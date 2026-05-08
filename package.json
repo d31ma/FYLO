@@ -24,7 +24,8 @@
     "scripts": {
         "build": "node ./scripts/build.mjs",
         "build:exe": "mkdir -p ./dist-bin && bun build --compile ./src/cli/index.js --outfile ./dist-bin/fylo",
-        "test": "bun --env-file=.env.test test --timeout 120000 --parallel=1",
+        "test": "bun --env-file=.env.test test tests --timeout 120000 --parallel=1",
+        "test:blackbox": "bun run build && bun test package-contract --timeout 120000",
         "typecheck": "tsc --noEmit",
         "lint": "prettier --check \"src/**/*.js\" \"tests/**/*.js\" README.md",
         "format": "prettier --write src tests"
