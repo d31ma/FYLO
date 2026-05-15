@@ -291,10 +291,10 @@ jobs:
             package_name: ${{ needs.version.outputs.package_name }}
             version: ${{ needs.version.outputs.version }}
             npm_dist_tag: latest
+            npm_auth_mode: trusted
             source_repository: ${{ github.repository }}
         secrets:
             PACKAGES_READ_TOKEN: ${{ secrets.PACKAGES_READ_TOKEN }}
-            NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
     github-release:
         name: Create GitHub release
