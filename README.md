@@ -43,13 +43,13 @@
 
 FYLO trades complexity for clarity. Documents are plain JSON files on disk. Indexes are zero-byte key entries that accelerate queries without duplicating data. If the index ever drifts, FYLO rebuilds it from the documents — the files are always the source of truth.
 
-| Principle | Implementation |
-|-----------|---------------|
-| **Documents are truth** | One `.json` file per document, sharded by TTID prefix |
-| **Indexes are accelerators** | Zero-payload prefix keys in a sorted catalog file |
-| **Rebuildable, not sacred** | `rebuildCollection()` reconstructs indexes from documents |
+| Principle                            | Implementation                                                |
+| ------------------------------------ | ------------------------------------------------------------- |
+| **Documents are truth**              | One `.json` file per document, sharded by TTID prefix         |
+| **Indexes are accelerators**         | Zero-payload prefix keys in a sorted catalog file             |
+| **Rebuildable, not sacred**          | `rebuildCollection()` reconstructs indexes from documents     |
 | **Bun-native, zero-dependency core** | `bun:sqlite`, `Bun.mmap()`, `Bun.S3Client` — no native addons |
-| **Filesystem-first** | One engine. Sync to S3/GCS is your deployment choice |
+| **Filesystem-first**                 | One engine. Sync to S3/GCS is your deployment choice          |
 
 ---
 
@@ -116,10 +116,10 @@ age/nr/3fc1ffffffffffff/4UUB32VGUDW
 
 ### Index Backends
 
-| Backend | Description | Best for |
-|---------|-------------|----------|
-| `local-fs` (default) | mmap'd sorted file + WAL. Binary search, zero JS heap. | Embedded, single-process |
-| `s3-client` | Bun.S3Client. Each key is a zero-byte S3 object. | Distributed, multi-writer |
+| Backend              | Description                                            | Best for                  |
+| -------------------- | ------------------------------------------------------ | ------------------------- |
+| `local-fs` (default) | mmap'd sorted file + WAL. Binary search, zero JS heap. | Embedded, single-process  |
+| `s3-client`          | Bun.S3Client. Each key is a zero-byte S3 object.       | Distributed, multi-writer |
 
 ```ts
 // S3-backed indexes (documents stay on local filesystem)
@@ -138,25 +138,25 @@ Collection names map directly to S3 bucket names. Credentials resolve from `AWS_
 
 ## Configuration
 
-| Variable | Purpose | Default |
-|----------|---------|---------|
-| `FYLO_ROOT` | Filesystem root for collections | `./.fylo-data` |
-| `FYLO_SCHEMA_DIR` | Directory containing JSON validation schemas | — |
-| `CHEX_SCHEMA_DIR` | Schema directory for `@d31ma/chex` (synced from `FYLO_SCHEMA_DIR`) | — |
-| `FYLO_STRICT` | Validate documents with chex before writes | — |
-| `FYLO_ENCRYPTION_KEY` | AES-GCM key for `$encrypted` fields (≥32 chars) | — |
-| `FYLO_CIPHER_SALT` | Salt for blind index derivation | — |
-| `FYLO_LOGGING` | Enable logging (`"1"`) | — |
+| Variable              | Purpose                                                            | Default        |
+| --------------------- | ------------------------------------------------------------------ | -------------- |
+| `FYLO_ROOT`           | Filesystem root for collections                                    | `./.fylo-data` |
+| `FYLO_SCHEMA_DIR`     | Directory containing JSON validation schemas                       | —              |
+| `CHEX_SCHEMA_DIR`     | Schema directory for `@d31ma/chex` (synced from `FYLO_SCHEMA_DIR`) | —              |
+| `FYLO_STRICT`         | Validate documents with chex before writes                         | —              |
+| `FYLO_ENCRYPTION_KEY` | AES-GCM key for `$encrypted` fields (≥32 chars)                    | —              |
+| `FYLO_CIPHER_SALT`    | Salt for blind index derivation                                    | —              |
+| `FYLO_LOGGING`        | Enable logging (`"1"`)                                             | —              |
 
 S3 index credentials (resolved in order: explicit options → `AWS_*` → `FYLO_S3_*`):
 
-| Variable | AWS equivalent |
-|----------|---------------|
-| `FYLO_S3_ACCESS_KEY_ID` | `AWS_ACCESS_KEY_ID` |
-| `FYLO_S3_SECRET_ACCESS_KEY` | `AWS_SECRET_ACCESS_KEY` |
-| `FYLO_S3_SESSION_TOKEN` | `AWS_SESSION_TOKEN` |
-| `FYLO_S3_ENDPOINT` | `AWS_ENDPOINT_URL_S3` / `AWS_ENDPOINT_URL` |
-| `FYLO_S3_REGION` | `AWS_REGION` / `AWS_DEFAULT_REGION` |
+| Variable                    | AWS equivalent                             |
+| --------------------------- | ------------------------------------------ |
+| `FYLO_S3_ACCESS_KEY_ID`     | `AWS_ACCESS_KEY_ID`                        |
+| `FYLO_S3_SECRET_ACCESS_KEY` | `AWS_SECRET_ACCESS_KEY`                    |
+| `FYLO_S3_SESSION_TOKEN`     | `AWS_SESSION_TOKEN`                        |
+| `FYLO_S3_ENDPOINT`          | `AWS_ENDPOINT_URL_S3` / `AWS_ENDPOINT_URL` |
+| `FYLO_S3_REGION`            | `AWS_REGION` / `AWS_DEFAULT_REGION`        |
 
 Copy `.env.example` to `.env` and fill in your values.
 
@@ -203,30 +203,38 @@ FYLO queries use prefix indexes first, then hydrate only matching documents.
 ```ts
 // Exact match
 const results = {}
-for await (const doc of db.findDocs('users', {
-    $ops: [{ name: { $eq: 'Alice' } }]
-}).collect()) {
+for await (const doc of db
+    .findDocs('users', {
+        $ops: [{ name: { $eq: 'Alice' } }]
+    })
+    .collect()) {
     Object.assign(results, doc)
 }
 
 // Range query (numeric fields)
-for await (const doc of db.findDocs('users', {
-    $ops: [{ age: { $gte: 18 } }]
-}).collect()) {
+for await (const doc of db
+    .findDocs('users', {
+        $ops: [{ age: { $gte: 18 } }]
+    })
+    .collect()) {
     Object.assign(results, doc)
 }
 
 // Contains (array membership)
-for await (const doc of db.findDocs('users', {
-    $ops: [{ tags: { $contains: 'engineering' } }]
-}).collect()) {
+for await (const doc of db
+    .findDocs('users', {
+        $ops: [{ tags: { $contains: 'engineering' } }]
+    })
+    .collect()) {
     Object.assign(results, doc)
 }
 
 // OR across conditions
-for await (const doc of db.findDocs('users', {
-    $ops: [{ role: { $eq: 'admin' } }, { role: { $eq: 'owner' } }]
-}).collect()) {
+for await (const doc of db
+    .findDocs('users', {
+        $ops: [{ role: { $eq: 'admin' } }, { role: { $eq: 'owner' } }]
+    })
+    .collect()) {
     Object.assign(results, doc)
 }
 ```
@@ -241,14 +249,14 @@ const posts = await db.executeSQL(`SELECT * FROM posts WHERE published = true`)
 
 ### Query Strategy
 
-| Operator | Index used | Fallback |
-|----------|-----------|----------|
-| `$eq` | Exact match key (`eq`) | — |
-| `$gt`, `$gte`, `$lt`, `$lte` | Sortable numeric key (`n`/`nr`) | Full scan if non-numeric |
-| `$contains` | Exact match on array members | — |
-| `$like "ali%"` | Forward prefix (`f`) | Full scan |
-| `$like "%ice"` | Reversed prefix (`r`) | Full scan |
-| `$like "%lic%"` | Trigram (`g3`) → hydrate → verify | Full scan |
+| Operator                     | Index used                        | Fallback                 |
+| ---------------------------- | --------------------------------- | ------------------------ |
+| `$eq`                        | Exact match key (`eq`)            | —                        |
+| `$gt`, `$gte`, `$lt`, `$lte` | Sortable numeric key (`n`/`nr`)   | Full scan if non-numeric |
+| `$contains`                  | Exact match on array members      | —                        |
+| `$like "ali%"`               | Forward prefix (`f`)              | Full scan                |
+| `$like "%ice"`               | Reversed prefix (`r`)             | Full scan                |
+| `$like "%lic%"`              | Trigram (`g3`) → hydrate → verify | Full scan                |
 
 ---
 
@@ -297,15 +305,17 @@ Upgraders are pure functions:
 export default function upgrade(doc) {
     return {
         ...doc,
-        slug: String(doc.title ?? '')
-            .toLowerCase()
-            .replace(/[^a-z0-9]+/g, '-')
-            .replace(/^-+|-+$/g, '') || 'untitled'
+        slug:
+            String(doc.title ?? '')
+                .toLowerCase()
+                .replace(/[^a-z0-9]+/g, '-')
+                .replace(/^-+|-+$/g, '') || 'untitled'
     }
 }
 ```
 
 Behavior:
+
 - Documents carry `_v` (version label)
 - Reads materialize old docs to head shape in memory
 - Strict writes validate against head schema via `@d31ma/chex`
@@ -328,6 +338,7 @@ Fields declared in `$encrypted` arrays are stored with AES-GCM. Equality queries
 ```
 
 Requirements:
+
 - `FYLO_ENCRYPTION_KEY` must be ≥32 characters
 - `FYLO_CIPHER_SALT` is recommended
 - Process-global: one key for all collections
@@ -377,15 +388,15 @@ const db = new Fylo({
     root: '/mnt/fylo',
     worm: {
         mode: 'append-only',
-        deletePolicy: 'tombstone'  // or 'reject'
+        deletePolicy: 'tombstone' // or 'reject'
     }
 })
 
 const v1 = await db.putData('posts', { title: 'v1' })
 const v2 = await db.patchDoc('posts', { [v1]: { title: 'v2' } })
 
-const head = await db.getLatest('posts', v1)       // current head
-const history = await db.getHistory('posts', v2)   // full chain
+const head = await db.getLatest('posts', v1) // current head
+const history = await db.getHistory('posts', v2) // full chain
 ```
 
 - Each update writes a new immutable version
@@ -404,7 +415,7 @@ Sync hooks let FYLO notify your storage client:
 ```ts
 const db = new Fylo({
     root: '/mnt/fylo',
-    syncMode: 'await-sync',   // or 'fire-and-forget'
+    syncMode: 'await-sync', // or 'fire-and-forget'
     sync: {
         async onWrite(event) {
             await s3.putObject({
@@ -421,9 +432,9 @@ const db = new Fylo({
 })
 ```
 
-| Mode | Behavior |
-|------|----------|
-| `await-sync` | Waits for hook, throws if sync fails |
+| Mode              | Behavior                                       |
+| ----------------- | ---------------------------------------------- |
+| `await-sync`      | Waits for hook, throws if sync fails           |
 | `fire-and-forget` | Commits locally first, runs hook in background |
 
 WORM mode sync carries lineage metadata under `event.worm` (head operation type, lineage ID, delete mode).
@@ -458,6 +469,7 @@ await db.queue.drainRegistered(new UserConsumer())
 ```
 
 Queue files:
+
 ```text
 <root>/.fylo/queue/topics/<topic>.ndjson
 <root>/.fylo/queue/consumers/<group>/<topic>.json
@@ -545,17 +557,17 @@ Use `rebuildCollection()` after operator-level recovery or when external process
 
 ## Limitations
 
-| Limitation | Detail |
-|-----------|--------|
-| **Filesystem-only engine** | One engine writes to a local path. Remote replication is your responsibility. |
-| **Advisory locking** | Lock-files with TTL. Networked filesystems without atomic `link()` are not supported. |
-| **Indexes are derived** | External writes to document files won't update indexes. Use `rebuildCollection()`. |
-| **Logical WORM** | Enforced by FYLO write paths. Pair with OS-level immutability for true WORM. |
-| **Frequency leaks on encryption** | HMAC blind indexes for `$eq` reveal value repetition even without decryption. |
-| **Process-global cipher** | One key per process for all `$encrypted` fields. No per-collection key rotation built in. |
-| **No cross-collection transactions** | Writes are serialized per collection. No atomic multi-collection commits. |
-| **TTID-derived timestamps** | `createdAt`/`updatedAt` from TTIDs, not filesystem `mtime`. Stable but tooling can't override. |
-| **Bulk import for trusted sources** | SSRF guard blocks private addresses and caps at 50 MiB. Not for user-provided URLs. |
+| Limitation                           | Detail                                                                                         |
+| ------------------------------------ | ---------------------------------------------------------------------------------------------- |
+| **Filesystem-only engine**           | One engine writes to a local path. Remote replication is your responsibility.                  |
+| **Advisory locking**                 | Lock-files with TTL. Networked filesystems without atomic `link()` are not supported.          |
+| **Indexes are derived**              | External writes to document files won't update indexes. Use `rebuildCollection()`.             |
+| **Logical WORM**                     | Enforced by FYLO write paths. Pair with OS-level immutability for true WORM.                   |
+| **Frequency leaks on encryption**    | HMAC blind indexes for `$eq` reveal value repetition even without decryption.                  |
+| **Process-global cipher**            | One key per process for all `$encrypted` fields. No per-collection key rotation built in.      |
+| **No cross-collection transactions** | Writes are serialized per collection. No atomic multi-collection commits.                      |
+| **TTID-derived timestamps**          | `createdAt`/`updatedAt` from TTIDs, not filesystem `mtime`. Stable but tooling can't override. |
+| **Bulk import for trusted sources**  | SSRF guard blocks private addresses and caps at 50 MiB. Not for user-provided URLs.            |
 
 ---
 
