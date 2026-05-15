@@ -1,11 +1,15 @@
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import { Cipher } from '../../src/security/cipher.js'
+import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
+
+/** @type {typeof import('../../src/security/cipher.js').Cipher} */
+let Cipher
 
 describe('Cipher.configure FYLO_CIPHER_SALT requirement', () => {
     /** @type {string | undefined} */
     let previousSalt
-    beforeEach(() => {
+    beforeEach(async () => {
         previousSalt = process.env.FYLO_CIPHER_SALT
+        mock.restore()
+        ;({ Cipher } = await import(`../../src/security/cipher.js?cipher-salt=${Date.now()}`))
         Cipher.reset()
     })
     afterEach(() => {

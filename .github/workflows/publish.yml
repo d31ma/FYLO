@@ -257,9 +257,7 @@ jobs:
                         echo "@d31ma:registry=https://registry.npmjs.org/"
                       } > .npmrc
                       cp .npmrc ~/.npmrc
-                      cp "$RUNNER_TEMP/original-bunfig.toml" bunfig.toml 2>/dev/null || true
-                      cat >> bunfig.toml <<'EOF'
-
+                      cat > bunfig.toml <<'EOF'
                       [install.scopes]
                       "@d31ma" = { url = "https://registry.npmjs.org/" }
                       EOF
