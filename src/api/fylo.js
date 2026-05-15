@@ -89,6 +89,11 @@ export default class Fylo {
      * @param {FyloOptions} [options]
      */
     constructor(options = {}) {
+        // Sync chex's env var with FYLO's so standalone chex usage
+        // (outside FYLO's validation wrapper) resolves schemas correctly.
+        if (process.env.FYLO_SCHEMA_DIR && !process.env.CHEX_SCHEMA_DIR) {
+            process.env.CHEX_SCHEMA_DIR = process.env.FYLO_SCHEMA_DIR
+        }
         this.rlsEnabled = options.rls === true
         this.onEvent = options.onEvent
         this.queue = options.queue

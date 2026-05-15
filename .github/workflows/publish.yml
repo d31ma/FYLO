@@ -52,9 +52,6 @@ jobs:
             - name: Run tests
               run: bun run test
 
-            - name: Run package blackbox tests
-              run: bun run test:blackbox
-
     blackbox-config:
         name: Detect blackbox configuration
         runs-on: ubuntu-latest
@@ -76,7 +73,7 @@ jobs:
                   fi
 
     package-blackbox:
-        name: NightJar security blackbox tests
+        name: NightJar blackbox tests
         runs-on: ubuntu-latest
         needs: blackbox-config
         if: needs.blackbox-config.outputs.enabled == 'true'
@@ -136,7 +133,7 @@ jobs:
             - name: Patch FYLO blackbox helper for GitHub Packages
               run: node scripts/patch-nightjar-fylo-blackbox.mjs .blackbox-tests
 
-            - name: Run FYLO security blackbox tests
+            - name: Run FYLO blackbox tests
               working-directory: .blackbox-tests
               env:
                   FYLO_PACKAGE_TARBALL: ${{ steps.pack.outputs.tarball }}
@@ -146,7 +143,11 @@ jobs:
                     bun install --frozen-lockfile
                   fi
 
-                  bun test fylo/security-contract.test.mjs --timeout 120000
+                  if [ -f package.json ] && jq -e '.scripts.blackbox' package.json >/dev/null; then
+                    bun run blackbox
+                  else
+                    bun test fylo --timeout 120000
+                  fi
 
     version:
         name: Read version
@@ -221,6 +222,7 @@ jobs:
 
     publish:
         name: Publish to GitHub Packages
+        runs-on: ubuntu-latest
         needs: [test, blackbox-config, package-blackbox, version]
         if: >-
             ${{
@@ -235,23 +237,40 @@ jobs:
                 needs.package-blackbox.result == 'success'
               )
             }}
-        runs-on: ubuntu-latest
         timeout-minutes: 15
         permissions:
             contents: read
             packages: write
         environment: packages-prod
+        env:
+            NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
         steps:
-            - name: Publish via FOUNDRY
-              uses: d31ma/FOUNDRY/.github/actions/publish-github-package@main
+            - name: Checkout
+              uses: actions/checkout@v6
+
+            - name: Setup Bun
+              uses: oven-sh/setup-bun@v2
               with:
-                  package_name: ${{ needs.version.outputs.package_name }}
-                  version: ${{ needs.version.outputs.version }}
-                  github_dist_tag: beta
-                  build_command: bun run build
-                  publish_token: ${{ github.token }}
-                  packages_read_token: ${{ secrets.PACKAGES_READ_TOKEN || github.token }}
+                  bun-version: latest
+
+            - name: Install dependencies
+              run: bun install --frozen-lockfile
+
+            - name: Build package
+              run: bun run build
+
+            - name: Setup Node
+              uses: actions/setup-node@v6
+              with:
+                  node-version: '24'
+                  registry-url: 'https://npm.pkg.github.com'
+                  scope: '@d31ma'
+
+            - name: Publish to GitHub Packages
+              run: npm publish --tag beta --registry=https://npm.pkg.github.com
+              env:
+                  NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     promote-npm:
         name: Promote to npm registry
@@ -259,7 +278,6 @@ jobs:
         if: needs.publish.result == 'success'
         permissions:
             contents: read
-            id-token: write
             packages: read
         uses: d31ma/FOUNDRY/.github/workflows/promote-npm.yml@main
         with:
@@ -268,6 +286,7 @@ jobs:
             npm_dist_tag: latest
             source_repository: ${{ github.repository }}
         secrets:
+            NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
             PACKAGES_READ_TOKEN: ${{ secrets.PACKAGES_READ_TOKEN }}
 
     github-release:

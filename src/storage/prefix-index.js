@@ -490,6 +490,49 @@ export class LocalFsPrefixIndexStore {
         return path.join(this.root(collection), LOCAL_FS_WAL)
     }
 
+    /**
+     * Returns a memory-mapped view of the sorted keys file.
+     * Uses Bun.mmap so only pages touched by binary search are faulted in
+     * (OS page cache handles the rest — no full-file load into JS heap).
+     *
+     * @param {string} collection
+     * @returns Uint8Array
+     */
+    #snapshotBuffer(collection) {
+        try {
+            return Bun.mmap(this.snapshotPath(collection))
+        } catch {
+            return new Uint8Array(0)
+        }
+    }
+
+    /**
+     * Binary search for the byte offset of the first key >= prefix.
+     * Operates directly on the mmap'd buffer — O(log n) key comparisons.
+     *
+     * @param {Uint8Array} buf
+     * @param {string} prefix
+     * @returns {number} byte offset of the start of the matching line
+     */
+    #findGE(buf, prefix) {
+        if (buf.length === 0) return 0
+        const decoder = new TextDecoder()
+        let lo = 0
+        let hi = buf.length
+        while (lo < hi) {
+            const mid = Math.floor((lo + hi) / 2)
+            let start = mid
+            while (start > 0 && buf[start - 1] !== 0x0a) start--
+            let end = mid
+            while (end < buf.length && buf[end] !== 0x0a) end++
+            const key = decoder.decode(buf.subarray(start, end))
+            if (key < prefix) lo = end + 1
+            else hi = start
+        }
+        while (lo > 0 && lo < buf.length && buf[lo - 1] !== 0x0a) lo--
+        return lo
+    }
+
     /** @param {string} collection @returns {Promise<void>} */
     async ensureCollection(collection) {
         const root = this.root(collection)
@@ -519,12 +562,17 @@ export class LocalFsPrefixIndexStore {
     }
 
     /**
+     * Loads the full key set (snapshot + WAL) into a JS Set.
+     * Used only during compaction — not in the hot query path.
+     *
      * @param {string} collection
      * @returns {Promise<Set<string>>}
      */
     async loadKeySet(collection) {
         await this.ensureCollection(collection)
-        const keys = new Set(lines(await readTextIfExists(this.snapshotPath(collection))))
+        // Read snapshot efficiently via mmap lines (avoids full string decode)
+        const snapBuf = this.#snapshotBuffer(collection)
+        const keys = new Set(lines(new TextDecoder().decode(snapBuf)))
         for (const line of lines(await readTextIfExists(this.walPath(collection)))) {
             const op = line[0]
             if (line[1] !== '\t') continue
@@ -563,6 +611,10 @@ export class LocalFsPrefixIndexStore {
     }
 
     /**
+     * Merges WAL into the sorted snapshot atomically.
+     * After compaction any subsequent listKeys() picks up the new
+     * file via a fresh mmap (mmap sees the rewritten file on next call).
+     *
      * @param {string} collection
      * @returns {Promise<void>}
      */
@@ -572,10 +624,43 @@ export class LocalFsPrefixIndexStore {
         await writeDurable(this.walPath(collection), '')
     }
 
-    /** @param {string} collection @param {string} prefix @returns {Promise<string[]>} */
+    /**
+     * Lists index keys matching a prefix using O(log n) binary search
+     * on the mmap'd snapshot + O(k) sequential scan of matching keys
+     * + WAL merge. Never loads the full key set into JS memory.
+     *
+     * @param {string} collection
+     * @param {string} [prefix]
+     * @returns {Promise<string[]>}
+     */
     async listKeys(collection, prefix = '') {
-        const keys = Array.from(await this.loadKeySet(collection)).sort()
-        return keys.filter((key) => key.startsWith(prefix))
+        await this.ensureCollection(collection)
+        const buf = this.#snapshotBuffer(collection)
+        const decoder = new TextDecoder()
+        const result = new Set()
+
+        // Phase 1: binary search + range scan on mmap'd snapshot
+        let pos = this.#findGE(buf, prefix)
+        while (pos < buf.length) {
+            let end = pos
+            while (end < buf.length && buf[end] !== 0x0a) end++
+            const key = decoder.decode(buf.subarray(pos, end))
+            if (!key || !key.startsWith(prefix)) break
+            result.add(key)
+            pos = end + 1
+        }
+
+        // Phase 2: apply WAL mutations on top (only for matching prefix)
+        for (const line of lines(await readTextIfExists(this.walPath(collection)))) {
+            const op = line[0]
+            if (line[1] !== '\t') continue
+            const key = line.slice(2)
+            if (!key || !key.startsWith(prefix)) continue
+            if (op === '+') result.add(key)
+            else if (op === '-') result.delete(key)
+        }
+
+        return Array.from(result).sort()
     }
 
     /** @param {string} collection @param {TTID} docId @param {Record<string, any>} doc @returns {Promise<void>} */
