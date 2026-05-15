@@ -252,6 +252,18 @@ jobs:
                   build_command: bun run build
                   publish_token: ${{ github.token }}
                   packages_read_token: ${{ secrets.PACKAGES_READ_TOKEN || github.token }}
+                  install_command: |
+                      {
+                        echo "@d31ma:registry=https://registry.npmjs.org/"
+                      } > .npmrc
+                      cp .npmrc ~/.npmrc
+                      cp "$RUNNER_TEMP/original-bunfig.toml" bunfig.toml 2>/dev/null || true
+                      cat >> bunfig.toml <<'EOF'
+
+                      [install.scopes]
+                      "@d31ma" = { url = "https://registry.npmjs.org/" }
+                      EOF
+                      bun install --frozen-lockfile
 
     promote-npm:
         name: Promote to npm registry
