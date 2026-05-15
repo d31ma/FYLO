@@ -31,6 +31,7 @@ beforeAll(async () => {
 })
 afterAll(async () => {
     CipherMock.reset()
+    mock.restore()
     await fylo.dropCollection(COLLECTION)
     await rm(root, { recursive: true, force: true })
 })
