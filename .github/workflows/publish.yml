@@ -52,6 +52,9 @@ jobs:
             - name: Run tests
               run: bun run test
 
+            - name: Run package blackbox tests
+              run: bun run test:blackbox
+
     blackbox-config:
         name: Detect blackbox configuration
         runs-on: ubuntu-latest
