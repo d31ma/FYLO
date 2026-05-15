@@ -294,6 +294,7 @@ jobs:
             source_repository: ${{ github.repository }}
         secrets:
             PACKAGES_READ_TOKEN: ${{ secrets.PACKAGES_READ_TOKEN }}
+            NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
     github-release:
         name: Create GitHub release
