@@ -155,7 +155,7 @@ describe('TTID direct integration', () => {
 
         test('decodeTime returns monotonic timestamps', () => {
             const ids = Array.from({ length: 5 }, () => TTID.generate())
-            const timestamps = ids.map(id => TTID.decodeTime(id).createdAt)
+            const timestamps = ids.map((id) => TTID.decodeTime(id).createdAt)
             for (let i = 1; i < timestamps.length; i++) {
                 expect(timestamps[i]).toBeGreaterThanOrEqual(timestamps[i - 1])
             }
