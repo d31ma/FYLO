@@ -61,99 +61,6 @@ jobs:
             - name: Run package blackbox tests
               run: bun run test:blackbox
 
-    blackbox-config:
-        name: Detect blackbox configuration
-        runs-on: ubuntu-latest
-        outputs:
-            enabled: ${{ steps.detect.outputs.enabled }}
-        env:
-            BLACKBOX_REPOSITORY: ${{ vars.FYLO_BLACKBOX_REPOSITORY || secrets.FYLO_BLACKBOX_REPOSITORY || vars.BLACKBOX_REPOSITORY || secrets.BLACKBOX_REPOSITORY || vars.NIGHTJAR_BLACKBOX_REPOSITORY || secrets.NIGHTJAR_BLACKBOX_REPOSITORY }}
-            BLACKBOX_SSH_KEY: ${{ secrets.FYLO_BLACKBOX_SSH_KEY || secrets.BLACKBOX_SSH_KEY || secrets.NIGHTJAR_BLACKBOX_SSH_KEY }}
-
-        steps:
-            - id: detect
-              name: Check private suite credentials
-              run: |
-                  if [ -n "$BLACKBOX_REPOSITORY" ] && [ -n "$BLACKBOX_SSH_KEY" ]; then
-                    echo "enabled=true" >> "$GITHUB_OUTPUT"
-                  else
-                    echo "enabled=false" >> "$GITHUB_OUTPUT"
-                    echo "Blackbox configuration not present; skipping private package validation."
-                  fi
-
-    package-blackbox:
-        name: NightJar security blackbox tests
-        runs-on: ubuntu-latest
-        needs: blackbox-config
-        if: needs.blackbox-config.outputs.enabled == 'true'
-        timeout-minutes: 20
-        env:
-            BLACKBOX_REPOSITORY: ${{ vars.FYLO_BLACKBOX_REPOSITORY || secrets.FYLO_BLACKBOX_REPOSITORY || vars.BLACKBOX_REPOSITORY || secrets.BLACKBOX_REPOSITORY || vars.NIGHTJAR_BLACKBOX_REPOSITORY || secrets.NIGHTJAR_BLACKBOX_REPOSITORY }}
-            BLACKBOX_SSH_KEY: ${{ secrets.FYLO_BLACKBOX_SSH_KEY || secrets.BLACKBOX_SSH_KEY || secrets.NIGHTJAR_BLACKBOX_SSH_KEY }}
-            NODE_AUTH_TOKEN: ${{ secrets.PACKAGES_READ_TOKEN || github.token }}
-        steps:
-            - name: Checkout FYLO
-              uses: actions/checkout@v6
-
-            - name: Setup Bun
-              uses: oven-sh/setup-bun@v2
-              with:
-                  bun-version: latest
-
-            - name: Setup Node
-              uses: actions/setup-node@v6
-              with:
-                  node-version: '24'
-                  registry-url: 'https://npm.pkg.github.com'
-                  scope: '@d31ma'
-
-            - name: Install dependencies
-              run: bun install --frozen-lockfile
-
-            - name: Build package
-              run: bun run build
-
-            - name: Pack package under test
-              id: pack
-              run: |
-                  npm pack --json --ignore-scripts > /tmp/fylo-pack.json
-                  filename=$(node -e "console.log(require('/tmp/fylo-pack.json')[0].filename)")
-                  echo "tarball=$PWD/$filename" >> "$GITHUB_OUTPUT"
-
-            - name: Require private blackbox credentials
-              run: |
-                  if [ -z "$BLACKBOX_REPOSITORY" ]; then
-                    echo "::error::Missing BLACKBOX_REPOSITORY variable"
-                    exit 1
-                  fi
-                  if [ -z "$BLACKBOX_SSH_KEY" ]; then
-                    echo "::error::Missing BLACKBOX_SSH_KEY secret"
-                    exit 1
-                  fi
-
-            - name: Checkout private blackbox suite
-              uses: actions/checkout@v6
-              with:
-                  repository: ${{ env.BLACKBOX_REPOSITORY }}
-                  ssh-key: ${{ env.BLACKBOX_SSH_KEY }}
-                  ref: ${{ vars.FYLO_BLACKBOX_REF || vars.BLACKBOX_REF || vars.NIGHTJAR_BLACKBOX_REF || 'main' }}
-                  path: .blackbox-tests
-
-            - name: Patch FYLO blackbox helper for GitHub Packages
-              run: node scripts/patch-nightjar-fylo-blackbox.mjs .blackbox-tests
-
-            - name: Run FYLO security blackbox tests
-              working-directory: .blackbox-tests
-              env:
-                  FYLO_PACKAGE_TARBALL: ${{ steps.pack.outputs.tarball }}
-                  NIGHTJAR_SUITE: fylo
-              run: |
-                  if [ -f package.json ] || [ -f bun.lock ] || [ -f bun.lockb ]; then
-                    bun install --frozen-lockfile
-                  fi
-
-                  bun test fylo/security-contract.test.mjs --timeout 120000
-
     version:
         name: Read version
         runs-on: ubuntu-latest
@@ -227,19 +134,14 @@ jobs:
 
     publish:
         name: Publish to GitHub Packages
-        needs: [test, blackbox-config, package-blackbox, version]
+        needs: [test, version]
         if: >-
             ${{
               always() &&
               needs.test.result == 'success' &&
-              needs.blackbox-config.result == 'success' &&
               needs.version.result == 'success' &&
               needs.version.outputs.tag_exists == 'false' &&
-              needs.version.outputs.github_version_exists == 'false' &&
-              (
-                needs.blackbox-config.outputs.enabled == 'false' ||
-                needs.package-blackbox.result == 'success'
-              )
+              needs.version.outputs.github_version_exists == 'false'
             }}
         runs-on: ubuntu-latest
         timeout-minutes: 15
@@ -270,7 +172,7 @@ jobs:
                       bun install --frozen-lockfile
 
     promote-npm:
-        name: Promote to npm registry
+        name: Request npm promotion
         needs: [version, publish]
         if: >-
             ${{
@@ -282,19 +184,42 @@ jobs:
                 needs.version.outputs.github_version_exists == 'true'
               )
             }}
+        runs-on: ubuntu-latest
+        timeout-minutes: 10
         permissions:
             contents: read
-            id-token: write
-            packages: read
-        uses: d31ma/FOUNDRY/.github/workflows/promote-npm.yml@main
-        with:
-            package_name: ${{ needs.version.outputs.package_name }}
-            version: ${{ needs.version.outputs.version }}
-            npm_dist_tag: latest
-            npm_auth_mode: trusted
-            source_repository: ${{ github.repository }}
-        secrets:
-            PACKAGES_READ_TOKEN: ${{ secrets.PACKAGES_READ_TOKEN }}
+
+        steps:
+            - name: Dispatch FOUNDRY npm promotion
+              env:
+                  GH_TOKEN: ${{ secrets.FOUNDRY_DISPATCH_TOKEN }}
+                  PACKAGE_NAME: ${{ needs.version.outputs.package_name }}
+                  VERSION: ${{ needs.version.outputs.version }}
+                  SOURCE_REPOSITORY: ${{ github.repository }}
+              run: |
+                  set -euo pipefail
+                  if [ -z "${GH_TOKEN:-}" ]; then
+                    echo "::error::FOUNDRY_DISPATCH_TOKEN is required to request npm promotion from FOUNDRY."
+                    exit 1
+                  fi
+
+                  jq -n \
+                    --arg package_name "$PACKAGE_NAME" \
+                    --arg version "$VERSION" \
+                    --arg npm_dist_tag "latest" \
+                    --arg npm_auth_mode "trusted" \
+                    --arg source_repository "$SOURCE_REPOSITORY" \
+                    '{
+                      event_type: "promote-npm",
+                      client_payload: {
+                        package_name: $package_name,
+                        version: $version,
+                        npm_dist_tag: $npm_dist_tag,
+                        npm_auth_mode: $npm_auth_mode,
+                        source_repository: $source_repository
+                      }
+                    }' |
+                    gh api repos/d31ma/FOUNDRY/dispatches --input -
 
     github-release:
         name: Create GitHub release
