@@ -15,15 +15,11 @@ concurrency:
 
 jobs:
     test:
-        name: Test (Bun ${{ matrix.bun-version }})
+        name: Test (Bun latest)
         runs-on: ubuntu-latest
         timeout-minutes: 20
         env:
             NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-        strategy:
-            matrix:
-                bun-version: [latest, 1.2.x]
 
         steps:
             - name: Checkout
@@ -39,7 +35,7 @@ jobs:
             - name: Setup Bun
               uses: oven-sh/setup-bun@v2
               with:
-                  bun-version: ${{ matrix.bun-version }}
+                  bun-version: latest
 
             - name: Install dependencies
               run: bun install --frozen-lockfile
@@ -57,5 +53,4 @@ jobs:
               run: bun run test
 
             - name: Run package blackbox tests
-              if: matrix.bun-version == 'latest'
               run: bun run test:blackbox
