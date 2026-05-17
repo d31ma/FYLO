@@ -1,6 +1,5 @@
 import path from 'node:path'
-import { readFileSync } from 'node:fs'
-import { mkdir, open, rm, stat } from 'node:fs/promises'
+import { mkdir, open, readFile, rm, stat } from 'node:fs/promises'
 import { Cipher } from '../security/cipher.js'
 import { validateDocId } from '../core/doc-id.js'
 import { writeDurable } from './durable.js'
@@ -499,13 +498,13 @@ export class LocalFsPrefixIndexStore {
      * @param {string} collection
      * @returns Uint8Array
      */
-    #snapshotBuffer(collection) {
+    async #snapshotBuffer(collection) {
         const snapshot = this.snapshotPath(collection)
         try {
             return Bun.mmap(snapshot)
         } catch {
             try {
-                return readFileSync(snapshot)
+                return await readFile(snapshot)
             } catch (fallbackErr) {
                 const error = /** @type {NodeJS.ErrnoException} */ (fallbackErr)
                 if (error.code === 'ENOENT') return new Uint8Array(0)
@@ -579,7 +578,7 @@ export class LocalFsPrefixIndexStore {
     async loadKeySet(collection) {
         await this.ensureCollection(collection)
         // Read snapshot efficiently via mmap lines (avoids full string decode)
-        const snapBuf = this.#snapshotBuffer(collection)
+        const snapBuf = await this.#snapshotBuffer(collection)
         const keys = new Set(lines(new TextDecoder().decode(snapBuf)))
         for (const line of lines(await readTextIfExists(this.walPath(collection)))) {
             const op = line[0]
@@ -643,7 +642,7 @@ export class LocalFsPrefixIndexStore {
      */
     async listKeys(collection, prefix = '') {
         await this.ensureCollection(collection)
-        const buf = this.#snapshotBuffer(collection)
+        const buf = await this.#snapshotBuffer(collection)
         const decoder = new TextDecoder()
         const result = new Set()
 
