@@ -4,8 +4,9 @@ import os from 'node:os'
 import path from 'node:path'
 import Fylo from '../../src/index.js'
 import { Cipher } from '../../src/security/cipher.js'
+import { createTestRoot } from '../helpers/root.js'
 
-const root = await mkdtemp(path.join(os.tmpdir(), 'fylo-events-'))
+const root = await createTestRoot('fylo-events-')
 
 describe('FYLO onEvent hook', () => {
     afterAll(async () => {
@@ -110,12 +111,18 @@ describe('FYLO onEvent hook', () => {
     })
 
     test('emits lock.takeover when a stale collection write-lock is reclaimed', async () => {
-        const lockRoot = await mkdtemp(path.join(os.tmpdir(), 'fylo-events-lock-'))
+        const lockRoot = await createTestRoot('fylo-events-lock-')
         const collection = `evt-takeover-${Date.now()}`
         try {
             const fylo = new Fylo({ root: lockRoot })
             await fylo.createCollection(collection)
-            const lockPath = path.join(lockRoot, collection, '.fylo', 'collection.lock')
+            const lockPath = path.join(
+                lockRoot,
+                '.collections',
+                collection,
+                'locks',
+                'collection.lock'
+            )
             // Plant a lock file older than the collection-write TTL (5 min) so
             // the next acquirer treats it as stale and takes it over.
             await mkdir(path.dirname(lockPath), { recursive: true })

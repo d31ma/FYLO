@@ -1,4 +1,5 @@
 import path from 'node:path'
+import { readFileSync } from 'node:fs'
 import { mkdir, open, rm, stat } from 'node:fs/promises'
 import { Cipher } from '../security/cipher.js'
 import { validateDocId } from '../core/doc-id.js'
@@ -463,7 +464,7 @@ export class LocalFsPrefixIndexStore {
      * @returns {string}
      */
     root(collection) {
-        return path.join(this.rootForCollection(collection), '.fylo', 'local-fs')
+        return path.join(this.rootForCollection(collection), 'index')
     }
 
     /**
@@ -499,10 +500,17 @@ export class LocalFsPrefixIndexStore {
      * @returns Uint8Array
      */
     #snapshotBuffer(collection) {
+        const snapshot = this.snapshotPath(collection)
         try {
-            return Bun.mmap(this.snapshotPath(collection))
+            return Bun.mmap(snapshot)
         } catch {
-            return new Uint8Array(0)
+            try {
+                return readFileSync(snapshot)
+            } catch (fallbackErr) {
+                const error = /** @type {NodeJS.ErrnoException} */ (fallbackErr)
+                if (error.code === 'ENOENT') return new Uint8Array(0)
+                throw fallbackErr
+            }
         }
     }
 

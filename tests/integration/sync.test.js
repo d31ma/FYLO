@@ -1,13 +1,13 @@
 import { afterAll, describe, expect, test } from 'bun:test'
-import { mkdtemp, rm } from 'node:fs/promises'
-import os from 'node:os'
+import { rm } from 'node:fs/promises'
 import path from 'node:path'
 import Fylo, { FyloSyncError } from '../../src/index.js'
+import { createTestRoot } from '../helpers/root.js'
 
 const roots = []
 
 async function createRoot(prefix) {
-    const root = await mkdtemp(path.join(os.tmpdir(), prefix))
+    const root = await createTestRoot(prefix)
     roots.push(root)
     return root
 }
@@ -47,7 +47,14 @@ describe('sync hooks', () => {
                 operation: 'put',
                 collection,
                 docId: id,
-                path: path.join(root, collection, '.fylo', 'docs', id.slice(0, 2), `${id}.json`),
+                path: path.join(
+                    root,
+                    '.collections',
+                    collection,
+                    'docs',
+                    id.slice(0, 2),
+                    `${id}.json`
+                ),
                 data: { title: 'Hello sync' }
             },
             {
@@ -55,7 +62,14 @@ describe('sync hooks', () => {
                 operation: 'patch',
                 collection,
                 docId: id,
-                path: path.join(root, collection, '.fylo', 'docs', id.slice(0, 2), `${id}.json`)
+                path: path.join(
+                    root,
+                    '.collections',
+                    collection,
+                    'docs',
+                    id.slice(0, 2),
+                    `${id}.json`
+                )
             },
             {
                 hook: 'write',
@@ -65,8 +79,8 @@ describe('sync hooks', () => {
                 previousDocId: id,
                 path: path.join(
                     root,
+                    '.collections',
                     collection,
-                    '.fylo',
                     'docs',
                     nextId.slice(0, 2),
                     `${nextId}.json`
@@ -80,8 +94,8 @@ describe('sync hooks', () => {
                 docId: nextId,
                 path: path.join(
                     root,
+                    '.collections',
                     collection,
-                    '.fylo',
                     'docs',
                     nextId.slice(0, 2),
                     `${nextId}.json`
@@ -124,13 +138,20 @@ describe('sync hooks', () => {
                 operation: 'put',
                 collection,
                 docId: id,
-                path: path.join(root, collection, '.fylo', 'docs', id.slice(0, 2), `${id}.json`),
+                path: path.join(
+                    root,
+                    '.collections',
+                    collection,
+                    'docs',
+                    id.slice(0, 2),
+                    `${id}.json`
+                ),
                 data: { title: 'Hello worm sync' },
                 worm: {
                     lineageId: id,
                     headOperation: 'create',
                     headDocId: id,
-                    headPath: path.join(root, collection, '.fylo', 'heads', `${id}.json`)
+                    headPath: path.join(root, '.collections', collection, 'heads', `${id}.json`)
                 }
             },
             {
@@ -141,8 +162,8 @@ describe('sync hooks', () => {
                 previousDocId: id,
                 path: path.join(
                     root,
+                    '.collections',
                     collection,
-                    '.fylo',
                     'docs',
                     nextId.slice(0, 2),
                     `${nextId}.json`
@@ -152,7 +173,7 @@ describe('sync hooks', () => {
                     lineageId: id,
                     headOperation: 'advance',
                     headDocId: nextId,
-                    headPath: path.join(root, collection, '.fylo', 'heads', `${id}.json`)
+                    headPath: path.join(root, '.collections', collection, 'heads', `${id}.json`)
                 }
             },
             {
@@ -160,17 +181,17 @@ describe('sync hooks', () => {
                 operation: 'delete',
                 collection,
                 docId: nextId,
-                path: path.join(root, collection, '.fylo', 'heads', `${id}.json`),
+                path: path.join(root, '.collections', collection, 'heads', `${id}.json`),
                 worm: {
                     lineageId: id,
                     headOperation: 'delete',
                     headDocId: nextId,
-                    headPath: path.join(root, collection, '.fylo', 'heads', `${id}.json`),
+                    headPath: path.join(root, '.collections', collection, 'heads', `${id}.json`),
                     deleteMode: 'tombstone',
                     versionPath: path.join(
                         root,
+                        '.collections',
                         collection,
-                        '.fylo',
                         'docs',
                         nextId.slice(0, 2),
                         `${nextId}.json`

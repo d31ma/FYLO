@@ -1,13 +1,13 @@
 import { afterAll, describe, expect, test } from 'bun:test'
-import { mkdtemp, rm } from 'node:fs/promises'
-import os from 'node:os'
+import { rm } from 'node:fs/promises'
 import path from 'node:path'
 import Fylo, { LocalQueue, consume, publish } from '../../src/index.js'
+import { createTestRoot } from '../helpers/root.js'
 
 const roots = []
 
 async function createRoot(prefix) {
-    const root = await mkdtemp(path.join(os.tmpdir(), prefix))
+    const root = await createTestRoot(prefix)
     roots.push(root)
     return root
 }
@@ -21,11 +21,18 @@ describe('local queue', () => {
         const root = await createRoot('fylo-queue-off-')
         const fylo = new Fylo({ root })
         expect(fylo.queue).toBeUndefined()
+        expect(
+            await Bun.file(
+                path.join(root, '.collections', 'users', 'index', 'manifest.json')
+            ).exists()
+        ).toBe(true)
     })
 
     test('mirrors document events into collection action topics', async () => {
         const root = await createRoot('fylo-queue-events-')
         const fylo = new Fylo({ root, queue: true })
+        const seeded = await fylo.getDoc('users', '4V6329YC0F2').once()
+        expect(seeded['4V6329YC0F2'].name).toBe('Ada Lovelace')
         await fylo.createCollection('queue-users')
 
         const id = await fylo.putData('queue-users', { name: 'Alice' })
@@ -114,7 +121,7 @@ describe('local queue', () => {
             }
         )
         const dlq = await Bun.file(
-            path.join(root, '.fylo', 'queue', 'dlq', `${encodeURIComponent('poison.topic')}.ndjson`)
+            path.join(root, '.queue', 'dlq', `${encodeURIComponent('poison.topic')}.ndjson`)
         ).text()
 
         expect(result.failed).toBe(1)

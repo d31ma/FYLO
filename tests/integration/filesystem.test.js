@@ -1,15 +1,26 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { mkdtemp, rm } from 'node:fs/promises'
-import os from 'node:os'
+import { rm, stat } from 'node:fs/promises'
 import path from 'node:path'
 import Fylo from '../../src/index.js'
-const root = await mkdtemp(path.join(os.tmpdir(), 'fylo-filesystem-'))
+import { createTestRoot } from '../helpers/root.js'
+
+const root = await createTestRoot('fylo-filesystem-')
 const fylo = new Fylo({ root })
 const POSTS = 'filesystem-posts'
 const USERS = 'filesystem-users'
 
-async function readLocalFsIndex(collection) {
-    const indexRoot = path.join(root, collection, '.fylo', 'local-fs')
+async function isDirectory(target) {
+    try {
+        return (await stat(target)).isDirectory()
+    } catch (err) {
+        const error = /** @type {NodeJS.ErrnoException} */ (err)
+        if (error.code === 'ENOENT') return false
+        throw err
+    }
+}
+
+async function readLocalIndex(collection) {
+    const indexRoot = path.join(root, '.collections', collection, 'index')
     const snapshot = await Bun.file(path.join(indexRoot, 'keys.snapshot')).text()
     const wal = await Bun.file(path.join(indexRoot, 'keys.wal')).text()
     return `${snapshot}${wal}`
@@ -44,6 +55,11 @@ describe('filesystem engine', () => {
         expect(await fylo.getDoc(POSTS, id).once()).toEqual({})
         await fylo.delDoc(POSTS, nextId)
         expect(await fylo.getDoc(POSTS, nextId).once()).toEqual({})
+    })
+    test('stores collection data under .collections', async () => {
+        expect(await isDirectory(path.join(root, '.collections', POSTS, 'docs'))).toBe(true)
+        expect(await isDirectory(path.join(root, '.collections', POSTS, 'index'))).toBe(true)
+        expect(await isDirectory(path.join(root, POSTS))).toBe(false)
     })
     test('findDocs listener is backed by the filesystem event journal', async () => {
         const iter = fylo
@@ -88,7 +104,7 @@ describe('filesystem engine', () => {
             body: 'payload only'
         })
         const raw = await Bun.file(
-            path.join(root, POSTS, '.fylo', 'docs', id.slice(0, 2), `${id}.json`)
+            path.join(root, '.collections', POSTS, 'docs', id.slice(0, 2), `${id}.json`)
         ).json()
 
         expect(raw).toEqual({
@@ -104,12 +120,16 @@ describe('filesystem engine', () => {
             title: 'Prefix doc',
             tags: ['bun', 'prefix']
         })
-        const index = await readLocalFsIndex(POSTS)
+        const index = await readLocalIndex(POSTS)
         expect(index).toContain(`+\ttitle/eq/Prefix%20doc/${id}`)
         expect(index).toContain(`+\ttags/eq/prefix/${id}`)
-        expect(await Bun.file(path.join(root, POSTS, '.fylo', 'index.db')).exists()).toBe(false)
+        expect(await Bun.file(path.join(root, '.collections', POSTS, 'index.db')).exists()).toBe(
+            false
+        )
         expect(
-            await Bun.file(path.join(root, POSTS, '.fylo', 'local-fs', 'manifest.json')).exists()
+            await Bun.file(
+                path.join(root, '.collections', POSTS, 'index', 'manifest.json')
+            ).exists()
         ).toBe(true)
     })
     test('uses prefix indexes to support exact, range, like, and contains queries', async () => {
@@ -188,7 +208,7 @@ describe('filesystem engine', () => {
         }
         expect(Object.keys(containsLikeResults)).toEqual([bunId])
 
-        const index = await readLocalFsIndex(queryCollection)
+        const index = await readLocalIndex(queryCollection)
         expect(index).toContain(`+\ttitle/eq/Bun%20launch/${bunId}`)
         expect(index).toContain(`+\ttags/eq/storage/${bunId}`)
         expect(index).toContain(`+\tmeta/score/n/`)

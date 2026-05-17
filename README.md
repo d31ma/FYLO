@@ -80,24 +80,26 @@ console.log(doc[id]) // { name: 'Ada', role: 'admin', ... }
 
 ## Architecture
 
-Each collection lives in a directory under the configured root:
+Each collection lives under `.collections` in the configured root:
 
 ```text
-<root>/<collection>/
-  .fylo/
-    docs/                  ← one .json file per document (TTID-named)
-      4U/
-        4UUB32VGUDW.json
-    local-fs/              ← prefix index catalog
-      manifest.json         ← format version marker
-      keys.snapshot         ← sorted index keys, mmap'd for O(log n) lookup
-      keys.wal              ← append-only mutation log (compacted at 1 MiB)
-    events/
-      <collection>.ndjson  ← append-only event journal
-    locks/                  ← advisory file locks
-    heads/                  ← WORM lineage heads (WORM mode only)
-    versions/               ← version metadata (WORM mode only)
+<root>/.collections/<collection>/
+  docs/                    ← one .json file per document (TTID-named)
+    4U/
+      4UUB32VGUDW.json
+  index/                   ← local filesystem prefix index catalog
+    manifest.json          ← format version marker
+    keys.snapshot          ← sorted index keys, mmap'd for O(log n) lookup
+    keys.wal               ← append-only mutation log (compacted at 1 MiB)
+  events/
+    <collection>.ndjson    ← append-only event journal
+  locks/                   ← advisory file locks
+  heads/                   ← WORM lineage heads (WORM mode only)
+  versions/                ← version metadata (WORM mode only)
 ```
+
+See [examples/production-folder-structure.md](examples/production-folder-structure.md) for a
+production-style tree with multiple collections and queue storage.
 
 **Index keys** look like S3 object keys — field path, kind, value, doc ID:
 
@@ -471,9 +473,9 @@ await db.queue.drainRegistered(new UserConsumer())
 Queue files:
 
 ```text
-<root>/.fylo/queue/topics/<topic>.ndjson
-<root>/.fylo/queue/consumers/<group>/<topic>.json
-<root>/.fylo/queue/dlq/<topic>.ndjson
+<root>/.queue/topics/<topic>.ndjson
+<root>/.queue/consumers/<group>/<topic>.json
+<root>/.queue/dlq/<topic>.ndjson
 ```
 
 At-least-once delivery, consumer-group checkpoints, advisory leases, retry tracking, dead-letter files. Handlers should be idempotent.

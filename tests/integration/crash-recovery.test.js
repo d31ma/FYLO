@@ -4,8 +4,9 @@ import os from 'node:os'
 import path from 'node:path'
 import Fylo from '../../src/index.js'
 import { tryAcquireFileLock } from '../../src/storage/fs-lock.js'
+import { createTestRoot } from '../helpers/root.js'
 
-const root = await mkdtemp(path.join(os.tmpdir(), 'fylo-crash-'))
+const root = await createTestRoot('fylo-crash-')
 const KILL_WORKER = path.join(import.meta.dir, 'crash-recovery.worker.js')
 
 describe('crash recovery and concurrency', () => {
@@ -36,13 +37,13 @@ describe('crash recovery and concurrency', () => {
         expect(titles).toEqual(expected)
     })
 
-    test('stale files in the local-fs index root are ignored by reads and subsequent writes', async () => {
+    test('stale files in the local index root are ignored by reads and subsequent writes', async () => {
         const collection = `stale-tmp-${Date.now()}`
         const fylo = new Fylo({ root })
         await fylo.createCollection(collection)
         await fylo.putData(collection, { title: 'before' })
 
-        const indexDir = path.join(root, collection, '.fylo', 'local-fs')
+        const indexDir = path.join(root, '.collections', collection, 'index')
         await writeFile(path.join(indexDir, `leftover.tmp`), 'garbage')
         await appendFile(path.join(indexDir, 'keys.wal'), '+\ttitle/eq/anything')
 
@@ -74,7 +75,7 @@ describe('crash recovery and concurrency', () => {
         await fylo.createCollection(collection)
         await fylo.putData(collection, { title: 'original' })
 
-        await rm(path.join(root, collection, '.fylo', 'local-fs'), {
+        await rm(path.join(root, '.collections', collection, 'index'), {
             recursive: true,
             force: true
         })
@@ -104,7 +105,7 @@ describe('crash recovery and concurrency', () => {
 
     test('SIGKILL during writes leaves on-disk docs atomic (no partial reads)', async () => {
         const collection = `sigkill-${Date.now()}`
-        const writeRoot = await mkdtemp(path.join(os.tmpdir(), 'fylo-sigkill-'))
+        const writeRoot = await createTestRoot('fylo-sigkill-')
         try {
             const proc = Bun.spawn(['bun', KILL_WORKER, writeRoot, collection, '500'], {
                 stdout: 'pipe',
@@ -114,7 +115,7 @@ describe('crash recovery and concurrency', () => {
             proc.kill('SIGKILL')
             await proc.exited
 
-            const docsRoot = path.join(writeRoot, collection, '.fylo', 'docs')
+            const docsRoot = path.join(writeRoot, '.collections', collection, 'docs')
             /** @type {string[]} */
             const docFiles = []
             try {

@@ -35,7 +35,7 @@ describe('rebuildCollection', () => {
             title: 'Rebuild me'
         })
 
-        await rm(path.join(ROOT, BASIC_COLLECTION, '.fylo', 'local-fs'), {
+        await rm(path.join(ROOT, '.collections', BASIC_COLLECTION, 'index'), {
             recursive: true,
             force: true
         })
@@ -92,29 +92,29 @@ describe('rebuildCollection', () => {
 
         const activeHeadPath = path.join(
             ROOT,
+            '.collections',
             WORM_COLLECTION,
-            '.fylo',
             'heads',
             `${activeFirst}.json`
         )
         const activeFirstMetaPath = path.join(
             ROOT,
+            '.collections',
             WORM_COLLECTION,
-            '.fylo',
             'versions',
             `${activeFirst}.meta.json`
         )
         const activeSecondMetaPath = path.join(
             ROOT,
+            '.collections',
             WORM_COLLECTION,
-            '.fylo',
             'versions',
             `${activeSecond}.meta.json`
         )
         const tombstoneHeadPath = path.join(
             ROOT,
+            '.collections',
             WORM_COLLECTION,
-            '.fylo',
             'heads',
             `${tombstoneFirst}.json`
         )
@@ -123,7 +123,7 @@ describe('rebuildCollection', () => {
         await unlink(activeFirstMetaPath)
         await unlink(activeSecondMetaPath)
         await unlink(tombstoneHeadPath)
-        await rm(path.join(ROOT, WORM_COLLECTION, '.fylo', 'local-fs'), {
+        await rm(path.join(ROOT, '.collections', WORM_COLLECTION, 'index'), {
             recursive: true,
             force: true
         })

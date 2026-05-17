@@ -1,15 +1,14 @@
 import { afterAll, describe, expect, test } from 'bun:test'
-import { mkdtemp, rm } from 'node:fs/promises'
-import os from 'node:os'
-import path from 'node:path'
+import { rm } from 'node:fs/promises'
 import Fylo from '../../src/index.js'
 import {
     normalizeImportOptions,
     assertImportUrlAllowed,
     redactImportUrl
 } from '../../src/security/import-guard.js'
+import { createTestRoot } from '../helpers/root.js'
 
-const root = await mkdtemp(path.join(os.tmpdir(), 'fylo-import-sec-'))
+const root = await createTestRoot('fylo-import-sec-')
 const fylo = new Fylo({ root })
 const COLL = 'import-sec-posts'
 

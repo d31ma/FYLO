@@ -118,15 +118,15 @@ export class FilesystemEngine {
     /** @param {string} collection @returns {string} */
     collectionRoot(collection) {
         validateCollectionName(collection)
-        return path.join(this.root, collection)
+        return path.join(this.root, '.collections', collection)
     }
     /** @param {string} collection @returns {string} */
     docsRoot(collection) {
-        return path.join(this.collectionRoot(collection), '.fylo', 'docs')
+        return path.join(this.collectionRoot(collection), 'docs')
     }
     /** @param {string} collection @returns {string} */
     metaRoot(collection) {
-        return path.join(this.collectionRoot(collection), '.fylo')
+        return this.collectionRoot(collection)
     }
     /** @param {string} collection @returns {string} */
     headsRoot(collection) {

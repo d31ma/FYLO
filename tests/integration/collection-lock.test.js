@@ -1,10 +1,10 @@
 import { afterAll, describe, expect, test } from 'bun:test'
-import { mkdtemp, rm } from 'node:fs/promises'
-import os from 'node:os'
+import { rm } from 'node:fs/promises'
 import path from 'node:path'
 import Fylo from '../../src/index.js'
+import { createTestRoot } from '../helpers/root.js'
 
-const root = await mkdtemp(path.join(os.tmpdir(), 'fylo-colllock-'))
+const root = await createTestRoot('fylo-colllock-')
 const WORKER = path.join(import.meta.dir, 'collection-lock.worker.js')
 
 describe('cross-process collection index lock', () => {
