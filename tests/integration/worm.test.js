@@ -63,11 +63,11 @@ describe('WORM mode', () => {
         expect(results).toHaveLength(1)
         expect(Object.keys(results[0])[0]).toBe(secondId)
 
-        const headPath = path.join(root, COLLECTION, '.fylo', 'heads', `${firstId}.json`)
+        const headPath = path.join(root, '.collections', COLLECTION, 'heads', `${firstId}.json`)
         const versionPath = path.join(
             root,
+            '.collections',
             COLLECTION,
-            '.fylo',
             'versions',
             `${secondId}.meta.json`
         )
@@ -195,7 +195,13 @@ describe('WORM mode', () => {
 
         expect(results).toHaveLength(0)
 
-        const headPath = path.join(root, TOMBSTONE_COLLECTION, '.fylo', 'heads', `${firstId}.json`)
+        const headPath = path.join(
+            root,
+            '.collections',
+            TOMBSTONE_COLLECTION,
+            'heads',
+            `${firstId}.json`
+        )
         const head = await Bun.file(headPath).json()
 
         expect(head.currentVersionId).toBe(secondId)

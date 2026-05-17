@@ -1,0 +1,2 @@
+{"ts":1760000010000,"action":"insert","id":"4V6329YC0R0","doc":{"orderNo":"ORD-1001","userId":"4V6329YC0F2","status":"open","total":42.5}}
+{"ts":1760000011000,"action":"insert","id":"4V6329YC0RG","doc":{"orderNo":"ORD-1002","userId":"4V6329YC0PG","status":"shipped","total":88}}

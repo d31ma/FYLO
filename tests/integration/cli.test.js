@@ -1,13 +1,13 @@
 import { afterAll, describe, expect, test } from 'bun:test'
-import { mkdtemp, rm } from 'node:fs/promises'
-import os from 'node:os'
+import { rm } from 'node:fs/promises'
 import path from 'node:path'
 import Fylo from '../../src/index.js'
+import { createTestRoot } from '../helpers/root.js'
 
 const roots = []
 
 async function createRoot(prefix) {
-    const root = await mkdtemp(path.join(os.tmpdir(), prefix))
+    const root = await createTestRoot(prefix)
     roots.push(root)
     return root
 }

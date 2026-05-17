@@ -1,13 +1,13 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { mkdtemp, readdir, rm } from 'node:fs/promises'
-import os from 'node:os'
+import { readdir, rm } from 'node:fs/promises'
 import path from 'node:path'
+import { createTestRoot } from '../helpers/root.js'
 
 const roots = []
 let buildResult
 
 async function createRoot(prefix) {
-    const root = await mkdtemp(path.join(os.tmpdir(), prefix))
+    const root = await createTestRoot(prefix)
     roots.push(root)
     return root
 }

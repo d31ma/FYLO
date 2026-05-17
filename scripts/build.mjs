@@ -14,7 +14,7 @@ const typeOnlyRuntimeFiles = new Set([
     'src/types/vendor.js'
 ])
 
-await rm(distDir, { recursive: true, force: true })
+await rm(distDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
 await mkdir(distDir, { recursive: true })
 await cp(srcDir, distDir, {
     recursive: true,

@@ -239,17 +239,17 @@ function patchSecurityContract() {
         source = replaceRequired(
             source,
             `      const indexFile = await readFile(
-        path.join(root, collection, '.fylo', 'indexes', collection + '.idx.json'),
+        path.join(root, '.collections', collection, 'indexes', collection + '.idx.json'),
         'utf8'
       )
 `,
-            "      const indexFile = await readTree(path.join(root, collection, '.fylo', 'local-fs'))\n",
+            "      const indexFile = await readTree(path.join(root, '.collections', collection, 'index'))\n",
             filePath
         )
         source = replaceRequired(
             source,
             `      await writeFile(
-        path.join(root, collection, '.fylo', 'indexes', collection + '.idx.json'),
+        path.join(root, '.collections', collection, 'indexes', collection + '.idx.json'),
         '{not-json',
         'utf8'
       )
@@ -266,7 +266,7 @@ function patchSecurityContract() {
       }
       if (!badIndex) throw new Error('corrupted index did not return sanitized error')
 `,
-            `      const staleIndexDir = path.join(root, collection, '.fylo', 'local-fs')
+            `      const staleIndexDir = path.join(root, '.collections', collection, 'index')
       await mkdir(staleIndexDir, { recursive: true })
       await writeFile(path.join(staleIndexDir, 'leftover.tmp'), 'not-a-catalog-file', 'utf8')
 
@@ -276,7 +276,7 @@ function patchSecurityContract() {
       }).collect()) {
         rows.push(doc)
       }
-      if (rows.length !== 0) throw new Error('stale local-fs index file was not ignored')
+      if (rows.length !== 0) throw new Error('stale local index file was not ignored')
 `,
             filePath
         )

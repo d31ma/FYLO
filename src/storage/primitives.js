@@ -106,7 +106,7 @@ export class FilesystemLockManager {
      */
     lockPath(collection, docId) {
         validateDocId(docId)
-        const locksRoot = path.join(this.root, collection, '.fylo', 'locks')
+        const locksRoot = path.join(this.root, '.collections', collection, 'locks')
         const target = path.join(locksRoot, `${docId}.lock`)
         assertPathInside(locksRoot, target)
         return target
@@ -138,7 +138,7 @@ export class FilesystemLockManager {
      * @returns {string}
      */
     collectionLockPath(collection) {
-        return path.join(this.root, collection, '.fylo', 'collection.lock')
+        return path.join(this.root, '.collections', collection, 'locks', 'collection.lock')
     }
     /**
      * Blocking-acquires the collection-level write lock. Serializes
@@ -187,7 +187,7 @@ export class FilesystemEventBus {
      * @returns {string}
      */
     journalPath(collection) {
-        return path.join(this.root, collection, '.fylo', 'events', `${collection}.ndjson`)
+        return path.join(this.root, '.collections', collection, 'events', `${collection}.ndjson`)
     }
     /**
      * Appends an event to the collection journal.

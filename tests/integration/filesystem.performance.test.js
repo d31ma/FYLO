@@ -1,18 +1,18 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { mkdtemp, rm } from 'node:fs/promises'
-import os from 'node:os'
+import { rm } from 'node:fs/promises'
 import path from 'node:path'
 import Fylo from '../../src/index.js'
+import { createTestRoot } from '../helpers/root.js'
 
 const runPerf = process.env.FYLO_RUN_PERF_TESTS === 'true'
 
 describe.skipIf(!runPerf)('filesystem engine performance', () => {
-    let root = path.join(os.tmpdir(), `fylo-filesystem-perf-${Date.now()}`)
+    let root = ''
     const collection = 'filesystem-perf'
     let fylo = new Fylo({ root })
 
     beforeAll(async () => {
-        root = await mkdtemp(root)
+        root = await createTestRoot('fylo-filesystem-perf-')
         fylo = new Fylo({ root })
         await fylo.createCollection(collection)
     })
@@ -58,7 +58,7 @@ describe.skipIf(!runPerf)('filesystem engine performance', () => {
         }
         const rangeMs = performance.now() - rangeStart
 
-        const indexRoot = path.join(root, collection, '.fylo', 'local-fs')
+        const indexRoot = path.join(root, '.collections', collection, 'index')
         const indexBytes = (await Bun.file(path.join(indexRoot, 'keys.wal')).text()).length
 
         expect(Object.keys(exactResults)).toHaveLength(1)

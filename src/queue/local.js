@@ -236,7 +236,7 @@ export class LocalQueue {
 
     /** @returns {string} */
     queueRoot() {
-        return path.join(this.root, '.fylo', 'queue')
+        return path.join(this.root, '.queue')
     }
 
     /** @param {string} topic @returns {string} */
