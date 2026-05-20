@@ -209,7 +209,7 @@ jobs:
                     --arg package_name "$PACKAGE_NAME" \
                     --arg version "$VERSION" \
                     --arg npm_dist_tag "latest" \
-                    --arg npm_auth_mode "trusted" \
+                    --arg npm_auth_mode "token" \
                     --arg source_repository "$SOURCE_REPOSITORY" \
                     '{
                       event_type: "promote-npm",
