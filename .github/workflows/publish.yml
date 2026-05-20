@@ -177,8 +177,10 @@ jobs:
         if: >-
             ${{
               always() &&
-              github.event_name == 'workflow_dispatch' &&
-              inputs.promote_npm == true &&
+              (
+                (github.event_name == 'workflow_dispatch' && inputs.promote_npm == true) ||
+                (github.event_name == 'push')
+              ) &&
               (
                 needs.publish.result == 'success' ||
                 needs.version.outputs.github_version_exists == 'true'
