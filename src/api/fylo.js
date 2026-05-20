@@ -9,6 +9,7 @@ import { LocalQueue } from '../queue/local.js'
 import { validateDocId } from '../core/doc-id.js'
 import { validateAgainstHead } from '../schema/validation.js'
 import { materializeDoc, materializeEnvelope } from '../schema/migrate.js'
+import { schemaEnv, syncChexSchemaEnv } from '../schema/env.js'
 import { loadHeadSchema } from '../schema/versioning.js'
 import { authorizeOperation, isDocVisible } from '../security/rules/engine.js'
 import { loadRules } from '../security/rules/loader.js'
@@ -89,11 +90,7 @@ export default class Fylo {
      * @param {FyloOptions} [options]
      */
     constructor(options = {}) {
-        // Sync chex's env var with FYLO's so standalone chex usage
-        // (outside FYLO's validation wrapper) resolves schemas correctly.
-        if (process.env.FYLO_SCHEMA_DIR && !process.env.CHEX_SCHEMA_DIR) {
-            process.env.CHEX_SCHEMA_DIR = process.env.FYLO_SCHEMA_DIR
-        }
+        syncChexSchemaEnv()
         this.rlsEnabled = options.rls === true
         this.onEvent = options.onEvent
         this.queue = options.queue
@@ -122,9 +119,10 @@ export default class Fylo {
      * @returns The results of the query.
      */
     async executeSQL(SQL) {
-        const op = SQL.match(/^(SELECT|INSERT|UPDATE|DELETE|CREATE|DROP)/i)
-        if (!op) throw new Error('Missing SQL Operation')
-        switch (op.shift()) {
+        const operationMatch = SQL.match(/^(SELECT|INSERT|UPDATE|DELETE|CREATE|DROP)/i)
+        const operation = operationMatch?.[0]?.toUpperCase()
+        if (!operation) throw new Error('Missing SQL Operation')
+        switch (operation) {
             case 'CREATE':
                 return await this.createCollection(
                     /** @type {{ $collection: string }} */ (Parser.parse(SQL)).$collection
@@ -137,11 +135,14 @@ export default class Fylo {
                 const query = /** @type {StoreQuery} */ (Parser.parse(SQL))
                 if (SQL.includes('JOIN'))
                     return await this.joinDocs(/** @type {StoreJoin} */ (query))
-                const selCol = query.$collection
+                const selectedCollection = query.$collection
                 delete query.$collection
                 /** @type {TTIDValue[] | Record<string, any>} */
                 let docs = query.$onlyIds ? [] : {}
-                for await (const data of this.findDocs(String(selCol), query).collect()) {
+                for await (const data of this.findDocs(
+                    String(selectedCollection),
+                    query
+                ).collect()) {
                     if (typeof data === 'object')
                         docs = /** @type {{ appendGroup(target: any, value: any): any }} */ (
                             /** @type {unknown} */ (Object)
@@ -152,9 +153,9 @@ export default class Fylo {
             }
             case 'INSERT': {
                 const insert = /** @type {StoreInsert} */ (Parser.parse(SQL))
-                const insCol = insert.$collection
+                const insertCollection = insert.$collection
                 delete insert.$collection
-                return await this.putData(String(insCol), insert.$values)
+                return await this.putData(String(insertCollection), insert.$values)
             }
             case 'UPDATE': {
                 const update = /** @type {StoreUpdate} */ (Parser.parse(SQL))
@@ -164,9 +165,9 @@ export default class Fylo {
             }
             case 'DELETE': {
                 const del = /** @type {StoreDelete} */ (Parser.parse(SQL))
-                const delCol = del.$collection
+                const deleteCollection = del.$collection
                 delete del.$collection
-                return await this.delDocs(String(delCol), del)
+                return await this.delDocs(String(deleteCollection), del)
             }
             default:
                 throw new Error('Invalid Operation')
@@ -227,7 +228,7 @@ export default class Fylo {
     /** @param {string} collection @returns {Promise<void>} */
     static async loadEncryption(collection) {
         if (Fylo.loadedEncryption.has(collection)) return
-        const schemaDir = process.env.FYLO_SCHEMA_DIR
+        const schemaDir = schemaEnv()
         if (!schemaDir) {
             Fylo.loadedEncryption.add(collection)
             return
@@ -324,21 +325,24 @@ export default class Fylo {
         /** @type {URL[]} */
         const fetchTargets = pin ? pin.pinnedUrls : [url]
         /** @type {Response | undefined} */
-        let res
+        let response
         /** @type {unknown} */
-        let lastErr
+        let lastFetchError
         for (let i = 0; i < fetchTargets.length; i++) {
             try {
-                res = await fetch(fetchTargets[i], fetchInit)
+                response = await fetch(fetchTargets[i], fetchInit)
                 break
             } catch (err) {
-                lastErr = err
+                lastFetchError = err
                 if (i === fetchTargets.length - 1) throw err
             }
         }
-        if (!res) throw lastErr instanceof Error ? lastErr : new Error('Import request failed')
-        if (res.status >= 300 && res.status < 400) {
-            const location = res.headers.get('location')
+        if (!response)
+            throw lastFetchError instanceof Error
+                ? lastFetchError
+                : new Error('Import request failed')
+        if (response.status >= 300 && response.status < 400) {
+            const location = response.headers.get('location')
             const redactedLocation = location ? redactImportUrl(location) : 'unknown'
             emitFyloEvent(this.onEvent, {
                 type: 'import.blocked',
@@ -348,10 +352,10 @@ export default class Fylo {
             })
             throw new Error(`Import request redirected to ${redactedLocation}`)
         }
-        if (!res.ok) throw new Error(`Import request failed with status ${res.status}`)
-        if (!res.headers.get('content-type')?.includes('application/json'))
+        if (!response.ok) throw new Error(`Import request failed with status ${response.status}`)
+        if (!response.headers.get('content-type')?.includes('application/json'))
             throw new Error('Response is not JSON')
-        if (!res.body) throw new Error('Response body is empty')
+        if (!response.body) throw new Error('Response body is empty')
         let count = 0
         let batchNum = 0
         /** @param {Record<string, any>[]} batch @returns {Promise<void>} */
@@ -384,7 +388,7 @@ export default class Fylo {
         let batch = []
         let totalBytes = 0
         for await (const chunk of /** @type {AsyncIterable<Uint8Array>} */ (
-            /** @type {unknown} */ (res.body)
+            /** @type {unknown} */ (response.body)
         )) {
             totalBytes += chunk.length
             if (totalBytes > importOptions.maxBytes)
@@ -469,10 +473,10 @@ export default class Fylo {
             }
         } else batches.push(batch)
         for (const itemBatch of batches) {
-            const res = await Promise.allSettled(
+            const writeResults = await Promise.allSettled(
                 itemBatch.map((data) => this.putData(collection, data))
             )
-            for (const _id of res
+            for (const _id of writeResults
                 .filter((item) => item.status === 'fulfilled')
                 .map((item) => item.value)) {
                 ids.push(_id)
@@ -652,6 +656,11 @@ export default class Fylo {
         return Fylo.defaultEngine.findDocs(collection, query)
     }
 }
+
+/**
+ * RLS-scoped FYLO facade. Every operation delegates to a backing `Fylo`
+ * instance after authorizing the caller against collection rules.
+ */
 export class AuthenticatedFylo {
     /** @type {Fylo} */
     fylo
@@ -672,7 +681,7 @@ export class AuthenticatedFylo {
     async _authorize(args) {
         await authorizeOperation({
             collection: args.collection,
-            schemaDir: process.env.FYLO_SCHEMA_DIR,
+            schemaDir: schemaEnv(),
             auth: this.auth,
             action: args.action,
             docId: args.docId,
@@ -687,7 +696,7 @@ export class AuthenticatedFylo {
     async _isVisible(collection, doc) {
         return await isDocVisible({
             collection,
-            schemaDir: process.env.FYLO_SCHEMA_DIR,
+            schemaDir: schemaEnv(),
             auth: this.auth,
             doc
         })
@@ -735,6 +744,7 @@ export class AuthenticatedFylo {
                     if (await self._isVisible(collection, doc)) yield envelope
                 }
             },
+            /** @returns {Promise<Record<TTIDValue, Record<string, any>>>} */
             async once() {
                 await self._authorize({ action: 'doc:read', collection, docId: _id })
                 const result = await source.once()
@@ -825,7 +835,7 @@ export class AuthenticatedFylo {
      * @param {string} collection
      */
     async _assertNoProjectionWhenRlsEnabled(collection) {
-        const rules = await loadRules(collection, process.env.FYLO_SCHEMA_DIR)
+        const rules = await loadRules(collection, schemaEnv())
         if (rules) {
             throw new Error(
                 `RLS-protected collection '${collection}' cannot be queried with projections ` +
@@ -868,9 +878,10 @@ export class AuthenticatedFylo {
         // Re-dispatch the SQL through this scoped client so each branch is
         // authorized by the same rules as the equivalent direct call. This
         // avoids brittle string parsing and gives RLS proper per-op coverage.
-        const op = SQL.match(/^(SELECT|INSERT|UPDATE|DELETE|CREATE|DROP)/i)
-        if (!op) throw new Error('Missing SQL Operation')
-        switch (op.shift()) {
+        const operationMatch = SQL.match(/^(SELECT|INSERT|UPDATE|DELETE|CREATE|DROP)/i)
+        const operation = operationMatch?.[0]?.toUpperCase()
+        if (!operation) throw new Error('Missing SQL Operation')
+        switch (operation) {
             case 'CREATE':
                 return await this.createCollection(
                     /** @type {{ $collection: string }} */ (Parser.parse(SQL)).$collection
@@ -883,11 +894,14 @@ export class AuthenticatedFylo {
                 const query = /** @type {StoreQuery} */ (Parser.parse(SQL))
                 if (SQL.includes('JOIN'))
                     return await this.joinDocs(/** @type {StoreJoin} */ (query))
-                const selCol = query.$collection
+                const selectedCollection = query.$collection
                 delete query.$collection
                 /** @type {TTIDValue[] | Record<string, any>} */
                 let docs = query.$onlyIds ? [] : {}
-                for await (const data of this.findDocs(String(selCol), query).collect()) {
+                for await (const data of this.findDocs(
+                    String(selectedCollection),
+                    query
+                ).collect()) {
                     if (typeof data === 'object')
                         docs = /** @type {{ appendGroup(target: any, value: any): any }} */ (
                             /** @type {unknown} */ (Object)
@@ -898,21 +912,21 @@ export class AuthenticatedFylo {
             }
             case 'INSERT': {
                 const insert = /** @type {StoreInsert} */ (Parser.parse(SQL))
-                const insCol = insert.$collection
+                const insertCollection = insert.$collection
                 delete insert.$collection
-                return await this.putData(String(insCol), insert.$values)
+                return await this.putData(String(insertCollection), insert.$values)
             }
             case 'UPDATE': {
                 const update = /** @type {StoreUpdate} */ (Parser.parse(SQL))
-                const updateCol = update.$collection
+                const updateCollection = update.$collection
                 delete update.$collection
-                return await this.patchDocs(String(updateCol), update)
+                return await this.patchDocs(String(updateCollection), update)
             }
             case 'DELETE': {
                 const del = /** @type {StoreDelete} */ (Parser.parse(SQL))
-                const delCol = del.$collection
+                const deleteCollection = del.$collection
                 delete del.$collection
-                return await this.delDocs(String(delCol), del)
+                return await this.delDocs(String(deleteCollection), del)
             }
             default:
                 throw new Error('Invalid Operation')
@@ -1072,6 +1086,7 @@ function queryHasProjection(query) {
  * @param {AuthenticatedFylo} self
  * @param {string} collection
  * @param {unknown} value
+ * @returns {Promise<unknown>}
  */
 async function filterEnvelope(self, collection, value) {
     if (typeof value !== 'object' || value === null || Array.isArray(value)) {

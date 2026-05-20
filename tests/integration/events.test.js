@@ -47,7 +47,7 @@ describe('FYLO onEvent hook', () => {
     })
 
     test('emits cipher.configured when schema-driven config flips Cipher state', async () => {
-        const previousSchemaDir = process.env.FYLO_SCHEMA_DIR
+        const previousSchema = process.env.FYLO_SCHEMA
         const previousEncryptionKey = process.env.FYLO_ENCRYPTION_KEY
         const previousSalt = process.env.FYLO_CIPHER_SALT
         const schemaRoot = await mkdtemp(path.join(os.tmpdir(), 'fylo-events-schema-'))
@@ -55,7 +55,7 @@ describe('FYLO onEvent hook', () => {
         Cipher.reset()
         Fylo.loadedEncryption.delete(collection)
         await Bun.write(
-            path.join(schemaRoot, collection, 'history', 'v1.json'),
+            path.join(schemaRoot, collection, 'history', 'v1.schema.json'),
             JSON.stringify({ $encrypted: ['secret'] })
         )
         await Bun.write(
@@ -65,7 +65,7 @@ describe('FYLO onEvent hook', () => {
                 versions: [{ v: 'v1', addedAt: '2026-04-01T00:00:00Z' }]
             })
         )
-        process.env.FYLO_SCHEMA_DIR = schemaRoot
+        process.env.FYLO_SCHEMA = schemaRoot
         process.env.FYLO_ENCRYPTION_KEY = 'k'.repeat(48)
         process.env.FYLO_CIPHER_SALT = 'deadbeef'.repeat(8)
         /** @type {import('../../src/observability/events.js').FyloEvent[]} */
@@ -80,8 +80,8 @@ describe('FYLO onEvent hook', () => {
                 expect(cipherEvent.collection).toBe(collection)
             }
         } finally {
-            if (previousSchemaDir === undefined) delete process.env.FYLO_SCHEMA_DIR
-            else process.env.FYLO_SCHEMA_DIR = previousSchemaDir
+            if (previousSchema === undefined) delete process.env.FYLO_SCHEMA
+            else process.env.FYLO_SCHEMA = previousSchema
             if (previousEncryptionKey === undefined) delete process.env.FYLO_ENCRYPTION_KEY
             else process.env.FYLO_ENCRYPTION_KEY = previousEncryptionKey
             if (previousSalt === undefined) delete process.env.FYLO_CIPHER_SALT

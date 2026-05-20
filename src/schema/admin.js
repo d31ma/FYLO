@@ -2,6 +2,7 @@ import path from 'node:path'
 import { loadManifest, loadHeadSchema, currentVersion } from './versioning.js'
 import { materializeDoc } from './migrate.js'
 import { validateAgainstHead } from './validation.js'
+import { schemaEnv } from './env.js'
 
 /**
  * @typedef {import('./versioning.js').ManifestRecord} ManifestRecord
@@ -47,9 +48,9 @@ import { validateAgainstHead } from './validation.js'
  * @param {string | undefined | null} schemaDir
  * @returns {string}
  */
-export function resolveSchemaDir(schemaDir = process.env.FYLO_SCHEMA_DIR) {
+export function resolveSchemaDir(schemaDir = schemaEnv()) {
     if (!schemaDir) {
-        throw new Error('Schema commands require --schema-dir <path> or FYLO_SCHEMA_DIR')
+        throw new Error('Schema commands require --schema-dir <path> or FYLO_SCHEMA')
     }
     return path.resolve(schemaDir)
 }
@@ -79,7 +80,7 @@ function manifestPath(collection, schemaDir) {
  * @returns {string}
  */
 function schemaVersionPath(collection, schemaDir, version) {
-    return path.join(collectionDir(collection, schemaDir), 'history', `${version}.json`)
+    return path.join(collectionDir(collection, schemaDir), 'history', `${version}.schema.json`)
 }
 
 /**

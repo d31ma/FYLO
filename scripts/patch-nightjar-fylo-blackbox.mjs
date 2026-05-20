@@ -127,8 +127,8 @@ function patchPackageContract() {
 
     const root = await mkdtemp(path.join(os.tmpdir(), '\${uniqueName('fylo-auth')}-'))
     const schemaDir = await mkdtemp(path.join(os.tmpdir(), '\${uniqueName('fylo-auth-schema')}-'))
-    const previousSchemaDir = process.env.FYLO_SCHEMA_DIR
-    process.env.FYLO_SCHEMA_DIR = schemaDir
+    const previousSchema = process.env.FYLO_SCHEMA
+    process.env.FYLO_SCHEMA = schemaDir
     try {
       const openFylo = new Fylo({ root })
       let missingPolicy = false
@@ -169,8 +169,8 @@ function patchPackageContract() {
       }
       if (!denied) throw new Error('delete should be denied by rules')
     } finally {
-      if (previousSchemaDir === undefined) delete process.env.FYLO_SCHEMA_DIR
-      else process.env.FYLO_SCHEMA_DIR = previousSchemaDir
+      if (previousSchema === undefined) delete process.env.FYLO_SCHEMA
+      else process.env.FYLO_SCHEMA = previousSchema
       await rm(root, { recursive: true, force: true })
       await rm(schemaDir, { recursive: true, force: true })
     }
@@ -198,7 +198,7 @@ function patchSecurityContract() {
             "    import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'"
         )
         source = source
-            .replaceAll('process.env.SCHEMA_DIR', 'process.env.FYLO_SCHEMA_DIR')
+            .replaceAll('process.env.SCHEMA_DIR', 'process.env.FYLO_SCHEMA')
             .replaceAll('process.env.ENCRYPTION_KEY', 'process.env.FYLO_ENCRYPTION_KEY')
             .replaceAll('process.env.CIPHER_SALT', 'process.env.FYLO_CIPHER_SALT')
         source = replaceRequired(
@@ -226,7 +226,7 @@ function patchSecurityContract() {
       }))
 `,
             `      await mkdir(path.join(schemaDir, collection, 'history'), { recursive: true })
-      await writeFile(path.join(schemaDir, collection, 'history', 'v1.json'), JSON.stringify({
+      await writeFile(path.join(schemaDir, collection, 'history', 'v1.schema.json'), JSON.stringify({
         $encrypted: ['email', 'profile/ssn'],
       }))
       await writeFile(path.join(schemaDir, collection, 'manifest.json'), JSON.stringify({

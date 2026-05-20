@@ -12,6 +12,7 @@ import {
     isVersioned,
     loadManifest
 } from './versioning.js'
+import { schemaEnv } from './env.js'
 
 /**
  * @param {string} collection
@@ -21,7 +22,7 @@ import {
  */
 export async function materializeDoc(collection, doc, options = {}) {
     if (doc === null || doc === undefined || typeof doc !== 'object') return doc
-    const schemaDir = options.schemaDir ?? process.env.FYLO_SCHEMA_DIR
+    const schemaDir = options.schemaDir ?? schemaEnv()
     if (!(await isVersioned(collection, schemaDir))) return doc
     const manifest = await loadManifest(collection, schemaDir)
     if (!manifest) return doc

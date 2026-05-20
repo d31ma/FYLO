@@ -81,6 +81,10 @@
  * @property {FyloEventHandler=} onEvent
  */
 
+/**
+ * Error raised when an await-sync hook fails after the local write has already
+ * committed. The local filesystem remains the source of truth.
+ */
 export class FyloSyncError extends Error {
     /** @type {string} */
     collection

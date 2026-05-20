@@ -46,9 +46,6 @@ import path from 'node:path'
  * @typedef {Record<string, FyloRulesFile | Record<string, FyloRulesFile>>} FyloSharedRulesIndex
  */
 
-/** @type {Map<string, FyloRulesFile | null>} */
-const rulesCache = new Map()
-
 /**
  * @param {string} collection
  * @returns {[string, string] | null}
@@ -93,33 +90,59 @@ function selectSharedRules(sharedRules, collection) {
 }
 
 /**
+ * Loads and validates collection-specific and shared RLS rules from a schema
+ * directory.
+ */
+export class RulesLoader {
+    /** @type {Map<string, FyloRulesFile | null>} */
+    cache = new Map()
+
+    /**
+     * @param {string} collection
+     * @param {string|null|undefined} schemaDir
+     * @returns {Promise<FyloRulesFile|null>}
+     */
+    async load(collection, schemaDir) {
+        if (!schemaDir) return null
+        const key = `${path.resolve(schemaDir)}\0${collection}`
+        if (this.cache.has(key)) return this.cache.get(key) ?? null
+        const collectionRulesFile = Bun.file(path.join(schemaDir, collection, 'rules.json'))
+        if (await collectionRulesFile.exists()) {
+            const rules = /** @type {FyloRulesFile} */ (await collectionRulesFile.json())
+            validateRulesShape(rules, collection)
+            this.cache.set(key, rules)
+            return rules
+        }
+        const sharedRulesFile = Bun.file(path.join(schemaDir, 'rules.json'))
+        if (await sharedRulesFile.exists()) {
+            const sharedRules = /** @type {FyloSharedRulesIndex} */ (await sharedRulesFile.json())
+            const rules = selectSharedRules(sharedRules, collection)
+            if (rules) {
+                validateRulesShape(rules, collection)
+                this.cache.set(key, rules)
+                return rules
+            }
+        }
+        this.cache.set(key, null)
+        return null
+    }
+
+    /** Clear cached rules files. */
+    clearCache() {
+        this.cache.clear()
+    }
+}
+
+/** Shared process-level RLS rules loader. */
+export const rulesLoader = new RulesLoader()
+
+/**
  * @param {string} collection
  * @param {string|null|undefined} schemaDir
  * @returns {Promise<FyloRulesFile|null>}
  */
 export async function loadRules(collection, schemaDir) {
-    if (!schemaDir) return null
-    const cacheKey = `${path.resolve(schemaDir)}\0${collection}`
-    if (rulesCache.has(cacheKey)) return rulesCache.get(cacheKey) ?? null
-    const collectionRulesFile = Bun.file(path.join(schemaDir, collection, 'rules.json'))
-    if (await collectionRulesFile.exists()) {
-        const rules = /** @type {FyloRulesFile} */ (await collectionRulesFile.json())
-        validateRulesShape(rules, collection)
-        rulesCache.set(cacheKey, rules)
-        return rules
-    }
-    const sharedRulesFile = Bun.file(path.join(schemaDir, 'rules.json'))
-    if (await sharedRulesFile.exists()) {
-        const sharedRules = /** @type {FyloSharedRulesIndex} */ (await sharedRulesFile.json())
-        const rules = selectSharedRules(sharedRules, collection)
-        if (rules) {
-            validateRulesShape(rules, collection)
-            rulesCache.set(cacheKey, rules)
-            return rules
-        }
-    }
-    rulesCache.set(cacheKey, null)
-    return null
+    return await rulesLoader.load(collection, schemaDir)
 }
 
 /** @param {FyloRulesFile} rules @param {string} collection */
@@ -142,5 +165,5 @@ function validateRulesShape(rules, collection) {
 
 /** Test/dev hook to reset memoised rules. */
 export function _resetRulesCache() {
-    rulesCache.clear()
+    rulesLoader.clearCache()
 }

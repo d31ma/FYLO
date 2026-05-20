@@ -98,7 +98,7 @@ const COMPARATORS = {
 
 /**
  * Evaluate a predicate expression. Boolean literals pass through; objects
- * may contain logical ops ($and/$or/$not) or comparator ops ($eq/$gt/…)
+ * may contain logical ops ($and/$or/$not) or comparator ops ($eq/$gt/etc.)
  * with a 2-element operand array. Unknown shapes throw.
  *
  * @param {unknown} expr
@@ -110,29 +110,29 @@ export function evaluatePredicate(expr, context) {
     if (expr === null || expr === undefined) return true
     if (typeof expr !== 'object') return Boolean(expr)
 
-    const obj = /** @type {Record<string, unknown>} */ (expr)
+    const expression = /** @type {Record<string, unknown>} */ (expr)
 
-    if ('$and' in obj) {
-        const list = /** @type {unknown[]} */ (obj.$and)
+    if ('$and' in expression) {
+        const list = /** @type {unknown[]} */ (expression.$and)
         if (!Array.isArray(list)) throw new Error(`'$and' expects an array`)
         return list.every((sub) => evaluatePredicate(sub, context))
     }
-    if ('$or' in obj) {
-        const list = /** @type {unknown[]} */ (obj.$or)
+    if ('$or' in expression) {
+        const list = /** @type {unknown[]} */ (expression.$or)
         if (!Array.isArray(list)) throw new Error(`'$or' expects an array`)
         return list.some((sub) => evaluatePredicate(sub, context))
     }
-    if ('$not' in obj) return !evaluatePredicate(obj.$not, context)
+    if ('$not' in expression) return !evaluatePredicate(expression.$not, context)
 
-    for (const op of Object.keys(obj)) {
-        const cmp = COMPARATORS[op]
-        if (!cmp) continue
-        const operands = obj[op]
+    for (const operator of Object.keys(expression)) {
+        const comparator = COMPARATORS[operator]
+        if (!comparator) continue
+        const operands = expression[operator]
         if (!Array.isArray(operands) || operands.length !== 2) {
-            throw new Error(`Comparator '${op}' expects exactly 2 operands`)
+            throw new Error(`Comparator '${operator}' expects exactly 2 operands`)
         }
-        const [a, b] = operands.map((v) => substitute(v, context))
-        return cmp(a, b)
+        const [leftOperand, rightOperand] = operands.map((value) => substitute(value, context))
+        return comparator(leftOperand, rightOperand)
     }
 
     throw new Error(`Unknown predicate expression: ${JSON.stringify(expr)}`)

@@ -23,6 +23,7 @@ export class Cipher {
     /** @type {Map<string, Set<string>>} */
     static collections = new Map()
 
+    /** @returns {boolean} */
     static isConfigured() {
         return Cipher.key !== null
     }
@@ -110,6 +111,7 @@ export class Cipher {
         Cipher.hmacKey = hmacKey
     }
 
+    /** Reset keys and collection field registrations for tests or reconfiguration. */
     static reset() {
         Cipher.key = null
         Cipher.hmacKey = null

@@ -36,6 +36,10 @@ import { parseStoredValue, stringifyStoredValue } from './value-codec.js'
  * @typedef {import('../query/types.js').StoreQuery<Record<string, any>>} StoreQuery
  */
 
+/**
+ * Low-level filesystem storage engine for collections, documents, indexes,
+ * events, locks, WORM heads, and version metadata.
+ */
 export class FilesystemEngine {
     /** @type {string} */
     root
@@ -879,10 +883,13 @@ export class FilesystemEngine {
                     yield onlyId ? event.id : { [event.id]: doc }
                 }
             },
+            /** @returns {Promise<Record<TTID, Record<string, any>>>} */
             async once() {
                 const stored = await engine.documents.readStoredDoc(collection, docId)
                 if (!stored) return {}
-                const data = await materializeDoc(collection, stored.data)
+                const data = /** @type {Record<string, any>} */ (
+                    await materializeDoc(collection, stored.data)
+                )
                 return { [docId]: data }
             },
             async *onDelete() {

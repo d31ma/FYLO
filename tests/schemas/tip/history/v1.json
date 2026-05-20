@@ -1,7 +1,0 @@
-{
-    "user_id": "^.+$",
-    "business_id": "^.+$",
-    "text": "^.+$",
-    "date": "^.+$",
-    "compliment_count": "^[0-9]+$"
-}

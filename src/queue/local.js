@@ -207,12 +207,16 @@ async function appendDurable(target, data) {
     }
 }
 
+/**
+ * Per-message acknowledgement context passed to queue consumers.
+ */
 export class QueueMessageContext {
     /** @type {boolean} */
     acked = false
     /** @type {unknown} */
     nackReason
 
+    /** Marks the message as successfully handled when auto-ack is disabled. */
     ack() {
         this.acked = true
     }
@@ -223,6 +227,10 @@ export class QueueMessageContext {
     }
 }
 
+/**
+ * Durable local queue backed by append-only topic files, consumer checkpoints,
+ * advisory leases, and dead-letter queues under the FYLO root.
+ */
 export class LocalQueue {
     /** @type {string} */
     root

@@ -6,6 +6,23 @@ mock `users` and `orders` collections.
 
 ```text
 examples/db/
+  schemas/
+    users/
+      manifest.json
+      history/
+        v1.schema.json
+    orders/
+      manifest.json
+      history/
+        v1.schema.json
+    article/
+      manifest.json
+      history/
+        v1.schema.json
+        v2.schema.json
+      upgraders/
+        v1-to-v2.js
+    rules.json
   .collections/
     users/
       docs/
@@ -50,6 +67,8 @@ examples/db/
 | `.collections/<collection>/locks/`    | Advisory document and collection write locks.                   |
 | `.collections/<collection>/heads/`    | WORM lineage head pointers, present when WORM mode is enabled.  |
 | `.collections/<collection>/versions/` | WORM version metadata, present when WORM mode is enabled.       |
+| `schemas/<collection>/manifest.json`  | Collection schema version manifest used by validation and admin commands. |
+| `schemas/<collection>/history/`       | Versioned CHEX schemas named `<version>.schema.json`.           |
 
 Queue data, when enabled, is global to the FYLO root and remains outside
 `.collections`:
