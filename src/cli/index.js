@@ -29,6 +29,7 @@ import {
  * @property {PagerMode} pager
  * @property {string | undefined} request
  * @property {boolean} help
+ * @returns {string}
  */
 function usage() {
     return [
@@ -61,7 +62,7 @@ function usage() {
         '',
         'Options:',
         '  --root <path>   Override FYLO_ROOT for this command',
-        '  --schema-dir <path> Override FYLO_SCHEMA_DIR for schema admin commands',
+        '  --schema-dir <path> Override FYLO_SCHEMA for schema admin commands',
         '  --worm          Enable WORM-aware admin behavior for this command',
         '  --json          Emit machine-readable JSON output',
         '  --id-only       Return only the resolved document id for latest',
@@ -187,7 +188,7 @@ function renderSqlResult(command, result) {
             return 'Successfully dropped schema'
         case 'SELECT':
             if (typeof result === 'object' && result !== null && !Array.isArray(result))
-                return renderTableOutput(result, currentTableOptions)
+                return renderTableOutput(result, cliRuntimeOptions.tableOptions)
             return String(result)
         case 'INSERT':
             return String(result)
@@ -200,22 +201,35 @@ function renderSqlResult(command, result) {
     }
 }
 
-/** @type {FormatTableOptions} */
-let currentTableOptions = {}
-/** @type {PagerMode} */
-let currentPagerMode = 'auto'
+/**
+ * Mutable runtime formatting options shared by command handlers for one CLI
+ * invocation.
+ */
+class CliRuntimeOptions {
+    /** @type {FormatTableOptions} */
+    tableOptions = {}
+    /** @type {PagerMode} */
+    pagerMode = 'auto'
+
+    /** @param {ParsedArgs} args */
+    apply(args) {
+        this.tableOptions = {
+            cellAlign: args.align,
+            pageSize: args.pageSize,
+            terminalWidth: 'auto',
+            wrap: true
+        }
+        this.pagerMode = args.pager
+    }
+}
+
+const cliRuntimeOptions = new CliRuntimeOptions()
 
 /**
  * @param {ParsedArgs} args
  */
 function setTableOptions(args) {
-    currentTableOptions = {
-        cellAlign: args.align,
-        pageSize: args.pageSize,
-        terminalWidth: 'auto',
-        wrap: true
-    }
-    currentPagerMode = args.pager
+    cliRuntimeOptions.apply(args)
 }
 
 /**
@@ -224,9 +238,9 @@ function setTableOptions(args) {
  */
 async function runSql(sql, root) {
     const result = await new Fylo(root ? { root } : {}).executeSQL(sql)
-    const op = sql.match(/^(SELECT|INSERT|UPDATE|DELETE|CREATE|DROP)/i)?.[0]
-    if (!op) throw new Error('Missing SQL operation')
-    return renderSqlResult(op, result)
+    const operation = sql.match(/^(SELECT|INSERT|UPDATE|DELETE|CREATE|DROP)/i)?.[0]
+    if (!operation) throw new Error('Missing SQL operation')
+    return renderSqlResult(operation, result)
 }
 
 /**
@@ -324,7 +338,7 @@ async function runGet(collection, docId, root, worm = false, json = false) {
         printJson(result)
         return undefined
     }
-    return renderTableOutput(result, currentTableOptions)
+    return renderTableOutput(result, cliRuntimeOptions.tableOptions)
 }
 
 /**
@@ -353,7 +367,7 @@ async function runLatest(collection, docId, root, worm = false, json = false, id
         printJson(result)
         return undefined
     }
-    return renderTableOutput(result, currentTableOptions)
+    return renderTableOutput(result, cliRuntimeOptions.tableOptions)
 }
 
 /**
@@ -381,7 +395,7 @@ async function runHistory(collection, docId, root, worm = false, json = false) {
                 `  previous: ${entry.previousVersionId ?? 'none'}`,
                 `  updatedAt: ${entry.updatedAt}`,
                 entry.deletedAt ? `  deletedAt: ${entry.deletedAt}` : undefined,
-                renderTableOutput({ [entry.id]: entry.data }, currentTableOptions)
+                renderTableOutput({ [entry.id]: entry.data }, cliRuntimeOptions.tableOptions)
             ]
                 .filter(Boolean)
                 .join('\n')
@@ -510,7 +524,7 @@ async function runSchema(action, collection, input, schemaDir, json = false) {
         printJson(result)
         return undefined
     }
-    return renderTableOutput({ document: result.document }, currentTableOptions)
+    return renderTableOutput({ document: result.document }, cliRuntimeOptions.tableOptions)
 }
 /**
  * @param {ParsedArgs} args
@@ -527,7 +541,7 @@ async function main(args) {
         const collection = rest[0]
         if (!collection) throw new Error('Missing collection name for inspect')
         const output = await runInspect(collection, args.root, args.worm, args.json)
-        if (output) await writeCliText(output, { pagerMode: currentPagerMode })
+        if (output) await writeCliText(output, { pagerMode: cliRuntimeOptions.pagerMode })
         return
     }
     if (command === 'get') {
@@ -536,7 +550,7 @@ async function main(args) {
         if (!collection) throw new Error('Missing collection name for get')
         if (!docId) throw new Error('Missing document id for get')
         const output = await runGet(collection, docId, args.root, args.worm, args.json)
-        if (output) await writeCliText(output, { pagerMode: currentPagerMode })
+        if (output) await writeCliText(output, { pagerMode: cliRuntimeOptions.pagerMode })
         return
     }
     if (command === 'latest') {
@@ -552,7 +566,7 @@ async function main(args) {
             args.json,
             args.idOnly
         )
-        if (output) await writeCliText(output, { pagerMode: currentPagerMode })
+        if (output) await writeCliText(output, { pagerMode: cliRuntimeOptions.pagerMode })
         return
     }
     if (command === 'history') {
@@ -561,14 +575,14 @@ async function main(args) {
         if (!collection) throw new Error('Missing collection name for history')
         if (!docId) throw new Error('Missing document id for history')
         const output = await runHistory(collection, docId, args.root, args.worm, args.json)
-        if (output) await writeCliText(output, { pagerMode: currentPagerMode })
+        if (output) await writeCliText(output, { pagerMode: cliRuntimeOptions.pagerMode })
         return
     }
     if (command === 'rebuild') {
         const collection = rest[0]
         if (!collection) throw new Error('Missing collection name for rebuild')
         const output = await runRebuild(collection, args.root, args.worm, args.json)
-        if (output) await writeCliText(output, { pagerMode: currentPagerMode })
+        if (output) await writeCliText(output, { pagerMode: cliRuntimeOptions.pagerMode })
         return
     }
     if (command === 'schema') {
@@ -592,7 +606,7 @@ async function main(args) {
             args.schemaDir,
             args.json
         )
-        if (output) await writeCliText(output, { pagerMode: currentPagerMode })
+        if (output) await writeCliText(output, { pagerMode: cliRuntimeOptions.pagerMode })
         return
     }
     if (command === 'exec') {
@@ -604,7 +618,7 @@ async function main(args) {
         const sql = rest.join(' ').trim()
         if (!sql) throw new Error('Missing SQL statement')
         const output = await runSql(sql, args.root)
-        if (output) await writeCliText(output, { pagerMode: currentPagerMode })
+        if (output) await writeCliText(output, { pagerMode: cliRuntimeOptions.pagerMode })
         return
     }
     const sql = args.positionals.join(' ').trim()
@@ -613,7 +627,7 @@ async function main(args) {
         throw new Error(`Unknown command: ${command}`)
     }
     const output = await runSql(sql, args.root)
-    if (output) await writeCliText(output, { pagerMode: currentPagerMode })
+    if (output) await writeCliText(output, { pagerMode: cliRuntimeOptions.pagerMode })
 }
 const cliArgs = parseArgs(process.argv.slice(2))
 try {

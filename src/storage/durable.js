@@ -17,6 +17,42 @@ function isUnsupportedDirectorySync(error) {
 }
 
 /**
+ * Atomic file writer that fsyncs file contents and, when supported, the parent
+ * directory.
+ */
+export class DurableFileWriter {
+    /**
+     * @param {string} target
+     * @param {string | Uint8Array} data
+     * @returns {Promise<void>}
+     */
+    async write(target, data) {
+        const targetDirectory = path.dirname(target)
+        await mkdir(targetDirectory, { recursive: true })
+        const scratchPath = `${target}.tmp`
+        const fileHandle = await open(scratchPath, 'w')
+        try {
+            await fileHandle.writeFile(data)
+            await fileHandle.sync()
+        } finally {
+            await fileHandle.close()
+        }
+        await rename(scratchPath, target)
+        const directoryHandle = await open(targetDirectory, 'r')
+        try {
+            await directoryHandle.sync()
+        } catch (error) {
+            if (!isUnsupportedDirectorySync(error)) throw error
+        } finally {
+            await directoryHandle.close()
+        }
+    }
+}
+
+/** Shared durable writer instance. */
+export const durableFileWriter = new DurableFileWriter()
+
+/**
  * Writes `data` to `target` with crash-safe durability guarantees.
  *
  * Pattern: write to `<target>.tmp`, fsync the file, rename into place,
@@ -32,23 +68,5 @@ function isUnsupportedDirectorySync(error) {
  * @returns {Promise<void>}
  */
 export async function writeDurable(target, data) {
-    const dir = path.dirname(target)
-    await mkdir(dir, { recursive: true })
-    const tmp = `${target}.tmp`
-    const fileHandle = await open(tmp, 'w')
-    try {
-        await fileHandle.writeFile(data)
-        await fileHandle.sync()
-    } finally {
-        await fileHandle.close()
-    }
-    await rename(tmp, target)
-    const dirHandle = await open(dir, 'r')
-    try {
-        await dirHandle.sync()
-    } catch (error) {
-        if (!isUnsupportedDirectorySync(error)) throw error
-    } finally {
-        await dirHandle.close()
-    }
+    await durableFileWriter.write(target, data)
 }

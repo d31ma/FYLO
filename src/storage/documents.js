@@ -35,6 +35,10 @@ import { assertPathInside, validateDocId } from '../core/doc-id.js'
  * @property {Record<string, any>} data
  */
 
+/**
+ * Document body and WORM metadata persistence for filesystem-backed FYLO
+ * collections.
+ */
 export class FilesystemDocuments {
     /** @type {FyloStorage} */
     storage

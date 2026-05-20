@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { rm, stat } from 'node:fs/promises'
+import { rm, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import Fylo from '../../src/index.js'
 import { createTestRoot } from '../helpers/root.js'
@@ -131,6 +131,25 @@ describe('filesystem engine', () => {
                 path.join(root, '.collections', POSTS, 'index', 'manifest.json')
             ).exists()
         ).toBe(true)
+    })
+    test('reads CRLF-terminated local index lines', async () => {
+        const collection = 'filesystem-crlf-index'
+        await fylo.createCollection(collection)
+        const id = await fylo.putData(collection, { title: 'Windows index' })
+        const walPath = path.join(root, '.collections', collection, 'index', 'keys.wal')
+        const wal = await Bun.file(walPath).text()
+        await writeFile(walPath, wal.replace(/\n/g, '\r\n'))
+
+        let results = {}
+        for await (const data of fylo
+            .findDocs(collection, {
+                $ops: [{ title: { $eq: 'Windows index' } }]
+            })
+            .collect()) {
+            results = { ...results, ...data }
+        }
+
+        expect(Object.keys(results)).toEqual([id])
     })
     test('uses prefix indexes to support exact, range, like, and contains queries', async () => {
         const queryCollection = 'filesystem-query'

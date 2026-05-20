@@ -1,5 +1,22 @@
 # Changelog
 
+## 26.21.02 - 2026-05-19
+
+### Changed
+
+- **Env var rename**: `FYLO_SCHEMA_DIR` replaced by `FYLO_SCHEMA`. A `schemaEnv()` / `syncChexSchemaEnv()` bridge module (`src/schema/env.js`) syncs the value to `CHEX_SCHEMA_DIR` for CHEX compatibility.
+- **Schema file convention**: Versioned schema files renamed from `<name>.json` to `<name>.schema.json`.
+- **Test schemas consolidated**: Removed `tests/schemas/` directory; tests now use `examples/db/schemas/` as the single source of truth.
+- **Internal readability**: Variable names improved across the codebase (e.g., `selCol` → `selectedCollection`, `res` → `response`, `delCol` → `deleteCollection`).
+- **Workflow files**: Whitespace-only reformatting of CI and publish workflows.
+
+### Added
+
+- `CliRuntimeOptions` class for mutable CLI runtime formatting options shared across command handlers.
+- Schema env bridge module (`src/schema/env.js`) providing `schemaEnv()` and `syncChexSchemaEnv()`.
+- CRLF-terminated local index line reading support with integration test.
+- Example collection schema validation test confirming `examples/db/schemas/` schemas match seeded data.
+
 ## 26.20.07 - 2026-05-17
 
 ### Breaking Changes

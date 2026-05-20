@@ -140,15 +140,14 @@ Collection names map directly to S3 bucket names. Credentials resolve from `AWS_
 
 ## Configuration
 
-| Variable              | Purpose                                                            | Default        |
-| --------------------- | ------------------------------------------------------------------ | -------------- |
-| `FYLO_ROOT`           | Filesystem root for collections                                    | `./.fylo-data` |
-| `FYLO_SCHEMA_DIR`     | Directory containing JSON validation schemas                       | —              |
-| `CHEX_SCHEMA_DIR`     | Schema directory for `@d31ma/chex` (synced from `FYLO_SCHEMA_DIR`) | —              |
-| `FYLO_STRICT`         | Validate documents with chex before writes                         | —              |
-| `FYLO_ENCRYPTION_KEY` | AES-GCM key for `$encrypted` fields (≥32 chars)                    | —              |
-| `FYLO_CIPHER_SALT`    | Salt for blind index derivation                                    | —              |
-| `FYLO_LOGGING`        | Enable logging (`"1"`)                                             | —              |
+| Variable              | Purpose                                         | Default        |
+| --------------------- | ----------------------------------------------- | -------------- |
+| `FYLO_ROOT`           | Filesystem root for collections                 | `./.fylo-data` |
+| `FYLO_SCHEMA`         | Directory containing JSON validation schemas    | —              |
+| `FYLO_STRICT`         | Validate documents with chex before writes      | —              |
+| `FYLO_ENCRYPTION_KEY` | AES-GCM key for `$encrypted` fields (≥32 chars) | —              |
+| `FYLO_CIPHER_SALT`    | Salt for blind index derivation                 | —              |
+| `FYLO_LOGGING`        | Enable logging (`"1"`)                          | —              |
 
 S3 index credentials (resolved in order: explicit options → `AWS_*` → `FYLO_S3_*`):
 
@@ -264,15 +263,15 @@ const posts = await db.executeSQL(`SELECT * FROM posts WHERE published = true`)
 
 ## Schema Versioning
 
-Schemas live under `FYLO_SCHEMA_DIR` in a per-collection layout:
+Schemas live under `FYLO_SCHEMA` in a per-collection layout:
 
 ```text
-<FYLO_SCHEMA_DIR>/
+<FYLO_SCHEMA>/
   <collection>/
     manifest.json          ← { current, versions: [{v, sha256?, addedAt?}] }
     history/
-      v1.json              ← chex regex schema
-      v2.json              ← head is whichever manifest.current points at
+      v1.schema.json       ← chex regex schema
+      v2.schema.json       ← head is whichever manifest.current points at
     upgraders/
       v1-to-v2.js          ← export default async (doc) => upgradedDoc
     rules.json             ← optional RLS rules
@@ -290,7 +289,7 @@ Schemas live under `FYLO_SCHEMA_DIR` in a per-collection layout:
 }
 ```
 
-Chex regex schemas (`history/v2.json`):
+Chex regex schemas (`history/v2.schema.json`):
 
 ```json
 {

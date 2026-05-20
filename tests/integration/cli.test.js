@@ -36,7 +36,7 @@ describe('CLI', () => {
     test('build emits a working CLI with SQL and richer admin commands', async () => {
         const repo = process.cwd()
         const root = await createRoot('fylo-cli-')
-        const schemaDir = path.join(repo, 'tests', 'schemas')
+        const schemaDir = path.join(repo, 'examples', 'db', 'schemas')
 
         const build = await run(['run', 'build'], repo)
         expect(build.exitCode).toBe(0)

@@ -1,6 +1,6 @@
 {
     "name": "@d31ma/fylo",
-    "version": "26.20.07",
+    "version": "26.21.02",
     "main": "./dist/index.js",
     "types": "./dist/types/index.d.ts",
     "exports": {
@@ -41,8 +41,8 @@
         "typescript": "^5.9.3"
     },
     "dependencies": {
-        "@d31ma/chex": "^26.20.2",
-        "@d31ma/ttid": "26.18.27-2"
+        "@d31ma/chex": "^26.21.2",
+        "@d31ma/ttid": "^26.21.3"
     },
     "type": "module",
     "repository": {

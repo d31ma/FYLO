@@ -9,7 +9,7 @@ import {
     InvalidNameError
 } from '@d31ma/chex'
 
-const TEST_DIR = path.join(import.meta.dir, '..', 'schemas', '_chex-test')
+const TEST_DIR = path.join(process.cwd(), 'examples', 'db', 'schemas', '_chex-test')
 const COLLECTION = 'user'
 
 const USER_SCHEMA = {
@@ -25,7 +25,10 @@ const USER_SCHEMA = {
 
 async function setupSchemas() {
     await mkdir(TEST_DIR, { recursive: true })
-    await writeFile(path.join(TEST_DIR, `${COLLECTION}.json`), JSON.stringify(USER_SCHEMA, null, 2))
+    await writeFile(
+        path.join(TEST_DIR, `${COLLECTION}.schema.json`),
+        JSON.stringify(USER_SCHEMA, null, 2)
+    )
 }
 
 async function teardownSchemas() {
@@ -170,7 +173,7 @@ describe('CHEX direct integration', () => {
     describe('validateData() — error types', () => {
         test('throws InvalidNameError for invalid collection name', async () => {
             await expect(
-                validateData('invalid/collection!', {}, { schemaDir: TEST_DIR })
+                validateData('invalid collection!', {}, { schemaDir: TEST_DIR })
             ).rejects.toBeInstanceOf(InvalidNameError)
         })
 
@@ -213,15 +216,19 @@ describe('CHEX direct integration', () => {
             ).rejects.toBeInstanceOf(SchemaLoadError)
         })
 
-        test('uses CHEX_SCHEMA_DIR env var as fallback', async () => {
+        test('validates with explicit CHEX_SCHEMA_DIR option', async () => {
             const prev = process.env.CHEX_SCHEMA_DIR
             process.env.CHEX_SCHEMA_DIR = TEST_DIR
             try {
-                const result = await validateData(COLLECTION, {
-                    id: '10',
-                    name: 'Liam',
-                    address: { street: 'Env St' }
-                })
+                const result = await validateData(
+                    COLLECTION,
+                    {
+                        id: '10',
+                        name: 'Liam',
+                        address: { street: 'Env St' }
+                    },
+                    { schemaDir: process.env.CHEX_SCHEMA_DIR }
+                )
                 expect(result.name).toBe('Liam')
             } finally {
                 if (prev === undefined) delete process.env.CHEX_SCHEMA_DIR
@@ -254,8 +261,9 @@ describe('CHEX direct integration', () => {
                 { schemaDir: TEST_DIR, cache }
             )
 
-            expect(cache.has(COLLECTION)).toBe(true)
-            const cached = cache.get(COLLECTION)
+            const key = `dir:${TEST_DIR}:${COLLECTION}`
+            expect(cache.has(key)).toBe(true)
+            const cached = cache.get(key)
             expect(cached).toBeDefined()
             expect(cached.id).toBe('^[0-9]+$')
 
@@ -313,12 +321,12 @@ describe('CHEX direct integration', () => {
         })
     })
 
-    describe('FYLO CHEX_SCHEMA_DIR sync (via Fylo class)', () => {
-        test('Fylo constructor syncs FYLO_SCHEMA_DIR → CHEX_SCHEMA_DIR', async () => {
-            const prevFylo = process.env.FYLO_SCHEMA_DIR
+    describe('FYLO schema env bridge (via Fylo class)', () => {
+        test('Fylo constructor syncs FYLO_SCHEMA into CHEX_SCHEMA_DIR', async () => {
+            const prevFylo = process.env.FYLO_SCHEMA
             const prevChex = process.env.CHEX_SCHEMA_DIR
             delete process.env.CHEX_SCHEMA_DIR
-            process.env.FYLO_SCHEMA_DIR = TEST_DIR
+            process.env.FYLO_SCHEMA = TEST_DIR
 
             try {
                 // Dynamic import to trigger constructor side-effect
@@ -326,16 +334,20 @@ describe('CHEX direct integration', () => {
                 new Fylo()
                 expect(process.env.CHEX_SCHEMA_DIR).toBe(TEST_DIR)
 
-                // Now chex should work without explicit schemaDir
-                const result = await validateData(COLLECTION, {
-                    id: '60',
-                    name: 'Sync Test',
-                    address: { street: 'Sync St' }
-                })
+                // CHEX 26.21 requires callers to pass the resolved schemaDir explicitly.
+                const result = await validateData(
+                    COLLECTION,
+                    {
+                        id: '60',
+                        name: 'Sync Test',
+                        address: { street: 'Sync St' }
+                    },
+                    { schemaDir: process.env.CHEX_SCHEMA_DIR }
+                )
                 expect(result.name).toBe('Sync Test')
             } finally {
-                if (prevFylo === undefined) delete process.env.FYLO_SCHEMA_DIR
-                else process.env.FYLO_SCHEMA_DIR = prevFylo
+                if (prevFylo === undefined) delete process.env.FYLO_SCHEMA
+                else process.env.FYLO_SCHEMA = prevFylo
                 if (prevChex === undefined) delete process.env.CHEX_SCHEMA_DIR
                 else process.env.CHEX_SCHEMA_DIR = prevChex
             }

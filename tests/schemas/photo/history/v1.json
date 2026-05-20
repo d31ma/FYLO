@@ -1,7 +1,0 @@
-{
-    "id": "^[0-9]+$",
-    "albumId": "^[0-9]+$",
-    "title": "^.+$",
-    "url": "^https?://.+$",
-    "thumbnailUrl": "^https?://.+$"
-}

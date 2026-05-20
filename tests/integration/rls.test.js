@@ -141,7 +141,7 @@ describe('effectiveReadFilter', () => {
         const userA = fylo.as({ subjectId: 'user-a', tenantId: 'tenant-a' })
         const filter = await effectiveReadFilter({
             collection: 'norules',
-            schemaDir: process.env.FYLO_SCHEMA_DIR,
+            schemaDir: process.env.FYLO_SCHEMA,
             auth: { subjectId: 'user-a', tenantId: 'tenant-a' }
         })
         expect(filter).toBeNull()

@@ -189,6 +189,10 @@ async function queryLookupValue(collection, fieldPath, value) {
     return lookupToken(rawValue)
 }
 
+/**
+ * Encodes document field values into prefix-searchable index keys and query
+ * lookup prefixes.
+ */
 export class PrefixIndexCodec {
     /**
      * @param {string} fieldPath
@@ -339,19 +343,23 @@ export class PrefixIndexCodec {
             return null
         }
         const rangeEntries = []
-        for (const op of /** @type {const} */ (['$gt', '$gte', '$lt', '$lte'])) {
-            const raw = operand[op]
+        for (const operator of /** @type {const} */ (['$gt', '$gte', '$lt', '$lte'])) {
+            const raw = operand[operator]
             if (raw === undefined) continue
             const numeric = numericValue(raw)
             const sortable = numeric === null ? '' : sortableFloat64(numeric)
             if (!sortable) return null
-            if (op === '$gt' || op === '$gte') {
-                rangeEntries.push({ kind: 'n', valuePrefix: '', range: { op, value: sortable } })
+            if (operator === '$gt' || operator === '$gte') {
+                rangeEntries.push({
+                    kind: 'n',
+                    valuePrefix: '',
+                    range: { op: operator, value: sortable }
+                })
             } else {
                 rangeEntries.push({
                     kind: 'nr',
                     valuePrefix: '',
-                    range: { op, value: reverseSortable(sortable) }
+                    range: { op: operator, value: reverseSortable(sortable) }
                 })
             }
         }
@@ -372,10 +380,18 @@ export class PrefixIndexCodec {
  * @param {string} text
  * @returns {string[]}
  */
-function lines(text) {
+function completeLines(text) {
     if (!text) return []
     const complete = text.endsWith('\n') ? text : text.slice(0, text.lastIndexOf('\n') + 1)
-    return complete.split('\n').filter(Boolean)
+    return complete.split('\n').map(stripTrailingCarriageReturn).filter(Boolean)
+}
+
+/**
+ * @param {string} line
+ * @returns {string}
+ */
+function stripTrailingCarriageReturn(line) {
+    return line.endsWith('\r') ? line.slice(0, -1) : line
 }
 
 /**
@@ -447,6 +463,21 @@ function serializeWal(mutations) {
     return mutations.map((mutation) => `${mutation.op}\t${mutation.key}\n`).join('')
 }
 
+/**
+ * @param {string} line
+ * @returns {{ op: '+' | '-', key: string } | null}
+ */
+function parseWalMutation(line) {
+    const operation = line[0]
+    if ((operation !== '+' && operation !== '-') || line[1] !== '\t') return null
+    const key = line.slice(2)
+    return key ? { op: operation, key } : null
+}
+
+/**
+ * Local object-store emulator for prefix indexes. Stores compact flat key
+ * manifests under each collection's index directory.
+ */
 export class LocalFsPrefixIndexStore {
     /** @type {(collection: string) => string} */
     rootForCollection
@@ -491,14 +522,14 @@ export class LocalFsPrefixIndexStore {
     }
 
     /**
-     * Returns a memory-mapped view of the sorted keys file.
-     * Uses Bun.mmap so only pages touched by binary search are faulted in
-     * (OS page cache handles the rest — no full-file load into JS heap).
+     * Returns bytes for the sorted snapshot file.
+     * Bun.mmap keeps hot queries out of the JS heap when the platform supports
+     * it; the async file-read fallback keeps unsupported platforms nonblocking.
      *
      * @param {string} collection
-     * @returns Uint8Array
+     * @returns {Promise<Uint8Array>}
      */
-    async #snapshotBuffer(collection) {
+    async #readSnapshotBytes(collection) {
         const snapshot = this.snapshotPath(collection)
         try {
             return Bun.mmap(snapshot)
@@ -515,28 +546,28 @@ export class LocalFsPrefixIndexStore {
 
     /**
      * Binary search for the byte offset of the first key >= prefix.
-     * Operates directly on the mmap'd buffer — O(log n) key comparisons.
+     * The snapshot stays as bytes until the matching range is known.
      *
-     * @param {Uint8Array} buf
+     * @param {Uint8Array} snapshotBytes
      * @param {string} prefix
      * @returns {number} byte offset of the start of the matching line
      */
-    #findGE(buf, prefix) {
-        if (buf.length === 0) return 0
+    #findFirstKeyAtOrAfter(snapshotBytes, prefix) {
+        if (snapshotBytes.length === 0) return 0
         const decoder = new TextDecoder()
         let lo = 0
-        let hi = buf.length
+        let hi = snapshotBytes.length
         while (lo < hi) {
             const mid = Math.floor((lo + hi) / 2)
             let start = mid
-            while (start > 0 && buf[start - 1] !== 0x0a) start--
+            while (start > 0 && snapshotBytes[start - 1] !== 0x0a) start--
             let end = mid
-            while (end < buf.length && buf[end] !== 0x0a) end++
-            const key = decoder.decode(buf.subarray(start, end))
+            while (end < snapshotBytes.length && snapshotBytes[end] !== 0x0a) end++
+            const key = decoder.decode(snapshotBytes.subarray(start, end))
             if (key < prefix) lo = end + 1
             else hi = start
         }
-        while (lo > 0 && lo < buf.length && buf[lo - 1] !== 0x0a) lo--
+        while (lo > 0 && lo < snapshotBytes.length && snapshotBytes[lo - 1] !== 0x0a) lo--
         return lo
     }
 
@@ -570,23 +601,20 @@ export class LocalFsPrefixIndexStore {
 
     /**
      * Loads the full key set (snapshot + WAL) into a JS Set.
-     * Used only during compaction — not in the hot query path.
+     * Used only during compaction, not in the hot query path.
      *
      * @param {string} collection
      * @returns {Promise<Set<string>>}
      */
     async loadKeySet(collection) {
         await this.ensureCollection(collection)
-        // Read snapshot efficiently via mmap lines (avoids full string decode)
-        const snapBuf = await this.#snapshotBuffer(collection)
-        const keys = new Set(lines(new TextDecoder().decode(snapBuf)))
-        for (const line of lines(await readTextIfExists(this.walPath(collection)))) {
-            const op = line[0]
-            if (line[1] !== '\t') continue
-            const key = line.slice(2)
-            if (!key) continue
-            if (op === '+') keys.add(key)
-            else if (op === '-') keys.delete(key)
+        const snapshotBytes = await this.#readSnapshotBytes(collection)
+        const keys = new Set(completeLines(new TextDecoder().decode(snapshotBytes)))
+        for (const line of completeLines(await readTextIfExists(this.walPath(collection)))) {
+            const mutation = parseWalMutation(line)
+            if (!mutation) continue
+            if (mutation.op === '+') keys.add(mutation.key)
+            else keys.delete(mutation.key)
         }
         return keys
     }
@@ -618,9 +646,9 @@ export class LocalFsPrefixIndexStore {
     }
 
     /**
-     * Merges WAL into the sorted snapshot atomically.
+     * Merges the WAL into the sorted snapshot atomically.
      * After compaction any subsequent listKeys() picks up the new
-     * file via a fresh mmap (mmap sees the rewritten file on next call).
+     * file via a fresh snapshot read.
      *
      * @param {string} collection
      * @returns {Promise<void>}
@@ -632,9 +660,9 @@ export class LocalFsPrefixIndexStore {
     }
 
     /**
-     * Lists index keys matching a prefix using O(log n) binary search
-     * on the mmap'd snapshot + O(k) sequential scan of matching keys
-     * + WAL merge. Never loads the full key set into JS memory.
+     * Lists index keys matching a prefix by binary-searching the snapshot,
+     * scanning only the matching snapshot range, then applying WAL mutations.
+     * The full key set is loaded only during compaction.
      *
      * @param {string} collection
      * @param {string} [prefix]
@@ -642,29 +670,27 @@ export class LocalFsPrefixIndexStore {
      */
     async listKeys(collection, prefix = '') {
         await this.ensureCollection(collection)
-        const buf = await this.#snapshotBuffer(collection)
+        const snapshotBytes = await this.#readSnapshotBytes(collection)
         const decoder = new TextDecoder()
         const result = new Set()
 
-        // Phase 1: binary search + range scan on mmap'd snapshot
-        let pos = this.#findGE(buf, prefix)
-        while (pos < buf.length) {
+        let pos = this.#findFirstKeyAtOrAfter(snapshotBytes, prefix)
+        while (pos < snapshotBytes.length) {
             let end = pos
-            while (end < buf.length && buf[end] !== 0x0a) end++
-            const key = decoder.decode(buf.subarray(pos, end))
+            while (end < snapshotBytes.length && snapshotBytes[end] !== 0x0a) end++
+            const key = stripTrailingCarriageReturn(
+                decoder.decode(snapshotBytes.subarray(pos, end))
+            )
             if (!key || !key.startsWith(prefix)) break
             result.add(key)
             pos = end + 1
         }
 
-        // Phase 2: apply WAL mutations on top (only for matching prefix)
-        for (const line of lines(await readTextIfExists(this.walPath(collection)))) {
-            const op = line[0]
-            if (line[1] !== '\t') continue
-            const key = line.slice(2)
-            if (!key || !key.startsWith(prefix)) continue
-            if (op === '+') result.add(key)
-            else if (op === '-') result.delete(key)
+        for (const line of completeLines(await readTextIfExists(this.walPath(collection)))) {
+            const mutation = parseWalMutation(line)
+            if (!mutation || !mutation.key.startsWith(prefix)) continue
+            if (mutation.op === '+') result.add(mutation.key)
+            else result.delete(mutation.key)
         }
 
         return Array.from(result).sort()
@@ -697,7 +723,9 @@ export class LocalFsPrefixIndexStore {
             try {
                 validateDocId(docId)
                 docIds.add(docId)
-            } catch {}
+            } catch {
+                // Index rows can contain non-document keys; only valid document ids count.
+            }
         }
         return docIds.size
     }
@@ -733,6 +761,10 @@ export class LocalFsPrefixIndexStore {
     }
 }
 
+/**
+ * Bun S3-backed prefix index store. Each FYLO collection maps directly to an
+ * S3 bucket and index entries are represented by object keys.
+ */
 export class BunS3ClientIndexStore {
     /** @type {S3ClientIndexOptions} */
     options
@@ -812,7 +844,9 @@ export class BunS3ClientIndexStore {
             try {
                 validateDocId(docId)
                 docIds.add(docId)
-            } catch {}
+            } catch {
+                // Index rows can contain non-document keys; only valid document ids count.
+            }
         }
         return docIds.size
     }

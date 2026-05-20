@@ -1,11 +1,11 @@
 /**
  * Advisory file-based locking for FYLO collection and document writes.
  *
- * Correctness model — read this before changing anything in here.
+ * Correctness model: read this before changing anything in here.
  *
  * This module implements *advisory* locking on top of `node:fs/promises`
  * primitives (`link`, `unlink`, `rename`). It is not built on POSIX
- * `fcntl(F_SETLK)` or `flock` — those would give true OS-level mutual
+ * `fcntl(F_SETLK)` or `flock`; those would give true OS-level mutual
  * exclusion, but they are not available through `node:fs/promises` and
  * they do not survive across `bun build --compile` targets uniformly.
  *
@@ -51,52 +51,108 @@ const heartbeats = new Map()
 
 /**
  * @param {string} lockPath
+ * @param {string} suffix
+ * @returns {string}
+ */
+function uniqueLockScratchPath(lockPath, suffix) {
+    const nonce = Math.random().toString(36).slice(2)
+    return `${lockPath}.${process.pid}.${Date.now()}.${nonce}.${suffix}`
+}
+
+/**
+ * Tracks lock heartbeat timers so long-running lock holders can refresh TTLs
+ * and release can drain in-flight refreshes safely.
+ */
+class FileLockHeartbeatRegistry {
+    /** @param {Map<string, HeartbeatEntry>} entries */
+    constructor(entries = new Map()) {
+        this.entries = entries
+    }
+
+    /**
+     * @param {string} lockPath
+     * @param {string} owner
+     * @param {number} ttlMs
+     */
+    start(lockPath, owner, ttlMs) {
+        void this.stop(lockPath)
+        const intervalMs = Math.max(Math.floor(ttlMs / 3), 100)
+        /** @type {HeartbeatEntry} */
+        const entry = {
+            interval: /** @type {any} */ (null),
+            owner,
+            cancelled: false,
+            inFlight: null
+        }
+        const tick = async () => {
+            await this.#tick(lockPath, entry)
+        }
+        entry.interval = setInterval(() => {
+            if (entry.cancelled || entry.inFlight) return
+            entry.inFlight = tick().finally(() => {
+                entry.inFlight = null
+            })
+        }, intervalMs)
+        if (typeof entry.interval.unref === 'function') entry.interval.unref()
+        this.entries.set(lockPath, entry)
+    }
+
+    /**
+     * @param {string} lockPath
+     * @param {HeartbeatEntry} entry
+     */
+    async #tick(lockPath, entry) {
+        if (entry.cancelled) return
+        const scratchPath = uniqueLockScratchPath(lockPath, 'heartbeat.tmp')
+        try {
+            const meta = await readLockMeta(lockPath)
+            if (entry.cancelled || !meta || meta.owner !== entry.owner) return
+            await writeFile(scratchPath, JSON.stringify({ owner: entry.owner, ts: Date.now() }))
+            if (entry.cancelled) return
+            const refreshedMeta = await readLockMeta(lockPath)
+            if (entry.cancelled || !refreshedMeta || refreshedMeta.owner !== entry.owner) return
+            await rename(scratchPath, lockPath)
+        } catch {
+            // Heartbeat loss is recovered by the TTL takeover path.
+        } finally {
+            try {
+                await unlink(scratchPath)
+            } catch (err) {
+                const error = /** @type {NodeJS.ErrnoException} */ (err)
+                if (error && error.code !== 'ENOENT') throw err
+            }
+        }
+    }
+
+    /**
+     * @param {string} lockPath
+     * @returns {Promise<void>}
+     */
+    async stop(lockPath) {
+        const entry = this.entries.get(lockPath)
+        if (!entry) return
+        entry.cancelled = true
+        clearInterval(entry.interval)
+        this.entries.delete(lockPath)
+        if (entry.inFlight) {
+            try {
+                await entry.inFlight
+            } catch {
+                // The heartbeat path is best effort; release should still continue.
+            }
+        }
+    }
+}
+
+const heartbeatRegistry = new FileLockHeartbeatRegistry(heartbeats)
+
+/**
+ * @param {string} lockPath
  * @param {string} owner
  * @param {number} ttlMs
  */
 function startHeartbeat(lockPath, owner, ttlMs) {
-    void stopHeartbeat(lockPath)
-    const intervalMs = Math.max(Math.floor(ttlMs / 3), 100)
-    /** @type {HeartbeatEntry} */
-    const entry = {
-        interval: /** @type {any} */ (null),
-        owner,
-        cancelled: false,
-        inFlight: null
-    }
-    const tick = async () => {
-        if (entry.cancelled) return
-        const tmp = `${lockPath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.heartbeat.tmp`
-        try {
-            const meta = await readLockMeta(lockPath)
-            if (entry.cancelled || !meta || meta.owner !== owner) return
-            await writeFile(tmp, JSON.stringify({ owner, ts: Date.now() }))
-            if (entry.cancelled) return
-            const meta2 = await readLockMeta(lockPath)
-            if (entry.cancelled || !meta2 || meta2.owner !== owner) return
-            await rename(tmp, lockPath)
-            return
-        } catch {
-        } finally {
-            try {
-                await unlink(tmp)
-            } catch (err) {
-                const error = /** @type {NodeJS.ErrnoException} */ (err)
-                if (error && error.code !== 'ENOENT') {
-                    // swallow — tmp already consumed by rename or never created
-                }
-            }
-        }
-    }
-    entry.interval = setInterval(() => {
-        if (entry.cancelled) return
-        if (entry.inFlight) return
-        entry.inFlight = tick().finally(() => {
-            entry.inFlight = null
-        })
-    }, intervalMs)
-    if (typeof entry.interval.unref === 'function') entry.interval.unref()
-    heartbeats.set(lockPath, entry)
+    heartbeatRegistry.start(lockPath, owner, ttlMs)
 }
 
 /**
@@ -108,16 +164,7 @@ function startHeartbeat(lockPath, owner, ttlMs) {
  * @returns {Promise<void>}
  */
 async function stopHeartbeat(lockPath) {
-    const entry = heartbeats.get(lockPath)
-    if (!entry) return
-    entry.cancelled = true
-    clearInterval(entry.interval)
-    heartbeats.delete(lockPath)
-    if (entry.inFlight) {
-        try {
-            await entry.inFlight
-        } catch {}
-    }
+    await heartbeatRegistry.stop(lockPath)
 }
 
 /**
@@ -142,7 +189,7 @@ async function readLockMeta(lockPath) {
 /**
  * Attempts an atomic create-exclusive of the lock file with the given payload.
  * Uses `link()` rather than `open(wx)` so the file appears at `lockPath` with
- * its content already populated — this closes the race where a concurrent
+ * its content already populated; this closes the race where a concurrent
  * reader sees an empty file after `open(wx)` but before `write`.
  *
  * Resolves true on success; resolves false if the target already existed.
@@ -150,12 +197,13 @@ async function readLockMeta(lockPath) {
  *
  * @param {string} lockPath
  * @param {string} payload
+ * @returns {Promise<boolean>}
  */
 async function tryCreateExclusive(lockPath, payload) {
-    const tmp = `${lockPath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`
-    await writeFile(tmp, payload)
+    const scratchPath = uniqueLockScratchPath(lockPath, 'tmp')
+    await writeFile(scratchPath, payload)
     try {
-        await link(tmp, lockPath)
+        await link(scratchPath, lockPath)
         return true
     } catch (err) {
         const error = /** @type {NodeJS.ErrnoException} */ (err)
@@ -163,7 +211,7 @@ async function tryCreateExclusive(lockPath, payload) {
         throw err
     } finally {
         try {
-            await unlink(tmp)
+            await unlink(scratchPath)
         } catch (cleanupErr) {
             const cleanupError = /** @type {NodeJS.ErrnoException} */ (cleanupErr)
             if (cleanupError.code !== 'ENOENT') throw cleanupErr
@@ -188,8 +236,8 @@ async function tryCreateExclusive(lockPath, payload) {
  * Acquires an advisory file-based lock.
  *
  * Semantics:
- * - Atomic `wx` open is the only path by which ownership is established —
- *   the filesystem guarantees at most one concurrent acquirer wins.
+ * - Atomic `link()` is the only path by which ownership is established; the
+ *   filesystem guarantees at most one concurrent acquirer wins.
  * - If the lock already exists and its timestamp is within `ttlMs`, the
  *   current holder is considered live and this call returns false.
  * - If the lock is stale (or its payload is missing/corrupt), a single
@@ -283,7 +331,7 @@ export async function waitAcquireFileLock(lockPath, owner, options = {}) {
  * Note: release is not atomic with the ownership check. A concurrent
  * stale-lock takeover between our read and unlink could cause us to
  * delete someone else's lock. This is acceptable for FYLO's advisory
- * locking — callers rely on short operation durations plus TTL-based
+ * locking: callers rely on short operation durations plus TTL-based
  * correctness, not fine-grained release ordering.
  *
  * @param {string} lockPath

@@ -10,6 +10,10 @@ import { tryAcquireFileLock, tryReleaseFileLock, waitAcquireFileLock } from './f
  * @typedef {import('./types.js').EventBus<Record<string, any>>} RecordEventBus
  */
 
+/**
+ * Minimal filesystem storage adapter used by higher-level collection
+ * primitives.
+ */
 export class FilesystemStorage {
     /**
      * @param {string} target
@@ -86,6 +90,9 @@ export class FilesystemStorage {
         }
     }
 }
+/**
+ * Collection/document lock manager built on advisory filesystem lock files.
+ */
 export class FilesystemLockManager {
     /** @type {string} */
     root
@@ -169,6 +176,9 @@ export class FilesystemLockManager {
         await tryReleaseFileLock(this.collectionLockPath(collection), owner)
     }
 }
+/**
+ * Append-only event journal used by collection listeners and queue mirroring.
+ */
 export class FilesystemEventBus {
     /** @type {string} */
     root

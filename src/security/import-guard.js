@@ -11,6 +11,7 @@ import { checkServerIdentity as tlsCheckServerIdentity } from 'node:tls'
  * @property {boolean=} allowPrivateNetwork
  */
 
+/** Default maximum response body size for bulk imports: 50 MiB. */
 export const DEFAULT_IMPORT_MAX_BYTES = 50 * 1024 * 1024
 
 /** @param {number | ImportBulkDataOptions | undefined} limitOrOptions @returns {Required<Omit<ImportBulkDataOptions, 'limit' | 'allowedHosts'>> & Pick<ImportBulkDataOptions, 'limit' | 'allowedHosts'>} */
@@ -45,8 +46,10 @@ export function expandIPv6(ipv6) {
     /** @type {number[]} */
     const tail = []
     if (trailingV4) {
-        const [a, b, c, d] = trailingV4[1].split('.').map((part) => Number(part))
-        tail.push((a << 8) | b, (c << 8) | d)
+        const [firstOctet, secondOctet, thirdOctet, fourthOctet] = trailingV4[1]
+            .split('.')
+            .map((part) => Number(part))
+        tail.push((firstOctet << 8) | secondOctet, (thirdOctet << 8) | fourthOctet)
         head = ipv6.slice(0, ipv6.length - trailingV4[1].length).replace(/:$/, '')
         if (head === '') head = '::'
     }
@@ -54,8 +57,8 @@ export function expandIPv6(ipv6) {
     if (parts.length > 2) return null
     const leftRaw = parts[0] ? parts[0].split(':') : []
     const rightRaw = parts.length === 2 ? (parts[1] ? parts[1].split(':') : []) : parts[0] ? [] : []
-    const left = leftRaw.map((h) => Number.parseInt(h, 16))
-    const right = rightRaw.map((h) => Number.parseInt(h, 16))
+    const left = leftRaw.map((segment) => Number.parseInt(segment, 16))
+    const right = rightRaw.map((segment) => Number.parseInt(segment, 16))
     const missing = 8 - tail.length - left.length - right.length
     if (missing < 0) return null
     const middle = parts.length === 2 ? new Array(missing).fill(0) : []
@@ -112,12 +115,12 @@ export function hostAllowed(hostname, allowedHosts) {
  */
 export function redactImportUrl(url) {
     try {
-        const u = new URL(url instanceof URL ? url.toString() : url)
-        u.username = ''
-        u.password = ''
-        u.search = ''
-        u.hash = ''
-        return u.toString()
+        const redacted = new URL(url instanceof URL ? url.toString() : url)
+        redacted.username = ''
+        redacted.password = ''
+        redacted.search = ''
+        redacted.hash = ''
+        return redacted.toString()
     } catch {
         return '[unparseable-url]'
     }
@@ -146,8 +149,8 @@ export async function assertImportUrlAllowed(url, options) {
     if (!options.allowPrivateNetwork && addresses.some((address) => isPrivateAddress(address)))
         throw new Error(`Import URL resolves to a private address: ${url.hostname}`)
     if (options.allowPrivateNetwork) return null
-    const pinnedUrls = addresses.map((ip) => {
-        const host = isIP(ip) === 6 ? `[${ip}]` : ip
+    const pinnedUrls = addresses.map((address) => {
+        const host = isIP(address) === 6 ? `[${address}]` : address
         const pinned = new URL(url.toString())
         pinned.hostname = host
         return pinned

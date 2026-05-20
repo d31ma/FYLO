@@ -1,8 +1,10 @@
 import { describe, expect, test } from 'bun:test'
 import path from 'node:path'
 import Fylo from '../../src/index.js'
+import { validateAgainstHead } from '../../src/schema/validation.js'
 
 const EXAMPLE_ROOT = path.join(process.cwd(), 'examples', 'db')
+const EXAMPLE_SCHEMA_DIR = path.join(EXAMPLE_ROOT, 'schemas')
 
 describe('example production root', () => {
     test('seeded mock data is readable through FYLO', async () => {
@@ -35,5 +37,31 @@ describe('example production root', () => {
             openOrders = { ...openOrders, ...data }
         }
         expect(openOrders['4V6329YC0R0'].orderNo).toBe('ORD-1001')
+    })
+
+    test('example collections include matching versioned schemas', async () => {
+        const user = await validateAgainstHead(
+            'users',
+            {
+                name: 'Ada Lovelace',
+                role: 'admin',
+                team: 'platform',
+                tags: ['math', 'storage']
+            },
+            { schemaDir: EXAMPLE_SCHEMA_DIR }
+        )
+        expect(user._v).toBe('v1')
+
+        const order = await validateAgainstHead(
+            'orders',
+            {
+                orderNo: 'ORD-1001',
+                userId: '4V6329YC0F2',
+                status: 'open',
+                total: 42.5
+            },
+            { schemaDir: EXAMPLE_SCHEMA_DIR }
+        )
+        expect(order._v).toBe('v1')
     })
 })

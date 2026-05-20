@@ -1,19 +1,19 @@
 /**
  * @fileoverview Schema versioning runtime.
  *
- * Each collection lives in its own directory under FYLO_SCHEMA_DIR. The head
+ * Each collection lives in its own directory under FYLO_SCHEMA. The head
  * schema file (whose name matches `manifest.current`) is what `@d31ma/chex`
  * validates against — FYLO pre-populates chex's cache so chex never has to
  * resolve the path itself. Frozen historical snapshots and the upgrader
  * chain live in sibling subdirectories.
  *
  * Layout:
- *   <FYLO_SCHEMA_DIR>/
+ *   <FYLO_SCHEMA>/
  *     <collection>/
  *       manifest.json               ← { current, versions: [{v, sha256?, addedAt?}] }
  *       history/
- *         v1.json                   ← all schema versions live here (head and prior)
- *         v2.json                   ← head is whichever manifest.current points at
+ *         v1.schema.json            ← all schema versions live here (head and prior)
+ *         v2.schema.json            ← head is whichever manifest.current points at
  *       upgraders/
  *         v1-to-v2.js               ← export default async (doc) => upgradedDoc
  *       rules.json                  ← (optional) RLS rules — see security/rules/loader.js
@@ -28,14 +28,8 @@
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 
+/** Reserved document field that stores the schema version label. */
 export const VERSION_FIELD = '_v'
-
-/** @type {Map<string, ManifestRecord | null>} */
-const manifestCache = new Map()
-/** @type {Map<string, (doc: Record<string, any>) => Promise<Record<string, any>> | Record<string, any>>} */
-const upgraderCache = new Map()
-/** @type {Map<string, Record<string, unknown>>} */
-const headSchemaCache = new Map()
 
 /**
  * @typedef {object} ManifestVersionEntry
@@ -69,7 +63,7 @@ function upgraderDir(collection, schemaDir) {
 }
 
 /**
- * Path to a schema version file: `<schemaDir>/<collection>/history/<version>.json`.
+ * Path to a schema version file: `<schemaDir>/<collection>/history/<version>.schema.json`.
  * The head version is whichever entry `manifest.current` points at — all
  * versions are siblings here, with no separate head/frozen split.
  * @param {string} collection
@@ -77,8 +71,201 @@ function upgraderDir(collection, schemaDir) {
  * @param {string} version
  */
 function schemaVersionPath(collection, schemaDir, version) {
-    return path.join(historyDir(collection, schemaDir), `${version}.json`)
+    return path.join(historyDir(collection, schemaDir), `${version}.schema.json`)
 }
+
+/**
+ * Loads schema manifests, head schemas, and migration upgraders with
+ * process-level memoization.
+ */
+export class SchemaVersionRegistry {
+    /** @type {Map<string, ManifestRecord | null>} */
+    manifestCache = new Map()
+    /** @type {Map<string, (doc: Record<string, any>) => Promise<Record<string, any>> | Record<string, any>>} */
+    upgraderCache = new Map()
+    /** @type {Map<string, Record<string, unknown>>} */
+    headSchemaCache = new Map()
+
+    /**
+     * @param {string} collection
+     * @param {string|null|undefined} schemaDir
+     * @returns {Promise<ManifestRecord|null>}
+     */
+    async loadManifest(collection, schemaDir) {
+        if (!schemaDir) return null
+        const key = cacheKey(collection, schemaDir)
+        if (this.manifestCache.has(key)) return this.manifestCache.get(key) ?? null
+        const target = path.join(collectionDir(collection, schemaDir), 'manifest.json')
+        const file = Bun.file(target)
+        if (!(await file.exists())) {
+            this.manifestCache.set(key, null)
+            return null
+        }
+        const manifest = /** @type {ManifestRecord} */ (await file.json())
+        this.assertValidManifest(collection, manifest)
+        this.manifestCache.set(key, manifest)
+        return manifest
+    }
+
+    /**
+     * @param {string} collection
+     * @param {ManifestRecord} manifest
+     */
+    assertValidManifest(collection, manifest) {
+        if (typeof manifest.current !== 'string' || manifest.current.length === 0) {
+            throw new Error(
+                `Invalid manifest for '${collection}': 'current' must be a non-empty string`
+            )
+        }
+        if (!Array.isArray(manifest.versions) || manifest.versions.length === 0) {
+            throw new Error(
+                `Invalid manifest for '${collection}': 'versions' must be a non-empty array`
+            )
+        }
+        if (!manifest.versions.some((entry) => entry.v === manifest.current)) {
+            throw new Error(
+                `Manifest for '${collection}': 'current' (${manifest.current}) is not present in 'versions'`
+            )
+        }
+    }
+
+    /**
+     * @param {string} collection
+     * @param {string|null|undefined} schemaDir
+     * @returns {Promise<string|null>}
+     */
+    async currentVersion(collection, schemaDir) {
+        const manifest = await this.loadManifest(collection, schemaDir)
+        return manifest?.current ?? null
+    }
+
+    /**
+     * @param {string} collection
+     * @param {string|null|undefined} schemaDir
+     * @returns {Promise<boolean>}
+     */
+    async isVersioned(collection, schemaDir) {
+        return (await this.loadManifest(collection, schemaDir)) !== null
+    }
+
+    /**
+     * @param {string} collection
+     * @param {string|null|undefined} schemaDir
+     * @returns {Promise<Record<string, unknown>|null>}
+     */
+    async loadHeadSchema(collection, schemaDir) {
+        if (!schemaDir) return null
+        const key = cacheKey(collection, schemaDir)
+        const cached = this.headSchemaCache.get(key)
+        if (cached) return cached
+        const manifest = await this.loadManifest(collection, schemaDir)
+        if (!manifest) return null
+        const target = schemaVersionPath(collection, schemaDir, manifest.current)
+        const file = Bun.file(target)
+        if (!(await file.exists())) {
+            throw new Error(
+                `Manifest for '${collection}' declares head version '${manifest.current}' but ${target} does not exist`
+            )
+        }
+        const schema = /** @type {Record<string, unknown>} */ (await file.json())
+        this.headSchemaCache.set(key, schema)
+        return schema
+    }
+
+    /**
+     * @param {string} collection
+     * @param {string} fromVersion
+     * @param {string} toVersion
+     * @param {string} schemaDir
+     * @returns {Promise<(doc: Record<string, any>) => Promise<Record<string, any>> | Record<string, any>>}
+     */
+    async loadUpgrader(collection, fromVersion, toVersion, schemaDir) {
+        const key = `${schemaDir}:${collection}@${fromVersion}->${toVersion}`
+        const cached = this.upgraderCache.get(key)
+        if (cached) return cached
+        const target = path.join(
+            upgraderDir(collection, schemaDir),
+            `${fromVersion}-to-${toVersion}.js`
+        )
+        let module
+        try {
+            module = await import(pathToFileURL(target).href)
+        } catch (err) {
+            const code = /** @type {NodeJS.ErrnoException} */ (err).code
+            if (code === 'ERR_MODULE_NOT_FOUND' || code === 'ENOENT') {
+                throw new Error(
+                    `Missing upgrader ${fromVersion}->${toVersion} for collection '${collection}' at ${target}`
+                )
+            }
+            throw err
+        }
+        if (typeof module.default !== 'function') {
+            throw new Error(
+                `Upgrader at ${target} must default-export an async (doc) => doc function`
+            )
+        }
+        this.upgraderCache.set(key, module.default)
+        return module.default
+    }
+
+    /**
+     * @param {string} collection
+     * @param {Record<string, any>} doc
+     * @param {string} fromVersion
+     * @param {string} toVersion
+     * @param {string} schemaDir
+     * @returns {Promise<Record<string, any>>}
+     */
+    async upgradeDoc(collection, doc, fromVersion, toVersion, schemaDir) {
+        if (fromVersion === toVersion) return doc
+        const manifest = await this.loadManifest(collection, schemaDir)
+        if (!manifest) {
+            throw new Error(`No manifest for '${collection}': cannot resolve upgrader chain`)
+        }
+        const order = manifest.versions.map((entry) => entry.v)
+        const fromIndex = order.indexOf(fromVersion)
+        const toIndex = order.indexOf(toVersion)
+        if (fromIndex === -1) {
+            throw new Error(
+                `Doc in '${collection}' is at unknown version '${fromVersion}' (not in manifest.versions)`
+            )
+        }
+        if (toIndex === -1) {
+            throw new Error(
+                `Target version '${toVersion}' is not in '${collection}' manifest.versions`
+            )
+        }
+        if (fromIndex > toIndex) {
+            throw new Error(
+                `Doc in '${collection}' is at ${fromVersion}, ahead of target ${toVersion}: schema rolled back?`
+            )
+        }
+        let next = doc
+        for (let index = fromIndex; index < toIndex; index++) {
+            const from = order[index]
+            const to = order[index + 1]
+            const upgrader = await this.loadUpgrader(collection, from, to, schemaDir)
+            const result = await upgrader(next)
+            if (result === null || result === undefined || typeof result !== 'object') {
+                throw new Error(
+                    `Upgrader ${from}->${to} for '${collection}' must return an object, got ${typeof result}`
+                )
+            }
+            next = /** @type {Record<string, any>} */ (result)
+        }
+        return next
+    }
+
+    /** Clear memoized manifests, head schemas, and upgrader modules. */
+    clearCaches() {
+        this.manifestCache.clear()
+        this.upgraderCache.clear()
+        this.headSchemaCache.clear()
+    }
+}
+
+/** Shared process-level schema version registry. */
+export const schemaVersionRegistry = new SchemaVersionRegistry()
 
 /**
  * Load the version manifest for `collection`. Returns `null` when no manifest
@@ -88,33 +275,7 @@ function schemaVersionPath(collection, schemaDir, version) {
  * @returns {Promise<ManifestRecord|null>}
  */
 export async function loadManifest(collection, schemaDir) {
-    if (!schemaDir) return null
-    const key = cacheKey(collection, schemaDir)
-    if (manifestCache.has(key)) return manifestCache.get(key) ?? null
-    const manifestPath = path.join(collectionDir(collection, schemaDir), 'manifest.json')
-    const file = Bun.file(manifestPath)
-    if (!(await file.exists())) {
-        manifestCache.set(key, null)
-        return null
-    }
-    const manifest = /** @type {ManifestRecord} */ (await file.json())
-    if (typeof manifest.current !== 'string' || manifest.current.length === 0) {
-        throw new Error(
-            `Invalid manifest for '${collection}': 'current' must be a non-empty string`
-        )
-    }
-    if (!Array.isArray(manifest.versions) || manifest.versions.length === 0) {
-        throw new Error(
-            `Invalid manifest for '${collection}': 'versions' must be a non-empty array`
-        )
-    }
-    if (!manifest.versions.some((entry) => entry.v === manifest.current)) {
-        throw new Error(
-            `Manifest for '${collection}': 'current' (${manifest.current}) is not present in 'versions'`
-        )
-    }
-    manifestCache.set(key, manifest)
-    return manifest
+    return await schemaVersionRegistry.loadManifest(collection, schemaDir)
 }
 
 /**
@@ -126,8 +287,7 @@ export async function loadManifest(collection, schemaDir) {
  * @returns {Promise<string|null>}
  */
 export async function currentVersion(collection, schemaDir) {
-    const manifest = await loadManifest(collection, schemaDir)
-    return manifest?.current ?? null
+    return await schemaVersionRegistry.currentVersion(collection, schemaDir)
 }
 
 /**
@@ -137,7 +297,7 @@ export async function currentVersion(collection, schemaDir) {
  * @returns {Promise<boolean>}
  */
 export async function isVersioned(collection, schemaDir) {
-    return (await loadManifest(collection, schemaDir)) !== null
+    return await schemaVersionRegistry.isVersioned(collection, schemaDir)
 }
 
 /**
@@ -148,22 +308,7 @@ export async function isVersioned(collection, schemaDir) {
  * @returns {Promise<Record<string, unknown>|null>}
  */
 export async function loadHeadSchema(collection, schemaDir) {
-    if (!schemaDir) return null
-    const key = cacheKey(collection, schemaDir)
-    const cached = headSchemaCache.get(key)
-    if (cached) return cached
-    const manifest = await loadManifest(collection, schemaDir)
-    if (!manifest) return null
-    const schemaPath = schemaVersionPath(collection, schemaDir, manifest.current)
-    const file = Bun.file(schemaPath)
-    if (!(await file.exists())) {
-        throw new Error(
-            `Manifest for '${collection}' declares head version '${manifest.current}' but ${schemaPath} does not exist`
-        )
-    }
-    const schema = /** @type {Record<string, unknown>} */ (await file.json())
-    headSchemaCache.set(key, schema)
-    return schema
+    return await schemaVersionRegistry.loadHeadSchema(collection, schemaDir)
 }
 
 /**
@@ -175,32 +320,7 @@ export async function loadHeadSchema(collection, schemaDir) {
  * @returns {Promise<(doc: Record<string, any>) => Promise<Record<string, any>> | Record<string, any>>}
  */
 export async function loadUpgrader(collection, fromVersion, toVersion, schemaDir) {
-    const key = `${schemaDir}:${collection}@${fromVersion}->${toVersion}`
-    const cached = upgraderCache.get(key)
-    if (cached) return cached
-    const upgraderPath = path.join(
-        upgraderDir(collection, schemaDir),
-        `${fromVersion}-to-${toVersion}.js`
-    )
-    let mod
-    try {
-        mod = await import(pathToFileURL(upgraderPath).href)
-    } catch (err) {
-        const code = /** @type {NodeJS.ErrnoException} */ (err).code
-        if (code === 'ERR_MODULE_NOT_FOUND' || code === 'ENOENT') {
-            throw new Error(
-                `Missing upgrader ${fromVersion}→${toVersion} for collection '${collection}' at ${upgraderPath}`
-            )
-        }
-        throw err
-    }
-    if (typeof mod.default !== 'function') {
-        throw new Error(
-            `Upgrader at ${upgraderPath} must default-export an async (doc) => doc function`
-        )
-    }
-    upgraderCache.set(key, mod.default)
-    return mod.default
+    return await schemaVersionRegistry.loadUpgrader(collection, fromVersion, toVersion, schemaDir)
 }
 
 /**
@@ -215,41 +335,13 @@ export async function loadUpgrader(collection, fromVersion, toVersion, schemaDir
  * @returns {Promise<Record<string, any>>}
  */
 export async function upgradeDoc(collection, doc, fromVersion, toVersion, schemaDir) {
-    if (fromVersion === toVersion) return doc
-    const manifest = await loadManifest(collection, schemaDir)
-    if (!manifest) {
-        throw new Error(`No manifest for '${collection}' — cannot resolve upgrader chain`)
-    }
-    const order = manifest.versions.map((e) => e.v)
-    const fromIdx = order.indexOf(fromVersion)
-    const toIdx = order.indexOf(toVersion)
-    if (fromIdx === -1) {
-        throw new Error(
-            `Doc in '${collection}' is at unknown version '${fromVersion}' (not in manifest.versions)`
-        )
-    }
-    if (toIdx === -1) {
-        throw new Error(`Target version '${toVersion}' is not in '${collection}' manifest.versions`)
-    }
-    if (fromIdx > toIdx) {
-        throw new Error(
-            `Doc in '${collection}' is at v${fromVersion}, ahead of target v${toVersion} — schema rolled back?`
-        )
-    }
-    let next = doc
-    for (let i = fromIdx; i < toIdx; i++) {
-        const from = order[i]
-        const to = order[i + 1]
-        const upgrader = await loadUpgrader(collection, from, to, schemaDir)
-        const result = await upgrader(next)
-        if (result === null || result === undefined || typeof result !== 'object') {
-            throw new Error(
-                `Upgrader ${from}→${to} for '${collection}' must return an object, got ${typeof result}`
-            )
-        }
-        next = /** @type {Record<string, any>} */ (result)
-    }
-    return next
+    return await schemaVersionRegistry.upgradeDoc(
+        collection,
+        doc,
+        fromVersion,
+        toVersion,
+        schemaDir
+    )
 }
 
 /**
@@ -279,7 +371,5 @@ export function attachVersion(doc, version) {
 
 /** Test/dev hook to reset memoised manifests, head schemas, and upgraders. */
 export function _resetCaches() {
-    manifestCache.clear()
-    upgraderCache.clear()
-    headSchemaCache.clear()
+    schemaVersionRegistry.clearCaches()
 }

@@ -18,6 +18,9 @@
  * @property {string=} docId
  */
 
+/**
+ * Authorization failure thrown when RLS denies a FYLO operation.
+ */
 export class FyloAuthError extends Error {
     /** @type {FyloAuthAction} */
     action

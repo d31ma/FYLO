@@ -59,7 +59,9 @@ const TokenType = {
  * @typedef {import('./types.js').StoreQuery<Record<string, any>>} StoreQuery
  * @typedef {import('./types.js').StoreUpdate<Record<string, any>>} StoreUpdate
  */
-// SQL Lexer
+/**
+ * Tokenizes the supported FYLO SQL subset into parser tokens.
+ */
 class SQLLexer {
     /** @type {string} */
     input
@@ -256,6 +258,9 @@ class SQLLexer {
     }
 }
 // SQL Parser
+/**
+ * Recursive-descent parser for FYLO's SQL subset.
+ */
 class SQLParser {
     /** @type {Token[]} */
     tokens
@@ -333,9 +338,9 @@ class SQLParser {
             [TokenType.LIKE]: '$like'
         }
         if (operatorMap[this.current.type]) {
-            const op = operatorMap[this.current.type]
+            const operator = operatorMap[this.current.type]
             this.advance()
-            return op ?? ''
+            return operator ?? ''
         }
         throw new Error(`Unknown operator: ${this.current.type}`)
     }
@@ -353,12 +358,12 @@ class SQLParser {
         const conditions = []
         do {
             const condition = this.parseCondition()
-            const op = {
+            const queryOperation = {
                 [condition.column]: {
                     [condition.operator]: condition.value
                 }
             }
-            conditions.push(op)
+            conditions.push(queryOperation)
             if (this.match(TokenType.AND, TokenType.OR)) {
                 this.advance()
             } else {
@@ -521,10 +526,10 @@ class SQLParser {
             [TokenType.LESS_EQUAL]: '$lte'
         }
         if (operatorMap[this.current.type]) {
-            const op = operatorMap[this.current.type]
+            const operator = operatorMap[this.current.type]
             this.advance()
-            if (!op) throw new Error(`Unknown join operator: ${this.current.type}`)
-            return op
+            if (!operator) throw new Error(`Unknown join operator: ${this.current.type}`)
+            return operator
         }
         throw new Error(`Unknown join operator: ${this.current.type}`)
     }
@@ -617,7 +622,10 @@ class SQLParser {
         return deleteQuery
     }
 }
-// Main SQL to AST converter
+/**
+ * Converts supported SQL statements into FYLO's structured query objects and
+ * exposes fluent builders for query construction.
+ */
 export class Parser {
     /**
      * Parses a SQL statement into FYLO's structured query AST.
@@ -665,7 +673,9 @@ export class Parser {
         return new JoinBuilder(leftCollection, rightCollection)
     }
 }
-// Bun SQL inspired query builder
+/**
+ * Fluent builder for FYLO SELECT-style query objects.
+ */
 export class QueryBuilder {
     /** @type {string} */
     collection
@@ -777,7 +787,9 @@ export class QueryBuilder {
         return opMap[operator] || '='
     }
 }
-// Join query builder
+/**
+ * Fluent builder for FYLO join query objects.
+ */
 export class JoinBuilder {
     /** @type {Partial<StoreJoin>} */
     joinAst = {}

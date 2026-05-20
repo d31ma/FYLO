@@ -71,7 +71,7 @@ describe('CLI machine interface', () => {
     test('exec handles JSON requests from inline payloads and stdin', async () => {
         const repo = process.cwd()
         const root = await createRoot('fylo-machine-')
-        const schemaDir = path.join(repo, 'tests', 'schemas')
+        const schemaDir = path.join(repo, 'examples', 'db', 'schemas')
 
         expect(buildResult.exitCode).toBe(0)
 

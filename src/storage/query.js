@@ -10,6 +10,10 @@ import { Cipher } from '../security/cipher.js'
  * @typedef {{ index: PrefixIndexStore }} FilesystemQueryContext
  */
 
+/**
+ * Query evaluator for filesystem-backed documents, combining prefix-index
+ * candidate selection with in-memory predicate checks.
+ */
 export class FilesystemQueryEngine {
     /** @type {FilesystemQueryContext} */
     context
