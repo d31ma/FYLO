@@ -1,6 +1,10 @@
 import { test, expect, describe, beforeAll, afterAll } from 'bun:test'
-import { rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
 import Fylo from '../../src/index.js'
+import { validateAgainstHead } from '../../src/schema/validation.js'
+import { _resetCaches } from '../../src/schema/versioning.js'
 import { createTestRoot } from '../helpers/root.js'
 
 const COLLECTION = 'article'
@@ -118,5 +122,33 @@ describe('schema versioning', () => {
         })
 
         await expect(fylo.getLatest(COLLECTION, id)).rejects.toThrow(/unknown version/)
+    })
+
+    test('FYLO schemas reject arrays of objects even when CHEX supports them', async () => {
+        const schemaRoot = await mkdtemp(path.join(os.tmpdir(), 'fylo-array-object-schema-'))
+        const collection = 'object-list'
+        const collectionRoot = path.join(schemaRoot, collection)
+        await mkdir(path.join(collectionRoot, 'history'), { recursive: true })
+        await writeFile(
+            path.join(collectionRoot, 'manifest.json'),
+            JSON.stringify({ current: 'v1', versions: [{ v: 'v1' }] })
+        )
+        await writeFile(
+            path.join(collectionRoot, 'history', 'v1.schema.json'),
+            JSON.stringify({ items: [{ name: '^[A-Za-z]+$' }] })
+        )
+
+        try {
+            await expect(
+                validateAgainstHead(
+                    collection,
+                    { items: [{ name: 'Ada' }] },
+                    { schemaDir: schemaRoot }
+                )
+            ).rejects.toThrow(/does not support arrays of objects/)
+        } finally {
+            _resetCaches()
+            await rm(schemaRoot, { recursive: true, force: true })
+        }
     })
 })

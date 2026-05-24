@@ -75,7 +75,7 @@ export class FilesystemEngine {
      * @param {{ sync?: FyloSyncHooks, syncMode?: FyloSyncMode, worm?: FyloWormOptions, onEvent?: FyloEventHandler, index?: import('./types.js').FyloIndexOptions, queue?: LocalQueue }} [options]
      */
     constructor(
-        root = process.env.FYLO_ROOT ?? path.join(process.cwd(), '.fylo-data'),
+        root = process.env.FYLO_ROOT || path.join(process.cwd(), '.fylo-data'),
         options = {}
     ) {
         this.root = root

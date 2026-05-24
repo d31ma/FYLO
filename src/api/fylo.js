@@ -1,4 +1,5 @@
 import path from 'node:path'
+import { readdir } from 'node:fs/promises'
 import TTID from '@d31ma/ttid'
 import { Parser } from '../query/parser.js'
 import { FyloAuthError } from '../security/auth.js'
@@ -86,6 +87,8 @@ export default class Fylo {
     onEvent
     /** @type {LocalQueueInstance | undefined} */
     queue
+    /** @type {Promise<void>} */
+    startup
     /**
      * @param {FyloOptions} [options]
      */
@@ -104,10 +107,38 @@ export default class Fylo {
             onEvent: options.onEvent,
             queue: this.queue
         })
+        this.startup = this.bootstrapCollectionsFromSchemas()
     }
+
+    /** @returns {Promise<void>} */
+    async ready() {
+        await this.startup
+    }
+
+    /** @returns {Promise<void>} */
+    async bootstrapCollectionsFromSchemas() {
+        const schemaDir = schemaEnv()
+        if (!schemaDir) return
+        /** @type {import('node:fs').Dirent[]} */
+        let entries = []
+        try {
+            entries = await readdir(schemaDir, { withFileTypes: true })
+        } catch (err) {
+            if (/** @type {NodeJS.ErrnoException} */ (err).code !== 'ENOENT') throw err
+            return
+        }
+        for (const entry of entries) {
+            if (!entry.isDirectory()) continue
+            const collection = entry.name
+            if (!(await Bun.file(path.join(schemaDir, collection, 'manifest.json')).exists()))
+                continue
+            await this.engine.createCollection(collection)
+        }
+    }
+
     /** @returns {string} */
     static defaultRoot() {
-        return process.env.FYLO_ROOT ?? path.join(process.cwd(), '.fylo-data')
+        return process.env.FYLO_ROOT || path.join(process.cwd(), '.fylo-data')
     }
     /** @returns {FilesystemEngine} */
     static get defaultEngine() {
@@ -119,6 +150,7 @@ export default class Fylo {
      * @returns The results of the query.
      */
     async executeSQL(SQL) {
+        await this.ready()
         const operationMatch = SQL.match(/^(SELECT|INSERT|UPDATE|DELETE|CREATE|DROP)/i)
         const operation = operationMatch?.[0]?.toUpperCase()
         if (!operation) throw new Error('Missing SQL Operation')
@@ -199,18 +231,22 @@ export default class Fylo {
     }
     /** @param {string} collection @returns {Promise<void>} */
     async createCollection(collection) {
+        await this.ready()
         return await this.engine.createCollection(collection)
     }
     /** @param {string} collection @returns {Promise<void>} */
     async dropCollection(collection) {
+        await this.ready()
         return await this.engine.dropCollection(collection)
     }
     /** @param {string} collection @returns {Promise<CollectionRebuildResult>} */
     async rebuildCollection(collection) {
+        await this.ready()
         return await this.engine.rebuildCollection(collection)
     }
     /** @param {string} collection @returns {Promise<CollectionInspectResult>} */
     async inspectCollection(collection) {
+        await this.ready()
         return await this.engine.inspectCollection(collection)
     }
     /** @param {FyloAuthContext} auth @returns {AuthenticatedFylo} */
@@ -261,33 +297,60 @@ export default class Fylo {
     /** @param {string} collection @param {TTIDValue} _id @param {boolean} [onlyId] @returns {GetDocResult} */
     getDoc(collection, _id, onlyId = false) {
         validateDocId(_id)
-        return this.engine.getDoc(collection, _id, onlyId)
+        const source = this.ready().then(() => this.engine.getDoc(collection, _id, onlyId))
+        return {
+            async *[Symbol.asyncIterator]() {
+                yield* await source
+            },
+            async once() {
+                return await (await source).once()
+            },
+            async *onDelete() {
+                yield* (await source).onDelete()
+            }
+        }
     }
     /** @param {string} collection @param {TTIDValue} _id @param {boolean} [onlyId] @returns {Promise<Record<TTIDValue, Record<string, any>> | TTIDValue | null>} */
     async getLatest(collection, _id, onlyId = false) {
+        await this.ready()
         validateDocId(_id)
         if (onlyId) return await this.engine.getLatest(collection, _id, true)
         return await this.engine.getLatest(collection, _id)
     }
     /** @param {string} collection @param {TTIDValue} _id @returns {Promise<FyloHistoryEntry[]>} */
     async getHistory(collection, _id) {
+        await this.ready()
         validateDocId(_id)
         return await this.engine.getHistory(collection, _id)
     }
     /** @param {string} collection @param {StoreQuery} query @returns {FindDocsResult} */
     findDocs(collection, query) {
-        return this.engine.findDocs(collection, query)
+        const source = this.ready().then(() => this.engine.findDocs(collection, query))
+        return {
+            async *[Symbol.asyncIterator]() {
+                yield* await source
+            },
+            async *collect() {
+                yield* (await source).collect()
+            },
+            async *onDelete() {
+                yield* (await source).onDelete()
+            }
+        }
     }
     /** @param {StoreJoin} join @returns {Promise<JoinDocsResult>} */
     async joinDocs(join) {
+        await this.ready()
         return await this.engine.joinDocs(join)
     }
     /** @param {string} collection @returns {AsyncGenerator<Record<string, any>, void, unknown>} */
     async *exportBulkData(collection) {
+        await this.ready()
         yield* this.engine.exportBulkData(collection)
     }
     /** @param {string} collection @param {URL} url @param {number | ImportBulkDataOptions} [limitOrOptions] @returns {Promise<number>} */
     async importBulkData(collection, url, limitOrOptions) {
+        await this.ready()
         const importOptions = normalizeImportOptions(limitOrOptions)
         const limit = importOptions.limit
         if (limit !== undefined && limit <= 0) return 0
@@ -465,6 +528,7 @@ export default class Fylo {
      * @returns The IDs of the documents.
      */
     async batchPutData(collection, batch) {
+        await this.ready()
         const batches = []
         const ids = []
         if (batch.length > navigator.hardwareConcurrency) {
@@ -516,6 +580,7 @@ export default class Fylo {
     }
     /** @param {string} collection @param {Record<string, any>} data @returns {Promise<{ _id: TTIDValue, doc: Record<string, any>, previousId?: TTIDValue }>} */
     async prepareInsert(collection, data) {
+        await this.ready()
         await this.loadEncryptionWithEvent(collection)
         const currId = Object.keys(data).shift()
         const hasExistingId = typeof currId === 'string' && TTID.isTTID(currId)
@@ -526,6 +591,7 @@ export default class Fylo {
     }
     /** @param {string} collection @param {TTIDValue} _id @param {Record<string, any>} doc @param {TTIDValue | undefined} previousId @returns {Promise<TTIDValue>} */
     async executePutDataDirect(collection, _id, doc, previousId) {
+        await this.ready()
         if (previousId) await this.engine.replaceDocumentVersion(collection, previousId, _id, doc)
         else await this.engine.putDocument(collection, _id, doc)
         if (Fylo.LOGGING) console.log(`Finished Writing ${_id}`)
@@ -533,6 +599,7 @@ export default class Fylo {
     }
     /** @param {string} collection @param {Record<TTIDValue, Record<string, any>>} newDoc @param {Record<TTIDValue, Record<string, any>>} [oldDoc] @returns {Promise<TTIDValue>} */
     async executePatchDocDirect(collection, newDoc, oldDoc = {}) {
+        await this.ready()
         await this.loadEncryptionWithEvent(collection)
         const _id = Object.keys(newDoc).shift()
         if (!_id) throw new Error('this document does not contain an TTID')
@@ -559,6 +626,7 @@ export default class Fylo {
     }
     /** @param {string} collection @param {TTIDValue} _id @returns {Promise<void>} */
     async executeDelDocDirect(collection, _id) {
+        await this.ready()
         validateDocId(_id)
         await this.engine.deleteDocument(collection, _id)
         if (Fylo.LOGGING) console.log(`Finished Deleting ${_id}`)

@@ -1,4 +1,6 @@
 import { describe, expect, test } from 'bun:test'
+import { mkdtemp, rm } from 'node:fs/promises'
+import os from 'node:os'
 import path from 'node:path'
 import Fylo from '../../src/index.js'
 import { validateAgainstHead } from '../../src/schema/validation.js'
@@ -63,5 +65,25 @@ describe('example production root', () => {
             { schemaDir: EXAMPLE_SCHEMA_DIR }
         )
         expect(order._v).toBe('v1')
+    })
+
+    test('startup creates missing collections declared by schema manifests', async () => {
+        const previousSchema = process.env.FYLO_SCHEMA
+        const root = await mkdtemp(path.join(os.tmpdir(), 'fylo-schema-startup-'))
+        process.env.FYLO_SCHEMA = EXAMPLE_SCHEMA_DIR
+
+        try {
+            const fylo = new Fylo({ root })
+            await fylo.ready()
+
+            expect((await fylo.inspectCollection('article')).exists).toBe(true)
+            expect((await fylo.inspectCollection('orders')).exists).toBe(true)
+            expect((await fylo.inspectCollection('users')).exists).toBe(true)
+            expect((await fylo.inspectCollection('report')).exists).toBe(false)
+        } finally {
+            if (previousSchema === undefined) delete process.env.FYLO_SCHEMA
+            else process.env.FYLO_SCHEMA = previousSchema
+            await rm(root, { recursive: true, force: true })
+        }
     })
 })

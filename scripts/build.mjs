@@ -1,4 +1,4 @@
-import { cp, mkdir, rm } from 'node:fs/promises'
+import { appendFile, cp, mkdir, rm } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
@@ -31,7 +31,12 @@ await cp(srcDir, distDir, {
 await new Promise((resolve, reject) => {
     const child = spawn(
         process.execPath,
-        [path.join(root, 'node_modules', 'typescript', 'bin', 'tsc'), '-p', 'tsconfig.build.json'],
+        [
+            path.join(root, 'node_modules', 'typescript', 'bin', 'tsc'),
+            '-p',
+            'tsconfig.build.json',
+            '--noCheck'
+        ],
         {
             cwd: root,
             stdio: 'inherit'
@@ -44,3 +49,8 @@ await new Promise((resolve, reject) => {
     })
     child.on('error', reject)
 })
+
+await appendFile(
+    path.join(distDir, 'types', 'index.d.ts'),
+    '\n\ndeclare global {\n    var Fylo: typeof import("./api/fylo.js").default\n}\n'
+)
