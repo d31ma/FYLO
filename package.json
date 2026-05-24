@@ -1,6 +1,6 @@
 {
     "name": "@d31ma/fylo",
-    "version": "26.21.02",
+    "version": "26.21.06",
     "main": "./dist/index.js",
     "types": "./dist/types/index.d.ts",
     "exports": {
@@ -24,8 +24,8 @@
     "scripts": {
         "build": "node ./scripts/build.mjs",
         "build:exe": "mkdir -p ./dist-bin && bun build --compile ./src/cli/index.js --outfile ./dist-bin/fylo",
-        "test": "bun --env-file=tests/.env.test test --timeout 120000 --parallel=1",
-        "test:blackbox": "bun run build && bun test package-contract --timeout 120000",
+        "test": "bun --env-file=tests/.env.test test tests/integration tests/collection --timeout 120000 --parallel=1",
+        "test:blackbox": "bun run build && bun test tests/package-contract --timeout 120000",
         "typecheck": "tsc --noEmit",
         "lint": "prettier --check \"src/**/*.js\" \"tests/**/*.js\" README.md",
         "format": "prettier --write src tests"
@@ -41,7 +41,7 @@
         "typescript": "^5.9.3"
     },
     "dependencies": {
-        "@d31ma/chex": "^26.21.2",
+        "@d31ma/chex": "^26.21.6",
         "@d31ma/ttid": "^26.21.3"
     },
     "type": "module",

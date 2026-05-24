@@ -7,4 +7,8 @@ import Fylo from './api/fylo.js'
 export { LocalQueue, QueueMessageContext, consume, publish } from './queue/local.js'
 export { FyloAuthError } from './security/auth.js'
 export { FyloSyncError } from './replication/sync.js'
+
+const globalScope = /** @type {typeof globalThis & { Fylo?: typeof Fylo }} */ (globalThis)
+globalScope.Fylo ??= Fylo
+
 export default Fylo

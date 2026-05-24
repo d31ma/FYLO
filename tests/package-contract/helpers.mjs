@@ -6,7 +6,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 
-const repoRoot = path.resolve(fileURLToPath(new URL('..', import.meta.url)))
+const repoRoot = path.resolve(fileURLToPath(new URL('../..', import.meta.url)))
 const packageTempRoot = mkdtempSync(path.join(os.tmpdir(), 'fylo-package-'))
 const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm'
 let packedTarball

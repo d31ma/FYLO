@@ -5,7 +5,7 @@
     "": {
       "name": "@d31ma/fylo",
       "dependencies": {
-        "@d31ma/chex": "^26.21.2",
+        "@d31ma/chex": "^26.21.6",
         "@d31ma/ttid": "^26.21.3",
       },
       "devDependencies": {
@@ -21,7 +21,7 @@
     },
   },
   "packages": {
-    "@d31ma/chex": ["@d31ma/chex@26.21.2", "", { "bin": { "chex": "src/cli/index.js" } }, "sha512-RU8qhnkQ5AegAFnB5nUZkXyHrAAN2xMHsTPK3lnP/Q73g04SkhBxqk0qJEsdstP6R0CpORvfhMeABiZAoO/Z5w=="],
+    "@d31ma/chex": ["@d31ma/chex@26.21.6", "", { "bin": { "chex": "src/cli/index.js" } }, "sha512-KSA7rafN+3n+bPeWTb4RmREdc5JxoGfyFSv2yc3fIaWCbkculCTFiZt7ohQX4PragIbGcVOwTKU3AdmpwRB1vg=="],
 
     "@d31ma/ttid": ["@d31ma/ttid@26.21.3", "", { "bin": { "ttid": "src/cli/index.js" } }, "sha512-WpBPEfVudZv38H3toPenPVrTiq/VZBYbGODokEt5ti+96RWYm41933TDyz3V22L1k9M3QO6rBLp/hlvnUfdjag=="],
 

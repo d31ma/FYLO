@@ -1,5 +1,26 @@
 # Changelog
 
+## 26.21.06 - 2026-05-23
+
+### Added
+
+- **Auto-bootstrap collections from `FYLO_SCHEMA`**: `new Fylo(...)` now scans the schema directory and creates any collection that has a `manifest.json`. Existing collections are untouched (creation is idempotent).
+- **`fylo.ready()`**: awaits startup bootstrap. Mutation and query methods already await internally; this is only needed for synchronous probes against `inspectCollection` before a write has been issued.
+- **`globalThis.Fylo`**: the package entry registers the default `Fylo` class on the global scope using nullish coalescing. Enables preloaded-runtime usage without changing the module API for existing consumers.
+- Regression test `tests/integration/global.test.js` for the global registration.
+
+### Changed
+
+- **Test layout**: `package-contract/` moved under `tests/package-contract/`. The default `test` script is now scoped to `tests/integration tests/collection` so it does not auto-discover the blackbox suite (which requires a build first). `test:blackbox` filter updated to `tests/package-contract`.
+- **Build**: `tsc -p tsconfig.build.json` runs with `--noCheck` (type checking is still enforced by `bun run typecheck`). The bundled `dist/types/index.d.ts` now declares `Fylo` on the global scope to match the runtime registration.
+- Dependency: `@d31ma/chex` bumped from `^26.21.2` to `^26.21.6`.
+
+### Fixed
+
+- **Schema guardrail**: FYLO now rejects arrays of objects in schema definitions with a clear error (`FYLO schema '<name>' does not support arrays of objects at '<path>'`), even though CHEX accepts them. Use a separate collection for nested object lists. Arrays of scalars and nested objects (as fields) remain supported.
+- **`Fylo.defaultRoot()` and `FilesystemEngine` constructor default both fall back to the data dir when `FYLO_ROOT` is the empty string** (previously only fell back when unset). Without this, the new bootstrap would write collections to `./.collections/` at the caller's `process.cwd()` when `FYLO_ROOT=` was exported by a launcher.
+- `tests/integration/filesystem.performance.test.js` no longer constructs a placeholder `Fylo` at module load time. The placeholder did nothing useful and would trigger the bootstrap with an empty root under the new behavior, even when the suite was skipped.
+
 ## 26.21.02 - 2026-05-19
 
 ### Changed

@@ -7,9 +7,11 @@ import { createTestRoot } from '../helpers/root.js'
 const runPerf = process.env.FYLO_RUN_PERF_TESTS === 'true'
 
 describe.skipIf(!runPerf)('filesystem engine performance', () => {
-    let root = ''
+    /** @type {string} */
+    let root
     const collection = 'filesystem-perf'
-    let fylo = new Fylo({ root })
+    /** @type {Fylo} */
+    let fylo
 
     beforeAll(async () => {
         root = await createTestRoot('fylo-filesystem-perf-')

@@ -75,6 +75,31 @@ function schemaVersionPath(collection, schemaDir, version) {
 }
 
 /**
+ * FYLO intentionally keeps schema arrays scalar-only even when CHEX supports
+ * validating arrays of nested objects. Nested objects are supported as fields,
+ * but arrays of objects need a separate collection boundary in FYLO.
+ * @param {string} collection
+ * @param {unknown} value
+ * @param {string} [location]
+ */
+export function assertFyloSchemaSupported(collection, value, location = '$') {
+    if (Array.isArray(value)) {
+        const item = value[0]
+        if (item && typeof item === 'object' && !Array.isArray(item)) {
+            throw new Error(
+                `FYLO schema '${collection}' does not support arrays of objects at '${location}'`
+            )
+        }
+        return
+    }
+    if (!value || typeof value !== 'object') return
+    for (const [key, child] of Object.entries(/** @type {Record<string, unknown>} */ (value))) {
+        if (key.startsWith('$')) continue
+        assertFyloSchemaSupported(collection, child, `${location}.${key}`)
+    }
+}
+
+/**
  * Loads schema manifests, head schemas, and migration upgraders with
  * process-level memoization.
  */
@@ -168,6 +193,7 @@ export class SchemaVersionRegistry {
             )
         }
         const schema = /** @type {Record<string, unknown>} */ (await file.json())
+        assertFyloSchemaSupported(collection, schema)
         this.headSchemaCache.set(key, schema)
         return schema
     }

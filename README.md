@@ -321,6 +321,8 @@ Behavior:
 - Reads materialize old docs to head shape in memory
 - Strict writes validate against head schema via `@d31ma/chex`
 - Documents missing `_v` are treated as oldest version (legacy upgrade on read)
+- Any collection directory under `FYLO_SCHEMA` that contains a `manifest.json` is auto-created on `new Fylo(...)`; await `fylo.ready()` if you need the bootstrap to settle before issuing reads from a synchronous probe (mutation/query methods await internally)
+- FYLO schemas do not support arrays of objects — declare each nested object as its own collection. A schema that would accept `items: [{ name: '...' }]` will throw `FYLO schema '...' does not support arrays of objects at '$.items'` on first read. Arrays of scalars and nested objects (as fields) are fine.
 
 ---
 
