@@ -150,6 +150,58 @@ describe('CLI machine interface', () => {
         expect(queryPayload.ok).toBe(true)
         expect(queryPayload.result[docId].title).toBe('Interop')
 
+        const deleteResponse = await run(
+            [
+                'dist/cli/index.js',
+                'exec',
+                '--request',
+                JSON.stringify({
+                    op: 'delDoc',
+                    root,
+                    collection: 'machine-posts',
+                    id: docId
+                })
+            ],
+            repo
+        )
+        expect(deleteResponse.exitCode).toBe(0)
+
+        const deletedResponse = await run(
+            [
+                'dist/cli/index.js',
+                'exec',
+                '--request',
+                JSON.stringify({
+                    op: 'findDeletedDocs',
+                    root,
+                    collection: 'machine-posts',
+                    query: { $deleted: { $gte: 0 } }
+                })
+            ],
+            repo
+        )
+        expect(deletedResponse.exitCode).toBe(0)
+        const deletedPayload = JSON.parse(deletedResponse.stdout)
+        expect(deletedPayload.ok).toBe(true)
+        expect(deletedPayload.result[docId].title).toBe('Interop')
+
+        const restoreResponse = await run(
+            [
+                'dist/cli/index.js',
+                'exec',
+                '--request',
+                JSON.stringify({
+                    op: 'restoreDoc',
+                    root,
+                    collection: 'machine-posts',
+                    id: docId
+                })
+            ],
+            repo
+        )
+        expect(restoreResponse.exitCode).toBe(0)
+        expect(JSON.parse(restoreResponse.stdout).result).toEqual({ restored: true, id: docId })
+
         const schemaInspectResponse = await run(
             [
                 'dist/cli/index.js',

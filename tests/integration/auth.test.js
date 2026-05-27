@@ -41,7 +41,7 @@ describe('auth policy wrapper', () => {
         expect(results[id].title).toBe('Allowed')
 
         const nextId = await scoped.patchDoc(collection, { [id]: { title: 'Updated' } })
-        expect(nextId).not.toBe(id)
+        expect(nextId).toBe(id)
 
         let exported = 0
         for await (const _doc of scoped.exportBulkData(collection)) exported++

@@ -1,10 +1,12 @@
 {
-  "extends": "./jsconfig.json",
-  "compilerOptions": {
-    "declaration": true,
-    "emitDeclarationOnly": true,
-    "declarationDir": "dist/types",
-    "noEmit": false
-  },
-  "exclude": ["dist", "dist-bin", "node_modules"]
+    "extends": "./jsconfig.json",
+    "compilerOptions": {
+        "declaration": true,
+        "emitDeclarationOnly": true,
+        "declarationDir": "dist/types",
+        "noCheck": true,
+        "noResolve": true,
+        "noEmit": false
+    },
+    "exclude": ["dist", "dist-bin", "node_modules", "src/cli", "src/query/parser.js"]
 }

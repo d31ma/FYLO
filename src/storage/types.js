@@ -10,6 +10,10 @@
  * @typedef {object} StorageEngine
  * @property {(path: string) => Promise<string>} read
  * @property {(path: string, data: string) => Promise<void>} write
+ * @property {(source: string, target: string) => Promise<void>} move
+ * @property {(path: string, mode: number) => Promise<void>} chmod
+ * @property {(path: string, mtimeMs: number) => Promise<void>} setModifiedTime
+ * @property {(path: string) => Promise<{ mtimeMs: number }>} metadata
  * @property {(path: string) => Promise<void>} delete
  * @property {(path: string) => Promise<string[]>} list
  * @property {(path: string) => Promise<void>} mkdir
@@ -49,6 +53,8 @@
  * @property {'insert' | 'delete'} action
  * @property {TTID} id
  * @property {T=} doc
+ * @property {number=} createdAt
+ * @property {number=} updatedAt
  */
 
 /**
@@ -57,26 +63,8 @@
  * @property {TTID} id
  * @property {number} createdAt
  * @property {number} updatedAt
+ * @property {number=} deletedAt
  * @property {T} data
- */
-
-/**
- * @typedef {object} StoredVersionMeta
- * @property {1} version
- * @property {TTID} versionId
- * @property {string} lineageId
- * @property {TTID=} previousVersionId
- * @property {number=} supersededAt
- * @property {number=} deletedAt
- */
-
-/**
- * @typedef {object} StoredHead
- * @property {1} version
- * @property {string} lineageId
- * @property {TTID} currentVersionId
- * @property {boolean=} deleted
- * @property {number=} deletedAt
  */
 
 /**
@@ -108,10 +96,6 @@
  * @property {boolean} worm
  * @property {number} docsScanned
  * @property {number} indexedDocs
- * @property {number} headsRebuilt
- * @property {number} versionMetasRebuilt
- * @property {number} staleHeadsRemoved
- * @property {number} staleVersionMetasRemoved
  */
 
 /**
@@ -120,11 +104,8 @@
  * @property {boolean} exists
  * @property {boolean} worm
  * @property {number} docsStored
+ * @property {number} deletedDocs
  * @property {number} indexedDocs
- * @property {number} headFiles
- * @property {number} activeHeads
- * @property {number} deletedHeads
- * @property {number} versionMetas
  */
 
 export {}

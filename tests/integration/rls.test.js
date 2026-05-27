@@ -78,7 +78,7 @@ describe('RLS update.filter', () => {
     test('user can patch their own doc', async () => {
         const userA = fylo.as({ subjectId: 'user-a', tenantId: 'tenant-a' })
         const newId = await userA.patchDoc('report', { [idA]: { title: 'Updated by A' } })
-        expect(newId).not.toBe(idA)
+        expect(newId).toBe(idA)
         const latest = await userA.getLatest('report', newId)
         expect(latest[newId].title).toBe('Updated by A')
     })
@@ -108,7 +108,7 @@ describe('RLS update.fields', () => {
         const newId = await admin.patchDoc('report', {
             [adminId]: { title: 'Admin updated title' }
         })
-        expect(newId).not.toBe(adminId)
+        expect(newId).toBe(adminId)
         const latest = await admin.getLatest('report', newId)
         expect(latest[newId].title).toBe('Admin updated title')
     })

@@ -21,6 +21,13 @@
  */
 
 /**
+ * @template T
+ * @typedef {AsyncIterable<TTID | Record<TTID, T> | undefined> & {
+ *   collect: <U = T>() => AsyncGenerator<TTID | Record<TTID, U> | undefined, void, unknown>
+ * }} DeletedDocsResult
+ */
+
+/**
  * @template {Record<string, any>} T
  * @template {Record<string, any>} U
  * @typedef {TTID[] | Record<string, TTID[]> | Record<string, Record<TTID, Partial<T | U>>> | Record<string, T | U | (T & U) | (Partial<T> & Partial<U>)>} JoinDocsResult

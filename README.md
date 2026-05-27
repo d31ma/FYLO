@@ -87,6 +87,9 @@ Each collection lives under `.collections` in the configured root:
   docs/                    ← one .json file per document (TTID-named)
     4U/
       4UUB32VGUDW.json
+  .deleted/                ← soft-deleted payloads (hidden sibling of docs/)
+    4U/
+      4UUB32VGUDW.json
   index/                   ← local filesystem prefix index catalog
     manifest.json          ← format version marker
     keys.snapshot          ← sorted index keys, mmap'd for O(log n) lookup
@@ -94,8 +97,6 @@ Each collection lives under `.collections` in the configured root:
   events/
     <collection>.ndjson    ← append-only event journal
   locks/                   ← advisory file locks
-  heads/                   ← WORM lineage heads (WORM mode only)
-  versions/                ← version metadata (WORM mode only)
 ```
 
 See [examples/production-folder-structure.md](examples/production-folder-structure.md) for a
@@ -181,10 +182,10 @@ const id = await db.putData('users', {
 const doc = await db.getDoc('users', id).once()
 ```
 
-### Update (creates a new immutable version)
+### Update (preserves the document TTID)
 
 ```ts
-const nextId = await db.patchDoc('users', {
+const sameId = await db.patchDoc('users', {
     [id]: { team: 'core-platform' }
 })
 ```
@@ -192,8 +193,31 @@ const nextId = await db.patchDoc('users', {
 ### Delete
 
 ```ts
-await db.delDoc('users', nextId)
+await db.delDoc('users', sameId) // moves payload to .deleted/4U/4UUB32VGUDW.json
 ```
+
+Soft-deleted files retain their TTID filename, use file `mtime` as `deletedAt`,
+and become read-only (`0444`). They are excluded from ordinary queries.
+
+### Recover Deleted Documents
+
+```ts
+const deleted = {}
+for await (const doc of db
+    .findDeletedDocs('users', {
+        $deleted: { $gte: Date.parse('2026-05-01T00:00:00Z') }
+    })
+    .collect()) {
+    Object.assign(deleted, doc)
+}
+
+await db.restoreDoc('users', sameId)
+```
+
+Restore preserves the TTID, moves the payload back into `docs/`, restores
+writable file permissions (`0644`), rebuilds its indexes, and records the
+restoration as a live insert event. A tombstoned TTID cannot be written
+directly; it must be restored.
 
 ---
 
@@ -384,28 +408,26 @@ Actions: `doc:read`, `doc:create`, `doc:update`, `doc:delete`, `bulk:import`, `b
 
 ## WORM Mode
 
-Append-only at the logical document level:
+Strict write-once storage for immutable documents:
 
 ```ts
 const db = new Fylo({
     root: '/mnt/fylo',
     worm: {
-        mode: 'append-only',
-        deletePolicy: 'tombstone' // or 'reject'
+        mode: 'strict'
     }
 })
 
-const v1 = await db.putData('posts', { title: 'v1' })
-const v2 = await db.patchDoc('posts', { [v1]: { title: 'v2' } })
-
-const head = await db.getLatest('posts', v1) // current head
-const history = await db.getHistory('posts', v2) // full chain
+const id = await db.putData('posts', { title: 'retain me' })
+await db.patchDoc('posts', { [id]: { title: 'changed' } }) // throws
+await db.delDoc('posts', id) // throws
 ```
 
-- Each update writes a new immutable version
-- One logical head per lineage for normal queries
-- `getDoc(versionId)` reads any retained version directly
-- Timestamps come from TTIDs, not filesystem `mtime`
+- A WORM document is written once and its local file is changed to read-only (`0444`)
+- Update, delete, and dropping a non-empty WORM collection are rejected
+- WORM does not create document versions or document history
+- `createdAt` is derived from the TTID; `updatedAt` is derived from file metadata
+- Collections containing legacy `heads/` or `versions/` WORM metadata fail closed and must be migrated before use
 
 ---
 
@@ -440,7 +462,7 @@ const db = new Fylo({
 | `await-sync`      | Waits for hook, throws if sync fails           |
 | `fire-and-forget` | Commits locally first, runs hook in background |
 
-WORM mode sync carries lineage metadata under `event.worm` (head operation type, lineage ID, delete mode).
+Strict WORM mode emits its initial write sync event only; mutation callbacks cannot occur because updates and deletes are rejected.
 
 ---
 
@@ -496,6 +518,8 @@ fylo.query sql "SELECT * FROM posts" --page-size 25
 fylo.admin inspect posts --root /mnt/fylo --json
 fylo.admin rebuild posts --root /mnt/fylo
 fylo.admin get posts 4UUB32VGUDW --root /mnt/fylo --json
+fylo.admin deleted posts --root /mnt/fylo --json
+fylo.admin restore posts 4UUB32VGUDW --root /mnt/fylo --json
 
 # Schema
 fylo.admin schema inspect article --schema-dir ./schemas --json
@@ -519,7 +543,7 @@ echo '{"op":"inspectCollection","root":"/mnt/fylo","collection":"posts"}' | fylo
 }
 ```
 
-Supported operations: `executeSQL`, `createCollection`, `dropCollection`, `inspectCollection`, `rebuildCollection`, `getDoc`, `getLatest`, `getHistory`, `findDocs`, `joinDocs`, `putData`, `batchPutData`, `patchDoc`, `patchDocs`, `delDoc`, `delDocs`, `importBulkData`, `schemaInspect`, `schemaCurrent`, `schemaHistory`, `schemaDoctor`, `schemaValidate`, `schemaMaterialize`.
+Supported operations: `executeSQL`, `createCollection`, `dropCollection`, `inspectCollection`, `rebuildCollection`, `getDoc`, `getLatest`, `findDocs`, `findDeletedDocs`, `restoreDoc`, `joinDocs`, `putData`, `batchPutData`, `patchDoc`, `patchDocs`, `delDoc`, `delDocs`, `importBulkData`, `schemaInspect`, `schemaCurrent`, `schemaHistory`, `schemaDoctor`, `schemaValidate`, `schemaMaterialize`.
 
 ### Compiled Executable
 
@@ -542,11 +566,7 @@ const result = await db.rebuildCollection('posts')
 //   collection: 'posts',
 //   worm: true,
 //   docsScanned: 42,
-//   indexedDocs: 30,
-//   headsRebuilt: 30,
-//   versionMetasRebuilt: 42,
-//   staleHeadsRemoved: 1,
-//   staleVersionMetasRemoved: 0
+//   indexedDocs: 42
 // }
 ```
 
@@ -560,17 +580,17 @@ Use `rebuildCollection()` after operator-level recovery or when external process
 
 ## Limitations
 
-| Limitation                           | Detail                                                                                         |
-| ------------------------------------ | ---------------------------------------------------------------------------------------------- |
-| **Filesystem-only engine**           | One engine writes to a local path. Remote replication is your responsibility.                  |
-| **Advisory locking**                 | Lock-files with TTL. Networked filesystems without atomic `link()` are not supported.          |
-| **Indexes are derived**              | External writes to document files won't update indexes. Use `rebuildCollection()`.             |
-| **Logical WORM**                     | Enforced by FYLO write paths. Pair with OS-level immutability for true WORM.                   |
-| **Frequency leaks on encryption**    | HMAC blind indexes for `$eq` reveal value repetition even without decryption.                  |
-| **Process-global cipher**            | One key per process for all `$encrypted` fields. No per-collection key rotation built in.      |
-| **No cross-collection transactions** | Writes are serialized per collection. No atomic multi-collection commits.                      |
-| **TTID-derived timestamps**          | `createdAt`/`updatedAt` from TTIDs, not filesystem `mtime`. Stable but tooling can't override. |
-| **Bulk import for trusted sources**  | SSRF guard blocks private addresses and caps at 50 MiB. Not for user-provided URLs.            |
+| Limitation                           | Detail                                                                                        |
+| ------------------------------------ | --------------------------------------------------------------------------------------------- |
+| **Filesystem-only engine**           | One engine writes to a local path. Remote replication is your responsibility.                 |
+| **Advisory locking**                 | Lock-files with TTL. Networked filesystems without atomic `link()` are not supported.         |
+| **Indexes are derived**              | External writes to document files won't update indexes. Use `rebuildCollection()`.            |
+| **Local strict WORM**                | FYLO rejects mutation and applies `0444`; privileged filesystem administrators can bypass it. |
+| **Frequency leaks on encryption**    | HMAC blind indexes for `$eq` reveal value repetition even without decryption.                 |
+| **Process-global cipher**            | One key per process for all `$encrypted` fields. No per-collection key rotation built in.     |
+| **No cross-collection transactions** | Writes are serialized per collection. No atomic multi-collection commits.                     |
+| **Timestamp metadata**               | `createdAt` comes from TTID; `updatedAt` comes from file modification metadata.               |
+| **Bulk import for trusted sources**  | SSRF guard blocks private addresses and caps at 50 MiB. Not for user-provided URLs.           |
 
 ---
 

@@ -14,7 +14,7 @@ const MACHINE_PROTOCOL_VERSION = 1
  */
 
 /**
- * @typedef {'executeSQL' | 'createCollection' | 'dropCollection' | 'inspectCollection' | 'rebuildCollection' | 'getDoc' | 'getLatest' | 'getHistory' | 'findDocs' | 'joinDocs' | 'putData' | 'batchPutData' | 'patchDoc' | 'patchDocs' | 'delDoc' | 'delDocs' | 'importBulkData' | 'schemaInspect' | 'schemaCurrent' | 'schemaHistory' | 'schemaDoctor' | 'schemaValidate' | 'schemaMaterialize'} MachineOperation
+ * @typedef {'executeSQL' | 'createCollection' | 'dropCollection' | 'inspectCollection' | 'rebuildCollection' | 'getDoc' | 'getLatest' | 'findDocs' | 'findDeletedDocs' | 'restoreDoc' | 'joinDocs' | 'putData' | 'batchPutData' | 'patchDoc' | 'patchDocs' | 'delDoc' | 'delDocs' | 'importBulkData' | 'schemaInspect' | 'schemaCurrent' | 'schemaHistory' | 'schemaDoctor' | 'schemaValidate' | 'schemaMaterialize'} MachineOperation
  */
 
 /**
@@ -121,19 +121,15 @@ function requireObjectArray(request, field) {
  */
 function normalizeWormOptions(worm) {
     if (worm === undefined || worm === false) return undefined
-    if (worm === true) return { mode: 'append-only' }
+    if (worm === true) return { mode: 'strict' }
     if (!isRecord(worm)) {
         throw new Error('Machine request field "worm" must be a boolean or object')
     }
-    const mode = worm.mode ?? 'append-only'
-    if (mode !== 'off' && mode !== 'append-only') {
-        throw new Error('Machine request field "worm.mode" must be "off" or "append-only"')
+    const mode = worm.mode ?? 'strict'
+    if (mode !== 'off' && mode !== 'strict') {
+        throw new Error('Machine request field "worm.mode" must be "off" or "strict"')
     }
-    const deletePolicy = worm.deletePolicy ?? 'reject'
-    if (deletePolicy !== 'reject' && deletePolicy !== 'tombstone') {
-        throw new Error('Machine request field "worm.deletePolicy" must be "reject" or "tombstone"')
-    }
-    return { mode, deletePolicy }
+    return { mode }
 }
 
 /**
@@ -145,7 +141,7 @@ function createMachineFylo(request, overrides = {}) {
     const root = overrides.root ?? request.root
     const worm =
         overrides.worm === true
-            ? /** @type {FyloWormOptions} */ ({ mode: 'append-only' })
+            ? /** @type {FyloWormOptions} */ ({ mode: 'strict' })
             : normalizeWormOptions(request.worm)
     return new Fylo({
         ...(root ? { root: path.resolve(root) } : {}),
@@ -163,6 +159,28 @@ async function collectFindDocs(fylo, collection, query) {
     /** @type {Record<string, any> | string[]} */
     let docs = query.$onlyIds ? [] : {}
     for await (const value of fylo.findDocs(collection, query).collect()) {
+        if (value === undefined) continue
+        if (typeof value === 'object' && value !== null) {
+            docs = /** @type {{ appendGroup(target: any, value: any): any }} */ (
+                /** @type {unknown} */ (Object)
+            ).appendGroup(docs, value)
+            continue
+        }
+        if (Array.isArray(docs)) docs.push(String(value))
+    }
+    return docs
+}
+
+/**
+ * @param {Fylo} fylo
+ * @param {string} collection
+ * @param {Record<string, any>} query
+ * @returns {Promise<Record<string, any> | string[]>}
+ */
+async function collectDeletedDocs(fylo, collection, query) {
+    /** @type {Record<string, any> | string[]} */
+    let docs = query.$onlyIds ? [] : {}
+    for await (const value of fylo.findDeletedDocs(collection, query).collect()) {
         if (value === undefined) continue
         if (typeof value === 'object' && value !== null) {
             docs = /** @type {{ appendGroup(target: any, value: any): any }} */ (
@@ -213,16 +231,17 @@ export async function executeMachineOperation(request, overrides = {}) {
                 requireString(request, 'id'),
                 request.onlyId === true
             )
-        case 'getHistory':
-            return await fylo.getHistory(
-                requireString(request, 'collection'),
-                requireString(request, 'id')
-            )
         case 'findDocs':
             return await collectFindDocs(
                 fylo,
                 requireString(request, 'collection'),
                 requireObject(request, 'query')
+            )
+        case 'findDeletedDocs':
+            return await collectDeletedDocs(
+                fylo,
+                requireString(request, 'collection'),
+                isRecord(request.query) ? request.query : {}
             )
         case 'joinDocs':
             return await fylo.joinDocs(
@@ -256,6 +275,13 @@ export async function executeMachineOperation(request, overrides = {}) {
         case 'delDoc':
             await fylo.delDoc(requireString(request, 'collection'), requireString(request, 'id'))
             return { deleted: true }
+        case 'restoreDoc': {
+            const id = await fylo.restoreDoc(
+                requireString(request, 'collection'),
+                requireString(request, 'id')
+            )
+            return { restored: true, id }
+        }
         case 'delDocs':
             return await fylo.delDocs(
                 requireString(request, 'collection'),

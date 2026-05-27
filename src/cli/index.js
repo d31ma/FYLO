@@ -39,9 +39,10 @@ function usage() {
         '  fylo.exec exec --request <json|@path|-> [--root <path>] [--worm]',
         '  fylo.query inspect <collection> [--root <path>] [--worm] [--json]',
         '  fylo.query get <collection> <doc-id> [--root <path>] [--worm] [--json]',
-        '  fylo.query latest <collection> <doc-or-lineage-id> [--root <path>] [--worm] [--json] [--id-only]',
-        '  fylo.query history <collection> <doc-or-lineage-id> [--root <path>] [--worm] [--json]',
+        '  fylo.query latest <collection> <doc-id> [--root <path>] [--worm] [--json] [--id-only]',
         '  fylo.query rebuild <collection> [--root <path>] [--worm] [--json]',
+        '  fylo.query deleted <collection> [--root <path>] [--json]',
+        '  fylo.query restore <collection> <doc-id> [--root <path>] [--json]',
         '  fylo.query schema inspect <collection> [--schema-dir <path>] [--json]',
         '  fylo.query schema current <collection> [--schema-dir <path>] [--json]',
         '  fylo.query schema history <collection> [--schema-dir <path>] [--json]',
@@ -50,9 +51,10 @@ function usage() {
         '  fylo.query schema materialize <collection> <json|@path|-> [--schema-dir <path>] [--json]',
         '  fylo.admin inspect <collection> [--root <path>] [--worm] [--json]',
         '  fylo.admin get <collection> <doc-id> [--root <path>] [--worm] [--json]',
-        '  fylo.admin latest <collection> <doc-or-lineage-id> [--root <path>] [--worm] [--json] [--id-only]',
-        '  fylo.admin history <collection> <doc-or-lineage-id> [--root <path>] [--worm] [--json]',
+        '  fylo.admin latest <collection> <doc-id> [--root <path>] [--worm] [--json] [--id-only]',
         '  fylo.admin rebuild <collection> [--root <path>] [--worm] [--json]',
+        '  fylo.admin deleted <collection> [--root <path>] [--json]',
+        '  fylo.admin restore <collection> <doc-id> [--root <path>] [--json]',
         '  fylo.admin schema inspect <collection> [--schema-dir <path>] [--json]',
         '  fylo.admin schema current <collection> [--schema-dir <path>] [--json]',
         '  fylo.admin schema history <collection> [--schema-dir <path>] [--json]',
@@ -251,7 +253,7 @@ async function runSql(sql, root) {
 function createFylo(root, worm = false) {
     return new Fylo({
         ...(root ? { root } : {}),
-        ...(worm ? { worm: { mode: 'append-only' } } : {})
+        ...(worm ? { worm: { mode: 'strict' } } : {})
     })
 }
 
@@ -316,11 +318,8 @@ async function runInspect(collection, root, worm = false, json = false) {
         `Exists: ${result.exists ? 'yes' : 'no'}`,
         `WORM mode: ${result.worm ? 'enabled' : 'disabled'}`,
         `Stored documents: ${result.docsStored}`,
-        `Indexed documents: ${result.indexedDocs}`,
-        `Head files: ${result.headFiles}`,
-        `Active heads: ${result.activeHeads}`,
-        `Deleted heads: ${result.deletedHeads}`,
-        `Version metadata files: ${result.versionMetas}`
+        `Deleted documents: ${result.deletedDocs}`,
+        `Indexed documents: ${result.indexedDocs}`
     ].join('\n')
 }
 
@@ -354,7 +353,7 @@ async function runLatest(collection, docId, root, worm = false, json = false, id
     const fylo = createFylo(root, worm)
     if (idOnly) {
         const latestId = await fylo.getLatest(collection, docId, true)
-        if (!latestId) throw new Error(`No active head found for ${docId}`)
+        if (!latestId) throw new Error(`No document found for ${docId}`)
         if (json) {
             printJson({ id: latestId })
             return undefined
@@ -362,46 +361,12 @@ async function runLatest(collection, docId, root, worm = false, json = false, id
         return String(latestId)
     }
     const result = /** @type {Record<string, any>} */ (await fylo.getLatest(collection, docId))
-    if (Object.keys(result).length === 0) throw new Error(`No active head found for ${docId}`)
+    if (Object.keys(result).length === 0) throw new Error(`No document found for ${docId}`)
     if (json) {
         printJson(result)
         return undefined
     }
     return renderTableOutput(result, cliRuntimeOptions.tableOptions)
-}
-
-/**
- * @param {string} collection
- * @param {TTID} docId
- * @param {string | undefined} root
- * @param {boolean=} worm
- * @param {boolean=} json
- */
-async function runHistory(collection, docId, root, worm = false, json = false) {
-    const history = await createFylo(root, worm).getHistory(collection, docId)
-    if (json) {
-        printJson(history)
-        return undefined
-    }
-    if (history.length === 0) {
-        return `No history found for ${docId}`
-    }
-    const blocks = []
-    for (const entry of history) {
-        blocks.push(
-            [
-                `${entry.id}${entry.isHead ? ' [head]' : ''}${entry.deleted ? ' [deleted]' : ''}`,
-                `  lineage: ${entry.lineageId}`,
-                `  previous: ${entry.previousVersionId ?? 'none'}`,
-                `  updatedAt: ${entry.updatedAt}`,
-                entry.deletedAt ? `  deletedAt: ${entry.deletedAt}` : undefined,
-                renderTableOutput({ [entry.id]: entry.data }, cliRuntimeOptions.tableOptions)
-            ]
-                .filter(Boolean)
-                .join('\n')
-        )
-    }
-    return blocks.join('\n\n')
 }
 
 /**
@@ -420,16 +385,46 @@ async function runRebuild(collection, root, worm = false, json = false) {
         `Rebuilt collection ${result.collection}`,
         `WORM mode: ${result.worm ? 'enabled' : 'disabled'}`,
         `Documents scanned: ${result.docsScanned}`,
-        `Indexed documents: ${result.indexedDocs}`,
-        result.worm ? `Heads rebuilt: ${result.headsRebuilt}` : undefined,
-        result.worm ? `Version metadata rebuilt: ${result.versionMetasRebuilt}` : undefined,
-        result.worm ? `Stale heads removed: ${result.staleHeadsRemoved}` : undefined,
-        result.worm
-            ? `Stale version metadata removed: ${result.staleVersionMetasRemoved}`
-            : undefined
+        `Indexed documents: ${result.indexedDocs}`
     ]
         .filter(Boolean)
         .join('\n')
+}
+
+/**
+ * @param {string} collection
+ * @param {string | undefined} root
+ * @param {boolean=} json
+ */
+async function runDeleted(collection, root, json = false) {
+    const results = {}
+    for await (const result of createFylo(root)
+        .findDeletedDocs(collection, { $deleted: { $gte: 0 } })
+        .collect()) {
+        if (result && typeof result === 'object') Object.assign(results, result)
+    }
+    if (json) {
+        printJson(results)
+        return undefined
+    }
+    if (Object.keys(results).length === 0) return `No deleted documents found for ${collection}`
+    return renderTableOutput(results, cliRuntimeOptions.tableOptions)
+}
+
+/**
+ * @param {string} collection
+ * @param {TTID} docId
+ * @param {string | undefined} root
+ * @param {boolean=} json
+ */
+async function runRestore(collection, docId, root, json = false) {
+    const id = await createFylo(root).restoreDoc(collection, docId)
+    const result = { restored: true, id }
+    if (json) {
+        printJson(result)
+        return undefined
+    }
+    return `Restored document ${id}`
 }
 
 /**
@@ -569,19 +564,26 @@ async function main(args) {
         if (output) await writeCliText(output, { pagerMode: cliRuntimeOptions.pagerMode })
         return
     }
-    if (command === 'history') {
-        const collection = rest[0]
-        const docId = rest[1]
-        if (!collection) throw new Error('Missing collection name for history')
-        if (!docId) throw new Error('Missing document id for history')
-        const output = await runHistory(collection, docId, args.root, args.worm, args.json)
-        if (output) await writeCliText(output, { pagerMode: cliRuntimeOptions.pagerMode })
-        return
-    }
     if (command === 'rebuild') {
         const collection = rest[0]
         if (!collection) throw new Error('Missing collection name for rebuild')
         const output = await runRebuild(collection, args.root, args.worm, args.json)
+        if (output) await writeCliText(output, { pagerMode: cliRuntimeOptions.pagerMode })
+        return
+    }
+    if (command === 'deleted') {
+        const collection = rest[0]
+        if (!collection) throw new Error('Missing collection name for deleted')
+        const output = await runDeleted(collection, args.root, args.json)
+        if (output) await writeCliText(output, { pagerMode: cliRuntimeOptions.pagerMode })
+        return
+    }
+    if (command === 'restore') {
+        const collection = rest[0]
+        const docId = rest[1]
+        if (!collection) throw new Error('Missing collection name for restore')
+        if (!docId) throw new Error('Missing document id for restore')
+        const output = await runRestore(collection, docId, args.root, args.json)
         if (output) await writeCliText(output, { pagerMode: cliRuntimeOptions.pagerMode })
         return
     }

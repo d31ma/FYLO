@@ -1,4 +1,4 @@
-import { mkdir, open, readdir, rm, stat } from 'node:fs/promises'
+import { chmod, mkdir, open, readdir, rename, rm, stat, utimes } from 'node:fs/promises'
 import path from 'node:path'
 import { assertPathInside, validateDocId } from '../core/doc-id.js'
 import { writeDurable } from './durable.js'
@@ -29,6 +29,40 @@ export class FilesystemStorage {
      */
     async write(target, data) {
         await writeDurable(target, data)
+    }
+    /**
+     * @param {string} source
+     * @param {string} target
+     * @returns {Promise<void>}
+     */
+    async move(source, target) {
+        await mkdir(path.dirname(target), { recursive: true })
+        await rename(source, target)
+    }
+    /**
+     * @param {string} target
+     * @param {number} mode
+     * @returns {Promise<void>}
+     */
+    async chmod(target, mode) {
+        await chmod(target, mode)
+    }
+    /**
+     * @param {string} target
+     * @param {number} mtimeMs
+     * @returns {Promise<void>}
+     */
+    async setModifiedTime(target, mtimeMs) {
+        const modified = new Date(mtimeMs)
+        await utimes(target, modified, modified)
+    }
+    /**
+     * @param {string} target
+     * @returns {Promise<{ mtimeMs: number }>}
+     */
+    async metadata(target) {
+        const metadata = await stat(target)
+        return { mtimeMs: metadata.mtimeMs }
     }
     /**
      * @param {string} target
