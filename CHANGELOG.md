@@ -1,5 +1,38 @@
 # Changelog
 
+## 26.22.03 - 2026-05-27
+
+### Breaking Changes
+
+- **WORM mode renamed**: `worm: { mode: 'append-only' }` is now `worm: { mode: 'strict' }`. Strict mode rejects updates and deletes outright — the previous append-only-with-lineage model is gone.
+- **`worm.deletePolicy` option removed**: there are no delete modes anymore; strict WORM refuses deletes.
+- **Storage layout change**: collection directories no longer contain `heads/` or `versions/`. Soft-deleted document payloads are retained as `0444` files under `.deleted/<bucket>/<id>.json` and use the file `mtime` as `deletedAt`.
+- **Legacy guard fail-closed**: opening any collection that still has `heads/` or `versions/` files throws `Collection '<name>' contains unsupported legacy WORM <dir> metadata; migrate or remove legacy versions before opening it`. Operators with prior WORM collections must clear the legacy directories (or rebuild from `docs/`) before this release will mount them.
+- **`fylo.getHistory()` removed** along with the `FyloHistoryEntry` type — versions are no longer materialized. Equivalent introspection: query the live document with `getDoc`/`getLatest` and the retained tombstones with `findDeletedDocs`.
+- **Machine interface**: `getHistory` operation removed; `findDeletedDocs` and `restoreDoc` operations added.
+- **`patchDoc` preserves the TTID**: an update no longer mints a new version id. Callers that captured the return value of `patchDoc` will continue to work because the returned id is unchanged from the original — but any code that relied on the previous "v1 vs v2 id" distinction must adapt.
+- **`rebuildCollection` result shape**: `headsRebuilt`, `versionMetasRebuilt`, `staleHeadsRemoved`, `staleVersionMetasRemoved` fields removed. Result now reports `indexedDocs` only.
+
+### Added
+
+- **`findDeletedDocs(collection, query?)`**: query soft-deleted documents under `.deleted/`. Supports the new `$deleted` `TimestampQuery` filter alongside the standard query DSL.
+- **`restoreDoc(collection, id)`**: move a tombstoned payload back into `docs/`, restore `0644` permissions, rebuild its indexes, and emit a live insert event. A tombstoned TTID cannot be written directly; it must be restored.
+- **CLI**: `fylo.admin deleted <collection> [--root <path>] [--json]` lists retained tombstones; `fylo.admin restore <collection> <doc-id> [--root <path>] [--json]` restores one.
+- **`$deleted` timestamp query operator** for filtering tombstones by deletion time.
+- **`DeletedDocsResult` type** mirroring `FindDocsResult` (without `onDelete`, which is meaningless for tombstones).
+- **Storage primitives**: `FyloStorage` gains `move`, `chmod`, `setModifiedTime`, and `metadata` so the deletion path can atomically move + lock + timestamp tombstones without round-tripping through application code.
+
+### Changed
+
+- **Soft-delete is the only delete path**: `delDoc` and `delDocs` move payloads into `.deleted/` rather than removing files. Hard deletion of tombstones is intentionally out of scope for this release; operators who want true erasure can `rm -rf .collections/<name>/.deleted/` between rebuilds.
+- **Rebuild simplified**: `rebuildCollection` rebuilds the prefix index from live docs only. Tombstones are not re-indexed (they are queried via their own path).
+- **Sync envelope**: strict WORM emits the initial write sync event only; mutation callbacks cannot occur because updates and deletes are rejected.
+- `examples/db/.collections/<name>/.deleted/.gitkeep` placeholders added so the tombstone directory shape is captured in version control.
+
+### Notes for RLS users
+
+- `AuthenticatedFylo` (the `.as({...})` wrapper) does not currently expose `findDeletedDocs` or `restoreDoc`. Calling either through a scoped instance throws `TypeError: ... is not a function` — fail-closed but not explicit. Use the unscoped `Fylo` for tombstone introspection until a scoped surface lands.
+
 ## 26.21.06 - 2026-05-23
 
 ### Added

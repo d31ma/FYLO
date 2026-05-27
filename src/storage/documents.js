@@ -7,37 +7,31 @@ import { assertPathInside, validateDocId } from '../core/doc-id.js'
  * @typedef {object} FyloStorage
  * @property {(path: string) => Promise<string>} read
  * @property {(path: string, data: string) => Promise<void>} write
+ * @property {(source: string, target: string) => Promise<void>} move
+ * @property {(path: string, mode: number) => Promise<void>} chmod
+ * @property {(path: string, mtimeMs: number) => Promise<void>} setModifiedTime
+ * @property {(path: string) => Promise<{ mtimeMs: number }>} metadata
  * @property {(path: string) => Promise<void>} delete
  * @property {(path: string) => Promise<string[]>} list
  * @property {(path: string) => Promise<void>} mkdir
  * @property {(path: string) => Promise<void>} rmdir
  * @property {(path: string) => Promise<boolean>} exists
  *
- * @typedef {object} StoredHeadRecord
- * @property {1} version
- * @property {string} lineageId
- * @property {TTIDValue} currentVersionId
- * @property {boolean=} deleted
- * @property {number=} deletedAt
- *
- * @typedef {object} StoredVersionMetaRecord
- * @property {1} version
- * @property {TTIDValue} versionId
- * @property {string} lineageId
- * @property {TTIDValue=} previousVersionId
- * @property {number=} supersededAt
- * @property {number=} deletedAt
- *
  * @typedef {object} StoredDocRecord
  * @property {TTIDValue} id
  * @property {number} createdAt
  * @property {number} updatedAt
  * @property {Record<string, any>} data
+ *
+ * @typedef {object} DeletedDocRecord
+ * @property {TTIDValue} id
+ * @property {number} createdAt
+ * @property {number} deletedAt
+ * @property {Record<string, any>} data
  */
 
 /**
- * Document body and WORM metadata persistence for filesystem-backed FYLO
- * collections.
+ * Document body persistence for filesystem-backed FYLO collections.
  */
 export class FilesystemDocuments {
     /** @type {FyloStorage} */
@@ -47,13 +41,9 @@ export class FilesystemDocuments {
     /** @type {(collection: string, docId: TTIDValue) => string} */
     docPath
     /** @type {(collection: string) => string} */
-    headsRoot
-    /** @type {(collection: string, lineageId: string) => string} */
-    headPath
-    /** @type {(collection: string) => string} */
-    versionsRoot
+    deletedRoot
     /** @type {(collection: string, docId: TTIDValue) => string} */
-    versionMetaPath
+    deletedPath
     /** @type {(collection: string) => Promise<void>} */
     ensureCollection
     /** @type {<T extends Record<string, any>>(collection: string, value: T, parentField?: string) => Promise<T>} */
@@ -61,14 +51,12 @@ export class FilesystemDocuments {
     /** @type {<T extends Record<string, any>>(collection: string, value: T, parentField?: string) => Promise<T>} */
     decodeEncrypted
     /**
-     * Coordinates low-level document, head, and version metadata persistence.
+     * Coordinates low-level live, deleted, and read-only document persistence.
      * @param {FyloStorage} storage
      * @param {(collection: string) => string} docsRoot
      * @param {(collection: string, docId: TTIDValue) => string} docPath
-     * @param {(collection: string) => string} headsRoot
-     * @param {(collection: string, lineageId: string) => string} headPath
-     * @param {(collection: string) => string} versionsRoot
-     * @param {(collection: string, docId: TTIDValue) => string} versionMetaPath
+     * @param {(collection: string) => string} deletedRoot
+     * @param {(collection: string, docId: TTIDValue) => string} deletedPath
      * @param {(collection: string) => Promise<void>} ensureCollection
      * @param {<T extends Record<string, any>>(collection: string, value: T, parentField?: string) => Promise<T>} encodeEncrypted
      * @param {<T extends Record<string, any>>(collection: string, value: T, parentField?: string) => Promise<T>} decodeEncrypted
@@ -77,10 +65,8 @@ export class FilesystemDocuments {
         storage,
         docsRoot,
         docPath,
-        headsRoot,
-        headPath,
-        versionsRoot,
-        versionMetaPath,
+        deletedRoot,
+        deletedPath,
         ensureCollection,
         encodeEncrypted,
         decodeEncrypted
@@ -88,10 +74,8 @@ export class FilesystemDocuments {
         this.storage = storage
         this.docsRoot = docsRoot
         this.docPath = docPath
-        this.headsRoot = headsRoot
-        this.headPath = headPath
-        this.versionsRoot = versionsRoot
-        this.versionMetaPath = versionMetaPath
+        this.deletedRoot = deletedRoot
+        this.deletedPath = deletedPath
         this.ensureCollection = ensureCollection
         this.encodeEncrypted = encodeEncrypted
         this.decodeEncrypted = decodeEncrypted
@@ -109,13 +93,37 @@ export class FilesystemDocuments {
         try {
             const raw = JSON.parse(await this.storage.read(target))
             const decoded = await this.decodeEncrypted(collection, raw)
-            const { createdAt, updatedAt } = TTID.decodeTime(docId)
+            const { createdAt } = TTID.decodeTime(docId)
+            const { mtimeMs } = await this.storage.metadata(target)
             return {
                 id: docId,
                 createdAt,
-                updatedAt: updatedAt ?? createdAt,
+                updatedAt: mtimeMs,
                 data: decoded
             }
+        } catch (err) {
+            const error = /** @type {NodeJS.ErrnoException} */ (err)
+            if (error.code === 'ENOENT') return null
+            throw err
+        }
+    }
+    /**
+     * Reads a retained soft-deleted document. Its file modification time is
+     * the deletion timestamp, not the previous live update timestamp.
+     * @param {string} collection
+     * @param {TTIDValue} docId
+     * @returns {Promise<DeletedDocRecord | null>}
+     */
+    async readDeletedDoc(collection, docId) {
+        validateDocId(docId)
+        const target = this.deletedPath(collection, docId)
+        assertPathInside(this.deletedRoot(collection), target)
+        try {
+            const raw = JSON.parse(await this.storage.read(target))
+            const decoded = await this.decodeEncrypted(collection, raw)
+            const { createdAt } = TTID.decodeTime(docId)
+            const { mtimeMs } = await this.storage.metadata(target)
+            return { id: docId, createdAt, deletedAt: mtimeMs, data: decoded }
         } catch (err) {
             const error = /** @type {NodeJS.ErrnoException} */ (err)
             if (error.code === 'ENOENT') return null
@@ -151,77 +159,53 @@ export class FilesystemDocuments {
         await this.storage.delete(target)
     }
     /**
-     * Reads append-only lineage metadata for a document version.
+     * Moves a normal-mode document out of the queryable tree while retaining
+     * its original TTID identity in the deleted namespace.
      * @param {string} collection
      * @param {TTIDValue} docId
-     * @returns {Promise<StoredVersionMetaRecord | null>}
+     * @param {number} deletedAt
+     * @returns {Promise<string>}
      */
-    async readVersionMeta(collection, docId) {
+    async softDeleteStoredDoc(collection, docId, deletedAt) {
         validateDocId(docId)
-        const target = this.versionMetaPath(collection, docId)
-        assertPathInside(this.versionsRoot(collection), target)
-        try {
-            return JSON.parse(await this.storage.read(target))
-        } catch (err) {
-            const error = /** @type {NodeJS.ErrnoException} */ (err)
-            if (error.code === 'ENOENT') return null
-            throw err
-        }
+        const source = this.docPath(collection, docId)
+        const target = this.deletedPath(collection, docId)
+        assertPathInside(this.docsRoot(collection), source)
+        assertPathInside(this.deletedRoot(collection), target)
+        await this.storage.move(source, target)
+        await this.storage.setModifiedTime(target, deletedAt)
+        await this.storage.chmod(target, 0o444)
+        return target
     }
     /**
-     * Persists append-only lineage metadata for a document version.
-     * @param {string} collection
-     * @param {StoredVersionMetaRecord} meta
-     * @returns {Promise<void>}
-     */
-    async writeVersionMeta(collection, meta) {
-        validateDocId(meta.versionId)
-        await this.ensureCollection(collection)
-        const target = this.versionMetaPath(collection, meta.versionId)
-        assertPathInside(this.versionsRoot(collection), target)
-        await this.storage.write(target, JSON.stringify(meta))
-    }
-    /**
-     * Reads the active head pointer for a lineage.
-     * @param {string} collection
-     * @param {string} lineageId
-     * @returns {Promise<StoredHeadRecord | null>}
-     */
-    async readHead(collection, lineageId) {
-        const target = this.headPath(collection, lineageId)
-        assertPathInside(this.headsRoot(collection), target)
-        try {
-            return JSON.parse(await this.storage.read(target))
-        } catch (err) {
-            const error = /** @type {NodeJS.ErrnoException} */ (err)
-            if (error.code === 'ENOENT') return null
-            throw err
-        }
-    }
-    /**
-     * Writes the active head pointer for a lineage.
-     * @param {string} collection
-     * @param {StoredHeadRecord} head
-     * @returns {Promise<void>}
-     */
-    async writeHead(collection, head) {
-        await this.ensureCollection(collection)
-        const target = this.headPath(collection, head.lineageId)
-        assertPathInside(this.headsRoot(collection), target)
-        await this.storage.write(target, JSON.stringify(head))
-    }
-    /**
-     * Resolves either a lineage id or version id to its current head.
+     * Restores a retained tombstone to the live document namespace.
      * @param {string} collection
      * @param {TTIDValue} docId
-     * @returns {Promise<StoredHeadRecord | null>}
+     * @param {number} restoredAt
+     * @returns {Promise<string>}
      */
-    async resolveHead(collection, docId) {
-        const directHead = await this.readHead(collection, docId)
-        if (directHead) return directHead
-        const meta = await this.readVersionMeta(collection, docId)
-        if (!meta) return null
-        return await this.readHead(collection, meta.lineageId)
+    async restoreStoredDoc(collection, docId, restoredAt) {
+        validateDocId(docId)
+        const source = this.deletedPath(collection, docId)
+        const target = this.docPath(collection, docId)
+        assertPathInside(this.deletedRoot(collection), source)
+        assertPathInside(this.docsRoot(collection), target)
+        await this.storage.move(source, target)
+        await this.storage.chmod(target, 0o644)
+        await this.storage.setModifiedTime(target, restoredAt)
+        return target
+    }
+    /**
+     * Applies local defense-in-depth permissions to a strict WORM document.
+     * @param {string} collection
+     * @param {TTIDValue} docId
+     * @returns {Promise<void>}
+     */
+    async makeStoredDocReadOnly(collection, docId) {
+        validateDocId(docId)
+        const target = this.docPath(collection, docId)
+        assertPathInside(this.docsRoot(collection), target)
+        await this.storage.chmod(target, 0o444)
     }
     /**
      * Lists all stored document version ids.
@@ -241,19 +225,15 @@ export class FilesystemDocuments {
         )
     }
     /**
-     * Lists current non-deleted head document ids.
+     * Lists soft-deleted document IDs retained in the tombstone namespace.
      * @param {string} collection
      * @returns {Promise<TTIDValue[]>}
      */
-    async listActiveDocIds(collection) {
-        const files = await this.storage.list(this.headsRoot(collection))
-        const ids = []
-        for (const file of files) {
-            if (!file.endsWith('.json')) continue
-            const head = JSON.parse(await this.storage.read(file))
-            if (head.deleted || !TTID.isTTID(head.currentVersionId)) continue
-            ids.push(head.currentVersionId)
-        }
-        return ids
+    async listDeletedDocIds(collection) {
+        const files = await this.storage.list(this.deletedRoot(collection))
+        return files
+            .filter((file) => file.endsWith('.json'))
+            .map((file) => path.basename(file, '.json'))
+            .filter((key) => TTID.isTTID(key))
     }
 }

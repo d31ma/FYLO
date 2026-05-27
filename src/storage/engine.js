@@ -18,8 +18,6 @@ import { parseStoredValue, stringifyStoredValue } from './value-codec.js'
  * @typedef {import('../replication/sync.js').FyloWriteSyncEvent<Record<string, any>>} FyloWriteSyncEvent
  * @typedef {import('../replication/sync.js').FyloDeleteSyncEvent} FyloDeleteSyncEvent
  * @typedef {import('../replication/sync.js').FyloWormOptions} FyloWormOptions
- * @typedef {import('../replication/sync.js').FyloWormWriteSyncInfo} FyloWormWriteSyncInfo
- * @typedef {import('../replication/sync.js').FyloWormDeleteSyncInfo} FyloWormDeleteSyncInfo
  * @typedef {import('../observability/events.js').FyloEventHandler} FyloEventHandler
  * @typedef {import('./types.js').StorageEngine} StorageEngine
  * @typedef {import('./types.js').LockManager} LockManager
@@ -28,8 +26,6 @@ import { parseStoredValue, stringifyStoredValue } from './value-codec.js'
  * @typedef {import('./types.js').CollectionRebuildResult} CollectionRebuildResult
  * @typedef {import('./types.js').FilesystemEvent<Record<string, any>>} FilesystemEvent
  * @typedef {import('./types.js').StoredDoc<Record<string, any>>} StoredDoc
- * @typedef {import('./types.js').StoredHead} StoredHead
- * @typedef {import('./types.js').StoredVersionMeta} StoredVersionMeta
  * @typedef {import('./types.js').PrefixIndexStore} PrefixIndexStore
  * @typedef {import('../queue/local.js').LocalQueue} LocalQueue
  * @typedef {import('../query/types.js').StoreJoin<Record<string, any>, Record<string, any>>} StoreJoin
@@ -38,7 +34,7 @@ import { parseStoredValue, stringifyStoredValue } from './value-codec.js'
 
 /**
  * Low-level filesystem storage engine for collections, documents, indexes,
- * events, locks, WORM heads, and version metadata.
+ * events, locks, and strict read-only WORM documents.
  */
 export class FilesystemEngine {
     /** @type {string} */
@@ -82,8 +78,7 @@ export class FilesystemEngine {
         this.sync = options.sync
         this.syncMode = resolveSyncMode(options.syncMode)
         this.worm = {
-            mode: options.worm?.mode ?? 'off',
-            deletePolicy: options.worm?.deletePolicy ?? 'reject'
+            mode: options.worm?.mode ?? 'off'
         }
         this.onEvent = options.onEvent
         this.storage = new FilesystemStorage()
@@ -98,10 +93,8 @@ export class FilesystemEngine {
             this.storage,
             this.docsRoot.bind(this),
             this.docPath.bind(this),
-            this.headsRoot.bind(this),
-            this.headPath.bind(this),
-            this.versionsRoot.bind(this),
-            this.versionMetaPath.bind(this),
+            this.deletedRoot.bind(this),
+            this.deletedPath.bind(this),
             this.ensureCollection.bind(this),
             this.encodeEncrypted.bind(this),
             this.decodeEncrypted.bind(this)
@@ -129,31 +122,12 @@ export class FilesystemEngine {
         return path.join(this.collectionRoot(collection), 'docs')
     }
     /** @param {string} collection @returns {string} */
+    deletedRoot(collection) {
+        return path.join(this.collectionRoot(collection), '.deleted')
+    }
+    /** @param {string} collection @returns {string} */
     metaRoot(collection) {
         return this.collectionRoot(collection)
-    }
-    /** @param {string} collection @returns {string} */
-    headsRoot(collection) {
-        return path.join(this.metaRoot(collection), 'heads')
-    }
-    /** @param {string} collection @returns {string} */
-    versionsRoot(collection) {
-        return path.join(this.metaRoot(collection), 'versions')
-    }
-    /** @param {string} collection @param {string} lineageId @returns {string} */
-    headPath(collection, lineageId) {
-        const headsRoot = this.headsRoot(collection)
-        const target = path.join(headsRoot, `${lineageId}.json`)
-        assertPathInside(headsRoot, target)
-        return target
-    }
-    /** @param {string} collection @param {TTID} docId @returns {string} */
-    versionMetaPath(collection, docId) {
-        validateDocId(docId)
-        const versionsRoot = this.versionsRoot(collection)
-        const target = path.join(versionsRoot, `${docId}.meta.json`)
-        assertPathInside(versionsRoot, target)
-        return target
     }
     /** @param {string} collection @param {TTID} docId @returns {string} */
     docPath(collection, docId) {
@@ -161,6 +135,14 @@ export class FilesystemEngine {
         const docsRoot = this.docsRoot(collection)
         const target = path.join(docsRoot, docId.slice(0, 2), `${docId}.json`)
         assertPathInside(docsRoot, target)
+        return target
+    }
+    /** @param {string} collection @param {TTID} docId @returns {string} */
+    deletedPath(collection, docId) {
+        validateDocId(docId)
+        const deletedRoot = this.deletedRoot(collection)
+        const target = path.join(deletedRoot, docId.slice(0, 2), `${docId}.json`)
+        assertPathInside(deletedRoot, target)
         return target
     }
     /**
@@ -213,21 +195,34 @@ export class FilesystemEngine {
     /** @param {string} collection @returns {Promise<void>} */
     async ensureCollection(collection) {
         await this.storage.mkdir(this.collectionRoot(collection))
+        await this.assertNoLegacyWormArtifacts(collection)
         await this.storage.mkdir(this.metaRoot(collection))
         await this.storage.mkdir(this.docsRoot(collection))
+        await this.storage.mkdir(this.deletedRoot(collection))
         await this.index.ensureCollection(collection)
-        if (this.wormEnabled()) {
-            await this.storage.mkdir(this.headsRoot(collection))
-            await this.storage.mkdir(this.versionsRoot(collection))
+    }
+    /**
+     * Refuses to reinterpret append-only WORM files as independent live docs
+     * after the strict WORM storage format change.
+     * @param {string} collection
+     * @returns {Promise<void>}
+     */
+    async assertNoLegacyWormArtifacts(collection) {
+        const legacyPaths = ['heads', 'versions']
+        for (const legacyPath of legacyPaths) {
+            const files = await this.storage.list(
+                path.join(this.collectionRoot(collection), legacyPath)
+            )
+            if (files.length > 0) {
+                throw new Error(
+                    `Collection '${collection}' contains unsupported legacy WORM ${legacyPath} metadata; migrate or remove legacy versions before opening it`
+                )
+            }
         }
     }
     /** @returns {boolean} */
     wormEnabled() {
-        return this.worm.mode === 'append-only'
-    }
-    /** @param {TTID} docId @returns {string} */
-    inferredLineageBucket(docId) {
-        return docId.split('-')[0] ?? docId
+        return this.worm.mode === 'strict'
     }
     /** @param {string} collection @returns {Promise<void>} */
     async resetIndex(collection) {
@@ -235,157 +230,51 @@ export class FilesystemEngine {
     }
     /** @param {string} collection @returns {Promise<TTID[]>} */
     async listQueryableDocIds(collection) {
-        if (!this.wormEnabled()) return await this.documents.listDocIds(collection)
-        return await this.documents.listActiveDocIds(collection)
-    }
-    /** @param {string} collection @param {TTID} docId @returns {Promise<StoredHead | null>} */
-    async resolveHead(collection, docId) {
-        if (!this.wormEnabled()) {
-            const existing = await this.documents.readStoredDoc(collection, docId)
-            if (!existing) return null
-            return {
-                version: 1,
-                lineageId: docId,
-                currentVersionId: docId,
-                deleted: false
-            }
-        }
-        return await this.documents.resolveHead(collection, docId)
-    }
-    /** @param {string} collection @param {TTID} docId @param {Record<string, any>} doc @returns {Promise<{ lineageId: string, data: Record<string, any>, headPath: string }>} */
-    async initializeWormVersion(collection, docId, doc) {
-        const existingMeta = await this.documents.readVersionMeta(collection, docId)
-        const lineageId = existingMeta?.lineageId ?? docId
-        await this.documents.writeVersionMeta(collection, {
-            version: 1,
-            versionId: docId,
-            lineageId,
-            previousVersionId: existingMeta?.previousVersionId,
-            supersededAt: existingMeta?.supersededAt,
-            deletedAt: existingMeta?.deletedAt
-        })
-        await this.documents.writeHead(collection, {
-            version: 1,
-            lineageId,
-            currentVersionId: docId,
-            deleted: false
-        })
-        return { lineageId, data: doc, headPath: this.headPath(collection, lineageId) }
-    }
-    /** @param {string} collection @param {string} lineageId @param {TTID} headDocId @param {'create' | 'advance'} headOperation @returns {FyloWormWriteSyncInfo} */
-    buildWormWriteSyncInfo(collection, lineageId, headDocId, headOperation) {
-        return {
-            lineageId,
-            headOperation,
-            headDocId,
-            headPath: this.headPath(collection, lineageId)
-        }
-    }
-    /** @param {{ collection: string, lineageId: string, headDocId: TTID, deleteMode: 'physical' | 'tombstone', versionPath?: string }} args @returns {FyloWormDeleteSyncInfo} */
-    buildWormDeleteSyncInfo(args) {
-        return {
-            lineageId: args.lineageId,
-            headOperation: 'delete',
-            headDocId: args.headDocId,
-            headPath: this.headPath(args.collection, args.lineageId),
-            deleteMode: args.deleteMode,
-            versionPath: args.versionPath
-        }
+        await this.assertNoLegacyWormArtifacts(collection)
+        return await this.documents.listDocIds(collection)
     }
     /**
-     * Advances a lineage from one document version to another.
+     * Overwrites a mutable document while preserving its identity.
      * @param {string} collection
-     * @param {TTID} oldId
-     * @param {TTID} newId
+     * @param {TTID} docId
      * @param {Record<string, any>} nextDoc
      * @param {Record<string, any>} oldDoc
      * @returns {Promise<TTID>}
      */
-    async advanceDocumentVersion(collection, oldId, newId, nextDoc, oldDoc) {
-        validateDocId(oldId)
-        validateDocId(newId)
+    async updateDocument(collection, docId, nextDoc, oldDoc) {
+        validateDocId(docId)
+        if (this.wormEnabled()) throw new Error('Update is not allowed in WORM mode')
+        await this.assertNoLegacyWormArtifacts(collection)
         return await this.withCollectionWriteLock(collection, async () => {
             const owner = Bun.randomUUIDv7()
-            if (!(await this.locks.acquire(collection, oldId, owner)))
-                throw new Error(`Unable to acquire filesystem lock for ${oldId}`)
-            const oldPath = this.docPath(collection, oldId)
+            if (!(await this.locks.acquire(collection, docId, owner)))
+                throw new Error(`Unable to acquire filesystem lock for ${docId}`)
+            const targetPath = this.docPath(collection, docId)
             try {
                 const existing =
-                    oldDoc ?? (await this.documents.readStoredDoc(collection, oldId))?.data
-                if (!existing) return oldId
-                const newPath = this.docPath(collection, newId)
-                await this.removeIndexes(collection, oldId, existing)
-                if (!this.wormEnabled()) {
-                    await this.documents.removeStoredDoc(collection, oldId)
-                }
-                await this.publishDocumentEvent(collection, {
-                    ts: Date.now(),
-                    action: 'delete',
-                    id: oldId,
-                    doc: await this.encodeEncrypted(collection, existing)
-                })
-                await this.documents.writeStoredDoc(collection, newId, nextDoc)
-                await this.rebuildIndexes(collection, newId, nextDoc)
-                /** @type {FyloWormWriteSyncInfo | undefined} */
-                let wormWriteInfo
-                if (this.wormEnabled()) {
-                    const oldMeta = await this.documents.readVersionMeta(collection, oldId)
-                    const lineageId = oldMeta?.lineageId ?? oldId
-                    await this.documents.writeVersionMeta(collection, {
-                        version: 1,
-                        versionId: oldId,
-                        lineageId,
-                        previousVersionId: oldMeta?.previousVersionId,
-                        supersededAt: Date.now(),
-                        deletedAt: oldMeta?.deletedAt
-                    })
-                    await this.documents.writeVersionMeta(collection, {
-                        version: 1,
-                        versionId: newId,
-                        lineageId,
-                        previousVersionId: oldId
-                    })
-                    await this.documents.writeHead(collection, {
-                        version: 1,
-                        lineageId,
-                        currentVersionId: newId,
-                        deleted: false
-                    })
-                    wormWriteInfo = this.buildWormWriteSyncInfo(
-                        collection,
-                        lineageId,
-                        newId,
-                        'advance'
-                    )
-                }
+                    oldDoc ?? (await this.documents.readStoredDoc(collection, docId))?.data
+                if (!existing) return docId
+                await this.removeIndexes(collection, docId, existing)
+                await this.documents.writeStoredDoc(collection, docId, nextDoc)
+                await this.rebuildIndexes(collection, docId, nextDoc)
                 await this.publishDocumentEvent(collection, {
                     ts: Date.now(),
                     action: 'insert',
-                    id: newId,
+                    id: docId,
                     doc: await this.encodeEncrypted(collection, nextDoc)
                 })
-                await this.runSyncTask(collection, newId, 'patch', newPath, async () => {
-                    if (!this.wormEnabled()) {
-                        await this.syncDelete({
-                            operation: 'patch',
-                            collection,
-                            docId: oldId,
-                            path: oldPath
-                        })
-                    }
+                await this.runSyncTask(collection, docId, 'patch', targetPath, async () => {
                     await this.syncWrite({
                         operation: 'patch',
                         collection,
-                        docId: newId,
-                        previousDocId: oldId,
-                        path: newPath,
-                        data: nextDoc,
-                        worm: wormWriteInfo
+                        docId,
+                        path: targetPath,
+                        data: nextDoc
                     })
                 })
-                return newId
+                return docId
             } finally {
-                await this.locks.release(collection, oldId, owner)
+                await this.locks.release(collection, docId, owner)
             }
         })
     }
@@ -430,6 +319,9 @@ export class FilesystemEngine {
     }
     /** @param {string} collection @returns {Promise<void>} */
     async dropCollection(collection) {
+        if (this.wormEnabled() && (await this.documents.listDocIds(collection)).length > 0) {
+            throw new Error('Drop is not allowed for a non-empty WORM collection')
+        }
         await this.storage.rmdir(this.collectionRoot(collection))
     }
     /** @param {string} collection @returns {Promise<boolean>} */
@@ -445,40 +337,22 @@ export class FilesystemEngine {
                 exists: false,
                 worm: false,
                 docsStored: 0,
-                indexedDocs: 0,
-                headFiles: 0,
-                activeHeads: 0,
-                deletedHeads: 0,
-                versionMetas: 0
+                deletedDocs: 0,
+                indexedDocs: 0
             }
         }
-        const [docIds, indexedDocs, headFiles, versionFiles] = await Promise.all([
+        const [docIds, deletedDocIds, indexedDocs] = await Promise.all([
             this.documents.listDocIds(collection),
-            this.index.countDocuments(collection),
-            this.storage.list(this.headsRoot(collection)),
-            this.storage.list(this.versionsRoot(collection))
+            this.documents.listDeletedDocIds(collection),
+            this.index.countDocuments(collection)
         ])
-        let headCount = 0
-        let activeHeads = 0
-        let deletedHeads = 0
-        for (const headFile of headFiles) {
-            if (!headFile.endsWith('.json')) continue
-            headCount++
-            const head = JSON.parse(await this.storage.read(headFile))
-            if (head.deleted) deletedHeads++
-            else activeHeads++
-        }
-        const versionMetas = versionFiles.filter((file) => file.endsWith('.meta.json')).length
         return {
             collection,
             exists: true,
-            worm: this.wormEnabled() || headCount > 0 || versionMetas > 0,
+            worm: this.wormEnabled(),
             docsStored: docIds.length,
-            indexedDocs,
-            headFiles: headCount,
-            activeHeads,
-            deletedHeads,
-            versionMetas
+            deletedDocs: deletedDocIds.length,
+            indexedDocs
         }
     }
     /** @param {string} collection @param {any} value @param {string} [parentField] @returns {Promise<any>} */
@@ -577,7 +451,25 @@ export class FilesystemEngine {
             const data = /** @type {Record<string, any>} */ (
                 await materializeDoc(collection, stored.data)
             )
-            if (!this.queryEngine.matchesQuery(id, data, query)) continue
+            if (!this.queryEngine.matchesQuery(id, data, query, stored)) continue
+            results.push({ [id]: data })
+            if (limit && results.length >= limit) break
+        }
+        return results
+    }
+    /** @param {string} collection @param {StoreQuery | undefined} [query] @returns {Promise<Array<Record<string, Record<string, any>>>>} */
+    async deletedDocResults(collection, query) {
+        const ids = await this.documents.listDeletedDocIds(collection)
+        const limit = query?.$limit
+        /** @type {Array<Record<string, Record<string, any>>>} */
+        const results = []
+        for (const id of ids) {
+            const stored = await this.documents.readDeletedDoc(collection, id)
+            if (!stored) continue
+            const data = /** @type {Record<string, any>} */ (
+                await materializeDoc(collection, stored.data)
+            )
+            if (!this.queryEngine.matchesDeletedQuery(id, data, query, stored)) continue
             results.push({ [id]: data })
             if (limit && results.length >= limit) break
         }
@@ -596,113 +488,10 @@ export class FilesystemEngine {
         return await this.withCollectionWriteLock(collection, async () => {
             await this.ensureCollection(collection)
             const docIds = await this.documents.listDocIds(collection)
-            const docs = new Map()
+            let indexedDocs = 0
+            await this.resetIndex(collection)
             for (const docId of docIds) {
                 const stored = await this.documents.readStoredDoc(collection, docId)
-                if (stored) docs.set(docId, stored)
-            }
-            let indexedDocs = 0
-            let headsRebuilt = 0
-            let versionMetasRebuilt = 0
-            let staleHeadsRemoved = 0
-            let staleVersionMetasRemoved = 0
-            await this.resetIndex(collection)
-            if (!this.wormEnabled()) {
-                for (const [docId, stored] of docs) {
-                    await this.index.putDocument(collection, docId, stored.data)
-                    indexedDocs++
-                }
-                emitFyloEvent(this.onEvent, {
-                    type: 'index.rebuilt',
-                    collection,
-                    docsScanned: docs.size,
-                    indexedDocs,
-                    worm: false
-                })
-                return {
-                    collection,
-                    worm: false,
-                    docsScanned: docs.size,
-                    indexedDocs,
-                    headsRebuilt,
-                    versionMetasRebuilt,
-                    staleHeadsRemoved,
-                    staleVersionMetasRemoved
-                }
-            }
-            /** @type {Map<string, Array<{ docId: TTID, stored: StoredDoc, meta: StoredVersionMeta | null }>>} */
-            const grouped = new Map()
-            for (const [docId, stored] of docs) {
-                const meta = await this.documents.readVersionMeta(collection, docId)
-                const bucket = meta?.lineageId
-                    ? this.inferredLineageBucket(meta.lineageId)
-                    : this.inferredLineageBucket(docId)
-                const entries = grouped.get(bucket) ?? []
-                entries.push({ docId, stored, meta })
-                grouped.set(bucket, entries)
-            }
-            /** @type {TTID[]} */
-            const activeDocIds = []
-            /** @type {Set<string>} */
-            const validLineageIds = new Set()
-            /** @type {Set<TTID>} */
-            const validVersionIds = new Set()
-            for (const entries of grouped.values()) {
-                entries.sort((left, right) => left.stored.updatedAt - right.stored.updatedAt)
-                const lineageId =
-                    entries.find((entry) => entry.meta?.lineageId)?.meta?.lineageId ??
-                    entries[0]?.docId
-                if (!lineageId) continue
-                validLineageIds.add(lineageId)
-                const existingHead = await this.documents.readHead(collection, lineageId)
-                const currentHead = entries.at(-1)
-                if (!currentHead) continue
-                for (let index = 0; index < entries.length; index++) {
-                    const entry = entries[index]
-                    const next = entries[index + 1]
-                    validVersionIds.add(entry.docId)
-                    await this.documents.writeVersionMeta(collection, {
-                        version: 1,
-                        versionId: entry.docId,
-                        lineageId,
-                        previousVersionId: index > 0 ? entries[index - 1].docId : undefined,
-                        supersededAt: next ? next.stored.updatedAt : undefined,
-                        deletedAt:
-                            existingHead?.deleted && currentHead.docId === entry.docId
-                                ? existingHead.deletedAt
-                                : entry.meta?.deletedAt
-                    })
-                    versionMetasRebuilt++
-                }
-                const headMeta = await this.documents.readVersionMeta(collection, currentHead.docId)
-                const deleted = Boolean(existingHead?.deleted || headMeta?.deletedAt)
-                const deletedAt = existingHead?.deletedAt ?? headMeta?.deletedAt
-                await this.documents.writeHead(collection, {
-                    version: 1,
-                    lineageId,
-                    currentVersionId: currentHead.docId,
-                    deleted,
-                    deletedAt
-                })
-                headsRebuilt++
-                if (!deleted) activeDocIds.push(currentHead.docId)
-            }
-            for (const headFile of await this.storage.list(this.headsRoot(collection))) {
-                if (!headFile.endsWith('.json')) continue
-                const lineageId = path.basename(headFile, '.json')
-                if (validLineageIds.has(lineageId)) continue
-                await this.storage.delete(headFile)
-                staleHeadsRemoved++
-            }
-            for (const versionFile of await this.storage.list(this.versionsRoot(collection))) {
-                if (!versionFile.endsWith('.meta.json')) continue
-                const versionId = path.basename(versionFile, '.meta.json')
-                if (validVersionIds.has(versionId)) continue
-                await this.storage.delete(versionFile)
-                staleVersionMetasRemoved++
-            }
-            for (const docId of activeDocIds) {
-                const stored = docs.get(docId)
                 if (!stored) continue
                 await this.index.putDocument(collection, docId, stored.data)
                 indexedDocs++
@@ -710,44 +499,39 @@ export class FilesystemEngine {
             emitFyloEvent(this.onEvent, {
                 type: 'index.rebuilt',
                 collection,
-                docsScanned: docs.size,
+                docsScanned: docIds.length,
                 indexedDocs,
-                worm: true
+                worm: this.wormEnabled()
             })
             return {
                 collection,
-                worm: true,
-                docsScanned: docs.size,
-                indexedDocs,
-                headsRebuilt,
-                versionMetasRebuilt,
-                staleHeadsRemoved,
-                staleVersionMetasRemoved
+                worm: this.wormEnabled(),
+                docsScanned: docIds.length,
+                indexedDocs
             }
         })
     }
     /** @param {string} collection @param {TTID} docId @param {Record<string, any>} doc @returns {Promise<void>} */
     async putDocument(collection, docId, doc) {
         validateDocId(docId)
+        await this.assertNoLegacyWormArtifacts(collection)
         await this.withCollectionWriteLock(collection, async () => {
             const owner = Bun.randomUUIDv7()
             if (!(await this.locks.acquire(collection, docId, owner)))
                 throw new Error(`Unable to acquire filesystem lock for ${docId}`)
             const targetPath = this.docPath(collection, docId)
-            /** @type {{ lineageId: string, headPath: string } | undefined} */
-            let wormInfo
             try {
                 const existing = await this.documents.readStoredDoc(collection, docId)
+                if (await this.documents.readDeletedDoc(collection, docId)) {
+                    throw new Error(`Document is soft-deleted; restore it before writing: ${docId}`)
+                }
+                if (existing && this.wormEnabled())
+                    throw new Error('Update is not allowed in WORM mode')
                 if (existing) await this.removeIndexes(collection, docId, existing.data)
                 await this.documents.writeStoredDoc(collection, docId, doc)
-                if (this.wormEnabled()) {
-                    const initialized = await this.initializeWormVersion(collection, docId, doc)
-                    wormInfo = {
-                        lineageId: initialized.lineageId,
-                        headPath: initialized.headPath
-                    }
-                }
                 await this.rebuildIndexes(collection, docId, doc)
+                if (this.wormEnabled())
+                    await this.documents.makeStoredDocReadOnly(collection, docId)
                 await this.publishDocumentEvent(collection, {
                     ts: Date.now(),
                     action: 'insert',
@@ -760,15 +544,7 @@ export class FilesystemEngine {
                         collection,
                         docId,
                         path: targetPath,
-                        data: doc,
-                        worm: wormInfo
-                            ? this.buildWormWriteSyncInfo(
-                                  collection,
-                                  wormInfo.lineageId,
-                                  docId,
-                                  'create'
-                              )
-                            : undefined
+                        data: doc
                     })
                 })
             } finally {
@@ -778,92 +554,100 @@ export class FilesystemEngine {
     }
     /** @param {string} collection @param {TTID} oldId @param {TTID} newId @param {Record<string, any>} patch @param {Record<string, any>} oldDoc @returns {Promise<TTID>} */
     async patchDocument(collection, oldId, newId, patch, oldDoc) {
+        if (this.wormEnabled()) throw new Error('Update is not allowed in WORM mode')
         const existing = oldDoc ?? (await this.documents.readStoredDoc(collection, oldId))?.data
         if (!existing) return oldId
         const nextDoc = { ...existing, ...patch }
-        return await this.advanceDocumentVersion(collection, oldId, newId, nextDoc, existing)
+        return await this.updateDocument(collection, oldId, nextDoc, existing)
     }
     /** @param {string} collection @param {TTID} oldId @param {TTID} newId @param {Record<string, any>} doc @param {Record<string, any>} [oldDoc] @returns {Promise<TTID>} */
     async replaceDocumentVersion(collection, oldId, newId, doc, oldDoc) {
-        if (oldDoc) return await this.advanceDocumentVersion(collection, oldId, newId, doc, oldDoc)
+        if (this.wormEnabled()) throw new Error('Update is not allowed in WORM mode')
+        if (oldDoc) return await this.updateDocument(collection, oldId, doc, oldDoc)
         const stored = await this.documents.readStoredDoc(collection, oldId)
+        if (!stored && (await this.documents.readDeletedDoc(collection, oldId))) {
+            throw new Error(`Document is soft-deleted; restore it before writing: ${oldId}`)
+        }
         if (!stored) return oldId
-        return await this.advanceDocumentVersion(collection, oldId, newId, doc, stored.data)
+        return await this.updateDocument(collection, oldId, doc, stored.data)
     }
     /** @param {string} collection @param {TTID} docId @returns {Promise<void>} */
     async deleteDocument(collection, docId) {
         validateDocId(docId)
-        if (this.wormEnabled() && this.worm.deletePolicy === 'reject')
-            throw new Error('Delete is not allowed in WORM mode')
+        if (this.wormEnabled()) throw new Error('Delete is not allowed in WORM mode')
+        await this.assertNoLegacyWormArtifacts(collection)
         await this.withCollectionWriteLock(collection, async () => {
             const owner = Bun.randomUUIDv7()
             if (!(await this.locks.acquire(collection, docId, owner)))
                 throw new Error(`Unable to acquire filesystem lock for ${docId}`)
-            const targetPath = this.docPath(collection, docId)
             try {
                 const existing = await this.documents.readStoredDoc(collection, docId)
                 if (!existing) return
-                if (this.wormEnabled() && this.worm.deletePolicy === 'tombstone') {
-                    const head = await this.documents.resolveHead(collection, docId)
-                    const lineageId = head?.lineageId ?? docId
-                    const headPath = this.headPath(collection, lineageId)
-                    const deletedAt = Date.now()
-                    await this.removeIndexes(collection, docId, existing.data)
-                    const existingMeta = await this.documents.readVersionMeta(collection, docId)
-                    await this.documents.writeVersionMeta(collection, {
-                        version: 1,
-                        versionId: docId,
-                        lineageId,
-                        previousVersionId: existingMeta?.previousVersionId,
-                        supersededAt: existingMeta?.supersededAt,
-                        deletedAt
-                    })
-                    await this.documents.writeHead(collection, {
-                        version: 1,
-                        lineageId,
-                        currentVersionId: docId,
-                        deleted: true,
-                        deletedAt
-                    })
-                    await this.publishDocumentEvent(collection, {
-                        ts: Date.now(),
-                        action: 'delete',
-                        id: docId,
-                        doc: await this.encodeEncrypted(collection, existing.data)
-                    })
-                    await this.runSyncTask(collection, docId, 'delete', targetPath, async () => {
-                        await this.syncDelete({
-                            operation: 'delete',
-                            collection,
-                            docId,
-                            path: headPath,
-                            worm: this.buildWormDeleteSyncInfo({
-                                collection,
-                                lineageId,
-                                headDocId: docId,
-                                deleteMode: 'tombstone',
-                                versionPath: targetPath
-                            })
-                        })
-                    })
-                    return
-                }
                 await this.removeIndexes(collection, docId, existing.data)
-                await this.documents.removeStoredDoc(collection, docId)
+                const deletedAt = Date.now()
+                const deletedPath = await this.documents.softDeleteStoredDoc(
+                    collection,
+                    docId,
+                    deletedAt
+                )
                 await this.publishDocumentEvent(collection, {
-                    ts: Date.now(),
+                    ts: deletedAt,
                     action: 'delete',
                     id: docId,
-                    doc: await this.encodeEncrypted(collection, existing.data)
+                    doc: await this.encodeEncrypted(collection, existing.data),
+                    createdAt: existing.createdAt,
+                    updatedAt: existing.updatedAt
                 })
-                await this.runSyncTask(collection, docId, 'delete', targetPath, async () => {
+                await this.runSyncTask(collection, docId, 'delete', deletedPath, async () => {
                     await this.syncDelete({
                         operation: 'delete',
                         collection,
                         docId,
-                        path: targetPath
+                        path: deletedPath
                     })
                 })
+            } finally {
+                await this.locks.release(collection, docId, owner)
+            }
+        })
+    }
+    /** @param {string} collection @param {TTID} docId @returns {Promise<TTID>} */
+    async restoreDocument(collection, docId) {
+        validateDocId(docId)
+        if (this.wormEnabled()) throw new Error('Restore is not allowed in WORM mode')
+        await this.assertNoLegacyWormArtifacts(collection)
+        return await this.withCollectionWriteLock(collection, async () => {
+            const owner = Bun.randomUUIDv7()
+            if (!(await this.locks.acquire(collection, docId, owner)))
+                throw new Error(`Unable to acquire filesystem lock for ${docId}`)
+            try {
+                if (await this.documents.readStoredDoc(collection, docId)) {
+                    throw new Error(`Cannot restore document because it already exists: ${docId}`)
+                }
+                const deleted = await this.documents.readDeletedDoc(collection, docId)
+                if (!deleted) throw new Error(`Deleted document not found: ${docId}`)
+                const restoredPath = await this.documents.restoreStoredDoc(
+                    collection,
+                    docId,
+                    Date.now()
+                )
+                await this.rebuildIndexes(collection, docId, deleted.data)
+                await this.publishDocumentEvent(collection, {
+                    ts: Date.now(),
+                    action: 'insert',
+                    id: docId,
+                    doc: await this.encodeEncrypted(collection, deleted.data)
+                })
+                await this.runSyncTask(collection, docId, 'restore', restoredPath, async () => {
+                    await this.syncWrite({
+                        operation: 'restore',
+                        collection,
+                        docId,
+                        path: restoredPath,
+                        data: deleted.data
+                    })
+                })
+                return docId
             } finally {
                 await this.locks.release(collection, docId, owner)
             }
@@ -885,6 +669,7 @@ export class FilesystemEngine {
             },
             /** @returns {Promise<Record<TTID, Record<string, any>>>} */
             async once() {
+                await engine.assertNoLegacyWormArtifacts(collection)
                 const stored = await engine.documents.readStoredDoc(collection, docId)
                 if (!stored) return {}
                 const data = /** @type {Record<string, any>} */ (
@@ -902,46 +687,14 @@ export class FilesystemEngine {
     /** @param {string} collection @param {TTID} docId @param {boolean} [onlyId] @returns {Promise<Record<TTID, Record<string, any>> | TTID | null>} */
     async getLatest(collection, docId, onlyId = false) {
         validateDocId(docId)
-        const head = await this.resolveHead(collection, docId)
-        if (!head || head.deleted) return onlyId ? null : {}
-        const stored = await this.documents.readStoredDoc(collection, head.currentVersionId)
+        await this.assertNoLegacyWormArtifacts(collection)
+        const stored = await this.documents.readStoredDoc(collection, docId)
         if (!stored) return onlyId ? null : {}
         if (onlyId) return stored.id
         const data = /** @type {Record<string, any>} */ (
             await materializeDoc(collection, stored.data)
         )
         return { [stored.id]: data }
-    }
-    /** @param {string} collection @param {TTID} docId @returns {Promise<any[]>} */
-    async getHistory(collection, docId) {
-        validateDocId(docId)
-        const head = await this.resolveHead(collection, docId)
-        if (!head) return []
-        const history = []
-        let currentId = head.currentVersionId
-        while (currentId) {
-            const stored = await this.documents.readStoredDoc(collection, currentId)
-            if (!stored) break
-            const meta = this.wormEnabled()
-                ? await this.documents.readVersionMeta(collection, currentId)
-                : null
-            history.push({
-                ...stored,
-                lineageId: meta?.lineageId ?? head.lineageId,
-                previousVersionId: meta?.previousVersionId,
-                supersededAt: meta?.supersededAt,
-                isHead: currentId === head.currentVersionId,
-                deleted: Boolean(
-                    currentId === head.currentVersionId && (head.deleted || meta?.deletedAt)
-                ),
-                deletedAt:
-                    currentId === head.currentVersionId
-                        ? (head.deletedAt ?? meta?.deletedAt)
-                        : undefined
-            })
-            currentId = meta?.previousVersionId ?? ''
-        }
-        return history
     }
     /** @param {string} collection @param {StoreQuery | undefined} query @returns {any} */
     findDocs(collection, query) {
@@ -959,7 +712,9 @@ export class FilesystemEngine {
                 for await (const event of engine.events.listen(collection)) {
                     if (event.action !== 'insert' || !event.doc) continue
                     const doc = await engine.decodeEncrypted(collection, event.doc)
-                    if (!engine.queryEngine.matchesQuery(event.id, doc, query)) continue
+                    const stored = await engine.documents.readStoredDoc(collection, event.id)
+                    if (!stored || !engine.queryEngine.matchesQuery(event.id, doc, query, stored))
+                        continue
                     const processed = engine.queryEngine.processDoc({ [event.id]: doc }, query)
                     if (processed !== undefined) yield processed
                 }
@@ -971,9 +726,34 @@ export class FilesystemEngine {
                 for await (const event of engine.events.listen(collection)) {
                     if (event.action !== 'delete' || !event.doc) continue
                     const doc = await engine.decodeEncrypted(collection, event.doc)
-                    if (!engine.queryEngine.matchesQuery(event.id, doc, query)) continue
+                    if (
+                        !engine.queryEngine.matchesQuery(event.id, doc, query, {
+                            createdAt: event.createdAt ?? event.ts,
+                            updatedAt: event.updatedAt ?? event.ts
+                        })
+                    )
+                        continue
                     yield event.id
                 }
+            }
+        }
+    }
+    /** @param {string} collection @param {StoreQuery | undefined} query @returns {any} */
+    findDeletedDocs(collection, query) {
+        const engine = this
+        const collectDocs = async function* () {
+            const docs = await engine.deletedDocResults(collection, query)
+            for (const doc of docs) {
+                const result = engine.queryEngine.processDoc(doc, query)
+                if (result !== undefined) yield result
+            }
+        }
+        return {
+            async *[Symbol.asyncIterator]() {
+                yield* collectDocs()
+            },
+            async *collect() {
+                yield* collectDocs()
             }
         }
     }

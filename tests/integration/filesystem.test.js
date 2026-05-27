@@ -40,26 +40,133 @@ describe('filesystem engine', () => {
             tags: ['bun', 'storage'],
             meta: { score: 1 }
         })
+        const activePath = path.join(
+            root,
+            '.collections',
+            POSTS,
+            'docs',
+            id.slice(0, 2),
+            `${id}.json`
+        )
+        const createdTime = (await stat(activePath)).mtimeMs
         const created = await fylo.getDoc(POSTS, id).once()
         expect(created[id].title).toBe('Hello')
         expect(created[id].tags).toEqual(['bun', 'storage'])
+        await Bun.sleep(10)
         const nextId = await fylo.patchDoc(POSTS, {
             [id]: {
                 title: 'Hello 2',
                 meta: { score: 2 }
             }
         })
+        expect(nextId).toBe(id)
         const updated = await fylo.getDoc(POSTS, nextId).once()
         expect(updated[nextId].title).toBe('Hello 2')
         expect(updated[nextId].meta.score).toBe(2)
-        expect(await fylo.getDoc(POSTS, id).once()).toEqual({})
+        expect((await stat(activePath)).mtimeMs).toBeGreaterThan(createdTime)
         await fylo.delDoc(POSTS, nextId)
         expect(await fylo.getDoc(POSTS, nextId).once()).toEqual({})
+        const deletedPath = path.join(
+            root,
+            '.collections',
+            POSTS,
+            '.deleted',
+            id.slice(0, 2),
+            `${id}.json`
+        )
+        expect(await Bun.file(activePath).exists()).toBe(false)
+        expect(await Bun.file(deletedPath).exists()).toBe(true)
     })
     test('stores collection data under .collections', async () => {
         expect(await isDirectory(path.join(root, '.collections', POSTS, 'docs'))).toBe(true)
         expect(await isDirectory(path.join(root, '.collections', POSTS, 'index'))).toBe(true)
         expect(await isDirectory(path.join(root, POSTS))).toBe(false)
+    })
+    test('queries updatedAt from the stable document file modification time', async () => {
+        const id = await fylo.putData(POSTS, { title: 'Timestamp v1' })
+        await Bun.sleep(10)
+        await fylo.patchDoc(POSTS, { [id]: { title: 'Timestamp v2' } })
+        const target = path.join(root, '.collections', POSTS, 'docs', id.slice(0, 2), `${id}.json`)
+        const updatedAt = (await stat(target)).mtimeMs
+        const results = []
+        for await (const doc of fylo.findDocs(POSTS, { $updated: { $gte: updatedAt } }).collect()) {
+            results.push(doc)
+        }
+        expect(results.some((doc) => Object.hasOwn(doc, id))).toBe(true)
+    })
+    test('delete listeners filter using stored document timestamps', async () => {
+        const id = await fylo.putData(POSTS, { title: 'Deleted timestamp' })
+        const target = path.join(root, '.collections', POSTS, 'docs', id.slice(0, 2), `${id}.json`)
+        const updatedAt = (await stat(target)).mtimeMs
+        const deletes = fylo
+            .findDocs(POSTS, {
+                $ops: [{ title: { $eq: 'Deleted timestamp' } }],
+                $updated: { $lte: updatedAt }
+            })
+            .onDelete()
+            [Symbol.asyncIterator]()
+        const pending = deletes.next()
+
+        await Bun.sleep(10)
+        await fylo.delDoc(POSTS, id)
+
+        expect((await pending).value).toBe(id)
+        await deletes.return?.()
+    })
+    test('soft deletes are read-only and queryable by deletion time, then restorable', async () => {
+        const id = await fylo.putData(POSTS, { title: 'Restore me', status: 'archived' })
+        const deletedAtFloor = Date.now()
+
+        await fylo.delDoc(POSTS, id)
+
+        const deletedPath = path.join(
+            root,
+            '.collections',
+            POSTS,
+            '.deleted',
+            id.slice(0, 2),
+            `${id}.json`
+        )
+        const deletedMetadata = await stat(deletedPath)
+        expect(deletedMetadata.mtimeMs).toBeGreaterThanOrEqual(deletedAtFloor)
+        expect(deletedMetadata.mode & 0o777).toBe(0o444)
+
+        const deleted = []
+        for await (const doc of fylo
+            .findDeletedDocs(POSTS, {
+                $ops: [{ title: { $eq: 'Restore me' } }],
+                $deleted: { $gte: deletedAtFloor }
+            })
+            .collect()) {
+            deleted.push(doc)
+        }
+        expect(deleted).toEqual([{ [id]: { title: 'Restore me', status: 'archived' } }])
+        await expect(
+            fylo.putData(POSTS, { [id]: { title: 'Bypass restore', status: 'archived' } })
+        ).rejects.toThrow('soft-deleted')
+
+        await fylo.restoreDoc(POSTS, id)
+
+        const activePath = path.join(
+            root,
+            '.collections',
+            POSTS,
+            'docs',
+            id.slice(0, 2),
+            `${id}.json`
+        )
+        expect(await Bun.file(deletedPath).exists()).toBe(false)
+        expect((await stat(activePath)).mode & 0o777).toBe(0o644)
+        expect(await fylo.getDoc(POSTS, id).once()).toEqual({
+            [id]: { title: 'Restore me', status: 'archived' }
+        })
+        const queried = []
+        for await (const doc of fylo
+            .findDocs(POSTS, { $ops: [{ status: { $eq: 'archived' } }] })
+            .collect()) {
+            queried.push(doc)
+        }
+        expect(queried.some((doc) => Object.hasOwn(doc, id))).toBe(true)
     })
     test('findDocs listener is backed by the filesystem event journal', async () => {
         const iter = fylo
@@ -237,6 +344,7 @@ describe('filesystem engine', () => {
         await fylo.createCollection(collection)
         const firstId = await fylo.putData(collection, { tags: ['alpha', 'beta'] })
         const secondId = await fylo.patchDoc(collection, { [firstId]: { tags: ['beta', 'gamma'] } })
+        expect(secondId).toBe(firstId)
 
         let oldResults = {}
         for await (const data of fylo

@@ -32,8 +32,6 @@ import '../core/extensions.js'
  * @typedef {import('../replication/sync.js').FyloDeleteSyncEvent} FyloDeleteSyncEvent
  * @typedef {import('../replication/sync.js').FyloWormMode} FyloWormMode
  * @typedef {import('../replication/sync.js').FyloWormOptions} FyloWormOptions
- * @typedef {import('../replication/sync.js').FyloWormWriteSyncInfo} FyloWormWriteSyncInfo
- * @typedef {import('../replication/sync.js').FyloWormDeleteSyncInfo} FyloWormDeleteSyncInfo
  * @typedef {import('../observability/events.js').FyloEvent} FyloEvent
  * @typedef {import('../observability/events.js').FyloEventHandler} FyloEventHandler
  * @typedef {import('../query/types.js').StoreDelete<Record<string, any>>} StoreDelete
@@ -47,6 +45,7 @@ import '../core/extensions.js'
  * @typedef {import('../queue/local.js').LocalQueue} LocalQueueInstance
  * @typedef {import('../types/fylo.js').GetDocResult<Record<string, any>>} GetDocResult
  * @typedef {import('../types/fylo.js').FindDocsResult<Record<string, any>>} FindDocsResult
+ * @typedef {import('../types/fylo.js').DeletedDocsResult<Record<string, any>>} DeletedDocsResult
  * @typedef {import('../types/fylo.js').JoinDocsResult<Record<string, any>, Record<string, any>>} JoinDocsResult
  */
 
@@ -54,19 +53,6 @@ import '../core/extensions.js'
  * @typedef {import('../security/import-guard.js').ImportBulkDataOptions} ImportBulkDataOptions
  */
 
-/**
- * @typedef {object} FyloHistoryEntry
- * @property {TTIDValue} id
- * @property {number} createdAt
- * @property {number} updatedAt
- * @property {Record<string, any>} data
- * @property {TTIDValue} lineageId
- * @property {TTIDValue=} previousVersionId
- * @property {number=} supersededAt
- * @property {boolean} isHead
- * @property {boolean} deleted
- * @property {number=} deletedAt
- */
 export default class Fylo {
     /** @type {string | undefined} */
     static LOGGING = process.env.FYLO_LOGGING
@@ -317,12 +303,6 @@ export default class Fylo {
         if (onlyId) return await this.engine.getLatest(collection, _id, true)
         return await this.engine.getLatest(collection, _id)
     }
-    /** @param {string} collection @param {TTIDValue} _id @returns {Promise<FyloHistoryEntry[]>} */
-    async getHistory(collection, _id) {
-        await this.ready()
-        validateDocId(_id)
-        return await this.engine.getHistory(collection, _id)
-    }
     /** @param {string} collection @param {StoreQuery} query @returns {FindDocsResult} */
     findDocs(collection, query) {
         const source = this.ready().then(() => this.engine.findDocs(collection, query))
@@ -335,6 +315,24 @@ export default class Fylo {
             },
             async *onDelete() {
                 yield* (await source).onDelete()
+            }
+        }
+    }
+    /**
+     * Finds retained soft-deleted documents; `$deleted` filters tombstone
+     * modification time, which FYLO records at soft delete.
+     * @param {string} collection
+     * @param {StoreQuery} [query]
+     * @returns {DeletedDocsResult}
+     */
+    findDeletedDocs(collection, query = {}) {
+        const source = this.ready().then(() => this.engine.findDeletedDocs(collection, query))
+        return {
+            async *[Symbol.asyncIterator]() {
+                yield* await source
+            },
+            async *collect() {
+                yield* (await source).collect()
             }
         }
     }
@@ -584,7 +582,7 @@ export default class Fylo {
         await this.loadEncryptionWithEvent(collection)
         const currId = Object.keys(data).shift()
         const hasExistingId = typeof currId === 'string' && TTID.isTTID(currId)
-        const _id = hasExistingId ? await Fylo.uniqueTTID(currId) : await Fylo.uniqueTTID(undefined)
+        const _id = hasExistingId ? currId : await Fylo.uniqueTTID(undefined)
         let doc = hasExistingId ? Object.values(data).shift() : data
         if (Fylo.STRICT) doc = await validateAgainstHead(collection, doc)
         return { _id, doc, previousId: hasExistingId ? currId : undefined }
@@ -612,12 +610,11 @@ export default class Fylo {
         if (!existingDoc) return _id
         const currData = { ...existingDoc, ...newDoc[_id] }
         let docToWrite = currData
-        const _newId = await Fylo.uniqueTTID(_id)
         if (Fylo.STRICT) docToWrite = await validateAgainstHead(collection, currData)
         const nextId = await this.engine.patchDocument(
             collection,
             _id,
-            _newId,
+            _id,
             docToWrite,
             existingDoc
         )
@@ -680,6 +677,17 @@ export default class Fylo {
     /** @param {string} collection @param {TTIDValue} _id @returns {Promise<void>} */
     async delDoc(collection, _id) {
         await this.executeDelDocDirect(collection, _id)
+    }
+    /**
+     * Restores a retained soft-deleted document to the live collection.
+     * @param {string} collection
+     * @param {TTIDValue} _id
+     * @returns {Promise<TTIDValue>}
+     */
+    async restoreDoc(collection, _id) {
+        await this.ready()
+        validateDocId(_id)
+        return await this.engine.restoreDocument(collection, _id)
     }
     /**
      * Deletes documents from a collection.
@@ -840,17 +848,6 @@ export class AuthenticatedFylo {
         const [, doc] = entries[0]
         if (!(await this._isVisible(collection, doc))) return {}
         return result
-    }
-    /** @param {string} collection @param {TTIDValue} _id @returns {Promise<FyloHistoryEntry[]>} */
-    async getHistory(collection, _id) {
-        await this._authorize({ action: 'doc:read', collection, docId: _id })
-        const history = await this.fylo.getHistory(collection, _id)
-        if (history.length === 0) return history
-        // History is per-lineage; if the head version is invisible to the
-        // user, the whole lineage is hidden. Otherwise return all entries.
-        const headEntry = history.find((e) => e.isHead)
-        if (headEntry && !(await this._isVisible(collection, headEntry.data))) return []
-        return history
     }
     /** @param {string} collection @param {StoreQuery} query @returns {FindDocsResult} */
     findDocs(collection, query) {

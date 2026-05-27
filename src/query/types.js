@@ -66,6 +66,7 @@
  * @property {keyof T=} $groupby
  * @property {TimestampQuery=} $updated
  * @property {TimestampQuery=} $created
+ * @property {TimestampQuery=} $deleted
  */
 
 /**

@@ -98,7 +98,7 @@ describe('NO-SQL', () => {
         expect(renamed.title).toBeUndefined()
         await cleanFylo.delDoc(COLLECTION, _id)
     })
-    test('versioned putData — preserves creation-time prefix in TTID', async () => {
+    test('keyed putData updates the original TTID file', async () => {
         const cleanFylo = new Fylo({ root })
         const _id1 = await cleanFylo.putData(COLLECTION, {
             userId: 1,
@@ -109,15 +109,14 @@ describe('NO-SQL', () => {
         const _id2 = await cleanFylo.putData(COLLECTION, {
             [_id1]: { userId: 1, id: 400, title: 'Updated', body: 'v2' }
         })
-        expect(_id2.split('-')[0]).toBe(_id1.split('-')[0])
+        expect(_id2).toBe(_id1)
         const result = await fylo.getDoc(COLLECTION, _id2).once()
         const doc = result[_id2]
         expect(doc).toBeDefined()
         expect(doc.title).toBe('Updated')
         await cleanFylo.delDoc(COLLECTION, _id1)
-        await cleanFylo.delDoc(COLLECTION, _id2)
     })
-    test('versioned putData — original version is no longer retrievable by old full TTID', async () => {
+    test('keyed putData does not create a second document identity', async () => {
         const cleanFylo = new Fylo({ root })
         const _id1 = await cleanFylo.putData(COLLECTION, {
             userId: 1,
@@ -128,7 +127,7 @@ describe('NO-SQL', () => {
         const _id2 = await cleanFylo.putData(COLLECTION, {
             [_id1]: { userId: 1, id: 500, title: 'New Version', body: 'updated' }
         })
-        expect(_id1).not.toBe(_id2)
+        expect(_id1).toBe(_id2)
         await cleanFylo.delDoc(COLLECTION, _id2)
     })
 })

@@ -60,7 +60,7 @@ describe('CLI', () => {
         expect(create.stdout).toContain('Successfully created schema')
 
         const fylo = new Fylo({ root })
-        await fylo.putData('cli-posts', { title: 'CLI' })
+        const cliDocId = await fylo.putData('cli-posts', { title: 'CLI' })
 
         const select = await run(
             ['dist/cli/index.js', 'sql', 'SELECT * FROM cli-posts', '--root', root],
@@ -98,18 +98,37 @@ describe('CLI', () => {
         expect(inspectResult.collection).toBe('cli-posts')
         expect(inspectResult.exists).toBe(true)
         expect(inspectResult.docsStored).toBe(1)
+        expect(inspectResult.deletedDocs).toBe(0)
         expect(inspectResult.indexedDocs).toBe(1)
         expect(inspectResult.worm).toBe(false)
 
+        await fylo.delDoc('cli-posts', cliDocId)
+        const deleted = await run(
+            ['dist/cli/index.js', 'deleted', 'cli-posts', '--root', root, '--json'],
+            repo
+        )
+        expect(deleted.exitCode).toBe(0)
+        expect(JSON.parse(deleted.stdout)[cliDocId].title).toBe('CLI')
+
+        const inspectDeleted = await run(
+            ['dist/cli/index.js', 'inspect', 'cli-posts', '--root', root, '--json'],
+            repo
+        )
+        expect(JSON.parse(inspectDeleted.stdout).deletedDocs).toBe(1)
+
+        const restore = await run(
+            ['dist/cli/index.js', 'restore', 'cli-posts', cliDocId, '--root', root, '--json'],
+            repo
+        )
+        expect(restore.exitCode).toBe(0)
+        expect(JSON.parse(restore.stdout)).toEqual({ restored: true, id: cliDocId })
+
         const wormFylo = new Fylo({
             root,
-            worm: { mode: 'append-only', deletePolicy: 'tombstone' }
+            worm: { mode: 'strict' }
         })
         await wormFylo.createCollection('cli-worm')
         const originalId = await wormFylo.putData('cli-worm', { title: 'v1' })
-        const updatedId = await wormFylo.patchDoc('cli-worm', {
-            [originalId]: { title: 'v2' }
-        })
 
         const inspectWorm = await run(
             ['dist/cli/index.js', 'inspect', 'cli-worm', '--root', root, '--worm', '--json'],
@@ -118,10 +137,8 @@ describe('CLI', () => {
         expect(inspectWorm.exitCode).toBe(0)
         const inspectWormResult = JSON.parse(inspectWorm.stdout)
         expect(inspectWormResult.worm).toBe(true)
-        expect(inspectWormResult.docsStored).toBe(2)
+        expect(inspectWormResult.docsStored).toBe(1)
         expect(inspectWormResult.indexedDocs).toBe(1)
-        expect(inspectWormResult.headFiles).toBe(1)
-        expect(inspectWormResult.versionMetas).toBe(2)
 
         const getHistorical = await run(
             [
@@ -155,7 +172,7 @@ describe('CLI', () => {
         )
         expect(latest.exitCode).toBe(0)
         const latestResult = JSON.parse(latest.stdout)
-        expect(latestResult[updatedId].title).toBe('v2')
+        expect(latestResult[originalId].title).toBe('v1')
 
         const latestIdOnly = await run(
             [
@@ -171,26 +188,7 @@ describe('CLI', () => {
             repo
         )
         expect(latestIdOnly.exitCode).toBe(0)
-        expect(latestIdOnly.stdout.trim()).toBe(updatedId)
-
-        const history = await run(
-            [
-                'dist/cli/index.js',
-                'history',
-                'cli-worm',
-                originalId,
-                '--root',
-                root,
-                '--worm',
-                '--json'
-            ],
-            repo
-        )
-        expect(history.exitCode).toBe(0)
-        const historyResult = JSON.parse(history.stdout)
-        expect(historyResult).toHaveLength(2)
-        expect(historyResult[0].id).toBe(updatedId)
-        expect(historyResult[1].id).toBe(originalId)
+        expect(latestIdOnly.stdout.trim()).toBe(originalId)
 
         const schemaCurrent = await run(
             ['dist/cli/index.js', 'schema', 'current', 'article', '--schema-dir', schemaDir],

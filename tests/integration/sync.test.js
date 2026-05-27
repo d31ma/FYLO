@@ -40,6 +40,15 @@ describe('sync hooks', () => {
             [id]: { title: 'Hello sync 2' }
         })
         await fylo.delDoc(collection, nextId)
+        await fylo.restoreDoc(collection, id)
+        const deletedPath = path.join(
+            root,
+            '.collections',
+            collection,
+            '.deleted',
+            id.slice(0, 2),
+            `${id}.json`
+        )
 
         expect(calls).toEqual([
             {
@@ -58,7 +67,7 @@ describe('sync hooks', () => {
                 data: { title: 'Hello sync' }
             },
             {
-                hook: 'delete',
+                hook: 'write',
                 operation: 'patch',
                 collection,
                 docId: id,
@@ -69,21 +78,6 @@ describe('sync hooks', () => {
                     'docs',
                     id.slice(0, 2),
                     `${id}.json`
-                )
-            },
-            {
-                hook: 'write',
-                operation: 'patch',
-                collection,
-                docId: nextId,
-                previousDocId: id,
-                path: path.join(
-                    root,
-                    '.collections',
-                    collection,
-                    'docs',
-                    nextId.slice(0, 2),
-                    `${nextId}.json`
                 ),
                 data: { title: 'Hello sync 2' }
             },
@@ -91,27 +85,34 @@ describe('sync hooks', () => {
                 hook: 'delete',
                 operation: 'delete',
                 collection,
-                docId: nextId,
+                docId: id,
+                path: deletedPath
+            },
+            {
+                hook: 'write',
+                operation: 'restore',
+                collection,
+                docId: id,
                 path: path.join(
                     root,
                     '.collections',
                     collection,
                     'docs',
-                    nextId.slice(0, 2),
-                    `${nextId}.json`
-                )
+                    id.slice(0, 2),
+                    `${id}.json`
+                ),
+                data: { title: 'Hello sync 2' }
             }
         ])
     })
 
-    test('worm sync hooks expose lineage/head metadata for append-only patches and tombstones', async () => {
+    test('strict WORM sync writes once and rejects mutation callbacks', async () => {
         const root = await createRoot('fylo-sync-worm-')
         const calls = []
         const fylo = new Fylo({
             root,
             worm: {
-                mode: 'append-only',
-                deletePolicy: 'tombstone'
+                mode: 'strict'
             },
             sync: {
                 onWrite: async (event) => {
@@ -127,10 +128,12 @@ describe('sync hooks', () => {
         await fylo.createCollection(collection)
 
         const id = await fylo.putData(collection, { title: 'Hello worm sync' })
-        const nextId = await fylo.patchDoc(collection, {
-            [id]: { title: 'Hello worm sync 2' }
-        })
-        await fylo.delDoc(collection, nextId)
+        await expect(fylo.patchDoc(collection, { [id]: { title: 'changed' } })).rejects.toThrow(
+            'Update is not allowed in WORM mode'
+        )
+        await expect(fylo.delDoc(collection, id)).rejects.toThrow(
+            'Delete is not allowed in WORM mode'
+        )
 
         expect(calls).toEqual([
             {
@@ -146,57 +149,7 @@ describe('sync hooks', () => {
                     id.slice(0, 2),
                     `${id}.json`
                 ),
-                data: { title: 'Hello worm sync' },
-                worm: {
-                    lineageId: id,
-                    headOperation: 'create',
-                    headDocId: id,
-                    headPath: path.join(root, '.collections', collection, 'heads', `${id}.json`)
-                }
-            },
-            {
-                hook: 'write',
-                operation: 'patch',
-                collection,
-                docId: nextId,
-                previousDocId: id,
-                path: path.join(
-                    root,
-                    '.collections',
-                    collection,
-                    'docs',
-                    nextId.slice(0, 2),
-                    `${nextId}.json`
-                ),
-                data: { title: 'Hello worm sync 2' },
-                worm: {
-                    lineageId: id,
-                    headOperation: 'advance',
-                    headDocId: nextId,
-                    headPath: path.join(root, '.collections', collection, 'heads', `${id}.json`)
-                }
-            },
-            {
-                hook: 'delete',
-                operation: 'delete',
-                collection,
-                docId: nextId,
-                path: path.join(root, '.collections', collection, 'heads', `${id}.json`),
-                worm: {
-                    lineageId: id,
-                    headOperation: 'delete',
-                    headDocId: nextId,
-                    headPath: path.join(root, '.collections', collection, 'heads', `${id}.json`),
-                    deleteMode: 'tombstone',
-                    versionPath: path.join(
-                        root,
-                        '.collections',
-                        collection,
-                        'docs',
-                        nextId.slice(0, 2),
-                        `${nextId}.json`
-                    )
-                }
+                data: { title: 'Hello worm sync' }
             }
         ])
     })

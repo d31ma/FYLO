@@ -1,4 +1,3 @@
-import TTID from '@d31ma/ttid'
 import { Cipher } from '../security/cipher.js'
 
 /**
@@ -48,12 +47,11 @@ export class FilesystemQueryEngine {
     /**
      * @param {TTIDValue} docId
      * @param {StoreQuery | undefined} query
+     * @param {{ createdAt: number, updatedAt: number }} timestamps
      * @returns {boolean}
      */
-    matchesTimestamp(docId, query) {
+    matchesTimestamp(docId, query, timestamps) {
         if (!query?.$created && !query?.$updated) return true
-        const { createdAt, updatedAt } = TTID.decodeTime(docId)
-        const timestamps = { createdAt, updatedAt: updatedAt ?? createdAt }
         /**
          * @param {number} value
          * @param {import('../query/types.js').TimestampQuery | undefined} range
@@ -71,6 +69,34 @@ export class FilesystemQueryEngine {
             match(timestamps.createdAt, query.$created) &&
             match(timestamps.updatedAt, query.$updated)
         )
+    }
+    /**
+     * Matches a soft-deleted document while preserving `$updated` for live
+     * document semantics and exposing deletion time through `$deleted`.
+     * @param {TTIDValue} docId
+     * @param {Record<string, any>} doc
+     * @param {StoreQuery | undefined} query
+     * @param {{ createdAt: number, deletedAt: number }} timestamps
+     * @returns {boolean}
+     */
+    matchesDeletedQuery(docId, doc, query, timestamps) {
+        if (query?.$updated) {
+            throw new Error('Deleted document queries use $deleted instead of $updated')
+        }
+        if (
+            !this.matchesQuery(docId, doc, query, {
+                ...timestamps,
+                updatedAt: timestamps.deletedAt
+            })
+        )
+            return false
+        const range = query?.$deleted
+        if (!range) return true
+        if (range.$gt !== undefined && !(timestamps.deletedAt > range.$gt)) return false
+        if (range.$gte !== undefined && !(timestamps.deletedAt >= range.$gte)) return false
+        if (range.$lt !== undefined && !(timestamps.deletedAt < range.$lt)) return false
+        if (range.$lte !== undefined && !(timestamps.deletedAt <= range.$lte)) return false
+        return true
     }
     /**
      * @param {string} pattern
@@ -222,10 +248,11 @@ export class FilesystemQueryEngine {
      * @param {TTIDValue} docId
      * @param {Record<string, any>} doc
      * @param {StoreQuery | undefined} query
+     * @param {{ createdAt: number, updatedAt: number }} timestamps
      * @returns {boolean}
      */
-    matchesQuery(docId, doc, query) {
-        if (!this.matchesTimestamp(docId, query)) return false
+    matchesQuery(docId, doc, query, timestamps) {
+        if (!this.matchesTimestamp(docId, query, timestamps)) return false
         if (!query?.$ops || query.$ops.length === 0) return true
         return query.$ops.some((operation) => {
             for (const field in operation) {

@@ -26,10 +26,10 @@ examples/db/
   .collections/
     users/
       docs/
-        4U/
-          4UUB32VGUDW.json
         4V/
-          4V3M1R8K9CA.json
+          4V6329YC0F2.json
+          4V6329YC0PG.json
+      .deleted/
       events/
         users.ndjson
       index/
@@ -37,16 +37,13 @@ examples/db/
         keys.snapshot
         keys.wal
       locks/
-        collection.lock
-        4UUB32VGUDW.lock
-      heads/
-        4UUB32VGUDW.json
-      versions/
-        4V3M1R8K9CA.meta.json
+        .gitkeep
     orders/
       docs/
-        4W/
-          4WKVZ8NTG2P.json
+        4V/
+          4V6329YC0R0.json
+          4V6329YC0RG.json
+      .deleted/
       events/
         orders.ndjson
       index/
@@ -54,21 +51,27 @@ examples/db/
         keys.snapshot
         keys.wal
       locks/
-        collection.lock
+        .gitkeep
+    article/
+      docs/
+      .deleted/
+      index/
+        manifest.json
+        keys.snapshot
+        keys.wal
 ```
 
 ## Directory Roles
 
-| Path                                  | Purpose                                                         |
-| ------------------------------------- | --------------------------------------------------------------- |
-| `.collections/<collection>/docs/`     | Document JSON files, bucketed by the first two TTID characters. |
-| `.collections/<collection>/events/`   | Append-only collection event journal.                           |
-| `.collections/<collection>/index/`    | Local filesystem prefix index catalog.                          |
-| `.collections/<collection>/locks/`    | Advisory document and collection write locks.                   |
-| `.collections/<collection>/heads/`    | WORM lineage head pointers, present when WORM mode is enabled.  |
-| `.collections/<collection>/versions/` | WORM version metadata, present when WORM mode is enabled.       |
-| `schemas/<collection>/manifest.json`  | Collection schema version manifest used by validation and admin commands. |
-| `schemas/<collection>/history/`       | Versioned CHEX schemas named `<version>.schema.json`.           |
+| Path                                  | Purpose                                                                                |
+| ------------------------------------- | -------------------------------------------------------------------------------------- |
+| `.collections/<collection>/docs/`     | Document JSON files, bucketed by the first two TTID characters.                        |
+| `.collections/<collection>/.deleted/` | Hidden read-only tombstones; original TTID filename and deletion time as file `mtime`. |
+| `.collections/<collection>/events/`   | Append-only collection event journal.                                                  |
+| `.collections/<collection>/index/`    | Local filesystem prefix index catalog.                                                 |
+| `.collections/<collection>/locks/`    | Advisory document and collection write locks.                                          |
+| `schemas/<collection>/manifest.json`  | Collection schema version manifest used by validation and admin commands.              |
+| `schemas/<collection>/history/`       | Versioned CHEX schemas named `<version>.schema.json`.                                  |
 
 Queue data, when enabled, is global to the FYLO root and remains outside
 `.collections`:

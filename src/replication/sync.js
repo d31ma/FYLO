@@ -14,42 +14,21 @@
  */
 
 /** @typedef {'await-sync' | 'fire-and-forget'} FyloSyncMode */
-/** @typedef {'off' | 'append-only'} FyloWormMode */
+/** @typedef {'off' | 'strict'} FyloWormMode */
 
 /**
  * @typedef {object} FyloWormOptions
  * @property {FyloWormMode=} mode
- * @property {'reject' | 'tombstone'=} deletePolicy
- */
-
-/**
- * @typedef {object} FyloWormWriteSyncInfo
- * @property {TTID} lineageId
- * @property {'create' | 'advance'} headOperation
- * @property {TTID} headDocId
- * @property {string} headPath
- */
-
-/**
- * @typedef {object} FyloWormDeleteSyncInfo
- * @property {TTID} lineageId
- * @property {'delete'} headOperation
- * @property {TTID} headDocId
- * @property {string} headPath
- * @property {'physical' | 'tombstone'} deleteMode
- * @property {string=} versionPath
  */
 
 /**
  * @template {Record<string, any>} [T=Record<string, any>]
  * @typedef {object} FyloWriteSyncEvent
- * @property {'put' | 'patch'} operation
+ * @property {'put' | 'patch' | 'restore'} operation
  * @property {string} collection
  * @property {TTID} docId
- * @property {TTID=} previousDocId
  * @property {string} path
  * @property {T} data
- * @property {FyloWormWriteSyncInfo=} worm
  */
 
 /**
@@ -58,7 +37,6 @@
  * @property {string} collection
  * @property {TTID} docId
  * @property {string} path
- * @property {FyloWormDeleteSyncInfo=} worm
  */
 
 /**

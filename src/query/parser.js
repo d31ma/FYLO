@@ -52,12 +52,14 @@ const TokenType = {
  */
 
 /**
- * @typedef {import('./types.js').SqlCondition} SqlCondition
- * @typedef {import('./types.js').StoreDelete<Record<string, any>>} StoreDelete
- * @typedef {import('./types.js').StoreInsert<Record<string, any>>} StoreInsert
- * @typedef {import('./types.js').StoreJoin<Record<string, any>, Record<string, any>>} StoreJoin
- * @typedef {import('./types.js').StoreQuery<Record<string, any>>} StoreQuery
- * @typedef {import('./types.js').StoreUpdate<Record<string, any>>} StoreUpdate
+ * @typedef {{ column: string, operator: string, value: string | number | boolean | null }} SqlCondition
+ * @typedef {Record<string, Record<string, any>>} QueryOperation
+ * @typedef {{ $eq?: string, $ne?: string, $gt?: string, $lt?: string, $gte?: string, $lte?: string }} JoinOperand
+ * @typedef {{ $collection?: string, $select?: string[], $rename?: Record<string, string>, $ops?: QueryOperation[], $limit?: number, $onlyIds?: boolean, $groupby?: string }} StoreQuery
+ * @typedef {{ $leftCollection: string, $rightCollection: string, $mode: 'inner' | 'left' | 'right' | 'outer', $on: Record<string, JoinOperand>, $select?: string[], $limit?: number, $onlyIds?: boolean, $groupby?: string, $rename?: Record<string, string> }} StoreJoin
+ * @typedef {{ $collection?: string, $values: Record<string, any> }} StoreInsert
+ * @typedef {{ $collection?: string, $where?: StoreQuery, $set: Record<string, any> }} StoreUpdate
+ * @typedef {StoreQuery} StoreDelete
  */
 /**
  * Tokenizes the supported FYLO SQL subset into parser tokens.
@@ -351,10 +353,10 @@ class SQLParser {
         const value = this.parseValue()
         return { column, operator, value }
     }
-    /** @returns {import('./types.js').QueryOperation<Record<string, any>>[]} */
+    /** @returns {QueryOperation[]} */
     parseWhereClause() {
         this.expect(TokenType.WHERE)
-        /** @type {import('./types.js').QueryOperation<Record<string, any>>[]} */
+        /** @type {QueryOperation[]} */
         const conditions = []
         do {
             const condition = this.parseCondition()
@@ -480,9 +482,9 @@ class SQLParser {
         }
         return joinQuery
     }
-    /** @returns {Record<string, import('./types.js').JoinOperand>} */
+    /** @returns {Record<string, JoinOperand>} */
     parseJoinConditions() {
-        /** @type {Record<string, import('./types.js').JoinOperand>} */
+        /** @type {Record<string, JoinOperand>} */
         const conditions = {}
         do {
             // Parse: table1.column = table2.column
@@ -514,9 +516,9 @@ class SQLParser {
         }
         return { column: identifier }
     }
-    /** @returns {keyof import('./types.js').JoinOperand} */
+    /** @returns {keyof JoinOperand} */
     parseJoinOperator() {
-        /** @type {Partial<Record<TokenType, keyof import('./types.js').JoinOperand>>} */
+        /** @type {Partial<Record<TokenType, keyof JoinOperand>>} */
         const operatorMap = {
             [TokenType.EQUALS]: '$eq',
             [TokenType.NOT_EQUALS]: '$ne',
@@ -697,7 +699,7 @@ export class QueryBuilder {
         return this
     }
     /**
-     * @param {import('./types.js').QueryOperation<Record<string, any>>[]} conditions
+     * @param {QueryOperation[]} conditions
      * @returns {this}
      */
     where(conditions) {
@@ -831,7 +833,7 @@ export class JoinBuilder {
         return this
     }
     /**
-     * @param {Record<string, import('./types.js').JoinOperand>} conditions
+     * @param {Record<string, JoinOperand>} conditions
      * @returns {this}
      */
     on(conditions) {
