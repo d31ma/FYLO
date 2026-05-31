@@ -19,7 +19,7 @@ afterAll(async () => {
 describe('local queue', () => {
     test('queueing is opt-in on Fylo instances', async () => {
         const root = await createRoot('fylo-queue-off-')
-        const fylo = new Fylo({ root })
+        const fylo = new Fylo(root)
         expect(fylo.queue).toBeUndefined()
         expect(
             await Bun.file(
@@ -30,7 +30,7 @@ describe('local queue', () => {
 
     test('mirrors document events into collection action topics', async () => {
         const root = await createRoot('fylo-queue-events-')
-        const fylo = new Fylo({ root, queue: true })
+        const fylo = new Fylo(root, { queue: true })
         const seeded = await fylo.getDoc('users', '4V6329YC0F2').once()
         expect(seeded['4V6329YC0F2'].name).toBe('Ada Lovelace')
         await fylo.createCollection('queue-users')

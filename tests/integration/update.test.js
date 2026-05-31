@@ -6,7 +6,7 @@ import { createTestRoot } from '../helpers/root.js'
 const PHOTOS = `photo`
 const TODOS = `todo`
 const root = await createTestRoot('fylo-update-')
-const fylo = new Fylo({ root })
+const fylo = new Fylo(root)
 beforeAll(async () => {
     await Promise.all([fylo.createCollection(PHOTOS), fylo.executeSQL(`CREATE TABLE ${TODOS}`)])
     try {

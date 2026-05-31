@@ -10,7 +10,7 @@ const EXAMPLE_SCHEMA_DIR = path.join(EXAMPLE_ROOT, 'schemas')
 
 describe('example production root', () => {
     test('seeded mock data is readable through FYLO', async () => {
-        const fylo = new Fylo({ root: EXAMPLE_ROOT })
+        const fylo = new Fylo(EXAMPLE_ROOT)
 
         const user = await fylo.getDoc('users', '4V6329YC0F2').once()
         expect(user['4V6329YC0F2']).toEqual({
@@ -73,7 +73,7 @@ describe('example production root', () => {
         process.env.FYLO_SCHEMA = EXAMPLE_SCHEMA_DIR
 
         try {
-            const fylo = new Fylo({ root })
+            const fylo = new Fylo(root)
             await fylo.ready()
 
             expect((await fylo.inspectCollection('article')).exists).toBe(true)

@@ -7,7 +7,7 @@ const POSTS = `post`
 const ALBUMS = `album`
 let count = 0
 const root = await createTestRoot('fylo-read-')
-const fylo = new Fylo({ root })
+const fylo = new Fylo(root)
 beforeAll(async () => {
     await Promise.all([fylo.createCollection(ALBUMS), fylo.executeSQL(`CREATE TABLE ${POSTS}`)])
     try {

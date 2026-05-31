@@ -24,7 +24,7 @@ describe('cross-process collection index lock', () => {
         const [aExit, bExit] = await Promise.all([a.exited, b.exited])
         expect(aExit).toBe(0)
         expect(bExit).toBe(0)
-        const fylo = new Fylo({ root })
+        const fylo = new Fylo(root)
         /** @type {string[]} */
         const titles = []
         for await (const data of fylo.findDocs(collection).collect()) {

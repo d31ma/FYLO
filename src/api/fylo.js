@@ -20,6 +20,7 @@ import {
     redactImportUrl,
     tlsCheckServerIdentity
 } from '../security/import-guard.js'
+import { createQueryCache } from '../cache/query.js'
 import '../core/extensions.js'
 
 /**
@@ -43,6 +44,7 @@ import '../core/extensions.js'
  * @typedef {import('../storage/types.js').CollectionInspectResult} CollectionInspectResult
  * @typedef {import('../storage/types.js').CollectionRebuildResult} CollectionRebuildResult
  * @typedef {import('../queue/local.js').LocalQueue} LocalQueueInstance
+ * @typedef {import('../cache/query.js').QueryCache} QueryCache
  * @typedef {import('../types/fylo.js').GetDocResult<Record<string, any>>} GetDocResult
  * @typedef {import('../types/fylo.js').FindDocsResult<Record<string, any>>} FindDocsResult
  * @typedef {import('../types/fylo.js').DeletedDocsResult<Record<string, any>>} DeletedDocsResult
@@ -73,32 +75,51 @@ export default class Fylo {
     onEvent
     /** @type {LocalQueueInstance | undefined} */
     queue
+    /** @type {QueryCache | undefined} */
+    cache
     /** @type {Promise<void>} */
     startup
+    /** @type {(strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown>} */
+    sql
+    /** @type {Record<string, CollectionFacade>} */
+    db
     /**
+     * @param {string} root
      * @param {FyloOptions} [options]
      */
-    constructor(options = {}) {
+    constructor(root, options = {}) {
+        root = Fylo.rootFromPath(root)
+        if (Object.hasOwn(options, 'root')) {
+            throw new Error(
+                'Fylo constructor config must not include root; pass the database path as the first argument'
+            )
+        }
         syncChexSchemaEnv()
         this.rlsEnabled = options.rls === true
         this.onEvent = options.onEvent
-        this.queue = options.queue
-            ? new LocalQueue({ root: options.root ?? Fylo.defaultRoot() })
-            : undefined
-        this.engine = new FilesystemEngine(options.root ?? Fylo.defaultRoot(), {
+        this.queue = options.queue ? new LocalQueue({ root }) : undefined
+        this.cache = createQueryCache(root, options.cache)
+        this.engine = new FilesystemEngine(root, {
             sync: options.sync,
             syncMode: options.syncMode,
             worm: options.worm,
             index: options.index,
             onEvent: options.onEvent,
-            queue: this.queue
+            queue: this.queue,
+            queryCache: this.cache
         })
+        this.sql = this.createSqlTag()
+        this.db = this.createCollectionProxy()
         this.startup = this.bootstrapCollectionsFromSchemas()
     }
 
     /** @returns {Promise<void>} */
     async ready() {
         await this.startup
+    }
+
+    async close() {
+        await this.cache?.close?.()
     }
 
     /** @returns {Promise<void>} */
@@ -126,9 +147,84 @@ export default class Fylo {
     static defaultRoot() {
         return process.env.FYLO_ROOT || path.join(process.cwd(), '.fylo-data')
     }
+    /**
+     * @param {string} root
+     * @returns {string}
+     */
+    static rootFromPath(root) {
+        if (typeof root !== 'string' || root.length === 0) {
+            throw new Error('Fylo constructor requires a database path string')
+        }
+        if (root.startsWith('fylo://')) {
+            throw new Error('Fylo constructor accepts a filesystem path directly; remove fylo://')
+        }
+        return root
+    }
     /** @returns {FilesystemEngine} */
     static get defaultEngine() {
         return new FilesystemEngine(Fylo.defaultRoot())
+    }
+    /**
+     * @param {unknown} value
+     * @returns {string}
+     */
+    static sqlValue(value) {
+        if (value === null || value === undefined) return 'NULL'
+        if (typeof value === 'number') {
+            if (!Number.isFinite(value)) throw new Error('SQL parameter must be a finite number')
+            return String(value)
+        }
+        if (typeof value === 'boolean') return value ? 'true' : 'false'
+        if (typeof value === 'bigint') return value.toString()
+        if (value instanceof Date) return `'${value.toISOString().replaceAll("'", "''")}'`
+        if (typeof value === 'object') {
+            throw new Error('SQL parameters must be scalar values')
+        }
+        return `'${String(value).replaceAll("'", "''")}'`
+    }
+    /** @returns {(strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown>} */
+    createSqlTag() {
+        return async (strings, ...values) => {
+            let statement = strings[0] ?? ''
+            for (let index = 0; index < values.length; index++) {
+                statement += Fylo.sqlValue(values[index]) + (strings[index + 1] ?? '')
+            }
+            return await this.executeSQL(statement)
+        }
+    }
+    /** @returns {Record<string, CollectionFacade>} */
+    createCollectionProxy() {
+        const fylo = this
+        const reserved = new Set([
+            'then',
+            'db',
+            'constructor',
+            'prototype',
+            'toString',
+            'valueOf',
+            ...Object.getOwnPropertyNames(Object.prototype),
+            ...Object.getOwnPropertyNames(Fylo.prototype),
+            ...Object.getOwnPropertyNames(fylo)
+        ])
+        return /** @type {Record<string, CollectionFacade>} */ (
+            new Proxy(
+                {},
+                {
+                    get(_target, prop) {
+                        if (typeof prop === 'symbol') return undefined
+                        if (reserved.has(prop)) {
+                            throw new Error(
+                                `Collection name collides with reserved db property: ${prop}`
+                            )
+                        }
+                        return new CollectionFacade(fylo, prop)
+                    },
+                    has(_target, prop) {
+                        return typeof prop === 'string' && !reserved.has(prop)
+                    }
+                }
+            )
+        )
     }
     /**
      * Executes a SQL query and returns the results.
@@ -730,6 +826,80 @@ export default class Fylo {
     /** @param {string} collection @param {StoreQuery} query @returns {FindDocsResult} */
     static findDocs(collection, query) {
         return Fylo.defaultEngine.findDocs(collection, query)
+    }
+}
+
+/**
+ * Collection-scoped convenience facade exposed through `fylo.db.<collection>`.
+ */
+class CollectionFacade {
+    /** @type {Fylo} */
+    fylo
+    /** @type {string} */
+    collection
+    /**
+     * @param {Fylo} fylo
+     * @param {string} collection
+     */
+    constructor(fylo, collection) {
+        this.fylo = fylo
+        this.collection = collection
+    }
+    /** @param {TTIDValue} id @param {boolean} [onlyId] */
+    getDoc(id, onlyId = false) {
+        return this.fylo.getDoc(this.collection, id, onlyId)
+    }
+    /** @param {TTIDValue} id @param {boolean} [onlyId] */
+    async getLatest(id, onlyId = false) {
+        return await this.fylo.getLatest(this.collection, id, onlyId)
+    }
+    /** @param {StoreQuery} [query] */
+    findDocs(query = {}) {
+        return this.fylo.findDocs(this.collection, query)
+    }
+    /** @param {StoreQuery} [query] */
+    findDeletedDocs(query = {}) {
+        return this.fylo.findDeletedDocs(this.collection, query)
+    }
+    /** @param {Record<string, any>} data */
+    async putData(data) {
+        return await this.fylo.putData(this.collection, data)
+    }
+    /** @param {Record<string, any>[]} batch */
+    async batchPutData(batch) {
+        return await this.fylo.batchPutData(this.collection, batch)
+    }
+    /** @param {TTIDValue} id @param {Record<string, any>} patch @param {Record<string, any>} [oldDoc] */
+    async patchDoc(id, patch, oldDoc = {}) {
+        return await this.fylo.patchDoc(this.collection, { [id]: patch }, oldDoc)
+    }
+    /** @param {StoreUpdate} update */
+    async patchDocs(update) {
+        return await this.fylo.patchDocs(this.collection, update)
+    }
+    /** @param {TTIDValue} id */
+    async delDoc(id) {
+        return await this.fylo.delDoc(this.collection, id)
+    }
+    /** @param {StoreDelete} query */
+    async delDocs(query) {
+        return await this.fylo.delDocs(this.collection, query)
+    }
+    /** @param {TTIDValue} id */
+    async restoreDoc(id) {
+        return await this.fylo.restoreDoc(this.collection, id)
+    }
+    async inspect() {
+        return await this.fylo.inspectCollection(this.collection)
+    }
+    async rebuild() {
+        return await this.fylo.rebuildCollection(this.collection)
+    }
+    async create() {
+        return await this.fylo.createCollection(this.collection)
+    }
+    async drop() {
+        return await this.fylo.dropCollection(this.collection)
     }
 }
 

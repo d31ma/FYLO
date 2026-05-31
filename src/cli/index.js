@@ -239,7 +239,7 @@ function setTableOptions(args) {
  * @param {string | undefined} root
  */
 async function runSql(sql, root) {
-    const result = await new Fylo(root ? { root } : {}).executeSQL(sql)
+    const result = await createFylo(root).executeSQL(sql)
     const operation = sql.match(/^(SELECT|INSERT|UPDATE|DELETE|CREATE|DROP)/i)?.[0]
     if (!operation) throw new Error('Missing SQL operation')
     return renderSqlResult(operation, result)
@@ -251,8 +251,7 @@ async function runSql(sql, root) {
  * @returns {Fylo}
  */
 function createFylo(root, worm = false) {
-    return new Fylo({
-        ...(root ? { root } : {}),
+    return new Fylo(root ?? Fylo.defaultRoot(), {
         ...(worm ? { worm: { mode: 'strict' } } : {})
     })
 }

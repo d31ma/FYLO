@@ -1,5 +1,6 @@
 import { test, expect, describe, beforeAll, afterAll } from 'bun:test'
-import { mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import os from 'node:os'
 import path from 'node:path'
 import {
     validateData,
@@ -331,7 +332,12 @@ describe('CHEX direct integration', () => {
             try {
                 // Dynamic import to trigger constructor side-effect
                 const { default: Fylo } = await import('../../src/api/fylo.js')
-                new Fylo()
+                const root = await mkdtemp(path.join(os.tmpdir(), 'fylo-chex-env-'))
+                try {
+                    new Fylo(root)
+                } finally {
+                    await rm(root, { recursive: true, force: true })
+                }
                 expect(process.env.CHEX_SCHEMA_DIR).toBe(TEST_DIR)
 
                 // CHEX 26.21 requires callers to pass the resolved schemaDir explicitly.

@@ -20,8 +20,7 @@ describe('sync hooks', () => {
     test('await-sync emits write, patch, and delete events with filesystem paths', async () => {
         const root = await createRoot('fylo-sync-await-')
         const calls = []
-        const fylo = new Fylo({
-            root,
+        const fylo = new Fylo(root, {
             sync: {
                 onWrite: async (event) => {
                     calls.push({ hook: 'write', ...event })
@@ -109,8 +108,7 @@ describe('sync hooks', () => {
     test('strict WORM sync writes once and rejects mutation callbacks', async () => {
         const root = await createRoot('fylo-sync-worm-')
         const calls = []
-        const fylo = new Fylo({
-            root,
+        const fylo = new Fylo(root, {
             worm: {
                 mode: 'strict'
             },
@@ -163,8 +161,7 @@ describe('sync hooks', () => {
             releaseHook = resolve
         })
 
-        const fylo = new Fylo({
-            root,
+        const fylo = new Fylo(root, {
             syncMode: 'fire-and-forget',
             sync: {
                 onWrite: async () => {
@@ -195,8 +192,7 @@ describe('sync hooks', () => {
     test('await-sync surfaces sync failures as FyloSyncError after the local write', async () => {
         const root = await createRoot('fylo-sync-error-')
         let failedDocId
-        const fylo = new Fylo({
-            root,
+        const fylo = new Fylo(root, {
             sync: {
                 onWrite: async (event) => {
                     failedDocId = event.docId

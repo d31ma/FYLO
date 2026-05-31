@@ -16,7 +16,7 @@ describe('crash recovery and concurrency', () => {
 
     test('in-process parallel putData calls preserve every entry', async () => {
         const collection = `parallel-${Date.now()}`
-        const fylo = new Fylo({ root })
+        const fylo = new Fylo(root)
         await fylo.createCollection(collection)
         const parallelism = 50
         const ids = await Promise.all(
@@ -39,7 +39,7 @@ describe('crash recovery and concurrency', () => {
 
     test('stale files in the local index root are ignored by reads and subsequent writes', async () => {
         const collection = `stale-tmp-${Date.now()}`
-        const fylo = new Fylo({ root })
+        const fylo = new Fylo(root)
         await fylo.createCollection(collection)
         await fylo.putData(collection, { title: 'before' })
 
@@ -71,7 +71,7 @@ describe('crash recovery and concurrency', () => {
 
     test('rebuildCollection recovers deleted prefix index entries from documents', async () => {
         const collection = `recover-index-${Date.now()}`
-        const fylo = new Fylo({ root })
+        const fylo = new Fylo(root)
         await fylo.createCollection(collection)
         await fylo.putData(collection, { title: 'original' })
 
@@ -89,7 +89,7 @@ describe('crash recovery and concurrency', () => {
         }
         expect(before).toHaveLength(0)
 
-        const recovered = new Fylo({ root })
+        const recovered = new Fylo(root)
         const result = await recovered.rebuildCollection(collection)
         expect(result.indexedDocs).toBe(1)
 

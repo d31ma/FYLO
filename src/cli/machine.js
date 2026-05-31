@@ -143,8 +143,7 @@ function createMachineFylo(request, overrides = {}) {
         overrides.worm === true
             ? /** @type {FyloWormOptions} */ ({ mode: 'strict' })
             : normalizeWormOptions(request.worm)
-    return new Fylo({
-        ...(root ? { root: path.resolve(root) } : {}),
+    return new Fylo(path.resolve(root ?? Fylo.defaultRoot()), {
         ...(worm ? { worm } : {})
     })
 }

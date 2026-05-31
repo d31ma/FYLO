@@ -6,7 +6,7 @@ import { createTestRoot } from '../helpers/root.js'
 const ALBUMS = 'jm-album'
 const POSTS = 'jm-post'
 const root = await createTestRoot('fylo-join-')
-const fylo = new Fylo({ root })
+const fylo = new Fylo(root)
 beforeAll(async () => {
     await Promise.all([fylo.createCollection(ALBUMS), fylo.createCollection(POSTS)])
     try {

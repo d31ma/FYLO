@@ -6,7 +6,7 @@ import { createTestRoot } from '../helpers/root.js'
 import { CipherMock } from '../mocks/cipher.js'
 const COLLECTION = 'encrypted-test'
 const root = await createTestRoot('fylo-encryption-')
-const fylo = new Fylo({ root })
+const fylo = new Fylo(root)
 mock.module('../../src/security/cipher', () => ({ Cipher: CipherMock }))
 
 async function readTree(target) {
@@ -194,7 +194,7 @@ describe('Encryption', () => {
         delete process.env.FYLO_ENCRYPTION_KEY
 
         try {
-            const guardedFylo = new Fylo({ root })
+            const guardedFylo = new Fylo(root)
             await guardedFylo.createCollection(collection)
             await expect(
                 guardedFylo.putData(collection, { secret: 'do not store' })

@@ -5,7 +5,7 @@ import { albumURL } from '../data.js'
 import { createTestRoot } from '../helpers/root.js'
 const ALBUMS = 'ops-album'
 const root = await createTestRoot('fylo-operators-')
-const fylo = new Fylo({ root })
+const fylo = new Fylo(root)
 beforeAll(async () => {
     await fylo.createCollection(ALBUMS)
     try {

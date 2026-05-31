@@ -11,13 +11,13 @@ afterAll(async () => {
 
 describe('auth policy wrapper', () => {
     test('as() fails closed when RLS is not enabled', () => {
-        const fylo = new Fylo({ root })
+        const fylo = new Fylo(root)
         expect(() => fylo.as({ subjectId: 'user-1' })).toThrow('FYLO RLS is not enabled')
     })
 
     test('authorized scoped client delegates public document operations', async () => {
         const calls = []
-        const fylo = new Fylo({ root, rls: true })
+        const fylo = new Fylo(root, { rls: true })
         const scoped = fylo.as({ subjectId: 'user-1', tenantId: 'tenant-a', roles: ['writer'] })
         const collection = 'auth-allowed'
 
@@ -53,7 +53,7 @@ describe('auth policy wrapper', () => {
     })
 
     test('denied reads do not touch storage', async () => {
-        const fylo = new Fylo({ root, rls: true })
+        const fylo = new Fylo(root, { rls: true })
         const collection = 'auth-denied'
         await fylo.createCollection(collection)
         const id = await fylo.putData(collection, { title: 'Private' })

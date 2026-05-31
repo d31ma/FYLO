@@ -59,7 +59,7 @@ describe('CLI', () => {
         expect(create.exitCode).toBe(0)
         expect(create.stdout).toContain('Successfully created schema')
 
-        const fylo = new Fylo({ root })
+        const fylo = new Fylo(root)
         const cliDocId = await fylo.putData('cli-posts', { title: 'CLI' })
 
         const select = await run(
@@ -123,10 +123,7 @@ describe('CLI', () => {
         expect(restore.exitCode).toBe(0)
         expect(JSON.parse(restore.stdout)).toEqual({ restored: true, id: cliDocId })
 
-        const wormFylo = new Fylo({
-            root,
-            worm: { mode: 'strict' }
-        })
+        const wormFylo = new Fylo(root, { worm: { mode: 'strict' } })
         await wormFylo.createCollection('cli-worm')
         const originalId = await wormFylo.putData('cli-worm', { title: 'v1' })
 
