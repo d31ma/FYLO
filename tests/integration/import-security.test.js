@@ -9,7 +9,7 @@ import {
 import { createTestRoot } from '../helpers/root.js'
 
 const root = await createTestRoot('fylo-import-sec-')
-const fylo = new Fylo({ root })
+const fylo = new Fylo(root)
 const COLL = 'import-sec-posts'
 
 describe('importBulkData SSRF/rebinding hardening', () => {

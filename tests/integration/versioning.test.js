@@ -9,7 +9,7 @@ import { createTestRoot } from '../helpers/root.js'
 
 const COLLECTION = 'article'
 const root = await createTestRoot('fylo-versioning-')
-const fylo = new Fylo({ root })
+const fylo = new Fylo(root)
 const originalStrict = Fylo.STRICT
 
 beforeAll(async () => {

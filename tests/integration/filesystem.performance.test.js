@@ -15,7 +15,7 @@ describe.skipIf(!runPerf)('filesystem engine performance', () => {
 
     beforeAll(async () => {
         root = await createTestRoot('fylo-filesystem-perf-')
-        fylo = new Fylo({ root })
+        fylo = new Fylo(root)
         await fylo.createCollection(collection)
     })
 

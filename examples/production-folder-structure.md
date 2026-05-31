@@ -4,6 +4,17 @@ This directory documents the tracked `examples/db` fixture used by the
 integration tests. It is shaped like a production FYLO root and contains small
 mock `users` and `orders` collections.
 
+Open this fixture with the path-first FYLO API:
+
+```js
+import Fylo from '@d31ma/fylo'
+
+const { db, sql } = new Fylo('./examples/db')
+
+const user = await db.users.getDoc('4V6329YC0F2').once()
+const activeUsers = await sql`SELECT * FROM users WHERE active = ${true}`
+```
+
 ```text
 examples/db/
   schemas/

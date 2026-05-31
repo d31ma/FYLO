@@ -8,7 +8,7 @@ const USERS = `user`
 let commentsResults = {}
 let usersResults = {}
 const root = await createTestRoot('fylo-delete-')
-const fylo = new Fylo({ root })
+const fylo = new Fylo(root)
 beforeAll(async () => {
     await Promise.all([fylo.createCollection(COMMENTS), fylo.executeSQL(`CREATE TABLE ${USERS}`)])
     try {

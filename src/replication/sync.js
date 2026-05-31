@@ -11,6 +11,7 @@
  * @typedef {import('../types/vendor.js').TTID} TTID
  * @typedef {import('../observability/events.js').FyloEventHandler} FyloEventHandler
  * @typedef {import('../storage/types.js').FyloIndexOptions} FyloIndexOptions
+ * @typedef {import('../cache/query.js').FyloCacheOptions} FyloCacheOptions
  */
 
 /** @typedef {'await-sync' | 'fire-and-forget'} FyloSyncMode */
@@ -49,12 +50,12 @@
 /**
  * @template {Record<string, any>} [T=Record<string, any>]
  * @typedef {object} FyloOptions
- * @property {string=} root
  * @property {boolean=} rls
  * @property {FyloSyncHooks<T>=} sync
  * @property {FyloSyncMode=} syncMode
  * @property {FyloWormOptions=} worm
  * @property {FyloIndexOptions=} index
+ * @property {FyloCacheOptions=} cache
  * @property {boolean=} queue
  * @property {FyloEventHandler=} onEvent
  */

@@ -7,7 +7,7 @@ const USERS = 'nst-user'
 let insertedCount = 0
 let sampleId
 const root = await createTestRoot('fylo-nested-')
-const fylo = new Fylo({ root })
+const fylo = new Fylo(root)
 beforeAll(async () => {
     await fylo.createCollection(USERS)
     try {

@@ -16,7 +16,7 @@ describe('FYLO onEvent hook', () => {
     test('emits import.blocked when SSRF guard rejects a private address', async () => {
         /** @type {import('../../src/observability/events.js').FyloEvent[]} */
         const events = []
-        const fylo = new Fylo({ root, onEvent: (e) => events.push(e) })
+        const fylo = new Fylo(root, { onEvent: (e) => events.push(e) })
         const collection = `evt-import-${Date.now()}`
         await fylo.createCollection(collection)
         await expect(
@@ -33,7 +33,7 @@ describe('FYLO onEvent hook', () => {
     test('emits import.blocked with reason=protocol for unsupported scheme', async () => {
         /** @type {import('../../src/observability/events.js').FyloEvent[]} */
         const events = []
-        const fylo = new Fylo({ root, onEvent: (e) => events.push(e) })
+        const fylo = new Fylo(root, { onEvent: (e) => events.push(e) })
         const collection = `evt-proto-${Date.now()}`
         await fylo.createCollection(collection)
         await expect(
@@ -71,7 +71,7 @@ describe('FYLO onEvent hook', () => {
         /** @type {import('../../src/observability/events.js').FyloEvent[]} */
         const events = []
         try {
-            const fylo = new Fylo({ root, onEvent: (e) => events.push(e) })
+            const fylo = new Fylo(root, { onEvent: (e) => events.push(e) })
             await fylo.createCollection(collection)
             await fylo.putData(collection, { secret: 'shh' })
             const cipherEvent = events.find((e) => e.type === 'cipher.configured')
@@ -94,7 +94,7 @@ describe('FYLO onEvent hook', () => {
     test('emits index.rebuilt at the end of rebuildCollection', async () => {
         /** @type {import('../../src/observability/events.js').FyloEvent[]} */
         const events = []
-        const fylo = new Fylo({ root, onEvent: (e) => events.push(e) })
+        const fylo = new Fylo(root, { onEvent: (e) => events.push(e) })
         const collection = `evt-rebuild-${Date.now()}`
         await fylo.createCollection(collection)
         await fylo.putData(collection, { title: 'one' })
@@ -114,7 +114,7 @@ describe('FYLO onEvent hook', () => {
         const lockRoot = await createTestRoot('fylo-events-lock-')
         const collection = `evt-takeover-${Date.now()}`
         try {
-            const fylo = new Fylo({ root: lockRoot })
+            const fylo = new Fylo(lockRoot)
             await fylo.createCollection(collection)
             const lockPath = path.join(
                 lockRoot,
@@ -132,7 +132,7 @@ describe('FYLO onEvent hook', () => {
             )
             /** @type {import('../../src/observability/events.js').FyloEvent[]} */
             const events = []
-            const observer = new Fylo({ root: lockRoot, onEvent: (e) => events.push(e) })
+            const observer = new Fylo(lockRoot, { onEvent: (e) => events.push(e) })
             await observer.putData(collection, { title: 'after-takeover' })
             const takeover = events.find((e) => e.type === 'lock.takeover')
             expect(takeover).toBeDefined()
@@ -146,8 +146,7 @@ describe('FYLO onEvent hook', () => {
     })
 
     test('a throwing onEvent handler does not break the underlying operation', async () => {
-        const fylo = new Fylo({
-            root,
+        const fylo = new Fylo(root, {
             onEvent: () => {
                 throw new Error('handler boom')
             }
@@ -166,8 +165,7 @@ describe('FYLO onEvent hook', () => {
         }
         process.on('unhandledRejection', onUnhandled)
         try {
-            const fylo = new Fylo({
-                root,
+            const fylo = new Fylo(root, {
                 onEvent: async () => {
                     throw new Error('handler async boom')
                 }

@@ -5,7 +5,7 @@ import Fylo from '../../src/index.js'
 import { createTestRoot } from '../helpers/root.js'
 
 const root = await createTestRoot('fylo-filesystem-')
-const fylo = new Fylo({ root })
+const fylo = new Fylo(root)
 const POSTS = 'filesystem-posts'
 const USERS = 'filesystem-users'
 
@@ -76,6 +76,79 @@ describe('filesystem engine', () => {
         )
         expect(await Bun.file(activePath).exists()).toBe(false)
         expect(await Bun.file(deletedPath).exists()).toBe(true)
+    })
+    test('path constructor exposes SQL tag and collision-checked collection facades', async () => {
+        const { sql, db } = new Fylo(root)
+        await sql`CREATE TABLE apiusers`
+        const id = await sql`INSERT INTO apiusers (name, role) VALUES (${"O'Brien"}, ${'admin'})`
+
+        const queried = await sql`SELECT * FROM apiusers WHERE name = ${"O'Brien"}`
+        expect(queried[id].role).toBe('admin')
+
+        const viaFacade = await db.apiusers.getDoc(id).once()
+        expect(viaFacade[id].name).toBe("O'Brien")
+        await db.apiusers.patchDoc(id, { role: 'owner' })
+        expect((await db.apiusers.getDoc(id).once())[id].role).toBe('owner')
+        expect(() => db.getDoc).toThrow('reserved db property')
+        expect(() => db.hasOwnProperty).toThrow('reserved db property')
+        await expect(sql`SELECT * FROM apiusers WHERE name = ${{ nested: true }}`).rejects.toThrow(
+            'SQL parameters must be scalar values'
+        )
+        expect(() => new Fylo(`fylo://${root}`)).toThrow('remove fylo://')
+    })
+    test('memory query cache stores TTID lists and invalidates on writes', async () => {
+        const cached = new Fylo(root, { cache: true })
+        const collection = 'cache-users'
+        await cached.createCollection(collection)
+
+        const firstId = await cached.db[collection].putData({ name: 'Ada', team: 'platform' })
+        const query = { $ops: [{ name: { $eq: 'Ada' } }] }
+        const firstResults = {}
+        for await (const doc of cached.db[collection].findDocs(query).collect()) {
+            Object.assign(firstResults, doc)
+        }
+        expect(Object.keys(firstResults)).toEqual([firstId])
+
+        const secondId = await cached.db[collection].putData({ name: 'Ada', team: 'runtime' })
+        const secondResults = {}
+        for await (const doc of cached.db[collection].findDocs(query).collect()) {
+            Object.assign(secondResults, doc)
+        }
+        expect(Object.keys(secondResults).sort()).toEqual([firstId, secondId].sort())
+    })
+    test('query cache stampede protection single-flights concurrent misses', async () => {
+        const cached = new Fylo(root, { cache: true })
+        const collection = 'cache-stampede-users'
+        await cached.createCollection(collection)
+        await cached.db[collection].putData({ name: 'Grace' })
+
+        const originalListQueryableDocIds = cached.engine.listQueryableDocIds.bind(cached.engine)
+        let calls = 0
+        cached.engine.listQueryableDocIds = async (targetCollection) => {
+            calls++
+            await Bun.sleep(10)
+            return await originalListQueryableDocIds(targetCollection)
+        }
+
+        await Promise.all([
+            Array.fromAsync(cached.db[collection].findDocs({}).collect()),
+            Array.fromAsync(cached.db[collection].findDocs({}).collect())
+        ])
+
+        expect(calls).toBe(1)
+    })
+    test('write-through query cache surfaces cache-version failures on writes', async () => {
+        const cached = new Fylo(root, { cache: { method: 'write-through' } })
+        const collection = 'cache-write-through-users'
+        await cached.createCollection(collection)
+        if (!cached.engine.queryCache) throw new Error('missing query cache')
+        cached.engine.queryCache.bumpCollection = async () => {
+            throw new Error('cache unavailable')
+        }
+
+        await expect(cached.db[collection].putData({ name: 'Linus' })).rejects.toThrow(
+            'cache unavailable'
+        )
     })
     test('stores collection data under .collections', async () => {
         expect(await isDirectory(path.join(root, '.collections', POSTS, 'docs'))).toBe(true)

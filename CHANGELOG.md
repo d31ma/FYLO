@@ -1,5 +1,26 @@
 # Changelog
 
+## 26.22.07 - 2026-05-31
+
+### Breaking Changes
+
+- **Constructor is path-first only**: use `new Fylo('/path/to/db', options)`. The old `new Fylo({ root })` form and `fylo://` protocol strings are rejected so CLI, JS, and machine-call consumers all share one executable-friendly calling convention.
+- **Collection facades added as the primary ergonomic API**: `fylo.db.<collection>` exposes collection-scoped methods such as `getDoc`, `findDocs`, `putData`, `patchDoc`, `delDoc`, `findDeletedDocs`, and `restoreDoc`. Collection names that collide with reserved FYLO properties fail closed.
+
+### Added
+
+- **SQL template tag**: `const { sql } = new Fylo('/path')` supports scalar interpolation with SQL-string escaping and delegates to the existing FYLO SQL executor.
+- **Query result caching**: opt-in `cache` configuration supports memory and Bun Redis backends with `cache-aside`, `read-through`, `write-through`, and `write-around` strategies.
+- **Redis configuration**: FYLO checks `cache.redis.url`, then `FYLO_REDIS_URL`; if neither is provided, Bun's native Redis client resolves `REDIS_URL`, `VALKEY_URL`, or localhost.
+- **Stampede protection**: identical in-process cache misses are single-flighted so concurrent hot queries share one storage/index lookup.
+
+### Changed
+
+- Query caching stores matched TTID lists only and always hydrates documents from canonical FYLO storage files, avoiding decrypted document payloads in Redis.
+- Collection cache invalidation is version-based. Mutations bump a per-collection cache version and old Redis keys expire naturally by TTL.
+- CLI and machine-interface constructors now use the same path-first API as JS consumers.
+- README and production fixture docs now show path-first construction, `sql` usage, collection facades, and cache configuration.
+
 ## 26.22.03 - 2026-05-27
 
 ### Breaking Changes

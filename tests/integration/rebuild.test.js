@@ -8,9 +8,8 @@ const ROOT = await createTestRoot('fylo-rebuild-')
 const BASIC_COLLECTION = 'rebuild-posts'
 const WORM_COLLECTION = 'rebuild-worm-posts'
 
-const fylo = new Fylo({ root: ROOT })
-const wormFylo = new Fylo({
-    root: ROOT,
+const fylo = new Fylo(ROOT)
+const wormFylo = new Fylo(ROOT, {
     worm: {
         mode: 'strict'
     }

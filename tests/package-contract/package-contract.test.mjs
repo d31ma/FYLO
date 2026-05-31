@@ -4,15 +4,15 @@ import { createFyloConsumer, uniqueName } from './helpers.mjs'
 let consumer
 
 beforeAll(async () => {
-  consumer = await createFyloConsumer()
+    consumer = await createFyloConsumer()
 })
 
 afterAll(async () => {
-  await consumer?.cleanup()
+    await consumer?.cleanup()
 })
 
 test('packed package supports a document lifecycle from a clean consumer project', async () => {
-  await consumer.runModule(`
+    await consumer.runModule(`
     import { mkdtemp, rm } from 'node:fs/promises'
     import os from 'node:os'
     import path from 'node:path'
@@ -20,7 +20,8 @@ test('packed package supports a document lifecycle from a clean consumer project
 
     const root = await mkdtemp(path.join(os.tmpdir(), '${uniqueName('fylo-root')}-'))
     try {
-      const fylo = new Fylo({ root })
+      const fylo = new Fylo(root)
+      const { db, sql } = fylo
       const collection = 'blackbox-posts'
       await fylo.createCollection(collection)
 
@@ -41,6 +42,19 @@ test('packed package supports a document lifecycle from a clean consumer project
         Object.assign(queryResults, doc)
       }
       if (!queryResults[id]) throw new Error('findDocs did not find indexed document')
+
+      await sql\`CREATE TABLE blackbox-facade\`
+      const taggedId = await sql\`INSERT INTO blackbox-facade (title, author) VALUES (\${'Tagged SQL'}, \${"O'Brien"})\`
+      const taggedRows = await sql\`SELECT * FROM blackbox-facade WHERE author = \${"O'Brien"}\`
+      if (!taggedRows[taggedId]) throw new Error('sql tag did not parameterize and query data')
+      const facadeRows = await db['blackbox-facade'].getDoc(taggedId).once()
+      if (facadeRows[taggedId].title !== 'Tagged SQL') throw new Error('db facade did not read by collection')
+      try {
+        db.getDoc
+        throw new Error('reserved db property did not throw')
+      } catch (error) {
+        if (!String(error.message).includes('reserved db property')) throw error
+      }
 
       const nextId = await fylo.patchDoc(collection, { [id]: { title: 'Blackbox updated' } })
       const updated = await fylo.getDoc(collection, nextId).once()

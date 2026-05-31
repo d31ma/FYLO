@@ -83,6 +83,11 @@ class SQLLexer {
         this.position++
         this.current = this.position < this.input.length ? this.input[this.position] : null
     }
+    /** @returns {string | null} */
+    peek() {
+        const nextPosition = this.position + 1
+        return nextPosition < this.input.length ? this.input[nextPosition] : null
+    }
     /** @returns {void} */
     skipWhitespace() {
         while (this.current && /\s/.test(this.current)) {
@@ -97,6 +102,15 @@ class SQLLexer {
         while (this.current && this.current !== quote) {
             result += this.current
             this.advance()
+        }
+        while (this.current === quote && this.peek() === quote) {
+            result += quote
+            this.advance()
+            this.advance()
+            while (this.current && this.current !== quote) {
+                result += this.current
+                this.advance()
+            }
         }
         if (this.current === quote) {
             this.advance() // Skip closing quote

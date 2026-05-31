@@ -62,17 +62,17 @@ bun add @d31ma/fylo
 ```ts
 import Fylo from '@d31ma/fylo'
 
-const db = new Fylo({ root: '/mnt/fylo' })
+const { db, sql } = new Fylo('/mnt/fylo')
 
-await db.createCollection('users')
+await sql`CREATE TABLE users`
 
-const id = await db.putData('users', {
+const id = await db.users.putData({
     name: 'Ada',
     role: 'admin',
     tags: ['engineering', 'platform']
 })
 
-const doc = await db.getDoc('users', id).once()
+const doc = await db.users.getDoc(id).once()
 console.log(doc[id]) // { name: 'Ada', role: 'admin', ... }
 ```
 
@@ -126,8 +126,7 @@ age/nr/3fc1ffffffffffff/4UUB32VGUDW
 
 ```ts
 // S3-backed indexes (documents stay on local filesystem)
-const db = new Fylo({
-    root: '/mnt/fylo',
+const fylo = new Fylo('/mnt/fylo', {
     index: {
         backend: 's3-client',
         s3: { region: 'us-east-1' }
@@ -149,6 +148,7 @@ Collection names map directly to S3 bucket names. Credentials resolve from `AWS_
 | `FYLO_ENCRYPTION_KEY` | AES-GCM key for `$encrypted` fields (≥32 chars) | —              |
 | `FYLO_CIPHER_SALT`    | Salt for blind index derivation                 | —              |
 | `FYLO_LOGGING`        | Enable logging (`"1"`)                          | —              |
+| `FYLO_REDIS_URL`      | FYLO-specific Redis URL for query caching       | —              |
 
 S3 index credentials (resolved in order: explicit options → `AWS_*` → `FYLO_S3_*`):
 
@@ -162,6 +162,51 @@ S3 index credentials (resolved in order: explicit options → `AWS_*` → `FYLO_
 
 Copy `.env.example` to `.env` and fill in your values.
 
+### Query Cache
+
+Query caching is off by default. When enabled, FYLO caches matched TTID lists
+and still hydrates documents from the canonical storage files.
+
+```ts
+const fylo = new Fylo('/mnt/fylo', {
+    cache: true // memory cache, method: 'cache-aside', ttl: 30
+})
+```
+
+Use Bun's native Redis client for shared production caches:
+
+```ts
+const fylo = new Fylo('/mnt/fylo', {
+    cache: {
+        backend: 'redis',
+        method: 'cache-aside',
+        ttl: 60,
+        redis: {
+            url: process.env.FYLO_REDIS_URL
+        }
+    }
+})
+```
+
+If `cache.redis.url` is omitted, FYLO checks `FYLO_REDIS_URL`; otherwise Bun's
+Redis client resolves its own defaults (`REDIS_URL`, `VALKEY_URL`, then local
+Redis). Cache invalidation is version-based per collection, so writes bump the
+collection version and old Redis keys expire naturally by TTL.
+
+Supported cache methods:
+
+| Method          | FYLO behavior                                                                |
+| --------------- | ---------------------------------------------------------------------------- |
+| `cache-aside`   | Read checks cache first, loads from FYLO storage on miss, then caches TTIDs. |
+| `read-through`  | Same storage path as cache-aside, exposed as a cache-fronted read strategy.  |
+| `write-through` | Writes require the cache version bump to succeed before the call returns.    |
+| `write-around`  | Writes avoid payload caching and only bump the collection cache version.     |
+
+FYLO currently caches TTID result lists, not full document payloads. This keeps
+Redis free of decrypted user documents while still avoiding repeated index
+lookups on hot queries. Identical in-process misses are single-flighted to avoid
+local cache stampedes.
+
 ---
 
 ## CRUD Operations
@@ -169,7 +214,7 @@ Copy `.env.example` to `.env` and fill in your values.
 ### Create
 
 ```ts
-const id = await db.putData('users', {
+const id = await db.users.putData({
     name: 'Jane Doe',
     age: 29,
     team: 'platform'
@@ -179,21 +224,19 @@ const id = await db.putData('users', {
 ### Read
 
 ```ts
-const doc = await db.getDoc('users', id).once()
+const doc = await db.users.getDoc(id).once()
 ```
 
 ### Update (preserves the document TTID)
 
 ```ts
-const sameId = await db.patchDoc('users', {
-    [id]: { team: 'core-platform' }
-})
+const sameId = await db.users.patchDoc(id, { team: 'core-platform' })
 ```
 
 ### Delete
 
 ```ts
-await db.delDoc('users', sameId) // moves payload to .deleted/4U/4UUB32VGUDW.json
+await db.users.delDoc(sameId) // moves payload to .deleted/4U/4UUB32VGUDW.json
 ```
 
 Soft-deleted files retain their TTID filename, use file `mtime` as `deletedAt`,
@@ -203,15 +246,15 @@ and become read-only (`0444`). They are excluded from ordinary queries.
 
 ```ts
 const deleted = {}
-for await (const doc of db
-    .findDeletedDocs('users', {
+for await (const doc of db.users
+    .findDeletedDocs({
         $deleted: { $gte: Date.parse('2026-05-01T00:00:00Z') }
     })
     .collect()) {
     Object.assign(deleted, doc)
 }
 
-await db.restoreDoc('users', sameId)
+await db.users.restoreDoc(sameId)
 ```
 
 Restore preserves the TTID, moves the payload back into `docs/`, restores
@@ -228,8 +271,8 @@ FYLO queries use prefix indexes first, then hydrate only matching documents.
 ```ts
 // Exact match
 const results = {}
-for await (const doc of db
-    .findDocs('users', {
+for await (const doc of db.users
+    .findDocs({
         $ops: [{ name: { $eq: 'Alice' } }]
     })
     .collect()) {
@@ -237,8 +280,8 @@ for await (const doc of db
 }
 
 // Range query (numeric fields)
-for await (const doc of db
-    .findDocs('users', {
+for await (const doc of db.users
+    .findDocs({
         $ops: [{ age: { $gte: 18 } }]
     })
     .collect()) {
@@ -246,8 +289,8 @@ for await (const doc of db
 }
 
 // Contains (array membership)
-for await (const doc of db
-    .findDocs('users', {
+for await (const doc of db.users
+    .findDocs({
         $ops: [{ tags: { $contains: 'engineering' } }]
     })
     .collect()) {
@@ -255,8 +298,8 @@ for await (const doc of db
 }
 
 // OR across conditions
-for await (const doc of db
-    .findDocs('users', {
+for await (const doc of db.users
+    .findDocs({
         $ops: [{ role: { $eq: 'admin' } }, { role: { $eq: 'owner' } }]
     })
     .collect()) {
@@ -267,9 +310,11 @@ for await (const doc of db
 ### SQL Support
 
 ```ts
-await db.executeSQL(`CREATE TABLE posts`)
-await db.executeSQL(`INSERT INTO posts VALUES { "title": "Hello", "published": true }`)
-const posts = await db.executeSQL(`SELECT * FROM posts WHERE published = true`)
+const { sql } = new Fylo('/mnt/fylo')
+
+await sql`CREATE TABLE posts`
+const id = await sql`INSERT INTO posts (title, published) VALUES (${'Hello'}, ${true})`
+const posts = await sql`SELECT * FROM posts WHERE published = ${true}`
 ```
 
 ### Query Strategy
@@ -377,8 +422,7 @@ Requirements:
 FYLO does not authenticate. Your app verifies identity; FYLO enforces policy.
 
 ```ts
-const db = new Fylo({
-    root: '/mnt/fylo',
+const fylo = new Fylo('/mnt/fylo', {
     auth: {
         authorize({ auth, action, collection, data }) {
             if (auth.roles?.includes('admin')) return true
@@ -391,7 +435,7 @@ const db = new Fylo({
 })
 
 const user = await verifyRequest(request)
-const scoped = db.as({
+const scoped = fylo.as({
     subjectId: user.id,
     tenantId: user.tenantId,
     roles: user.roles
@@ -411,16 +455,15 @@ Actions: `doc:read`, `doc:create`, `doc:update`, `doc:delete`, `bulk:import`, `b
 Strict write-once storage for immutable documents:
 
 ```ts
-const db = new Fylo({
-    root: '/mnt/fylo',
+const { db } = new Fylo('/mnt/fylo', {
     worm: {
         mode: 'strict'
     }
 })
 
-const id = await db.putData('posts', { title: 'retain me' })
-await db.patchDoc('posts', { [id]: { title: 'changed' } }) // throws
-await db.delDoc('posts', id) // throws
+const id = await db.posts.putData({ title: 'retain me' })
+await db.posts.patchDoc(id, { title: 'changed' }) // throws
+await db.posts.delDoc(id) // throws
 ```
 
 - A WORM document is written once and its local file is changed to read-only (`0444`)
@@ -438,8 +481,7 @@ FYLO owns document storage and querying. **You** own how the root directory reac
 Sync hooks let FYLO notify your storage client:
 
 ```ts
-const db = new Fylo({
-    root: '/mnt/fylo',
+const fylo = new Fylo('/mnt/fylo', {
     syncMode: 'await-sync', // or 'fire-and-forget'
     sync: {
         async onWrite(event) {
@@ -471,7 +513,7 @@ Strict WORM mode emits its initial write sync event only; mutation callbacks can
 Opt-in durable local queue for event-driven workflows:
 
 ```ts
-const db = new Fylo({ root: '/mnt/fylo', queue: true })
+const { db } = new Fylo('/mnt/fylo', { queue: true })
 
 import { consume, publish } from '@d31ma/fylo'
 

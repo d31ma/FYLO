@@ -6,7 +6,7 @@ import { _resetRulesCache } from '../../src/security/rules/loader.js'
 import { effectiveReadFilter } from '../../src/security/rules/engine.js'
 
 const root = await createTestRoot('fylo-rls-')
-const fylo = new Fylo({ root, rls: true })
+const fylo = new Fylo(root, { rls: true })
 
 beforeAll(async () => {
     await fylo.createCollection('report')

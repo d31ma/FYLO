@@ -28,6 +28,7 @@ import { parseStoredValue, stringifyStoredValue } from './value-codec.js'
  * @typedef {import('./types.js').StoredDoc<Record<string, any>>} StoredDoc
  * @typedef {import('./types.js').PrefixIndexStore} PrefixIndexStore
  * @typedef {import('../queue/local.js').LocalQueue} LocalQueue
+ * @typedef {import('../cache/query.js').QueryCache} QueryCache
  * @typedef {import('../query/types.js').StoreJoin<Record<string, any>, Record<string, any>>} StoreJoin
  * @typedef {import('../query/types.js').StoreQuery<Record<string, any>>} StoreQuery
  */
@@ -43,6 +44,8 @@ export class FilesystemEngine {
     kind = 'filesystem'
     /** @type {Map<string, Promise<void>>} */
     writeLanes = new Map()
+    /** @type {Map<string, Promise<TTID[]>>} */
+    cacheMissLanes = new Map()
     /** @type {StorageEngine} */
     storage
     /** @type {LockManager} */
@@ -51,6 +54,8 @@ export class FilesystemEngine {
     events
     /** @type {LocalQueue | undefined} */
     queue
+    /** @type {QueryCache | undefined} */
+    queryCache
     /** @type {FilesystemDocuments} */
     documents
     /** @type {FilesystemQueryEngine} */
@@ -68,7 +73,7 @@ export class FilesystemEngine {
     /**
      * Creates the filesystem-backed FYLO engine and its persistence collaborators.
      * @param {string} [root]
-     * @param {{ sync?: FyloSyncHooks, syncMode?: FyloSyncMode, worm?: FyloWormOptions, onEvent?: FyloEventHandler, index?: import('./types.js').FyloIndexOptions, queue?: LocalQueue }} [options]
+     * @param {{ sync?: FyloSyncHooks, syncMode?: FyloSyncMode, worm?: FyloWormOptions, onEvent?: FyloEventHandler, index?: import('./types.js').FyloIndexOptions, queue?: LocalQueue, queryCache?: QueryCache }} [options]
      */
     constructor(
         root = process.env.FYLO_ROOT || path.join(process.cwd(), '.fylo-data'),
@@ -85,6 +90,7 @@ export class FilesystemEngine {
         this.locks = new FilesystemLockManager(this.root, this.storage)
         this.events = new FilesystemEventBus(this.root, this.storage)
         this.queue = options.queue
+        this.queryCache = options.queryCache
         this.index =
             options.index?.backend === 's3-client'
                 ? new BunS3ClientIndexStore(options.index.s3)
@@ -225,8 +231,80 @@ export class FilesystemEngine {
         return this.worm.mode === 'strict'
     }
     /** @param {string} collection @returns {Promise<void>} */
+    async invalidateQueryCache(collection) {
+        if (!this.queryCache) return
+        try {
+            await this.queryCache.bumpCollection(collection)
+        } catch (err) {
+            if (this.queryCache.required || this.queryCache.method === 'write-through') throw err
+        }
+    }
+    /** @param {string} collection @returns {Promise<number | null>} */
+    async queryCacheVersion(collection) {
+        if (!this.queryCache) return null
+        try {
+            return await this.queryCache.version(collection)
+        } catch (err) {
+            if (this.queryCache.required) throw err
+            return null
+        }
+    }
+    /**
+     * @param {'active' | 'deleted'} kind
+     * @param {string} collection
+     * @param {StoreQuery | undefined} query
+     * @param {number | null} version
+     * @returns {Promise<TTID[] | null>}
+     */
+    async cachedQueryIds(kind, collection, query, version) {
+        if (!this.queryCache || version === null) return null
+        try {
+            return await this.queryCache.getIds(kind, collection, version, query)
+        } catch (err) {
+            if (this.queryCache.required) throw err
+            return null
+        }
+    }
+    /**
+     * @param {'active' | 'deleted'} kind
+     * @param {string} collection
+     * @param {StoreQuery | undefined} query
+     * @param {number | null} version
+     * @param {TTID[]} ids
+     * @returns {Promise<void>}
+     */
+    async cacheQueryIds(kind, collection, query, version, ids) {
+        if (!this.queryCache || version === null) return
+        try {
+            if ((await this.queryCache.version(collection)) !== version) return
+            await this.queryCache.setIds(kind, collection, version, query, ids)
+        } catch (err) {
+            if (this.queryCache.required) throw err
+        }
+    }
+    /**
+     * @param {'active' | 'deleted'} kind
+     * @param {string} collection
+     * @param {StoreQuery | undefined} query
+     * @param {number | null} version
+     * @param {() => Promise<TTID[]>} loadIds
+     * @returns {Promise<TTID[]>}
+     */
+    async loadCacheMissIds(kind, collection, query, version, loadIds) {
+        if (!this.queryCache?.stampedeProtection || version === null) return await loadIds()
+        const key = this.queryCache.key(kind, collection, version, query)
+        const existing = this.cacheMissLanes.get(key)
+        if (existing) return await existing
+        const lane = loadIds().finally(() => {
+            if (this.cacheMissLanes.get(key) === lane) this.cacheMissLanes.delete(key)
+        })
+        this.cacheMissLanes.set(key, lane)
+        return await lane
+    }
+    /** @param {string} collection @returns {Promise<void>} */
     async resetIndex(collection) {
         await this.index.resetCollection(collection)
+        await this.invalidateQueryCache(collection)
     }
     /** @param {string} collection @returns {Promise<TTID[]>} */
     async listQueryableDocIds(collection) {
@@ -272,6 +350,7 @@ export class FilesystemEngine {
                         data: nextDoc
                     })
                 })
+                await this.invalidateQueryCache(collection)
                 return docId
             } finally {
                 await this.locks.release(collection, docId, owner)
@@ -316,6 +395,7 @@ export class FilesystemEngine {
     /** @param {string} collection @returns {Promise<void>} */
     async createCollection(collection) {
         await this.ensureCollection(collection)
+        await this.invalidateQueryCache(collection)
     }
     /** @param {string} collection @returns {Promise<void>} */
     async dropCollection(collection) {
@@ -323,6 +403,7 @@ export class FilesystemEngine {
             throw new Error('Drop is not allowed for a non-empty WORM collection')
         }
         await this.storage.rmdir(this.collectionRoot(collection))
+        await this.invalidateQueryCache(collection)
     }
     /** @param {string} collection @returns {Promise<boolean>} */
     async hasCollection(collection) {
@@ -434,13 +515,24 @@ export class FilesystemEngine {
     }
     /** @param {string} collection @param {StoreQuery | undefined} [query] @returns {Promise<Array<Record<string, Record<string, any>>>>} */
     async docResults(collection, query) {
-        const candidateIds = await this.queryEngine.candidateDocIdsForQuery(collection, query)
-        const ids = candidateIds
-            ? Array.from(candidateIds)
-            : await this.listQueryableDocIds(collection)
+        const cacheVersion = await this.queryCacheVersion(collection)
+        const cachedIds = await this.cachedQueryIds('active', collection, query, cacheVersion)
+        const ids =
+            cachedIds ??
+            (await this.loadCacheMissIds('active', collection, query, cacheVersion, async () => {
+                const candidateIds = await this.queryEngine.candidateDocIdsForQuery(
+                    collection,
+                    query
+                )
+                return candidateIds
+                    ? Array.from(candidateIds)
+                    : await this.listQueryableDocIds(collection)
+            }))
         const limit = query?.$limit
         /** @type {Array<Record<string, Record<string, any>>>} */
         const results = []
+        /** @type {TTID[]} */
+        const resultIds = []
         for (const id of ids) {
             const stored = await this.documents.readStoredDoc(collection, id)
             if (!stored) continue
@@ -453,16 +545,27 @@ export class FilesystemEngine {
             )
             if (!this.queryEngine.matchesQuery(id, data, query, stored)) continue
             results.push({ [id]: data })
+            resultIds.push(id)
             if (limit && results.length >= limit) break
         }
+        if (!cachedIds)
+            await this.cacheQueryIds('active', collection, query, cacheVersion, resultIds)
         return results
     }
     /** @param {string} collection @param {StoreQuery | undefined} [query] @returns {Promise<Array<Record<string, Record<string, any>>>>} */
     async deletedDocResults(collection, query) {
-        const ids = await this.documents.listDeletedDocIds(collection)
+        const cacheVersion = await this.queryCacheVersion(collection)
+        const cachedIds = await this.cachedQueryIds('deleted', collection, query, cacheVersion)
+        const ids =
+            cachedIds ??
+            (await this.loadCacheMissIds('deleted', collection, query, cacheVersion, async () => {
+                return await this.documents.listDeletedDocIds(collection)
+            }))
         const limit = query?.$limit
         /** @type {Array<Record<string, Record<string, any>>>} */
         const results = []
+        /** @type {TTID[]} */
+        const resultIds = []
         for (const id of ids) {
             const stored = await this.documents.readDeletedDoc(collection, id)
             if (!stored) continue
@@ -471,8 +574,11 @@ export class FilesystemEngine {
             )
             if (!this.queryEngine.matchesDeletedQuery(id, data, query, stored)) continue
             results.push({ [id]: data })
+            resultIds.push(id)
             if (limit && results.length >= limit) break
         }
+        if (!cachedIds)
+            await this.cacheQueryIds('deleted', collection, query, cacheVersion, resultIds)
         return results
     }
     /** @param {string} collection @param {TTID} docId @param {Record<string, any>} doc @returns {Promise<void>} */
@@ -547,6 +653,7 @@ export class FilesystemEngine {
                         data: doc
                     })
                 })
+                await this.invalidateQueryCache(collection)
             } finally {
                 await this.locks.release(collection, docId, owner)
             }
@@ -606,6 +713,7 @@ export class FilesystemEngine {
                         path: deletedPath
                     })
                 })
+                await this.invalidateQueryCache(collection)
             } finally {
                 await this.locks.release(collection, docId, owner)
             }
@@ -647,6 +755,7 @@ export class FilesystemEngine {
                         data: deleted.data
                     })
                 })
+                await this.invalidateQueryCache(collection)
                 return docId
             } finally {
                 await this.locks.release(collection, docId, owner)

@@ -6,8 +6,7 @@ import { createTestRoot } from '../helpers/root.js'
 
 const COLLECTION = 'worm-posts'
 const root = await createTestRoot('fylo-worm-')
-const fylo = new Fylo({
-    root,
+const fylo = new Fylo(root, {
     worm: {
         mode: 'strict'
     }

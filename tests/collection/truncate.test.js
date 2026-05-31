@@ -7,13 +7,13 @@ const POSTS = `post`
 const ALBUMS = `album`
 const root = await createTestRoot('fylo-truncate-')
 afterAll(async () => {
-    const fylo = new Fylo({ root })
+    const fylo = new Fylo(root)
     await Promise.all([fylo.dropCollection(ALBUMS), fylo.dropCollection(POSTS)])
     await rm(root, { recursive: true, force: true })
 })
 describe('NO-SQL', () => {
     test('TRUNCATE', async () => {
-        const fylo = new Fylo({ root })
+        const fylo = new Fylo(root)
         await fylo.createCollection(POSTS)
         await fylo.importBulkData(POSTS, new URL(postsURL))
         await fylo.delDocs(POSTS)
@@ -26,7 +26,7 @@ describe('NO-SQL', () => {
 })
 describe('SQL', () => {
     test('TRUNCATE', async () => {
-        const fylo = new Fylo({ root })
+        const fylo = new Fylo(root)
         await fylo.executeSQL(`CREATE TABLE ${ALBUMS}`)
         await fylo.importBulkData(ALBUMS, new URL(albumURL))
         await fylo.executeSQL(`DELETE FROM ${ALBUMS}`)

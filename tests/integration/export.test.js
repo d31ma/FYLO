@@ -7,7 +7,7 @@ const POSTS = 'exp-post'
 const IMPORT_LIMIT = 20
 let importedCount = 0
 const root = await createTestRoot('fylo-export-')
-const fylo = new Fylo({ root })
+const fylo = new Fylo(root)
 beforeAll(async () => {
     await fylo.createCollection(POSTS)
     try {

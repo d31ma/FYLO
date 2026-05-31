@@ -5,7 +5,7 @@ import TTID from '@d31ma/ttid'
 import { createTestRoot } from '../helpers/root.js'
 const COLLECTION = 'ec-test'
 const root = await createTestRoot('fylo-edge-')
-const fylo = new Fylo({ root })
+const fylo = new Fylo(root)
 beforeAll(async () => {
     await fylo.createCollection(COLLECTION)
 })
@@ -51,7 +51,7 @@ describe('NO-SQL', () => {
         await fylo.delDoc(COLLECTION, _id)
     })
     test('$ops — multiple conditions act as OR union', async () => {
-        const cleanFylo = new Fylo({ root })
+        const cleanFylo = new Fylo(root)
         const id1 = await cleanFylo.putData(COLLECTION, {
             userId: 10,
             id: 100,
@@ -78,7 +78,7 @@ describe('NO-SQL', () => {
         await cleanFylo.delDoc(COLLECTION, id2)
     })
     test('$rename — renames fields in query output', async () => {
-        const cleanFylo = new Fylo({ root })
+        const cleanFylo = new Fylo(root)
         const _id = await cleanFylo.putData(COLLECTION, {
             userId: 1,
             id: 300,
@@ -99,7 +99,7 @@ describe('NO-SQL', () => {
         await cleanFylo.delDoc(COLLECTION, _id)
     })
     test('keyed putData updates the original TTID file', async () => {
-        const cleanFylo = new Fylo({ root })
+        const cleanFylo = new Fylo(root)
         const _id1 = await cleanFylo.putData(COLLECTION, {
             userId: 1,
             id: 400,
@@ -117,7 +117,7 @@ describe('NO-SQL', () => {
         await cleanFylo.delDoc(COLLECTION, _id1)
     })
     test('keyed putData does not create a second document identity', async () => {
-        const cleanFylo = new Fylo({ root })
+        const cleanFylo = new Fylo(root)
         const _id1 = await cleanFylo.putData(COLLECTION, {
             userId: 1,
             id: 500,
@@ -133,7 +133,7 @@ describe('NO-SQL', () => {
 })
 describe('SQL', () => {
     test('UPDATE ONE — update a single document by querying its unique field', async () => {
-        const cleanFylo = new Fylo({ root })
+        const cleanFylo = new Fylo(root)
         await cleanFylo.putData(COLLECTION, {
             userId: 1,
             id: 600,
@@ -151,7 +151,7 @@ describe('SQL', () => {
         expect(Object.values(results)[0].title).toBe('After SQL Update')
     })
     test('DELETE ONE — delete a single document by querying its unique field', async () => {
-        const cleanFylo = new Fylo({ root })
+        const cleanFylo = new Fylo(root)
         await cleanFylo.putData(COLLECTION, {
             userId: 1,
             id: 700,
