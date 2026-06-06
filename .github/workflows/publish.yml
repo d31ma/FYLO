@@ -87,6 +87,11 @@ jobs:
             - name: Setup Dart
               uses: dart-lang/setup-dart@v1
 
+            - name: Setup PHP
+              uses: shivammathur/setup-php@v2
+              with:
+                  php-version: '8.3'
+
             - name: Setup .NET
               uses: actions/setup-dotnet@v4
               with:
