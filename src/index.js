@@ -5,6 +5,7 @@
 import Fylo from './api/fylo.js'
 
 export { LocalQueue, QueueMessageContext, consume, publish } from './queue/local.js'
+export { createFyloHttpHandler, serveFyloHttp } from './server/http.js'
 export { FyloAuthError } from './security/auth.js'
 export { FyloSyncError } from './replication/sync.js'
 

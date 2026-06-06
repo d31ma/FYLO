@@ -1,5 +1,28 @@
 # Changelog
 
+## 26.23.05 - 2026-06-05
+
+### Added
+
+- **Browser-native per-document runtime**: `@d31ma/fylo/browser` preserves FYLO's per-document layout over OPFS or an injected VFS instead of storing a collection blob.
+- **Default browser client**: `@d31ma/fylo/browser` exports an app-author friendly default client so browser code can call `fylo.<collection>.putData(data)` directly. It prefers OPFS and falls back to memory when OPFS is unavailable.
+- **Browser worker runtime**: real browser contexts prefer `SharedWorker`, fall back to `DedicatedWorker`, and multiplex FYLO cores by namespace. Collection subscriptions fan out to every subscribed port in the same namespace.
+- **Browser-safe filesystem core**: added `FyloFilesystem`, `MemoryFilesystem`, `BrowserDocuments`, `BrowserPrefixIndex`, `BrowserEventBus`, and a browser-safe query engine under `src/browser/core`.
+- **Browser conformance coverage**: tests now verify per-document storage, tombstones, prefix index files, worker request correlation, cross-port subscription fanout, and clean browser bundles without Bun/Node/server-cipher leakage.
+- **Document version control**: `fylo checkout [-b] <branch>`, `fylo branch`, `fylo commit -m <message>`, and `fylo log` add Git/Dolt-style branch isolation with S3-style full collection snapshots under `.fylo-vcs`.
+- **Document version-control diffing and restore**: `fylo status`, `fylo diff`, and `fylo restore-commit <commit-id>` compare payload snapshots and safely restore commits with a dirty-tree guard.
+- **Document version-control merges**: `fylo merge <ref>` supports fast-forward merges and conservative three-way document-payload merges, with structured conflict reporting when both sides changed the same TTID differently.
+- **Machine version-control operations**: `exec --request` now supports `checkout`, `branch`, `commit`, `log`, `status`, `diff`, `restoreCommit`, and `merge` so compiled-binary consumers can drive the same version-control flow from any language.
+- **Remote HTTP gateway**: `fylo serve` exposes a PostgREST-inspired HTTP boundary over a local FYLO root with bearer-token auth, URL-based filtering, branch profiles via `Accept-Profile`/`Content-Profile` headers, and an embeddable `createFyloHttpHandler` export under `@d31ma/fylo/server`.
+- **Compiled binary interop**: CI now verifies the compiled `fylo` binary against Python, Ruby, PHP, Dart, Java, C#, C++, Swift, Kotlin, and Rust callers.
+
+### Notes
+
+- Browser support is intentionally JavaScript-first because JavaScript already runs natively in browsers. OPFS or memory filesystem adapters execute reads/writes, while the browser core owns validation, document mutation, prefix indexing, query execution, and the worker protocol.
+- Document version-control snapshots are whole `.collections` copies, not diffs. This favors auditability and recovery over storage efficiency for the first production-safe implementation.
+- Version-control diffs intentionally compare live and tombstoned document payload files only. Indexes, events, locks, and file metadata are excluded from diff noise.
+- The HTTP gateway uses a single shared bearer token (like PostgREST). Loopback binding without a token is allowed; non-loopback binding without auth fails closed at startup.
+
 ## 26.22.07 - 2026-05-31
 
 ### Breaking Changes

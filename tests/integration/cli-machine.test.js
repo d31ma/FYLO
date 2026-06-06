@@ -248,6 +248,239 @@ describe('CLI machine interface', () => {
         expect(schemaMaterializePayload.result.document._v).toBe('v2')
     })
 
+    test('exec exposes version-control operations for language-agnostic callers', async () => {
+        const repo = process.cwd()
+        const root = await createRoot('fylo-machine-vcs-')
+
+        expect(buildResult.exitCode).toBe(0)
+
+        const createResponse = await run(
+            [
+                'dist/cli/index.js',
+                'exec',
+                '--request',
+                JSON.stringify({
+                    op: 'createCollection',
+                    root,
+                    collection: 'machine-vcs'
+                })
+            ],
+            repo
+        )
+        expect(createResponse.exitCode).toBe(0)
+
+        const putMainResponse = await run(
+            [
+                'dist/cli/index.js',
+                'exec',
+                '--request',
+                JSON.stringify({
+                    op: 'putData',
+                    root,
+                    collection: 'machine-vcs',
+                    data: { title: 'main' }
+                })
+            ],
+            repo
+        )
+        expect(putMainResponse.exitCode).toBe(0)
+
+        const initialCommitResponse = await run(
+            [
+                'dist/cli/index.js',
+                'exec',
+                '--request',
+                JSON.stringify({
+                    op: 'commit',
+                    root,
+                    message: 'machine main snapshot'
+                })
+            ],
+            repo
+        )
+        expect(initialCommitResponse.exitCode).toBe(0)
+        const initialCommitPayload = JSON.parse(initialCommitResponse.stdout)
+        expect(initialCommitPayload.ok).toBe(true)
+
+        const checkoutResponse = await run(
+            [
+                'dist/cli/index.js',
+                'exec',
+                '--request',
+                JSON.stringify({
+                    op: 'checkout',
+                    root,
+                    branch: 'machine/feature',
+                    create: true
+                })
+            ],
+            repo
+        )
+        expect(checkoutResponse.exitCode).toBe(0)
+        const checkoutPayload = JSON.parse(checkoutResponse.stdout)
+        expect(checkoutPayload.result.branch).toBe('machine/feature')
+
+        const putFeatureResponse = await run(
+            [
+                'dist/cli/index.js',
+                'exec',
+                '--request',
+                JSON.stringify({
+                    op: 'putData',
+                    root,
+                    collection: 'machine-vcs',
+                    data: { title: 'feature' }
+                })
+            ],
+            repo
+        )
+        expect(putFeatureResponse.exitCode).toBe(0)
+
+        const branchResponse = await run(
+            ['dist/cli/index.js', 'exec', '--request', JSON.stringify({ op: 'branch', root })],
+            repo
+        )
+        expect(branchResponse.exitCode).toBe(0)
+        const branchPayload = JSON.parse(branchResponse.stdout)
+        expect(branchPayload.result.current).toBe('machine/feature')
+
+        const featureCommitResponse = await run(
+            [
+                'dist/cli/index.js',
+                'exec',
+                '--request',
+                JSON.stringify({
+                    op: 'commit',
+                    root,
+                    message: 'machine feature snapshot'
+                })
+            ],
+            repo
+        )
+        expect(featureCommitResponse.exitCode).toBe(0)
+        const featureCommitPayload = JSON.parse(featureCommitResponse.stdout)
+
+        const logResponse = await run(
+            ['dist/cli/index.js', 'exec', '--request', JSON.stringify({ op: 'log', root })],
+            repo
+        )
+        expect(logResponse.exitCode).toBe(0)
+        const logPayload = JSON.parse(logResponse.stdout)
+        expect(logPayload.result.map((commit) => commit.message)).toEqual([
+            'machine feature snapshot',
+            'machine main snapshot'
+        ])
+
+        const dirtyPutResponse = await run(
+            [
+                'dist/cli/index.js',
+                'exec',
+                '--request',
+                JSON.stringify({
+                    op: 'putData',
+                    root,
+                    collection: 'machine-vcs',
+                    data: { title: 'dirty' }
+                })
+            ],
+            repo
+        )
+        expect(dirtyPutResponse.exitCode).toBe(0)
+
+        const statusResponse = await run(
+            ['dist/cli/index.js', 'exec', '--request', JSON.stringify({ op: 'status', root })],
+            repo
+        )
+        expect(statusResponse.exitCode).toBe(0)
+        const statusPayload = JSON.parse(statusResponse.stdout)
+        expect(statusPayload.result.clean).toBe(false)
+        expect(statusPayload.result.diff.counts.added).toBe(1)
+
+        const diffResponse = await run(
+            ['dist/cli/index.js', 'exec', '--request', JSON.stringify({ op: 'diff', root })],
+            repo
+        )
+        expect(diffResponse.exitCode).toBe(0)
+        const diffPayload = JSON.parse(diffResponse.stdout)
+        expect(diffPayload.result.counts.total).toBe(1)
+
+        const guardedRestoreResponse = await run(
+            [
+                'dist/cli/index.js',
+                'exec',
+                '--request',
+                JSON.stringify({
+                    op: 'restoreCommit',
+                    root,
+                    id: initialCommitPayload.result.id
+                })
+            ],
+            repo
+        )
+        expect(guardedRestoreResponse.exitCode).toBe(1)
+        const guardedRestorePayload = JSON.parse(guardedRestoreResponse.stdout)
+        expect(guardedRestorePayload.ok).toBe(false)
+        expect(guardedRestorePayload.error.message).toContain(
+            'Working tree has uncommitted changes'
+        )
+
+        const forcedRestoreResponse = await run(
+            [
+                'dist/cli/index.js',
+                'exec',
+                '--request',
+                JSON.stringify({
+                    op: 'restoreCommit',
+                    root,
+                    id: featureCommitPayload.result.id,
+                    force: true
+                })
+            ],
+            repo
+        )
+        expect(forcedRestoreResponse.exitCode).toBe(0)
+        const forcedRestorePayload = JSON.parse(forcedRestoreResponse.stdout)
+        expect(forcedRestorePayload.result.restored).toBe(featureCommitPayload.result.id)
+
+        const checkoutMainResponse = await run(
+            [
+                'dist/cli/index.js',
+                'exec',
+                '--request',
+                JSON.stringify({
+                    op: 'checkout',
+                    root,
+                    branch: 'main'
+                })
+            ],
+            repo
+        )
+        expect(checkoutMainResponse.exitCode).toBe(0)
+
+        const mergeResponse = await run(
+            [
+                'dist/cli/index.js',
+                'exec',
+                '--request',
+                JSON.stringify({
+                    op: 'merge',
+                    root,
+                    source: 'machine/feature'
+                })
+            ],
+            repo
+        )
+        expect(mergeResponse.exitCode).toBe(0)
+        const mergePayload = JSON.parse(mergeResponse.stdout)
+        expect(mergePayload.result).toMatchObject({
+            branch: 'main',
+            source: featureCommitPayload.result.id,
+            mode: 'fast-forward',
+            merged: true,
+            head: featureCommitPayload.result.id
+        })
+    })
+
     test('exec returns structured JSON errors with non-zero exits', async () => {
         const repo = process.cwd()
 

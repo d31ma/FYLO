@@ -61,6 +61,73 @@ jobs:
             - name: Run package blackbox tests
               run: bun run test:blackbox
 
+    binary-interop:
+        name: Compiled binary interop
+        runs-on: macos-latest
+        timeout-minutes: 30
+        env:
+            NODE_AUTH_TOKEN: ${{ secrets.PACKAGES_READ_TOKEN || github.token }}
+
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v6
+
+            - name: Setup Node
+              uses: actions/setup-node@v6
+              with:
+                  node-version: '24'
+                  registry-url: 'https://npm.pkg.github.com'
+                  scope: '@d31ma'
+
+            - name: Setup Bun
+              uses: oven-sh/setup-bun@v2
+              with:
+                  bun-version: latest
+
+            - name: Setup Dart
+              uses: dart-lang/setup-dart@v1
+
+            - name: Setup PHP
+              uses: shivammathur/setup-php@v2
+              with:
+                  php-version: '8.3'
+
+            - name: Setup .NET
+              uses: actions/setup-dotnet@v4
+              with:
+                  dotnet-version: '8.0.x'
+
+            - name: Install Kotlin compiler
+              env:
+                  KOTLIN_VERSION: 2.1.10
+              run: |
+                  set -euo pipefail
+                  curl -fsSL \
+                    "https://github.com/JetBrains/kotlin/releases/download/v${KOTLIN_VERSION}/kotlin-compiler-${KOTLIN_VERSION}.zip" \
+                    -o "$RUNNER_TEMP/kotlin-compiler.zip"
+                  unzip -q "$RUNNER_TEMP/kotlin-compiler.zip" -d "$RUNNER_TEMP/kotlin"
+                  echo "$RUNNER_TEMP/kotlin/kotlinc/bin" >> "$GITHUB_PATH"
+
+            - name: Install dependencies
+              run: bun install --frozen-lockfile
+
+            - name: Verify interop language toolchains
+              run: |
+                  python3 --version
+                  ruby --version
+                  php --version
+                  dart --version
+                  javac -version
+                  java -version
+                  dotnet --version
+                  c++ --version
+                  swift --version
+                  kotlinc -version
+                  rustc --version
+
+            - name: Run compiled binary interop tests
+              run: bun run test:interop
+
     version:
         name: Read version
         runs-on: ubuntu-latest
@@ -73,7 +140,7 @@ jobs:
 
         steps:
             - name: Checkout
-              uses: actions/checkout@v4
+              uses: actions/checkout@v6
               with:
                   fetch-depth: 0
 
@@ -134,11 +201,12 @@ jobs:
 
     publish:
         name: Publish to GitHub Packages
-        needs: [test, version]
+        needs: [test, binary-interop, version]
         if: >-
             ${{
               always() &&
               needs.test.result == 'success' &&
+              needs.binary-interop.result == 'success' &&
               needs.version.result == 'success' &&
               needs.version.outputs.tag_exists == 'false' &&
               needs.version.outputs.github_version_exists == 'false'
@@ -173,10 +241,11 @@ jobs:
 
     promote-npm:
         name: Request npm promotion
-        needs: [version, publish]
+        needs: [version, binary-interop, publish]
         if: >-
             ${{
               always() &&
+              needs.binary-interop.result == 'success' &&
               (
                 (github.event_name == 'workflow_dispatch' && inputs.promote_npm == true) ||
                 (github.event_name == 'push')
@@ -226,10 +295,11 @@ jobs:
     github-release:
         name: Create GitHub release
         runs-on: ubuntu-latest
-        needs: [version, publish]
+        needs: [version, binary-interop, publish]
         if: >-
             ${{
               always() &&
+              needs.binary-interop.result == 'success' &&
               needs.version.outputs.tag_exists == 'false' &&
               (
                 needs.publish.result == 'success' ||

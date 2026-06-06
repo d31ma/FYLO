@@ -1,6 +1,6 @@
 {
     "name": "@d31ma/fylo",
-    "version": "26.22.07",
+    "version": "26.23.05",
     "main": "./dist/index.js",
     "types": "./dist/types/index.d.ts",
     "exports": {
@@ -9,9 +9,20 @@
             "import": "./dist/index.js",
             "default": "./dist/index.js"
         },
+        "./browser": {
+            "types": "./dist/types/browser/index.d.ts",
+            "import": "./dist/browser/index.js",
+            "default": "./dist/browser/index.js"
+        },
+        "./server": {
+            "types": "./dist/types/server/index.d.ts",
+            "import": "./dist/server/index.js",
+            "default": "./dist/server/index.js"
+        },
         "./package.json": "./package.json"
     },
     "bin": {
+        "fylo": "./dist/cli/index.js",
         "fylo.query": "./dist/cli/index.js",
         "fylo.admin": "./dist/cli/index.js",
         "fylo.exec": "./dist/cli/index.js"
@@ -24,8 +35,10 @@
     "scripts": {
         "build": "node ./scripts/build.mjs",
         "build:exe": "mkdir -p ./dist-bin && bun build --compile ./src/cli/index.js --outfile ./dist-bin/fylo",
-        "test": "bun --env-file=tests/.env.test test tests/integration tests/collection --timeout 120000 --parallel=1",
+        "test": "bun --env-file=tests/.env.test test tests/integration tests/collection tests/browser --timeout 120000 --parallel=1",
+        "test:browser": "bun test tests/browser --timeout 120000 --parallel=1",
         "test:blackbox": "bun run build && bun test tests/package-contract --timeout 120000",
+        "test:interop": "bun test tests/interop --timeout 120000 --parallel=1",
         "typecheck": "tsc --noEmit",
         "lint": "prettier --check \"src/**/*.js\" \"tests/**/*.js\" README.md",
         "format": "prettier --write src tests"

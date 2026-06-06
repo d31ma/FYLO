@@ -33,6 +33,297 @@ afterAll(async () => {
 })
 
 describe('CLI', () => {
+    test('version control commands create isolated branches and commit history', async () => {
+        const repo = process.cwd()
+        const root = await createRoot('fylo-vcs-')
+
+        const build = await run(['run', 'build'], repo)
+        expect(build.exitCode).toBe(0)
+        expect(build.stderr.toLowerCase()).not.toContain('error')
+
+        const main = new Fylo(root)
+        await main.createCollection('vc-posts')
+        await main.putData('vc-posts', { title: 'main only' })
+
+        const initialCommit = await run(
+            [
+                'dist/cli/index.js',
+                'commit',
+                '-m',
+                'initial main snapshot',
+                '--root',
+                root,
+                '--json'
+            ],
+            repo
+        )
+        expect(initialCommit.exitCode).toBe(0)
+        const initialCommitResult = JSON.parse(initialCommit.stdout)
+        expect(initialCommitResult.branch).toBe('main')
+        expect(initialCommitResult.message).toBe('initial main snapshot')
+
+        const checkoutFeature = await run(
+            ['dist/cli/index.js', 'checkout', '-b', 'feature/docs', '--root', root, '--json'],
+            repo
+        )
+        expect(checkoutFeature.exitCode).toBe(0)
+        const checkoutFeatureResult = JSON.parse(checkoutFeature.stdout)
+        expect(checkoutFeatureResult).toMatchObject({
+            branch: 'feature/docs',
+            created: true,
+            head: initialCommitResult.id
+        })
+
+        const feature = new Fylo(root)
+        await feature.putData('vc-posts', { title: 'feature only' })
+
+        const featureCommit = await run(
+            ['dist/cli/index.js', 'commit', '-m', 'feature snapshot', '--root', root, '--json'],
+            repo
+        )
+        expect(featureCommit.exitCode).toBe(0)
+        const featureCommitResult = JSON.parse(featureCommit.stdout)
+        expect(featureCommitResult.branch).toBe('feature/docs')
+        expect(featureCommitResult.parents).toEqual([initialCommitResult.id])
+
+        const featureSelect = await run(
+            ['dist/cli/index.js', 'sql', 'SELECT * FROM vc-posts', '--root', root],
+            repo
+        )
+        expect(featureSelect.exitCode).toBe(0)
+        expect(featureSelect.stdout).toContain('main only')
+        expect(featureSelect.stdout).toContain('feature only')
+
+        const branchList = await run(
+            ['dist/cli/index.js', 'branch', '--root', root, '--json'],
+            repo
+        )
+        expect(branchList.exitCode).toBe(0)
+        const branchListResult = JSON.parse(branchList.stdout)
+        expect(branchListResult.current).toBe('feature/docs')
+        expect(branchListResult.branches.map((branch) => branch.name)).toEqual([
+            'feature/docs',
+            'main'
+        ])
+
+        const log = await run(['dist/cli/index.js', 'log', '--root', root, '--json'], repo)
+        expect(log.exitCode).toBe(0)
+        const logResult = JSON.parse(log.stdout)
+        expect(logResult.map((commit) => commit.message)).toEqual([
+            'feature snapshot',
+            'initial main snapshot'
+        ])
+
+        const cleanStatus = await run(
+            ['dist/cli/index.js', 'status', '--root', root, '--json'],
+            repo
+        )
+        expect(cleanStatus.exitCode).toBe(0)
+        expect(JSON.parse(cleanStatus.stdout).clean).toBe(true)
+
+        await feature.putData('vc-posts', { title: 'uncommitted' })
+
+        const dirtyStatus = await run(
+            ['dist/cli/index.js', 'status', '--root', root, '--json'],
+            repo
+        )
+        expect(dirtyStatus.exitCode).toBe(0)
+        const dirtyStatusResult = JSON.parse(dirtyStatus.stdout)
+        expect(dirtyStatusResult.clean).toBe(false)
+        expect(dirtyStatusResult.diff.counts.added).toBe(1)
+
+        const dirtyDiff = await run(['dist/cli/index.js', 'diff', '--root', root, '--json'], repo)
+        expect(dirtyDiff.exitCode).toBe(0)
+        const dirtyDiffResult = JSON.parse(dirtyDiff.stdout)
+        expect(dirtyDiffResult.counts).toMatchObject({ added: 1, total: 1 })
+        expect(dirtyDiffResult.changes[0]).toMatchObject({
+            status: 'added',
+            collection: 'vc-posts',
+            kind: 'active'
+        })
+
+        const guardedRestore = await run(
+            [
+                'dist/cli/index.js',
+                'restore-commit',
+                initialCommitResult.id,
+                '--root',
+                root,
+                '--json'
+            ],
+            repo
+        )
+        expect(guardedRestore.exitCode).toBe(1)
+        expect(guardedRestore.stderr).toContain('Working tree has uncommitted changes')
+
+        const forcedRestore = await run(
+            [
+                'dist/cli/index.js',
+                'restore-commit',
+                initialCommitResult.id,
+                '--root',
+                root,
+                '--force',
+                '--json'
+            ],
+            repo
+        )
+        expect(forcedRestore.exitCode).toBe(0)
+        const forcedRestoreResult = JSON.parse(forcedRestore.stdout)
+        expect(forcedRestoreResult).toMatchObject({
+            branch: 'feature/docs',
+            head: initialCommitResult.id,
+            restored: initialCommitResult.id,
+            forced: true
+        })
+
+        const restoredFeatureSelect = await run(
+            ['dist/cli/index.js', 'sql', 'SELECT * FROM vc-posts', '--root', root],
+            repo
+        )
+        expect(restoredFeatureSelect.exitCode).toBe(0)
+        expect(restoredFeatureSelect.stdout).toContain('main only')
+        expect(restoredFeatureSelect.stdout).not.toContain('feature only')
+        expect(restoredFeatureSelect.stdout).not.toContain('uncommitted')
+
+        const checkoutMain = await run(
+            ['dist/cli/index.js', 'checkout', 'main', '--root', root, '--json'],
+            repo
+        )
+        expect(checkoutMain.exitCode).toBe(0)
+        expect(JSON.parse(checkoutMain.stdout).branch).toBe('main')
+
+        const mainSelect = await run(
+            ['dist/cli/index.js', 'sql', 'SELECT * FROM vc-posts', '--root', root],
+            repo
+        )
+        expect(mainSelect.exitCode).toBe(0)
+        expect(mainSelect.stdout).toContain('main only')
+        expect(mainSelect.stdout).not.toContain('feature only')
+
+        const duplicate = await run(
+            ['dist/cli/index.js', 'checkout', '-b', 'feature/docs', '--root', root],
+            repo
+        )
+        expect(duplicate.exitCode).toBe(1)
+        expect(duplicate.stderr).toContain('Branch already exists')
+    })
+
+    test('version control merge handles clean merges and reports conflicts', async () => {
+        const repo = process.cwd()
+        const root = await createRoot('fylo-merge-')
+
+        const build = await run(['run', 'build'], repo)
+        expect(build.exitCode).toBe(0)
+
+        const main = new Fylo(root)
+        await main.createCollection('merge-posts')
+        await main.putData('merge-posts', { title: 'base' })
+        await run(['dist/cli/index.js', 'commit', '-m', 'base', '--root', root, '--json'], repo)
+
+        const checkoutFeature = await run(
+            ['dist/cli/index.js', 'checkout', '-b', 'feature/merge', '--root', root, '--json'],
+            repo
+        )
+        expect(checkoutFeature.exitCode).toBe(0)
+        const feature = new Fylo(root)
+        await feature.putData('merge-posts', { title: 'feature only' })
+        const featureCommit = await run(
+            ['dist/cli/index.js', 'commit', '-m', 'feature work', '--root', root, '--json'],
+            repo
+        )
+        expect(featureCommit.exitCode).toBe(0)
+        const featureCommitResult = JSON.parse(featureCommit.stdout)
+
+        const checkoutMain = await run(
+            ['dist/cli/index.js', 'checkout', 'main', '--root', root, '--json'],
+            repo
+        )
+        expect(checkoutMain.exitCode).toBe(0)
+        const mainAgain = new Fylo(root)
+        await mainAgain.putData('merge-posts', { title: 'main only' })
+        const mainCommit = await run(
+            ['dist/cli/index.js', 'commit', '-m', 'main work', '--root', root, '--json'],
+            repo
+        )
+        expect(mainCommit.exitCode).toBe(0)
+        const mainCommitResult = JSON.parse(mainCommit.stdout)
+
+        const merge = await run(
+            [
+                'dist/cli/index.js',
+                'merge',
+                'feature/merge',
+                '-m',
+                'merge feature',
+                '--root',
+                root,
+                '--json'
+            ],
+            repo
+        )
+        expect(merge.exitCode).toBe(0)
+        const mergeResult = JSON.parse(merge.stdout)
+        expect(mergeResult).toMatchObject({
+            branch: 'main',
+            source: featureCommitResult.id,
+            mode: 'merge',
+            merged: true,
+            parents: [mainCommitResult.id, featureCommitResult.id]
+        })
+        expect(typeof mergeResult.commit).toBe('string')
+        expect(mergeResult.applied).toBe(1)
+
+        const mergedSelect = await run(
+            ['dist/cli/index.js', 'sql', 'SELECT * FROM merge-posts', '--root', root],
+            repo
+        )
+        expect(mergedSelect.exitCode).toBe(0)
+        expect(mergedSelect.stdout).toContain('base')
+        expect(mergedSelect.stdout).toContain('main only')
+        expect(mergedSelect.stdout).toContain('feature only')
+
+        const conflictRoot = await createRoot('fylo-merge-conflict-')
+        const conflictMain = new Fylo(conflictRoot)
+        await conflictMain.createCollection('merge-conflicts')
+        const sharedId = await conflictMain.putData('merge-conflicts', { title: 'base' })
+        await run(
+            ['dist/cli/index.js', 'commit', '-m', 'conflict base', '--root', conflictRoot],
+            repo
+        )
+        await run(
+            ['dist/cli/index.js', 'checkout', '-b', 'feature/conflict', '--root', conflictRoot],
+            repo
+        )
+        const conflictFeature = new Fylo(conflictRoot)
+        await conflictFeature.patchDoc('merge-conflicts', { [sharedId]: { title: 'feature edit' } })
+        await run(
+            ['dist/cli/index.js', 'commit', '-m', 'feature edit', '--root', conflictRoot],
+            repo
+        )
+        await run(['dist/cli/index.js', 'checkout', 'main', '--root', conflictRoot], repo)
+        const conflictMainAgain = new Fylo(conflictRoot)
+        await conflictMainAgain.patchDoc('merge-conflicts', { [sharedId]: { title: 'main edit' } })
+        await run(['dist/cli/index.js', 'commit', '-m', 'main edit', '--root', conflictRoot], repo)
+
+        const conflictMerge = await run(
+            ['dist/cli/index.js', 'merge', 'feature/conflict', '--root', conflictRoot, '--json'],
+            repo
+        )
+        expect(conflictMerge.exitCode).toBe(1)
+        const conflictMergeResult = JSON.parse(conflictMerge.stdout)
+        expect(conflictMergeResult).toMatchObject({
+            branch: 'main',
+            mode: 'conflict',
+            merged: false
+        })
+        expect(conflictMergeResult.conflicts[0]).toMatchObject({
+            collection: 'merge-conflicts',
+            kind: 'active',
+            id: sharedId
+        })
+    })
+
     test('build emits a working CLI with SQL and richer admin commands', async () => {
         const repo = process.cwd()
         const root = await createRoot('fylo-cli-')

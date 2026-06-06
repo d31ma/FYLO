@@ -58,6 +58,7 @@
  * @property {FyloCacheOptions=} cache
  * @property {boolean=} queue
  * @property {FyloEventHandler=} onEvent
+ * @property {{ resolve?: boolean }=} versioning
  */
 
 /**

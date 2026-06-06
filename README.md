@@ -23,6 +23,7 @@
 - [Why FYLO?](#why-fylo)
 - [Quick Start](#quick-start)
 - [Architecture](#architecture)
+- [Browser Runtime](#browser-runtime)
 - [Configuration](#configuration)
 - [CRUD Operations](#crud-operations)
 - [Querying](#querying)
@@ -31,6 +32,7 @@
 - [Auth & Row-Level Security](#auth--row-level-security)
 - [WORM Mode](#worm-mode)
 - [Syncing & Replication](#syncing--replication)
+- [Remote Gateway](#remote-gateway)
 - [Local Queue](#local-queue)
 - [CLI & Machine Interface](#cli--machine-interface)
 - [Recovery & Rebuild](#recovery--rebuild)
@@ -50,6 +52,7 @@ FYLO trades complexity for clarity. Documents are plain JSON files on disk. Inde
 | **Rebuildable, not sacred**          | `rebuildCollection()` reconstructs indexes from documents     |
 | **Bun-native, zero-dependency core** | `bun:sqlite`, `Bun.mmap()`, `Bun.S3Client` — no native addons |
 | **Filesystem-first**                 | One engine. Sync to S3/GCS is your deployment choice          |
+| **Browser runtime**                  | JavaScript runtime over OPFS/memory filesystem adapters       |
 
 ---
 
@@ -76,6 +79,20 @@ const doc = await db.users.getDoc(id).once()
 console.log(doc[id]) // { name: 'Ada', role: 'admin', ... }
 ```
 
+### Optional Website Submodule
+
+The private FYLO website lives in the optional `website/` submodule. A normal
+clone does not fetch submodule contents, so users without access to
+`d31ma/FY-LO` can still clone and work on FYLO itself.
+
+```bash
+# Clone package only
+git clone https://github.com/d31ma/Fylo.git
+
+# If you have access to the private website repo
+git submodule update --init website
+```
+
 ---
 
 ## Architecture
@@ -98,6 +115,26 @@ Each collection lives under `.collections` in the configured root:
     <collection>.ndjson    ← append-only event journal
   locks/                   ← advisory file locks
 ```
+
+When document version control is initialized, FYLO also writes hidden repository
+metadata beside `.collections`:
+
+```text
+<root>/.fylo-vcs/
+  HEAD                     ← active branch ref
+  refs/heads/<branch>.json ← branch metadata and latest commit id
+  branches/<branch>/       ← hidden working tree for non-main branches
+    .collections/...
+  commits/<commit-id>/     ← full collection snapshot for one commit
+    manifest.json
+    .collections/...
+```
+
+`main` uses the root `.collections` tree. Other branches use hidden working
+trees under `.fylo-vcs/branches/`, so `fylo checkout -b feature` isolates
+subsequent reads and writes without changing the base document layout. Commits
+store full snapshots instead of diffs, matching S3-style whole-object version
+retention and keeping restores auditable.
 
 See [examples/production-folder-structure.md](examples/production-folder-structure.md) for a
 production-style tree with multiple collections and queue storage.
@@ -135,6 +172,79 @@ const fylo = new Fylo('/mnt/fylo', {
 ```
 
 Collection names map directly to S3 bucket names. Credentials resolve from `AWS_*` env vars, `FYLO_S3_*` aliases, or explicit `index.s3` options.
+
+---
+
+## Browser Runtime
+
+FYLO exposes a browser-native runtime under `@d31ma/fylo/browser`. It is plain
+JavaScript because JavaScript already runs in the browser. The browser runtime
+preserves FYLO's per-document layout over OPFS or an injected VFS instead of
+storing a single collection blob.
+
+```ts
+import fylo from '@d31ma/fylo/browser'
+
+const id = await fylo.users.putData({ name: 'Ada', role: 'admin' })
+const doc = await fylo.users.getDoc(id).once()
+```
+
+That default import is browser-local and app-author friendly: OPFS is used when
+available, otherwise FYLO falls back to memory. If you need a separate namespace
+or explicit options, create an isolated instance:
+
+```ts
+import { createBrowserClient } from '@d31ma/fylo/browser'
+
+const fylo = createBrowserClient({
+    storage: 'opfs',
+    namespace: 'my-app'
+})
+
+await fylo.users.create()
+const id = await fylo.users.putData({ name: 'Ada', role: 'admin' })
+const doc = await fylo.users.getDoc(id).once()
+```
+
+Available browser hosts:
+
+| Host     | Usage                                                         |
+| -------- | ------------------------------------------------------------- |
+| `opfs`   | Durable browser-local data through Origin Private File System |
+| `memory` | Ephemeral tests, demos, and short-lived browser sessions      |
+
+In browser contexts FYLO prefers a `SharedWorker`, falls back to a
+`DedicatedWorker`, and finally falls back to an in-process memory filesystem
+when workers are unavailable. The worker multiplexes cores by namespace, so two
+tabs using the same namespace observe the same collection events.
+
+Browser storage mirrors the server layout:
+
+```text
+/.collections/<collection>/
+  docs/<bucket>/<id>.json
+  .deleted/<bucket>/<id>.json
+  index/{manifest.json,keys.snapshot,keys.wal}
+  events/<collection>.ndjson
+```
+
+The clean runtime split is:
+
+```text
+src/browser/core/       browser-safe FYLO protocol, documents, indexes, query engine
+src/browser/worker/     SharedWorker/DedicatedWorker runtime and client
+src/browser/            app-author API and OPFS filesystem; no Bun APIs
+```
+
+Current execution flow:
+
+```text
+fylo.<collection>.<method>(...)
+  -> @d31ma/fylo/browser proxy
+  -> browser core validates collection/doc IDs, mutates documents, updates indexes,
+     evaluates queries, and emits events
+  -> OPFS by default, memory fallback
+```
 
 ---
 
@@ -508,6 +618,72 @@ Strict WORM mode emits its initial write sync event only; mutation callbacks can
 
 ---
 
+## Remote Gateway
+
+`fylo serve` exposes a PostgREST-inspired HTTP boundary over a local FYLO root.
+It is useful when the database directory lives on one machine or mounted drive
+and other services need to query it over the network.
+
+```bash
+FYLO_SERVER_TOKEN="$(openssl rand -hex 32)" \
+fylo serve --root /mnt/fylo --host 0.0.0.0 --port 8787
+```
+
+Routes:
+
+| Route                        | Purpose                                  |
+| ---------------------------- | ---------------------------------------- |
+| `GET /v1/health`             | Health and protocol metadata             |
+| `GET /v1/openapi.json`       | Minimal OpenAPI description              |
+| `GET /v1/:collection`        | Query collection documents               |
+| `POST /v1/:collection`       | Insert one document                      |
+| `GET /v1/:collection/:id`    | Read one document by TTID                |
+| `PATCH /v1/:collection/:id`  | Patch one document by TTID               |
+| `DELETE /v1/:collection/:id` | Soft-delete one document by TTID         |
+| `POST /v1/sql`               | Execute FYLO SQL with `{ "sql": "..." }` |
+| `POST /v1/exec`              | Execute the machine JSON protocol        |
+
+Every non-`OPTIONS` request requires `Authorization: Bearer <token>` unless
+`--allow-anonymous` is explicitly passed. Binding to a non-loopback host without
+a token fails closed.
+
+```bash
+curl -H "Authorization: Bearer $FYLO_SERVER_TOKEN" \
+  "http://localhost:8787/v1/users?role=eq.admin&age=gte.30"
+```
+
+Supported URL filters are `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `like`, and
+`contains`. For example, `name=like.Ada%25`, `tags=contains.platform`, and
+`onlyIds=true`.
+
+Branch profiles use PostgREST-style headers. `Accept-Profile` selects the
+branch for reads; `Content-Profile` selects the branch for writes.
+
+```bash
+curl -H "Authorization: Bearer $FYLO_SERVER_TOKEN" \
+  -H "Accept-Profile: feature/docs" \
+  http://localhost:8787/v1/posts
+```
+
+Embed the gateway in your own Bun service when you need custom routing,
+middleware, TLS, or deployment-specific auth:
+
+```ts
+import { createFyloHttpHandler } from '@d31ma/fylo/server'
+
+const fyloHandler = createFyloHttpHandler({
+    root: '/mnt/fylo',
+    token: process.env.FYLO_SERVER_TOKEN
+})
+
+Bun.serve({
+    port: 8787,
+    fetch: fyloHandler
+})
+```
+
+---
+
 ## Local Queue
 
 Opt-in durable local queue for event-driven workflows:
@@ -563,11 +739,30 @@ fylo.admin get posts 4UUB32VGUDW --root /mnt/fylo --json
 fylo.admin deleted posts --root /mnt/fylo --json
 fylo.admin restore posts 4UUB32VGUDW --root /mnt/fylo --json
 
+# Document version control
+fylo checkout -b feature/docs --root /mnt/fylo
+fylo commit -m "snapshot feature docs" --root /mnt/fylo
+fylo branch --root /mnt/fylo
+fylo log --root /mnt/fylo
+fylo status --root /mnt/fylo
+fylo diff --root /mnt/fylo
+fylo restore-commit 4UUB32VGUDW --root /mnt/fylo --force
+fylo merge feature/docs -m "merge feature docs" --root /mnt/fylo
+fylo checkout main --root /mnt/fylo
+
 # Schema
 fylo.admin schema inspect article --schema-dir ./schemas --json
 fylo.admin schema doctor article --schema-dir ./schemas
 fylo.admin schema validate article @article.json --schema-dir ./schemas --json
 ```
+
+`status` and `diff` compare document payloads only (`docs/` and `.deleted/`),
+so rebuilt indexes, event journals, lock files, and mtime-only changes do not
+create noisy diffs. `restore-commit` refuses to overwrite uncommitted working
+tree changes unless `--force` is passed; commit snapshots themselves remain
+immutable. `merge` supports fast-forward and three-way document-payload merges.
+If both sides changed the same TTID payload differently, FYLO reports conflicts
+and leaves the current branch untouched.
 
 ### Machine Interface (cross-language)
 
@@ -585,7 +780,7 @@ echo '{"op":"inspectCollection","root":"/mnt/fylo","collection":"posts"}' | fylo
 }
 ```
 
-Supported operations: `executeSQL`, `createCollection`, `dropCollection`, `inspectCollection`, `rebuildCollection`, `getDoc`, `getLatest`, `findDocs`, `findDeletedDocs`, `restoreDoc`, `joinDocs`, `putData`, `batchPutData`, `patchDoc`, `patchDocs`, `delDoc`, `delDocs`, `importBulkData`, `schemaInspect`, `schemaCurrent`, `schemaHistory`, `schemaDoctor`, `schemaValidate`, `schemaMaterialize`.
+Supported operations: `executeSQL`, `createCollection`, `dropCollection`, `inspectCollection`, `rebuildCollection`, `getDoc`, `getLatest`, `findDocs`, `findDeletedDocs`, `restoreDoc`, `joinDocs`, `putData`, `batchPutData`, `patchDoc`, `patchDocs`, `delDoc`, `delDocs`, `importBulkData`, `checkout`, `branch`, `commit`, `log`, `status`, `diff`, `restoreCommit`, `merge`, `schemaInspect`, `schemaCurrent`, `schemaHistory`, `schemaDoctor`, `schemaValidate`, `schemaMaterialize`.
 
 ### Compiled Executable
 
@@ -594,7 +789,14 @@ bun run build:exe
 ./dist-bin/fylo exec --request @request.json
 ```
 
-Callable from Python, Go, Rust, Java — write JSON to stdin, read JSON from stdout.
+Callable from any language that can spawn a process and read JSON: write a
+machine request to stdin or `--request`, then read the JSON response from stdout.
+
+The compiled executable interop contract is tested in CI against Python, Ruby,
+PHP, Dart, Java, C#, C++, Swift, Kotlin, and Rust. Each language invokes the
+same `fylo exec --request <json>` machine protocol, so non-JS callers do not
+depend on JS-only conveniences such as `new Fylo(...)`, `sql` template tags, or
+`db.<collection>` facades.
 
 ---
 
