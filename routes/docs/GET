@@ -1,0 +1,5 @@
+#!/usr/bin/env bun
+// Docs GET handler — HTML requests are intercepted by the Tachyon shell before
+// this file runs. This exists so the /docs route is registered server-side,
+// enabling direct URL access to the docs page.
+process.stdout.write(JSON.stringify({ ok: true }))

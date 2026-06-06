@@ -1,0 +1,4 @@
+#!/usr/bin/env bun
+// Root GET handler — HTML requests are intercepted upstream by the Tachyon
+// shell before this file runs. This exists to satisfy process pre-warming.
+process.stdout.write(JSON.stringify({ ok: true }))
