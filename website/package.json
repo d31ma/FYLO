@@ -1,0 +1,27 @@
+{
+  "name": "fylo",
+  "version": "1.4.3",
+  "private": true,
+  "scripts": {
+    "start": "bun run serve",
+    "serve": "tach.serve",
+    "bundle": "bun ./scripts/bundle.mjs",
+    "bundle:watch": "bun ./scripts/bundle.mjs --watch",
+    "preview": "bun ./scripts/preview.mjs",
+    "test": "bun test tests/site.test.js tests/dom/site.dom.test.js",
+    "test:dom": "bun test tests/dom/site.dom.test.js",
+    "test:visual": "bun test tests/visual/site.visual.test.js --timeout 120000",
+    "test:visual:update": "UPDATE_VISUAL=1 bun test tests/visual/site.visual.test.js --timeout 120000",
+    "test:visual:setup": "bunx playwright install chromium",
+    "test:full": "bun run test && bun run test:visual"
+  },
+  "devDependencies": {
+    "@delma/tachyon": "^1.7.1",
+    "@tailwindcss/cli": "^4.2.2",
+    "happy-dom": "^20.8.9",
+    "pixelmatch": "^7.1.0",
+    "playwright": "^1.59.1",
+    "pngjs": "^7.0.0",
+    "tailwindcss": "^4.2.2"
+  }
+}

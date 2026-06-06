@@ -1,0 +1,76 @@
+@media (max-width: 900px) {
+  .demo-inner {
+    @apply grid-cols-1 gap-10;
+  }
+
+  .demo-inner.reverse {
+    direction: ltr;
+  }
+}
+
+@media (min-width: 1280px) {
+  .footer-grid {
+    grid-template-columns: 2.2fr 1fr 1fr 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .site-nav,
+  .demo-section,
+  .site-footer,
+  .docs-wrap {
+    @apply px-4;
+  }
+
+  .site-nav {
+    @apply flex-nowrap items-center gap-2 py-3;
+  }
+
+  .nav-right {
+    @apply w-auto shrink-0 flex-row items-center gap-2;
+  }
+
+  .nav-link-group {
+    @apply w-auto flex-nowrap items-center justify-end gap-1.5;
+  }
+
+  .nav-logo {
+    @apply text-base;
+    letter-spacing: 0.12em;
+  }
+
+  .nav-logo-icon {
+    @apply h-6 w-6;
+  }
+
+  .nav-install-btn {
+    display: none;
+  }
+
+  .nav-install-btn .install-label {
+    @apply truncate;
+    max-width: 100%;
+  }
+
+  .nav-gh-link {
+    @apply justify-center px-2.5 py-1.5 text-[0.68rem];
+    min-width: auto;
+    gap: 0.35rem;
+  }
+
+  .nav-gh-link svg {
+    @apply h-3.5 w-3.5 shrink-0;
+  }
+
+  .site-footer {
+    @apply mt-16 py-10;
+  }
+
+  .footer-grid {
+    @apply gap-8;
+  }
+
+  .footer-bottom-row {
+    @apply items-start;
+  }
+}

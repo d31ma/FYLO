@@ -1,0 +1,120 @@
+<style>
+  .env-section {
+    padding: 5rem 2rem;
+    background: linear-gradient(180deg, transparent, rgba(248,155,75,0.04) 50%, transparent);
+  }
+  .env-table-wrap { max-width: var(--max-w); margin: 0 auto; }
+  .env-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    margin-top: 2rem;
+  }
+  .env-row {
+    display: grid;
+    grid-template-columns: 28ch 1fr;
+    gap: 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .env-row:last-child { border-bottom: none; }
+  .env-row:nth-child(even) { background: rgba(255,255,255,0.015); }
+  .env-key {
+    padding: 0.9rem 1.25rem;
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    color: var(--accent);
+    border-right: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+  }
+  .env-desc {
+    padding: 0.9rem 1.25rem;
+    font-size: 0.83rem;
+    color: var(--text-dim);
+    display: flex;
+    align-items: center;
+    min-width: 0;
+  }
+  .env-key { overflow-wrap: anywhere; }
+  .env-desc code { overflow-wrap: anywhere; }
+
+  @media (max-width: 900px) {
+    .env-row { grid-template-columns: 22ch 1fr; }
+  }
+  @media (max-width: 640px) {
+    .env-row { grid-template-columns: 1fr; }
+    .env-key { border-right: none; border-bottom: 1px solid var(--border); padding-bottom: 0.4rem; }
+    .env-desc { padding-top: 0.4rem; }
+  }
+</style>
+
+<script>
+  const envRows = [
+    {
+      key: 'FYLO_ROOT',
+      kind: 'plain',
+      text: 'Preferred filesystem root for FYLO collections.',
+    },
+    {
+      key: 'FYLO_S3FILES_ROOT',
+      kind: 'code-trailing',
+      textBefore: 'Backward-compatible alias for ',
+      code: 'FYLO_ROOT',
+      textAfter: '.',
+    },
+    {
+      key: 'SCHEMA_DIR',
+      kind: 'plain',
+      text: 'Directory containing collection JSON schemas for validation and encryption metadata.',
+    },
+    {
+      key: 'STRICT',
+      kind: 'plain',
+      text: 'Set to any truthy value to validate writes with CHEX before they are committed.',
+    },
+    {
+      key: 'ENCRYPTION_KEY',
+      kind: 'code-trailing',
+      textBefore: 'Minimum 32 characters. Required when any schema declares ',
+      code: '$encrypted',
+      textAfter: ' fields.',
+    },
+    {
+      key: 'CIPHER_SALT',
+      kind: 'plain',
+      text: 'Unique random salt per deployment for PBKDF2 key derivation. Prevents cross-instance precomputation.',
+    },
+    {
+      key: 'LOGGING',
+      kind: 'plain',
+      text: 'Enable extra logging for bulk imports and related FYLO operations.',
+    },
+  ]
+</script>
+
+<section class="env-section" aria-labelledby="env-heading">
+  <div class="env-table-wrap">
+    <div class="section-eyebrow">Configuration</div>
+    <h2 id="env-heading" style="font-size:clamp(1.6rem,3.5vw,2.2rem);font-weight:800;letter-spacing:-0.03em;color:var(--text);margin-bottom:0.5rem;">Zero config by default.<br/>Everything configurable via env.</h2>
+    <p style="color:var(--text-dim);font-size:1rem;max-width:52ch;">Drop a <code style="font-family:var(--font-mono);font-size:0.85em;background:rgba(255,255,255,0.07);padding:0.15em 0.4em;border-radius:4px;color:var(--text)">.env</code> file in your project root. FYLO now prefers a single filesystem root with optional validation, encryption, and logging controls.</p>
+
+    <div class="env-grid" role="table" aria-label="Environment variables">
+      <loop :for="let row of envRows">
+        <div class="env-row" role="row">
+          <div class="env-key" role="cell">{row.key}</div>
+          <div class="env-desc" role="cell">
+            <logic :if="row.kind === 'plain'">
+              {row.text}
+            </logic>
+            <logic else="">
+              {row.textBefore}<code style="font-family:var(--font-mono);font-size:0.8em;color:var(--text-dim)">{row.code}</code>{row.textAfter}
+            </logic>
+          </div>
+        </div>
+      </loop>
+    </div>
+  </div>
+</section>
