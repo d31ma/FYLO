@@ -6,6 +6,7 @@ import {
     materializeSchemaDocument,
     validateSchemaDocument
 } from '../schema/admin.js'
+import { VersionRepository } from '../versioning/repository.js'
 
 const MACHINE_PROTOCOL_VERSION = 1
 
@@ -14,7 +15,7 @@ const MACHINE_PROTOCOL_VERSION = 1
  */
 
 /**
- * @typedef {'executeSQL' | 'createCollection' | 'dropCollection' | 'inspectCollection' | 'rebuildCollection' | 'getDoc' | 'getLatest' | 'findDocs' | 'findDeletedDocs' | 'restoreDoc' | 'joinDocs' | 'putData' | 'batchPutData' | 'patchDoc' | 'patchDocs' | 'delDoc' | 'delDocs' | 'importBulkData' | 'schemaInspect' | 'schemaCurrent' | 'schemaHistory' | 'schemaDoctor' | 'schemaValidate' | 'schemaMaterialize'} MachineOperation
+ * @typedef {'executeSQL' | 'createCollection' | 'dropCollection' | 'inspectCollection' | 'rebuildCollection' | 'getDoc' | 'getLatest' | 'findDocs' | 'findDeletedDocs' | 'restoreDoc' | 'joinDocs' | 'putData' | 'batchPutData' | 'patchDoc' | 'patchDocs' | 'delDoc' | 'delDocs' | 'importBulkData' | 'checkout' | 'branch' | 'commit' | 'log' | 'status' | 'diff' | 'restoreCommit' | 'merge' | 'schemaInspect' | 'schemaCurrent' | 'schemaHistory' | 'schemaDoctor' | 'schemaValidate' | 'schemaMaterialize'} MachineOperation
  */
 
 /**
@@ -25,6 +26,13 @@ const MACHINE_PROTOCOL_VERSION = 1
  * @property {string=} schemaDir
  * @property {boolean | FyloWormOptions=} worm
  * @property {string=} collection
+ * @property {string=} branch
+ * @property {boolean=} create
+ * @property {boolean=} force
+ * @property {string=} message
+ * @property {string=} source
+ * @property {string=} from
+ * @property {string=} to
  * @property {string=} id
  * @property {boolean=} onlyId
  * @property {string=} sql
@@ -46,6 +54,7 @@ const MACHINE_PROTOCOL_VERSION = 1
  * @typedef {object} MachineCliOverrides
  * @property {string=} root
  * @property {boolean=} worm
+ * @property {{ resolve?: boolean }=} versioning
  */
 
 /**
@@ -144,8 +153,18 @@ function createMachineFylo(request, overrides = {}) {
             ? /** @type {FyloWormOptions} */ ({ mode: 'strict' })
             : normalizeWormOptions(request.worm)
     return new Fylo(path.resolve(root ?? Fylo.defaultRoot()), {
-        ...(worm ? { worm } : {})
+        ...(worm ? { worm } : {}),
+        ...(overrides.versioning ? { versioning: overrides.versioning } : {})
     })
+}
+
+/**
+ * @param {MachineRequest} request
+ * @param {MachineCliOverrides=} overrides
+ * @returns {VersionRepository}
+ */
+function createMachineRepository(request, overrides = {}) {
+    return new VersionRepository(path.resolve(overrides.root ?? request.root ?? Fylo.defaultRoot()))
 }
 
 /**
@@ -201,6 +220,40 @@ export async function executeMachineOperation(request, overrides = {}) {
     if (!isRecord(request)) throw new Error('Machine request body must be a JSON object')
     if (typeof request.op !== 'string') {
         throw new Error('Machine request field "op" must be a string')
+    }
+    switch (request.op) {
+        case 'checkout':
+            return await createMachineRepository(request, overrides).checkout(
+                requireString(request, 'branch'),
+                { create: request.create === true }
+            )
+        case 'branch':
+            return await createMachineRepository(request, overrides).listBranches()
+        case 'commit':
+            return await createMachineRepository(request, overrides).commit(
+                requireString(request, 'message')
+            )
+        case 'log':
+            return await createMachineRepository(request, overrides).log({
+                branch: request.branch
+            })
+        case 'status':
+            return await createMachineRepository(request, overrides).status()
+        case 'diff':
+            return await createMachineRepository(request, overrides).diff(
+                request.from ?? 'HEAD',
+                request.to ?? 'WORKTREE'
+            )
+        case 'restoreCommit':
+            return await createMachineRepository(request, overrides).restoreCommit(
+                requireString(request, 'id'),
+                { force: request.force === true }
+            )
+        case 'merge':
+            return await createMachineRepository(request, overrides).merge(
+                requireString(request, 'source'),
+                { message: request.message }
+            )
     }
     const fylo = createMachineFylo(request, overrides)
     switch (request.op) {

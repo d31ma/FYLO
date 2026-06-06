@@ -21,6 +21,7 @@ import {
     tlsCheckServerIdentity
 } from '../security/import-guard.js'
 import { createQueryCache } from '../cache/query.js'
+import { VersionRepository } from '../versioning/repository.js'
 import '../core/extensions.js'
 
 /**
@@ -89,6 +90,9 @@ export default class Fylo {
      */
     constructor(root, options = {}) {
         root = Fylo.rootFromPath(root)
+        if (options.versioning?.resolve !== false) {
+            root = VersionRepository.resolveActiveRoot(root)
+        }
         if (Object.hasOwn(options, 'root')) {
             throw new Error(
                 'Fylo constructor config must not include root; pass the database path as the first argument'

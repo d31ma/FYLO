@@ -1,0 +1,22 @@
+# Keep Graphify from re-reading its own generated outputs.
+graphify-out/GRAPH_REPORT.md
+graphify-out/graph.html
+graphify-out/graph.json
+graphify-out/manifest.json
+graphify-out/cache/
+graphify-out/converted/
+graphify-out/wiki/
+graphify-out/graph.svg
+graphify-out/graph.graphml
+graphify-out/cypher.txt
+
+# Graphify local bookkeeping.
+.graphify_*
+
+# Repo-local generated artifacts that Graphify does not skip by default.
+dist/
+dist-bin/
+test-results/
+
+# Private website submodule.
+website/

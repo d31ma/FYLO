@@ -3,12 +3,14 @@ import path from 'node:path'
 import Fylo from '../index.js'
 import { runMachineRequestSource } from './machine.js'
 import { renderTableOutput, writeCliText } from './output.js'
+import { serveFyloHttp } from '../server/http.js'
 import {
     doctorSchema,
     inspectSchema,
     materializeSchemaDocument,
     validateSchemaDocument
 } from '../schema/admin.js'
+import { VersionRepository } from '../versioning/repository.js'
 
 /**
  * @typedef {import('../types/vendor.js').TTID} TTID
@@ -20,20 +22,38 @@ import {
  * @typedef {object} ParsedArgs
  * @property {string[]} positionals
  * @property {string | undefined} root
+ * @property {string | undefined} host
+ * @property {number | undefined} port
+ * @property {string | undefined} token
+ * @property {string | string[] | undefined} corsOrigin
+ * @property {number | undefined} maxBodyBytes
  * @property {boolean} worm
  * @property {boolean} json
  * @property {boolean} idOnly
+ * @property {boolean} allowAnonymous
+ * @property {boolean} createBranch
+ * @property {boolean} force
  * @property {string | undefined} schemaDir
  * @property {number | undefined} pageSize
  * @property {'left' | 'center' | 'right' | 'auto'} align
  * @property {PagerMode} pager
  * @property {string | undefined} request
+ * @property {string | undefined} message
  * @property {boolean} help
  * @returns {string}
  */
 function usage() {
     return [
         'Usage:',
+        '  fylo checkout [-b] <branch> [--root <path>] [--json]',
+        '  fylo branch [--root <path>] [--json]',
+        '  fylo commit -m <message> [--root <path>] [--json]',
+        '  fylo log [--root <path>] [--json]',
+        '  fylo status [--root <path>] [--json]',
+        '  fylo diff [<from>] [<to>] [--root <path>] [--json]',
+        '  fylo restore-commit <commit-id> [--root <path>] [--force] [--json]',
+        '  fylo merge <ref> [-m <message>] [--root <path>] [--json]',
+        '  fylo serve [--root <path>] [--host <host>] [--port <n>] [--token <token>] [--cors-origin <origin>] [--max-body-bytes <n>] [--allow-anonymous]',
         '  fylo.query "<SQL>"',
         '  fylo.query sql "<SQL>"',
         '  fylo.exec exec --request <json|@path|-> [--root <path>] [--worm]',
@@ -64,10 +84,19 @@ function usage() {
         '',
         'Options:',
         '  --root <path>   Override FYLO_ROOT for this command',
+        '  --host <host>   Host for fylo serve (default: 127.0.0.1)',
+        '  --port <n>      Port for fylo serve (default: 8787)',
+        '  --token <v>     Bearer token for fylo serve (or FYLO_SERVER_TOKEN)',
+        '  --cors-origin <origin> Allow CORS for fylo serve; repeatable',
+        '  --max-body-bytes <n> Maximum JSON request body for fylo serve',
+        '  --allow-anonymous Allow unauthenticated fylo serve access',
         '  --schema-dir <path> Override FYLO_SCHEMA for schema admin commands',
         '  --worm          Enable WORM-aware admin behavior for this command',
         '  --json          Emit machine-readable JSON output',
         '  --id-only       Return only the resolved document id for latest',
+        '  -b              Create a new branch during checkout',
+        '  -m, --message <v> Commit message',
+        '  --force         Allow restore-commit to overwrite uncommitted changes',
         '  --page-size <n> Repeat headers every n rows in text output',
         '  --align <mode>  Cell alignment: left, center, right, or auto',
         '  --request <v>   Machine request payload, @file path, or - for stdin',
@@ -83,9 +112,18 @@ function usage() {
 function parseArgs(argv) {
     const positionals = []
     let root
+    let host
+    let port
+    let token
+    /** @type {string[]} */
+    const corsOrigins = []
+    let maxBodyBytes
     let worm = false
     let json = false
     let idOnly = false
+    let allowAnonymous = false
+    let createBranch = false
+    let force = false
     let schemaDir
     let pageSize
     /** @type {'left' | 'center' | 'right' | 'auto'} */
@@ -93,6 +131,7 @@ function parseArgs(argv) {
     /** @type {PagerMode} */
     let pager = 'auto'
     let request
+    let message
     let help = false
     for (let index = 0; index < argv.length; index++) {
         const arg = argv[index]
@@ -100,6 +139,43 @@ function parseArgs(argv) {
             const value = argv[index + 1]
             if (!value) throw new Error('Missing value for --root')
             root = path.resolve(value)
+            index++
+            continue
+        }
+        if (arg === '--host') {
+            const value = argv[index + 1]
+            if (!value) throw new Error('Missing value for --host')
+            host = value
+            index++
+            continue
+        }
+        if (arg === '--port') {
+            const value = Number(argv[index + 1])
+            if (!Number.isInteger(value) || value <= 0)
+                throw new Error('Missing or invalid value for --port')
+            port = value
+            index++
+            continue
+        }
+        if (arg === '--token') {
+            const value = argv[index + 1]
+            if (!value) throw new Error('Missing value for --token')
+            token = value
+            index++
+            continue
+        }
+        if (arg === '--cors-origin') {
+            const value = argv[index + 1]
+            if (!value) throw new Error('Missing value for --cors-origin')
+            corsOrigins.push(value)
+            index++
+            continue
+        }
+        if (arg === '--max-body-bytes') {
+            const value = Number(argv[index + 1])
+            if (!Number.isInteger(value) || value <= 0)
+                throw new Error('Missing or invalid value for --max-body-bytes')
+            maxBodyBytes = value
             index++
             continue
         }
@@ -120,6 +196,25 @@ function parseArgs(argv) {
         }
         if (arg === '--id-only') {
             idOnly = true
+            continue
+        }
+        if (arg === '--allow-anonymous') {
+            allowAnonymous = true
+            continue
+        }
+        if (arg === '-b') {
+            createBranch = true
+            continue
+        }
+        if (arg === '-m' || arg === '--message') {
+            const value = argv[index + 1]
+            if (!value) throw new Error(`Missing value for ${arg}`)
+            message = value
+            index++
+            continue
+        }
+        if (arg === '--force') {
+            force = true
             continue
         }
         if (arg === '--page-size') {
@@ -158,14 +253,23 @@ function parseArgs(argv) {
     return {
         positionals,
         root,
+        host,
+        port,
+        token,
+        corsOrigin: corsOrigins.length > 1 ? corsOrigins : corsOrigins[0],
+        maxBodyBytes,
         worm,
         json,
         idOnly,
+        allowAnonymous,
+        createBranch,
+        force,
         schemaDir,
         pageSize,
         align,
         pager,
         request,
+        message,
         help
     }
 }
@@ -254,6 +358,221 @@ function createFylo(root, worm = false) {
     return new Fylo(root ?? Fylo.defaultRoot(), {
         ...(worm ? { worm: { mode: 'strict' } } : {})
     })
+}
+
+/**
+ * @param {string | undefined} root
+ * @returns {VersionRepository}
+ */
+function createVersionRepository(root) {
+    return new VersionRepository(root ?? Fylo.defaultRoot())
+}
+
+/**
+ * @param {ParsedArgs} args
+ * @returns {Promise<void>}
+ */
+async function runServe(args) {
+    const server = serveFyloHttp({
+        root: args.root ?? Fylo.defaultRoot(),
+        host: args.host,
+        port: args.port,
+        token: args.token,
+        corsOrigin: args.corsOrigin,
+        maxBodyBytes: args.maxBodyBytes,
+        allowAnonymous: args.allowAnonymous
+    })
+    console.log(`FYLO remote gateway listening on http://${server.hostname}:${server.port}`)
+    await new Promise(() => {})
+}
+
+/**
+ * @param {string} branch
+ * @param {string | undefined} root
+ * @param {boolean} createBranch
+ * @param {boolean=} json
+ * @returns {Promise<string | undefined>}
+ */
+async function runCheckout(branch, root, createBranch, json = false) {
+    const result = await createVersionRepository(root).checkout(branch, { create: createBranch })
+    if (json) {
+        printJson(result)
+        return undefined
+    }
+    return `${createBranch ? 'Created and switched to' : 'Switched to'} branch ${result.branch}`
+}
+
+/**
+ * @param {string | undefined} root
+ * @param {boolean=} json
+ * @returns {Promise<string | undefined>}
+ */
+async function runBranch(root, json = false) {
+    const result = await createVersionRepository(root).listBranches()
+    if (json) {
+        printJson(result)
+        return undefined
+    }
+    return result.branches
+        .map((branch) => `${branch.name === result.current ? '*' : ' '} ${branch.name}`)
+        .join('\n')
+}
+
+/**
+ * @param {string | undefined} root
+ * @param {string | undefined} message
+ * @param {boolean=} json
+ * @returns {Promise<string | undefined>}
+ */
+async function runCommit(root, message, json = false) {
+    if (!message) throw new Error('Missing commit message; pass -m <message>')
+    const result = await createVersionRepository(root).commit(message)
+    if (json) {
+        printJson(result)
+        return undefined
+    }
+    return `[${result.branch} ${result.id}] ${result.message}`
+}
+
+/**
+ * @param {string | undefined} root
+ * @param {boolean=} json
+ * @returns {Promise<string | undefined>}
+ */
+async function runLog(root, json = false) {
+    const result = await createVersionRepository(root).log()
+    if (json) {
+        printJson(result)
+        return undefined
+    }
+    if (result.length === 0) return 'No commits yet'
+    return result
+        .map((commit) =>
+            [
+                `commit ${commit.id}`,
+                `Branch: ${commit.branch}`,
+                `Date: ${commit.createdAt}`,
+                '',
+                `    ${commit.message}`
+            ].join('\n')
+        )
+        .join('\n\n')
+}
+
+/**
+ * @param {string | undefined} root
+ * @param {boolean=} json
+ * @returns {Promise<string | undefined>}
+ */
+async function runStatus(root, json = false) {
+    const result = await createVersionRepository(root).status()
+    if (json) {
+        printJson(result)
+        return undefined
+    }
+    return [
+        `On branch ${result.branch}`,
+        `HEAD ${result.head ?? 'none'}`,
+        result.clean
+            ? 'Working tree clean'
+            : `Working tree has ${result.diff.counts.total} change(s)`,
+        renderDiffChanges(result.diff)
+    ]
+        .filter(Boolean)
+        .join('\n')
+}
+
+/**
+ * @param {string | undefined} root
+ * @param {string | undefined} from
+ * @param {string | undefined} to
+ * @param {boolean=} json
+ * @returns {Promise<string | undefined>}
+ */
+async function runDiff(root, from, to, json = false) {
+    const result = await createVersionRepository(root).diff(from ?? 'HEAD', to ?? 'WORKTREE')
+    if (json) {
+        printJson(result)
+        return undefined
+    }
+    return [`Diff ${result.from} -> ${result.to}`, renderDiffChanges(result) || 'No changes'].join(
+        '\n'
+    )
+}
+
+/**
+ * @param {string | undefined} root
+ * @param {string} commitId
+ * @param {boolean} force
+ * @param {boolean=} json
+ * @returns {Promise<string | undefined>}
+ */
+async function runRestoreCommit(root, commitId, force, json = false) {
+    const result = await createVersionRepository(root).restoreCommit(commitId, { force })
+    if (json) {
+        printJson(result)
+        return undefined
+    }
+    return `Restored branch ${result.branch} to commit ${result.restored}`
+}
+
+/**
+ * @param {string | undefined} root
+ * @param {string} source
+ * @param {string | undefined} message
+ * @param {boolean=} json
+ * @returns {Promise<{ output: string | undefined, merged: boolean }>}
+ */
+async function runMerge(root, source, message, json = false) {
+    const result = await createVersionRepository(root).merge(source, { message })
+    if (json) {
+        printJson(result)
+        return { output: undefined, merged: result.merged }
+    }
+    if (!result.merged) {
+        return {
+            output: [
+                `Merge conflict while merging ${source} into ${result.branch}`,
+                renderMergeConflicts(result.conflicts)
+            ]
+                .filter(Boolean)
+                .join('\n'),
+            merged: false
+        }
+    }
+    if (result.mode === 'already-up-to-date') {
+        return { output: `Already up to date with ${source}`, merged: true }
+    }
+    if (result.mode === 'fast-forward') {
+        return { output: `Fast-forwarded ${result.branch} to ${result.head}`, merged: true }
+    }
+    return {
+        output: `Merged ${source} into ${result.branch} as ${result.commit}`,
+        merged: true
+    }
+}
+
+/**
+ * @param {import('../versioning/repository.js').FyloDiffResult} diff
+ * @returns {string}
+ */
+function renderDiffChanges(diff) {
+    return diff.changes
+        .map(
+            (change) =>
+                `${change.status.padEnd(8)} ${change.collection}/${change.kind}/${change.id}`
+        )
+        .join('\n')
+}
+
+/**
+ * @param {import('../versioning/repository.js').FyloMergeConflict[]} conflicts
+ * @returns {string}
+ */
+function renderMergeConflicts(conflicts) {
+    return conflicts
+        .map((conflict) => `conflict ${conflict.collection}/${conflict.kind}/${conflict.id}`)
+        .join('\n')
 }
 
 /**
@@ -531,6 +850,58 @@ async function main(args) {
         return
     }
     const [command, ...rest] = args.positionals
+    if (command === 'serve') {
+        await runServe(args)
+        return
+    }
+    if (command === 'checkout') {
+        const branch = rest[0]
+        if (!branch) throw new Error('Missing branch name for checkout')
+        const output = await runCheckout(branch, args.root, args.createBranch, args.json)
+        if (output) await writeCliText(output, { pagerMode: cliRuntimeOptions.pagerMode })
+        return
+    }
+    if (command === 'branch') {
+        const output = await runBranch(args.root, args.json)
+        if (output) await writeCliText(output, { pagerMode: cliRuntimeOptions.pagerMode })
+        return
+    }
+    if (command === 'commit') {
+        const output = await runCommit(args.root, args.message, args.json)
+        if (output) await writeCliText(output, { pagerMode: cliRuntimeOptions.pagerMode })
+        return
+    }
+    if (command === 'log') {
+        const output = await runLog(args.root, args.json)
+        if (output) await writeCliText(output, { pagerMode: cliRuntimeOptions.pagerMode })
+        return
+    }
+    if (command === 'status') {
+        const output = await runStatus(args.root, args.json)
+        if (output) await writeCliText(output, { pagerMode: cliRuntimeOptions.pagerMode })
+        return
+    }
+    if (command === 'diff') {
+        const output = await runDiff(args.root, rest[0], rest[1], args.json)
+        if (output) await writeCliText(output, { pagerMode: cliRuntimeOptions.pagerMode })
+        return
+    }
+    if (command === 'restore-commit') {
+        const commitId = rest[0]
+        if (!commitId) throw new Error('Missing commit id for restore-commit')
+        const output = await runRestoreCommit(args.root, commitId, args.force, args.json)
+        if (output) await writeCliText(output, { pagerMode: cliRuntimeOptions.pagerMode })
+        return
+    }
+    if (command === 'merge') {
+        const source = rest[0]
+        if (!source) throw new Error('Missing ref for merge')
+        const result = await runMerge(args.root, source, args.message, args.json)
+        if (result.output)
+            await writeCliText(result.output, { pagerMode: cliRuntimeOptions.pagerMode })
+        if (!result.merged) process.exitCode = 1
+        return
+    }
     if (command === 'inspect') {
         const collection = rest[0]
         if (!collection) throw new Error('Missing collection name for inspect')
