@@ -6,7 +6,7 @@ describe('BrowserPrefixIndex', () => {
     test('stores server-compatible manifest, snapshot, and WAL files', async () => {
         const fs = createMemoryFilesystem()
         const fylo = new BrowserCore({ fs, root: '/' })
-        const id = await fylo.putData('users', {
+        const id = await fylo['users'].put({
             name: 'Alice',
             score: 42,
             tags: ['browser', 'fylo']
@@ -23,8 +23,8 @@ describe('BrowserPrefixIndex', () => {
     test('uses prefix index candidates for exact, like, contains, and range queries', async () => {
         const fs = createMemoryFilesystem()
         const fylo = new BrowserCore({ fs, root: '/' })
-        const ada = await fylo.putData('users', { name: 'Ada', score: 10, tags: ['ops'] })
-        const grace = await fylo.putData('users', { name: 'Grace', score: 20, tags: ['runtime'] })
+        const ada = await fylo['users'].put({ name: 'Ada', score: 10, tags: ['ops'] })
+        const grace = await fylo['users'].put({ name: 'Grace', score: 20, tags: ['runtime'] })
 
         const exact = await collect(fylo, { $ops: [{ name: { $eq: 'Ada' } }] })
         expect(Object.keys(exact)).toEqual([ada])
@@ -42,7 +42,7 @@ describe('BrowserPrefixIndex', () => {
     test('indexes nested fields, scalar arrays, LIKE helpers, booleans, and numeric ranges', async () => {
         const fs = createMemoryFilesystem()
         const fylo = new BrowserCore({ fs, root: '/' })
-        const id = await fylo.putData('users', {
+        const id = await fylo['users'].put({
             name: 'Alice',
             address: { city: 'Lagos' },
             tags: ['ops', 'browser'],
@@ -83,6 +83,6 @@ describe('BrowserPrefixIndex', () => {
 
 async function collect(fylo, query) {
     const docs = {}
-    for await (const doc of fylo.findDocs('users', query).collect()) Object.assign(docs, doc)
+    for await (const doc of fylo['users'].find(query).collect()) Object.assign(docs, doc)
     return docs
 }

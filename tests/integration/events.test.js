@@ -18,10 +18,10 @@ describe('FYLO onEvent hook', () => {
         const events = []
         const fylo = new Fylo(root, { onEvent: (e) => events.push(e) })
         const collection = `evt-import-${Date.now()}`
-        await fylo.createCollection(collection)
-        await expect(
-            fylo.importBulkData(collection, new URL('http://127.0.0.1/x.json'))
-        ).rejects.toThrow('private address')
+        await fylo[collection].create()
+        await expect(fylo[collection].import(new URL('http://127.0.0.1/x.json'))).rejects.toThrow(
+            'private address'
+        )
         const blocked = events.find((e) => e.type === 'import.blocked')
         expect(blocked).toBeDefined()
         if (blocked && blocked.type === 'import.blocked') {
@@ -35,10 +35,10 @@ describe('FYLO onEvent hook', () => {
         const events = []
         const fylo = new Fylo(root, { onEvent: (e) => events.push(e) })
         const collection = `evt-proto-${Date.now()}`
-        await fylo.createCollection(collection)
-        await expect(
-            fylo.importBulkData(collection, new URL('ftp://example.com/x.json'))
-        ).rejects.toThrow('protocol is not allowed')
+        await fylo[collection].create()
+        await expect(fylo[collection].import(new URL('ftp://example.com/x.json'))).rejects.toThrow(
+            'protocol is not allowed'
+        )
         const blocked = events.find((e) => e.type === 'import.blocked')
         expect(blocked).toBeDefined()
         if (blocked && blocked.type === 'import.blocked') {
@@ -72,8 +72,8 @@ describe('FYLO onEvent hook', () => {
         const events = []
         try {
             const fylo = new Fylo(root, { onEvent: (e) => events.push(e) })
-            await fylo.createCollection(collection)
-            await fylo.putData(collection, { secret: 'shh' })
+            await fylo[collection].create()
+            await fylo[collection].put({ secret: 'shh' })
             const cipherEvent = events.find((e) => e.type === 'cipher.configured')
             expect(cipherEvent).toBeDefined()
             if (cipherEvent && cipherEvent.type === 'cipher.configured') {
@@ -96,10 +96,10 @@ describe('FYLO onEvent hook', () => {
         const events = []
         const fylo = new Fylo(root, { onEvent: (e) => events.push(e) })
         const collection = `evt-rebuild-${Date.now()}`
-        await fylo.createCollection(collection)
-        await fylo.putData(collection, { title: 'one' })
-        await fylo.putData(collection, { title: 'two' })
-        await fylo.rebuildCollection(collection)
+        await fylo[collection].create()
+        await fylo[collection].put({ title: 'one' })
+        await fylo[collection].put({ title: 'two' })
+        await fylo[collection].rebuild()
         const rebuilt = events.find((e) => e.type === 'index.rebuilt')
         expect(rebuilt).toBeDefined()
         if (rebuilt && rebuilt.type === 'index.rebuilt') {
@@ -115,7 +115,7 @@ describe('FYLO onEvent hook', () => {
         const collection = `evt-takeover-${Date.now()}`
         try {
             const fylo = new Fylo(lockRoot)
-            await fylo.createCollection(collection)
+            await fylo[collection].create()
             const lockPath = path.join(
                 lockRoot,
                 '.collections',
@@ -133,7 +133,7 @@ describe('FYLO onEvent hook', () => {
             /** @type {import('../../src/observability/events.js').FyloEvent[]} */
             const events = []
             const observer = new Fylo(lockRoot, { onEvent: (e) => events.push(e) })
-            await observer.putData(collection, { title: 'after-takeover' })
+            await observer[collection].put({ title: 'after-takeover' })
             const takeover = events.find((e) => e.type === 'lock.takeover')
             expect(takeover).toBeDefined()
             if (takeover && takeover.type === 'lock.takeover') {
@@ -152,9 +152,9 @@ describe('FYLO onEvent hook', () => {
             }
         })
         const collection = `evt-throw-${Date.now()}`
-        await fylo.createCollection(collection)
-        await fylo.putData(collection, { title: 'one' })
-        const result = await fylo.rebuildCollection(collection)
+        await fylo[collection].create()
+        await fylo[collection].put({ title: 'one' })
+        const result = await fylo[collection].rebuild()
         expect(result.indexedDocs).toBe(1)
     })
 
@@ -171,9 +171,9 @@ describe('FYLO onEvent hook', () => {
                 }
             })
             const collection = `evt-reject-${Date.now()}`
-            await fylo.createCollection(collection)
-            await fylo.putData(collection, { title: 'one' })
-            const result = await fylo.rebuildCollection(collection)
+            await fylo[collection].create()
+            await fylo[collection].put({ title: 'one' })
+            const result = await fylo[collection].rebuild()
             expect(result.indexedDocs).toBe(1)
             await new Promise((r) => setTimeout(r, 50))
             expect(unhandled).toBe(false)

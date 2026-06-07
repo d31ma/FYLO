@@ -28,14 +28,14 @@ async function readLocalIndex(collection) {
 
 describe('filesystem engine', () => {
     beforeAll(async () => {
-        await fylo.createCollection(POSTS)
-        await fylo.createCollection(USERS)
+        await fylo[POSTS].create()
+        await fylo[USERS].create()
     })
     afterAll(async () => {
         await rm(root, { recursive: true, force: true })
     })
     test('put/get/patch/delete works without Redis or cloud adapters', async () => {
-        const id = await fylo.putData(POSTS, {
+        const id = await fylo[POSTS].put({
             title: 'Hello',
             tags: ['bun', 'storage'],
             meta: { score: 1 }
@@ -49,23 +49,21 @@ describe('filesystem engine', () => {
             `${id}.json`
         )
         const createdTime = (await stat(activePath)).mtimeMs
-        const created = await fylo.getDoc(POSTS, id).once()
+        const created = await fylo[POSTS].get(id).once()
         expect(created[id].title).toBe('Hello')
         expect(created[id].tags).toEqual(['bun', 'storage'])
         await Bun.sleep(10)
-        const nextId = await fylo.patchDoc(POSTS, {
-            [id]: {
-                title: 'Hello 2',
-                meta: { score: 2 }
-            }
+        const nextId = await fylo[POSTS].patch(id, {
+            title: 'Hello 2',
+            meta: { score: 2 }
         })
         expect(nextId).toBe(id)
-        const updated = await fylo.getDoc(POSTS, nextId).once()
+        const updated = await fylo[POSTS].get(nextId).once()
         expect(updated[nextId].title).toBe('Hello 2')
         expect(updated[nextId].meta.score).toBe(2)
         expect((await stat(activePath)).mtimeMs).toBeGreaterThan(createdTime)
-        await fylo.delDoc(POSTS, nextId)
-        expect(await fylo.getDoc(POSTS, nextId).once()).toEqual({})
+        await fylo[POSTS].delete(nextId)
+        expect(await fylo[POSTS].get(nextId).once()).toEqual({})
         const deletedPath = path.join(
             root,
             '.collections',
@@ -77,41 +75,40 @@ describe('filesystem engine', () => {
         expect(await Bun.file(activePath).exists()).toBe(false)
         expect(await Bun.file(deletedPath).exists()).toBe(true)
     })
-    test('path constructor exposes SQL tag and collision-checked collection facades', async () => {
-        const { sql, db } = new Fylo(root)
-        await sql`CREATE TABLE apiusers`
-        const id = await sql`INSERT INTO apiusers (name, role) VALUES (${"O'Brien"}, ${'admin'})`
+    test('path constructor exposes SQL tag and collection-first facades', async () => {
+        const fylo = new Fylo(root)
+        await fylo.sql`CREATE TABLE apiusers`
+        const id =
+            await fylo.sql`INSERT INTO apiusers (name, role) VALUES (${"O'Brien"}, ${'admin'})`
 
-        const queried = await sql`SELECT * FROM apiusers WHERE name = ${"O'Brien"}`
+        const queried = await fylo.sql`SELECT * FROM apiusers WHERE name = ${"O'Brien"}`
         expect(queried[id].role).toBe('admin')
 
-        const viaFacade = await db.apiusers.getDoc(id).once()
+        const viaFacade = await fylo['apiusers'].get(id).once()
         expect(viaFacade[id].name).toBe("O'Brien")
-        await db.apiusers.patchDoc(id, { role: 'owner' })
-        expect((await db.apiusers.getDoc(id).once())[id].role).toBe('owner')
-        expect(() => db.getDoc).toThrow('reserved db property')
-        expect(() => db.hasOwnProperty).toThrow('reserved db property')
-        await expect(sql`SELECT * FROM apiusers WHERE name = ${{ nested: true }}`).rejects.toThrow(
-            'SQL parameters must be scalar values'
-        )
+        await fylo['apiusers'].patch(id, { role: 'owner' })
+        expect((await fylo['apiusers'].get(id).once())[id].role).toBe('owner')
+        await expect(
+            fylo.sql`SELECT * FROM apiusers WHERE name = ${{ nested: true }}`
+        ).rejects.toThrow('SQL parameters must be scalar values')
         expect(() => new Fylo(`fylo://${root}`)).toThrow('remove fylo://')
     })
     test('memory query cache stores TTID lists and invalidates on writes', async () => {
         const cached = new Fylo(root, { cache: true })
         const collection = 'cache-users'
-        await cached.createCollection(collection)
+        await cached[collection].create()
 
-        const firstId = await cached.db[collection].putData({ name: 'Ada', team: 'platform' })
+        const firstId = await cached[collection].put({ name: 'Ada', team: 'platform' })
         const query = { $ops: [{ name: { $eq: 'Ada' } }] }
         const firstResults = {}
-        for await (const doc of cached.db[collection].findDocs(query).collect()) {
+        for await (const doc of cached[collection].find(query).collect()) {
             Object.assign(firstResults, doc)
         }
         expect(Object.keys(firstResults)).toEqual([firstId])
 
-        const secondId = await cached.db[collection].putData({ name: 'Ada', team: 'runtime' })
+        const secondId = await cached[collection].put({ name: 'Ada', team: 'runtime' })
         const secondResults = {}
-        for await (const doc of cached.db[collection].findDocs(query).collect()) {
+        for await (const doc of cached[collection].find(query).collect()) {
             Object.assign(secondResults, doc)
         }
         expect(Object.keys(secondResults).sort()).toEqual([firstId, secondId].sort())
@@ -119,8 +116,8 @@ describe('filesystem engine', () => {
     test('query cache stampede protection single-flights concurrent misses', async () => {
         const cached = new Fylo(root, { cache: true })
         const collection = 'cache-stampede-users'
-        await cached.createCollection(collection)
-        await cached.db[collection].putData({ name: 'Grace' })
+        await cached[collection].create()
+        await cached[collection].put({ name: 'Grace' })
 
         const originalListQueryableDocIds = cached.engine.listQueryableDocIds.bind(cached.engine)
         let calls = 0
@@ -131,8 +128,8 @@ describe('filesystem engine', () => {
         }
 
         await Promise.all([
-            Array.fromAsync(cached.db[collection].findDocs({}).collect()),
-            Array.fromAsync(cached.db[collection].findDocs({}).collect())
+            Array.fromAsync(cached[collection].find({}).collect()),
+            Array.fromAsync(cached[collection].find({}).collect())
         ])
 
         expect(calls).toBe(1)
@@ -140,15 +137,13 @@ describe('filesystem engine', () => {
     test('write-through query cache surfaces cache-version failures on writes', async () => {
         const cached = new Fylo(root, { cache: { method: 'write-through' } })
         const collection = 'cache-write-through-users'
-        await cached.createCollection(collection)
+        await cached[collection].create()
         if (!cached.engine.queryCache) throw new Error('missing query cache')
         cached.engine.queryCache.bumpCollection = async () => {
             throw new Error('cache unavailable')
         }
 
-        await expect(cached.db[collection].putData({ name: 'Linus' })).rejects.toThrow(
-            'cache unavailable'
-        )
+        await expect(cached[collection].put({ name: 'Linus' })).rejects.toThrow('cache unavailable')
     })
     test('stores collection data under .collections', async () => {
         expect(await isDirectory(path.join(root, '.collections', POSTS, 'docs'))).toBe(true)
@@ -156,41 +151,40 @@ describe('filesystem engine', () => {
         expect(await isDirectory(path.join(root, POSTS))).toBe(false)
     })
     test('queries updatedAt from the stable document file modification time', async () => {
-        const id = await fylo.putData(POSTS, { title: 'Timestamp v1' })
+        const id = await fylo[POSTS].put({ title: 'Timestamp v1' })
         await Bun.sleep(10)
-        await fylo.patchDoc(POSTS, { [id]: { title: 'Timestamp v2' } })
+        await fylo[POSTS].patch(id, { title: 'Timestamp v2' })
         const target = path.join(root, '.collections', POSTS, 'docs', id.slice(0, 2), `${id}.json`)
         const updatedAt = (await stat(target)).mtimeMs
         const results = []
-        for await (const doc of fylo.findDocs(POSTS, { $updated: { $gte: updatedAt } }).collect()) {
+        for await (const doc of fylo[POSTS].find({ $updated: { $gte: updatedAt } }).collect()) {
             results.push(doc)
         }
         expect(results.some((doc) => Object.hasOwn(doc, id))).toBe(true)
     })
     test('delete listeners filter using stored document timestamps', async () => {
-        const id = await fylo.putData(POSTS, { title: 'Deleted timestamp' })
+        const id = await fylo[POSTS].put({ title: 'Deleted timestamp' })
         const target = path.join(root, '.collections', POSTS, 'docs', id.slice(0, 2), `${id}.json`)
         const updatedAt = (await stat(target)).mtimeMs
-        const deletes = fylo
-            .findDocs(POSTS, {
-                $ops: [{ title: { $eq: 'Deleted timestamp' } }],
-                $updated: { $lte: updatedAt }
-            })
+        const deletes = fylo[POSTS].find({
+            $ops: [{ title: { $eq: 'Deleted timestamp' } }],
+            $updated: { $lte: updatedAt }
+        })
             .onDelete()
             [Symbol.asyncIterator]()
         const pending = deletes.next()
 
         await Bun.sleep(10)
-        await fylo.delDoc(POSTS, id)
+        await fylo[POSTS].delete(id)
 
         expect((await pending).value).toBe(id)
         await deletes.return?.()
     })
     test('soft deletes are read-only and queryable by deletion time, then restorable', async () => {
-        const id = await fylo.putData(POSTS, { title: 'Restore me', status: 'archived' })
+        const id = await fylo[POSTS].put({ title: 'Restore me', status: 'archived' })
         const deletedAtFloor = Date.now()
 
-        await fylo.delDoc(POSTS, id)
+        await fylo[POSTS].delete(id)
 
         const deletedPath = path.join(
             root,
@@ -205,20 +199,18 @@ describe('filesystem engine', () => {
         expect(deletedMetadata.mode & 0o777).toBe(0o444)
 
         const deleted = []
-        for await (const doc of fylo
-            .findDeletedDocs(POSTS, {
-                $ops: [{ title: { $eq: 'Restore me' } }],
-                $deleted: { $gte: deletedAtFloor }
-            })
-            .collect()) {
+        for await (const doc of fylo[POSTS].findDeleted({
+            $ops: [{ title: { $eq: 'Restore me' } }],
+            $deleted: { $gte: deletedAtFloor }
+        }).collect()) {
             deleted.push(doc)
         }
         expect(deleted).toEqual([{ [id]: { title: 'Restore me', status: 'archived' } }])
         await expect(
-            fylo.putData(POSTS, { [id]: { title: 'Bypass restore', status: 'archived' } })
+            fylo[POSTS].put({ [id]: { title: 'Bypass restore', status: 'archived' } })
         ).rejects.toThrow('soft-deleted')
 
-        await fylo.restoreDoc(POSTS, id)
+        await fylo[POSTS].restore(id)
 
         const activePath = path.join(
             root,
@@ -230,56 +222,52 @@ describe('filesystem engine', () => {
         )
         expect(await Bun.file(deletedPath).exists()).toBe(false)
         expect((await stat(activePath)).mode & 0o777).toBe(0o644)
-        expect(await fylo.getDoc(POSTS, id).once()).toEqual({
+        expect(await fylo[POSTS].get(id).once()).toEqual({
             [id]: { title: 'Restore me', status: 'archived' }
         })
         const queried = []
-        for await (const doc of fylo
-            .findDocs(POSTS, { $ops: [{ status: { $eq: 'archived' } }] })
-            .collect()) {
+        for await (const doc of fylo[POSTS].find({
+            $ops: [{ status: { $eq: 'archived' } }]
+        }).collect()) {
             queried.push(doc)
         }
         expect(queried.some((doc) => Object.hasOwn(doc, id))).toBe(true)
     })
     test('findDocs listener is backed by the filesystem event journal', async () => {
-        const iter = fylo
-            .findDocs(POSTS, {
-                $ops: [{ title: { $eq: 'Live event' } }]
-            })
-            [Symbol.asyncIterator]()
+        const iter = fylo[POSTS].find({
+            $ops: [{ title: { $eq: 'Live event' } }]
+        })[Symbol.asyncIterator]()
         const pending = iter.next()
         await Bun.sleep(100)
-        const id = await fylo.putData(POSTS, { title: 'Live event' })
+        const id = await fylo[POSTS].put({ title: 'Live event' })
         const { value } = await pending
         expect(value).toEqual({ [id]: { title: 'Live event' } })
         await iter.return?.()
     })
     test('supports long values without path-length issues', async () => {
         const longBody = 'x'.repeat(5000)
-        const id = await fylo.putData(POSTS, {
+        const id = await fylo[POSTS].put({
             title: 'Long payload',
             body: longBody
         })
-        const result = await fylo.getDoc(POSTS, id).once()
+        const result = await fylo[POSTS].get(id).once()
         expect(result[id].body).toBe(longBody)
     })
     test('importBulkData rejects oversized responses and private-network URLs by default', async () => {
         const tooLarge = new URL('data:application/json,%5B%7B%22title%22%3A%22x%22%7D%5D')
-        await expect(fylo.importBulkData(POSTS, tooLarge, { maxBytes: 4 })).rejects.toThrow(
-            'exceeded'
+        await expect(fylo[POSTS].import(tooLarge, { maxBytes: 4 })).rejects.toThrow('exceeded')
+        await expect(fylo[POSTS].import(new URL('http://127.0.0.1/data.json'))).rejects.toThrow(
+            'private address'
         )
-        await expect(
-            fylo.importBulkData(POSTS, new URL('http://127.0.0.1/data.json'))
-        ).rejects.toThrow('private address')
     })
     test('importBulkData reports malformed JSON with a sanitized error', async () => {
         const invalidJson = new URL('data:application/json,%5Bnot-json')
-        await expect(fylo.importBulkData(POSTS, invalidJson)).rejects.toThrow(
+        await expect(fylo[POSTS].import(invalidJson)).rejects.toThrow(
             'Invalid JSON in import response'
         )
     })
     test('stores only user document data in the file body', async () => {
-        const id = await fylo.putData(POSTS, {
+        const id = await fylo[POSTS].put({
             title: 'Lean doc',
             body: 'payload only'
         })
@@ -296,7 +284,7 @@ describe('filesystem engine', () => {
         expect(raw.updatedAt).toBeUndefined()
     })
     test('stores query indexes as compact local object keys', async () => {
-        const id = await fylo.putData(POSTS, {
+        const id = await fylo[POSTS].put({
             title: 'Prefix doc',
             tags: ['bun', 'prefix']
         })
@@ -314,15 +302,15 @@ describe('filesystem engine', () => {
     })
     test('reads CRLF-terminated local index lines', async () => {
         const collection = 'filesystem-crlf-index'
-        await fylo.createCollection(collection)
-        const id = await fylo.putData(collection, { title: 'Windows index' })
+        await fylo[collection].create()
+        const id = await fylo[collection].put({ title: 'Windows index' })
         const walPath = path.join(root, '.collections', collection, 'index', 'keys.wal')
         const wal = await Bun.file(walPath).text()
         await writeFile(walPath, wal.replace(/\n/g, '\r\n'))
 
         let results = {}
-        for await (const data of fylo
-            .findDocs(collection, {
+        for await (const data of fylo[collection]
+            .find({
                 $ops: [{ title: { $eq: 'Windows index' } }]
             })
             .collect()) {
@@ -333,22 +321,22 @@ describe('filesystem engine', () => {
     })
     test('uses prefix indexes to support exact, range, like, and contains queries', async () => {
         const queryCollection = 'filesystem-query'
-        await fylo.createCollection(queryCollection)
+        await fylo[queryCollection].create()
 
-        const bunId = await fylo.putData(queryCollection, {
+        const bunId = await fylo[queryCollection].put({
             title: 'Bun launch',
             tags: ['bun', 'storage'],
             meta: { score: 10 }
         })
-        const nodeId = await fylo.putData(queryCollection, {
+        const nodeId = await fylo[queryCollection].put({
             title: 'Node launch',
             tags: ['node'],
             meta: { score: 2 }
         })
 
         let eqResults = {}
-        for await (const data of fylo
-            .findDocs(queryCollection, {
+        for await (const data of fylo[queryCollection]
+            .find({
                 $ops: [{ title: { $eq: 'Bun launch' } }]
             })
             .collect()) {
@@ -357,8 +345,8 @@ describe('filesystem engine', () => {
         expect(Object.keys(eqResults)).toEqual([bunId])
 
         let rangeResults = {}
-        for await (const data of fylo
-            .findDocs(queryCollection, {
+        for await (const data of fylo[queryCollection]
+            .find({
                 $ops: [{ ['meta.score']: { $gte: 5 } }]
             })
             .collect()) {
@@ -367,8 +355,8 @@ describe('filesystem engine', () => {
         expect(Object.keys(rangeResults)).toEqual([bunId])
 
         let containsResults = {}
-        for await (const data of fylo
-            .findDocs(queryCollection, {
+        for await (const data of fylo[queryCollection]
+            .find({
                 $ops: [{ tags: { $contains: 'storage' } }]
             })
             .collect()) {
@@ -378,8 +366,8 @@ describe('filesystem engine', () => {
         expect(containsResults[nodeId]).toBeUndefined()
 
         let prefixResults = {}
-        for await (const data of fylo
-            .findDocs(queryCollection, {
+        for await (const data of fylo[queryCollection]
+            .find({
                 $ops: [{ title: { $like: 'Bun%' } }]
             })
             .collect()) {
@@ -388,8 +376,8 @@ describe('filesystem engine', () => {
         expect(Object.keys(prefixResults)).toEqual([bunId])
 
         let suffixResults = {}
-        for await (const data of fylo
-            .findDocs(queryCollection, {
+        for await (const data of fylo[queryCollection]
+            .find({
                 $ops: [{ title: { $like: '%launch' } }]
             })
             .collect()) {
@@ -398,8 +386,8 @@ describe('filesystem engine', () => {
         expect(Object.keys(suffixResults).sort()).toEqual([bunId, nodeId].sort())
 
         let containsLikeResults = {}
-        for await (const data of fylo
-            .findDocs(queryCollection, {
+        for await (const data of fylo[queryCollection]
+            .find({
                 $ops: [{ title: { $like: '%un l%' } }]
             })
             .collect()) {
@@ -414,14 +402,14 @@ describe('filesystem engine', () => {
     })
     test('array index entries shrink and expand with document changes', async () => {
         const collection = 'filesystem-array-index'
-        await fylo.createCollection(collection)
-        const firstId = await fylo.putData(collection, { tags: ['alpha', 'beta'] })
-        const secondId = await fylo.patchDoc(collection, { [firstId]: { tags: ['beta', 'gamma'] } })
+        await fylo[collection].create()
+        const firstId = await fylo[collection].put({ tags: ['alpha', 'beta'] })
+        const secondId = await fylo[collection].patch(firstId, { tags: ['beta', 'gamma'] })
         expect(secondId).toBe(firstId)
 
         let oldResults = {}
-        for await (const data of fylo
-            .findDocs(collection, {
+        for await (const data of fylo[collection]
+            .find({
                 $ops: [{ tags: { $contains: 'alpha' } }]
             })
             .collect()) {
@@ -429,8 +417,8 @@ describe('filesystem engine', () => {
         }
 
         let newResults = {}
-        for await (const data of fylo
-            .findDocs(collection, {
+        for await (const data of fylo[collection]
+            .find({
                 $ops: [{ tags: { $contains: 'gamma' } }]
             })
             .collect()) {
@@ -441,8 +429,8 @@ describe('filesystem engine', () => {
         expect(Object.keys(newResults)).toEqual([secondId])
     })
     test('joins work in filesystem mode', async () => {
-        const userId = await fylo.putData(USERS, { id: 42, name: 'Ada' })
-        const postId = await fylo.putData(POSTS, { id: 42, title: 'Shared', content: 'join me' })
+        const userId = await fylo[USERS].put({ id: 42, name: 'Ada' })
+        const postId = await fylo[POSTS].put({ id: 42, title: 'Shared', content: 'join me' })
         const joined = await fylo.joinDocs({
             $leftCollection: USERS,
             $rightCollection: POSTS,
@@ -454,17 +442,17 @@ describe('filesystem engine', () => {
         expect(joined[`${userId}, ${postId}`]).toBeDefined()
     })
     test('rejects collection names that are unsafe for cross-platform filesystems', async () => {
-        await expect(fylo.createCollection('bad/name')).rejects.toThrow('Invalid collection name')
-        await expect(fylo.createCollection('bad\\name')).rejects.toThrow('Invalid collection name')
-        await expect(fylo.createCollection('bad:name')).rejects.toThrow('Invalid collection name')
+        await expect(fylo['bad/name'].create()).rejects.toThrow('Invalid collection name')
+        await expect(fylo['bad\\name'].create()).rejects.toThrow('Invalid collection name')
+        await expect(fylo['bad:name'].create()).rejects.toThrow('Invalid collection name')
     })
     test('static helpers can use filesystem root env defaults', async () => {
         const prevFyloRoot = process.env.FYLO_ROOT
         process.env.FYLO_ROOT = root
         const collection = 'filesystem-static'
-        await Fylo.createCollection(collection)
-        const id = await fylo.putData(collection, { title: 'Static path' })
-        const result = await Fylo.getDoc(collection, id).once()
+        await fylo[collection].create()
+        const id = await fylo[collection].put({ title: 'Static path' })
+        const result = await fylo[collection].get(id).once()
         expect(result[id].title).toBe('Static path')
         if (prevFyloRoot === undefined) delete process.env.FYLO_ROOT
         else process.env.FYLO_ROOT = prevFyloRoot

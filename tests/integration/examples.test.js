@@ -12,7 +12,7 @@ describe('example production root', () => {
     test('seeded mock data is readable through FYLO', async () => {
         const fylo = new Fylo(EXAMPLE_ROOT)
 
-        const user = await fylo.getDoc('users', '4V6329YC0F2').once()
+        const user = await fylo['users'].get('4V6329YC0F2').once()
         expect(user['4V6329YC0F2']).toEqual({
             name: 'Ada Lovelace',
             role: 'admin',
@@ -21,8 +21,8 @@ describe('example production root', () => {
         })
 
         let admins = {}
-        for await (const data of fylo
-            .findDocs('users', {
+        for await (const data of fylo['users']
+            .find({
                 $ops: [{ role: { $eq: 'admin' } }]
             })
             .collect()) {
@@ -31,8 +31,8 @@ describe('example production root', () => {
         expect(Object.keys(admins)).toEqual(['4V6329YC0F2'])
 
         let openOrders = {}
-        for await (const data of fylo
-            .findDocs('orders', {
+        for await (const data of fylo['orders']
+            .find({
                 $ops: [{ status: { $eq: 'open' } }]
             })
             .collect()) {
@@ -76,10 +76,10 @@ describe('example production root', () => {
             const fylo = new Fylo(root)
             await fylo.ready()
 
-            expect((await fylo.inspectCollection('article')).exists).toBe(true)
-            expect((await fylo.inspectCollection('orders')).exists).toBe(true)
-            expect((await fylo.inspectCollection('users')).exists).toBe(true)
-            expect((await fylo.inspectCollection('report')).exists).toBe(false)
+            expect((await fylo['article'].inspect()).exists).toBe(true)
+            expect((await fylo['orders'].inspect()).exists).toBe(true)
+            expect((await fylo['users'].inspect()).exists).toBe(true)
+            expect((await fylo['report'].inspect()).exists).toBe(false)
         } finally {
             if (previousSchema === undefined) delete process.env.FYLO_SCHEMA
             else process.env.FYLO_SCHEMA = previousSchema

@@ -15,10 +15,10 @@ const RESERVED = new Set([
     'ready',
     'request',
     'sql',
-    'inspectCollection',
-    'rebuildCollection',
-    'createCollection',
-    'dropCollection',
+    'inspect',
+    'rebuild',
+    'create',
+    'drop',
     'toString',
     'valueOf',
     'constructor',
@@ -39,7 +39,7 @@ function normalizeOptions(options = {}) {
 
 /**
  * Root-level ergonomic FYLO browser client. Collection names are exposed directly
- * on the instance (`fylo.users.putData(...)`) while reserved helper names remain
+ * on the instance (`fylo.users.put(...)`) while reserved helper names remain
  * available on the root.
  */
 export class BrowserFyloClient {
@@ -137,50 +137,54 @@ export class BrowserDirectCollection {
         return await this.host.rebuildCollection(this.collection)
     }
 
-    /** @param {Record<string, any>} data */
-    async putData(data) {
+    /** @param {import('./core/types.js').BrowserOperation} op @param {Record<string, any>} [fields] */
+    async #req(op, fields = {}) {
         await this.host.ready()
-        return await this.host.browser.putData(this.collection, data)
+        const res = await this.host.request({ op, collection: this.collection, ...fields })
+        if (!res.ok) throw new Error(res.error?.message ?? 'browser request failed')
+        return res.result
+    }
+
+    /** @param {Record<string, any>} data */
+    put(data) {
+        return this.#req('putData', { data })
     }
 
     /** @param {Record<string, any>[]} batch */
-    async batchPutData(batch) {
-        await this.host.ready()
-        return await this.host.browser.batchPutData(this.collection, batch)
+    batchPut(batch) {
+        return this.#req('batchPutData', { batch })
     }
 
     /** @param {string} id @param {Record<string, any>} patch @param {Record<string, any>} [oldDoc] */
-    async patchDoc(id, patch, oldDoc = {}) {
-        await this.host.ready()
-        return await this.host.browser.patchDoc(this.collection, { [id]: patch }, oldDoc)
+    patch(id, patch, oldDoc = {}) {
+        return this.#req('patchDoc', { newDoc: { [id]: patch }, oldDoc })
     }
 
     /** @param {Record<string, any>} update */
-    async patchDocs(update) {
-        await this.host.ready()
-        return await this.host.browser.patchDocs(this.collection, update)
+    patchMany(update) {
+        return this.#req('patchDocs', { update })
     }
 
     /** @param {string} id */
-    async delDoc(id) {
-        await this.host.ready()
-        await this.host.browser.delDoc(this.collection, id)
+    async delete(id) {
+        await this.#req('delDoc', { id })
     }
 
     /** @param {Record<string, any>} query */
-    async delDocs(query) {
-        await this.host.ready()
-        return await this.host.browser.delDocs(this.collection, query)
+    deleteMany(query) {
+        return this.#req('delDocs', { query })
     }
 
     /** @param {string} id */
-    async restoreDoc(id) {
-        await this.host.ready()
-        return await this.host.browser.restoreDoc(this.collection, id)
+    async restore(id) {
+        const res = /** @type {{ id?: string } | undefined} */ (
+            await this.#req('restoreDoc', { id })
+        )
+        return res?.id ?? res
     }
 
     /** @param {string} id @param {boolean} [onlyId] */
-    getDoc(id, onlyId = false) {
+    get(id, onlyId = false) {
         const host = this.host
         const collection = this.collection
         return {
@@ -188,8 +192,9 @@ export class BrowserDirectCollection {
                 yield* this.collect()
             },
             async once() {
-                await host.ready()
-                return await host.browser.getDoc(collection, id, onlyId).once()
+                const res = await host.request({ op: 'getDoc', collection, id, onlyId })
+                if (!res.ok) throw new Error(res.error?.message ?? 'browser getDoc failed')
+                return res.result
             },
             async *collect() {
                 const doc = await this.once()
@@ -197,19 +202,17 @@ export class BrowserDirectCollection {
             },
             async *onDelete() {
                 await host.ready()
-                yield* host.browser.getDoc(collection, id, onlyId).onDelete()
+                yield await host.request({ op: 'getDoc', collection, id, onlyId })
             }
         }
     }
 
     /** @param {string} id @param {boolean} [onlyId] */
-    async getLatest(id, onlyId = false) {
-        await this.host.ready()
-        return await this.host.browser.getLatest(this.collection, id, onlyId)
+    async latest(id, onlyId = false) {
+        return await this.#req('getLatest', { id, onlyId })
     }
 
-    /** @param {Record<string, any>} [query] */
-    findDocs(query = {}) {
+    find(query = {}) {
         const host = this.host
         const collection = this.collection
         return {
@@ -217,18 +220,20 @@ export class BrowserDirectCollection {
                 yield* this.collect()
             },
             async *collect() {
-                await host.ready()
-                yield* host.browser.findDocs(collection, query).collect()
+                const res = await host.request({ op: 'findDocs', collection, query })
+                if (!res.ok) throw new Error(res.error?.message ?? 'browser findDocs failed')
+                const docs = res.result
+                if (Array.isArray(docs)) {
+                    for (const id of docs) yield id
+                } else if (docs && typeof docs === 'object') {
+                    for (const [id, doc] of Object.entries(docs)) yield { [id]: doc }
+                }
             },
-            async *onDelete() {
-                await host.ready()
-                yield* host.browser.findDocs(collection, query).onDelete()
-            }
+            async *onDelete() {}
         }
     }
 
-    /** @param {Record<string, any>} [query] */
-    findDeletedDocs(query = {}) {
+    findDeleted(query = {}) {
         const host = this.host
         const collection = this.collection
         return {
@@ -236,8 +241,14 @@ export class BrowserDirectCollection {
                 yield* this.collect()
             },
             async *collect() {
-                await host.ready()
-                yield* host.browser.findDeletedDocs(collection, query).collect()
+                const res = await host.request({ op: 'findDeletedDocs', collection, query })
+                if (!res.ok) throw new Error(res.error?.message ?? 'browser findDeletedDocs failed')
+                const docs = res.result
+                if (docs && typeof docs === 'object') {
+                    for (const [id, doc] of Object.entries(docs)) {
+                        yield { [id]: doc }
+                    }
+                }
             }
         }
     }

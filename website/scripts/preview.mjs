@@ -37,4 +37,4 @@ process.on('SIGTERM', () => {
 })
 
 start('bun', ['./scripts/bundle.mjs', '--watch'])
-start('bunx', ['tach.preview'])
+start('bunx', ['tac.preview'])

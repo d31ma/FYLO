@@ -65,17 +65,18 @@ bun add @d31ma/fylo
 ```ts
 import Fylo from '@d31ma/fylo'
 
-const { db, sql } = new Fylo('/mnt/fylo')
+const db = new Fylo('/mnt/fylo')
+const { sql } = db
 
 await sql`CREATE TABLE users`
 
-const id = await db.users.putData({
+const id = await db.users.put({
     name: 'Ada',
     role: 'admin',
     tags: ['engineering', 'platform']
 })
 
-const doc = await db.users.getDoc(id).once()
+const doc = await db.users.get(id).once()
 console.log(doc[id]) // { name: 'Ada', role: 'admin', ... }
 ```
 
@@ -185,8 +186,8 @@ storing a single collection blob.
 ```ts
 import fylo from '@d31ma/fylo/browser'
 
-const id = await fylo.users.putData({ name: 'Ada', role: 'admin' })
-const doc = await fylo.users.getDoc(id).once()
+const id = await fylo.users.put({ name: 'Ada', role: 'admin' })
+const doc = await fylo.users.get(id).once()
 ```
 
 That default import is browser-local and app-author friendly: OPFS is used when
@@ -202,8 +203,8 @@ const fylo = createBrowserClient({
 })
 
 await fylo.users.create()
-const id = await fylo.users.putData({ name: 'Ada', role: 'admin' })
-const doc = await fylo.users.getDoc(id).once()
+const id = await fylo.users.put({ name: 'Ada', role: 'admin' })
+const doc = await fylo.users.get(id).once()
 ```
 
 Available browser hosts:
@@ -324,7 +325,7 @@ local cache stampedes.
 ### Create
 
 ```ts
-const id = await db.users.putData({
+const id = await db.users.put({
     name: 'Jane Doe',
     age: 29,
     team: 'platform'
@@ -334,19 +335,19 @@ const id = await db.users.putData({
 ### Read
 
 ```ts
-const doc = await db.users.getDoc(id).once()
+const doc = await db.users.get(id).once()
 ```
 
 ### Update (preserves the document TTID)
 
 ```ts
-const sameId = await db.users.patchDoc(id, { team: 'core-platform' })
+const sameId = await db.users.patch(id, { team: 'core-platform' })
 ```
 
 ### Delete
 
 ```ts
-await db.users.delDoc(sameId) // moves payload to .deleted/4U/4UUB32VGUDW.json
+await db.users.delete(sameId) // moves payload to .deleted/4U/4UUB32VGUDW.json
 ```
 
 Soft-deleted files retain their TTID filename, use file `mtime` as `deletedAt`,
@@ -357,14 +358,14 @@ and become read-only (`0444`). They are excluded from ordinary queries.
 ```ts
 const deleted = {}
 for await (const doc of db.users
-    .findDeletedDocs({
+    .findDeleted({
         $deleted: { $gte: Date.parse('2026-05-01T00:00:00Z') }
     })
     .collect()) {
     Object.assign(deleted, doc)
 }
 
-await db.users.restoreDoc(sameId)
+await db.users.restore(sameId)
 ```
 
 Restore preserves the TTID, moves the payload back into `docs/`, restores
@@ -382,7 +383,7 @@ FYLO queries use prefix indexes first, then hydrate only matching documents.
 // Exact match
 const results = {}
 for await (const doc of db.users
-    .findDocs({
+    .find({
         $ops: [{ name: { $eq: 'Alice' } }]
     })
     .collect()) {
@@ -391,7 +392,7 @@ for await (const doc of db.users
 
 // Range query (numeric fields)
 for await (const doc of db.users
-    .findDocs({
+    .find({
         $ops: [{ age: { $gte: 18 } }]
     })
     .collect()) {
@@ -400,7 +401,7 @@ for await (const doc of db.users
 
 // Contains (array membership)
 for await (const doc of db.users
-    .findDocs({
+    .find({
         $ops: [{ tags: { $contains: 'engineering' } }]
     })
     .collect()) {
@@ -409,7 +410,7 @@ for await (const doc of db.users
 
 // OR across conditions
 for await (const doc of db.users
-    .findDocs({
+    .find({
         $ops: [{ role: { $eq: 'admin' } }, { role: { $eq: 'owner' } }]
     })
     .collect()) {
@@ -551,7 +552,7 @@ const scoped = fylo.as({
     roles: user.roles
 })
 
-const posts = scoped.findDocs('posts', {
+const posts = scoped.posts.find({
     $ops: [{ tenantId: { $eq: user.tenantId } }]
 })
 ```
@@ -565,15 +566,15 @@ Actions: `doc:read`, `doc:create`, `doc:update`, `doc:delete`, `bulk:import`, `b
 Strict write-once storage for immutable documents:
 
 ```ts
-const { db } = new Fylo('/mnt/fylo', {
+const db = new Fylo('/mnt/fylo', {
     worm: {
         mode: 'strict'
     }
 })
 
-const id = await db.posts.putData({ title: 'retain me' })
-await db.posts.patchDoc(id, { title: 'changed' }) // throws
-await db.posts.delDoc(id) // throws
+const id = await db.posts.put({ title: 'retain me' })
+await db.posts.patch(id, { title: 'changed' }) // throws
+await db.posts.delete(id) // throws
 ```
 
 - A WORM document is written once and its local file is changed to read-only (`0444`)
@@ -689,7 +690,7 @@ Bun.serve({
 Opt-in durable local queue for event-driven workflows:
 
 ```ts
-const { db } = new Fylo('/mnt/fylo', { queue: true })
+const db = new Fylo('/mnt/fylo', { queue: true })
 
 import { consume, publish } from '@d31ma/fylo'
 
@@ -805,7 +806,7 @@ depend on JS-only conveniences such as `new Fylo(...)`, `sql` template tags, or
 Documents are truth. Indexes are derived. When they drift:
 
 ```ts
-const result = await db.rebuildCollection('posts')
+const result = await db.posts.rebuild()
 // {
 //   collection: 'posts',
 //   worm: true,

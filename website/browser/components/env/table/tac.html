@@ -1,0 +1,22 @@
+<section class="env-section" aria-labelledby="env-heading">
+  <div class="env-table-wrap">
+    <div class="section-eyebrow">Configuration</div>
+    <h2 id="env-heading" style="font-size:clamp(1.6rem,3.5vw,2.2rem);font-weight:800;letter-spacing:-0.03em;color:var(--text);margin-bottom:0.5rem;">Zero config by default.<br/>Everything configurable via env.</h2>
+    <p style="color:var(--text-dim);font-size:1rem;max-width:52ch;">Drop a <code style="font-family:var(--font-mono);font-size:0.85em;background:rgba(255,255,255,0.07);padding:0.15em 0.4em;border-radius:4px;color:var(--text)">.env</code> file in your project root. FYLO now prefers a single filesystem root with optional validation, encryption, and logging controls.</p>
+
+    <div class="env-grid" role="table" aria-label="Environment variables">
+      <loop :for="let row of envRows">
+        <div class="env-row" role="row">
+          <div class="env-key" role="cell">{row.key}</div>
+          <div class="env-desc" role="cell">
+            <logic :if="row.kind === 'plain'">
+              {row.text}
+            </logic><logic else="">
+              {row.textBefore}<code style="font-family:var(--font-mono);font-size:0.8em;color:var(--text-dim)">{row.code}</code>{row.textAfter}
+            </logic>
+          </div>
+        </div>
+      </loop>
+    </div>
+  </div>
+</section>

@@ -16,7 +16,7 @@ describe.skipIf(!runPerf)('filesystem engine performance', () => {
     beforeAll(async () => {
         root = await createTestRoot('fylo-filesystem-perf-')
         fylo = new Fylo(root)
-        await fylo.createCollection(collection)
+        await fylo[collection].create()
     })
 
     afterAll(async () => {
@@ -28,7 +28,7 @@ describe.skipIf(!runPerf)('filesystem engine performance', () => {
         const insertStart = performance.now()
 
         for (let index = 0; index < totalDocs; index++) {
-            await fylo.putData(collection, {
+            await fylo[collection].put({
                 title: `doc-${index}`,
                 group: index % 10,
                 tags: [`tag-${index % 5}`, `batch-${Math.floor(index / 100)}`],
@@ -40,8 +40,8 @@ describe.skipIf(!runPerf)('filesystem engine performance', () => {
 
         const exactStart = performance.now()
         let exactResults = {}
-        for await (const data of fylo
-            .findDocs(collection, {
+        for await (const data of fylo[collection]
+            .find({
                 $ops: [{ title: { $eq: 'doc-1555' } }]
             })
             .collect()) {
@@ -51,8 +51,8 @@ describe.skipIf(!runPerf)('filesystem engine performance', () => {
 
         const rangeStart = performance.now()
         let rangeCount = 0
-        for await (const data of fylo
-            .findDocs(collection, {
+        for await (const data of fylo[collection]
+            .find({
                 $ops: [{ ['meta.score']: { $gte: 1900 } }]
             })
             .collect()) {

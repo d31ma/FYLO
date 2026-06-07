@@ -42,8 +42,8 @@ describe('CLI', () => {
         expect(build.stderr.toLowerCase()).not.toContain('error')
 
         const main = new Fylo(root)
-        await main.createCollection('vc-posts')
-        await main.putData('vc-posts', { title: 'main only' })
+        await main['vc-posts'].create()
+        await main['vc-posts'].put({ title: 'main only' })
 
         const initialCommit = await run(
             [
@@ -75,7 +75,7 @@ describe('CLI', () => {
         })
 
         const feature = new Fylo(root)
-        await feature.putData('vc-posts', { title: 'feature only' })
+        await feature['vc-posts'].put({ title: 'feature only' })
 
         const featureCommit = await run(
             ['dist/cli/index.js', 'commit', '-m', 'feature snapshot', '--root', root, '--json'],
@@ -121,7 +121,7 @@ describe('CLI', () => {
         expect(cleanStatus.exitCode).toBe(0)
         expect(JSON.parse(cleanStatus.stdout).clean).toBe(true)
 
-        await feature.putData('vc-posts', { title: 'uncommitted' })
+        await feature['vc-posts'].put({ title: 'uncommitted' })
 
         const dirtyStatus = await run(
             ['dist/cli/index.js', 'status', '--root', root, '--json'],
@@ -217,8 +217,8 @@ describe('CLI', () => {
         expect(build.exitCode).toBe(0)
 
         const main = new Fylo(root)
-        await main.createCollection('merge-posts')
-        await main.putData('merge-posts', { title: 'base' })
+        await main['merge-posts'].create()
+        await main['merge-posts'].put({ title: 'base' })
         await run(['dist/cli/index.js', 'commit', '-m', 'base', '--root', root, '--json'], repo)
 
         const checkoutFeature = await run(
@@ -227,7 +227,7 @@ describe('CLI', () => {
         )
         expect(checkoutFeature.exitCode).toBe(0)
         const feature = new Fylo(root)
-        await feature.putData('merge-posts', { title: 'feature only' })
+        await feature['merge-posts'].put({ title: 'feature only' })
         const featureCommit = await run(
             ['dist/cli/index.js', 'commit', '-m', 'feature work', '--root', root, '--json'],
             repo
@@ -241,7 +241,7 @@ describe('CLI', () => {
         )
         expect(checkoutMain.exitCode).toBe(0)
         const mainAgain = new Fylo(root)
-        await mainAgain.putData('merge-posts', { title: 'main only' })
+        await mainAgain['merge-posts'].put({ title: 'main only' })
         const mainCommit = await run(
             ['dist/cli/index.js', 'commit', '-m', 'main work', '--root', root, '--json'],
             repo
@@ -285,8 +285,8 @@ describe('CLI', () => {
 
         const conflictRoot = await createRoot('fylo-merge-conflict-')
         const conflictMain = new Fylo(conflictRoot)
-        await conflictMain.createCollection('merge-conflicts')
-        const sharedId = await conflictMain.putData('merge-conflicts', { title: 'base' })
+        await conflictMain['merge-conflicts'].create()
+        const sharedId = await conflictMain['merge-conflicts'].put({ title: 'base' })
         await run(
             ['dist/cli/index.js', 'commit', '-m', 'conflict base', '--root', conflictRoot],
             repo
@@ -296,14 +296,14 @@ describe('CLI', () => {
             repo
         )
         const conflictFeature = new Fylo(conflictRoot)
-        await conflictFeature.patchDoc('merge-conflicts', { [sharedId]: { title: 'feature edit' } })
+        await conflictFeature['merge-conflicts'].patch(sharedId, { title: 'feature edit' })
         await run(
             ['dist/cli/index.js', 'commit', '-m', 'feature edit', '--root', conflictRoot],
             repo
         )
         await run(['dist/cli/index.js', 'checkout', 'main', '--root', conflictRoot], repo)
         const conflictMainAgain = new Fylo(conflictRoot)
-        await conflictMainAgain.patchDoc('merge-conflicts', { [sharedId]: { title: 'main edit' } })
+        await conflictMainAgain['merge-conflicts'].patch(sharedId, { title: 'main edit' })
         await run(['dist/cli/index.js', 'commit', '-m', 'main edit', '--root', conflictRoot], repo)
 
         const conflictMerge = await run(
@@ -351,7 +351,7 @@ describe('CLI', () => {
         expect(create.stdout).toContain('Successfully created schema')
 
         const fylo = new Fylo(root)
-        const cliDocId = await fylo.putData('cli-posts', { title: 'CLI' })
+        const cliDocId = await fylo['cli-posts'].put({ title: 'CLI' })
 
         const select = await run(
             ['dist/cli/index.js', 'sql', 'SELECT * FROM cli-posts', '--root', root],
@@ -393,7 +393,7 @@ describe('CLI', () => {
         expect(inspectResult.indexedDocs).toBe(1)
         expect(inspectResult.worm).toBe(false)
 
-        await fylo.delDoc('cli-posts', cliDocId)
+        await fylo['cli-posts'].delete(cliDocId)
         const deleted = await run(
             ['dist/cli/index.js', 'deleted', 'cli-posts', '--root', root, '--json'],
             repo
@@ -415,8 +415,8 @@ describe('CLI', () => {
         expect(JSON.parse(restore.stdout)).toEqual({ restored: true, id: cliDocId })
 
         const wormFylo = new Fylo(root, { worm: { mode: 'strict' } })
-        await wormFylo.createCollection('cli-worm')
-        const originalId = await wormFylo.putData('cli-worm', { title: 'v1' })
+        await wormFylo['cli-worm'].create()
+        const originalId = await wormFylo['cli-worm'].put({ title: 'v1' })
 
         const inspectWorm = await run(
             ['dist/cli/index.js', 'inspect', 'cli-worm', '--root', root, '--worm', '--json'],

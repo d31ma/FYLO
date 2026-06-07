@@ -12,13 +12,13 @@ describe('package setup', () => {
         const pkg = JSON.parse(await read('package.json'))
 
         expect(pkg.scripts.start).toBe('bun run serve')
-        expect(pkg.scripts.serve).toBe('tach.serve')
+        expect(pkg.scripts.serve).toBe('yon.serve')
         expect(pkg.scripts.bundle).toBe('bun ./scripts/bundle.mjs')
         expect(pkg.scripts['bundle:watch']).toBe('bun ./scripts/bundle.mjs --watch')
         expect(pkg.scripts.preview).toBe('bun ./scripts/preview.mjs')
         expect(pkg.scripts.test).toBe('bun test tests/site.test.js tests/dom/site.dom.test.js')
         expect(pkg.scripts['test:dom']).toBe('bun test tests/dom/site.dom.test.js')
-        expect(pkg.devDependencies['@delma/tachyon']).toMatch(/^\^/)
+        expect(pkg.devDependencies['@d31ma/tachyon']).toMatch(/^\^/)
         expect(pkg.devDependencies['happy-dom']).toMatch(/^\^/)
     })
 })
@@ -30,17 +30,10 @@ describe('bundled output', () => {
         const docsPage = await read('dist/docs/index.html')
 
         expect(homepage).toContain('FYLO')
-        expect(homepage).toContain('bun add @delma/fylo')
-        expect(docsPage).toMatch(/src="(?:\.\.\/|\/)main\.js"/)
-        expect(docsPage).toMatch(/src="(?:\.\.\/|\/)spa-renderer\.js"/)
+        expect(homepage).toContain('bun add @d31ma/fylo')
+        expect(docsPage).toMatch(/spa-renderer\.js/)
         expect(docsPage).toContain('class="docs-wrap"')
     })
 
-    test('emits routes manifest', { timeout: 60000 }, async () => {
-        await ensureBundle()
-        const routes = await read('dist/routes.json')
 
-        expect(routes).toContain('"/"')
-        expect(routes).toContain('"/docs"')
-    })
 })

@@ -17,17 +17,17 @@ describe('crash recovery and concurrency', () => {
     test('in-process parallel putData calls preserve every entry', async () => {
         const collection = `parallel-${Date.now()}`
         const fylo = new Fylo(root)
-        await fylo.createCollection(collection)
+        await fylo[collection].create()
         const parallelism = 50
         const ids = await Promise.all(
             Array.from({ length: parallelism }, (_, i) =>
-                fylo.putData(collection, { title: `p-${i}`, n: i })
+                fylo[collection].put({ title: `p-${i}`, n: i })
             )
         )
         expect(new Set(ids).size).toBe(parallelism)
         /** @type {string[]} */
         const titles = []
-        for await (const data of fylo.findDocs(collection).collect()) {
+        for await (const data of fylo[collection].find().collect()) {
             for (const doc of Object.values(data)) {
                 titles.push(/** @type {any} */ (doc).title)
             }
@@ -40,8 +40,8 @@ describe('crash recovery and concurrency', () => {
     test('stale files in the local index root are ignored by reads and subsequent writes', async () => {
         const collection = `stale-tmp-${Date.now()}`
         const fylo = new Fylo(root)
-        await fylo.createCollection(collection)
-        await fylo.putData(collection, { title: 'before' })
+        await fylo[collection].create()
+        await fylo[collection].put({ title: 'before' })
 
         const indexDir = path.join(root, '.collections', collection, 'index')
         await writeFile(path.join(indexDir, `leftover.tmp`), 'garbage')
@@ -50,7 +50,7 @@ describe('crash recovery and concurrency', () => {
         // Read works:
         /** @type {string[]} */
         const beforeTitles = []
-        for await (const data of fylo.findDocs(collection).collect()) {
+        for await (const data of fylo[collection].find().collect()) {
             for (const doc of Object.values(data)) {
                 beforeTitles.push(/** @type {any} */ (doc).title)
             }
@@ -58,10 +58,10 @@ describe('crash recovery and concurrency', () => {
         expect(beforeTitles).toEqual(['before'])
 
         // Subsequent writes work:
-        await fylo.putData(collection, { title: 'after' })
+        await fylo[collection].put({ title: 'after' })
         /** @type {string[]} */
         const allTitles = []
-        for await (const data of fylo.findDocs(collection).collect()) {
+        for await (const data of fylo[collection].find().collect()) {
             for (const doc of Object.values(data)) {
                 allTitles.push(/** @type {any} */ (doc).title)
             }
@@ -72,16 +72,16 @@ describe('crash recovery and concurrency', () => {
     test('rebuildCollection recovers deleted prefix index entries from documents', async () => {
         const collection = `recover-index-${Date.now()}`
         const fylo = new Fylo(root)
-        await fylo.createCollection(collection)
-        await fylo.putData(collection, { title: 'original' })
+        await fylo[collection].create()
+        await fylo[collection].put({ title: 'original' })
 
         await rm(path.join(root, '.collections', collection, 'index'), {
             recursive: true,
             force: true
         })
         const before = []
-        for await (const data of fylo
-            .findDocs(collection, {
+        for await (const data of fylo[collection]
+            .find({
                 $ops: [{ title: { $eq: 'original' } }]
             })
             .collect()) {
@@ -90,12 +90,12 @@ describe('crash recovery and concurrency', () => {
         expect(before).toHaveLength(0)
 
         const recovered = new Fylo(root)
-        const result = await recovered.rebuildCollection(collection)
+        const result = await recovered[collection].rebuild()
         expect(result.indexedDocs).toBe(1)
 
         /** @type {string[]} */
         const titles = []
-        for await (const data of recovered.findDocs(collection).collect()) {
+        for await (const data of recovered[collection].find().collect()) {
             for (const doc of Object.values(data)) {
                 titles.push(/** @type {any} */ (doc).title)
             }

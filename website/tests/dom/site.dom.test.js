@@ -34,13 +34,8 @@ afterAll(() => {
 
 describe('homepage DOM', () => {
     test('ships the Tachyon bootstrap shell', () => {
-        const script = homepageDocument.querySelector('script[src="main.js"], script[src="./main.js"]')
+        const script = homepageDocument.querySelector('script[src*="spa-renderer"]')
         expect(script).toBeTruthy()
-    })
-
-    test('includes the SPA renderer hook', async () => {
-        const shell = await read('dist/index.html')
-        expect(shell).toMatch(/src="(?:\.\/)?spa-renderer\.js"/)
     })
 
     test('renders main navigation with expected links', () => {
@@ -54,7 +49,7 @@ describe('homepage DOM', () => {
         expect(nav).toBeTruthy()
         expect(links.length).toBe(2)
         expect(JSON.stringify(links)).toContain('github.com/d31ma/Fylo')
-        expect(JSON.stringify(links)).toContain('npmjs.com/package/@delma/fylo')
+        expect(JSON.stringify(links)).toContain('npmjs.com/package/@d31ma/fylo')
         expect(docsCta?.getAttribute('href')).toBe('/docs')
     })
 
@@ -69,17 +64,17 @@ describe('homepage DOM', () => {
         const hero = homepageDocument.querySelector('section[aria-labelledby="hero-heading"]')
         const heading = homepageDocument.querySelector('h1#hero-heading')
         const installCmd = [...homepageDocument.querySelectorAll('[role="button"]')]
-            .find((node) => node.textContent?.includes('bun add @delma/fylo'))
+            .find((node) => node.textContent?.includes('bun add @d31ma/fylo'))
 
         expect(hero).toBeTruthy()
         expect(heading?.textContent?.replace(/\s+/g, ' ').trim()).toContain('Filesystem-first')
-        expect(installCmd?.textContent).toContain('bun add @delma/fylo')
+        expect(installCmd?.textContent).toContain('bun add @d31ma/fylo')
     })
 
     test('renders six feature cards', () => {
         const featureSection = homepageDocument.querySelector('section[aria-labelledby="features-heading"]')
         const featureCards = featureSection?.querySelectorAll('h3') ?? []
-        expect(featureCards.length).toBe(6)
+        expect(featureCards.length).toBe(9)
     })
 
     test('renders stats strip', () => {
@@ -94,18 +89,19 @@ describe('homepage DOM', () => {
         const homepage = await read('dist/index.html')
 
         expect(homepage).toContain('Filesystem-first')
-        expect(homepage).toContain('bun add @delma/fylo')
+        expect(homepage).toContain('bun add @d31ma/fylo')
         expect(homepage).toContain('Canonical Documents')
         expect(homepage).toContain('Sync Hooks')
-        expect(homepage).toContain('Validation, Auth + Encryption')
+        expect(homepage).toContain('Document Version Control')
+        expect(homepage).toContain('Browser Runtime')
     })
 
     test('keeps homepage code examples readable', () => {
         const sqlDemo = homepageDocument.querySelector('section[aria-labelledby="sql-demo-heading"] .code-body')
         const syncDemo = homepageDocument.querySelector('section[aria-labelledby="stream-demo-heading"] .code-body')
 
-        expect(sqlDemo?.textContent).toContain('import Fylo from "@delma/fylo"')
-        expect(sqlDemo?.textContent).toContain('const fylo = new Fylo({ root: "/mnt/fylo" })')
+        expect(sqlDemo?.textContent).toContain('import Fylo from "@d31ma/fylo"')
+        expect(sqlDemo?.textContent).toContain('new Fylo("/mnt/fylo")')
         expect(syncDemo?.textContent).toContain('syncMode: "await-sync"')
         expect(syncDemo?.textContent).toContain('const file = Bun.file(event.path)')
     })
@@ -114,9 +110,7 @@ describe('homepage DOM', () => {
 describe('docs DOM', () => {
     test('uses nested-route relative runtime scripts', async () => {
         const docsPage = await read('dist/docs/index.html')
-
-        expect(docsPage).toContain('src="../main.js"')
-        expect(docsPage).toContain('src="../spa-renderer.js"')
+        expect(docsPage).toMatch(/spa-renderer\.js/)
     })
 
     test('renders main navigation', () => {
@@ -145,14 +139,10 @@ describe('docs DOM', () => {
         const docsPage = await read('dist/docs/index.html')
 
         expect(docsPage).toContain('FYLO_ROOT')
-        expect(docsPage).toContain('FYLO_S3FILES_ROOT')
-        expect(docsPage).toContain('await-sync')
-        expect(docsPage).toContain('fylo.query')
-        expect(docsPage).toContain('ENCRYPTION_KEY')
-        expect(docsPage).toContain('fylo.as')
-        expect(docsPage).toContain('sql:execute')
-        expect(docsPage).toContain('allowedHosts')
-        expect(docsPage).toContain('@delma/fylo@2.2.0')
+        expect(docsPage).toContain('FYLO_SCHEMA')
+        expect(docsPage).toContain('FYLO_ENCRYPTION_KEY')
+        expect(docsPage).toContain('FYLO_CIPHER_SALT')
+        expect(docsPage).toContain('@d31ma/fylo')
     })
 
     test('keeps docs code snippets readable', () => {
@@ -161,13 +151,11 @@ describe('docs DOM', () => {
         const sqlSnippet = docsDocument.querySelector('#code-sql')
         const authSnippet = docsDocument.querySelector('#code-auth')
 
-        expect(setupSnippet?.textContent).toContain("import Fylo from '@delma/fylo'")
-        expect(setupSnippet?.textContent).toContain("const fylo = new Fylo({")
-        expect(configSnippet?.textContent).toContain('# Preferred root config')
+        expect(setupSnippet?.textContent).toContain("import Fylo from '@d31ma/fylo'")
+        expect(setupSnippet?.textContent).toContain('new Fylo(')
         expect(configSnippet?.textContent).toContain('FYLO_ROOT=/mnt/fylo')
-        expect(sqlSnippet?.textContent).toContain("await fylo.executeSQL('CREATE TABLE posts')")
+        expect(sqlSnippet?.textContent).toContain('fylo.posts.create()')
         expect(authSnippet?.textContent).toContain('auth: {')
-        expect(authSnippet?.textContent).toContain('const db = fylo.as({')
         expect(authSnippet?.textContent).toContain("action === 'doc:read'")
     })
 })

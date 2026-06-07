@@ -95,6 +95,14 @@ export class BrowserCore {
             this.ensureCollection.bind(this)
         )
         this.queryEngine = new BrowserQueryEngine({ index: this.index })
+        return new Proxy(this, {
+            get(target, prop, receiver) {
+                if (typeof prop === 'symbol') return Reflect.get(target, prop, receiver)
+                if (prop in target || typeof (/** @type {any} */ (target)[prop]) === 'function')
+                    return Reflect.get(target, prop, receiver)
+                return new BrowserCollectionFacade(target, prop)
+            }
+        })
     }
 
     /** @returns {Promise<void>} */
@@ -715,4 +723,69 @@ function planRestoreOperation(options) {
     if (options.activeExists) return BROWSER_OPERATION.errRestoreActiveExists
     if (!options.deletedExists) return BROWSER_OPERATION.errRestoreMissingTombstone
     return BROWSER_OPERATION.restore
+}
+
+/** Lightweight collection facade for BrowserCore's Proxy. */
+class BrowserCollectionFacade {
+    /** @param {BrowserCore} core @param {string} collection */
+    constructor(core, collection) {
+        this.core = core
+        this.collection = collection
+    }
+    async create() {
+        await this.core.createCollection(this.collection)
+    }
+    async drop() {
+        await this.core.dropCollection(this.collection)
+    }
+    async inspect() {
+        return await this.core.inspectCollection(this.collection)
+    }
+    async rebuild() {
+        return await this.core.rebuildCollection(this.collection)
+    }
+    /** @param {Record<string, any>} data */
+    async put(data) {
+        return await this.core.putData(this.collection, data)
+    }
+    /** @param {Record<string, any>[]} batch */
+    async batchPut(batch) {
+        return await this.core.batchPutData(this.collection, batch)
+    }
+    /** @param {string} id @param {Record<string, any>} patch @param {Record<string, any>} [oldDoc] */
+    async patch(id, patch, oldDoc) {
+        return await this.core.patchDoc(this.collection, { [id]: patch }, oldDoc ?? {})
+    }
+    /** @param {StoreUpdate} update */
+    async patchMany(update) {
+        return await this.core.patchDocs(this.collection, update)
+    }
+    /** @param {string} id */
+    async delete(id) {
+        await this.core.delDoc(this.collection, id)
+    }
+    /** @param {Record<string, any>} query */
+    async deleteMany(query) {
+        return await this.core.delDocs(this.collection, query)
+    }
+    /** @param {string} id */
+    async restore(id) {
+        return await this.core.restoreDoc(this.collection, id)
+    }
+    /** @param {string} id @param {boolean} [onlyId] */
+    get(id, onlyId) {
+        return this.core.getDoc(this.collection, id, onlyId)
+    }
+    /** @param {string} id @param {boolean} [onlyId] */
+    async latest(id, onlyId) {
+        return await this.core.getLatest(this.collection, id, onlyId)
+    }
+    /** @param {Record<string, any>} [query] */
+    find(query) {
+        return this.core.findDocs(this.collection, query ?? {})
+    }
+    /** @param {Record<string, any>} [query] */
+    findDeleted(query) {
+        return this.core.deletedDocResults(this.collection, query ?? {})
+    }
 }

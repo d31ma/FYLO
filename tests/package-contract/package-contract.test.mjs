@@ -21,49 +21,43 @@ test('packed package supports a document lifecycle from a clean consumer project
     const root = await mkdtemp(path.join(os.tmpdir(), '${uniqueName('fylo-root')}-'))
     try {
       const fylo = new Fylo(root)
-      const { db, sql } = fylo
+      const { sql } = fylo
       const collection = 'blackbox-posts'
-      await fylo.createCollection(collection)
+      await fylo[collection].create()
 
-      const id = await fylo.putData(collection, {
+      const id = await fylo[collection].put({
         title: 'Blackbox package smoke',
         tags: ['fylo', 'package-contract'],
         meta: { score: 9 },
       })
 
-      const found = await fylo.getDoc(collection, id).once()
-      if (!found[id]) throw new Error('getDoc did not return the created document')
-      if (found[id].title !== 'Blackbox package smoke') throw new Error('getDoc did not round-trip')
+      const found = await fylo[collection].get(id).once()
+      if (!found[id]) throw new Error('get did not return the created document')
+      if (found[id].title !== 'Blackbox package smoke') throw new Error('get did not round-trip')
 
       const queryResults = {}
-      for await (const doc of fylo.findDocs(collection, {
+      for await (const doc of fylo[collection].find({
         $ops: [{ 'meta.score': { $gte: 9 } }],
       }).collect()) {
         Object.assign(queryResults, doc)
       }
-      if (!queryResults[id]) throw new Error('findDocs did not find indexed document')
+      if (!queryResults[id]) throw new Error('find did not find indexed document')
 
       await sql\`CREATE TABLE blackbox-facade\`
       const taggedId = await sql\`INSERT INTO blackbox-facade (title, author) VALUES (\${'Tagged SQL'}, \${"O'Brien"})\`
       const taggedRows = await sql\`SELECT * FROM blackbox-facade WHERE author = \${"O'Brien"}\`
       if (!taggedRows[taggedId]) throw new Error('sql tag did not parameterize and query data')
-      const facadeRows = await db['blackbox-facade'].getDoc(taggedId).once()
-      if (facadeRows[taggedId].title !== 'Tagged SQL') throw new Error('db facade did not read by collection')
-      try {
-        db.getDoc
-        throw new Error('reserved db property did not throw')
-      } catch (error) {
-        if (!String(error.message).includes('reserved db property')) throw error
-      }
+      const facadeRows = await fylo['blackbox-facade'].get(taggedId).once()
+      if (facadeRows[taggedId].title !== 'Tagged SQL') throw new Error('collection facade did not read by collection')
 
-      const nextId = await fylo.patchDoc(collection, { [id]: { title: 'Blackbox updated' } })
-      const updated = await fylo.getDoc(collection, nextId).once()
-      if (!updated[nextId]) throw new Error('patchDoc did not return an updated document id')
-      if (updated[nextId].title !== 'Blackbox updated') throw new Error('patchDoc did not update')
+      const nextId = await fylo[collection].patch(id, { title: 'Blackbox updated' })
+      const updated = await fylo[collection].get(nextId).once()
+      if (!updated[nextId]) throw new Error('patch did not return an updated document id')
+      if (updated[nextId].title !== 'Blackbox updated') throw new Error('patch did not update')
 
-      await fylo.delDoc(collection, nextId)
-      const deleted = await fylo.getDoc(collection, nextId).once()
-      if (Object.keys(deleted).length !== 0) throw new Error('delDoc did not remove document')
+      await fylo[collection].delete(nextId)
+      const deleted = await fylo[collection].get(nextId).once()
+      if (Object.keys(deleted).length !== 0) throw new Error('delete did not remove document')
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -80,21 +74,21 @@ test('packed package exposes the browser runtime', async () => {
 
     const directCollection = '${uniqueName('packageusers').replaceAll('-', '')}'
     await browserFylo[directCollection].create()
-    const directId = await browserFylo[directCollection].putData({ name: 'Direct package browser import' })
-    const direct = await browserFylo[directCollection].getDoc(directId).once()
+    const directId = await browserFylo[directCollection].put({ name: 'Direct package browser import' })
+    const direct = await browserFylo[directCollection].get(directId).once()
     if (direct[directId].name !== 'Direct package browser import') throw new Error('default browser import did not expose direct collection methods')
 
     const isolated = createBrowserClient({ worker: false })
     const memoryCollection = '${uniqueName('memoryusers').replaceAll('-', '')}'
     await isolated[memoryCollection].create()
-    const memoryId = await isolated[memoryCollection].putData({ name: 'Factory memory fallback' })
-    if ((await isolated[memoryCollection].getLatest(memoryId))[memoryId].name !== 'Factory memory fallback') throw new Error('browser factory did not use memory fallback')
+    const memoryId = await isolated[memoryCollection].put({ name: 'Factory memory fallback' })
+    if ((await isolated[memoryCollection].latest(memoryId))[memoryId].name !== 'Factory memory fallback') throw new Error('browser factory did not use memory fallback')
     if (isolated.options.storage !== 'memory') throw new Error('browser factory did not default to memory outside OPFS')
 
     const fs = createMemoryFilesystem()
     const core = new BrowserCore({ fs, root: '/' })
-    await core.createCollection('coreusers')
-    const coreId = await core.putData('coreusers', { name: 'Injected VFS' })
+    await core['coreusers'].create()
+    const coreId = await core['coreusers'].put({ name: 'Injected VFS' })
     if (!(await fs.exists('/.collections/coreusers/docs/' + coreId.slice(0, 2) + '/' + coreId + '.json'))) throw new Error('browser core did not write to injected VFS')
 
     const fylo = createBrowserClient({ worker: false })
@@ -102,15 +96,15 @@ test('packed package exposes the browser runtime', async () => {
     const events = []
     const unsubscribe = fylo.users.subscribe((event) => events.push(event))
 
-    const id = await fylo.users.putData({
+    const id = await fylo.users.put({
       name: 'Browser package smoke',
       role: 'admin',
       score: 11,
     })
 
-    const found = await fylo.users.getDoc(id).once()
-    if (!found[id]) throw new Error('browser getDoc did not return the created document')
-    if (found[id].name !== 'Browser package smoke') throw new Error('browser getDoc did not round-trip data')
+    const found = await fylo.users.get(id).once()
+    if (!found[id]) throw new Error('browser get did not return the created document')
+    if (found[id].name !== 'Browser package smoke') throw new Error('browser get did not round-trip data')
 
     const rows = await fylo.sql\`SELECT * FROM users WHERE role = \${'admin'}\`
     if (!rows[id]) throw new Error('browser sql tag did not query data')
@@ -123,14 +117,14 @@ test('packed package exposes the browser runtime', async () => {
     if (!response.ok) throw new Error(response.error.message)
     if (!response.result[id]) throw new Error('browser request protocol did not return data')
 
-    await fylo.users.delDoc(id)
-    const deleted = await fylo.users.findDeletedDocs({ $ops: [{ name: { $eq: 'Browser package smoke' } }] }).collect().next()
+    await fylo.users.delete(id)
+    const deleted = await fylo.users.findDeleted({ $ops: [{ name: { $eq: 'Browser package smoke' } }] }).collect().next()
     if (!deleted.value[id]) throw new Error('browser deleted query did not return tombstone')
     if (deleted.value[id]._deletedAt !== undefined) throw new Error('browser tombstone leaked internal deletion metadata')
 
-    const restoredId = await fylo.users.restoreDoc(id)
+    const restoredId = await fylo.users.restore(id)
     if (restoredId !== id) throw new Error('browser restore changed the TTID')
-    const restored = await fylo.users.getLatest(id)
+    const restored = await fylo.users.latest(id)
     if (restored[id].name !== 'Browser package smoke') throw new Error('browser restore did not restore data')
     if (events.length < 3) throw new Error('browser subscribe did not receive write/delete/restore events')
     unsubscribe()

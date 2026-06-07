@@ -343,7 +343,7 @@ function setTableOptions(args) {
  * @param {string | undefined} root
  */
 async function runSql(sql, root) {
-    const result = await createFylo(root).executeSQL(sql)
+    const result = await createFylo(root)._sql(sql)
     const operation = sql.match(/^(SELECT|INSERT|UPDATE|DELETE|CREATE|DROP)/i)?.[0]
     if (!operation) throw new Error('Missing SQL operation')
     return renderSqlResult(operation, result)
@@ -352,12 +352,16 @@ async function runSql(sql, root) {
 /**
  * @param {string | undefined} root
  * @param {boolean=} worm
- * @returns {Fylo}
+ * @returns {import('../api/fylo.js').FyloCollections}
  */
 function createFylo(root, worm = false) {
-    return new Fylo(root ?? Fylo.defaultRoot(), {
-        ...(worm ? { worm: { mode: 'strict' } } : {})
-    })
+    return /** @type {import('../api/fylo.js').FyloCollections} */ (
+        /** @type {unknown} */ (
+            new Fylo(root ?? Fylo.defaultRoot(), {
+                ...(worm ? { worm: { mode: 'strict' } } : {})
+            })
+        )
+    )
 }
 
 /**
@@ -626,7 +630,7 @@ async function runMachineExec(request, overrides) {
  * @param {boolean=} json
  */
 async function runInspect(collection, root, worm = false, json = false) {
-    const result = await createFylo(root, worm).inspectCollection(collection)
+    const result = await createFylo(root, worm)[collection].inspect()
     if (json) {
         printJson(result)
         return undefined
@@ -649,7 +653,7 @@ async function runInspect(collection, root, worm = false, json = false) {
  * @param {boolean=} json
  */
 async function runGet(collection, docId, root, worm = false, json = false) {
-    const result = await createFylo(root, worm).getDoc(collection, docId).once()
+    const result = await createFylo(root, worm)[collection].get(docId).once()
     if (Object.keys(result).length === 0) throw new Error(`Document not found: ${docId}`)
     if (json) {
         printJson(result)
@@ -670,7 +674,7 @@ async function runGet(collection, docId, root, worm = false, json = false) {
 async function runLatest(collection, docId, root, worm = false, json = false, idOnly = false) {
     const fylo = createFylo(root, worm)
     if (idOnly) {
-        const latestId = await fylo.getLatest(collection, docId, true)
+        const latestId = await fylo[collection].latest(docId, true)
         if (!latestId) throw new Error(`No document found for ${docId}`)
         if (json) {
             printJson({ id: latestId })
@@ -678,7 +682,7 @@ async function runLatest(collection, docId, root, worm = false, json = false, id
         }
         return String(latestId)
     }
-    const result = /** @type {Record<string, any>} */ (await fylo.getLatest(collection, docId))
+    const result = /** @type {Record<string, any>} */ (await fylo[collection].latest(docId))
     if (Object.keys(result).length === 0) throw new Error(`No document found for ${docId}`)
     if (json) {
         printJson(result)
@@ -694,7 +698,7 @@ async function runLatest(collection, docId, root, worm = false, json = false, id
  * @param {boolean=} json
  */
 async function runRebuild(collection, root, worm = false, json = false) {
-    const result = await createFylo(root, worm).rebuildCollection(collection)
+    const result = await createFylo(root, worm)[collection].rebuild()
     if (json) {
         printJson(result)
         return undefined
@@ -717,7 +721,7 @@ async function runRebuild(collection, root, worm = false, json = false) {
 async function runDeleted(collection, root, json = false) {
     const results = {}
     for await (const result of createFylo(root)
-        .findDeletedDocs(collection, { $deleted: { $gte: 0 } })
+        [collection].findDeleted({ $deleted: { $gte: 0 } })
         .collect()) {
         if (result && typeof result === 'object') Object.assign(results, result)
     }
@@ -736,7 +740,7 @@ async function runDeleted(collection, root, json = false) {
  * @param {boolean=} json
  */
 async function runRestore(collection, docId, root, json = false) {
-    const id = await createFylo(root).restoreDoc(collection, docId)
+    const id = await createFylo(root)[collection].restore(docId)
     const result = { restored: true, id }
     if (json) {
         printJson(result)

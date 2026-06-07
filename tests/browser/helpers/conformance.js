@@ -18,7 +18,7 @@ function assert(condition, message) {
 async function collectFind(fylo, collection, query = {}) {
     /** @type {Record<string, any>} */
     const docs = {}
-    for await (const value of fylo.findDocs(collection, query).collect()) {
+    for await (const value of fylo[collection].find(query).collect()) {
         if (value && typeof value === 'object' && !Array.isArray(value)) Object.assign(docs, value)
     }
     return docs
@@ -33,7 +33,7 @@ async function collectFind(fylo, collection, query = {}) {
 async function collectDeleted(fylo, collection, query = {}) {
     /** @type {Record<string, any>} */
     const docs = {}
-    for await (const value of fylo.findDeletedDocs(collection, query).collect()) {
+    for await (const value of fylo[collection].findDeleted(query).collect()) {
         if (value && typeof value === 'object' && !Array.isArray(value)) Object.assign(docs, value)
     }
     return docs
@@ -53,22 +53,22 @@ export async function runBrowserConformance(createRuntime) {
     const users = 'browser-users'
     const orders = 'browser-orders'
     try {
-        await fylo.createCollection(users)
-        await fylo.createCollection(orders)
+        await fylo[users].create()
+        await fylo[orders].create()
 
-        const userId = await fylo.putData(users, {
+        const userId = await fylo[users].put({
             name: 'Alice',
             role: 'admin',
             score: 42,
             tags: ['browser', 'fylo']
         })
-        const orderId = await fylo.putData(orders, {
+        const orderId = await fylo[orders].put({
             userId,
             total: 125,
             status: 'open'
         })
 
-        assert((await fylo.getLatest(users, userId))[userId].name === 'Alice', 'getLatest failed')
+        assert((await fylo[users].latest(userId))[userId].name === 'Alice', 'getLatest failed')
 
         const exact = await collectFind(fylo, users, {
             $ops: [{ role: { $eq: 'admin' } }]
@@ -86,21 +86,16 @@ export async function runBrowserConformance(createRuntime) {
         })
         assert(Object.hasOwn(range, orderId), 'range query failed')
 
-        const patchedId = await fylo.patchDoc(users, {
-            [userId]: { role: 'owner', score: 50 }
-        })
+        const patchedId = await fylo[users].patch(userId, { role: 'owner', score: 50 })
         assert(patchedId === userId, 'patch changed a stable document id')
-        assert((await fylo.getLatest(users, userId))[userId].role === 'owner', 'patch failed')
+        assert((await fylo[users].latest(userId))[userId].role === 'owner', 'patch failed')
 
-        const patchedCount = await fylo.patchDocs(orders, {
+        const patchedCount = await fylo[orders].patchMany({
             $where: { $ops: [{ status: { $eq: 'open' } }] },
             $set: { status: 'paid' }
         })
         assert(patchedCount === 1, 'patchDocs returned the wrong count')
-        assert(
-            (await fylo.getLatest(orders, orderId))[orderId].status === 'paid',
-            'patchDocs failed'
-        )
+        assert((await fylo[orders].latest(orderId))[orderId].status === 'paid', 'patchDocs failed')
 
         const joined = await fylo.joinDocs({
             $leftCollection: orders,
@@ -110,10 +105,10 @@ export async function runBrowserConformance(createRuntime) {
         })
         assert(Object.keys(joined).length === 0, 'join should not match without matching right key')
 
-        const sqlId = await fylo.executeSQL(
+        const sqlId = await fylo._sql(
             "INSERT INTO browser-users (name, role, score) VALUES ('Bob', 'member', 12)"
         )
-        const sqlRows = await fylo.executeSQL("SELECT * FROM browser-users WHERE role = 'member'")
+        const sqlRows = await fylo._sql("SELECT * FROM browser-users WHERE role = 'member'")
         assert(Object.hasOwn(sqlRows, sqlId), 'SQL insert/select failed')
 
         const response = await runBrowserRequest(fylo, {
@@ -128,9 +123,9 @@ export async function runBrowserConformance(createRuntime) {
         )
 
         const deletedFloor = Date.now()
-        await fylo.delDoc(users, userId)
+        await fylo[users].delete(userId)
         assert(
-            Object.keys(await fylo.getLatest(users, userId)).length === 0,
+            Object.keys(await fylo[users].latest(userId)).length === 0,
             'delete did not hide doc'
         )
 
@@ -140,11 +135,11 @@ export async function runBrowserConformance(createRuntime) {
         })
         assert(Object.hasOwn(deleted, userId), 'deleted query failed')
 
-        const restoredId = await fylo.restoreDoc(users, userId)
+        const restoredId = await fylo[users].restore(userId)
         assert(restoredId === userId, 'restore returned wrong id')
-        assert((await fylo.getLatest(users, userId))[userId].role === 'owner', 'restore failed')
+        assert((await fylo[users].latest(userId))[userId].role === 'owner', 'restore failed')
 
-        const inspect = await fylo.inspectCollection(users)
+        const inspect = await fylo[users].inspect()
         assert(inspect.exists === true, 'inspect did not report existing collection')
         assert(inspect.docsStored >= 2, 'inspect docsStored is wrong')
 

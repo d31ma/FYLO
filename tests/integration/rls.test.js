@@ -9,7 +9,7 @@ const root = await createTestRoot('fylo-rls-')
 const fylo = new Fylo(root, { rls: true })
 
 beforeAll(async () => {
-    await fylo.createCollection('report')
+    await fylo['report'].create()
 })
 
 afterAll(async () => {
@@ -19,31 +19,31 @@ afterAll(async () => {
 
 describe('RLS read.filter', () => {
     test('user A cannot see user B docs via getLatest', async () => {
-        const idA = await fylo.putData('report', {
+        const idA = await fylo['report'].put({
             tenantId: 'tenant-a',
             title: 'A Report',
             public: false
         })
-        const idB = await fylo.putData('report', {
+        const idB = await fylo['report'].put({
             tenantId: 'tenant-b',
             title: 'B Report',
             public: false
         })
 
         const userA = fylo.as({ subjectId: 'user-a', tenantId: 'tenant-a' })
-        const latestA = await userA.getLatest('report', idA)
+        const latestA = await userA['report'].latest(idA)
         expect(latestA[idA]).toBeDefined()
         expect(latestA[idA].title).toBe('A Report')
 
         // user-a must NOT see tenant-b's doc — returns empty envelope
-        const stolen = await userA.getLatest('report', idB)
+        const stolen = await userA['report'].latest(idB)
         expect(Object.keys(stolen)).toHaveLength(0)
     })
 
     test('invisible docs dropped from findDocs result stream', async () => {
         const userA = fylo.as({ subjectId: 'user-a', tenantId: 'tenant-a' })
         const all = []
-        for await (const doc of userA.findDocs('report').collect()) {
+        for await (const doc of userA['report'].find().collect()) {
             all.push(doc)
         }
         // All returned docs must belong to tenant-a (the only tenant userA belongs to)
@@ -57,11 +57,11 @@ describe('RLS read.filter', () => {
 describe('RLS update.filter', () => {
     let idA, idB
     beforeAll(async () => {
-        idA = await fylo.putData('report', {
+        idA = await fylo['report'].put({
             tenantId: 'tenant-a',
             title: 'User A Doc'
         })
-        idB = await fylo.putData('report', {
+        idB = await fylo['report'].put({
             tenantId: 'tenant-b',
             title: 'User B Doc'
         })
@@ -70,16 +70,16 @@ describe('RLS update.filter', () => {
     test('user cannot patch a doc outside their tenant', async () => {
         const userA = fylo.as({ subjectId: 'user-a', tenantId: 'tenant-a' })
         // idB belongs to tenant-b — update should be denied by update.filter
-        await expect(
-            userA.patchDoc('report', { [idB]: { title: 'Hacked' } })
-        ).rejects.toBeInstanceOf(FyloAuthError)
+        await expect(userA['report'].patch(idB, { title: 'Hacked' })).rejects.toBeInstanceOf(
+            FyloAuthError
+        )
     })
 
     test('user can patch their own doc', async () => {
         const userA = fylo.as({ subjectId: 'user-a', tenantId: 'tenant-a' })
-        const newId = await userA.patchDoc('report', { [idA]: { title: 'Updated by A' } })
+        const newId = await userA['report'].patch(idA, { title: 'Updated by A' })
         expect(newId).toBe(idA)
-        const latest = await userA.getLatest('report', newId)
+        const latest = await userA['report'].latest(newId)
         expect(latest[newId].title).toBe('Updated by A')
     })
 })
@@ -87,7 +87,7 @@ describe('RLS update.filter', () => {
 describe('RLS update.fields', () => {
     let adminId
     beforeAll(async () => {
-        adminId = await fylo.putData('report', {
+        adminId = await fylo['report'].put({
             tenantId: 'tenant-a',
             title: 'Admin Doc'
         })
@@ -97,19 +97,15 @@ describe('RLS update.fields', () => {
         const admin = fylo.as({ subjectId: 'admin', tenantId: 'tenant-a', roles: ['admin'] })
         // admin role is restricted to only 'title' field via update.fields
         await expect(
-            admin.patchDoc('report', {
-                [adminId]: { title: 'OK title', internalNote: 'secret' }
-            })
+            admin['report'].patch(adminId, { title: 'OK title', internalNote: 'secret' })
         ).rejects.toBeInstanceOf(FyloAuthError)
     })
 
     test('patch allowed when all fields are in allowed fields list', async () => {
         const admin = fylo.as({ subjectId: 'admin', tenantId: 'tenant-a', roles: ['admin'] })
-        const newId = await admin.patchDoc('report', {
-            [adminId]: { title: 'Admin updated title' }
-        })
+        const newId = await admin['report'].patch(adminId, { title: 'Admin updated title' })
         expect(newId).toBe(adminId)
-        const latest = await admin.getLatest('report', newId)
+        const latest = await admin['report'].latest(newId)
         expect(latest[newId].title).toBe('Admin updated title')
     })
 })
@@ -117,11 +113,11 @@ describe('RLS update.fields', () => {
 describe('RLS delete.filter', () => {
     let idA, idB
     beforeAll(async () => {
-        idA = await fylo.putData('report', {
+        idA = await fylo['report'].put({
             tenantId: 'tenant-a',
             title: 'Delete A'
         })
-        idB = await fylo.putData('report', {
+        idB = await fylo['report'].put({
             tenantId: 'tenant-b',
             title: 'Delete B'
         })
@@ -129,15 +125,15 @@ describe('RLS delete.filter', () => {
 
     test('user cannot delete a doc outside their tenant', async () => {
         const userA = fylo.as({ subjectId: 'user-a', tenantId: 'tenant-a' })
-        await expect(userA.delDoc('report', idB)).rejects.toBeInstanceOf(FyloAuthError)
+        await expect(userA['report'].delete(idB)).rejects.toBeInstanceOf(FyloAuthError)
     })
 })
 
 describe('effectiveReadFilter', () => {
     test('returns null when no rules file exists for collection', async () => {
         // Create a collection with no rules file — effectiveReadFilter should return null
-        await fylo.createCollection('norules')
-        await fylo.putData('norules', { title: 'orphan' })
+        await fylo['norules'].create()
+        await fylo['norules'].put({ title: 'orphan' })
         const userA = fylo.as({ subjectId: 'user-a', tenantId: 'tenant-a' })
         const filter = await effectiveReadFilter({
             collection: 'norules',
@@ -145,7 +141,7 @@ describe('effectiveReadFilter', () => {
             auth: { subjectId: 'user-a', tenantId: 'tenant-a' }
         })
         expect(filter).toBeNull()
-        await fylo.dropCollection('norules')
+        await fylo['norules'].drop()
     })
 })
 
@@ -155,7 +151,7 @@ describe('RLS projection guard', () => {
         // $select would yield flat rows that have no envelope to filter against;
         // RLS cannot be enforced, so the wrapper must refuse.
         await expect(async () => {
-            for await (const _ of userA.findDocs('report', { $select: ['title'] }).collect()) {
+            for await (const _ of userA['report'].find({ $select: ['title'] }).collect()) {
                 /* should never reach here */
             }
         }).toThrow(/projection/)

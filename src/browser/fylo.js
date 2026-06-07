@@ -19,11 +19,6 @@ export class FyloBrowser {
     core
     /** @type {FyloWorkerClient | null} */
     worker
-    /** @type {(strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown>} */
-    sql
-    /** @type {Record<string, BrowserCollectionFacade>} */
-    db
-
     /**
      * @param {{ fs?: FyloFilesystem, storage?: 'memory' | 'opfs', namespace?: string, root?: string, worker?: boolean, worm?: BrowserCoreOptions['worm'] }=} options
      */
@@ -47,7 +42,21 @@ export class FyloBrowser {
             ? null
             : new BrowserCore({ fs, root: this.root, worm: options.worm })
         this.sql = this.createSqlTag()
-        this.db = this.createCollectionProxy()
+        const reserved = new Set([
+            'then',
+            'constructor',
+            'prototype',
+            ...Object.getOwnPropertyNames(Object.prototype),
+            ...Object.getOwnPropertyNames(FyloBrowser.prototype),
+            ...Object.getOwnPropertyNames(this)
+        ])
+        return new Proxy(this, {
+            get(target, prop, receiver) {
+                if (typeof prop === 'symbol') return Reflect.get(target, prop, receiver)
+                if (reserved.has(prop)) return Reflect.get(target, prop, receiver)
+                return new BrowserCollectionFacade(target, prop)
+            }
+        })
     }
 
     /** @returns {Promise<void>} */
@@ -68,7 +77,7 @@ export class FyloBrowser {
             for (let index = 0; index < values.length; index++) {
                 statement += FyloBrowser.sqlValue(values[index]) + (strings[index + 1] ?? '')
             }
-            return await this.executeSQL(statement)
+            return await this._sql(statement)
         }
     }
 
@@ -125,7 +134,7 @@ export class FyloBrowser {
     }
 
     /** @param {string} statement @returns {Promise<unknown>} */
-    async executeSQL(statement) {
+    async _sql(statement) {
         return await this.dispatch({ op: 'executeSQL', sql: statement })
     }
 
@@ -318,57 +327,47 @@ export class BrowserCollectionFacade {
     }
 
     /** @param {string} id @param {boolean} [onlyId] */
-    getDoc(id, onlyId = false) {
+    get(id, onlyId = false) {
         return this.fylo.getDoc(this.collection, id, onlyId)
     }
-
     /** @param {string} id @param {boolean} [onlyId] */
-    async getLatest(id, onlyId = false) {
+    async latest(id, onlyId = false) {
         return await this.fylo.getLatest(this.collection, id, onlyId)
     }
-
     /** @param {Record<string, any>} [query] */
-    findDocs(query = {}) {
+    find(query = {}) {
         return this.fylo.findDocs(this.collection, query)
     }
-
     /** @param {Record<string, any>} [query] */
-    findDeletedDocs(query = {}) {
+    findDeleted(query = {}) {
         return this.fylo.findDeletedDocs(this.collection, query)
     }
-
     /** @param {Record<string, any>} data */
-    async putData(data) {
+    async put(data) {
         return await this.fylo.putData(this.collection, data)
     }
-
     /** @param {Record<string, any>[]} batch */
-    async batchPutData(batch) {
+    async batchPut(batch) {
         return await this.fylo.batchPutData(this.collection, batch)
     }
-
     /** @param {string} id @param {Record<string, any>} patch @param {Record<string, any>} [oldDoc] */
-    async patchDoc(id, patch, oldDoc = {}) {
+    async patch(id, patch, oldDoc = {}) {
         return await this.fylo.patchDoc(this.collection, { [id]: patch }, oldDoc)
     }
-
     /** @param {Record<string, any>} update */
-    async patchDocs(update) {
+    async patchMany(update) {
         return await this.fylo.patchDocs(this.collection, update)
     }
-
     /** @param {string} id */
-    async delDoc(id) {
+    async delete(id) {
         await this.fylo.delDoc(this.collection, id)
     }
-
     /** @param {Record<string, any>} query */
-    async delDocs(query) {
+    async deleteMany(query) {
         return await this.fylo.delDocs(this.collection, query)
     }
-
     /** @param {string} id */
-    async restoreDoc(id) {
+    async restore(id) {
         return await this.fylo.restoreDoc(this.collection, id)
     }
 

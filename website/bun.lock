@@ -5,7 +5,7 @@
     "": {
       "name": "sy-lo",
       "devDependencies": {
-        "@delma/tachyon": "^1.7.1",
+        "@d31ma/tachyon": "^26.23.1",
         "@tailwindcss/cli": "^4.2.2",
         "happy-dom": "^20.8.9",
         "pixelmatch": "^7.1.0",
@@ -16,7 +16,13 @@
     },
   },
   "packages": {
-    "@delma/tachyon": ["@delma/tachyon@1.7.1", "", { "bin": { "tach.init": "src/cli/init.ts", "tach.serve": "src/cli/serve.ts", "tach.bundle": "src/cli/bundle.ts", "tach.preview": "src/cli/preview.ts" } }, "sha512-Zrl6Ih+i88oWfDEF9Yv6dpBqjBBi9wD2MxZiWk3EsRFjlsbtlB9nDk8OVdWRTFJXIC5ZMK1Aa4IuuoikVVkXEA=="],
+    "@d31ma/chex": ["@d31ma/chex@26.21.6", "", { "bin": { "chex": "src/cli/index.js" } }, "sha512-KSA7rafN+3n+bPeWTb4RmREdc5JxoGfyFSv2yc3fIaWCbkculCTFiZt7ohQX4PragIbGcVOwTKU3AdmpwRB1vg=="],
+
+    "@d31ma/fylo": ["@d31ma/fylo@26.22.7", "", { "dependencies": { "@d31ma/chex": "^26.21.6", "@d31ma/ttid": "^26.21.3" }, "bin": { "fylo.exec": "dist/cli/index.js", "fylo.admin": "dist/cli/index.js", "fylo.query": "dist/cli/index.js" } }, "sha512-WpvuAspWa0WHW96ZchukVsdex3/IRVraSFNdT35wsi4dhl13OnZrPf2/0lLojYpM74aq15GRWK4YO0sUTB4sng=="],
+
+    "@d31ma/tachyon": ["@d31ma/tachyon@26.23.1", "", { "dependencies": { "@d31ma/fylo": "26.22.7" }, "bin": { "yon.init": "bin/yon.init.js", "yon.serve": "bin/yon.serve.js", "tac.bundle": "bin/tac.bundle.js", "tac.preview": "bin/tac.preview.js" } }, "sha512-ZaC+j5cuK/294ban+ef1R8s4qeGlltGt1HmdhAHJsVfWCYAqOLz3qwhlY/0RwauWleFS5iXkAYn5w4LHyXGiSw=="],
+
+    "@d31ma/ttid": ["@d31ma/ttid@26.21.3", "", { "bin": { "ttid": "src/cli/index.js" } }, "sha512-WpBPEfVudZv38H3toPenPVrTiq/VZBYbGODokEt5ti+96RWYm41933TDyz3V22L1k9M3QO6rBLp/hlvnUfdjag=="],
 
     "@jridgewell/gen-mapping": ["@jridgewell/gen-mapping@0.3.13", "", { "dependencies": { "@jridgewell/sourcemap-codec": "^1.5.0", "@jridgewell/trace-mapping": "^0.3.24" } }, "sha512-2kkt/7niJ6MgEPxF0bYdQ6etZaA+fQvDcLKckhy1yIQOzaoKjBBjSj63/aLVjYE3qhRt5dvM+uUyfCg6UKCBbA=="],
 

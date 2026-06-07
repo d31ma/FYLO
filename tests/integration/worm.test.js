@@ -13,7 +13,7 @@ const fylo = new Fylo(root, {
 })
 
 beforeAll(async () => {
-    await fylo.createCollection(COLLECTION)
+    await fylo[COLLECTION].create()
 })
 
 afterAll(async () => {
@@ -22,7 +22,7 @@ afterAll(async () => {
 
 describe('strict WORM mode', () => {
     test('writes one read-only immutable document with no version history artifacts', async () => {
-        const id = await fylo.putData(COLLECTION, { title: 'Retain me' })
+        const id = await fylo[COLLECTION].put({ title: 'Retain me' })
         const documentPath = path.join(
             root,
             '.collections',
@@ -40,30 +40,30 @@ describe('strict WORM mode', () => {
             await Bun.file(path.join(root, '.collections', COLLECTION, 'versions')).exists()
         ).toBe(false)
 
-        const stored = await fylo.getDoc(COLLECTION, id).once()
+        const stored = await fylo[COLLECTION].get(id).once()
         expect(stored[id].title).toBe('Retain me')
     })
 
     test('rejects patch, versioned put, and delete after first write', async () => {
-        const id = await fylo.putData(COLLECTION, { title: 'Locked' })
+        const id = await fylo[COLLECTION].put({ title: 'Locked' })
 
-        await expect(fylo.patchDoc(COLLECTION, { [id]: { title: 'Changed' } })).rejects.toThrow(
+        await expect(fylo[COLLECTION].patch(id, { title: 'Changed' })).rejects.toThrow(
             'Update is not allowed in WORM mode'
         )
-        await expect(fylo.putData(COLLECTION, { [id]: { title: 'Changed' } })).rejects.toThrow(
+        await expect(fylo[COLLECTION].put({ [id]: { title: 'Changed' } })).rejects.toThrow(
             'Update is not allowed in WORM mode'
         )
-        await expect(fylo.delDoc(COLLECTION, id)).rejects.toThrow(
+        await expect(fylo[COLLECTION].delete(id)).rejects.toThrow(
             'Delete is not allowed in WORM mode'
         )
-        await expect(fylo.restoreDoc(COLLECTION, id)).rejects.toThrow(
+        await expect(fylo[COLLECTION].restore(id)).rejects.toThrow(
             'Restore is not allowed in WORM mode'
         )
-        await expect(fylo.dropCollection(COLLECTION)).rejects.toThrow(
+        await expect(fylo[COLLECTION].drop()).rejects.toThrow(
             'Drop is not allowed for a non-empty WORM collection'
         )
 
-        const stored = await fylo.getDoc(COLLECTION, id).once()
+        const stored = await fylo[COLLECTION].get(id).once()
         expect(stored[id].title).toBe('Locked')
     })
 
@@ -73,7 +73,7 @@ describe('strict WORM mode', () => {
         await mkdir(headRoot, { recursive: true })
         await writeFile(path.join(headRoot, 'legacy.json'), '{}')
 
-        await expect(fylo.createCollection(legacyCollection)).rejects.toThrow(
+        await expect(fylo[legacyCollection].create()).rejects.toThrow(
             'unsupported legacy WORM heads metadata'
         )
     })

@@ -1,4 +1,4 @@
-import { mkdir, rm } from 'node:fs/promises'
+import { cp, mkdir, rm } from 'node:fs/promises'
 import path from 'node:path'
 import { collectHtmlFiles, htmlFingerprint } from './dist-html.mjs'
 import { normalizeDistHtml } from './postbundle.mjs'
@@ -33,8 +33,10 @@ async function runOnce() {
   await mkdir(bundleLockDir, { recursive: true })
 
   try {
-    await runInherited('bunx', ['tach.bundle', ...args])
+    await runInherited('bunx', ['tac.bundle', ...args])
     await buildTailwind()
+    // Copy built CSS to shared assets so Tachyon can serve it
+    await cp('assets/styles.css', 'browser/shared/assets/styles.css')
     await normalizeDistHtml()
   } finally {
     await rm(bundleLockDir, { recursive: true, force: true })
@@ -43,7 +45,7 @@ async function runOnce() {
 
 async function runWatch() {
   await buildTailwind()
-  const child = startInherited('bunx', ['tach.bundle', ...args])
+  const child = startInherited('bunx', ['tac.bundle', ...args])
   const tailwind = startTailwindWatch()
   let lastFingerprint = ''
   let normalizeInFlight = false

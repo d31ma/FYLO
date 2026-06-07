@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "start": "bun run serve",
-    "serve": "tach.serve",
+    "serve": "yon.serve",
     "bundle": "bun ./scripts/bundle.mjs",
     "bundle:watch": "bun ./scripts/bundle.mjs --watch",
     "preview": "bun ./scripts/preview.mjs",
@@ -16,7 +16,7 @@
     "test:full": "bun run test && bun run test:visual"
   },
   "devDependencies": {
-    "@delma/tachyon": "^1.7.1",
+    "@d31ma/tachyon": "^26.23.1",
     "@tailwindcss/cli": "^4.2.2",
     "happy-dom": "^20.8.9",
     "pixelmatch": "^7.1.0",
