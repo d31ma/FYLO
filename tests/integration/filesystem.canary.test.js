@@ -6,14 +6,14 @@ describe('filesystem canary', () => {
     canaryTest('mounted filesystem root handles a real CRUD cycle', async () => {
         const collection = `canary_${Date.now()}`
         const fylo = new Fylo(process.env.FYLO_ROOT)
-        await fylo.createCollection(collection)
-        const id = await fylo.putData(collection, {
+        await fylo[collection].create()
+        const id = await fylo[collection].put({
             title: 'canary',
             tags: ['mounted', 'filesystem']
         })
-        const doc = await fylo.getDoc(collection, id).once()
+        const doc = await fylo[collection].get(id).once()
         expect(doc[id].title).toBe('canary')
-        await fylo.delDoc(collection, id)
-        await fylo.dropCollection(collection)
+        await fylo[collection].delete(id)
+        await fylo[collection].drop()
     })
 })

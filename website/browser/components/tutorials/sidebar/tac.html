@@ -1,0 +1,12 @@
+<aside class="docs-sidebar" aria-label="Tutorials navigation">
+  <loop :for="let group of navGroups">
+    <div class="sidebar-section">
+      <div class="sidebar-section-title">{group.title}</div>
+      <ul class="sidebar-list">
+        <loop :for="let item of group.items">
+          <li><a :href="'#' + item.id">{item.label}</a></li>
+        </loop>
+      </ul>
+    </div>
+  </loop>
+</aside>

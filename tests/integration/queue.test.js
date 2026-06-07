@@ -31,11 +31,11 @@ describe('local queue', () => {
     test('mirrors document events into collection action topics', async () => {
         const root = await createRoot('fylo-queue-events-')
         const fylo = new Fylo(root, { queue: true })
-        const seeded = await fylo.getDoc('users', '4V6329YC0F2').once()
+        const seeded = await fylo['users'].get('4V6329YC0F2').once()
         expect(seeded['4V6329YC0F2'].name).toBe('Ada Lovelace')
-        await fylo.createCollection('queue-users')
+        await fylo['queue-users'].create()
 
-        const id = await fylo.putData('queue-users', { name: 'Alice' })
+        const id = await fylo['queue-users'].put({ name: 'Alice' })
         const seen = []
         const result = await fylo.queue.drain(
             'queue-users.insert',

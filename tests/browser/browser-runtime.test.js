@@ -31,23 +31,23 @@ describe('browser runtime', () => {
 
     test('strict WORM mode remains write-once in the browser runtime', async () => {
         const fylo = createBrowserFylo({ worker: false, worm: { mode: 'strict' } })
-        await fylo.createCollection('worm-docs')
-        const id = await fylo.putData('worm-docs', { title: 'Immutable' })
+        await fylo['worm-docs'].create()
+        const id = await fylo['worm-docs'].put({ title: 'Immutable' })
 
-        await expect(fylo.patchDoc('worm-docs', { [id]: { title: 'Changed' } })).rejects.toThrow(
+        await expect(fylo['worm-docs'].patch(id, { title: 'Changed' })).rejects.toThrow(
             'Update is not allowed in WORM mode'
         )
-        await expect(fylo.delDoc('worm-docs', id)).rejects.toThrow(
+        await expect(fylo['worm-docs'].delete(id)).rejects.toThrow(
             'Delete is not allowed in WORM mode'
         )
-        expect((await fylo.getLatest('worm-docs', id))[id].title).toBe('Immutable')
+        expect((await fylo['worm-docs'].latest(id))[id].title).toBe('Immutable')
     })
 
     test('browser facade can use an injected per-document filesystem', async () => {
         const fs = createMemoryFilesystem()
         const fylo = createBrowserFylo({ worker: false, fs })
-        await fylo.db.users.create()
-        const id = await fylo.db.users.putData({ name: 'Lin' })
+        await fylo.users.create()
+        const id = await fylo.users.put({ name: 'Lin' })
 
         expect(await fs.exists(`/.collections/users/docs/${id.slice(0, 2)}/${id}.json`)).toBe(true)
         expect(await fs.exists('/.collections/users/collection.json')).toBe(false)
@@ -55,11 +55,11 @@ describe('browser runtime', () => {
 
     test('direct browser runtime exposes collection subscriptions', async () => {
         const fylo = createBrowserFylo({ worker: false })
-        await fylo.db.users.create()
+        await fylo.users.create()
         const events = []
-        const unsubscribe = fylo.db.users.subscribe((event) => events.push(event))
+        const unsubscribe = fylo.users.subscribe((event) => events.push(event))
 
-        const id = await fylo.db.users.putData({ name: 'Sub' })
+        const id = await fylo.users.put({ name: 'Sub' })
         unsubscribe()
 
         expect(events).toHaveLength(1)
@@ -69,18 +69,18 @@ describe('browser runtime', () => {
     test('top-level browser default exposes direct collection facades', async () => {
         const collection = `users${Date.now()}`
         await fylo.collection(collection).create()
-        const id = await fylo[collection].putData({ name: 'Default browser import' })
+        const id = await fylo[collection].put({ name: 'Default browser import' })
 
-        const found = await fylo[collection].getDoc(id).once()
+        const found = await fylo[collection].get(id).once()
         expect(found[id].name).toBe('Default browser import')
     })
 
     test('top-level browser factory defaults to memory when OPFS is unavailable', async () => {
         const local = createBrowserClient({ worker: false })
         await local.users.create()
-        const id = await local.users.putData({ name: 'Memory fallback' })
+        const id = await local.users.put({ name: 'Memory fallback' })
 
         expect(local.options.storage).toBe('memory')
-        expect((await local.users.getLatest(id))[id].name).toBe('Memory fallback')
+        expect((await local.users.latest(id))[id].name).toBe('Memory fallback')
     })
 })

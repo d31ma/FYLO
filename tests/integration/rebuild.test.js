@@ -16,18 +16,18 @@ const wormFylo = new Fylo(ROOT, {
 })
 
 beforeAll(async () => {
-    await fylo.createCollection(BASIC_COLLECTION)
-    await wormFylo.createCollection(WORM_COLLECTION)
+    await fylo[BASIC_COLLECTION].create()
+    await wormFylo[WORM_COLLECTION].create()
 })
 
 afterAll(async () => {
-    await fylo.dropCollection(BASIC_COLLECTION)
+    await fylo[BASIC_COLLECTION].drop()
     await rm(ROOT, { recursive: true, force: true })
 })
 
 describe('rebuildCollection', () => {
     test('restores queryability after non-WORM index drift', async () => {
-        await fylo.putData(BASIC_COLLECTION, {
+        await fylo[BASIC_COLLECTION].put({
             id: 10001,
             title: 'Rebuild me'
         })
@@ -38,23 +38,19 @@ describe('rebuildCollection', () => {
         })
 
         const before = []
-        for await (const doc of fylo
-            .findDocs(BASIC_COLLECTION, {
-                $ops: [{ id: { $eq: 10001 } }]
-            })
-            .collect()) {
+        for await (const doc of fylo[BASIC_COLLECTION].find({
+            $ops: [{ id: { $eq: 10001 } }]
+        }).collect()) {
             before.push(doc)
         }
         expect(before).toHaveLength(0)
 
-        const rebuild = await fylo.rebuildCollection(BASIC_COLLECTION)
+        const rebuild = await fylo[BASIC_COLLECTION].rebuild()
 
         const after = []
-        for await (const doc of fylo
-            .findDocs(BASIC_COLLECTION, {
-                $ops: [{ id: { $eq: 10001 } }]
-            })
-            .collect()) {
+        for await (const doc of fylo[BASIC_COLLECTION].find({
+            $ops: [{ id: { $eq: 10001 } }]
+        }).collect()) {
             after.push(doc)
         }
 
@@ -66,7 +62,7 @@ describe('rebuildCollection', () => {
     })
 
     test('rebuilds strict WORM indexes without introducing version metadata', async () => {
-        const activeId = await wormFylo.putData(WORM_COLLECTION, {
+        const activeId = await wormFylo[WORM_COLLECTION].put({
             id: 10003,
             title: 'Immutable'
         })
@@ -75,8 +71,8 @@ describe('rebuildCollection', () => {
             force: true
         })
 
-        const rebuild = await wormFylo.rebuildCollection(WORM_COLLECTION)
-        const activeLatest = await wormFylo.getLatest(WORM_COLLECTION, activeId)
+        const rebuild = await wormFylo[WORM_COLLECTION].rebuild()
+        const activeLatest = await wormFylo[WORM_COLLECTION].latest(activeId)
 
         expect(rebuild.collection).toBe(WORM_COLLECTION)
         expect(rebuild.worm).toBe(true)
@@ -91,11 +87,9 @@ describe('rebuildCollection', () => {
         ).toBe(false)
 
         const activeResults = []
-        for await (const doc of wormFylo
-            .findDocs(WORM_COLLECTION, {
-                $ops: [{ id: { $eq: 10003 } }]
-            })
-            .collect()) {
+        for await (const doc of wormFylo[WORM_COLLECTION].find({
+            $ops: [{ id: { $eq: 10003 } }]
+        }).collect()) {
             activeResults.push(doc)
         }
 

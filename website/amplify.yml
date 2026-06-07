@@ -1,0 +1,19 @@
+version: 1
+frontend:
+  phases:
+    preBuild:
+      commands:
+        - curl -fsSL https://bun.sh/install | bash
+        - export PATH="$HOME/.bun/bin:$PATH"
+        - rm -rf node_modules dist ~/.bun/install/cache
+        - bun install --no-cache
+    build:
+      commands:
+        - export PATH="$HOME/.bun/bin:$PATH"
+        - bun run bundle
+  artifacts:
+    baseDirectory: dist
+    files:
+      - '**/*'
+  cache:
+    paths: []

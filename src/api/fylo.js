@@ -82,8 +82,6 @@ export default class Fylo {
     startup
     /** @type {(strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown>} */
     sql
-    /** @type {Record<string, CollectionFacade>} */
-    db
     /**
      * @param {string} root
      * @param {FyloOptions} [options]
@@ -113,8 +111,8 @@ export default class Fylo {
             queryCache: this.cache
         })
         this.sql = this.createSqlTag()
-        this.db = this.createCollectionProxy()
         this.startup = this.bootstrapCollectionsFromSchemas()
+        return this.createFyloProxy()
     }
 
     /** @returns {Promise<void>} */
@@ -187,68 +185,22 @@ export default class Fylo {
         return `'${String(value).replaceAll("'", "''")}'`
     }
     /** @returns {(strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown>} */
-    createSqlTag() {
-        return async (strings, ...values) => {
-            let statement = strings[0] ?? ''
-            for (let index = 0; index < values.length; index++) {
-                statement += Fylo.sqlValue(values[index]) + (strings[index + 1] ?? '')
-            }
-            return await this.executeSQL(statement)
-        }
-    }
-    /** @returns {Record<string, CollectionFacade>} */
-    createCollectionProxy() {
-        const fylo = this
-        const reserved = new Set([
-            'then',
-            'db',
-            'constructor',
-            'prototype',
-            'toString',
-            'valueOf',
-            ...Object.getOwnPropertyNames(Object.prototype),
-            ...Object.getOwnPropertyNames(Fylo.prototype),
-            ...Object.getOwnPropertyNames(fylo)
-        ])
-        return /** @type {Record<string, CollectionFacade>} */ (
-            new Proxy(
-                {},
-                {
-                    get(_target, prop) {
-                        if (typeof prop === 'symbol') return undefined
-                        if (reserved.has(prop)) {
-                            throw new Error(
-                                `Collection name collides with reserved db property: ${prop}`
-                            )
-                        }
-                        return new CollectionFacade(fylo, prop)
-                    },
-                    has(_target, prop) {
-                        return typeof prop === 'string' && !reserved.has(prop)
-                    }
-                }
-            )
-        )
-    }
     /**
-     * Executes a SQL query and returns the results.
-     * @param {string} SQL The SQL query to execute.
-     * @returns The results of the query.
+     * Internal: execute a raw SQL string. Prefer the `fylo.sql`...`` template tag for application code.
+     * @param {string} SQL
+     * @returns {Promise<unknown>}
      */
-    async executeSQL(SQL) {
+    async _sql(SQL) {
         await this.ready()
         const operationMatch = SQL.match(/^(SELECT|INSERT|UPDATE|DELETE|CREATE|DROP)/i)
         const operation = operationMatch?.[0]?.toUpperCase()
         if (!operation) throw new Error('Missing SQL Operation')
+        const col = /** @type {{ $collection: string }} */ (Parser.parse(SQL)).$collection
         switch (operation) {
             case 'CREATE':
-                return await this.createCollection(
-                    /** @type {{ $collection: string }} */ (Parser.parse(SQL)).$collection
-                )
+                return await new CollectionFacade(this, col).create()
             case 'DROP':
-                return await this.dropCollection(
-                    /** @type {{ $collection: string }} */ (Parser.parse(SQL)).$collection
-                )
+                return await new CollectionFacade(this, col).drop()
             case 'SELECT': {
                 const query = /** @type {StoreQuery} */ (Parser.parse(SQL))
                 if (SQL.includes('JOIN'))
@@ -257,10 +209,9 @@ export default class Fylo {
                 delete query.$collection
                 /** @type {TTIDValue[] | Record<string, any>} */
                 let docs = query.$onlyIds ? [] : {}
-                for await (const data of this.findDocs(
-                    String(selectedCollection),
-                    query
-                ).collect()) {
+                for await (const data of new CollectionFacade(this, String(selectedCollection))
+                    .find(query)
+                    .collect()) {
                     if (typeof data === 'object')
                         docs = /** @type {{ appendGroup(target: any, value: any): any }} */ (
                             /** @type {unknown} */ (Object)
@@ -273,67 +224,121 @@ export default class Fylo {
                 const insert = /** @type {StoreInsert} */ (Parser.parse(SQL))
                 const insertCollection = insert.$collection
                 delete insert.$collection
-                return await this.putData(String(insertCollection), insert.$values)
+                return await new CollectionFacade(this, String(insertCollection)).put(
+                    insert.$values
+                )
             }
             case 'UPDATE': {
                 const update = /** @type {StoreUpdate} */ (Parser.parse(SQL))
                 const updateCol = update.$collection
                 delete update.$collection
-                return await this.patchDocs(String(updateCol), update)
+                return await new CollectionFacade(this, String(updateCol)).patchMany(update)
             }
             case 'DELETE': {
                 const del = /** @type {StoreDelete} */ (Parser.parse(SQL))
                 const deleteCollection = del.$collection
                 delete del.$collection
-                return await this.delDocs(String(deleteCollection), del)
+                return await new CollectionFacade(this, String(deleteCollection)).deleteMany(del)
             }
             default:
                 throw new Error('Invalid Operation')
         }
     }
-    /**
-     * Creates a new collection on the configured filesystem root.
-     * @param {string} collection The name of the collection.
-     * @returns {Promise<void>}
-     */
+    createSqlTag() {
+        const fylo = this
+        return /** @type {(strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown>} */ (
+            async (strings, ...values) => {
+                let statement = strings[0] ?? ''
+                for (let index = 0; index < values.length; index++) {
+                    statement += Fylo.sqlValue(values[index]) + (strings[index + 1] ?? '')
+                }
+                return await fylo._sql(statement)
+            }
+        )
+    }
+    /** @returns {Fylo} */
+    createFyloProxy() {
+        const fylo = this
+        const reserved = new Set([
+            'then',
+            'constructor',
+            'prototype',
+            '_sql',
+            ...Object.getOwnPropertyNames(Object.prototype),
+            ...Object.getOwnPropertyNames(Fylo.prototype),
+            ...Object.getOwnPropertyNames(fylo)
+        ])
+        return new Proxy(this, {
+            get(target, prop, receiver) {
+                if (typeof prop === 'symbol') return Reflect.get(target, prop, receiver)
+                if (reserved.has(prop)) return Reflect.get(target, prop, receiver)
+                return new CollectionFacade(fylo, prop)
+            }
+        })
+    }
+    /** @deprecated Use fylo.sql('...') or fylo.sql`...` instead */
+    async executeSQL() {
+        throw new Error(
+            "fylo.executeSQL() has been removed. Use fylo.sql('SELECT ...') or the template tag fylo.sql`...` instead."
+        )
+    }
+    // ── Static migration stubs ──────────────────────────────────────────────────
+    /** @deprecated Construct a Fylo instance and use fylo[collection].create() */
+    /** @param {string} collection */
     static async createCollection(collection) {
-        await Fylo.defaultEngine.createCollection(collection)
+        throw new Error(
+            `Fylo.createCollection('${collection}') has been removed. Construct a Fylo instance and use fylo['${collection}'].create().`
+        )
     }
-    /**
-     * Drops an existing collection from the configured filesystem root.
-     * @param {string} collection The name of the collection.
-     * @returns {Promise<void>}
-     */
+    /** @deprecated Construct a Fylo instance and use fylo[collection].drop() */
+    /** @param {string} collection */
     static async dropCollection(collection) {
-        await Fylo.defaultEngine.dropCollection(collection)
+        throw new Error(
+            `Fylo.dropCollection('${collection}') has been removed. Construct a Fylo instance and use fylo['${collection}'].drop().`
+        )
     }
-    /** @param {string} collection @returns {Promise<CollectionRebuildResult>} */
+    /** @deprecated Construct a Fylo instance and use fylo[collection].rebuild() */
+    /** @param {string} collection */
     static async rebuildCollection(collection) {
-        return await Fylo.defaultEngine.rebuildCollection(collection)
+        throw new Error(
+            `Fylo.rebuildCollection('${collection}') has been removed. Construct a Fylo instance and use fylo['${collection}'].rebuild().`
+        )
     }
-    /** @param {string} collection @returns {Promise<CollectionInspectResult>} */
+    /** @deprecated Construct a Fylo instance and use fylo[collection].inspect() */
+    /** @param {string} collection */
     static async inspectCollection(collection) {
-        return await Fylo.defaultEngine.inspectCollection(collection)
+        throw new Error(
+            `Fylo.inspectCollection('${collection}') has been removed. Construct a Fylo instance and use fylo['${collection}'].inspect().`
+        )
     }
-    /** @param {string} collection @returns {Promise<void>} */
+    // ── Migration stubs (old method-first API removed) ──────────────────────────
+    /** @deprecated Use fylo[collection].create() instead */
+    /** @param {string} collection */
     async createCollection(collection) {
-        await this.ready()
-        return await this.engine.createCollection(collection)
+        throw new Error(
+            `fylo.createCollection('${collection}') has been removed. Use fylo['${collection}'].create() instead.`
+        )
     }
-    /** @param {string} collection @returns {Promise<void>} */
+    /** @deprecated Use fylo[collection].drop() instead */
+    /** @param {string} collection */
     async dropCollection(collection) {
-        await this.ready()
-        return await this.engine.dropCollection(collection)
+        throw new Error(
+            `fylo.dropCollection('${collection}') has been removed. Use fylo['${collection}'].drop() instead.`
+        )
     }
-    /** @param {string} collection @returns {Promise<CollectionRebuildResult>} */
+    /** @deprecated Use fylo[collection].rebuild() instead */
+    /** @param {string} collection */
     async rebuildCollection(collection) {
-        await this.ready()
-        return await this.engine.rebuildCollection(collection)
+        throw new Error(
+            `fylo.rebuildCollection('${collection}') has been removed. Use fylo['${collection}'].rebuild() instead.`
+        )
     }
-    /** @param {string} collection @returns {Promise<CollectionInspectResult>} */
+    /** @deprecated Use fylo[collection].inspect() instead */
+    /** @param {string} collection */
     async inspectCollection(collection) {
-        await this.ready()
-        return await this.engine.inspectCollection(collection)
+        throw new Error(
+            `fylo.inspectCollection('${collection}') has been removed. Use fylo['${collection}'].inspect() instead.`
+        )
     }
     /** @param {FyloAuthContext} auth @returns {AuthenticatedFylo} */
     as(auth) {
@@ -380,71 +385,45 @@ export default class Fylo {
         }
         Fylo.loadedEncryption.add(collection)
     }
-    /** @param {string} collection @param {TTIDValue} _id @param {boolean} [onlyId] @returns {GetDocResult} */
-    getDoc(collection, _id, onlyId = false) {
-        validateDocId(_id)
-        const source = this.ready().then(() => this.engine.getDoc(collection, _id, onlyId))
-        return {
-            async *[Symbol.asyncIterator]() {
-                yield* await source
-            },
-            async once() {
-                return await (await source).once()
-            },
-            async *onDelete() {
-                yield* (await source).onDelete()
-            }
-        }
+    /** @deprecated Use fylo[collection].get(id) instead */
+    /** @param {string} collection @param {TTIDValue} [_id] */
+    getDoc(collection, _id) {
+        throw new Error(
+            `fylo.getDoc('${collection}', id) has been removed. Use fylo['${collection}'].get(id) instead.`
+        )
     }
-    /** @param {string} collection @param {TTIDValue} _id @param {boolean} [onlyId] @returns {Promise<Record<TTIDValue, Record<string, any>> | TTIDValue | null>} */
-    async getLatest(collection, _id, onlyId = false) {
-        await this.ready()
-        validateDocId(_id)
-        if (onlyId) return await this.engine.getLatest(collection, _id, true)
-        return await this.engine.getLatest(collection, _id)
+    /** @deprecated Use fylo[collection].latest(id) instead */
+    /** @param {string} collection @param {TTIDValue} [_id] */
+    async getLatest(collection, _id) {
+        throw new Error(
+            `fylo.getLatest('${collection}', id) has been removed. Use fylo['${collection}'].latest(id) instead.`
+        )
     }
-    /** @param {string} collection @param {StoreQuery} query @returns {FindDocsResult} */
-    findDocs(collection, query) {
-        const source = this.ready().then(() => this.engine.findDocs(collection, query))
-        return {
-            async *[Symbol.asyncIterator]() {
-                yield* await source
-            },
-            async *collect() {
-                yield* (await source).collect()
-            },
-            async *onDelete() {
-                yield* (await source).onDelete()
-            }
-        }
+    /** @deprecated Use fylo[collection].find(query) instead */
+    /** @param {string} collection */
+    findDocs(collection) {
+        throw new Error(
+            `fylo.findDocs('${collection}', query) has been removed. Use fylo['${collection}'].find(query) instead.`
+        )
     }
-    /**
-     * Finds retained soft-deleted documents; `$deleted` filters tombstone
-     * modification time, which FYLO records at soft delete.
-     * @param {string} collection
-     * @param {StoreQuery} [query]
-     * @returns {DeletedDocsResult}
-     */
-    findDeletedDocs(collection, query = {}) {
-        const source = this.ready().then(() => this.engine.findDeletedDocs(collection, query))
-        return {
-            async *[Symbol.asyncIterator]() {
-                yield* await source
-            },
-            async *collect() {
-                yield* (await source).collect()
-            }
-        }
+    /** @deprecated Use fylo[collection].findDeleted(query) instead */
+    /** @param {string} collection */
+    findDeletedDocs(collection) {
+        throw new Error(
+            `fylo.findDeletedDocs('${collection}', query) has been removed. Use fylo['${collection}'].findDeleted(query) instead.`
+        )
     }
     /** @param {StoreJoin} join @returns {Promise<JoinDocsResult>} */
     async joinDocs(join) {
         await this.ready()
         return await this.engine.joinDocs(join)
     }
-    /** @param {string} collection @returns {AsyncGenerator<Record<string, any>, void, unknown>} */
+    /** @deprecated Use fylo[collection].export() instead */
+    /** @param {string} collection */
     async *exportBulkData(collection) {
-        await this.ready()
-        yield* this.engine.exportBulkData(collection)
+        throw new Error(
+            `fylo.exportBulkData('${collection}') has been removed. Use fylo['${collection}'].export() instead.`
+        )
     }
     /** @param {string} collection @param {URL} url @param {number | ImportBulkDataOptions} [limitOrOptions] @returns {Promise<number>} */
     async importBulkData(collection, url, limitOrOptions) {
@@ -529,7 +508,7 @@ export default class Fylo {
             if (!items.length) return
             batchNum++
             const start = Date.now()
-            await this.batchPutData(collection, items)
+            await new CollectionFacade(this, collection).batchPut(items)
             count += items.length
             if (count % 10000 === 0) console.log('Count:', count)
             if (Fylo.LOGGING) {
@@ -601,50 +580,20 @@ export default class Fylo {
         }
         return count
     }
-    /**
-     * Gets an exported stream of documents from a collection.
-     */
-    /** @param {string} collection @returns {AsyncGenerator<Record<string, any>, void, unknown>} */
-    static async *exportBulkData(collection) {
-        yield* Fylo.defaultEngine.exportBulkData(collection)
+    /** @deprecated Construct a Fylo instance and use fylo[collection].export() */
+    /** @param {string} collection */
+    static async */** @param {string} collection */
+    exportBulkData(collection) {
+        throw new Error(
+            `Fylo.exportBulkData('${collection}') has been removed. Construct a Fylo instance and use fylo['${collection}'].export().`
+        )
     }
-    /**
-     * Gets a document from a collection.
-     * @param {string} collection The name of the collection.
-     * @param {TTIDValue} _id The ID of the document.
-     * @param {boolean} onlyId Whether to only return the ID of the document.
-     * @returns The document or the ID of the document.
-     */
-    static getDoc(collection, _id, onlyId = false) {
-        validateDocId(_id)
-        return Fylo.defaultEngine.getDoc(collection, _id, onlyId)
-    }
-    /**
-     * Puts multiple documents into a collection.
-     * @param {string} collection The name of the collection.
-     * @param {Record<string, any>[]} batch The documents to put.
-     * @returns The IDs of the documents.
-     */
-    async batchPutData(collection, batch) {
-        await this.ready()
-        const batches = []
-        const ids = []
-        if (batch.length > navigator.hardwareConcurrency) {
-            for (let i = 0; i < batch.length; i += navigator.hardwareConcurrency) {
-                batches.push(batch.slice(i, i + navigator.hardwareConcurrency))
-            }
-        } else batches.push(batch)
-        for (const itemBatch of batches) {
-            const writeResults = await Promise.allSettled(
-                itemBatch.map((data) => this.putData(collection, data))
-            )
-            for (const _id of writeResults
-                .filter((item) => item.status === 'fulfilled')
-                .map((item) => item.value)) {
-                ids.push(_id)
-            }
-        }
-        return ids
+    /** @deprecated Construct a Fylo instance and use fylo[collection].get(id) */
+    /** @param {string} collection */
+    static getDoc(collection) {
+        throw new Error(
+            `Fylo.getDoc('${collection}', id) has been removed. Construct a Fylo instance and use fylo['${collection}'].get(id).`
+        )
     }
     /**
      * Puts a document into a collection.
@@ -728,115 +677,76 @@ export default class Fylo {
         await this.engine.deleteDocument(collection, _id)
         if (Fylo.LOGGING) console.log(`Finished Deleting ${_id}`)
     }
-    /** @param {string} collection @param {Record<string, any>} data @returns {Promise<TTIDValue>} */
-    async putData(collection, data) {
-        const { _id, doc, previousId } = await this.prepareInsert(collection, data)
-        await this.executePutDataDirect(collection, _id, doc, previousId)
-        return _id
+    /** @deprecated Use fylo[collection].put(data) instead */
+    /** @param {string} collection */
+    async putData(collection) {
+        throw new Error(
+            `fylo.putData('${collection}', data) has been removed. Use fylo['${collection}'].put(data) instead.`
+        )
     }
-    /**
-     * Patches a document in a collection.
-     * @param {string} collection The name of the collection.
-     * @param {Record<TTIDValue, Record<string, any>>} newDoc The new document data.
-     * @param {Record<TTIDValue, Record<string, any>>} oldDoc The old document data.
-     * @returns The number of documents patched.
-     */
-    async patchDoc(collection, newDoc, oldDoc = {}) {
-        return await this.executePatchDocDirect(collection, newDoc, oldDoc)
+    /** @deprecated Use fylo[collection].patch(id, patch) instead */
+    /** @param {string} collection */
+    async patchDoc(collection) {
+        throw new Error(
+            `fylo.patchDoc('${collection}', ...) has been removed. Use fylo['${collection}'].patch(id, patch) instead.`
+        )
     }
-    /**
-     * Patches documents in a collection.
-     * @param {string} collection The name of the collection.
-     * @param {StoreUpdate} updateSchema The update schema.
-     * @returns The number of documents patched.
-     */
-    async patchDocs(collection, updateSchema) {
-        await this.loadEncryptionWithEvent(collection)
-        let count = 0
-        const promises = []
-        for await (const value of this.findDocs(collection, updateSchema.$where ?? {}).collect()) {
-            if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-                const [_id, current] = Object.entries(value)[0] ?? []
-                if (_id && current) {
-                    promises.push(
-                        this.patchDoc(collection, { [_id]: updateSchema.$set }, { [_id]: current })
-                    )
-                    count++
-                }
-            }
-        }
-        await Promise.all(promises)
-        return count
+    /** @deprecated Use fylo[collection].patchMany(update) instead */
+    /** @param {string} collection */
+    async patchDocs(collection) {
+        throw new Error(
+            `fylo.patchDocs('${collection}', update) has been removed. Use fylo['${collection}'].patchMany(update) instead.`
+        )
     }
-    /**
-     * Deletes a document from a collection.
-     * @param collection The name of the collection.
-     * @param _id The ID of the document.
-     * @returns The number of documents deleted.
-     */
-    /** @param {string} collection @param {TTIDValue} _id @returns {Promise<void>} */
-    async delDoc(collection, _id) {
-        await this.executeDelDocDirect(collection, _id)
+    /** @deprecated Use fylo[collection].delete(id) instead */
+    /** @param {string} collection */
+    async delDoc(collection) {
+        throw new Error(
+            `fylo.delDoc('${collection}', id) has been removed. Use fylo['${collection}'].delete(id) instead.`
+        )
     }
-    /**
-     * Restores a retained soft-deleted document to the live collection.
-     * @param {string} collection
-     * @param {TTIDValue} _id
-     * @returns {Promise<TTIDValue>}
-     */
-    async restoreDoc(collection, _id) {
-        await this.ready()
-        validateDocId(_id)
-        return await this.engine.restoreDocument(collection, _id)
+    /** @deprecated Use fylo[collection].deleteMany(query) instead */
+    /** @param {string} collection */
+    async delDocs(collection) {
+        throw new Error(
+            `fylo.delDocs('${collection}', query) has been removed. Use fylo['${collection}'].deleteMany(query) instead.`
+        )
     }
-    /**
-     * Deletes documents from a collection.
-     * @param collection The name of the collection.
-     * @param deleteSchema The delete schema.
-     * @returns The number of documents deleted.
-     */
-    /** @param {string} collection @param {StoreDelete} deleteSchema @returns {Promise<number>} */
-    async delDocs(collection, deleteSchema) {
-        await this.loadEncryptionWithEvent(collection)
-        let count = 0
-        const promises = []
-        for await (const value of this.findDocs(collection, deleteSchema).collect()) {
-            if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-                const _id = Object.keys(value).find((docId) => TTID.isTTID(docId))
-                if (_id) {
-                    promises.push(this.delDoc(collection, _id))
-                    count++
-                }
-            }
-        }
-        await Promise.all(promises)
-        return count
+    /** @deprecated Use fylo[collection].restore(id) instead */
+    /** @param {string} collection */
+    async restoreDoc(collection) {
+        throw new Error(
+            `fylo.restoreDoc('${collection}', id) has been removed. Use fylo['${collection}'].restore(id) instead.`
+        )
     }
-    /**
-     * Joins documents from two collections.
-     * @param join The join schema.
-     * @returns The joined documents.
-     */
-    /** @param {StoreJoin} join @returns {Promise<JoinDocsResult>} */
+    /** @deprecated Use fylo[collection].batchPut(batch) instead */
+    /** @param {string} collection */
+    async batchPutData(collection) {
+        throw new Error(
+            `fylo.batchPutData('${collection}', batch) has been removed. Use fylo['${collection}'].batchPut(batch) instead.`
+        )
+    }
+    /** @deprecated Construct a Fylo instance and use fylo.joinDocs(join) */
+    /** @param {StoreJoin} join */
     static async joinDocs(join) {
         return await Fylo.defaultEngine.joinDocs(join)
     }
-    /**
-     * Finds documents in a collection.
-     * @param collection The name of the collection.
-     * @param query The query schema.
-     * @returns The found documents.
-     */
-    /** @param {string} collection @param {StoreQuery} query @returns {FindDocsResult} */
-    static findDocs(collection, query) {
-        return Fylo.defaultEngine.findDocs(collection, query)
+    /** @deprecated Construct a Fylo instance and use fylo[collection].find(query) */
+    /** @param {string} collection */
+    /** @param {string} collection */
+    static findDocs(collection) {
+        throw new Error(
+            `Fylo.findDocs('${collection}', query) has been removed. Construct a Fylo instance and use fylo['${collection}'].find(query).`
+        )
     }
 }
 
 /**
- * Collection-scoped convenience facade exposed through `fylo.db.<collection>`.
+ * Collection-scoped facade returned by `fylo.<collection>`.
+ * Each access creates a new facade that binds the collection name
+ * so callers write `fylo.users.get(id)` instead of `fylo.getDoc('users', id)`.
  */
-class CollectionFacade {
+export class CollectionFacade {
     /** @type {Fylo} */
     fylo
     /** @type {string} */
@@ -850,66 +760,168 @@ class CollectionFacade {
         this.collection = collection
     }
     /** @param {TTIDValue} id @param {boolean} [onlyId] */
-    getDoc(id, onlyId = false) {
-        return this.fylo.getDoc(this.collection, id, onlyId)
+    get(id, onlyId = false) {
+        validateDocId(id)
+        const source = this.fylo
+            .ready()
+            .then(() => this.fylo.engine.getDoc(this.collection, id, onlyId))
+        return {
+            async *[Symbol.asyncIterator]() {
+                yield* await source
+            },
+            async once() {
+                return await (await source).once()
+            },
+            async *onDelete() {
+                yield* (await source).onDelete()
+            }
+        }
     }
     /** @param {TTIDValue} id @param {boolean} [onlyId] */
-    async getLatest(id, onlyId = false) {
-        return await this.fylo.getLatest(this.collection, id, onlyId)
+    async latest(id, onlyId = false) {
+        await this.fylo.ready()
+        validateDocId(id)
+        if (onlyId) return await this.fylo.engine.getLatest(this.collection, id, true)
+        return await this.fylo.engine.getLatest(this.collection, id)
     }
     /** @param {StoreQuery} [query] */
-    findDocs(query = {}) {
-        return this.fylo.findDocs(this.collection, query)
+    find(query = {}) {
+        const source = this.fylo
+            .ready()
+            .then(() => this.fylo.engine.findDocs(this.collection, query))
+        return {
+            async *[Symbol.asyncIterator]() {
+                yield* await source
+            },
+            async *collect() {
+                yield* (await source).collect()
+            },
+            async *onDelete() {
+                yield* (await source).onDelete()
+            }
+        }
     }
     /** @param {StoreQuery} [query] */
-    findDeletedDocs(query = {}) {
-        return this.fylo.findDeletedDocs(this.collection, query)
+    findDeleted(query = {}) {
+        const source = this.fylo
+            .ready()
+            .then(() => this.fylo.engine.findDeletedDocs(this.collection, query))
+        return {
+            async *[Symbol.asyncIterator]() {
+                yield* await source
+            },
+            async *collect() {
+                yield* (await source).collect()
+            }
+        }
     }
     /** @param {Record<string, any>} data */
-    async putData(data) {
-        return await this.fylo.putData(this.collection, data)
+    async put(data) {
+        const { _id, doc, previousId } = await this.fylo.prepareInsert(this.collection, data)
+        return await this.fylo.executePutDataDirect(this.collection, _id, doc, previousId)
     }
     /** @param {Record<string, any>[]} batch */
-    async batchPutData(batch) {
-        return await this.fylo.batchPutData(this.collection, batch)
+    async batchPut(batch) {
+        await this.fylo.ready()
+        const ids = []
+        const chunkSize = navigator.hardwareConcurrency
+        for (let i = 0; i < batch.length; i += chunkSize) {
+            const chunk = batch.slice(i, i + chunkSize)
+            const results = await Promise.allSettled(chunk.map((data) => this.put(data)))
+            for (const r of results) {
+                if (r.status === 'fulfilled') ids.push(r.value)
+            }
+        }
+        return ids
     }
     /** @param {TTIDValue} id @param {Record<string, any>} patch @param {Record<string, any>} [oldDoc] */
-    async patchDoc(id, patch, oldDoc = {}) {
-        return await this.fylo.patchDoc(this.collection, { [id]: patch }, oldDoc)
+    async patch(id, patch, oldDoc = {}) {
+        return await this.fylo.executePatchDocDirect(this.collection, { [id]: patch }, oldDoc)
     }
     /** @param {StoreUpdate} update */
-    async patchDocs(update) {
-        return await this.fylo.patchDocs(this.collection, update)
+    async patchMany(update) {
+        await this.fylo.loadEncryptionWithEvent(this.collection)
+        let count = 0
+        for await (const value of this.find(update.$where ?? {}).collect()) {
+            const entries = Object.entries(value)
+            if (entries.length === 0) continue
+            const [docId, existing] = entries[0]
+            try {
+                await this.fylo.executePatchDocDirect(
+                    this.collection,
+                    { [docId]: update.$set },
+                    { [docId]: /** @type {Record<string, any>} */ (existing) }
+                )
+                count++
+            } catch (err) {
+                if (err instanceof FyloAuthError) continue
+                throw err
+            }
+        }
+        return count
     }
     /** @param {TTIDValue} id */
-    async delDoc(id) {
-        return await this.fylo.delDoc(this.collection, id)
+    async ['delete'](id) {
+        return await this.fylo.executeDelDocDirect(this.collection, id)
     }
     /** @param {StoreDelete} query */
-    async delDocs(query) {
-        return await this.fylo.delDocs(this.collection, query)
+    async deleteMany(query) {
+        await this.fylo.loadEncryptionWithEvent(this.collection)
+        let count = 0
+        for await (const value of this.find(query).collect()) {
+            const entries = Object.entries(value)
+            if (entries.length === 0) continue
+            const [docId] = entries[0]
+            try {
+                await this.fylo.executeDelDocDirect(this.collection, docId)
+                count++
+            } catch (err) {
+                if (err instanceof FyloAuthError) continue
+                throw err
+            }
+        }
+        return count
     }
     /** @param {TTIDValue} id */
-    async restoreDoc(id) {
-        return await this.fylo.restoreDoc(this.collection, id)
+    async restore(id) {
+        await this.fylo.ready()
+        return await this.fylo.engine.restoreDocument(this.collection, id)
+    }
+    /** @returns {AsyncGenerator<Record<string, any>, void, unknown>} */
+    async *export() {
+        await this.fylo.ready()
+        yield* this.fylo.engine.exportBulkData(this.collection)
+    }
+    /** @param {URL} url @param {number | ImportBulkDataOptions} [limitOrOptions] */
+    async import(url, limitOrOptions) {
+        return await this.fylo.importBulkData(this.collection, url, limitOrOptions)
     }
     async inspect() {
-        return await this.fylo.inspectCollection(this.collection)
+        await this.fylo.ready()
+        return await this.fylo.engine.inspectCollection(this.collection)
     }
     async rebuild() {
-        return await this.fylo.rebuildCollection(this.collection)
+        await this.fylo.ready()
+        return await this.fylo.engine.rebuildCollection(this.collection)
     }
     async create() {
-        return await this.fylo.createCollection(this.collection)
+        await this.fylo.ready()
+        return await this.fylo.engine.createCollection(this.collection)
     }
     async drop() {
-        return await this.fylo.dropCollection(this.collection)
+        await this.fylo.ready()
+        return await this.fylo.engine.dropCollection(this.collection)
     }
 }
 
 /**
  * RLS-scoped FYLO facade. Every operation delegates to a backing `Fylo`
  * instance after authorizing the caller against collection rules.
+ */
+/**
+ * RLS-scoped FYLO facade with collection-first access.
+ * `fylo.as(auth)` returns a Proxy that authorizes every operation
+ * against collection rules. Access collections as `scoped.users.get(id)`.
  */
 export class AuthenticatedFylo {
     /** @type {Fylo} */
@@ -923,212 +935,50 @@ export class AuthenticatedFylo {
     constructor(fylo, auth) {
         this.fylo = fylo
         this.auth = auth
-    }
-    /**
-     * @param {{ action: FyloAuthAction, collection: string, docId?: string, data?: Record<string, any>, existing?: Record<string, any> }} args
-     * @returns {Promise<void>}
-     */
-    async _authorize(args) {
-        await authorizeOperation({
-            collection: args.collection,
-            schemaDir: schemaEnv(),
-            auth: this.auth,
-            action: args.action,
-            docId: args.docId,
-            data: args.data,
-            existing: args.existing
-        })
-    }
-    /**
-     * @param {string} collection
-     * @param {Record<string, any>} doc
-     */
-    async _isVisible(collection, doc) {
-        return await isDocVisible({
-            collection,
-            schemaDir: schemaEnv(),
-            auth: this.auth,
-            doc
-        })
-    }
-    /** @param {Record<string, any>} data @returns {TTIDValue | undefined} */
-    firstDocId(data) {
-        return Object.keys(data).find((key) => TTID.isTTID(key))
-    }
-    /** @param {string} collection @returns {Promise<void>} */
-    async createCollection(collection) {
-        await this._authorize({ action: 'collection:create', collection })
-        return await this.fylo.createCollection(collection)
-    }
-    /** @param {string} collection @returns {Promise<void>} */
-    async dropCollection(collection) {
-        await this._authorize({ action: 'collection:drop', collection })
-        return await this.fylo.dropCollection(collection)
-    }
-    /** @param {string} collection @returns {Promise<CollectionRebuildResult>} */
-    async rebuildCollection(collection) {
-        await this._authorize({ action: 'collection:rebuild', collection })
-        return await this.fylo.rebuildCollection(collection)
-    }
-    /** @param {string} collection @returns {Promise<CollectionInspectResult>} */
-    async inspectCollection(collection) {
-        await this._authorize({ action: 'collection:inspect', collection })
-        return await this.fylo.inspectCollection(collection)
-    }
-    /** @param {string} collection @param {TTIDValue} _id @param {boolean} [onlyId] @returns {GetDocResult} */
-    getDoc(collection, _id, onlyId = false) {
-        validateDocId(_id)
-        const self = this
-        const source = this.fylo.getDoc(collection, _id, onlyId)
-        return /** @type {GetDocResult} */ ({
-            async *[Symbol.asyncIterator]() {
-                await self._authorize({ action: 'doc:read', collection, docId: _id })
-                for await (const value of source) {
-                    if (onlyId) {
-                        yield value
-                        continue
-                    }
-                    const envelope = /** @type {Record<string, Record<string, any>>} */ (value)
-                    const [, doc] = Object.entries(envelope)[0] ?? [undefined, undefined]
-                    if (!doc) continue
-                    if (await self._isVisible(collection, doc)) yield envelope
-                }
-            },
-            /** @returns {Promise<Record<TTIDValue, Record<string, any>>>} */
-            async once() {
-                await self._authorize({ action: 'doc:read', collection, docId: _id })
-                const result = await source.once()
-                if (Object.keys(result).length === 0) return result
-                const doc = /** @type {Record<string, any>} */ (result[_id])
-                if (!(await self._isVisible(collection, doc))) return {}
-                return result
-            },
-            async *onDelete() {
-                await self._authorize({ action: 'doc:read', collection, docId: _id })
-                yield* source.onDelete()
+        const reserved = new Set([
+            'then',
+            'constructor',
+            'prototype',
+            ...Object.getOwnPropertyNames(Object.prototype),
+            ...Object.getOwnPropertyNames(AuthenticatedFylo.prototype),
+            ...Object.getOwnPropertyNames(this)
+        ])
+        return new Proxy(this, {
+            get(target, prop, receiver) {
+                if (typeof prop === 'symbol') return Reflect.get(target, prop, receiver)
+                if (reserved.has(prop)) return Reflect.get(target, prop, receiver)
+                return new AuthenticatedCollectionFacade(target, prop)
             }
         })
     }
-    /** @param {string} collection @param {TTIDValue} _id @param {boolean} [onlyId] @returns {Promise<Record<TTIDValue, Record<string, any>> | TTIDValue | null>} */
-    async getLatest(collection, _id, onlyId = false) {
-        await this._authorize({ action: 'doc:read', collection, docId: _id })
-        if (onlyId) return await this.fylo.getLatest(collection, _id, true)
-        const result = /** @type {Record<TTIDValue, Record<string, any>> | null} */ (
-            await this.fylo.getLatest(collection, _id)
-        )
-        if (!result) return result
-        const entries = Object.entries(result)
-        if (entries.length === 0) return result
-        const [, doc] = entries[0]
-        if (!(await this._isVisible(collection, doc))) return {}
-        return result
-    }
-    /** @param {string} collection @param {StoreQuery} query @returns {FindDocsResult} */
-    findDocs(collection, query) {
-        const self = this
-        // Projection queries ($select / $onlyIds / $groupBy) yield flat rows
-        // that have no envelope to evaluate read.filter against — would
-        // silently bypass RLS. Refuse them on rules-protected collections;
-        // the caller can query for full envelopes and project client-side.
-        if (queryHasProjection(query)) {
-            return /** @type {FindDocsResult} */ ({
-                async *[Symbol.asyncIterator]() {
-                    await self._assertNoProjectionWhenRlsEnabled(collection)
-                    yield* self.fylo.findDocs(collection, query)
-                },
-                async *collect() {
-                    await self._assertNoProjectionWhenRlsEnabled(collection)
-                    yield* self.fylo.findDocs(collection, query).collect()
-                },
-                async *onDelete() {
-                    await self._assertNoProjectionWhenRlsEnabled(collection)
-                    yield* self.fylo.findDocs(collection, query).onDelete()
-                }
-            })
-        }
-        const source = this.fylo.findDocs(collection, query)
-        return /** @type {FindDocsResult} */ ({
-            async *[Symbol.asyncIterator]() {
-                await self._authorize({ action: 'doc:find', collection })
-                for await (const value of source) {
-                    const filtered = await filterEnvelope(self, collection, value)
-                    if (filtered !== undefined) yield filtered
-                }
-            },
-            async *collect() {
-                await self._authorize({ action: 'doc:find', collection })
-                for await (const value of source.collect()) {
-                    const filtered = await filterEnvelope(self, collection, value)
-                    if (filtered !== undefined) yield filtered
-                }
-            },
-            async *onDelete() {
-                await self._authorize({ action: 'doc:find', collection })
-                yield* source.onDelete()
-            }
-        })
-    }
-    /**
-     * Throw if `collection` has a rules file and the caller is using a
-     * projection query — RLS cannot be applied to flat projected rows.
-     * @param {string} collection
-     */
-    async _assertNoProjectionWhenRlsEnabled(collection) {
-        const rules = await loadRules(collection, schemaEnv())
-        if (rules) {
-            throw new Error(
-                `RLS-protected collection '${collection}' cannot be queried with projections ` +
-                    `($select / $onlyIds / $groupBy). Query for full envelopes and project client-side.`
-            )
-        }
-        // No rules → allow the projection through; the caller's _authorize
-        // would have caught this for collections that are RLS-protected.
-        await this._authorize({ action: 'doc:find', collection })
+    /** @param {FyloAuthContext} auth @returns {AuthenticatedFylo} */
+    as(auth) {
+        return new AuthenticatedFylo(this.fylo, auth)
     }
     /** @param {StoreJoin} join @returns {Promise<JoinDocsResult>} */
     async joinDocs(join) {
-        // For joins, both collections must permit the action under the user's role.
-        await this._authorize({
-            action: 'join:execute',
-            collection: String(join.$leftCollection)
-        })
-        await this._authorize({
-            action: 'join:execute',
-            collection: String(join.$rightCollection)
-        })
-        return await this.fylo.joinDocs(join)
+        await this._authorize({ action: 'join:execute', collection: String(join.$leftCollection) })
+        await this._authorize({ action: 'join:execute', collection: String(join.$rightCollection) })
+        return await this.fylo.engine.joinDocs(join)
     }
-    /** @param {string} collection @returns {AsyncGenerator<Record<string, any>, void, unknown>} */
-    async *exportBulkData(collection) {
-        await this._authorize({ action: 'bulk:export', collection })
-        for await (const doc of this.fylo.exportBulkData(collection)) {
-            if (await this._isVisible(collection, doc)) yield doc
-        }
+    /** @deprecated Use scoped.sql`...` template tag instead */
+    async executeSQL() {
+        throw new Error('executeSQL() has been removed. Use the .sql`...` template tag instead.')
     }
-    /** @param {string} collection @param {URL} url @param {number | ImportBulkDataOptions} [limitOrOptions] @returns {Promise<number>} */
-    async importBulkData(collection, url, limitOrOptions) {
-        await this._authorize({ action: 'bulk:import', collection })
-        if (typeof limitOrOptions === 'number')
-            return await this.fylo.importBulkData(collection, url, limitOrOptions)
-        return await this.fylo.importBulkData(collection, url, limitOrOptions)
-    }
-    /** @param {string} SQL @returns {ReturnType<Fylo['executeSQL']>} */
-    async executeSQL(SQL) {
-        // Re-dispatch the SQL through this scoped client so each branch is
-        // authorized by the same rules as the equivalent direct call. This
-        // avoids brittle string parsing and gives RLS proper per-op coverage.
+    /**
+     * Internal: execute a raw SQL string through RLS-scoped collection access.
+     * @param {string} SQL
+     */
+    async _sql(SQL) {
         const operationMatch = SQL.match(/^(SELECT|INSERT|UPDATE|DELETE|CREATE|DROP)/i)
         const operation = operationMatch?.[0]?.toUpperCase()
         if (!operation) throw new Error('Missing SQL Operation')
+        const col = /** @type {{ $collection: string }} */ (Parser.parse(SQL)).$collection
         switch (operation) {
             case 'CREATE':
-                return await this.createCollection(
-                    /** @type {{ $collection: string }} */ (Parser.parse(SQL)).$collection
-                )
+                return await new AuthenticatedCollectionFacade(this, col).create()
             case 'DROP':
-                return await this.dropCollection(
-                    /** @type {{ $collection: string }} */ (Parser.parse(SQL)).$collection
-                )
+                return await new AuthenticatedCollectionFacade(this, col).drop()
             case 'SELECT': {
                 const query = /** @type {StoreQuery} */ (Parser.parse(SQL))
                 if (SQL.includes('JOIN'))
@@ -1137,10 +987,12 @@ export class AuthenticatedFylo {
                 delete query.$collection
                 /** @type {TTIDValue[] | Record<string, any>} */
                 let docs = query.$onlyIds ? [] : {}
-                for await (const data of this.findDocs(
-                    String(selectedCollection),
-                    query
-                ).collect()) {
+                for await (const data of new AuthenticatedCollectionFacade(
+                    this,
+                    String(selectedCollection)
+                )
+                    .find(query)
+                    .collect()) {
                     if (typeof data === 'object')
                         docs = /** @type {{ appendGroup(target: any, value: any): any }} */ (
                             /** @type {unknown} */ (Object)
@@ -1153,150 +1005,363 @@ export class AuthenticatedFylo {
                 const insert = /** @type {StoreInsert} */ (Parser.parse(SQL))
                 const insertCollection = insert.$collection
                 delete insert.$collection
-                return await this.putData(String(insertCollection), insert.$values)
+                return await new AuthenticatedCollectionFacade(this, String(insertCollection)).put(
+                    insert.$values
+                )
             }
             case 'UPDATE': {
                 const update = /** @type {StoreUpdate} */ (Parser.parse(SQL))
-                const updateCollection = update.$collection
+                const updateCol = update.$collection
                 delete update.$collection
-                return await this.patchDocs(String(updateCollection), update)
+                return await new AuthenticatedCollectionFacade(this, String(updateCol)).patchMany(
+                    update
+                )
             }
             case 'DELETE': {
                 const del = /** @type {StoreDelete} */ (Parser.parse(SQL))
                 const deleteCollection = del.$collection
                 delete del.$collection
-                return await this.delDocs(String(deleteCollection), del)
+                return await new AuthenticatedCollectionFacade(
+                    this,
+                    String(deleteCollection)
+                ).deleteMany(del)
             }
             default:
                 throw new Error('Invalid Operation')
         }
     }
-    /** @param {string} collection @param {Record<string, any>[]} batch @returns {Promise<TTIDValue[]>} */
-    async batchPutData(collection, batch) {
-        for (const data of batch) {
-            await this._authorize({ action: 'doc:create', collection, data })
+    /** @type {Fylo['sql']} */
+    get sql() {
+        const self = this
+        return async (strings, ...values) => {
+            let statement = strings[0] ?? ''
+            for (let index = 0; index < values.length; index++) {
+                statement += Fylo.sqlValue(values[index]) + (strings[index + 1] ?? '')
+            }
+            return await self._sql(statement)
         }
-        return await this.fylo.batchPutData(collection, batch)
     }
-    /** @param {string} collection @param {Record<string, any>} data @returns {Promise<TTIDValue>} */
-    async putData(collection, data) {
-        await this._authorize({
+    // ── Internal helpers ────────────────────────────────────────────────────────
+    /** @param {{ action: FyloAuthAction, collection: string, docId?: string, data?: Record<string, any>, existing?: Record<string, any> }} args */
+    async _authorize(args) {
+        await authorizeOperation({
+            collection: args.collection,
+            schemaDir: schemaEnv(),
+            auth: this.auth,
+            action: args.action,
+            docId: args.docId,
+            data: args.data,
+            existing: args.existing
+        })
+    }
+    /** @param {string} collection @param {Record<string, any>} doc */
+    async _isVisible(collection, doc) {
+        return await isDocVisible({ collection, schemaDir: schemaEnv(), auth: this.auth, doc })
+    }
+    /** @param {Record<string, any>} data @returns {TTIDValue | undefined} */
+    firstDocId(data) {
+        return Object.keys(data).find((key) => TTID.isTTID(key))
+    }
+    /** @param {string} collection */
+    async _assertNoProjectionWhenRlsEnabled(collection) {
+        const rules = await loadRules(collection, schemaEnv())
+        if (rules)
+            throw new Error(
+                `RLS-protected collection '${collection}' cannot be queried with projections ($select / $onlyIds / $groupBy). Query for full envelopes and project client-side.`
+            )
+        await this._authorize({ action: 'doc:find', collection })
+    }
+}
+
+/**
+ * RLS-wrapped collection facade. Each method authorizes the operation
+ * against the scoped auth context, then delegates to the underlying Fylo engine.
+ */
+class AuthenticatedCollectionFacade {
+    /** @type {AuthenticatedFylo} */
+    authFylo
+    /** @type {string} */
+    collection
+    /** @param {AuthenticatedFylo} authFylo @param {string} collection */
+    constructor(authFylo, collection) {
+        this.authFylo = authFylo
+        this.collection = collection
+    }
+    async create() {
+        await this.authFylo._authorize({ action: 'collection:create', collection: this.collection })
+        return await this.authFylo.fylo.engine.createCollection(this.collection)
+    }
+    async drop() {
+        await this.authFylo._authorize({ action: 'collection:drop', collection: this.collection })
+        return await this.authFylo.fylo.engine.dropCollection(this.collection)
+    }
+    async rebuild() {
+        await this.authFylo._authorize({
+            action: 'collection:rebuild',
+            collection: this.collection
+        })
+        return await this.authFylo.fylo.engine.rebuildCollection(this.collection)
+    }
+    async inspect() {
+        await this.authFylo._authorize({
+            action: 'collection:inspect',
+            collection: this.collection
+        })
+        return await this.authFylo.fylo.engine.inspectCollection(this.collection)
+    }
+    /** @param {TTIDValue} id @param {boolean} [onlyId] */
+    get(id, onlyId = false) {
+        validateDocId(id)
+        const self = this
+        const source = this.authFylo.fylo.engine.getDoc(this.collection, id, onlyId)
+        return {
+            async *[Symbol.asyncIterator]() {
+                await self.authFylo._authorize({
+                    action: 'doc:read',
+                    collection: self.collection,
+                    docId: id
+                })
+                for await (const value of source) {
+                    if (onlyId) {
+                        yield value
+                        continue
+                    }
+                    const envelope = /** @type {Record<string, Record<string, any>>} */ (value)
+                    const [, doc] = Object.entries(envelope)[0] ?? [undefined, undefined]
+                    if (!doc) continue
+                    if (await self.authFylo._isVisible(self.collection, doc)) yield envelope
+                }
+            },
+            async once() {
+                await self.authFylo._authorize({
+                    action: 'doc:read',
+                    collection: self.collection,
+                    docId: id
+                })
+                const result = await source.once()
+                if (Object.keys(result).length === 0) return result
+                const doc = /** @type {Record<string, any>} */ (result[id])
+                if (!(await self.authFylo._isVisible(self.collection, doc))) return {}
+                return result
+            },
+            async *onDelete() {
+                await self.authFylo._authorize({
+                    action: 'doc:read',
+                    collection: self.collection,
+                    docId: id
+                })
+                yield* source.onDelete()
+            }
+        }
+    }
+    /** @param {TTIDValue} id @param {boolean} [onlyId] */
+    async latest(id, onlyId = false) {
+        await this.authFylo._authorize({
+            action: 'doc:read',
+            collection: this.collection,
+            docId: id
+        })
+        if (onlyId) return await this.authFylo.fylo.engine.getLatest(this.collection, id, true)
+        const result = /** @type {Record<TTIDValue, Record<string, any>> | null} */ (
+            await this.authFylo.fylo.engine.getLatest(this.collection, id)
+        )
+        if (!result) return result
+        const entries = Object.entries(result)
+        if (entries.length === 0) return result
+        const [, doc] = entries[0]
+        if (!(await this.authFylo._isVisible(this.collection, doc))) return {}
+        return result
+    }
+    find(query = {}) {
+        const self = this
+        if (queryHasProjection(query)) {
+            return {
+                async *[Symbol.asyncIterator]() {
+                    await self.authFylo._assertNoProjectionWhenRlsEnabled(self.collection)
+                    yield* self.authFylo.fylo.engine.findDocs(self.collection, query)
+                },
+                async *collect() {
+                    await self.authFylo._assertNoProjectionWhenRlsEnabled(self.collection)
+                    yield* self.authFylo.fylo.engine.findDocs(self.collection, query).collect()
+                },
+                async *onDelete() {
+                    await self.authFylo._assertNoProjectionWhenRlsEnabled(self.collection)
+                    yield* self.authFylo.fylo.engine.findDocs(self.collection, query).onDelete()
+                }
+            }
+        }
+        const source = this.authFylo.fylo.engine.findDocs(this.collection, query)
+        return {
+            async *[Symbol.asyncIterator]() {
+                await self.authFylo._authorize({ action: 'doc:find', collection: self.collection })
+                for await (const value of source) {
+                    const filtered = await filterEnvelope(self.authFylo, self.collection, value)
+                    if (filtered !== undefined) yield filtered
+                }
+            },
+            async *collect() {
+                await self.authFylo._authorize({ action: 'doc:find', collection: self.collection })
+                for await (const value of source.collect()) {
+                    const filtered = await filterEnvelope(self.authFylo, self.collection, value)
+                    if (filtered !== undefined) yield filtered
+                }
+            },
+            async *onDelete() {
+                await self.authFylo._authorize({ action: 'doc:find', collection: self.collection })
+                yield* source.onDelete()
+            }
+        }
+    }
+    findDeleted(query = {}) {
+        const self = this
+        const source = this.authFylo.fylo.engine.findDeletedDocs(this.collection, query)
+        return {
+            async *[Symbol.asyncIterator]() {
+                await self.authFylo._authorize({ action: 'doc:find', collection: self.collection })
+                yield* source
+            },
+            async *collect() {
+                yield* source.collect()
+            }
+        }
+    }
+    /** @param {Record<string, any>} data */
+    async put(data) {
+        await this.authFylo._authorize({
             action: 'doc:create',
-            collection,
-            docId: this.firstDocId(data),
+            collection: this.collection,
+            docId: this.authFylo.firstDocId(data),
             data
         })
-        return await this.fylo.putData(collection, data)
+        return await new CollectionFacade(this.authFylo.fylo, this.collection).put(data)
     }
-    /** @param {string} collection @param {Record<TTIDValue, Record<string, any>>} newDoc @param {Record<TTIDValue, Record<string, any>>} [oldDoc] @returns {Promise<TTIDValue>} */
-    async patchDoc(collection, newDoc, oldDoc = {}) {
-        const _id = this.firstDocId(newDoc)
-        if (!_id) throw new Error('patchDoc: newDoc must contain a TTID-keyed entry')
-        let existing = oldDoc[_id]
+    /** @param {Record<string, any>[]} batch */
+    async batchPut(batch) {
+        for (const data of batch)
+            await this.authFylo._authorize({
+                action: 'doc:create',
+                collection: this.collection,
+                data
+            })
+        return await new CollectionFacade(this.authFylo.fylo, this.collection).batchPut(batch)
+    }
+    /** @param {TTIDValue} id @param {Record<string, any>} patch @param {Record<string, any>} [oldDoc] */
+    async patch(id, patch, oldDoc = {}) {
+        let existing = oldDoc[id]
         if (!existing) {
-            const fetched = await this.fylo.engine.getDoc(collection, _id).once()
-            existing = fetched[_id]
+            const fetched = await this.authFylo.fylo.engine.getDoc(this.collection, id).once()
+            existing = fetched[id]
         }
         if (!existing)
             throw new FyloAuthError({
-                auth: this.auth,
+                auth: this.authFylo.auth,
                 action: 'doc:update',
-                collection,
-                docId: _id
+                collection: this.collection,
+                docId: id
             })
-        await this._authorize({
+        await this.authFylo._authorize({
             action: 'doc:update',
-            collection,
-            docId: _id,
-            data: newDoc[_id],
+            collection: this.collection,
+            docId: id,
+            data: patch,
             existing
         })
-        return await this.fylo.patchDoc(collection, newDoc, oldDoc)
+        return await this.authFylo.fylo.executePatchDocDirect(
+            this.collection,
+            { [id]: patch },
+            oldDoc
+        )
     }
-    /** @param {string} collection @param {StoreUpdate} updateSchema @returns {Promise<number>} */
-    async patchDocs(collection, updateSchema) {
-        // Iterate via the scoped findDocs so the role's read.filter applies —
-        // bulk update operates only on the visible subset, matching the Atlas
-        // model where update is gated by the read scope.
-        // Per-doc FyloAuthError is treated as "filter doesn't match" and
-        // silently skipped (SQL UPDATE-style — non-matching rows are no-ops).
+    /** @param {StoreUpdate} update */
+    async patchMany(update) {
         let count = 0
-        const promises = []
-        for await (const value of this.findDocs(collection, updateSchema.$where ?? {}).collect()) {
+        for await (const value of this.find(update.$where ?? {}).collect()) {
             if (typeof value !== 'object' || value === null || Array.isArray(value)) continue
             const entry = Object.entries(value)[0]
             if (!entry) continue
-            const [_id, existing] = entry
+            const [id, existing] = entry
             try {
-                await this._authorize({
+                await this.authFylo._authorize({
                     action: 'doc:update',
-                    collection,
-                    docId: _id,
-                    data: updateSchema.$set,
+                    collection: this.collection,
+                    docId: id,
+                    data: update.$set,
                     existing: /** @type {Record<string, any>} */ (existing)
                 })
             } catch (err) {
                 if (err instanceof FyloAuthError) continue
                 throw err
             }
-            promises.push(
-                this.fylo.patchDoc(
-                    collection,
-                    { [_id]: updateSchema.$set },
-                    { [_id]: /** @type {Record<string, any>} */ (existing) }
-                )
+            await this.authFylo.fylo.executePatchDocDirect(
+                this.collection,
+                { [id]: update.$set },
+                { [id]: /** @type {Record<string, any>} */ (existing) }
             )
             count++
         }
-        await Promise.all(promises)
         return count
     }
-    /** @param {string} collection @param {TTIDValue} _id @returns {Promise<void>} */
-    async delDoc(collection, _id) {
-        const fetched = await this.fylo.engine.getDoc(collection, _id).once()
-        const existing = fetched[_id]
+    /** @param {TTIDValue} id */
+    async ['delete'](id) {
+        const fetched = await this.authFylo.fylo.engine.getDoc(this.collection, id).once()
+        const existing = fetched[id]
         if (!existing)
             throw new FyloAuthError({
-                auth: this.auth,
+                auth: this.authFylo.auth,
                 action: 'doc:delete',
-                collection,
-                docId: _id
+                collection: this.collection,
+                docId: id
             })
-        await this._authorize({
+        await this.authFylo._authorize({
             action: 'doc:delete',
-            collection,
-            docId: _id,
+            collection: this.collection,
+            docId: id,
             existing: /** @type {Record<string, any>} */ (existing)
         })
-        return await this.fylo.delDoc(collection, _id)
+        return await this.authFylo.fylo.engine.deleteDocument(this.collection, id)
     }
-    /** @param {string} collection @param {StoreDelete} deleteSchema @returns {Promise<number>} */
-    async delDocs(collection, deleteSchema) {
-        // Same model as patchDocs: scoped iteration + per-doc auth, with
-        // FyloAuthError treated as a filter miss.
+    /** @param {StoreDelete} query */
+    async deleteMany(query) {
         let count = 0
-        const promises = []
-        for await (const value of this.findDocs(collection, deleteSchema).collect()) {
+        for await (const value of this.find(query).collect()) {
             if (typeof value !== 'object' || value === null || Array.isArray(value)) continue
             const entry = Object.entries(value)[0]
             if (!entry) continue
-            const [_id, existing] = entry
+            const [id, existing] = entry
             try {
-                await this._authorize({
+                await this.authFylo._authorize({
                     action: 'doc:delete',
-                    collection,
-                    docId: _id,
+                    collection: this.collection,
+                    docId: id,
                     existing: /** @type {Record<string, any>} */ (existing)
                 })
             } catch (err) {
                 if (err instanceof FyloAuthError) continue
                 throw err
             }
-            promises.push(this.fylo.delDoc(collection, _id))
+            await this.authFylo.fylo.engine.deleteDocument(this.collection, id)
             count++
         }
-        await Promise.all(promises)
         return count
+    }
+    /** @param {TTIDValue} id */
+    async restore(id) {
+        await this.authFylo._authorize({
+            action: 'doc:update',
+            collection: this.collection,
+            docId: id
+        })
+        return await this.authFylo.fylo.engine.restoreDocument(this.collection, id)
+    }
+    async *export() {
+        await this.authFylo._authorize({ action: 'bulk:export', collection: this.collection })
+        for await (const doc of this.authFylo.fylo.engine.exportBulkData(this.collection))
+            if (await this.authFylo._isVisible(this.collection, doc)) yield doc
+    }
+    /** @param {URL} url @param {number | ImportBulkDataOptions} [limitOrOptions] */
+    async import(url, limitOrOptions) {
+        await this.authFylo._authorize({ action: 'bulk:import', collection: this.collection })
+        return await this.authFylo.fylo.importBulkData(this.collection, url, limitOrOptions)
     }
 }
 
@@ -1339,3 +1404,15 @@ async function filterEnvelope(self, collection, value) {
         ? value
         : undefined
 }
+
+/**
+ * A `Fylo` instance accessed through its collection-facade Proxy: real methods
+ * plus dynamic `fylo[collection]` access returning a `CollectionFacade`.
+ * @typedef {Fylo & { [collection: string]: CollectionFacade }} FyloCollections
+ */
+
+/**
+ * An RLS-scoped `AuthenticatedFylo` accessed through its collection-facade
+ * Proxy: real methods plus dynamic `scoped[collection]` access.
+ * @typedef {AuthenticatedFylo & { [collection: string]: AuthenticatedCollectionFacade }} AuthenticatedFyloCollections
+ */

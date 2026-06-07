@@ -1,0 +1,16 @@
+<section class="stats-strip" aria-label="Key facts">
+  <div class="stats-inner">
+    <loop :for="let stat of stats">
+      <div class="stat-item">
+        <div class="stat-value">
+          <logic :if="stat.accent">
+            <span class="accent">{stat.value}</span>
+          </logic><logic else="">
+            {stat.value}
+          </logic>
+        </div>
+        <div class="stat-label">{stat.label}</div>
+      </div>
+    </loop>
+  </div>
+</section>

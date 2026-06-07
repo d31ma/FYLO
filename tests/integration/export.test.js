@@ -9,25 +9,25 @@ let importedCount = 0
 const root = await createTestRoot('fylo-export-')
 const fylo = new Fylo(root)
 beforeAll(async () => {
-    await fylo.createCollection(POSTS)
+    await fylo[POSTS].create()
     try {
-        importedCount = await fylo.importBulkData(POSTS, new URL(postsURL), IMPORT_LIMIT)
+        importedCount = await fylo[POSTS].import(new URL(postsURL), IMPORT_LIMIT)
     } catch {}
 })
 afterAll(async () => {
-    await fylo.dropCollection(POSTS)
+    await fylo[POSTS].drop()
     await rm(root, { recursive: true, force: true })
 })
 describe('NO-SQL', () => {
     test('EXPORT count matches import', async () => {
         let exported = 0
-        for await (const _doc of fylo.exportBulkData(POSTS)) {
+        for await (const _doc of fylo[POSTS].export()) {
             exported++
         }
         expect(exported).toBe(importedCount)
     })
     test('EXPORT document shape', async () => {
-        for await (const doc of fylo.exportBulkData(POSTS)) {
+        for await (const doc of fylo[POSTS].export()) {
             expect(doc).toHaveProperty('title')
             expect(doc).toHaveProperty('userId')
             expect(doc).toHaveProperty('body')
@@ -35,7 +35,7 @@ describe('NO-SQL', () => {
         }
     })
     test('EXPORT all documents are valid posts', async () => {
-        for await (const doc of fylo.exportBulkData(POSTS)) {
+        for await (const doc of fylo[POSTS].export()) {
             expect(typeof doc.title).toBe('string')
             expect(typeof doc.userId).toBe('number')
             expect(doc.userId).toBeGreaterThan(0)

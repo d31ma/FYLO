@@ -1,0 +1,9 @@
+node_modules
+dist
+.env
+.DS_Store
+.bundle-lock
+.test-bundle-lock
+.test-bundle-ready
+.tmp-snapshots
+tests/visual/artifacts

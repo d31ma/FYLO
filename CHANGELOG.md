@@ -1,5 +1,26 @@
 # Changelog
 
+## 26.23.07 - 2026-06-07
+
+### Breaking Changes
+
+- **Method-first API removed**: `fylo.getDoc(c, id)`, `fylo.putData(c, data)`, `fylo.patchDoc`, `fylo.delDoc`, `fylo.findDocs`, `fylo.findDeletedDocs`, `fylo.restoreDoc`, `fylo.batchPutData`, `fylo.createCollection`, `fylo.dropCollection`, `fylo.rebuildCollection`, `fylo.inspectCollection`, `fylo.exportBulkData` (and their `static` forms) now throw a migration error. Use collection facades instead.
+- **`fylo.db.<collection>` accessor removed**: the constructor returns a collection-facade Proxy, so collections are accessed directly on the instance — `fylo.users.get(id)`, `fylo['users'].put(data)`. `const { db } = new Fylo(...)` is no longer valid; use `const db = new Fylo('/path')` (the instance is the db).
+- **`fylo.executeSQL(sql)` removed**: use the `` fylo.sql`...` `` template tag.
+- **Facade method names finalized**: `get`, `latest`, `find`, `findDeleted`, `put`, `batchPut`, `patch`, `patchMany`, `delete`, `deleteMany`, `restore`, `export`, `import`, `inspect`, `rebuild`, `create`, `drop`. (Previous facade exposed the old method-first names such as `getDoc`/`findDocs`.)
+- **Reserved collection names fail closed**: names that collide with FYLO internals or removed methods (`sql`, `as`, `db`, `ready`, `close`, `engine`, `cache`, `queue`, `getDoc`, `putData`, …) are rejected by `validateCollectionName` and cannot be created or addressed.
+
+### Changed
+
+- **`AuthenticatedFylo` (RLS via `fylo.as(auth)`) is collection-first**: returns a Proxy exposing the same facade methods (`scoped.posts.find(...)`); scoped SQL runs through the authorized facades, preserving every `doc:*` authorization and row-visibility check.
+- **Full JSDoc typing** across the facade API, CLI machine interface, HTTP gateway, and browser runtime; `tsc --noEmit` is clean. Factory helpers (`createFylo`, `createMachineFylo`, `fyloFor`) and the `fylo[collection]` access points are typed via a `FyloCollections` intersection.
+
+### Fixed
+
+- **Browser client**: `inspectCollection`/`rebuildCollection` now call the correct `FyloBrowser` methods (previously called non-existent `inspect`/`rebuild`); `get().onDelete()` no longer `yield*`s a `Promise`.
+- Removed a dead duplicate `batchPutData` implementation on the `Fylo` class.
+- README examples updated to the facade API (`db.users.patch`, `db.users.find`, `db.users.delete`, `db.posts.rebuild()`) and corrected the Quick Start construction (`const db = new Fylo('/path')`).
+
 ## 26.23.05 - 2026-06-05
 
 ### Added

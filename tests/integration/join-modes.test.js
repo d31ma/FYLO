@@ -8,16 +8,16 @@ const POSTS = 'jm-post'
 const root = await createTestRoot('fylo-join-')
 const fylo = new Fylo(root)
 beforeAll(async () => {
-    await Promise.all([fylo.createCollection(ALBUMS), fylo.createCollection(POSTS)])
+    await Promise.all([fylo[ALBUMS].create(), fylo[POSTS].create()])
     try {
         await Promise.all([
-            fylo.importBulkData(ALBUMS, new URL(albumURL), 100),
-            fylo.importBulkData(POSTS, new URL(postsURL), 100)
+            fylo[ALBUMS].import(new URL(albumURL), 100),
+            fylo[POSTS].import(new URL(postsURL), 100)
         ])
     } catch {}
 })
 afterAll(async () => {
-    await Promise.all([fylo.dropCollection(ALBUMS), fylo.dropCollection(POSTS)])
+    await Promise.all([fylo[ALBUMS].drop(), fylo[POSTS].drop()])
     await rm(root, { recursive: true, force: true })
 })
 describe('NO-SQL', async () => {
@@ -128,13 +128,13 @@ describe('NO-SQL', async () => {
 })
 describe('SQL', async () => {
     test('INNER JOIN', async () => {
-        const results = await fylo.executeSQL(
+        const results = await fylo._sql(
             `SELECT * FROM ${ALBUMS} INNER JOIN ${POSTS} ON userId = userId`
         )
         expect(Object.keys(results).length).toBeGreaterThan(0)
     })
     test('LEFT JOIN', async () => {
-        const results = await fylo.executeSQL(
+        const results = await fylo._sql(
             `SELECT * FROM ${ALBUMS} LEFT JOIN ${POSTS} ON userId = userId`
         )
         const docs = Object.values(results)
@@ -142,7 +142,7 @@ describe('SQL', async () => {
         expect(docs[0]).toHaveProperty('title')
     })
     test('RIGHT JOIN', async () => {
-        const results = await fylo.executeSQL(
+        const results = await fylo._sql(
             `SELECT * FROM ${ALBUMS} RIGHT JOIN ${POSTS} ON userId = userId`
         )
         const docs = Object.values(results)

@@ -13,13 +13,13 @@ const fylo = new Fylo(root)
 const originalStrict = Fylo.STRICT
 
 beforeAll(async () => {
-    await fylo.createCollection(COLLECTION)
+    await fylo[COLLECTION].create()
 })
 
 afterAll(async () => {
     Fylo.STRICT = originalStrict
     try {
-        await fylo.dropCollection(COLLECTION)
+        await fylo[COLLECTION].drop()
     } catch {}
     await rm(root, { recursive: true, force: true })
 })
@@ -29,13 +29,13 @@ describe('schema versioning', () => {
         // STRICT off → write bypasses validateAgainstHead, doc lands on disk
         // without _v field, simulating a legacy/pre-bump record.
         Fylo.STRICT = undefined
-        const id = await fylo.putData(COLLECTION, {
+        const id = await fylo[COLLECTION].put({
             id: 1,
             title: 'Hello World',
             body: 'first article'
         })
 
-        const latest = await fylo.getLatest(COLLECTION, id)
+        const latest = await fylo[COLLECTION].latest(id)
         const doc = latest[id]
         expect(doc).toBeDefined()
         expect(doc.title).toBe('Hello World')
@@ -47,14 +47,14 @@ describe('schema versioning', () => {
 
     test('strict write stamps _v=head and chex validates against head schema', async () => {
         Fylo.STRICT = '1'
-        const id = await fylo.putData(COLLECTION, {
+        const id = await fylo[COLLECTION].put({
             id: 2,
             title: 'Strict Insert',
             body: 'body',
             slug: 'strict-insert'
         })
 
-        const latest = await fylo.getLatest(COLLECTION, id)
+        const latest = await fylo[COLLECTION].latest(id)
         expect(latest[id]._v).toBe('v2')
         expect(latest[id].slug).toBe('strict-insert')
     })
@@ -63,7 +63,7 @@ describe('schema versioning', () => {
         Fylo.STRICT = '1'
         // v2 head requires `slug`; chex must reject a write missing it.
         await expect(
-            fylo.putData(COLLECTION, {
+            fylo[COLLECTION].put({
                 id: 99,
                 title: 'No Slug',
                 body: 'should fail'
@@ -73,7 +73,7 @@ describe('schema versioning', () => {
 
     test('findDocs upgrades pre-versioning docs in query results', async () => {
         const seen = []
-        for await (const result of fylo.findDocs(COLLECTION).collect()) {
+        for await (const result of fylo[COLLECTION].find().collect()) {
             const [, data] = Object.entries(result)[0]
             seen.push(data)
         }
@@ -87,7 +87,7 @@ describe('schema versioning', () => {
 
     test('patch self-heals legacy doc to head shape', async () => {
         Fylo.STRICT = undefined
-        const id = await fylo.putData(COLLECTION, {
+        const id = await fylo[COLLECTION].put({
             id: 3,
             title: 'Old Article',
             body: 'old body'
@@ -97,11 +97,12 @@ describe('schema versioning', () => {
         // then merged with the patch, then validated. The on-disk new version
         // should be head-shaped.
         Fylo.STRICT = '1'
-        const newId = await fylo.patchDoc(COLLECTION, {
-            [id]: { title: 'Updated Title', slug: 'updated-title' }
+        const newId = await fylo[COLLECTION].patch(id, {
+            title: 'Updated Title',
+            slug: 'updated-title'
         })
 
-        const latest = await fylo.getLatest(COLLECTION, newId)
+        const latest = await fylo[COLLECTION].latest(newId)
         expect(latest[newId]._v).toBe('v2')
         expect(latest[newId].title).toBe('Updated Title')
         expect(latest[newId].slug).toBe('updated-title')
@@ -113,7 +114,7 @@ describe('schema versioning', () => {
         // array. STRICT off so it is stored as-is (validateAgainstHead would
         // otherwise re-stamp with the head label).
         Fylo.STRICT = undefined
-        const id = await fylo.putData(COLLECTION, {
+        const id = await fylo[COLLECTION].put({
             id: 4,
             title: 'From the future',
             body: 'tomorrow',
@@ -121,7 +122,7 @@ describe('schema versioning', () => {
             _v: 'v99'
         })
 
-        await expect(fylo.getLatest(COLLECTION, id)).rejects.toThrow(/unknown version/)
+        await expect(fylo[COLLECTION].latest(id)).rejects.toThrow(/unknown version/)
     })
 
     test('FYLO schemas reject arrays of objects even when CHEX supports them', async () => {

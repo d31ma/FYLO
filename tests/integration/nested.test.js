@@ -9,28 +9,28 @@ let sampleId
 const root = await createTestRoot('fylo-nested-')
 const fylo = new Fylo(root)
 beforeAll(async () => {
-    await fylo.createCollection(USERS)
+    await fylo[USERS].create()
     try {
-        insertedCount = await fylo.importBulkData(USERS, new URL(usersURL))
+        insertedCount = await fylo[USERS].import(new URL(usersURL))
     } catch {}
-    for await (const data of fylo.findDocs(USERS, { $limit: 1, $onlyIds: true }).collect()) {
+    for await (const data of fylo[USERS].find({ $limit: 1, $onlyIds: true }).collect()) {
         sampleId = data
     }
 })
 afterAll(async () => {
-    await fylo.dropCollection(USERS)
+    await fylo[USERS].drop()
     await rm(root, { recursive: true, force: true })
 })
 describe('NO-SQL', async () => {
     test('SELECT ALL — nested documents are returned', async () => {
         let results = {}
-        for await (const data of fylo.findDocs(USERS).collect()) {
+        for await (const data of fylo[USERS].find().collect()) {
             results = { ...results, ...data }
         }
         expect(Object.keys(results).length).toBe(insertedCount)
     })
     test('GET ONE — top-level fields are reconstructed correctly', async () => {
-        const result = await fylo.getDoc(USERS, sampleId).once()
+        const result = await fylo[USERS].get(sampleId).once()
         const user = result[sampleId]
         expect(user).toBeDefined()
         expect(typeof user.name).toBe('string')
@@ -38,7 +38,7 @@ describe('NO-SQL', async () => {
         expect(typeof user.phone).toBe('string')
     })
     test('GET ONE — first-level nested object is reconstructed correctly', async () => {
-        const result = await fylo.getDoc(USERS, sampleId).once()
+        const result = await fylo[USERS].get(sampleId).once()
         const user = result[sampleId]
         expect(user.address).toBeDefined()
         expect(typeof user.address.city).toBe('string')
@@ -46,14 +46,14 @@ describe('NO-SQL', async () => {
         expect(typeof user.address.zipcode).toBe('string')
     })
     test('GET ONE — deeply nested object is reconstructed correctly', async () => {
-        const result = await fylo.getDoc(USERS, sampleId).once()
+        const result = await fylo[USERS].get(sampleId).once()
         const user = result[sampleId]
         expect(user.address.geo).toBeDefined()
         expect(typeof user.address.geo.lat).toBe('number')
         expect(typeof user.address.geo.lng).toBe('number')
     })
     test('GET ONE — second nested object is reconstructed correctly', async () => {
-        const result = await fylo.getDoc(USERS, sampleId).once()
+        const result = await fylo[USERS].get(sampleId).once()
         const user = result[sampleId]
         expect(user.company).toBeDefined()
         expect(typeof user.company.name).toBe('string')
@@ -61,7 +61,7 @@ describe('NO-SQL', async () => {
         expect(typeof user.company.bs).toBe('string')
     })
     test('SELECT — nested values are not corrupted across documents', async () => {
-        for await (const data of fylo.findDocs(USERS).collect()) {
+        for await (const data of fylo[USERS].find().collect()) {
             const [, user] = Object.entries(data)[0]
             expect(user.address).toBeDefined()
             expect(user.address.geo).toBeDefined()
@@ -71,7 +71,7 @@ describe('NO-SQL', async () => {
     })
     test('$select — returns only requested top-level fields', async () => {
         let results = {}
-        for await (const data of fylo.findDocs(USERS, { $select: ['name', 'email'] }).collect()) {
+        for await (const data of fylo[USERS].find({ $select: ['name', 'email'] }).collect()) {
             results = { ...results, ...data }
         }
         const users = Object.values(results)
@@ -79,14 +79,12 @@ describe('NO-SQL', async () => {
         expect(onlyNameAndEmail).toBe(true)
     })
     test('$eq on nested string field — query by city', async () => {
-        const result = await fylo.getDoc(USERS, sampleId).once()
+        const result = await fylo[USERS].get(sampleId).once()
         const targetCity = result[sampleId].address.city
         let results = {}
-        for await (const data of fylo
-            .findDocs(USERS, {
-                $ops: [{ ['address/city']: { $eq: targetCity } }]
-            })
-            .collect()) {
+        for await (const data of fylo[USERS].find({
+            $ops: [{ ['address/city']: { $eq: targetCity } }]
+        }).collect()) {
             results = { ...results, ...data }
         }
         const matchingUsers = Object.values(results)
@@ -97,9 +95,9 @@ describe('NO-SQL', async () => {
 })
 describe('SQL — dot notation', async () => {
     test('WHERE with dot notation — first-level nested field', async () => {
-        const result = await fylo.getDoc(USERS, sampleId).once()
+        const result = await fylo[USERS].get(sampleId).once()
         const targetCity = result[sampleId].address.city
-        const results = await fylo.executeSQL(
+        const results = await fylo._sql(
             `SELECT * FROM ${USERS} WHERE address.city = '${targetCity}'`
         )
         const users = Object.values(results)
@@ -108,9 +106,9 @@ describe('SQL — dot notation', async () => {
         expect(users.length).toBeGreaterThan(0)
     })
     test('WHERE with dot notation — deeply nested field', async () => {
-        const result = await fylo.getDoc(USERS, sampleId).once()
+        const result = await fylo[USERS].get(sampleId).once()
         const targetLat = result[sampleId].address.geo.lat
-        const results = await fylo.executeSQL(
+        const results = await fylo._sql(
             `SELECT * FROM ${USERS} WHERE address.geo.lat = '${targetLat}'`
         )
         const users = Object.values(results)
@@ -119,9 +117,9 @@ describe('SQL — dot notation', async () => {
         expect(users.length).toBeGreaterThan(0)
     })
     test('WHERE with dot notation — second nested object', async () => {
-        const result = await fylo.getDoc(USERS, sampleId).once()
+        const result = await fylo[USERS].get(sampleId).once()
         const targetCompany = result[sampleId].company.name
-        const results = await fylo.executeSQL(
+        const results = await fylo._sql(
             `SELECT * FROM ${USERS} WHERE company.name = '${targetCompany}'`
         )
         const users = Object.values(results)
@@ -130,9 +128,9 @@ describe('SQL — dot notation', async () => {
         expect(users.length).toBeGreaterThan(0)
     })
     test('SELECT with dot notation in WHERE — partial field selection', async () => {
-        const result = await fylo.getDoc(USERS, sampleId).once()
+        const result = await fylo[USERS].get(sampleId).once()
         const targetCity = result[sampleId].address.city
-        const results = await fylo.executeSQL(
+        const results = await fylo._sql(
             `SELECT name, email FROM ${USERS} WHERE address.city = '${targetCity}'`
         )
         const users = Object.values(results)

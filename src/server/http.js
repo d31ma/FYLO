@@ -73,7 +73,7 @@ export function createFyloHttpHandler(options) {
                 if (!isRecord(body) || typeof body.sql !== 'string') {
                     throw statusError(400, 'SQL request body must include a string "sql" field')
                 }
-                const result = await (await fyloFor(context)).executeSQL(body.sql)
+                const result = await (await fyloFor(context))._sql(body.sql)
                 return jsonResponse({ ok: true, result }, 200, normalized)
             }
             const route = parseCollectionRoute(url.pathname)
@@ -129,11 +129,11 @@ async function handleCollectionRoute(context, route) {
     if (!route.id && context.request.method === 'POST') {
         const body = await readJsonBody(context.request, options.maxBodyBytes)
         if (!isRecord(body)) throw statusError(400, 'Document body must be a JSON object')
-        const id = await fylo.putData(route.collection, body)
+        const id = await fylo[route.collection].put(body)
         return jsonResponse({ ok: true, result: { id } }, 201, options)
     }
     if (route.id && context.request.method === 'GET') {
-        const result = await fylo.getDoc(route.collection, route.id).once()
+        const result = await fylo[route.collection].get(route.id).once()
         if (Object.keys(result).length === 0) {
             return jsonResponse(
                 { ok: false, error: { message: 'Document not found' } },
@@ -144,7 +144,7 @@ async function handleCollectionRoute(context, route) {
         return jsonResponse({ ok: true, result }, 200, options)
     }
     if (route.id && context.request.method === 'PATCH') {
-        const current = await fylo.getDoc(route.collection, route.id).once()
+        const current = await fylo[route.collection].get(route.id).once()
         if (Object.keys(current).length === 0) {
             return jsonResponse(
                 { ok: false, error: { message: 'Document not found' } },
@@ -154,11 +154,11 @@ async function handleCollectionRoute(context, route) {
         }
         const body = await readJsonBody(context.request, options.maxBodyBytes)
         if (!isRecord(body)) throw statusError(400, 'Patch body must be a JSON object')
-        const id = await fylo.patchDoc(route.collection, { [route.id]: body })
+        const id = await fylo[route.collection].patch(route.id, body)
         return jsonResponse({ ok: true, result: { id } }, 200, options)
     }
     if (route.id && context.request.method === 'DELETE') {
-        await fylo.delDoc(route.collection, route.id)
+        await fylo[route.collection].delete(route.id)
         return jsonResponse({ ok: true, result: { deleted: true, id: route.id } }, 200, options)
     }
     return jsonResponse({ ok: false, error: { message: 'Method not allowed' } }, 405, options)
@@ -166,12 +166,16 @@ async function handleCollectionRoute(context, route) {
 
 /**
  * @param {FyloHttpContext} context
- * @returns {Promise<Fylo>}
+ * @returns {Promise<import('../api/fylo.js').FyloCollections>}
  */
 async function fyloFor(context) {
-    return new Fylo(await resolveRoot(context), {
-        ...(context.branch ? { versioning: { resolve: false } } : {})
-    })
+    return /** @type {import('../api/fylo.js').FyloCollections} */ (
+        /** @type {unknown} */ (
+            new Fylo(await resolveRoot(context), {
+                ...(context.branch ? { versioning: { resolve: false } } : {})
+            })
+        )
+    )
 }
 
 /**
@@ -197,7 +201,7 @@ async function machineOverridesFor(context) {
 }
 
 /**
- * @param {Fylo} fylo
+ * @param {import('../api/fylo.js').FyloCollections} fylo
  * @param {string} collection
  * @param {Record<string, any>} query
  * @returns {Promise<Record<string, any> | string[]>}
@@ -205,7 +209,7 @@ async function machineOverridesFor(context) {
 async function collectFindDocs(fylo, collection, query) {
     /** @type {Record<string, any> | string[]} */
     let docs = query.$onlyIds ? [] : {}
-    for await (const value of fylo.findDocs(collection, query).collect()) {
+    for await (const value of fylo[collection].find(query).collect()) {
         if (value === undefined) continue
         if (typeof value === 'object' && value !== null) {
             docs = /** @type {{ appendGroup(target: any, value: any): any }} */ (

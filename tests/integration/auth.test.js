@@ -21,18 +21,18 @@ describe('auth policy wrapper', () => {
         const scoped = fylo.as({ subjectId: 'user-1', tenantId: 'tenant-a', roles: ['writer'] })
         const collection = 'auth-allowed'
 
-        await scoped.createCollection(collection)
-        const id = await scoped.putData(collection, {
+        await scoped[collection].create()
+        const id = await scoped[collection].put({
             tenantId: 'tenant-a',
             title: 'Allowed'
         })
 
-        const doc = await scoped.getDoc(collection, id).once()
+        const doc = await scoped[collection].get(id).once()
         expect(doc[id].title).toBe('Allowed')
 
         const results = {}
-        for await (const value of scoped
-            .findDocs(collection, {
+        for await (const value of scoped[collection]
+            .find({
                 $ops: [{ tenantId: { $eq: 'tenant-a' } }]
             })
             .collect()) {
@@ -40,27 +40,27 @@ describe('auth policy wrapper', () => {
         }
         expect(results[id].title).toBe('Allowed')
 
-        const nextId = await scoped.patchDoc(collection, { [id]: { title: 'Updated' } })
+        const nextId = await scoped[collection].patch(id, { title: 'Updated' })
         expect(nextId).toBe(id)
 
         let exported = 0
-        for await (const _doc of scoped.exportBulkData(collection)) exported++
+        for await (const _doc of scoped[collection].export()) exported++
         expect(exported).toBe(1)
 
-        await expect(scoped.delDoc(collection, nextId)).rejects.toBeInstanceOf(FyloAuthError)
+        await expect(scoped[collection].delete(nextId)).rejects.toBeInstanceOf(FyloAuthError)
 
-        await fylo.dropCollection(collection)
+        await fylo[collection].drop()
     })
 
     test('denied reads do not touch storage', async () => {
         const fylo = new Fylo(root, { rls: true })
         const collection = 'auth-denied'
-        await fylo.createCollection(collection)
-        const id = await fylo.putData(collection, { title: 'Private' })
+        await fylo[collection].create()
+        const id = await fylo[collection].put({ title: 'Private' })
         const scoped = fylo.as({ subjectId: 'blocked-user' })
 
-        await expect(scoped.getDoc(collection, id).once()).rejects.toBeInstanceOf(FyloAuthError)
+        await expect(scoped[collection].get(id).once()).rejects.toBeInstanceOf(FyloAuthError)
 
-        await fylo.dropCollection(collection)
+        await fylo[collection].drop()
     })
 })

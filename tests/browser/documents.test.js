@@ -7,8 +7,8 @@ describe('BrowserDocuments through BrowserCore', () => {
     test('uses FYLO per-document layout and keeps active document bodies pure', async () => {
         const fs = createMemoryFilesystem()
         const fylo = new BrowserCore({ fs, root: '/' })
-        await fylo.createCollection('users')
-        const id = await fylo.putData('users', { name: 'Ada', role: 'admin' })
+        await fylo['users'].create()
+        const id = await fylo['users'].put({ name: 'Ada', role: 'admin' })
         const path = `/.collections/users/docs/${id.slice(0, 2)}/${id}.json`
 
         expect(await fs.readText(path)).toBe('{"name":"Ada","role":"admin"}')
@@ -20,8 +20,8 @@ describe('BrowserDocuments through BrowserCore', () => {
         const fylo = new BrowserCore({ fs, root: '/' })
         const id = /** @type {string} */ (TTID.generate())
 
-        await fylo.putData('users', { [id]: { name: 'Grace' } })
-        await fylo.delDoc('users', id)
+        await fylo['users'].put({ [id]: { name: 'Grace' } })
+        await fylo['users'].delete(id)
 
         const livePath = `/.collections/users/docs/${id.slice(0, 2)}/${id}.json`
         const deletedPath = `/.collections/users/.deleted/${id.slice(0, 2)}/${id}.json`
@@ -30,7 +30,7 @@ describe('BrowserDocuments through BrowserCore', () => {
         expect(tombstone).toMatchObject({ name: 'Grace' })
         expect(tombstone._deletedAt).toBeNumber()
 
-        await fylo.restoreDoc('users', id)
+        await fylo['users'].restore(id)
         expect(await fs.exists(deletedPath)).toBe(false)
         expect(await fs.readText(livePath)).toBe('{"name":"Grace"}')
     })
@@ -38,23 +38,23 @@ describe('BrowserDocuments through BrowserCore', () => {
     test('rejects malformed JSON document text on read', async () => {
         const fs = createMemoryFilesystem()
         const fylo = new BrowserCore({ fs, root: '/' })
-        const id = await fylo.putData('users', { name: 'Ada' })
+        const id = await fylo['users'].put({ name: 'Ada' })
         const path = `/.collections/users/docs/${id.slice(0, 2)}/${id}.json`
 
         await fs.writeText(path, '{"name":@}')
 
-        await expect(fylo.getDoc('users', id).once()).rejects.toThrow()
+        await expect(fylo['users'].get(id).once()).rejects.toThrow()
     })
 
     test('rejects non-object JSON document bodies', async () => {
         const fs = createMemoryFilesystem()
         const fylo = new BrowserCore({ fs, root: '/' })
-        const id = await fylo.putData('users', { name: 'Ada' })
+        const id = await fylo['users'].put({ name: 'Ada' })
         const path = `/.collections/users/docs/${id.slice(0, 2)}/${id}.json`
 
         await fs.writeText(path, '["not","a","document"]')
 
-        await expect(fylo.getDoc('users', id).once()).rejects.toThrow(
+        await expect(fylo['users'].get(id).once()).rejects.toThrow(
             'FYLO document body must be a JSON object'
         )
     })

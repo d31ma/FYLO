@@ -32,14 +32,12 @@ describe('sync hooks', () => {
         })
 
         const collection = 'sync-posts'
-        await fylo.createCollection(collection)
+        await fylo[collection].create()
 
-        const id = await fylo.putData(collection, { title: 'Hello sync' })
-        const nextId = await fylo.patchDoc(collection, {
-            [id]: { title: 'Hello sync 2' }
-        })
-        await fylo.delDoc(collection, nextId)
-        await fylo.restoreDoc(collection, id)
+        const id = await fylo[collection].put({ title: 'Hello sync' })
+        const nextId = await fylo[collection].patch(id, { title: 'Hello sync 2' })
+        await fylo[collection].delete(nextId)
+        await fylo[collection].restore(id)
         const deletedPath = path.join(
             root,
             '.collections',
@@ -123,13 +121,13 @@ describe('sync hooks', () => {
         })
 
         const collection = 'worm-sync-posts'
-        await fylo.createCollection(collection)
+        await fylo[collection].create()
 
-        const id = await fylo.putData(collection, { title: 'Hello worm sync' })
-        await expect(fylo.patchDoc(collection, { [id]: { title: 'changed' } })).rejects.toThrow(
+        const id = await fylo[collection].put({ title: 'Hello worm sync' })
+        await expect(fylo[collection].patch(id, { title: 'changed' })).rejects.toThrow(
             'Update is not allowed in WORM mode'
         )
-        await expect(fylo.delDoc(collection, id)).rejects.toThrow(
+        await expect(fylo[collection].delete(id)).rejects.toThrow(
             'Delete is not allowed in WORM mode'
         )
 
@@ -172,9 +170,9 @@ describe('sync hooks', () => {
             }
         })
 
-        await fylo.createCollection('fire-posts')
+        await fylo['fire-posts'].create()
 
-        const putPromise = fylo.putData('fire-posts', { title: 'Fast local write' })
+        const putPromise = fylo['fire-posts'].put({ title: 'Fast local write' })
         await started.promise
 
         const state = await Promise.race([
@@ -201,14 +199,14 @@ describe('sync hooks', () => {
             }
         })
 
-        await fylo.createCollection('error-posts')
+        await fylo['error-posts'].create()
 
         await expect(
-            fylo.putData('error-posts', { title: 'Still written locally' })
+            fylo['error-posts'].put({ title: 'Still written locally' })
         ).rejects.toBeInstanceOf(FyloSyncError)
 
         expect(failedDocId).toBeDefined()
-        const stored = await fylo.getDoc('error-posts', failedDocId).once()
+        const stored = await fylo['error-posts'].get(failedDocId).once()
         expect(stored[failedDocId]).toEqual({ title: 'Still written locally' })
     })
 })

@@ -1,0 +1,803 @@
+<section class="doc-section" id="getting-started">
+  <div class="doc-badge">Tutorial 1</div>
+  <h1 class="doc-h1">Getting Started with FYLO</h1>
+  <p class="doc-lead">Set up your first FYLO instance, create a collection, and write your first document — all in under two minutes.</p>
+
+  <h3 class="doc-h3">Step 1: Install FYLO</h3>
+  <p class="doc-p">Add the package to your Bun project:</p>
+  <div class="doc-code-wrap">
+    <div class="doc-code-bar"><span class="doc-code-lang">Shell</span><button class="doc-code-copy" onclick="copySnippet('t1s1')">Copy</button></div>
+    <div class="doc-code-body" id="t1s1">bun add @d31ma/fylo</div>
+  </div>
+
+  <h3 class="doc-h3">Step 2: Configure the root</h3>
+  <p class="doc-p">Set the filesystem root where FYLO stores all data. Use an environment variable or pass it to the constructor:</p>
+  <div class="doc-code-wrap">
+    <div class="doc-code-bar"><span class="doc-code-lang">.env</span><button class="doc-code-copy" onclick="copySnippet('t1s2')">Copy</button></div>
+    <div class="doc-code-body" id="t1s2">FYLO_ROOT=./data</div>
+  </div>
+
+  <h3 class="doc-h3">Step 3: Import and initialize</h3>
+  <div class="doc-code-wrap">
+    <div class="doc-code-bar"><span class="doc-code-lang">app.js</span><button class="doc-code-copy" onclick="copySnippet('t1s3')">Copy</button></div>
+    <div class="doc-code-body" id="t1s3">import Fylo from '@d31ma/fylo'
+
+const fylo = new Fylo('./data')</div>
+  </div>
+
+  <h3 class="doc-h3">Step 4: Create a collection and insert a document</h3>
+  <div class="doc-code-wrap">
+    <div class="doc-code-bar"><span class="doc-code-lang">app.js</span><button class="doc-code-copy" onclick="copySnippet('t1s4')">Copy</button></div>
+    <div class="doc-code-body" id="t1s4">await fylo.users.create()
+
+const userId = await fylo.users.put({! '\x7b' }
+  name: 'Ada Lovelace',
+  email: 'ada@example.com',
+  role: 'admin',
+  tags: ['engineering', 'platform']
+{! '\x7d' })
+
+console.log('Created user:', userId)</div>
+  </div>
+
+  <h3 class="doc-h3">Step 5: Read it back</h3>
+  <div class="doc-code-wrap">
+    <div class="doc-code-bar"><span class="doc-code-lang">app.js</span><button class="doc-code-copy" onclick="copySnippet('t1s5')">Copy</button></div>
+    <div class="doc-code-body" id="t1s5">const user = await fylo.users.get(userId).once()
+console.log(user)
+// {! '\x7b' } name: 'Ada Lovelace', email: 'ada@example.com', role: 'admin', ... {! '\x7d' }</div>
+  </div>
+
+  <div class="doc-note"><strong>What just happened?</strong> FYLO created a <span class="ic">./data/.collections/users/</span> directory with your document stored as a JSON file and an index file for fast queries.</div>
+</section>
+
+<!-- ── Tutorial 2: Document CRUD ──────────────────────────────── -->
+<section class="doc-section" id="crud">
+  <div class="doc-badge">Tutorial 2</div>
+  <h2 class="doc-h2">Document CRUD Operations</h2>
+  <p class="doc-lead">Master the full lifecycle: create, read, update, delete, and restore documents.</p>
+
+  <h3 class="doc-h3">Create (Insert) Documents</h3>
+  <p class="doc-p">Use <span class="ic">put()</span> for single inserts or <span class="ic">batchPut()</span> for bulk writes. Every document gets a TTID (time-ordered ID) automatically:</p>
+  <div class="doc-code-wrap">
+    <div class="doc-code-bar"><span class="doc-code-lang">Create</span><button class="doc-code-copy" onclick="copySnippet('t2s1')">Copy</button></div>
+    <div class="doc-code-body" id="t2s1">// Single insert
+const id = await fylo.users.put({! '\x7b' } name: 'Alice' {! '\x7d' })
+
+// Batch insert
+const ids = await fylo.users.batchPut([
+  {! '\x7b' } name: 'Bob' {! '\x7d' },
+  {! '\x7b' } name: 'Charlie' {! '\x7d' }
+])</div>
+  </div>
+
+  <h3 class="doc-h3">Read Documents</h3>
+  <p class="doc-p"><span class="ic">get()</span> fetches by ID. <span class="ic">find()</span> queries with operators. <span class="ic">latest()</span> returns the most recent insert:</p>
+  <div class="doc-code-wrap">
+    <div class="doc-code-bar"><span class="doc-code-lang">Read</span><button class="doc-code-copy" onclick="copySnippet('t2s2')">Copy</button></div>
+    <div class="doc-code-body" id="t2s2">// By ID
+const doc = await fylo.users.get(id).once()
+
+// Query (returns an async iterable)
+for await (const doc of fylo.users.find({! '\x7b' }
+  $ops: [{! '\x7b' } role: {! '\x7b' } $eq: 'admin' {! '\x7d' } {! '\x7d' }]
+{! '\x7d' }).collect()) {! '\x7b' }
+  console.log(doc)
+{! '\x7d' }
+
+// Most recent
+const latest = await fylo.users.latest()</div>
+  </div>
+
+  <h3 class="doc-h3">Update Documents</h3>
+  <p class="doc-p"><span class="ic">patch()</span> merges partial updates into one document. <span class="ic">patchMany()</span> applies a patch to every document matching a query:</p>
+  <div class="doc-code-wrap">
+    <div class="doc-code-bar"><span class="doc-code-lang">Update</span><button class="doc-code-copy" onclick="copySnippet('t2s3')">Copy</button></div>
+    <div class="doc-code-body" id="t2s3">// Patch one
+await fylo.users.patch(id, {! '\x7b' } role: 'superadmin' {! '\x7d' })
+
+// Patch many
+const count = await fylo.users.patchMany(
+  {! '\x7b' } $ops: [{! '\x7b' } role: {! '\x7b' } $eq: 'admin' {! '\x7d' } {! '\x7d' }] {! '\x7d' },
+  {! '\x7b' } role: 'superadmin' {! '\x7d' }
+)
+console.log(`Updated ${! '\x7b' }count{! '\x7d' } documents`)</div>
+  </div>
+
+  <h3 class="doc-h3">Delete Documents</h3>
+  <p class="doc-p">Documents are soft-deleted by default — moved to a <span class="ic">.deleted/</span> directory as read-only. You can restore them:</p>
+  <div class="doc-code-wrap">
+    <div class="doc-code-bar"><span class="doc-code-lang">Delete & Restore</span><button class="doc-code-copy" onclick="copySnippet('t2s4')">Copy</button></div>
+    <div class="doc-code-body" id="t2s4">// Soft delete
+await fylo.users.delete(id)
+
+// Batch delete by query
+const count = await fylo.users.deleteMany({! '\x7b' }
+  $ops: [{! '\x7b' } status: {! '\x7b' } $eq: 'inactive' {! '\x7d' } {! '\x7d' }]
+{! '\x7d' })
+
+// Find deleted docs
+const deleted = await fylo.users.findDeleted()
+
+// Restore a deleted document
+await fylo.users.restore(id)</div>
+  </div>
+</section>
+
+<!-- ── Tutorial 3: SQL Querying ───────────────────────────────── -->
+<section class="doc-section" id="sql-querying">
+  <div class="doc-badge">Tutorial 3</div>
+  <h2 class="doc-h2">SQL Querying</h2>
+  <p class="doc-lead">FYLO parses a SQL dialect into collection operations. Use the <span class="ic">fylo.sql</span> template tag for type-safe, interpolated queries.</p>
+
+  <h3 class="doc-h3">DDL: Create and Drop Collections</h3>
+  <div class="doc-code-wrap">
+    <div class="doc-code-bar"><span class="doc-code-lang">SQL</span><button class="doc-code-copy" onclick="copySnippet('t3s1')">Copy</button></div>
+    <div class="doc-code-body" id="t3s1">await fylo.posts.create()
+await fylo.sql`DROP TABLE posts`</div>
+  </div>
+
+  <h3 class="doc-h3">DML: Insert, Select, Update, Delete</h3>
+  <div class="doc-code-wrap">
+    <div class="doc-code-bar"><span class="doc-code-lang">SQL</span><button class="doc-code-copy" onclick="copySnippet('t3s2')">Copy</button></div>
+    <div class="doc-code-body" id="t3s2">// Insert
+await fylo.sql`INSERT INTO posts VALUES {! '\x7b' } "title": "Hello", "published": true {! '\x7d' }`
+
+// Select with WHERE
+const posts = await fylo.sql`SELECT * FROM posts WHERE published = true LIMIT 10`
+
+// Update
+await fylo.sql`UPDATE posts SET published = false WHERE title = "Hello"`
+
+// Delete
+await fylo.sql`DELETE FROM posts WHERE published = false`</div>
+  </div>
+
+  <h3 class="doc-h3">SQL Template Tag (Recommended)</h3>
+  <p class="doc-p">Use <span class="ic">fylo.sql</span> for cleaner, interpolation-safe queries:</p>
+  <div class="doc-code-wrap">
+    <div class="doc-code-bar"><span class="doc-code-lang">Template Tag</span><button class="doc-code-copy" onclick="copySnippet('t3s3')">Copy</button></div>
+    <div class="doc-code-body" id="t3s3">const minAge = 18
+const role = 'admin'
+
+const results = await fylo.sql`
+  SELECT * FROM users
+  WHERE age > ${! '\x7b' }minAge{! '\x7d' }
+  AND role = ${! '\x7b' }role{! '\x7d' }
+  LIMIT 50
+`</div>
+  </div>
+
+  <h3 class="doc-h3">Joins</h3>
+  <div class="doc-code-wrap">
+    <div class="doc-code-bar"><span class="doc-code-lang">Joins</span><button class="doc-code-copy" onclick="copySnippet('t3s4')">Copy</button></div>
+    <div class="doc-code-body" id="t3s4">// SQL join
+const results = await fylo.sql`
+  SELECT * FROM posts
+  JOIN users ON posts.userId = users.id
+  WHERE posts.published = true
+`
+
+// Programmatic join
+const joined = await fylo.joinDocs({! '\x7b' }
+  $leftCollection: 'posts',
+  $rightCollection: 'users',
+  $mode: 'inner',
+  $on: {! '\x7b' } userId: {! '\x7b' } $eq: 'id' {! '\x7d' } {! '\x7d' }
+{! '\x7d' })</div>
+  </div>
+</section>
+
+<!-- ── Tutorial 4: NoSQL Operators ────────────────────────────── -->
+<section class="doc-section" id="nosql-operators">
+  <div class="doc-badge">Tutorial 4</div>
+  <h2 class="doc-h2">NoSQL Query Operators</h2>
+  <p class="doc-lead">FYLO's typed query surface supports comparison, range, pattern, and array operators across object fields.</p>
+
+  <h3 class="doc-h3">Comparison Operators</h3>
+  <div class="doc-code-wrap">
+    <div class="doc-code-bar"><span class="doc-code-lang">Operators</span><button class="doc-code-copy" onclick="copySnippet('t4s1')">Copy</button></div>
+    <div class="doc-code-body" id="t4s1">// Exact match
+{! '\x7b' } $ops: [{! '\x7b' } status: {! '\x7b' } $eq: 'active' {! '\x7d' } {! '\x7d' }] {! '\x7d' }
+
+// Not equal
+{! '\x7b' } $ops: [{! '\x7b' } status: {! '\x7b' } $ne: 'deleted' {! '\x7d' } {! '\x7d' }] {! '\x7d' }
+
+// Greater than / Less than
+{! '\x7b' } $ops: [{! '\x7b' } age: {! '\x7b' } $gte: 18, $lte: 65 {! '\x7d' } {! '\x7d' }] {! '\x7d' }</div>
+  </div>
+
+  <h3 class="doc-h3">String Matching</h3>
+  <div class="doc-code-wrap">
+    <div class="doc-code-bar"><span class="doc-code-lang">String Ops</span><button class="doc-code-copy" onclick="copySnippet('t4s2')">Copy</button></div>
+    <div class="doc-code-body" id="t4s2">// LIKE pattern matching
+{! '\x7b' } $ops: [{! '\x7b' } name: {! '\x7b' } $like: 'Ada%' {! '\x7d' } {! '\x7d' }] {! '\x7d' }
+
+// Array contains
+{! '\x7b' } $ops: [{! '\x7b' } tags: {! '\x7b' } $contains: 'engineering' {! '\x7d' } {! '\x7d' }] {! '\x7d' }</div>
+  </div>
+
+  <h3 class="doc-h3">Timestamp Filters</h3>
+  <div class="doc-code-wrap">
+    <div class="doc-code-bar"><span class="doc-code-lang">Timestamps</span><button class="doc-code-copy" onclick="copySnippet('t4s3')">Copy</button></div>
+    <div class="doc-code-body" id="t4s3">// Filter by creation time
+{! '\x7b' } $created: {! '\x7b' } $gte: '2026-01-01T00:00:00Z' {! '\x7d' } {! '\x7d' }
+
+// Filter by last update time
+{! '\x7b' } $updated: {! '\x7b' } $lte: '2026-06-01T00:00:00Z' {! '\x7d' } {! '\x7d' }</div>
+  </div>
+
+  <h3 class="doc-h3">Combining Multiple Conditions</h3>
+  <div class="doc-code-wrap">
+    <div class="doc-code-bar"><span class="doc-code-lang">Combined</span><button class="doc-code-copy" onclick="copySnippet('t4s4')">Copy</button></div>
+    <div class="doc-code-body" id="t4s4">const results = await fylo.users.find({! '\x7b' }
+  $ops: [
+    {! '\x7b' } role: {! '\x7b' } $eq: 'admin' {! '\x7d' } {! '\x7d' },
+    {! '\x7b' } lastLogin: {! '\x7b' } $gte: '2026-01-01T00:00:00Z' {! '\x7d' } {! '\x7d' },
+    {! '\x7b' } tags: {! '\x7b' } $contains: 'platform' {! '\x7d' } {! '\x7d' }
+  ]
+{! '\x7d' }).collect()</div>
+  </div>
+</section>
+
+<!-- ── Tutorial 5: Realtime Listeners ─────────────────────────── -->
+<section class="doc-section" id="realtime-listeners">
+  <div class="doc-badge">Tutorial 5</div>
+  <h2 class="doc-h2">Realtime Listeners</h2>
+  <p class="doc-lead">Subscribe to live document changes and query results using FYLO's append-only event journal.</p>
+
+  <h3 class="doc-h3">Live Query Results</h3>
+  <p class="doc-p">Iterate a query and receive new matching documents as they arrive:</p>
+  <div class="doc-code-wrap">
+    <div class="doc-code-bar"><span class="doc-code-lang">Live Query</span><button class="doc-code-copy" onclick="copySnippet('t5s1')">Copy</button></div>
+    <div class="doc-code-body" id="t5s1">for await (const doc of fylo.users.find({! '\x7b' }
+  $ops: [{! '\x7b' } role: {! '\x7b' } $eq: 'admin' {! '\x7d' } {! '\x7d' }]
+{! '\x7d' })) {! '\x7b' }
+  console.log('Admin user:', doc.name)
+  // Runs for each existing match, then waits for new inserts
+{! '\x7d' }</div>
+  </div>
+
+  <h3 class="doc-h3">Watch a Single Document</h3>
+  <div class="doc-code-wrap">
+    <div class="doc-code-bar"><span class="doc-code-lang">Doc Watch</span><button class="doc-code-copy" onclick="copySnippet('t5s2')">Copy</button></div>
+    <div class="doc-code-body" id="t5s2">// Listen for updates
+for await (const doc of fylo.users.get(userId)) {! '\x7b' }
+  console.log('Updated:', doc)
+{! '\x7d' }
+
+// Listen for deletion
+for await (const deletedId of fylo.users.get(userId).onDelete()) {! '\x7b' }
+  console.log('Deleted:', deletedId)
+{! '\x7d' }</div>
+  </div>
+
+  <div class="doc-note"><strong>How it works.</strong> Each collection has an append-only <span class="ic">events/&lt;collection&gt;.ndjson</span> journal. Listeners tail this file, making subscriptions lightweight and crash-safe.</div>
+</section>
+
+<!-- ── Tutorial 6: Sync Hooks ─────────────────────────────────── -->
+<section class="doc-section" id="sync-hooks">
+  <div class="doc-badge">Tutorial 6</div>
+  <h2 class="doc-h2">Sync Hooks for Replication</h2>
+  <p class="doc-lead">Mirror your local FYLO root to S3, GCS, or any backend using <span class="ic">onWrite</span> and <span class="ic">onDelete</span> hooks.</p>
+
+  <h3 class="doc-h3">Step 1: Create an S3 client</h3>
+  <div class="doc-code-wrap">
+    <div class="doc-code-bar"><span class="doc-code-lang">S3 Setup</span><button class="doc-code-copy" onclick="copySnippet('t6s1')">Copy</button></div>
+    <div class="doc-code-body" id="t6s1">const s3 = new Bun.S3Client({! '\x7b' }
+  accessKeyId: process.env.S3_ACCESS_KEY,
+  secretAccessKey: process.env.S3_SECRET_KEY,
+  bucket: 'my-fylo-bucket',
+  region: 'us-east-1'
+{! '\x7d' })</div>
+  </div>
+
+  <h3 class="doc-h3">Step 2: Configure sync hooks</h3>
+  <div class="doc-code-wrap">
+    <div class="doc-code-bar"><span class="doc-code-lang">Hooks</span><button class="doc-code-copy" onclick="copySnippet('t6s2')">Copy</button></div>
+    <div class="doc-code-body" id="t6s2">const fylo = new Fylo('/mnt/fylo', {! '\x7b' }
+  syncMode: 'await-sync',  // or 'fire-and-forget'
+  sync: {! '\x7b' }
+    async onWrite(event) {! '\x7b' }
+      const file = Bun.file(event.path)
+      await s3.putObject({! '\x7b' }
+        key: `${! '\x7b' }event.collection{! '\x7d' }/${! '\x7b' }event.docId{! '\x7d' }.json`,
+        body: await file.arrayBuffer()
+      {! '\x7d' })
+    {! '\x7d' },
+    async onDelete(event) {! '\x7b' }
+      await s3.deleteObject({! '\x7b' }
+        key: `${! '\x7b' }event.collection{! '\x7d' }/${! '\x7b' }event.docId{! '\x7d' }.json`
+      {! '\x7d' })
+    {! '\x7d' }
+  {! '\x7d' }
+{! '\x7d' })</div>
+  </div>
+
+  <h3 class="doc-h3">Step 3: Choose your sync mode</h3>
+  <div class="doc-table-wrap">
+    <table class="doc-table">
+      <thead><tr><th>Mode</th><th>Behavior</th><th>Use When</th></tr></thead>
+      <tbody>
+        <tr><td>await-sync</td><td>Waits for hook, throws on failure</td><td>Durability matters more than latency</td></tr>
+        <tr><td>fire-and-forget</td><td>Commits locally, runs hook in background</td><td>Latency matters more than guaranteed sync</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="doc-warn"><strong>Error handling.</strong> When <span class="ic">await-sync</span> fails after a successful local write, FYLO throws <span class="ic">FyloSyncError</span> with the collection, doc ID, path, and operation. Your app should catch and retry.</div>
+</section>
+
+<!-- ── Tutorial 7: Schema Validation ───────────────────────────── -->
+<section class="doc-section" id="schema-validation">
+  <div class="doc-badge">Tutorial 7</div>
+  <h2 class="doc-h2">Schema Validation</h2>
+  <p class="doc-lead">Define JSON schemas for your collections and enforce them at write time with CHEX validation.</p>
+
+  <h3 class="doc-h3">Step 1: Create a schema file</h3>
+  <div class="doc-code-wrap">
+    <div class="doc-code-bar"><span class="doc-code-lang">schemas/users.json</span><button class="doc-code-copy" onclick="copySnippet('t7s1')">Copy</button></div>
+    <div class="doc-code-body" id="t7s1">{! '\x7b' }
+  "name": "^[A-Za-z .'-]+$",
+  "email?": "^[^@]+@[^@]+$",
+  "age?": "^[0-9]+$",
+  "role": "^(admin|user|viewer)$",
+  "tags": ["^[a-z][a-z0-9-]*$"]
+{! '\x7d' }</div>
+  </div>
+
+  <h3 class="doc-h3">Step 2: Enable validation</h3>
+  <div class="doc-code-wrap">
+    <div class="doc-code-bar"><span class="doc-code-lang">.env</span><button class="doc-code-copy" onclick="copySnippet('t7s2')">Copy</button></div>
+    <div class="doc-code-body" id="t7s2">FYLO_SCHEMA=./schemas
+FYLO_STRICT=1</div>
+  </div>
+
+  <h3 class="doc-h3">Step 3: Validated writes</h3>
+  <div class="doc-code-wrap">
+    <div class="doc-code-bar"><span class="doc-code-lang">Validation</span><button class="doc-code-copy" onclick="copySnippet('t7s3')">Copy</button></div>
+    <div class="doc-code-body" id="t7s3">// Succeeds — passes schema validation
+await fylo.users.put({! '\x7b' }
+  name: 'Ada',
+  email: 'ada@example.com',
+  age: 28,
+  role: 'admin'
+{! '\x7d' })
+
+// Throws — 'role' value is not in the allowed set
+await fylo.users.put({! '\x7b' }
+  name: 'Bob',
+  email: 'bob@example.com',
+  role: 'superuser'
+{! '\x7d' })</div>
+  </div>
+</section>
+
+<!-- ── Tutorial 8: Field Encryption ────────────────────────────── -->
+<section class="doc-section" id="field-encryption">
+  <div class="doc-badge">Tutorial 8</div>
+  <h2 class="doc-h2">Field-Level Encryption</h2>
+  <p class="doc-lead">Encrypt sensitive fields at rest with AES-256-GCM. FYLO keeps plaintext out of document files, indexes, and event journals.</p>
+
+  <h3 class="doc-h3">Step 1: Mark encrypted fields in your schema</h3>
+  <div class="doc-code-wrap">
+    <div class="doc-code-bar"><span class="doc-code-lang">schemas/users.json</span><button class="doc-code-copy" onclick="copySnippet('t8s1')">Copy</button></div>
+    <div class="doc-code-body" id="t8s1">{! '\x7b' }
+  "$encrypted": ["ssn", "accessToken"],
+  "name": "^[A-Za-z .'-]+$",
+  "ssn?": "^[0-9]{3}-[0-9]{2}-[0-9]{4}$",
+  "accessToken?": "^.+$"
+{! '\x7d' }</div>
+  </div>
+
+  <h3 class="doc-h3">Step 2: Set encryption credentials</h3>
+  <div class="doc-code-wrap">
+    <div class="doc-code-bar"><span class="doc-code-lang">.env</span><button class="doc-code-copy" onclick="copySnippet('t8s2')">Copy</button></div>
+    <div class="doc-code-body" id="t8s2">FYLO_ENCRYPTION_KEY=a-very-long-encryption-key-at-least-32-chars
+FYLO_CIPHER_SALT=unique-random-salt-per-deployment</div>
+  </div>
+
+  <h3 class="doc-h3">Step 3: Write and query encrypted data</h3>
+  <div class="doc-code-wrap">
+    <div class="doc-code-bar"><span class="doc-code-lang">Encryption</span><button class="doc-code-copy" onclick="copySnippet('t8s3')">Copy</button></div>
+    <div class="doc-code-body" id="t8s3">// Write — FYLO encrypts ssn and accessToken automatically
+await fylo.users.put({! '\x7b' }
+  name: 'Ada',
+  ssn: '123-45-6789',
+  accessToken: 'sk-secret-token'
+{! '\x7d' })
+
+// Exact-match queries still work via HMAC blind indexes
+const user = await fylo.users.find({! '\x7b' }
+  $ops: [{! '\x7b' } ssn: {! '\x7b' } $eq: '123-45-6789' {! '\x7d' } {! '\x7d' }]
+{! '\x7d' }).collect()</div>
+  </div>
+
+  <div class="doc-note"><strong>Blind indexes.</strong> FYLO creates HMAC-based blind indexes for encrypted fields, enabling exact-match (<span class="ic">$eq</span>) queries without revealing plaintext. Range queries on encrypted fields are not supported.</div>
+</section>
+
+<!-- ── Tutorial 9: Row-Level Security ──────────────────────────── -->
+<section class="doc-section" id="row-level-security">
+  <div class="doc-badge">Tutorial 9</div>
+  <h2 class="doc-h2">Row-Level Security (RLS)</h2>
+  <p class="doc-lead">Scope database access per user with authorization policies. Authenticate outside FYLO, authorize inside.</p>
+
+  <h3 class="doc-h3">Step 1: Configure the root client with an auth policy</h3>
+  <div class="doc-code-wrap">
+    <div class="doc-code-bar"><span class="doc-code-lang">RLS Setup</span><button class="doc-code-copy" onclick="copySnippet('t9s1')">Copy</button></div>
+    <div class="doc-code-body" id="t9s1">const fylo = new Fylo('/mnt/fylo', {! '\x7b' }
+  auth: {! '\x7b' }
+    authorize({! '\x7b' } auth, action, collection, data {! '\x7d' }) {! '\x7b' }
+      // Admins can do anything
+      if (auth.roles?.includes('admin')) return true
+
+      // Only allow access to the user's own tenant
+      if (collection === 'posts') {! '\x7b' }
+        if (action === 'doc:create') return data?.tenantId === auth.tenantId
+        return action === 'doc:read' || action === 'doc:find'
+      {! '\x7d' }
+
+      return false // Deny everything else
+    {! '\x7d' }
+  {! '\x7d' }
+{! '\x7d' })</div>
+  </div>
+
+  <h3 class="doc-h3">Step 2: Create scoped clients per request</h3>
+  <div class="doc-code-wrap">
+    <div class="doc-code-bar"><span class="doc-code-lang">Scoped Client</span><button class="doc-code-copy" onclick="copySnippet('t9s2')">Copy</button></div>
+    <div class="doc-code-body" id="t9s2">async function handleRequest(request) {! '\x7b' }
+  // Authenticate the user (your app logic)
+  const user = await verifySession(request)
+
+  // Create a scoped FYLO client for this user
+  const db = fylo.as({! '\x7b' }
+    subjectId: user.id,
+    tenantId: user.tenantId,
+    roles: user.roles
+  {! '\x7d' })
+
+  // All operations through 'db' are now authorized
+  const posts = await db.posts.find({! '\x7b' }
+    $ops: [{! '\x7b' } tenantId: {! '\x7b' } $eq: user.tenantId {! '\x7d' } {! '\x7d' }]
+  {! '\x7d' }).collect()
+
+  return Response.json(posts)
+{! '\x7d' }</div>
+  </div>
+
+  <h3 class="doc-h3">Available Actions</h3>
+  <div class="doc-table-wrap">
+    <table class="doc-table">
+      <thead><tr><th>Action</th><th>Triggered By</th></tr></thead>
+      <tbody>
+        <tr><td>collection:create</td><td>create()</td></tr>
+        <tr><td>doc:read</td><td>get(), latest()</td></tr>
+        <tr><td>doc:find</td><td>find()</td></tr>
+        <tr><td>doc:create</td><td>put()</td></tr>
+        <tr><td>doc:update</td><td>patch(), patchMany()</td></tr>
+        <tr><td>doc:delete</td><td>delete(), deleteMany()</td></tr>
+        <tr><td>bulk:import / bulk:export</td><td>importBulkData() / exportBulkData()</td></tr>
+        <tr><td>sql:execute</td><td>sql(), fylo.sql</td></tr>
+        <tr><td>join:execute</td><td>joinDocs()</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="doc-warn"><strong>Fail-closed.</strong> Scoped clients deny all operations unless a matching rule explicitly returns <span class="ic">true</span>. There is no default allow.</div>
+</section>
+
+<!-- ── Tutorial 10: Version Control ────────────────────────────── -->
+<section class="doc-section" id="version-control">
+  <div class="doc-badge">Tutorial 10</div>
+  <h2 class="doc-h2">Document Version Control</h2>
+  <p class="doc-lead">Branch, commit, diff, and merge your document store — just like Git, but for your collections.</p>
+
+  <h3 class="doc-h3">Step 1: Create a branch and commit</h3>
+  <div class="doc-code-wrap">
+    <div class="doc-code-bar"><span class="doc-code-lang">Shell</span><button class="doc-code-copy" onclick="copySnippet('t10s1')">Copy</button></div>
+    <div class="doc-code-body" id="t10s1"># Create a feature branch
+fylo branch feature-redesign
+
+# Make changes to your documents...
+# Then snapshot the state
+fylo commit -m "Redesigned user profiles with new schema"</div>
+  </div>
+
+  <h3 class="doc-h3">Step 2: Inspect history and diffs</h3>
+  <div class="doc-code-wrap">
+    <div class="doc-code-bar"><span class="doc-code-lang">Shell</span><button class="doc-code-copy" onclick="copySnippet('t10s2')">Copy</button></div>
+    <div class="doc-code-body" id="t10s2"># View commit log
+fylo log
+
+# See what changed since main
+fylo diff main
+
+# Check current branch status
+fylo status</div>
+  </div>
+
+  <h3 class="doc-h3">Step 3: Merge branches</h3>
+  <div class="doc-code-wrap">
+    <div class="doc-code-bar"><span class="doc-code-lang">Shell</span><button class="doc-code-copy" onclick="copySnippet('t10s3')">Copy</button></div>
+    <div class="doc-code-body" id="t10s3"># Switch to main
+fylo checkout main
+
+# Merge the feature branch
+fylo merge feature-redesign
+
+# Restore a previous commit if needed
+fylo restore-commit abc123def</div>
+  </div>
+
+  <h3 class="doc-h3">Programmatic API</h3>
+  <div class="doc-code-wrap">
+    <div class="doc-code-bar"><span class="doc-code-lang">API</span><button class="doc-code-copy" onclick="copySnippet('t10s4')">Copy</button></div>
+    <div class="doc-code-body" id="t10s4">const vcs = fylo.createVersionRepository()
+
+await vcs.branch('experiment')
+await vcs.commit('Snapshot before migration')
+const history = await vcs.log()
+await vcs.merge('experiment', {! '\x7b' } mode: 'three-way' {! '\x7d' })</div>
+  </div>
+
+  <div class="doc-note"><strong>Storage.</strong> Commits are full-collection snapshots under <span class="ic">.fylo-vcs/</span>. Branches use hidden working trees for isolation. Three-way merge compares document payloads via SHA-256 hashes.</div>
+</section>
+
+<!-- ── Tutorial 11: Browser Runtime ────────────────────────────── -->
+<section class="doc-section" id="browser-runtime">
+  <div class="doc-badge">Tutorial 11</div>
+  <h2 class="doc-h2">Browser Runtime</h2>
+  <p class="doc-lead">Run the full FYLO engine in the browser using OPFS. Build local-first apps with document storage, indexing, and realtime events — no server required.</p>
+
+  <h3 class="doc-h3">Step 1: Import the browser client</h3>
+  <div class="doc-code-wrap">
+    <div class="doc-code-bar"><span class="doc-code-lang">app.js</span><button class="doc-code-copy" onclick="copySnippet('t11s1')">Copy</button></div>
+    <div class="doc-code-body" id="t11s1">import {! '\x7b' } createBrowserClient {! '\x7d' } from '@d31ma/fylo/browser'
+
+const fylo = createBrowserClient({! '\x7b' }
+  namespace: 'my-app'  // Isolates data per app
+{! '\x7d' })</div>
+  </div>
+
+  <h3 class="doc-h3">Step 2: Use the same API as the server</h3>
+  <div class="doc-code-wrap">
+    <div class="doc-code-bar"><span class="doc-code-lang">Browser</span><button class="doc-code-copy" onclick="copySnippet('t11s2')">Copy</button></div>
+    <div class="doc-code-body" id="t11s2">await fylo.tasks.create()
+
+await fylo.tasks.put({! '\x7b' }
+  title: 'Finish the report',
+  done: false,
+  dueDate: '2026-06-15'
+{! '\x7d' })
+
+// Live query — updates when new tasks are added
+for await (const task of fylo.tasks.find({! '\x7b' }
+  $ops: [{! '\x7b' } done: {! '\x7b' } $eq: false {! '\x7d' } {! '\x7d' }]
+{! '\x7d' })) {! '\x7b' }
+  renderTask(task)
+{! '\x7d' }</div>
+  </div>
+
+  <h3 class="doc-h3">Worker Architecture</h3>
+  <p class="doc-p">FYLO automatically selects the best backend for your browser:</p>
+  <div class="doc-table-wrap">
+    <table class="doc-table">
+      <thead><tr><th>Backend</th><th>When Used</th></tr></thead>
+      <tbody>
+        <tr><td>SharedWorker</td><td>Preferred — shared state across tabs</td></tr>
+        <tr><td>DedicatedWorker</td><td>Fallback when SharedWorker is unavailable</td></tr>
+        <tr><td>In-Process</td><td>Final fallback — runs in the main thread</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="doc-note"><strong>Data stays local.</strong> All browser data lives in OPFS (Origin Private File System). Nothing leaves the browser unless you explicitly sync it.</div>
+</section>
+
+<!-- ── Tutorial 12: HTTP Gateway ───────────────────────────────── -->
+<section class="doc-section" id="http-gateway">
+  <div class="doc-badge">Tutorial 12</div>
+  <h2 class="doc-h2">HTTP Gateway</h2>
+  <p class="doc-lead">Expose FYLO as a REST API. Embed it in your Bun app or run it standalone with the CLI.</p>
+
+  <h3 class="doc-h3">Option A: Embedded Server</h3>
+  <div class="doc-code-wrap">
+    <div class="doc-code-bar"><span class="doc-code-lang">Embedded</span><button class="doc-code-copy" onclick="copySnippet('t12s1')">Copy</button></div>
+    <div class="doc-code-body" id="t12s1">import {! '\x7b' } serveFyloHttp {! '\x7d' } from '@d31ma/fylo/server'
+
+serveFyloHttp({! '\x7b' }
+  root: '/mnt/fylo',
+  port: 3000,
+  auth: {! '\x7b' } bearer: 'my-secret-token' {! '\x7d' },
+  cors: {! '\x7b' } origin: 'https://myapp.com' {! '\x7d' }
+{! '\x7d' })</div>
+  </div>
+
+  <h3 class="doc-h3">Option B: Standalone CLI</h3>
+  <div class="doc-code-wrap">
+    <div class="doc-code-bar"><span class="doc-code-lang">Shell</span><button class="doc-code-copy" onclick="copySnippet('t12s2')">Copy</button></div>
+    <div class="doc-code-body" id="t12s2">fylo serve --root /mnt/fylo --port 3000</div>
+  </div>
+
+  <h3 class="doc-h3">REST Endpoints</h3>
+  <div class="doc-table-wrap">
+    <table class="doc-table">
+      <thead><tr><th>Method</th><th>Path</th><th>Purpose</th></tr></thead>
+      <tbody>
+        <tr><td>GET</td><td>/v1/health</td><td>Health check</td></tr>
+        <tr><td>GET</td><td>/v1/openapi.json</td><td>OpenAPI specification</td></tr>
+        <tr><td>GET</td><td>/v1/:collection</td><td>Query documents with URL filters</td></tr>
+        <tr><td>POST</td><td>/v1/:collection</td><td>Insert a document</td></tr>
+        <tr><td>GET</td><td>/v1/:collection/:id</td><td>Get a document by ID</td></tr>
+        <tr><td>PATCH</td><td>/v1/:collection/:id</td><td>Update a document</td></tr>
+        <tr><td>DELETE</td><td>/v1/:collection/:id</td><td>Delete a document</td></tr>
+        <tr><td>POST</td><td>/v1/sql</td><td>Execute a SQL query</td></tr>
+        <tr><td>POST</td><td>/v1/exec</td><td>Execute batch SQL statements</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="doc-h3">URL Filter Syntax</h3>
+  <div class="doc-code-wrap">
+    <div class="doc-code-bar"><span class="doc-code-lang">REST</span><button class="doc-code-copy" onclick="copySnippet('t12s3')">Copy</button></div>
+    <div class="doc-code-body" id="t12s3"># Filter: status = 'active' AND age >= 18
+GET /v1/users?status.eq=active&age.gte=18
+
+# Available operators: eq, ne, gt, gte, lt, lte, like, contains</div>
+  </div>
+</section>
+
+<!-- ── Tutorial 13: WORM Mode ──────────────────────────────────── -->
+<section class="doc-section" id="worm-mode">
+  <div class="doc-badge">Tutorial 13</div>
+  <h2 class="doc-h2">WORM Mode (Write-Once-Read-Many)</h2>
+  <p class="doc-lead">Create immutable, append-only collections for audit logs, financial records, and compliance-critical data.</p>
+
+  <h3 class="doc-h3">Enable WORM Mode</h3>
+  <div class="doc-code-wrap">
+    <div class="doc-code-bar"><span class="doc-code-lang">WORM Setup</span><button class="doc-code-copy" onclick="copySnippet('t13s1')">Copy</button></div>
+    <div class="doc-code-body" id="t13s1">const fylo = new Fylo('/mnt/fylo', {! '\x7b' }
+  worm: {! '\x7b' } mode: 'strict' {! '\x7d' }
+{! '\x7d' })</div>
+  </div>
+
+  <h3 class="doc-h3">What WORM Enforces</h3>
+  <div class="doc-code-wrap">
+    <div class="doc-code-bar"><span class="doc-code-lang">WORM Behavior</span><button class="doc-code-copy" onclick="copySnippet('t13s2')">Copy</button></div>
+    <div class="doc-code-body" id="t13s2">await fylo.ledger.create()
+
+// Allowed — initial write
+const id = await fylo.ledger.put({! '\x7b' }
+  amount: 100, currency: 'USD'
+{! '\x7d' })
+
+// Throws FyloWormMode — updates are rejected
+await fylo.ledger.patch(id, {! '\x7b' } amount: 200 {! '\x7d' })
+
+// Throws FyloWormMode — deletes are rejected
+await fylo.ledger.delete(id)
+
+// Throws FyloWormMode — can't drop a non-empty collection
+await fylo.ledger.drop()</div>
+  </div>
+
+  <p class="doc-p">Files are also set to read-only (<span class="ic">0444</span>) after write, providing an OS-level guard against accidental modification.</p>
+
+  <div class="doc-warn"><strong>Irreversible.</strong> Once written in strict WORM mode, a document cannot be updated or deleted. Plan your collection schemas accordingly — include version fields or use append-only patterns.</div>
+</section>
+
+<!-- ── Tutorial 14: Local Queue ────────────────────────────────── -->
+<section class="doc-section" id="local-queue">
+  <div class="doc-badge">Tutorial 14</div>
+  <h2 class="doc-h2">Local Queue</h2>
+  <p class="doc-lead">Use FYLO's built-in durable queue for async task processing, retries, and dead-letter handling — all on the local filesystem.</p>
+
+  <h3 class="doc-h3">Publish Messages</h3>
+  <div class="doc-code-wrap">
+    <div class="doc-code-bar"><span class="doc-code-lang">Publish</span><button class="doc-code-copy" onclick="copySnippet('t14s1')">Copy</button></div>
+    <div class="doc-code-body" id="t14s1">import {! '\x7b' } publish {! '\x7d' } from '@d31ma/fylo'
+
+await publish('email-queue', {! '\x7b' }
+  to: 'user@example.com',
+  subject: 'Welcome!',
+  body: 'Thanks for signing up.'
+{! '\x7d' })</div>
+  </div>
+
+  <h3 class="doc-h3">Consume Messages</h3>
+  <div class="doc-code-wrap">
+    <div class="doc-code-bar"><span class="doc-code-lang">Consume</span><button class="doc-code-copy" onclick="copySnippet('t14s2')">Copy</button></div>
+    <div class="doc-code-body" id="t14s2">import {! '\x7b' } consume, QueueMessageContext {! '\x7d' } from '@d31ma/fylo'
+
+await consume('email-queue', async (msg, ctx) => {! '\x7b' }
+  await sendEmail(msg.body)
+
+  // Acknowledge successful processing
+  await ctx.ack()
+{! '\x7d' })</div>
+  </div>
+
+  <h3 class="doc-h3">Retries and Dead Letters</h3>
+  <p class="doc-p">Failed messages are retried up to 3 times. After exhausting retries, they move to a dead-letter file for inspection:</p>
+  <div class="doc-code-wrap">
+    <div class="doc-code-bar"><span class="doc-code-lang">Retries</span><button class="doc-code-copy" onclick="copySnippet('t14s3')">Copy</button></div>
+    <div class="doc-code-body" id="t14s3">await consume('critical-queue', async (msg, ctx) => {! '\x7b' }
+  try {! '\x7b' }
+    await processMessage(msg.body)
+    await ctx.ack()
+  {! '\x7d' } catch (err) {! '\x7b' }
+    // ctx.retryCount tracks attempts (max 3)
+    if (ctx.retryCount < 3) {! '\x7b' }
+      await ctx.retry({! '\x7b' } delay: 5000 {! '\x7d' }) // retry after 5s
+    {! '\x7d' } else {! '\x7b' }
+      await ctx.deadLetter() // move to dead-letter
+    {! '\x7d' }
+  {! '\x7d' }
+{! '\x7d' })</div>
+  </div>
+
+  <div class="doc-note"><strong>Collection events.</strong> FYLO automatically mirrors collection writes to internal topics: <span class="ic">.insert</span> and <span class="ic">.delete</span> per collection. Subscribe to these for change-data-capture patterns.</div>
+</section>
+
+<!-- ── Tutorial 15: Query Caching ──────────────────────────────── -->
+<section class="doc-section" id="query-caching">
+  <div class="doc-badge">Tutorial 15</div>
+  <h2 class="doc-h2">Query Caching</h2>
+  <p class="doc-lead">Accelerate repeated queries with in-memory or Redis-backed caching. Choose a strategy that matches your consistency requirements.</p>
+
+  <h3 class="doc-h3">Enable Caching</h3>
+  <div class="doc-code-wrap">
+    <div class="doc-code-bar"><span class="doc-code-lang">Cache Setup</span><button class="doc-code-copy" onclick="copySnippet('t15s1')">Copy</button></div>
+    <div class="doc-code-body" id="t15s1">const fylo = new Fylo('/mnt/fylo', {! '\x7b' }
+  cache: {! '\x7b' }
+    backend: 'memory',       // or 'redis'
+    strategy: 'cache-aside',
+    ttl: 60_000,             // 1 minute
+    maxEntries: 10_000
+  {! '\x7d' }
+{! '\x7d' })</div>
+  </div>
+
+  <h3 class="doc-h3">Caching Strategies</h3>
+  <div class="doc-table-wrap">
+    <table class="doc-table">
+      <thead><tr><th>Strategy</th><th>Read</th><th>Write</th><th>Best For</th></tr></thead>
+      <tbody>
+        <tr><td>cache-aside</td><td>Check cache → fallback to store</td><td>Write to store → invalidate cache</td><td>Read-heavy workloads</td></tr>
+        <tr><td>read-through</td><td>Cache fetches from store on miss</td><td>Write to store → update cache</td><td>Simplified app logic</td></tr>
+        <tr><td>write-through</td><td>Always from cache</td><td>Write to cache → write to store</td><td>Strong consistency</td></tr>
+        <tr><td>write-around</td><td>Check cache → fallback to store</td><td>Write to store only (bypass cache)</td><td>Write-heavy workloads</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3 class="doc-h3">Stampede Protection</h3>
+  <p class="doc-p">When multiple requests hit the same uncached query simultaneously, FYLO deduplicates them — only one query runs against the store while others wait for the result:</p>
+  <div class="doc-code-wrap">
+    <div class="doc-code-bar"><span class="doc-code-lang">Stampede Protection</span><button class="doc-code-copy" onclick="copySnippet('t15s2')">Copy</button></div>
+    <div class="doc-code-body" id="t15s2">// No special code needed — built-in single-flight dedup
+// These three concurrent queries trigger only ONE store read
+const [a, b, c] = await Promise.all([
+  fylo.users.find(query).collect(),
+  fylo.users.find(query).collect(),
+  fylo.users.find(query).collect()
+])</div>
+  </div>
+
+  <h3 class="doc-h3">Redis Backend</h3>
+  <div class="doc-code-wrap">
+    <div class="doc-code-bar"><span class="doc-code-lang">Redis Cache</span><button class="doc-code-copy" onclick="copySnippet('t15s3')">Copy</button></div>
+    <div class="doc-code-body" id="t15s3">const fylo = new Fylo('/mnt/fylo', {! '\x7b' }
+  cache: {! '\x7b' }
+    backend: 'redis',
+    redisUrl: 'redis://localhost:6379',
+    strategy: 'cache-aside',
+    ttl: 300_000  // 5 minutes
+  {! '\x7d' }
+{! '\x7d' })</div>
+  </div>
+
+  <div class="doc-note"><strong>Cache invalidation.</strong> With <span class="ic">cache-aside</span> and <span class="ic">write-around</span>, FYLO automatically invalidates relevant cache entries when documents in the queried collection are created, updated, or deleted.</div>
+</section>
+

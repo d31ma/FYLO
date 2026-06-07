@@ -27,7 +27,7 @@ describe('cross-process collection index lock', () => {
         const fylo = new Fylo(root)
         /** @type {string[]} */
         const titles = []
-        for await (const data of fylo.findDocs(collection).collect()) {
+        for await (const data of fylo[collection].find().collect()) {
             for (const doc of Object.values(data)) {
                 titles.push(/** @type {any} */ (doc).title)
             }

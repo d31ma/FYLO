@@ -25,20 +25,20 @@ async function readTree(target) {
     return text
 }
 beforeAll(async () => {
-    await fylo.createCollection(COLLECTION)
+    await fylo[COLLECTION].create()
     await CipherMock.configure('test-secret-key')
     CipherMock.registerFields(COLLECTION, ['email', 'ssn', 'address'])
 })
 afterAll(async () => {
     CipherMock.reset()
     mock.restore()
-    await fylo.dropCollection(COLLECTION)
+    await fylo[COLLECTION].drop()
     await rm(root, { recursive: true, force: true })
 })
 describe('Encryption', () => {
     let docId
     test('PUT encrypted document', async () => {
-        docId = await fylo.putData(COLLECTION, {
+        docId = await fylo[COLLECTION].put({
             name: 'Alice',
             email: 'alice@example.com',
             ssn: '123-45-6789',
@@ -47,7 +47,7 @@ describe('Encryption', () => {
         expect(docId).toBeDefined()
     })
     test('GET decrypts fields transparently', async () => {
-        const result = await fylo.getDoc(COLLECTION, docId).once()
+        const result = await fylo[COLLECTION].get(docId).once()
         const doc = Object.values(result)[0]
         expect(doc.name).toBe('Alice')
         expect(doc.email).toBe('alice@example.com')
@@ -74,11 +74,9 @@ describe('Encryption', () => {
     })
     test('$eq query works on encrypted field', async () => {
         let found = false
-        for await (const data of fylo
-            .findDocs(COLLECTION, {
-                $ops: [{ email: { $eq: 'alice@example.com' } }]
-            })
-            .collect()) {
+        for await (const data of fylo[COLLECTION].find({
+            $ops: [{ email: { $eq: 'alice@example.com' } }]
+        }).collect()) {
             if (typeof data === 'object') {
                 const doc = Object.values(data)[0]
                 expect(doc.email).toBe('alice@example.com')
@@ -89,11 +87,9 @@ describe('Encryption', () => {
     })
     test('$ne throws on encrypted field', async () => {
         try {
-            const iter = fylo
-                .findDocs(COLLECTION, {
-                    $ops: [{ email: { $ne: 'bob@example.com' } }]
-                })
-                .collect()
+            const iter = fylo[COLLECTION].find({
+                $ops: [{ email: { $ne: 'bob@example.com' } }]
+            }).collect()
             await iter.next()
             expect(true).toBe(false)
         } catch (e) {
@@ -102,11 +98,9 @@ describe('Encryption', () => {
     })
     test('$gt throws on encrypted field', async () => {
         try {
-            const iter = fylo
-                .findDocs(COLLECTION, {
-                    $ops: [{ ssn: { $gt: 0 } }]
-                })
-                .collect()
+            const iter = fylo[COLLECTION].find({
+                $ops: [{ ssn: { $gt: 0 } }]
+            }).collect()
             await iter.next()
             expect(true).toBe(false)
         } catch (e) {
@@ -115,11 +109,9 @@ describe('Encryption', () => {
     })
     test('$like throws on encrypted field', async () => {
         try {
-            const iter = fylo
-                .findDocs(COLLECTION, {
-                    $ops: [{ email: { $like: '%@example.com' } }]
-                })
-                .collect()
+            const iter = fylo[COLLECTION].find({
+                $ops: [{ email: { $like: '%@example.com' } }]
+            }).collect()
             await iter.next()
             expect(true).toBe(false)
         } catch (e) {
@@ -128,11 +120,9 @@ describe('Encryption', () => {
     })
     test('non-encrypted fields remain queryable with all operators', async () => {
         let found = false
-        for await (const data of fylo
-            .findDocs(COLLECTION, {
-                $ops: [{ name: { $eq: 'Alice' } }]
-            })
-            .collect()) {
+        for await (const data of fylo[COLLECTION].find({
+            $ops: [{ name: { $eq: 'Alice' } }]
+        }).collect()) {
             if (typeof data === 'object') {
                 const doc = Object.values(data)[0]
                 expect(doc.name).toBe('Alice')
@@ -142,28 +132,24 @@ describe('Encryption', () => {
         expect(found).toBe(true)
     })
     test('nested encrypted field (address.city)', async () => {
-        const id = await fylo.putData(COLLECTION, {
+        const id = await fylo[COLLECTION].put({
             name: 'Bob',
             email: 'bob@example.com',
             ssn: '987-65-4321',
             age: 25,
             address: { city: 'Toronto', zip: 'M5V 2T6' }
         })
-        const result = await fylo.getDoc(COLLECTION, id).once()
+        const result = await fylo[COLLECTION].get(id).once()
         const doc = Object.values(result)[0]
         expect(doc.address.city).toBe('Toronto')
         expect(doc.address.zip).toBe('M5V 2T6')
     })
     test('UPDATE preserves encryption', async () => {
-        await fylo.patchDoc(COLLECTION, {
-            [docId]: { email: 'alice-new@example.com' }
-        })
+        await fylo[COLLECTION].patch(docId, { email: 'alice-new@example.com' })
         let found = false
-        for await (const data of fylo
-            .findDocs(COLLECTION, {
-                $ops: [{ email: { $eq: 'alice-new@example.com' } }]
-            })
-            .collect()) {
+        for await (const data of fylo[COLLECTION].find({
+            $ops: [{ email: { $eq: 'alice-new@example.com' } }]
+        }).collect()) {
             if (typeof data === 'object') {
                 const doc = Object.values(data)[0]
                 expect(doc.email).toBe('alice-new@example.com')
@@ -195,10 +181,10 @@ describe('Encryption', () => {
 
         try {
             const guardedFylo = new Fylo(root)
-            await guardedFylo.createCollection(collection)
-            await expect(
-                guardedFylo.putData(collection, { secret: 'do not store' })
-            ).rejects.toThrow('FYLO_ENCRYPTION_KEY')
+            await guardedFylo[collection].create()
+            await expect(guardedFylo[collection].put({ secret: 'do not store' })).rejects.toThrow(
+                'FYLO_ENCRYPTION_KEY'
+            )
         } finally {
             if (previousSchema === undefined) delete process.env.FYLO_SCHEMA
             else process.env.FYLO_SCHEMA = previousSchema

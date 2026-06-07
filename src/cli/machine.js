@@ -144,7 +144,7 @@ function normalizeWormOptions(worm) {
 /**
  * @param {MachineRequest} request
  * @param {MachineCliOverrides=} overrides
- * @returns {Fylo}
+ * @returns {import('../api/fylo.js').FyloCollections}
  */
 function createMachineFylo(request, overrides = {}) {
     const root = overrides.root ?? request.root
@@ -152,10 +152,14 @@ function createMachineFylo(request, overrides = {}) {
         overrides.worm === true
             ? /** @type {FyloWormOptions} */ ({ mode: 'strict' })
             : normalizeWormOptions(request.worm)
-    return new Fylo(path.resolve(root ?? Fylo.defaultRoot()), {
-        ...(worm ? { worm } : {}),
-        ...(overrides.versioning ? { versioning: overrides.versioning } : {})
-    })
+    return /** @type {import('../api/fylo.js').FyloCollections} */ (
+        /** @type {unknown} */ (
+            new Fylo(path.resolve(root ?? Fylo.defaultRoot()), {
+                ...(worm ? { worm } : {}),
+                ...(overrides.versioning ? { versioning: overrides.versioning } : {})
+            })
+        )
+    )
 }
 
 /**
@@ -168,7 +172,7 @@ function createMachineRepository(request, overrides = {}) {
 }
 
 /**
- * @param {Fylo} fylo
+ * @param {import('../api/fylo.js').FyloCollections} fylo
  * @param {string} collection
  * @param {Record<string, any>} query
  * @returns {Promise<Record<string, any> | string[]>}
@@ -176,7 +180,7 @@ function createMachineRepository(request, overrides = {}) {
 async function collectFindDocs(fylo, collection, query) {
     /** @type {Record<string, any> | string[]} */
     let docs = query.$onlyIds ? [] : {}
-    for await (const value of fylo.findDocs(collection, query).collect()) {
+    for await (const value of fylo[collection].find(query).collect()) {
         if (value === undefined) continue
         if (typeof value === 'object' && value !== null) {
             docs = /** @type {{ appendGroup(target: any, value: any): any }} */ (
@@ -190,7 +194,7 @@ async function collectFindDocs(fylo, collection, query) {
 }
 
 /**
- * @param {Fylo} fylo
+ * @param {import('../api/fylo.js').FyloCollections} fylo
  * @param {string} collection
  * @param {Record<string, any>} query
  * @returns {Promise<Record<string, any> | string[]>}
@@ -198,7 +202,7 @@ async function collectFindDocs(fylo, collection, query) {
 async function collectDeletedDocs(fylo, collection, query) {
     /** @type {Record<string, any> | string[]} */
     let docs = query.$onlyIds ? [] : {}
-    for await (const value of fylo.findDeletedDocs(collection, query).collect()) {
+    for await (const value of fylo[collection].findDeleted(query).collect()) {
         if (value === undefined) continue
         if (typeof value === 'object' && value !== null) {
             docs = /** @type {{ appendGroup(target: any, value: any): any }} */ (
@@ -258,28 +262,27 @@ export async function executeMachineOperation(request, overrides = {}) {
     const fylo = createMachineFylo(request, overrides)
     switch (request.op) {
         case 'executeSQL':
-            return await fylo.executeSQL(requireString(request, 'sql'))
+            return await fylo._sql(requireString(request, 'sql'))
         case 'createCollection': {
             const collection = requireString(request, 'collection')
-            await fylo.createCollection(collection)
+            await fylo[collection].create()
             return { collection }
         }
         case 'dropCollection': {
             const collection = requireString(request, 'collection')
-            await fylo.dropCollection(collection)
+            await fylo[collection].drop()
             return { collection }
         }
         case 'inspectCollection':
-            return await fylo.inspectCollection(requireString(request, 'collection'))
+            return await fylo[requireString(request, 'collection')].inspect()
         case 'rebuildCollection':
-            return await fylo.rebuildCollection(requireString(request, 'collection'))
+            return await fylo[requireString(request, 'collection')].rebuild()
         case 'getDoc':
-            return await fylo
-                .getDoc(requireString(request, 'collection'), requireString(request, 'id'))
+            return await fylo[requireString(request, 'collection')]
+                .get(requireString(request, 'id'))
                 .once()
         case 'getLatest':
-            return await fylo.getLatest(
-                requireString(request, 'collection'),
+            return await fylo[requireString(request, 'collection')].latest(
                 requireString(request, 'id'),
                 request.onlyId === true
             )
@@ -302,48 +305,39 @@ export async function executeMachineOperation(request, overrides = {}) {
                 )
             )
         case 'putData':
-            return await fylo.putData(
-                requireString(request, 'collection'),
+            return await fylo[requireString(request, 'collection')].put(
                 requireObject(request, 'data')
             )
         case 'batchPutData':
-            return await fylo.batchPutData(
-                requireString(request, 'collection'),
+            return await fylo[requireString(request, 'collection')].batchPut(
                 requireObjectArray(request, 'batch')
             )
         case 'patchDoc':
-            return await fylo.patchDoc(
-                requireString(request, 'collection'),
+            return await fylo[requireString(request, 'collection')].patch(
+                requireString(request, 'id'),
                 requireObject(request, 'newDoc'),
                 isRecord(request.oldDoc) ? request.oldDoc : {}
             )
         case 'patchDocs':
-            return await fylo.patchDocs(
-                requireString(request, 'collection'),
+            return await fylo[requireString(request, 'collection')].patchMany(
                 /** @type {import('../query/types.js').StoreUpdate<Record<string, any>>} */ (
                     requireObject(request, 'update')
                 )
             )
         case 'delDoc':
-            await fylo.delDoc(requireString(request, 'collection'), requireString(request, 'id'))
+            await fylo[requireString(request, 'collection')].delete(requireString(request, 'id'))
             return { deleted: true }
-        case 'restoreDoc': {
-            const id = await fylo.restoreDoc(
-                requireString(request, 'collection'),
-                requireString(request, 'id')
-            )
-            return { restored: true, id }
-        }
+        case 'restoreDoc':
+            await fylo[requireString(request, 'collection')].restore(requireString(request, 'id'))
+            return { restored: true, id: requireString(request, 'id') }
         case 'delDocs':
-            return await fylo.delDocs(
-                requireString(request, 'collection'),
+            return await fylo[requireString(request, 'collection')].deleteMany(
                 /** @type {import('../query/types.js').StoreDelete<Record<string, any>>} */ (
                     requireObject(request, 'delete')
                 )
             )
         case 'importBulkData':
-            return await fylo.importBulkData(
-                requireString(request, 'collection'),
+            return await fylo[requireString(request, 'collection')].import(
                 new URL(requireString(request, 'url')),
                 request.limitOrOptions
             )
