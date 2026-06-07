@@ -29,7 +29,6 @@ const RESERVED_NAMES = new Set([
     'joinDocs',
     'ready',
     'close',
-    'sql',
     '_sql'
 ])
 

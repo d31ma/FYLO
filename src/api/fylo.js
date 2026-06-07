@@ -849,7 +849,7 @@ export class CollectionFacade {
             try {
                 await this.fylo.executePatchDocDirect(
                     this.collection,
-                    { [docId]: update.$set ?? existing },
+                    { [docId]: update.$set },
                     { [docId]: /** @type {Record<string, any>} */ (existing) }
                 )
                 count++

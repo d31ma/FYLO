@@ -200,10 +200,7 @@ export class BrowserDirectCollection {
                 const doc = await this.once()
                 if (doc && typeof doc === 'object' && Object.keys(doc).length > 0) yield doc
             },
-            async *onDelete() {
-                await host.ready()
-                yield await host.request({ op: 'getDoc', collection, id, onlyId })
-            }
+            async *onDelete() {}
         }
     }
 
