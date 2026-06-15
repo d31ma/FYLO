@@ -161,6 +161,10 @@ describe('sync hooks', () => {
 
         const fylo = new Fylo(root, {
             syncMode: 'fire-and-forget',
+            // Isolate the sync behavior: auto-commit (on by default) awaits its
+            // own version-control work on every write, which is unrelated to
+            // whether the fire-and-forget sync hook blocks the local write.
+            versioning: { autoCommit: false },
             sync: {
                 onWrite: async () => {
                     writeStarted = true
@@ -175,9 +179,12 @@ describe('sync hooks', () => {
         const putPromise = fylo['fire-posts'].put({ title: 'Fast local write' })
         await started.promise
 
+        // The hook blocks forever (hookBlocker is released after this race), so a
+        // blocking sync would never let the put resolve. A generous bound keeps
+        // the assertion deterministic across fast and slow CI disks.
         const state = await Promise.race([
             putPromise.then(() => 'resolved'),
-            Bun.sleep(25).then(() => 'pending')
+            Bun.sleep(500).then(() => 'pending')
         ])
 
         expect(writeStarted).toBe(true)
