@@ -32,6 +32,7 @@ import '../core/extensions.js'
  * @typedef {import('../replication/sync.js').FyloSyncHooks<Record<string, any>>} FyloSyncHooks
  * @typedef {import('../replication/sync.js').FyloWriteSyncEvent<Record<string, any>>} FyloWriteSyncEvent
  * @typedef {import('../replication/sync.js').FyloDeleteSyncEvent} FyloDeleteSyncEvent
+ * @typedef {import('../replication/sync.js').FyloAutoCommitEvent} FyloAutoCommitEvent
  * @typedef {import('../replication/sync.js').FyloWormMode} FyloWormMode
  * @typedef {import('../replication/sync.js').FyloWormOptions} FyloWormOptions
  * @typedef {import('../observability/events.js').FyloEvent} FyloEvent
@@ -56,6 +57,53 @@ import '../core/extensions.js'
  * @typedef {import('../security/import-guard.js').ImportBulkDataOptions} ImportBulkDataOptions
  */
 
+/**
+ * @typedef {((data: Record<string, any>) => Promise<TTIDValue>) & {
+ *   batch(batch: Record<string, any>[]): Promise<TTIDValue[]>
+ * }} CollectionPut
+ * @typedef {((id: TTIDValue, patch: Record<string, any>, oldDoc?: Record<TTIDValue, Record<string, any>>) => Promise<TTIDValue>) & {
+ *   many(update: StoreUpdate): Promise<number>
+ * }} CollectionPatch
+ * @typedef {((id: TTIDValue) => Promise<void>) & {
+ *   many(query: StoreDelete): Promise<number>
+ * }} CollectionDelete
+ * @typedef {((query?: StoreQuery) => FindDocsResult) & {
+ *   deleted(query?: StoreQuery): DeletedDocsResult
+ * }} CollectionFind
+ */
+
+/**
+ * Thrown by `collection.put.batch` when one or more documents fail to write.
+ * Every item in the batch is still attempted; the error then carries the ids
+ * that were written and the per-item failures so callers can recover or retry
+ * the failed records instead of silently losing them.
+ */
+export class FyloBatchWriteError extends Error {
+    /** @type {'FYLO_BATCH_WRITE_FAILED'} */
+    code = 'FYLO_BATCH_WRITE_FAILED'
+    /** @type {string} */
+    collection
+    /** @type {TTIDValue[]} */
+    writtenIds
+    /** @type {Array<{ index: number, error: Error }>} */
+    failures
+    /**
+     * @param {string} collection
+     * @param {TTIDValue[]} writtenIds
+     * @param {Array<{ index: number, error: Error }>} failures
+     */
+    constructor(collection, writtenIds, failures) {
+        const total = writtenIds.length + failures.length
+        super(
+            `${failures.length} of ${total} documents failed to write to collection "${collection}"`
+        )
+        this.name = 'FyloBatchWriteError'
+        this.collection = collection
+        this.writtenIds = writtenIds
+        this.failures = failures
+    }
+}
+
 export default class Fylo {
     /** @type {string | undefined} */
     static LOGGING = process.env.FYLO_LOGGING
@@ -70,6 +118,10 @@ export default class Fylo {
     static loadedEncryption = new Set()
     /** @type {FilesystemEngine} */
     engine
+    /** @type {string} */
+    root
+    /** @type {string} */
+    repositoryRoot
     /** @type {boolean} */
     rlsEnabled
     /** @type {FyloEventHandler | undefined} */
@@ -82,12 +134,24 @@ export default class Fylo {
     startup
     /** @type {(strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown>} */
     sql
+    /** @type {NonNullable<FyloOptions['versioning']>} */
+    versioning
+    /** @type {Promise<void>} */
+    autoCommitLane = Promise.resolve()
+    /** @type {number} */
+    coalesceDepth = 0
+    /** @type {Array<Omit<FyloAutoCommitEvent, 'repositoryRoot'>> | null} */
+    coalesceChanges = null
     /**
      * @param {string} root
      * @param {FyloOptions} [options]
      */
     constructor(root, options = {}) {
-        root = Fylo.rootFromPath(root)
+        const requestedRoot = Fylo.rootFromPath(root)
+        const repositoryRoot = VersionRepository.resolveRepositoryRoot(
+            options.versioning?.repositoryRoot ?? requestedRoot
+        )
+        root = requestedRoot
         if (options.versioning?.resolve !== false) {
             root = VersionRepository.resolveActiveRoot(root)
         }
@@ -97,6 +161,9 @@ export default class Fylo {
             )
         }
         syncChexSchemaEnv()
+        this.root = root
+        this.repositoryRoot = repositoryRoot
+        this.versioning = options.versioning ?? {}
         this.rlsEnabled = options.rls === true
         this.onEvent = options.onEvent
         this.queue = options.queue ? new LocalQueue({ root }) : undefined
@@ -203,8 +270,7 @@ export default class Fylo {
                 return await new CollectionFacade(this, col).drop()
             case 'SELECT': {
                 const query = /** @type {StoreQuery} */ (Parser.parse(SQL))
-                if (SQL.includes('JOIN'))
-                    return await this.joinDocs(/** @type {StoreJoin} */ (query))
+                if (SQL.includes('JOIN')) return await this.join(/** @type {StoreJoin} */ (query))
                 const selectedCollection = query.$collection
                 delete query.$collection
                 /** @type {TTIDValue[] | Record<string, any>} */
@@ -232,13 +298,13 @@ export default class Fylo {
                 const update = /** @type {StoreUpdate} */ (Parser.parse(SQL))
                 const updateCol = update.$collection
                 delete update.$collection
-                return await new CollectionFacade(this, String(updateCol)).patchMany(update)
+                return await new CollectionFacade(this, String(updateCol)).patch.many(update)
             }
             case 'DELETE': {
                 const del = /** @type {StoreDelete} */ (Parser.parse(SQL))
                 const deleteCollection = del.$collection
                 delete del.$collection
-                return await new CollectionFacade(this, String(deleteCollection)).deleteMany(del)
+                return await new CollectionFacade(this, String(deleteCollection)).delete.many(del)
             }
             default:
                 throw new Error('Invalid Operation')
@@ -406,15 +472,15 @@ export default class Fylo {
             `fylo.findDocs('${collection}', query) has been removed. Use fylo['${collection}'].find(query) instead.`
         )
     }
-    /** @deprecated Use fylo[collection].findDeleted(query) instead */
+    /** @deprecated Use fylo[collection].find.deleted(query) instead */
     /** @param {string} collection */
     findDeletedDocs(collection) {
         throw new Error(
-            `fylo.findDeletedDocs('${collection}', query) has been removed. Use fylo['${collection}'].findDeleted(query) instead.`
+            `fylo.findDeletedDocs('${collection}', query) has been removed. Use fylo['${collection}'].find.deleted(query) instead.`
         )
     }
     /** @param {StoreJoin} join @returns {Promise<JoinDocsResult>} */
-    async joinDocs(join) {
+    async join(join) {
         await this.ready()
         return await this.engine.joinDocs(join)
     }
@@ -428,10 +494,12 @@ export default class Fylo {
     /** @param {string} collection @param {URL} url @param {number | ImportBulkDataOptions} [limitOrOptions] @returns {Promise<number>} */
     async importBulkData(collection, url, limitOrOptions) {
         await this.ready()
+        await this.engine.requireCollection(collection)
         const importOptions = normalizeImportOptions(limitOrOptions)
         const limit = importOptions.limit
         if (limit !== undefined && limit <= 0) return 0
-        let pin
+        /** @type {{ pinnedUrls: URL[], serverName: string } | null} */
+        let pin = null
         try {
             pin = await assertImportUrlAllowed(url, importOptions)
         } catch (err) {
@@ -452,13 +520,14 @@ export default class Fylo {
         /** @type {RequestInit & { tls?: { serverName?: string, checkServerIdentity?: Function } }} */
         const fetchInit = { redirect: 'manual' }
         if (pin) {
+            const { serverName } = pin
             fetchInit.headers = { Host: url.host }
             if (url.protocol === 'https:') {
                 fetchInit.tls = {
-                    serverName: pin.serverName,
+                    serverName,
                     /** @param {string} _hostname @param {import('node:tls').PeerCertificate} cert */
                     checkServerIdentity: (_hostname, cert) =>
-                        tlsCheckServerIdentity(pin.serverName, cert)
+                        tlsCheckServerIdentity(serverName, cert)
                 }
             }
         }
@@ -496,6 +565,7 @@ export default class Fylo {
         if (!response.headers.get('content-type')?.includes('application/json'))
             throw new Error('Response is not JSON')
         if (!response.body) throw new Error('Response body is empty')
+        const responseBody = response.body
         let count = 0
         let batchNum = 0
         /** @param {Record<string, any>[]} batch @returns {Promise<void>} */
@@ -508,7 +578,7 @@ export default class Fylo {
             if (!items.length) return
             batchNum++
             const start = Date.now()
-            await new CollectionFacade(this, collection).batchPut(items)
+            await new CollectionFacade(this, collection).put.batch(items)
             count += items.length
             if (count % 10000 === 0) console.log('Count:', count)
             if (Fylo.LOGGING) {
@@ -520,65 +590,72 @@ export default class Fylo {
                 )
             }
         }
-        let isJsonArray = null
-        const jsonArrayChunks = []
-        let jsonArrayLength = 0
-        let pending = new Uint8Array(0)
-        /** @type {Record<string, any>[]} */
-        let batch = []
-        let totalBytes = 0
-        for await (const chunk of /** @type {AsyncIterable<Uint8Array>} */ (
-            /** @type {unknown} */ (response.body)
-        )) {
-            totalBytes += chunk.length
-            if (totalBytes > importOptions.maxBytes)
-                throw new Error(`Import response exceeded ${importOptions.maxBytes} bytes`)
-            if (isJsonArray === null) isJsonArray = chunk[0] === 0x5b
-            if (isJsonArray) {
-                jsonArrayChunks.push(chunk)
-                jsonArrayLength += chunk.length
-                continue
-            }
-            const merged = new Uint8Array(pending.length + chunk.length)
-            merged.set(pending)
-            merged.set(chunk, pending.length)
-            const { values, read } = Bun.JSONL.parseChunk(merged)
-            pending = merged.subarray(read)
-            for (const item of values) {
-                batch.push(/** @type {Record<string, any>} */ (item))
-                if (batch.length === Fylo.MAX_CPUS) {
-                    await flush(batch)
-                    batch = []
-                    if (limit !== undefined && count >= limit) return count
+        // Coalesce the entire stream into one commit: each `flush` opens a
+        // nested coalesced scope that joins this outer one, so a multi-batch
+        // import records a single version-control entry instead of one per batch.
+        return await this.runCoalesced(async () => {
+            let isJsonArray = null
+            const jsonArrayChunks = []
+            let jsonArrayLength = 0
+            let pending = new Uint8Array(0)
+            /** @type {Record<string, any>[]} */
+            let batch = []
+            let totalBytes = 0
+            for await (const chunk of /** @type {AsyncIterable<Uint8Array>} */ (
+                /** @type {unknown} */ (responseBody)
+            )) {
+                totalBytes += chunk.length
+                if (totalBytes > importOptions.maxBytes)
+                    throw new Error(`Import response exceeded ${importOptions.maxBytes} bytes`)
+                if (isJsonArray === null) isJsonArray = chunk[0] === 0x5b
+                if (isJsonArray) {
+                    jsonArrayChunks.push(chunk)
+                    jsonArrayLength += chunk.length
+                    continue
+                }
+                const merged = new Uint8Array(pending.length + chunk.length)
+                merged.set(pending)
+                merged.set(chunk, pending.length)
+                const { values, read } = Bun.JSONL.parseChunk(merged)
+                pending = merged.subarray(read)
+                for (const item of values) {
+                    batch.push(/** @type {Record<string, any>} */ (item))
+                    if (batch.length === Fylo.MAX_CPUS) {
+                        await flush(batch)
+                        batch = []
+                        if (limit !== undefined && count >= limit) return count
+                    }
                 }
             }
-        }
-        if (isJsonArray) {
-            const body = new Uint8Array(jsonArrayLength)
-            let offset = 0
-            for (const c of jsonArrayChunks) {
-                body.set(c, offset)
-                offset += c.length
+            if (isJsonArray) {
+                const body = new Uint8Array(jsonArrayLength)
+                let offset = 0
+                for (const c of jsonArrayChunks) {
+                    body.set(c, offset)
+                    offset += c.length
+                }
+                let data
+                try {
+                    data = JSON.parse(new TextDecoder().decode(body))
+                } catch {
+                    throw new Error('Invalid JSON in import response')
+                }
+                const items = /** @type {Record<string, any>[]} */ (
+                    Array.isArray(data) ? data : [data]
+                )
+                for (let i = 0; i < items.length; i += Fylo.MAX_CPUS) {
+                    if (limit !== undefined && count >= limit) break
+                    await flush(items.slice(i, i + Fylo.MAX_CPUS))
+                }
+            } else {
+                if (pending.length > 0) {
+                    const { values } = Bun.JSONL.parseChunk(pending)
+                    for (const item of values) batch.push(/** @type {Record<string, any>} */ (item))
+                }
+                if (batch.length > 0) await flush(batch)
             }
-            let data
-            try {
-                data = JSON.parse(new TextDecoder().decode(body))
-            } catch {
-                throw new Error('Invalid JSON in import response')
-            }
-            const items = /** @type {Record<string, any>[]} */ (Array.isArray(data) ? data : [data])
-            for (let i = 0; i < items.length; i += Fylo.MAX_CPUS) {
-                if (limit !== undefined && count >= limit) break
-                await flush(items.slice(i, i + Fylo.MAX_CPUS))
-            }
-        } else {
-            if (pending.length > 0) {
-                const { values } = Bun.JSONL.parseChunk(pending)
-                for (const item of values) batch.push(/** @type {Record<string, any>} */ (item))
-            }
-            if (batch.length > 0) await flush(batch)
-        }
-        return count
+            return count
+        })
     }
     /** @deprecated Construct a Fylo instance and use fylo[collection].export() */
     /** @param {string} collection */
@@ -625,6 +702,99 @@ export default class Fylo {
             emitFyloEvent(this.onEvent, { type: 'cipher.configured', collection })
         }
     }
+    /** @returns {boolean} */
+    autoCommitEnabled() {
+        if (this.engine.wormEnabled()) return false
+        return this.versioning.autoCommit !== false
+    }
+    /**
+     * @param {FyloAutoCommitEvent} event
+     * @returns {string}
+     */
+    autoCommitMessage(event) {
+        return (
+            this.versioning.autoCommitMessage?.(event) ??
+            `${event.operation} ${event.collection}/${event.docId}`
+        )
+    }
+    /**
+     * Promotes a successful document mutation into version-control history.
+     * Inside a {@link runCoalesced} block the change is recorded but its commit
+     * is deferred so the whole bulk operation yields one commit; otherwise the
+     * dirty check runs immediately under a repository-level lock so parallel
+     * writes commit in deterministic order.
+     *
+     * @param {Omit<FyloAutoCommitEvent, 'repositoryRoot'>} event
+     * @returns {Promise<void>}
+     */
+    async autoCommit(event) {
+        if (!this.autoCommitEnabled()) return
+        if (this.coalesceDepth > 0) {
+            this.coalesceChanges?.push(event)
+            return
+        }
+        const message = this.autoCommitMessage({ ...event, repositoryRoot: this.repositoryRoot })
+        const hints = [{ collection: event.collection, id: String(event.docId) }]
+        await this.runAutoCommit((repository) => repository.commitIfDirty(message, hints))
+    }
+    /**
+     * Groups every document mutation performed inside `fn` into a single
+     * version-control commit instead of one commit per write. Nested calls join
+     * the outermost group, so a streaming import that issues many internal
+     * batches still produces exactly one commit. With auto-commit disabled (or
+     * in WORM mode) this is a transparent pass-through.
+     *
+     * @template T
+     * @param {() => Promise<T>} fn
+     * @returns {Promise<T>}
+     */
+    async runCoalesced(fn) {
+        if (!this.autoCommitEnabled()) return await fn()
+        const outermost = this.coalesceDepth === 0
+        if (outermost) this.coalesceChanges = []
+        this.coalesceDepth++
+        try {
+            return await fn()
+        } finally {
+            this.coalesceDepth--
+            if (outermost) {
+                const changes = this.coalesceChanges ?? []
+                this.coalesceChanges = null
+                if (changes.length > 0) await this.commitCoalesced(changes)
+            }
+        }
+    }
+    /**
+     * @param {Array<Omit<FyloAutoCommitEvent, 'repositoryRoot'>>} changes
+     * @returns {Promise<void>}
+     */
+    async commitCoalesced(changes) {
+        const { operation, collection } = changes[0]
+        const count = changes.length
+        const message = `${operation} ${collection} (${count} document${count === 1 ? '' : 's'})`
+        const hints = changes.map((change) => ({
+            collection: change.collection,
+            id: String(change.docId)
+        }))
+        await this.runAutoCommit((repository) => repository.commitIfDirty(message, hints))
+    }
+    /**
+     * Serializes a repository write behind {@link autoCommitLane} so concurrent
+     * mutations on this instance commit in order, and absorbs failures into the
+     * lane without breaking the chain for the next writer.
+     *
+     * @param {(repository: VersionRepository) => Promise<unknown>} commit
+     * @returns {Promise<void>}
+     */
+    async runAutoCommit(commit) {
+        const run = this.autoCommitLane
+            .catch(() => {})
+            .then(async () => {
+                await commit(new VersionRepository(this.repositoryRoot))
+            })
+        this.autoCommitLane = run.catch(() => {})
+        await run
+    }
     /** @param {string} collection @param {Record<string, any>} data @returns {Promise<{ _id: TTIDValue, doc: Record<string, any>, previousId?: TTIDValue }>} */
     async prepareInsert(collection, data) {
         await this.ready()
@@ -641,6 +811,11 @@ export default class Fylo {
         await this.ready()
         if (previousId) await this.engine.replaceDocumentVersion(collection, previousId, _id, doc)
         else await this.engine.putDocument(collection, _id, doc)
+        await this.autoCommit({
+            operation: previousId ? 'patch' : 'put',
+            collection,
+            docId: _id
+        })
         if (Fylo.LOGGING) console.log(`Finished Writing ${_id}`)
         return _id
     }
@@ -668,6 +843,7 @@ export default class Fylo {
             existingDoc
         )
         if (Fylo.LOGGING) console.log(`Finished Updating ${_id} to ${nextId}`)
+        await this.autoCommit({ operation: 'patch', collection, docId: nextId })
         return nextId
     }
     /** @param {string} collection @param {TTIDValue} _id @returns {Promise<void>} */
@@ -675,7 +851,15 @@ export default class Fylo {
         await this.ready()
         validateDocId(_id)
         await this.engine.deleteDocument(collection, _id)
+        await this.autoCommit({ operation: 'delete', collection, docId: _id })
         if (Fylo.LOGGING) console.log(`Finished Deleting ${_id}`)
+    }
+    /** @param {string} collection @param {TTIDValue} _id @returns {Promise<TTIDValue>} */
+    async executeRestoreDocDirect(collection, _id) {
+        await this.ready()
+        const restoredId = await this.engine.restoreDocument(collection, _id)
+        await this.autoCommit({ operation: 'restore', collection, docId: restoredId })
+        return restoredId
     }
     /** @deprecated Use fylo[collection].put(data) instead */
     /** @param {string} collection */
@@ -691,11 +875,11 @@ export default class Fylo {
             `fylo.patchDoc('${collection}', ...) has been removed. Use fylo['${collection}'].patch(id, patch) instead.`
         )
     }
-    /** @deprecated Use fylo[collection].patchMany(update) instead */
+    /** @deprecated Use fylo[collection].patch.many(update) instead */
     /** @param {string} collection */
     async patchDocs(collection) {
         throw new Error(
-            `fylo.patchDocs('${collection}', update) has been removed. Use fylo['${collection}'].patchMany(update) instead.`
+            `fylo.patchDocs('${collection}', update) has been removed. Use fylo['${collection}'].patch.many(update) instead.`
         )
     }
     /** @deprecated Use fylo[collection].delete(id) instead */
@@ -705,11 +889,11 @@ export default class Fylo {
             `fylo.delDoc('${collection}', id) has been removed. Use fylo['${collection}'].delete(id) instead.`
         )
     }
-    /** @deprecated Use fylo[collection].deleteMany(query) instead */
+    /** @deprecated Use fylo[collection].delete.many(query) instead */
     /** @param {string} collection */
     async delDocs(collection) {
         throw new Error(
-            `fylo.delDocs('${collection}', query) has been removed. Use fylo['${collection}'].deleteMany(query) instead.`
+            `fylo.delDocs('${collection}', query) has been removed. Use fylo['${collection}'].delete.many(query) instead.`
         )
     }
     /** @deprecated Use fylo[collection].restore(id) instead */
@@ -719,16 +903,16 @@ export default class Fylo {
             `fylo.restoreDoc('${collection}', id) has been removed. Use fylo['${collection}'].restore(id) instead.`
         )
     }
-    /** @deprecated Use fylo[collection].batchPut(batch) instead */
+    /** @deprecated Use fylo[collection].put.batch(batch) instead */
     /** @param {string} collection */
     async batchPutData(collection) {
         throw new Error(
-            `fylo.batchPutData('${collection}', batch) has been removed. Use fylo['${collection}'].batchPut(batch) instead.`
+            `fylo.batchPutData('${collection}', batch) has been removed. Use fylo['${collection}'].put.batch(batch) instead.`
         )
     }
-    /** @deprecated Construct a Fylo instance and use fylo.joinDocs(join) */
+    /** @deprecated Construct a Fylo instance and use fylo.join(join) */
     /** @param {StoreJoin} join */
-    static async joinDocs(join) {
+    static async join(join) {
         return await Fylo.defaultEngine.joinDocs(join)
     }
     /** @deprecated Construct a Fylo instance and use fylo[collection].find(query) */
@@ -751,6 +935,14 @@ export class CollectionFacade {
     fylo
     /** @type {string} */
     collection
+    /** @type {CollectionPut} */
+    put
+    /** @type {CollectionPatch} */
+    patch
+    /** @type {CollectionDelete} */
+    delete
+    /** @type {CollectionFind} */
+    find
     /**
      * @param {Fylo} fylo
      * @param {string} collection
@@ -758,6 +950,150 @@ export class CollectionFacade {
     constructor(fylo, collection) {
         this.fylo = fylo
         this.collection = collection
+
+        const self = this
+        // put / put.batch
+        const put = /** @type {CollectionPut} */ (
+            async (data) => {
+                const { _id, doc, previousId } = await self.fylo.prepareInsert(
+                    self.collection,
+                    data
+                )
+                return await self.fylo.executePutDataDirect(self.collection, _id, doc, previousId)
+            }
+        )
+        put.batch = async (batch) => {
+            await self.fylo.ready()
+            return await self.fylo.runCoalesced(async () => {
+                /** @type {TTIDValue[]} */
+                const ids = []
+                /** @type {Array<{ index: number, error: Error }>} */
+                const failures = []
+                const chunkSize = navigator.hardwareConcurrency
+                for (let i = 0; i < batch.length; i += chunkSize) {
+                    const chunk = batch.slice(i, i + chunkSize)
+                    const results = await Promise.allSettled(chunk.map((data) => self.put(data)))
+                    results.forEach((result, offset) => {
+                        if (result.status === 'fulfilled') {
+                            ids.push(result.value)
+                            return
+                        }
+                        failures.push({
+                            index: i + offset,
+                            error:
+                                result.reason instanceof Error
+                                    ? result.reason
+                                    : new Error(String(result.reason))
+                        })
+                    })
+                }
+                if (failures.length > 0) {
+                    throw new FyloBatchWriteError(self.collection, ids, failures)
+                }
+                return ids
+            })
+        }
+        this.put = put
+        // patch / patch.many
+        const patch = /** @type {CollectionPatch} */ (
+            async (id, patch, oldDoc = {}) => {
+                return await self.fylo.executePatchDocDirect(
+                    self.collection,
+                    { [id]: patch },
+                    oldDoc
+                )
+            }
+        )
+        patch.many = async (update) => {
+            await self.fylo.loadEncryptionWithEvent(self.collection)
+            return await self.fylo.runCoalesced(async () => {
+                let count = 0
+                for await (const value of self.find(update.$where ?? {}).collect()) {
+                    if (typeof value !== 'object' || value === null || Array.isArray(value))
+                        continue
+                    const entries = Object.entries(value)
+                    if (entries.length === 0) continue
+                    const [docId, existing] = entries[0]
+                    try {
+                        await self.fylo.executePatchDocDirect(
+                            self.collection,
+                            { [docId]: update.$set },
+                            { [docId]: /** @type {Record<string, any>} */ (existing) }
+                        )
+                        count++
+                    } catch (err) {
+                        if (err instanceof FyloAuthError) continue
+                        throw err
+                    }
+                }
+                return count
+            })
+        }
+        this.patch = patch
+        // delete / delete.many
+        const del = /** @type {CollectionDelete} */ (
+            async (id) => {
+                return await self.fylo.executeDelDocDirect(self.collection, id)
+            }
+        )
+        del.many = async (query) => {
+            await self.fylo.loadEncryptionWithEvent(self.collection)
+            return await self.fylo.runCoalesced(async () => {
+                let count = 0
+                for await (const value of self.find(query).collect()) {
+                    if (typeof value !== 'object' || value === null || Array.isArray(value))
+                        continue
+                    const entries = Object.entries(value)
+                    if (entries.length === 0) continue
+                    const [docId] = entries[0]
+                    try {
+                        await self.fylo.executeDelDocDirect(self.collection, docId)
+                        count++
+                    } catch (err) {
+                        if (err instanceof FyloAuthError) continue
+                        throw err
+                    }
+                }
+                return count
+            })
+        }
+        this.delete = del
+        // find / find.deleted
+        const find = /** @type {CollectionFind} */ (
+            /** @type {unknown} */ (
+                (query = {}) => {
+                    const source = self.fylo
+                        .ready()
+                        .then(() => self.fylo.engine.findDocs(self.collection, query))
+                    const result = {
+                        async *[Symbol.asyncIterator]() {
+                            yield* await source
+                        },
+                        async *collect() {
+                            yield* (await source).collect()
+                        },
+                        async *onDelete() {
+                            yield* (await source).onDelete()
+                        }
+                    }
+                    return result
+                }
+            )
+        )
+        find.deleted = (query = {}) => {
+            const source = self.fylo
+                .ready()
+                .then(() => self.fylo.engine.findDeletedDocs(self.collection, query))
+            return {
+                async *[Symbol.asyncIterator]() {
+                    yield* await source
+                },
+                async *collect() {
+                    yield* (await source).collect()
+                }
+            }
+        }
+        this.find = find
     }
     /** @param {TTIDValue} id @param {boolean} [onlyId] */
     get(id, onlyId = false) {
@@ -784,108 +1120,10 @@ export class CollectionFacade {
         if (onlyId) return await this.fylo.engine.getLatest(this.collection, id, true)
         return await this.fylo.engine.getLatest(this.collection, id)
     }
-    /** @param {StoreQuery} [query] */
-    find(query = {}) {
-        const source = this.fylo
-            .ready()
-            .then(() => this.fylo.engine.findDocs(this.collection, query))
-        return {
-            async *[Symbol.asyncIterator]() {
-                yield* await source
-            },
-            async *collect() {
-                yield* (await source).collect()
-            },
-            async *onDelete() {
-                yield* (await source).onDelete()
-            }
-        }
-    }
-    /** @param {StoreQuery} [query] */
-    findDeleted(query = {}) {
-        const source = this.fylo
-            .ready()
-            .then(() => this.fylo.engine.findDeletedDocs(this.collection, query))
-        return {
-            async *[Symbol.asyncIterator]() {
-                yield* await source
-            },
-            async *collect() {
-                yield* (await source).collect()
-            }
-        }
-    }
-    /** @param {Record<string, any>} data */
-    async put(data) {
-        const { _id, doc, previousId } = await this.fylo.prepareInsert(this.collection, data)
-        return await this.fylo.executePutDataDirect(this.collection, _id, doc, previousId)
-    }
-    /** @param {Record<string, any>[]} batch */
-    async batchPut(batch) {
-        await this.fylo.ready()
-        const ids = []
-        const chunkSize = navigator.hardwareConcurrency
-        for (let i = 0; i < batch.length; i += chunkSize) {
-            const chunk = batch.slice(i, i + chunkSize)
-            const results = await Promise.allSettled(chunk.map((data) => this.put(data)))
-            for (const r of results) {
-                if (r.status === 'fulfilled') ids.push(r.value)
-            }
-        }
-        return ids
-    }
-    /** @param {TTIDValue} id @param {Record<string, any>} patch @param {Record<string, any>} [oldDoc] */
-    async patch(id, patch, oldDoc = {}) {
-        return await this.fylo.executePatchDocDirect(this.collection, { [id]: patch }, oldDoc)
-    }
-    /** @param {StoreUpdate} update */
-    async patchMany(update) {
-        await this.fylo.loadEncryptionWithEvent(this.collection)
-        let count = 0
-        for await (const value of this.find(update.$where ?? {}).collect()) {
-            const entries = Object.entries(value)
-            if (entries.length === 0) continue
-            const [docId, existing] = entries[0]
-            try {
-                await this.fylo.executePatchDocDirect(
-                    this.collection,
-                    { [docId]: update.$set },
-                    { [docId]: /** @type {Record<string, any>} */ (existing) }
-                )
-                count++
-            } catch (err) {
-                if (err instanceof FyloAuthError) continue
-                throw err
-            }
-        }
-        return count
-    }
-    /** @param {TTIDValue} id */
-    async ['delete'](id) {
-        return await this.fylo.executeDelDocDirect(this.collection, id)
-    }
-    /** @param {StoreDelete} query */
-    async deleteMany(query) {
-        await this.fylo.loadEncryptionWithEvent(this.collection)
-        let count = 0
-        for await (const value of this.find(query).collect()) {
-            const entries = Object.entries(value)
-            if (entries.length === 0) continue
-            const [docId] = entries[0]
-            try {
-                await this.fylo.executeDelDocDirect(this.collection, docId)
-                count++
-            } catch (err) {
-                if (err instanceof FyloAuthError) continue
-                throw err
-            }
-        }
-        return count
-    }
     /** @param {TTIDValue} id */
     async restore(id) {
         await this.fylo.ready()
-        return await this.fylo.engine.restoreDocument(this.collection, id)
+        return await this.fylo.executeRestoreDocDirect(this.collection, id)
     }
     /** @returns {AsyncGenerator<Record<string, any>, void, unknown>} */
     async *export() {
@@ -956,7 +1194,7 @@ export class AuthenticatedFylo {
         return new AuthenticatedFylo(this.fylo, auth)
     }
     /** @param {StoreJoin} join @returns {Promise<JoinDocsResult>} */
-    async joinDocs(join) {
+    async join(join) {
         await this._authorize({ action: 'join:execute', collection: String(join.$leftCollection) })
         await this._authorize({ action: 'join:execute', collection: String(join.$rightCollection) })
         return await this.fylo.engine.joinDocs(join)
@@ -981,8 +1219,7 @@ export class AuthenticatedFylo {
                 return await new AuthenticatedCollectionFacade(this, col).drop()
             case 'SELECT': {
                 const query = /** @type {StoreQuery} */ (Parser.parse(SQL))
-                if (SQL.includes('JOIN'))
-                    return await this.joinDocs(/** @type {StoreJoin} */ (query))
+                if (SQL.includes('JOIN')) return await this.join(/** @type {StoreJoin} */ (query))
                 const selectedCollection = query.$collection
                 delete query.$collection
                 /** @type {TTIDValue[] | Record<string, any>} */
@@ -1013,7 +1250,7 @@ export class AuthenticatedFylo {
                 const update = /** @type {StoreUpdate} */ (Parser.parse(SQL))
                 const updateCol = update.$collection
                 delete update.$collection
-                return await new AuthenticatedCollectionFacade(this, String(updateCol)).patchMany(
+                return await new AuthenticatedCollectionFacade(this, String(updateCol)).patch.many(
                     update
                 )
             }
@@ -1024,7 +1261,7 @@ export class AuthenticatedFylo {
                 return await new AuthenticatedCollectionFacade(
                     this,
                     String(deleteCollection)
-                ).deleteMany(del)
+                ).delete.many(del)
             }
             default:
                 throw new Error('Invalid Operation')
@@ -1082,10 +1319,240 @@ class AuthenticatedCollectionFacade {
     authFylo
     /** @type {string} */
     collection
+    /** @type {CollectionPut} */
+    put
+    /** @type {CollectionPatch} */
+    patch
+    /** @type {CollectionDelete} */
+    delete
+    /** @type {CollectionFind} */
+    find
     /** @param {AuthenticatedFylo} authFylo @param {string} collection */
     constructor(authFylo, collection) {
         this.authFylo = authFylo
         this.collection = collection
+        const self = this
+
+        // put / put.batch
+        const put = /** @type {CollectionPut} */ (
+            async (data) => {
+                await self.authFylo._authorize({
+                    action: 'doc:create',
+                    collection: self.collection,
+                    docId: self.authFylo.firstDocId(data),
+                    data
+                })
+                return await new CollectionFacade(self.authFylo.fylo, self.collection).put(data)
+            }
+        )
+        put.batch = async (batch) => {
+            for (const data of batch)
+                await self.authFylo._authorize({
+                    action: 'doc:create',
+                    collection: self.collection,
+                    data
+                })
+            return await new CollectionFacade(self.authFylo.fylo, self.collection).put.batch(batch)
+        }
+        this.put = put
+        // patch / patch.many
+        const patch = /** @type {CollectionPatch} */ (
+            async (id, patch, oldDoc = {}) => {
+                let existing = oldDoc[id]
+                if (!existing) {
+                    const fetched = await self.authFylo.fylo.engine
+                        .getDoc(self.collection, id)
+                        .once()
+                    existing = fetched[id]
+                }
+                if (!existing)
+                    throw new FyloAuthError({
+                        auth: self.authFylo.auth,
+                        action: 'doc:update',
+                        collection: self.collection,
+                        docId: id
+                    })
+                await self.authFylo._authorize({
+                    action: 'doc:update',
+                    collection: self.collection,
+                    docId: id,
+                    data: patch,
+                    existing
+                })
+                return await self.authFylo.fylo.executePatchDocDirect(
+                    self.collection,
+                    { [id]: patch },
+                    oldDoc
+                )
+            }
+        )
+        patch.many = async (update) => {
+            return await self.authFylo.fylo.runCoalesced(async () => {
+                let count = 0
+                for await (const value of self.find(update.$where ?? {}).collect()) {
+                    if (typeof value !== 'object' || value === null || Array.isArray(value))
+                        continue
+                    const entry = Object.entries(value)[0]
+                    if (!entry) continue
+                    const [id, existing] = entry
+                    try {
+                        await self.authFylo._authorize({
+                            action: 'doc:update',
+                            collection: self.collection,
+                            docId: id,
+                            data: update.$set,
+                            existing: /** @type {Record<string, any>} */ (existing)
+                        })
+                    } catch (err) {
+                        if (err instanceof FyloAuthError) continue
+                        throw err
+                    }
+                    await self.authFylo.fylo.executePatchDocDirect(
+                        self.collection,
+                        { [id]: update.$set },
+                        { [id]: /** @type {Record<string, any>} */ (existing) }
+                    )
+                    count++
+                }
+                return count
+            })
+        }
+        this.patch = patch
+        // delete / delete.many
+        const del = /** @type {CollectionDelete} */ (
+            async (id) => {
+                const fetched = await self.authFylo.fylo.engine.getDoc(self.collection, id).once()
+                const existing = fetched[id]
+                if (!existing)
+                    throw new FyloAuthError({
+                        auth: self.authFylo.auth,
+                        action: 'doc:delete',
+                        collection: self.collection,
+                        docId: id
+                    })
+                await self.authFylo._authorize({
+                    action: 'doc:delete',
+                    collection: self.collection,
+                    docId: id,
+                    existing: /** @type {Record<string, any>} */ (existing)
+                })
+                return await self.authFylo.fylo.executeDelDocDirect(self.collection, id)
+            }
+        )
+        del.many = async (query) => {
+            return await self.authFylo.fylo.runCoalesced(async () => {
+                let count = 0
+                for await (const value of self.find(query).collect()) {
+                    if (typeof value !== 'object' || value === null || Array.isArray(value))
+                        continue
+                    const entry = Object.entries(value)[0]
+                    if (!entry) continue
+                    const [id, existing] = entry
+                    try {
+                        await self.authFylo._authorize({
+                            action: 'doc:delete',
+                            collection: self.collection,
+                            docId: id,
+                            existing: /** @type {Record<string, any>} */ (existing)
+                        })
+                    } catch (err) {
+                        if (err instanceof FyloAuthError) continue
+                        throw err
+                    }
+                    await self.authFylo.fylo.executeDelDocDirect(self.collection, id)
+                    count++
+                }
+                return count
+            })
+        }
+        this.delete = del
+        // find / find.deleted
+        const find = /** @type {CollectionFind} */ (
+            /** @type {unknown} */ (
+                (query = {}) => {
+                    if (queryHasProjection(query)) {
+                        return {
+                            async *[Symbol.asyncIterator]() {
+                                await self.authFylo._assertNoProjectionWhenRlsEnabled(
+                                    self.collection
+                                )
+                                yield* self.authFylo.fylo.engine.findDocs(self.collection, query)
+                            },
+                            async *collect() {
+                                await self.authFylo._assertNoProjectionWhenRlsEnabled(
+                                    self.collection
+                                )
+                                yield* self.authFylo.fylo.engine
+                                    .findDocs(self.collection, query)
+                                    .collect()
+                            },
+                            async *onDelete() {
+                                await self.authFylo._assertNoProjectionWhenRlsEnabled(
+                                    self.collection
+                                )
+                                yield* self.authFylo.fylo.engine
+                                    .findDocs(self.collection, query)
+                                    .onDelete()
+                            }
+                        }
+                    }
+                    const source = self.authFylo.fylo.engine.findDocs(self.collection, query)
+                    return {
+                        async *[Symbol.asyncIterator]() {
+                            await self.authFylo._authorize({
+                                action: 'doc:find',
+                                collection: self.collection
+                            })
+                            for await (const value of source) {
+                                const filtered = await filterEnvelope(
+                                    self.authFylo,
+                                    self.collection,
+                                    value
+                                )
+                                if (filtered !== undefined) yield filtered
+                            }
+                        },
+                        async *collect() {
+                            await self.authFylo._authorize({
+                                action: 'doc:find',
+                                collection: self.collection
+                            })
+                            for await (const value of source.collect()) {
+                                const filtered = await filterEnvelope(
+                                    self.authFylo,
+                                    self.collection,
+                                    value
+                                )
+                                if (filtered !== undefined) yield filtered
+                            }
+                        },
+                        async *onDelete() {
+                            await self.authFylo._authorize({
+                                action: 'doc:find',
+                                collection: self.collection
+                            })
+                            yield* source.onDelete()
+                        }
+                    }
+                }
+            )
+        )
+        find.deleted = (query = {}) => {
+            const source = self.authFylo.fylo.engine.findDeletedDocs(self.collection, query)
+            return {
+                async *[Symbol.asyncIterator]() {
+                    await self.authFylo._authorize({
+                        action: 'doc:find',
+                        collection: self.collection
+                    })
+                    yield* source
+                },
+                async *collect() {
+                    yield* source.collect()
+                }
+            }
+        }
+        this.find = find
     }
     async create() {
         await this.authFylo._authorize({ action: 'collection:create', collection: this.collection })
@@ -1172,178 +1639,6 @@ class AuthenticatedCollectionFacade {
         if (!(await this.authFylo._isVisible(this.collection, doc))) return {}
         return result
     }
-    find(query = {}) {
-        const self = this
-        if (queryHasProjection(query)) {
-            return {
-                async *[Symbol.asyncIterator]() {
-                    await self.authFylo._assertNoProjectionWhenRlsEnabled(self.collection)
-                    yield* self.authFylo.fylo.engine.findDocs(self.collection, query)
-                },
-                async *collect() {
-                    await self.authFylo._assertNoProjectionWhenRlsEnabled(self.collection)
-                    yield* self.authFylo.fylo.engine.findDocs(self.collection, query).collect()
-                },
-                async *onDelete() {
-                    await self.authFylo._assertNoProjectionWhenRlsEnabled(self.collection)
-                    yield* self.authFylo.fylo.engine.findDocs(self.collection, query).onDelete()
-                }
-            }
-        }
-        const source = this.authFylo.fylo.engine.findDocs(this.collection, query)
-        return {
-            async *[Symbol.asyncIterator]() {
-                await self.authFylo._authorize({ action: 'doc:find', collection: self.collection })
-                for await (const value of source) {
-                    const filtered = await filterEnvelope(self.authFylo, self.collection, value)
-                    if (filtered !== undefined) yield filtered
-                }
-            },
-            async *collect() {
-                await self.authFylo._authorize({ action: 'doc:find', collection: self.collection })
-                for await (const value of source.collect()) {
-                    const filtered = await filterEnvelope(self.authFylo, self.collection, value)
-                    if (filtered !== undefined) yield filtered
-                }
-            },
-            async *onDelete() {
-                await self.authFylo._authorize({ action: 'doc:find', collection: self.collection })
-                yield* source.onDelete()
-            }
-        }
-    }
-    findDeleted(query = {}) {
-        const self = this
-        const source = this.authFylo.fylo.engine.findDeletedDocs(this.collection, query)
-        return {
-            async *[Symbol.asyncIterator]() {
-                await self.authFylo._authorize({ action: 'doc:find', collection: self.collection })
-                yield* source
-            },
-            async *collect() {
-                yield* source.collect()
-            }
-        }
-    }
-    /** @param {Record<string, any>} data */
-    async put(data) {
-        await this.authFylo._authorize({
-            action: 'doc:create',
-            collection: this.collection,
-            docId: this.authFylo.firstDocId(data),
-            data
-        })
-        return await new CollectionFacade(this.authFylo.fylo, this.collection).put(data)
-    }
-    /** @param {Record<string, any>[]} batch */
-    async batchPut(batch) {
-        for (const data of batch)
-            await this.authFylo._authorize({
-                action: 'doc:create',
-                collection: this.collection,
-                data
-            })
-        return await new CollectionFacade(this.authFylo.fylo, this.collection).batchPut(batch)
-    }
-    /** @param {TTIDValue} id @param {Record<string, any>} patch @param {Record<string, any>} [oldDoc] */
-    async patch(id, patch, oldDoc = {}) {
-        let existing = oldDoc[id]
-        if (!existing) {
-            const fetched = await this.authFylo.fylo.engine.getDoc(this.collection, id).once()
-            existing = fetched[id]
-        }
-        if (!existing)
-            throw new FyloAuthError({
-                auth: this.authFylo.auth,
-                action: 'doc:update',
-                collection: this.collection,
-                docId: id
-            })
-        await this.authFylo._authorize({
-            action: 'doc:update',
-            collection: this.collection,
-            docId: id,
-            data: patch,
-            existing
-        })
-        return await this.authFylo.fylo.executePatchDocDirect(
-            this.collection,
-            { [id]: patch },
-            oldDoc
-        )
-    }
-    /** @param {StoreUpdate} update */
-    async patchMany(update) {
-        let count = 0
-        for await (const value of this.find(update.$where ?? {}).collect()) {
-            if (typeof value !== 'object' || value === null || Array.isArray(value)) continue
-            const entry = Object.entries(value)[0]
-            if (!entry) continue
-            const [id, existing] = entry
-            try {
-                await this.authFylo._authorize({
-                    action: 'doc:update',
-                    collection: this.collection,
-                    docId: id,
-                    data: update.$set,
-                    existing: /** @type {Record<string, any>} */ (existing)
-                })
-            } catch (err) {
-                if (err instanceof FyloAuthError) continue
-                throw err
-            }
-            await this.authFylo.fylo.executePatchDocDirect(
-                this.collection,
-                { [id]: update.$set },
-                { [id]: /** @type {Record<string, any>} */ (existing) }
-            )
-            count++
-        }
-        return count
-    }
-    /** @param {TTIDValue} id */
-    async ['delete'](id) {
-        const fetched = await this.authFylo.fylo.engine.getDoc(this.collection, id).once()
-        const existing = fetched[id]
-        if (!existing)
-            throw new FyloAuthError({
-                auth: this.authFylo.auth,
-                action: 'doc:delete',
-                collection: this.collection,
-                docId: id
-            })
-        await this.authFylo._authorize({
-            action: 'doc:delete',
-            collection: this.collection,
-            docId: id,
-            existing: /** @type {Record<string, any>} */ (existing)
-        })
-        return await this.authFylo.fylo.engine.deleteDocument(this.collection, id)
-    }
-    /** @param {StoreDelete} query */
-    async deleteMany(query) {
-        let count = 0
-        for await (const value of this.find(query).collect()) {
-            if (typeof value !== 'object' || value === null || Array.isArray(value)) continue
-            const entry = Object.entries(value)[0]
-            if (!entry) continue
-            const [id, existing] = entry
-            try {
-                await this.authFylo._authorize({
-                    action: 'doc:delete',
-                    collection: this.collection,
-                    docId: id,
-                    existing: /** @type {Record<string, any>} */ (existing)
-                })
-            } catch (err) {
-                if (err instanceof FyloAuthError) continue
-                throw err
-            }
-            await this.authFylo.fylo.engine.deleteDocument(this.collection, id)
-            count++
-        }
-        return count
-    }
     /** @param {TTIDValue} id */
     async restore(id) {
         await this.authFylo._authorize({
@@ -1351,7 +1646,7 @@ class AuthenticatedCollectionFacade {
             collection: this.collection,
             docId: id
         })
-        return await this.authFylo.fylo.engine.restoreDocument(this.collection, id)
+        return await this.authFylo.fylo.executeRestoreDocDirect(this.collection, id)
     }
     async *export() {
         await this.authFylo._authorize({ action: 'bulk:export', collection: this.collection })

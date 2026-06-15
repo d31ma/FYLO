@@ -3,12 +3,31 @@ import { runBrowserRequest } from './core/protocol.js'
 import { createMemoryFilesystem } from './core/memory-filesystem.js'
 import { createOpfsFilesystem } from './opfs-filesystem.js'
 import { createWorkerClient } from './worker/client.js'
+import { CollectionNotFoundError } from '../core/collection.js'
 
 /**
  * @typedef {import('./core/filesystem.js').FyloFilesystem} FyloFilesystem
  * @typedef {import('./core/types.js').BrowserRequest} BrowserRequest
  * @typedef {import('./core/types.js').BrowserCoreOptions} BrowserCoreOptions
  * @typedef {import('./worker/client.js').FyloWorkerClient} FyloWorkerClient
+ * @typedef {import('../types/vendor.js').TTID} TTIDValue
+ * @typedef {import('../query/types.js').StoreDelete<Record<string, any>>} StoreDelete
+ * @typedef {import('../query/types.js').StoreQuery<Record<string, any>>} StoreQuery
+ * @typedef {import('../query/types.js').StoreUpdate<Record<string, any>>} StoreUpdate
+ * @typedef {ReturnType<FyloBrowser['findDocs']>} BrowserFindResult
+ * @typedef {ReturnType<FyloBrowser['findDeletedDocs']>} BrowserDeletedFindResult
+ * @typedef {((data: Record<string, any>) => Promise<TTIDValue>) & {
+ *   batch(batch: Record<string, any>[]): Promise<TTIDValue[]>
+ * }} BrowserCollectionPut
+ * @typedef {((id: TTIDValue, patch: Record<string, any>, oldDoc?: Record<TTIDValue, Record<string, any>>) => Promise<TTIDValue>) & {
+ *   many(update: StoreUpdate): Promise<number>
+ * }} BrowserCollectionPatch
+ * @typedef {((id: TTIDValue) => Promise<void>) & {
+ *   many(query: StoreDelete): Promise<number>
+ * }} BrowserCollectionDelete
+ * @typedef {((query?: StoreQuery) => BrowserFindResult) & {
+ *   deleted(query?: StoreQuery): BrowserDeletedFindResult
+ * }} BrowserCollectionFind
  */
 
 /**
@@ -152,7 +171,7 @@ export class FyloBrowser {
         if (this.worker) return await this.worker.request(request)
         if (!this.core) throw new Error('FYLO browser runtime is not initialised')
         const response = await runBrowserRequest(this.core, request)
-        if (!response.ok) throw new Error(response.error.message)
+        if (!response.ok) throw browserProtocolError(response.error)
         return response.result
     }
 
@@ -241,7 +260,7 @@ export class FyloBrowser {
     }
 
     /** @param {Record<string, any>} join @returns {Promise<unknown>} */
-    async joinDocs(join) {
+    async join(join) {
         return await this.dispatch({
             op: 'joinDocs',
             join: /** @type {import('../query/types.js').StoreJoin<Record<string, any>, Record<string, any>>} */ (
@@ -319,11 +338,59 @@ export class BrowserCollectionFacade {
     fylo
     /** @type {string} */
     collection
+    /** @type {BrowserCollectionPut} */
+    put
+    /** @type {BrowserCollectionPatch} */
+    patch
+    /** @type {BrowserCollectionDelete} */
+    delete
+    /** @type {BrowserCollectionFind} */
+    find
 
     /** @param {FyloBrowser} fylo @param {string} collection */
     constructor(fylo, collection) {
         this.fylo = fylo
         this.collection = collection
+        const self = this
+        const put = /** @type {BrowserCollectionPut} */ (
+            async (data) => {
+                return await self.fylo.putData(self.collection, data)
+            }
+        )
+        put.batch = async (batch) => {
+            return await self.fylo.batchPutData(self.collection, batch)
+        }
+        this.put = put
+
+        const patch = /** @type {BrowserCollectionPatch} */ (
+            async (id, patch, oldDoc = {}) => {
+                return await self.fylo.patchDoc(self.collection, { [id]: patch }, oldDoc)
+            }
+        )
+        patch.many = async (update) => {
+            return await self.fylo.patchDocs(self.collection, update)
+        }
+        this.patch = patch
+
+        const del = /** @type {BrowserCollectionDelete} */ (
+            async (id) => {
+                await self.fylo.delDoc(self.collection, id)
+            }
+        )
+        del.many = async (query) => {
+            return await self.fylo.delDocs(self.collection, query)
+        }
+        this.delete = del
+
+        const find = /** @type {BrowserCollectionFind} */ (
+            (query = {}) => {
+                return self.fylo.findDocs(self.collection, query)
+            }
+        )
+        find.deleted = (query = {}) => {
+            return self.fylo.findDeletedDocs(self.collection, query)
+        }
+        this.find = find
     }
 
     /** @param {string} id @param {boolean} [onlyId] */
@@ -333,38 +400,6 @@ export class BrowserCollectionFacade {
     /** @param {string} id @param {boolean} [onlyId] */
     async latest(id, onlyId = false) {
         return await this.fylo.getLatest(this.collection, id, onlyId)
-    }
-    /** @param {Record<string, any>} [query] */
-    find(query = {}) {
-        return this.fylo.findDocs(this.collection, query)
-    }
-    /** @param {Record<string, any>} [query] */
-    findDeleted(query = {}) {
-        return this.fylo.findDeletedDocs(this.collection, query)
-    }
-    /** @param {Record<string, any>} data */
-    async put(data) {
-        return await this.fylo.putData(this.collection, data)
-    }
-    /** @param {Record<string, any>[]} batch */
-    async batchPut(batch) {
-        return await this.fylo.batchPutData(this.collection, batch)
-    }
-    /** @param {string} id @param {Record<string, any>} patch @param {Record<string, any>} [oldDoc] */
-    async patch(id, patch, oldDoc = {}) {
-        return await this.fylo.patchDoc(this.collection, { [id]: patch }, oldDoc)
-    }
-    /** @param {Record<string, any>} update */
-    async patchMany(update) {
-        return await this.fylo.patchDocs(this.collection, update)
-    }
-    /** @param {string} id */
-    async delete(id) {
-        await this.fylo.delDoc(this.collection, id)
-    }
-    /** @param {Record<string, any>} query */
-    async deleteMany(query) {
-        return await this.fylo.delDocs(this.collection, query)
     }
     /** @param {string} id */
     async restore(id) {
@@ -396,6 +431,19 @@ export class BrowserCollectionFacade {
 /** @param {ConstructorParameters<typeof FyloBrowser>[0]} [options] @returns {FyloBrowser} */
 export function createBrowserFylo(options) {
     return new FyloBrowser(options)
+}
+
+/**
+ * @param {{ name: string, message: string, code?: string }} error
+ * @returns {Error}
+ */
+function browserProtocolError(error) {
+    if (error.code === 'FYLO_COLLECTION_NOT_FOUND') {
+        return new CollectionNotFoundError(error.message.replace(/^Collection not found: /, ''))
+    }
+    const failure = new Error(error.message)
+    failure.name = error.name || 'Error'
+    return failure
 }
 
 /**

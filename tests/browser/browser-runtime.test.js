@@ -1,6 +1,11 @@
 import { describe, expect, test } from 'bun:test'
 import path from 'node:path'
-import fylo, { createBrowserClient, createBrowserFylo } from '../../src/browser/index.js'
+import TTID from '@d31ma/ttid'
+import fylo, {
+    CollectionNotFoundError,
+    createBrowserClient,
+    createBrowserFylo
+} from '../../src/browser/index.js'
 import { createMemoryFilesystem } from '../../src/browser/core/memory-filesystem.js'
 import { runBrowserConformance } from './helpers/conformance.js'
 
@@ -51,6 +56,24 @@ describe('browser runtime', () => {
 
         expect(await fs.exists(`/.collections/users/docs/${id.slice(0, 2)}/${id}.json`)).toBe(true)
         expect(await fs.exists('/.collections/users/collection.json')).toBe(false)
+    })
+
+    test('browser collection facades fail closed when the collection does not exist', async () => {
+        const fylo = createBrowserFylo({ worker: false })
+        const missing = `missing${Date.now()}`
+        const id = TTID.generate()
+
+        expect((await fylo[missing].inspect()).exists).toBe(false)
+        await expect(fylo[missing].put({ name: 'No collection' })).rejects.toBeInstanceOf(
+            CollectionNotFoundError
+        )
+        await expect(fylo[missing].get(id).once()).rejects.toBeInstanceOf(CollectionNotFoundError)
+        await expect(Array.fromAsync(fylo[missing].find({}).collect())).rejects.toBeInstanceOf(
+            CollectionNotFoundError
+        )
+        await expect(fylo[missing].delete(id)).rejects.toBeInstanceOf(CollectionNotFoundError)
+        await fylo[missing].create()
+        expect((await fylo[missing].inspect()).exists).toBe(true)
     })
 
     test('direct browser runtime exposes collection subscriptions', async () => {

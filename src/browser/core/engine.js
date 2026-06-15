@@ -1,5 +1,5 @@
 import TTID from '@d31ma/ttid'
-import { validateCollectionName } from '../../core/collection.js'
+import { CollectionNotFoundError, validateCollectionName } from '../../core/collection.js'
 import { Parser } from '../../query/parser.js'
 import { runInLane } from './filesystem.js'
 import { BrowserDocuments } from './documents.js'
@@ -186,8 +186,14 @@ export class BrowserCore {
     }
 
     /** @param {string} collection @returns {Promise<void>} */
+    async requireCollection(collection) {
+        if (!(await this.hasCollection(collection))) throw new CollectionNotFoundError(collection)
+    }
+
+    /** @param {string} collection @returns {Promise<void>} */
     async dropCollection(collection) {
         this.assertCollectionName(collection)
+        await this.requireCollection(collection)
         if (this.wormEnabled() && (await this.documents.listDocIds(collection)).length > 0) {
             throw new Error('Drop is not allowed for a non-empty WORM collection')
         }
@@ -232,6 +238,7 @@ export class BrowserCore {
 
     /** @param {string} collection @returns {Promise<{ collection: string, worm: boolean, docsScanned: number, indexedDocs: number }>} */
     async rebuildCollection(collection) {
+        await this.requireCollection(collection)
         return await this.withCollectionWriteLane(collection, async () => {
             await this.ensureCollection(collection)
             const docIds = await this.documents.listDocIds(collection)
@@ -258,6 +265,7 @@ export class BrowserCore {
      * @returns {Promise<TTIDValue>}
      */
     async putData(collection, data) {
+        await this.requireCollection(collection)
         const explicit = explicitDocumentEntry(data)
         const id = explicit?.[0] ?? /** @type {TTIDValue} */ (TTID.generate())
         const doc = clone(explicit?.[1] ?? data)
@@ -312,6 +320,7 @@ export class BrowserCore {
      */
     async patchDoc(collection, newDoc, oldDoc = {}) {
         if (this.wormEnabled()) throw new Error('Update is not allowed in WORM mode')
+        await this.requireCollection(collection)
         const id = Object.keys(newDoc).shift()
         if (!id) throw new Error('this document does not contain an TTID')
         validateDocId(id)
@@ -337,6 +346,7 @@ export class BrowserCore {
     /** @param {string} collection @param {TTIDValue} id @returns {Promise<void>} */
     async delDoc(collection, id) {
         validateDocId(id)
+        await this.requireCollection(collection)
         await this.withCollectionWriteLane(collection, async () => {
             const stored = await this.documents.readStoredDoc(collection, id)
             const operation = planDeleteOperation({
@@ -364,6 +374,7 @@ export class BrowserCore {
     /** @param {string} collection @param {TTIDValue} id @returns {Promise<TTIDValue>} */
     async restoreDoc(collection, id) {
         validateDocId(id)
+        await this.requireCollection(collection)
         return await this.withCollectionWriteLane(collection, async () => {
             const [active, deleted] = await Promise.all([
                 this.documents.readStoredDoc(collection, id),
@@ -411,11 +422,13 @@ export class BrowserCore {
 
     /** @param {string} collection @returns {Promise<TTIDValue[]>} */
     async listQueryableDocIds(collection) {
+        await this.requireCollection(collection)
         return await this.documents.listDocIds(collection)
     }
 
     /** @param {string} collection @param {StoreQuery | undefined} [query] @returns {Promise<Array<Record<string, Record<string, any>>>>} */
     async docResults(collection, query = {}) {
+        await this.requireCollection(collection)
         const candidateIds = await this.queryEngine.candidateDocIdsForQuery(collection, query)
         const ids = candidateIds
             ? Array.from(candidateIds)
@@ -435,6 +448,7 @@ export class BrowserCore {
 
     /** @param {string} collection @param {StoreQuery | undefined} [query] @returns {Promise<Array<Record<string, Record<string, any>>>>} */
     async deletedDocResults(collection, query = {}) {
+        await this.requireCollection(collection)
         const ids = await this.documents.listDeletedDocIds(collection)
         const limit = query.$limit
         /** @type {Array<Record<string, Record<string, any>>>} */
@@ -463,11 +477,13 @@ export class BrowserCore {
                 }
             },
             async once() {
+                await core.requireCollection(collection)
                 const stored = await core.documents.readStoredDoc(collection, id)
                 if (!stored) return onlyId ? null : {}
                 return onlyId ? stored.id : { [stored.id]: clone(stored.data) }
             },
             async *onDelete() {
+                await core.requireCollection(collection)
                 for await (const event of core.events.listen(collection)) {
                     if (event.action === 'delete' && event.id === id) yield event.id
                 }
@@ -478,6 +494,7 @@ export class BrowserCore {
     /** @param {string} collection @param {TTIDValue} id @param {boolean} [onlyId] @returns {Promise<Record<TTIDValue, Record<string, any>> | TTIDValue | null>} */
     async getLatest(collection, id, onlyId = false) {
         validateDocId(id)
+        await this.requireCollection(collection)
         const stored = await this.documents.readStoredDoc(collection, id)
         if (!stored) return onlyId ? null : {}
         return onlyId ? stored.id : { [stored.id]: clone(stored.data) }
@@ -512,6 +529,7 @@ export class BrowserCore {
                 yield* collectDocs()
             },
             async *onDelete() {
+                await core.requireCollection(collection)
                 for await (const event of core.events.listen(collection)) {
                     if (event.action !== 'delete' || !event.doc) continue
                     if (
@@ -553,11 +571,12 @@ export class BrowserCore {
      * @returns {() => void}
      */
     subscribe(collection, listener) {
+        this.assertCollectionName(collection)
         return this.events.subscribe(collection, listener)
     }
 
     /** @param {StoreJoin} join @returns {Promise<any>} */
-    async joinDocs(join) {
+    async join(join) {
         const leftDocs = await this.docResults(join.$leftCollection)
         const rightDocs = await this.docResults(join.$rightCollection)
         /** @type {Record<string, Record<string, any>>} */
@@ -650,8 +669,7 @@ export class BrowserCore {
                 )
             case 'SELECT': {
                 const query = /** @type {StoreQuery} */ (Parser.parse(SQL))
-                if (SQL.includes('JOIN'))
-                    return await this.joinDocs(/** @type {StoreJoin} */ (query))
+                if (SQL.includes('JOIN')) return await this.join(/** @type {StoreJoin} */ (query))
                 const selectedCollection = query.$collection
                 delete query.$collection
                 /** @type {TTIDValue[] | Record<string, any>} */

@@ -118,7 +118,7 @@ test('packed package exposes the browser runtime', async () => {
     if (!response.result[id]) throw new Error('browser request protocol did not return data')
 
     await fylo.users.delete(id)
-    const deleted = await fylo.users.findDeleted({ $ops: [{ name: { $eq: 'Browser package smoke' } }] }).collect().next()
+    const deleted = await fylo.users.find.deleted({ $ops: [{ name: { $eq: 'Browser package smoke' } }] }).collect().next()
     if (!deleted.value[id]) throw new Error('browser deleted query did not return tombstone')
     if (deleted.value[id]._deletedAt !== undefined) throw new Error('browser tombstone leaked internal deletion metadata')
 
@@ -141,6 +141,15 @@ test('packed package exposes the embeddable server gateway', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), '${uniqueName('fylo-server')}-'))
     try {
       const handler = createFyloHttpHandler({ root, token: 'package-token' })
+      const collection = await handler(new Request('http://fylo.test/v1/sql', {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer package-token',
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({ sql: 'CREATE TABLE package-users' }),
+      }))
+      if (collection.status !== 200) throw new Error('server gateway did not create collection')
       const create = await handler(new Request('http://fylo.test/v1/package-users', {
         method: 'POST',
         headers: {

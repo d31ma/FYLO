@@ -13,6 +13,7 @@
  *   | { type: 'cipher.configured', collection: string }
  *   | { type: 'index.rebuilt', collection: string, docsScanned: number, indexedDocs: number, worm: boolean }
  *   | { type: 'lock.takeover', lockPath: string, newOwner: string, previousOwner?: string }
+ *   | { type: 'sync.failed', collection: string, docId: string, operation: string, path: string, detail: string }
  * )} FyloEvent
  * @typedef {(event: FyloEvent) => void | Promise<void>} FyloEventHandler
  */

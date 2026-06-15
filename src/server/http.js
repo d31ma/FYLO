@@ -1,4 +1,5 @@
 import path from 'node:path'
+import { createHash, timingSafeEqual } from 'node:crypto'
 import Fylo from '../index.js'
 import { runMachineRequest } from '../cli/machine.js'
 import { validateBranchName, VersionRepository } from '../versioning/repository.js'
@@ -20,12 +21,16 @@ const FYLO_REMOTE_PROTOCOL_VERSION = 1
  */
 
 /**
+ * @typedef {FyloHttpServerOptions & { root: string, maxBodyBytes: number, resolvedCorsOrigin?: string }} FyloResponseOptions
+ */
+
+/**
  * @typedef {object} FyloHttpContext
  * @property {URL} url
  * @property {Request} request
  * @property {string} root
  * @property {string | undefined} branch
- * @property {FyloHttpServerOptions & { root: string, maxBodyBytes: number }} options
+ * @property {FyloResponseOptions} options
  */
 
 /**
@@ -37,17 +42,24 @@ export function createFyloHttpHandler(options) {
     const normalized = normalizeServerOptions(options)
     return async (request) => {
         const url = new URL(request.url)
+        const responseOptions = withResolvedCors(normalized, request)
         try {
-            if (request.method === 'OPTIONS') return emptyResponse(204, normalized)
+            if (request.method === 'OPTIONS') return emptyResponse(204, responseOptions)
             if (!isAuthorized(request, normalized)) {
                 return jsonResponse(
                     { ok: false, error: { message: 'Unauthorized' } },
                     401,
-                    normalized
+                    responseOptions
                 )
             }
             const branch = selectBranch(request)
-            const context = { url, request, root: normalized.root, branch, options: normalized }
+            const context = {
+                url,
+                request,
+                root: normalized.root,
+                branch,
+                options: responseOptions
+            }
             if (url.pathname === '/v1/health' && request.method === 'GET') {
                 return jsonResponse(
                     {
@@ -57,16 +69,16 @@ export function createFyloHttpHandler(options) {
                         branch: branch ?? null
                     },
                     200,
-                    normalized
+                    responseOptions
                 )
             }
             if (url.pathname === '/v1/openapi.json' && request.method === 'GET') {
-                return jsonResponse(openApiDocument(), 200, normalized)
+                return jsonResponse(openApiDocument(), 200, responseOptions)
             }
             if (url.pathname === '/v1/exec' && request.method === 'POST') {
                 const body = await readJsonBody(request, normalized.maxBodyBytes)
                 const response = await runMachineRequest(body, await machineOverridesFor(context))
-                return jsonResponse(response, response.ok ? 200 : 400, normalized)
+                return jsonResponse(response, response.ok ? 200 : 400, responseOptions)
             }
             if (url.pathname === '/v1/sql' && request.method === 'POST') {
                 const body = await readJsonBody(request, normalized.maxBodyBytes)
@@ -74,26 +86,46 @@ export function createFyloHttpHandler(options) {
                     throw statusError(400, 'SQL request body must include a string "sql" field')
                 }
                 const result = await (await fyloFor(context))._sql(body.sql)
-                return jsonResponse({ ok: true, result }, 200, normalized)
+                return jsonResponse({ ok: true, result }, 200, responseOptions)
             }
             const route = parseCollectionRoute(url.pathname)
             if (route) return await handleCollectionRoute(context, route)
-            return jsonResponse({ ok: false, error: { message: 'Not found' } }, 404, normalized)
-        } catch (error) {
-            const failure = /** @type {Error & { status?: number }} */ (error)
             return jsonResponse(
-                {
-                    ok: false,
-                    error: {
-                        name: failure.name || 'Error',
-                        message: failure.message || 'Unknown error'
-                    }
-                },
-                failure.status ?? 500,
-                normalized
+                { ok: false, error: { message: 'Not found' } },
+                404,
+                responseOptions
             )
+        } catch (error) {
+            return errorResponse(error, responseOptions)
         }
     }
+}
+
+/**
+ * Builds an error response, exposing the message only for intentional client
+ * errors (those carrying a 4xx status). Unexpected failures are logged
+ * server-side and returned as a generic 500 so internal details — filesystem
+ * paths, stack traces — never reach the client.
+ *
+ * @param {unknown} error
+ * @param {FyloResponseOptions} options
+ * @returns {Response}
+ */
+function errorResponse(error, options) {
+    const failure = /** @type {Error & { status?: number }} */ (error)
+    const status = typeof failure.status === 'number' ? failure.status : 500
+    const isClientError = status >= 400 && status < 500
+    if (!isClientError) console.error('[fylo] unhandled request error:', failure)
+    return jsonResponse(
+        {
+            ok: false,
+            error: isClientError
+                ? { name: failure.name || 'Error', message: failure.message || 'Request failed' }
+                : { name: 'Error', message: 'Internal server error' }
+        },
+        status,
+        options
+    )
 }
 
 /**
@@ -117,8 +149,12 @@ export function serveFyloHttp(options) {
  * @returns {Promise<Response>}
  */
 async function handleCollectionRoute(context, route) {
-    validateCollectionName(route.collection)
-    if (route.id) validateDocId(route.id)
+    try {
+        validateCollectionName(route.collection)
+        if (route.id) validateDocId(route.id)
+    } catch (err) {
+        throw statusError(400, err instanceof Error ? err.message : 'Invalid request path')
+    }
     const fylo = await fyloFor(context)
     const options = context.options
     if (!route.id && context.request.method === 'GET') {
@@ -172,7 +208,9 @@ async function fyloFor(context) {
     return /** @type {import('../api/fylo.js').FyloCollections} */ (
         /** @type {unknown} */ (
             new Fylo(await resolveRoot(context), {
-                ...(context.branch ? { versioning: { resolve: false } } : {})
+                ...(context.branch
+                    ? { versioning: { resolve: false, repositoryRoot: context.root } }
+                    : {})
             })
         )
     )
@@ -191,12 +229,12 @@ async function resolveRoot(context) {
 
 /**
  * @param {FyloHttpContext} context
- * @returns {Promise<{ root: string, versioning?: { resolve?: boolean }}>}
+ * @returns {Promise<{ root: string, versioning?: import('../replication/sync.js').FyloVersioningOptions }>}
  */
 async function machineOverridesFor(context) {
     return {
         root: await resolveRoot(context),
-        ...(context.branch ? { versioning: { resolve: false } } : {})
+        ...(context.branch ? { versioning: { resolve: false, repositoryRoot: context.root } } : {})
     }
 }
 
@@ -333,7 +371,24 @@ async function readJsonBody(request, maxBytes) {
 function isAuthorized(request, options) {
     if (request.method === 'OPTIONS') return true
     if (!options.token) return options.allowAnonymous === true
-    return request.headers.get('authorization') === `Bearer ${options.token}`
+    const provided = request.headers.get('authorization')
+    if (!provided) return false
+    return constantTimeEquals(provided, `Bearer ${options.token}`)
+}
+
+/**
+ * Compares two strings without leaking their relationship through timing.
+ * Both sides are hashed to a fixed-width digest first so the comparison length
+ * is constant regardless of the (attacker-controlled) input length.
+ *
+ * @param {string} a
+ * @param {string} b
+ * @returns {boolean}
+ */
+function constantTimeEquals(a, b) {
+    const digestA = createHash('sha256').update(a).digest()
+    const digestB = createHash('sha256').update(b).digest()
+    return timingSafeEqual(digestA, digestB)
 }
 
 /**
@@ -407,7 +462,7 @@ function statusError(status, message) {
 /**
  * @param {unknown} body
  * @param {number} status
- * @param {FyloHttpServerOptions} options
+ * @param {FyloResponseOptions} options
  * @returns {Response}
  */
 function jsonResponse(body, status, options) {
@@ -419,7 +474,7 @@ function jsonResponse(body, status, options) {
 
 /**
  * @param {number} status
- * @param {FyloHttpServerOptions} options
+ * @param {FyloResponseOptions} options
  * @returns {Response}
  */
 function emptyResponse(status, options) {
@@ -427,7 +482,7 @@ function emptyResponse(status, options) {
 }
 
 /**
- * @param {FyloHttpServerOptions} options
+ * @param {FyloResponseOptions} options
  * @param {string=} contentType
  * @returns {Headers}
  */
@@ -435,11 +490,8 @@ function responseHeaders(options, contentType) {
     const headers = new Headers()
     if (contentType) headers.set('content-type', contentType)
     headers.set('vary', 'origin, accept-profile, content-profile')
-    if (options.corsOrigin) {
-        const origin = Array.isArray(options.corsOrigin)
-            ? options.corsOrigin.join(', ')
-            : options.corsOrigin
-        headers.set('access-control-allow-origin', origin)
+    if (options.resolvedCorsOrigin) {
+        headers.set('access-control-allow-origin', options.resolvedCorsOrigin)
         headers.set('access-control-allow-methods', 'GET,HEAD,POST,PATCH,DELETE,OPTIONS')
         headers.set(
             'access-control-allow-headers',
@@ -447,6 +499,36 @@ function responseHeaders(options, contentType) {
         )
     }
     return headers
+}
+
+/**
+ * Resolves the `access-control-allow-origin` value for one request. A single
+ * configured origin (including `*`) is returned as-is; a configured allowlist
+ * echoes the caller's Origin only when it appears in the list, so multiple
+ * origins work without emitting a spec-invalid comma-joined header.
+ *
+ * @param {FyloHttpServerOptions} options
+ * @param {string | null} requestOrigin
+ * @returns {string | undefined}
+ */
+function resolveCorsOrigin(options, requestOrigin) {
+    const configured = options.corsOrigin
+    if (!configured) return undefined
+    if (typeof configured === 'string') return configured
+    if (requestOrigin && configured.includes(requestOrigin)) return requestOrigin
+    return undefined
+}
+
+/**
+ * @param {FyloHttpServerOptions & { root: string, maxBodyBytes: number }} options
+ * @param {Request} request
+ * @returns {FyloResponseOptions}
+ */
+function withResolvedCors(options, request) {
+    return {
+        ...options,
+        resolvedCorsOrigin: resolveCorsOrigin(options, request.headers.get('origin'))
+    }
 }
 
 /**

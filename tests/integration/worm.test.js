@@ -39,6 +39,7 @@ describe('strict WORM mode', () => {
         expect(
             await Bun.file(path.join(root, '.collections', COLLECTION, 'versions')).exists()
         ).toBe(false)
+        expect(await Bun.file(path.join(root, '.fylo-vcs')).exists()).toBe(false)
 
         const stored = await fylo[COLLECTION].get(id).once()
         expect(stored[id].title).toBe('Retain me')

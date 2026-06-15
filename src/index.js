@@ -5,7 +5,9 @@
 import Fylo from './api/fylo.js'
 export { CollectionFacade } from './api/fylo.js'
 export { AuthenticatedFylo } from './api/fylo.js'
+export { FyloBatchWriteError } from './api/fylo.js'
 
+export { CollectionNotFoundError } from './core/collection.js'
 export { LocalQueue, QueueMessageContext, consume, publish } from './queue/local.js'
 export { createFyloHttpHandler, serveFyloHttp } from './server/http.js'
 export { FyloAuthError } from './security/auth.js'

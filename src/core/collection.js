@@ -32,6 +32,22 @@ const RESERVED_NAMES = new Set([
     '_sql'
 ])
 
+export class CollectionNotFoundError extends Error {
+    /** @type {string} */
+    collection
+    /** @type {'FYLO_COLLECTION_NOT_FOUND'} */
+    code = 'FYLO_COLLECTION_NOT_FOUND'
+    /** @type {number} */
+    status = 404
+
+    /** @param {string} collection */
+    constructor(collection) {
+        super(`Collection not found: ${collection}`)
+        this.name = 'CollectionNotFoundError'
+        this.collection = collection
+    }
+}
+
 /**
  * @param {string} collection
  */

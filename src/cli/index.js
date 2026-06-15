@@ -721,7 +721,7 @@ async function runRebuild(collection, root, worm = false, json = false) {
 async function runDeleted(collection, root, json = false) {
     const results = {}
     for await (const result of createFylo(root)
-        [collection].findDeleted({ $deleted: { $gte: 0 } })
+        [collection].find.deleted({ $deleted: { $gte: 0 } })
         .collect()) {
         if (result && typeof result === 'object') Object.assign(results, result)
     }

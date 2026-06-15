@@ -38,7 +38,7 @@ describe('NO-SQL', async () => {
     test('UPDATE CLAUSE', async () => {
         let count = -1
         try {
-            count = await fylo[PHOTOS].patchMany({
+            count = await fylo[PHOTOS].patch.many({
                 $set: { title: 'All Mighti' },
                 $where: { $ops: [{ title: { $like: '%est%' } }] }
             })
@@ -54,7 +54,7 @@ describe('NO-SQL', async () => {
     test('UPDATE ALL', async () => {
         let count = -1
         try {
-            count = await fylo[PHOTOS].patchMany({ $set: { title: 'All Mighter' } })
+            count = await fylo[PHOTOS].patch.many({ $set: { title: 'All Mighter' } })
         } catch {}
         let results = {}
         for await (const data of fylo[PHOTOS].find({

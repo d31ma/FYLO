@@ -1,8 +1,8 @@
 <section class="doc-section" id="overview">
   <div class="doc-badge">@d31ma/fylo</div>
-  <h1 class="doc-h1">Filesystem-first document storage for Bun.</h1>
+  <h1 class="doc-h1">Filesystem-first document storage for any language.</h1>
   <p class="doc-lead">FYLO keeps one canonical file per document and one collection index file for fast queries. The filesystem is the source of truth. Indexes are accelerators — rebuildable from documents at any time.</p>
-  <p class="doc-p">One Bun-native package. Two runtimes: a server engine for filesystem-backed storage and a browser engine for OPFS-backed local-first apps. No native addons, no separate database processes.</p>
+  <p class="doc-p">A Bun-native library plus a standalone executable binary and HTTP gateway, so any language can use it. Two runtimes: a server engine for filesystem-backed storage and a browser engine for OPFS-backed local-first apps. No native addons, no separate database processes.</p>
   <div class="doc-note"><strong>Mental model.</strong> Document files are authoritative. Index files can be rebuilt from those documents if they ever drift.</div>
   <div class="doc-code-wrap">
     <div class="doc-code-bar">
@@ -28,7 +28,7 @@
     </svg>
     Installation
   </h2>
-  <p class="doc-p">Install the published package directly from npm with Bun:</p>
+  <p class="doc-p">Install the published library from npm:</p>
   <div class="doc-code-wrap">
     <div class="doc-code-bar">
       <span class="doc-code-lang">Bash</span>

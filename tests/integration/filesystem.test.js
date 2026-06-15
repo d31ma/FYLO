@@ -1,8 +1,11 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { rm, stat, writeFile } from 'node:fs/promises'
+import { readdirSync } from 'node:fs'
 import path from 'node:path'
-import Fylo from '../../src/index.js'
+import TTID from '@d31ma/ttid'
+import Fylo, { CollectionNotFoundError, FyloBatchWriteError } from '../../src/index.js'
 import { createTestRoot } from '../helpers/root.js'
+import { VersionRepository } from '../../src/versioning/repository.js'
 
 const root = await createTestRoot('fylo-filesystem-')
 const fylo = new Fylo(root)
@@ -75,6 +78,206 @@ describe('filesystem engine', () => {
         expect(await Bun.file(activePath).exists()).toBe(false)
         expect(await Bun.file(deletedPath).exists()).toBe(true)
     })
+
+    test('collection facades fail closed when the collection does not exist', async () => {
+        const missing = `missing-${Date.now()}`
+        const id = TTID.generate()
+
+        expect((await fylo[missing].inspect()).exists).toBe(false)
+        await expect(fylo[missing].put({ name: 'No collection' })).rejects.toBeInstanceOf(
+            CollectionNotFoundError
+        )
+        await expect(fylo[missing].get(id).once()).rejects.toBeInstanceOf(CollectionNotFoundError)
+        await expect(Array.fromAsync(fylo[missing].find({}).collect())).rejects.toBeInstanceOf(
+            CollectionNotFoundError
+        )
+        await expect(fylo[missing].patch(id, { name: 'Nope' })).rejects.toBeInstanceOf(
+            CollectionNotFoundError
+        )
+        await expect(fylo[missing].delete(id)).rejects.toBeInstanceOf(CollectionNotFoundError)
+        await fylo[missing].create()
+        await expect(fylo[missing].create()).resolves.toBeUndefined()
+        expect((await fylo[missing].inspect()).exists).toBe(true)
+    })
+
+    test('document writes auto-commit by default and can be disabled', async () => {
+        const autoRoot = await createTestRoot('fylo-auto-commit-')
+        try {
+            const auto = new Fylo(autoRoot)
+            const repo = new VersionRepository(autoRoot)
+            await auto['auto-posts'].create()
+
+            const id = await auto['auto-posts'].put({ title: 'v1' })
+            await auto['auto-posts'].patch(id, { title: 'v2' })
+            await auto['auto-posts'].delete(id)
+            await auto['auto-posts'].restore(id)
+
+            expect((await repo.status()).clean).toBe(true)
+            expect((await repo.log({ limit: 4 })).map((commit) => commit.message)).toEqual([
+                `restore auto-posts/${id}`,
+                `delete auto-posts/${id}`,
+                `patch auto-posts/${id}`,
+                `put auto-posts/${id}`
+            ])
+        } finally {
+            await rm(autoRoot, { recursive: true, force: true })
+        }
+
+        const manualRoot = await createTestRoot('fylo-manual-commit-')
+        try {
+            const manual = new Fylo(manualRoot, { versioning: { autoCommit: false } })
+            const repo = new VersionRepository(manualRoot)
+            await manual['manual-posts'].create()
+            await repo.commit('baseline')
+            await manual['manual-posts'].put({ title: 'manual' })
+
+            const status = await repo.status()
+            expect(status.clean).toBe(false)
+            expect(status.diff.counts.added).toBe(1)
+        } finally {
+            await rm(manualRoot, { recursive: true, force: true })
+        }
+    })
+
+    test('bulk operations coalesce into a single version-control commit', async () => {
+        const bulkRoot = await createTestRoot('fylo-coalesce-')
+        try {
+            const fylo = new Fylo(bulkRoot)
+            const repo = new VersionRepository(bulkRoot)
+            await fylo['bulk-posts'].create()
+
+            const ids = await fylo['bulk-posts'].put.batch(
+                Array.from({ length: 12 }, (_, i) => ({ title: `post ${i}` }))
+            )
+            expect(ids).toHaveLength(12)
+            expect((await repo.log({ limit: 10 })).map((commit) => commit.message)).toEqual([
+                'put bulk-posts (12 documents)'
+            ])
+            expect((await repo.status()).clean).toBe(true)
+
+            await fylo['bulk-posts'].patch.many({ $set: { pinned: true } })
+            await fylo['bulk-posts'].delete.many({})
+            expect((await repo.log({ limit: 10 })).map((commit) => commit.message)).toEqual([
+                'delete bulk-posts (12 documents)',
+                'patch bulk-posts (12 documents)',
+                'put bulk-posts (12 documents)'
+            ])
+            expect((await repo.status()).clean).toBe(true)
+        } finally {
+            await rm(bulkRoot, { recursive: true, force: true })
+        }
+    })
+
+    test('put.batch surfaces per-item failures instead of dropping them silently', async () => {
+        const batchRoot = await createTestRoot('fylo-batch-fail-')
+        try {
+            const fylo = new Fylo(batchRoot)
+            await fylo['batch-fail'].create()
+            // A null entry is malformed and rejects; the valid documents around
+            // it must still be written, committed, and reported back.
+            const batch = /** @type {Record<string, any>[]} */ (
+                /** @type {unknown} */ ([{ title: 'ok-1' }, null, { title: 'ok-2' }])
+            )
+            const error = await fylo['batch-fail'].put.batch(batch).then(
+                () => null,
+                (err) => err
+            )
+            expect(error).toBeInstanceOf(FyloBatchWriteError)
+            const failure = /** @type {FyloBatchWriteError} */ (error)
+            expect(failure.code).toBe('FYLO_BATCH_WRITE_FAILED')
+            expect(failure.writtenIds).toHaveLength(2)
+            expect(failure.failures).toHaveLength(1)
+            expect(failure.failures[0].index).toBe(1)
+
+            const seen = []
+            for await (const doc of fylo['batch-fail'].find({}).collect()) seen.push(doc)
+            expect(seen).toHaveLength(2)
+        } finally {
+            await rm(batchRoot, { recursive: true, force: true })
+        }
+    })
+
+    test('single-document commits do bounded work as the collection grows', async () => {
+        const scaleRoot = await createTestRoot('fylo-vcs-scale-')
+        try {
+            const fylo = new Fylo(scaleRoot)
+            const repo = new VersionRepository(scaleRoot)
+            await fylo.scale.create()
+
+            const latestTreeBytes = async () => {
+                const [latest] = await repo.log({ limit: 1 })
+                const treePath = path.join(
+                    scaleRoot,
+                    '.fylo-vcs',
+                    'commits',
+                    latest.id,
+                    'tree.json'
+                )
+                return (await stat(treePath)).size
+            }
+            const objectCount = () =>
+                readdirSync(path.join(scaleRoot, '.fylo-vcs', 'objects'), {
+                    recursive: true,
+                    withFileTypes: true
+                }).filter((entry) => entry.isFile()).length
+
+            let made = 0
+            const fillTo = async (target) => {
+                while (made < target) await fylo.scale.put({ n: made++ })
+            }
+
+            await fillTo(20)
+            const smallTree = await latestTreeBytes()
+            const beforeSmall = objectCount()
+            await fylo.scale.put({ probe: 'small' })
+            const smallDelta = objectCount() - beforeSmall
+
+            await fillTo(220) // an order of magnitude larger
+            const largeTree = await latestTreeBytes()
+            const beforeLarge = objectCount()
+            await fylo.scale.put({ probe: 'large' })
+            const largeDelta = objectCount() - beforeLarge
+
+            // tree.json references the root tree by hash, so its size is constant
+            // no matter how many documents the collection holds.
+            expect(largeTree).toBe(smallTree)
+            // A single write rewrites only the path from its blob to the root
+            // (blob + bucket + namespace + collection + root) — a fixed number of
+            // new objects, independent of collection size.
+            expect(smallDelta).toBeLessThanOrEqual(8)
+            expect(largeDelta).toBe(smallDelta)
+        } finally {
+            await rm(scaleRoot, { recursive: true, force: true })
+        }
+    })
+
+    test('auto-commit records writes on the active version branch', async () => {
+        const branchRoot = await createTestRoot('fylo-auto-branch-')
+        try {
+            const repo = new VersionRepository(branchRoot)
+            const main = new Fylo(branchRoot)
+            await main['branch-posts'].create()
+            const mainId = await main['branch-posts'].put({ title: 'main' })
+
+            await repo.checkout('feature/auto', { create: true })
+            const feature = new Fylo(branchRoot)
+            const featureId = await feature['branch-posts'].put({ title: 'feature' })
+
+            const [latest] = await repo.log({ limit: 1 })
+            expect(latest.branch).toBe('feature/auto')
+            expect(latest.message).toBe(`put branch-posts/${featureId}`)
+            expect((await repo.status()).clean).toBe(true)
+
+            await repo.checkout('main')
+            expect(await main['branch-posts'].get(mainId).once()).toEqual({
+                [mainId]: { title: 'main' }
+            })
+            expect(await main['branch-posts'].get(featureId).once()).toEqual({})
+        } finally {
+            await rm(branchRoot, { recursive: true, force: true })
+        }
+    })
+
     test('path constructor exposes SQL tag and collection-first facades', async () => {
         const fylo = new Fylo(root)
         await fylo.sql`CREATE TABLE apiusers`
@@ -199,10 +402,12 @@ describe('filesystem engine', () => {
         expect(deletedMetadata.mode & 0o777).toBe(0o444)
 
         const deleted = []
-        for await (const doc of fylo[POSTS].findDeleted({
-            $ops: [{ title: { $eq: 'Restore me' } }],
-            $deleted: { $gte: deletedAtFloor }
-        }).collect()) {
+        for await (const doc of fylo[POSTS].find
+            .deleted({
+                $ops: [{ title: { $eq: 'Restore me' } }],
+                $deleted: { $gte: deletedAtFloor }
+            })
+            .collect()) {
             deleted.push(doc)
         }
         expect(deleted).toEqual([{ [id]: { title: 'Restore me', status: 'archived' } }])
@@ -431,7 +636,7 @@ describe('filesystem engine', () => {
     test('joins work in filesystem mode', async () => {
         const userId = await fylo[USERS].put({ id: 42, name: 'Ada' })
         const postId = await fylo[POSTS].put({ id: 42, title: 'Shared', content: 'join me' })
-        const joined = await fylo.joinDocs({
+        const joined = await fylo.join({
             $leftCollection: USERS,
             $rightCollection: POSTS,
             $mode: 'inner',

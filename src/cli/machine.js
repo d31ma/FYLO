@@ -12,6 +12,7 @@ const MACHINE_PROTOCOL_VERSION = 1
 
 /**
  * @typedef {import('../replication/sync.js').FyloWormOptions} FyloWormOptions
+ * @typedef {import('../replication/sync.js').FyloVersioningOptions} FyloVersioningOptions
  */
 
 /**
@@ -25,6 +26,7 @@ const MACHINE_PROTOCOL_VERSION = 1
  * @property {string=} root
  * @property {string=} schemaDir
  * @property {boolean | FyloWormOptions=} worm
+ * @property {FyloVersioningOptions=} versioning
  * @property {string=} collection
  * @property {string=} branch
  * @property {boolean=} create
@@ -54,7 +56,7 @@ const MACHINE_PROTOCOL_VERSION = 1
  * @typedef {object} MachineCliOverrides
  * @property {string=} root
  * @property {boolean=} worm
- * @property {{ resolve?: boolean }=} versioning
+ * @property {FyloVersioningOptions=} versioning
  */
 
 /**
@@ -142,6 +144,43 @@ function normalizeWormOptions(worm) {
 }
 
 /**
+ * @param {unknown} versioning
+ * @returns {FyloVersioningOptions | undefined}
+ */
+function normalizeVersioningOptions(versioning) {
+    if (versioning === undefined) return undefined
+    if (!isRecord(versioning)) {
+        throw new Error('Machine request field "versioning" must be an object')
+    }
+    /** @type {FyloVersioningOptions} */
+    const normalized = {}
+    if (Object.hasOwn(versioning, 'resolve')) {
+        if (typeof versioning.resolve !== 'boolean') {
+            throw new Error('Machine request field "versioning.resolve" must be a boolean')
+        }
+        normalized.resolve = versioning.resolve
+    }
+    if (Object.hasOwn(versioning, 'autoCommit')) {
+        if (typeof versioning.autoCommit !== 'boolean') {
+            throw new Error('Machine request field "versioning.autoCommit" must be a boolean')
+        }
+        normalized.autoCommit = versioning.autoCommit
+    }
+    if (Object.hasOwn(versioning, 'repositoryRoot')) {
+        if (
+            typeof versioning.repositoryRoot !== 'string' ||
+            versioning.repositoryRoot.length === 0
+        ) {
+            throw new Error(
+                'Machine request field "versioning.repositoryRoot" must be a non-empty string'
+            )
+        }
+        normalized.repositoryRoot = versioning.repositoryRoot
+    }
+    return normalized
+}
+
+/**
  * @param {MachineRequest} request
  * @param {MachineCliOverrides=} overrides
  * @returns {import('../api/fylo.js').FyloCollections}
@@ -152,11 +191,16 @@ function createMachineFylo(request, overrides = {}) {
         overrides.worm === true
             ? /** @type {FyloWormOptions} */ ({ mode: 'strict' })
             : normalizeWormOptions(request.worm)
+    const requestVersioning = normalizeVersioningOptions(request.versioning)
+    const versioning =
+        requestVersioning || overrides.versioning
+            ? { ...(requestVersioning ?? {}), ...(overrides.versioning ?? {}) }
+            : undefined
     return /** @type {import('../api/fylo.js').FyloCollections} */ (
         /** @type {unknown} */ (
             new Fylo(path.resolve(root ?? Fylo.defaultRoot()), {
                 ...(worm ? { worm } : {}),
-                ...(overrides.versioning ? { versioning: overrides.versioning } : {})
+                ...(versioning ? { versioning } : {})
             })
         )
     )
@@ -202,7 +246,7 @@ async function collectFindDocs(fylo, collection, query) {
 async function collectDeletedDocs(fylo, collection, query) {
     /** @type {Record<string, any> | string[]} */
     let docs = query.$onlyIds ? [] : {}
-    for await (const value of fylo[collection].findDeleted(query).collect()) {
+    for await (const value of fylo[collection].find.deleted(query).collect()) {
         if (value === undefined) continue
         if (typeof value === 'object' && value !== null) {
             docs = /** @type {{ appendGroup(target: any, value: any): any }} */ (
@@ -299,7 +343,7 @@ export async function executeMachineOperation(request, overrides = {}) {
                 isRecord(request.query) ? request.query : {}
             )
         case 'joinDocs':
-            return await fylo.joinDocs(
+            return await fylo.join(
                 /** @type {import('../query/types.js').StoreJoin<Record<string, any>, Record<string, any>>} */ (
                     requireObject(request, 'join')
                 )
@@ -309,7 +353,7 @@ export async function executeMachineOperation(request, overrides = {}) {
                 requireObject(request, 'data')
             )
         case 'batchPutData':
-            return await fylo[requireString(request, 'collection')].batchPut(
+            return await fylo[requireString(request, 'collection')].put.batch(
                 requireObjectArray(request, 'batch')
             )
         case 'patchDoc':
@@ -319,7 +363,7 @@ export async function executeMachineOperation(request, overrides = {}) {
                 isRecord(request.oldDoc) ? request.oldDoc : {}
             )
         case 'patchDocs':
-            return await fylo[requireString(request, 'collection')].patchMany(
+            return await fylo[requireString(request, 'collection')].patch.many(
                 /** @type {import('../query/types.js').StoreUpdate<Record<string, any>>} */ (
                     requireObject(request, 'update')
                 )
@@ -331,7 +375,7 @@ export async function executeMachineOperation(request, overrides = {}) {
             await fylo[requireString(request, 'collection')].restore(requireString(request, 'id'))
             return { restored: true, id: requireString(request, 'id') }
         case 'delDocs':
-            return await fylo[requireString(request, 'collection')].deleteMany(
+            return await fylo[requireString(request, 'collection')].delete.many(
                 /** @type {import('../query/types.js').StoreDelete<Record<string, any>>} */ (
                     requireObject(request, 'delete')
                 )

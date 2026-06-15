@@ -22,7 +22,7 @@ afterAll(async () => {
 })
 describe('NO-SQL', async () => {
     test('INNER JOIN — returns only join field values', async () => {
-        const results = await fylo.joinDocs({
+        const results = await fylo.join({
             $leftCollection: ALBUMS,
             $rightCollection: POSTS,
             $mode: 'inner',
@@ -36,7 +36,7 @@ describe('NO-SQL', async () => {
         }
     })
     test('LEFT JOIN — returns full left-collection document', async () => {
-        const results = await fylo.joinDocs({
+        const results = await fylo.join({
             $leftCollection: ALBUMS,
             $rightCollection: POSTS,
             $mode: 'left',
@@ -50,7 +50,7 @@ describe('NO-SQL', async () => {
         }
     })
     test('RIGHT JOIN — returns full right-collection document', async () => {
-        const results = await fylo.joinDocs({
+        const results = await fylo.join({
             $leftCollection: ALBUMS,
             $rightCollection: POSTS,
             $mode: 'right',
@@ -65,7 +65,7 @@ describe('NO-SQL', async () => {
         }
     })
     test('OUTER JOIN — returns merged left + right document', async () => {
-        const results = await fylo.joinDocs({
+        const results = await fylo.join({
             $leftCollection: ALBUMS,
             $rightCollection: POSTS,
             $mode: 'outer',
@@ -78,7 +78,7 @@ describe('NO-SQL', async () => {
         }
     })
     test('JOIN with $limit — respects the result cap', async () => {
-        const results = await fylo.joinDocs({
+        const results = await fylo.join({
             $leftCollection: ALBUMS,
             $rightCollection: POSTS,
             $mode: 'inner',
@@ -88,7 +88,7 @@ describe('NO-SQL', async () => {
         expect(Object.keys(results).length).toBe(5)
     })
     test('JOIN with $select — only requested fields are returned', async () => {
-        const results = await fylo.joinDocs({
+        const results = await fylo.join({
             $leftCollection: ALBUMS,
             $rightCollection: POSTS,
             $mode: 'left',
@@ -104,7 +104,7 @@ describe('NO-SQL', async () => {
         }
     })
     test('JOIN with $groupby — groups results by field value', async () => {
-        const results = await fylo.joinDocs({
+        const results = await fylo.join({
             $leftCollection: ALBUMS,
             $rightCollection: POSTS,
             $mode: 'inner',
@@ -114,7 +114,7 @@ describe('NO-SQL', async () => {
         expect(Object.keys(results).length).toBeGreaterThan(0)
     })
     test('JOIN with $onlyIds — returns IDs only', async () => {
-        const results = await fylo.joinDocs({
+        const results = await fylo.join({
             $leftCollection: ALBUMS,
             $rightCollection: POSTS,
             $mode: 'inner',
