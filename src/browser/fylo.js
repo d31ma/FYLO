@@ -434,15 +434,23 @@ export function createBrowserFylo(options) {
 }
 
 /**
- * @param {{ name: string, message: string, code?: string }} error
+ * @param {unknown} error
  * @returns {Error}
  */
 function browserProtocolError(error) {
-    if (error.code === 'FYLO_COLLECTION_NOT_FOUND') {
-        return new CollectionNotFoundError(error.message.replace(/^Collection not found: /, ''))
+    if (!error || typeof error !== 'object') {
+        return new Error('Unknown browser protocol error')
     }
-    const failure = new Error(error.message)
-    failure.name = error.name || 'Error'
+    const err = /** @type {Record<string, unknown>} */ (error)
+    if (err.code === 'FYLO_COLLECTION_NOT_FOUND') {
+        return new CollectionNotFoundError(
+            typeof err.message === 'string'
+                ? err.message.replace(/^Collection not found: /, '')
+                : ''
+        )
+    }
+    const failure = new Error(typeof err.message === 'string' ? err.message : 'Request failed')
+    failure.name = typeof err.name === 'string' ? err.name : 'Error'
     return failure
 }
 

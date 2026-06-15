@@ -112,16 +112,23 @@ export function createFyloHttpHandler(options) {
  * @returns {Response}
  */
 function errorResponse(error, options) {
-    const failure = /** @type {Error & { status?: number }} */ (error)
-    const status = typeof failure.status === 'number' ? failure.status : 500
+    const failure =
+        error && typeof error === 'object'
+            ? /** @type {Error & { status?: number }} */ (error)
+            : null
+    const status = failure && typeof failure.status === 'number' ? failure.status : 500
     const isClientError = status >= 400 && status < 500
-    if (!isClientError) console.error('[fylo] unhandled request error:', failure)
+    if (!isClientError) console.error('[fylo] unhandled request error:', failure ?? error)
     return jsonResponse(
         {
             ok: false,
-            error: isClientError
-                ? { name: failure.name || 'Error', message: failure.message || 'Request failed' }
-                : { name: 'Error', message: 'Internal server error' }
+            error:
+                isClientError && failure
+                    ? {
+                          name: failure.name || 'Error',
+                          message: failure.message || 'Request failed'
+                      }
+                    : { name: 'Error', message: 'Internal server error' }
         },
         status,
         options
