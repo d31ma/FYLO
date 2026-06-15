@@ -16,6 +16,7 @@
 
 /** @typedef {'await-sync' | 'fire-and-forget'} FyloSyncMode */
 /** @typedef {'off' | 'strict'} FyloWormMode */
+/** @typedef {'put' | 'patch' | 'delete' | 'restore'} FyloAutoCommitOperation */
 
 /**
  * @typedef {object} FyloWormOptions
@@ -48,6 +49,22 @@
  */
 
 /**
+ * @typedef {object} FyloAutoCommitEvent
+ * @property {FyloAutoCommitOperation} operation
+ * @property {string} collection
+ * @property {TTID} docId
+ * @property {string} repositoryRoot
+ */
+
+/**
+ * @typedef {object} FyloVersioningOptions
+ * @property {boolean=} resolve
+ * @property {boolean=} autoCommit
+ * @property {string=} repositoryRoot
+ * @property {((event: FyloAutoCommitEvent) => string)=} autoCommitMessage
+ */
+
+/**
  * @template {Record<string, any>} [T=Record<string, any>]
  * @typedef {object} FyloOptions
  * @property {boolean=} rls
@@ -58,7 +75,7 @@
  * @property {FyloCacheOptions=} cache
  * @property {boolean=} queue
  * @property {FyloEventHandler=} onEvent
- * @property {{ resolve?: boolean }=} versioning
+ * @property {FyloVersioningOptions=} versioning
  */
 
 /**

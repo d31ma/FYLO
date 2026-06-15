@@ -14,17 +14,17 @@ document.head.appendChild(favicon)
 
 // ── SEO meta tags ──────────────────────────────────────────────────────────
 const seoMeta = [
-  { name: 'description', content: 'Filesystem-first document storage for Bun with one canonical file per document, collection index files, SQL helpers, realtime listeners, and optional sync hooks.' },
+  { name: 'description', content: 'Filesystem-first document storage for any language with one canonical file per document, collection index files, SQL helpers, realtime listeners, and optional sync hooks.' },
   { name: 'keywords', content: 'fylo, bun, document store, filesystem, sql, sync hooks, realtime, javascript, typescript' },
   { name: 'author', content: 'Fylo contributors' },
   { name: 'robots', content: 'index, follow' },
   { property: 'og:type', content: 'website' },
-  { property: 'og:title', content: 'FYLO – Filesystem-first document storage for Bun' },
+  { property: 'og:title', content: 'FYLO – Filesystem-first document storage for any language' },
   { property: 'og:description', content: 'One canonical file per document, one collection index file for fast queries, and optional sync hooks for your replication layer.' },
   { property: 'og:url', content: 'https://fylo.del.ma' },
   { property: 'og:site_name', content: 'FYLO' },
   { name: 'twitter:card', content: 'summary' },
-  { name: 'twitter:title', content: 'FYLO – Filesystem-first document storage for Bun' },
+  { name: 'twitter:title', content: 'FYLO – Filesystem-first document storage for any language' },
   { name: 'twitter:description', content: 'One canonical file per document, one collection index file for fast queries, and optional sync hooks for your replication layer.' },
 ]
 for (const attrs of seoMeta) {

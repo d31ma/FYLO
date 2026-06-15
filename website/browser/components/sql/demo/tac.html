@@ -51,7 +51,7 @@ await fylo.sql`INSERT INTO users VALUES {! '\x7b' } "name": "Alice", "age": 28 {
 const results = await fylo.sql`SELECT * FROM users WHERE age &gt; 18 LIMIT 10`
 
 // Cross-collection join
-const joined = await fylo.joinDocs({! '\x7b' }
+const joined = await fylo.join({! '\x7b' }
   $leftCollection: "posts",
   $rightCollection: "users",
   $mode: "inner",

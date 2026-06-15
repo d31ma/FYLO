@@ -20,6 +20,7 @@ describe('BrowserDocuments through BrowserCore', () => {
         const fylo = new BrowserCore({ fs, root: '/' })
         const id = /** @type {string} */ (TTID.generate())
 
+        await fylo['users'].create()
         await fylo['users'].put({ [id]: { name: 'Grace' } })
         await fylo['users'].delete(id)
 
@@ -38,6 +39,7 @@ describe('BrowserDocuments through BrowserCore', () => {
     test('rejects malformed JSON document text on read', async () => {
         const fs = createMemoryFilesystem()
         const fylo = new BrowserCore({ fs, root: '/' })
+        await fylo['users'].create()
         const id = await fylo['users'].put({ name: 'Ada' })
         const path = `/.collections/users/docs/${id.slice(0, 2)}/${id}.json`
 
@@ -49,6 +51,7 @@ describe('BrowserDocuments through BrowserCore', () => {
     test('rejects non-object JSON document bodies', async () => {
         const fs = createMemoryFilesystem()
         const fylo = new BrowserCore({ fs, root: '/' })
+        await fylo['users'].create()
         const id = await fylo['users'].put({ name: 'Ada' })
         const path = `/.collections/users/docs/${id.slice(0, 2)}/${id}.json`
 

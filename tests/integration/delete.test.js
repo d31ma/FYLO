@@ -41,7 +41,7 @@ describe('NO-SQL', async () => {
     })
     test('DELETE CLAUSE', async () => {
         try {
-            await fylo[COMMENTS].deleteMany({ $ops: [{ name: { $like: '%et%' } }] })
+            await fylo[COMMENTS].delete.many({ $ops: [{ name: { $like: '%et%' } }] })
         } catch (e) {
             console.error(e)
         }
@@ -55,7 +55,7 @@ describe('NO-SQL', async () => {
     })
     test('DELETE ALL', async () => {
         try {
-            await fylo[COMMENTS].deleteMany()
+            await fylo[COMMENTS].delete.many()
         } catch {}
         commentsResults = {}
         for await (const data of fylo[COMMENTS].find().collect()) {

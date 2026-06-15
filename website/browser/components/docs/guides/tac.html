@@ -45,23 +45,30 @@ FYLO_STRICT=1</div>
     Authorization
   </h2>
   <p class="doc-p">FYLO does not authenticate users directly. Your app should verify sessions, JWTs, OAuth tokens, or API keys first, then pass the verified identity into FYLO with <span class="ic">fylo.as(authContext)</span>.</p>
-  <p class="doc-p">The package-level auth hook is intentionally minimal: configure an <span class="ic">auth.authorize()</span> policy on the root client, then use the scoped client for request handling. Scoped clients fail closed unless a policy is configured.</p>
+  <p class="doc-p">Enable row-level security with <span class="ic">rls: true</span> and declare per-collection rules in a <span class="ic">rules.json</span> beside your schema. Roles are matched in declaration order by <span class="ic">apply_when</span>, and each gates reads, writes, and deletes with filters and predicates that reference the caller through <span class="ic">%%user.*</span>. Everything fails closed: <span class="ic">fylo.as(...)</span> throws unless <span class="ic">rls</span> is enabled, and any operation without a matching rule is denied.</p>
   <div class="doc-code-wrap">
     <div class="doc-code-bar">
-      <span class="doc-code-lang">Authorization Policy</span>
+      <span class="doc-code-lang">rules.json</span>
+      <button class="doc-code-copy" onclick="copySnippet('code-rules')">Copy</button>
+    </div>
+    <div class="doc-code-body" id="code-rules">{! '\x7b' }
+  "version": 1,
+  "roles": [{! '\x7b' }
+    "name": "tenant",
+    "apply_when": true,
+    "read":   {! '\x7b' } "filter": {! '\x7b' } "tenantId": "%%user.tenantId" {! '\x7d' } {! '\x7d' },
+    "insert": {! '\x7b' } "predicate": true {! '\x7d' },
+    "update": {! '\x7b' } "filter": {! '\x7b' } "tenantId": "%%user.tenantId" {! '\x7d' } {! '\x7d' },
+    "delete": {! '\x7b' } "filter": {! '\x7b' } "tenantId": "%%user.tenantId" {! '\x7d' } {! '\x7d' }
+  {! '\x7d' }]
+{! '\x7d' }</div>
+  </div>
+  <div class="doc-code-wrap">
+    <div class="doc-code-bar">
+      <span class="doc-code-lang">Scoped Client</span>
       <button class="doc-code-copy" onclick="copySnippet('code-auth')">Copy</button>
     </div>
-    <div class="doc-code-body" id="code-auth">const fylo = new Fylo('/mnt/fylo', {! '\x7b' }
-  auth: {! '\x7b' }
-    authorize({! '\x7b' } auth, action, collection, data {! '\x7d' }) {! '\x7b' }
-      if (auth.roles?.includes('admin')) return true
-      if (collection !== 'posts') return false
-      const document = data as {! '\x7b' } tenantId?: string {! '\x7d' } | undefined
-      if (action === 'doc:create') return document?.tenantId === auth.tenantId
-      return action === 'doc:read' || action === 'doc:find'
-    {! '\x7d' }
-  {! '\x7d' }
-{! '\x7d' })
+    <div class="doc-code-body" id="code-auth">const fylo = new Fylo('/mnt/fylo', {! '\x7b' } rls: true {! '\x7d' })
 
 const user = await verifyRequest(request)
 const db = fylo.as({! '\x7b' }
@@ -70,9 +77,8 @@ const db = fylo.as({! '\x7b' }
   roles: user.roles
 {! '\x7d' })
 
-const posts = await db.posts.find({! '\x7b' }
-  $ops: [{! '\x7b' } tenantId: {! '\x7b' } $eq: user.tenantId {! '\x7d' } {! '\x7d' }]
-{! '\x7d' }).collect()</div>
+// Reads are tenant-filtered; writes and deletes are authorized by the rules above
+const posts = await db.posts.find().collect()</div>
   </div>
   <div class="doc-note"><strong>Policy inputs.</strong> Authorization policies receive actions such as <span class="ic">collection:create</span>, <span class="ic">doc:read</span>, <span class="ic">doc:find</span>, <span class="ic">doc:create</span>, <span class="ic">doc:update</span>, <span class="ic">doc:delete</span>, <span class="ic">bulk:import</span>, <span class="ic">bulk:export</span>, <span class="ic">join:execute</span>, and <span class="ic">sql:execute</span>.</div>
   <div class="doc-note"><strong>Tenant safety.</strong> Store tenant or owner fields on documents and deny broad operations such as <span class="ic">sql:execute</span> unless the caller is trusted.</div>
@@ -112,7 +118,7 @@ const posts = await db.posts.find({! '\x7b' }
     </svg>
     Document Version Control
   </h2>
-  <p class="doc-p">FYLO includes git-like version control for your document store. Branch, commit full-collection snapshots, inspect diffs, and merge branches — all through the CLI or programmatic API.</p>
+  <p class="doc-p">FYLO includes git-like version control for your document store, and every document write auto-commits by default. Branch, inspect diffs, restore commits, and merge branches through the CLI; bulk operations coalesce into a single commit.</p>
   <div class="doc-code-wrap">
     <div class="doc-code-bar">
       <span class="doc-code-lang">Version Control</span>
@@ -121,7 +127,7 @@ const posts = await db.posts.find({! '\x7b' }
     <div class="doc-code-body" id="code-vcs"># Create and switch to a feature branch
 fylo branch feature-v2
 
-# Snapshot the current state
+# Snapshot the current state (auto-commit also runs on every write)
 fylo commit -m "baseline before restructure"
 
 # View history
@@ -133,7 +139,8 @@ fylo diff main
 # Merge back
 fylo merge feature-v2</div>
   </div>
-  <div class="doc-note"><strong>Storage.</strong> Commits are full-collection snapshots stored under <span class="ic">.fylo-vcs/</span>. Branches are isolated via hidden working trees. Three-way merge with structured conflict reporting is supported.</div>
+  <div class="doc-note"><strong>Content-addressed storage.</strong> Each document version is written once as a deduplicated blob under <span class="ic">.fylo-vcs/objects/</span>, and a commit stores a hierarchical tree that shares unchanged subtrees by hash. A single write commits in time proportional to what changed, not the collection size. Three-way merge with structured conflict reporting is supported.</div>
+  <div class="doc-note"><strong>Auto-commit.</strong> Every <span class="ic">put</span>, <span class="ic">patch</span>, <span class="ic">delete</span>, and <span class="ic">restore</span> records a commit by default (WORM collections are exempt). Disable it with <span class="ic">new Fylo(root, {! '\x7b' } versioning: {! '\x7b' } autoCommit: false {! '\x7d' } {! '\x7d' })</span> to manage commits manually.</div>
 </section>
 
 <section class="doc-section" id="browser-runtime">

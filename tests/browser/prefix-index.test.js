@@ -6,6 +6,7 @@ describe('BrowserPrefixIndex', () => {
     test('stores server-compatible manifest, snapshot, and WAL files', async () => {
         const fs = createMemoryFilesystem()
         const fylo = new BrowserCore({ fs, root: '/' })
+        await fylo['users'].create()
         const id = await fylo['users'].put({
             name: 'Alice',
             score: 42,
@@ -23,6 +24,7 @@ describe('BrowserPrefixIndex', () => {
     test('uses prefix index candidates for exact, like, contains, and range queries', async () => {
         const fs = createMemoryFilesystem()
         const fylo = new BrowserCore({ fs, root: '/' })
+        await fylo['users'].create()
         const ada = await fylo['users'].put({ name: 'Ada', score: 10, tags: ['ops'] })
         const grace = await fylo['users'].put({ name: 'Grace', score: 20, tags: ['runtime'] })
 
@@ -42,6 +44,7 @@ describe('BrowserPrefixIndex', () => {
     test('indexes nested fields, scalar arrays, LIKE helpers, booleans, and numeric ranges', async () => {
         const fs = createMemoryFilesystem()
         const fylo = new BrowserCore({ fs, root: '/' })
+        await fylo['users'].create()
         const id = await fylo['users'].put({
             name: 'Alice',
             address: { city: 'Lagos' },

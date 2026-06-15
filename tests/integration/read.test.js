@@ -74,7 +74,7 @@ describe('NO-SQL', async () => {
         expect(Object.keys(results).length).toBeGreaterThan(0)
     })
     test('SELECT JOIN', async () => {
-        const results = await fylo.joinDocs({
+        const results = await fylo.join({
             $leftCollection: ALBUMS,
             $rightCollection: POSTS,
             $mode: 'inner',

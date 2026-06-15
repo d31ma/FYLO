@@ -277,6 +277,7 @@ describe('CLI machine interface', () => {
                 JSON.stringify({
                     op: 'putData',
                     root,
+                    versioning: { autoCommit: false },
                     collection: 'machine-vcs',
                     data: { title: 'main' }
                 })
@@ -328,6 +329,7 @@ describe('CLI machine interface', () => {
                 JSON.stringify({
                     op: 'putData',
                     root,
+                    versioning: { autoCommit: false },
                     collection: 'machine-vcs',
                     data: { title: 'feature' }
                 })
@@ -379,6 +381,7 @@ describe('CLI machine interface', () => {
                 JSON.stringify({
                     op: 'putData',
                     root,
+                    versioning: { autoCommit: false },
                     collection: 'machine-vcs',
                     data: { title: 'dirty' }
                 })

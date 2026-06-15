@@ -46,6 +46,37 @@ describe('FYLO onEvent hook', () => {
         }
     })
 
+    test('emits sync.failed when a fire-and-forget sync hook rejects', async () => {
+        /** @type {import('../../src/observability/events.js').FyloEvent[]} */
+        const events = []
+        const syncRoot = await createTestRoot('fylo-sync-fail-')
+        try {
+            const fylo = new Fylo(syncRoot, {
+                syncMode: 'fire-and-forget',
+                sync: {
+                    onWrite: () => {
+                        throw new Error('replica unreachable')
+                    }
+                },
+                onEvent: (e) => events.push(e)
+            })
+            const collection = `evt-sync-${Date.now()}`
+            await fylo[collection].create()
+            await fylo[collection].put({ title: 'will sync' })
+            // Fire-and-forget: the hook rejects on a later turn, so let it settle.
+            await new Promise((resolve) => setTimeout(resolve, 50))
+            const failed = events.find((e) => e.type === 'sync.failed')
+            expect(failed).toBeDefined()
+            if (failed && failed.type === 'sync.failed') {
+                expect(failed.collection).toBe(collection)
+                expect(failed.operation).toBe('put')
+                expect(failed.detail).toContain('replica unreachable')
+            }
+        } finally {
+            await rm(syncRoot, { recursive: true, force: true })
+        }
+    })
+
     test('emits cipher.configured when schema-driven config flips Cipher state', async () => {
         const previousSchema = process.env.FYLO_SCHEMA
         const previousEncryptionKey = process.env.FYLO_ENCRYPTION_KEY

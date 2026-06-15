@@ -5,10 +5,12 @@ import path from 'node:path'
 import TTID from '@d31ma/ttid'
 import { writeDurable } from '../storage/durable.js'
 import { FilesystemEngine } from '../storage/engine.js'
+import { tryReleaseFileLock, waitAcquireFileLock } from '../storage/fs-lock.js'
 
 const DEFAULT_BRANCH = 'main'
 const METADATA_DIR = '.fylo-vcs'
 const COLLECTIONS_DIR = '.collections'
+const OBJECTS_DIR = 'objects'
 
 /**
  * @typedef {object} FyloBranchRef
@@ -117,11 +119,25 @@ const COLLECTIONS_DIR = '.collections'
  */
 
 /**
- * File-backed repository metadata for FYLO document version control.
+ * File-backed repository for FYLO document version control.
  *
- * This layer intentionally versions whole collection trees rather than diffs.
- * It is larger than copy-on-write storage, but it keeps recovery simple and
- * mirrors S3's full-object version semantics for the first production slice.
+ * Storage is content-addressed end to end. Every document version is written
+ * once as a deduplicated blob under `objects/`, and a commit's snapshot is a
+ * tree of content-addressed tree nodes mirroring the on-disk shard layout
+ * (collection -> namespace -> bucket -> document). A commit's `tree.json` holds
+ * only the root tree hash, so it is O(1); unchanged subtrees are shared by hash
+ * across commits and branches.
+ *
+ * Single-document commits are incremental: auto-commit passes the ids it
+ * changed, so only those documents are re-read and only the tree nodes on their
+ * path to the root are rewritten — per-commit work is bounded by what changed,
+ * not the collection size. Manual `commit` (no hints) does a full working-tree
+ * scan and yields an identical root hash, and bulk operations coalesce into one
+ * commit. The dirty check is an O(1) root-hash comparison.
+ *
+ * Documents are the source of truth; indexes are accelerators. Restores and
+ * merges rematerialize documents from blobs and then rebuild the derived
+ * indexes, so no index state is ever versioned.
  */
 export class VersionRepository {
     /** @type {string} */
@@ -287,10 +303,67 @@ export class VersionRepository {
         await this.init()
         const branch = await this.currentBranch()
         const ref = await this.readRef(branch)
-        return await this.createCommit(branch, ref, ref.head ? [ref.head] : [], message.trim())
+        const tree = await this.snapshotWorkingTree(this.branchRoot(branch))
+        return await this.createCommitFromTree(
+            branch,
+            ref,
+            ref.head ? [ref.head] : [],
+            message.trim(),
+            tree
+        )
     }
 
     /**
+     * Commits the current branch only when document state differs from HEAD.
+     * When the caller supplies the ids it changed (auto-commit always does), the
+     * new tree is computed incrementally: only those documents are re-read and
+     * only the tree nodes on their path are rewritten, so per-commit work is
+     * independent of total collection size. Without hints — the manual CLI
+     * `commit` — it falls back to a full working-tree scan. Either way the dirty
+     * check is an O(1) root-hash comparison, so no-op writes create no commit.
+     *
+     * @param {string} message
+     * @param {Array<{ collection: string, id: string }>} [changes]
+     * @returns {Promise<FyloCommitManifest | null>}
+     */
+    async commitIfDirty(message, changes) {
+        if (typeof message !== 'string' || message.trim().length === 0) {
+            throw new Error('Commit message is required')
+        }
+        await this.init()
+        const owner = Bun.randomUUIDv7()
+        const lockPath = path.join(this.metadataRoot(), 'locks', 'autocommit.lock')
+        await waitAcquireFileLock(lockPath, owner, {
+            ttlMs: 300_000,
+            waitTimeoutMs: 60_000,
+            heartbeat: true
+        })
+        try {
+            const branch = await this.currentBranch()
+            const ref = await this.readRef(branch)
+            const branchRoot = this.branchRoot(branch)
+            const parentRoot = ref.head ? await this.readTreeRoot(ref.head) : null
+            const rootHash =
+                changes && changes.length > 0 && ref.head
+                    ? await this.computeIncrementalRoot(parentRoot, branchRoot, changes)
+                    : await this.writeTreeFromEntries(await this.snapshotWorkingTree(branchRoot))
+            if (rootHash === parentRoot) return null
+            return await this.writeCommit(
+                branch,
+                ref,
+                ref.head ? [ref.head] : [],
+                message.trim(),
+                rootHash
+            )
+        } finally {
+            await tryReleaseFileLock(lockPath, owner)
+        }
+    }
+
+    /**
+     * Snapshots the branch working tree, then writes the commit. Retained for
+     * merge, which commits an already-materialized working tree.
+     *
      * @param {string} branch
      * @param {FyloBranchRef} ref
      * @param {string[]} parents
@@ -298,10 +371,51 @@ export class VersionRepository {
      * @returns {Promise<FyloCommitManifest>}
      */
     async createCommit(branch, ref, parents, message) {
+        const tree = await this.snapshotWorkingTree(this.branchRoot(branch))
+        return await this.createCommitFromTree(branch, ref, parents, message, tree)
+    }
+
+    /**
+     * Writes a commit from a complete flat document tree, building the nested
+     * content-addressed tree objects from scratch. Used by the full-scan paths
+     * (manual `commit`, merge).
+     *
+     * @param {string} branch
+     * @param {FyloBranchRef} ref
+     * @param {string[]} parents
+     * @param {string} message
+     * @param {Map<string, DocumentTreeEntry>} tree
+     * @returns {Promise<FyloCommitManifest>}
+     */
+    async createCommitFromTree(branch, ref, parents, message, tree) {
+        return await this.writeCommit(
+            branch,
+            ref,
+            parents,
+            message,
+            await this.writeTreeFromEntries(tree)
+        )
+    }
+
+    /**
+     * Persists an immutable commit object: a small `manifest.json` (history
+     * metadata) plus a `tree.json` that references the content-addressed root
+     * tree by hash. Document and tree-node bytes already live in the shared
+     * object store, so commits share every unchanged subtree across history and
+     * branches and never copy collection data. `tree.json` is O(1) regardless of
+     * collection size.
+     *
+     * @param {string} branch
+     * @param {FyloBranchRef} ref
+     * @param {string[]} parents
+     * @param {string} message
+     * @param {string | null} rootHash
+     * @returns {Promise<FyloCommitManifest>}
+     */
+    async writeCommit(branch, ref, parents, message, rootHash) {
         const commitId = String(TTID.generate())
         const commitRoot = this.commitRoot(commitId)
         await mkdir(commitRoot, { recursive: true })
-        await copyCollections(this.branchRoot(branch), commitRoot)
         const manifest = {
             id: commitId,
             branch,
@@ -310,6 +424,10 @@ export class VersionRepository {
             createdAt: new Date().toISOString(),
             root: path.relative(this.root, commitRoot)
         }
+        await writeDurable(
+            path.join(commitRoot, 'tree.json'),
+            `${JSON.stringify({ root: rootHash })}\n`
+        )
         await writeDurable(
             path.join(commitRoot, 'manifest.json'),
             `${JSON.stringify(manifest, null, 2)}\n`
@@ -356,7 +474,7 @@ export class VersionRepository {
     async diff(from = 'HEAD', to = 'WORKTREE') {
         await this.init()
         const [left, right] = await Promise.all([this.resolveTree(from), this.resolveTree(to)])
-        const changes = await diffTrees(left.root, right.root)
+        const changes = diffTrees(left.tree, right.tree)
         return {
             from: left.label,
             to: right.label,
@@ -368,7 +486,8 @@ export class VersionRepository {
     /**
      * Restores a commit snapshot into the current branch working tree. The
      * commit objects remain immutable; this only moves the branch head and
-     * replaces the branch's `.collections` tree.
+     * rematerializes the branch's documents from the snapshot, rebuilding
+     * indexes afterward.
      *
      * @param {string} commitId
      * @param {{ force?: boolean }} [options]
@@ -389,7 +508,7 @@ export class VersionRepository {
             }
         }
         const branchRoot = this.branchRoot(branch)
-        await copyCollections(this.commitRoot(commitId), branchRoot)
+        await this.materializeTree(await this.readCommitTree(commitId), branchRoot)
         await this.writeRef({
             ...ref,
             head: commitId,
@@ -430,16 +549,15 @@ export class VersionRepository {
             return mergeResult(branch, theirs.id, theirs.id, oursHead, 'already-up-to-date', true)
         }
         if (!oursHead || (await this.isAncestor(oursHead, theirs.id))) {
-            await copyCollections(this.commitRoot(theirs.id), this.branchRoot(branch))
+            await this.materializeTree(
+                await this.readCommitTree(theirs.id),
+                this.branchRoot(branch)
+            )
             await this.writeRef({ ...ref, head: theirs.id, updatedAt: new Date().toISOString() })
             return mergeResult(branch, theirs.id, oursHead, theirs.id, 'fast-forward', true)
         }
         const base = await this.commonAncestor(oursHead, theirs.id)
-        const plan = await planThreeWayMerge(
-            base ? this.commitRoot(base) : '',
-            this.commitRoot(oursHead),
-            this.commitRoot(theirs.id)
-        )
+        const plan = await this.planThreeWayMerge(base, oursHead, theirs.id)
         if (plan.conflicts.length > 0) {
             return {
                 branch,
@@ -454,8 +572,7 @@ export class VersionRepository {
                 conflicts: plan.conflicts
             }
         }
-        for (const change of plan.apply)
-            await applyTreeChange(this.branchRoot(branch), this.commitRoot(theirs.id), change)
+        for (const change of plan.apply) await this.applyTreeChange(this.branchRoot(branch), change)
         await rebuildChangedCollections(this.branchRoot(branch), plan.apply)
         const message = options.message?.trim() || `Merge ${source} into ${branch}`
         const commit = await this.createCommit(branch, ref, [oursHead, theirs.id], message)
@@ -495,28 +612,35 @@ export class VersionRepository {
     }
 
     /**
+     * Resolves a ref to its document tree. Committed refs read the stored
+     * snapshot directly; working refs (`WORKTREE` or a branch name) are scanned
+     * and hashed live so a diff reflects uncommitted changes.
+     *
      * @param {string} ref
-     * @returns {Promise<{ label: string, root: string }>}
+     * @returns {Promise<{ label: string, tree: Map<string, DocumentTreeEntry> }>}
      */
     async resolveTree(ref) {
         const normalized = ref.trim()
         if (normalized === 'WORKTREE') {
             const branch = await this.currentBranch()
-            return { label: `${branch}:WORKTREE`, root: this.branchRoot(branch) }
+            return {
+                label: `${branch}:WORKTREE`,
+                tree: await readDocumentTree(this.branchRoot(branch))
+            }
         }
         if (normalized === 'HEAD') {
             const branch = await this.currentBranch()
             const branchRef = await this.readRef(branch)
-            if (!branchRef.head) return { label: `${branch}:HEAD`, root: '' }
-            return { label: `${branch}:HEAD`, root: this.commitRoot(branchRef.head) }
+            if (!branchRef.head) return { label: `${branch}:HEAD`, tree: new Map() }
+            return { label: `${branch}:HEAD`, tree: await this.readCommitTree(branchRef.head) }
         }
         if (TTID.isTTID(normalized)) {
             await this.readCommit(normalized)
-            return { label: normalized, root: this.commitRoot(normalized) }
+            return { label: normalized, tree: await this.readCommitTree(normalized) }
         }
         validateBranchName(normalized)
         const branchRef = await this.readRef(normalized)
-        return { label: normalized, root: this.branchRoot(branchRef.name) }
+        return { label: normalized, tree: await readDocumentTree(this.branchRoot(branchRef.name)) }
     }
 
     /**
@@ -632,6 +756,481 @@ export class VersionRepository {
         }
         return branchRoot
     }
+
+    /**
+     * Resolves the repository metadata root even when callers pass an already
+     * materialized branch working tree with `{ versioning: { resolve: false } }`.
+     *
+     * @param {string} root
+     * @returns {string}
+     */
+    static resolveRepositoryRoot(root) {
+        const absolute = path.resolve(root)
+        if (existsSync(path.join(absolute, METADATA_DIR, 'HEAD'))) return absolute
+        let current = absolute
+        while (true) {
+            const parent = path.dirname(current)
+            if (parent === current) return absolute
+            if (existsSync(path.join(parent, METADATA_DIR, 'HEAD'))) {
+                const branchesRoot = path.join(parent, METADATA_DIR, 'branches')
+                const relative = path.relative(branchesRoot, absolute)
+                if (relative && !relative.startsWith('..') && !path.isAbsolute(relative)) {
+                    return parent
+                }
+            }
+            current = parent
+        }
+    }
+
+    /** @returns {string} */
+    objectsRoot() {
+        return path.join(this.metadataRoot(), OBJECTS_DIR)
+    }
+
+    /**
+     * @param {string} hash
+     * @returns {string}
+     */
+    objectPath(hash) {
+        if (!/^[0-9a-f]{64}$/.test(hash)) throw new Error(`Invalid object hash: ${hash}`)
+        return path.join(this.objectsRoot(), hash.slice(0, 2), hash.slice(2))
+    }
+
+    /**
+     * Persists a document's bytes as a content-addressed, deduplicated blob.
+     * Identical content across documents, commits, and branches is stored once.
+     *
+     * @param {string} hash
+     * @param {Uint8Array} content
+     * @returns {Promise<void>}
+     */
+    async writeObject(hash, content) {
+        const target = this.objectPath(hash)
+        if (await exists(target)) return
+        await writeDurable(target, content)
+    }
+
+    /**
+     * @param {string} hash
+     * @returns {Promise<Buffer>}
+     */
+    async readObject(hash) {
+        return await readFile(this.objectPath(hash))
+    }
+
+    /**
+     * Reads the hash of a commit's content-addressed root tree (or null for an
+     * empty commit). O(1) — used for parent lookups and the dirty check.
+     *
+     * @param {string} commitId
+     * @returns {Promise<string | null>}
+     */
+    async readTreeRoot(commitId) {
+        validateCommitId(commitId)
+        const text = await readFile(path.join(this.commitRoot(commitId), 'tree.json'), 'utf8')
+        return /** @type {{ root: string | null }} */ (JSON.parse(text)).root
+    }
+
+    /**
+     * Reads a commit's document tree as a flat `path → content-hash` map by
+     * walking its content-addressed tree objects. Diff, merge, and restore all
+     * consume this flat shape, so they are unaffected by the nested storage.
+     *
+     * @param {string} commitId
+     * @returns {Promise<Map<string, DocumentTreeEntry>>}
+     */
+    async readCommitTree(commitId) {
+        /** @type {Map<string, DocumentTreeEntry>} */
+        const tree = new Map()
+        const rootHash = await this.readTreeRoot(commitId)
+        if (rootHash) await this.flattenTree(rootHash, tree)
+        return tree
+    }
+
+    /**
+     * @param {string} rootHash
+     * @param {Map<string, DocumentTreeEntry>} tree
+     * @returns {Promise<void>}
+     */
+    async flattenTree(rootHash, tree) {
+        for (const collectionNode of await this.readTreeNode(rootHash)) {
+            const collection = collectionNode.name
+            for (const kindNode of await this.readTreeNode(collectionNode.hash)) {
+                const namespace = kindNode.name
+                const kind = namespace === 'docs' ? 'active' : 'deleted'
+                for (const bucketNode of await this.readTreeNode(kindNode.hash)) {
+                    for (const blob of await this.readTreeNode(bucketNode.hash)) {
+                        const id = blob.name
+                        tree.set(`${collection}/${kind}/${id}`, {
+                            collection,
+                            kind,
+                            id,
+                            path: path.join(
+                                COLLECTIONS_DIR,
+                                collection,
+                                namespace,
+                                bucketNode.name,
+                                `${id}.json`
+                            ),
+                            hash: blob.hash
+                        })
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Writes a content-addressed tree node: a canonical, name-sorted list of
+     * child entries. Identical nodes across commits and branches collapse to one
+     * object, which is what lets unchanged subtrees be shared by reference.
+     *
+     * @param {Map<string, { type: 'tree' | 'blob', hash: string }>} entries
+     * @returns {Promise<string>}
+     */
+    async writeTreeNode(entries) {
+        const node = {
+            entries: [...entries.entries()]
+                .map(([name, child]) => ({ name, type: child.type, hash: child.hash }))
+                .sort((left, right) =>
+                    left.name < right.name ? -1 : left.name > right.name ? 1 : 0
+                )
+        }
+        const serialized = JSON.stringify(node)
+        const hash = createHash('sha256').update(serialized).digest('hex')
+        await this.writeObject(hash, Buffer.from(serialized, 'utf8'))
+        return hash
+    }
+
+    /**
+     * @param {string} hash
+     * @returns {Promise<Array<{ name: string, type: 'tree' | 'blob', hash: string }>>}
+     */
+    async readTreeNode(hash) {
+        const buffer = await this.readObject(hash)
+        return /** @type {{ entries: Array<{ name: string, type: 'tree' | 'blob', hash: string }> }} */ (
+            JSON.parse(buffer.toString('utf8'))
+        ).entries
+    }
+
+    /**
+     * @param {string | undefined} hash
+     * @returns {Promise<Map<string, { type: 'tree' | 'blob', hash: string }>>}
+     */
+    async toEntryMap(hash) {
+        /** @type {Map<string, { type: 'tree' | 'blob', hash: string }>} */
+        const map = new Map()
+        if (!hash) return map
+        for (const child of await this.readTreeNode(hash)) {
+            map.set(child.name, { type: child.type, hash: child.hash })
+        }
+        return map
+    }
+
+    /**
+     * Builds the full nested tree from a flat document map, writing every tree
+     * node, and returns the root hash (null for an empty tree). The hierarchy is
+     * collection → namespace (`docs`/`.deleted`) → bucket (`id.slice(0,2)`) →
+     * document blob, mirroring the on-disk shard layout.
+     *
+     * @param {Map<string, DocumentTreeEntry>} flatTree
+     * @returns {Promise<string | null>}
+     */
+    async writeTreeFromEntries(flatTree) {
+        if (flatTree.size === 0) return null
+        /** @type {Map<string, Map<string, Map<string, Map<string, string>>>>} */
+        const grouped = new Map()
+        for (const entry of flatTree.values()) {
+            const namespace = entry.kind === 'active' ? 'docs' : '.deleted'
+            getOrCreate(
+                getOrCreate(getOrCreate(grouped, entry.collection), namespace),
+                entry.id.slice(0, 2)
+            ).set(entry.id, entry.hash)
+        }
+        /** @type {Map<string, { type: 'tree' | 'blob', hash: string }>} */
+        const rootEntries = new Map()
+        for (const [collection, namespaces] of grouped) {
+            /** @type {Map<string, { type: 'tree' | 'blob', hash: string }>} */
+            const collectionEntries = new Map()
+            for (const [namespace, buckets] of namespaces) {
+                /** @type {Map<string, { type: 'tree' | 'blob', hash: string }>} */
+                const kindEntries = new Map()
+                for (const [bucket, docs] of buckets) {
+                    /** @type {Map<string, { type: 'tree' | 'blob', hash: string }>} */
+                    const docEntries = new Map()
+                    for (const [id, hash] of docs) docEntries.set(id, { type: 'blob', hash })
+                    kindEntries.set(bucket, {
+                        type: 'tree',
+                        hash: await this.writeTreeNode(docEntries)
+                    })
+                }
+                collectionEntries.set(namespace, {
+                    type: 'tree',
+                    hash: await this.writeTreeNode(kindEntries)
+                })
+            }
+            rootEntries.set(collection, {
+                type: 'tree',
+                hash: await this.writeTreeNode(collectionEntries)
+            })
+        }
+        return await this.writeTreeNode(rootEntries)
+    }
+
+    /**
+     * Computes a new root tree from the parent tree plus the documents that
+     * changed, re-reading only those documents and rewriting only the tree nodes
+     * on their paths. Unchanged subtrees are inherited from the parent by hash.
+     * Produces a hash identical to a full scan of the same state, so it
+     * interoperates with `writeTreeFromEntries` and the O(1) dirty check.
+     *
+     * @param {string | null} parentRoot
+     * @param {string} branchRoot
+     * @param {Array<{ collection: string, id: string }>} changes
+     * @returns {Promise<string | null>}
+     */
+    async computeIncrementalRoot(parentRoot, branchRoot, changes) {
+        const changeMap = await this.buildChangeMap(branchRoot, changes)
+        const rootEntries = await this.toEntryMap(parentRoot ?? undefined)
+        for (const [collection, namespaces] of changeMap) {
+            const collectionEntries = await this.toEntryMap(rootEntries.get(collection)?.hash)
+            for (const [namespace, buckets] of namespaces) {
+                const kindEntries = await this.toEntryMap(collectionEntries.get(namespace)?.hash)
+                for (const [bucket, docs] of buckets) {
+                    const bucketEntries = await this.toEntryMap(kindEntries.get(bucket)?.hash)
+                    for (const [id, hash] of docs) {
+                        if (hash === null) bucketEntries.delete(id)
+                        else bucketEntries.set(id, { type: 'blob', hash })
+                    }
+                    if (bucketEntries.size === 0) kindEntries.delete(bucket)
+                    else
+                        kindEntries.set(bucket, {
+                            type: 'tree',
+                            hash: await this.writeTreeNode(bucketEntries)
+                        })
+                }
+                if (kindEntries.size === 0) collectionEntries.delete(namespace)
+                else
+                    collectionEntries.set(namespace, {
+                        type: 'tree',
+                        hash: await this.writeTreeNode(kindEntries)
+                    })
+            }
+            if (collectionEntries.size === 0) rootEntries.delete(collection)
+            else
+                rootEntries.set(collection, {
+                    type: 'tree',
+                    hash: await this.writeTreeNode(collectionEntries)
+                })
+        }
+        if (rootEntries.size === 0) return null
+        return await this.writeTreeNode(rootEntries)
+    }
+
+    /**
+     * Reconciles each changed document id against the working tree, writing any
+     * new blob, and groups the results as collection → namespace → bucket → id →
+     * blobHash (null = the document is absent from that namespace and must be
+     * removed). Both namespaces are reconciled per id so deletes and restores
+     * move documents between `docs` and `.deleted` correctly.
+     *
+     * @param {string} branchRoot
+     * @param {Array<{ collection: string, id: string }>} changes
+     * @returns {Promise<Map<string, Map<string, Map<string, Map<string, string | null>>>>>}
+     */
+    async buildChangeMap(branchRoot, changes) {
+        /** @type {Map<string, Map<string, Map<string, Map<string, string | null>>>>} */
+        const grouped = new Map()
+        /** @type {Set<string>} */
+        const seen = new Set()
+        for (const change of changes) {
+            const id = String(change.id)
+            const dedupeKey = `${change.collection}/${id}`
+            if (seen.has(dedupeKey)) continue
+            seen.add(dedupeKey)
+            const bucket = id.slice(0, 2)
+            for (const namespace of ['docs', '.deleted']) {
+                const filePath = path.join(
+                    branchRoot,
+                    COLLECTIONS_DIR,
+                    change.collection,
+                    namespace,
+                    bucket,
+                    `${id}.json`
+                )
+                /** @type {string | null} */
+                let blobHash = null
+                if (await exists(filePath)) {
+                    const content = await readFile(filePath)
+                    blobHash = createHash('sha256').update(content).digest('hex')
+                    await this.writeObject(blobHash, content)
+                }
+                getOrCreate(
+                    getOrCreate(getOrCreate(grouped, change.collection), namespace),
+                    bucket
+                ).set(id, blobHash)
+            }
+        }
+        return grouped
+    }
+
+    /**
+     * Snapshots a working tree into the object store: every document and
+     * tombstone is hashed, written once as a blob, and recorded as a tree entry.
+     * Returns the tree without copying whole collection directories.
+     *
+     * @param {string} branchRoot
+     * @returns {Promise<Map<string, DocumentTreeEntry>>}
+     */
+    async snapshotWorkingTree(branchRoot) {
+        /** @type {Map<string, DocumentTreeEntry>} */
+        const tree = new Map()
+        const collectionsRoot = path.join(branchRoot, COLLECTIONS_DIR)
+        if (!(await exists(collectionsRoot))) return tree
+        for (const collectionEntry of await readdir(collectionsRoot, { withFileTypes: true })) {
+            if (!collectionEntry.isDirectory()) continue
+            const collection = collectionEntry.name
+            const collectionRoot = path.join(collectionsRoot, collection)
+            await this.snapshotNamespace(tree, collectionRoot, collection, 'docs', 'active')
+            await this.snapshotNamespace(tree, collectionRoot, collection, '.deleted', 'deleted')
+        }
+        return tree
+    }
+
+    /**
+     * @param {Map<string, DocumentTreeEntry>} tree
+     * @param {string} collectionRoot
+     * @param {string} collection
+     * @param {string} namespace
+     * @param {FyloVersionedDocumentKind} kind
+     * @returns {Promise<void>}
+     */
+    async snapshotNamespace(tree, collectionRoot, collection, namespace, kind) {
+        const namespaceRoot = path.join(collectionRoot, namespace)
+        if (!(await exists(namespaceRoot))) return
+        for (const file of await listJsonFiles(namespaceRoot)) {
+            const id = path.basename(file, '.json')
+            const content = await readFile(path.join(namespaceRoot, file))
+            const hash = createHash('sha256').update(content).digest('hex')
+            await this.writeObject(hash, content)
+            tree.set(`${collection}/${kind}/${id}`, {
+                collection,
+                kind,
+                id,
+                path: path.join(COLLECTIONS_DIR, collection, namespace, file),
+                hash
+            })
+        }
+    }
+
+    /**
+     * Materializes a committed tree into a working directory by reconstructing
+     * each document from its blob, then rebuilds the derived indexes for every
+     * affected collection (documents are truth; indexes are accelerators).
+     *
+     * @param {Map<string, DocumentTreeEntry>} tree
+     * @param {string} targetRoot
+     * @returns {Promise<void>}
+     */
+    async materializeTree(tree, targetRoot) {
+        await rm(path.join(targetRoot, COLLECTIONS_DIR), { recursive: true, force: true })
+        /** @type {Set<string>} */
+        const collections = new Set()
+        for (const entry of tree.values()) {
+            const target = path.join(targetRoot, entry.path)
+            assertPathInside(targetRoot, target)
+            await writeDurable(target, await this.readObject(entry.hash))
+            collections.add(entry.collection)
+        }
+        if (collections.size === 0) return
+        const engine = new FilesystemEngine(targetRoot)
+        for (const collection of collections) {
+            await engine.ensureCollection(collection)
+            await engine.rebuildCollection(collection)
+        }
+    }
+
+    /**
+     * Applies a single resolved merge change to a working tree, sourcing new
+     * content from the object store rather than another commit directory.
+     *
+     * @param {string} targetRoot
+     * @param {DocumentTreeEntry & { deleted?: boolean }} change
+     * @returns {Promise<void>}
+     */
+    async applyTreeChange(targetRoot, change) {
+        const target = path.join(targetRoot, change.path)
+        assertPathInside(targetRoot, target)
+        if (change.deleted) {
+            await rm(target, { force: true })
+            return
+        }
+        await writeDurable(target, await this.readObject(change.hash))
+    }
+
+    /**
+     * @param {string | null} baseId
+     * @param {string} oursId
+     * @param {string} theirsId
+     * @returns {Promise<ThreeWayMergePlan>}
+     */
+    async planThreeWayMerge(baseId, oursId, theirsId) {
+        const [base, ours, theirs] = await Promise.all([
+            baseId ? this.readCommitTree(baseId) : new Map(),
+            this.readCommitTree(oursId),
+            this.readCommitTree(theirsId)
+        ])
+        const keys = [...new Set([...base.keys(), ...ours.keys(), ...theirs.keys()])].sort()
+        /** @type {(DocumentTreeEntry & { deleted?: boolean })[]} */
+        const apply = []
+        /** @type {FyloMergeConflict[]} */
+        const conflicts = []
+        for (const key of keys) {
+            const baseEntry = base.get(key)
+            const oursEntry = ours.get(key)
+            const theirsEntry = theirs.get(key)
+            const baseHash = baseEntry?.hash ?? null
+            const oursHash = oursEntry?.hash ?? null
+            const theirsHash = theirsEntry?.hash ?? null
+            if (oursHash === theirsHash) continue
+            if (baseHash === theirsHash) continue
+            if (baseHash === oursHash) {
+                if (theirsEntry) apply.push(theirsEntry)
+                else {
+                    const deletionEntry = oursEntry ?? baseEntry
+                    if (deletionEntry) apply.push({ ...deletionEntry, hash: '', deleted: true })
+                }
+                continue
+            }
+            const representative = theirsEntry ?? oursEntry ?? baseEntry
+            if (!representative) continue
+            conflicts.push({
+                collection: representative.collection,
+                kind: representative.kind,
+                id: representative.id,
+                path: representative.path,
+                baseHash,
+                oursHash,
+                theirsHash
+            })
+        }
+        return { apply, conflicts }
+    }
+}
+
+/**
+ * Returns the nested map stored at `key`, creating an empty one if absent.
+ * Used to group documents into the collection/namespace/bucket hierarchy.
+ *
+ * @template {Map<any, any>} V
+ * @param {Map<string, V>} map
+ * @param {string} key
+ * @returns {V}
+ */
+function getOrCreate(map, key) {
+    let value = map.get(key)
+    if (!value) map.set(key, (value = /** @type {V} */ (new Map())))
+    return value
 }
 
 /**
@@ -712,15 +1311,11 @@ async function copyCollections(sourceRoot, targetRoot) {
 }
 
 /**
- * @param {string} leftRoot
- * @param {string} rightRoot
- * @returns {Promise<FyloTreeChange[]>}
+ * @param {Map<string, DocumentTreeEntry>} left
+ * @param {Map<string, DocumentTreeEntry>} right
+ * @returns {FyloTreeChange[]}
  */
-async function diffTrees(leftRoot, rightRoot) {
-    const [left, right] = await Promise.all([
-        readDocumentTree(leftRoot),
-        readDocumentTree(rightRoot)
-    ])
+function diffTrees(left, right) {
     const keys = [...new Set([...left.keys(), ...right.keys()])].sort()
     /** @type {FyloTreeChange[]} */
     const changes = []
@@ -747,74 +1342,6 @@ async function diffTrees(leftRoot, rightRoot) {
  * @property {(DocumentTreeEntry & { deleted?: boolean })[]} apply
  * @property {FyloMergeConflict[]} conflicts
  */
-
-/**
- * @param {string} baseRoot
- * @param {string} oursRoot
- * @param {string} theirsRoot
- * @returns {Promise<ThreeWayMergePlan>}
- */
-async function planThreeWayMerge(baseRoot, oursRoot, theirsRoot) {
-    const [base, ours, theirs] = await Promise.all([
-        readDocumentTree(baseRoot),
-        readDocumentTree(oursRoot),
-        readDocumentTree(theirsRoot)
-    ])
-    const keys = [...new Set([...base.keys(), ...ours.keys(), ...theirs.keys()])].sort()
-    /** @type {(DocumentTreeEntry & { deleted?: boolean })[]} */
-    const apply = []
-    /** @type {FyloMergeConflict[]} */
-    const conflicts = []
-    for (const key of keys) {
-        const baseEntry = base.get(key)
-        const oursEntry = ours.get(key)
-        const theirsEntry = theirs.get(key)
-        const baseHash = baseEntry?.hash ?? null
-        const oursHash = oursEntry?.hash ?? null
-        const theirsHash = theirsEntry?.hash ?? null
-        if (oursHash === theirsHash) continue
-        if (baseHash === theirsHash) continue
-        if (baseHash === oursHash) {
-            if (theirsEntry) apply.push(theirsEntry)
-            else {
-                const deletionEntry = oursEntry ?? baseEntry
-                if (deletionEntry) apply.push({ ...deletionEntry, hash: '', deleted: true })
-            }
-            continue
-        }
-        const representative = theirsEntry ?? oursEntry ?? baseEntry
-        if (!representative) continue
-        conflicts.push({
-            collection: representative.collection,
-            kind: representative.kind,
-            id: representative.id,
-            path: representative.path,
-            baseHash,
-            oursHash,
-            theirsHash
-        })
-    }
-    return { apply, conflicts }
-}
-
-/**
- * @param {string} targetRoot
- * @param {string} sourceRoot
- * @param {DocumentTreeEntry & { deleted?: boolean }} change
- * @returns {Promise<void>}
- */
-async function applyTreeChange(targetRoot, sourceRoot, change) {
-    const target = path.join(targetRoot, change.path)
-    assertPathInside(targetRoot, target)
-    if (change.deleted) {
-        await rm(target, { force: true })
-        return
-    }
-    const source = path.join(sourceRoot, change.path)
-    assertPathInside(sourceRoot, source)
-    await mkdir(path.dirname(target), { recursive: true })
-    await cp(source, target, { preserveTimestamps: true })
-}
 
 /**
  * @param {string} root

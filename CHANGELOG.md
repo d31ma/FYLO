@@ -1,5 +1,32 @@
 # Changelog
 
+## 26.25.01 - 2026-06-15
+
+### Breaking Changes
+
+- **Fluent facade sub-methods**: bulk and deleted-document operations moved under their base verb — `findDeleted(q)` → `find.deleted(q)`, `batchPut(b)` → `put.batch(b)`, `patchMany(u)` → `patch.many(u)`, `deleteMany(q)` → `delete.many(q)`. The deprecated method-first forms (`fylo.patchDocs`, `fylo.delDocs`, `fylo.batchPutData`) now point callers at the new names.
+- **`joinDocs` renamed to `join`**: `fylo.join(spec)` replaces `fylo.joinDocs(spec)` (and the deprecated `Fylo.joinDocs` static). The machine/HTTP `joinDocs` operation name is unchanged.
+- **Collections must exist before use**: `put`, `patch`, `delete`, `restore`, and reads (`get`, `find`) against an unknown collection now throw `CollectionNotFoundError` (`code: 'FYLO_COLLECTION_NOT_FOUND'`, HTTP 404) instead of silently auto-creating it. Call `fylo[collection].create()` first. `inspect()` still returns `{ exists: false }` without throwing. The error is exported from the package root and `@d31ma/fylo/browser`, and propagates across the browser worker protocol.
+
+### Changed
+
+- **Content-addressed, hierarchical version storage**: every document version is written once as a deduplicated blob under `.fylo-vcs/objects/`, and a commit's snapshot is a tree of content-addressed tree nodes mirroring the on-disk shard layout (collection → namespace → bucket → document). A commit's `tree.json` holds only the root tree hash (O(1)), and unchanged subtrees are shared by hash across commits and branches — no per-commit data duplication or full-tree copy. Restores and merges rematerialize documents from blobs and rebuild indexes.
+- **Incremental single-document commits**: auto-commit passes the ids it changed, so a commit re-reads only those documents and rewrites only the tree nodes on their path to the root. Per-commit work is bounded by what changed rather than the collection size (a 10× larger collection still does the same work per single write), making sustained single-document write workloads scale linearly instead of quadratically. Manual `commit` falls back to a full scan and yields an identical root hash.
+- **Auto-commit coalesces bulk operations**: `put.batch`, `patch.many`, `delete.many`, and `import` each record a single commit covering every document they touch, instead of one commit per document. Single-document writes still commit individually.
+- **`put.batch` no longer drops failed inserts silently**: every item is still attempted, but if any fail it now throws `FyloBatchWriteError` (exported from the package root) carrying `writtenIds` (the documents that did land) and `failures` (`{ index, error }` per rejected item) so callers can recover the partial batch instead of losing it.
+- **`sync.failed` observability event**: fire-and-forget replication failures now emit a `sync.failed` event (`{ collection, docId, operation, path, detail }`) to the `onEvent` handler in addition to logging, giving operators an inspection hook for the async sync pipeline.
+
+### Security
+
+- **Constant-time bearer-token check**: the HTTP gateway compared the `Authorization` token with `===` (timing-attack vector); it now uses `crypto.timingSafeEqual` over SHA-256 digests.
+- **Internal errors no longer leak to clients**: HTTP 5xx responses return a generic `Internal server error` message (the detail is logged server-side), so filesystem paths and stack traces are no longer exposed. Intentional 4xx errors keep their helpful messages.
+
+### Fixed
+
+- `tsc --noEmit` is clean again (typed the certificate-pinning variable in `importBulkData`).
+- **Multi-origin CORS**: an array `corsOrigin` previously emitted a spec-invalid comma-joined `access-control-allow-origin` header. The gateway now echoes the caller's `Origin` when it is in the allowlist (and omits the header otherwise); a single configured origin or `*` is still returned as-is.
+- **Malformed request paths return 400**: an invalid document ID or collection name in a URL now responds `400` with the validation message instead of a generic `500`.
+
 ## 26.23.07 - 2026-06-07
 
 ### Breaking Changes

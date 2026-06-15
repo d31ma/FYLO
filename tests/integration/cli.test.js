@@ -5,6 +5,7 @@ import Fylo from '../../src/index.js'
 import { createTestRoot } from '../helpers/root.js'
 
 const roots = []
+const manualVersioning = { versioning: { autoCommit: false } }
 
 async function createRoot(prefix) {
     const root = await createTestRoot(prefix)
@@ -41,7 +42,7 @@ describe('CLI', () => {
         expect(build.exitCode).toBe(0)
         expect(build.stderr.toLowerCase()).not.toContain('error')
 
-        const main = new Fylo(root)
+        const main = new Fylo(root, manualVersioning)
         await main['vc-posts'].create()
         await main['vc-posts'].put({ title: 'main only' })
 
@@ -74,7 +75,7 @@ describe('CLI', () => {
             head: initialCommitResult.id
         })
 
-        const feature = new Fylo(root)
+        const feature = new Fylo(root, manualVersioning)
         await feature['vc-posts'].put({ title: 'feature only' })
 
         const featureCommit = await run(
@@ -216,7 +217,7 @@ describe('CLI', () => {
         const build = await run(['run', 'build'], repo)
         expect(build.exitCode).toBe(0)
 
-        const main = new Fylo(root)
+        const main = new Fylo(root, manualVersioning)
         await main['merge-posts'].create()
         await main['merge-posts'].put({ title: 'base' })
         await run(['dist/cli/index.js', 'commit', '-m', 'base', '--root', root, '--json'], repo)
@@ -226,7 +227,7 @@ describe('CLI', () => {
             repo
         )
         expect(checkoutFeature.exitCode).toBe(0)
-        const feature = new Fylo(root)
+        const feature = new Fylo(root, manualVersioning)
         await feature['merge-posts'].put({ title: 'feature only' })
         const featureCommit = await run(
             ['dist/cli/index.js', 'commit', '-m', 'feature work', '--root', root, '--json'],
@@ -240,7 +241,7 @@ describe('CLI', () => {
             repo
         )
         expect(checkoutMain.exitCode).toBe(0)
-        const mainAgain = new Fylo(root)
+        const mainAgain = new Fylo(root, manualVersioning)
         await mainAgain['merge-posts'].put({ title: 'main only' })
         const mainCommit = await run(
             ['dist/cli/index.js', 'commit', '-m', 'main work', '--root', root, '--json'],
@@ -284,7 +285,7 @@ describe('CLI', () => {
         expect(mergedSelect.stdout).toContain('feature only')
 
         const conflictRoot = await createRoot('fylo-merge-conflict-')
-        const conflictMain = new Fylo(conflictRoot)
+        const conflictMain = new Fylo(conflictRoot, manualVersioning)
         await conflictMain['merge-conflicts'].create()
         const sharedId = await conflictMain['merge-conflicts'].put({ title: 'base' })
         await run(
@@ -295,14 +296,14 @@ describe('CLI', () => {
             ['dist/cli/index.js', 'checkout', '-b', 'feature/conflict', '--root', conflictRoot],
             repo
         )
-        const conflictFeature = new Fylo(conflictRoot)
+        const conflictFeature = new Fylo(conflictRoot, manualVersioning)
         await conflictFeature['merge-conflicts'].patch(sharedId, { title: 'feature edit' })
         await run(
             ['dist/cli/index.js', 'commit', '-m', 'feature edit', '--root', conflictRoot],
             repo
         )
         await run(['dist/cli/index.js', 'checkout', 'main', '--root', conflictRoot], repo)
-        const conflictMainAgain = new Fylo(conflictRoot)
+        const conflictMainAgain = new Fylo(conflictRoot, manualVersioning)
         await conflictMainAgain['merge-conflicts'].patch(sharedId, { title: 'main edit' })
         await run(['dist/cli/index.js', 'commit', '-m', 'main edit', '--root', conflictRoot], repo)
 
@@ -333,6 +334,13 @@ describe('CLI', () => {
         expect(build.exitCode).toBe(0)
         expect(build.stderr.toLowerCase()).not.toContain('error')
 
+        const create = await run(
+            ['dist/cli/index.js', 'sql', 'CREATE TABLE cli-posts', '--root', root],
+            repo
+        )
+        expect(create.exitCode).toBe(0)
+        expect(create.stdout).toContain('Successfully created schema')
+
         const rebuild = await run(
             ['dist/cli/index.js', 'rebuild', 'cli-posts', '--root', root, '--json'],
             repo
@@ -342,13 +350,6 @@ describe('CLI', () => {
         expect(rebuildResult.collection).toBe('cli-posts')
         expect(rebuildResult.docsScanned).toBe(0)
         expect(rebuildResult.indexedDocs).toBe(0)
-
-        const create = await run(
-            ['dist/cli/index.js', 'sql', 'CREATE TABLE cli-posts', '--root', root],
-            repo
-        )
-        expect(create.exitCode).toBe(0)
-        expect(create.stdout).toContain('Successfully created schema')
 
         const fylo = new Fylo(root)
         const cliDocId = await fylo['cli-posts'].put({ title: 'CLI' })

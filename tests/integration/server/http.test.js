@@ -70,11 +70,58 @@ describe('FYLO HTTP gateway', () => {
         expect((await json(openapi)).openapi).toBe('3.1.0')
     })
 
+    test('echoes an allow-listed CORS origin and omits unlisted ones', async () => {
+        const root = await createRoot('fylo-http-cors-')
+        const handler = createFyloHttpHandler({
+            root,
+            token: 'test-token',
+            corsOrigin: ['https://a.example', 'https://b.example']
+        })
+
+        const allowed = await handler(
+            new Request('http://fylo.test/v1/users', {
+                method: 'OPTIONS',
+                headers: { origin: 'https://b.example' }
+            })
+        )
+        expect(allowed.headers.get('access-control-allow-origin')).toBe('https://b.example')
+
+        const blocked = await handler(
+            new Request('http://fylo.test/v1/users', {
+                method: 'OPTIONS',
+                headers: { origin: 'https://evil.example' }
+            })
+        )
+        expect(blocked.headers.get('access-control-allow-origin')).toBeNull()
+    })
+
+    test('maps a malformed document id to 400 instead of a generic 500', async () => {
+        const root = await createRoot('fylo-http-badid-')
+        const handler = createFyloHttpHandler({ root, token: 'test-token' })
+        const response = await request(handler, '/v1/http-users/not-a-ttid')
+        expect(response.status).toBe(400)
+        expect((await json(response)).ok).toBe(false)
+    })
+
     test('performs collection CRUD and URL-filtered queries', async () => {
         const root = await createRoot('fylo-http-crud-')
         const handler = createFyloHttpHandler({ root, token: 'test-token' })
+        const collectionName = 'http-users'
 
-        const create = await request(handler, '/v1/users', {
+        const missingCollection = await request(handler, `/v1/${collectionName}`, {
+            method: 'POST',
+            body: JSON.stringify({ name: 'Should fail' })
+        })
+        expect(missingCollection.status).toBe(404)
+        expect((await json(missingCollection)).error.name).toBe('CollectionNotFoundError')
+
+        const collection = await request(handler, '/v1/sql', {
+            method: 'POST',
+            body: JSON.stringify({ sql: `CREATE TABLE ${collectionName}` })
+        })
+        expect(collection.status).toBe(200)
+
+        const create = await request(handler, `/v1/${collectionName}`, {
             method: 'POST',
             body: JSON.stringify({
                 name: 'Ada Lovelace',
@@ -87,31 +134,37 @@ describe('FYLO HTTP gateway', () => {
         const id = (await json(create)).result.id
         expect(typeof id).toBe('string')
 
-        const byId = await request(handler, `/v1/users/${id}`)
+        const byId = await request(handler, `/v1/${collectionName}/${id}`)
         expect(byId.status).toBe(200)
         expect((await json(byId)).result[id].name).toBe('Ada Lovelace')
 
-        const filtered = await request(handler, '/v1/users?active=eq.true&age=gte.30&limit=5')
+        const filtered = await request(
+            handler,
+            `/v1/${collectionName}?active=eq.true&age=gte.30&limit=5`
+        )
         expect(filtered.status).toBe(200)
         expect((await json(filtered)).result[id].name).toBe('Ada Lovelace')
 
-        const dottedValue = await request(handler, '/v1/users?email=ada.lovelace%40example.com')
+        const dottedValue = await request(
+            handler,
+            `/v1/${collectionName}?email=ada.lovelace%40example.com`
+        )
         expect(dottedValue.status).toBe(200)
         expect((await json(dottedValue)).result[id].name).toBe('Ada Lovelace')
 
-        const patch = await request(handler, `/v1/users/${id}`, {
+        const patch = await request(handler, `/v1/${collectionName}/${id}`, {
             method: 'PATCH',
             body: JSON.stringify({ role: 'admin' })
         })
         expect(patch.status).toBe(200)
 
-        const patched = await request(handler, `/v1/users/${id}`)
+        const patched = await request(handler, `/v1/${collectionName}/${id}`)
         expect((await json(patched)).result[id].role).toBe('admin')
 
-        const deleted = await request(handler, `/v1/users/${id}`, { method: 'DELETE' })
+        const deleted = await request(handler, `/v1/${collectionName}/${id}`, { method: 'DELETE' })
         expect(deleted.status).toBe(200)
 
-        const missing = await request(handler, `/v1/users/${id}`)
+        const missing = await request(handler, `/v1/${collectionName}/${id}`)
         expect(missing.status).toBe(404)
     })
 

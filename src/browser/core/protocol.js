@@ -162,7 +162,7 @@ export async function executeBrowserOperation(fylo, request) {
                 isRecord(request.query) ? request.query : {}
             )
         case 'joinDocs':
-            return await fylo.joinDocs(requireObject(request, 'join'))
+            return await fylo.join(requireObject(request, 'join'))
         case 'putData':
             return await fylo.putData(
                 requireString(request, 'collection'),

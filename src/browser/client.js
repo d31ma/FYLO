@@ -112,6 +112,9 @@ export class BrowserFyloClient {
 }
 
 export class BrowserDirectCollection {
+    /** @type {any} */
+    find
+
     /**
      * @param {BrowserFyloClient} host
      * @param {string} collection
@@ -119,6 +122,10 @@ export class BrowserDirectCollection {
     constructor(host, collection) {
         this.host = host
         this.collection = collection
+        const self = this
+        const find = /** @type {any} */ ((query = {}) => self.findActive(query))
+        find.deleted = (query = {}) => self.findDeleted(query)
+        this.find = find
     }
 
     async create() {
@@ -209,7 +216,7 @@ export class BrowserDirectCollection {
         return await this.#req('getLatest', { id, onlyId })
     }
 
-    find(query = {}) {
+    findActive(query = {}) {
         const host = this.host
         const collection = this.collection
         return {

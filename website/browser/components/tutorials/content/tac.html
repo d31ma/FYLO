@@ -4,7 +4,7 @@
   <p class="doc-lead">Set up your first FYLO instance, create a collection, and write your first document — all in under two minutes.</p>
 
   <h3 class="doc-h3">Step 1: Install FYLO</h3>
-  <p class="doc-p">Add the package to your Bun project:</p>
+  <p class="doc-p">Add the package to your project:</p>
   <div class="doc-code-wrap">
     <div class="doc-code-bar"><span class="doc-code-lang">Shell</span><button class="doc-code-copy" onclick="copySnippet('t1s1')">Copy</button></div>
     <div class="doc-code-body" id="t1s1">bun add @d31ma/fylo</div>
@@ -58,14 +58,14 @@ console.log(user)
   <p class="doc-lead">Master the full lifecycle: create, read, update, delete, and restore documents.</p>
 
   <h3 class="doc-h3">Create (Insert) Documents</h3>
-  <p class="doc-p">Use <span class="ic">put()</span> for single inserts or <span class="ic">batchPut()</span> for bulk writes. Every document gets a TTID (time-ordered ID) automatically:</p>
+  <p class="doc-p">Use <span class="ic">put()</span> for single inserts or <span class="ic">put.batch()</span> for bulk writes. Every document gets a TTID (time-ordered ID) automatically:</p>
   <div class="doc-code-wrap">
     <div class="doc-code-bar"><span class="doc-code-lang">Create</span><button class="doc-code-copy" onclick="copySnippet('t2s1')">Copy</button></div>
     <div class="doc-code-body" id="t2s1">// Single insert
 const id = await fylo.users.put({! '\x7b' } name: 'Alice' {! '\x7d' })
 
 // Batch insert
-const ids = await fylo.users.batchPut([
+const ids = await fylo.users.put.batch([
   {! '\x7b' } name: 'Bob' {! '\x7d' },
   {! '\x7b' } name: 'Charlie' {! '\x7d' }
 ])</div>
@@ -90,14 +90,14 @@ const latest = await fylo.users.latest()</div>
   </div>
 
   <h3 class="doc-h3">Update Documents</h3>
-  <p class="doc-p"><span class="ic">patch()</span> merges partial updates into one document. <span class="ic">patchMany()</span> applies a patch to every document matching a query:</p>
+  <p class="doc-p"><span class="ic">patch()</span> merges partial updates into one document. <span class="ic">patch.many()</span> applies a patch to every document matching a query:</p>
   <div class="doc-code-wrap">
     <div class="doc-code-bar"><span class="doc-code-lang">Update</span><button class="doc-code-copy" onclick="copySnippet('t2s3')">Copy</button></div>
     <div class="doc-code-body" id="t2s3">// Patch one
 await fylo.users.patch(id, {! '\x7b' } role: 'superadmin' {! '\x7d' })
 
 // Patch many
-const count = await fylo.users.patchMany(
+const count = await fylo.users.patch.many(
   {! '\x7b' } $ops: [{! '\x7b' } role: {! '\x7b' } $eq: 'admin' {! '\x7d' } {! '\x7d' }] {! '\x7d' },
   {! '\x7b' } role: 'superadmin' {! '\x7d' }
 )
@@ -112,12 +112,12 @@ console.log(`Updated ${! '\x7b' }count{! '\x7d' } documents`)</div>
 await fylo.users.delete(id)
 
 // Batch delete by query
-const count = await fylo.users.deleteMany({! '\x7b' }
+const count = await fylo.users.delete.many({! '\x7b' }
   $ops: [{! '\x7b' } status: {! '\x7b' } $eq: 'inactive' {! '\x7d' } {! '\x7d' }]
 {! '\x7d' })
 
 // Find deleted docs
-const deleted = await fylo.users.findDeleted()
+const deleted = await fylo.users.find.deleted()
 
 // Restore a deleted document
 await fylo.users.restore(id)</div>
@@ -179,7 +179,7 @@ const results = await fylo.sql`
 `
 
 // Programmatic join
-const joined = await fylo.joinDocs({! '\x7b' }
+const joined = await fylo.join({! '\x7b' }
   $leftCollection: 'posts',
   $rightCollection: 'users',
   $mode: 'inner',
@@ -422,25 +422,26 @@ const user = await fylo.users.find({! '\x7b' }
   <h2 class="doc-h2">Row-Level Security (RLS)</h2>
   <p class="doc-lead">Scope database access per user with authorization policies. Authenticate outside FYLO, authorize inside.</p>
 
-  <h3 class="doc-h3">Step 1: Configure the root client with an auth policy</h3>
+  <h3 class="doc-h3">Step 1: Define collection rules and enable RLS</h3>
+  <p class="doc-p">Place a <span class="ic">rules.json</span> next to the collection schema in your <span class="ic">FYLO_SCHEMA</span> directory. Roles match on <span class="ic">apply_when</span> and filter by the caller via <span class="ic">%%user.*</span>.</p>
   <div class="doc-code-wrap">
-    <div class="doc-code-bar"><span class="doc-code-lang">RLS Setup</span><button class="doc-code-copy" onclick="copySnippet('t9s1')">Copy</button></div>
-    <div class="doc-code-body" id="t9s1">const fylo = new Fylo('/mnt/fylo', {! '\x7b' }
-  auth: {! '\x7b' }
-    authorize({! '\x7b' } auth, action, collection, data {! '\x7d' }) {! '\x7b' }
-      // Admins can do anything
-      if (auth.roles?.includes('admin')) return true
-
-      // Only allow access to the user's own tenant
-      if (collection === 'posts') {! '\x7b' }
-        if (action === 'doc:create') return data?.tenantId === auth.tenantId
-        return action === 'doc:read' || action === 'doc:find'
-      {! '\x7d' }
-
-      return false // Deny everything else
-    {! '\x7d' }
-  {! '\x7d' }
-{! '\x7d' })</div>
+    <div class="doc-code-bar"><span class="doc-code-lang">schemas/posts/rules.json</span><button class="doc-code-copy" onclick="copySnippet('t9s1')">Copy</button></div>
+    <div class="doc-code-body" id="t9s1">{! '\x7b' }
+  "version": 1,
+  "roles": [{! '\x7b' }
+    "name": "tenant",
+    "apply_when": true,
+    "read":   {! '\x7b' } "filter": {! '\x7b' } "tenantId": "%%user.tenantId" {! '\x7d' } {! '\x7d' },
+    "insert": {! '\x7b' } "predicate": true {! '\x7d' },
+    "update": {! '\x7b' } "filter": {! '\x7b' } "tenantId": "%%user.tenantId" {! '\x7d' } {! '\x7d' },
+    "delete": {! '\x7b' } "filter": {! '\x7b' } "tenantId": "%%user.tenantId" {! '\x7d' } {! '\x7d' }
+  {! '\x7d' }]
+{! '\x7d' }</div>
+  </div>
+  <p class="doc-p">Then construct the client with <span class="ic">rls: true</span>:</p>
+  <div class="doc-code-wrap">
+    <div class="doc-code-bar"><span class="doc-code-lang">RLS Setup</span><button class="doc-code-copy" onclick="copySnippet('t9s1b')">Copy</button></div>
+    <div class="doc-code-body" id="t9s1b">const fylo = new Fylo('/mnt/fylo', {! '\x7b' } rls: true {! '\x7d' })</div>
   </div>
 
   <h3 class="doc-h3">Step 2: Create scoped clients per request</h3>
@@ -475,11 +476,11 @@ const user = await fylo.users.find({! '\x7b' }
         <tr><td>doc:read</td><td>get(), latest()</td></tr>
         <tr><td>doc:find</td><td>find()</td></tr>
         <tr><td>doc:create</td><td>put()</td></tr>
-        <tr><td>doc:update</td><td>patch(), patchMany()</td></tr>
-        <tr><td>doc:delete</td><td>delete(), deleteMany()</td></tr>
-        <tr><td>bulk:import / bulk:export</td><td>importBulkData() / exportBulkData()</td></tr>
+        <tr><td>doc:update</td><td>patch(), patch.many()</td></tr>
+        <tr><td>doc:delete</td><td>delete(), delete.many()</td></tr>
+        <tr><td>bulk:import / bulk:export</td><td>import() / export()</td></tr>
         <tr><td>sql:execute</td><td>sql(), fylo.sql</td></tr>
-        <tr><td>join:execute</td><td>joinDocs()</td></tr>
+        <tr><td>join:execute</td><td>join()</td></tr>
       </tbody>
     </table>
   </div>
@@ -530,18 +531,19 @@ fylo merge feature-redesign
 fylo restore-commit abc123def</div>
   </div>
 
-  <h3 class="doc-h3">Programmatic API</h3>
+  <h3 class="doc-h3">Automatic commits</h3>
+  <p class="doc-p">You usually do not commit by hand: every <span class="ic">put</span>, <span class="ic">patch</span>, <span class="ic">delete</span>, and <span class="ic">restore</span> auto-commits, and bulk operations coalesce into a single commit. Opt out to manage commits manually with the CLI.</p>
   <div class="doc-code-wrap">
-    <div class="doc-code-bar"><span class="doc-code-lang">API</span><button class="doc-code-copy" onclick="copySnippet('t10s4')">Copy</button></div>
-    <div class="doc-code-body" id="t10s4">const vcs = fylo.createVersionRepository()
+    <div class="doc-code-bar"><span class="doc-code-lang">app.js</span><button class="doc-code-copy" onclick="copySnippet('t10s4')">Copy</button></div>
+    <div class="doc-code-body" id="t10s4">// Auto-commit is on by default
+const fylo = new Fylo('/mnt/fylo')
+await fylo.users.put({! '\x7b' } name: 'Ada' {! '\x7d' }) // records a commit
 
-await vcs.branch('experiment')
-await vcs.commit('Snapshot before migration')
-const history = await vcs.log()
-await vcs.merge('experiment', {! '\x7b' } mode: 'three-way' {! '\x7d' })</div>
+// Opt out to drive branch/commit/merge from the CLI yourself
+const manual = new Fylo('/mnt/fylo', {! '\x7b' } versioning: {! '\x7b' } autoCommit: false {! '\x7d' } {! '\x7d' })</div>
   </div>
 
-  <div class="doc-note"><strong>Storage.</strong> Commits are full-collection snapshots under <span class="ic">.fylo-vcs/</span>. Branches use hidden working trees for isolation. Three-way merge compares document payloads via SHA-256 hashes.</div>
+  <div class="doc-note"><strong>Content-addressed storage.</strong> Each document version is stored once as a deduplicated blob under <span class="ic">.fylo-vcs/objects/</span>; a commit references a hierarchical tree that shares unchanged subtrees by hash, so a single write commits in time proportional to what changed. Branches use hidden working trees for isolation, and three-way merge compares document payloads via SHA-256 hashes.</div>
 </section>
 
 <!-- ── Tutorial 11: Browser Runtime ────────────────────────────── -->
@@ -599,7 +601,7 @@ for await (const task of fylo.tasks.find({! '\x7b' }
 <section class="doc-section" id="http-gateway">
   <div class="doc-badge">Tutorial 12</div>
   <h2 class="doc-h2">HTTP Gateway</h2>
-  <p class="doc-lead">Expose FYLO as a REST API. Embed it in your Bun app or run it standalone with the CLI.</p>
+  <p class="doc-lead">Expose FYLO as a REST API. Embed it in a JS app, or run it standalone with the CLI so any language can call it over HTTP.</p>
 
   <h3 class="doc-h3">Option A: Embedded Server</h3>
   <div class="doc-code-wrap">
@@ -609,8 +611,8 @@ for await (const task of fylo.tasks.find({! '\x7b' }
 serveFyloHttp({! '\x7b' }
   root: '/mnt/fylo',
   port: 3000,
-  auth: {! '\x7b' } bearer: 'my-secret-token' {! '\x7d' },
-  cors: {! '\x7b' } origin: 'https://myapp.com' {! '\x7d' }
+  token: 'my-secret-token',
+  corsOrigin: 'https://myapp.com'
 {! '\x7d' })</div>
   </div>
 

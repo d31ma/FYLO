@@ -33,7 +33,7 @@ async function collectFind(fylo, collection, query = {}) {
 async function collectDeleted(fylo, collection, query = {}) {
     /** @type {Record<string, any>} */
     const docs = {}
-    for await (const value of fylo[collection].findDeleted(query).collect()) {
+    for await (const value of fylo[collection].find.deleted(query).collect()) {
         if (value && typeof value === 'object' && !Array.isArray(value)) Object.assign(docs, value)
     }
     return docs
@@ -90,14 +90,14 @@ export async function runBrowserConformance(createRuntime) {
         assert(patchedId === userId, 'patch changed a stable document id')
         assert((await fylo[users].latest(userId))[userId].role === 'owner', 'patch failed')
 
-        const patchedCount = await fylo[orders].patchMany({
+        const patchedCount = await fylo[orders].patch.many({
             $where: { $ops: [{ status: { $eq: 'open' } }] },
             $set: { status: 'paid' }
         })
         assert(patchedCount === 1, 'patchDocs returned the wrong count')
         assert((await fylo[orders].latest(orderId))[orderId].status === 'paid', 'patchDocs failed')
 
-        const joined = await fylo.joinDocs({
+        const joined = await fylo.join({
             $leftCollection: orders,
             $rightCollection: users,
             $mode: 'inner',

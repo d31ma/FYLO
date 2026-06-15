@@ -322,9 +322,15 @@ local cache stampedes.
 
 ## CRUD Operations
 
+Collections must be created explicitly before reads, writes, updates, deletes,
+imports, rebuilds, or queries. Use `db.<collection>.inspect()` when you want a
+safe existence check; it returns `exists: false` instead of throwing.
+
 ### Create
 
 ```ts
+await db.users.create()
+
 const id = await db.users.put({
     name: 'Jane Doe',
     age: 29,
@@ -357,8 +363,8 @@ and become read-only (`0444`). They are excluded from ordinary queries.
 
 ```ts
 const deleted = {}
-for await (const doc of db.users
-    .findDeleted({
+for await (const doc of db.users.find
+    .deleted({
         $deleted: { $gte: Date.parse('2026-05-01T00:00:00Z') }
     })
     .collect()) {
@@ -644,6 +650,10 @@ Routes:
 | `POST /v1/sql`               | Execute FYLO SQL with `{ "sql": "..." }` |
 | `POST /v1/exec`              | Execute the machine JSON protocol        |
 
+Collection endpoints require the collection to already exist. Create it first
+with `POST /v1/sql` (`CREATE TABLE <collection>`) or `/v1/exec` using the
+`createCollection` operation.
+
 Every non-`OPTIONS` request requires `Authorization: Bearer <token>` unless
 `--allow-anonymous` is explicitly passed. Binding to a non-loopback host without
 a token fails closed.
@@ -759,11 +769,45 @@ fylo.admin schema validate article @article.json --schema-dir ./schemas --json
 
 `status` and `diff` compare document payloads only (`docs/` and `.deleted/`),
 so rebuilt indexes, event journals, lock files, and mtime-only changes do not
-create noisy diffs. `restore-commit` refuses to overwrite uncommitted working
-tree changes unless `--force` is passed; commit snapshots themselves remain
-immutable. `merge` supports fast-forward and three-way document-payload merges.
-If both sides changed the same TTID payload differently, FYLO reports conflicts
-and leaves the current branch untouched.
+create noisy diffs.
+
+Document writes are auto-committed by default. `put`, `patch`, `delete`, and
+`restore` create commit snapshots after the local filesystem write succeeds;
+failed writes and no-op mutations do not create empty commits. Strict WORM
+collections are excluded so WORM remains write-once without version history.
+
+Commit storage is content-addressed: each document version is stored once as a
+deduplicated blob, so commits share unchanged bytes across history and branches
+instead of copying whole collections. Bulk operations coalesce — `put.batch`,
+`patch.many`, `delete.many`, and `import` each record a single commit covering
+every document they touch, so large ingests stay fast. Prefer these over
+per-document writes when loading data.
+
+Disable auto-commit for manual Git-style working trees:
+
+```js
+const db = new Fylo('/mnt/fylo', {
+    versioning: { autoCommit: false }
+})
+```
+
+Machine/executable callers can use the same option in JSON:
+
+```json
+{
+    "op": "putData",
+    "root": "/mnt/fylo",
+    "collection": "posts",
+    "versioning": { "autoCommit": false },
+    "data": { "title": "manual commit later" }
+}
+```
+
+`restore-commit` refuses to overwrite uncommitted working tree changes unless
+`--force` is passed; commit snapshots themselves remain immutable. `merge`
+supports fast-forward and three-way document-payload merges. If both sides
+changed the same TTID payload differently, FYLO reports conflicts and leaves
+the current branch untouched.
 
 ### Machine Interface (cross-language)
 

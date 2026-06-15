@@ -8,11 +8,11 @@
   <p class="doc-p">The collection API stays straightforward: create a collection, write JSON documents, query by indexed fields, then patch or delete by document id.</p>
   <div class="method-grid">
     <div class="method-card"><div class="method-name">create()</div><div class="method-desc">Create a collection directory and FYLO metadata layout.</div></div>
-    <div class="method-card"><div class="method-name">put()</div><div class="method-desc">Insert a document and receive a generated TTID.</div></div>
+    <div class="method-card"><div class="method-name">put() / put.batch()</div><div class="method-desc">Insert one document, or many at once, each with a generated TTID.</div></div>
     <div class="method-card"><div class="method-name">get()</div><div class="method-desc">Read one document and optionally keep listening for changes.</div></div>
-    <div class="method-card"><div class="method-name">find()</div><div class="method-desc">Filter many documents with async iteration and collection helpers.</div></div>
-    <div class="method-card"><div class="method-name">patch() / patchMany()</div><div class="method-desc">Update one document by id or patch many by query.</div></div>
-    <div class="method-card"><div class="method-name">delete() / deleteMany()</div><div class="method-desc">Delete one document or a query-selected set.</div></div>
+    <div class="method-card"><div class="method-name">find() / find.deleted()</div><div class="method-desc">Iterate live documents, or list soft-deleted ones, with collection helpers.</div></div>
+    <div class="method-card"><div class="method-name">patch() / patch.many()</div><div class="method-desc">Update one document by id or patch many by query.</div></div>
+    <div class="method-card"><div class="method-name">delete() / delete.many()</div><div class="method-desc">Delete one document or a query-selected set.</div></div>
   </div>
   <div class="doc-code-wrap">
     <div class="doc-code-bar">
@@ -128,13 +128,13 @@ for await (const deletedId of fylo.users.get(userId).onDelete()) {! '\x7b' }
     </svg>
     Joins
   </h2>
-  <p class="doc-p">Cross-collection joins still exist in the package surface. You can call <span class="ic">joinDocs()</span> directly or express joins through SQL.</p>
+  <p class="doc-p">Cross-collection joins still exist in the package surface. You can call <span class="ic">join()</span> directly or express joins through SQL.</p>
   <div class="doc-code-wrap">
     <div class="doc-code-bar">
-      <span class="doc-code-lang">JoinDocs</span>
+      <span class="doc-code-lang">Join</span>
       <button class="doc-code-copy" onclick="copySnippet('code-join')">Copy</button>
     </div>
-    <div class="doc-code-body" id="code-join">const joined = await fylo.joinDocs({! '\x7b' }
+    <div class="doc-code-body" id="code-join">const joined = await fylo.join({! '\x7b' }
   $leftCollection: 'posts',
   $rightCollection: 'users',
   $mode: 'inner',
@@ -231,7 +231,7 @@ for await (const doc of fylo.users.export()) {! '\x7b' }
     </svg>
     HTTP Gateway
   </h2>
-  <p class="doc-p">Embed a REST API server directly in your Bun app with <span class="ic">serveFyloHttp</span> or use the CLI to stand one up:</p>
+  <p class="doc-p">Embed a REST API server directly in a JS app with <span class="ic">serveFyloHttp</span>, or use the CLI to stand one up so any language can call FYLO over HTTP:</p>
   <div class="doc-code-wrap">
     <div class="doc-code-bar">
       <span class="doc-code-lang">Server</span>
@@ -242,7 +242,7 @@ for await (const doc of fylo.users.export()) {! '\x7b' }
 serveFyloHttp({! '\x7b' }
   root: '/mnt/fylo',
   port: 3000,
-  auth: {! '\x7b' } bearer: 'my-secret-token' {! '\x7d' }
+  token: 'my-secret-token'
 {! '\x7d' })</div>
   </div>
   <p class="doc-p">The gateway exposes a full REST surface: <span class="ic">GET /v1/:collection</span> with URL filter parsing, <span class="ic">POST /v1/sql</span> for SQL queries, <span class="ic">POST /v1/exec</span> for multi-statement execution, and OpenAPI spec at <span class="ic">/v1/openapi.json</span>.</p>

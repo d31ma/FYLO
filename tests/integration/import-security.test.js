@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, test } from 'bun:test'
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { rm } from 'node:fs/promises'
 import Fylo from '../../src/index.js'
 import {
@@ -13,6 +13,10 @@ const fylo = new Fylo(root)
 const COLL = 'import-sec-posts'
 
 describe('importBulkData SSRF/rebinding hardening', () => {
+    beforeAll(async () => {
+        await fylo[COLL].create()
+    })
+
     afterAll(async () => {
         await rm(root, { recursive: true, force: true })
     })

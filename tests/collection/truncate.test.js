@@ -16,7 +16,7 @@ describe('NO-SQL', () => {
         const fylo = new Fylo(root)
         await fylo[POSTS].create()
         await fylo[POSTS].import(new URL(postsURL))
-        await fylo[POSTS].deleteMany()
+        await fylo[POSTS].delete.many()
         const ids = []
         for await (const data of fylo[POSTS].find({ $limit: 1, $onlyIds: true }).collect()) {
             ids.push(data)
