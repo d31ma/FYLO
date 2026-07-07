@@ -28,7 +28,14 @@ export function warm(client) {
         const done = () => {
             if (--inflight === 0) setRef(false)
         }
-        return request(op).then(
+        let pending
+        try {
+            pending = request(op)
+        } catch (/** @type {any} */ error) {
+            done() // a synchronous throw still releases the ref counter
+            throw error
+        }
+        return pending.then(
             (/** @type {any} */ r) => {
                 done()
                 return r

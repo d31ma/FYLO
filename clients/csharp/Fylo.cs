@@ -19,6 +19,7 @@
 
 using System;
 using System.Diagnostics;
+using System.Text;
 using System.Text.Json;
 
 namespace Fylo
@@ -41,6 +42,9 @@ namespace Fylo
                 RedirectStandardInput = true,
                 RedirectStandardOutput = true,
                 UseShellExecute = false,
+                // Protocol is UTF-8; don't fall back to the Windows console code page.
+                StandardInputEncoding = new UTF8Encoding(false),
+                StandardOutputEncoding = new UTF8Encoding(false),
             };
             psi.ArgumentList.Add("exec");
             psi.ArgumentList.Add("--loop");
