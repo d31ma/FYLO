@@ -1128,7 +1128,16 @@ export class VersionRepository {
             const filename = path.basename(file)
             const id = rawFileId(filename)
             if (!id || !(await TTID.isTTID(id))) continue
-            const content = await readFile(path.join(namespaceRoot, file))
+            let content
+            try {
+                content = await readFile(path.join(namespaceRoot, file))
+            } catch (err) {
+                // A concurrent write can move/replace this file between listing
+                // and reading; skip the vanished version — the next auto-commit
+                // captures the settled state.
+                if (/** @type {NodeJS.ErrnoException} */ (err).code === 'ENOENT') continue
+                throw err
+            }
             const hash = createHash('sha256').update(content).digest('hex')
             await this.writeObject(hash, content)
             tree.set(`${collection}/${kind}/${filename}`, {
