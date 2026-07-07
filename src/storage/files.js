@@ -116,7 +116,15 @@ export class FilesystemFiles {
     async findPath(root, docId) {
         await validateDocId(docId)
         const bucket = path.join(root, docId.slice(0, 2))
-        const matches = (await this.storage.list(bucket)).filter((file) => {
+        let entries
+        try {
+            entries = await this.storage.list(bucket)
+        } catch (err) {
+            // Bucket directory doesn't exist yet (empty collection / unknown id).
+            if (/** @type {NodeJS.ErrnoException} */ (err).code === 'ENOENT') return null
+            throw err
+        }
+        const matches = entries.filter((file) => {
             const filename = path.basename(file)
             return rawFileId(filename) === docId
         })
@@ -204,27 +212,33 @@ export class FilesystemFiles {
     async readFileAtRoot(collection, root, docId) {
         const target = await this.findPath(root, docId)
         if (!target) return null
-        const filename = path.basename(target)
-        const extension = filename.slice(docId.length).toLowerCase()
-        const metadata = await this.storage.metadata(target)
-        const checksumSHA256 = await this.hash(target)
-        const key = await this.readKey(collection, docId)
-        const { createdAt } = await TTID.decodeTime(docId)
-        return {
-            id: docId,
-            path: target,
-            createdAt,
-            updatedAt: metadata.mtimeMs,
-            data: rawFileMetadata(
-                docId,
-                key,
-                extension,
-                rawFileContentType(extension, undefined),
-                metadata.size,
-                checksumSHA256,
+        try {
+            const filename = path.basename(target)
+            const extension = filename.slice(docId.length).toLowerCase()
+            const metadata = await this.storage.metadata(target)
+            const checksumSHA256 = await this.hash(target)
+            const key = await this.readKey(collection, docId)
+            const { createdAt } = await TTID.decodeTime(docId)
+            return {
+                id: docId,
+                path: target,
                 createdAt,
-                metadata.mtimeMs
-            )
+                updatedAt: metadata.mtimeMs,
+                data: rawFileMetadata(
+                    docId,
+                    key,
+                    extension,
+                    rawFileContentType(extension, undefined),
+                    metadata.size,
+                    checksumSHA256,
+                    createdAt,
+                    metadata.mtimeMs
+                )
+            }
+        } catch (err) {
+            // File (or its metadata) vanished between listing and reading.
+            if (/** @type {NodeJS.ErrnoException} */ (err).code === 'ENOENT') return null
+            throw err
         }
     }
 

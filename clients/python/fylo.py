@@ -32,7 +32,12 @@ class Fylo:
         if worm:
             args.append("--worm")
         self._proc = subprocess.Popen(
-            args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1
+            args,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",  # protocol is UTF-8; don't fall back to the Windows code page
+            bufsize=1,
         )
         self._lock = threading.Lock()
 

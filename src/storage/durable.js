@@ -113,7 +113,12 @@ export class DurableFileWriter {
             throw error
         }
         await fileHandle.close()
-        await rename(scratchPath, target)
+        try {
+            await rename(scratchPath, target)
+        } catch (error) {
+            await rm(scratchPath, { force: true }) // don't orphan the scratch file
+            throw error
+        }
         const directoryHandle = await open(targetDirectory, 'r')
         try {
             await directoryHandle.sync()

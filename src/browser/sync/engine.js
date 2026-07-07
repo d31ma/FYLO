@@ -235,9 +235,29 @@ export class SyncEngine {
                 await this._consumeSSE(collection, res.body, signal)
             } catch {
                 if (signal.aborted) return
-                // fall back to a single JSON poll, then retry after a beat
-                await this._pollOnce(collection)
-                await new Promise((r) => setTimeout(r, this.pingMs))
+                // fall back to a single JSON poll (ignore its errors so a failed
+                // poll doesn't kill the loop), then retry after a beat.
+                try {
+                    await this._pollOnce(collection)
+                } catch {
+                    // transient fallback-poll failure; retry on the next iteration
+                }
+                // Abortable sleep: stop() aborts the signal and clears the timer.
+                // The listener is removed whether we wake by timer or by abort, so
+                // it can't accumulate across retries.
+                await new Promise((resolve) => {
+                    /** @type {ReturnType<typeof setTimeout>} */
+                    let timer
+                    const onAbort = () => {
+                        clearTimeout(timer)
+                        resolve(undefined)
+                    }
+                    timer = setTimeout(() => {
+                        signal.removeEventListener('abort', onAbort)
+                        resolve(undefined)
+                    }, this.pingMs)
+                    signal.addEventListener('abort', onAbort, { once: true })
+                })
             }
         }
     }

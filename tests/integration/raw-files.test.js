@@ -47,6 +47,18 @@ describe('raw file collections', () => {
         expect(await new Response(await result.stream()).text()).toBe('hello raw file')
     })
 
+    test('reading an absent raw file surfaces a clean not-found, not a raw ENOENT (#49)', async () => {
+        // A real, valid TTID that lives in `assets`...
+        const id = await fylo.assets.put(
+            new File(['present'], 'present.txt', { type: 'text/plain' })
+        )
+        // ...but `empties` has never stored it, so its shard bucket directory does
+        // not exist. findPath must return null (clean not-found) rather than
+        // letting the raw ENOENT from listing a missing directory escape.
+        await fylo.empties.create({ kind: 'file' })
+        await expect(fylo.empties.get(id).bytes()).rejects.toThrow(/Raw file not found/)
+    })
+
     test('queries durable object keys and preserves them while rebuilding indexes', async () => {
         const id = await fylo.assets.put(
             new File([new Uint8Array([1, 2, 3, 4])], 'pixel.png', { type: 'image/png' }),

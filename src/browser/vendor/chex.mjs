@@ -105,11 +105,12 @@ const validateProperty = (schema, data, schemaKey, path) => {
 // Validate `data` against a schema object, recursively. Mirrors the binary's
 // SchemaObjectValidator: reject unknown data keys, then check each schema key.
 const walk = (schema, data, path) => {
-  for (const dataKey in data) {
-    if (dataKey in schema || `${dataKey}?` in schema) continue;
+  // Own enumerable keys only — never the prototype chain (avoids inherited/polluted keys).
+  for (const dataKey of Object.keys(data)) {
+    if (Object.hasOwn(schema, dataKey) || Object.hasOwn(schema, `${dataKey}?`)) continue;
     throw new CHEXError(`Property '${dataKey}' does not exist in schema`);
   }
-  for (const schemaKey in schema) {
+  for (const schemaKey of Object.keys(schema)) {
     validateProperty(schema, data, schemaKey, path);
   }
   return data;
