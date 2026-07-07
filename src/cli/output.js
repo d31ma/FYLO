@@ -20,8 +20,8 @@ const DISABLED_PAGER_VALUES = new Set(['0', 'false', 'off', 'none', 'disabled'])
  * @param {Record<string, any>} docs
  * @param {FormatTableOptions=} tableOptions
  */
-export function renderTableOutput(docs, tableOptions = {}) {
-    return formatTable(docs, tableOptions)
+export async function renderTableOutput(docs, tableOptions = {}) {
+    return await formatTable(docs, tableOptions)
 }
 
 /**

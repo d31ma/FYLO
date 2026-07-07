@@ -1,0 +1,22 @@
+.features-row {
+  row-gap: var(--w-space-4);
+}
+
+.feature-card {
+  height: 100%;
+  padding: 1.5rem;
+  box-sizing: border-box;
+}
+
+.feature-card h3 {
+  margin: 0.85rem 0 0.5rem;
+  font-size: 1.05rem;
+  letter-spacing: -0.01em;
+}
+
+.feature-card p {
+  margin: 0;
+  color: var(--w-text-subtle);
+  font-size: 0.9rem;
+  line-height: 1.7;
+}

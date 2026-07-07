@@ -9,11 +9,14 @@
 /**
  * @typedef {object} StorageEngine
  * @property {(path: string) => Promise<string>} read
+ * @property {(path: string) => Promise<Uint8Array>} readBytes
+ * @property {(path: string) => ReadableStream<Uint8Array>} readStream
  * @property {(path: string, data: string) => Promise<void>} write
+ * @property {(path: string, stream: ReadableStream<Uint8Array>, options?: { maxBytes?: number }) => Promise<{ contentLength: number, checksumSHA256: string }>} writeStream
  * @property {(source: string, target: string) => Promise<void>} move
  * @property {(path: string, mode: number) => Promise<void>} chmod
  * @property {(path: string, mtimeMs: number) => Promise<void>} setModifiedTime
- * @property {(path: string) => Promise<{ mtimeMs: number }>} metadata
+ * @property {(path: string) => Promise<{ mtimeMs: number, size: number }>} metadata
  * @property {(path: string) => Promise<void>} delete
  * @property {(path: string) => Promise<string[]>} list
  * @property {(path: string) => Promise<void>} mkdir
@@ -91,8 +94,18 @@
  */
 
 /**
+ * @typedef {'document' | 'file'} FyloCollectionKind
+ */
+
+/**
+ * @typedef {object} CollectionCreateOptions
+ * @property {FyloCollectionKind=} kind
+ */
+
+/**
  * @typedef {object} CollectionRebuildResult
  * @property {string} collection
+ * @property {FyloCollectionKind} kind
  * @property {boolean} worm
  * @property {number} docsScanned
  * @property {number} indexedDocs
@@ -101,6 +114,7 @@
 /**
  * @typedef {object} CollectionInspectResult
  * @property {string} collection
+ * @property {FyloCollectionKind} kind
  * @property {boolean} exists
  * @property {boolean} worm
  * @property {number} docsStored

@@ -1,0 +1,97 @@
+.showcase {
+  padding: 4.5rem 1rem;
+}
+
+.showcase-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.showcase-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+.showcase-tabs .w-btn {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.showcase-langs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin-bottom: 1rem;
+}
+
+.showcase-langs .w-btn {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.collection-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  color: var(--w-text-subtle);
+}
+
+.collection-field input {
+  width: 9rem;
+  padding: 0.45rem 0.75rem;
+  border: 1px solid var(--w-border);
+  border-radius: var(--w-radius);
+  background: var(--w-surface-container-low);
+  color: var(--w-primary);
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+}
+
+.collection-field input:focus {
+  outline: 2px solid var(--w-primary);
+  outline-offset: 1px;
+}
+
+.showcase-panel {
+  position: relative;
+}
+
+.showcase-panel .code-block {
+  min-height: 18rem;
+}
+
+.showcase-copy {
+  position: absolute;
+  top: 0.6rem;
+  right: 0.6rem;
+}
+
+@media (max-width: 599.98px) {
+  .showcase-tabs {
+    width: 100%;
+    overflow-x: auto;
+    flex-wrap: nowrap;
+    padding-bottom: 0.25rem;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .showcase-tabs::-webkit-scrollbar {
+    display: none;
+  }
+  .collection-field {
+    width: 100%;
+  }
+  .collection-field input {
+    flex: 1;
+  }
+  .showcase-panel .code-block {
+    min-height: 20rem;
+    font-size: 0.78rem;
+  }
+}

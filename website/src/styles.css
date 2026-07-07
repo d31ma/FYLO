@@ -1,9 +1,0 @@
-@import "tailwindcss";
-@import "./styles/theme.css";
-@import "./styles/base.css";
-@import "./styles/components.css";
-@import "./styles/responsive.css";
-
-@source "../components/**/*.html";
-@source "../routes/**/*";
-@source "../main.js";

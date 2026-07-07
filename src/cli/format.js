@@ -1,4 +1,4 @@
-import TTID from '@d31ma/ttid'
+import { filterTTIDs } from '../core/doc-id.js'
 
 /** @typedef {'left' | 'center' | 'right' | 'auto'} TableAlignment */
 
@@ -191,17 +191,12 @@ function resolveTerminalWidth(terminalWidth) {
 
 /**
  * @param {string[]} keys
- * @returns {string}
+ * @returns {Promise<string>}
  */
-function detectRowKeyLabel(keys) {
-    return keys.some((key) =>
-        key
-            .split(',')
-            .map((part) => part.trim())
-            .some((part) => TTID.isTTID(part))
-    )
-        ? '_id'
-        : '_key'
+async function detectRowKeyLabel(keys) {
+    const parts = keys.flatMap((key) => key.split(',').map((part) => part.trim()))
+    const valid = await filterTTIDs(parts)
+    return valid.length > 0 ? '_id' : '_key'
 }
 
 /**
@@ -393,9 +388,9 @@ function chunkRows(rows, size) {
 /**
  * @param {Record<string, any>} docs
  * @param {FormatTableOptions=} options
- * @returns {string}
+ * @returns {Promise<string>}
  */
-export function formatTable(docs, options = {}) {
+export async function formatTable(docs, options = {}) {
     const entries = Object.entries(docs)
     if (entries.length === 0) return options.emptyMessage ?? DEFAULT_EMPTY_MESSAGE
     const maxColumnWidth = options.maxColumnWidth ?? DEFAULT_MAX_COLUMN_WIDTH
@@ -405,7 +400,7 @@ export function formatTable(docs, options = {}) {
     const cellAlign = options.cellAlign ?? 'auto'
     const keyAlign = options.keyAlign ?? 'left'
     const headerAlign = options.headerAlign ?? 'center'
-    const rowKeyLabel = detectRowKeyLabel(entries.map(([key]) => key))
+    const rowKeyLabel = await detectRowKeyLabel(entries.map(([key]) => key))
     const rows = entries.map(([key, value]) => ({
         key,
         values: normalizeRow(value)
@@ -467,6 +462,6 @@ export function formatTable(docs, options = {}) {
  * @param {Record<string, any>} docs
  * @param {FormatTableOptions=} options
  */
-export function printTable(docs, options = {}) {
-    console.log(formatTable(docs, options))
+export async function printTable(docs, options = {}) {
+    console.log(await formatTable(docs, options))
 }

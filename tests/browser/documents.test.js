@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import TTID from '@d31ma/ttid'
+import TTID from '../../src/browser/vendor/ttid.mjs'
 import { createMemoryFilesystem } from '../../src/browser/core/memory-filesystem.js'
 import { BrowserCore } from '../../src/browser/core/engine.js'
 

@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from 'bun:test'
 import { mkdtemp, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import TTID from '@d31ma/ttid'
+import TTID from '../helpers/ttid.js'
 import { tryAcquireFileLock, tryReleaseFileLock } from '../../src/storage/fs-lock.js'
 import { FilesystemLockManager, FilesystemStorage } from '../../src/storage/primitives.js'
 

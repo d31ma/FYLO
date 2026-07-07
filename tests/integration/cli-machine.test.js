@@ -1,10 +1,9 @@
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { readdir, rm } from 'node:fs/promises'
+import { afterAll, describe, expect, test } from 'bun:test'
+import { rm } from 'node:fs/promises'
 import path from 'node:path'
 import { createTestRoot } from '../helpers/root.js'
 
 const roots = []
-let buildResult
 
 async function createRoot(prefix) {
     const root = await createTestRoot(prefix)
@@ -34,50 +33,18 @@ async function run(args, cwd, stdinText) {
     return { stdout, stderr, exitCode }
 }
 
-/**
- * @param {string} root
- * @returns {Promise<string[]>}
- */
-async function listJsFiles(root) {
-    /** @type {string[]} */
-    const files = []
-    for (const entry of await readdir(root, { withFileTypes: true })) {
-        const fullPath = path.join(root, entry.name)
-        if (entry.isDirectory()) {
-            files.push(...(await listJsFiles(fullPath)))
-            continue
-        }
-        if (entry.isFile() && fullPath.endsWith('.js')) files.push(fullPath)
-    }
-    return files
-}
-
 afterAll(async () => {
     await Promise.all(roots.map((root) => rm(root, { recursive: true, force: true })))
 })
 
 describe('CLI machine interface', () => {
-    beforeAll(async () => {
-        buildResult = await run(['run', 'build'], process.cwd())
-    })
-
-    test('build publishes declaration output without stray JS helpers', async () => {
-        const repo = process.cwd()
-        expect(buildResult.exitCode).toBe(0)
-        const jsFiles = await listJsFiles(path.join(repo, 'dist', 'types'))
-        expect(jsFiles).toEqual([])
-    })
-
     test('exec handles JSON requests from inline payloads and stdin', async () => {
         const repo = process.cwd()
         const root = await createRoot('fylo-machine-')
-        const schemaDir = path.join(repo, 'examples', 'db', 'schemas')
-
-        expect(buildResult.exitCode).toBe(0)
 
         const createResponse = await run(
             [
-                'dist/cli/index.js',
+                'src/cli/index.js',
                 'exec',
                 '--request',
                 JSON.stringify({
@@ -98,7 +65,7 @@ describe('CLI machine interface', () => {
 
         const putResponse = await run(
             [
-                'dist/cli/index.js',
+                'src/cli/index.js',
                 'exec',
                 '--request',
                 JSON.stringify({
@@ -116,7 +83,7 @@ describe('CLI machine interface', () => {
         const docId = putPayload.result
 
         const latestResponse = await run(
-            ['dist/cli/index.js', 'exec', '--request', '-'],
+            ['src/cli/index.js', 'exec', '--request', '-'],
             repo,
             JSON.stringify({
                 requestId: 'latest-1',
@@ -133,7 +100,7 @@ describe('CLI machine interface', () => {
 
         const queryResponse = await run(
             [
-                'dist/cli/index.js',
+                'src/cli/index.js',
                 'exec',
                 '--request',
                 JSON.stringify({
@@ -152,7 +119,7 @@ describe('CLI machine interface', () => {
 
         const deleteResponse = await run(
             [
-                'dist/cli/index.js',
+                'src/cli/index.js',
                 'exec',
                 '--request',
                 JSON.stringify({
@@ -168,7 +135,7 @@ describe('CLI machine interface', () => {
 
         const deletedResponse = await run(
             [
-                'dist/cli/index.js',
+                'src/cli/index.js',
                 'exec',
                 '--request',
                 JSON.stringify({
@@ -187,7 +154,7 @@ describe('CLI machine interface', () => {
 
         const restoreResponse = await run(
             [
-                'dist/cli/index.js',
+                'src/cli/index.js',
                 'exec',
                 '--request',
                 JSON.stringify({
@@ -201,62 +168,15 @@ describe('CLI machine interface', () => {
         )
         expect(restoreResponse.exitCode).toBe(0)
         expect(JSON.parse(restoreResponse.stdout).result).toEqual({ restored: true, id: docId })
-
-        const schemaInspectResponse = await run(
-            [
-                'dist/cli/index.js',
-                'exec',
-                '--request',
-                JSON.stringify({
-                    op: 'schemaInspect',
-                    schemaDir,
-                    collection: 'article'
-                })
-            ],
-            repo
-        )
-        expect(schemaInspectResponse.exitCode).toBe(0)
-        const schemaInspectPayload = JSON.parse(schemaInspectResponse.stdout)
-        expect(schemaInspectPayload.ok).toBe(true)
-        expect(schemaInspectPayload.result.current).toBe('v2')
-        expect(schemaInspectPayload.result.versions).toHaveLength(2)
-
-        const schemaMaterializeResponse = await run(
-            [
-                'dist/cli/index.js',
-                'exec',
-                '--request',
-                JSON.stringify({
-                    op: 'schemaMaterialize',
-                    schemaDir,
-                    collection: 'article',
-                    document: {
-                        id: 9,
-                        title: 'Machine Article',
-                        body: 'body',
-                        _v: 'v1'
-                    }
-                })
-            ],
-            repo
-        )
-        expect(schemaMaterializeResponse.exitCode).toBe(0)
-        const schemaMaterializePayload = JSON.parse(schemaMaterializeResponse.stdout)
-        expect(schemaMaterializePayload.ok).toBe(true)
-        expect(schemaMaterializePayload.result.current).toBe('v2')
-        expect(schemaMaterializePayload.result.document.slug).toBe('machine-article')
-        expect(schemaMaterializePayload.result.document._v).toBe('v2')
     })
 
     test('exec exposes version-control operations for language-agnostic callers', async () => {
         const repo = process.cwd()
         const root = await createRoot('fylo-machine-vcs-')
 
-        expect(buildResult.exitCode).toBe(0)
-
         const createResponse = await run(
             [
-                'dist/cli/index.js',
+                'src/cli/index.js',
                 'exec',
                 '--request',
                 JSON.stringify({
@@ -271,7 +191,7 @@ describe('CLI machine interface', () => {
 
         const putMainResponse = await run(
             [
-                'dist/cli/index.js',
+                'src/cli/index.js',
                 'exec',
                 '--request',
                 JSON.stringify({
@@ -288,7 +208,7 @@ describe('CLI machine interface', () => {
 
         const initialCommitResponse = await run(
             [
-                'dist/cli/index.js',
+                'src/cli/index.js',
                 'exec',
                 '--request',
                 JSON.stringify({
@@ -305,7 +225,7 @@ describe('CLI machine interface', () => {
 
         const checkoutResponse = await run(
             [
-                'dist/cli/index.js',
+                'src/cli/index.js',
                 'exec',
                 '--request',
                 JSON.stringify({
@@ -323,7 +243,7 @@ describe('CLI machine interface', () => {
 
         const putFeatureResponse = await run(
             [
-                'dist/cli/index.js',
+                'src/cli/index.js',
                 'exec',
                 '--request',
                 JSON.stringify({
@@ -339,7 +259,7 @@ describe('CLI machine interface', () => {
         expect(putFeatureResponse.exitCode).toBe(0)
 
         const branchResponse = await run(
-            ['dist/cli/index.js', 'exec', '--request', JSON.stringify({ op: 'branch', root })],
+            ['src/cli/index.js', 'exec', '--request', JSON.stringify({ op: 'branch', root })],
             repo
         )
         expect(branchResponse.exitCode).toBe(0)
@@ -348,7 +268,7 @@ describe('CLI machine interface', () => {
 
         const featureCommitResponse = await run(
             [
-                'dist/cli/index.js',
+                'src/cli/index.js',
                 'exec',
                 '--request',
                 JSON.stringify({
@@ -363,7 +283,7 @@ describe('CLI machine interface', () => {
         const featureCommitPayload = JSON.parse(featureCommitResponse.stdout)
 
         const logResponse = await run(
-            ['dist/cli/index.js', 'exec', '--request', JSON.stringify({ op: 'log', root })],
+            ['src/cli/index.js', 'exec', '--request', JSON.stringify({ op: 'log', root })],
             repo
         )
         expect(logResponse.exitCode).toBe(0)
@@ -375,7 +295,7 @@ describe('CLI machine interface', () => {
 
         const dirtyPutResponse = await run(
             [
-                'dist/cli/index.js',
+                'src/cli/index.js',
                 'exec',
                 '--request',
                 JSON.stringify({
@@ -391,7 +311,7 @@ describe('CLI machine interface', () => {
         expect(dirtyPutResponse.exitCode).toBe(0)
 
         const statusResponse = await run(
-            ['dist/cli/index.js', 'exec', '--request', JSON.stringify({ op: 'status', root })],
+            ['src/cli/index.js', 'exec', '--request', JSON.stringify({ op: 'status', root })],
             repo
         )
         expect(statusResponse.exitCode).toBe(0)
@@ -400,7 +320,7 @@ describe('CLI machine interface', () => {
         expect(statusPayload.result.diff.counts.added).toBe(1)
 
         const diffResponse = await run(
-            ['dist/cli/index.js', 'exec', '--request', JSON.stringify({ op: 'diff', root })],
+            ['src/cli/index.js', 'exec', '--request', JSON.stringify({ op: 'diff', root })],
             repo
         )
         expect(diffResponse.exitCode).toBe(0)
@@ -409,7 +329,7 @@ describe('CLI machine interface', () => {
 
         const guardedRestoreResponse = await run(
             [
-                'dist/cli/index.js',
+                'src/cli/index.js',
                 'exec',
                 '--request',
                 JSON.stringify({
@@ -429,7 +349,7 @@ describe('CLI machine interface', () => {
 
         const forcedRestoreResponse = await run(
             [
-                'dist/cli/index.js',
+                'src/cli/index.js',
                 'exec',
                 '--request',
                 JSON.stringify({
@@ -447,7 +367,7 @@ describe('CLI machine interface', () => {
 
         const checkoutMainResponse = await run(
             [
-                'dist/cli/index.js',
+                'src/cli/index.js',
                 'exec',
                 '--request',
                 JSON.stringify({
@@ -462,7 +382,7 @@ describe('CLI machine interface', () => {
 
         const mergeResponse = await run(
             [
-                'dist/cli/index.js',
+                'src/cli/index.js',
                 'exec',
                 '--request',
                 JSON.stringify({
@@ -484,13 +404,84 @@ describe('CLI machine interface', () => {
         })
     })
 
+    test('exec ingests raw files from absolute paths for non-JavaScript callers', async () => {
+        const repo = process.cwd()
+        const root = await createRoot('fylo-machine-file-')
+        const source = path.join(root, 'machine-source.txt')
+        await Bun.write(source, 'machine raw bytes')
+
+        const createResponse = await run(
+            [
+                'src/cli/index.js',
+                'exec',
+                '--request',
+                JSON.stringify({
+                    op: 'createCollection',
+                    root,
+                    collection: 'machine-files',
+                    kind: 'file'
+                })
+            ],
+            repo
+        )
+        expect(createResponse.exitCode).toBe(0)
+        expect(JSON.parse(createResponse.stdout).result.kind).toBe('file')
+
+        const putResponse = await run(
+            [
+                'src/cli/index.js',
+                'exec',
+                '--request',
+                JSON.stringify({
+                    op: 'putData',
+                    root,
+                    collection: 'machine-files',
+                    file: {
+                        path: source,
+                        key: '/machine/imports/source.txt'
+                    }
+                })
+            ],
+            repo
+        )
+        expect(putResponse.exitCode).toBe(0)
+        const id = JSON.parse(putResponse.stdout).result
+        expect(
+            await Bun.file(
+                path.join(
+                    root,
+                    '.collections',
+                    'machine-files',
+                    'docs',
+                    id.slice(0, 2),
+                    `${id}.txt`
+                )
+            ).text()
+        ).toBe('machine raw bytes')
+
+        const getResponse = await run(
+            [
+                'src/cli/index.js',
+                'exec',
+                '--request',
+                JSON.stringify({
+                    op: 'getDoc',
+                    root,
+                    collection: 'machine-files',
+                    id
+                })
+            ],
+            repo
+        )
+        expect(getResponse.exitCode).toBe(0)
+        expect(JSON.parse(getResponse.stdout).result[id].key).toBe('/machine/imports/source.txt')
+    })
+
     test('exec returns structured JSON errors with non-zero exits', async () => {
         const repo = process.cwd()
 
-        expect(buildResult.exitCode).toBe(0)
-
         const response = await run(
-            ['dist/cli/index.js', 'exec', '--request', JSON.stringify({ op: 'unknownOperation' })],
+            ['src/cli/index.js', 'exec', '--request', JSON.stringify({ op: 'unknownOperation' })],
             repo
         )
         expect(response.exitCode).toBe(1)

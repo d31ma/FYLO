@@ -88,6 +88,10 @@ export function createFyloHttpHandler(options) {
                 const result = await (await fyloFor(context))._sql(body.sql)
                 return jsonResponse({ ok: true, result }, 200, responseOptions)
             }
+            const eventsCollection = parseEventsRoute(url.pathname)
+            if (eventsCollection && request.method === 'GET') {
+                return await handleEventsRoute(context, eventsCollection)
+            }
             const route = parseCollectionRoute(url.pathname)
             if (route) return await handleCollectionRoute(context, route)
             return jsonResponse(
@@ -152,24 +156,57 @@ export function serveFyloHttp(options) {
 
 /**
  * @param {FyloHttpContext} context
- * @param {{ collection: string, id?: string }} route
+ * @param {{ collection: string, id?: string, raw?: boolean }} route
  * @returns {Promise<Response>}
  */
 async function handleCollectionRoute(context, route) {
     try {
         validateCollectionName(route.collection)
-        if (route.id) validateDocId(route.id)
+        if (route.id) await validateDocId(route.id)
     } catch (err) {
         throw statusError(400, err instanceof Error ? err.message : 'Invalid request path')
     }
     const fylo = await fyloFor(context)
     const options = context.options
+    if (route.raw && route.id && context.request.method === 'GET') {
+        const manifest = await fylo[route.collection].get(route.id).once()
+        if (!manifest[route.id]) {
+            return jsonResponse({ ok: false, error: { message: 'File not found' } }, 404, options)
+        }
+        const stream = await fylo[route.collection].get(route.id).stream()
+        const metadata = manifest[route.id]
+        const headers = responseHeaders(options, metadata.contentType)
+        headers.set('content-length', String(metadata.contentLength))
+        headers.set('etag', `"${metadata.etag}"`)
+        headers.set('content-disposition', `attachment; filename="${metadata.name}"`)
+        return new Response(stream, { status: 200, headers })
+    }
+    if (route.raw) {
+        return jsonResponse({ ok: false, error: { message: 'Method not allowed' } }, 405, options)
+    }
     if (!route.id && context.request.method === 'GET') {
         const query = queryFromUrl(context.url)
         const result = await collectFindDocs(fylo, route.collection, query)
         return jsonResponse({ ok: true, result }, 200, options)
     }
     if (!route.id && context.request.method === 'POST') {
+        if ((await fylo[route.collection].inspect()).kind === 'file') {
+            if (!context.request.body) throw statusError(400, 'Raw file body is empty')
+            const contentLength = Number(context.request.headers.get('content-length'))
+            if (Number.isFinite(contentLength) && contentLength > options.maxBodyBytes) {
+                throw statusError(413, `Request body exceeds ${options.maxBodyBytes} bytes`)
+            }
+            const name = context.request.headers.get('x-fylo-filename') ?? 'file.bin'
+            const key = context.request.headers.get('x-fylo-key') ?? undefined
+            const id = await fylo.executePutFileSourceDirect(route.collection, {
+                stream: /** @type {ReadableStream<Uint8Array>} */ (context.request.body),
+                name,
+                contentType: context.request.headers.get('content-type') ?? undefined,
+                key,
+                maxBytes: options.maxBodyBytes
+            })
+            return jsonResponse({ ok: true, result: { id } }, 201, options)
+        }
         const body = await readJsonBody(context.request, options.maxBodyBytes)
         if (!isRecord(body)) throw statusError(400, 'Document body must be a JSON object')
         const id = await fylo[route.collection].put(body)
@@ -236,11 +273,12 @@ async function resolveRoot(context) {
 
 /**
  * @param {FyloHttpContext} context
- * @returns {Promise<{ root: string, versioning?: import('../replication/sync.js').FyloVersioningOptions }>}
+ * @returns {Promise<{ root: string, versioning?: import('../replication/sync.js').FyloVersioningOptions, allowFilePaths: boolean }>}
  */
 async function machineOverridesFor(context) {
     return {
         root: await resolveRoot(context),
+        allowFilePaths: false,
         ...(context.branch ? { versioning: { resolve: false, repositoryRoot: context.root } } : {})
     }
 }
@@ -269,14 +307,94 @@ async function collectFindDocs(fylo, collection, query) {
 
 /**
  * @param {string} pathname
- * @returns {{ collection: string, id?: string } | null}
+ * @returns {{ collection: string, id?: string, raw?: boolean } | null}
  */
 function parseCollectionRoute(pathname) {
     const parts = pathname.split('/').filter(Boolean)
-    if (parts[0] !== 'v1' || parts.length < 2 || parts.length > 3) return null
+    if (parts[0] !== 'v1' || parts.length < 2 || parts.length > 4) return null
     const collection = decodeURIComponent(parts[1])
     if (['health', 'openapi.json', 'exec', 'sql'].includes(collection)) return null
-    return { collection, ...(parts[2] ? { id: decodeURIComponent(parts[2]) } : {}) }
+    if (parts.length === 4 && parts[3] !== 'raw') return null
+    if (parts.length === 3 && parts[2] === 'events') return null
+    return {
+        collection,
+        ...(parts[2] ? { id: decodeURIComponent(parts[2]) } : {}),
+        ...(parts[3] === 'raw' ? { raw: true } : {})
+    }
+}
+
+/**
+ * Matches `/v1/:collection/events` (the sync changes feed). Returns the
+ * collection name, or null.
+ * @param {string} pathname
+ * @returns {string | null}
+ */
+function parseEventsRoute(pathname) {
+    const parts = pathname.split('/').filter(Boolean)
+    if (parts[0] !== 'v1' || parts.length !== 3 || parts[2] !== 'events') return null
+    return decodeURIComponent(parts[1])
+}
+
+/**
+ * Serves a collection's event journal for pull-sync. With
+ * `Accept: text/event-stream` it streams new events as Server-Sent Events;
+ * otherwise it returns one JSON batch since `?since=<offset>` (poll fallback).
+ * Both report the new byte offset so clients resume without gaps or dupes.
+ * @param {FyloHttpContext} context
+ * @param {string} collection
+ * @returns {Promise<Response>}
+ */
+async function handleEventsRoute(context, collection) {
+    validateCollectionName(collection)
+    const fylo = /** @type {any} */ (await fyloFor(context))
+    const engine = fylo.engine
+    const events = engine.events
+    const since = Number(context.url.searchParams.get('since') ?? 0) || 0
+    const wantsStream = (context.request.headers.get('accept') ?? '').includes('text/event-stream')
+
+    // The journal stores encrypted docs; the plaintext browser store needs
+    // plaintext, so decrypt each event's doc before it leaves the server. The
+    // cipher config is cached, so loading it per request is cheap and idempotent.
+    await Fylo.loadEncryption(collection)
+    /** @param {{ events: any[], offset: number }} batch */
+    const decrypt = async (batch) => {
+        for (const event of batch.events) {
+            if (event.doc) event.doc = await engine.decodeEncrypted(collection, event.doc)
+        }
+        return batch
+    }
+
+    if (!wantsStream) {
+        const batch = await decrypt(await events.readSince(collection, since))
+        return jsonResponse({ ok: true, result: batch }, 200, context.options)
+    }
+
+    const controller = new AbortController()
+    context.request.signal?.addEventListener('abort', () => controller.abort())
+    const encoder = new TextEncoder()
+    const stream = new ReadableStream({
+        async start(ctrl) {
+            try {
+                for await (const batch of events.tailFrom(collection, since, controller.signal)) {
+                    await decrypt(batch)
+                    ctrl.enqueue(
+                        encoder.encode(`event: fylo.events\ndata: ${JSON.stringify(batch)}\n\n`)
+                    )
+                }
+            } catch {
+                // client disconnected or journal error — end the stream
+            } finally {
+                ctrl.close()
+            }
+        },
+        cancel() {
+            controller.abort()
+        }
+    })
+    const headers = responseHeaders(context.options, 'text/event-stream')
+    headers.set('cache-control', 'no-cache')
+    headers.set('connection', 'keep-alive')
+    return new Response(stream, { status: 200, headers })
 }
 
 /**
@@ -502,7 +620,7 @@ function responseHeaders(options, contentType) {
         headers.set('access-control-allow-methods', 'GET,HEAD,POST,PATCH,DELETE,OPTIONS')
         headers.set(
             'access-control-allow-headers',
-            'authorization,content-type,accept-profile,content-profile'
+            'authorization,content-type,accept-profile,content-profile,x-fylo-filename,x-fylo-key'
         )
     }
     return headers
@@ -554,12 +672,15 @@ function openApiDocument() {
             '/v1/sql': { post: { summary: 'Execute FYLO SQL' } },
             '/v1/{collection}': {
                 get: { summary: 'Query collection documents' },
-                post: { summary: 'Create a document' }
+                post: { summary: 'Create a document or upload a raw file' }
             },
             '/v1/{collection}/{id}': {
                 get: { summary: 'Read a document by TTID' },
                 patch: { summary: 'Patch a document by TTID' },
                 delete: { summary: 'Soft-delete a document by TTID' }
+            },
+            '/v1/{collection}/{id}/raw': {
+                get: { summary: 'Stream raw file bytes by TTID' }
             }
         }
     }

@@ -1,5 +1,5 @@
 import { stringifyStoredValue } from '../../storage/value-codec.js'
-import TTID from '@d31ma/ttid'
+import TTID from '../vendor/ttid.mjs'
 import { join } from './path.js'
 
 /**

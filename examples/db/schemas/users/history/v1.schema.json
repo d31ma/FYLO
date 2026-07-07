@@ -1,6 +1,0 @@
-{
-    "name": "^[A-Za-z .'-]+$",
-    "role": "^(admin|developer)$",
-    "team": "^[a-z][a-z0-9-]*$",
-    "tags": ["^[a-z][a-z0-9-]*$"]
-}

@@ -1,0 +1,42 @@
+<section class="showcase" aria-labelledby="showcase-heading">
+  <div class="w-container w-container--lg">
+    <div class="section-head">
+      <span class="eyebrow">Show me the code</span>
+      <h2 id="showcase-heading">{heading}</h2>
+      <p>
+        One binary, one JSON protocol, your language. The same engine speaks NoSQL collections,
+        plain SQL, and a PostgREST-style HTTP gateway. Pick a language, rename the collection —
+        every sample follows.
+      </p>
+    </div>
+
+    <div class="showcase-toolbar">
+      <div class="showcase-tabs" role="tablist" aria-label="Code samples">
+        <loop :for="let tabDef of tabs">
+          <button type="button" :class="$tab === tabDef.key ? 'w-btn w-btn-filled w-btn--sm' : 'w-btn w-btn-text w-btn--sm'" :aria-selected="$tab === tabDef.key ? 'true' : 'false'" role="tab" on:click="show(tabDef.key)">{tabDef.label}</button>
+        </loop>
+      </div>
+
+      <label class="collection-field">
+        <span>collection</span>
+        <input :value="collection" spellcheck="false" autocomplete="off" aria-label="Collection name used in the code samples" />
+      </label>
+    </div>
+
+    <logic :if="isCodeTab()">
+      <div class="showcase-langs" role="tablist" aria-label="Language">
+        <loop :for="let lang of langs">
+          <button type="button" :class="$lang === lang.key ? 'w-btn w-btn-tonal w-btn--sm' : 'w-btn w-btn-ghost w-btn--sm'" :aria-selected="$lang === lang.key ? 'true' : 'false'" role="tab" on:click="showLang(lang.key)">{lang.label}</button>
+        </loop>
+      </div>
+    </logic>
+
+    <div class="showcase-panel">
+      <pre class="code-block"><code>{currentCode()}</code></pre>
+
+      <button type="button" class="w-btn w-btn-ghost w-btn--sm showcase-copy" on:click="copyCurrent()" aria-label="Copy code sample">
+        <logic :if="copied">Copied ✓</logic><logic else="">Copy</logic>
+      </button>
+    </div>
+  </div>
+</section>

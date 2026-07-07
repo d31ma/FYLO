@@ -1,7 +1,7 @@
 import { test, expect, describe, beforeAll, afterAll } from 'bun:test'
 import { rm } from 'node:fs/promises'
 import Fylo from '../../src/index.js'
-import TTID from '@d31ma/ttid'
+import TTID from '../helpers/ttid.js'
 import { createTestRoot } from '../helpers/root.js'
 const COLLECTION = 'ec-test'
 const root = await createTestRoot('fylo-edge-')
@@ -20,7 +20,12 @@ describe('NO-SQL', () => {
         expect(Object.keys(result).length).toBe(0)
     })
     test('GET/DELETE reject invalid document IDs before filesystem access', async () => {
-        expect(() => fylo[COLLECTION].get('../not-a-ttid')).toThrow('Invalid document ID')
+        // ID validation is async now (driven by the ttid binary), so get() rejects
+        // when consumed rather than throwing synchronously — but still before any
+        // filesystem access.
+        await expect(fylo[COLLECTION].get('../not-a-ttid').once()).rejects.toThrow(
+            'Invalid document ID'
+        )
         await expect(fylo[COLLECTION].delete('../not-a-ttid')).rejects.toThrow(
             'Invalid document ID'
         )

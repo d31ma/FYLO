@@ -1,0 +1,26 @@
+.stats {
+  padding: 1rem;
+  border-top: 1px solid var(--w-divider);
+  border-bottom: 1px solid var(--w-divider);
+  background: var(--w-surface-container-low);
+}
+
+.stat {
+  padding: 1.25rem 0.5rem;
+  text-align: center;
+}
+
+.stat-value {
+  font-size: 1.9rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--w-primary);
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+}
+
+.stat-label {
+  margin-top: 0.35rem;
+  color: var(--w-text-subtle);
+  font-size: 0.85rem;
+  line-height: 1.5;
+}

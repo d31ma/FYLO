@@ -1,0 +1,152 @@
+<section class="docs section" aria-labelledby="docs-heading">
+  <div class="w-container w-container--lg">
+    <div class="docs-head">
+      <span class="eyebrow">Quick reference</span>
+      <h1 id="docs-heading">FYLO documentation</h1>
+      <p>
+        FYLO is a single binary that speaks a JSON machine protocol over stdin/stdout. Pick your
+        language below — the same operations work from
+        <a href="https://github.com/d31ma/Fylo/tree/main/clients">every client</a>. The full
+        reference — configuration, schema versioning, recovery, and limitations — lives in the
+        <a href="https://github.com/d31ma/Fylo#readme" target="_blank" rel="noopener">README on GitHub</a>.
+      </p>
+    </div>
+
+    <div class="docs-tabs" role="tablist" aria-label="Documentation sections">
+      <loop :for="let section of sections">
+        <button type="button" :class="$section === section.key ? 'w-btn w-btn-filled w-btn--sm' : 'w-btn w-btn-ghost w-btn--sm'" :aria-selected="$section === section.key ? 'true' : 'false'" role="tab" on:click="show(section.key)">{section.label}</button>
+      </loop>
+    </div>
+
+    <logic :if="isCodeSection()">
+      <div class="docs-langs" role="tablist" aria-label="Language">
+        <loop :for="let lang of langs">
+          <button type="button" :class="$lang === lang.key ? 'w-btn w-btn-tonal w-btn--sm' : 'w-btn w-btn-ghost w-btn--sm'" :aria-selected="$lang === lang.key ? 'true' : 'false'" role="tab" on:click="showLang(lang.key)">{lang.label}</button>
+        </loop>
+      </div>
+    </logic>
+
+    <switch :value="$section">
+      <case :when="'install'">
+        <article class="docs-panel">
+          <h2>Install &amp; quick start</h2>
+          <p>
+            Install the <code>fylo</code> binary once, drop the single-file client for your
+            language into your project, then point it at a directory and write. Every operation is
+            a JSON request; the response carries <code>ok</code> and either <code>result</code> or
+            <code>error</code>.
+          </p>
+          <pre class="code-block"><code>{code()}</code></pre>
+        </article>
+      </case>
+
+      <case :when="'crud'">
+        <article class="docs-panel">
+          <h2>CRUD operations</h2>
+          <p>
+            <code>putData</code> creates, <code>patchDoc</code> updates in place while preserving
+            the document TTID, and <code>delDoc</code> soft-deletes into a read-only
+            <code>.deleted/</code> sibling that <code>restoreDoc</code> can bring back.
+          </p>
+          <pre class="code-block"><code>{code()}</code></pre>
+          <p>
+            File collections accept a <code>Blob</code>, <code>File</code>, or <code>URL</code>
+            with S3-style logical object keys, streamed back as bytes, blob, or stream.
+          </p>
+        </article>
+      </case>
+
+      <case :when="'query'">
+        <article class="docs-panel">
+          <h2>Querying</h2>
+          <p>Queries hit the prefix indexes first, then hydrate only matching documents.</p>
+          <pre class="code-block"><code>{code()}</code></pre>
+          <h3>Query strategy</h3>
+          <div class="w-table-wrap w-table-wrap--responsive-scroll">
+            <table class="w-table w-table--striped">
+              <thead>
+                <tr><th>Operator</th><th>Index used</th><th>Fallback</th></tr>
+              </thead>
+              <tbody>
+                <loop :for="let row of queryStrategies">
+                  <tr>
+                    <td data-label="Operator"><code>{row.op}</code></td>
+                    <td data-label="Index used">{row.index}</td>
+                    <td data-label="Fallback">{row.fallback}</td>
+                  </tr>
+                </loop>
+              </tbody>
+            </table>
+          </div>
+        </article>
+      </case>
+
+      <case :when="'sql'">
+        <article class="docs-panel">
+          <h2>SQL support</h2>
+          <p>
+            Every client drives the engine with SQL. Each also has a <code>sql</code> helper you
+            interpolate natively: Node and <code>JS (Browser)</code> (tagged template) and C#
+            (<code>FormattableString</code>) escape the interpolated values for you; the other
+            languages inline them verbatim, so escape untrusted input yourself.
+          </p>
+          <pre class="code-block"><code>{code()}</code></pre>
+        </article>
+      </case>
+
+      <case :when="'schema'">
+        <article class="docs-panel">
+          <h2>Schema versioning</h2>
+          <p>
+            Schemas are CHEX regex documents with a per-collection manifest, history, and pure
+            upgrader functions — all on disk, so they apply no matter which language writes.
+            Documents carry a <code>_v</code> label; old shapes materialize to head on read, and
+            strict writes validate against the head schema.
+          </p>
+          <pre class="code-block"><code>{schemaCode()}</code></pre>
+        </article>
+      </case>
+
+      <case :when="'security'">
+        <article class="docs-panel">
+          <h2>Security</h2>
+          <p>
+            FYLO does not authenticate — your app verifies identity, FYLO enforces policy. Fields
+            listed in a schema's <code>$encrypted</code> array are stored with AES-GCM; equality
+            lookups use HMAC blind indexes. Row-level security rules and WORM (write-once) mode are
+            declared on disk and over the serve flags, so they hold for every client.
+          </p>
+          <pre class="code-block"><code>{securityCode()}</code></pre>
+        </article>
+      </case>
+
+      <case default>
+        <article class="docs-panel">
+          <h2>HTTP gateway &amp; CLI</h2>
+          <p>
+            <code>fylo serve</code> exposes a PostgREST-inspired REST boundary over a local root —
+            the option for anything that can't spawn the binary directly. Every non-OPTIONS request
+            requires a Bearer token unless anonymous access is explicitly allowed.
+          </p>
+          <div class="w-table-wrap w-table-wrap--responsive-scroll">
+            <table class="w-table">
+              <thead>
+                <tr><th>Route</th><th>Purpose</th></tr>
+              </thead>
+              <tbody>
+                <loop :for="let route of gatewayRoutes">
+                  <tr>
+                    <td data-label="Route"><code>{route.path}</code></td>
+                    <td data-label="Purpose">{route.purpose}</td>
+                  </tr>
+                </loop>
+              </tbody>
+            </table>
+          </div>
+          <h3>CLI &amp; version control</h3>
+          <pre class="code-block"><code>{cliCode()}</code></pre>
+        </article>
+      </case>
+    </switch>
+  </div>
+</section>

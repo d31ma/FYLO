@@ -1,0 +1,126 @@
+.hero {
+  position: relative;
+  overflow: hidden;
+  padding: 5.5rem 1rem 4rem;
+  text-align: center;
+  background:
+    radial-gradient(ellipse 70% 55% at 50% 0%, rgba(248, 155, 75, 0.16) 0%, transparent 70%);
+}
+
+.hero-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1.5rem;
+}
+
+.hero h1 {
+  margin: 0;
+  font-size: clamp(2.4rem, 7vw, 4.25rem);
+  font-weight: 650;
+  letter-spacing: -0.03em;
+  line-height: 1.05;
+}
+
+.hero-grad {
+  display: block;
+  background: linear-gradient(90deg, var(--w-text) 20%, #f89b4b 90%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.hero-plain {
+  display: block;
+  color: var(--w-text);
+}
+
+.hero-sub {
+  max-width: 42rem;
+  margin: 0;
+  color: var(--w-text-subtle);
+  font-size: 1.05rem;
+  line-height: 1.8;
+}
+
+.hero-install {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.85rem 1.25rem;
+  border: 1px solid var(--w-border);
+  border-radius: var(--w-radius-pill);
+  background: var(--w-surface-container-low);
+  cursor: pointer;
+  max-width: 100%;
+}
+
+.hero-prompt {
+  color: var(--w-text-very-subtle);
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  flex-shrink: 0;
+}
+
+.hero-cmd {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 0.95rem;
+  color: var(--w-primary);
+  white-space: nowrap;
+  /* Keep the pill within the viewport: the command scrolls inside it instead of
+     bleeding past the edge on narrow screens. Click-to-copy still grabs it all. */
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.hero-cmd::-webkit-scrollbar {
+  display: none;
+}
+
+.hero-copied {
+  color: var(--w-success, #4caf50);
+  font-size: 0.8rem;
+  flex-shrink: 0;
+}
+
+.hero-copy-hint {
+  color: var(--w-text-very-subtle);
+  font-size: 0.8rem;
+  flex-shrink: 0;
+}
+
+.hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.75rem;
+}
+
+.hero-ticks {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.5rem 1.5rem;
+  color: var(--w-text-subtle);
+  font-size: 0.88rem;
+}
+
+@media (max-width: 599.98px) {
+  .hero {
+    padding-top: 3.5rem;
+  }
+  .hero-actions {
+    width: 100%;
+    flex-direction: column;
+  }
+  .hero-actions .w-btn {
+    width: 100%;
+    box-sizing: border-box;
+  }
+  .hero-ticks {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.5rem;
+    text-align: left;
+  }
+}

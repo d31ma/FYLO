@@ -1,4 +1,4 @@
-import TTID from '@d31ma/ttid'
+import TTID from '../vendor/ttid.mjs'
 import { assertPathInside, basename, join } from './path.js'
 
 /**

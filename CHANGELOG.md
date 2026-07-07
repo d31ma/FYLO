@@ -1,5 +1,23 @@
 # Changelog
 
+## 26.28.02 - 2026-07-07
+
+### Added
+
+- **Language client suite** (`clients/`): drop-in, dependency-free clients that drive the compiled binary over the machine protocol — Python, Ruby, Node/TypeScript, PHP, Go, Rust, C#, Java, and Dart. Each exposes a named method per operation plus a collection-scoped facade — `db.collection("users").put(...)`, with `db.users.put(...)` sugar in the dynamic languages.
+- **Local-first clients**: the browser bundle (`fylo-web.mjs`) and native iOS (Swift), Android (Kotlin), and Flutter clients embed the engine on-device (OPFS) and reconcile with a backend `fylo serve` over REST/SSE — fully offline-capable. The mobile and Flutter clients host the web engine in a headless WebView and share one RPC bridge (`clients/mobile/`).
+- **Local-first browser sync** (`src/browser/sync/`): an OPFS-backed store with a background sync engine — push over the machine protocol, pull via an SSE changes feed (`GET /v1/:collection/events`), document-level three-way merge, and offline queueing.
+- **Raw file storage**: store and read opaque files alongside documents (`src/core/raw-file.js`, `src/storage/files.js`).
+- **Version-matched clients bundle**: every release attaches a `fylo-clients.tar.gz` (paired with that release's binary) alongside the platform binaries and the web bundle.
+
+### Changed
+
+- **CHEX and TTID are consumed as standalone binaries, not npm packages**: the engine spawns the `ttid` and `chex` binaries — installed from their GitHub Releases via `scripts/install-vendor-bins.sh` — through dependency-free vendored shims in `src/vendor/`, instead of importing `@d31ma/ttid` / `@d31ma/chex`. This keeps FYLO's distribution binary-first with a minimal dependency graph.
+
+### Removed
+
+- Bundled example-database fixtures (`examples/db/`) and the standalone `scripts/build.mjs` / patch scripts, superseded by the `build:exe` and `build:web` scripts.
+
 ## 26.25.01 - 2026-06-15
 
 ### Breaking Changes

@@ -205,6 +205,55 @@ describe('FYLO HTTP gateway', () => {
         expect(Object.values(docs)[0].title).toBe('Network-native')
     })
 
+    test('streams raw file uploads and downloads without exposing server paths', async () => {
+        const root = await createRoot('fylo-http-files-')
+        const db = new Fylo(root, { versioning: { autoCommit: false } })
+        await db.assets.create({ kind: 'file' })
+        const handler = createFyloHttpHandler({
+            root,
+            token: 'test-token',
+            maxBodyBytes: 1024
+        })
+
+        const upload = await request(handler, '/v1/assets', {
+            method: 'POST',
+            headers: {
+                'content-type': 'text/plain',
+                'x-fylo-filename': 'remote.txt',
+                'x-fylo-key': '/remote/uploads/remote.txt'
+            },
+            body: 'remote raw bytes'
+        })
+        expect(upload.status).toBe(201)
+        const id = (await json(upload)).result.id
+
+        const metadata = await request(handler, `/v1/assets/${id}`)
+        expect((await json(metadata)).result[id]).toMatchObject({
+            key: '/remote/uploads/remote.txt',
+            extension: '.txt',
+            contentType: 'text/plain',
+            contentLength: 16
+        })
+
+        const download = await request(handler, `/v1/assets/${id}/raw`)
+        expect(download.status).toBe(200)
+        expect(download.headers.get('content-type')).toBe('text/plain')
+        expect(await download.text()).toBe('remote raw bytes')
+
+        const blockedPath = await request(handler, '/v1/exec', {
+            method: 'POST',
+            body: JSON.stringify({
+                op: 'putData',
+                collection: 'assets',
+                file: { path: `${root}/secret.txt` }
+            })
+        })
+        expect(blockedPath.status).toBe(400)
+        expect((await json(blockedPath)).error.message).toContain(
+            'Local file paths are not allowed'
+        )
+    })
+
     test('pins branch profiles instead of following the active checkout', async () => {
         const root = await createRoot('fylo-http-branch-')
         const repo = new VersionRepository(root)
