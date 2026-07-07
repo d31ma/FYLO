@@ -1,0 +1,20 @@
+<section class="faq section" aria-labelledby="faq-heading">
+  <div class="w-container w-container--md">
+    <div class="section-head">
+      <span class="eyebrow">Questions</span>
+      <h2 id="faq-heading">Frequently asked.</h2>
+    </div>
+
+    <div class="w-accordion w-accordion--variant-default">
+      <loop :for="let faq of faqs">
+        <div :class="openKey === faq.key ? 'w-expand open' : 'w-expand'">
+          <button type="button" class="w-expand-header" on:click="toggle(faq.key)" :aria-expanded="openKey === faq.key ? 'true' : 'false'">
+            <span class="w-expand-title">{faq.q}</span>
+            <span class="w-expand-chevron" aria-hidden="true">⌄</span>
+          </button>
+          <div class="w-expand-body">{faq.a}</div>
+        </div>
+      </loop>
+    </div>
+  </div>
+</section>

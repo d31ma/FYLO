@@ -1,0 +1,65 @@
+.download-head {
+  max-width: 44rem;
+  margin-bottom: 2rem;
+}
+
+.download-head h1 {
+  margin: 0.4rem 0 0.75rem;
+  font-size: clamp(1.8rem, 4vw, 2.5rem);
+  letter-spacing: -0.02em;
+}
+
+.download-head p {
+  margin: 0;
+  color: var(--w-text-subtle);
+  line-height: 1.7;
+}
+
+.download-head a {
+  color: var(--w-primary);
+}
+
+.download-install {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+  gap: 1.5rem;
+  margin-bottom: 2.5rem;
+}
+
+.download-panel h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1.15rem;
+  letter-spacing: -0.01em;
+}
+
+.download-panel p {
+  color: var(--w-text-subtle);
+  line-height: 1.7;
+  margin: 0 0 0.75rem;
+}
+
+.download-panel code {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 0.9em;
+  color: var(--w-primary);
+}
+
+.download-panel .code-block code {
+  color: var(--w-text);
+}
+
+.download-subhead {
+  margin: 0 0 1rem;
+  font-size: 1.35rem;
+  letter-spacing: -0.01em;
+}
+
+.download-note {
+  margin: 1.25rem 0 0;
+  color: var(--w-text-subtle);
+  line-height: 1.7;
+}
+
+.download-note a {
+  color: var(--w-primary);
+}

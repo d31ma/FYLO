@@ -1,0 +1,97 @@
+.arch {
+  border-top: 1px solid var(--w-divider);
+  background: var(--w-surface-container-low);
+}
+
+.arch-row {
+  row-gap: var(--w-space-6);
+}
+
+.arch-sub {
+  margin: 0 0 0.85rem;
+  font-size: 1rem;
+  color: var(--w-text);
+}
+
+.arch-tree {
+  font-size: 0.8rem;
+}
+
+.key-anatomy {
+  padding: 1rem 1.25rem;
+  border: 1px solid var(--w-border);
+  border-radius: var(--w-radius-lg);
+  background: var(--w-surface);
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 1rem;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.key-sep {
+  color: var(--w-text-very-subtle);
+  margin: 0 0.15rem;
+}
+
+.key-part {
+  padding: 0.15rem 0.4rem;
+  border-radius: var(--w-radius-sm);
+}
+
+.key-field {
+  background: rgba(248, 155, 75, 0.18);
+  color: var(--w-primary);
+}
+
+.key-kind {
+  background: rgba(76, 175, 130, 0.18);
+  color: var(--w-success, #4caf82);
+}
+
+.key-value {
+  background: rgba(100, 160, 255, 0.16);
+  color: #7ab0ff;
+}
+
+.key-id {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--w-text-subtle);
+}
+
+.key-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.25rem;
+  margin: 0.75rem 0 1.5rem;
+  color: var(--w-text-subtle);
+  font-size: 0.8rem;
+}
+
+.key-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.key-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.arch-table {
+  font-size: 0.85rem;
+}
+
+.arch-table code {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  color: var(--w-primary);
+  font-size: 0.9em;
+}
+
+@media (max-width: 599.98px) {
+  .key-anatomy {
+    font-size: 0.85rem;
+  }
+}

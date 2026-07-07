@@ -1,7 +1,7 @@
 import { chmod, mkdir, open, readdir, rename, rm, stat, utimes } from 'node:fs/promises'
 import path from 'node:path'
 import { assertPathInside, validateDocId } from '../core/doc-id.js'
-import { writeDurable } from './durable.js'
+import { writeDurable, writeDurableStream } from './durable.js'
 import { tryAcquireFileLock, tryReleaseFileLock, waitAcquireFileLock } from './fs-lock.js'
 
 /**
@@ -24,11 +24,34 @@ export class FilesystemStorage {
     }
     /**
      * @param {string} target
+     * @returns {Promise<Uint8Array>}
+     */
+    async readBytes(target) {
+        return new Uint8Array(await Bun.file(target).arrayBuffer())
+    }
+    /**
+     * @param {string} target
+     * @returns {ReadableStream<Uint8Array>}
+     */
+    readStream(target) {
+        return /** @type {ReadableStream<Uint8Array>} */ (Bun.file(target).stream())
+    }
+    /**
+     * @param {string} target
      * @param {string} data
      * @returns {Promise<void>}
      */
     async write(target, data) {
         await writeDurable(target, data)
+    }
+    /**
+     * @param {string} target
+     * @param {ReadableStream<Uint8Array>} stream
+     * @param {{ maxBytes?: number }} [options]
+     * @returns {Promise<{ contentLength: number, checksumSHA256: string }>}
+     */
+    async writeStream(target, stream, options) {
+        return await writeDurableStream(target, stream, options)
     }
     /**
      * @param {string} source
@@ -58,11 +81,11 @@ export class FilesystemStorage {
     }
     /**
      * @param {string} target
-     * @returns {Promise<{ mtimeMs: number }>}
+     * @returns {Promise<{ mtimeMs: number, size: number }>}
      */
     async metadata(target) {
         const metadata = await stat(target)
-        return { mtimeMs: metadata.mtimeMs }
+        return { mtimeMs: metadata.mtimeMs, size: metadata.size }
     }
     /**
      * @param {string} target
@@ -143,10 +166,10 @@ export class FilesystemLockManager {
     /**
      * @param {string} collection
      * @param {TTIDValue} docId
-     * @returns {string}
+     * @returns {Promise<string>}
      */
-    lockPath(collection, docId) {
-        validateDocId(docId)
+    async lockPath(collection, docId) {
+        await validateDocId(docId)
         const locksRoot = path.join(this.root, '.collections', collection, 'locks')
         const target = path.join(locksRoot, `${docId}.lock`)
         assertPathInside(locksRoot, target)
@@ -162,7 +185,11 @@ export class FilesystemLockManager {
      * @returns {Promise<boolean>}
      */
     async acquire(collection, docId, owner, ttlMsOrOptions = 30_000) {
-        return await tryAcquireFileLock(this.lockPath(collection, docId), owner, ttlMsOrOptions)
+        return await tryAcquireFileLock(
+            await this.lockPath(collection, docId),
+            owner,
+            ttlMsOrOptions
+        )
     }
     /**
      * Releases a lock only when the current owner matches.
@@ -172,7 +199,7 @@ export class FilesystemLockManager {
      * @returns {Promise<void>}
      */
     async release(collection, docId, owner) {
-        await tryReleaseFileLock(this.lockPath(collection, docId), owner)
+        await tryReleaseFileLock(await this.lockPath(collection, docId), owner)
     }
     /**
      * @param {string} collection
@@ -281,6 +308,84 @@ export class FilesystemEventBus {
             } catch (err) {
                 const error = /** @type {NodeJS.ErrnoException} */ (err)
                 if (error.code !== 'ENOENT') throw err
+            }
+            await Bun.sleep(100)
+        }
+    }
+
+    /**
+     * Reads the events appended since byte offset `fromOffset`. Only whole lines
+     * are consumed, so a torn final write is left for the next read. Returns the
+     * new offset (a line boundary) for the caller to resume from.
+     * @template {Record<string, any>} T
+     * @param {string} collection
+     * @param {number} [fromOffset]
+     * @returns {Promise<{ events: T[], offset: number }>}
+     */
+    async readSince(collection, fromOffset = 0) {
+        const target = this.journalPath(collection)
+        try {
+            const fileStat = await stat(target)
+            if (fileStat.size <= fromOffset) return { events: [], offset: fileStat.size }
+            const handle = await open(target, 'r')
+            try {
+                const size = fileStat.size - fromOffset
+                const buffer = Buffer.alloc(size)
+                await handle.read(buffer, 0, size, fromOffset)
+                const text = buffer.toString('utf8')
+                const lastNewline = text.lastIndexOf('\n')
+                if (lastNewline === -1) return { events: [], offset: fromOffset }
+                const complete = text.slice(0, lastNewline + 1)
+                /** @type {T[]} */
+                const events = []
+                for (const line of complete.split('\n')) {
+                    if (line.trim().length === 0) continue
+                    events.push(JSON.parse(line))
+                }
+                return { events, offset: fromOffset + Buffer.byteLength(complete, 'utf8') }
+            } finally {
+                await handle.close()
+            }
+        } catch (err) {
+            const error = /** @type {NodeJS.ErrnoException} */ (err)
+            if (error.code !== 'ENOENT') throw err
+            return { events: [], offset: 0 }
+        }
+    }
+
+    /**
+     * Current byte length of the collection journal — the offset a fresh client
+     * should resume streaming from. Cheap (stat only).
+     * @param {string} collection
+     * @returns {Promise<number>}
+     */
+    async currentOffset(collection) {
+        try {
+            return (await stat(this.journalPath(collection))).size
+        } catch (err) {
+            const error = /** @type {NodeJS.ErrnoException} */ (err)
+            if (error.code !== 'ENOENT') throw err
+            return 0
+        }
+    }
+
+    /**
+     * Tails the collection journal from byte offset `fromOffset`, yielding one
+     * `{ events, offset }` batch per poll that has new events. Stops when
+     * `signal` aborts.
+     * @template {Record<string, any>} T
+     * @param {string} collection
+     * @param {number} [fromOffset]
+     * @param {AbortSignal} [signal]
+     * @returns {AsyncGenerator<{ events: T[], offset: number }, void, unknown>}
+     */
+    async *tailFrom(collection, fromOffset = 0, signal) {
+        let offset = fromOffset
+        while (!signal?.aborted) {
+            const batch = await this.readSince(collection, offset)
+            if (batch.events.length > 0) {
+                offset = batch.offset
+                yield /** @type {{ events: T[], offset: number }} */ (batch)
             }
             await Bun.sleep(100)
         }

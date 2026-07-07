@@ -199,6 +199,20 @@ export class SchemaVersionRegistry {
     }
 
     /**
+     * Path to the head schema file (`history/<current>.schema.json`), or null
+     * when the collection has no manifest. CHEX reads this file directly.
+     * @param {string} collection
+     * @param {string|null|undefined} schemaDir
+     * @returns {Promise<string|null>}
+     */
+    async headSchemaPath(collection, schemaDir) {
+        if (!schemaDir) return null
+        const manifest = await this.loadManifest(collection, schemaDir)
+        if (!manifest) return null
+        return schemaVersionPath(collection, schemaDir, manifest.current)
+    }
+
+    /**
      * @param {string} collection
      * @param {string} fromVersion
      * @param {string} toVersion
@@ -335,6 +349,18 @@ export async function isVersioned(collection, schemaDir) {
  */
 export async function loadHeadSchema(collection, schemaDir) {
     return await schemaVersionRegistry.loadHeadSchema(collection, schemaDir)
+}
+
+/**
+ * Path to the head schema file for `collection` (`history/<current>.schema.json`),
+ * or `null` when the collection has no manifest. CHEX validates against this
+ * file directly.
+ * @param {string} collection
+ * @param {string|null|undefined} schemaDir
+ * @returns {Promise<string|null>}
+ */
+export async function headSchemaFilePath(collection, schemaDir) {
+    return await schemaVersionRegistry.headSchemaPath(collection, schemaDir)
 }
 
 /**

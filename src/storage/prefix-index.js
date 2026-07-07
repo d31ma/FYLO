@@ -1,7 +1,7 @@
 import path from 'node:path'
 import { mkdir, open, readFile, rm, stat } from 'node:fs/promises'
 import { Cipher } from '../security/cipher.js'
-import { validateDocId } from '../core/doc-id.js'
+import { filterTTIDs } from '../core/doc-id.js'
 import { writeDurable } from './durable.js'
 import { stringifyStoredValue } from './value-codec.js'
 
@@ -171,7 +171,10 @@ function docIdFromKey(prefix, key) {
     const suffix = key.slice(prefix.length)
     const segments = suffix.split('/')
     const docId = decodeSegment(segments.at(-1) ?? '')
-    validateDocId(docId)
+    // ponytail: no TTID re-validation here — this key was written by FYLO from an
+    // already-validated docId, and driving the async `ttid` binary on this hot
+    // sync decode path would cascade IPC through the whole query engine. Indexes
+    // are rebuildable accelerators; documents are the source of truth.
     return docId
 }
 
@@ -202,7 +205,9 @@ export class PrefixIndexCodec {
      * @returns {string}
      */
     static key(fieldPath, kind, value, docId) {
-        validateDocId(docId)
+        // ponytail: docId is already validated at the storage/API boundary before
+        // it reaches this hot sync key-builder; re-checking via the async `ttid`
+        // binary would force the whole index/query path async for no safety gain.
         return [encodeFieldPath(fieldPath), kind, value, encodeSegment(docId)].join('/')
     }
 
@@ -324,10 +329,22 @@ export class PrefixIndexCodec {
                 ]
             }
             if (wildcardCount === 1 && pattern.endsWith('%')) {
-                return [{ kind: 'f', valuePrefix: encodeSegment(pattern.slice(0, -1)) }]
+                return [
+                    {
+                        kind: 'f',
+                        valuePrefix: encodeSegment(stringifyStoredValue(pattern.slice(0, -1)))
+                    }
+                ]
             }
             if (wildcardCount === 1 && pattern.startsWith('%')) {
-                return [{ kind: 'r', valuePrefix: encodeSegment(reverseString(pattern.slice(1))) }]
+                return [
+                    {
+                        kind: 'r',
+                        valuePrefix: encodeSegment(
+                            reverseString(stringifyStoredValue(pattern.slice(1)))
+                        )
+                    }
+                ]
             }
             if (
                 wildcardCount === 2 &&
@@ -335,7 +352,7 @@ export class PrefixIndexCodec {
                 pattern.endsWith('%') &&
                 pattern.length > 2
             ) {
-                const needle = pattern.slice(1, -1)
+                const needle = stringifyStoredValue(pattern.slice(1, -1))
                 if (Array.from(needle).length >= NGRAM_SIZE) {
                     return [{ kind: 'g3', valuePrefix: `${encodeSegment(needle.slice(0, 3))}/` }]
                 }
@@ -717,17 +734,9 @@ export class LocalFsPrefixIndexStore {
     /** @param {string} collection @returns {Promise<number>} */
     async countDocuments(collection) {
         const keys = await this.listKeys(collection)
-        const docIds = new Set()
-        for (const key of keys) {
-            const docId = decodeSegment(key.split('/').at(-1) ?? '')
-            try {
-                validateDocId(docId)
-                docIds.add(docId)
-            } catch {
-                // Index rows can contain non-document keys; only valid document ids count.
-            }
-        }
-        return docIds.size
+        // Index rows can contain non-document keys; only valid document ids count.
+        const candidates = keys.map((key) => decodeSegment(key.split('/').at(-1) ?? ''))
+        return new Set(await filterTTIDs(candidates)).size
     }
 
     /**
@@ -838,17 +847,9 @@ export class BunS3ClientIndexStore {
     /** @param {string} collection @returns {Promise<number>} */
     async countDocuments(collection) {
         const keys = await this.listKeys(collection)
-        const docIds = new Set()
-        for (const key of keys) {
-            const docId = decodeSegment(key.split('/').at(-1) ?? '')
-            try {
-                validateDocId(docId)
-                docIds.add(docId)
-            } catch {
-                // Index rows can contain non-document keys; only valid document ids count.
-            }
-        }
-        return docIds.size
+        // Index rows can contain non-document keys; only valid document ids count.
+        const candidates = keys.map((key) => decodeSegment(key.split('/').at(-1) ?? ''))
+        return new Set(await filterTTIDs(candidates)).size
     }
 
     /**

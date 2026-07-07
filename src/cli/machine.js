@@ -1,4 +1,5 @@
 import path from 'node:path'
+import { pathToFileURL } from 'node:url'
 import Fylo from '../index.js'
 import {
     doctorSchema,
@@ -7,6 +8,7 @@ import {
     validateSchemaDocument
 } from '../schema/admin.js'
 import { VersionRepository } from '../versioning/repository.js'
+import { syncPush } from '../replication/sync-push.js'
 
 const MACHINE_PROTOCOL_VERSION = 1
 
@@ -16,7 +18,7 @@ const MACHINE_PROTOCOL_VERSION = 1
  */
 
 /**
- * @typedef {'executeSQL' | 'createCollection' | 'dropCollection' | 'inspectCollection' | 'rebuildCollection' | 'getDoc' | 'getLatest' | 'findDocs' | 'findDeletedDocs' | 'restoreDoc' | 'joinDocs' | 'putData' | 'batchPutData' | 'patchDoc' | 'patchDocs' | 'delDoc' | 'delDocs' | 'importBulkData' | 'checkout' | 'branch' | 'commit' | 'log' | 'status' | 'diff' | 'restoreCommit' | 'merge' | 'schemaInspect' | 'schemaCurrent' | 'schemaHistory' | 'schemaDoctor' | 'schemaValidate' | 'schemaMaterialize'} MachineOperation
+ * @typedef {'executeSQL' | 'createCollection' | 'dropCollection' | 'inspectCollection' | 'rebuildCollection' | 'getDoc' | 'getLatest' | 'findDocs' | 'findDeletedDocs' | 'restoreDoc' | 'joinDocs' | 'putData' | 'batchPutData' | 'patchDoc' | 'patchDocs' | 'delDoc' | 'delDocs' | 'importBulkData' | 'syncPush' | 'checkout' | 'branch' | 'commit' | 'log' | 'status' | 'diff' | 'restoreCommit' | 'merge' | 'schemaInspect' | 'schemaCurrent' | 'schemaHistory' | 'schemaDoctor' | 'schemaValidate' | 'schemaMaterialize'} MachineOperation
  */
 
 /**
@@ -28,6 +30,7 @@ const MACHINE_PROTOCOL_VERSION = 1
  * @property {boolean | FyloWormOptions=} worm
  * @property {FyloVersioningOptions=} versioning
  * @property {string=} collection
+ * @property {'document' | 'file'=} kind
  * @property {string=} branch
  * @property {boolean=} create
  * @property {boolean=} force
@@ -40,8 +43,11 @@ const MACHINE_PROTOCOL_VERSION = 1
  * @property {string=} sql
  * @property {Record<string, any>=} query
  * @property {Record<string, any>=} join
+ * @property {import('../replication/sync-push.js').SyncChange[]=} changes
  * @property {Record<string, any>=} document
  * @property {Record<string, any>=} data
+ * @property {{ path?: string, url?: string, key?: string }=} file
+ * @property {{ maxBytes?: number, key?: string, allowedProtocols?: string[], allowedHosts?: string[], allowPrivateNetwork?: boolean }=} fileOptions
  * @property {Record<string, any>[]=} batch
  * @property {Record<string, any>=} newDoc
  * @property {Record<string, any>=} oldDoc
@@ -57,6 +63,8 @@ const MACHINE_PROTOCOL_VERSION = 1
  * @property {string=} root
  * @property {boolean=} worm
  * @property {FyloVersioningOptions=} versioning
+ * @property {boolean=} allowFilePaths
+ * @property {Map<string, any>=} cache Warm instances reused across requests (stdio loop)
  */
 
 /**
@@ -124,6 +132,40 @@ function requireObjectArray(request, field) {
         throw new Error(`Machine request field "${String(field)}" must be an array of objects`)
     }
     return value
+}
+
+/**
+ * @param {MachineRequest} request
+ * @param {MachineCliOverrides} overrides
+ * @returns {URL | null}
+ */
+function machineFileInput(request, overrides) {
+    if (request.file === undefined) return null
+    if (!isRecord(request.file)) {
+        throw new Error('Machine request field "file" must be an object')
+    }
+    const filePath = request.file.path
+    const fileUrl = request.file.url
+    if ((filePath === undefined) === (fileUrl === undefined)) {
+        throw new Error('Machine file input requires exactly one of "path" or "url"')
+    }
+    if (filePath !== undefined) {
+        if (typeof filePath !== 'string' || !path.isAbsolute(filePath)) {
+            throw new Error('Machine file path must be an absolute path')
+        }
+        if (overrides.allowFilePaths === false) {
+            throw new Error('Local file paths are not allowed through this transport')
+        }
+        return pathToFileURL(filePath)
+    }
+    if (typeof fileUrl !== 'string') {
+        throw new Error('Machine file URL must be a string')
+    }
+    const parsed = new URL(fileUrl)
+    if (parsed.protocol === 'file:' && overrides.allowFilePaths === false) {
+        throw new Error('Local file paths are not allowed through this transport')
+    }
+    return parsed
 }
 
 /**
@@ -196,14 +238,24 @@ function createMachineFylo(request, overrides = {}) {
         requestVersioning || overrides.versioning
             ? { ...(requestVersioning ?? {}), ...(overrides.versioning ?? {}) }
             : undefined
-    return /** @type {import('../api/fylo.js').FyloCollections} */ (
-        /** @type {unknown} */ (
-            new Fylo(path.resolve(root ?? Fylo.defaultRoot()), {
-                ...(worm ? { worm } : {}),
-                ...(versioning ? { versioning } : {})
-            })
+    const resolvedRoot = path.resolve(root ?? Fylo.defaultRoot())
+    const build = () =>
+        /** @type {import('../api/fylo.js').FyloCollections} */ (
+            /** @type {unknown} */ (
+                new Fylo(resolvedRoot, {
+                    ...(worm ? { worm } : {}),
+                    ...(versioning ? { versioning } : {})
+                })
+            )
         )
-    )
+    if (!overrides.cache) return build()
+    const key = `fylo:${resolvedRoot}:${JSON.stringify(worm ?? null)}:${JSON.stringify(versioning ?? null)}`
+    let instance = overrides.cache.get(key)
+    if (!instance) {
+        instance = build()
+        overrides.cache.set(key, instance)
+    }
+    return instance
 }
 
 /**
@@ -212,7 +264,15 @@ function createMachineFylo(request, overrides = {}) {
  * @returns {VersionRepository}
  */
 function createMachineRepository(request, overrides = {}) {
-    return new VersionRepository(path.resolve(overrides.root ?? request.root ?? Fylo.defaultRoot()))
+    const resolvedRoot = path.resolve(overrides.root ?? request.root ?? Fylo.defaultRoot())
+    if (!overrides.cache) return new VersionRepository(resolvedRoot)
+    const key = `repo:${resolvedRoot}`
+    let instance = overrides.cache.get(key)
+    if (!instance) {
+        instance = new VersionRepository(resolvedRoot)
+        overrides.cache.set(key, instance)
+    }
+    return instance
 }
 
 /**
@@ -309,8 +369,12 @@ export async function executeMachineOperation(request, overrides = {}) {
             return await fylo._sql(requireString(request, 'sql'))
         case 'createCollection': {
             const collection = requireString(request, 'collection')
-            await fylo[collection].create()
-            return { collection }
+            const kind = request.kind ?? 'document'
+            if (kind !== 'document' && kind !== 'file') {
+                throw new Error('Machine request field "kind" must be "document" or "file"')
+            }
+            await fylo[collection].create({ kind })
+            return { collection, kind }
         }
         case 'dropCollection': {
             const collection = requireString(request, 'collection')
@@ -348,10 +412,25 @@ export async function executeMachineOperation(request, overrides = {}) {
                     requireObject(request, 'join')
                 )
             )
-        case 'putData':
-            return await fylo[requireString(request, 'collection')].put(
-                requireObject(request, 'data')
+        case 'syncPush':
+            return await syncPush(
+                fylo,
+                requireString(request, 'collection'),
+                /** @type {import('../replication/sync-push.js').SyncChange[]} */ (
+                    Array.isArray(request.changes) ? request.changes : []
+                )
             )
+        case 'putData': {
+            const collection = requireString(request, 'collection')
+            const file = machineFileInput(request, overrides)
+            if (file) {
+                return await fylo[collection].put(file, {
+                    ...request.fileOptions,
+                    key: request.file?.key ?? request.fileOptions?.key
+                })
+            }
+            return await fylo[collection].put(requireObject(request, 'data'))
+        }
         case 'batchPutData':
             return await fylo[requireString(request, 'collection')].put.batch(
                 requireObjectArray(request, 'batch')
@@ -525,4 +604,39 @@ export async function runMachineRequestSource(requestSource, overrides = {}) {
             }
         }
     }
+}
+
+/**
+ * Persistent NDJSON loop: read one MachineRequest per line from `input`, write
+ * one MachineResponse per line to `write`, keeping engine instances warm across
+ * requests via a shared cache. One malformed/failed request never kills the loop.
+ *
+ * @param {object} [options]
+ * @param {AsyncIterable<Uint8Array | string>} [options.input] Defaults to process.stdin
+ * @param {(line: string) => void} [options.write] Defaults to stdout
+ * @param {MachineCliOverrides} [options.overrides]
+ * @returns {Promise<void>}
+ */
+export async function serveStdioLoop(options = {}) {
+    const input = options.input ?? process.stdin
+    const write = options.write ?? ((line) => process.stdout.write(line))
+    const overrides = { ...(options.overrides ?? {}), cache: options.overrides?.cache ?? new Map() }
+    const decoder = new TextDecoder()
+    let buffer = ''
+    const handleLine = async (/** @type {string} */ line) => {
+        const trimmed = line.trim()
+        if (!trimmed) return
+        const response = await runMachineRequestSource(trimmed, overrides)
+        write(`${JSON.stringify(response)}\n`)
+    }
+    for await (const chunk of input) {
+        buffer += typeof chunk === 'string' ? chunk : decoder.decode(chunk, { stream: true })
+        let newline
+        while ((newline = buffer.indexOf('\n')) !== -1) {
+            const line = buffer.slice(0, newline)
+            buffer = buffer.slice(newline + 1)
+            await handleLine(line)
+        }
+    }
+    await handleLine(buffer)
 }

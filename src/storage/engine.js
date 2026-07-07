@@ -6,6 +6,7 @@ import { FyloSyncError, resolveSyncMode } from '../replication/sync.js'
 import { emitFyloEvent } from '../observability/events.js'
 import { FilesystemEventBus, FilesystemLockManager, FilesystemStorage } from './primitives.js'
 import { FilesystemDocuments } from './documents.js'
+import { FilesystemFiles } from './files.js'
 import { FilesystemQueryEngine } from './query.js'
 import { materializeDoc } from '../schema/migrate.js'
 import { BunS3ClientIndexStore, LocalFsPrefixIndexStore } from './prefix-index.js'
@@ -24,13 +25,17 @@ import { parseStoredValue, stringifyStoredValue } from './value-codec.js'
  * @typedef {import('./types.js').EventBus<Record<string, any>>} EventBus
  * @typedef {import('./types.js').CollectionInspectResult} CollectionInspectResult
  * @typedef {import('./types.js').CollectionRebuildResult} CollectionRebuildResult
+ * @typedef {import('./types.js').CollectionCreateOptions} CollectionCreateOptions
+ * @typedef {import('./types.js').FyloCollectionKind} FyloCollectionKind
  * @typedef {import('./types.js').FilesystemEvent<Record<string, any>>} FilesystemEvent
  * @typedef {import('./types.js').StoredDoc<Record<string, any>>} StoredDoc
+ * @typedef {import('./files.js').RawFileSource} RawFileSource
  * @typedef {import('./types.js').PrefixIndexStore} PrefixIndexStore
  * @typedef {import('../queue/local.js').LocalQueue} LocalQueue
  * @typedef {import('../cache/query.js').QueryCache} QueryCache
  * @typedef {import('../query/types.js').StoreJoin<Record<string, any>, Record<string, any>>} StoreJoin
  * @typedef {import('../query/types.js').StoreQuery<Record<string, any>>} StoreQuery
+ * @typedef {{ id: TTID, createdAt: number, updatedAt: number, deletedAt?: number, data: Record<string, any>, path?: string }} StoredRecord
  */
 
 /**
@@ -58,6 +63,8 @@ export class FilesystemEngine {
     queryCache
     /** @type {FilesystemDocuments} */
     documents
+    /** @type {FilesystemFiles} */
+    files
     /** @type {FilesystemQueryEngine} */
     queryEngine
     /** @type {PrefixIndexStore} */
@@ -70,16 +77,19 @@ export class FilesystemEngine {
     worm
     /** @type {FyloEventHandler | undefined} */
     onEvent
+    /** @type {string} */
+    catalogRoot
     /**
      * Creates the filesystem-backed FYLO engine and its persistence collaborators.
      * @param {string} [root]
-     * @param {{ sync?: FyloSyncHooks, syncMode?: FyloSyncMode, worm?: FyloWormOptions, onEvent?: FyloEventHandler, index?: import('./types.js').FyloIndexOptions, queue?: LocalQueue, queryCache?: QueryCache }} [options]
+     * @param {{ sync?: FyloSyncHooks, syncMode?: FyloSyncMode, worm?: FyloWormOptions, onEvent?: FyloEventHandler, index?: import('./types.js').FyloIndexOptions, queue?: LocalQueue, queryCache?: QueryCache, catalogRoot?: string }} [options]
      */
     constructor(
         root = process.env.FYLO_ROOT || path.join(process.cwd(), '.fylo-data'),
         options = {}
     ) {
         this.root = root
+        this.catalogRoot = options.catalogRoot ?? root
         this.sync = options.sync
         this.syncMode = resolveSyncMode(options.syncMode)
         this.worm = {
@@ -104,6 +114,13 @@ export class FilesystemEngine {
             this.ensureCollection.bind(this),
             this.encodeEncrypted.bind(this),
             this.decodeEncrypted.bind(this)
+        )
+        this.files = new FilesystemFiles(
+            this.storage,
+            this.docsRoot.bind(this),
+            this.deletedRoot.bind(this),
+            this.fileMetadataRoot.bind(this),
+            this.ensureCollection.bind(this)
         )
         this.queryEngine = new FilesystemQueryEngine({
             index: this.index
@@ -132,12 +149,49 @@ export class FilesystemEngine {
         return path.join(this.collectionRoot(collection), '.deleted')
     }
     /** @param {string} collection @returns {string} */
+    fileMetadataRoot(collection) {
+        return path.join(this.collectionRoot(collection), '.metadata')
+    }
+    /** @param {string} collection @returns {string} */
     metaRoot(collection) {
         return this.collectionRoot(collection)
     }
+    /** @param {string} collection @returns {string} */
+    collectionDescriptorPath(collection) {
+        validateCollectionName(collection)
+        return path.join(this.catalogRoot, '.fylo-catalog', 'collections', `${collection}.json`)
+    }
+    /** @param {string} collection @returns {Promise<FyloCollectionKind>} */
+    async collectionKind(collection) {
+        validateCollectionName(collection)
+        const descriptor = this.collectionDescriptorPath(collection)
+        if (!(await this.storage.exists(descriptor))) return 'document'
+        const parsed = /** @type {{ kind?: unknown }} */ (
+            JSON.parse(await this.storage.read(descriptor))
+        )
+        if (parsed.kind !== 'document' && parsed.kind !== 'file') {
+            throw new Error(`Collection descriptor is corrupt: ${collection}`)
+        }
+        return parsed.kind
+    }
+    /**
+     * @param {string} collection
+     * @param {FyloCollectionKind} expected
+     * @returns {Promise<void>}
+     */
+    async requireCollectionKind(collection, expected) {
+        const actual = await this.collectionKind(collection)
+        if (actual !== expected) {
+            throw new Error(
+                `Collection "${collection}" is a ${actual} collection, not a ${expected} collection`
+            )
+        }
+    }
     /** @param {string} collection @param {TTID} docId @returns {string} */
     docPath(collection, docId) {
-        validateDocId(docId)
+        // ponytail: docId is validated at the public method / storage-layer entry
+        // before it reaches this sync path-builder; re-checking via the async
+        // `ttid` binary here would force every path build async.
         const docsRoot = this.docsRoot(collection)
         const target = path.join(docsRoot, docId.slice(0, 2), `${docId}.json`)
         assertPathInside(docsRoot, target)
@@ -145,7 +199,6 @@ export class FilesystemEngine {
     }
     /** @param {string} collection @param {TTID} docId @returns {string} */
     deletedPath(collection, docId) {
-        validateDocId(docId)
         const deletedRoot = this.deletedRoot(collection)
         const target = path.join(deletedRoot, docId.slice(0, 2), `${docId}.json`)
         assertPathInside(deletedRoot, target)
@@ -212,6 +265,9 @@ export class FilesystemEngine {
         await this.storage.mkdir(this.metaRoot(collection))
         await this.storage.mkdir(this.docsRoot(collection))
         await this.storage.mkdir(this.deletedRoot(collection))
+        if ((await this.collectionKind(collection)) === 'file') {
+            await this.storage.mkdir(this.fileMetadataRoot(collection))
+        }
         await this.index.ensureCollection(collection)
     }
     /** @param {string} collection @returns {Promise<void>} */
@@ -321,7 +377,9 @@ export class FilesystemEngine {
     async listQueryableDocIds(collection) {
         await this.requireCollection(collection)
         await this.assertNoLegacyWormArtifacts(collection)
-        return await this.documents.listDocIds(collection)
+        return (await this.collectionKind(collection)) === 'file'
+            ? await this.files.listFileIds(collection)
+            : await this.documents.listDocIds(collection)
     }
     /**
      * Overwrites a mutable document while preserving its identity.
@@ -332,8 +390,9 @@ export class FilesystemEngine {
      * @returns {Promise<TTID>}
      */
     async updateDocument(collection, docId, nextDoc, oldDoc) {
-        validateDocId(docId)
+        await validateDocId(docId)
         if (this.wormEnabled()) throw new Error('Update is not allowed in WORM mode')
+        await this.requireCollectionKind(collection, 'document')
         await this.assertNoLegacyWormArtifacts(collection)
         return await this.withCollectionWriteLock(collection, async () => {
             const owner = Bun.randomUUIDv7()
@@ -404,15 +463,38 @@ export class FilesystemEngine {
             }
         }
     }
-    /** @param {string} collection @returns {Promise<void>} */
-    async createCollection(collection) {
+    /** @param {string} collection @param {CollectionCreateOptions} [options] @returns {Promise<void>} */
+    async createCollection(collection, options = {}) {
+        const kind = options.kind ?? 'document'
+        if (kind !== 'document' && kind !== 'file') {
+            throw new Error('Collection kind must be "document" or "file"')
+        }
+        if (await this.hasCollection(collection)) {
+            const existingKind = await this.collectionKind(collection)
+            if (options.kind !== undefined && existingKind !== kind) {
+                throw new Error(
+                    `Collection "${collection}" already exists with kind "${existingKind}"`
+                )
+            }
+            await this.ensureCollection(collection)
+            return
+        }
+        await this.storage.write(
+            this.collectionDescriptorPath(collection),
+            `${JSON.stringify({ version: 1, kind })}\n`
+        )
         await this.ensureCollection(collection)
         await this.invalidateQueryCache(collection)
     }
     /** @param {string} collection @returns {Promise<void>} */
     async dropCollection(collection) {
         await this.requireCollection(collection)
-        if (this.wormEnabled() && (await this.documents.listDocIds(collection)).length > 0) {
+        const kind = await this.collectionKind(collection)
+        const ids =
+            kind === 'file'
+                ? await this.files.listFileIds(collection)
+                : await this.documents.listDocIds(collection)
+        if (this.wormEnabled() && ids.length > 0) {
             throw new Error('Drop is not allowed for a non-empty WORM collection')
         }
         await this.storage.rmdir(this.collectionRoot(collection))
@@ -428,6 +510,7 @@ export class FilesystemEngine {
         if (!exists) {
             return {
                 collection,
+                kind: 'document',
                 exists: false,
                 worm: false,
                 docsStored: 0,
@@ -435,13 +518,19 @@ export class FilesystemEngine {
                 indexedDocs: 0
             }
         }
+        const kind = await this.collectionKind(collection)
         const [docIds, deletedDocIds, indexedDocs] = await Promise.all([
-            this.documents.listDocIds(collection),
-            this.documents.listDeletedDocIds(collection),
+            kind === 'file'
+                ? this.files.listFileIds(collection)
+                : this.documents.listDocIds(collection),
+            kind === 'file'
+                ? this.files.listDeletedFileIds(collection)
+                : this.documents.listDeletedDocIds(collection),
             this.index.countDocuments(collection)
         ])
         return {
             collection,
+            kind,
             exists: true,
             worm: this.wormEnabled(),
             docsStored: docIds.length,
@@ -526,6 +615,37 @@ export class FilesystemEngine {
         }
         return value
     }
+    /**
+     * @param {string} collection
+     * @param {TTID} docId
+     * @returns {Promise<StoredRecord | null>}
+     */
+    async readStoredRecord(collection, docId) {
+        return (await this.collectionKind(collection)) === 'file'
+            ? await this.files.readStoredFile(collection, docId)
+            : await this.documents.readStoredDoc(collection, docId)
+    }
+    /**
+     * @param {string} collection
+     * @param {TTID} docId
+     * @returns {Promise<StoredRecord | null>}
+     */
+    async readDeletedRecord(collection, docId) {
+        if ((await this.collectionKind(collection)) === 'file') {
+            return await this.files.readDeletedFile(collection, docId)
+        }
+        const deleted = await this.documents.readDeletedDoc(collection, docId)
+        return deleted ? { ...deleted, updatedAt: deleted.deletedAt } : null
+    }
+    /**
+     * @param {string} collection
+     * @param {Record<string, any>} data
+     * @returns {Promise<Record<string, any>>}
+     */
+    async materializeRecord(collection, data) {
+        if ((await this.collectionKind(collection)) === 'file') return data
+        return /** @type {Record<string, any>} */ (await materializeDoc(collection, data))
+    }
     /** @param {string} collection @param {StoreQuery | undefined} [query] @returns {Promise<Array<Record<string, Record<string, any>>>>} */
     async docResults(collection, query) {
         await this.requireCollection(collection)
@@ -548,15 +668,13 @@ export class FilesystemEngine {
         /** @type {TTID[]} */
         const resultIds = []
         for (const id of ids) {
-            const stored = await this.documents.readStoredDoc(collection, id)
+            const stored = await this.readStoredRecord(collection, id)
             if (!stored) continue
             // Upgrade pre-match so queries against fields added in newer schema
             // versions can still hit older docs in storage. Note: indexes are
             // built from on-disk shape, so index-eligible queries on new-only
             // fields still require a rebuild after a schema bump.
-            const data = /** @type {Record<string, any>} */ (
-                await materializeDoc(collection, stored.data)
-            )
+            const data = await this.materializeRecord(collection, stored.data)
             if (!this.queryEngine.matchesQuery(id, data, query, stored)) continue
             results.push({ [id]: data })
             resultIds.push(id)
@@ -574,7 +692,9 @@ export class FilesystemEngine {
         const ids =
             cachedIds ??
             (await this.loadCacheMissIds('deleted', collection, query, cacheVersion, async () => {
-                return await this.documents.listDeletedDocIds(collection)
+                return (await this.collectionKind(collection)) === 'file'
+                    ? await this.files.listDeletedFileIds(collection)
+                    : await this.documents.listDeletedDocIds(collection)
             }))
         const limit = query?.$limit
         /** @type {Array<Record<string, Record<string, any>>>} */
@@ -582,12 +702,18 @@ export class FilesystemEngine {
         /** @type {TTID[]} */
         const resultIds = []
         for (const id of ids) {
-            const stored = await this.documents.readDeletedDoc(collection, id)
+            const stored = await this.readDeletedRecord(collection, id)
             if (!stored) continue
-            const data = /** @type {Record<string, any>} */ (
-                await materializeDoc(collection, stored.data)
+            const data = await this.materializeRecord(collection, stored.data)
+            if (
+                !this.queryEngine.matchesDeletedQuery(
+                    id,
+                    data,
+                    query,
+                    /** @type {{ createdAt: number, deletedAt: number }} */ (stored)
+                )
             )
-            if (!this.queryEngine.matchesDeletedQuery(id, data, query, stored)) continue
+                continue
             results.push({ [id]: data })
             resultIds.push(id)
             if (limit && results.length >= limit) break
@@ -609,12 +735,30 @@ export class FilesystemEngine {
         await this.requireCollection(collection)
         return await this.withCollectionWriteLock(collection, async () => {
             await this.ensureCollection(collection)
-            const docIds = await this.documents.listDocIds(collection)
+            const kind = await this.collectionKind(collection)
+            const docIds =
+                kind === 'file'
+                    ? await this.files.listFileIds(collection)
+                    : await this.documents.listDocIds(collection)
             let indexedDocs = 0
+            const objectKeys = new Map()
             await this.resetIndex(collection)
             for (const docId of docIds) {
-                const stored = await this.documents.readStoredDoc(collection, docId)
+                const stored =
+                    kind === 'file'
+                        ? await this.files.readStoredFile(collection, docId)
+                        : await this.documents.readStoredDoc(collection, docId)
                 if (!stored) continue
+                if (kind === 'file') {
+                    const key = String(stored.data.key)
+                    const existingId = objectKeys.get(key)
+                    if (existingId && existingId !== docId) {
+                        throw new Error(
+                            `Duplicate object key "${key}" belongs to ${existingId} and ${docId}`
+                        )
+                    }
+                    objectKeys.set(key, docId)
+                }
                 await this.index.putDocument(collection, docId, stored.data)
                 indexedDocs++
             }
@@ -627,6 +771,7 @@ export class FilesystemEngine {
             })
             return {
                 collection,
+                kind,
                 worm: this.wormEnabled(),
                 docsScanned: docIds.length,
                 indexedDocs
@@ -635,8 +780,9 @@ export class FilesystemEngine {
     }
     /** @param {string} collection @param {TTID} docId @param {Record<string, any>} doc @returns {Promise<void>} */
     async putDocument(collection, docId, doc) {
-        validateDocId(docId)
+        await validateDocId(docId)
         await this.requireCollection(collection)
+        await this.requireCollectionKind(collection, 'document')
         await this.assertNoLegacyWormArtifacts(collection)
         await this.withCollectionWriteLock(collection, async () => {
             const owner = Bun.randomUUIDv7()
@@ -676,10 +822,79 @@ export class FilesystemEngine {
             }
         })
     }
+    /**
+     * @param {string} collection
+     * @param {TTID} docId
+     * @param {RawFileSource} source
+     * @returns {Promise<void>}
+     */
+    async putFile(collection, docId, source) {
+        await validateDocId(docId)
+        await this.requireCollection(collection)
+        await this.requireCollectionKind(collection, 'file')
+        await this.assertNoLegacyWormArtifacts(collection)
+        await this.withCollectionWriteLock(collection, async () => {
+            const owner = Bun.randomUUIDv7()
+            if (!(await this.locks.acquire(collection, docId, owner))) {
+                throw new Error(`Unable to acquire filesystem lock for ${docId}`)
+            }
+            try {
+                const [existing, deleted] = await Promise.all([
+                    this.files.readStoredFile(collection, docId),
+                    this.files.readDeletedFile(collection, docId)
+                ])
+                if (deleted) {
+                    throw new Error(`Document is soft-deleted; restore it before writing: ${docId}`)
+                }
+                if (existing) throw new Error(`Raw file already exists: ${docId}`)
+                const { key } = this.files.resolveMetadata(docId, source)
+                await this.assertObjectKeyAvailable(collection, key)
+                const stored = await this.files.writeStoredFile(collection, docId, source)
+                await this.rebuildIndexes(collection, docId, stored.data)
+                if (this.wormEnabled()) {
+                    await this.files.makeStoredFileReadOnly(collection, docId)
+                    await this.files.makeSystemMetadataReadOnly(collection, docId)
+                }
+                await this.publishDocumentEvent(collection, {
+                    ts: stored.data.lastModified,
+                    action: 'insert',
+                    id: docId,
+                    doc: stored.data
+                })
+                await this.runSyncTask(collection, docId, 'put', stored.path, async () => {
+                    await this.syncWrite({
+                        operation: 'put',
+                        collection,
+                        docId,
+                        path: stored.path,
+                        data: stored.data
+                    })
+                })
+                await this.invalidateQueryCache(collection)
+            } finally {
+                await this.locks.release(collection, docId, owner)
+            }
+        })
+    }
+    /**
+     * @param {string} collection
+     * @param {string} key
+     * @param {string} [allowedId]
+     * @returns {Promise<void>}
+     */
+    async assertObjectKeyAvailable(collection, key, allowedId) {
+        const ids = await this.index.candidateDocIds(collection, 'key', { $eq: key })
+        for (const id of ids ?? []) {
+            if (id !== allowedId) {
+                throw new Error(`Object key already exists in collection "${collection}": ${key}`)
+            }
+        }
+    }
     /** @param {string} collection @param {TTID} oldId @param {TTID} newId @param {Record<string, any>} patch @param {Record<string, any>} oldDoc @returns {Promise<TTID>} */
     async patchDocument(collection, oldId, newId, patch, oldDoc) {
         if (this.wormEnabled()) throw new Error('Update is not allowed in WORM mode')
         await this.requireCollection(collection)
+        await this.requireCollectionKind(collection, 'document')
         const existing = oldDoc ?? (await this.documents.readStoredDoc(collection, oldId))?.data
         if (!existing) return oldId
         const nextDoc = { ...existing, ...patch }
@@ -689,6 +904,7 @@ export class FilesystemEngine {
     async replaceDocumentVersion(collection, oldId, newId, doc, oldDoc) {
         if (this.wormEnabled()) throw new Error('Update is not allowed in WORM mode')
         await this.requireCollection(collection)
+        await this.requireCollectionKind(collection, 'document')
         if (oldDoc) return await this.updateDocument(collection, oldId, doc, oldDoc)
         const stored = await this.documents.readStoredDoc(collection, oldId)
         if (!stored && (await this.documents.readDeletedDoc(collection, oldId))) {
@@ -699,7 +915,7 @@ export class FilesystemEngine {
     }
     /** @param {string} collection @param {TTID} docId @returns {Promise<void>} */
     async deleteDocument(collection, docId) {
-        validateDocId(docId)
+        await validateDocId(docId)
         if (this.wormEnabled()) throw new Error('Delete is not allowed in WORM mode')
         await this.requireCollection(collection)
         await this.assertNoLegacyWormArtifacts(collection)
@@ -708,15 +924,18 @@ export class FilesystemEngine {
             if (!(await this.locks.acquire(collection, docId, owner)))
                 throw new Error(`Unable to acquire filesystem lock for ${docId}`)
             try {
-                const existing = await this.documents.readStoredDoc(collection, docId)
+                const kind = await this.collectionKind(collection)
+                const existing =
+                    kind === 'file'
+                        ? await this.files.readStoredFile(collection, docId)
+                        : await this.documents.readStoredDoc(collection, docId)
                 if (!existing) return
                 await this.removeIndexes(collection, docId, existing.data)
                 const deletedAt = Date.now()
-                const deletedPath = await this.documents.softDeleteStoredDoc(
-                    collection,
-                    docId,
-                    deletedAt
-                )
+                const deletedPath =
+                    kind === 'file'
+                        ? await this.files.softDeleteStoredFile(collection, docId, deletedAt)
+                        : await this.documents.softDeleteStoredDoc(collection, docId, deletedAt)
                 await this.publishDocumentEvent(collection, {
                     ts: deletedAt,
                     action: 'delete',
@@ -741,7 +960,7 @@ export class FilesystemEngine {
     }
     /** @param {string} collection @param {TTID} docId @returns {Promise<TTID>} */
     async restoreDocument(collection, docId) {
-        validateDocId(docId)
+        await validateDocId(docId)
         if (this.wormEnabled()) throw new Error('Restore is not allowed in WORM mode')
         await this.requireCollection(collection)
         await this.assertNoLegacyWormArtifacts(collection)
@@ -750,16 +969,26 @@ export class FilesystemEngine {
             if (!(await this.locks.acquire(collection, docId, owner)))
                 throw new Error(`Unable to acquire filesystem lock for ${docId}`)
             try {
-                if (await this.documents.readStoredDoc(collection, docId)) {
+                const kind = await this.collectionKind(collection)
+                const active =
+                    kind === 'file'
+                        ? await this.files.readStoredFile(collection, docId)
+                        : await this.documents.readStoredDoc(collection, docId)
+                if (active) {
                     throw new Error(`Cannot restore document because it already exists: ${docId}`)
                 }
-                const deleted = await this.documents.readDeletedDoc(collection, docId)
+                const deleted =
+                    kind === 'file'
+                        ? await this.files.readDeletedFile(collection, docId)
+                        : await this.documents.readDeletedDoc(collection, docId)
                 if (!deleted) throw new Error(`Deleted document not found: ${docId}`)
-                const restoredPath = await this.documents.restoreStoredDoc(
-                    collection,
-                    docId,
-                    Date.now()
-                )
+                if (kind === 'file') {
+                    await this.assertObjectKeyAvailable(collection, String(deleted.data.key), docId)
+                }
+                const restoredPath =
+                    kind === 'file'
+                        ? await this.files.restoreStoredFile(collection, docId, Date.now())
+                        : await this.documents.restoreStoredDoc(collection, docId, Date.now())
                 await this.rebuildIndexes(collection, docId, deleted.data)
                 await this.publishDocumentEvent(collection, {
                     ts: Date.now(),
@@ -785,7 +1014,8 @@ export class FilesystemEngine {
     }
     /** @param {string} collection @param {TTID} docId @param {boolean} [onlyId] @returns {any} */
     getDoc(collection, docId, onlyId = false) {
-        validateDocId(docId)
+        // Validation is async now (ttid binary), so it runs inside each async
+        // entry below rather than in this sync builder.
         const engine = this
         return {
             async *[Symbol.asyncIterator]() {
@@ -799,16 +1029,16 @@ export class FilesystemEngine {
             },
             /** @returns {Promise<Record<TTID, Record<string, any>>>} */
             async once() {
+                await validateDocId(docId)
                 await engine.requireCollection(collection)
                 await engine.assertNoLegacyWormArtifacts(collection)
-                const stored = await engine.documents.readStoredDoc(collection, docId)
+                const stored = await engine.readStoredRecord(collection, docId)
                 if (!stored) return {}
-                const data = /** @type {Record<string, any>} */ (
-                    await materializeDoc(collection, stored.data)
-                )
+                const data = await engine.materializeRecord(collection, stored.data)
                 return { [docId]: data }
             },
             async *onDelete() {
+                await validateDocId(docId)
                 await engine.requireCollection(collection)
                 for await (const event of engine.events.listen(collection)) {
                     if (event.action === 'delete' && event.id === docId) yield event.id
@@ -818,16 +1048,26 @@ export class FilesystemEngine {
     }
     /** @param {string} collection @param {TTID} docId @param {boolean} [onlyId] @returns {Promise<Record<TTID, Record<string, any>> | TTID | null>} */
     async getLatest(collection, docId, onlyId = false) {
-        validateDocId(docId)
+        await validateDocId(docId)
         await this.requireCollection(collection)
         await this.assertNoLegacyWormArtifacts(collection)
-        const stored = await this.documents.readStoredDoc(collection, docId)
+        const stored = await this.readStoredRecord(collection, docId)
         if (!stored) return onlyId ? null : {}
         if (onlyId) return stored.id
-        const data = /** @type {Record<string, any>} */ (
-            await materializeDoc(collection, stored.data)
-        )
+        const data = await this.materializeRecord(collection, stored.data)
         return { [stored.id]: data }
+    }
+    /** @param {string} collection @param {TTID} docId @returns {Promise<Uint8Array>} */
+    async getFileBytes(collection, docId) {
+        await this.requireCollection(collection)
+        await this.requireCollectionKind(collection, 'file')
+        return await this.files.readBytes(collection, docId)
+    }
+    /** @param {string} collection @param {TTID} docId @returns {Promise<ReadableStream<Uint8Array>>} */
+    async getFileStream(collection, docId) {
+        await this.requireCollection(collection)
+        await this.requireCollectionKind(collection, 'file')
+        return await this.files.readStream(collection, docId)
     }
     /** @param {string} collection @param {StoreQuery | undefined} query @returns {any} */
     findDocs(collection, query) {
@@ -845,7 +1085,7 @@ export class FilesystemEngine {
                 for await (const event of engine.events.listen(collection)) {
                     if (event.action !== 'insert' || !event.doc) continue
                     const doc = await engine.decodeEncrypted(collection, event.doc)
-                    const stored = await engine.documents.readStoredDoc(collection, event.id)
+                    const stored = await engine.readStoredRecord(collection, event.id)
                     if (!stored || !engine.queryEngine.matchesQuery(event.id, doc, query, stored))
                         continue
                     const processed = engine.queryEngine.processDoc({ [event.id]: doc }, query)
@@ -895,9 +1135,9 @@ export class FilesystemEngine {
     async *exportBulkData(collection) {
         const ids = await this.listQueryableDocIds(collection)
         for (const id of ids) {
-            const stored = await this.documents.readStoredDoc(collection, id)
+            const stored = await this.readStoredRecord(collection, id)
             if (!stored) continue
-            yield /** @type {Record<string, any>} */ (await materializeDoc(collection, stored.data))
+            yield await this.materializeRecord(collection, stored.data)
         }
     }
     /** @param {StoreJoin} join @returns {Promise<any>} */

@@ -1,0 +1,6 @@
+[
+  { "value": "1", "label": "canonical file per document" },
+  { "value": "0", "label": "native addons or external services" },
+  { "value": "O(log n)", "label": "mmap'd prefix index lookups" },
+  { "value": "13", "label": "language clients (shims + local-first)" }
+]

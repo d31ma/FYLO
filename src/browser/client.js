@@ -15,6 +15,7 @@ const RESERVED = new Set([
     'ready',
     'request',
     'sql',
+    '_sql',
     'inspect',
     'rebuild',
     'create',
@@ -69,6 +70,17 @@ export class BrowserFyloClient {
     /** @returns {Promise<void>} */
     async close() {
         await this.browser.close()
+    }
+
+    /**
+     * Execute a raw SQL string (the `.sql` template tag delegates here). Mirrors
+     * the server client so both engines expose the same SQL surface.
+     * @param {string} statement
+     * @returns {Promise<unknown>}
+     */
+    async _sql(statement) {
+        await this.ready()
+        return await this.browser._sql(statement)
     }
 
     /** @param {import('./core/types.js').BrowserRequest} request */

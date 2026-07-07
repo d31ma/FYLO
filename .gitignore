@@ -26,3 +26,4 @@ AGENTS.md
 !examples/db/**
 .claude
 .codex
+dist-web

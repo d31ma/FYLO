@@ -2,10 +2,11 @@ import { createHash } from 'node:crypto'
 import { cp, mkdir, readFile, readdir, rm, stat } from 'node:fs/promises'
 import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
-import TTID from '@d31ma/ttid'
+import TTID from '../vendor/ttid.js'
 import { writeDurable } from '../storage/durable.js'
 import { FilesystemEngine } from '../storage/engine.js'
 import { tryReleaseFileLock, waitAcquireFileLock } from '../storage/fs-lock.js'
+import { rawFileId } from '../core/raw-file.js'
 
 const DEFAULT_BRANCH = 'main'
 const METADATA_DIR = '.fylo-vcs'
@@ -48,7 +49,7 @@ const OBJECTS_DIR = 'objects'
  */
 
 /**
- * @typedef {'active' | 'deleted'} FyloVersionedDocumentKind
+ * @typedef {'active' | 'deleted' | 'metadata'} FyloVersionedDocumentKind
  */
 
 /**
@@ -199,10 +200,10 @@ export class VersionRepository {
 
     /**
      * @param {string} commitId
-     * @returns {string}
+     * @returns {Promise<string>}
      */
-    commitRoot(commitId) {
-        validateCommitId(commitId)
+    async commitRoot(commitId) {
+        await validateCommitId(commitId)
         return path.join(this.commitsRoot(), commitId)
     }
 
@@ -413,8 +414,8 @@ export class VersionRepository {
      * @returns {Promise<FyloCommitManifest>}
      */
     async writeCommit(branch, ref, parents, message, rootHash) {
-        const commitId = String(TTID.generate())
-        const commitRoot = this.commitRoot(commitId)
+        const commitId = String(await TTID.generate())
+        const commitRoot = await this.commitRoot(commitId)
         await mkdir(commitRoot, { recursive: true })
         const manifest = {
             id: commitId,
@@ -494,7 +495,7 @@ export class VersionRepository {
      * @returns {Promise<FyloRestoreCommitResult>}
      */
     async restoreCommit(commitId, options = {}) {
-        validateCommitId(commitId)
+        await validateCommitId(commitId)
         await this.init()
         await this.readCommit(commitId)
         const branch = await this.currentBranch()
@@ -595,8 +596,11 @@ export class VersionRepository {
      * @returns {Promise<FyloCommitManifest>}
      */
     async readCommit(commitId) {
-        validateCommitId(commitId)
-        const text = await readFile(path.join(this.commitRoot(commitId), 'manifest.json'), 'utf8')
+        await validateCommitId(commitId)
+        const text = await readFile(
+            path.join(await this.commitRoot(commitId), 'manifest.json'),
+            'utf8'
+        )
         return /** @type {FyloCommitManifest} */ (JSON.parse(text))
     }
 
@@ -634,7 +638,7 @@ export class VersionRepository {
             if (!branchRef.head) return { label: `${branch}:HEAD`, tree: new Map() }
             return { label: `${branch}:HEAD`, tree: await this.readCommitTree(branchRef.head) }
         }
-        if (TTID.isTTID(normalized)) {
+        if (await TTID.isTTID(normalized)) {
             await this.readCommit(normalized)
             return { label: normalized, tree: await this.readCommitTree(normalized) }
         }
@@ -655,7 +659,7 @@ export class VersionRepository {
             if (!branchRef.head) throw new Error(`Branch has no commits: ${branch}`)
             return await this.readCommit(branchRef.head)
         }
-        if (TTID.isTTID(normalized)) return await this.readCommit(normalized)
+        if (await TTID.isTTID(normalized)) return await this.readCommit(normalized)
         validateBranchName(normalized)
         const branchRef = await this.readRef(normalized)
         if (!branchRef.head) throw new Error(`Branch has no commits: ${normalized}`)
@@ -826,8 +830,8 @@ export class VersionRepository {
      * @returns {Promise<string | null>}
      */
     async readTreeRoot(commitId) {
-        validateCommitId(commitId)
-        const text = await readFile(path.join(this.commitRoot(commitId), 'tree.json'), 'utf8')
+        await validateCommitId(commitId)
+        const text = await readFile(path.join(await this.commitRoot(commitId), 'tree.json'), 'utf8')
         return /** @type {{ root: string | null }} */ (JSON.parse(text)).root
     }
 
@@ -857,11 +861,13 @@ export class VersionRepository {
             const collection = collectionNode.name
             for (const kindNode of await this.readTreeNode(collectionNode.hash)) {
                 const namespace = kindNode.name
-                const kind = namespace === 'docs' ? 'active' : 'deleted'
+                const kind = versionedKindForNamespace(namespace)
                 for (const bucketNode of await this.readTreeNode(kindNode.hash)) {
                     for (const blob of await this.readTreeNode(bucketNode.hash)) {
-                        const id = blob.name
-                        tree.set(`${collection}/${kind}/${id}`, {
+                        const filename = blob.name
+                        const id = rawFileId(filename)
+                        if (!id || !(await TTID.isTTID(id))) continue
+                        tree.set(`${collection}/${kind}/${filename}`, {
                             collection,
                             kind,
                             id,
@@ -870,7 +876,7 @@ export class VersionRepository {
                                 collection,
                                 namespace,
                                 bucketNode.name,
-                                `${id}.json`
+                                filename
                             ),
                             hash: blob.hash
                         })
@@ -941,11 +947,11 @@ export class VersionRepository {
         /** @type {Map<string, Map<string, Map<string, Map<string, string>>>>} */
         const grouped = new Map()
         for (const entry of flatTree.values()) {
-            const namespace = entry.kind === 'active' ? 'docs' : '.deleted'
+            const namespace = namespaceForVersionedKind(entry.kind)
             getOrCreate(
                 getOrCreate(getOrCreate(grouped, entry.collection), namespace),
                 entry.id.slice(0, 2)
-            ).set(entry.id, entry.hash)
+            ).set(path.basename(entry.path), entry.hash)
         }
         /** @type {Map<string, { type: 'tree' | 'blob', hash: string }>} */
         const rootEntries = new Map()
@@ -958,7 +964,8 @@ export class VersionRepository {
                 for (const [bucket, docs] of buckets) {
                     /** @type {Map<string, { type: 'tree' | 'blob', hash: string }>} */
                     const docEntries = new Map()
-                    for (const [id, hash] of docs) docEntries.set(id, { type: 'blob', hash })
+                    for (const [filename, hash] of docs)
+                        docEntries.set(filename, { type: 'blob', hash })
                     kindEntries.set(bucket, {
                         type: 'tree',
                         hash: await this.writeTreeNode(docEntries)
@@ -998,9 +1005,16 @@ export class VersionRepository {
                 const kindEntries = await this.toEntryMap(collectionEntries.get(namespace)?.hash)
                 for (const [bucket, docs] of buckets) {
                     const bucketEntries = await this.toEntryMap(kindEntries.get(bucket)?.hash)
-                    for (const [id, hash] of docs) {
-                        if (hash === null) bucketEntries.delete(id)
-                        else bucketEntries.set(id, { type: 'blob', hash })
+                    for (const [id, file] of docs) {
+                        for (const filename of bucketEntries.keys()) {
+                            if (rawFileId(filename) === id) bucketEntries.delete(filename)
+                        }
+                        if (file !== null) {
+                            bucketEntries.set(file.filename, {
+                                type: 'blob',
+                                hash: file.hash
+                            })
+                        }
                     }
                     if (bucketEntries.size === 0) kindEntries.delete(bucket)
                     else
@@ -1030,16 +1044,16 @@ export class VersionRepository {
     /**
      * Reconciles each changed document id against the working tree, writing any
      * new blob, and groups the results as collection → namespace → bucket → id →
-     * blobHash (null = the document is absent from that namespace and must be
+     * blob descriptor (null = the document is absent from that namespace and must be
      * removed). Both namespaces are reconciled per id so deletes and restores
      * move documents between `docs` and `.deleted` correctly.
      *
      * @param {string} branchRoot
      * @param {Array<{ collection: string, id: string }>} changes
-     * @returns {Promise<Map<string, Map<string, Map<string, Map<string, string | null>>>>>}
+     * @returns {Promise<Map<string, Map<string, Map<string, Map<string, { filename: string, hash: string } | null>>>>>}
      */
     async buildChangeMap(branchRoot, changes) {
-        /** @type {Map<string, Map<string, Map<string, Map<string, string | null>>>>} */
+        /** @type {Map<string, Map<string, Map<string, Map<string, { filename: string, hash: string } | null>>>>} */
         const grouped = new Map()
         /** @type {Set<string>} */
         const seen = new Set()
@@ -1049,26 +1063,27 @@ export class VersionRepository {
             if (seen.has(dedupeKey)) continue
             seen.add(dedupeKey)
             const bucket = id.slice(0, 2)
-            for (const namespace of ['docs', '.deleted']) {
-                const filePath = path.join(
+            for (const namespace of ['docs', '.deleted', '.metadata']) {
+                const namespaceRoot = path.join(
                     branchRoot,
                     COLLECTIONS_DIR,
                     change.collection,
                     namespace,
-                    bucket,
-                    `${id}.json`
+                    bucket
                 )
-                /** @type {string | null} */
-                let blobHash = null
-                if (await exists(filePath)) {
+                const filePath = await findVersionedFile(namespaceRoot, id)
+                /** @type {{ filename: string, hash: string } | null} */
+                let blob = null
+                if (filePath) {
                     const content = await readFile(filePath)
-                    blobHash = createHash('sha256').update(content).digest('hex')
-                    await this.writeObject(blobHash, content)
+                    const hash = createHash('sha256').update(content).digest('hex')
+                    await this.writeObject(hash, content)
+                    blob = { filename: path.basename(filePath), hash }
                 }
                 getOrCreate(
                     getOrCreate(getOrCreate(grouped, change.collection), namespace),
                     bucket
-                ).set(id, blobHash)
+                ).set(id, blob)
             }
         }
         return grouped
@@ -1093,6 +1108,7 @@ export class VersionRepository {
             const collectionRoot = path.join(collectionsRoot, collection)
             await this.snapshotNamespace(tree, collectionRoot, collection, 'docs', 'active')
             await this.snapshotNamespace(tree, collectionRoot, collection, '.deleted', 'deleted')
+            await this.snapshotNamespace(tree, collectionRoot, collection, '.metadata', 'metadata')
         }
         return tree
     }
@@ -1108,12 +1124,14 @@ export class VersionRepository {
     async snapshotNamespace(tree, collectionRoot, collection, namespace, kind) {
         const namespaceRoot = path.join(collectionRoot, namespace)
         if (!(await exists(namespaceRoot))) return
-        for (const file of await listJsonFiles(namespaceRoot)) {
-            const id = path.basename(file, '.json')
+        for (const file of await listFiles(namespaceRoot)) {
+            const filename = path.basename(file)
+            const id = rawFileId(filename)
+            if (!id || !(await TTID.isTTID(id))) continue
             const content = await readFile(path.join(namespaceRoot, file))
             const hash = createHash('sha256').update(content).digest('hex')
             await this.writeObject(hash, content)
-            tree.set(`${collection}/${kind}/${id}`, {
+            tree.set(`${collection}/${kind}/${filename}`, {
                 collection,
                 kind,
                 id,
@@ -1143,7 +1161,7 @@ export class VersionRepository {
             collections.add(entry.collection)
         }
         if (collections.size === 0) return
-        const engine = new FilesystemEngine(targetRoot)
+        const engine = new FilesystemEngine(targetRoot, { catalogRoot: this.root })
         for (const collection of collections) {
             await engine.ensureCollection(collection)
             await engine.rebuildCollection(collection)
@@ -1234,6 +1252,27 @@ function getOrCreate(map, key) {
 }
 
 /**
+ * @param {FyloVersionedDocumentKind} kind
+ * @returns {'docs' | '.deleted' | '.metadata'}
+ */
+function namespaceForVersionedKind(kind) {
+    if (kind === 'active') return 'docs'
+    if (kind === 'deleted') return '.deleted'
+    return '.metadata'
+}
+
+/**
+ * @param {string} namespace
+ * @returns {FyloVersionedDocumentKind}
+ */
+function versionedKindForNamespace(namespace) {
+    if (namespace === 'docs') return 'active'
+    if (namespace === '.deleted') return 'deleted'
+    if (namespace === '.metadata') return 'metadata'
+    throw new Error(`Unsupported versioned namespace: ${namespace}`)
+}
+
+/**
  * @param {string} name
  * @returns {void}
  */
@@ -1256,10 +1295,10 @@ export function validateBranchName(name) {
 
 /**
  * @param {string} commitId
- * @returns {void}
+ * @returns {Promise<void>}
  */
-function validateCommitId(commitId) {
-    if (typeof commitId !== 'string' || !TTID.isTTID(commitId)) {
+async function validateCommitId(commitId) {
+    if (typeof commitId !== 'string' || !(await TTID.isTTID(commitId))) {
         throw new Error(`Invalid commit id: ${commitId}`)
     }
 }
@@ -1269,6 +1308,14 @@ function validateCommitId(commitId) {
  * @returns {Promise<string[]>}
  */
 async function listJsonFiles(root) {
+    return (await listFiles(root)).filter((file) => file.endsWith('.json'))
+}
+
+/**
+ * @param {string} root
+ * @returns {Promise<string[]>}
+ */
+async function listFiles(root) {
     /** @type {string[]} */
     const files = []
     /**
@@ -1285,11 +1332,25 @@ async function listJsonFiles(root) {
                 await walk(full, relative)
                 continue
             }
-            if (entry.isFile() && relative.endsWith('.json')) files.push(relative)
+            if (entry.isFile()) files.push(relative)
         }
     }
     await walk(root)
     return files
+}
+
+/**
+ * @param {string} namespaceRoot
+ * @param {string} id
+ * @returns {Promise<string | null>}
+ */
+async function findVersionedFile(namespaceRoot, id) {
+    if (!(await exists(namespaceRoot))) return null
+    const matches = (await readdir(namespaceRoot, { withFileTypes: true }))
+        .filter((entry) => entry.isFile() && rawFileId(entry.name) === id)
+        .map((entry) => path.join(namespaceRoot, entry.name))
+    if (matches.length > 1) throw new Error(`Multiple versioned files found for document ID: ${id}`)
+    return matches[0] ?? null
 }
 
 /**
@@ -1413,6 +1474,7 @@ async function readDocumentTree(root) {
         const collectionRoot = path.join(collectionsRoot, collection)
         await readDocumentNamespace(entries, collectionRoot, collection, 'docs', 'active')
         await readDocumentNamespace(entries, collectionRoot, collection, '.deleted', 'deleted')
+        await readDocumentNamespace(entries, collectionRoot, collection, '.metadata', 'metadata')
     }
     return entries
 }
@@ -1428,11 +1490,13 @@ async function readDocumentTree(root) {
 async function readDocumentNamespace(entries, collectionRoot, collection, namespace, kind) {
     const namespaceRoot = path.join(collectionRoot, namespace)
     if (!(await exists(namespaceRoot))) return
-    for (const file of await listJsonFiles(namespaceRoot)) {
-        const id = path.basename(file, '.json')
+    for (const file of await listFiles(namespaceRoot)) {
+        const filename = path.basename(file)
+        const id = rawFileId(filename)
+        if (!id || !(await TTID.isTTID(id))) continue
         const relativePath = path.join(COLLECTIONS_DIR, collection, namespace, file)
         const hash = await hashFile(path.join(namespaceRoot, file))
-        entries.set(`${collection}/${kind}/${id}`, {
+        entries.set(`${collection}/${kind}/${filename}`, {
             collection,
             kind,
             id,

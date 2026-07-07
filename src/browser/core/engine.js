@@ -1,4 +1,4 @@
-import TTID from '@d31ma/ttid'
+import TTID from '../vendor/ttid.mjs'
 import { CollectionNotFoundError, validateCollectionName } from '../../core/collection.js'
 import { Parser } from '../../query/parser.js'
 import { runInLane } from './filesystem.js'

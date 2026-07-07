@@ -1,16 +1,17 @@
 import path from 'node:path'
 import { readdir } from 'node:fs/promises'
-import TTID from '@d31ma/ttid'
+import { fileURLToPath } from 'node:url'
+import TTID from '../vendor/ttid.js'
 import { Parser } from '../query/parser.js'
 import { FyloAuthError } from '../security/auth.js'
 import { Cipher } from '../security/cipher.js'
 import { FilesystemEngine } from '../storage/engine.js'
 import { emitFyloEvent } from '../observability/events.js'
 import { LocalQueue } from '../queue/local.js'
-import { validateDocId } from '../core/doc-id.js'
+import { validateDocId, filterTTIDs } from '../core/doc-id.js'
 import { validateAgainstHead } from '../schema/validation.js'
 import { materializeDoc, materializeEnvelope } from '../schema/migrate.js'
-import { schemaEnv, syncChexSchemaEnv } from '../schema/env.js'
+import { schemaEnv } from '../schema/env.js'
 import { loadHeadSchema } from '../schema/versioning.js'
 import { authorizeOperation, isDocVisible } from '../security/rules/engine.js'
 import { loadRules } from '../security/rules/loader.js'
@@ -45,6 +46,7 @@ import '../core/extensions.js'
  * @typedef {import('../types/vendor.js').TTID} TTIDValue
  * @typedef {import('../storage/types.js').CollectionInspectResult} CollectionInspectResult
  * @typedef {import('../storage/types.js').CollectionRebuildResult} CollectionRebuildResult
+ * @typedef {import('../storage/types.js').CollectionCreateOptions} CollectionCreateOptions
  * @typedef {import('../queue/local.js').LocalQueue} LocalQueueInstance
  * @typedef {import('../cache/query.js').QueryCache} QueryCache
  * @typedef {import('../types/fylo.js').GetDocResult<Record<string, any>>} GetDocResult
@@ -55,11 +57,13 @@ import '../core/extensions.js'
 
 /**
  * @typedef {import('../security/import-guard.js').ImportBulkDataOptions} ImportBulkDataOptions
+ * @typedef {Blob | URL} RawFileInput
+ * @typedef {Omit<ImportBulkDataOptions, 'limit'> & { key?: string }} RawFilePutOptions
  */
 
 /**
- * @typedef {((data: Record<string, any>) => Promise<TTIDValue>) & {
- *   batch(batch: Record<string, any>[]): Promise<TTIDValue[]>
+ * @typedef {((data: Record<string, any> | RawFileInput, options?: RawFilePutOptions) => Promise<TTIDValue>) & {
+ *   batch(batch: Array<Record<string, any> | RawFileInput>, options?: RawFilePutOptions): Promise<TTIDValue[]>
  * }} CollectionPut
  * @typedef {((id: TTIDValue, patch: Record<string, any>, oldDoc?: Record<TTIDValue, Record<string, any>>) => Promise<TTIDValue>) & {
  *   many(update: StoreUpdate): Promise<number>
@@ -113,6 +117,8 @@ export default class Fylo {
     static STRICT = process.env.FYLO_STRICT
     /** @type {Promise<void>} */
     static ttidLock = Promise.resolve()
+    /** Last id issued by {@link Fylo.uniqueTTID}; guards against same-tick collisions. */
+    static lastTTID = ''
     /** Collections whose schema `$encrypted` config has already been loaded. */
     /** @type {Set<string>} */
     static loadedEncryption = new Set()
@@ -160,7 +166,6 @@ export default class Fylo {
                 'Fylo constructor config must not include root; pass the database path as the first argument'
             )
         }
-        syncChexSchemaEnv()
         this.root = root
         this.repositoryRoot = repositoryRoot
         this.versioning = options.versioning ?? {}
@@ -175,7 +180,8 @@ export default class Fylo {
             index: options.index,
             onEvent: options.onEvent,
             queue: this.queue,
-            queryCache: this.cache
+            queryCache: this.cache,
+            catalogRoot: this.repositoryRoot
         })
         this.sql = this.createSqlTag()
         this.startup = this.bootstrapCollectionsFromSchemas()
@@ -342,70 +348,6 @@ export default class Fylo {
             }
         })
     }
-    /** @deprecated Use fylo.sql('...') or fylo.sql`...` instead */
-    async executeSQL() {
-        throw new Error(
-            "fylo.executeSQL() has been removed. Use fylo.sql('SELECT ...') or the template tag fylo.sql`...` instead."
-        )
-    }
-    // ── Static migration stubs ──────────────────────────────────────────────────
-    /** @deprecated Construct a Fylo instance and use fylo[collection].create() */
-    /** @param {string} collection */
-    static async createCollection(collection) {
-        throw new Error(
-            `Fylo.createCollection('${collection}') has been removed. Construct a Fylo instance and use fylo['${collection}'].create().`
-        )
-    }
-    /** @deprecated Construct a Fylo instance and use fylo[collection].drop() */
-    /** @param {string} collection */
-    static async dropCollection(collection) {
-        throw new Error(
-            `Fylo.dropCollection('${collection}') has been removed. Construct a Fylo instance and use fylo['${collection}'].drop().`
-        )
-    }
-    /** @deprecated Construct a Fylo instance and use fylo[collection].rebuild() */
-    /** @param {string} collection */
-    static async rebuildCollection(collection) {
-        throw new Error(
-            `Fylo.rebuildCollection('${collection}') has been removed. Construct a Fylo instance and use fylo['${collection}'].rebuild().`
-        )
-    }
-    /** @deprecated Construct a Fylo instance and use fylo[collection].inspect() */
-    /** @param {string} collection */
-    static async inspectCollection(collection) {
-        throw new Error(
-            `Fylo.inspectCollection('${collection}') has been removed. Construct a Fylo instance and use fylo['${collection}'].inspect().`
-        )
-    }
-    // ── Migration stubs (old method-first API removed) ──────────────────────────
-    /** @deprecated Use fylo[collection].create() instead */
-    /** @param {string} collection */
-    async createCollection(collection) {
-        throw new Error(
-            `fylo.createCollection('${collection}') has been removed. Use fylo['${collection}'].create() instead.`
-        )
-    }
-    /** @deprecated Use fylo[collection].drop() instead */
-    /** @param {string} collection */
-    async dropCollection(collection) {
-        throw new Error(
-            `fylo.dropCollection('${collection}') has been removed. Use fylo['${collection}'].drop() instead.`
-        )
-    }
-    /** @deprecated Use fylo[collection].rebuild() instead */
-    /** @param {string} collection */
-    async rebuildCollection(collection) {
-        throw new Error(
-            `fylo.rebuildCollection('${collection}') has been removed. Use fylo['${collection}'].rebuild() instead.`
-        )
-    }
-    /** @deprecated Use fylo[collection].inspect() instead */
-    /** @param {string} collection */
-    async inspectCollection(collection) {
-        throw new Error(
-            `fylo.inspectCollection('${collection}') has been removed. Use fylo['${collection}'].inspect() instead.`
-        )
-    }
     /** @param {FyloAuthContext} auth @returns {AuthenticatedFylo} */
     as(auth) {
         if (!this.rlsEnabled) {
@@ -451,45 +393,10 @@ export default class Fylo {
         }
         Fylo.loadedEncryption.add(collection)
     }
-    /** @deprecated Use fylo[collection].get(id) instead */
-    /** @param {string} collection @param {TTIDValue} [_id] */
-    getDoc(collection, _id) {
-        throw new Error(
-            `fylo.getDoc('${collection}', id) has been removed. Use fylo['${collection}'].get(id) instead.`
-        )
-    }
-    /** @deprecated Use fylo[collection].latest(id) instead */
-    /** @param {string} collection @param {TTIDValue} [_id] */
-    async getLatest(collection, _id) {
-        throw new Error(
-            `fylo.getLatest('${collection}', id) has been removed. Use fylo['${collection}'].latest(id) instead.`
-        )
-    }
-    /** @deprecated Use fylo[collection].find(query) instead */
-    /** @param {string} collection */
-    findDocs(collection) {
-        throw new Error(
-            `fylo.findDocs('${collection}', query) has been removed. Use fylo['${collection}'].find(query) instead.`
-        )
-    }
-    /** @deprecated Use fylo[collection].find.deleted(query) instead */
-    /** @param {string} collection */
-    findDeletedDocs(collection) {
-        throw new Error(
-            `fylo.findDeletedDocs('${collection}', query) has been removed. Use fylo['${collection}'].find.deleted(query) instead.`
-        )
-    }
     /** @param {StoreJoin} join @returns {Promise<JoinDocsResult>} */
     async join(join) {
         await this.ready()
         return await this.engine.joinDocs(join)
-    }
-    /** @deprecated Use fylo[collection].export() instead */
-    /** @param {string} collection */
-    async *exportBulkData(collection) {
-        throw new Error(
-            `fylo.exportBulkData('${collection}') has been removed. Use fylo['${collection}'].export() instead.`
-        )
     }
     /** @param {string} collection @param {URL} url @param {number | ImportBulkDataOptions} [limitOrOptions] @returns {Promise<number>} */
     async importBulkData(collection, url, limitOrOptions) {
@@ -657,21 +564,6 @@ export default class Fylo {
             return count
         })
     }
-    /** @deprecated Construct a Fylo instance and use fylo[collection].export() */
-    /** @param {string} collection */
-    static async */** @param {string} collection */
-    exportBulkData(collection) {
-        throw new Error(
-            `Fylo.exportBulkData('${collection}') has been removed. Construct a Fylo instance and use fylo['${collection}'].export().`
-        )
-    }
-    /** @deprecated Construct a Fylo instance and use fylo[collection].get(id) */
-    /** @param {string} collection */
-    static getDoc(collection) {
-        throw new Error(
-            `Fylo.getDoc('${collection}', id) has been removed. Construct a Fylo instance and use fylo['${collection}'].get(id).`
-        )
-    }
     /**
      * Puts a document into a collection.
      * @param collection The name of the collection.
@@ -683,7 +575,20 @@ export default class Fylo {
         let _id
         const prev = Fylo.ttidLock
         Fylo.ttidLock = prev.then(async () => {
-            _id = existingId ? TTID.generate(existingId) : TTID.generate()
+            if (existingId) {
+                _id = await TTID.generate(existingId)
+                return
+            }
+            // Fresh ids are serialized here, but TTID.generate() is clock-based:
+            // rapid concurrent inserts can land in the same tick and produce the
+            // same id (→ two docs collide on one file). Regenerate until strictly
+            // greater than the last issued id. TTIDs are equal-length time-ordered
+            // strings, so string comparison matches chronological order; the clock
+            // advances within a couple of iterations.
+            do {
+                _id = await TTID.generate()
+            } while (_id <= Fylo.lastTTID)
+            Fylo.lastTTID = /** @type {string} */ (_id)
         })
         await Fylo.ttidLock
         return /** @type {TTIDValue} */ (/** @type {unknown} */ (_id))
@@ -795,16 +700,148 @@ export default class Fylo {
         this.autoCommitLane = run.catch(() => {})
         await run
     }
+    /**
+     * Converts a public raw-file input into a one-shot byte stream. File URLs
+     * are read locally; network URLs pass through the same SSRF and redirect
+     * controls as bulk imports.
+     *
+     * @param {RawFileInput} input
+     * @param {RawFilePutOptions} [options]
+     * @returns {Promise<import('../storage/files.js').RawFileSource>}
+     */
+    async prepareFileSource(input, options = {}) {
+        const normalized = normalizeImportOptions(options)
+        if (input instanceof Blob) {
+            if (input.size > normalized.maxBytes) {
+                throw new Error(`Raw file exceeded ${normalized.maxBytes} bytes`)
+            }
+            return {
+                stream: /** @type {ReadableStream<Uint8Array>} */ (input.stream()),
+                name:
+                    typeof (/** @type {{ name?: unknown }} */ (input).name) === 'string'
+                        ? /** @type {{ name: string }} */ (/** @type {unknown} */ (input)).name
+                        : undefined,
+                contentType: input.type || undefined,
+                key: options.key,
+                maxBytes: normalized.maxBytes
+            }
+        }
+        if (!(input instanceof URL)) {
+            throw new Error('File collection put() requires a Blob, File, or URL')
+        }
+        if (input.protocol === 'file:') {
+            const file = Bun.file(fileURLToPath(input))
+            if (!(await file.exists())) throw new Error(`Raw file source was not found: ${input}`)
+            if (file.size > normalized.maxBytes) {
+                throw new Error(`Raw file exceeded ${normalized.maxBytes} bytes`)
+            }
+            return {
+                stream: /** @type {ReadableStream<Uint8Array>} */ (file.stream()),
+                name: decodeURIComponent(input.pathname.split('/').pop() ?? ''),
+                contentType: file.type || undefined,
+                key: options.key,
+                maxBytes: normalized.maxBytes
+            }
+        }
+        const response = await this.fetchRawFile(input, normalized)
+        if (!response.body) throw new Error('Raw file response body is empty')
+        const declaredLength = Number(response.headers.get('content-length'))
+        if (Number.isFinite(declaredLength) && declaredLength > normalized.maxBytes) {
+            throw new Error(`Raw file exceeded ${normalized.maxBytes} bytes`)
+        }
+        const disposition = response.headers.get('content-disposition') ?? ''
+        const filename = disposition.match(/filename\*?=(?:UTF-8''|")?([^";]+)/i)?.[1]
+        return {
+            stream: /** @type {ReadableStream<Uint8Array>} */ (response.body),
+            name:
+                filename !== undefined
+                    ? decodeURIComponent(filename.trim())
+                    : decodeURIComponent(input.pathname.split('/').pop() || 'file.bin'),
+            contentType: response.headers.get('content-type') ?? undefined,
+            key: options.key,
+            maxBytes: normalized.maxBytes
+        }
+    }
+    /**
+     * @param {URL} url
+     * @param {ReturnType<typeof normalizeImportOptions>} options
+     * @returns {Promise<Response>}
+     */
+    async fetchRawFile(url, options) {
+        const pin = await assertImportUrlAllowed(url, options)
+        /** @type {RequestInit & { tls?: { serverName?: string, checkServerIdentity?: Function } }} */
+        const fetchInit = { redirect: 'manual' }
+        if (pin) {
+            fetchInit.headers = { Host: url.host }
+            if (url.protocol === 'https:') {
+                fetchInit.tls = {
+                    serverName: pin.serverName,
+                    /** @param {string} _hostname @param {import('node:tls').PeerCertificate} cert */
+                    checkServerIdentity: (_hostname, cert) =>
+                        tlsCheckServerIdentity(pin.serverName, cert)
+                }
+            }
+        }
+        const targets = pin ? pin.pinnedUrls : [url]
+        /** @type {Response | undefined} */
+        let response
+        /** @type {unknown} */
+        let lastError
+        for (const target of targets) {
+            try {
+                response = await fetch(target, fetchInit)
+                break
+            } catch (error) {
+                lastError = error
+            }
+        }
+        if (!response) {
+            throw lastError instanceof Error ? lastError : new Error('Raw file request failed')
+        }
+        if (response.status >= 300 && response.status < 400) {
+            throw new Error(
+                `Raw file request redirected to ${redactImportUrl(response.headers.get('location') ?? 'unknown')}`
+            )
+        }
+        if (!response.ok) {
+            throw new Error(`Raw file request failed with status ${response.status}`)
+        }
+        return response
+    }
     /** @param {string} collection @param {Record<string, any>} data @returns {Promise<{ _id: TTIDValue, doc: Record<string, any>, previousId?: TTIDValue }>} */
     async prepareInsert(collection, data) {
         await this.ready()
         await this.loadEncryptionWithEvent(collection)
         const currId = Object.keys(data).shift()
-        const hasExistingId = typeof currId === 'string' && TTID.isTTID(currId)
+        const hasExistingId = typeof currId === 'string' && (await TTID.isTTID(currId)) !== null
         const _id = hasExistingId ? currId : await Fylo.uniqueTTID(undefined)
         let doc = hasExistingId ? Object.values(data).shift() : data
         if (Fylo.STRICT) doc = await validateAgainstHead(collection, doc)
         return { _id, doc, previousId: hasExistingId ? currId : undefined }
+    }
+    /**
+     * @param {string} collection
+     * @param {RawFileInput} input
+     * @param {RawFilePutOptions} [options]
+     * @returns {Promise<TTIDValue>}
+     */
+    async executePutFileDirect(collection, input, options) {
+        await this.ready()
+        return await this.executePutFileSourceDirect(
+            collection,
+            await this.prepareFileSource(input, options)
+        )
+    }
+    /**
+     * @param {string} collection
+     * @param {import('../storage/files.js').RawFileSource} source
+     * @returns {Promise<TTIDValue>}
+     */
+    async executePutFileSourceDirect(collection, source) {
+        const id = await Fylo.uniqueTTID(undefined)
+        await this.engine.putFile(collection, id, source)
+        await this.autoCommit({ operation: 'put', collection, docId: id })
+        return id
     }
     /** @param {string} collection @param {TTIDValue} _id @param {Record<string, any>} doc @param {TTIDValue | undefined} previousId @returns {Promise<TTIDValue>} */
     async executePutDataDirect(collection, _id, doc, previousId) {
@@ -825,7 +862,7 @@ export default class Fylo {
         await this.loadEncryptionWithEvent(collection)
         const _id = Object.keys(newDoc).shift()
         if (!_id) throw new Error('this document does not contain an TTID')
-        validateDocId(_id)
+        await validateDocId(_id)
         let existingDoc = oldDoc[_id]
         if (!existingDoc) {
             const existing = await this.engine.getDoc(collection, _id).once()
@@ -849,7 +886,7 @@ export default class Fylo {
     /** @param {string} collection @param {TTIDValue} _id @returns {Promise<void>} */
     async executeDelDocDirect(collection, _id) {
         await this.ready()
-        validateDocId(_id)
+        await validateDocId(_id)
         await this.engine.deleteDocument(collection, _id)
         await this.autoCommit({ operation: 'delete', collection, docId: _id })
         if (Fylo.LOGGING) console.log(`Finished Deleting ${_id}`)
@@ -860,68 +897,6 @@ export default class Fylo {
         const restoredId = await this.engine.restoreDocument(collection, _id)
         await this.autoCommit({ operation: 'restore', collection, docId: restoredId })
         return restoredId
-    }
-    /** @deprecated Use fylo[collection].put(data) instead */
-    /** @param {string} collection */
-    async putData(collection) {
-        throw new Error(
-            `fylo.putData('${collection}', data) has been removed. Use fylo['${collection}'].put(data) instead.`
-        )
-    }
-    /** @deprecated Use fylo[collection].patch(id, patch) instead */
-    /** @param {string} collection */
-    async patchDoc(collection) {
-        throw new Error(
-            `fylo.patchDoc('${collection}', ...) has been removed. Use fylo['${collection}'].patch(id, patch) instead.`
-        )
-    }
-    /** @deprecated Use fylo[collection].patch.many(update) instead */
-    /** @param {string} collection */
-    async patchDocs(collection) {
-        throw new Error(
-            `fylo.patchDocs('${collection}', update) has been removed. Use fylo['${collection}'].patch.many(update) instead.`
-        )
-    }
-    /** @deprecated Use fylo[collection].delete(id) instead */
-    /** @param {string} collection */
-    async delDoc(collection) {
-        throw new Error(
-            `fylo.delDoc('${collection}', id) has been removed. Use fylo['${collection}'].delete(id) instead.`
-        )
-    }
-    /** @deprecated Use fylo[collection].delete.many(query) instead */
-    /** @param {string} collection */
-    async delDocs(collection) {
-        throw new Error(
-            `fylo.delDocs('${collection}', query) has been removed. Use fylo['${collection}'].delete.many(query) instead.`
-        )
-    }
-    /** @deprecated Use fylo[collection].restore(id) instead */
-    /** @param {string} collection */
-    async restoreDoc(collection) {
-        throw new Error(
-            `fylo.restoreDoc('${collection}', id) has been removed. Use fylo['${collection}'].restore(id) instead.`
-        )
-    }
-    /** @deprecated Use fylo[collection].put.batch(batch) instead */
-    /** @param {string} collection */
-    async batchPutData(collection) {
-        throw new Error(
-            `fylo.batchPutData('${collection}', batch) has been removed. Use fylo['${collection}'].put.batch(batch) instead.`
-        )
-    }
-    /** @deprecated Construct a Fylo instance and use fylo.join(join) */
-    /** @param {StoreJoin} join */
-    static async join(join) {
-        return await Fylo.defaultEngine.joinDocs(join)
-    }
-    /** @deprecated Construct a Fylo instance and use fylo[collection].find(query) */
-    /** @param {string} collection */
-    /** @param {string} collection */
-    static findDocs(collection) {
-        throw new Error(
-            `Fylo.findDocs('${collection}', query) has been removed. Construct a Fylo instance and use fylo['${collection}'].find(query).`
-        )
     }
 }
 
@@ -954,15 +929,36 @@ export class CollectionFacade {
         const self = this
         // put / put.batch
         const put = /** @type {CollectionPut} */ (
-            async (data) => {
+            async (data, options) => {
+                await self.fylo.ready()
+                await self.fylo.engine.requireCollection(self.collection)
+                const kind = await self.fylo.engine.collectionKind(self.collection)
+                const rawInput = data instanceof Blob || data instanceof URL
+                if (kind === 'file') {
+                    if (!rawInput) {
+                        throw new Error(
+                            `Collection "${self.collection}" is a file collection; put() requires a Blob, File, or URL`
+                        )
+                    }
+                    return await self.fylo.executePutFileDirect(
+                        self.collection,
+                        /** @type {RawFileInput} */ (data),
+                        options
+                    )
+                }
+                if (rawInput) {
+                    throw new Error(
+                        `Collection "${self.collection}" is a document collection; put() requires a record`
+                    )
+                }
                 const { _id, doc, previousId } = await self.fylo.prepareInsert(
                     self.collection,
-                    data
+                    /** @type {Record<string, any>} */ (data)
                 )
                 return await self.fylo.executePutDataDirect(self.collection, _id, doc, previousId)
             }
         )
-        put.batch = async (batch) => {
+        put.batch = async (batch, options) => {
             await self.fylo.ready()
             return await self.fylo.runCoalesced(async () => {
                 /** @type {TTIDValue[]} */
@@ -972,7 +968,9 @@ export class CollectionFacade {
                 const chunkSize = navigator.hardwareConcurrency
                 for (let i = 0; i < batch.length; i += chunkSize) {
                     const chunk = batch.slice(i, i + chunkSize)
-                    const results = await Promise.allSettled(chunk.map((data) => self.put(data)))
+                    const results = await Promise.allSettled(
+                        chunk.map((data) => self.put(data, options))
+                    )
                     results.forEach((result, offset) => {
                         if (result.status === 'fulfilled') {
                             ids.push(result.value)
@@ -1097,7 +1095,13 @@ export class CollectionFacade {
     }
     /** @param {TTIDValue} id @param {boolean} [onlyId] */
     get(id, onlyId = false) {
-        validateDocId(id)
+        const fylo = this.fylo
+        const collection = this.collection
+        // Validation is async now (ttid binary). engine.getDoc validates lazily in
+        // its own async entries (iterator/once/onDelete), so we don't validate in
+        // this eager source promise — doing so would surface an unhandled
+        // rejection when a caller builds get(badId) without consuming it. The
+        // direct file readers below (bytes/stream) validate explicitly.
         const source = this.fylo
             .ready()
             .then(() => this.fylo.engine.getDoc(this.collection, id, onlyId))
@@ -1108,6 +1112,25 @@ export class CollectionFacade {
             async once() {
                 return await (await source).once()
             },
+            async bytes() {
+                await fylo.ready()
+                await validateDocId(id)
+                return await fylo.engine.getFileBytes(collection, id)
+            },
+            async stream() {
+                await fylo.ready()
+                await validateDocId(id)
+                return await fylo.engine.getFileStream(collection, id)
+            },
+            async blob() {
+                await fylo.ready()
+                const manifest = await (await source).once()
+                const contentType = manifest[id]?.contentType
+                const bytes = await fylo.engine.getFileBytes(collection, id)
+                return new Blob([/** @type {BlobPart} */ (/** @type {unknown} */ (bytes))], {
+                    type: typeof contentType === 'string' ? contentType : ''
+                })
+            },
             async *onDelete() {
                 yield* (await source).onDelete()
             }
@@ -1116,7 +1139,7 @@ export class CollectionFacade {
     /** @param {TTIDValue} id @param {boolean} [onlyId] */
     async latest(id, onlyId = false) {
         await this.fylo.ready()
-        validateDocId(id)
+        await validateDocId(id)
         if (onlyId) return await this.fylo.engine.getLatest(this.collection, id, true)
         return await this.fylo.engine.getLatest(this.collection, id)
     }
@@ -1142,9 +1165,10 @@ export class CollectionFacade {
         await this.fylo.ready()
         return await this.fylo.engine.rebuildCollection(this.collection)
     }
-    async create() {
+    /** @param {CollectionCreateOptions} [options] */
+    async create(options) {
         await this.fylo.ready()
-        return await this.fylo.engine.createCollection(this.collection)
+        return await this.fylo.engine.createCollection(this.collection, options)
     }
     async drop() {
         await this.fylo.ready()
@@ -1198,10 +1222,6 @@ export class AuthenticatedFylo {
         await this._authorize({ action: 'join:execute', collection: String(join.$leftCollection) })
         await this._authorize({ action: 'join:execute', collection: String(join.$rightCollection) })
         return await this.fylo.engine.joinDocs(join)
-    }
-    /** @deprecated Use scoped.sql`...` template tag instead */
-    async executeSQL() {
-        throw new Error('executeSQL() has been removed. Use the .sql`...` template tag instead.')
     }
     /**
      * Internal: execute a raw SQL string through RLS-scoped collection access.
@@ -1295,9 +1315,10 @@ export class AuthenticatedFylo {
     async _isVisible(collection, doc) {
         return await isDocVisible({ collection, schemaDir: schemaEnv(), auth: this.auth, doc })
     }
-    /** @param {Record<string, any>} data @returns {TTIDValue | undefined} */
-    firstDocId(data) {
-        return Object.keys(data).find((key) => TTID.isTTID(key))
+    /** @param {Record<string, any>} data @returns {Promise<TTIDValue | undefined>} */
+    async firstDocId(data) {
+        // filterTTIDs preserves order, so the first survivor is the first TTID key.
+        return (await filterTTIDs(Object.keys(data)))[0]
     }
     /** @param {string} collection */
     async _assertNoProjectionWhenRlsEnabled(collection) {
@@ -1339,7 +1360,7 @@ class AuthenticatedCollectionFacade {
                 await self.authFylo._authorize({
                     action: 'doc:create',
                     collection: self.collection,
-                    docId: self.authFylo.firstDocId(data),
+                    docId: await self.authFylo.firstDocId(data),
                     data
                 })
                 return await new CollectionFacade(self.authFylo.fylo, self.collection).put(data)
@@ -1578,11 +1599,11 @@ class AuthenticatedCollectionFacade {
     }
     /** @param {TTIDValue} id @param {boolean} [onlyId] */
     get(id, onlyId = false) {
-        validateDocId(id)
         const self = this
         const source = this.authFylo.fylo.engine.getDoc(this.collection, id, onlyId)
         return {
             async *[Symbol.asyncIterator]() {
+                await validateDocId(id)
                 await self.authFylo._authorize({
                     action: 'doc:read',
                     collection: self.collection,
@@ -1600,6 +1621,7 @@ class AuthenticatedCollectionFacade {
                 }
             },
             async once() {
+                await validateDocId(id)
                 await self.authFylo._authorize({
                     action: 'doc:read',
                     collection: self.collection,
@@ -1612,6 +1634,7 @@ class AuthenticatedCollectionFacade {
                 return result
             },
             async *onDelete() {
+                await validateDocId(id)
                 await self.authFylo._authorize({
                     action: 'doc:read',
                     collection: self.collection,

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import path from 'node:path'
-import TTID from '@d31ma/ttid'
+import TTID from '../../src/browser/vendor/ttid.mjs'
 import fylo, {
     CollectionNotFoundError,
     createBrowserClient,

@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { cp, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -741,5 +741,371 @@ fn main() {
         const result = await run([executable, binaryPath, root], { timeout: 120_000 })
         expectSuccess('rust interop', result)
         expect(JSON.parse(result.stdout).ok).toBe(true)
+    })
+
+    test('persistent --loop serves many requests over one warm process', async () => {
+        const root = await tempRoot('fylo-loop-')
+        const collection = 'interop-loop'
+        // Five requests down a single process: create, put, getLatest, put, findDocs.
+        const requests = [
+            { op: 'createCollection', requestId: 'r1', root, collection },
+            {
+                op: 'putData',
+                requestId: 'r2',
+                root,
+                collection,
+                data: { language: 'loop', score: 10 }
+            },
+            {
+                op: 'putData',
+                requestId: 'r3',
+                root,
+                collection,
+                data: { language: 'loop', score: 90 }
+            },
+            {
+                op: 'findDocs',
+                requestId: 'r4',
+                root,
+                collection,
+                query: { $ops: [{ score: { $gte: 50 } }] }
+            }
+        ]
+        const stdin = requests.map((r) => JSON.stringify(r)).join('\n') + '\n'
+        const result = await run([binaryPath, 'exec', '--loop', '--root', root], { stdin })
+        expectSuccess('loop interop', result)
+        const responses = result.stdout
+            .trim()
+            .split('\n')
+            .map((line) => JSON.parse(line))
+        // One response per request, order and requestId preserved.
+        expect(responses.map((r) => r.requestId)).toEqual(['r1', 'r2', 'r3', 'r4'])
+        expect(responses.every((r) => r.ok)).toBe(true)
+        // The high-score doc is found; the low-score one is filtered out.
+        const found = JSON.stringify(responses[3].result)
+        expect(found).toContain('"score":90')
+        expect(found).not.toContain('"score":10')
+    })
+})
+
+// These exercise the actual client shims in clients/<lang>/ — their named-method
+// API and native (non-JSON-string) object arguments — rather than the raw
+// protocol. Each copies the shim next to a small driver and runs it warm.
+describe('language client shims', () => {
+    /** @param {string} lang @param {string} file */
+    function shimSource(lang, file) {
+        return path.join(repoRoot, 'clients', lang, file)
+    }
+
+    /**
+     * @param {string} label
+     * @param {Awaited<ReturnType<typeof run>>} result
+     */
+    function expectShimOk(label, result) {
+        expectSuccess(label, result)
+        expect(result.stdout, `${label} stdout:\n${result.stdout}`).toContain('"ok":true')
+    }
+
+    test('Python shim drives named methods with a native dict', async () => {
+        await requireCommand('python3')
+        const root = await tempRoot('fylo-shim-py-')
+        const ws = await tempWorkspace('fylo-shim-py-src-')
+        await cp(shimSource('python', 'fylo.py'), path.join(ws, 'fylo.py'))
+        await writeFile(
+            path.join(ws, 'driver.py'),
+            String.raw`import sys
+from fylo import Fylo
+
+binary, root = sys.argv[1], sys.argv[2]
+with Fylo(root, binary=binary) as db:
+    db.create_collection("users")
+    doc_id = db.put_data("users", {"name": "Ada", "role": "admin", "age": 30})
+    doc = db.get_latest("users", doc_id)
+    found = db.find_docs("users", {"$ops": [{"age": {"$gte": 18}}]})
+    assert doc[doc_id]["name"] == "Ada", doc
+    assert found, "no match"
+    print('{"ok":true}')
+`
+        )
+        const result = await run(['python3', 'driver.py', binaryPath, root], { cwd: ws })
+        expectShimOk('python shim', result)
+    })
+
+    test('Ruby shim drives named methods with a native Hash', async () => {
+        await requireCommand('ruby')
+        const root = await tempRoot('fylo-shim-rb-')
+        const ws = await tempWorkspace('fylo-shim-rb-src-')
+        await cp(shimSource('ruby', 'fylo.rb'), path.join(ws, 'fylo.rb'))
+        await writeFile(
+            path.join(ws, 'driver.rb'),
+            String.raw`require_relative "fylo"
+
+binary, root = ARGV[0], ARGV[1]
+Fylo.open(root, binary: binary) do |db|
+  db.create_collection("users")
+  id = db.put_data("users", { "name" => "Ada", "role" => "admin", "age" => 30 })
+  doc = db.get_latest("users", id)
+  found = db.find_docs("users", { "$ops" => [{ "age" => { "$gte" => 18 } }] })
+  raise "bad result" unless doc[id]["name"] == "Ada" && found
+  puts '{"ok":true}'
+end
+`
+        )
+        const result = await run(['ruby', 'driver.rb', binaryPath, root], { cwd: ws })
+        expectShimOk('ruby shim', result)
+    })
+
+    test('Node shim drives named methods with a native object', async () => {
+        const root = await tempRoot('fylo-shim-node-')
+        const ws = await tempWorkspace('fylo-shim-node-src-')
+        await cp(shimSource('node', 'fylo.mjs'), path.join(ws, 'fylo.mjs'))
+        await writeFile(
+            path.join(ws, 'driver.mjs'),
+            String.raw`import { Fylo } from './fylo.mjs'
+
+const [binary, root] = [process.argv[2], process.argv[3]]
+const db = new Fylo(root, { binary })
+await db.createCollection('users')
+const id = await db.putData('users', { name: 'Ada', role: 'admin', age: 30 })
+const doc = await db.getLatest('users', id)
+const found = await db.findDocs('users', { $ops: [{ age: { $gte: 18 } }] })
+if (doc[id].name !== 'Ada' || !found) throw new Error('bad result')
+await db.close()
+console.log('{"ok":true}')
+`
+        )
+        const result = await run(['bun', 'driver.mjs', binaryPath, root], { cwd: ws })
+        expectShimOk('node shim', result)
+    })
+
+    test('PHP shim drives named methods with a native array', async () => {
+        await requireCommand('php')
+        const root = await tempRoot('fylo-shim-php-')
+        const ws = await tempWorkspace('fylo-shim-php-src-')
+        await cp(shimSource('php', 'fylo.php'), path.join(ws, 'fylo.php'))
+        await writeFile(
+            path.join(ws, 'driver.php'),
+            String.raw`<?php
+require 'fylo.php';
+
+$binary = $argv[1];
+$root = $argv[2];
+$db = new Fylo($root, $binary);
+$db->createCollection("users");
+$id = $db->putData("users", ["name" => "Ada", "role" => "admin", "age" => 30]);
+$doc = $db->getLatest("users", $id);
+$found = $db->findDocs("users", ['$ops' => [['age' => ['$gte' => 18]]]]);
+if ($doc[$id]["name"] !== "Ada" || empty($found)) {
+    throw new Exception("bad result");
+}
+$db->close();
+echo '{"ok":true}' . "\n";
+`
+        )
+        const result = await run(['php', 'driver.php', binaryPath, root], { cwd: ws })
+        expectShimOk('php shim', result)
+    })
+
+    test('Go shim drives named methods with a native map', async () => {
+        await requireCommand('go')
+        const root = await tempRoot('fylo-shim-go-')
+        const ws = await tempWorkspace('fylo-shim-go-src-')
+        await mkdir(path.join(ws, 'fylo'), { recursive: true })
+        await cp(shimSource('go', 'fylo.go'), path.join(ws, 'fylo', 'fylo.go'))
+        await writeFile(path.join(ws, 'go.mod'), 'module interop\n\ngo 1.21\n')
+        await writeFile(
+            path.join(ws, 'main.go'),
+            String.raw`package main
+
+import (
+	"fmt"
+	"os"
+
+	fylo "interop/fylo"
+)
+
+func main() {
+	// args: [binaryPath, root]; Open takes (root, binary, worm).
+	db, err := fylo.Open(os.Args[2], os.Args[1], false)
+	if err != nil {
+		panic(err)
+	}
+	defer db.Close()
+	db.CreateCollection("users", "document")
+	id, err := db.PutData("users", map[string]any{"name": "Ada", "role": "admin", "age": 30})
+	if err != nil {
+		panic(err)
+	}
+	doc, _ := db.GetLatest("users", id.(string))
+	found, _ := db.FindDocs("users", map[string]any{
+		"$ops": []any{map[string]any{"age": map[string]any{"$gte": 18}}}})
+	if doc == nil || found == nil {
+		panic("bad result")
+	}
+	fmt.Println(` +
+                '`{"ok":true}`' +
+                `)
+}
+`
+        )
+        const result = await run(['go', 'run', '.', binaryPath, root], {
+            cwd: ws,
+            timeout: 120_000
+        })
+        expectShimOk('go shim', result)
+    })
+
+    test('Rust shim drives named methods with the Json builder', async () => {
+        await requireCommand('rustc')
+        const root = await tempRoot('fylo-shim-rs-')
+        const ws = await tempWorkspace('fylo-shim-rs-src-')
+        await cp(shimSource('rust', 'fylo.rs'), path.join(ws, 'fylo.rs'))
+        await writeFile(
+            path.join(ws, 'main.rs'),
+            String.raw`#[path = "fylo.rs"]
+mod fylo;
+use fylo::{Fylo, Json};
+
+fn main() {
+    let binary = std::env::args().nth(1).unwrap();
+    let root = std::env::args().nth(2).unwrap();
+    let mut db = Fylo::open(&root, &binary, false).unwrap();
+    db.create_collection("users", "document").unwrap();
+    let put = db
+        .put_data(
+            "users",
+            Json::obj(vec![("name", "Ada".into()), ("role", "admin".into()), ("age", 30.into())]),
+        )
+        .unwrap();
+    let found = db
+        .find_docs(
+            "users",
+            Json::obj(vec![(
+                "$ops",
+                Json::arr(vec![Json::obj(vec![("age", Json::obj(vec![("$gte", 18.into())]))])]),
+            )]),
+        )
+        .unwrap();
+    assert!(put.contains("\"result\""));
+    assert!(found.contains("\"ok\":true"));
+    println!("{{\"ok\":true}}");
+}
+`
+        )
+        const executable = path.join(ws, 'app')
+        const compile = await run(['rustc', path.join(ws, 'main.rs'), '-o', executable], {
+            timeout: 120_000
+        })
+        expectSuccess('rustc shim compile', compile)
+        const result = await run([executable, binaryPath, root], { timeout: 120_000 })
+        expectShimOk('rust shim', result)
+    })
+
+    test('Java shim drives named methods with native Maps', async () => {
+        await requireCommand('javac')
+        const root = await tempRoot('fylo-shim-java-')
+        const ws = await tempWorkspace('fylo-shim-java-src-')
+        await cp(shimSource('java', 'Fylo.java'), path.join(ws, 'Fylo.java'))
+        await writeFile(
+            path.join(ws, 'Interop.java'),
+            String.raw`import java.util.List;
+import java.util.Map;
+
+public class Interop {
+    public static void main(String[] a) throws Exception {
+        try (Fylo db = new Fylo(a[1], a[0], false)) {
+            db.createCollection("users");
+            String put = db.putData("users", Map.of("name", "Ada", "role", "admin", "age", 30));
+            String found = db.findDocs("users",
+                Map.of("$ops", List.of(Map.of("age", Map.of("$gte", 18)))));
+            if (!put.contains("\"result\"") || !found.contains("\"ok\":true")) {
+                throw new Exception("bad result");
+            }
+            System.out.println("{\"ok\":true}");
+        }
+    }
+}
+`
+        )
+        const compile = await run(['javac', 'Fylo.java', 'Interop.java'], {
+            cwd: ws,
+            timeout: 120_000
+        })
+        expectSuccess('javac shim compile', compile)
+        const result = await run(['java', '-cp', ws, 'Interop', binaryPath, root], {
+            timeout: 120_000
+        })
+        expectShimOk('java shim', result)
+    })
+
+    test('C# shim drives named methods with a native Dictionary', async () => {
+        await requireCommand('dotnet')
+        const root = await tempRoot('fylo-shim-cs-')
+        const ws = await tempWorkspace('fylo-shim-cs-src-')
+        await cp(shimSource('csharp', 'Fylo.cs'), path.join(ws, 'Fylo.cs'))
+        await writeFile(
+            path.join(ws, 'Interop.csproj'),
+            String.raw`<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+</Project>
+`
+        )
+        await writeFile(
+            path.join(ws, 'Program.cs'),
+            String.raw`using System.Collections.Generic;
+
+var db = new Fylo.Fylo(args[1], args[0], false);
+db.CreateCollection("users");
+var data = new Dictionary<string, object> { ["name"] = "Ada", ["role"] = "admin", ["age"] = 30 };
+db.PutData("users", data);
+var query = new Dictionary<string, object>
+{
+    ["$ops"] = new object[]
+    {
+        new Dictionary<string, object> { ["age"] = new Dictionary<string, object> { ["$gte"] = 18 } }
+    }
+};
+db.FindDocs("users", query);
+System.Console.WriteLine("{\"ok\":true}");
+db.Dispose();
+`
+        )
+        const result = await run(['dotnet', 'run', '--project', ws, '--', binaryPath, root], {
+            timeout: 180_000
+        })
+        expectShimOk('csharp shim', result)
+    })
+
+    test('Dart shim drives named methods with a native Map', async () => {
+        await requireCommand('dart')
+        const root = await tempRoot('fylo-shim-dart-')
+        const ws = await tempWorkspace('fylo-shim-dart-src-')
+        await cp(shimSource('dart', 'fylo.dart'), path.join(ws, 'fylo.dart'))
+        await writeFile(
+            path.join(ws, 'driver.dart'),
+            String.raw`import './fylo.dart';
+
+Future<void> main(List<String> args) async {
+  final db = await Fylo.open(args[1], binary: args[0]);
+  await db.createCollection('users');
+  final id = await db.putData('users', {'name': 'Ada', 'role': 'admin', 'age': 30}) as String;
+  final doc = await db.getLatest('users', id) as Map;
+  final found = await db.findDocs('users', {r'$ops': [{'age': {r'$gte': 18}}]}) as Map;
+  if ((doc[id] as Map)['name'] != 'Ada' || found.isEmpty) throw StateError('bad result');
+  await db.close();
+  print('{"ok":true}');
+}
+`
+        )
+        const result = await run(['dart', 'driver.dart', binaryPath, root], {
+            cwd: ws,
+            timeout: 120_000
+        })
+        expectShimOk('dart shim', result)
     })
 })

@@ -1,6 +1,6 @@
 import path from 'node:path'
-import TTID from '@d31ma/ttid'
-import { assertPathInside, validateDocId } from '../core/doc-id.js'
+import TTID from '../vendor/ttid.js'
+import { assertPathInside, validateDocId, filterTTIDs } from '../core/doc-id.js'
 
 /**
  * @typedef {string} TTIDValue
@@ -87,13 +87,13 @@ export class FilesystemDocuments {
      * @returns {Promise<StoredDocRecord | null>}
      */
     async readStoredDoc(collection, docId) {
-        validateDocId(docId)
+        await validateDocId(docId)
         const target = this.docPath(collection, docId)
         assertPathInside(this.docsRoot(collection), target)
         try {
             const raw = JSON.parse(await this.storage.read(target))
             const decoded = await this.decodeEncrypted(collection, raw)
-            const { createdAt } = TTID.decodeTime(docId)
+            const { createdAt } = await TTID.decodeTime(docId)
             const { mtimeMs } = await this.storage.metadata(target)
             return {
                 id: docId,
@@ -115,13 +115,13 @@ export class FilesystemDocuments {
      * @returns {Promise<DeletedDocRecord | null>}
      */
     async readDeletedDoc(collection, docId) {
-        validateDocId(docId)
+        await validateDocId(docId)
         const target = this.deletedPath(collection, docId)
         assertPathInside(this.deletedRoot(collection), target)
         try {
             const raw = JSON.parse(await this.storage.read(target))
             const decoded = await this.decodeEncrypted(collection, raw)
-            const { createdAt } = TTID.decodeTime(docId)
+            const { createdAt } = await TTID.decodeTime(docId)
             const { mtimeMs } = await this.storage.metadata(target)
             return { id: docId, createdAt, deletedAt: mtimeMs, data: decoded }
         } catch (err) {
@@ -139,7 +139,7 @@ export class FilesystemDocuments {
      * @returns {Promise<void>}
      */
     async writeStoredDoc(collection, docId, data) {
-        validateDocId(docId)
+        await validateDocId(docId)
         await this.ensureCollection(collection)
         const encoded = await this.encodeEncrypted(collection, data)
         const target = this.docPath(collection, docId)
@@ -153,7 +153,7 @@ export class FilesystemDocuments {
      * @returns {Promise<void>}
      */
     async removeStoredDoc(collection, docId) {
-        validateDocId(docId)
+        await validateDocId(docId)
         const target = this.docPath(collection, docId)
         assertPathInside(this.docsRoot(collection), target)
         await this.storage.delete(target)
@@ -167,7 +167,7 @@ export class FilesystemDocuments {
      * @returns {Promise<string>}
      */
     async softDeleteStoredDoc(collection, docId, deletedAt) {
-        validateDocId(docId)
+        await validateDocId(docId)
         const source = this.docPath(collection, docId)
         const target = this.deletedPath(collection, docId)
         assertPathInside(this.docsRoot(collection), source)
@@ -185,7 +185,7 @@ export class FilesystemDocuments {
      * @returns {Promise<string>}
      */
     async restoreStoredDoc(collection, docId, restoredAt) {
-        validateDocId(docId)
+        await validateDocId(docId)
         const source = this.deletedPath(collection, docId)
         const target = this.docPath(collection, docId)
         assertPathInside(this.deletedRoot(collection), source)
@@ -202,7 +202,7 @@ export class FilesystemDocuments {
      * @returns {Promise<void>}
      */
     async makeStoredDocReadOnly(collection, docId) {
-        validateDocId(docId)
+        await validateDocId(docId)
         const target = this.docPath(collection, docId)
         assertPathInside(this.docsRoot(collection), target)
         await this.storage.chmod(target, 0o444)
@@ -214,15 +214,10 @@ export class FilesystemDocuments {
      */
     async listDocIds(collection) {
         const files = await this.storage.list(this.docsRoot(collection))
-        return (
-            files
-                /** @param {string} file */
-                .filter((file) => file.endsWith('.json'))
-                /** @param {string} file */
-                .map((file) => path.basename(file, '.json'))
-                /** @param {string} key */
-                .filter((key) => TTID.isTTID(key))
-        )
+        const keys = files
+            .filter((file) => file.endsWith('.json'))
+            .map((file) => path.basename(file, '.json'))
+        return await filterTTIDs(keys)
     }
     /**
      * Lists soft-deleted document IDs retained in the tombstone namespace.
@@ -231,9 +226,9 @@ export class FilesystemDocuments {
      */
     async listDeletedDocIds(collection) {
         const files = await this.storage.list(this.deletedRoot(collection))
-        return files
+        const keys = files
             .filter((file) => file.endsWith('.json'))
             .map((file) => path.basename(file, '.json'))
-            .filter((key) => TTID.isTTID(key))
+        return await filterTTIDs(keys)
     }
 }

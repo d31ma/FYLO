@@ -1,0 +1,159 @@
+// Fylo client — drives the `fylo` binary's persistent NDJSON loop.
+//
+// Dart SDK only (dart:io, dart:convert, dart:async). Requires the `fylo` binary
+// on PATH (brew/scoop) or an explicit path. One long-lived subprocess keeps the
+// engine warm across calls.
+//
+//   final db = await Fylo.open('/path/to/db');
+//   await db.createCollection('users');
+//   final id = await db.putData('users', {'name': 'Ada', 'role': 'admin'});
+//   final doc = await db.getLatest('users', id);
+//   final admins = await db.findDocs('users', {r'$ops': [{'role': {r'$eq': 'admin'}}]});
+//   await db.close();
+//
+// Each operation method builds the request and resolves with the op's `result`
+// (throwing on failure). Method names mirror the machine-protocol op names in
+// Dart's lowerCamelCase. `request(op)` remains a raw escape hatch resolving the
+// full response — use it for ops without a dedicated method (branching, schema…).
+// Requests are queued: each resolves with its own response line, in order.
+
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
+class FyloException implements Exception {
+  final String message;
+  FyloException(this.message);
+  @override
+  String toString() => 'FyloException: $message';
+}
+
+class Fylo {
+  final Process _proc;
+  final IOSink _stdin;
+  final List<Completer<Map<String, dynamic>>> _queue = [];
+
+  Fylo._(this._proc, this._stdin, Stream<String> lines) {
+    lines.listen((line) {
+      if (line.trim().isEmpty) return;
+      if (_queue.isNotEmpty) {
+        _queue.removeAt(0).complete(jsonDecode(line) as Map<String, dynamic>);
+      }
+    }, onDone: () {
+      final err = FyloException('fylo process exited');
+      for (final c in _queue) {
+        if (!c.isCompleted) c.completeError(err);
+      }
+      _queue.clear();
+    });
+  }
+
+  /// Start a warm fylo process rooted at [root]. [binary] defaults to `fylo`.
+  static Future<Fylo> open(String root,
+      {String binary = 'fylo', bool worm = false}) async {
+    final args = ['exec', '--loop', '--root', root, if (worm) '--worm'];
+    final proc = await Process.start(binary, args);
+    final lines =
+        proc.stdout.transform(utf8.decoder).transform(const LineSplitter());
+    return Fylo._(proc, proc.stdin, lines);
+  }
+
+  /// Send one raw machine-protocol op; resolves with the full response object.
+  Future<Map<String, dynamic>> request(Map<String, dynamic> op) {
+    final completer = Completer<Map<String, dynamic>>();
+    _queue.add(completer);
+    _stdin.add(utf8.encode('${jsonEncode(op)}\n'));
+    return completer.future;
+  }
+
+  Future<dynamic> _op(String name, Map<String, dynamic> fields) async {
+    final payload = <String, dynamic>{'op': name};
+    fields.forEach((key, value) {
+      if (value != null) payload[key] = value;
+    });
+    final response = await request(payload);
+    if (response['ok'] != true) {
+      final error = response['error'];
+      throw FyloException(
+          (error is Map ? error['message'] : null) ?? 'fylo error');
+    }
+    return response['result'];
+  }
+
+  // --- Collections ---
+  Future<dynamic> createCollection(String collection, [String kind = 'document']) =>
+      _op('createCollection', {'collection': collection, 'kind': kind});
+  Future<dynamic> dropCollection(String collection) =>
+      _op('dropCollection', {'collection': collection});
+  Future<dynamic> inspectCollection(String collection) =>
+      _op('inspectCollection', {'collection': collection});
+  Future<dynamic> rebuildCollection(String collection) =>
+      _op('rebuildCollection', {'collection': collection});
+
+  // --- Documents ---
+  Future<dynamic> putData(String collection, Map<String, dynamic> data) =>
+      _op('putData', {'collection': collection, 'data': data});
+  Future<dynamic> batchPutData(String collection, List<dynamic> batch) =>
+      _op('batchPutData', {'collection': collection, 'batch': batch});
+  Future<dynamic> getDoc(String collection, String id) =>
+      _op('getDoc', {'collection': collection, 'id': id});
+  Future<dynamic> getLatest(String collection, String id) =>
+      _op('getLatest', {'collection': collection, 'id': id});
+  Future<dynamic> patchDoc(String collection, String id, Map<String, dynamic> newDoc) =>
+      _op('patchDoc', {'collection': collection, 'id': id, 'newDoc': newDoc});
+  Future<dynamic> patchDocs(String collection, Map<String, dynamic> update) =>
+      _op('patchDocs', {'collection': collection, 'update': update});
+  Future<dynamic> delDoc(String collection, String id) =>
+      _op('delDoc', {'collection': collection, 'id': id});
+  Future<dynamic> delDocs(String collection, Map<String, dynamic> criteria) =>
+      _op('delDocs', {'collection': collection, 'delete': criteria});
+  Future<dynamic> restoreDoc(String collection, String id) =>
+      _op('restoreDoc', {'collection': collection, 'id': id});
+
+  // --- Query ---
+  Future<dynamic> findDocs(String collection, Map<String, dynamic> query) =>
+      _op('findDocs', {'collection': collection, 'query': query});
+  Future<dynamic> findDeletedDocs(String collection, Map<String, dynamic> query) =>
+      _op('findDeletedDocs', {'collection': collection, 'query': query});
+  Future<dynamic> joinDocs(Map<String, dynamic> join) =>
+      _op('joinDocs', {'join': join});
+  Future<dynamic> executeSQL(String sql) => _op('executeSQL', {'sql': sql});
+
+  /// Run raw SQL, built with native interpolation: db.sql("… ${x}").
+  /// Values are inlined verbatim — escape/validate untrusted input yourself.
+  Future<dynamic> sql(String query) => executeSQL(query);
+
+  Future<dynamic> importBulkData(String collection, String url) =>
+      _op('importBulkData', {'collection': collection, 'url': url});
+
+  /// Collection-scoped facade with short method names, so
+  /// `db.collection('users').put(data)` reads like the browser client.
+  FyloCollection collection(String name) => FyloCollection(this, name);
+
+  /// Close stdin so the loop ends, and wait for the process to exit.
+  Future<void> close() async {
+    await _stdin.close();
+    await _proc.exitCode;
+  }
+}
+
+/// A collection-scoped view; methods drop the leading collection argument.
+class FyloCollection {
+  final Fylo _db;
+  final String _name;
+
+  FyloCollection(this._db, this._name);
+
+  Future<dynamic> create([String kind = 'document']) => _db.createCollection(_name, kind);
+  Future<dynamic> drop() => _db.dropCollection(_name);
+  Future<dynamic> inspect() => _db.inspectCollection(_name);
+  Future<dynamic> rebuild() => _db.rebuildCollection(_name);
+  Future<dynamic> put(Map<String, dynamic> data) => _db.putData(_name, data);
+  Future<dynamic> get(String id) => _db.getDoc(_name, id);
+  Future<dynamic> latest(String id) => _db.getLatest(_name, id);
+  Future<dynamic> patch(String id, Map<String, dynamic> newDoc) =>
+      _db.patchDoc(_name, id, newDoc);
+  Future<dynamic> delete(String id) => _db.delDoc(_name, id);
+  Future<dynamic> restore(String id) => _db.restoreDoc(_name, id);
+  Future<dynamic> find(Map<String, dynamic> query) => _db.findDocs(_name, query);
+}

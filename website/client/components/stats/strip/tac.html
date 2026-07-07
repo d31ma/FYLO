@@ -1,0 +1,14 @@
+<section class="stats" aria-label="FYLO by the numbers">
+  <div class="w-container w-container--lg">
+    <div class="w-grid-row w-grid-row--justify-center">
+      <loop :for="let stat of stats">
+        <div class="w-grid-col-6 w-grid-col-md-3">
+          <div class="stat">
+            <div class="stat-value">{stat.value}</div>
+            <div class="stat-label">{stat.label}</div>
+          </div>
+        </div>
+      </loop>
+    </div>
+  </div>
+</section>

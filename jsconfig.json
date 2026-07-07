@@ -16,6 +16,6 @@
         "types": ["bun-types", "node"],
         "skipLibCheck": true
     },
-    "include": ["src/**/*.js"],
+    "include": ["src/**/*.js", "src/**/*.d.ts"],
     "exclude": ["dist", "dist-bin", "node_modules"]
 }

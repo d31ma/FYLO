@@ -1,19 +1,12 @@
-name: Publish
+name: Release
 
 on:
     push:
         branches: [main]
     workflow_dispatch:
-        inputs:
-            promote_npm:
-                description: Promote the GitHub Packages artifact to npm after stability is confirmed
-                required: false
-                default: false
-                type: boolean
 
 permissions:
     contents: read
-    packages: read
 
 concurrency:
     group: release-${{ github.repository }}
@@ -21,11 +14,9 @@ concurrency:
 
 jobs:
     test:
-        name: Test before publish
+        name: Test before release
         runs-on: ubuntu-latest
         timeout-minutes: 20
-        env:
-            NODE_AUTH_TOKEN: ${{ secrets.PACKAGES_READ_TOKEN || github.token }}
 
         steps:
             - name: Checkout
@@ -40,11 +31,14 @@ jobs:
               uses: actions/setup-node@v6
               with:
                   node-version: '24'
-                  registry-url: 'https://npm.pkg.github.com'
-                  scope: '@d31ma'
 
             - name: Install dependencies
               run: bun install --frozen-lockfile
+
+            - name: Install CHEX and TTID binaries
+              run: |
+                  sh ./scripts/install-vendor-bins.sh
+                  echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
             - name: Type check
               run: bun run typecheck
@@ -52,21 +46,13 @@ jobs:
             - name: Lint
               run: bun run lint
 
-            - name: Build
-              run: bun run build
-
             - name: Run tests
               run: bun run test
-
-            - name: Run package blackbox tests
-              run: bun run test:blackbox
 
     binary-interop:
         name: Compiled binary interop
         runs-on: macos-latest
         timeout-minutes: 30
-        env:
-            NODE_AUTH_TOKEN: ${{ secrets.PACKAGES_READ_TOKEN || github.token }}
 
         steps:
             - name: Checkout
@@ -76,8 +62,6 @@ jobs:
               uses: actions/setup-node@v6
               with:
                   node-version: '24'
-                  registry-url: 'https://npm.pkg.github.com'
-                  scope: '@d31ma'
 
             - name: Setup Bun
               uses: oven-sh/setup-bun@v2
@@ -97,6 +81,11 @@ jobs:
               with:
                   dotnet-version: '8.0.x'
 
+            - name: Setup Go
+              uses: actions/setup-go@v5
+              with:
+                  go-version: '1.22'
+
             - name: Install Kotlin compiler
               env:
                   KOTLIN_VERSION: 2.1.10
@@ -111,6 +100,11 @@ jobs:
             - name: Install dependencies
               run: bun install --frozen-lockfile
 
+            - name: Install CHEX and TTID binaries
+              run: |
+                  sh ./scripts/install-vendor-bins.sh
+                  echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
             - name: Verify interop language toolchains
               run: |
                   python3 --version
@@ -124,6 +118,7 @@ jobs:
                   swift --version
                   kotlinc -version
                   rustc --version
+                  go version
 
             - name: Run compiled binary interop tests
               run: bun run test:interop
@@ -132,11 +127,8 @@ jobs:
         name: Read version
         runs-on: ubuntu-latest
         outputs:
-            package_name: ${{ steps.read.outputs.package_name }}
             version: ${{ steps.read.outputs.version }}
             tag_exists: ${{ steps.check.outputs.exists }}
-            github_version_exists: ${{ steps.check_github.outputs.exists }}
-            npm_version_exists: ${{ steps.check_npm.outputs.exists }}
 
         steps:
             - name: Checkout
@@ -147,11 +139,8 @@ jobs:
             - name: Read package version
               id: read
               run: |
-                  PACKAGE_NAME=$(node -p "require('./package.json').name")
                   VERSION=$(node -p "require('./package.json').version")
-                  echo "package_name=$PACKAGE_NAME" >> "$GITHUB_OUTPUT"
                   echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-                  echo "Package: $PACKAGE_NAME"
                   echo "Version: $VERSION"
 
             - name: Check version tag
@@ -161,150 +150,21 @@ jobs:
               run: |
                   if git rev-parse "refs/tags/$TAG" >/dev/null 2>&1; then
                     echo "exists=true" >> "$GITHUB_OUTPUT"
-                    echo "Tag $TAG already exists; skipping publish and release."
+                    echo "Tag $TAG already exists; skipping release."
                   else
                     echo "exists=false" >> "$GITHUB_OUTPUT"
                   fi
-
-            - name: Check GitHub Packages version
-              id: check_github
-              env:
-                  PACKAGE_NAME: ${{ steps.read.outputs.package_name }}
-                  VERSION: ${{ steps.read.outputs.version }}
-                  NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-              run: |
-                  cat > ~/.npmrc <<EOF
-                  @d31ma:registry=https://npm.pkg.github.com
-                  //npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}
-                  always-auth=true
-                  EOF
-
-                  if npm view "${PACKAGE_NAME}@${VERSION}" version --registry=https://npm.pkg.github.com >/dev/null 2>&1; then
-                    echo "exists=true" >> "$GITHUB_OUTPUT"
-                    echo "GitHub Packages already has ${PACKAGE_NAME}@${VERSION}."
-                  else
-                    echo "exists=false" >> "$GITHUB_OUTPUT"
-                  fi
-
-            - name: Check npm version
-              id: check_npm
-              env:
-                  PACKAGE_NAME: ${{ steps.read.outputs.package_name }}
-                  VERSION: ${{ steps.read.outputs.version }}
-              run: |
-                  if npm view "${PACKAGE_NAME}@${VERSION}" version --registry=https://registry.npmjs.org >/dev/null 2>&1; then
-                    echo "exists=true" >> "$GITHUB_OUTPUT"
-                    echo "npm already has ${PACKAGE_NAME}@${VERSION}."
-                  else
-                    echo "exists=false" >> "$GITHUB_OUTPUT"
-                  fi
-
-    publish:
-        name: Publish to GitHub Packages
-        needs: [test, binary-interop, version]
-        if: >-
-            ${{
-              always() &&
-              needs.test.result == 'success' &&
-              needs.binary-interop.result == 'success' &&
-              needs.version.result == 'success' &&
-              needs.version.outputs.tag_exists == 'false' &&
-              needs.version.outputs.github_version_exists == 'false'
-            }}
-        runs-on: ubuntu-latest
-        timeout-minutes: 15
-        permissions:
-            contents: read
-            packages: write
-        environment: packages-prod
-
-        steps:
-            - name: Publish via FOUNDRY
-              uses: d31ma/FOUNDRY/.github/actions/publish-github-package@main
-              with:
-                  package_name: ${{ needs.version.outputs.package_name }}
-                  version: ${{ needs.version.outputs.version }}
-                  github_dist_tag: beta
-                  build_command: bun run build
-                  publish_token: ${{ github.token }}
-                  packages_read_token: ${{ secrets.PACKAGES_READ_TOKEN || github.token }}
-                  install_command: |
-                      {
-                        echo "@d31ma:registry=https://registry.npmjs.org/"
-                      } > .npmrc
-                      cp .npmrc ~/.npmrc
-                      cat > bunfig.toml <<'EOF'
-                      [install.scopes]
-                      "@d31ma" = { url = "https://registry.npmjs.org/" }
-                      EOF
-                      bun install --frozen-lockfile
-
-    promote-npm:
-        name: Request npm promotion
-        needs: [version, binary-interop, publish]
-        if: >-
-            ${{
-              always() &&
-              needs.binary-interop.result == 'success' &&
-              (
-                (github.event_name == 'workflow_dispatch' && inputs.promote_npm == true) ||
-                (github.event_name == 'push')
-              ) &&
-              (
-                needs.publish.result == 'success' ||
-                needs.version.outputs.github_version_exists == 'true'
-              )
-            }}
-        runs-on: ubuntu-latest
-        timeout-minutes: 10
-        permissions:
-            contents: read
-
-        steps:
-            - name: Dispatch FOUNDRY npm promotion
-              env:
-                  GH_TOKEN: ${{ secrets.FOUNDRY_DISPATCH_TOKEN }}
-                  PACKAGE_NAME: ${{ needs.version.outputs.package_name }}
-                  VERSION: ${{ needs.version.outputs.version }}
-                  SOURCE_REPOSITORY: ${{ github.repository }}
-              run: |
-                  set -euo pipefail
-                  if [ -z "${GH_TOKEN:-}" ]; then
-                    echo "::error::FOUNDRY_DISPATCH_TOKEN is required to request npm promotion from FOUNDRY."
-                    exit 1
-                  fi
-
-                  jq -n \
-                    --arg package_name "$PACKAGE_NAME" \
-                    --arg version "$VERSION" \
-                    --arg npm_dist_tag "latest" \
-                    --arg npm_auth_mode "token" \
-                    --arg source_repository "$SOURCE_REPOSITORY" \
-                    '{
-                      event_type: "promote-npm",
-                      client_payload: {
-                        package_name: $package_name,
-                        version: $version,
-                        npm_dist_tag: $npm_dist_tag,
-                        npm_auth_mode: $npm_auth_mode,
-                        source_repository: $source_repository
-                      }
-                    }' |
-                    gh api repos/d31ma/FOUNDRY/dispatches --input -
 
     github-release:
         name: Create GitHub release
         runs-on: ubuntu-latest
-        needs: [version, binary-interop, publish]
+        needs: [test, binary-interop, version]
         if: >-
             ${{
-              always() &&
+              needs.test.result == 'success' &&
               needs.binary-interop.result == 'success' &&
-              needs.version.outputs.tag_exists == 'false' &&
-              (
-                needs.publish.result == 'success' ||
-                needs.version.outputs.github_version_exists == 'true'
-              )
+              needs.version.result == 'success' &&
+              needs.version.outputs.tag_exists == 'false'
             }}
         timeout-minutes: 10
         permissions:
@@ -333,3 +193,47 @@ jobs:
                   gh release create "v$VERSION" \
                     --title "v$VERSION" \
                     --generate-notes
+
+            - name: Setup Bun
+              uses: oven-sh/setup-bun@v2
+              with:
+                  bun-version: latest
+
+            - name: Install dependencies
+              run: bun install --frozen-lockfile
+
+            - name: Build cross-platform binaries
+              run: |
+                  set -euo pipefail
+                  mkdir -p dist-bin
+                  build() {
+                    echo "::group::$2"
+                    bun build --compile --target="$1" ./src/cli/index.js --outfile "dist-bin/$2"
+                    echo "::endgroup::"
+                  }
+                  build bun-linux-x64     fylo-linux-x64
+                  build bun-linux-arm64   fylo-linux-arm64
+                  build bun-darwin-x64    fylo-macos-x64
+                  build bun-darwin-arm64  fylo-macos-arm64
+                  build bun-windows-x64   fylo-windows-x64.exe
+                  cd dist-bin && sha256sum fylo-* > SHA256SUMS
+
+            - name: Build local-first web bundle
+              run: bun run build:web
+
+            - name: Package language clients
+              run: tar -czf fylo-clients.tar.gz clients
+
+            - name: Upload binaries, web bundle, clients, and installers to release
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  VERSION: ${{ needs.version.outputs.version }}
+              run: |
+                  cp dist-web/fylo.mjs dist-web/fylo-web.mjs
+                  gh release upload "v$VERSION" \
+                    dist-bin/fylo-* dist-bin/SHA256SUMS \
+                    dist-web/fylo-web.mjs \
+                    fylo-clients.tar.gz \
+                    website/client/shared/assets/install.sh \
+                    website/client/shared/assets/install.ps1 \
+                    --clobber

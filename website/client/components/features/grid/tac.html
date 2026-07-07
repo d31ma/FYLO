@@ -1,0 +1,24 @@
+<section class="features section" aria-labelledby="features-heading">
+  <div class="w-container w-container--xl">
+    <div class="section-head">
+      <span class="eyebrow">Everything you need</span>
+      <h2 id="features-heading">Complexity traded for clarity.</h2>
+      <p>
+        Git-like version control, SQL and REST query surfaces, field-level encryption, and
+        durable queues — in one standalone binary with drop-in clients for {clientCount} languages.
+      </p>
+    </div>
+
+    <div class="w-grid-row features-row">
+      <loop :for="let feature of features">
+        <div class="w-grid-col-12 w-grid-col-sm-6 w-grid-col-lg-4">
+          <div class="w-card w-card--variant-outlined feature-card">
+            <span :class="'w-chip w-chip-tonal w-chip--x-small w-chip-' + feature.color">{feature.area}</span>
+            <h3>{feature.title}</h3>
+            <p>{feature.text}</p>
+          </div>
+        </div>
+      </loop>
+    </div>
+  </div>
+</section>

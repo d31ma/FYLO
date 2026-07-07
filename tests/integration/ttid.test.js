@@ -1,5 +1,5 @@
 import { test, expect, describe } from 'bun:test'
-import TTID from '@d31ma/ttid'
+import TTID from '../helpers/ttid.js'
 
 describe('TTID direct integration', () => {
     describe('generate()', () => {

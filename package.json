@@ -1,43 +1,14 @@
 {
     "name": "@d31ma/fylo",
-    "version": "26.25.01",
-    "main": "./dist/index.js",
-    "types": "./dist/types/index.d.ts",
-    "exports": {
-        ".": {
-            "types": "./dist/types/index.d.ts",
-            "import": "./dist/index.js",
-            "default": "./dist/index.js"
-        },
-        "./browser": {
-            "types": "./dist/types/browser/index.d.ts",
-            "import": "./dist/browser/index.js",
-            "default": "./dist/browser/index.js"
-        },
-        "./server": {
-            "types": "./dist/types/server/index.d.ts",
-            "import": "./dist/server/index.js",
-            "default": "./dist/server/index.js"
-        },
-        "./package.json": "./package.json"
-    },
-    "bin": {
-        "fylo": "./dist/cli/index.js",
-        "fylo.query": "./dist/cli/index.js",
-        "fylo.admin": "./dist/cli/index.js",
-        "fylo.exec": "./dist/cli/index.js"
-    },
-    "files": [
-        "dist",
-        "README.md",
-        "LICENSE"
-    ],
+    "version": "26.28.02",
+    "private": true,
+    "type": "module",
     "scripts": {
-        "build": "node ./scripts/build.mjs",
+        "vendor:install": "sh ./scripts/install-vendor-bins.sh",
         "build:exe": "mkdir -p ./dist-bin && bun build --compile ./src/cli/index.js --outfile ./dist-bin/fylo",
-        "test": "bun --env-file=tests/.env.test test tests/integration tests/collection tests/browser --timeout 120000 --parallel=1",
-        "test:browser": "bun test tests/browser --timeout 120000 --parallel=1",
-        "test:blackbox": "bun run build && bun test tests/package-contract --timeout 120000",
+        "build:web": "mkdir -p ./dist-web && bun build ./src/browser/index.js --target=browser --outfile ./dist-web/fylo.mjs",
+        "test": "bun --env-file=tests/.env.test test tests/integration tests/collection tests/browser --timeout 120000",
+        "test:par": "node ./scripts/test-parallel.mjs",
         "test:interop": "bun test tests/interop --timeout 120000 --parallel=1",
         "typecheck": "tsc --noEmit",
         "lint": "prettier --check \"src/**/*.js\" \"tests/**/*.js\" README.md",
@@ -53,18 +24,9 @@
         "prettier": "^3.0.0",
         "typescript": "^5.9.3"
     },
-    "dependencies": {
-        "@d31ma/chex": "^26.21.6",
-        "@d31ma/ttid": "^26.21.3"
-    },
-    "type": "module",
     "repository": {
         "type": "git",
         "url": "git+https://github.com/d31ma/Fylo.git"
-    },
-    "publishConfig": {
-        "registry": "https://npm.pkg.github.com",
-        "tag": "beta"
     },
     "homepage": "https://fylo.del.ma",
     "license": "MIT",
@@ -75,8 +37,7 @@
         "document-store",
         "javascript",
         "jsdoc",
-        "executable",
-        "bun"
+        "executable"
     ],
     "author": "Chidelma",
     "bugs": {

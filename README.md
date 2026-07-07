@@ -1,19 +1,18 @@
 <p align="center">
   <strong style="font-size: 2em;">FYLO</strong><br/>
-  <em>A Bun-native document store with zero-payload prefix indexes.</em>
+  <em>A single-binary document store with zero-payload prefix indexes and language shims for Python, Ruby, Node, Go, Rust, C#, Java, PHP, and Dart, plus local-first browser, mobile (iOS/Android), and Flutter clients.</em>
 </p>
 
 <p align="center">
   <a href="https://github.com/d31ma/Fylo/releases/latest"><img src="https://img.shields.io/github/v/release/d31ma/Fylo?label=latest&color=blue" alt="Latest Release"></a>
   <a href="https://github.com/d31ma/Fylo/actions"><img src="https://img.shields.io/github/actions/workflow/status/d31ma/Fylo/publish.yml?label=build" alt="Build Status"></a>
-  <a href="https://www.npmjs.com/package/@d31ma/fylo"><img src="https://img.shields.io/npm/v/@d31ma/fylo?label=npm" alt="npm"></a>
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT"></a>
   <a href="https://github.com/d31ma/Fylo/stargazers"><img src="https://img.shields.io/github/stars/d31ma/Fylo?style=flat" alt="GitHub Stars"></a>
 </p>
 
 <p align="center">
   <strong>One canonical file per document. Key-only indexes. No monolithic caches.</strong><br/>
-  Just&nbsp;<code>bun add @d31ma/fylo</code>.
+  A single <code>fylo</code> binary, driven from 8 languages via thin shims.
 </p>
 
 ---
@@ -23,7 +22,7 @@
 - [Why FYLO?](#why-fylo)
 - [Quick Start](#quick-start)
 - [Architecture](#architecture)
-- [Browser Runtime](#browser-runtime)
+- [Browser access](#browser-access)
 - [Configuration](#configuration)
 - [CRUD Operations](#crud-operations)
 - [Querying](#querying)
@@ -45,40 +44,51 @@
 
 FYLO trades complexity for clarity. Documents are plain JSON files on disk. Indexes are zero-byte key entries that accelerate queries without duplicating data. If the index ever drifts, FYLO rebuilds it from the documents — the files are always the source of truth.
 
-| Principle                            | Implementation                                                |
-| ------------------------------------ | ------------------------------------------------------------- |
-| **Documents are truth**              | One `.json` file per document, sharded by TTID prefix         |
-| **Indexes are accelerators**         | Zero-payload prefix keys in a sorted catalog file             |
-| **Rebuildable, not sacred**          | `rebuildCollection()` reconstructs indexes from documents     |
-| **Bun-native, zero-dependency core** | `bun:sqlite`, `Bun.mmap()`, `Bun.S3Client` — no native addons |
-| **Filesystem-first**                 | One engine. Sync to S3/GCS is your deployment choice          |
-| **Browser runtime**                  | JavaScript runtime over OPFS/memory filesystem adapters       |
+| Principle                    | Implementation                                                                         |
+| ---------------------------- | -------------------------------------------------------------------------------------- |
+| **Documents are truth**      | One `.json` file per document, sharded by TTID prefix                                  |
+| **Indexes are accelerators** | Zero-payload prefix keys in a sorted catalog file                                      |
+| **Rebuildable, not sacred**  | `fylo.<collection>.rebuild()` reconstructs indexes from data                           |
+| **Zero-dependency core**     | Embedded SQLite catalog, memory-mapped I/O, native S3 sync — one self-contained binary |
+| **Filesystem-first**         | One engine. Sync to S3/GCS is your deployment choice                                   |
+| **Browser: local-first**     | OPFS engine in the browser, background REST/SSE sync, offline-capable                  |
 
 ---
 
 ## Quick Start
 
+FYLO ships as a single self-contained `fylo` binary via
+[GitHub Releases](https://github.com/d31ma/Fylo/releases) — not npm. Install it
+onto your `PATH`, together with the [`chex`](https://github.com/d31ma/CHEX) and
+[`ttid`](https://github.com/d31ma/TTID) binaries it drives:
+
 ```bash
-bun add @d31ma/fylo
+# fylo (macOS / Linux)
+curl -fsSL https://github.com/d31ma/Fylo/releases/latest/download/install.sh | sh
+# chex + ttid
+sh ./scripts/install-vendor-bins.sh
 ```
+
+Then drive it from your language through a thin, dependency-free
+[client shim](clients/). Node example:
 
 ```ts
-import Fylo from '@d31ma/fylo'
+import { Fylo } from './clients/node/fylo.mjs' // spawns the `fylo` binary
 
 const db = new Fylo('/mnt/fylo')
-const { sql } = db
+await db.createCollection('users')
 
-await sql`CREATE TABLE users`
+const id = await db.putData('users', { name: 'Ada', role: 'admin' })
+const doc = await db.getLatest('users', id)
+console.log(doc) // { <id>: { name: 'Ada', role: 'admin' } }
 
-const id = await db.users.put({
-    name: 'Ada',
-    role: 'admin',
-    tags: ['engineering', 'platform']
-})
-
-const doc = await db.users.get(id).once()
-console.log(doc[id]) // { name: 'Ada', role: 'admin', ... }
+await db.close()
 ```
+
+Shims ship for Node, Python, Ruby, Go, Rust, C#, Java, PHP, and Dart (see
+[`clients/`](clients/)). Browsers, mobile apps (iOS/Swift, Android/Kotlin), and
+Flutter use local-first clients that embed the engine on-device and sync to the
+backend — see [Browser access](#browser-access) and [`clients/`](clients/).
 
 ### Optional Website Submodule
 
@@ -106,6 +116,9 @@ Each collection lives under `.collections` in the configured root:
     4U/
       4UUB32VGUDW.json
   .deleted/                ← soft-deleted payloads (hidden sibling of docs/)
+    4U/
+      4UUB32VGUDW.json
+  .metadata/               ← file collections only; logical object-key sidecars
     4U/
       4UUB32VGUDW.json
   index/                   ← local filesystem prefix index catalog
@@ -137,9 +150,6 @@ subsequent reads and writes without changing the base document layout. Commits
 store full snapshots instead of diffs, matching S3-style whole-object version
 retention and keeping restores auditable.
 
-See [examples/production-folder-structure.md](examples/production-folder-structure.md) for a
-production-style tree with multiple collections and queue storage.
-
 **Index keys** look like S3 object keys — field path, kind, value, doc ID:
 
 ```text
@@ -160,7 +170,7 @@ age/nr/3fc1ffffffffffff/4UUB32VGUDW
 | Backend              | Description                                            | Best for                  |
 | -------------------- | ------------------------------------------------------ | ------------------------- |
 | `local-fs` (default) | mmap'd sorted file + WAL. Binary search, zero JS heap. | Embedded, single-process  |
-| `s3-client`          | Bun.S3Client. Each key is a zero-byte S3 object.       | Distributed, multi-writer |
+| `s3-client`          | Native S3 client. Each key is a zero-byte S3 object.   | Distributed, multi-writer |
 
 ```ts
 // S3-backed indexes (documents stay on local filesystem)
@@ -176,76 +186,35 @@ Collection names map directly to S3 bucket names. Credentials resolve from `AWS_
 
 ---
 
-## Browser Runtime
+## Browser access
 
-FYLO exposes a browser-native runtime under `@d31ma/fylo/browser`. It is plain
-JavaScript because JavaScript already runs in the browser. The browser runtime
-preserves FYLO's per-document layout over OPFS or an injected VFS instead of
-storing a single collection blob.
+The browser client is **local-first**: a bundled OPFS engine (`fylo-web.mjs`,
+released as an asset) that
+reads and writes a browser-local store directly — fully offline — while a
+background sync engine reconciles with a backend `fylo serve` over REST.
 
-```ts
-import fylo from '@d31ma/fylo/browser'
-
-const id = await fylo.users.put({ name: 'Ada', role: 'admin' })
-const doc = await fylo.users.get(id).once()
-```
-
-That default import is browser-local and app-author friendly: OPFS is used when
-available, otherwise FYLO falls back to memory. If you need a separate namespace
-or explicit options, create an isolated instance:
+- **Push**: local writes go to the backend via `POST /v1/exec` (`syncPush`,
+  document-level three-way merge; last-write-wins for true conflicts).
+- **Pull**: the backend's changes feed `GET /v1/{collection}/events` (streamed
+  SSE, JSON-poll fallback) materializes remote writes into the local store.
+- **Offline**: when the health ping fails, the local store is the store and
+  writes queue for the next reconnect.
 
 ```ts
-import { createBrowserClient } from '@d31ma/fylo/browser'
+import { createSyncedClient } from './fylo-web.mjs'
 
-const fylo = createBrowserClient({
-    storage: 'opfs',
-    namespace: 'my-app'
-})
+// Omit serverUrl for a pure offline store.
+const db = createSyncedClient({ serverUrl: 'https://api.example.com', token: FYLO_TOKEN })
+await db.ready()
+await db.sync.start()
 
-await fylo.users.create()
-const id = await fylo.users.put({ name: 'Ada', role: 'admin' })
-const doc = await fylo.users.get(id).once()
+const id = await db.users.put({ name: 'Ada', role: 'admin' }) // local, synced in the background
+const doc = await db.users.latest(id)
 ```
 
-Available browser hosts:
-
-| Host     | Usage                                                         |
-| -------- | ------------------------------------------------------------- |
-| `opfs`   | Durable browser-local data through Origin Private File System |
-| `memory` | Ephemeral tests, demos, and short-lived browser sessions      |
-
-In browser contexts FYLO prefers a `SharedWorker`, falls back to a
-`DedicatedWorker`, and finally falls back to an in-process memory filesystem
-when workers are unavailable. The worker multiplexes cores by namespace, so two
-tabs using the same namespace observe the same collection events.
-
-Browser storage mirrors the server layout:
-
-```text
-/.collections/<collection>/
-  docs/<bucket>/<id>.json
-  .deleted/<bucket>/<id>.json
-  index/{manifest.json,keys.snapshot,keys.wal}
-  events/<collection>.ndjson
-```
-
-The clean runtime split is:
-
-```text
-src/browser/core/       browser-safe FYLO protocol, documents, indexes, query engine
-src/browser/worker/     SharedWorker/DedicatedWorker runtime and client
-src/browser/            app-author API and OPFS filesystem; no Bun APIs
-```
-
-Current execution flow:
-
-```text
-fylo.<collection>.<method>(...)
-  -> @d31ma/fylo/browser proxy
-  -> browser core validates collection/doc IDs, mutates documents, updates indexes,
-     evaluates queries, and emits events
-  -> OPFS by default, memory fallback
-```
+Run the backend with `fylo serve`. The server also exposes REST resources
+(`/v1/{collection}[/{id}][/raw]`), SQL (`/v1/sql`), the changes feed, and an
+OpenAPI document at `/v1/openapi.json`. See the HTTP server section below.
 
 ---
 
@@ -284,7 +253,7 @@ const fylo = new Fylo('/mnt/fylo', {
 })
 ```
 
-Use Bun's native Redis client for shared production caches:
+Use a Redis client for shared production caches:
 
 ```ts
 const fylo = new Fylo('/mnt/fylo', {
@@ -299,7 +268,7 @@ const fylo = new Fylo('/mnt/fylo', {
 })
 ```
 
-If `cache.redis.url` is omitted, FYLO checks `FYLO_REDIS_URL`; otherwise Bun's
+If `cache.redis.url` is omitted, FYLO checks `FYLO_REDIS_URL`; otherwise the
 Redis client resolves its own defaults (`REDIS_URL`, `VALKEY_URL`, then local
 Redis). Cache invalidation is version-based per collection, so writes bump the
 collection version and old Redis keys expire naturally by TTL.
@@ -378,6 +347,87 @@ Restore preserves the TTID, moves the payload back into `docs/`, restores
 writable file permissions (`0644`), rebuilds its indexes, and records the
 restoration as a live insert event. A tombstoned TTID cannot be written
 directly; it must be restored.
+
+### Raw Files
+
+Create a file collection, then pass a `Blob`, `File`, or `URL` to the normal
+`put()` method:
+
+```js
+await db.assets.create({ kind: 'file' })
+
+const id = await db.assets.put(new File(['hello'], 'greeting.txt', { type: 'text/plain' }))
+
+const metadata = await db.assets.get(id).once()
+const bytes = await db.assets.get(id).bytes()
+const blob = await db.assets.get(id).blob()
+const stream = await db.assets.get(id).stream()
+```
+
+File collections also support S3-style logical object keys. `/` is the default;
+root and trailing-slash keys append the generated TTID filename, while an exact
+key is preserved as supplied:
+
+```js
+const id = await db.assets.put(file, { key: '/reports/2026/summary.pdf' })
+
+const exact = await db.assets
+    .find({
+        $ops: [{ key: { $eq: '/reports/2026/summary.pdf' } }]
+    })
+    .collect()
+
+const reports = await db.assets
+    .find({
+        $ops: [{ key: { $like: '/reports/%' } }]
+    })
+    .collect()
+```
+
+Keys are unique among active files in a collection. They always begin with `/`,
+may be at most 1024 UTF-8 bytes, and cannot contain backslashes, control
+characters, or `.` / `..` path segments. A key is logical metadata, not a local
+filesystem path; the raw bytes still use the TTID filename shown below.
+
+FYLO stores the bytes unchanged at:
+
+```text
+.collections/assets/docs/<TTID-prefix>/<TTID>.<original-extension>
+```
+
+No source path or URL is retained. Metadata is derived from the stored file,
+with the logical `key` stored in a small system sidecar:
+`name`, `key`, `extension`, `contentType`, `contentLength`, `etag`,
+`checksumSHA256`, `createdAt`, and `lastModified`. These fields use the normal
+prefix index and can be queried with `find()`. Portable custom metadata is not
+currently stored.
+
+`URL` ingestion snapshots the content at write time. `file:` URLs work
+server-side; browser runtimes accept `Blob`, `File`, and network URLs. The
+default ingestion limit is 50 MiB and can be changed per write:
+
+```js
+await db.assets.put(file, { maxBytes: 250 * 1024 * 1024 })
+```
+
+Compiled executable callers use a tagged absolute path:
+
+```json
+{
+    "op": "putData",
+    "root": "/mnt/fylo",
+    "collection": "assets",
+    "file": {
+        "path": "/uploads/greeting.txt",
+        "key": "/incoming/greeting.txt"
+    }
+}
+```
+
+The HTTP gateway accepts raw bytes with `Content-Type` and
+`X-FYLO-Filename`; pass the logical object key through `X-FYLO-Key`. It streams them back from
+`GET /v1/{collection}/{id}/raw`. Server-local paths are rejected through the
+remote `/v1/exec` transport.
 
 ---
 
@@ -505,7 +555,7 @@ Behavior:
 
 - Documents carry `_v` (version label)
 - Reads materialize old docs to head shape in memory
-- Strict writes validate against head schema via `@d31ma/chex`
+- Strict writes validate against head schema via the `chex` binary
 - Documents missing `_v` are treated as oldest version (legacy upgrade on read)
 - Any collection directory under `FYLO_SCHEMA` that contains a `manifest.json` is auto-created on `new Fylo(...)`; await `fylo.ready()` if you need the bootstrap to settle before issuing reads from a synchronous probe (mutation/query methods await internally)
 - FYLO schemas do not support arrays of objects — declare each nested object as its own collection. A schema that would accept `items: [{ name: '...' }]` will throw `FYLO schema '...' does not support arrays of objects at '$.items'` on first read. Arrays of scalars and nested objects (as fields) are fine.
@@ -604,7 +654,7 @@ const fylo = new Fylo('/mnt/fylo', {
         async onWrite(event) {
             await s3.putObject({
                 key: `${event.collection}/${event.docId}.json`,
-                body: await Bun.file(event.path).arrayBuffer()
+                body: await readFile(event.path)
             })
         },
         async onDelete(event) {
@@ -676,33 +726,34 @@ curl -H "Authorization: Bearer $FYLO_SERVER_TOKEN" \
   http://localhost:8787/v1/posts
 ```
 
-Embed the gateway in your own Bun service when you need custom routing,
-middleware, TLS, or deployment-specific auth:
+Need custom routing, middleware, TLS, or deployment-specific auth? Build from
+source and embed the handler `createFyloHttpHandler` (exported from
+`src/server/http.js`) in your own service:
 
 ```ts
-import { createFyloHttpHandler } from '@d31ma/fylo/server'
+import { createFyloHttpHandler } from './src/server/http.js'
 
 const fyloHandler = createFyloHttpHandler({
     root: '/mnt/fylo',
     token: process.env.FYLO_SERVER_TOKEN
 })
 
-Bun.serve({
-    port: 8787,
-    fetch: fyloHandler
-})
+// fyloHandler is a standard (request) => Response handler — serve it with
+// your runtime's HTTP server.
 ```
 
 ---
 
 ## Local Queue
 
-Opt-in durable local queue for event-driven workflows:
+Opt-in durable local queue for event-driven workflows. This is an in-process
+API — use it when embedding FYLO from source (`src/`):
 
 ```ts
-const db = new Fylo('/mnt/fylo', { queue: true })
+import Fylo from './src/index.js'
+import { consume, publish } from './src/queue/local.js'
 
-import { consume, publish } from '@d31ma/fylo'
+const db = new Fylo('/mnt/fylo', { queue: true })
 
 class UserConsumer {
     @consume('users.insert', { group: 'email-service', autoAck: false })
@@ -829,9 +880,10 @@ Supported operations: `executeSQL`, `createCollection`, `dropCollection`, `inspe
 
 ### Compiled Executable
 
+The `fylo` binary (installed from a release) runs the same machine interface:
+
 ```bash
-bun run build:exe
-./dist-bin/fylo exec --request @request.json
+fylo exec --request @request.json
 ```
 
 Callable from any language that can spawn a process and read JSON: write a
@@ -863,7 +915,8 @@ const result = await db.posts.rebuild()
 fylo.admin rebuild posts --root /mnt/fylo --json
 ```
 
-Use `rebuildCollection()` after operator-level recovery or when external processes have modified document files directly.
+Use `db.<collection>.rebuild()` after operator-level recovery or when external
+processes have modified data files directly.
 
 ---
 
@@ -873,7 +926,7 @@ Use `rebuildCollection()` after operator-level recovery or when external process
 | ------------------------------------ | --------------------------------------------------------------------------------------------- |
 | **Filesystem-only engine**           | One engine writes to a local path. Remote replication is your responsibility.                 |
 | **Advisory locking**                 | Lock-files with TTL. Networked filesystems without atomic `link()` are not supported.         |
-| **Indexes are derived**              | External writes to document files won't update indexes. Use `rebuildCollection()`.            |
+| **Indexes are derived**              | External writes to data files won't update indexes. Use `db.<collection>.rebuild()`.          |
 | **Local strict WORM**                | FYLO rejects mutation and applies `0444`; privileged filesystem administrators can bypass it. |
 | **Frequency leaks on encryption**    | HMAC blind indexes for `$eq` reveal value repetition even without decryption.                 |
 | **Process-global cipher**            | One key per process for all `$encrypted` fields. No per-collection key rotation built in.     |

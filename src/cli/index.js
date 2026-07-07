@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import path from 'node:path'
 import Fylo from '../index.js'
-import { runMachineRequestSource } from './machine.js'
+import { runMachineRequestSource, serveStdioLoop } from './machine.js'
 import { renderTableOutput, writeCliText } from './output.js'
 import { serveFyloHttp } from '../server/http.js'
 import {
@@ -40,6 +40,7 @@ import { VersionRepository } from '../versioning/repository.js'
  * @property {string | undefined} request
  * @property {string | undefined} message
  * @property {boolean} help
+ * @property {boolean} loop
  * @returns {string}
  */
 function usage() {
@@ -57,6 +58,7 @@ function usage() {
         '  fylo.query "<SQL>"',
         '  fylo.query sql "<SQL>"',
         '  fylo.exec exec --request <json|@path|-> [--root <path>] [--worm]',
+        '  fylo.exec exec --loop [--root <path>] [--worm]  (persistent NDJSON: one request/response per line)',
         '  fylo.query inspect <collection> [--root <path>] [--worm] [--json]',
         '  fylo.query get <collection> <doc-id> [--root <path>] [--worm] [--json]',
         '  fylo.query latest <collection> <doc-id> [--root <path>] [--worm] [--json] [--id-only]',
@@ -133,6 +135,7 @@ function parseArgs(argv) {
     let request
     let message
     let help = false
+    let loop = false
     for (let index = 0; index < argv.length; index++) {
         const arg = argv[index]
         if (arg === '--root') {
@@ -244,6 +247,10 @@ function parseArgs(argv) {
             index++
             continue
         }
+        if (arg === '--loop' || arg === '--serve-stdio') {
+            loop = true
+            continue
+        }
         if (arg === '--help' || arg === '-h') {
             help = true
             continue
@@ -270,7 +277,8 @@ function parseArgs(argv) {
         pager,
         request,
         message,
-        help
+        help,
+        loop
     }
 }
 
@@ -286,7 +294,7 @@ function isSqlCommand(input) {
  * @param {string} command
  * @param {unknown} result
  */
-function renderSqlResult(command, result) {
+async function renderSqlResult(command, result) {
     switch (command.toUpperCase()) {
         case 'CREATE':
             return 'Successfully created schema'
@@ -294,7 +302,7 @@ function renderSqlResult(command, result) {
             return 'Successfully dropped schema'
         case 'SELECT':
             if (typeof result === 'object' && result !== null && !Array.isArray(result))
-                return renderTableOutput(result, cliRuntimeOptions.tableOptions)
+                return await renderTableOutput(result, cliRuntimeOptions.tableOptions)
             return String(result)
         case 'INSERT':
             return String(result)
@@ -346,7 +354,7 @@ async function runSql(sql, root) {
     const result = await createFylo(root)._sql(sql)
     const operation = sql.match(/^(SELECT|INSERT|UPDATE|DELETE|CREATE|DROP)/i)?.[0]
     if (!operation) throw new Error('Missing SQL operation')
-    return renderSqlResult(operation, result)
+    return await renderSqlResult(operation, result)
 }
 
 /**
@@ -659,7 +667,7 @@ async function runGet(collection, docId, root, worm = false, json = false) {
         printJson(result)
         return undefined
     }
-    return renderTableOutput(result, cliRuntimeOptions.tableOptions)
+    return await renderTableOutput(result, cliRuntimeOptions.tableOptions)
 }
 
 /**
@@ -688,7 +696,7 @@ async function runLatest(collection, docId, root, worm = false, json = false, id
         printJson(result)
         return undefined
     }
-    return renderTableOutput(result, cliRuntimeOptions.tableOptions)
+    return await renderTableOutput(result, cliRuntimeOptions.tableOptions)
 }
 
 /**
@@ -730,7 +738,7 @@ async function runDeleted(collection, root, json = false) {
         return undefined
     }
     if (Object.keys(results).length === 0) return `No deleted documents found for ${collection}`
-    return renderTableOutput(results, cliRuntimeOptions.tableOptions)
+    return await renderTableOutput(results, cliRuntimeOptions.tableOptions)
 }
 
 /**
@@ -841,7 +849,7 @@ async function runSchema(action, collection, input, schemaDir, json = false) {
         printJson(result)
         return undefined
     }
-    return renderTableOutput({ document: result.document }, cliRuntimeOptions.tableOptions)
+    return await renderTableOutput({ document: result.document }, cliRuntimeOptions.tableOptions)
 }
 /**
  * @param {ParsedArgs} args
@@ -986,6 +994,10 @@ async function main(args) {
         return
     }
     if (command === 'exec') {
+        if (args.loop) {
+            await serveStdioLoop({ overrides: { root: args.root, worm: args.worm } })
+            return
+        }
         const ok = await runMachineExec(args.request, { root: args.root, worm: args.worm })
         if (!ok) process.exitCode = 1
         return
