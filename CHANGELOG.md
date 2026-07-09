@@ -1,5 +1,16 @@
 # Changelog
 
+## 26.28.04 - 2026-07-09
+
+### Breaking Changes
+
+- **Single `fylo` CLI command**: removed the documented dotted command surface (`fylo.admin`, `fylo.query`, and `fylo.exec`). Use `fylo inspect`, `fylo rebuild`, `fylo sql`, `fylo exec`, and the other normal subcommands instead.
+
+### Changed
+
+- Package bin metadata now exposes only `fylo`, keeping npm/binary installs aligned with the compiled executable and cross-language machine protocol.
+- README and website examples now use the canonical `fylo <subcommand>` style exclusively.
+
 ## 26.28.02 - 2026-07-07
 
 ### Added
@@ -127,7 +138,7 @@
 
 - **`findDeletedDocs(collection, query?)`**: query soft-deleted documents under `.deleted/`. Supports the new `$deleted` `TimestampQuery` filter alongside the standard query DSL.
 - **`restoreDoc(collection, id)`**: move a tombstoned payload back into `docs/`, restore `0644` permissions, rebuild its indexes, and emit a live insert event. A tombstoned TTID cannot be written directly; it must be restored.
-- **CLI**: `fylo.admin deleted <collection> [--root <path>] [--json]` lists retained tombstones; `fylo.admin restore <collection> <doc-id> [--root <path>] [--json]` restores one.
+- **CLI**: `fylo deleted <collection> [--root <path>] [--json]` lists retained tombstones; `fylo restore <collection> <doc-id> [--root <path>] [--json]` restores one.
 - **`$deleted` timestamp query operator** for filtering tombstones by deletion time.
 - **`DeletedDocsResult` type** mirroring `FindDocsResult` (without `onDelete`, which is meaningless for tombstones).
 - **Storage primitives**: `FyloStorage` gains `move`, `chmod`, `setModifiedTime`, and `metadata` so the deletion path can atomically move + lock + timestamp tombstones without round-tripping through application code.
