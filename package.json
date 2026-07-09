@@ -1,8 +1,11 @@
 {
     "name": "@d31ma/fylo",
-    "version": "26.28.02",
+    "version": "26.28.04",
     "private": true,
     "type": "module",
+    "bin": {
+        "fylo": "src/cli/index.js"
+    },
     "scripts": {
         "vendor:install": "sh ./scripts/install-vendor-bins.sh",
         "build:exe": "mkdir -p ./dist-bin && bun build --compile ./src/cli/index.js --outfile ./dist-bin/fylo",

@@ -791,15 +791,15 @@ At-least-once delivery, consumer-group checkpoints, advisory leases, retry track
 
 ```bash
 # Query
-fylo.query "SELECT * FROM posts WHERE published = true"
-fylo.query sql "SELECT * FROM posts" --page-size 25
+fylo "SELECT * FROM posts WHERE published = true"
+fylo sql "SELECT * FROM posts" --page-size 25
 
 # Admin
-fylo.admin inspect posts --root /mnt/fylo --json
-fylo.admin rebuild posts --root /mnt/fylo
-fylo.admin get posts 4UUB32VGUDW --root /mnt/fylo --json
-fylo.admin deleted posts --root /mnt/fylo --json
-fylo.admin restore posts 4UUB32VGUDW --root /mnt/fylo --json
+fylo inspect posts --root /mnt/fylo --json
+fylo rebuild posts --root /mnt/fylo
+fylo get posts 4UUB32VGUDW --root /mnt/fylo --json
+fylo deleted posts --root /mnt/fylo --json
+fylo restore posts 4UUB32VGUDW --root /mnt/fylo --json
 
 # Document version control
 fylo checkout -b feature/docs --root /mnt/fylo
@@ -813,9 +813,9 @@ fylo merge feature/docs -m "merge feature docs" --root /mnt/fylo
 fylo checkout main --root /mnt/fylo
 
 # Schema
-fylo.admin schema inspect article --schema-dir ./schemas --json
-fylo.admin schema doctor article --schema-dir ./schemas
-fylo.admin schema validate article @article.json --schema-dir ./schemas --json
+fylo schema inspect article --schema-dir ./schemas --json
+fylo schema doctor article --schema-dir ./schemas
+fylo schema validate article @article.json --schema-dir ./schemas --json
 ```
 
 `status` and `diff` compare document payloads only (`docs/` and `.deleted/`),
@@ -863,7 +863,7 @@ the current branch untouched.
 ### Machine Interface (cross-language)
 
 ```bash
-echo '{"op":"inspectCollection","root":"/mnt/fylo","collection":"posts"}' | fylo.exec exec --request -
+echo '{"op":"inspectCollection","root":"/mnt/fylo","collection":"posts"}' | fylo exec --request -
 ```
 
 ```json
@@ -912,7 +912,7 @@ const result = await db.posts.rebuild()
 ```
 
 ```bash
-fylo.admin rebuild posts --root /mnt/fylo --json
+fylo rebuild posts --root /mnt/fylo --json
 ```
 
 Use `db.<collection>.rebuild()` after operator-level recovery or when external

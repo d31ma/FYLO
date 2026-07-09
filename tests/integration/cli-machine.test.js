@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from 'bun:test'
-import { rm } from 'node:fs/promises'
+import { readFile, rm } from 'node:fs/promises'
 import path from 'node:path'
 import { createTestRoot } from '../helpers/root.js'
 
@@ -38,6 +38,21 @@ afterAll(async () => {
 })
 
 describe('CLI machine interface', () => {
+    test('help and package metadata expose only the fylo command', async () => {
+        const repo = process.cwd()
+        const help = await run(['src/cli/index.js', '--help'], repo)
+        expect(help.exitCode).toBe(0)
+        expect(help.stdout).toContain('fylo exec --request')
+        expect(help.stdout).toContain('fylo inspect <collection>')
+        expect(help.stdout).toContain('fylo sql "<SQL>"')
+        expect(help.stdout).not.toContain('fylo.exec')
+        expect(help.stdout).not.toContain('fylo.admin')
+        expect(help.stdout).not.toContain('fylo.query')
+
+        const manifest = JSON.parse(await readFile(path.join(repo, 'package.json'), 'utf8'))
+        expect(manifest.bin).toEqual({ fylo: 'src/cli/index.js' })
+    })
+
     test('exec handles JSON requests from inline payloads and stdin', async () => {
         const repo = process.cwd()
         const root = await createRoot('fylo-machine-')

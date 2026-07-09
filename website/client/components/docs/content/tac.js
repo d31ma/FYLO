@@ -641,9 +641,9 @@ export default class extends Tac {
   cliCode() {
     return [
       '# Query and admin from the shell',
-      'fylo.query "SELECT * FROM posts WHERE published = true"',
-      'fylo.admin inspect posts --root /mnt/fylo --json',
-      'fylo.admin rebuild posts --root /mnt/fylo',
+      'fylo "SELECT * FROM posts WHERE published = true"',
+      'fylo inspect posts --root /mnt/fylo --json',
+      'fylo rebuild posts --root /mnt/fylo',
       '',
       '# Git-like document version control',
       'fylo checkout -b feature/docs --root /mnt/fylo',
