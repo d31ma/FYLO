@@ -127,6 +127,10 @@ jobs:
             - name: Install dependencies
               run: bun install --frozen-lockfile
 
+            - name: Install website dependencies
+              working-directory: website
+              run: bun install --frozen-lockfile
+
             - name: Install CHEX and TTID binaries
               run: |
                   sh ./scripts/install-vendor-bins.sh
