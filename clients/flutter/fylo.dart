@@ -215,7 +215,10 @@ class Fylo {
 
   void _onMessage(String text) {
     final recoveredId = _recoverReplyId(text);
-    if (utf8.encode(text).length > _maxBridgeResponseBytes) {
+    final textLength = text.length;
+    if (textLength > _maxBridgeResponseBytes ||
+        (textLength * 3 > _maxBridgeResponseBytes &&
+            utf8.encode(text).length > _maxBridgeResponseBytes)) {
       if (recoveredId != null) {
         _failCorrelated(
           recoveredId,

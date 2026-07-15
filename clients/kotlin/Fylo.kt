@@ -111,7 +111,12 @@ class Fylo private constructor(
         @JavascriptInterface
         fun onMessage(text: String) {
             val recoveredId = recoverReplyId(text)
-            if (text.toByteArray(Charsets.UTF_8).size > MAX_BRIDGE_RESPONSE_BYTES) {
+            val textLength = text.length
+            if (
+                textLength > MAX_BRIDGE_RESPONSE_BYTES ||
+                    (textLength * 3 > MAX_BRIDGE_RESPONSE_BYTES &&
+                        text.toByteArray(Charsets.UTF_8).size > MAX_BRIDGE_RESPONSE_BYTES)
+            ) {
                 recoveredId?.let {
                     failCorrelated(it, "FYLO bridge response exceeds the 6 MiB limit")
                 }

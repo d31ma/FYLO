@@ -1963,9 +1963,7 @@ function appendGroup(target, source) {
       result[sourceId] = sourceGroup && typeof sourceGroup === "object" && !Array.isArray(sourceGroup) ? copySafeRecord(sourceGroup) : sourceGroup;
       continue;
     }
-    if (!result[sourceId] || typeof result[sourceId] !== "object") {
-      result[sourceId] = safeRecord();
-    }
+    result[sourceId] = result[sourceId] && typeof result[sourceId] === "object" && !Array.isArray(result[sourceId]) ? copySafeRecord(result[sourceId]) : safeRecord();
     for (const [groupId, groupDoc] of Object.entries(sourceGroup)) {
       result[sourceId][groupId] = groupDoc;
     }

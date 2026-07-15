@@ -213,7 +213,10 @@ function decode(encoded) {
     }
     if (!/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)) throw new Error('Invalid base64 request')
     const binary = atob(encoded)
-    const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0))
+    const bytes = new Uint8Array(binary.length)
+    for (let index = 0; index < binary.length; index++) {
+        bytes[index] = binary.charCodeAt(index)
+    }
     return new TextDecoder('utf-8', { fatal: true }).decode(bytes)
 }
 
