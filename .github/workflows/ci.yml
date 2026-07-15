@@ -7,6 +7,7 @@ on:
 
 permissions:
     contents: read
+    packages: read
 
 concurrency:
     group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -129,7 +130,9 @@ jobs:
 
             - name: Install website dependencies
               working-directory: website
-              run: bun install --frozen-lockfile
+              env:
+                  BUN_AUTH_TOKEN: ${{ github.token }}
+              run: bun install --frozen-lockfile --registry=https://npm.pkg.github.com
 
             - name: Install CHEX and TTID binaries
               run: |
