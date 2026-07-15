@@ -109,6 +109,21 @@ impl Fylo {
             esc(id)
         ))
     }
+    pub fn get_meta(&mut self, collection: &str, id: &str) -> std::io::Result<String> {
+        self.checked(format!(
+            r#"{{"op":"getMeta","collection":"{}","id":"{}"}}"#,
+            esc(collection),
+            esc(id)
+        ))
+    }
+    pub fn set_meta(&mut self, collection: &str, id: &str, meta: Json) -> std::io::Result<String> {
+        self.checked(format!(
+            r#"{{"op":"setMeta","collection":"{}","id":"{}","meta":{}}}"#,
+            esc(collection),
+            esc(id),
+            meta.encode()
+        ))
+    }
     pub fn get_latest(&mut self, collection: &str, id: &str) -> std::io::Result<String> {
         self.checked(format!(
             r#"{{"op":"getLatest","collection":"{}","id":"{}"}}"#,
@@ -188,6 +203,12 @@ impl<'a> Collection<'a> {
     }
     pub fn get(&mut self, id: &str) -> std::io::Result<String> {
         self.db.get_doc(&self.name, id)
+    }
+    pub fn get_meta(&mut self, id: &str) -> std::io::Result<String> {
+        self.db.get_meta(&self.name, id)
+    }
+    pub fn set_meta(&mut self, id: &str, meta: Json) -> std::io::Result<String> {
+        self.db.set_meta(&self.name, id, meta)
     }
     pub fn latest(&mut self, id: &str) -> std::io::Result<String> {
         self.db.get_latest(&self.name, id)

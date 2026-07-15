@@ -6,6 +6,7 @@ import { Parser } from '../query/parser.js'
 import { FyloAuthError } from '../security/auth.js'
 import { Cipher } from '../security/cipher.js'
 import { FilesystemEngine } from '../storage/engine.js'
+import { metaMutations } from '../storage/files.js'
 import { emitFyloEvent } from '../observability/events.js'
 import { LocalQueue } from '../queue/local.js'
 import { validateDocId, filterTTIDs } from '../core/doc-id.js'
@@ -58,11 +59,18 @@ import '../core/extensions.js'
 /**
  * @typedef {import('../security/import-guard.js').ImportBulkDataOptions} ImportBulkDataOptions
  * @typedef {Blob | URL} RawFileInput
- * @typedef {Omit<ImportBulkDataOptions, 'limit'> & { key?: string }} RawFilePutOptions
+ * @typedef {Omit<ImportBulkDataOptions, 'limit'> & { key?: string, meta?: Record<string, any> }} RawFilePutOptions
  */
 
 /**
- * @typedef {((data: Record<string, any> | RawFileInput, options?: RawFilePutOptions) => Promise<TTIDValue>) & {
+ * @typedef {PromiseLike<TTIDValue> & {
+ *   catch(onRejected?: (reason: any) => any): Promise<TTIDValue>,
+ *   finally(onFinally?: () => void): Promise<TTIDValue>,
+ *   metadata(record: Record<string, any>): Promise<TTIDValue>
+ * }} MetadataPutOperation
+ * @typedef {((data: Record<string, any> | RawFileInput, options?: RawFilePutOptions) => Promise<TTIDValue>) &
+ *   ((id: TTIDValue, data: Record<string, any> | RawFileInput, options?: RawFilePutOptions) => MetadataPutOperation) &
+ *   ((id: TTIDValue) => { metadata(record: Record<string, any>): Promise<TTIDValue> }) & {
  *   batch(batch: Array<Record<string, any> | RawFileInput>, options?: RawFilePutOptions): Promise<TTIDValue[]>
  * }} CollectionPut
  * @typedef {((id: TTIDValue, patch: Record<string, any>, oldDoc?: Record<TTIDValue, Record<string, any>>) => Promise<TTIDValue>) & {
@@ -74,7 +82,54 @@ import '../core/extensions.js'
  * @typedef {((query?: StoreQuery) => FindDocsResult) & {
  *   deleted(query?: StoreQuery): DeletedDocsResult
  * }} CollectionFind
+ * @typedef {((id: TTIDValue, key: string) => Promise<string>) & {
+ *   prefix(oldPrefix: string, newPrefix: string): Promise<number>
+ * }} CollectionRekey
  */
+
+/**
+ * Defers an explicit-id put until it is awaited or configured with metadata.
+ * That lets `put(id, data).metadata(record)` include metadata in the same
+ * write/commit path while preserving the ordinary `await put(id, data)` form.
+ *
+ * @param {(metadata: Record<string, any> | undefined) => Promise<TTIDValue>} write
+ * @param {(id: TTIDValue, metadata: Record<string, any>) => Promise<TTIDValue>} writeMetadata
+ * @returns {MetadataPutOperation}
+ */
+function metadataPutOperation(write, writeMetadata) {
+    /** @type {Record<string, any> | undefined} */
+    let initialMetadata
+    let hasInitialMetadata = false
+    /** @type {Promise<TTIDValue> | undefined} */
+    let operation
+    const start = () => {
+        operation ??= Promise.resolve().then(() =>
+            write(hasInitialMetadata ? initialMetadata : undefined)
+        )
+        return operation
+    }
+    return {
+        then(onFulfilled, onRejected) {
+            return start().then(onFulfilled, onRejected)
+        },
+        catch(onRejected) {
+            return start().catch(onRejected)
+        },
+        finally(onFinally) {
+            return start().finally(onFinally)
+        },
+        async metadata(record) {
+            metaMutations(record)
+            if (!operation) {
+                initialMetadata = record
+                hasInitialMetadata = true
+                return await start()
+            }
+            const id = await start()
+            return await writeMetadata(id, record)
+        }
+    }
+}
 
 /**
  * Thrown by `collection.put.batch` when one or more documents fail to write.
@@ -184,7 +239,12 @@ export default class Fylo {
             catalogRoot: this.repositoryRoot
         })
         this.sql = this.createSqlTag()
-        this.startup = this.bootstrapCollectionsFromSchemas()
+        this.startup = (async () => {
+            if (await Bun.file(path.join(repositoryRoot, '.fylo-vcs', 'HEAD')).exists()) {
+                await new VersionRepository(repositoryRoot).init()
+            }
+            await this.bootstrapCollectionsFromSchemas()
+        })()
         return this.createFyloProxy()
     }
 
@@ -827,10 +887,25 @@ export default class Fylo {
      */
     async executePutFileDirect(collection, input, options) {
         await this.ready()
-        return await this.executePutFileSourceDirect(
-            collection,
-            await this.prepareFileSource(input, options)
-        )
+        const source = await this.prepareFileSource(input, options)
+        if (options?.meta !== undefined) source.meta = options.meta
+        return await this.executePutFileSourceDirect(collection, source)
+    }
+    /**
+     * @param {string} collection
+     * @param {TTIDValue} id
+     * @param {RawFileInput} input
+     * @param {RawFilePutOptions} [options]
+     * @returns {Promise<TTIDValue>}
+     */
+    async executePutFileAtIdDirect(collection, id, input, options) {
+        await this.ready()
+        await validateDocId(id)
+        const source = await this.prepareFileSource(input, options)
+        if (options?.meta !== undefined) source.meta = options.meta
+        await this.engine.putFile(collection, id, source)
+        await this.autoCommit({ operation: 'put', collection, docId: id })
+        return id
     }
     /**
      * @param {string} collection
@@ -843,11 +918,19 @@ export default class Fylo {
         await this.autoCommit({ operation: 'put', collection, docId: id })
         return id
     }
-    /** @param {string} collection @param {TTIDValue} _id @param {Record<string, any>} doc @param {TTIDValue | undefined} previousId @returns {Promise<TTIDValue>} */
-    async executePutDataDirect(collection, _id, doc, previousId) {
+    /** @param {string} collection @param {TTIDValue} _id @param {Record<string, any>} doc @param {TTIDValue | undefined} previousId @param {Record<string, any>=} meta @returns {Promise<TTIDValue>} */
+    async executePutDataDirect(collection, _id, doc, previousId, meta) {
         await this.ready()
-        if (previousId) await this.engine.replaceDocumentVersion(collection, previousId, _id, doc)
-        else await this.engine.putDocument(collection, _id, doc)
+        if (previousId)
+            await this.engine.replaceDocumentVersion(
+                collection,
+                previousId,
+                _id,
+                doc,
+                undefined,
+                meta
+            )
+        else await this.engine.putDocument(collection, _id, doc, meta)
         await this.autoCommit({
             operation: previousId ? 'patch' : 'put',
             collection,
@@ -855,6 +938,42 @@ export default class Fylo {
         })
         if (Fylo.LOGGING) console.log(`Finished Writing ${_id}`)
         return _id
+    }
+    /**
+     * @param {string} collection
+     * @param {TTIDValue} id
+     * @param {Record<string, any>} record
+     * @returns {Promise<TTIDValue>}
+     */
+    async writeDocMetadata(collection, id, record) {
+        await this.ready()
+        await this.engine.setDocMetaRecord(collection, String(id), record)
+        await this.engine.publishDocumentEvent(collection, {
+            ts: await this.engine.docMetaUpdatedAt(collection, String(id)),
+            action: 'meta',
+            id,
+            meta: await this.engine.listDocMeta(collection, String(id))
+        })
+        await this.autoCommit({ operation: 'meta', collection, docId: id })
+        return id
+    }
+    /**
+     * @param {string} collection
+     * @param {TTIDValue} id
+     * @param {Record<string, any>} record authoritative complete metadata record
+     * @returns {Promise<TTIDValue>}
+     */
+    async replaceDocMetadata(collection, id, record) {
+        await this.ready()
+        await this.engine.replaceDocMetaRecord(collection, String(id), record)
+        await this.engine.publishDocumentEvent(collection, {
+            ts: await this.engine.docMetaUpdatedAt(collection, String(id)),
+            action: 'meta',
+            id,
+            meta: await this.engine.listDocMeta(collection, String(id))
+        })
+        await this.autoCommit({ operation: 'meta', collection, docId: id })
+        return id
     }
     /** @param {string} collection @param {Record<TTIDValue, Record<string, any>>} newDoc @param {Record<TTIDValue, Record<string, any>>} [oldDoc] @returns {Promise<TTIDValue>} */
     async executePatchDocDirect(collection, newDoc, oldDoc = {}) {
@@ -918,6 +1037,8 @@ export class CollectionFacade {
     delete
     /** @type {CollectionFind} */
     find
+    /** @type {CollectionRekey} */
+    rekey
     /**
      * @param {Fylo} fylo
      * @param {string} collection
@@ -927,36 +1048,167 @@ export class CollectionFacade {
         this.collection = collection
 
         const self = this
+        // rekey / rekey.prefix — reassign object keys in place (no byte rewrite).
+        const rekey = /** @type {CollectionRekey} */ (
+            async (id, key) => {
+                await self.fylo.ready()
+                const next = await self.fylo.engine.rekeyFile(self.collection, String(id), key)
+                await self.fylo.autoCommit({
+                    operation: 'rekey',
+                    collection: self.collection,
+                    docId: id
+                })
+                return next
+            }
+        )
+        rekey.prefix = async (oldPrefix, newPrefix) => {
+            for (const prefix of [oldPrefix, newPrefix]) {
+                if (
+                    typeof prefix !== 'string' ||
+                    !prefix.startsWith('/') ||
+                    !prefix.endsWith('/')
+                ) {
+                    throw new Error("Rekey prefixes must start and end with '/'")
+                }
+            }
+            await self.fylo.ready()
+            // One coalesced commit for the whole folder move.
+            return await self.fylo.runCoalesced(async () => {
+                let moved = 0
+                for await (const entry of self
+                    .find({ $ops: [{ key: { $like: `${oldPrefix}%` } }] })
+                    .collect()) {
+                    if (typeof entry !== 'object' || entry === null) continue
+                    for (const [docId, data] of Object.entries(entry)) {
+                        const key = String(data?.key ?? '')
+                        if (!key.startsWith(oldPrefix)) continue
+                        await self.fylo.engine.rekeyFile(
+                            self.collection,
+                            docId,
+                            `${newPrefix}${key.slice(oldPrefix.length)}`
+                        )
+                        await self.fylo.autoCommit({
+                            operation: 'rekey',
+                            collection: self.collection,
+                            docId
+                        })
+                        moved++
+                    }
+                }
+                return moved
+            })
+        }
+        this.rekey = rekey
         // put / put.batch
         const put = /** @type {CollectionPut} */ (
-            async (data, options) => {
-                await self.fylo.ready()
-                await self.fylo.engine.requireCollection(self.collection)
-                const kind = await self.fylo.engine.collectionKind(self.collection)
-                const rawInput = data instanceof Blob || data instanceof URL
-                if (kind === 'file') {
-                    if (!rawInput) {
-                        throw new Error(
-                            `Collection "${self.collection}" is a file collection; put() requires a Blob, File, or URL`
+            /** @type {unknown} */ (
+                function (
+                    /** @type {TTIDValue | Record<string, any> | RawFileInput} */ idOrData,
+                    /** @type {Record<string, any> | RawFileInput | RawFilePutOptions | undefined} */ dataOrOptions,
+                    /** @type {RawFilePutOptions | undefined} */ explicitOptions
+                ) {
+                    if (typeof idOrData === 'string') {
+                        const id = /** @type {TTIDValue} */ (idOrData)
+                        if (arguments.length === 1) {
+                            return {
+                                metadata: async (/** @type {Record<string, any>} */ record) =>
+                                    await self.fylo.writeDocMetadata(self.collection, id, record)
+                            }
+                        }
+                        const data = /** @type {Record<string, any> | RawFileInput} */ (
+                            dataOrOptions
+                        )
+                        return metadataPutOperation(
+                            async (metadata) => {
+                                await self.fylo.ready()
+                                await self.fylo.engine.requireCollection(self.collection)
+                                const kind = await self.fylo.engine.collectionKind(self.collection)
+                                const rawInput = data instanceof Blob || data instanceof URL
+                                const options = {
+                                    ...(explicitOptions ?? {}),
+                                    ...(metadata ? { meta: metadata } : {})
+                                }
+                                if (kind === 'file') {
+                                    if (!rawInput) {
+                                        throw new Error(
+                                            `Collection "${self.collection}" is a file collection; put(id, file) requires a Blob, File, or URL`
+                                        )
+                                    }
+                                    return await self.fylo.executePutFileAtIdDirect(
+                                        self.collection,
+                                        id,
+                                        /** @type {RawFileInput} */ (data),
+                                        options
+                                    )
+                                }
+                                if (
+                                    rawInput ||
+                                    typeof data !== 'object' ||
+                                    data === null ||
+                                    Array.isArray(data)
+                                ) {
+                                    throw new Error(
+                                        `Collection "${self.collection}" is a document collection; put(id, document) requires a record`
+                                    )
+                                }
+                                await self.fylo.loadEncryptionWithEvent(self.collection)
+                                let doc = /** @type {Record<string, any>} */ (data)
+                                if (Fylo.STRICT)
+                                    doc = await validateAgainstHead(self.collection, doc)
+                                return await self.fylo.executePutDataDirect(
+                                    self.collection,
+                                    id,
+                                    doc,
+                                    undefined,
+                                    metadata
+                                )
+                            },
+                            async (writtenId, metadata) =>
+                                await self.fylo.writeDocMetadata(
+                                    self.collection,
+                                    writtenId,
+                                    metadata
+                                )
                         )
                     }
-                    return await self.fylo.executePutFileDirect(
-                        self.collection,
-                        /** @type {RawFileInput} */ (data),
-                        options
-                    )
+                    const data = /** @type {Record<string, any> | RawFileInput} */ (idOrData)
+                    const options = /** @type {RawFilePutOptions | undefined} */ (dataOrOptions)
+                    return (async () => {
+                        await self.fylo.ready()
+                        await self.fylo.engine.requireCollection(self.collection)
+                        const kind = await self.fylo.engine.collectionKind(self.collection)
+                        const rawInput = data instanceof Blob || data instanceof URL
+                        if (kind === 'file') {
+                            if (!rawInput) {
+                                throw new Error(
+                                    `Collection "${self.collection}" is a file collection; put() requires a Blob, File, or URL`
+                                )
+                            }
+                            return await self.fylo.executePutFileDirect(
+                                self.collection,
+                                /** @type {RawFileInput} */ (data),
+                                options
+                            )
+                        }
+                        if (rawInput) {
+                            throw new Error(
+                                `Collection "${self.collection}" is a document collection; put() requires a record`
+                            )
+                        }
+                        const { _id, doc, previousId } = await self.fylo.prepareInsert(
+                            self.collection,
+                            /** @type {Record<string, any>} */ (data)
+                        )
+                        return await self.fylo.executePutDataDirect(
+                            self.collection,
+                            _id,
+                            doc,
+                            previousId,
+                            options?.meta
+                        )
+                    })()
                 }
-                if (rawInput) {
-                    throw new Error(
-                        `Collection "${self.collection}" is a document collection; put() requires a record`
-                    )
-                }
-                const { _id, doc, previousId } = await self.fylo.prepareInsert(
-                    self.collection,
-                    /** @type {Record<string, any>} */ (data)
-                )
-                return await self.fylo.executePutDataDirect(self.collection, _id, doc, previousId)
-            }
+            )
         )
         put.batch = async (batch, options) => {
             await self.fylo.ready()
@@ -994,13 +1246,19 @@ export class CollectionFacade {
         this.put = put
         // patch / patch.many
         const patch = /** @type {CollectionPatch} */ (
-            async (id, patch, oldDoc = {}) => {
-                return await self.fylo.executePatchDocDirect(
-                    self.collection,
-                    { [id]: patch },
-                    oldDoc
-                )
-            }
+            /** @type {unknown} */ (
+                function (
+                    /** @type {TTIDValue} */ id,
+                    /** @type {Record<string, any>} */ patchData,
+                    /** @type {Record<TTIDValue, Record<string, any>>} */ oldDoc = {}
+                ) {
+                    return self.fylo.executePatchDocDirect(
+                        self.collection,
+                        { [id]: patchData },
+                        oldDoc
+                    )
+                }
+            )
         )
         patch.many = async (update) => {
             await self.fylo.loadEncryptionWithEvent(self.collection)
@@ -1117,10 +1375,21 @@ export class CollectionFacade {
                 await validateDocId(id)
                 return await fylo.engine.getFileBytes(collection, id)
             },
-            async stream() {
+            /** @param {{ start?: number, end?: number }} [range] half-open byte range [start, end) */
+            async stream(range) {
                 await fylo.ready()
                 await validateDocId(id)
-                return await fylo.engine.getFileStream(collection, id)
+                return await fylo.engine.getFileStream(collection, id, range)
+            },
+            /**
+             * The document's developer metadata record (`user.fylo.meta.*`
+             * xattrs), decoded to typed values. Write it with
+             * `put(id, data).metadata(record)` or `put(id).metadata(record)`.
+             * @returns {Promise<Record<string, any>>}
+             */
+            async metadata() {
+                await fylo.ready()
+                return await fylo.engine.listDocMeta(collection, String(id))
             },
             async blob() {
                 await fylo.ready()
@@ -1147,6 +1416,32 @@ export class CollectionFacade {
     async restore(id) {
         await this.fylo.ready()
         return await this.fylo.executeRestoreDocDirect(this.collection, id)
+    }
+    /**
+     * One folder level of a file collection: direct-child file manifests plus
+     * immediate subfolder names, derived from object keys.
+     * @param {string} [prefix]
+     * @returns {Promise<{ prefix: string, files: Record<string, Record<string, any>>, folders: string[] }>}
+     */
+    async folder(prefix = '/') {
+        await this.fylo.ready()
+        return await this.fylo.engine.listFolder(this.collection, prefix)
+    }
+    /**
+     * Stamp-ignoring integrity audit: re-hashes every file's full contents
+     * (active and soft-deleted) and reports any whose bytes no longer match
+     * their recorded checksum. Slow by design — run it as a background job.
+     * @returns {Promise<{
+     *   collection: string,
+     *   filesScanned: number,
+     *   verified: number,
+     *   stamped: number,
+     *   corrupt: Array<{ id: string, namespace: 'active' | 'deleted', expected: string, actual: string }>
+     * }>}
+     */
+    async verify() {
+        await this.fylo.ready()
+        return await this.fylo.engine.verifyCollection(this.collection)
     }
     /** @returns {AsyncGenerator<Record<string, any>, void, unknown>} */
     async *export() {
@@ -1356,15 +1651,87 @@ class AuthenticatedCollectionFacade {
 
         // put / put.batch
         const put = /** @type {CollectionPut} */ (
-            async (data) => {
-                await self.authFylo._authorize({
-                    action: 'doc:create',
-                    collection: self.collection,
-                    docId: await self.authFylo.firstDocId(data),
-                    data
-                })
-                return await new CollectionFacade(self.authFylo.fylo, self.collection).put(data)
-            }
+            /** @type {unknown} */ (
+                function (
+                    /** @type {TTIDValue | Record<string, any> | RawFileInput} */ idOrData,
+                    /** @type {Record<string, any> | RawFileInput | RawFilePutOptions | undefined} */ dataOrOptions,
+                    /** @type {RawFilePutOptions | undefined} */ explicitOptions
+                ) {
+                    const facade = new CollectionFacade(self.authFylo.fylo, self.collection)
+                    if (typeof idOrData === 'string') {
+                        const id = /** @type {TTIDValue} */ (idOrData)
+                        const authorizeMetadata = async () => {
+                            const fetched = await self.authFylo.fylo.engine
+                                .getDoc(self.collection, id)
+                                .once()
+                            const existing = fetched[id]
+                            if (!existing) {
+                                throw new FyloAuthError({
+                                    auth: self.authFylo.auth,
+                                    action: 'doc:update',
+                                    collection: self.collection,
+                                    docId: id
+                                })
+                            }
+                            await self.authFylo._authorize({
+                                action: 'doc:update',
+                                collection: self.collection,
+                                docId: id,
+                                existing
+                            })
+                        }
+                        if (arguments.length === 1) {
+                            return {
+                                metadata: async (/** @type {Record<string, any>} */ record) => {
+                                    await authorizeMetadata()
+                                    return await facade.put(id).metadata(record)
+                                }
+                            }
+                        }
+                        const data = /** @type {Record<string, any> | RawFileInput} */ (
+                            dataOrOptions
+                        )
+                        const rawInput = data instanceof Blob || data instanceof URL
+                        return metadataPutOperation(
+                            async (metadata) => {
+                                const fetched = await self.authFylo.fylo.engine
+                                    .getDoc(self.collection, id)
+                                    .once()
+                                const existing = fetched[id]
+                                await self.authFylo._authorize({
+                                    action: existing ? 'doc:update' : 'doc:create',
+                                    collection: self.collection,
+                                    docId: id,
+                                    data: rawInput ? undefined : data,
+                                    existing
+                                })
+                                const operation = facade.put(id, data, explicitOptions)
+                                return metadata === undefined
+                                    ? await operation
+                                    : await operation.metadata(metadata)
+                            },
+                            async (writtenId, metadata) => {
+                                await authorizeMetadata()
+                                return await facade.put(writtenId).metadata(metadata)
+                            }
+                        )
+                    }
+                    const data = /** @type {Record<string, any> | RawFileInput} */ (idOrData)
+                    const rawInput = data instanceof Blob || data instanceof URL
+                    return (async () => {
+                        await self.authFylo._authorize({
+                            action: 'doc:create',
+                            collection: self.collection,
+                            docId: rawInput ? undefined : await self.authFylo.firstDocId(data),
+                            data: rawInput ? undefined : data
+                        })
+                        return await facade.put(
+                            data,
+                            /** @type {RawFilePutOptions | undefined} */ (dataOrOptions)
+                        )
+                    })()
+                }
+            )
         )
         put.batch = async (batch) => {
             for (const data of batch)
@@ -1632,6 +1999,18 @@ class AuthenticatedCollectionFacade {
                 const doc = /** @type {Record<string, any>} */ (result[id])
                 if (!(await self.authFylo._isVisible(self.collection, doc))) return {}
                 return result
+            },
+            async metadata() {
+                await validateDocId(id)
+                await self.authFylo._authorize({
+                    action: 'doc:read',
+                    collection: self.collection,
+                    docId: id
+                })
+                const result = await source.once()
+                const doc = /** @type {Record<string, any> | undefined} */ (result[id])
+                if (!doc || !(await self.authFylo._isVisible(self.collection, doc))) return {}
+                return await self.authFylo.fylo.engine.listDocMeta(self.collection, String(id))
             },
             async *onDelete() {
                 await validateDocId(id)

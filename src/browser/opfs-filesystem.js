@@ -141,6 +141,12 @@ export class OpfsFilesystem {
         return file.lastModified
     }
 
+    /** @param {string} path @returns {Promise<number>} */
+    async size(path) {
+        const file = await (await this.fileHandle(path, false)).getFile()
+        return file.size
+    }
+
     /** @param {string} path @param {{ recursive?: boolean }} [options] @returns {Promise<void>} */
     async mkdir(path, options = {}) {
         await this.directoryHandle(path, options.recursive === true)

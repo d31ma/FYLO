@@ -15,7 +15,12 @@ export default class extends Tac {
     {
       key: 'languages',
       q: 'Which languages can I use FYLO from?',
-      a: 'Any language that can spawn a process. FYLO ships as a single binary that speaks a JSON machine protocol over stdin/stdout; drop-in shims are provided for Python, Ruby, Node/TypeScript, PHP, Go, Rust, C#, Java, and Dart, and the protocol is tested in CI against even more. For platforms that can\'t spawn the binary there are local-first clients that embed the engine and sync — the browser bundle, native iOS (Swift) and Android (Kotlin) clients, and a Flutter client. The HTTP gateway adds a REST boundary for anything that can speak HTTP.',
+      a: 'Any language that can spawn a process. FYLO ships as a single binary that speaks a JSON machine protocol over stdin/stdout; drop-in shims are provided for Python, Ruby, Node/TypeScript, PHP, Go, Rust, C#, Java, and Dart, and the protocol is tested in CI against even more. For platforms that can\'t spawn the binary there are local-only clients that embed the engine on-device — the browser bundle, native iOS (Swift) and Android (Kotlin) clients, and a Flutter client.',
+    },
+    {
+      key: 'explorer',
+      q: 'Can I browse a FYLO database visually?',
+      a: "Yes — Fylo Explorer is a browser UI over a real FYLO root on your disk, opened through the File System Access API. Pick the folder once and browse collections, inspect documents, and filter with SQL WHERE expressions (role = 'admin' AND age >= 30). It is read-only by default — the engine rebuilds indexes into memory, never touching the folder — with opt-in writes that go through the engine. Chromium-only, since Firefox and Safari do not implement real-folder access.",
     },
     {
       key: 'replication',

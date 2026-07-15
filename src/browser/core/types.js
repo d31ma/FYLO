@@ -34,11 +34,12 @@
 /**
  * @typedef {object} BrowserEvent
  * @property {number} ts
- * @property {'insert' | 'delete'} action
+ * @property {'insert' | 'delete' | 'meta'} action
  * @property {TTID} id
  * @property {Record<string, any>=} doc
  * @property {number=} createdAt
  * @property {number=} updatedAt
+ * @property {Record<string, any>=} meta
  */
 
 /**
@@ -53,7 +54,7 @@
  */
 
 /**
- * @typedef {'executeSQL' | 'createCollection' | 'dropCollection' | 'inspectCollection' | 'rebuildCollection' | 'getDoc' | 'getLatest' | 'findDocs' | 'findDeletedDocs' | 'restoreDoc' | 'joinDocs' | 'putData' | 'batchPutData' | 'patchDoc' | 'patchDocs' | 'delDoc' | 'delDocs'} BrowserOperation
+ * @typedef {'executeSQL' | 'createCollection' | 'dropCollection' | 'inspectCollection' | 'rebuildCollection' | 'getDoc' | 'getLatest' | 'getMeta' | 'setMeta' | 'findDocs' | 'findDeletedDocs' | 'restoreDoc' | 'joinDocs' | 'putData' | 'batchPutData' | 'patchDoc' | 'patchDocs' | 'delDoc' | 'delDocs'} BrowserOperation
  */
 
 /**
@@ -67,6 +68,7 @@
  * @property {StoreQuery=} query
  * @property {StoreJoin=} join
  * @property {Record<string, any>=} data
+ * @property {Record<string, any>=} meta
  * @property {Record<string, any>[]=} batch
  * @property {Record<TTID, Record<string, any>>=} newDoc
  * @property {Record<TTID, Record<string, any>>=} oldDoc

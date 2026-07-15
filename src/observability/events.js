@@ -12,6 +12,8 @@
  *   | { type: 'import.blocked', reason: 'protocol' | 'host' | 'private-network' | 'redirect', url: string, detail?: string }
  *   | { type: 'cipher.configured', collection: string }
  *   | { type: 'index.rebuilt', collection: string, docsScanned: number, indexedDocs: number, worm: boolean }
+ *   | { type: 'file.key-repaired', collection: string, docId: string, key: string }
+ *   | { type: 'file.checksum-mismatch', collection: string, docId: string, expected: string, actual: string }
  *   | { type: 'lock.takeover', lockPath: string, newOwner: string, previousOwner?: string }
  *   | { type: 'sync.failed', collection: string, docId: string, operation: string, path: string, detail: string }
  * )} FyloEvent

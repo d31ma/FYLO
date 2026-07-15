@@ -73,6 +73,13 @@ describe('NO-SQL', async () => {
         }
         expect(Object.keys(results).length).toBeGreaterThan(0)
     })
+    test('appendGroup does not mutate an existing nested group', () => {
+        const target = { source: { existing: 'value' } }
+        const result = Object.appendGroup(target, { source: { added: 'value' } })
+
+        expect(result.source).toEqual({ existing: 'value', added: 'value' })
+        expect(target).toEqual({ source: { existing: 'value' } })
+    })
     test('SELECT JOIN', async () => {
         const results = await fylo.join({
             $leftCollection: ALBUMS,

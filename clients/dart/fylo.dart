@@ -97,6 +97,10 @@ class Fylo {
       _op('batchPutData', {'collection': collection, 'batch': batch});
   Future<dynamic> getDoc(String collection, String id) =>
       _op('getDoc', {'collection': collection, 'id': id});
+  Future<dynamic> getMeta(String collection, String id) =>
+      _op('getMeta', {'collection': collection, 'id': id});
+  Future<dynamic> setMeta(String collection, String id, Map<String, dynamic> meta) =>
+      _op('setMeta', {'collection': collection, 'id': id, 'meta': meta});
   Future<dynamic> getLatest(String collection, String id) =>
       _op('getLatest', {'collection': collection, 'id': id});
   Future<dynamic> patchDoc(String collection, String id, Map<String, dynamic> newDoc) =>
@@ -150,6 +154,8 @@ class FyloCollection {
   Future<dynamic> rebuild() => _db.rebuildCollection(_name);
   Future<dynamic> put(Map<String, dynamic> data) => _db.putData(_name, data);
   Future<dynamic> get(String id) => _db.getDoc(_name, id);
+  Future<dynamic> getMeta(String id) => _db.getMeta(_name, id);
+  Future<dynamic> setMeta(String id, Map<String, dynamic> meta) => _db.setMeta(_name, id, meta);
   Future<dynamic> latest(String id) => _db.getLatest(_name, id);
   Future<dynamic> patch(String id, Map<String, dynamic> newDoc) =>
       _db.patchDoc(_name, id, newDoc);

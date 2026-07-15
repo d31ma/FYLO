@@ -1,0 +1,19 @@
+<style>
+  /* the shell renders header + home content + footer; the Explorer is a
+     full-screen app with its own bar (site nav folded in), so hide all three. */
+  #home-content {
+    display: none;
+  }
+  .site-header,
+  .site-footer {
+    display: none !important;
+  }
+</style>
+
+<div class="explorer-route">
+  <div class="explorer-shell">
+    <explorer-app />
+  </div>
+</div>
+
+<slot />

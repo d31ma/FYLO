@@ -13,6 +13,33 @@ concurrency:
     cancel-in-progress: false
 
 jobs:
+    windows-storage:
+        name: Windows storage smoke
+        runs-on: windows-latest
+        timeout-minutes: 15
+
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v6
+
+            - name: Setup Bun
+              uses: oven-sh/setup-bun@v2
+              with:
+                  bun-version: latest
+
+            - name: Install dependencies
+              run: bun install --frozen-lockfile
+
+            - name: Run xattr adapter tests
+              run: bun test tests/integration/xattr.test.js --timeout 120000 --parallel=1
+
+            - name: Build and start Windows executable
+              shell: pwsh
+              run: |
+                  New-Item -ItemType Directory -Force dist-bin | Out-Null
+                  bun build --compile ./src/cli/index.js --outfile ./dist-bin/fylo.exe
+                  ./dist-bin/fylo.exe --help | Out-Null
+
     test:
         name: Test before release
         runs-on: ubuntu-latest
@@ -155,44 +182,23 @@ jobs:
                     echo "exists=false" >> "$GITHUB_OUTPUT"
                   fi
 
-    github-release:
-        name: Create GitHub release
+    release-assets:
+        name: Build release assets
         runs-on: ubuntu-latest
-        needs: [test, binary-interop, version]
+        needs: [test, binary-interop, windows-storage, version]
         if: >-
             ${{
               needs.test.result == 'success' &&
               needs.binary-interop.result == 'success' &&
+              needs.windows-storage.result == 'success' &&
               needs.version.result == 'success' &&
               needs.version.outputs.tag_exists == 'false'
             }}
         timeout-minutes: 10
-        permissions:
-            contents: write
 
         steps:
             - name: Checkout
               uses: actions/checkout@v6
-              with:
-                  fetch-depth: 0
-
-            - name: Create and push version tag
-              env:
-                  VERSION: ${{ needs.version.outputs.version }}
-              run: |
-                  git config user.name "github-actions[bot]"
-                  git config user.email "github-actions[bot]@users.noreply.github.com"
-                  git tag -a "v$VERSION" -m "v$VERSION"
-                  git push origin "v$VERSION"
-
-            - name: Create GitHub release
-              env:
-                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-                  VERSION: ${{ needs.version.outputs.version }}
-              run: |
-                  gh release create "v$VERSION" \
-                    --title "v$VERSION" \
-                    --generate-notes
 
             - name: Setup Bun
               uses: oven-sh/setup-bun@v2
@@ -205,10 +211,10 @@ jobs:
             - name: Build cross-platform binaries
               run: |
                   set -euo pipefail
-                  mkdir -p dist-bin
+                  mkdir -p release-assets
                   build() {
                     echo "::group::$2"
-                    bun build --compile --target="$1" ./src/cli/index.js --outfile "dist-bin/$2"
+                    bun build --compile --target="$1" ./src/cli/index.js --outfile "release-assets/$2"
                     echo "::endgroup::"
                   }
                   build bun-linux-x64     fylo-linux-x64
@@ -216,24 +222,193 @@ jobs:
                   build bun-darwin-x64    fylo-macos-x64
                   build bun-darwin-arm64  fylo-macos-arm64
                   build bun-windows-x64   fylo-windows-x64.exe
-                  cd dist-bin && sha256sum fylo-* > SHA256SUMS
 
             - name: Build local-first web bundle
               run: bun run build:web
 
             - name: Package language clients
-              run: tar -czf fylo-clients.tar.gz clients
+              run: tar -czf release-assets/fylo-clients.tar.gz clients
 
-            - name: Upload binaries, web bundle, clients, and installers to release
+            - name: Stage web bundle and installers
+              run: |
+                  set -euo pipefail
+                  cp dist-web/fylo.mjs release-assets/fylo-web.mjs
+                  cp website/client/shared/assets/install.sh release-assets/install.sh
+                  cp website/client/shared/assets/install.ps1 release-assets/install.ps1
+
+            - name: Checksum and verify release assets
+              working-directory: release-assets
+              run: |
+                  set -euo pipefail
+                  expected=$(cat <<'EOF'
+                  fylo-clients.tar.gz
+                  fylo-linux-arm64
+                  fylo-linux-x64
+                  fylo-macos-arm64
+                  fylo-macos-x64
+                  fylo-web.mjs
+                  fylo-windows-x64.exe
+                  install.ps1
+                  install.sh
+                  EOF
+                  )
+                  actual=$(find . -maxdepth 1 -type f -print | sed 's|^./||' | sort)
+                  diff -u <(printf '%s\n' "$expected") <(printf '%s\n' "$actual")
+                  while IFS= read -r asset; do
+                    sha256sum "$asset"
+                  done <<<"$expected" > SHA256SUMS
+                  sha256sum --check SHA256SUMS
+
+            - name: Upload verified release assets
+              uses: actions/upload-artifact@v4
+              with:
+                  name: release-assets-${{ github.sha }}
+                  path: release-assets/
+                  if-no-files-found: error
+                  compression-level: 0
+                  retention-days: 1
+
+    github-release:
+        name: Publish GitHub release
+        runs-on: ubuntu-latest
+        needs: [release-assets, version]
+        if: >-
+            ${{
+              needs.release-assets.result == 'success' &&
+              needs.version.result == 'success' &&
+              needs.version.outputs.tag_exists == 'false'
+            }}
+        timeout-minutes: 10
+        permissions:
+            contents: write
+
+        steps:
+            - name: Checkout release commit
+              uses: actions/checkout@v6
+              with:
+                  fetch-depth: 0
+
+            - name: Download verified release assets
+              uses: actions/download-artifact@v5
+              with:
+                  name: release-assets-${{ github.sha }}
+                  path: release-assets
+
+            - name: Verify release source and downloaded assets
               env:
                   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-                  VERSION: ${{ needs.version.outputs.version }}
+                  TAG: v${{ needs.version.outputs.version }}
               run: |
-                  cp dist-web/fylo.mjs dist-web/fylo-web.mjs
-                  gh release upload "v$VERSION" \
-                    dist-bin/fylo-* dist-bin/SHA256SUMS \
-                    dist-web/fylo-web.mjs \
-                    fylo-clients.tar.gz \
-                    website/client/shared/assets/install.sh \
-                    website/client/shared/assets/install.ps1 \
-                    --clobber
+                  set -euo pipefail
+                  default_branch=$(gh api "repos/$GITHUB_REPOSITORY" --jq .default_branch)
+                  if [[ "$GITHUB_REF" != "refs/heads/$default_branch" ]]; then
+                    echo "Release must run from the default branch ($default_branch), not $GITHUB_REF." >&2
+                    exit 1
+                  fi
+
+                  git fetch --no-tags origin "$default_branch"
+                  if ! git merge-base --is-ancestor "$GITHUB_SHA" "origin/$default_branch"; then
+                    echo "$GITHUB_SHA is not merged into origin/$default_branch." >&2
+                    exit 1
+                  fi
+                  if [[ "$(git rev-parse HEAD)" != "$GITHUB_SHA" ]]; then
+                    echo "Checkout does not match the workflow commit $GITHUB_SHA." >&2
+                    exit 1
+                  fi
+                  if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+                    echo "Tag $TAG already exists; refusing to move or replace it." >&2
+                    exit 1
+                  fi
+                  if gh release view "$TAG" >/dev/null 2>&1; then
+                    echo "Release $TAG already exists; refusing to replace it." >&2
+                    exit 1
+                  fi
+
+                  cd release-assets
+                  sha256sum --check SHA256SUMS
+
+            - name: Create, verify, and publish release
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  TAG: v${{ needs.version.outputs.version }}
+              run: |
+                  set -euo pipefail
+
+                  marker="<!-- fylo-release-workflow:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT} -->"
+                  published=false
+
+                  cleanup_draft() {
+                    status=$?
+                    trap - EXIT
+                    if [[ "$published" != true ]]; then
+                      release=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" 2>/dev/null || true)
+                      if [[ -n "$release" ]] && jq -e \
+                        --arg marker "$marker" \
+                        '.draft == true and ((.body // "") | contains($marker))' \
+                        <<<"$release" >/dev/null; then
+                        echo "Cleaning up unpublished workflow draft $TAG."
+                        cleaned=false
+                        for _ in {1..3}; do
+                          if gh release delete "$TAG" --cleanup-tag --yes; then
+                            cleaned=true
+                            break
+                          fi
+                          sleep 2
+                        done
+                        if [[ "$cleaned" != true ]]; then
+                          echo "::error::Failed to clean up draft release $TAG"
+                        fi
+                      fi
+                    fi
+                    exit "$status"
+                  }
+                  trap cleanup_draft EXIT
+
+                  mapfile -t assets < <(find release-assets -maxdepth 1 -type f -print | sort)
+                  gh release create "$TAG" "${assets[@]}" \
+                    --draft \
+                    --target "$GITHUB_SHA" \
+                    --title "$TAG" \
+                    --generate-notes \
+                    --notes "$marker"
+
+                  release=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG")
+                  jq -e \
+                    --arg marker "$marker" \
+                    --arg target "$GITHUB_SHA" \
+                    '.draft == true and .target_commitish == $target and ((.body // "") | contains($marker))' \
+                    <<<"$release" >/dev/null
+
+                  expected=$(find release-assets -maxdepth 1 -type f -print | sed 's|.*/||' | sort)
+                  actual=$(jq -r '.assets[].name' <<<"$release" | sort)
+                  diff -u <(printf '%s\n' "$expected") <(printf '%s\n' "$actual")
+                  jq -e 'all(.assets[]; .size > 0)' <<<"$release" >/dev/null
+                  while IFS= read -r asset; do
+                    local_digest=$(sha256sum "release-assets/$asset" | awk '{print $1}')
+                    remote_digest=$(jq -er \
+                      --arg asset "$asset" \
+                      '.assets[] | select(.name == $asset) | .digest' \
+                      <<<"$release")
+                    if [[ "$remote_digest" != "sha256:$local_digest" ]]; then
+                      echo "Uploaded digest mismatch for $asset." >&2
+                      exit 1
+                    fi
+                  done <<<"$expected"
+
+                  # Publishing the verified draft is the first operation that makes
+                  # the missing tag visible. GitHub creates it at --target above.
+                  gh release edit "$TAG" --draft=false
+                  published=true
+
+                  release=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG")
+                  jq -e '.draft == false' <<<"$release" >/dev/null
+                  tag_sha=''
+                  for _ in {1..5}; do
+                    tag_sha=$(git ls-remote origin "refs/tags/$TAG" | awk '{print $1}')
+                    [[ -n "$tag_sha" ]] && break
+                    sleep 2
+                  done
+                  if [[ "$tag_sha" != "$GITHUB_SHA" ]]; then
+                    echo "Tag $TAG resolves to $tag_sha, expected $GITHUB_SHA." >&2
+                    exit 1
+                  fi

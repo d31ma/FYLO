@@ -68,6 +68,29 @@ describe('strict WORM mode', () => {
         expect(stored[id].title).toBe('Locked')
     })
 
+    test('explicitly rejects metadata and rekey mutations', async () => {
+        const documentId = await fylo[COLLECTION].put({ title: 'Metadata stays fixed' })
+        await expect(
+            fylo[COLLECTION].put(documentId).metadata({ owner: 'changed' })
+        ).rejects.toThrow('Metadata update is not allowed in WORM mode')
+        expect(await fylo[COLLECTION].get(documentId).metadata()).toEqual({})
+
+        const files = 'worm-files'
+        await fylo[files].create({ kind: 'file' })
+        const fileId = await fylo[files].put(new File(['fixed'], 'fixed.txt'), {
+            key: '/fixed.txt',
+            meta: { retention: 'locked' }
+        })
+        await expect(fylo[files].put(fileId).metadata({ retention: 'changed' })).rejects.toThrow(
+            'Metadata update is not allowed in WORM mode'
+        )
+        await expect(fylo[files].rekey(fileId, '/moved.txt')).rejects.toThrow(
+            'Rekey is not allowed in WORM mode'
+        )
+        expect(await fylo[files].get(fileId).metadata()).toEqual({ retention: 'locked' })
+        expect((await fylo[files].get(fileId).once())[fileId].key).toBe('/fixed.txt')
+    })
+
     test('fails closed when legacy version-history metadata is present', async () => {
         const legacyCollection = 'legacy-worm'
         const headRoot = path.join(root, '.collections', legacyCollection, 'heads')

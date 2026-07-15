@@ -114,7 +114,7 @@
             FYLO does not authenticate — your app verifies identity, FYLO enforces policy. Fields
             listed in a schema's <code>$encrypted</code> array are stored with AES-GCM; equality
             lookups use HMAC blind indexes. Row-level security rules and WORM (write-once) mode are
-            declared on disk and over the serve flags, so they hold for every client.
+            declared on disk, so they hold for every client.
           </p>
           <pre class="code-block"><code>{securityCode()}</code></pre>
         </article>
@@ -122,28 +122,12 @@
 
       <case default>
         <article class="docs-panel">
-          <h2>HTTP gateway &amp; CLI</h2>
+          <h2>CLI &amp; version control</h2>
           <p>
-            <code>fylo serve</code> exposes a PostgREST-inspired REST boundary over a local root —
-            the option for anything that can't spawn the binary directly. Every non-OPTIONS request
-            requires a Bearer token unless anonymous access is explicitly allowed.
+            The <code>fylo</code> binary is the only surface: query and administer a local root
+            from the shell, and drive git-like document version control. There is no server and
+            no network protocol — every client owns its database directly.
           </p>
-          <div class="w-table-wrap w-table-wrap--responsive-scroll">
-            <table class="w-table">
-              <thead>
-                <tr><th>Route</th><th>Purpose</th></tr>
-              </thead>
-              <tbody>
-                <loop :for="let route of gatewayRoutes">
-                  <tr>
-                    <td data-label="Route"><code>{route.path}</code></td>
-                    <td data-label="Purpose">{route.purpose}</td>
-                  </tr>
-                </loop>
-              </tbody>
-            </table>
-          </div>
-          <h3>CLI &amp; version control</h3>
           <pre class="code-block"><code>{cliCode()}</code></pre>
         </article>
       </case>

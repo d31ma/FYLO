@@ -1,0 +1,25 @@
+<logic :if="rows.length === 0">
+    <p class="explorer-hint">{empty}</p>
+</logic>
+<ul class="explorer-versions">
+    <loop :for="let v of rows">
+        <li class="explorer-version">
+            <div class="explorer-version-info">
+                <span class="explorer-version-msg">{v.message || 'version'}</span>
+                <span class="explorer-version-at">{v.at}</span>
+            </div>
+            <logic :if="v.current">
+                <span class="explorer-version-cur">current</span>
+            </logic>
+            <logic :if="!v.current && writable">
+                <button
+                    type="button"
+                    class="w-btn w-btn-outlined w-btn--sm"
+                    on:click="restore(v)"
+                >
+                    Restore
+                </button>
+            </logic>
+        </li>
+    </loop>
+</ul>

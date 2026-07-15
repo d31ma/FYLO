@@ -185,6 +185,14 @@ export class MemoryFilesystem {
         return new Uint8Array(bytes)
     }
 
+    /** @param {string} path @returns {Promise<number>} */
+    async size(path) {
+        const key = this.key(path)
+        const bytes = this.files.get(key)
+        if (!bytes) throw notFound(path)
+        return bytes.byteLength
+    }
+
     /**
      * @param {string} key
      * @returns {void}

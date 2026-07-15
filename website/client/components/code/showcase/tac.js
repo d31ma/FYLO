@@ -252,11 +252,7 @@ const SCAFFOLD = {
     close: ['}'],
   },
   swift: {
-    open: [
-      'import Fylo',
-      '',
-      'let db = try await Fylo(serverUrl: "https://api.example.com", token: token)',
-    ],
+    open: ['import Fylo', '', 'let db = try await Fylo()'],
     indent: '',
     close: [],
   },
@@ -264,7 +260,7 @@ const SCAFFOLD = {
     open: [
       '// inside a coroutine (e.g. lifecycleScope.launch { … })',
       '',
-      'val db = Fylo.open(context, serverUrl = "https://api.example.com", token = token)',
+      'val db = Fylo.open(context)',
     ],
     indent: '',
     close: [],
@@ -279,7 +275,7 @@ const SCAFFOLD = {
       "import 'fylo.dart';",
       '',
       '// in an async context (e.g. initState / an async method)',
-      "final db = await Fylo.open(serverUrl: 'https://api.example.com', token: token);",
+      'final db = await Fylo.open();',
     ],
     indent: '',
     close: [],
@@ -313,7 +309,6 @@ export default class extends Tac {
     { key: 'start', label: 'Quick start', code: true },
     { key: 'query', label: 'Query', code: true },
     { key: 'sql', label: 'SQL', code: true },
-    { key: 'gateway', label: 'HTTP gateway', code: false },
   ]
 
   show(key) {
@@ -336,14 +331,13 @@ export default class extends Tac {
     return cleaned || 'users'
   }
 
-  // JS (Browser): the local-first OPFS client, not a binary shim.
+  // JS (Browser): the local-only OPFS client, not a binary shim.
   webScaffold(body) {
     return [
-      "import { createSyncedClient } from './fylo-web.mjs'",
+      "import { createBrowserClient } from './fylo-web.mjs'",
       '',
-      "const db = createSyncedClient({ serverUrl: 'https://api.example.com', token })",
+      'const db = createBrowserClient()',
       'await db.ready()',
-      'await db.sync.start()',
       '',
       ...body,
     ].join('\n')
@@ -468,25 +462,12 @@ export default class extends Tac {
     }
   }
 
-  gatewayCode() {
-    const c = this.safeCollection()
-    return [
-      '# PostgREST-inspired HTTP boundary over a local FYLO root',
-      'fylo serve --root /mnt/fylo --host 0.0.0.0 --port 8787',
-      '',
-      'curl -H "Authorization: Bearer $FYLO_SERVER_TOKEN" \\',
-      `  "http://localhost:8787/v1/${c}?role=eq.admin&age=gte.30"`,
-    ].join('\n')
-  }
-
   currentCode() {
     switch (this.$tab) {
       case 'query':
         return this.queryCode()
       case 'sql':
         return this.sqlCode()
-      case 'gateway':
-        return this.gatewayCode()
       default:
         return this.quickstartCode()
     }

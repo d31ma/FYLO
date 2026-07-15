@@ -9,9 +9,9 @@ export { FyloBatchWriteError } from './api/fylo.js'
 
 export { CollectionNotFoundError } from './core/collection.js'
 export { LocalQueue, QueueMessageContext, consume, publish } from './queue/local.js'
-export { createFyloHttpHandler, serveFyloHttp } from './server/http.js'
 export { FyloAuthError } from './security/auth.js'
 export { FyloSyncError } from './replication/sync.js'
+export { getXattr, setXattr, listXattr, removeXattr } from './storage/xattr.js'
 
 const globalScope = /** @type {typeof globalThis & { Fylo?: typeof Fylo }} */ (globalThis)
 globalScope.Fylo ??= Fylo

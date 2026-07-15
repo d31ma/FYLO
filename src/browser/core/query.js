@@ -1,3 +1,6 @@
+import { matchesLike } from '../../query/like.js'
+import { copySafeRecord, safeRecord } from '../../query/safe-record.js'
+
 /**
  * Browser-safe query evaluator for the FYLO browser core.
  *
@@ -32,10 +35,10 @@ export class BrowserQueryEngine {
         return fieldPath
             .replaceAll('/', '.')
             .split('.')
-            .reduce(
-                (acc, key) => (acc === undefined || acc === null ? undefined : acc[key]),
-                target
-            )
+            .reduce((acc, key) => {
+                if (acc === undefined || acc === null || typeof acc !== 'object') return undefined
+                return Object.hasOwn(acc, key) ? acc[key] : undefined
+            }, target)
     }
 
     /** @param {string} fieldPath @returns {string} */
@@ -96,12 +99,6 @@ export class BrowserQueryEngine {
         return true
     }
 
-    /** @param {string} pattern @returns {RegExp} */
-    likeToRegex(pattern) {
-        const escaped = pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replaceAll('%', '.*')
-        return new RegExp(`^${escaped}$`)
-    }
-
     /**
      * @param {unknown} value
      * @param {Operand} operand
@@ -150,7 +147,7 @@ export class BrowserQueryEngine {
      * @returns {boolean}
      */
     matchesLike(value, pattern) {
-        return this.likeToRegex(pattern).test(value)
+        return matchesLike(value, pattern)
     }
 
     /**
@@ -269,7 +266,7 @@ export class BrowserQueryEngine {
         if (!this.matchesTimestamp(docId, query, timestamps)) return false
         if (!query?.$ops || query.$ops.length === 0) return true
         return query.$ops.some((operation) => {
-            for (const field in operation) {
+            for (const field of Object.keys(operation)) {
                 const value = this.getValueByPath(doc, field)
                 const operand = operation[field]
                 if (!operand || !this.matchesOperand(value, operand)) return false
@@ -280,8 +277,8 @@ export class BrowserQueryEngine {
 
     /** @param {string[]} selection @param {Record<string, any>} data @returns {Record<string, any>} */
     selectValues(selection, data) {
-        const copy = { ...data }
-        for (const field in copy) {
+        const copy = copySafeRecord(data)
+        for (const field of Object.keys(copy)) {
             if (!selection.includes(field)) delete copy[field]
         }
         return copy
@@ -289,9 +286,9 @@ export class BrowserQueryEngine {
 
     /** @param {Record<string, string>} rename @param {Record<string, any>} data @returns {Record<string, any>} */
     renameFields(rename, data) {
-        const copy = { ...data }
-        for (const field in copy) {
-            if (rename[field]) {
+        const copy = copySafeRecord(data)
+        for (const field of Object.keys(copy)) {
+            if (Object.hasOwn(rename, field) && typeof rename[field] === 'string') {
                 copy[rename[field]] = copy[field]
                 delete copy[field]
             }
@@ -306,7 +303,7 @@ export class BrowserQueryEngine {
      */
     processDoc(doc, query) {
         if (Object.keys(doc).length === 0) return
-        const next = { ...doc }
+        const next = copySafeRecord(doc)
         for (let [_id, data] of Object.entries(next)) {
             if (query?.$select?.length) data = this.selectValues(query.$select, data)
             if (query?.$rename) data = this.renameFields(query.$rename, data)
@@ -314,19 +311,23 @@ export class BrowserQueryEngine {
         }
         if (query?.$groupby) {
             /** @type {Record<string, Record<TTIDValue, Record<string, any>>>} */
-            const docGroup = {}
+            const docGroup = safeRecord()
             for (const [id, data] of Object.entries(next)) {
                 const groupValue = data[query.$groupby]
-                if (groupValue) {
-                    const groupData = { ...data }
+                if (groupValue !== undefined && groupValue !== null) {
+                    const groupData = copySafeRecord(data)
                     delete groupData[query.$groupby]
-                    docGroup[groupValue] = { [id]: groupData }
+                    const group = safeRecord()
+                    group[id] = groupData
+                    docGroup[String(groupValue)] = group
                 }
             }
             if (query.$onlyIds) {
                 /** @type {Record<string, TTIDValue[]>} */
-                const groupedIds = {}
-                for (const group in docGroup) groupedIds[group] = Object.keys(docGroup[group])
+                const groupedIds = safeRecord()
+                for (const group of Object.keys(docGroup)) {
+                    groupedIds[group] = Object.keys(docGroup[group])
+                }
                 return groupedIds
             }
             return docGroup

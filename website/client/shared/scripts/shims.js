@@ -3,8 +3,8 @@
 // Two kinds of clients:
 //   - Thin shims: spawn the `fylo` binary and speak the machine protocol over
 //     stdin/stdout. One drop-in file per language (clients/<lang>/).
-//   - Local-first clients: embed FYLO's engine on-device (OPFS/WebView) and sync
-//     to a backend over REST/SSE. The browser bundle and the iOS/Android clients.
+//   - Local-only clients: embed FYLO's engine on-device (OPFS/WebView) — each
+//     device owns its store. The browser bundle and the iOS/Android clients.
 export const SHIM_LANGUAGES = [
   'Python',
   'Ruby',
@@ -18,7 +18,7 @@ export const SHIM_LANGUAGES = [
 ]
 export const SHIM_COUNT = SHIM_LANGUAGES.length
 
-// Local-first clients (embed the engine + sync), not machine-interface shims.
+// Local-only clients (embed the engine on-device), not machine-interface shims.
 export const LOCAL_FIRST_CLIENTS = [
   'Browser (JS)',
   'iOS (Swift)',

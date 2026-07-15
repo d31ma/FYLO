@@ -1,4 +1,5 @@
 import { Cipher } from '../security/cipher.js'
+import { matchesLike } from '../query/like.js'
 
 /**
  * @typedef {import('../types/vendor.js').TTID} TTIDValue
@@ -99,14 +100,6 @@ export class FilesystemQueryEngine {
         return true
     }
     /**
-     * @param {string} pattern
-     * @returns {RegExp}
-     */
-    likeToRegex(pattern) {
-        const escaped = pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replaceAll('%', '.*')
-        return new RegExp(`^${escaped}$`)
-    }
-    /**
      * @param {unknown} value
      * @param {Operand} operand
      * @returns {boolean}
@@ -120,7 +113,8 @@ export class FilesystemQueryEngine {
         if (operand.$lte !== undefined && !(Number(value) <= operand.$lte)) return false
         if (
             operand.$like !== undefined &&
-            (typeof value !== 'string' || !this.likeToRegex(operand.$like).test(value))
+            (typeof value !== 'string' ||
+                !matchesLike(value, operand.$like, { singleCharacterWildcard: false }))
         )
             return false
         if (operand.$contains !== undefined) {

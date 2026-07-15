@@ -17,7 +17,7 @@ const LANGS = [
 ]
 
 // Swift (iOS), Kotlin (Android), and Flutter are local-first mobile clients — they
-// embed the engine in a WebView and sync to a backend, like the browser client.
+// embed the engine in a WebView, on-device only, like the browser client.
 const isMobile = (lang) => lang === 'swift' || lang === 'kotlin' || lang === 'flutter'
 
 // Native object/array literal renderers, one per language. Object arguments are
@@ -264,16 +264,17 @@ const SCAFFOLD = {
     close: [],
   },
   java: {
-    open: ['import java.util.Map;', 'import java.util.List;', '', 'try (Fylo db = new Fylo("/mnt/fylo")) {'],
+    open: [
+      'import java.util.Map;',
+      'import java.util.List;',
+      '',
+      'try (Fylo db = new Fylo("/mnt/fylo")) {',
+    ],
     indent: '    ',
     close: ['}'],
   },
   swift: {
-    open: [
-      'import Fylo',
-      '',
-      'let db = try await Fylo(serverUrl: "https://api.example.com", token: token)',
-    ],
+    open: ['import Fylo', '', 'let db = try await Fylo()'],
     indent: '',
     close: [],
   },
@@ -281,13 +282,18 @@ const SCAFFOLD = {
     open: [
       '// inside a coroutine (e.g. lifecycleScope.launch { … })',
       '',
-      'val db = Fylo.open(context, serverUrl = "https://api.example.com", token = token)',
+      'val db = Fylo.open(context)',
     ],
     indent: '',
     close: [],
   },
   dart: {
-    open: ["import 'fylo.dart';", '', 'Future<void> main() async {', "  final db = await Fylo.open('/mnt/fylo');"],
+    open: [
+      "import 'fylo.dart';",
+      '',
+      'Future<void> main() async {',
+      "  final db = await Fylo.open('/mnt/fylo');",
+    ],
     indent: '  ',
     close: ['}'],
   },
@@ -296,7 +302,7 @@ const SCAFFOLD = {
       "import 'fylo.dart';",
       '',
       '// in an async context (e.g. initState / an async method)',
-      "final db = await Fylo.open(serverUrl: 'https://api.example.com', token: token);",
+      'final db = await Fylo.open();',
     ],
     indent: '',
     close: [],
@@ -325,7 +331,7 @@ export default class extends Tac {
     { key: 'sql', label: 'SQL', code: true },
     { key: 'schema', label: 'Schemas', code: false },
     { key: 'security', label: 'Security', code: false },
-    { key: 'gateway', label: 'Gateway & CLI', code: false },
+    { key: 'cli', label: 'CLI', code: false },
   ]
 
   queryStrategies = [
@@ -339,19 +345,6 @@ export default class extends Tac {
     { op: "$like 'ali%'", index: 'Forward prefix (f)', fallback: 'Full scan' },
     { op: "$like '%ice'", index: 'Reversed prefix (r)', fallback: 'Full scan' },
     { op: "$like '%lic%'", index: 'Trigram (g3) → hydrate → verify', fallback: 'Full scan' },
-  ]
-
-  gatewayRoutes = [
-    { path: 'GET /v1/health', purpose: 'Health and protocol metadata' },
-    { path: 'GET /v1/openapi.json', purpose: 'Minimal OpenAPI description' },
-    { path: 'GET /v1/:collection', purpose: 'Query collection documents with URL filters' },
-    { path: 'POST /v1/:collection', purpose: 'Insert one document' },
-    { path: 'GET /v1/:collection/:id', purpose: 'Read one document by TTID' },
-    { path: 'PATCH /v1/:collection/:id', purpose: 'Patch one document by TTID' },
-    { path: 'DELETE /v1/:collection/:id', purpose: 'Soft-delete one document by TTID' },
-    { path: 'GET /v1/:collection/events', purpose: 'Sync changes feed (SSE) for the local-first browser and mobile clients' },
-    { path: 'POST /v1/sql', purpose: 'Execute FYLO SQL' },
-    { path: 'POST /v1/exec', purpose: 'Execute the machine JSON protocol' },
   ]
 
   show(key) {
@@ -398,8 +391,8 @@ export default class extends Tac {
     ].join('\n')
   }
 
-  // Swift (iOS) / Kotlin (Android) / Flutter: a local-first client that embeds the
-  // engine in a WebView and syncs to a backend — no binary to spawn on a phone.
+  // Swift (iOS) / Kotlin (Android) / Flutter: a local-only client that embeds the
+  // engine in a WebView — no backend and no binary to spawn on a phone.
   mobileInstall(lang) {
     if (lang === 'swift') {
       return [
@@ -409,10 +402,9 @@ export default class extends Tac {
         '',
         'import Fylo',
         '',
-        '// Reads/writes hit an on-device OPFS store (offline); sync runs in the background.',
-        'let db = try await Fylo(serverUrl: "https://api.example.com", token: token)',
+        '// All reads and writes hit an on-device OPFS store — fully offline, no backend.',
+        'let db = try await Fylo()',
         'try await db.collection("users").put(["name": "Ada", "role": "admin"])',
-        'try await db.syncStart()   // omit serverUrl to stay offline',
       ].join('\n')
     }
     if (lang === 'flutter') {
@@ -423,10 +415,9 @@ export default class extends Tac {
         '',
         "import 'fylo.dart';",
         '',
-        '// Reads/writes hit an on-device OPFS store (offline); sync runs in the background.',
-        "final db = await Fylo.open(serverUrl: 'https://api.example.com', token: token);",
+        '// All reads and writes hit an on-device OPFS store — fully offline, no backend.',
+        'final db = await Fylo.open();',
         "await db.collection('users').put({'name': 'Ada', 'role': 'admin'});",
-        'await db.syncStart(); // omit serverUrl to stay offline',
       ].join('\n')
     }
     return [
@@ -434,10 +425,9 @@ export default class extends Tac {
       '// 2. Put the engine assets under app/src/main/assets/fylo/: fylo.mjs (from',
       '//    a FYLO release) plus host.html and bridge.js from clients/mobile/.',
       '',
-      '// Reads/writes hit an on-device OPFS store (offline); sync runs in the background.',
-      'val db = Fylo.open(context, serverUrl = "https://api.example.com", token = token)',
+      '// All reads and writes hit an on-device OPFS store — fully offline, no backend.',
+      'val db = Fylo.open(context)',
       'db.collection("users").put(mapOf("name" to "Ada", "role" to "admin"))',
-      'db.syncStart()   // omit serverUrl to stay offline',
     ].join('\n')
   }
 
@@ -449,11 +439,20 @@ export default class extends Tac {
       call(lang, { op: 'createCollection', collection: 'users', kind: 'document' }),
       '',
       `${cmt} Create — the response's "result" field holds the new document id.`,
-      call(lang, { op: 'putData', collection: 'users', data: { name: 'Ada', role: 'admin' } }),
+      call(lang, {
+        op: 'putData',
+        collection: 'users',
+        data: { name: 'Ada', role: 'admin' },
+      }),
       '',
       `${cmt} Read the latest version, update in place (TTID preserved), then soft-delete.`,
       call(lang, { op: 'getLatest', collection: 'users', id: '<id>' }),
-      call(lang, { op: 'patchDoc', collection: 'users', id: '<id>', newDoc: { role: 'owner' } }),
+      call(lang, {
+        op: 'patchDoc',
+        collection: 'users',
+        id: '<id>',
+        newDoc: { role: 'owner' },
+      }),
       call(lang, { op: 'delDoc', collection: 'users', id: '<id>' }),
       `${cmt} ...and bring it back:`,
       call(lang, { op: 'restoreDoc', collection: 'users', id: '<id>' }),
@@ -560,15 +559,14 @@ export default class extends Tac {
     }
   }
 
-  // ---- JS (Browser): local-first OPFS client, not a binary shim ----
+  // ---- JS (Browser): local-only OPFS client, not a binary shim ----
 
   webScaffold(body) {
     return [
-      "import { createSyncedClient } from './fylo-web.mjs'",
+      "import { createBrowserClient } from './fylo-web.mjs'",
       '',
-      "const db = createSyncedClient({ serverUrl: 'https://api.example.com', token })",
+      'const db = createBrowserClient()',
       'await db.ready()',
-      'await db.sync.start()   // background sync; omit serverUrl to stay offline',
       '',
       ...body,
     ].join('\n')
@@ -580,7 +578,7 @@ export default class extends Tac {
       '// Grab fylo-web.mjs from a GitHub release.',
       '',
       this.webScaffold([
-        '// Reads and writes are local-first (work offline) and sync in the background.',
+        '// All reads and writes hit the browser-local OPFS store — fully offline.',
         "const id = await db.users.put({ name: 'Ada', role: 'admin' })",
         'const doc = await db.users.latest(id)',
       ]),
@@ -589,7 +587,7 @@ export default class extends Tac {
 
   webCrud() {
     return this.webScaffold([
-      "// Create — put returns the new document id.",
+      '// Create — put returns the new document id.',
       "const id = await db.users.put({ name: 'Ada', role: 'admin' })",
       '',
       '// Read latest, update in place (id preserved), soft-delete, then restore.',
@@ -633,8 +631,8 @@ export default class extends Tac {
       '',
       '# 2. Row-level security lives in <FYLO_SCHEMA>/users/rules.json',
       '',
-      '# 3. WORM (write-once) and the auth token are set when you serve a root:',
-      'fylo serve --root /mnt/fylo --worm --token "$FYLO_SERVER_TOKEN"',
+      '# 3. WORM (write-once) is a per-open flag, honored by every client:',
+      'fylo exec --loop --root /mnt/fylo --worm',
     ].join('\n')
   }
 

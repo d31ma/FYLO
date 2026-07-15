@@ -6,11 +6,20 @@ import { FyloSyncError, resolveSyncMode } from '../replication/sync.js'
 import { emitFyloEvent } from '../observability/events.js'
 import { FilesystemEventBus, FilesystemLockManager, FilesystemStorage } from './primitives.js'
 import { FilesystemDocuments } from './documents.js'
-import { FilesystemFiles } from './files.js'
+import {
+    FilesystemFiles,
+    KEY_XATTR,
+    META_UPDATED_XATTR,
+    META_XATTR_PREFIX,
+    metaMutations
+} from './files.js'
 import { FilesystemQueryEngine } from './query.js'
 import { materializeDoc } from '../schema/migrate.js'
 import { BunS3ClientIndexStore, LocalFsPrefixIndexStore } from './prefix-index.js'
 import { parseStoredValue, stringifyStoredValue } from './value-codec.js'
+import { getXattr, listXattr, removeXattr, setXattr } from './xattr.js'
+import { rawFileKey } from '../core/raw-file.js'
+import { tryReleaseFileLock, waitAcquireFileLock } from './fs-lock.js'
 
 /**
  * @typedef {import('../types/vendor.js').TTID} TTID
@@ -37,6 +46,48 @@ import { parseStoredValue, stringifyStoredValue } from './value-codec.js'
  * @typedef {import('../query/types.js').StoreQuery<Record<string, any>>} StoreQuery
  * @typedef {{ id: TTID, createdAt: number, updatedAt: number, deletedAt?: number, data: Record<string, any>, path?: string }} StoredRecord
  */
+
+/**
+ * `writeDurable` replaces the target inode. Preserve only developer metadata
+ * xattrs across JSON document rewrites; checksum xattrs are file-specific and
+ * system metadata belongs to raw-file collections.
+ * @param {string} target
+ * @returns {Array<[string, Uint8Array]>}
+ */
+function developerMetadataXattrs(target) {
+    /** @type {Array<[string, Uint8Array]>} */
+    const attributes = []
+    for (const name of listXattr(target)) {
+        if (!name.startsWith(META_XATTR_PREFIX) && name !== META_UPDATED_XATTR) continue
+        const value = getXattr(target, name)
+        if (value !== null) attributes.push([name, value])
+    }
+    return attributes
+}
+
+/** @param {string} target @param {Array<[string, Uint8Array]>} attributes */
+function restoreDeveloperMetadataXattrs(target, attributes) {
+    for (const [name, value] of attributes) setXattr(target, name, value)
+}
+
+/** @param {string} target @returns {Array<[string, Uint8Array]>} */
+function snapshotMetadataXattrs(target) {
+    return developerMetadataXattrs(target)
+}
+
+/** @param {string} target @param {Array<[string, Uint8Array]>} snapshot */
+function restoreMetadataXattrsExact(target, snapshot) {
+    const expected = new Set(snapshot.map(([name]) => name))
+    for (const name of listXattr(target)) {
+        if (
+            (name.startsWith(META_XATTR_PREFIX) || name === META_UPDATED_XATTR) &&
+            !expected.has(name)
+        ) {
+            removeXattr(target, name)
+        }
+    }
+    restoreDeveloperMetadataXattrs(target, snapshot)
+}
 
 /**
  * Low-level filesystem storage engine for collections, documents, indexes,
@@ -79,10 +130,12 @@ export class FilesystemEngine {
     onEvent
     /** @type {string} */
     catalogRoot
+    /** @type {boolean} */
+    repositoryGate
     /**
      * Creates the filesystem-backed FYLO engine and its persistence collaborators.
      * @param {string} [root]
-     * @param {{ sync?: FyloSyncHooks, syncMode?: FyloSyncMode, worm?: FyloWormOptions, onEvent?: FyloEventHandler, index?: import('./types.js').FyloIndexOptions, queue?: LocalQueue, queryCache?: QueryCache, catalogRoot?: string }} [options]
+     * @param {{ sync?: FyloSyncHooks, syncMode?: FyloSyncMode, worm?: FyloWormOptions, onEvent?: FyloEventHandler, index?: import('./types.js').FyloIndexOptions, queue?: LocalQueue, queryCache?: QueryCache, catalogRoot?: string, repositoryGate?: boolean }} [options]
      */
     constructor(
         root = process.env.FYLO_ROOT || path.join(process.cwd(), '.fylo-data'),
@@ -96,9 +149,18 @@ export class FilesystemEngine {
             mode: options.worm?.mode ?? 'off'
         }
         this.onEvent = options.onEvent
+        this.repositoryGate = options.repositoryGate !== false
         this.storage = new FilesystemStorage()
-        this.locks = new FilesystemLockManager(this.root, this.storage)
-        this.events = new FilesystemEventBus(this.root, this.storage)
+        /**
+         * Sync cache of each collection's kind, so path builders can route
+         * document collections to `.collections/` and file collections
+         * (buckets) to `.buckets/` without an async descriptor read. Warmed by
+         * {@link resolveKind} before any sync path is built.
+         * @type {Map<string, FyloCollectionKind>}
+         */
+        this.kinds = new Map()
+        this.locks = new FilesystemLockManager(this.collectionRoot.bind(this), this.storage)
+        this.events = new FilesystemEventBus(this.collectionRoot.bind(this), this.storage)
         this.queue = options.queue
         this.queryCache = options.queryCache
         this.index =
@@ -113,13 +175,13 @@ export class FilesystemEngine {
             this.deletedPath.bind(this),
             this.ensureCollection.bind(this),
             this.encodeEncrypted.bind(this),
-            this.decodeEncrypted.bind(this)
+            this.decodeEncrypted.bind(this),
+            this.root
         )
         this.files = new FilesystemFiles(
             this.storage,
             this.docsRoot.bind(this),
             this.deletedRoot.bind(this),
-            this.fileMetadataRoot.bind(this),
             this.ensureCollection.bind(this)
         )
         this.queryEngine = new FilesystemQueryEngine({
@@ -135,10 +197,19 @@ export class FilesystemEngine {
         await this.events.publish(collection, event)
         await this.queue?.publishCollectionEvent(collection, event)
     }
+    /**
+     * On-disk namespace for a collection: `.buckets` for byte collections
+     * (files), `.collections` for document (Record) collections. Reads the
+     * synchronous kind cache; defaults to `.collections` until warmed.
+     * @param {string} collection @returns {string}
+     */
+    namespaceDir(collection) {
+        return this.kinds.get(collection) === 'file' ? '.buckets' : '.collections'
+    }
     /** @param {string} collection @returns {string} */
     collectionRoot(collection) {
         validateCollectionName(collection)
-        return path.join(this.root, '.collections', collection)
+        return path.join(this.root, this.namespaceDir(collection), collection)
     }
     /** @param {string} collection @returns {string} */
     docsRoot(collection) {
@@ -149,10 +220,6 @@ export class FilesystemEngine {
         return path.join(this.collectionRoot(collection), '.deleted')
     }
     /** @param {string} collection @returns {string} */
-    fileMetadataRoot(collection) {
-        return path.join(this.collectionRoot(collection), '.metadata')
-    }
-    /** @param {string} collection @returns {string} */
     metaRoot(collection) {
         return this.collectionRoot(collection)
     }
@@ -161,18 +228,51 @@ export class FilesystemEngine {
         validateCollectionName(collection)
         return path.join(this.catalogRoot, '.fylo-catalog', 'collections', `${collection}.json`)
     }
+    /**
+     * Resolves a collection's kind from its catalog descriptor (the authority,
+     * at a location-independent path), warms the sync {@link kinds} cache, and
+     * lazily migrates a legacy `.collections/<name>` file collection to
+     * `.buckets/<name>`. All sync path building depends on this having run for
+     * the collection first — `hasCollection` and `createCollection` ensure it.
+     * @param {string} collection @returns {Promise<FyloCollectionKind>}
+     */
+    async resolveKind(collection) {
+        validateCollectionName(collection)
+        const cached = this.kinds.get(collection)
+        if (cached !== undefined) return cached
+        const descriptor = this.collectionDescriptorPath(collection)
+        /** @type {FyloCollectionKind} */
+        let kind = 'document'
+        if (await this.storage.exists(descriptor)) {
+            const parsed = /** @type {{ kind?: unknown }} */ (
+                JSON.parse(await this.storage.read(descriptor))
+            )
+            if (parsed.kind !== 'document' && parsed.kind !== 'file') {
+                throw new Error(`Collection descriptor is corrupt: ${collection}`)
+            }
+            kind = parsed.kind
+        }
+        if (kind === 'file') await this.migrateBucketIfNeeded(collection)
+        this.kinds.set(collection, kind)
+        return kind
+    }
     /** @param {string} collection @returns {Promise<FyloCollectionKind>} */
     async collectionKind(collection) {
-        validateCollectionName(collection)
-        const descriptor = this.collectionDescriptorPath(collection)
-        if (!(await this.storage.exists(descriptor))) return 'document'
-        const parsed = /** @type {{ kind?: unknown }} */ (
-            JSON.parse(await this.storage.read(descriptor))
-        )
-        if (parsed.kind !== 'document' && parsed.kind !== 'file') {
-            throw new Error(`Collection descriptor is corrupt: ${collection}`)
+        return await this.resolveKind(collection)
+    }
+    /**
+     * Auto-migrate on open: move a byte collection's data from the legacy
+     * `.collections/<name>` layout to `.buckets/<name>`. Idempotent and
+     * crash-safe (a single rename); the catalog descriptor never moves.
+     * @param {string} collection @returns {Promise<void>}
+     */
+    async migrateBucketIfNeeded(collection) {
+        const bucketPath = path.join(this.root, '.buckets', collection)
+        if (await this.storage.exists(bucketPath)) return
+        const legacyPath = path.join(this.root, '.collections', collection)
+        if (await this.storage.exists(legacyPath)) {
+            await this.storage.move(legacyPath, bucketPath)
         }
-        return parsed.kind
     }
     /**
      * @param {string} collection
@@ -260,14 +360,14 @@ export class FilesystemEngine {
     }
     /** @param {string} collection @returns {Promise<void>} */
     async ensureCollection(collection) {
+        // Warm the kind cache so every path below resolves to the right
+        // namespace (.collections vs .buckets), even on a cold engine.
+        await this.resolveKind(collection)
         await this.storage.mkdir(this.collectionRoot(collection))
         await this.assertNoLegacyWormArtifacts(collection)
         await this.storage.mkdir(this.metaRoot(collection))
         await this.storage.mkdir(this.docsRoot(collection))
         await this.storage.mkdir(this.deletedRoot(collection))
-        if ((await this.collectionKind(collection)) === 'file') {
-            await this.storage.mkdir(this.fileMetadataRoot(collection))
-        }
         await this.index.ensureCollection(collection)
     }
     /** @param {string} collection @returns {Promise<void>} */
@@ -387,9 +487,11 @@ export class FilesystemEngine {
      * @param {TTID} docId
      * @param {Record<string, any>} nextDoc
      * @param {Record<string, any>} oldDoc
+     * @param {Record<string, any>=} meta
      * @returns {Promise<TTID>}
      */
-    async updateDocument(collection, docId, nextDoc, oldDoc) {
+    async updateDocument(collection, docId, nextDoc, oldDoc, meta = undefined) {
+        const metaUpdates = meta === undefined ? undefined : metaMutations(meta)
         await validateDocId(docId)
         if (this.wormEnabled()) throw new Error('Update is not allowed in WORM mode')
         await this.requireCollectionKind(collection, 'document')
@@ -404,8 +506,26 @@ export class FilesystemEngine {
                     oldDoc ?? (await this.documents.readStoredDoc(collection, docId))?.data
                 if (!existing) return docId
                 await this.removeIndexes(collection, docId, existing)
-                await this.documents.writeStoredDoc(collection, docId, nextDoc)
-                await this.rebuildIndexes(collection, docId, nextDoc)
+                const metadata = developerMetadataXattrs(targetPath)
+                try {
+                    await this.documents.writeStoredDoc(collection, docId, nextDoc)
+                    restoreDeveloperMetadataXattrs(targetPath, metadata)
+                    if (metaUpdates?.length) this.applyDocMetaMutations(targetPath, metaUpdates)
+                    await this.rebuildIndexes(collection, docId, nextDoc)
+                } catch (error) {
+                    try {
+                        await this.removeIndexes(collection, docId, nextDoc)
+                        await this.documents.writeStoredDoc(collection, docId, existing)
+                        restoreDeveloperMetadataXattrs(targetPath, metadata)
+                        await this.rebuildIndexes(collection, docId, existing)
+                    } catch (rollbackError) {
+                        throw new AggregateError(
+                            [error, rollbackError],
+                            'Document update failed and rollback was incomplete'
+                        )
+                    }
+                    throw error
+                }
                 await this.publishDocumentEvent(collection, {
                     ts: Date.now(),
                     action: 'insert',
@@ -441,7 +561,38 @@ export class FilesystemEngine {
         this.writeLanes.set(collection, lane)
         await previous
         const owner = Bun.randomUUIDv7()
+        const repositoryGate = path.join(
+            this.catalogRoot,
+            '.fylo-vcs',
+            'locks',
+            'worktree',
+            `${collection}.lock`
+        )
+        let repositoryGateHeld = false
         try {
+            if (
+                this.repositoryGate &&
+                (await this.storage.exists(path.join(this.catalogRoot, '.fylo-vcs', 'HEAD')))
+            ) {
+                await waitAcquireFileLock(repositoryGate, owner, {
+                    ttlMs: 300_000,
+                    waitTimeoutMs: 60_000,
+                    heartbeat: true
+                })
+                repositoryGateHeld = true
+                const pendingTransactions = await this.storage.list(
+                    path.join(this.catalogRoot, '.fylo-vcs', 'staging')
+                )
+                if (
+                    pendingTransactions.some(
+                        (target) => path.basename(target) === 'transaction.json'
+                    )
+                ) {
+                    throw new Error(
+                        'Pending version materialization requires repository startup recovery'
+                    )
+                }
+            }
             await this.storage.mkdir(this.metaRoot(collection))
             await this.locks.acquireCollectionWrite(collection, owner, {
                 onTakeover: (info) => {
@@ -458,8 +609,12 @@ export class FilesystemEngine {
             try {
                 await this.locks.releaseCollectionWrite(collection, owner)
             } finally {
-                release()
-                if (this.writeLanes.get(collection) === lane) this.writeLanes.delete(collection)
+                try {
+                    if (repositoryGateHeld) await tryReleaseFileLock(repositoryGate, owner)
+                } finally {
+                    release()
+                    if (this.writeLanes.get(collection) === lane) this.writeLanes.delete(collection)
+                }
             }
         }
     }
@@ -479,10 +634,19 @@ export class FilesystemEngine {
             await this.ensureCollection(collection)
             return
         }
+        if (options.versioned !== undefined && typeof options.versioned !== 'boolean') {
+            throw new Error('Collection "versioned" option must be a boolean')
+        }
         await this.storage.write(
             this.collectionDescriptorPath(collection),
-            `${JSON.stringify({ version: 1, kind })}\n`
+            `${JSON.stringify({
+                version: 1,
+                kind,
+                ...(options.versioned === false ? { versioned: false } : {})
+            })}\n`
         )
+        // Route this collection's paths to the right namespace before building them.
+        this.kinds.set(collection, kind)
         await this.ensureCollection(collection)
         await this.invalidateQueryCache(collection)
     }
@@ -498,10 +662,14 @@ export class FilesystemEngine {
             throw new Error('Drop is not allowed for a non-empty WORM collection')
         }
         await this.storage.rmdir(this.collectionRoot(collection))
+        this.kinds.delete(collection)
         await this.invalidateQueryCache(collection)
     }
     /** @param {string} collection @returns {Promise<boolean>} */
     async hasCollection(collection) {
+        // Warm the kind cache (and migrate legacy buckets) so collectionRoot
+        // resolves to the right namespace before we probe for existence.
+        await this.resolveKind(collection)
         return await this.storage.exists(this.collectionRoot(collection))
     }
     /** @param {string} collection @returns {Promise<CollectionInspectResult>} */
@@ -744,10 +912,31 @@ export class FilesystemEngine {
             const objectKeys = new Map()
             await this.resetIndex(collection)
             for (const docId of docIds) {
-                const stored =
-                    kind === 'file'
-                        ? await this.files.readStoredFile(collection, docId)
-                        : await this.documents.readStoredDoc(collection, docId)
+                let stored
+                try {
+                    stored =
+                        kind === 'file'
+                            ? await this.files.readStoredFile(collection, docId)
+                            : await this.documents.readStoredDoc(collection, docId)
+                } catch (err) {
+                    // A raw file whose key xattr was stripped (copied without
+                    // xattrs) is repaired to its default `/<filename>` key —
+                    // bytes are truth; a custom key is not recoverable from them.
+                    if (
+                        kind !== 'file' ||
+                        !/metadata is missing/.test(/** @type {Error} */ (err).message)
+                    ) {
+                        throw err
+                    }
+                    const key = await this.files.repairKey(collection, docId)
+                    emitFyloEvent(this.onEvent, {
+                        type: 'file.key-repaired',
+                        collection,
+                        docId,
+                        key
+                    })
+                    stored = await this.files.readStoredFile(collection, docId)
+                }
                 if (!stored) continue
                 if (kind === 'file') {
                     const key = String(stored.data.key)
@@ -778,8 +967,9 @@ export class FilesystemEngine {
             }
         })
     }
-    /** @param {string} collection @param {TTID} docId @param {Record<string, any>} doc @returns {Promise<void>} */
-    async putDocument(collection, docId, doc) {
+    /** @param {string} collection @param {TTID} docId @param {Record<string, any>} doc @param {Record<string, any>=} meta @returns {Promise<void>} */
+    async putDocument(collection, docId, doc, meta) {
+        const metaUpdates = meta === undefined ? undefined : metaMutations(meta)
         await validateDocId(docId)
         await this.requireCollection(collection)
         await this.requireCollectionKind(collection, 'document')
@@ -797,8 +987,30 @@ export class FilesystemEngine {
                 if (existing && this.wormEnabled())
                     throw new Error('Update is not allowed in WORM mode')
                 if (existing) await this.removeIndexes(collection, docId, existing.data)
-                await this.documents.writeStoredDoc(collection, docId, doc)
-                await this.rebuildIndexes(collection, docId, doc)
+                const metadata = existing ? developerMetadataXattrs(targetPath) : []
+                try {
+                    await this.documents.writeStoredDoc(collection, docId, doc)
+                    restoreDeveloperMetadataXattrs(targetPath, metadata)
+                    if (metaUpdates?.length) this.applyDocMetaMutations(targetPath, metaUpdates)
+                    await this.rebuildIndexes(collection, docId, doc)
+                } catch (error) {
+                    try {
+                        await this.removeIndexes(collection, docId, doc)
+                        if (existing) {
+                            await this.documents.writeStoredDoc(collection, docId, existing.data)
+                            restoreDeveloperMetadataXattrs(targetPath, metadata)
+                            await this.rebuildIndexes(collection, docId, existing.data)
+                        } else {
+                            await this.documents.removeStoredDoc(collection, docId)
+                        }
+                    } catch (rollbackError) {
+                        throw new AggregateError(
+                            [error, rollbackError],
+                            'Document put failed and rollback was incomplete'
+                        )
+                    }
+                    throw error
+                }
                 if (this.wormEnabled())
                     await this.documents.makeStoredDocReadOnly(collection, docId)
                 await this.publishDocumentEvent(collection, {
@@ -850,10 +1062,38 @@ export class FilesystemEngine {
                 const { key } = this.files.resolveMetadata(docId, source)
                 await this.assertObjectKeyAvailable(collection, key)
                 const stored = await this.files.writeStoredFile(collection, docId, source)
-                await this.rebuildIndexes(collection, docId, stored.data)
+                try {
+                    await this.rebuildIndexes(collection, docId, stored.data)
+                } catch (error) {
+                    /** @type {unknown[]} */
+                    const rollbackErrors = []
+                    try {
+                        // putDocument may have appended some prefix entries
+                        // before surfacing a later index failure.
+                        await this.removeIndexes(collection, docId, stored.data)
+                    } catch (rollbackError) {
+                        rollbackErrors.push(rollbackError)
+                    }
+                    try {
+                        // Removing the raw file removes its bytes and every
+                        // xattr (key, checksum, and initial developer metadata)
+                        // as one inode-scoped rollback.
+                        await this.storage.delete(stored.path)
+                    } catch (rollbackError) {
+                        rollbackErrors.push(rollbackError)
+                    }
+                    if (rollbackErrors.length > 0) {
+                        throw new AggregateError(
+                            [error, ...rollbackErrors],
+                            'Raw file put failed and rollback was incomplete'
+                        )
+                    }
+                    throw error
+                }
                 if (this.wormEnabled()) {
+                    // chmod 0444 also freezes the file's xattr metadata (the
+                    // kernel requires write permission to set user xattrs).
                     await this.files.makeStoredFileReadOnly(collection, docId)
-                    await this.files.makeSystemMetadataReadOnly(collection, docId)
                 }
                 await this.publishDocumentEvent(collection, {
                     ts: stored.data.lastModified,
@@ -900,18 +1140,18 @@ export class FilesystemEngine {
         const nextDoc = { ...existing, ...patch }
         return await this.updateDocument(collection, oldId, nextDoc, existing)
     }
-    /** @param {string} collection @param {TTID} oldId @param {TTID} newId @param {Record<string, any>} doc @param {Record<string, any>} [oldDoc] @returns {Promise<TTID>} */
-    async replaceDocumentVersion(collection, oldId, newId, doc, oldDoc) {
+    /** @param {string} collection @param {TTID} oldId @param {TTID} newId @param {Record<string, any>} doc @param {Record<string, any>} [oldDoc] @param {Record<string, any>} [meta] @returns {Promise<TTID>} */
+    async replaceDocumentVersion(collection, oldId, newId, doc, oldDoc, meta) {
         if (this.wormEnabled()) throw new Error('Update is not allowed in WORM mode')
         await this.requireCollection(collection)
         await this.requireCollectionKind(collection, 'document')
-        if (oldDoc) return await this.updateDocument(collection, oldId, doc, oldDoc)
+        if (oldDoc) return await this.updateDocument(collection, oldId, doc, oldDoc, meta)
         const stored = await this.documents.readStoredDoc(collection, oldId)
         if (!stored && (await this.documents.readDeletedDoc(collection, oldId))) {
             throw new Error(`Document is soft-deleted; restore it before writing: ${oldId}`)
         }
         if (!stored) return oldId
-        return await this.updateDocument(collection, oldId, doc, stored.data)
+        return await this.updateDocument(collection, oldId, doc, stored.data, meta)
     }
     /** @param {string} collection @param {TTID} docId @returns {Promise<void>} */
     async deleteDocument(collection, docId) {
@@ -1063,11 +1303,321 @@ export class FilesystemEngine {
         await this.requireCollectionKind(collection, 'file')
         return await this.files.readBytes(collection, docId)
     }
-    /** @param {string} collection @param {TTID} docId @returns {Promise<ReadableStream<Uint8Array>>} */
-    async getFileStream(collection, docId) {
+    /**
+     * @param {string} collection
+     * @param {TTID} docId
+     * @param {{ start?: number, end?: number }} [range] half-open byte range [start, end)
+     * @returns {Promise<ReadableStream<Uint8Array>>}
+     */
+    async getFileStream(collection, docId, range) {
         await this.requireCollection(collection)
         await this.requireCollectionKind(collection, 'file')
-        return await this.files.readStream(collection, docId)
+        return await this.files.readStream(collection, docId, range)
+    }
+    /**
+     * Reassigns a raw file's durable object key in place — no byte rewrite,
+     * new key indexed immediately. Prefix and root keys expand like `put()`.
+     * @param {string} collection @param {string} docId @param {string} key
+     * @returns {Promise<string>} the expanded key now assigned
+     */
+    async rekeyFile(collection, docId, key) {
+        await validateDocId(docId)
+        if (this.wormEnabled()) throw new Error('Rekey is not allowed in WORM mode')
+        await this.requireCollection(collection)
+        await this.requireCollectionKind(collection, 'file')
+        return await this.withCollectionWriteLock(collection, async () => {
+            const stored = await this.files.readStoredFile(collection, docId)
+            if (!stored) throw new Error(`Raw file not found: ${docId}`)
+            const next = rawFileKey(key, docId, stored.data.extension)
+            if (next === stored.data.key) return next
+            await this.assertObjectKeyAvailable(collection, next, docId)
+            const data = { ...stored.data, key: next }
+            setXattr(stored.path, KEY_XATTR, next)
+            try {
+                await this.removeIndexes(collection, docId, stored.data)
+                await this.rebuildIndexes(collection, docId, data)
+                await this.invalidateQueryCache(collection)
+            } catch (error) {
+                try {
+                    setXattr(stored.path, KEY_XATTR, String(stored.data.key))
+                    await this.removeIndexes(collection, docId, data)
+                    await this.rebuildIndexes(collection, docId, stored.data)
+                } catch (rollbackError) {
+                    throw new AggregateError(
+                        [error, rollbackError],
+                        'File rekey failed and rollback was incomplete'
+                    )
+                }
+                throw error
+            }
+            await this.publishDocumentEvent(collection, {
+                ts: Date.now(),
+                action: 'insert',
+                id: docId,
+                doc: data
+            })
+            return next
+        })
+    }
+    /**
+     * Stamp-ignoring integrity audit of a file collection: re-hashes the full
+     * contents of every active and soft-deleted file, reports files whose
+     * bytes no longer match their recorded checksum, and freshens the stamps
+     * of the ones that do. Raw files are immutable, so no write lock is held;
+     * a file moved or deleted mid-scan is simply skipped.
+     *
+     * @param {string} collection
+     * @returns {Promise<{
+     *   collection: string,
+     *   filesScanned: number,
+     *   verified: number,
+     *   stamped: number,
+     *   corrupt: Array<{ id: string, namespace: 'active' | 'deleted', expected: string, actual: string }>
+     * }>}
+     */
+    async verifyCollection(collection) {
+        await this.requireCollection(collection)
+        await this.requireCollectionKind(collection, 'file')
+        const result = {
+            collection,
+            filesScanned: 0,
+            verified: 0,
+            stamped: 0,
+            /** @type {Array<{ id: string, namespace: 'active' | 'deleted', expected: string, actual: string }>} */
+            corrupt: []
+        }
+        /** @type {Array<['active' | 'deleted', string, string[]]>} */
+        const namespaces = [
+            ['active', this.docsRoot(collection), await this.files.listFileIds(collection)],
+            [
+                'deleted',
+                this.deletedRoot(collection),
+                await this.files.listDeletedFileIds(collection)
+            ]
+        ]
+        for (const [namespace, root, ids] of namespaces) {
+            for (const docId of ids) {
+                const target = await this.files.findPath(root, docId)
+                if (!target) continue
+                let check
+                try {
+                    check = await this.files.verifyTarget(target)
+                } catch (err) {
+                    if (/** @type {NodeJS.ErrnoException} */ (err).code === 'ENOENT') continue
+                    throw err
+                }
+                result.filesScanned++
+                if (check.status === 'corrupt') {
+                    const expected = /** @type {string} */ (check.expected)
+                    result.corrupt.push({ id: docId, namespace, expected, actual: check.actual })
+                    emitFyloEvent(this.onEvent, {
+                        type: 'file.checksum-mismatch',
+                        collection,
+                        docId,
+                        expected,
+                        actual: check.actual
+                    })
+                } else if (check.status === 'stamped') result.stamped++
+                else result.verified++
+            }
+        }
+        return result
+    }
+    /**
+     * One folder level of a file collection: direct-child files as full
+     * manifests plus immediate subfolder names. Deeper descendants cost one
+     * key-xattr read each — no content is hashed for them.
+     * @param {string} collection
+     * @param {string} prefix folder path starting and ending with '/'
+     * @returns {Promise<{ prefix: string, files: Record<string, Record<string, any>>, folders: string[] }>}
+     */
+    async listFolder(collection, prefix) {
+        if (typeof prefix !== 'string' || !prefix.startsWith('/') || !prefix.endsWith('/')) {
+            throw new Error("Folder prefix must start and end with '/'")
+        }
+        await this.requireCollection(collection)
+        await this.requireCollectionKind(collection, 'file')
+        const candidates =
+            (await this.index.candidateDocIds(collection, 'key', { $like: `${prefix}%` })) ??
+            new Set(await this.files.listFileIds(collection))
+        /** @type {Record<string, Record<string, any>>} */
+        const files = {}
+        /** @type {Set<string>} */
+        const folders = new Set()
+        for (const docId of candidates) {
+            const target = await this.files.findPath(this.docsRoot(collection), String(docId))
+            if (!target) continue
+            let key
+            try {
+                key = this.files.readKey(target, String(docId))
+            } catch {
+                continue // stripped key xattr; `rebuild()` repairs it
+            }
+            if (!key.startsWith(prefix)) continue
+            const rest = key.slice(prefix.length)
+            const slash = rest.indexOf('/')
+            if (slash !== -1) {
+                folders.add(rest.slice(0, slash))
+                continue
+            }
+            const stored = await this.files.readStoredFile(collection, String(docId))
+            if (stored) files[String(docId)] = stored.data
+        }
+        return { prefix, files, folders: [...folders].sort() }
+    }
+    /**
+     * Resolves the on-disk file (JSON document or raw file) that carries a
+     * document's developer metadata xattrs.
+     * @param {string} collection @param {string} docId @returns {Promise<string>}
+     */
+    async metaTarget(collection, docId) {
+        await validateDocId(docId)
+        await this.requireCollection(collection)
+        if ((await this.collectionKind(collection)) === 'file') {
+            const target = await this.files.findPath(this.docsRoot(collection), docId)
+            if (!target) throw new Error(`Raw file not found: ${docId}`)
+            return target
+        }
+        try {
+            return await this.documents.metadataTarget(collection, docId)
+        } catch (error) {
+            if (/** @type {NodeJS.ErrnoException} */ (error).code === 'ENOENT') {
+                throw new Error(`Document not found: ${docId}`)
+            }
+            throw error
+        }
+    }
+    /**
+     * Bulk metadata write: sets every pair in `record` (values are stored
+     * JSON-encoded, so they round-trip typed); a `null` value removes the
+     * entry. One index refresh covers the whole batch.
+     * @param {string} collection @param {string} docId @param {Record<string, any>} record
+     * @returns {Promise<void>}
+     */
+    async setDocMetaRecord(collection, docId, record) {
+        const mutations = metaMutations(record)
+        if (mutations.length === 0) return
+        await this.updateDocMeta(collection, docId, (target) =>
+            this.applyDocMetaMutations(target, mutations)
+        )
+    }
+    /** @param {string} target @param {Array<[string, string | null]>} mutations */
+    applyDocMetaMutations(target, mutations) {
+        const attributes = [...new Set([...mutations.map(([attr]) => attr), META_UPDATED_XATTR])]
+        const previous = new Map(attributes.map((attr) => [attr, getXattr(target, attr)]))
+        try {
+            for (const [attr, encoded] of mutations) {
+                if (encoded === null) removeXattr(target, attr)
+                else setXattr(target, attr, encoded)
+            }
+            const previousUpdatedAt = Number(
+                new TextDecoder().decode(previous.get(META_UPDATED_XATTR) ?? new Uint8Array())
+            )
+            const updatedAt = Math.max(
+                Date.now(),
+                Number.isFinite(previousUpdatedAt) ? previousUpdatedAt + 1 : 0
+            )
+            setXattr(target, META_UPDATED_XATTR, String(updatedAt))
+        } catch (error) {
+            /** @type {unknown[]} */
+            const rollbackErrors = []
+            for (const attr of attributes.reverse()) {
+                try {
+                    const value = previous.get(attr)
+                    if (value === null) removeXattr(target, attr)
+                    else if (value !== undefined) setXattr(target, attr, value)
+                } catch (rollbackError) {
+                    rollbackErrors.push(rollbackError)
+                }
+            }
+            if (rollbackErrors.length > 0) {
+                throw new AggregateError(
+                    [error, ...rollbackErrors],
+                    'Metadata update failed and rollback was incomplete'
+                )
+            }
+            throw error
+        }
+    }
+    /**
+     * Replaces the complete developer metadata record. Keys missing from the
+     * authoritative record are removed through the same failure-atomic batch.
+     * @param {string} collection @param {string} docId @param {Record<string, any>} record
+     * @returns {Promise<void>}
+     */
+    async replaceDocMetaRecord(collection, docId, record) {
+        metaMutations(record)
+        await this.updateDocMeta(collection, docId, (target) => {
+            const current = this.files.readMeta(target) ?? {}
+            /** @type {Record<string, any>} */
+            const replacement = { ...record }
+            for (const name of Object.keys(current)) {
+                if (!Object.hasOwn(record, name)) replacement[name] = null
+            }
+            const mutations = metaMutations(replacement)
+            if (mutations.length > 0) this.applyDocMetaMutations(target, mutations)
+        })
+    }
+    /** @param {string} collection @param {string} docId @returns {Promise<number>} */
+    async docMetaUpdatedAt(collection, docId) {
+        const value = getXattr(await this.metaTarget(collection, docId), META_UPDATED_XATTR)
+        const updatedAt = value === null ? 0 : Number(new TextDecoder().decode(value))
+        return Number.isFinite(updatedAt) ? updatedAt : 0
+    }
+    /**
+     * Applies a metadata mutation; file collections carry meta in their
+     * indexed manifests, so the doc's index entries are refreshed under the
+     * collection write lock.
+     * @param {string} collection @param {string} docId @param {(target: string) => void} mutate
+     * @returns {Promise<void>}
+     */
+    async updateDocMeta(collection, docId, mutate) {
+        if (this.wormEnabled()) throw new Error('Metadata update is not allowed in WORM mode')
+        await this.requireCollection(collection)
+        await this.withCollectionWriteLock(collection, async () => {
+            const owner = Bun.randomUUIDv7()
+            if (!(await this.locks.acquire(collection, docId, owner))) {
+                throw new Error(`Unable to acquire filesystem lock for ${docId}`)
+            }
+            try {
+                if ((await this.collectionKind(collection)) !== 'file') {
+                    mutate(await this.metaTarget(collection, docId))
+                    return
+                }
+                const before = await this.files.readStoredFile(collection, docId)
+                if (!before) throw new Error(`Raw file not found: ${docId}`)
+                const metadata = snapshotMetadataXattrs(before.path)
+                /** @type {StoredRecord | null} */
+                let after = null
+                try {
+                    mutate(before.path)
+                    after = await this.files.readStoredFile(collection, docId)
+                    if (!after)
+                        throw new Error(`Raw file not found after metadata update: ${docId}`)
+                    await this.removeIndexes(collection, docId, before.data)
+                    await this.rebuildIndexes(collection, docId, after.data)
+                    await this.invalidateQueryCache(collection)
+                } catch (error) {
+                    try {
+                        restoreMetadataXattrsExact(before.path, metadata)
+                        if (after) await this.removeIndexes(collection, docId, after.data)
+                        await this.rebuildIndexes(collection, docId, before.data)
+                    } catch (rollbackError) {
+                        throw new AggregateError(
+                            [error, rollbackError],
+                            'File metadata update failed and rollback was incomplete'
+                        )
+                    }
+                    throw error
+                }
+            } finally {
+                await this.locks.release(collection, docId, owner)
+            }
+        })
+    }
+    /** @param {string} collection @param {string} docId @returns {Promise<Record<string, any>>} */
+    async listDocMeta(collection, docId) {
+        return this.files.readMeta(await this.metaTarget(collection, docId)) ?? {}
     }
     /** @param {string} collection @param {StoreQuery | undefined} query @returns {any} */
     findDocs(collection, query) {

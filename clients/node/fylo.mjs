@@ -69,6 +69,8 @@ export class Fylo {
             rebuild: () => this.rebuildCollection(name),
             put: (data) => this.putData(name, data),
             get: (id) => this.getDoc(name, id),
+            getMeta: (id) => this.getMeta(name, id),
+            setMeta: (id, meta) => this.setMeta(name, id, meta),
             latest: (id, onlyId) => this.getLatest(name, id, onlyId),
             patch: (id, newDoc, oldDoc) => this.patchDoc(name, id, newDoc, oldDoc),
             delete: (id) => this.delDoc(name, id),
@@ -132,6 +134,12 @@ export class Fylo {
     }
     getDoc(collection, id) {
         return this._op('getDoc', { collection, id })
+    }
+    getMeta(collection, id) {
+        return this._op('getMeta', { collection, id })
+    }
+    setMeta(collection, id, meta) {
+        return this._op('setMeta', { collection, id, meta })
     }
     getLatest(collection, id, onlyId = false) {
         return this._op('getLatest', { collection, id, onlyId })

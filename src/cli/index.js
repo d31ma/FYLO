@@ -3,7 +3,6 @@ import path from 'node:path'
 import Fylo from '../index.js'
 import { runMachineRequestSource, serveStdioLoop } from './machine.js'
 import { renderTableOutput, writeCliText } from './output.js'
-import { serveFyloHttp } from '../server/http.js'
 import {
     doctorSchema,
     inspectSchema,
@@ -22,15 +21,9 @@ import { VersionRepository } from '../versioning/repository.js'
  * @typedef {object} ParsedArgs
  * @property {string[]} positionals
  * @property {string | undefined} root
- * @property {string | undefined} host
- * @property {number | undefined} port
- * @property {string | undefined} token
- * @property {string | string[] | undefined} corsOrigin
- * @property {number | undefined} maxBodyBytes
  * @property {boolean} worm
  * @property {boolean} json
  * @property {boolean} idOnly
- * @property {boolean} allowAnonymous
  * @property {boolean} createBranch
  * @property {boolean} force
  * @property {string | undefined} schemaDir
@@ -54,7 +47,6 @@ function usage() {
         '  fylo diff [<from>] [<to>] [--root <path>] [--json]',
         '  fylo restore-commit <commit-id> [--root <path>] [--force] [--json]',
         '  fylo merge <ref> [-m <message>] [--root <path>] [--json]',
-        '  fylo serve [--root <path>] [--host <host>] [--port <n>] [--token <token>] [--cors-origin <origin>] [--max-body-bytes <n>] [--allow-anonymous]',
         '  fylo "<SQL>"',
         '  fylo sql "<SQL>"',
         '  fylo exec --request <json|@path|-> [--root <path>] [--worm]',
@@ -63,6 +55,7 @@ function usage() {
         '  fylo get <collection> <doc-id> [--root <path>] [--worm] [--json]',
         '  fylo latest <collection> <doc-id> [--root <path>] [--worm] [--json] [--id-only]',
         '  fylo rebuild <collection> [--root <path>] [--worm] [--json]',
+        '  fylo verify <collection> [--root <path>] [--json]',
         '  fylo deleted <collection> [--root <path>] [--json]',
         '  fylo restore <collection> <doc-id> [--root <path>] [--json]',
         '  fylo schema inspect <collection> [--schema-dir <path>] [--json]',
@@ -74,12 +67,6 @@ function usage() {
         '',
         'Options:',
         '  --root <path>   Override FYLO_ROOT for this command',
-        '  --host <host>   Host for fylo serve (default: 127.0.0.1)',
-        '  --port <n>      Port for fylo serve (default: 8787)',
-        '  --token <v>     Bearer token for fylo serve (or FYLO_SERVER_TOKEN)',
-        '  --cors-origin <origin> Allow CORS for fylo serve; repeatable',
-        '  --max-body-bytes <n> Maximum JSON request body for fylo serve',
-        '  --allow-anonymous Allow unauthenticated fylo serve access',
         '  --schema-dir <path> Override FYLO_SCHEMA for schema admin commands',
         '  --worm          Enable WORM-aware admin behavior for this command',
         '  --json          Emit machine-readable JSON output',
@@ -102,16 +89,9 @@ function usage() {
 function parseArgs(argv) {
     const positionals = []
     let root
-    let host
-    let port
-    let token
-    /** @type {string[]} */
-    const corsOrigins = []
-    let maxBodyBytes
     let worm = false
     let json = false
     let idOnly = false
-    let allowAnonymous = false
     let createBranch = false
     let force = false
     let schemaDir
@@ -133,43 +113,6 @@ function parseArgs(argv) {
             index++
             continue
         }
-        if (arg === '--host') {
-            const value = argv[index + 1]
-            if (!value) throw new Error('Missing value for --host')
-            host = value
-            index++
-            continue
-        }
-        if (arg === '--port') {
-            const value = Number(argv[index + 1])
-            if (!Number.isInteger(value) || value <= 0)
-                throw new Error('Missing or invalid value for --port')
-            port = value
-            index++
-            continue
-        }
-        if (arg === '--token') {
-            const value = argv[index + 1]
-            if (!value) throw new Error('Missing value for --token')
-            token = value
-            index++
-            continue
-        }
-        if (arg === '--cors-origin') {
-            const value = argv[index + 1]
-            if (!value) throw new Error('Missing value for --cors-origin')
-            corsOrigins.push(value)
-            index++
-            continue
-        }
-        if (arg === '--max-body-bytes') {
-            const value = Number(argv[index + 1])
-            if (!Number.isInteger(value) || value <= 0)
-                throw new Error('Missing or invalid value for --max-body-bytes')
-            maxBodyBytes = value
-            index++
-            continue
-        }
         if (arg === '--schema-dir') {
             const value = argv[index + 1]
             if (!value) throw new Error('Missing value for --schema-dir')
@@ -187,10 +130,6 @@ function parseArgs(argv) {
         }
         if (arg === '--id-only') {
             idOnly = true
-            continue
-        }
-        if (arg === '--allow-anonymous') {
-            allowAnonymous = true
             continue
         }
         if (arg === '-b') {
@@ -248,15 +187,9 @@ function parseArgs(argv) {
     return {
         positionals,
         root,
-        host,
-        port,
-        token,
-        corsOrigin: corsOrigins.length > 1 ? corsOrigins : corsOrigins[0],
-        maxBodyBytes,
         worm,
         json,
         idOnly,
-        allowAnonymous,
         createBranch,
         force,
         schemaDir,
@@ -366,24 +299,6 @@ function createFylo(root, worm = false) {
  */
 function createVersionRepository(root) {
     return new VersionRepository(root ?? Fylo.defaultRoot())
-}
-
-/**
- * @param {ParsedArgs} args
- * @returns {Promise<void>}
- */
-async function runServe(args) {
-    const server = serveFyloHttp({
-        root: args.root ?? Fylo.defaultRoot(),
-        host: args.host,
-        port: args.port,
-        token: args.token,
-        corsOrigin: args.corsOrigin,
-        maxBodyBytes: args.maxBodyBytes,
-        allowAnonymous: args.allowAnonymous
-    })
-    console.log(`FYLO remote gateway listening on http://${server.hostname}:${server.port}`)
-    await new Promise(() => {})
 }
 
 /**
@@ -710,6 +625,35 @@ async function runRebuild(collection, root, worm = false, json = false) {
 }
 
 /**
+ * Stamp-ignoring integrity audit for a file collection. Exits non-zero when
+ * corruption is found so cron/CI wrappers can alert on the exit code alone.
+ * @param {string} collection
+ * @param {string | undefined} root
+ * @param {boolean=} json
+ */
+async function runVerify(collection, root, json = false) {
+    const result = await createFylo(root)[collection].verify()
+    if (result.corrupt.length > 0) process.exitCode = 1
+    if (json) {
+        printJson(result)
+        return undefined
+    }
+    const lines = [
+        `Verified collection ${result.collection}`,
+        `Files scanned: ${result.filesScanned}`,
+        `Checksums verified: ${result.verified}`,
+        `Freshly stamped: ${result.stamped}`,
+        `Corrupt: ${result.corrupt.length}`
+    ]
+    for (const failure of result.corrupt) {
+        lines.push(
+            `  ${failure.id} (${failure.namespace}) expected ${failure.expected} got ${failure.actual}`
+        )
+    }
+    return lines.join('\n')
+}
+
+/**
  * @param {string} collection
  * @param {string | undefined} root
  * @param {boolean=} json
@@ -850,10 +794,6 @@ async function main(args) {
         return
     }
     const [command, ...rest] = args.positionals
-    if (command === 'serve') {
-        await runServe(args)
-        return
-    }
     if (command === 'checkout') {
         const branch = rest[0]
         if (!branch) throw new Error('Missing branch name for checkout')
@@ -938,6 +878,13 @@ async function main(args) {
         const collection = rest[0]
         if (!collection) throw new Error('Missing collection name for rebuild')
         const output = await runRebuild(collection, args.root, args.worm, args.json)
+        if (output) await writeCliText(output, { pagerMode: cliRuntimeOptions.pagerMode })
+        return
+    }
+    if (command === 'verify') {
+        const collection = rest[0]
+        if (!collection) throw new Error('Missing collection name for verify')
+        const output = await runVerify(collection, args.root, args.json)
         if (output) await writeCliText(output, { pagerMode: cliRuntimeOptions.pagerMode })
         return
     }

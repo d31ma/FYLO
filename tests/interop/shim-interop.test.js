@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
+import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -19,7 +20,7 @@ const shimRoot = path.join(repoRoot, 'clients')
 async function run(args, options = {}) {
     const proc = Bun.spawn(args, {
         cwd: options.cwd ?? repoRoot,
-        env: { ...process.env, ...options.env },
+        env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1', ...options.env },
         stdin: options.stdin === undefined ? 'ignore' : new Blob([options.stdin]),
         stdout: 'pipe',
         stderr: 'pipe'
@@ -86,10 +87,17 @@ with Fylo(${JSON.stringify(root)}, binary=${JSON.stringify(binaryPath)}) as db:
     doc_id = db.put_data('users', {'name': 'Ada', 'score': 90})
     doc = db.get_latest('users', doc_id)
     found = db.find_docs('users', {'$ops': [{'score': {'$gte': 50}}]})
-    print(json.dumps({'ok': True, 'id': doc_id, 'doc': doc, 'found': found}))
+    db.set_meta('users', doc_id, {'source': 'python', 'reviewed': False})
+    initial_meta = db.get_meta('users', doc_id)
+    db.set_meta('users', doc_id, {'source': None})
+    meta = db.get_meta('users', doc_id)
+    assert initial_meta == {'source': 'python', 'reviewed': False}, initial_meta
+    assert meta == {'reviewed': False}, meta
+    print(json.dumps({'ok': True, 'id': doc_id, 'doc': doc, 'found': found, 'meta': meta}))
 `
         const result = await run(['python3', '-c', script])
         expectSuccess('python shim interop', result)
+        expect(existsSync(path.join(shimRoot, 'python', '__pycache__'))).toBe(false)
         const parsed = JSON.parse(result.stdout)
         expect(parsed.ok).toBe(true)
         expect(parsed.found[parsed.id].name).toBe('Ada')
@@ -106,7 +114,13 @@ try {
   const id = await db.putData('users', { name: 'Ada', score: 90 })
   const doc = await db.getLatest('users', id)
   const found = await db.findDocs('users', { $ops: [{ score: { $gte: 50 } }] })
-  console.log(JSON.stringify({ ok: true, id, doc, found }))
+  await db.setMeta('users', id, { source: 'node', reviewed: false })
+  const initialMeta = await db.getMeta('users', id)
+  await db.setMeta('users', id, { source: null })
+  const meta = await db.getMeta('users', id)
+  if (initialMeta.source !== 'node' || initialMeta.reviewed !== false) throw new Error('bad initial metadata')
+  if ('source' in meta || meta.reviewed !== false) throw new Error('bad updated metadata')
+  console.log(JSON.stringify({ ok: true, id, doc, found, meta }))
 } finally {
   await db.close()
 }
@@ -132,7 +146,13 @@ begin
   id = db.put_data('users', { 'name' => 'Ada', 'score' => 90 })
   doc = db.get_latest('users', id)
   found = db.find_docs('users', { '$ops' => [{ 'score' => { '$gte' => 50 } }] })
-  puts JSON.generate({ ok: true, id: id, doc: doc, found: found })
+  db.set_meta('users', id, { 'source' => 'ruby', 'reviewed' => false })
+  initial_meta = db.get_meta('users', id)
+  db.set_meta('users', id, { 'source' => nil })
+  meta = db.get_meta('users', id)
+  raise 'bad initial metadata' unless initial_meta == { 'source' => 'ruby', 'reviewed' => false }
+  raise 'bad updated metadata' unless meta == { 'reviewed' => false }
+  puts JSON.generate({ ok: true, id: id, doc: doc, found: found, meta: meta })
 ensure
   db.close
 end

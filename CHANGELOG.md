@@ -1,5 +1,48 @@
 # Changelog
 
+## 26.29.03 - 2026-07-15
+
+### Breaking Changes
+
+- Removed the HTTP gateway, `fylo serve`, REST/SSE browser synchronization, and
+  `createSyncedClient`. Browser and mobile clients are local-only.
+
+### Added
+
+- Fluent developer metadata: `put(id, value).metadata(record)`,
+  `put(id).metadata(record)`, and `get(id).metadata()`, with matching machine
+  operations and language-shim methods.
+- Raw-file buckets under `.buckets`, including rekeying, folder browsing,
+  checksum verification, CLI `verify`, and migration from legacy file
+  collections.
+- Browser File System Access support and Fylo Explorer source. Shared website
+  builds exclude Explorer; dedicated-origin builds opt in with
+  `FYLO_EXPLORER_DEDICATED_ORIGIN=1`.
+- Cross-platform metadata persistence: native xattrs on macOS/Linux, a locked
+  and recoverable NTFS ADS manifest on Windows, and an OPFS sidecar in browsers.
+- Durable VCS materialization transactions with object-hash verification,
+  startup recovery, multi-process serialization, and crash-window tests.
+
+### Security
+
+- Reject symlink and reparse-point escapes throughout document, raw-file,
+  metadata, and versioning paths.
+- Hardened SQL/PostgREST maps against prototype pollution and replaced LIKE
+  regular expressions with bounded linear matching.
+- Added fail-closed mobile origin/asset allowlists, payload and pending-request
+  limits, timeouts, cancellation, and renderer/load failure cleanup.
+- Bounded Explorer preview, import, export, and upload memory use; removed FYLO's
+  dynamic-evaluation loader.
+
+### Fixed
+
+- Metadata, rekey, initial raw-file writes, index updates, restore, and merge now
+  roll back or recover atomically across injected failures and process crashes.
+- Release assets are built and verified before draft publication makes the tag
+  visible; failed drafts are cleaned up without moving an existing tag.
+- Client interop now covers metadata round trips/removal and mobile lifecycle
+  failures without regenerating tracked Python bytecode.
+
 ## 26.28.04 - 2026-07-09
 
 ### Breaking Changes

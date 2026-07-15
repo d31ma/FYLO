@@ -1,4 +1,5 @@
-import { chmod, mkdir, open, readdir, rename, rm, stat, utimes } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import { chmod, lstat, mkdir, open, readdir, rename, rm, stat, utimes } from 'node:fs/promises'
 import path from 'node:path'
 import { assertPathInside, validateDocId } from '../core/doc-id.js'
 import { writeDurable, writeDurableStream } from './durable.js'
@@ -20,21 +21,64 @@ export class FilesystemStorage {
      * @returns {Promise<string>}
      */
     async read(target) {
-        return await Bun.file(target).text()
+        const handle = await open(target, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
+        try {
+            return await handle.readFile('utf8')
+        } finally {
+            await handle.close()
+        }
     }
     /**
      * @param {string} target
      * @returns {Promise<Uint8Array>}
      */
     async readBytes(target) {
-        return new Uint8Array(await Bun.file(target).arrayBuffer())
+        const handle = await open(target, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
+        try {
+            return new Uint8Array(await handle.readFile())
+        } finally {
+            await handle.close()
+        }
     }
     /**
      * @param {string} target
+     * @param {{ start?: number, end?: number }} [range] half-open byte range [start, end)
      * @returns {ReadableStream<Uint8Array>}
      */
-    readStream(target) {
-        return /** @type {ReadableStream<Uint8Array>} */ (Bun.file(target).stream())
+    readStream(target, range) {
+        if (range?.end !== undefined && range.end <= (range.start ?? 0)) {
+            return new ReadableStream({
+                start(controller) {
+                    controller.close()
+                }
+            })
+        }
+        /** @type {import('node:fs').ReadStream | undefined} */
+        let stream
+        return new ReadableStream({
+            async start(controller) {
+                try {
+                    const handle = await open(
+                        target,
+                        constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0)
+                    )
+                    stream = handle.createReadStream({
+                        autoClose: true,
+                        ...(range?.start !== undefined ? { start: range.start } : {}),
+                        ...(range?.end !== undefined ? { end: range.end - 1 } : {})
+                    })
+                    for await (const chunk of stream) {
+                        controller.enqueue(new Uint8Array(/** @type {Buffer} */ (chunk)))
+                    }
+                    controller.close()
+                } catch (error) {
+                    controller.error(error)
+                }
+            },
+            cancel() {
+                stream?.destroy()
+            }
+        })
     }
     /**
      * @param {string} target
@@ -84,7 +128,10 @@ export class FilesystemStorage {
      * @returns {Promise<{ mtimeMs: number, size: number }>}
      */
     async metadata(target) {
-        const metadata = await stat(target)
+        const metadata = await lstat(target)
+        if (metadata.isSymbolicLink() || !metadata.isFile()) {
+            throw new Error(`Storage target must be a regular, non-link file: ${target}`)
+        }
         return { mtimeMs: metadata.mtimeMs, size: metadata.size }
     }
     /**
@@ -138,7 +185,7 @@ export class FilesystemStorage {
      */
     async exists(target) {
         try {
-            await stat(target)
+            await lstat(target)
             return true
         } catch (err) {
             const error = /** @type {NodeJS.ErrnoException} */ (err)
@@ -151,16 +198,17 @@ export class FilesystemStorage {
  * Collection/document lock manager built on advisory filesystem lock files.
  */
 export class FilesystemLockManager {
-    /** @type {string} */
-    root
+    /** @type {(collection: string) => string} */
+    collectionRoot
     /** @type {StorageEngine} */
     storage
     /**
-     * @param {string} root
+     * @param {(collection: string) => string} collectionRoot Resolves a
+     *   collection's on-disk root (kind-aware: `.collections` or `.buckets`).
      * @param {StorageEngine} storage
      */
-    constructor(root, storage) {
-        this.root = root
+    constructor(collectionRoot, storage) {
+        this.collectionRoot = collectionRoot
         this.storage = storage
     }
     /**
@@ -170,7 +218,7 @@ export class FilesystemLockManager {
      */
     async lockPath(collection, docId) {
         await validateDocId(docId)
-        const locksRoot = path.join(this.root, '.collections', collection, 'locks')
+        const locksRoot = path.join(this.collectionRoot(collection), 'locks')
         const target = path.join(locksRoot, `${docId}.lock`)
         assertPathInside(locksRoot, target)
         return target
@@ -206,7 +254,7 @@ export class FilesystemLockManager {
      * @returns {string}
      */
     collectionLockPath(collection) {
-        return path.join(this.root, '.collections', collection, 'locks', 'collection.lock')
+        return path.join(this.collectionRoot(collection), 'locks', 'collection.lock')
     }
     /**
      * Blocking-acquires the collection-level write lock. Serializes
@@ -241,16 +289,17 @@ export class FilesystemLockManager {
  * Append-only event journal used by collection listeners and queue mirroring.
  */
 export class FilesystemEventBus {
-    /** @type {string} */
-    root
+    /** @type {(collection: string) => string} */
+    collectionRoot
     /** @type {StorageEngine} */
     storage
     /**
-     * @param {string} root
+     * @param {(collection: string) => string} collectionRoot Resolves a
+     *   collection's on-disk root (kind-aware: `.collections` or `.buckets`).
      * @param {StorageEngine} storage
      */
-    constructor(root, storage) {
-        this.root = root
+    constructor(collectionRoot, storage) {
+        this.collectionRoot = collectionRoot
         this.storage = storage
     }
     /**
@@ -258,7 +307,7 @@ export class FilesystemEventBus {
      * @returns {string}
      */
     journalPath(collection) {
-        return path.join(this.root, '.collections', collection, 'events', `${collection}.ndjson`)
+        return path.join(this.collectionRoot(collection), 'events', `${collection}.ndjson`)
     }
     /**
      * Appends an event to the collection journal.
@@ -383,7 +432,7 @@ export class FilesystemEventBus {
         let offset = fromOffset
         while (!signal?.aborted) {
             const batch = await this.readSince(collection, offset)
-            if (batch.events.length > 0) {
+            if (batch.events.length > 0 || batch.offset !== offset) {
                 offset = batch.offset
                 yield /** @type {{ events: T[], offset: number }} */ (batch)
             }

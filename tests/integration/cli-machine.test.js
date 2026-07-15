@@ -463,14 +463,7 @@ describe('CLI machine interface', () => {
         const id = JSON.parse(putResponse.stdout).result
         expect(
             await Bun.file(
-                path.join(
-                    root,
-                    '.collections',
-                    'machine-files',
-                    'docs',
-                    id.slice(0, 2),
-                    `${id}.txt`
-                )
+                path.join(root, '.buckets', 'machine-files', 'docs', id.slice(0, 2), `${id}.txt`)
             ).text()
         ).toBe('machine raw bytes')
 

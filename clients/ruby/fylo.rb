@@ -83,6 +83,14 @@ class Fylo
     op("getDoc", "collection" => collection, "id" => id)
   end
 
+  def get_meta(collection, id)
+    op("getMeta", "collection" => collection, "id" => id)
+  end
+
+  def set_meta(collection, id, meta)
+    op("setMeta", "collection" => collection, "id" => id, "meta" => meta)
+  end
+
   def get_latest(collection, id)
     op("getLatest", "collection" => collection, "id" => id)
   end
@@ -204,6 +212,14 @@ class Fylo
 
     def get(id)
       @db.get_doc(@name, id)
+    end
+
+    def get_metadata(id)
+      @db.get_meta(@name, id)
+    end
+
+    def set_metadata(id, meta)
+      @db.set_meta(@name, id, meta)
     end
 
     def latest(id)

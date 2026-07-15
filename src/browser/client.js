@@ -123,6 +123,33 @@ export class BrowserFyloClient {
     }
 }
 
+/** @param {(record: Record<string, any> | undefined, present: boolean) => Promise<string>} write @param {(record: Record<string, any>) => Promise<string>} writeMetadata */
+function directMetadataPutOperation(write, writeMetadata) {
+    /** @type {Record<string, any> | undefined} */
+    let metadata
+    let hasMetadata = false
+    /** @type {Promise<string> | undefined} */
+    let operation
+    const start = () => (operation ??= Promise.resolve().then(() => write(metadata, hasMetadata)))
+    return {
+        then(
+            /** @type {(value: string) => any} */ onFulfilled,
+            /** @type {(reason: any) => any} */ onRejected
+        ) {
+            return start().then(onFulfilled, onRejected)
+        },
+        async metadata(/** @type {Record<string, any>} */ record) {
+            if (!operation) {
+                metadata = record
+                hasMetadata = true
+                return await start()
+            }
+            await start()
+            return await writeMetadata(record)
+        }
+    }
+}
+
 export class BrowserDirectCollection {
     /** @type {any} */
     find
@@ -164,9 +191,31 @@ export class BrowserDirectCollection {
         return res.result
     }
 
-    /** @param {Record<string, any>} data */
-    put(data) {
-        return this.#req('putData', { data })
+    /** @param {Record<string, any> | string} dataOrId @param {Record<string, any>=} data */
+    put(dataOrId, data) {
+        if (typeof dataOrId === 'string') {
+            const id = dataOrId
+            if (arguments.length === 1) {
+                return {
+                    metadata: (/** @type {Record<string, any>} */ record) =>
+                        this.#req('setMeta', { id, meta: record })
+                }
+            }
+            return directMetadataPutOperation(
+                async (record, present) =>
+                    /** @type {string} */ (
+                        await this.#req('putData', {
+                            data: { [id]: data },
+                            ...(present ? { meta: record } : {})
+                        })
+                    ),
+                async (record) => {
+                    await this.#req('setMeta', { id, meta: record })
+                    return id
+                }
+            )
+        }
+        return this.#req('putData', { data: dataOrId })
     }
 
     /** @param {Record<string, any>[]} batch */
@@ -215,6 +264,7 @@ export class BrowserDirectCollection {
                 if (!res.ok) throw new Error(res.error?.message ?? 'browser getDoc failed')
                 return res.result
             },
+            metadata: async () => await this.#req('getMeta', { id }),
             async *collect() {
                 const doc = await this.once()
                 if (doc && typeof doc === 'object' && Object.keys(doc).length > 0) yield doc

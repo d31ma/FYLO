@@ -94,7 +94,10 @@ describe('FilesystemLockManager', () => {
     test('acquire/release with valid TTID-format docId', async () => {
         const collection = 'lm-test'
         const storage = new FilesystemStorage()
-        const manager = new FilesystemLockManager(root, storage)
+        const manager = new FilesystemLockManager(
+            (name) => path.join(root, '.collections', name),
+            storage
+        )
         const docId = TTID.generate()
         expect(await manager.acquire(collection, docId, 'owner-A', 60_000)).toBe(true)
         expect(await manager.acquire(collection, docId, 'owner-B', 60_000)).toBe(false)

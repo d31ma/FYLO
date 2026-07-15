@@ -245,7 +245,7 @@ export class BrowserPrefixIndexCodec {
          * @param {string=} parentField
          */
         const walk = async (target, parentField) => {
-            for (const field in target) {
+            for (const field of Object.keys(target)) {
                 const fieldPath = parentField ? `${parentField}/${field}` : field
                 const value = target[field]
                 if (value && typeof value === 'object' && !Array.isArray(value)) {
@@ -299,6 +299,10 @@ export class BrowserPrefixIndexCodec {
         }
         if (operand.$like !== undefined) {
             const pattern = operand.$like
+            // `_` is a one-character wildcard. Existing prefix/reverse/ngram
+            // indexes cannot encode that positional constraint safely, so use
+            // the bounded in-memory matcher rather than risk false negatives.
+            if (pattern.includes('_')) return null
             const wildcards = (pattern.match(/%/g) ?? []).length
             if (wildcards === 0) {
                 return [

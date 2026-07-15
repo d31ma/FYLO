@@ -104,6 +104,10 @@ namespace Fylo
             Op($"{{\"op\":\"putData\",\"collection\":{J(collection)},\"data\":{J(data)}}}");
         public JsonElement GetDoc(string collection, string id) =>
             Op($"{{\"op\":\"getDoc\",\"collection\":{J(collection)},\"id\":{J(id)}}}");
+        public JsonElement GetMeta(string collection, string id) =>
+            Op($"{{\"op\":\"getMeta\",\"collection\":{J(collection)},\"id\":{J(id)}}}");
+        public JsonElement SetMeta(string collection, string id, object meta) =>
+            Op($"{{\"op\":\"setMeta\",\"collection\":{J(collection)},\"id\":{J(id)},\"meta\":{J(meta)}}}");
         public JsonElement GetLatest(string collection, string id) =>
             Op($"{{\"op\":\"getLatest\",\"collection\":{J(collection)},\"id\":{J(id)}}}");
         public JsonElement PatchDoc(string collection, string id, object newDoc) =>
@@ -182,6 +186,8 @@ namespace Fylo
         public JsonElement Rebuild() => _db.RebuildCollection(_name);
         public JsonElement Put(object data) => _db.PutData(_name, data);
         public JsonElement Get(string id) => _db.GetDoc(_name, id);
+        public JsonElement GetMeta(string id) => _db.GetMeta(_name, id);
+        public JsonElement SetMeta(string id, object meta) => _db.SetMeta(_name, id, meta);
         public JsonElement Latest(string id) => _db.GetLatest(_name, id);
         public JsonElement Patch(string id, object newDoc) => _db.PatchDoc(_name, id, newDoc);
         public JsonElement Delete(string id) => _db.DelDoc(_name, id);
