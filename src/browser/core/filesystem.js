@@ -24,6 +24,7 @@
  * @property {(path: string) => Promise<boolean>} exists
  * @property {(path: string) => Promise<boolean>} isDirectory
  * @property {(path: string) => Promise<number>} mtimeMs
+ * @property {(path: string) => Promise<number>} size
  * @property {(path: string, options?: { recursive?: boolean }) => Promise<void>} mkdir
  * @property {(path: string) => Promise<string[]>} list
  * @property {(path: string, options?: { recursive?: boolean }) => Promise<void>} rmdir

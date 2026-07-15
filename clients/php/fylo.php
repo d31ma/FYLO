@@ -85,6 +85,14 @@ class Fylo
     {
         return $this->op('getDoc', ['collection' => $collection, 'id' => $id]);
     }
+    public function getMeta(string $collection, string $id)
+    {
+        return $this->op('getMeta', ['collection' => $collection, 'id' => $id]);
+    }
+    public function setMeta(string $collection, string $id, array $meta)
+    {
+        return $this->op('setMeta', ['collection' => $collection, 'id' => $id, 'meta' => $meta]);
+    }
     public function getLatest(string $collection, string $id)
     {
         return $this->op('getLatest', ['collection' => $collection, 'id' => $id]);
@@ -210,6 +218,14 @@ class FyloCollection
     public function get(string $id)
     {
         return $this->db->getDoc($this->name, $id);
+    }
+    public function getMetadata(string $id)
+    {
+        return $this->db->getMeta($this->name, $id);
+    }
+    public function setMetadata(string $id, array $meta)
+    {
+        return $this->db->setMeta($this->name, $id, $meta);
     }
     public function latest(string $id)
     {

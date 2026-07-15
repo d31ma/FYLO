@@ -16,7 +16,7 @@
 
 /** @typedef {'await-sync' | 'fire-and-forget'} FyloSyncMode */
 /** @typedef {'off' | 'strict'} FyloWormMode */
-/** @typedef {'put' | 'patch' | 'delete' | 'restore'} FyloAutoCommitOperation */
+/** @typedef {'put' | 'patch' | 'delete' | 'restore' | 'meta' | 'rekey'} FyloAutoCommitOperation */
 
 /**
  * @typedef {object} FyloWormOptions

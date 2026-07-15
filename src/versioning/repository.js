@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { cp, mkdir, readFile, readdir, rm, stat } from 'node:fs/promises'
+import { cp, mkdir, open, readFile, readdir, rename, rm, stat } from 'node:fs/promises'
 import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import TTID from '../vendor/ttid.js'
@@ -7,11 +7,37 @@ import { writeDurable } from '../storage/durable.js'
 import { FilesystemEngine } from '../storage/engine.js'
 import { tryReleaseFileLock, waitAcquireFileLock } from '../storage/fs-lock.js'
 import { rawFileId } from '../core/raw-file.js'
+import { CHECKSUM_XATTR } from '../storage/files.js'
+import { getXattr, listXattr, setXattr } from '../storage/xattr.js'
+import { assertSafeStoragePath } from '../storage/safe-path.js'
 
 const DEFAULT_BRANCH = 'main'
 const METADATA_DIR = '.fylo-vcs'
 const COLLECTIONS_DIR = '.collections'
+const BUCKETS_DIR = '.buckets'
+// Both on-disk namespaces version control walks: document collections and file
+// buckets share an identical internal layout (docs/, .deleted/, index/, ...).
+const DATA_DIRS = [COLLECTIONS_DIR, BUCKETS_DIR]
 const OBJECTS_DIR = 'objects'
+// Document metadata lives in `user.fylo.*` extended attributes on the files
+// themselves. Commits still record it under the `.metadata` namespace as a
+// derived canonical blob, so history stays byte-compatible with old commits
+// (whose blobs were `{version:1,key}` sidecar files) and diffs detect
+// metadata changes by hash like any other document change.
+const FYLO_XATTR_PREFIX = 'user.fylo.'
+
+/**
+ * @typedef {'preparing' | 'staged' | 'swapping' | 'backup-moved' | 'installed' | 'ref-updated'} MaterializationPhase
+ */
+
+/**
+ * @typedef {object} MaterializationTransaction
+ * @property {1} version
+ * @property {MaterializationPhase} phase
+ * @property {string} targetRoot repository-relative working-tree root
+ * @property {Array<{ relative: string, collection: string, hadCurrent: boolean, shouldInstall: boolean }>} targets
+ * @property {{ prior: FyloBranchRef, target: FyloBranchRef } | null} ref
+ */
 
 /**
  * @typedef {object} FyloBranchRef
@@ -143,17 +169,80 @@ const OBJECTS_DIR = 'objects'
 export class VersionRepository {
     /** @type {string} */
     root
+    /** @type {((phase: MaterializationPhase, transactionRoot: string) => void | Promise<void>) | undefined} */
+    onMaterializationPhase
 
     /**
      * @param {string} root
+     * @param {{ onMaterializationPhase?: (phase: MaterializationPhase, transactionRoot: string) => void | Promise<void> }} [options]
      */
-    constructor(root) {
+    constructor(root, options = {}) {
         this.root = root
+        this.onMaterializationPhase = options.onMaterializationPhase
     }
 
     /** @returns {string} */
     metadataRoot() {
         return path.join(this.root, METADATA_DIR)
+    }
+
+    /** @returns {string} */
+    stagingRoot() {
+        return path.join(this.metadataRoot(), 'staging')
+    }
+
+    /** @returns {string} */
+    materializationLockPath() {
+        return path.join(this.metadataRoot(), 'locks', 'materialization.lock')
+    }
+
+    /** @param {string} collection @returns {string} */
+    worktreeLockPath(collection) {
+        validateBranchName(collection)
+        const locksRoot = path.join(this.metadataRoot(), 'locks', 'worktree')
+        const target = path.join(locksRoot, `${collection}.lock`)
+        assertPathInside(locksRoot, target)
+        return target
+    }
+
+    /**
+     * Collections created with `{ versioned: false }` are excluded from
+     * snapshots, diffs, and restores — their working files are the only copy.
+     * @param {string} collection
+     * @returns {Promise<boolean>}
+     */
+    async isVersionedCollection(collection) {
+        try {
+            const descriptor = await readFile(
+                path.join(this.root, '.fylo-catalog', 'collections', `${collection}.json`),
+                'utf8'
+            )
+            return (
+                /** @type {{ versioned?: unknown }} */ (JSON.parse(descriptor)).versioned !== false
+            )
+        } catch {
+            return true
+        }
+    }
+
+    /**
+     * On-disk namespace for a collection, from its (unversioned, persistent)
+     * catalog descriptor: `.buckets` for file collections, else `.collections`.
+     * Used on the restore side, where the committed tree doesn't record which.
+     * @param {string} collection @returns {Promise<string>}
+     */
+    async collectionDataDir(collection) {
+        try {
+            const descriptor = await readFile(
+                path.join(this.root, '.fylo-catalog', 'collections', `${collection}.json`),
+                'utf8'
+            )
+            return /** @type {{ kind?: unknown }} */ (JSON.parse(descriptor)).kind === 'file'
+                ? BUCKETS_DIR
+                : COLLECTIONS_DIR
+        } catch {
+            return COLLECTIONS_DIR
+        }
     }
 
     /** @returns {string} */
@@ -214,6 +303,7 @@ export class VersionRepository {
         await mkdir(this.refsRoot(), { recursive: true })
         await mkdir(this.commitsRoot(), { recursive: true })
         await mkdir(this.hiddenBranchesRoot(), { recursive: true })
+        await mkdir(this.stagingRoot(), { recursive: true })
         if (!(await exists(this.refPath(DEFAULT_BRANCH)))) {
             await this.writeRef({
                 name: DEFAULT_BRANCH,
@@ -226,6 +316,188 @@ export class VersionRepository {
             })
         }
         if (!(await exists(this.headPath()))) await this.writeHead(DEFAULT_BRANCH)
+        await this.recoverMaterializationTransactions()
+    }
+
+    /**
+     * Serializes repository materialization and protects every affected
+     * collection against ordinary storage writes through stable locks outside
+     * the directories being swapped.
+     * @template T
+     * @param {string[]} collections
+     * @param {() => Promise<T>} action
+     * @returns {Promise<T>}
+     */
+    async withMaterializationGuards(collections, action) {
+        const owner = String(Bun.randomUUIDv7())
+        const repositoryLock = this.materializationLockPath()
+        await waitAcquireFileLock(repositoryLock, owner, {
+            ttlMs: 300_000,
+            waitTimeoutMs: 60_000,
+            heartbeat: true
+        })
+        try {
+            return await this.withWorktreeLocks(collections, owner, action)
+        } finally {
+            await tryReleaseFileLock(repositoryLock, owner)
+        }
+    }
+
+    /** @template T @param {string[]} collections @param {string} owner @param {() => Promise<T>} action @returns {Promise<T>} */
+    async withWorktreeLocks(collections, owner, action) {
+        /** @type {string[]} */
+        const acquired = []
+        try {
+            for (const collection of [...new Set(collections)].sort()) {
+                const lockPath = this.worktreeLockPath(collection)
+                await waitAcquireFileLock(lockPath, owner, {
+                    ttlMs: 300_000,
+                    waitTimeoutMs: 60_000,
+                    heartbeat: true
+                })
+                acquired.push(lockPath)
+            }
+            return await action()
+        } finally {
+            for (const lockPath of acquired.reverse()) {
+                await tryReleaseFileLock(lockPath, owner)
+            }
+        }
+    }
+
+    /**
+     * Replays stranded materialization transactions at startup. Transactions
+     * before `installed` roll back to their prior tree/ref; `installed` and
+     * later roll forward to the target ref. Both decisions are idempotent and
+     * inferred from the durable phase plus the current/backup/staged paths.
+     * @returns {Promise<void>}
+     */
+    async recoverMaterializationTransactions() {
+        const owner = String(Bun.randomUUIDv7())
+        const repositoryLock = this.materializationLockPath()
+        await waitAcquireFileLock(repositoryLock, owner, {
+            ttlMs: 300_000,
+            waitTimeoutMs: 60_000,
+            heartbeat: true
+        })
+        try {
+            // The staging parent is a permanent coordination directory. It may
+            // be absent on first initialization (or after an older FYLO build
+            // removed it), so recreate it while holding the repository lock
+            // immediately before enumeration.
+            await mkdir(this.stagingRoot(), { recursive: true })
+            for (const entry of await readdir(this.stagingRoot(), { withFileTypes: true })) {
+                if (!entry.isDirectory() || entry.isSymbolicLink()) continue
+                const transactionRoot = path.join(this.stagingRoot(), entry.name)
+                let manifest
+                try {
+                    manifest = await this.readMaterializationManifest(transactionRoot)
+                } catch (error) {
+                    if (
+                        /** @type {NodeJS.ErrnoException} */ (error).code === 'ENOENT' &&
+                        !(await exists(path.join(transactionRoot, 'previous')))
+                    ) {
+                        // The process died while durably creating the first
+                        // `preparing` manifest. No swap can precede that write,
+                        // so this directory contains scratch/staged data only.
+                        await this.cleanupMaterialization(transactionRoot)
+                        continue
+                    }
+                    throw error
+                }
+                await this.withWorktreeLocks(
+                    manifest.targets.map((target) => target.collection),
+                    owner,
+                    async () => {
+                        if (manifest.phase === 'installed' || manifest.phase === 'ref-updated') {
+                            await this.rollForwardMaterialization(transactionRoot, manifest)
+                        } else {
+                            await this.rollBackMaterialization(transactionRoot, manifest)
+                        }
+                    }
+                )
+            }
+        } finally {
+            await tryReleaseFileLock(repositoryLock, owner)
+        }
+    }
+
+    /** @param {string} transactionRoot @returns {Promise<MaterializationTransaction>} */
+    async readMaterializationManifest(transactionRoot) {
+        const target = path.join(transactionRoot, 'transaction.json')
+        assertPathInside(this.stagingRoot(), target)
+        const parsed = /** @type {MaterializationTransaction} */ (
+            JSON.parse(await readFile(target, 'utf8'))
+        )
+        validateMaterializationManifest(parsed)
+        return parsed
+    }
+
+    /** @param {string} transactionRoot @param {MaterializationTransaction} manifest */
+    async writeMaterializationManifest(transactionRoot, manifest) {
+        await writeDurable(
+            path.join(transactionRoot, 'transaction.json'),
+            `${JSON.stringify(manifest, null, 2)}\n`
+        )
+        await this.onMaterializationPhase?.(manifest.phase, transactionRoot)
+    }
+
+    /** @param {MaterializationTransaction} manifest @returns {string} */
+    materializationTargetRoot(manifest) {
+        const target = path.resolve(this.root, manifest.targetRoot)
+        assertPathInside(this.root, target)
+        return target
+    }
+
+    /** @param {string} transactionRoot @param {MaterializationTransaction} manifest */
+    async rollBackMaterialization(transactionRoot, manifest) {
+        const targetRoot = this.materializationTargetRoot(manifest)
+        for (const target of [...manifest.targets].reverse()) {
+            const current = path.join(targetRoot, target.relative)
+            const backup = path.join(transactionRoot, 'previous', target.relative)
+            assertPathInside(targetRoot, current)
+            assertPathInside(transactionRoot, backup)
+            if (await exists(backup)) {
+                await rm(current, { recursive: true, force: true })
+                await renameDurable(backup, current)
+            } else if (!target.hadCurrent) {
+                await rm(current, { recursive: true, force: true })
+                await syncDirectory(path.dirname(current))
+            }
+        }
+        if (manifest.ref) await this.writeRef(manifest.ref.prior)
+        await this.cleanupMaterialization(transactionRoot)
+    }
+
+    /** @param {string} transactionRoot @param {MaterializationTransaction} manifest */
+    async rollForwardMaterialization(transactionRoot, manifest) {
+        const targetRoot = this.materializationTargetRoot(manifest)
+        for (const target of manifest.targets) {
+            const current = path.join(targetRoot, target.relative)
+            const staged = path.join(transactionRoot, 'next', target.relative)
+            assertPathInside(targetRoot, current)
+            assertPathInside(transactionRoot, staged)
+            if (!target.shouldInstall) {
+                await rm(current, { recursive: true, force: true })
+                await syncDirectory(path.dirname(current))
+            } else if (!(await exists(current))) {
+                if (!(await exists(staged))) {
+                    throw new Error(
+                        `Cannot recover installed materialization target: ${target.relative}`
+                    )
+                }
+                await mkdir(path.dirname(current), { recursive: true })
+                await renameDurable(staged, current)
+            }
+        }
+        if (manifest.ref) await this.writeRef(manifest.ref.target)
+        await this.cleanupMaterialization(transactionRoot)
+    }
+
+    /** @param {string} transactionRoot */
+    async cleanupMaterialization(transactionRoot) {
+        await rm(transactionRoot, { recursive: true, force: true })
+        await syncDirectory(this.stagingRoot())
     }
 
     /**
@@ -411,9 +683,10 @@ export class VersionRepository {
      * @param {string[]} parents
      * @param {string} message
      * @param {string | null} rootHash
+     * @param {{ updateRef?: boolean }} [options]
      * @returns {Promise<FyloCommitManifest>}
      */
-    async writeCommit(branch, ref, parents, message, rootHash) {
+    async writeCommit(branch, ref, parents, message, rootHash, options = {}) {
         const commitId = String(await TTID.generate())
         const commitRoot = await this.commitRoot(commitId)
         await mkdir(commitRoot, { recursive: true })
@@ -433,7 +706,9 @@ export class VersionRepository {
             path.join(commitRoot, 'manifest.json'),
             `${JSON.stringify(manifest, null, 2)}\n`
         )
-        await this.writeRef({ ...ref, head: commitId, updatedAt: manifest.createdAt })
+        if (options.updateRef !== false) {
+            await this.writeRef({ ...ref, head: commitId, updatedAt: manifest.createdAt })
+        }
         return manifest
     }
 
@@ -509,11 +784,14 @@ export class VersionRepository {
             }
         }
         const branchRoot = this.branchRoot(branch)
-        await this.materializeTree(await this.readCommitTree(commitId), branchRoot)
-        await this.writeRef({
+        const targetTree = await this.readCommitTree(commitId)
+        const targetRef = {
             ...ref,
             head: commitId,
             updatedAt: new Date().toISOString()
+        }
+        await this.materializeTree(targetTree, branchRoot, {
+            ref: { prior: ref, target: targetRef }
         })
         return {
             branch,
@@ -550,11 +828,18 @@ export class VersionRepository {
             return mergeResult(branch, theirs.id, theirs.id, oursHead, 'already-up-to-date', true)
         }
         if (!oursHead || (await this.isAncestor(oursHead, theirs.id))) {
-            await this.materializeTree(
-                await this.readCommitTree(theirs.id),
-                this.branchRoot(branch)
-            )
-            await this.writeRef({ ...ref, head: theirs.id, updatedAt: new Date().toISOString() })
+            const branchRoot = this.branchRoot(branch)
+            const targetTree = await this.readCommitTree(theirs.id)
+            await this.materializeTree(targetTree, branchRoot, {
+                ref: {
+                    prior: ref,
+                    target: {
+                        ...ref,
+                        head: theirs.id,
+                        updatedAt: new Date().toISOString()
+                    }
+                }
+            })
             return mergeResult(branch, theirs.id, oursHead, theirs.id, 'fast-forward', true)
         }
         const base = await this.commonAncestor(oursHead, theirs.id)
@@ -573,10 +858,35 @@ export class VersionRepository {
                 conflicts: plan.conflicts
             }
         }
-        for (const change of plan.apply) await this.applyTreeChange(this.branchRoot(branch), change)
-        await rebuildChangedCollections(this.branchRoot(branch), plan.apply)
+        // Verify every referenced object (including parsing metadata objects)
+        // before the first working-tree mutation.
+        for (const change of plan.apply) {
+            if (change.deleted) continue
+            const content = await this.readObject(change.hash)
+            if (change.kind === 'metadata') parseXattrBlob(content)
+        }
+        const branchRoot = this.branchRoot(branch)
+        const mergedTree = await this.readCommitTree(oursHead)
+        for (const change of plan.apply) {
+            const key = treeEntryKey(change)
+            if (change.deleted) mergedTree.delete(key)
+            else mergedTree.set(key, change)
+        }
         const message = options.message?.trim() || `Merge ${source} into ${branch}`
-        const commit = await this.createCommit(branch, ref, [oursHead, theirs.id], message)
+        const commit = await this.writeCommit(
+            branch,
+            ref,
+            [oursHead, theirs.id],
+            message,
+            await this.writeTreeFromEntries(mergedTree),
+            { updateRef: false }
+        )
+        await this.materializeTree(mergedTree, branchRoot, {
+            ref: {
+                prior: ref,
+                target: { ...ref, head: commit.id, updatedAt: commit.createdAt }
+            }
+        })
         return {
             branch,
             source: theirs.id,
@@ -629,7 +939,9 @@ export class VersionRepository {
             const branch = await this.currentBranch()
             return {
                 label: `${branch}:WORKTREE`,
-                tree: await readDocumentTree(this.branchRoot(branch))
+                tree: await readDocumentTree(this.branchRoot(branch), (c) =>
+                    this.isVersionedCollection(c)
+                )
             }
         }
         if (normalized === 'HEAD') {
@@ -644,7 +956,12 @@ export class VersionRepository {
         }
         validateBranchName(normalized)
         const branchRef = await this.readRef(normalized)
-        return { label: normalized, tree: await readDocumentTree(this.branchRoot(branchRef.name)) }
+        return {
+            label: normalized,
+            tree: await readDocumentTree(this.branchRoot(branchRef.name), (c) =>
+                this.isVersionedCollection(c)
+            )
+        }
     }
 
     /**
@@ -810,7 +1127,10 @@ export class VersionRepository {
      */
     async writeObject(hash, content) {
         const target = this.objectPath(hash)
-        if (await exists(target)) return
+        if (await exists(target)) {
+            await this.readObject(hash)
+            return
+        }
         await writeDurable(target, content)
     }
 
@@ -819,7 +1139,12 @@ export class VersionRepository {
      * @returns {Promise<Buffer>}
      */
     async readObject(hash) {
-        return await readFile(this.objectPath(hash))
+        const content = await readFile(this.objectPath(hash))
+        const actual = createHash('sha256').update(content).digest('hex')
+        if (actual !== hash) {
+            throw new Error(`Corrupt version object ${hash}: content hashes to ${actual}`)
+        }
+        return content
     }
 
     /**
@@ -859,6 +1184,9 @@ export class VersionRepository {
     async flattenTree(rootHash, tree) {
         for (const collectionNode of await this.readTreeNode(rootHash)) {
             const collection = collectionNode.name
+            // The committed tree doesn't record the namespace dir; the current
+            // catalog descriptor is the authority for where it restores to.
+            const dataDir = await this.collectionDataDir(collection)
             for (const kindNode of await this.readTreeNode(collectionNode.hash)) {
                 const namespace = kindNode.name
                 const kind = versionedKindForNamespace(namespace)
@@ -872,7 +1200,7 @@ export class VersionRepository {
                             kind,
                             id,
                             path: path.join(
-                                COLLECTIONS_DIR,
+                                dataDir,
                                 collection,
                                 namespace,
                                 bucketNode.name,
@@ -1062,19 +1390,24 @@ export class VersionRepository {
             const dedupeKey = `${change.collection}/${id}`
             if (seen.has(dedupeKey)) continue
             seen.add(dedupeKey)
+            if (!(await this.isVersionedCollection(change.collection))) continue
             const bucket = id.slice(0, 2)
-            for (const namespace of ['docs', '.deleted', '.metadata']) {
+            const changeDataDir = await this.collectionDataDir(change.collection)
+            /** @type {string | null} */
+            let documentPath = null
+            for (const namespace of ['docs', '.deleted']) {
                 const namespaceRoot = path.join(
                     branchRoot,
-                    COLLECTIONS_DIR,
+                    changeDataDir,
                     change.collection,
                     namespace,
                     bucket
                 )
-                const filePath = await findVersionedFile(namespaceRoot, id)
+                const filePath = await findVersionedFile(branchRoot, namespaceRoot, id)
                 /** @type {{ filename: string, hash: string } | null} */
                 let blob = null
                 if (filePath) {
+                    documentPath ??= filePath
                     const content = await readFile(filePath)
                     const hash = createHash('sha256').update(content).digest('hex')
                     await this.writeObject(hash, content)
@@ -1085,6 +1418,18 @@ export class VersionRepository {
                     bucket
                 ).set(id, blob)
             }
+            /** @type {{ filename: string, hash: string } | null} */
+            let metadataBlob = null
+            const content = documentPath ? xattrBlobForFile(documentPath) : null
+            if (content) {
+                const hash = createHash('sha256').update(content).digest('hex')
+                await this.writeObject(hash, content)
+                metadataBlob = { filename: `${id}.json`, hash }
+            }
+            getOrCreate(
+                getOrCreate(getOrCreate(grouped, change.collection), '.metadata'),
+                bucket
+            ).set(id, metadataBlob)
         }
         return grouped
     }
@@ -1100,37 +1445,90 @@ export class VersionRepository {
     async snapshotWorkingTree(branchRoot) {
         /** @type {Map<string, DocumentTreeEntry>} */
         const tree = new Map()
-        const collectionsRoot = path.join(branchRoot, COLLECTIONS_DIR)
-        if (!(await exists(collectionsRoot))) return tree
-        for (const collectionEntry of await readdir(collectionsRoot, { withFileTypes: true })) {
-            if (!collectionEntry.isDirectory()) continue
-            const collection = collectionEntry.name
-            const collectionRoot = path.join(collectionsRoot, collection)
-            await this.snapshotNamespace(tree, collectionRoot, collection, 'docs', 'active')
-            await this.snapshotNamespace(tree, collectionRoot, collection, '.deleted', 'deleted')
-            await this.snapshotNamespace(tree, collectionRoot, collection, '.metadata', 'metadata')
+        for (const dataDir of DATA_DIRS) {
+            const collectionsRoot = path.join(branchRoot, dataDir)
+            if (!(await exists(collectionsRoot))) continue
+            await assertSafeStoragePath(branchRoot, collectionsRoot, { finalType: 'directory' })
+            for (const collectionEntry of await readdir(collectionsRoot, { withFileTypes: true })) {
+                if (collectionEntry.isSymbolicLink()) {
+                    throw new Error(
+                        `Version storage path contains a symbolic link: ${path.join(collectionsRoot, collectionEntry.name)}`
+                    )
+                }
+                if (!collectionEntry.isDirectory()) continue
+                const collection = collectionEntry.name
+                if (!(await this.isVersionedCollection(collection))) continue
+                const collectionRoot = path.join(collectionsRoot, collection)
+                await this.snapshotNamespace(
+                    tree,
+                    branchRoot,
+                    collectionRoot,
+                    collection,
+                    'docs',
+                    'active',
+                    dataDir
+                )
+                await this.snapshotNamespace(
+                    tree,
+                    branchRoot,
+                    collectionRoot,
+                    collection,
+                    '.deleted',
+                    'deleted',
+                    dataDir
+                )
+                for (const entry of await collectXattrEntries(
+                    branchRoot,
+                    collectionRoot,
+                    collection,
+                    dataDir
+                )) {
+                    const hash = createHash('sha256').update(entry.content).digest('hex')
+                    await this.writeObject(hash, entry.content)
+                    tree.set(`${collection}/metadata/${entry.id}.json`, {
+                        collection,
+                        kind: 'metadata',
+                        id: entry.id,
+                        path: entry.path,
+                        hash
+                    })
+                }
+            }
         }
         return tree
     }
 
     /**
      * @param {Map<string, DocumentTreeEntry>} tree
+     * @param {string} branchRoot
      * @param {string} collectionRoot
      * @param {string} collection
      * @param {string} namespace
      * @param {FyloVersionedDocumentKind} kind
+     * @param {string} dataDir Top-level namespace dir (.collections or .buckets)
      * @returns {Promise<void>}
      */
-    async snapshotNamespace(tree, collectionRoot, collection, namespace, kind) {
+    async snapshotNamespace(
+        tree,
+        branchRoot,
+        collectionRoot,
+        collection,
+        namespace,
+        kind,
+        dataDir
+    ) {
         const namespaceRoot = path.join(collectionRoot, namespace)
         if (!(await exists(namespaceRoot))) return
+        await assertSafeStoragePath(branchRoot, namespaceRoot, { finalType: 'directory' })
         for (const file of await listFiles(namespaceRoot)) {
             const filename = path.basename(file)
             const id = rawFileId(filename)
             if (!id || !(await TTID.isTTID(id))) continue
             let content
             try {
-                content = await readFile(path.join(namespaceRoot, file))
+                const target = path.join(namespaceRoot, file)
+                await assertSafeStoragePath(branchRoot, target, { finalType: 'file' })
+                content = await readFile(target)
             } catch (err) {
                 // A concurrent write can move/replace this file between listing
                 // and reading; skip the vanished version — the next auto-commit
@@ -1144,7 +1542,7 @@ export class VersionRepository {
                 collection,
                 kind,
                 id,
-                path: path.join(COLLECTIONS_DIR, collection, namespace, file),
+                path: path.join(dataDir, collection, namespace, file),
                 hash
             })
         }
@@ -1157,42 +1555,133 @@ export class VersionRepository {
      *
      * @param {Map<string, DocumentTreeEntry>} tree
      * @param {string} targetRoot
+     * @param {{ ref?: { prior: FyloBranchRef, target: FyloBranchRef } }} [options]
      * @returns {Promise<void>}
      */
-    async materializeTree(tree, targetRoot) {
-        await rm(path.join(targetRoot, COLLECTIONS_DIR), { recursive: true, force: true })
-        /** @type {Set<string>} */
-        const collections = new Set()
+    async materializeTree(tree, targetRoot, options = {}) {
+        assertPathInside(this.root, targetRoot)
+        /** @type {Map<string, Buffer>} */
+        const objects = new Map()
+        /** @type {Map<string, string>} */
+        const collections = new Map()
+        /** @type {DocumentTreeEntry[]} */
+        const metadataEntries = []
         for (const entry of tree.values()) {
-            const target = path.join(targetRoot, entry.path)
-            assertPathInside(targetRoot, target)
-            await writeDurable(target, await this.readObject(entry.hash))
-            collections.add(entry.collection)
+            if (!(await this.isVersionedCollection(entry.collection))) continue
+            collections.set(entry.collection, await this.collectionDataDir(entry.collection))
+            if (!objects.has(entry.hash)) objects.set(entry.hash, await this.readObject(entry.hash))
+            if (entry.kind === 'metadata') {
+                metadataEntries.push(entry)
+                parseXattrBlob(/** @type {Buffer} */ (objects.get(entry.hash)))
+                continue
+            }
         }
-        if (collections.size === 0) return
-        const engine = new FilesystemEngine(targetRoot, { catalogRoot: this.root })
-        for (const collection of collections) {
-            await engine.ensureCollection(collection)
-            await engine.rebuildCollection(collection)
+        /** @type {Map<string, { dataDir: string, collection: string }>} */
+        const affected = new Map()
+        for (const [collection, dataDir] of collections) {
+            affected.set(`${dataDir}/${collection}`, { dataDir, collection })
         }
-    }
+        // Unversioned collections are intentionally absent: only cataloged
+        // versioned collection directories participate in the swap.
+        for (const dataDir of DATA_DIRS) {
+            const dataRoot = path.join(targetRoot, dataDir)
+            if (!(await exists(dataRoot))) continue
+            for (const entry of await readdir(dataRoot, { withFileTypes: true })) {
+                if (!entry.isDirectory() || entry.isSymbolicLink()) continue
+                if (!(await this.isVersionedCollection(entry.name))) continue
+                affected.set(`${dataDir}/${entry.name}`, { dataDir, collection: entry.name })
+            }
+        }
 
-    /**
-     * Applies a single resolved merge change to a working tree, sourcing new
-     * content from the object store rather than another commit directory.
-     *
-     * @param {string} targetRoot
-     * @param {DocumentTreeEntry & { deleted?: boolean }} change
-     * @returns {Promise<void>}
-     */
-    async applyTreeChange(targetRoot, change) {
-        const target = path.join(targetRoot, change.path)
-        assertPathInside(targetRoot, target)
-        if (change.deleted) {
-            await rm(target, { force: true })
-            return
-        }
-        await writeDurable(target, await this.readObject(change.hash))
+        await this.withMaterializationGuards(
+            [...affected.values()].map(({ collection }) => collection),
+            async () => {
+                const transactionRoot = path.join(this.stagingRoot(), String(Bun.randomUUIDv7()))
+                const stageRoot = path.join(transactionRoot, 'next')
+                const backupRoot = path.join(transactionRoot, 'previous')
+                /** @type {MaterializationTransaction} */
+                const manifest = {
+                    version: 1,
+                    phase: 'preparing',
+                    targetRoot: path.relative(this.root, targetRoot) || '.',
+                    targets: [],
+                    ref: options.ref ?? null
+                }
+                for (const { dataDir, collection } of affected.values()) {
+                    const relative = path.join(dataDir, collection)
+                    manifest.targets.push({
+                        relative,
+                        collection,
+                        hadCurrent: await exists(path.join(targetRoot, relative)),
+                        shouldInstall: collections.get(collection) === dataDir
+                    })
+                }
+                await this.writeMaterializationManifest(transactionRoot, manifest)
+                try {
+                    for (const entry of tree.values()) {
+                        if (!(await this.isVersionedCollection(entry.collection))) continue
+                        if (entry.kind === 'metadata') continue
+                        const target = path.join(stageRoot, entry.path)
+                        assertPathInside(stageRoot, target)
+                        await writeDurable(target, /** @type {Buffer} */ (objects.get(entry.hash)))
+                    }
+                    for (const entry of metadataEntries) {
+                        const target = await findMaterializedFile(stageRoot, entry)
+                        if (!target) continue
+                        applyXattrBlob(target, /** @type {Buffer} */ (objects.get(entry.hash)))
+                    }
+                    if (collections.size > 0) {
+                        const engine = new FilesystemEngine(stageRoot, {
+                            catalogRoot: this.root,
+                            repositoryGate: false
+                        })
+                        for (const collection of collections.keys()) {
+                            await engine.ensureCollection(collection)
+                            await engine.rebuildCollection(collection)
+                        }
+                    }
+                    manifest.phase = 'staged'
+                    await this.writeMaterializationManifest(transactionRoot, manifest)
+                    manifest.phase = 'swapping'
+                    await this.writeMaterializationManifest(transactionRoot, manifest)
+
+                    for (const target of manifest.targets) {
+                        const current = path.join(targetRoot, target.relative)
+                        const staged = path.join(stageRoot, target.relative)
+                        const backup = path.join(backupRoot, target.relative)
+                        assertPathInside(targetRoot, current)
+                        assertPathInside(transactionRoot, staged)
+                        assertPathInside(transactionRoot, backup)
+                        if (target.hadCurrent) {
+                            await mkdir(path.dirname(backup), { recursive: true })
+                            await renameDurable(current, backup)
+                            manifest.phase = 'backup-moved'
+                            await this.writeMaterializationManifest(transactionRoot, manifest)
+                        }
+                        if (await exists(staged)) {
+                            await mkdir(path.dirname(current), { recursive: true })
+                            await renameDurable(staged, current)
+                        }
+                    }
+                    manifest.phase = 'installed'
+                    await this.writeMaterializationManifest(transactionRoot, manifest)
+                    if (manifest.ref) await this.writeRef(manifest.ref.target)
+                    manifest.phase = 'ref-updated'
+                    await this.writeMaterializationManifest(transactionRoot, manifest)
+                    await this.cleanupMaterialization(transactionRoot)
+                } catch (error) {
+                    try {
+                        await this.rollBackMaterialization(transactionRoot, manifest)
+                    } catch (rollbackError) {
+                        throw new AggregateError(
+                            [error, rollbackError],
+                            'Version tree materialization failed and rollback was incomplete'
+                        )
+                    }
+                    throw error
+                }
+            }
+        )
     }
 
     /**
@@ -1258,6 +1747,89 @@ function getOrCreate(map, key) {
     let value = map.get(key)
     if (!value) map.set(key, (value = /** @type {V} */ (new Map())))
     return value
+}
+
+/** @param {DocumentTreeEntry} entry @returns {string} */
+function treeEntryKey(entry) {
+    return `${entry.collection}/${entry.kind}/${path.basename(entry.path)}`
+}
+
+/** @param {unknown} value @returns {asserts value is MaterializationTransaction} */
+function validateMaterializationManifest(value) {
+    const manifest = /** @type {Partial<MaterializationTransaction>} */ (value)
+    const phases = new Set([
+        'preparing',
+        'staged',
+        'swapping',
+        'backup-moved',
+        'installed',
+        'ref-updated'
+    ])
+    if (
+        !manifest ||
+        manifest.version !== 1 ||
+        typeof manifest.phase !== 'string' ||
+        !phases.has(manifest.phase) ||
+        typeof manifest.targetRoot !== 'string' ||
+        path.isAbsolute(manifest.targetRoot) ||
+        !Array.isArray(manifest.targets)
+    ) {
+        throw new Error('Corrupt FYLO materialization transaction manifest')
+    }
+    for (const target of manifest.targets) {
+        if (
+            !target ||
+            typeof target.relative !== 'string' ||
+            target.relative.length === 0 ||
+            path.isAbsolute(target.relative) ||
+            path.relative('.', target.relative).startsWith('..') ||
+            typeof target.collection !== 'string' ||
+            typeof target.hadCurrent !== 'boolean' ||
+            typeof target.shouldInstall !== 'boolean'
+        ) {
+            throw new Error('Corrupt FYLO materialization transaction target')
+        }
+        validateBranchName(target.collection)
+    }
+    if (manifest.ref !== null) {
+        if (!manifest.ref || !manifest.ref.prior || !manifest.ref.target) {
+            throw new Error('Corrupt FYLO materialization ref transition')
+        }
+        validateBranchName(manifest.ref.prior.name)
+        validateBranchName(manifest.ref.target.name)
+        if (manifest.ref.prior.name !== manifest.ref.target.name) {
+            throw new Error('FYLO materialization ref transition changes branch identity')
+        }
+    }
+}
+
+/**
+ * Fsyncs a directory entry when the host supports it. Windows and a few
+ * network filesystems reject directory handles/sync; their atomic rename is
+ * still used, and recovery remains deterministic from the manifest.
+ * @param {string} target
+ */
+async function syncDirectory(target) {
+    let handle
+    try {
+        handle = await open(target, 'r')
+        await handle.sync()
+    } catch (error) {
+        const code = /** @type {NodeJS.ErrnoException} */ (error).code
+        if (!['ENOENT', 'EPERM', 'EINVAL', 'ENOTSUP', 'EISDIR'].includes(String(code))) throw error
+    } finally {
+        await handle?.close()
+    }
+}
+
+/** @param {string} source @param {string} target */
+async function renameDurable(source, target) {
+    const sourceDirectory = path.dirname(source)
+    const targetDirectory = path.dirname(target)
+    await mkdir(targetDirectory, { recursive: true })
+    await rename(source, target)
+    await syncDirectory(sourceDirectory)
+    if (targetDirectory !== sourceDirectory) await syncDirectory(targetDirectory)
 }
 
 /**
@@ -1337,6 +1909,9 @@ async function listFiles(root) {
         for (const entry of entries) {
             const relative = prefix ? `${prefix}/${entry.name}` : entry.name
             const full = path.join(directory, entry.name)
+            if (entry.isSymbolicLink()) {
+                throw new Error(`Version storage path contains a symbolic link: ${full}`)
+            }
             if (entry.isDirectory()) {
                 await walk(full, relative)
                 continue
@@ -1349,15 +1924,24 @@ async function listFiles(root) {
 }
 
 /**
+ * @param {string} storageRoot
  * @param {string} namespaceRoot
  * @param {string} id
  * @returns {Promise<string | null>}
  */
-async function findVersionedFile(namespaceRoot, id) {
+async function findVersionedFile(storageRoot, namespaceRoot, id) {
     if (!(await exists(namespaceRoot))) return null
-    const matches = (await readdir(namespaceRoot, { withFileTypes: true }))
-        .filter((entry) => entry.isFile() && rawFileId(entry.name) === id)
-        .map((entry) => path.join(namespaceRoot, entry.name))
+    await assertSafeStoragePath(storageRoot, namespaceRoot, { finalType: 'directory' })
+    const matches = []
+    for (const entry of await readdir(namespaceRoot, { withFileTypes: true })) {
+        if (rawFileId(entry.name) !== id) continue
+        const target = path.join(namespaceRoot, entry.name)
+        if (entry.isSymbolicLink() || !entry.isFile()) {
+            throw new Error(`Version document target is not a regular, non-link file: ${target}`)
+        }
+        await assertSafeStoragePath(storageRoot, target, { finalType: 'file' })
+        matches.push(target)
+    }
     if (matches.length > 1) throw new Error(`Multiple versioned files found for document ID: ${id}`)
     return matches[0] ?? null
 }
@@ -1368,15 +1952,24 @@ async function findVersionedFile(namespaceRoot, id) {
  * @returns {Promise<void>}
  */
 async function copyCollections(sourceRoot, targetRoot) {
-    const source = path.join(sourceRoot, COLLECTIONS_DIR)
-    const target = path.join(targetRoot, COLLECTIONS_DIR)
-    await rm(target, { recursive: true, force: true })
-    try {
-        const sourceStats = await stat(source)
-        if (!sourceStats.isDirectory()) return
-        await cp(source, target, { recursive: true, preserveTimestamps: true })
-    } catch (error) {
-        if (/** @type {NodeJS.ErrnoException} */ (error).code !== 'ENOENT') throw error
+    for (const dataDir of DATA_DIRS) {
+        const source = path.join(sourceRoot, dataDir)
+        const target = path.join(targetRoot, dataDir)
+        await rm(target, { recursive: true, force: true })
+        try {
+            const sourceStats = await stat(source)
+            if (!sourceStats.isDirectory()) continue
+            await assertSafeStoragePath(sourceRoot, source, { finalType: 'directory' })
+            await listFiles(source)
+            await assertSafeStoragePath(targetRoot, target, {
+                allowMissingFinal: true,
+                createParentDirectories: true,
+                finalType: 'directory'
+            })
+            await cp(source, target, { recursive: true, preserveTimestamps: true })
+        } catch (error) {
+            if (/** @type {NodeJS.ErrnoException} */ (error).code !== 'ENOENT') throw error
+        }
     }
 }
 
@@ -1412,18 +2005,6 @@ function diffTrees(left, right) {
  * @property {(DocumentTreeEntry & { deleted?: boolean })[]} apply
  * @property {FyloMergeConflict[]} conflicts
  */
-
-/**
- * @param {string} root
- * @param {(DocumentTreeEntry & { deleted?: boolean })[]} changes
- * @returns {Promise<void>}
- */
-async function rebuildChangedCollections(root, changes) {
-    const collections = [...new Set(changes.map((change) => change.collection))]
-    if (collections.length === 0) return
-    const engine = new FilesystemEngine(root)
-    for (const collection of collections) await engine.rebuildCollection(collection)
-}
 
 /**
  * @param {string} branch
@@ -1470,41 +2051,93 @@ function countChanges(changes) {
 
 /**
  * @param {string} root
+ * @param {(collection: string) => Promise<boolean>} isVersioned
  * @returns {Promise<Map<string, DocumentTreeEntry>>}
  */
-async function readDocumentTree(root) {
+async function readDocumentTree(root, isVersioned) {
     const entries = new Map()
     if (!root) return entries
-    const collectionsRoot = path.join(root, COLLECTIONS_DIR)
-    if (!(await exists(collectionsRoot))) return entries
-    for (const collectionEntry of await readdir(collectionsRoot, { withFileTypes: true })) {
-        if (!collectionEntry.isDirectory()) continue
-        const collection = collectionEntry.name
-        const collectionRoot = path.join(collectionsRoot, collection)
-        await readDocumentNamespace(entries, collectionRoot, collection, 'docs', 'active')
-        await readDocumentNamespace(entries, collectionRoot, collection, '.deleted', 'deleted')
-        await readDocumentNamespace(entries, collectionRoot, collection, '.metadata', 'metadata')
+    for (const dataDir of DATA_DIRS) {
+        const collectionsRoot = path.join(root, dataDir)
+        if (!(await exists(collectionsRoot))) continue
+        await assertSafeStoragePath(root, collectionsRoot, { finalType: 'directory' })
+        for (const collectionEntry of await readdir(collectionsRoot, { withFileTypes: true })) {
+            if (collectionEntry.isSymbolicLink()) {
+                throw new Error(
+                    `Version storage path contains a symbolic link: ${path.join(collectionsRoot, collectionEntry.name)}`
+                )
+            }
+            if (!collectionEntry.isDirectory()) continue
+            const collection = collectionEntry.name
+            if (!(await isVersioned(collection))) continue
+            const collectionRoot = path.join(collectionsRoot, collection)
+            await readDocumentNamespace(
+                entries,
+                root,
+                collectionRoot,
+                collection,
+                'docs',
+                'active',
+                dataDir
+            )
+            await readDocumentNamespace(
+                entries,
+                root,
+                collectionRoot,
+                collection,
+                '.deleted',
+                'deleted',
+                dataDir
+            )
+            for (const entry of await collectXattrEntries(
+                root,
+                collectionRoot,
+                collection,
+                dataDir
+            )) {
+                entries.set(`${collection}/metadata/${entry.id}.json`, {
+                    collection,
+                    kind: 'metadata',
+                    id: entry.id,
+                    path: entry.path,
+                    hash: createHash('sha256').update(entry.content).digest('hex')
+                })
+            }
+        }
     }
     return entries
 }
 
 /**
  * @param {Map<string, DocumentTreeEntry>} entries
+ * @param {string} storageRoot
  * @param {string} collectionRoot
  * @param {string} collection
  * @param {string} namespace
  * @param {FyloVersionedDocumentKind} kind
+ * @param {string} dataDir Top-level namespace dir (.collections or .buckets)
  * @returns {Promise<void>}
  */
-async function readDocumentNamespace(entries, collectionRoot, collection, namespace, kind) {
+async function readDocumentNamespace(
+    entries,
+    storageRoot,
+    collectionRoot,
+    collection,
+    namespace,
+    kind,
+    dataDir = COLLECTIONS_DIR
+) {
     const namespaceRoot = path.join(collectionRoot, namespace)
     if (!(await exists(namespaceRoot))) return
+    await assertSafeStoragePath(storageRoot, namespaceRoot, { finalType: 'directory' })
     for (const file of await listFiles(namespaceRoot)) {
         const filename = path.basename(file)
         const id = rawFileId(filename)
         if (!id || !(await TTID.isTTID(id))) continue
-        const relativePath = path.join(COLLECTIONS_DIR, collection, namespace, file)
-        const hash = await hashFile(path.join(namespaceRoot, file))
+        const relativePath = path.join(dataDir, collection, namespace, file)
+        const target = path.join(namespaceRoot, file)
+        await assertSafeStoragePath(storageRoot, target, { finalType: 'file' })
+        const hash = await hashFile(target)
         entries.set(`${collection}/${kind}/${filename}`, {
             collection,
             kind,
@@ -1513,6 +2146,154 @@ async function readDocumentNamespace(entries, collectionRoot, collection, namesp
             hash
         })
     }
+}
+
+/**
+ * Canonical metadata blob derived from a file's `user.fylo.*` xattrs:
+ * name-sorted, base64 values, one JSON line. Returns null when the file has
+ * no fylo xattrs or vanished mid-scan (a concurrent move; the next commit
+ * captures the settled state).
+ *
+ * @param {string} target
+ * @returns {Buffer | null}
+ */
+function xattrBlobForFile(target) {
+    /** @type {Record<string, string>} */
+    const xattrs = {}
+    try {
+        const names = listXattr(target)
+            .filter((name) => name.startsWith(FYLO_XATTR_PREFIX) && name !== CHECKSUM_XATTR)
+            .sort()
+        for (const name of names) {
+            const value = getXattr(target, name)
+            if (value !== null) xattrs[name] = Buffer.from(value).toString('base64')
+        }
+    } catch (err) {
+        if (/** @type {NodeJS.ErrnoException} */ (err).code === 'ENOENT') return null
+        throw err
+    }
+    if (Object.keys(xattrs).length === 0) return null
+    return Buffer.from(`${JSON.stringify({ version: 2, xattrs })}\n`, 'utf8')
+}
+
+/**
+ * Applies a committed metadata blob back onto a file as xattrs. Legacy
+ * `{version:1,key}` blobs (the pre-xattr sidecar format) map to the key
+ * xattr, so restoring old commits migrates them in place.
+ *
+ * @param {string} target
+ * @param {Buffer} content
+ * @returns {void}
+ */
+function applyXattrBlob(target, content) {
+    const parsed = parseXattrBlob(content)
+    if (parsed.version === 1 && typeof parsed.key === 'string') {
+        setXattr(target, `${FYLO_XATTR_PREFIX}key`, parsed.key)
+        return
+    }
+    if (parsed.version !== 2) throw new Error('Corrupt version metadata object')
+    for (const [name, encoded] of Object.entries(parsed.xattrs)) {
+        setXattr(target, name, Buffer.from(encoded, 'base64'))
+    }
+}
+
+/**
+ * Parses and validates a committed metadata object before any working-tree
+ * mutation. Unknown versions, malformed xattr maps, foreign namespaces, and
+ * non-canonical base64 are corruption rather than best-effort input.
+ * @param {Buffer} content
+ * @returns {{ version: 1, key: string } | { version: 2, xattrs: Record<string, string> }}
+ */
+function parseXattrBlob(content) {
+    const parsed = /** @type {{ version?: unknown, key?: unknown, xattrs?: unknown }} */ (
+        JSON.parse(content.toString('utf8'))
+    )
+    if (parsed.version === 1 && typeof parsed.key === 'string') {
+        return { version: 1, key: parsed.key }
+    }
+    if (
+        parsed.version !== 2 ||
+        !parsed.xattrs ||
+        typeof parsed.xattrs !== 'object' ||
+        Array.isArray(parsed.xattrs)
+    ) {
+        throw new Error('Corrupt version metadata object: invalid xattr manifest')
+    }
+    /** @type {Record<string, string>} */
+    const xattrs = {}
+    for (const [name, encoded] of Object.entries(parsed.xattrs)) {
+        if (!name.startsWith(FYLO_XATTR_PREFIX) || typeof encoded !== 'string') {
+            throw new Error('Corrupt version metadata object: invalid xattr entry')
+        }
+        const decoded = Buffer.from(encoded, 'base64')
+        if (decoded.toString('base64') !== encoded) {
+            throw new Error('Corrupt version metadata object: invalid base64 value')
+        }
+        xattrs[name] = encoded
+    }
+    return { version: 2, xattrs }
+}
+
+/**
+ * Collects the xattr-derived metadata entries for every document and
+ * tombstone in a collection working tree.
+ *
+ * @param {string} storageRoot
+ * @param {string} collectionRoot
+ * @param {string} collection
+ * @returns {Promise<Array<{ id: string, path: string, content: Buffer }>>}
+ */
+async function collectXattrEntries(
+    storageRoot,
+    collectionRoot,
+    collection,
+    dataDir = COLLECTIONS_DIR
+) {
+    /** @type {Array<{ id: string, path: string, content: Buffer }>} */
+    const collected = []
+    for (const namespace of ['docs', '.deleted']) {
+        const namespaceRoot = path.join(collectionRoot, namespace)
+        if (!(await exists(namespaceRoot))) continue
+        await assertSafeStoragePath(storageRoot, namespaceRoot, { finalType: 'directory' })
+        for (const file of await listFiles(namespaceRoot)) {
+            const filename = path.basename(file)
+            const id = rawFileId(filename)
+            if (!id || !(await TTID.isTTID(id))) continue
+            const target = path.join(namespaceRoot, file)
+            await assertSafeStoragePath(storageRoot, target, { finalType: 'file' })
+            const content = xattrBlobForFile(target)
+            if (!content) continue
+            collected.push({
+                id,
+                path: path.join(dataDir, collection, '.metadata', id.slice(0, 2), `${id}.json`),
+                content
+            })
+        }
+    }
+    return collected
+}
+
+/**
+ * Locates the materialized document or tombstone file a metadata entry
+ * belongs to, or null when the file is absent from both namespaces.
+ *
+ * @param {string} targetRoot
+ * @param {DocumentTreeEntry} entry
+ * @returns {Promise<string | null>}
+ */
+async function findMaterializedFile(targetRoot, entry) {
+    const bucket = entry.id.slice(0, 2)
+    // entry.path already encodes the namespace dir (.collections or .buckets).
+    const dataDir = entry.path.split(path.sep)[0] || COLLECTIONS_DIR
+    for (const namespace of ['docs', '.deleted']) {
+        const found = await findVersionedFile(
+            targetRoot,
+            path.join(targetRoot, dataDir, entry.collection, namespace, bucket),
+            entry.id
+        )
+        if (found) return found
+    }
+    return null
 }
 
 /**

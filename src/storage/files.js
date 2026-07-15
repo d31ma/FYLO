@@ -1,4 +1,5 @@
 import path from 'node:path'
+import { lstat, realpath } from 'node:fs/promises'
 import TTID from '../vendor/ttid.js'
 import { assertPathInside, validateDocId } from '../core/doc-id.js'
 import {
@@ -8,6 +9,78 @@ import {
     rawFileKey,
     rawFileMetadata
 } from '../core/raw-file.js'
+import { getXattr, listXattr, setXattr } from './xattr.js'
+
+/** Extended attribute holding the raw file's durable object key. */
+export const KEY_XATTR = 'user.fylo.key'
+/**
+ * Extended attribute caching `sha256:size:mtimeMs`. A derived accelerator,
+ * never versioned: trusted while its (size, mtimeMs) stamp matches the file,
+ * recomputed otherwise.
+ */
+export const CHECKSUM_XATTR = 'user.fylo.checksum'
+/** Extended-attribute namespace for developer-defined document metadata. */
+export const META_XATTR_PREFIX = 'user.fylo.meta.'
+/** Internal last-write timestamp for metadata sync conflict resolution. */
+export const META_UPDATED_XATTR = 'user.fylo.meta-updated-at'
+/** Conservative cross-platform ceiling below Linux's per-xattr value limit. */
+export const MAX_META_VALUE_BYTES = 60 * 1024
+
+/**
+ * @param {string} name
+ * @returns {string}
+ */
+export function metaXattrName(name) {
+    if (typeof name !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)) {
+        throw new Error(
+            'Metadata name must be 1-64 characters: letters, digits, ".", "_" or "-", starting with a letter or digit'
+        )
+    }
+    return `${META_XATTR_PREFIX}${name}`
+}
+
+/**
+ * Metadata values are stored JSON-encoded so they round-trip typed
+ * (strings, numbers, booleans, arrays, objects).
+ * @param {unknown} value
+ * @returns {string}
+ */
+export function encodeMetaValue(value) {
+    const encoded = JSON.stringify(value)
+    if (encoded === undefined) throw new Error('Metadata values must be JSON-serializable')
+    if (new TextEncoder().encode(encoded).byteLength > MAX_META_VALUE_BYTES) {
+        throw new Error('Metadata values must be at most 60 KiB when JSON-encoded')
+    }
+    return encoded
+}
+
+/**
+ * @param {string} text
+ * @returns {any} the decoded value; pre-JSON plain strings pass through as-is
+ */
+export function decodeMetaValue(text) {
+    try {
+        return JSON.parse(text)
+    } catch {
+        return text
+    }
+}
+
+/**
+ * Normalizes and validates a metadata record into xattr mutations.
+ * `null` values mean "remove this entry".
+ * @param {Record<string, any>} record
+ * @returns {Array<[attr: string, encoded: string | null]>}
+ */
+export function metaMutations(record) {
+    if (typeof record !== 'object' || record === null || Array.isArray(record)) {
+        throw new Error('Metadata must be a plain object of name/value pairs')
+    }
+    return Object.entries(record).map(([name, value]) => [
+        metaXattrName(name),
+        value === null ? null : encodeMetaValue(value)
+    ])
+}
 
 /**
  * @typedef {import('./types.js').StorageEngine} StorageEngine
@@ -19,6 +92,7 @@ import {
  * @property {string=} contentType
  * @property {number=} maxBytes
  * @property {string=} key
+ * @property {Record<string, any>=} meta developer metadata written with the upload
  *
  * @typedef {object} StoredRawFile
  * @property {string} id
@@ -26,7 +100,7 @@ import {
  * @property {number} createdAt
  * @property {number} updatedAt
  * @property {number=} deletedAt
- * @property {RawFileMetadata} data
+ * @property {RawFileMetadata & { meta?: Record<string, string> }} data
  */
 
 /**
@@ -38,28 +112,13 @@ export class FilesystemFiles {
      * @param {StorageEngine} storage
      * @param {(collection: string) => string} docsRoot
      * @param {(collection: string) => string} deletedRoot
-     * @param {(collection: string) => string} metadataRoot
      * @param {(collection: string) => Promise<void>} ensureCollection
      */
-    constructor(storage, docsRoot, deletedRoot, metadataRoot, ensureCollection) {
+    constructor(storage, docsRoot, deletedRoot, ensureCollection) {
         this.storage = storage
         this.docsRoot = docsRoot
         this.deletedRoot = deletedRoot
-        this.metadataRoot = metadataRoot
         this.ensureCollection = ensureCollection
-    }
-
-    /**
-     * @param {string} collection
-     * @param {string} docId
-     * @returns {Promise<string>}
-     */
-    async metadataPath(collection, docId) {
-        await validateDocId(docId)
-        const root = this.metadataRoot(collection)
-        const target = path.join(root, docId.slice(0, 2), `${docId}.json`)
-        assertPathInside(root, target)
-        return target
     }
 
     /**
@@ -77,35 +136,54 @@ export class FilesystemFiles {
     }
 
     /**
-     * @param {string} collection
+     * The durable object key lives in an extended attribute on the raw file
+     * itself, so it travels with the bytes across moves (soft delete, restore).
+     * @param {string} target
      * @param {string} docId
-     * @param {string} key
-     * @returns {Promise<void>}
+     * @returns {string}
      */
-    async writeKey(collection, docId, key) {
-        await this.storage.write(
-            await this.metadataPath(collection, docId),
-            `${JSON.stringify({ version: 1, key })}\n`
-        )
+    readKey(target, docId) {
+        const value = getXattr(target, KEY_XATTR)
+        if (value === null) {
+            throw new Error(`Raw file system metadata is missing: ${docId}`)
+        }
+        return new TextDecoder().decode(value)
     }
 
     /**
+     * Re-stamps the default key (`/<filename>`) on a raw file whose xattr
+     * metadata was stripped (copied without xattrs). Custom keys are not
+     * recoverable from the bytes; the file becomes readable again at its
+     * degraded default key.
      * @param {string} collection
      * @param {string} docId
      * @returns {Promise<string>}
      */
-    async readKey(collection, docId) {
-        const target = await this.metadataPath(collection, docId)
-        if (!(await this.storage.exists(target))) {
-            throw new Error(`Raw file system metadata is missing: ${docId}`)
+    async repairKey(collection, docId) {
+        const target = await this.findPath(this.docsRoot(collection), docId)
+        if (!target) throw new Error(`Raw file not found: ${docId}`)
+        const key = `/${path.basename(target)}`
+        setXattr(target, KEY_XATTR, key)
+        return key
+    }
+
+    /**
+     * Developer metadata xattrs as a plain record, or null when there are none.
+     * @param {string} target
+     * @returns {Record<string, string> | null}
+     */
+    readMeta(target) {
+        /** @type {Record<string, any> | null} */
+        let meta = null
+        for (const name of listXattr(target)) {
+            if (!name.startsWith(META_XATTR_PREFIX)) continue
+            const value = getXattr(target, name)
+            if (value === null) continue
+            ;(meta ??= {})[name.slice(META_XATTR_PREFIX.length)] = decodeMetaValue(
+                new TextDecoder().decode(value)
+            )
         }
-        const parsed = /** @type {{ version?: unknown, key?: unknown }} */ (
-            JSON.parse(await this.storage.read(target))
-        )
-        if (parsed.version !== 1 || typeof parsed.key !== 'string') {
-            throw new Error(`Raw file system metadata is corrupt: ${docId}`)
-        }
-        return parsed.key
+        return meta
     }
 
     /**
@@ -134,6 +212,18 @@ export class FilesystemFiles {
         const target = matches[0]
         if (!target) return null
         assertPathInside(root, target)
+        const metadata = await lstat(target)
+        if (metadata.isSymbolicLink() || !metadata.isFile()) {
+            throw new Error(`Raw file must be a regular, non-link file: ${docId}`)
+        }
+        const storageRoot = path.dirname(path.dirname(path.dirname(root)))
+        const [canonicalStorageRoot, canonicalRoot, canonicalTarget] = await Promise.all([
+            realpath(storageRoot),
+            realpath(root),
+            realpath(target)
+        ])
+        assertPathInside(canonicalStorageRoot, canonicalRoot)
+        assertPathInside(canonicalRoot, canonicalTarget)
         return target
     }
 
@@ -153,34 +243,62 @@ export class FilesystemFiles {
             `${docId}${extension}`
         )
         assertPathInside(this.docsRoot(collection), target)
+        await this.storage.mkdir(path.dirname(target))
+        const docsRoot = this.docsRoot(collection)
+        const storageRoot = path.dirname(path.dirname(path.dirname(docsRoot)))
+        const [canonicalStorageRoot, canonicalRoot, canonicalParent] = await Promise.all([
+            realpath(storageRoot),
+            realpath(docsRoot),
+            realpath(path.dirname(target))
+        ])
+        assertPathInside(canonicalStorageRoot, canonicalRoot)
+        assertPathInside(canonicalRoot, canonicalParent)
+        try {
+            const existing = await lstat(target)
+            if (existing.isSymbolicLink() || !existing.isFile()) {
+                throw new Error(`Raw file target must be a regular, non-link file: ${docId}`)
+            }
+        } catch (error) {
+            if (/** @type {NodeJS.ErrnoException} */ (error).code !== 'ENOENT') throw error
+        }
+        // Validate metadata before any bytes hit disk.
+        const mutations = source.meta ? metaMutations(source.meta) : []
         let written
         try {
             written = await this.storage.writeStream(target, source.stream, {
                 maxBytes: source.maxBytes
             })
-            await this.writeKey(collection, docId, key)
+            setXattr(target, KEY_XATTR, key)
+            for (const [attr, encoded] of mutations) {
+                if (encoded !== null) setXattr(target, attr, encoded)
+            }
+            if (mutations.length > 0) setXattr(target, META_UPDATED_XATTR, String(Date.now()))
         } catch (error) {
             await this.storage.delete(target)
-            await this.storage.delete(await this.metadataPath(collection, docId))
             throw error
         }
         const metadata = await this.storage.metadata(target)
+        this.stampChecksum(target, written.checksumSHA256, metadata)
+        const meta = this.readMeta(target)
         const { createdAt } = await TTID.decodeTime(docId)
         return {
             id: docId,
             path: target,
             createdAt,
             updatedAt: metadata.mtimeMs,
-            data: rawFileMetadata(
-                docId,
-                key,
-                extension,
-                contentType,
-                written.contentLength,
-                written.checksumSHA256,
-                createdAt,
-                metadata.mtimeMs
-            )
+            data: {
+                ...rawFileMetadata(
+                    docId,
+                    key,
+                    extension,
+                    contentType,
+                    written.contentLength,
+                    written.checksumSHA256,
+                    createdAt,
+                    metadata.mtimeMs
+                ),
+                ...(meta ? { meta } : {})
+            }
         }
     }
 
@@ -216,29 +334,122 @@ export class FilesystemFiles {
             const filename = path.basename(target)
             const extension = filename.slice(docId.length).toLowerCase()
             const metadata = await this.storage.metadata(target)
-            const checksumSHA256 = await this.hash(target)
-            const key = await this.readKey(collection, docId)
+            const checksumSHA256 = await this.checksum(target, metadata)
+            const key = this.readKey(target, docId)
+            const meta = this.readMeta(target)
             const { createdAt } = await TTID.decodeTime(docId)
             return {
                 id: docId,
                 path: target,
                 createdAt,
                 updatedAt: metadata.mtimeMs,
-                data: rawFileMetadata(
-                    docId,
-                    key,
-                    extension,
-                    rawFileContentType(extension, undefined),
-                    metadata.size,
-                    checksumSHA256,
-                    createdAt,
-                    metadata.mtimeMs
-                )
+                data: {
+                    ...rawFileMetadata(
+                        docId,
+                        key,
+                        extension,
+                        rawFileContentType(extension, undefined),
+                        metadata.size,
+                        checksumSHA256,
+                        createdAt,
+                        metadata.mtimeMs
+                    ),
+                    ...(meta ? { meta } : {})
+                }
             }
         } catch (err) {
             // File (or its metadata) vanished between listing and reading.
             if (/** @type {NodeJS.ErrnoException} */ (err).code === 'ENOENT') return null
             throw err
+        }
+    }
+
+    /**
+     * Cached sha256 for reads and listings: trusts the checksum xattr while
+     * its (size, mtimeMs) stamp matches the file, so materializing a manifest
+     * doesn't re-read the full contents. Recomputes and best-effort re-stamps
+     * on any mismatch (read-only WORM/soft-deleted files stay cold).
+     *
+     * A byte-tamper that preserves both size and mtime returns a stale hash
+     * here; `verifyTarget` / `collection.verify()` is the stamp-ignoring
+     * audit that catches it.
+     *
+     * @param {string} target
+     * @param {{ size: number, mtimeMs: number }} metadata
+     * @returns {Promise<string>}
+     */
+    async checksum(target, metadata) {
+        const cached = getXattr(target, CHECKSUM_XATTR)
+        if (cached !== null) {
+            const [sha256, size, mtimeMs] = new TextDecoder().decode(cached).split(':')
+            if (
+                Number(size) === metadata.size &&
+                Number(mtimeMs) === metadata.mtimeMs &&
+                /^[0-9a-f]{64}$/.test(sha256)
+            ) {
+                return sha256
+            }
+        }
+        const sha256 = await this.hash(target)
+        try {
+            this.stampChecksum(target, sha256, metadata)
+        } catch {
+            // Read-only target; recompute again next time.
+        }
+        return sha256
+    }
+
+    /**
+     * @param {string} target
+     * @param {string} sha256
+     * @param {{ size: number, mtimeMs: number }} metadata
+     * @returns {void}
+     */
+    stampChecksum(target, sha256, metadata) {
+        setXattr(target, CHECKSUM_XATTR, `${sha256}:${metadata.size}:${metadata.mtimeMs}`)
+    }
+
+    /**
+     * Refreshes the checksum stamp after a metadata-only mtime change (soft
+     * delete / restore moves); the bytes are unchanged so the hash is kept.
+     * @param {string} target
+     * @returns {Promise<void>}
+     */
+    async restampChecksum(target) {
+        const cached = getXattr(target, CHECKSUM_XATTR)
+        if (cached === null) return
+        const [sha256] = new TextDecoder().decode(cached).split(':')
+        if (!/^[0-9a-f]{64}$/.test(sha256)) return
+        this.stampChecksum(target, sha256, await this.storage.metadata(target))
+    }
+
+    /**
+     * Stamp-ignoring integrity check: re-hashes the full contents regardless
+     * of the cached stamp and compares against the recorded claim. Matches
+     * (and files with no usable claim) are freshly re-stamped best-effort;
+     * a corrupt file's stamp is left untouched as the record of what the
+     * contents should be.
+     *
+     * @param {string} target
+     * @returns {Promise<{ status: 'verified' | 'stamped' | 'corrupt', expected: string | null, actual: string }>}
+     */
+    async verifyTarget(target) {
+        const cached = getXattr(target, CHECKSUM_XATTR)
+        const claimed = cached === null ? null : new TextDecoder().decode(cached).split(':')[0]
+        const usableClaim = claimed !== null && /^[0-9a-f]{64}$/.test(claimed) ? claimed : null
+        const actual = await this.hash(target)
+        if (usableClaim !== null && usableClaim !== actual) {
+            return { status: 'corrupt', expected: usableClaim, actual }
+        }
+        try {
+            this.stampChecksum(target, actual, await this.storage.metadata(target))
+        } catch {
+            // Read-only target (WORM / soft-deleted); the verdict still stands.
+        }
+        return {
+            status: usableClaim === null ? 'stamped' : 'verified',
+            expected: usableClaim,
+            actual
         }
     }
 
@@ -299,6 +510,7 @@ export class FilesystemFiles {
         assertPathInside(this.deletedRoot(collection), target)
         await this.storage.move(source, target)
         await this.storage.setModifiedTime(target, deletedAt)
+        await this.restampChecksum(target)
         await this.storage.chmod(target, 0o444)
         return target
     }
@@ -321,6 +533,7 @@ export class FilesystemFiles {
         await this.storage.move(source, target)
         await this.storage.chmod(target, 0o644)
         await this.storage.setModifiedTime(target, restoredAt)
+        await this.restampChecksum(target)
         return target
     }
 
@@ -331,11 +544,6 @@ export class FilesystemFiles {
         await this.storage.chmod(target, 0o444)
     }
 
-    /** @param {string} collection @param {string} docId @returns {Promise<void>} */
-    async makeSystemMetadataReadOnly(collection, docId) {
-        await this.storage.chmod(await this.metadataPath(collection, docId), 0o444)
-    }
-
     /** @param {string} collection @param {string} docId @returns {Promise<Uint8Array>} */
     async readBytes(collection, docId) {
         const target = await this.findPath(this.docsRoot(collection), docId)
@@ -343,10 +551,15 @@ export class FilesystemFiles {
         return await this.storage.readBytes(target)
     }
 
-    /** @param {string} collection @param {string} docId @returns {Promise<ReadableStream<Uint8Array>>} */
-    async readStream(collection, docId) {
+    /**
+     * @param {string} collection
+     * @param {string} docId
+     * @param {{ start?: number, end?: number }} [range]
+     * @returns {Promise<ReadableStream<Uint8Array>>}
+     */
+    async readStream(collection, docId, range) {
         const target = await this.findPath(this.docsRoot(collection), docId)
         if (!target) throw new Error(`Raw file not found: ${docId}`)
-        return this.storage.readStream(target)
+        return this.storage.readStream(target, range)
     }
 }

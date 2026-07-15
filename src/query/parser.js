@@ -1,3 +1,5 @@
+import { safeRecord } from './safe-record.js'
+
 /** @enum {string} */
 const TokenType = {
     CREATE: 'CREATE',
@@ -372,20 +374,27 @@ class SQLParser {
         this.expect(TokenType.WHERE)
         /** @type {QueryOperation[]} */
         const conditions = []
-        do {
+        /** @type {QueryOperation} */
+        let conjunction = safeRecord()
+        while (true) {
             const condition = this.parseCondition()
-            const queryOperation = {
-                [condition.column]: {
-                    [condition.operator]: condition.value
-                }
-            }
-            conditions.push(queryOperation)
-            if (this.match(TokenType.AND, TokenType.OR)) {
+            const operand = conjunction[condition.column] ?? safeRecord()
+            operand[condition.operator] = condition.value
+            conjunction[condition.column] = operand
+
+            if (this.match(TokenType.AND)) {
                 this.advance()
-            } else {
-                break
+                continue
             }
-        } while (true)
+            if (this.match(TokenType.OR)) {
+                conditions.push(conjunction)
+                conjunction = safeRecord()
+                this.advance()
+                continue
+            }
+            break
+        }
+        conditions.push(conjunction)
         return conditions
     }
     /** @returns {string[]} */
@@ -499,7 +508,7 @@ class SQLParser {
     /** @returns {Record<string, JoinOperand>} */
     parseJoinConditions() {
         /** @type {Record<string, JoinOperand>} */
-        const conditions = {}
+        const conditions = safeRecord()
         do {
             // Parse: table1.column = table2.column
             const leftSide = this.parseJoinColumn()
@@ -508,9 +517,7 @@ class SQLParser {
             // Build the join condition
             const leftColumn = leftSide.column
             const rightColumn = rightSide.column
-            if (!conditions[leftColumn]) {
-                conditions[leftColumn] = {}
-            }
+            if (!Object.hasOwn(conditions, leftColumn)) conditions[leftColumn] = safeRecord()
             conditions[leftColumn][operator] = rightColumn
             if (this.match(TokenType.AND)) {
                 this.advance()
@@ -572,7 +579,7 @@ class SQLParser {
         this.expect(TokenType.VALUES)
         this.expect(TokenType.LPAREN)
         /** @type {Record<string, string | number | boolean | null>} */
-        const values = {}
+        const values = safeRecord()
         let valueIndex = 0
         do {
             const value = this.parseValue()
@@ -597,7 +604,7 @@ class SQLParser {
         const collection = this.expect(TokenType.IDENTIFIER).value
         this.expect(TokenType.SET)
         /** @type {Record<string, string | number | boolean | null>} */
-        const set = {}
+        const set = safeRecord()
         do {
             const column = this.expect(TokenType.IDENTIFIER).value
             this.expect(TokenType.EQUALS)

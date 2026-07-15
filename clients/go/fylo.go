@@ -111,6 +111,12 @@ func (f *Fylo) BatchPutData(collection string, batch []any) (any, error) {
 func (f *Fylo) GetDoc(collection, id string) (any, error) {
 	return f.op("getDoc", map[string]any{"collection": collection, "id": id})
 }
+func (f *Fylo) GetMeta(collection, id string) (any, error) {
+	return f.op("getMeta", map[string]any{"collection": collection, "id": id})
+}
+func (f *Fylo) SetMeta(collection, id string, meta map[string]any) (any, error) {
+	return f.op("setMeta", map[string]any{"collection": collection, "id": id, "meta": meta})
+}
 func (f *Fylo) GetLatest(collection, id string) (any, error) {
 	return f.op("getLatest", map[string]any{"collection": collection, "id": id})
 }
@@ -204,7 +210,11 @@ func (c *Collection) Rebuild() (any, error)           { return c.fylo.RebuildCol
 func (c *Collection) Put(data map[string]any) (any, error) {
 	return c.fylo.PutData(c.name, data)
 }
-func (c *Collection) Get(id string) (any, error)    { return c.fylo.GetDoc(c.name, id) }
+func (c *Collection) Get(id string) (any, error)     { return c.fylo.GetDoc(c.name, id) }
+func (c *Collection) GetMeta(id string) (any, error) { return c.fylo.GetMeta(c.name, id) }
+func (c *Collection) SetMeta(id string, meta map[string]any) (any, error) {
+	return c.fylo.SetMeta(c.name, id, meta)
+}
 func (c *Collection) Latest(id string) (any, error) { return c.fylo.GetLatest(c.name, id) }
 func (c *Collection) Patch(id string, newDoc map[string]any) (any, error) {
 	return c.fylo.PatchDoc(c.name, id, newDoc)

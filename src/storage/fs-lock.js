@@ -35,7 +35,7 @@
  * here.
  */
 
-import { link, mkdir, rename, unlink, writeFile } from 'node:fs/promises'
+import { link, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 
 /**
@@ -107,7 +107,10 @@ class FileLockHeartbeatRegistry {
         try {
             const meta = await readLockMeta(lockPath)
             if (entry.cancelled || !meta || meta.owner !== entry.owner) return
-            await writeFile(scratchPath, JSON.stringify({ owner: entry.owner, ts: Date.now() }))
+            await writeFile(
+                scratchPath,
+                JSON.stringify({ owner: entry.owner, pid: process.pid, ts: Date.now() })
+            )
             if (entry.cancelled) return
             const refreshedMeta = await readLockMeta(lockPath)
             if (entry.cancelled || !refreshedMeta || refreshedMeta.owner !== entry.owner) return
@@ -173,7 +176,7 @@ async function stopHeartbeat(lockPath) {
  * object otherwise. Corrupt JSON yields null (treated as stale).
  *
  * @param {string} lockPath
- * @returns {Promise<{ owner: string, ts: number } | null>}
+ * @returns {Promise<{ owner: string, pid?: number, ts: number } | null>}
  */
 async function readLockMeta(lockPath) {
     try {
@@ -183,6 +186,34 @@ async function readLockMeta(lockPath) {
         const error = /** @type {NodeJS.ErrnoException} */ (err)
         if (error.code === 'ENOENT') return null
         return null
+    }
+}
+
+/** @param {string} lockPath @returns {Promise<string | null>} */
+async function readLockPayload(lockPath) {
+    try {
+        return await readFile(lockPath, 'utf8')
+    } catch {
+        return null
+    }
+}
+
+/**
+ * A lock left by a process that no longer exists is immediately reclaimable;
+ * startup recovery must not wait for a multi-minute TTL after SIGKILL. Locks
+ * created by older FYLO versions have no pid and retain TTL-only semantics.
+ * @param {{ pid?: number } | null} meta
+ * @returns {boolean}
+ */
+function lockOwnerIsAlive(meta) {
+    if (!meta || !Number.isSafeInteger(meta.pid) || /** @type {number} */ (meta.pid) <= 0) {
+        return true
+    }
+    try {
+        process.kill(/** @type {number} */ (meta.pid), 0)
+        return true
+    } catch (error) {
+        return /** @type {NodeJS.ErrnoException} */ (error).code !== 'ESRCH'
     }
 }
 
@@ -258,20 +289,43 @@ export async function tryAcquireFileLock(lockPath, owner, ttlMsOrOptions = 30_00
     const options = typeof ttlMsOrOptions === 'number' ? { ttlMs: ttlMsOrOptions } : ttlMsOrOptions
     const ttlMs = options.ttlMs ?? 30_000
     await mkdir(path.dirname(lockPath), { recursive: true })
-    const payload = JSON.stringify({ owner, ts: Date.now() })
+    const payload = JSON.stringify({ owner, pid: process.pid, ts: Date.now() })
     if (await tryCreateExclusive(lockPath, payload)) {
         if (options.heartbeat) startHeartbeat(lockPath, owner, ttlMs)
         return true
     }
     const meta = await readLockMeta(lockPath)
-    if (meta && typeof meta.ts === 'number' && Date.now() - meta.ts <= ttlMs) {
+    if (
+        meta &&
+        typeof meta.ts === 'number' &&
+        Date.now() - meta.ts <= ttlMs &&
+        lockOwnerIsAlive(meta)
+    ) {
         return false
     }
     const previousOwner = meta && typeof meta.owner === 'string' ? meta.owner : undefined
-    const metaCheck = await readLockMeta(lockPath)
-    if (metaCheck) {
-        if (!meta) return false
+    if (meta) {
+        const metaCheck = await readLockMeta(lockPath)
+        // A missing second observation means another contender already moved
+        // or removed the stale lock. Do not unlink in that case: it may have
+        // created a fresh lock between our read and this takeover attempt.
+        if (!metaCheck) return false
         if (metaCheck.owner !== meta.owner || metaCheck.ts !== meta.ts) return false
+    } else {
+        // Preserve recovery of genuinely corrupt lock files without treating a
+        // transiently missing/replaced lock as corrupt. Two identical raw reads
+        // must still be invalid JSON before this contender may remove it.
+        const firstPayload = await readLockPayload(lockPath)
+        const secondPayload = await readLockPayload(lockPath)
+        if (firstPayload === null || secondPayload === null || firstPayload !== secondPayload) {
+            return false
+        }
+        try {
+            JSON.parse(secondPayload)
+            return false
+        } catch {
+            // Stable invalid payload: reclaim below.
+        }
     }
     try {
         await unlink(lockPath)

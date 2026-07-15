@@ -1,0 +1,30 @@
+<div
+    class="explorer-confirm"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="explorer-confirm-title"
+    aria-describedby="explorer-confirm-description"
+    tabindex="-1"
+    on:click="backdrop(event)"
+    on:keydown="dialogKey(event)"
+>
+    <span hidden aria-hidden="true">{ensureFocused()}</span>
+    <div class="w-card explorer-confirm-card">
+        <h3 id="explorer-confirm-title" class="explorer-confirm-title">{title}</h3>
+        <p id="explorer-confirm-description" class="explorer-confirm-body">
+            {bodyPre}<code>{code}</code>{bodyPost}
+        </p>
+        <div class="explorer-confirm-actions">
+            <button type="button" class="w-btn w-btn-text" data-confirm-cancel on:click="cancel()">
+                Cancel
+            </button>
+            <button
+                type="button"
+                :class="danger ? 'w-btn w-btn-filled explorer-confirm-del' : 'w-btn w-btn-filled'"
+                on:click="accept()"
+            >
+                {confirmLabel}
+            </button>
+        </div>
+    </div>
+</div>

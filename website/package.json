@@ -2,12 +2,14 @@
   "name": "fylo-website",
   "version": "26.25.1",
   "private": true,
-  "scripts": {
-    "start": "bun run serve",
-    "serve": "yon.serve",
-    "bundle": "tac.bundle",
-    "preview": "tac.preview"
-  },
+    "scripts": {
+        "start": "bun run serve",
+        "serve": "yon.serve",
+        "bundle": "tac.bundle && bun run gate:explorer",
+        "gate:explorer": "bun scripts/gate-explorer.mjs",
+        "preview": "tac.preview",
+        "seed": "bun seed.mjs"
+    },
   "devDependencies": {
     "@d31ma/tachyon": "^26.28.1"
   }

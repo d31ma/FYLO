@@ -12,7 +12,7 @@
 
 <p align="center">
   <strong>One canonical file per document. Key-only indexes. No monolithic caches.</strong><br/>
-  A single <code>fylo</code> binary, driven from 8 languages via thin shims.
+  A single <code>fylo</code> binary, driven from 9 languages via thin shims.
 </p>
 
 ---
@@ -31,7 +31,7 @@
 - [Auth & Row-Level Security](#auth--row-level-security)
 - [WORM Mode](#worm-mode)
 - [Syncing & Replication](#syncing--replication)
-- [Remote Gateway](#remote-gateway)
+- [Remote Access](#remote-access)
 - [Local Queue](#local-queue)
 - [CLI & Machine Interface](#cli--machine-interface)
 - [Recovery & Rebuild](#recovery--rebuild)
@@ -51,7 +51,7 @@ FYLO trades complexity for clarity. Documents are plain JSON files on disk. Inde
 | **Rebuildable, not sacred**  | `fylo.<collection>.rebuild()` reconstructs indexes from data                           |
 | **Zero-dependency core**     | Embedded SQLite catalog, memory-mapped I/O, native S3 sync — one self-contained binary |
 | **Filesystem-first**         | One engine. Sync to S3/GCS is your deployment choice                                   |
-| **Browser: local-first**     | OPFS engine in the browser, background REST/SSE sync, offline-capable                  |
+| **Browser: local-only**      | OPFS engine in the browser — each device owns its own store, fully offline             |
 
 ---
 
@@ -87,38 +87,36 @@ await db.close()
 
 Shims ship for Node, Python, Ruby, Go, Rust, C#, Java, PHP, and Dart (see
 [`clients/`](clients/)). Browsers, mobile apps (iOS/Swift, Android/Kotlin), and
-Flutter use local-first clients that embed the engine on-device and sync to the
-backend — see [Browser access](#browser-access) and [`clients/`](clients/).
+Flutter use local-only clients that embed the engine on-device (OPFS) — see
+[Browser access](#browser-access) and [`clients/`](clients/).
 
-### Optional Website Submodule
+### Website Source
 
-The private FYLO website lives in the optional `website/` submodule. A normal
-clone does not fetch submodule contents, so users without access to
-`d31ma/FY-LO` can still clone and work on FYLO itself.
+The website source lives in the tracked `website/` directory. Install its
+dependencies separately when you need to build or preview the site:
 
 ```bash
-# Clone package only
 git clone https://github.com/d31ma/Fylo.git
-
-# If you have access to the private website repo
-git submodule update --init website
+cd Fylo/website
+bun install --frozen-lockfile
 ```
 
 ---
 
 ## Architecture
 
-Each collection lives under `.collections` in the configured root:
+Document collections live under `.collections`; buckets (for raw files) live
+under `.buckets`. The two are structurally identical — only the top-level
+directory differs. Collections hold `Record` values; buckets hold `Blob`/`File`
+values:
 
 ```text
-<root>/.collections/<collection>/
-  docs/                    ← one .json file per document (TTID-named)
+<root>/.collections/<collection>/   ← documents (Record)
+<root>/.buckets/<bucket>/           ← raw files (Blob / File), same internal layout:
+  docs/                    ← one file per document/object (TTID-named)
     4U/
       4UUB32VGUDW.json
   .deleted/                ← soft-deleted payloads (hidden sibling of docs/)
-    4U/
-      4UUB32VGUDW.json
-  .metadata/               ← file collections only; logical object-key sidecars
     4U/
       4UUB32VGUDW.json
   index/                   ← local filesystem prefix index catalog
@@ -130,6 +128,10 @@ Each collection lives under `.collections` in the configured root:
   locks/                   ← advisory file locks
 ```
 
+A collection's kind is recorded once in its catalog descriptor
+(`.fylo-catalog/collections/<name>.json`); names are unique across both
+namespaces, so `db.<name>` is unambiguous.
+
 When document version control is initialized, FYLO also writes hidden repository
 metadata beside `.collections`:
 
@@ -139,16 +141,19 @@ metadata beside `.collections`:
   refs/heads/<branch>.json ← branch metadata and latest commit id
   branches/<branch>/       ← hidden working tree for non-main branches
     .collections/...
-  commits/<commit-id>/     ← full collection snapshot for one commit
-    manifest.json
-    .collections/...
+  commits/<commit-id>/     ← commit metadata and root tree hash
+  objects/<hh>/<hash>      ← verified content-addressed blobs and tree nodes
+  staging/<transaction>/   ← durable restore/merge recovery transactions
+    transaction.json
 ```
 
 `main` uses the root `.collections` tree. Other branches use hidden working
 trees under `.fylo-vcs/branches/`, so `fylo checkout -b feature` isolates
 subsequent reads and writes without changing the base document layout. Commits
-store full snapshots instead of diffs, matching S3-style whole-object version
-retention and keeping restores auditable.
+reference content-addressed trees. Unchanged blobs and subtrees are shared by
+hash, and object hashes are verified before restore or merge. Restore and merge
+materialization uses a durable staging transaction; startup deterministically
+rolls an interrupted swap backward or forward before collections are opened.
 
 **Index keys** look like S3 object keys — field path, kind, value, doc ID:
 
@@ -188,33 +193,75 @@ Collection names map directly to S3 bucket names. Credentials resolve from `AWS_
 
 ## Browser access
 
-The browser client is **local-first**: a bundled OPFS engine (`fylo-web.mjs`,
-released as an asset) that
-reads and writes a browser-local store directly — fully offline — while a
-background sync engine reconciles with a backend `fylo serve` over REST.
-
-- **Push**: local writes go to the backend via `POST /v1/exec` (`syncPush`,
-  document-level three-way merge; last-write-wins for true conflicts).
-- **Pull**: the backend's changes feed `GET /v1/{collection}/events` (streamed
-  SSE, JSON-poll fallback) materializes remote writes into the local store.
-- **Offline**: when the health ping fails, the local store is the store and
-  writes queue for the next reconnect.
+The browser client is **local-only**: a bundled OPFS engine (`fylo-web.mjs`,
+released as an asset) that reads and writes a browser-local store directly.
+There is no network access and no backend — each browser (and each mobile app
+hosting the engine in a WebView) owns its own database.
 
 ```ts
-import { createSyncedClient } from './fylo-web.mjs'
+import { createBrowserClient } from './fylo-web.mjs'
 
-// Omit serverUrl for a pure offline store.
-const db = createSyncedClient({ serverUrl: 'https://api.example.com', token: FYLO_TOKEN })
+const db = createBrowserClient()
 await db.ready()
-await db.sync.start()
 
-const id = await db.users.put({ name: 'Ada', role: 'admin' }) // local, synced in the background
+const id = await db.users.put({ name: 'Ada', role: 'admin' })
+await db.users.put(id).metadata({ source: 'browser', reviewed: false })
+const metadata = await db.users.get(id).metadata()
 const doc = await db.users.latest(id)
 ```
 
-Run the backend with `fylo serve`. The server also exposes REST resources
-(`/v1/{collection}[/{id}][/raw]`), SQL (`/v1/sql`), the changes feed, and an
-OpenAPI document at `/v1/openapi.json`. See the HTTP server section below.
+### Fylo Explorer
+
+The Explorer is a browser UI over a **real FYLO root on your disk** — no
+server, no protocol. It opens the folder through the File System Access API:
+pick the root once in the OS dialog, and later visits reopen it automatically
+(the handle persists; Chromium's "Allow on every visit" makes it zero-click).
+Chromium-only — Firefox and Safari do not implement real-folder access.
+
+```bash
+cd website && bun run seed      # optional: demo root at website/db (gitignored)
+cd website && FYLO_EXPLORER_DEDICATED_ORIGIN=1 bun run bundle
+cd website && bun run preview   # local preview of the Explorer source
+```
+
+- **Read-only by default.** Reads go straight to the folder; the engine's own
+  writes (index rebuilds, journals) land in an in-memory overlay, so the root
+  is never modified — indexes are accelerators, rebuilt in RAM per session.
+- **Browse and query.** A sidebar split into **Collections** (documents) and
+  **Buckets** (files), a document list, a JSON viewer, and a filter bar accepting
+  SQL `WHERE` expressions (`role = 'admin' AND age >= 30`). Buckets browse as macOS-Finder-style Miller
+  columns built from the plain-text key index (object keys live in xattrs, which
+  browsers can't read — the index mirror makes them visible anyway), with image
+  preview and byte download. A SQL console runs `SELECT` statements read-only
+  (full SQL once writes are enabled).
+- **Writes are opt-in.** "Enable writes" re-arms the folder as readwrite and
+  drops the overlay: create/edit/delete/restore go through the engine into the
+  real root (compat is tested in both directions — desktop reads what the
+  browser wrote and vice versa). Buckets accept uploads into the current folder;
+  the bytes and a `key` index entry are written immediately, but the
+  key/checksum xattrs can't be set from a browser — a desktop `rebuild` or
+  `verify` re-derives them. A banner warns when the root has live lock files;
+  there is no cross-process locking from a browser, so concurrent writes are
+  last-writer-wins.
+
+The Explorer rejects oversized work before reading it into memory:
+previews are limited to 32 MiB, imports to 16 MiB and 10,000 records, exports
+to 64 MiB and 10,000 records, and bucket uploads to 64 MiB. Use the CLI for
+larger operations. Explorer is retained as source and for local preview, but
+the shared Amplify marketing build removes its generated route, components,
+and runtime assets by default. Set `FYLO_EXPLORER_DEDICATED_ORIGIN=1` only in a
+build that will be published from a dedicated origin. Tachyon's generated
+component runtime currently uses `eval` for bindings and event dispatch, so a
+dedicated deployment's CSP must retain `unsafe-eval` until Tachyon offers a
+CSP-safe compiler mode. FYLO's own runtime import does not use `eval` or
+`new Function`.
+
+For production deployments, serve Explorer from a dedicated origin that hosts
+no unrelated application code. A CSP limits what a compromised page can load,
+but browser directory-handle grants and origin storage are shared by every
+script on the same origin; the application cannot enforce DNS/hosting
+separation in code. The marketing site may keep linking to that origin, but it
+should not share its JavaScript execution boundary.
 
 ---
 
@@ -348,10 +395,16 @@ writable file permissions (`0644`), rebuilds its indexes, and records the
 restoration as a live insert event. A tombstoned TTID cannot be written
 directly; it must be restored.
 
-### Raw Files
+### Raw Files (Buckets)
 
-Create a file collection, then pass a `Blob`, `File`, or `URL` to the normal
-`put()` method:
+A **bucket** stores raw files: create it with `kind: 'file'`, then pass a
+`Blob`, `File`, or `URL` to the normal `put()` method. The two collection kinds
+differ only by value type — a document collection takes a `Record`, a bucket
+takes a `Blob`/`File` — and the API is otherwise identical. Buckets are stored
+on disk under `.buckets/<name>/` (documents live under `.collections/<name>/`);
+the two share an identical internal layout. Databases written by older FYLO
+versions, where file collections lived under `.collections/`, are migrated to
+`.buckets/` automatically the first time the engine opens them.
 
 ```js
 await db.assets.create({ kind: 'file' })
@@ -389,18 +442,112 @@ may be at most 1024 UTF-8 bytes, and cannot contain backslashes, control
 characters, or `.` / `..` path segments. A key is logical metadata, not a local
 filesystem path; the raw bytes still use the TTID filename shown below.
 
+Keys can be reassigned in place — no byte rewrite — and folder-style trees
+derived from them can be browsed one level at a time:
+
+```js
+await db.assets.rekey(id, '/reports/2027/summary.pdf') // move one file
+await db.assets.rekey.prefix('/reports/', '/archive/') // move a whole folder
+
+const { files, folders } = await db.assets.folder('/archive/')
+// files   → { [id]: manifest } for direct children
+// folders → ['2026', '2027'] — immediate subfolder names
+```
+
+`folder()` reads only key metadata for deeper descendants (one xattr each), so
+browsing stays cheap in large trees. Checksums are cached in a
+`user.fylo.checksum` xattr stamped with (size, mtime), so listings and reads
+do not re-hash file contents; the hash is recomputed automatically whenever
+the stamp no longer matches the file.
+
+The cache trusts its stamp, so silent corruption that preserves both size and
+mtime is invisible to the fast path. `verify()` is the stamp-ignoring audit
+that closes the gap — it re-hashes the full contents of every file (active
+and soft-deleted), freshens matching stamps, and reports mismatches without
+touching the corrupt file's original claim:
+
+```js
+const report = await db.assets.verify()
+// { collection, filesScanned, verified, stamped, corrupt: [{ id, namespace, expected, actual }] }
+```
+
+Each mismatch also emits a `file.checksum-mismatch` event through `onEvent`.
+The audit reads every byte, so it is slow by design — run it as a scheduled
+background job, not per request. The CLI equivalent exits non-zero when
+corruption is found, so a cron line is all a weekly audit needs:
+
+```cron
+# Weekly integrity audit, Sunday 03:00 — mail/alert fires on non-zero exit
+0 3 * * 0  fylo verify assets --root /mnt/fylo --json || notify "fylo: corruption detected"
+```
+
+Machine-protocol callers use `{"op": "verifyCollection", "collection": "assets"}`.
+Metadata has machine ops too: `putData` accepts a top-level `meta` record;
+`{"op":"getMeta","collection":"...","id":"..."}` reads it, and
+`{"op":"setMeta","collection":"...","id":"...","meta":{...}}` bulk-edits
+it. Browser document collections persist metadata in a
+durable internal OPFS sidecar and expose the same metadata API. Local-first
+clients read and write that sidecar entirely on-device. There is no background
+metadata transport or remote conflict clock; moving data between devices is an
+application-level export, filesystem mount, or backup concern.
+
 FYLO stores the bytes unchanged at:
 
 ```text
-.collections/assets/docs/<TTID-prefix>/<TTID>.<original-extension>
+.buckets/assets/docs/<TTID-prefix>/<TTID>.<original-extension>
 ```
 
 No source path or URL is retained. Metadata is derived from the stored file,
-with the logical `key` stored in a small system sidecar:
+with the logical `key` stored as a `user.fylo.key` extended attribute (xattr)
+on the file itself, so it travels with the bytes across moves:
 `name`, `key`, `extension`, `contentType`, `contentLength`, `etag`,
 `checksumSHA256`, `createdAt`, and `lastModified`. These fields use the normal
-prefix index and can be queried with `find()`. Portable custom metadata is not
-currently stored.
+prefix index and can be queried with `find()`.
+
+Developer-defined metadata rides along the same way, as `user.fylo.meta.*`
+xattrs on the document or raw file. `put` has two metadata-focused forms:
+`put(id, documentOrFile).metadata(record)` writes bytes and metadata together,
+and `put(id).metadata(record)` bulk-edits an existing record (`null` removes an
+entry). `get(id).metadata()` reads the whole record:
+
+```js
+const id = await Fylo.uniqueTTID()
+await db.assets
+    .put(id, file, { key: '/pics/beach.jpg' })
+    .metadata({ camera: 'A7 IV', rating: 5, starred: true })
+await db.assets.put(id).metadata({ rating: 4, starred: null }) // update + remove
+await db.assets.get(id).metadata() // { camera: 'A7 IV', rating: 4 }
+```
+
+The existing generated-ID form (`put(dataOrFile, options)`) remains available.
+The record must be a plain object. Names are 1-64 characters of letters, digits,
+`.`, `_`, or `-`, starting with a letter or digit. Each value must be
+JSON-serializable and at most 60 KiB after UTF-8 JSON encoding; strings, numbers,
+booleans, arrays, and objects round-trip with their types. A top-level `null`
+value is a deletion marker, not a storable metadata value. FYLO validates the
+whole mutation before writing it and rolls back a filesystem xattr batch if a
+later write fails. Browser sidecars enforce the same names, value types, and
+size ceiling. On file collections, metadata is returned inside each manifest
+(`manifest.meta`) and is indexed, so it can be queried — including numerically:
+
+```js
+await db.assets.find({ $ops: [{ ['meta/starred']: { $eq: true } }] })
+await db.assets.find({ $ops: [{ ['meta/rating']: { $gte: 4 } }] })
+```
+
+Metadata survives soft delete, restore, and version-control
+restores (it is snapshotted with each commit), and is frozen alongside the
+bytes in WORM mode. If a store directory is ever copied by an xattr-dropping
+tool, `rebuild()` repairs each stripped file to its default `/<filename>` key
+(emitting a `file.key-repaired` event; custom keys are not recoverable from
+bytes alone — use a version-control restore for full fidelity). Filesystem-backed
+document and file collections use native xattrs on macOS/Linux and an NTFS
+Alternate Data Stream manifest on Windows. Browser document collections use the
+durable OPFS sidecar instead.
+Metadata is per-version on filesystem-backed JSON documents (a `patch` writes
+a new version file). The machine ops `getMeta`/`setMeta` cover it from any
+client shim. The low-level helpers `getXattr` / `setXattr` / `listXattr` /
+`removeXattr` are exported from the package for raw byte-level access.
 
 `URL` ingestion snapshots the content at write time. `file:` URLs work
 server-side; browser runtimes accept `Blob`, `File`, and network URLs. The
@@ -423,11 +570,6 @@ Compiled executable callers use a tagged absolute path:
     }
 }
 ```
-
-The HTTP gateway accepts raw bytes with `Content-Type` and
-`X-FYLO-Filename`; pass the logical object key through `X-FYLO-Key`. It streams them back from
-`GET /v1/{collection}/{id}/raw`. Server-local paths are rejected through the
-remote `/v1/exec` transport.
 
 ---
 
@@ -675,72 +817,18 @@ Strict WORM mode emits its initial write sync event only; mutation callbacks can
 
 ---
 
-## Remote Gateway
+## Remote Access
 
-`fylo serve` exposes a PostgREST-inspired HTTP boundary over a local FYLO root.
-It is useful when the database directory lives on one machine or mounted drive
-and other services need to query it over the network.
+There is none — by design. FYLO has no server and speaks no network protocol.
+Every client owns its database directly: the CLI and language shims drive the
+`fylo` binary against a local root, and the browser/mobile clients embed the
+engine over an on-device OPFS store (see [Browser access](#browser-access)).
+If a root must be reached from another machine, that is a filesystem-layer
+concern (a mounted drive, a synced directory) — not FYLO's.
 
-```bash
-FYLO_SERVER_TOKEN="$(openssl rand -hex 32)" \
-fylo serve --root /mnt/fylo --host 0.0.0.0 --port 8787
-```
-
-Routes:
-
-| Route                        | Purpose                                  |
-| ---------------------------- | ---------------------------------------- |
-| `GET /v1/health`             | Health and protocol metadata             |
-| `GET /v1/openapi.json`       | Minimal OpenAPI description              |
-| `GET /v1/:collection`        | Query collection documents               |
-| `POST /v1/:collection`       | Insert one document                      |
-| `GET /v1/:collection/:id`    | Read one document by TTID                |
-| `PATCH /v1/:collection/:id`  | Patch one document by TTID               |
-| `DELETE /v1/:collection/:id` | Soft-delete one document by TTID         |
-| `POST /v1/sql`               | Execute FYLO SQL with `{ "sql": "..." }` |
-| `POST /v1/exec`              | Execute the machine JSON protocol        |
-
-Collection endpoints require the collection to already exist. Create it first
-with `POST /v1/sql` (`CREATE TABLE <collection>`) or `/v1/exec` using the
-`createCollection` operation.
-
-Every non-`OPTIONS` request requires `Authorization: Bearer <token>` unless
-`--allow-anonymous` is explicitly passed. Binding to a non-loopback host without
-a token fails closed.
-
-```bash
-curl -H "Authorization: Bearer $FYLO_SERVER_TOKEN" \
-  "http://localhost:8787/v1/users?role=eq.admin&age=gte.30"
-```
-
-Supported URL filters are `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `like`, and
-`contains`. For example, `name=like.Ada%25`, `tags=contains.platform`, and
-`onlyIds=true`.
-
-Branch profiles use PostgREST-style headers. `Accept-Profile` selects the
-branch for reads; `Content-Profile` selects the branch for writes.
-
-```bash
-curl -H "Authorization: Bearer $FYLO_SERVER_TOKEN" \
-  -H "Accept-Profile: feature/docs" \
-  http://localhost:8787/v1/posts
-```
-
-Need custom routing, middleware, TLS, or deployment-specific auth? Build from
-source and embed the handler `createFyloHttpHandler` (exported from
-`src/server/http.js`) in your own service:
-
-```ts
-import { createFyloHttpHandler } from './src/server/http.js'
-
-const fyloHandler = createFyloHttpHandler({
-    root: '/mnt/fylo',
-    token: process.env.FYLO_SERVER_TOKEN
-})
-
-// fyloHandler is a standard (request) => Response handler — serve it with
-// your runtime's HTTP server.
-```
+The PostgREST-style filter grammar (`role=eq.admin&age=gte.30`) lives on as a
+query front-end: `queryFromSearch` in `src/query/postgrest.js` translates it
+into a `findDocs` query.
 
 ---
 
@@ -797,6 +885,7 @@ fylo sql "SELECT * FROM posts" --page-size 25
 # Admin
 fylo inspect posts --root /mnt/fylo --json
 fylo rebuild posts --root /mnt/fylo
+fylo verify assets --root /mnt/fylo --json  # integrity audit; exits 1 on corruption
 fylo get posts 4UUB32VGUDW --root /mnt/fylo --json
 fylo deleted posts --root /mnt/fylo --json
 fylo restore posts 4UUB32VGUDW --root /mnt/fylo --json
@@ -841,6 +930,17 @@ const db = new Fylo('/mnt/fylo', {
     versioning: { autoCommit: false }
 })
 ```
+
+Version-control snapshots keep a full content-addressed copy of every raw
+file, which doubles disk and write bandwidth for large media collections.
+Exclude a collection from history entirely at creation time:
+
+```js
+await db.media.create({ kind: 'file', versioned: false })
+```
+
+Unversioned collections never appear in commits, diffs, or restores — their
+working files are the only copy, and `restoreCommit` leaves them untouched.
 
 Machine/executable callers can use the same option in JSON:
 
@@ -917,6 +1017,13 @@ fylo rebuild posts --root /mnt/fylo --json
 
 Use `db.<collection>.rebuild()` after operator-level recovery or when external
 processes have modified data files directly.
+
+Version-control restore and merge operations maintain a durable transaction
+under `.fylo-vcs/staging/`. `VersionRepository.init()` recovers interrupted
+transactions before collection bootstrap. The shared staging directory is a
+permanent coordination root; completed transaction directories are removed.
+Multiple processes may initialize concurrently: one recovery owner performs the
+work while the others wait and then observe the recovered tree and ref.
 
 ---
 

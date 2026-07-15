@@ -297,7 +297,7 @@ export class LocalQueue {
 
     /**
      * @param {string} collection
-     * @param {{ action: 'insert' | 'delete', id: string, ts: number, doc?: Record<string, any> }} event
+     * @param {{ action: 'insert' | 'delete' | 'meta', id: string, ts: number, doc?: Record<string, any>, meta?: Record<string, any> }} event
      * @returns {Promise<string>}
      */
     async publishCollectionEvent(collection, event) {

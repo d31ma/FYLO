@@ -146,6 +146,12 @@ public final class Fylo implements AutoCloseable {
     public String getDoc(String collection, String id) throws IOException {
         return op("getDoc", "collection", collection, "id", id);
     }
+    public String getMeta(String collection, String id) throws IOException {
+        return op("getMeta", "collection", collection, "id", id);
+    }
+    public String setMeta(String collection, String id, Map<String, Object> meta) throws IOException {
+        return op("setMeta", "collection", collection, "id", id, "meta", meta);
+    }
     public String getLatest(String collection, String id) throws IOException {
         return op("getLatest", "collection", collection, "id", id);
     }
@@ -207,6 +213,10 @@ public final class Fylo implements AutoCloseable {
         }
         public String get(String id) throws IOException {
             return getDoc(name, id);
+        }
+        public String getMeta(String id) throws IOException { return Fylo.this.getMeta(name, id); }
+        public String setMeta(String id, Map<String, Object> meta) throws IOException {
+            return Fylo.this.setMeta(name, id, meta);
         }
         public String latest(String id) throws IOException {
             return getLatest(name, id);

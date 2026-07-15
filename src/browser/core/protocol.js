@@ -1,4 +1,5 @@
 import '../../core/extensions.js'
+import { safeRecord } from '../../query/safe-record.js'
 
 export const FYLO_BROWSER_PROTOCOL_VERSION = 1
 
@@ -72,7 +73,7 @@ export function isBrowserRequest(value) {
  */
 async function collectFindDocs(fylo, collection, query) {
     /** @type {Record<string, any> | string[]} */
-    let docs = query.$onlyIds ? [] : {}
+    let docs = query.$onlyIds ? [] : safeRecord()
     for await (const value of fylo.findDocs(collection, query).collect()) {
         if (value === undefined) continue
         if (typeof value === 'object' && value !== null) {
@@ -94,7 +95,7 @@ async function collectFindDocs(fylo, collection, query) {
  */
 async function collectDeletedDocs(fylo, collection, query) {
     /** @type {Record<string, any> | string[]} */
-    let docs = query.$onlyIds ? [] : {}
+    let docs = query.$onlyIds ? [] : safeRecord()
     for await (const value of fylo.findDeletedDocs(collection, query).collect()) {
         if (value === undefined) continue
         if (typeof value === 'object' && value !== null) {
@@ -149,6 +150,17 @@ export async function executeBrowserOperation(fylo, request) {
                 requireString(request, 'id'),
                 request.onlyId === true
             )
+        case 'getMeta':
+            return await fylo.getDocMeta(
+                requireString(request, 'collection'),
+                requireString(request, 'id')
+            )
+        case 'setMeta':
+            return await fylo.setDocMetaRecord(
+                requireString(request, 'collection'),
+                requireString(request, 'id'),
+                requireObject(request, 'meta')
+            )
         case 'findDocs':
             return await collectFindDocs(
                 fylo,
@@ -163,11 +175,15 @@ export async function executeBrowserOperation(fylo, request) {
             )
         case 'joinDocs':
             return await fylo.join(requireObject(request, 'join'))
-        case 'putData':
+        case 'putData': {
+            const hasMeta = Object.hasOwn(request, 'meta')
             return await fylo.putData(
                 requireString(request, 'collection'),
-                requireObject(request, 'data')
+                requireObject(request, 'data'),
+                hasMeta ? requireObject(request, 'meta') : undefined,
+                hasMeta
             )
+        }
         case 'batchPutData':
             return await fylo.batchPutData(
                 requireString(request, 'collection'),

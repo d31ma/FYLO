@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
+import { existsSync } from 'node:fs'
 import { cp, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -14,11 +15,12 @@ const binaryPath = path.join(
 
 /**
  * @param {string[]} args
- * @param {{ cwd?: string, stdin?: string, timeout?: number }} [options]
+ * @param {{ cwd?: string, stdin?: string, timeout?: number, env?: Record<string, string> }} [options]
  */
 async function run(args, options = {}) {
     const proc = Bun.spawn(args, {
         cwd: options.cwd ?? repoRoot,
+        env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1', ...options.env },
         stdin: options.stdin === undefined ? 'ignore' : new Blob([options.stdin]),
         stdout: 'pipe',
         stderr: 'pipe'
@@ -134,6 +136,7 @@ print(json.dumps({"ok": True, "id": doc_id}))
 
         const result = await run(['python3', script, binaryPath, root])
         expectSuccess('python interop', result)
+        expect(existsSync(path.join(workspace, '__pycache__'))).toBe(false)
         expect(JSON.parse(result.stdout).ok).toBe(true)
     })
 
@@ -829,6 +832,7 @@ with Fylo(root, binary=binary) as db:
         )
         const result = await run(['python3', 'driver.py', binaryPath, root], { cwd: ws })
         expectShimOk('python shim', result)
+        expect(existsSync(path.join(ws, '__pycache__'))).toBe(false)
     })
 
     test('Ruby shim drives named methods with a native Hash', async () => {
@@ -977,6 +981,24 @@ fn main() {
             Json::obj(vec![("name", "Ada".into()), ("role", "admin".into()), ("age", 30.into())]),
         )
         .unwrap();
+    let marker = "\"result\":\"";
+    let start = put.find(marker).expect("missing document id") + marker.len();
+    let id_tail = &put[start..];
+    let id = &id_tail[..id_tail.find('"').expect("unterminated document id")];
+    db.set_meta(
+        "users",
+        id,
+        Json::obj(vec![("source", "rust".into()), ("reviewed", false.into())]),
+    )
+    .unwrap();
+    let initial_meta = db.get_meta("users", id).unwrap();
+    assert!(initial_meta.contains("\"source\":\"rust\""), "{initial_meta}");
+    assert!(initial_meta.contains("\"reviewed\":false"), "{initial_meta}");
+    db.set_meta("users", id, Json::obj(vec![("source", Json::Null)]))
+        .unwrap();
+    let updated_meta = db.get_meta("users", id).unwrap();
+    assert!(!updated_meta.contains("\"source\""), "{updated_meta}");
+    assert!(updated_meta.contains("\"reviewed\":false"), "{updated_meta}");
     let found = db
         .find_docs(
             "users",

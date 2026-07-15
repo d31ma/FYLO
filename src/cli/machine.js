@@ -8,7 +8,6 @@ import {
     validateSchemaDocument
 } from '../schema/admin.js'
 import { VersionRepository } from '../versioning/repository.js'
-import { syncPush } from '../replication/sync-push.js'
 
 const MACHINE_PROTOCOL_VERSION = 1
 
@@ -18,7 +17,7 @@ const MACHINE_PROTOCOL_VERSION = 1
  */
 
 /**
- * @typedef {'executeSQL' | 'createCollection' | 'dropCollection' | 'inspectCollection' | 'rebuildCollection' | 'getDoc' | 'getLatest' | 'findDocs' | 'findDeletedDocs' | 'restoreDoc' | 'joinDocs' | 'putData' | 'batchPutData' | 'patchDoc' | 'patchDocs' | 'delDoc' | 'delDocs' | 'importBulkData' | 'syncPush' | 'checkout' | 'branch' | 'commit' | 'log' | 'status' | 'diff' | 'restoreCommit' | 'merge' | 'schemaInspect' | 'schemaCurrent' | 'schemaHistory' | 'schemaDoctor' | 'schemaValidate' | 'schemaMaterialize'} MachineOperation
+ * @typedef {'executeSQL' | 'createCollection' | 'dropCollection' | 'inspectCollection' | 'rebuildCollection' | 'verifyCollection' | 'getDoc' | 'getLatest' | 'getMeta' | 'setMeta' | 'findDocs' | 'findDeletedDocs' | 'restoreDoc' | 'joinDocs' | 'putData' | 'batchPutData' | 'patchDoc' | 'patchDocs' | 'delDoc' | 'delDocs' | 'importBulkData' | 'checkout' | 'branch' | 'commit' | 'log' | 'status' | 'diff' | 'restoreCommit' | 'merge' | 'schemaInspect' | 'schemaCurrent' | 'schemaHistory' | 'schemaDoctor' | 'schemaValidate' | 'schemaMaterialize'} MachineOperation
  */
 
 /**
@@ -43,11 +42,11 @@ const MACHINE_PROTOCOL_VERSION = 1
  * @property {string=} sql
  * @property {Record<string, any>=} query
  * @property {Record<string, any>=} join
- * @property {import('../replication/sync-push.js').SyncChange[]=} changes
  * @property {Record<string, any>=} document
  * @property {Record<string, any>=} data
  * @property {{ path?: string, url?: string, key?: string }=} file
- * @property {{ maxBytes?: number, key?: string, allowedProtocols?: string[], allowedHosts?: string[], allowPrivateNetwork?: boolean }=} fileOptions
+ * @property {{ maxBytes?: number, key?: string, meta?: Record<string, any>, allowedProtocols?: string[], allowedHosts?: string[], allowPrivateNetwork?: boolean }=} fileOptions
+ * @property {Record<string, any>=} meta developer metadata (putData initial record, or setMeta payload)
  * @property {Record<string, any>[]=} batch
  * @property {Record<string, any>=} newDoc
  * @property {Record<string, any>=} oldDoc
@@ -385,6 +384,18 @@ export async function executeMachineOperation(request, overrides = {}) {
             return await fylo[requireString(request, 'collection')].inspect()
         case 'rebuildCollection':
             return await fylo[requireString(request, 'collection')].rebuild()
+        case 'verifyCollection':
+            return await fylo[requireString(request, 'collection')].verify()
+        case 'getMeta':
+            return await fylo[requireString(request, 'collection')]
+                .get(requireString(request, 'id'))
+                .metadata()
+        case 'setMeta': {
+            const collection = requireString(request, 'collection')
+            const id = requireString(request, 'id')
+            await fylo[collection].put(id).metadata(requireObject(request, 'meta'))
+            return await fylo[collection].get(id).metadata()
+        }
         case 'getDoc':
             return await fylo[requireString(request, 'collection')]
                 .get(requireString(request, 'id'))
@@ -412,24 +423,20 @@ export async function executeMachineOperation(request, overrides = {}) {
                     requireObject(request, 'join')
                 )
             )
-        case 'syncPush':
-            return await syncPush(
-                fylo,
-                requireString(request, 'collection'),
-                /** @type {import('../replication/sync-push.js').SyncChange[]} */ (
-                    Array.isArray(request.changes) ? request.changes : []
-                )
-            )
         case 'putData': {
             const collection = requireString(request, 'collection')
             const file = machineFileInput(request, overrides)
             if (file) {
                 return await fylo[collection].put(file, {
                     ...request.fileOptions,
-                    key: request.file?.key ?? request.fileOptions?.key
+                    key: request.file?.key ?? request.fileOptions?.key,
+                    meta: request.meta ?? request.fileOptions?.meta
                 })
             }
-            return await fylo[collection].put(requireObject(request, 'data'))
+            return await fylo[collection].put(
+                requireObject(request, 'data'),
+                request.meta ? { meta: request.meta } : undefined
+            )
         }
         case 'batchPutData':
             return await fylo[requireString(request, 'collection')].put.batch(

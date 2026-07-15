@@ -1,0 +1,93 @@
+<div class="explorer-overview">
+    <div class="explorer-stats">
+        <div class="explorer-stat">
+            <span class="explorer-stat-num">{totals.collections}</span>
+            <span class="explorer-stat-label">Collections</span>
+        </div>
+        <div class="explorer-stat">
+            <span class="explorer-stat-num">{totals.buckets}</span>
+            <span class="explorer-stat-label">Buckets</span>
+        </div>
+        <div class="explorer-stat">
+            <span class="explorer-stat-num">{totals.items}</span>
+            <span class="explorer-stat-label">Items</span>
+        </div>
+        <div class="explorer-stat">
+            <span class="explorer-stat-num">{totals.commits}</span>
+            <span class="explorer-stat-label">Commits</span>
+        </div>
+    </div>
+    <logic :if="hasChart()">
+        <div class="explorer-chart-block">
+            <div class="explorer-chart-head">
+                <span>Write activity</span>
+                <span class="explorer-hint">hover a bar for details</span>
+            </div>
+            <svg
+                class="explorer-chart"
+                viewBox="0 0 100 40"
+                preserveAspectRatio="none"
+                role="img"
+                aria-label="Aggregate write activity over time"
+            >
+                <loop :for="let b of bars()">
+                    <rect
+                        :x="b.x"
+                        :y="b.y"
+                        :width="b.w"
+                        :height="b.h"
+                    >
+                        <title>{b.title}</title>
+                    </rect>
+                </loop>
+            </svg>
+            <div class="explorer-chart-axis">
+                <span>{fromLabel()}</span>
+                <span>{toLabel()}</span>
+            </div>
+        </div>
+    </logic>
+
+    <logic :if="rows.length > 0">
+        <table class="explorer-table">
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Kind</th>
+                    <th class="explorer-num">Items</th>
+                    <th class="explorer-num">Writes</th>
+                </tr>
+            </thead>
+            <tbody>
+                <loop :for="let r of rows">
+                    <tr>
+                        <td>{r.name}</td>
+                        <td>{r.kind}</td>
+                        <td class="explorer-num">{r.count}</td>
+                        <td class="explorer-num">
+                            <span class="explorer-spark-cell">
+                                <logic :if="hasSpark(r.spark)">
+                                    <svg
+                                        class="explorer-spark"
+                                        viewBox="0 0 100 24"
+                                        preserveAspectRatio="none"
+                                        aria-hidden="true"
+                                    >
+                                        <polyline :points="spark(r.spark)">
+                                            <title>{r.writes} writes over time</title>
+                                        </polyline>
+                                    </svg>
+                                </logic>
+                                <span>{r.writes}</span>
+                            </span>
+                        </td>
+                    </tr>
+                </loop>
+            </tbody>
+        </table>
+        <p class="explorer-hint">Writes = committed changes over time (from version history).</p>
+    </logic>
+    <logic :if="rows.length === 0">
+        <p class="explorer-hint">No collections or buckets in this root yet.</p>
+    </logic>
+</div>

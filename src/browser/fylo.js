@@ -16,7 +16,10 @@ import { CollectionNotFoundError } from '../core/collection.js'
  * @typedef {import('../query/types.js').StoreUpdate<Record<string, any>>} StoreUpdate
  * @typedef {ReturnType<FyloBrowser['findDocs']>} BrowserFindResult
  * @typedef {ReturnType<FyloBrowser['findDeletedDocs']>} BrowserDeletedFindResult
- * @typedef {((data: Record<string, any>) => Promise<TTIDValue>) & {
+ * @typedef {PromiseLike<TTIDValue> & { metadata(record: Record<string, any>): Promise<TTIDValue> }} BrowserMetadataPutOperation
+ * @typedef {((data: Record<string, any>) => Promise<TTIDValue>) &
+ *   ((id: TTIDValue, data: Record<string, any>) => BrowserMetadataPutOperation) &
+ *   ((id: TTIDValue) => { metadata(record: Record<string, any>): Promise<TTIDValue> }) & {
  *   batch(batch: Record<string, any>[]): Promise<TTIDValue[]>
  * }} BrowserCollectionPut
  * @typedef {((id: TTIDValue, patch: Record<string, any>, oldDoc?: Record<TTIDValue, Record<string, any>>) => Promise<TTIDValue>) & {
@@ -29,6 +32,33 @@ import { CollectionNotFoundError } from '../core/collection.js'
  *   deleted(query?: StoreQuery): BrowserDeletedFindResult
  * }} BrowserCollectionFind
  */
+
+/** @param {(record: Record<string, any> | undefined, present: boolean) => Promise<TTIDValue>} write @param {(record: Record<string, any>) => Promise<TTIDValue>} writeMetadata */
+function browserMetadataPutOperation(write, writeMetadata) {
+    /** @type {Record<string, any> | undefined} */
+    let metadata
+    let hasMetadata = false
+    /** @type {Promise<TTIDValue> | undefined} */
+    let operation
+    const start = () => (operation ??= Promise.resolve().then(() => write(metadata, hasMetadata)))
+    return {
+        then(
+            /** @type {(value: TTIDValue) => any} */ onFulfilled,
+            /** @type {(reason: any) => any} */ onRejected
+        ) {
+            return start().then(onFulfilled, onRejected)
+        },
+        async metadata(/** @type {Record<string, any>} */ record) {
+            if (!operation) {
+                metadata = record
+                hasMetadata = true
+                return await start()
+            }
+            await start()
+            return await writeMetadata(record)
+        }
+    }
+}
 
 /**
  * Browser-facing FYLO runtime backed by OPFS or an injected VFS.
@@ -216,6 +246,16 @@ export class FyloBrowser {
         return await this.dispatch({ op: 'getLatest', collection, id, onlyId })
     }
 
+    /** @param {string} collection @param {string} id */
+    async getDocMeta(collection, id) {
+        return await this.dispatch({ op: 'getMeta', collection, id })
+    }
+
+    /** @param {string} collection @param {string} id @param {Record<string, any>} meta */
+    async setDocMetaRecord(collection, id, meta) {
+        return await this.dispatch({ op: 'setMeta', collection, id, meta })
+    }
+
     /** @param {string} collection @param {Record<string, any>} [query] */
     findDocs(collection, query = {}) {
         const fylo = this
@@ -269,9 +309,16 @@ export class FyloBrowser {
         })
     }
 
-    /** @param {string} collection @param {Record<string, any>} data @returns {Promise<string>} */
-    async putData(collection, data) {
-        return /** @type {string} */ (await this.dispatch({ op: 'putData', collection, data }))
+    /** @param {string} collection @param {Record<string, any>} data @param {Record<string, any>=} meta @param {boolean} [metaPresent] @returns {Promise<string>} */
+    async putData(collection, data, meta, metaPresent = arguments.length >= 3) {
+        return /** @type {string} */ (
+            await this.dispatch({
+                op: 'putData',
+                collection,
+                data,
+                ...(metaPresent ? { meta } : {})
+            })
+        )
     }
 
     /** @param {string} collection @param {Record<string, any>[]} batch @returns {Promise<string[]>} */
@@ -353,9 +400,39 @@ export class BrowserCollectionFacade {
         this.collection = collection
         const self = this
         const put = /** @type {BrowserCollectionPut} */ (
-            async (data) => {
-                return await self.fylo.putData(self.collection, data)
-            }
+            /** @type {unknown} */ (
+                function (
+                    /** @type {Record<string, any> | string} */ dataOrId,
+                    /** @type {Record<string, any>} */ data
+                ) {
+                    if (typeof dataOrId === 'string') {
+                        const id = dataOrId
+                        if (arguments.length === 1) {
+                            return {
+                                metadata: async (/** @type {Record<string, any>} */ record) =>
+                                    await self.fylo.setDocMetaRecord(self.collection, id, record)
+                            }
+                        }
+                        return browserMetadataPutOperation(
+                            async (record, present) =>
+                                await self.fylo.putData(
+                                    self.collection,
+                                    { [id]: data },
+                                    record,
+                                    present
+                                ),
+                            async (record) =>
+                                await self.fylo
+                                    .setDocMetaRecord(self.collection, id, record)
+                                    .then(() => id)
+                        )
+                    }
+                    return self.fylo.putData(
+                        self.collection,
+                        /** @type {Record<string, any>} */ (dataOrId)
+                    )
+                }
+            )
         )
         put.batch = async (batch) => {
             return await self.fylo.batchPutData(self.collection, batch)
@@ -363,9 +440,15 @@ export class BrowserCollectionFacade {
         this.put = put
 
         const patch = /** @type {BrowserCollectionPatch} */ (
-            async (id, patch, oldDoc = {}) => {
-                return await self.fylo.patchDoc(self.collection, { [id]: patch }, oldDoc)
-            }
+            /** @type {unknown} */ (
+                function (
+                    /** @type {string} */ id,
+                    /** @type {Record<string, any>} */ patchData,
+                    oldDoc = {}
+                ) {
+                    return self.fylo.patchDoc(self.collection, { [id]: patchData }, oldDoc)
+                }
+            )
         )
         patch.many = async (update) => {
             return await self.fylo.patchDocs(self.collection, update)
@@ -395,7 +478,10 @@ export class BrowserCollectionFacade {
 
     /** @param {string} id @param {boolean} [onlyId] */
     get(id, onlyId = false) {
-        return this.fylo.getDoc(this.collection, id, onlyId)
+        return {
+            ...this.fylo.getDoc(this.collection, id, onlyId),
+            metadata: async () => await this.fylo.getDocMeta(this.collection, id)
+        }
     }
     /** @param {string} id @param {boolean} [onlyId] */
     async latest(id, onlyId = false) {

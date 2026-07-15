@@ -1,8 +1,11 @@
 import TTID from '../vendor/ttid.mjs'
+import { copySafeJson, safeRecord } from '../../query/safe-record.js'
 import { CollectionNotFoundError, validateCollectionName } from '../../core/collection.js'
 import { Parser } from '../../query/parser.js'
 import { runInLane } from './filesystem.js'
 import { BrowserDocuments } from './documents.js'
+import { validateMetadataRecord } from './metadata.js'
+import { BrowserMetadataStore } from './metadata.js'
 import { BrowserEventBus } from './event-bus.js'
 import { BrowserPrefixIndex } from './prefix-index.js'
 import { BrowserQueryEngine } from './query.js'
@@ -94,6 +97,7 @@ export class BrowserCore {
             this.deletedPath.bind(this),
             this.ensureCollection.bind(this)
         )
+        this.metadata = new BrowserMetadataStore(this.fs, this.collectionRoot.bind(this))
         this.queryEngine = new BrowserQueryEngine({ index: this.index })
         return new Proxy(this, {
             get(target, prop, receiver) {
@@ -176,6 +180,7 @@ export class BrowserCore {
         await this.fs.mkdir(this.collectionRoot(collection), { recursive: true })
         await this.fs.mkdir(this.docsRoot(collection), { recursive: true })
         await this.fs.mkdir(this.deletedRoot(collection), { recursive: true })
+        await this.fs.mkdir(this.metadata.root(collection), { recursive: true })
         await this.fs.mkdir(join(this.collectionRoot(collection), 'events'), { recursive: true })
         await this.index.ensureCollection(collection)
     }
@@ -262,9 +267,11 @@ export class BrowserCore {
     /**
      * @param {string} collection
      * @param {Record<string, any>} data
+     * @param {Record<string, any>=} meta
      * @returns {Promise<TTIDValue>}
      */
-    async putData(collection, data) {
+    async putData(collection, data, meta) {
+        if (meta !== undefined) validateMetadataRecord(meta)
         await this.requireCollection(collection)
         const explicit = explicitDocumentEntry(data)
         const id = explicit?.[0] ?? /** @type {TTIDValue} */ (TTID.generate())
@@ -291,6 +298,17 @@ export class BrowserCore {
                 await this.index.removeDocument(collection, id, existing.data)
             }
             await this.documents.writeStoredDoc(collection, id, doc)
+            try {
+                if (meta !== undefined) await this.metadata.mutate(collection, id, meta)
+            } catch (error) {
+                if (existing) {
+                    await this.documents.writeStoredDoc(collection, id, existing.data)
+                    await this.index.putDocument(collection, id, existing.data)
+                } else {
+                    await this.documents.removeStoredDoc(collection, id)
+                }
+                throw error
+            }
             await this.index.putDocument(collection, id, doc)
             if (this.wormEnabled()) await this.documents.makeStoredDocReadOnly(collection, id)
             const stored = await this.documents.readStoredDoc(collection, id)
@@ -310,6 +328,35 @@ export class BrowserCore {
         const ids = []
         for (const data of batch) ids.push(await this.putData(collection, data))
         return ids
+    }
+
+    /** @param {string} collection @param {TTIDValue} id */
+    async getDocMeta(collection, id) {
+        validateDocId(id)
+        await this.requireCollection(collection)
+        if (!(await this.documents.readStoredDoc(collection, id))) {
+            throw new Error(`Document not found: ${id}`)
+        }
+        return copySafeJson((await this.metadata.read(collection, id)).values)
+    }
+
+    /** @param {string} collection @param {TTIDValue} id @param {Record<string, any>} record */
+    async setDocMetaRecord(collection, id, record) {
+        validateDocId(id)
+        await this.requireCollection(collection)
+        return await this.withCollectionWriteLane(collection, async () => {
+            if (!(await this.documents.readStoredDoc(collection, id))) {
+                throw new Error(`Document not found: ${id}`)
+            }
+            const result = await this.metadata.mutate(collection, id, record)
+            await this.events.publish(collection, {
+                ts: result.updatedAt,
+                action: 'meta',
+                id,
+                meta: copySafeJson(result.values)
+            })
+            return copySafeJson(result.values)
+        })
     }
 
     /**
@@ -580,7 +627,7 @@ export class BrowserCore {
         const leftDocs = await this.docResults(join.$leftCollection)
         const rightDocs = await this.docResults(join.$rightCollection)
         /** @type {Record<string, Record<string, any>>} */
-        const docs = {}
+        const docs = safeRecord()
         /** @type {Record<string, (leftVal: unknown, rightVal: unknown) => boolean>} */
         const compareMap = {
             $eq: (leftVal, rightVal) => leftVal === rightVal,
@@ -595,8 +642,7 @@ export class BrowserCore {
             for (const rightEntry of rightDocs) {
                 const [rightId, rightData] = Object.entries(rightEntry)[0]
                 let matched = false
-                for (const field in join.$on) {
-                    const operand = join.$on[field]
+                for (const [field, operand] of Object.entries(join.$on)) {
                     if (!operand) continue
                     for (const opKey of Object.keys(compareMap)) {
                         const rightField = operand[/** @type {keyof typeof operand} */ (opKey)]
@@ -613,7 +659,11 @@ export class BrowserCore {
                 switch (join.$mode) {
                     case 'inner':
                     case 'outer':
-                        docs[`${leftId}, ${rightId}`] = { ...leftData, ...rightData }
+                        docs[`${leftId}, ${rightId}`] = Object.assign(
+                            safeRecord(),
+                            leftData,
+                            rightData
+                        )
                         break
                     case 'left':
                         docs[`${leftId}, ${rightId}`] = leftData
@@ -633,17 +683,17 @@ export class BrowserCore {
         }
         if (join.$groupby) {
             /** @type {Record<string, Record<string, Record<string, any>>>} */
-            const groupedDocs = {}
-            for (const ids in docs) {
+            const groupedDocs = safeRecord()
+            for (const ids of Object.keys(docs)) {
                 const data = docs[ids]
                 const key = String(data[join.$groupby])
-                if (!groupedDocs[key]) groupedDocs[key] = {}
+                if (!Object.hasOwn(groupedDocs, key)) groupedDocs[key] = safeRecord()
                 groupedDocs[key][ids] = data
             }
             if (join.$onlyIds) {
                 /** @type {Record<string, string[]>} */
-                const groupedIds = {}
-                for (const key in groupedDocs)
+                const groupedIds = safeRecord()
+                for (const key of Object.keys(groupedDocs))
                     groupedIds[key] = Object.keys(groupedDocs[key]).flat()
                 return groupedIds
             }

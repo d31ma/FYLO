@@ -8,6 +8,8 @@ Dockerfile
 .vscode
 bin
 .DS_Store
+__pycache__/
+*.py[cod]
 .fylo-data
 
 # Graphify

@@ -7,6 +7,7 @@ import fylo, {
     createBrowserFylo
 } from '../../src/browser/index.js'
 import { createMemoryFilesystem } from '../../src/browser/core/memory-filesystem.js'
+import { runBrowserRequest } from '../../src/browser/core/protocol.js'
 import { runBrowserConformance } from './helpers/conformance.js'
 
 describe('browser runtime', () => {
@@ -74,6 +75,32 @@ describe('browser runtime', () => {
         await expect(fylo[missing].delete(id)).rejects.toBeInstanceOf(CollectionNotFoundError)
         await fylo[missing].create()
         expect((await fylo[missing].inspect()).exists).toBe(true)
+    })
+
+    test('worker protocol rejects present non-object initial metadata atomically', async () => {
+        const local = createBrowserFylo({ worker: false })
+        await local.people.create()
+        const id = TTID.generate()
+        const response = await runBrowserRequest(local.core, {
+            op: 'putData',
+            collection: 'people',
+            data: { [id]: { name: 'Must not persist' } },
+            meta: /** @type {any} */ ([])
+        })
+
+        expect(response.ok).toBe(false)
+        expect(response.error?.message).toContain('field "meta" must be an object')
+        expect(await local.people.get(id).once()).toEqual({})
+
+        const undefinedId = TTID.generate()
+        const undefinedResponse = await runBrowserRequest(local.core, {
+            op: 'putData',
+            collection: 'people',
+            data: { [undefinedId]: { name: 'Must not persist either' } },
+            meta: /** @type {any} */ (undefined)
+        })
+        expect(undefinedResponse.ok).toBe(false)
+        expect(await local.people.get(undefinedId).once()).toEqual({})
     })
 
     test('direct browser runtime exposes collection subscriptions', async () => {

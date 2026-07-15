@@ -1,6 +1,6 @@
 {
     "name": "@d31ma/fylo",
-    "version": "26.28.04",
+    "version": "26.29.03",
     "private": true,
     "type": "module",
     "bin": {

@@ -10,7 +10,7 @@
  * @typedef {object} StorageEngine
  * @property {(path: string) => Promise<string>} read
  * @property {(path: string) => Promise<Uint8Array>} readBytes
- * @property {(path: string) => ReadableStream<Uint8Array>} readStream
+ * @property {(path: string, range?: { start?: number, end?: number }) => ReadableStream<Uint8Array>} readStream
  * @property {(path: string, data: string) => Promise<void>} write
  * @property {(path: string, stream: ReadableStream<Uint8Array>, options?: { maxBytes?: number }) => Promise<{ contentLength: number, checksumSHA256: string }>} writeStream
  * @property {(source: string, target: string) => Promise<void>} move
@@ -53,11 +53,12 @@
  * @template {Record<string, any>} T
  * @typedef {object} FilesystemEvent
  * @property {number} ts
- * @property {'insert' | 'delete'} action
+ * @property {'insert' | 'delete' | 'meta'} action
  * @property {TTID} id
  * @property {T=} doc
  * @property {number=} createdAt
  * @property {number=} updatedAt
+ * @property {Record<string, any>=} meta
  */
 
 /**
@@ -100,6 +101,7 @@
 /**
  * @typedef {object} CollectionCreateOptions
  * @property {FyloCollectionKind=} kind
+ * @property {boolean=} versioned Set false to exclude the collection from version-control snapshots (default true).
  */
 
 /**

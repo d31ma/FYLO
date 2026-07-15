@@ -48,10 +48,10 @@ export default class extends Tac {
       text: 'onWrite / onDelete hooks in await-sync or fire-and-forget mode, plus a durable local queue with consumer groups and dead-letter files.',
     },
     {
-      area: 'Network',
+      area: 'Architecture',
       color: 'success',
-      title: 'Remote HTTP gateway',
-      text: 'A PostgREST-inspired REST boundary with Bearer auth, URL filters, branch profiles, SQL over HTTP, and an OpenAPI description.',
+      title: 'No server, no protocol',
+      text: 'Every client owns its database directly — the binary on desktop, an on-device OPFS engine in browsers and mobile. Nothing listens on a port; there is no auth surface to harden.',
     },
     {
       area: 'Interop',

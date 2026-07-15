@@ -21,7 +21,14 @@ describe('cross-process collection index lock', () => {
             })
         const a = spawnWorker('A')
         const b = spawnWorker('B')
-        const [aExit, bExit] = await Promise.all([a.exited, b.exited])
+        const [aExit, bExit, aStderr, bStderr] = await Promise.all([
+            a.exited,
+            b.exited,
+            new Response(a.stderr).text(),
+            new Response(b.stderr).text()
+        ])
+        expect(aStderr).toBe('')
+        expect(bStderr).toBe('')
         expect(aExit).toBe(0)
         expect(bExit).toBe(0)
         const fylo = new Fylo(root)

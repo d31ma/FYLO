@@ -87,6 +87,12 @@ class Fylo:
     def get_doc(self, collection, id):
         return self._op("getDoc", collection=collection, id=id)
 
+    def get_meta(self, collection, id):
+        return self._op("getMeta", collection=collection, id=id)
+
+    def set_meta(self, collection, id, meta):
+        return self._op("setMeta", collection=collection, id=id, meta=meta)
+
     def get_latest(self, collection, id, only_id=False):
         return self._op("getLatest", collection=collection, id=id, onlyId=only_id)
 
@@ -177,6 +183,12 @@ class _Collection:
 
     def get(self, id):
         return self._db.get_doc(self._name, id)
+
+    def get_metadata(self, id):
+        return self._db.get_meta(self._name, id)
+
+    def set_metadata(self, id, meta):
+        return self._db.set_meta(self._name, id, meta)
 
     def latest(self, id, only_id=False):
         return self._db.get_latest(self._name, id, only_id)

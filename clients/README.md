@@ -5,9 +5,9 @@ addon. There are two kinds, sharing the same method names:
 
 - **Thin shims** spawn the compiled `fylo` binary and speak the machine protocol
   over stdin/stdout. Install one binary, drop in one file for your language.
-- **Local-first clients** embed Fylo's engine on-device (a phone or a browser
-  can't spawn the binary) and sync to a backend `fylo serve` over REST — reads
-  and writes work fully offline.
+- **Local-only clients** embed Fylo's engine on-device (a phone or a browser
+  can't spawn the binary). Reads and writes hit the device's own OPFS store —
+  fully offline, no backend, no network.
 
 ### Thin shims (spawn the binary)
 
@@ -23,13 +23,13 @@ addon. There are two kinds, sharing the same method names:
 | Java     | `java/Fylo.java` | none (JDK)      |
 | Dart     | `dart/fylo.dart` | none (SDK)      |
 
-### Local-first clients (embed the engine, sync over REST)
+### Local-only clients (embed the engine on-device)
 
 | Platform         | File                     | How                                     |
 | ---------------- | ------------------------ | --------------------------------------- |
-| Browser (JS)     | `fylo-web.mjs` (release) | OPFS store + sync engine                |
-| iOS (Swift)      | `swift/Fylo.swift`       | WKWebView hosting `fylo.mjs` + sync     |
-| Android (Kotlin) | `kotlin/Fylo.kt`         | android.webkit.WebView + sync           |
+| Browser (JS)     | `fylo-web.mjs` (release) | OPFS store                              |
+| iOS (Swift)      | `swift/Fylo.swift`       | WKWebView hosting `fylo.mjs`            |
+| Android (Kotlin) | `kotlin/Fylo.kt`         | android.webkit.WebView                  |
 | Flutter (Dart)   | `flutter/fylo.dart`      | flutter_inappwebview hosting `fylo.mjs` |
 
 See [Browser](#browser-fylo-webmjs), [Mobile](#mobile-ios--android), and
@@ -74,16 +74,23 @@ exported/public methods must be capitalized):
 | Op         | Python / Ruby / Rust | Node / PHP / Java / Swift / Kotlin / Dart | Go / C#      |
 | ---------- | -------------------- | ----------------------------------------- | ------------ |
 | putData    | `put_data`           | `putData`                                 | `PutData`    |
+| getMeta    | `get_meta`           | `getMeta`                                 | `GetMeta`    |
+| setMeta    | `set_meta`           | `setMeta`                                 | `SetMeta`    |
 | findDocs   | `find_docs`          | `findDocs`                                | `FindDocs`   |
 | executeSQL | `execute_sql`        | `executeSQL`                              | `ExecuteSQL` |
 
-Covered: `createCollection`, `dropCollection`, `inspectCollection`,
-`rebuildCollection`, `putData`, `batchPutData`, `getDoc`, `getLatest`,
-`patchDoc`, `patchDocs`, `delDoc`, `delDocs`, `restoreDoc`, `findDocs`,
-`findDeletedDocs`, `joinDocs`, `executeSQL`, `importBulkData`. Each returns the
-operation's **result** and raises/returns an error on failure. For anything
-without a dedicated method (branching, schema ops), use the raw `request(op)`
-escape hatch — see `fylo --help` and `src/cli/machine.js`.
+The larger dynamic shims cover the full common machine-operation set, including
+batch, bulk, deleted-document, and join helpers. Compact compiled-language
+shims intentionally expose a smaller dedicated-method set. Use the raw
+`request(op)` escape hatch for an operation that has no dedicated method in your
+language (including branching and schema administration); the authoritative
+operation list is in `fylo --help` and `src/cli/machine.js`.
+
+Most shims unwrap and return the operation's `result`. Rust and Java return the
+validated raw response JSON string from their dedicated methods, so callers
+decode the envelope and read its `result` field. C# returns an unwrapped
+`JsonElement`. Every shim raises, throws, or returns an error for a failed
+machine response.
 
 Object arguments are always the language's **native container** — a `dict`
 (Python), `Hash` (Ruby), object (Node), associative array (PHP), `map[string]any`
@@ -108,6 +115,35 @@ name — `db.users.put(data)` (Node), `db.users.put(data)` (Python), `db.users.p
 (Ruby), `$db->users->put($data)` (PHP). The method-per-op API (`db.putData("users",
 data)`) stays available everywhere; the facade is additive sugar over it.
 
+Developer metadata uses `getMeta(collection, id)` and `setMeta(collection, id,
+meta)` (snake_case in Python/Ruby/Rust; PascalCase in Go/C#). Collection facades
+use `getMeta(id)` / `setMeta(id, meta)`, except Python and Ruby, which use
+`get_metadata(id)` / `set_metadata(id, meta)`, and PHP, which uses
+`getMetadata(id)` / `setMetadata(id, meta)`.
+
+In result-unwrapping shims, `getMeta` returns the complete developer metadata
+record. Rust and Java return their raw response envelope as described above.
+`setMeta` bulk-edits the record: supplied keys are set, `null` values remove
+keys, and omitted keys remain unchanged. The metadata argument must be a plain native map/object with
+names of 1-64 characters, starting with a letter or digit and containing only
+letters, digits, `.`, `_`, or `-`. Each value must be JSON-serializable and no
+larger than 60 KiB after UTF-8 JSON encoding. The local executable stores
+metadata as filesystem xattrs; the browser client uses an internal OPFS sidecar.
+
+The mobile clients are local-only WebView hosts. They allowlist the three FYLO
+assets, deny other navigation/network resources, cap requests and responses,
+bound pending calls, and time out or drain requests on cancellation, load or
+renderer failure, and close. Configure a shorter RPC timeout when the default
+30 seconds is inappropriate for your application; values are capped at five
+minutes.
+
+```js
+// Node shim; use the naming convention from the table in other languages.
+await db.users.setMeta(id, { source: 'import', reviewed: false })
+await db.users.setMeta(id, { source: null }) // remove one key
+const metadata = await db.users.getMeta(id) // { reviewed: false }
+```
+
 ## SQL
 
 Every client has `executeSQL(sql)` for a raw string. Each also exposes a `sql`
@@ -131,8 +167,7 @@ Node and C# hand the interpolated values to the client, which escapes them —
 those are injection-safe. The rest interpolate **before** the client sees the
 string, so values are inlined verbatim: **escape or validate untrusted input
 yourself**, or keep to app-generated SQL. On the mobile clients, `sql` runs
-against the local on-device store and its writes are **not** synced — use the
-document methods to sync writes.
+against the local on-device store.
 
 ## How the shims work
 
@@ -146,34 +181,31 @@ Pass `--root` once on spawn (the shims do this); per-request `root` is optional.
 ## Browser (`fylo-web.mjs`)
 
 Browsers can't spawn the binary, so the web client is different: it's a **bundled
-local-first engine** (built from `src/browser`, released as `fylo-web.mjs`). It
-reads and writes an OPFS/memory store directly — fully offline — and a background
-sync engine reconciles with a backend `fylo serve` over REST (`POST /v1/exec` push,
-`GET /v1/:collection/events` SSE pull, document-level three-way merge). With no
-`serverUrl`, or when the backend can't be pinged, the local store is the store and
-writes queue for the next reconnect.
+local-only engine** (built from `src/browser`, released as `fylo-web.mjs`). It
+reads and writes an OPFS/memory store directly — fully offline, no backend, no
+network. Each browser profile owns its own database.
 
 ```js
-import { createSyncedClient } from './fylo-web.mjs'
+import { createBrowserClient } from './fylo-web.mjs'
 
-const db = createSyncedClient({ serverUrl: 'https://api.example.com', token: FYLO_TOKEN })
+const db = createBrowserClient()
 await db.ready()
-await db.sync.start() // begin connectivity + sync; omit serverUrl for offline-only
 
-const id = await db.users.put({ name: 'Ada', role: 'admin' }) // local write, synced in background
+const id = await db.users.put({ name: 'Ada', role: 'admin' })
+await db.users.put(id).metadata({ source: 'browser' })
+const metadata = await db.users.get(id).metadata()
 const doc = await db.users.latest(id)
 ```
 
-Grab `fylo-web.mjs` from a release. Run its backend with
-`fylo serve --root <db> --token <token>`.
+Grab `fylo-web.mjs` from a release.
 
 ## Mobile (iOS / Android)
 
-Phones can't spawn the binary either, so the mobile clients are **local-first**
+Phones can't spawn the binary either, so the mobile clients are **local-only**
 like the browser: they host the same web engine (`fylo.mjs`) in a headless
 WebView (WKWebView on iOS, `android.webkit.WebView` on Android) and expose a
-native async API. Reads and writes hit an on-device OPFS store (fully offline);
-a background sync engine reconciles with a backend `fylo serve` over REST/SSE.
+native async API. All reads and writes hit an on-device OPFS store — fully
+offline, no backend.
 
 Bundle three files as app assets: `fylo.mjs` (from a Fylo release) plus
 `host.html` and `bridge.js` from [`mobile/`](mobile/). They must be served from a
@@ -182,30 +214,26 @@ request interception on Android — or the browser engine can't use OPFS.
 
 ```swift
 // iOS — clients/swift/Fylo.swift (Foundation + WebKit)
-let db = try await Fylo(serverUrl: "https://api.example.com", token: token)
+let db = try await Fylo()
 try await db.putData("users", ["name": "Ada", "role": "admin"])
 let admins = try await db.findDocs("users", ["$ops": [["role": ["$eq": "admin"]]]])
-try await db.syncStart()   // background sync; omit serverUrl to stay offline
 ```
 
 ```kotlin
 // Android — clients/kotlin/Fylo.kt (android.webkit + org.json + coroutines)
-val db = Fylo.open(context, serverUrl = "https://api.example.com", token = token)
+val db = Fylo.open(context)
 db.putData("users", mapOf("name" to "Ada", "role" to "admin"))
 val admins = db.findDocs("users", mapOf("\$ops" to listOf(mapOf("role" to mapOf("\$eq" to "admin")))))
-db.syncStart()   // background sync; omit serverUrl to stay offline
 ```
 
 Same method names as the shims (`createCollection`, `putData`, `getLatest`,
-`patchDoc`, `delDoc`, `restoreDoc`, `findDocs`, `sql`), plus `syncStart`/
-`syncStop`/`isOnline`. Collections auto-create on first write. Note that mobile
-OSes suspend the WebView in the background, so sync runs while the app is active.
+`patchDoc`, `delDoc`, `restoreDoc`, `findDocs`, `sql`).
 
 ## Flutter
 
 Flutter apps are Dart, so where the app runs decides which client to use:
 
-- **Flutter iOS / Android / desktop** → `flutter/fylo.dart` — the same local-first
+- **Flutter iOS / Android / desktop** → `flutter/fylo.dart` — the same local-only
   model as the native mobile clients, hosting `fylo.mjs` in a headless
   [`flutter_inappwebview`](https://pub.dev/packages/flutter_inappwebview) (`^6.0.0`).
   It exposes the same async API + `collection()` facade. Add the three engine
@@ -219,10 +247,9 @@ Flutter apps are Dart, so where the app runs decides which client to use:
 ```dart
 import 'fylo.dart';
 
-final db = await Fylo.open(serverUrl: 'https://api.example.com', token: token);
+final db = await Fylo.open();
 await db.collection('users').put({'name': 'Ada', 'role': 'admin'});
 final admins = await db.collection('users').find({r'$ops': [{'role': {r'$eq': 'admin'}}]});
-await db.syncStart(); // background sync; omit serverUrl to stay offline
 ```
 
 Like the browser, it needs the assets served from a **secure origin** — the client

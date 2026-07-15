@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from 'bun:test'
-import { rm, stat } from 'node:fs/promises'
+import { mkdir, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import Fylo from '../../src/index.js'
@@ -21,7 +21,7 @@ describe('raw file collections', () => {
         const id = await fylo.assets.put(source)
         const storedPath = path.join(
             root,
-            '.collections',
+            '.buckets',
             'assets',
             'docs',
             id.slice(0, 2),
@@ -57,6 +57,19 @@ describe('raw file collections', () => {
         // letting the raw ENOENT from listing a missing directory escape.
         await fylo.empties.create({ kind: 'file' })
         await expect(fylo.empties.get(id).bytes()).rejects.toThrow(/Raw file not found/)
+    })
+
+    test('rejects a valid-TTID raw-file symlink that escapes its collection', async () => {
+        await fylo.links.create({ kind: 'file' })
+        const id = await Fylo.uniqueTTID()
+        const outside = path.join(root, 'outside-secret.txt')
+        await writeFile(outside, 'must not escape')
+        const bucket = path.join(root, '.buckets', 'links', 'docs', id.slice(0, 2))
+        await mkdir(bucket, { recursive: true })
+        await symlink(outside, path.join(bucket, `${id}.txt`))
+
+        await expect(fylo.links.get(id).bytes()).rejects.toThrow(/regular, non-link file/)
+        await expect(fylo.links.get(id).once()).rejects.toThrow(/regular, non-link file/)
     })
 
     test('queries durable object keys and preserves them while rebuilding indexes', async () => {
@@ -132,7 +145,7 @@ describe('raw file collections', () => {
         })
         const activePath = path.join(
             root,
-            '.collections',
+            '.buckets',
             'assets',
             'docs',
             id.slice(0, 2),
@@ -140,7 +153,7 @@ describe('raw file collections', () => {
         )
         const deletedPath = path.join(
             root,
-            '.collections',
+            '.buckets',
             'assets',
             '.deleted',
             id.slice(0, 2),
@@ -218,7 +231,7 @@ describe('raw file collections', () => {
             const id = await db.evidence.put(new File(['immutable'], 'evidence.bin'))
             const target = path.join(
                 wormRoot,
-                '.collections',
+                '.buckets',
                 'evidence',
                 'docs',
                 id.slice(0, 2),

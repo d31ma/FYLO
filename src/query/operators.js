@@ -24,7 +24,7 @@ export class Query {
         let expressions = new Set()
         if (query.$ops) {
             for (const operation of query.$ops) {
-                for (const column in operation) {
+                for (const column of Object.keys(operation)) {
                     /** @type {import('./types.js').Operand | undefined} */
                     const operand = operation[column]
                     if (!operand) continue
