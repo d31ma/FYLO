@@ -336,12 +336,25 @@ jobs:
 
                   marker="<!-- fylo-release-workflow:${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT} -->"
                   published=false
+                  release_id=''
+
+                  find_workflow_draft() {
+                    gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" | jq -ce \
+                      --arg marker "$marker" \
+                      --arg tag "$TAG" \
+                      '[.[] | select(.draft == true and .tag_name == $tag and ((.body // "") | contains($marker)))] | if length == 1 then .[0] else error("expected exactly one workflow draft") end'
+                  }
 
                   cleanup_draft() {
                     status=$?
                     trap - EXIT
                     if [[ "$published" != true ]]; then
-                      release=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" 2>/dev/null || true)
+                      if [[ -n "$release_id" ]]; then
+                        release=$(gh api "repos/$GITHUB_REPOSITORY/releases/$release_id" 2>/dev/null || true)
+                      else
+                        release=$(find_workflow_draft 2>/dev/null || true)
+                        release_id=$(jq -r '.id // empty' <<<"${release:-{}}")
+                      fi
                       if [[ -n "$release" ]] && jq -e \
                         --arg marker "$marker" \
                         '.draft == true and ((.body // "") | contains($marker))' \
@@ -349,7 +362,7 @@ jobs:
                         echo "Cleaning up unpublished workflow draft $TAG."
                         cleaned=false
                         for _ in {1..3}; do
-                          if gh release delete "$TAG" --cleanup-tag --yes; then
+                          if gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$release_id"; then
                             cleaned=true
                             break
                           fi
@@ -372,7 +385,8 @@ jobs:
                     --generate-notes \
                     --notes "$marker"
 
-                  release=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG")
+                  release=$(find_workflow_draft)
+                  release_id=$(jq -er '.id' <<<"$release")
                   jq -e \
                     --arg marker "$marker" \
                     --arg target "$GITHUB_SHA" \
@@ -397,10 +411,11 @@ jobs:
 
                   # Publishing the verified draft is the first operation that makes
                   # the missing tag visible. GitHub creates it at --target above.
-                  gh release edit "$TAG" --draft=false
+                  release=$(gh api -X PATCH \
+                    "repos/$GITHUB_REPOSITORY/releases/$release_id" \
+                    -F draft=false)
                   published=true
 
-                  release=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG")
                   jq -e '.draft == false' <<<"$release" >/dev/null
                   tag_sha=''
                   for _ in {1..5}; do
