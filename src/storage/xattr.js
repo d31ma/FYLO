@@ -2,7 +2,6 @@ import { dlopen, FFIType, ptr, read } from 'bun:ffi'
 import os from 'node:os'
 import {
     closeSync,
-    copyFileSync,
     lstatSync,
     openSync,
     readFileSync,
@@ -292,8 +291,12 @@ export class WindowsAdsManifestStore {
         // copy leaves an older, perfectly valid primary that must not win.
         try {
             const recovery = this.recoveryPath(target)
-            const recovered = parseWindowsManifest(readFileSync(recovery, 'utf8'))
-            copyFileSync(recovery, windowsStream(target))
+            const recoveryPayload = readFileSync(recovery, 'utf8')
+            const recovered = parseWindowsManifest(recoveryPayload)
+            // Bun's Windows copyFile implementation does not reliably copy
+            // between two named streams on the same base file. The validated
+            // recovery payload is already in memory, so promote it directly.
+            writeFileSync(windowsStream(target), recoveryPayload)
             try {
                 unlinkSync(recovery)
             } catch (error) {
@@ -327,8 +330,9 @@ export class WindowsAdsManifestStore {
             const attributes = this.readUnlocked(target)
             mutate(attributes)
             const recovery = this.recoveryPath(target)
-            writeFileSync(recovery, JSON.stringify(attributes))
-            copyFileSync(recovery, windowsStream(target))
+            const payload = JSON.stringify(attributes)
+            writeFileSync(recovery, payload)
+            writeFileSync(windowsStream(target), payload)
             try {
                 unlinkSync(recovery)
             } catch (error) {
