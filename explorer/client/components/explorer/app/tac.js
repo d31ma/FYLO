@@ -61,6 +61,12 @@ function safeRecord() {
     return Object.create(null)
 }
 
+/** Missing entries use POSIX codes in memory and DOMException names in browser storage. */
+function isMissingFilesystemEntry(error) {
+    const filesystemError = /** @type {{ code?: unknown, name?: unknown }} */ (error)
+    return filesystemError?.code === 'ENOENT' || filesystemError?.name === 'NotFoundError'
+}
+
 function copySafeJson(value) {
     if (Array.isArray(value)) return value.map(copySafeJson)
     if (typeof value !== 'object' || value === null) return value
@@ -1010,7 +1016,13 @@ export default class {
     /** Physical bytes path + extension for a file id. */
     async fileBytesPath(collection, id) {
         const base = `/${this.baseDir(collection)}/${collection}/docs/${id.slice(0, 2)}`
-        const names = await this._fs.list(base).catch(() => [])
+        let names
+        try {
+            names = await this._fs.list(base)
+        } catch (error) {
+            if (isMissingFilesystemEntry(error)) return null
+            throw error
+        }
         const name = names.find((entry) => entry === id || entry.startsWith(`${id}.`))
         return name ? { path: `${base}/${name}`, ext: name.slice(id.length) } : null
     }
@@ -1428,17 +1440,28 @@ export default class {
     async deleteEntry(target) {
         /** @type {string[]} */
         const lines = []
+        /** @type {string[]} */
+        const failures = []
         for (const { id, key } of this.targetEntries(target)) {
-            const src = await this.fileBytesPath(this.active, id)
-            if (src) {
-                const deletedDir = `/${this.baseDir(this.active)}/${this.active}/.deleted/${id.slice(0, 2)}`
-                await this._fs.mkdir(deletedDir, { recursive: true }).catch(() => {})
-                await this._fs.move(src.path, `${deletedDir}/${id}${src.ext}`)
+            try {
+                const src = await this.fileBytesPath(this.active, id)
+                if (src) {
+                    const deletedDir = `/${this.baseDir(this.active)}/${this.active}/.deleted/${id.slice(0, 2)}`
+                    await this._fs.mkdir(deletedDir, { recursive: true })
+                    await this._fs.move(src.path, `${deletedDir}/${id}${src.ext}`)
+                }
+                lines.push(`-\tkey/eq/${this.encodeKeyEntry(key)}/${id}\n`)
+            } catch (error) {
+                failures.push(`${key}: ${String(error?.message ?? error)}`)
             }
-            lines.push(`-\tkey/eq/${this.encodeKeyEntry(key)}/${id}\n`)
         }
         await this.commitKeyWal(this.active, lines)
         if (this.showDeleted) await this.refreshDeleted()
+        if (failures.length) {
+            throw new Error(
+                `Some files could not be moved to deleted storage: ${failures.join('; ')}`
+            )
+        }
     }
 
     // --- Resizable Miller columns ---

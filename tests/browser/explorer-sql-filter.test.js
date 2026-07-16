@@ -272,6 +272,101 @@ describe('hosted Explorer', () => {
         expect(explorer.error).toContain('Raw preview is limited to 32 MiB')
     })
 
+    test('treats filesystem not-found errors as absent file bytes', async () => {
+        const explorer = new WebsiteExplorer()
+        explorer.kinds = { assets: 'file' }
+
+        for (const error of [
+            Object.assign(new Error('missing'), { code: 'ENOENT' }),
+            Object.assign(new Error('missing'), { name: 'NotFoundError' })
+        ]) {
+            explorer._fs = {
+                async list() {
+                    throw error
+                }
+            }
+            expect(await explorer.fileBytesPath('assets', 'gone')).toBeNull()
+        }
+    })
+
+    test('removes only successfully trashed files from the key index on partial delete', async () => {
+        const explorer = new WebsiteExplorer()
+        explorer.active = 'assets'
+        explorer.kinds = { assets: 'file' }
+        explorer._keyMap = new Map([
+            ['one', 'reports/one.txt'],
+            ['two', 'reports/two.txt'],
+            ['gone', 'reports/gone.txt']
+        ])
+        const moved = []
+        const committed = []
+        explorer._fs = {
+            async list(base) {
+                if (base.endsWith('/on')) return ['one.txt']
+                if (base.endsWith('/tw')) return ['two.txt']
+                return []
+            },
+            async mkdir() {},
+            async move(source) {
+                moved.push(source)
+                if (source.endsWith('/two.txt')) throw new Error('disk write failed')
+            }
+        }
+        explorer.commitKeyWal = async (_collection, lines) => committed.push(...lines)
+
+        await expect(explorer.deleteEntry({ kind: 'folder', prefix: 'reports/' })).rejects.toThrow(
+            'two.txt'
+        )
+
+        expect(moved).toHaveLength(2)
+        expect(committed).toEqual([
+            `-\tkey/eq/${explorer.encodeKeyEntry('reports/one.txt')}/one\n`,
+            `-\tkey/eq/${explorer.encodeKeyEntry('reports/gone.txt')}/gone\n`
+        ])
+    })
+
+    test('continues deleting entries when a file path lookup fails', async () => {
+        const explorer = new WebsiteExplorer()
+        explorer.active = 'assets'
+        explorer.kinds = { assets: 'file' }
+        explorer._keyMap = new Map([
+            ['one', 'reports/one.txt'],
+            ['two', 'reports/two.txt'],
+            ['gone', 'reports/gone.txt']
+        ])
+        const lookups = []
+        const moved = []
+        const committed = []
+        explorer._fs = {
+            async list(path) {
+                lookups.push(path)
+                if (path.endsWith('/tw')) throw new Error('directory read failed')
+                if (path.endsWith('/on')) return ['one.txt']
+                return []
+            },
+            async mkdir() {},
+            async move(source) {
+                moved.push(source)
+            }
+        }
+        explorer.commitKeyWal = async (_collection, lines) => committed.push(...lines)
+
+        await expect(explorer.deleteEntry({ kind: 'folder', prefix: 'reports/' })).rejects.toThrow(
+            'reports/two.txt: directory read failed'
+        )
+
+        expect(lookups).toEqual([
+            '/.buckets/assets/docs/on',
+            '/.buckets/assets/docs/tw',
+            '/.buckets/assets/docs/go'
+        ])
+        expect(moved).toEqual(['/.buckets/assets/docs/on/one.txt'])
+        expect(committed).toEqual([
+            `-\tkey/eq/${explorer.encodeKeyEntry('reports/one.txt')}/one\n`,
+            `-\tkey/eq/${explorer.encodeKeyEntry('reports/gone.txt')}/gone\n`
+        ])
+    })
+
     test('rejects oversized imports before reading the File', async () => {
         const explorer = new WebsiteExplorer()
         explorer.writable = true

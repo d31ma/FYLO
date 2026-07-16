@@ -32,14 +32,19 @@ function manifestKey(prefix, dataKey) {
 }
 
 class RestoreClient {
-    constructor(objects, { pageSize = 2, transientReads = new Map(), readDelayMs = 0 } = {}) {
+    constructor(
+        objects,
+        { pageSize = 2, transientReads = new Map(), readDelayMs = 0, readDelays = new Map() } = {}
+    ) {
         this.objects = objects
         this.pageSize = pageSize
         this.transientReads = transientReads
         this.readDelayMs = readDelayMs
+        this.readDelays = readDelays
         this.listCalls = 0
         this.activeReads = 0
         this.maxActiveReads = 0
+        this.streamedKeys = []
     }
 
     async list({ prefix = '', startAfter } = {}) {
@@ -60,6 +65,7 @@ class RestoreClient {
                 const client = this
                 return new ReadableStream({
                     async start(controller) {
+                        client.streamedKeys.push(key)
                         const failures = client.transientReads.get(key) ?? 0
                         if (failures > 0) {
                             client.transientReads.set(key, failures - 1)
@@ -81,7 +87,8 @@ class RestoreClient {
                         }
                         client.activeReads++
                         client.maxActiveReads = Math.max(client.maxActiveReads, client.activeReads)
-                        if (client.readDelayMs) await Bun.sleep(client.readDelayMs)
+                        const delay = client.readDelays.get(key) ?? client.readDelayMs
+                        if (delay) await Bun.sleep(delay)
                         controller.enqueue(bytes)
                         controller.close()
                         client.activeReads--
@@ -169,6 +176,34 @@ describe('S3 recovery', () => {
 
         await expect(restore.restore()).rejects.toThrow('checksum mismatch')
         expect(await Bun.file(root).exists()).toBe(false)
+        expect(
+            await Array.fromAsync(new Bun.Glob('restored.fylo-restore-*.tmp').scan(parent))
+        ).toEqual([])
+    })
+
+    test('drains active workers before cleaning staging after the first failure', async () => {
+        const restorePrefix = 'tenant-a'
+        const { parent, root, prefix, objects, client } = await fixture(
+            {
+                'a-corrupt.txt': { bytes: 'expected' },
+                'b-slow.txt': { bytes: 'slow' },
+                'c-never-started.txt': { bytes: 'pending' }
+            },
+            {
+                pageSize: 20,
+                readDelays: new Map([
+                    [`${restorePrefix}/a-corrupt.txt`, 5],
+                    [`${restorePrefix}/b-slow.txt`, 50]
+                ])
+            }
+        )
+        objects.set(`${prefix}/a-corrupt.txt`, Buffer.from('tampered'))
+        const restore = new FyloS3Restore({ bucket: 'backup', prefix }, root, { client })
+
+        await expect(restore.restore({ concurrency: 2 })).rejects.toThrow('checksum mismatch')
+
+        expect(client.activeReads).toBe(0)
+        expect(client.streamedKeys).not.toContain(`${prefix}/c-never-started.txt`)
         expect(
             await Array.fromAsync(new Bun.Glob('restored.fylo-restore-*.tmp').scan(parent))
         ).toEqual([])

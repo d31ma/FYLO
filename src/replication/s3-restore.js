@@ -163,13 +163,24 @@ function validateManifest(value, dataKey, limits) {
  */
 async function mapLimit(values, concurrency, operation) {
     let cursor = 0
+    let failed = false
+    /** @type {unknown} */
+    let firstError
     const workers = Array.from({ length: Math.min(concurrency, values.length) }, async () => {
-        while (cursor < values.length) {
+        while (cursor < values.length && !failed) {
             const index = cursor++
-            await operation(values[index])
+            try {
+                await operation(values[index])
+            } catch (error) {
+                if (!failed) {
+                    failed = true
+                    firstError = error
+                }
+            }
         }
     })
     await Promise.all(workers)
+    if (failed) throw firstError
 }
 
 export class FyloS3Restore {

@@ -3,29 +3,77 @@ import { closeSync, constants, openSync, realpathSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-const library = process.platform === 'darwin' ? 'libSystem.B.dylib' : 'libc.so.6'
-const symbols =
-    process.platform === 'win32'
-        ? null
-        : dlopen(library, {
-              openat: {
-                  args: [FFIType.i32, FFIType.ptr, FFIType.i32],
-                  returns: FFIType.i32
-              },
-              ...(process.platform === 'darwin'
-                  ? { __error: { args: [], returns: FFIType.ptr } }
-                  : { __errno_location: { args: [], returns: FFIType.ptr } })
-          }).symbols
-const openat = symbols?.openat
 const encoder = new TextEncoder()
+
+/** @param {NodeJS.Platform} platform @param {string} architecture */
+export function libcCandidates(platform, architecture) {
+    if (platform === 'darwin') return ['libSystem.B.dylib']
+    if (platform !== 'linux') return []
+    const muslArchitecture =
+        {
+            x64: 'x86_64',
+            arm64: 'aarch64',
+            arm: 'armhf'
+        }[architecture] ?? architecture
+    return [
+        'libc.so.6',
+        `libc.musl-${muslArchitecture}.so.1`,
+        `/lib/ld-musl-${muslArchitecture}.so.1`
+    ]
+}
+
+/** @param {NodeJS.Platform} platform */
+function symbolDefinitions(platform) {
+    return {
+        openat: {
+            args: [FFIType.i32, FFIType.ptr, FFIType.i32],
+            returns: FFIType.i32
+        },
+        ...(platform === 'darwin'
+            ? { __error: { args: [], returns: FFIType.ptr } }
+            : { __errno_location: { args: [], returns: FFIType.ptr } })
+    }
+}
+
+/**
+ * Resolve the platform C library without making module import depend on a
+ * particular libc distribution. Returning null keeps traversal fail-closed.
+ *
+ * @param {typeof dlopen} openLibrary
+ * @param {string[]} candidates
+ * @param {NodeJS.Platform} [platform]
+ * @returns {Record<string, Function> | null}
+ */
+export function loadSecureOpenSymbols(
+    openLibrary = dlopen,
+    candidates = libcCandidates(process.platform, process.arch),
+    platform = process.platform
+) {
+    for (const candidate of candidates) {
+        try {
+            return /** @type {any} */ (openLibrary(candidate, symbolDefinitions(platform))).symbols
+        } catch {
+            // Try the next ABI-compatible libc name. Absence is handled by callers.
+        }
+    }
+    return null
+}
+
+/** @type {Record<string, Function> | null | undefined} */
+let symbols
+
+function secureOpenSymbols() {
+    if (symbols === undefined) symbols = loadSecureOpenSymbols()
+    return symbols
+}
 
 /** @param {string} value */
 function cstr(value) {
     return encoder.encode(`${value}\0`)
 }
 
-/** @returns {number} */
-function errno() {
+/** @param {Record<string, Function>} symbols @returns {number} */
+function errno(symbols) {
     const location =
         process.platform === 'darwin'
             ? /** @type {any} */ (symbols).__error()
@@ -33,9 +81,13 @@ function errno() {
     return read.i32(location, 0)
 }
 
-/** @param {string} target @param {boolean} allowUnsafe */
-function openFailure(target, allowUnsafe) {
-    const code = errno()
+/**
+ * @param {string} target
+ * @param {boolean} allowUnsafe
+ * @param {Record<string, Function>} symbols
+ */
+function openFailure(target, allowUnsafe, symbols) {
+    const code = errno(symbols)
     const name = Object.entries(os.constants.errno).find(([, value]) => value === code)?.[0]
     if (allowUnsafe && (name === 'ENOENT' || name === 'ELOOP' || name === 'ENOTDIR')) return null
     const error = /** @type {NodeJS.ErrnoException} */ (
@@ -55,6 +107,8 @@ function openFailure(target, allowUnsafe) {
  * @returns {number} caller-owned descriptor for the pinned directory
  */
 export function openDirectoryNoFollow(target) {
+    const symbols = secureOpenSymbols()
+    const openat = symbols?.openat
     if (!openat) throw new Error('Secure descriptor traversal is unavailable on this platform')
     const resolved = realpathSync(target)
     const parsed = path.parse(resolved)
@@ -67,7 +121,7 @@ export function openDirectoryNoFollow(target) {
                 ptr(cstr(part)),
                 constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_DIRECTORY
             )
-            if (next < 0) openFailure(target, false)
+            if (next < 0) openFailure(target, false, symbols)
             closeSync(current)
             current = next
         }
@@ -85,6 +139,8 @@ export function openDirectoryNoFollow(target) {
  * @returns {number | null}
  */
 export function openFileAtRoot(rootFd, relative) {
+    const symbols = secureOpenSymbols()
+    const openat = symbols?.openat
     if (!openat) throw new Error('Secure descriptor traversal is unavailable on this platform')
     const parts = relative.split(path.sep)
     if (!relative || parts.some((part) => !part || part === '.' || part === '..')) return null
@@ -97,7 +153,7 @@ export function openFileAtRoot(rootFd, relative) {
             const flags =
                 constants.O_RDONLY | constants.O_NOFOLLOW | (directory ? constants.O_DIRECTORY : 0)
             const next = openat(current, ptr(cstr(parts[index])), flags)
-            if (next < 0) return openFailure(relative, true)
+            if (next < 0) return openFailure(relative, true, symbols)
             if (ownsCurrent) closeSync(current)
             current = next
             ownsCurrent = true

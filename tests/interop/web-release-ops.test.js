@@ -165,6 +165,20 @@ describe('web release operations', () => {
         expect(runbook).toContain('bun scripts/amplify-release.mjs rollback fxp')
     })
 
+    test('installs every web workspace before compiled interop bundles run', async () => {
+        const workflow = await Bun.file('.github/workflows/ci.yml').text()
+        const binaryInterop = workflow.slice(workflow.indexOf('    binary-interop:'))
+
+        expect(binaryInterop).toContain('(cd website && bun install --frozen-lockfile)')
+        expect(binaryInterop).toContain('(cd explorer && bun install --frozen-lockfile)')
+        expect(binaryInterop.indexOf('(cd website && bun install --frozen-lockfile)')).toBeLessThan(
+            binaryInterop.indexOf('bun run test:interop')
+        )
+        expect(
+            binaryInterop.indexOf('(cd explorer && bun install --frozen-lockfile)')
+        ).toBeLessThan(binaryInterop.indexOf('bun run test:interop'))
+    })
+
     test('pins both Amplify targets and preserves checksum-verified rollback artifacts', async () => {
         const config = await Bun.file('ops/web-release.json').json()
         const release = await Bun.file('scripts/amplify-release.mjs').text()
