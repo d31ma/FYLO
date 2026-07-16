@@ -166,17 +166,21 @@ describe('web release operations', () => {
     })
 
     test('installs every web workspace before compiled interop bundles run', async () => {
-        const workflow = await Bun.file('.github/workflows/ci.yml').text()
-        const binaryInterop = workflow.slice(workflow.indexOf('    binary-interop:'))
+        for (const path of ['.github/workflows/ci.yml', '.github/workflows/publish.yml']) {
+            const workflow = await Bun.file(path).text()
+            const index = workflow.indexOf('    binary-interop:')
+            expect(index).toBeGreaterThan(-1)
+            const binaryInterop = workflow.slice(index)
 
-        expect(binaryInterop).toContain('(cd website && bun install --frozen-lockfile)')
-        expect(binaryInterop).toContain('(cd explorer && bun install --frozen-lockfile)')
-        expect(binaryInterop.indexOf('(cd website && bun install --frozen-lockfile)')).toBeLessThan(
-            binaryInterop.indexOf('bun run test:interop')
-        )
-        expect(
-            binaryInterop.indexOf('(cd explorer && bun install --frozen-lockfile)')
-        ).toBeLessThan(binaryInterop.indexOf('bun run test:interop'))
+            expect(binaryInterop).toContain('(cd website && bun install --frozen-lockfile)')
+            expect(binaryInterop).toContain('(cd explorer && bun install --frozen-lockfile)')
+            expect(
+                binaryInterop.indexOf('(cd website && bun install --frozen-lockfile)')
+            ).toBeLessThan(binaryInterop.indexOf('bun run test:interop'))
+            expect(
+                binaryInterop.indexOf('(cd explorer && bun install --frozen-lockfile)')
+            ).toBeLessThan(binaryInterop.indexOf('bun run test:interop'))
+        }
     })
 
     test('pins both Amplify targets and preserves checksum-verified rollback artifacts', async () => {
