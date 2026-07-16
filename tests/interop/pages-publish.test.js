@@ -27,7 +27,7 @@ describe('GitHub Pages browser client publishing', () => {
         expect(workflow).toContain(
             'bun scripts/pages-smoke.mjs "${{ needs.build.outputs.version }}"'
         )
-        expect(workflow.match(/persist-credentials: false/g)).toHaveLength(2)
+        expect(workflow.match(/persist-credentials: false/g) || []).toHaveLength(2)
         expect(workflow).toContain('GH_TOKEN: ${{ github.token }}')
         expect(workflow).toContain('gh auth setup-git')
         expect(workflow).toContain('needs: [build, deploy]')
