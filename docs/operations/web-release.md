@@ -6,7 +6,7 @@ Fylo has three independently deployed web surfaces:
 | --------------------------- | --------------------------------- | -------------------------------------------- |
 | Marketing and documentation | `website/dist/web`                | Amplify app `FYLO`, `https://fylo.del.ma`    |
 | Explorer                    | `explorer/dist/web`               | Amplify app `FXP`, `https://fx.del.ma`       |
-| Browser loader and engine   | `dist-web` plus `clients/browser` | GitHub Pages, `https://d31ma.github.io/Fylo` |
+| Browser loader and engine   | `dist-web` plus `clients/browser` | GitHub Pages, `https://d31ma.github.io/FYLO` |
 
 Do not upload a mutable `dist/web` directory directly. The Amplify release command normalizes
 file modes and timestamps, creates a deterministic ZIP, names it by its SHA-256 checksum, and
