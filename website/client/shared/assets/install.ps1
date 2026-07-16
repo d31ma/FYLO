@@ -5,30 +5,45 @@
 $ErrorActionPreference = 'Stop'
 
 $repo = 'd31ma/Fylo'
-$base = "https://github.com/$repo/releases/latest/download"
+$base = if ($env:FYLO_INSTALL_BASE_URL) {
+    $env:FYLO_INSTALL_BASE_URL.TrimEnd('/')
+} else {
+    "https://github.com/$repo/releases/latest/download"
+}
 $asset = 'fylo-windows-x64.exe'
 
 $dest = Join-Path $env:LOCALAPPDATA 'Fylo'
 New-Item -ItemType Directory -Force -Path $dest | Out-Null
 $exe = Join-Path $dest 'fylo.exe'
+$download = Join-Path $dest "fylo-$([Guid]::NewGuid().ToString('N')).download"
 
 Write-Host "Downloading $asset..."
-Invoke-WebRequest -Uri "$base/$asset" -OutFile $exe
-
-# Verify checksum (best-effort).
 try {
+    Invoke-WebRequest -Uri "$base/$asset" -OutFile $download
     $sums = (Invoke-WebRequest -Uri "$base/SHA256SUMS" -UseBasicParsing).Content
-    $line = ($sums -split "`n") | Where-Object { $_ -match "\s$([regex]::Escape($asset))$" } | Select-Object -First 1
-    if ($line) {
-        $expected = ($line -split '\s+')[0].ToLower()
-        $actual = (Get-FileHash -Algorithm SHA256 $exe).Hash.ToLower()
-        if ($expected -ne $actual) {
-            Remove-Item $exe -Force
-            throw "Checksum mismatch for $asset. Aborting."
-        }
+    $escapedAsset = [regex]::Escape($asset)
+    $line = ($sums -split "`n") |
+        Where-Object { $_ -match "^[0-9a-fA-F]{64}\s+\*?$escapedAsset\s*$" } |
+        Select-Object -First 1
+    if (-not $line) {
+        throw "Checksum metadata does not contain $asset. Aborting."
     }
-} catch {
-    Write-Warning "Could not verify checksum: $_"
+
+    $expected = ($line.Trim() -split '\s+')[0].ToLowerInvariant()
+    $actual = (Get-FileHash -Algorithm SHA256 $download).Hash.ToLowerInvariant()
+    if ($expected -ne $actual) {
+        throw "Checksum mismatch for $asset. Aborting."
+    }
+
+    Move-Item -LiteralPath $download -Destination $exe -Force
+} finally {
+    if (Test-Path -LiteralPath $download) {
+        Remove-Item -LiteralPath $download -Force
+    }
+}
+
+if (-not (Test-Path -LiteralPath $exe -PathType Leaf) -or (Get-Item -LiteralPath $exe).Length -eq 0) {
+    throw "Fylo executable was not installed. Aborting."
 }
 
 # Add install dir to the user PATH if it isn't already there.

@@ -33,6 +33,8 @@ const windows = process.platform === 'win32'
  *   lgetxattr?: (...args: (number | import('bun:ffi').Pointer | null)[]) => number | bigint,
  *   llistxattr?: (...args: (number | import('bun:ffi').Pointer | null)[]) => number | bigint,
  *   lremovexattr?: (...args: (number | import('bun:ffi').Pointer | null)[]) => number,
+ *   fgetxattr?: (...args: (number | import('bun:ffi').Pointer | null)[]) => number | bigint,
+ *   flistxattr?: (...args: (number | import('bun:ffi').Pointer | null)[]) => number | bigint,
  *   __error?: () => import('bun:ffi').Pointer,
  *   __errno_location?: () => import('bun:ffi').Pointer,
  *   strerror: (code: number) => string,
@@ -82,6 +84,21 @@ const libc = /** @type {XattrSymbols | null} */ (
                                 args: [FFIType.ptr, FFIType.ptr, FFIType.i32],
                                 returns: FFIType.i32
                             },
+                            fgetxattr: {
+                                args: [
+                                    FFIType.i32,
+                                    FFIType.ptr,
+                                    FFIType.ptr,
+                                    FFIType.u64,
+                                    FFIType.u32,
+                                    FFIType.i32
+                                ],
+                                returns: FFIType.i64
+                            },
+                            flistxattr: {
+                                args: [FFIType.i32, FFIType.ptr, FFIType.u64, FFIType.i32],
+                                returns: FFIType.i64
+                            },
                             __error: { args: [], returns: FFIType.ptr },
                             strerror: { args: [FFIType.i32], returns: FFIType.cstring }
                         }
@@ -112,6 +129,14 @@ const libc = /** @type {XattrSymbols | null} */ (
                                 args: [FFIType.ptr, FFIType.ptr],
                                 returns: FFIType.i32
                             },
+                            fgetxattr: {
+                                args: [FFIType.i32, FFIType.ptr, FFIType.ptr, FFIType.u64],
+                                returns: FFIType.i64
+                            },
+                            flistxattr: {
+                                args: [FFIType.i32, FFIType.ptr, FFIType.u64],
+                                returns: FFIType.i64
+                            },
                             __errno_location: { args: [], returns: FFIType.ptr },
                             strerror: { args: [FFIType.i32], returns: FFIType.cstring }
                         }
@@ -123,6 +148,8 @@ const nativeSetXattr = darwin ? libc?.setxattr : libc?.lsetxattr
 const nativeGetXattr = darwin ? libc?.getxattr : libc?.lgetxattr
 const nativeListXattr = darwin ? libc?.listxattr : libc?.llistxattr
 const nativeRemoveXattr = darwin ? libc?.removexattr : libc?.lremovexattr
+const nativeGetXattrFd = libc?.fgetxattr
+const nativeListXattrFd = libc?.flistxattr
 const XATTR_NOFOLLOW = 0x0001
 
 const errnoLocation = /** @type {() => import('bun:ffi').Pointer} */ (
@@ -499,6 +526,59 @@ export function listXattr(target) {
             return joined.split('\0').filter((name) => name.length > 0)
         }
         if (errno() !== ERANGE) throwErrno('listxattr', target)
+    }
+}
+
+/**
+ * Read one extended attribute from an already-open file descriptor. This keeps
+ * metadata bound to the same inode as a race-safe file read.
+ * @param {number} fd
+ * @param {string} name
+ * @returns {Uint8Array | null}
+ */
+export function getXattrFd(fd, name) {
+    if (windows) throw new Error('Descriptor-bound xattrs are unavailable on Windows')
+    if (!nativeGetXattrFd) throw new Error('Native descriptor xattrs are unavailable')
+    const nameBytes = cstr(name)
+    while (true) {
+        const size = darwin
+            ? nativeGetXattrFd(fd, ptr(nameBytes), null, 0, 0, 0)
+            : nativeGetXattrFd(fd, ptr(nameBytes), null, 0)
+        if (size < 0) {
+            if (errno() === ENOATTR) return null
+            throwErrno('fgetxattr', `fd ${fd}`)
+        }
+        const value = new Uint8Array(Number(size))
+        const buffer = value.length ? ptr(value) : null
+        const written = darwin
+            ? nativeGetXattrFd(fd, ptr(nameBytes), buffer, value.length, 0, 0)
+            : nativeGetXattrFd(fd, ptr(nameBytes), buffer, value.length)
+        if (written >= 0) return value.subarray(0, Number(written))
+        const code = errno()
+        if (code === ENOATTR) return null
+        if (code !== ERANGE) throwErrno('fgetxattr', `fd ${fd}`)
+    }
+}
+
+/** @param {number} fd @returns {string[]} */
+export function listXattrFd(fd) {
+    if (windows) throw new Error('Descriptor-bound xattrs are unavailable on Windows')
+    if (!nativeListXattrFd) throw new Error('Native descriptor xattrs are unavailable')
+    while (true) {
+        const size = darwin ? nativeListXattrFd(fd, null, 0, 0) : nativeListXattrFd(fd, null, 0)
+        if (size < 0) throwErrno('flistxattr', `fd ${fd}`)
+        if (size === 0n || size === 0) return []
+        const names = new Uint8Array(Number(size))
+        const written = darwin
+            ? nativeListXattrFd(fd, ptr(names), names.length, 0)
+            : nativeListXattrFd(fd, ptr(names), names.length)
+        if (written >= 0) {
+            return new TextDecoder()
+                .decode(names.subarray(0, Number(written)))
+                .split('\0')
+                .filter(Boolean)
+        }
+        if (errno() !== ERANGE) throwErrno('flistxattr', `fd ${fd}`)
     }
 }
 

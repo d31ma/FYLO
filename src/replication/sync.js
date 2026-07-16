@@ -10,7 +10,7 @@
 /**
  * @typedef {import('../types/vendor.js').TTID} TTID
  * @typedef {import('../observability/events.js').FyloEventHandler} FyloEventHandler
- * @typedef {import('../storage/types.js').FyloIndexOptions} FyloIndexOptions
+ * @typedef {import('./s3-backup.js').FyloS3BackupOptions} FyloS3BackupOptions
  * @typedef {import('../cache/query.js').FyloCacheOptions} FyloCacheOptions
  */
 
@@ -38,7 +38,9 @@
  * @property {'delete' | 'patch'} operation
  * @property {string} collection
  * @property {TTID} docId
- * @property {string} path
+ * @property {string} path where the record now lives (the `.deleted/` tombstone)
+ * @property {string=} previousPath where the record lived before the soft
+ *   delete (the live `docs/` path); used by the S3 backup to drop the old object
  */
 
 /**
@@ -46,6 +48,8 @@
  * @typedef {object} FyloSyncHooks
  * @property {(event: FyloWriteSyncEvent<T>) => Promise<void> | void=} onWrite
  * @property {(event: FyloDeleteSyncEvent) => Promise<void> | void=} onDelete
+ * @property {FyloS3BackupOptions=} s3 built-in whole-root S3 backup, scoped to
+ *   a required prefix unless allowBucketRoot is explicitly enabled
  */
 
 /**
@@ -71,7 +75,6 @@
  * @property {FyloSyncHooks<T>=} sync
  * @property {FyloSyncMode=} syncMode
  * @property {FyloWormOptions=} worm
- * @property {FyloIndexOptions=} index
  * @property {FyloCacheOptions=} cache
  * @property {boolean=} queue
  * @property {FyloEventHandler=} onEvent

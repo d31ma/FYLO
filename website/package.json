@@ -1,16 +1,14 @@
 {
-  "name": "fylo-website",
-  "version": "26.25.1",
-  "private": true,
+    "name": "fylo-website",
+    "version": "26.25.1",
+    "private": true,
     "scripts": {
         "start": "bun run serve",
-        "serve": "yon.serve",
-        "bundle": "tac.bundle && bun run gate:explorer",
-        "gate:explorer": "bun scripts/gate-explorer.mjs",
-        "preview": "tac.preview",
-        "seed": "bun seed.mjs"
+        "serve": "bun node_modules/@d31ma/tachyon/src/cli/index.js serve",
+        "bundle": "bun node_modules/@d31ma/tachyon/src/cli/index.js bundle && bun ../scripts/fingerprint-assets.mjs",
+        "preview": "bun node_modules/@d31ma/tachyon/src/cli/index.js preview --watch"
     },
-  "devDependencies": {
-    "@d31ma/tachyon": "^26.28.1"
-  }
+    "devDependencies": {
+        "@d31ma/tachyon": "github:d31ma/Tachyon#ef61b352b567b7b164fa74b6bc70e55858bb7421"
+    }
 }

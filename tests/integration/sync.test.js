@@ -83,7 +83,15 @@ describe('sync hooks', () => {
                 operation: 'delete',
                 collection,
                 docId: id,
-                path: deletedPath
+                path: deletedPath,
+                previousPath: path.join(
+                    root,
+                    '.collections',
+                    collection,
+                    'docs',
+                    id.slice(0, 2),
+                    `${id}.json`
+                )
             },
             {
                 hook: 'write',

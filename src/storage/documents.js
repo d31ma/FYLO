@@ -2,6 +2,7 @@ import path from 'node:path'
 import { readdir } from 'node:fs/promises'
 import TTID from '../vendor/ttid.js'
 import { assertPathInside, validateDocId, filterTTIDs } from '../core/doc-id.js'
+import { isDurableWriteScratchPath } from './durable.js'
 import { assertSafeStoragePath } from './safe-path.js'
 
 /**
@@ -274,6 +275,10 @@ export class FilesystemDocuments {
                     })
                     await walk(target)
                 } else if (entry.isFile()) {
+                    // Durable writes use a unique sibling until fsync + rename.
+                    // It is not a document and may legitimately disappear
+                    // between readdir() and path validation in another process.
+                    if (isDurableWriteScratchPath(entry.name)) continue
                     await assertSafeStoragePath(this.storageRoot, target, { finalType: 'file' })
                     files.push(target)
                 }

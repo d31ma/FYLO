@@ -162,7 +162,7 @@ describe('drive-style file collections', () => {
             fylo.drive.find({ $ops: [{ ['meta/starred']: { $eq: true } }] }).collect()
         )
         expect(afterRemove.some((entry) => entry[starred])).toBe(false)
-        expect(await fylo.drive.get(starred).metadata()).toEqual({ rating: 5 })
+        expect(await fylo.drive.get(starred).metadata()).toMatchObject({ rating: 5 })
     })
 
     test('file metadata restores xattrs and indexes when index refresh fails', async () => {
@@ -191,7 +191,7 @@ describe('drive-style file collections', () => {
             index.putDocument = originalPut
         }
 
-        expect(await fylo.drive.get(id).metadata()).toEqual({ stage: 'original' })
+        expect(await fylo.drive.get(id).metadata()).toMatchObject({ stage: 'original' })
         expect(await fylo.engine.docMetaUpdatedAt('drive', id)).toBe(beforeTimestamp)
         const oldHits = await Array.fromAsync(
             fylo.drive.find({ $ops: [{ ['meta/stage']: { $eq: 'original' } }] }).collect()

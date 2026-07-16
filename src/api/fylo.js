@@ -232,7 +232,6 @@ export default class Fylo {
             sync: options.sync,
             syncMode: options.syncMode,
             worm: options.worm,
-            index: options.index,
             onEvent: options.onEvent,
             queue: this.queue,
             queryCache: this.cache,
@@ -254,7 +253,27 @@ export default class Fylo {
     }
 
     async close() {
+        await this.engine.close()
         await this.cache?.close?.()
+    }
+
+    /**
+     * Force a full whole-root reconcile to S3 (upload changed, delete removed).
+     * No-op unless `sync.s3` was configured. `backup()` is an alias.
+     * @returns {Promise<void>}
+     */
+    async reconcile() {
+        await this.engine.reconcile()
+    }
+
+    /** @returns {Promise<void>} */
+    async backup() {
+        await this.engine.reconcile()
+    }
+
+    /** Inspect the current and most recent S3 backup pass. */
+    backupStatus() {
+        return this.engine.backupStatus()
     }
 
     /** @returns {Promise<void>} */
@@ -1099,6 +1118,7 @@ export class CollectionFacade {
             })
         }
         this.rekey = rekey
+
         // put / put.batch
         const put = /** @type {CollectionPut} */ (
             /** @type {unknown} */ (
@@ -1382,14 +1402,18 @@ export class CollectionFacade {
                 return await fylo.engine.getFileStream(collection, id, range)
             },
             /**
-             * The document's developer metadata record (`user.fylo.meta.*`
-             * xattrs), decoded to typed values. Write it with
+             * The document's complete canonical metadata plus developer
+             * metadata (`user.fylo.meta.*` xattrs), decoded to typed values.
+             * `mtime` and `updatedAt` are the file modification time;
+             * `createdAt` is derived from the TTID. Raw-file records also
+             * include their stored descriptor (name, key, type, size, and
+             * checksum). Write developer metadata with
              * `put(id, data).metadata(record)` or `put(id).metadata(record)`.
              * @returns {Promise<Record<string, any>>}
              */
             async metadata() {
                 await fylo.ready()
-                return await fylo.engine.listDocMeta(collection, String(id))
+                return await fylo.engine.getDocMetadata(collection, String(id))
             },
             async blob() {
                 await fylo.ready()
@@ -2010,7 +2034,7 @@ class AuthenticatedCollectionFacade {
                 const result = await source.once()
                 const doc = /** @type {Record<string, any> | undefined} */ (result[id])
                 if (!doc || !(await self.authFylo._isVisible(self.collection, doc))) return {}
-                return await self.authFylo.fylo.engine.listDocMeta(self.collection, String(id))
+                return await self.authFylo.fylo.engine.getDocMetadata(self.collection, String(id))
             },
             async *onDelete() {
                 await validateDocId(id)

@@ -16,6 +16,8 @@ const LANGS = [
   { key: 'web', label: 'JS (Browser)', dir: 'web', cmt: '//' },
 ]
 
+const FYLO_BROWSER_LOADER = 'https://d31ma.github.io/Fylo/version/26.29.04/fylo.js'
+
 // Swift (iOS), Kotlin (Android), and Flutter are local-first mobile clients — they
 // embed the engine in a WebView, on-device only, like the browser client.
 const isMobile = (lang) => lang === 'swift' || lang === 'kotlin' || lang === 'flutter'
@@ -563,10 +565,9 @@ export default class extends Tac {
 
   webScaffold(body) {
     return [
-      "import { createBrowserClient } from './fylo-web.mjs'",
+      `// Add once to <head>: <script src="${FYLO_BROWSER_LOADER}"></script>`,
       '',
-      'const db = createBrowserClient()',
-      'await db.ready()',
+      'const db = await Fylo.open()',
       '',
       ...body,
     ].join('\n')
@@ -574,8 +575,8 @@ export default class extends Tac {
 
   webInstall() {
     return [
-      '// The browser client is a bundled OPFS engine — no binary, no drop-in file.',
-      '// Grab fylo-web.mjs from a GitHub release.',
+      '// The browser client is a bundled OPFS engine — no binary or backend.',
+      '// The version-pinned loader and engine are published on GitHub Pages.',
       '',
       this.webScaffold([
         '// All reads and writes hit the browser-local OPFS store — fully offline.',

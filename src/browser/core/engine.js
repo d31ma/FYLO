@@ -334,10 +334,16 @@ export class BrowserCore {
     async getDocMeta(collection, id) {
         validateDocId(id)
         await this.requireCollection(collection)
-        if (!(await this.documents.readStoredDoc(collection, id))) {
+        const stored = await this.documents.readStoredDoc(collection, id)
+        if (!stored) {
             throw new Error(`Document not found: ${id}`)
         }
-        return copySafeJson((await this.metadata.read(collection, id)).values)
+        const metadata = copySafeJson((await this.metadata.read(collection, id)).values)
+        metadata.id = stored.id
+        metadata.mtime = stored.updatedAt
+        metadata.updatedAt = stored.updatedAt
+        metadata.createdAt = stored.createdAt
+        return metadata
     }
 
     /** @param {string} collection @param {TTIDValue} id @param {Record<string, any>} record */

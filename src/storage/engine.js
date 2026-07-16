@@ -3,6 +3,7 @@ import { CollectionNotFoundError, validateCollectionName } from '../core/collect
 import { assertPathInside, validateDocId } from '../core/doc-id.js'
 import { Cipher } from '../security/cipher.js'
 import { FyloSyncError, resolveSyncMode } from '../replication/sync.js'
+import { FyloS3Backup } from '../replication/s3-backup.js'
 import { emitFyloEvent } from '../observability/events.js'
 import { FilesystemEventBus, FilesystemLockManager, FilesystemStorage } from './primitives.js'
 import { FilesystemDocuments } from './documents.js'
@@ -15,7 +16,7 @@ import {
 } from './files.js'
 import { FilesystemQueryEngine } from './query.js'
 import { materializeDoc } from '../schema/migrate.js'
-import { BunS3ClientIndexStore, LocalFsPrefixIndexStore } from './prefix-index.js'
+import { LocalFsPrefixIndexStore } from './prefix-index.js'
 import { parseStoredValue, stringifyStoredValue } from './value-codec.js'
 import { getXattr, listXattr, removeXattr, setXattr } from './xattr.js'
 import { rawFileKey } from '../core/raw-file.js'
@@ -135,7 +136,7 @@ export class FilesystemEngine {
     /**
      * Creates the filesystem-backed FYLO engine and its persistence collaborators.
      * @param {string} [root]
-     * @param {{ sync?: FyloSyncHooks, syncMode?: FyloSyncMode, worm?: FyloWormOptions, onEvent?: FyloEventHandler, index?: import('./types.js').FyloIndexOptions, queue?: LocalQueue, queryCache?: QueryCache, catalogRoot?: string, repositoryGate?: boolean }} [options]
+     * @param {{ sync?: FyloSyncHooks, syncMode?: FyloSyncMode, worm?: FyloWormOptions, onEvent?: FyloEventHandler, queue?: LocalQueue, queryCache?: QueryCache, catalogRoot?: string, repositoryGate?: boolean }} [options]
      */
     constructor(
         root = process.env.FYLO_ROOT || path.join(process.cwd(), '.fylo-data'),
@@ -145,6 +146,16 @@ export class FilesystemEngine {
         this.catalogRoot = options.catalogRoot ?? root
         this.sync = options.sync
         this.syncMode = resolveSyncMode(options.syncMode)
+        /**
+         * Built-in whole-root S3 backup, when `sync.s3` is configured. Mirrors
+         * touched files on write and reconciles the whole root on an interval /
+         * on demand. Undefined leaves S3 out of the picture entirely.
+         * @type {FyloS3Backup | undefined}
+         */
+        this.backup = options.sync?.s3
+            ? new FyloS3Backup(options.sync.s3, root, { onEvent: options.onEvent })
+            : undefined
+        this.backup?.start()
         this.worm = {
             mode: options.worm?.mode ?? 'off'
         }
@@ -163,10 +174,7 @@ export class FilesystemEngine {
         this.events = new FilesystemEventBus(this.collectionRoot.bind(this), this.storage)
         this.queue = options.queue
         this.queryCache = options.queryCache
-        this.index =
-            options.index?.backend === 's3-client'
-                ? new BunS3ClientIndexStore(options.index.s3)
-                : new LocalFsPrefixIndexStore(this.collectionRoot.bind(this))
+        this.index = new LocalFsPrefixIndexStore(this.collectionRoot.bind(this))
         this.documents = new FilesystemDocuments(
             this.storage,
             this.docsRoot.bind(this),
@@ -314,7 +322,7 @@ export class FilesystemEngine {
      * @returns {Promise<void>}
      */
     async runSyncTask(collection, docId, operation, targetPath, task) {
-        if (!this.sync?.onWrite && !this.sync?.onDelete) return
+        if (!this.sync?.onWrite && !this.sync?.onDelete && !this.backup) return
         if (this.syncMode === 'fire-and-forget') {
             void task().catch((cause) => {
                 const error = new FyloSyncError({
@@ -350,13 +358,69 @@ export class FilesystemEngine {
     }
     /** @param {FyloWriteSyncEvent} event @returns {Promise<void>} */
     async syncWrite(event) {
-        if (!this.sync?.onWrite) return
-        await this.sync.onWrite(event)
+        if (this.sync?.onWrite) await this.sync.onWrite(event)
+        if (this.backup) {
+            await this.backup.mirror([event.path, ...this.collectionBackupPaths(event.collection)])
+        }
     }
     /** @param {FyloDeleteSyncEvent} event @returns {Promise<void>} */
     async syncDelete(event) {
-        if (!this.sync?.onDelete) return
-        await this.sync.onDelete(event)
+        if (this.sync?.onDelete) await this.sync.onDelete(event)
+        if (this.backup) {
+            // The record moved from `docs/` into the `.deleted/` tombstone: drop
+            // the old docs object, then mirror the tombstone plus the updated
+            // index/catalog.
+            if (event.previousPath) await this.backup.remove([event.previousPath])
+            await this.backup.mirror([event.path, ...this.collectionBackupPaths(event.collection)])
+        }
+    }
+
+    /**
+     * Files that change alongside any document write and must ride along with a
+     * mirror-on-write: the collection's local index and its catalog descriptor.
+     * Missing entries are skipped by {@link FyloS3Backup.mirror}.
+     * @param {string} collection @returns {string[]}
+     */
+    collectionBackupPaths(collection) {
+        const indexDir = path.join(this.collectionRoot(collection), 'index')
+        return [
+            path.join(indexDir, 'manifest.json'),
+            path.join(indexDir, 'keys.snapshot'),
+            path.join(indexDir, 'keys.wal'),
+            this.collectionDescriptorPath(collection)
+        ]
+    }
+
+    /**
+     * Mirror a record whose xattrs changed without rewriting its bytes.
+     * @param {string} collection @param {string} docId
+     * @param {'meta' | 'rekey'} operation @param {string} targetPath
+     */
+    async mirrorRecordMetadata(collection, docId, operation, targetPath) {
+        const backup = this.backup
+        if (!backup) return
+        await this.runSyncTask(collection, /** @type {TTID} */ (docId), operation, targetPath, () =>
+            backup.mirror([targetPath, ...this.collectionBackupPaths(collection)])
+        )
+    }
+
+    /**
+     * Reconcile the whole local root to S3 (upload changed, delete removed).
+     * No-op when S3 backup isn't configured.
+     * @returns {Promise<void>}
+     */
+    async reconcile() {
+        await this.backup?.reconcile()
+    }
+
+    /** @returns {Readonly<import('../replication/s3-backup.js').FyloS3Backup['status']> | undefined} */
+    backupStatus() {
+        return this.backup ? { ...this.backup.status } : undefined
+    }
+
+    /** Drain background backup work and release backup-owned descriptors. */
+    async close() {
+        await this.backup?.close()
     }
     /** @param {string} collection @returns {Promise<void>} */
     async ensureCollection(collection) {
@@ -1172,6 +1236,13 @@ export class FilesystemEngine {
                 if (!existing) return
                 await this.removeIndexes(collection, docId, existing.data)
                 const deletedAt = Date.now()
+                // Capture the live docs/ path before the move so the S3 backup can
+                // drop the old object (files carry an arbitrary extension, so this
+                // must be resolved, not rebuilt from the id).
+                const previousPath =
+                    (kind === 'file'
+                        ? await this.files.findPath(this.docsRoot(collection), docId)
+                        : this.docPath(collection, docId)) ?? undefined
                 const deletedPath =
                     kind === 'file'
                         ? await this.files.softDeleteStoredFile(collection, docId, deletedAt)
@@ -1189,7 +1260,8 @@ export class FilesystemEngine {
                         operation: 'delete',
                         collection,
                         docId,
-                        path: deletedPath
+                        path: deletedPath,
+                        previousPath
                     })
                 })
                 await this.invalidateQueryCache(collection)
@@ -1325,9 +1397,11 @@ export class FilesystemEngine {
         if (this.wormEnabled()) throw new Error('Rekey is not allowed in WORM mode')
         await this.requireCollection(collection)
         await this.requireCollectionKind(collection, 'file')
-        return await this.withCollectionWriteLock(collection, async () => {
+        let targetPath = ''
+        const nextKey = await this.withCollectionWriteLock(collection, async () => {
             const stored = await this.files.readStoredFile(collection, docId)
             if (!stored) throw new Error(`Raw file not found: ${docId}`)
+            targetPath = stored.path
             const next = rawFileKey(key, docId, stored.data.extension)
             if (next === stored.data.key) return next
             await this.assertObjectKeyAvailable(collection, next, docId)
@@ -1358,6 +1432,8 @@ export class FilesystemEngine {
             })
             return next
         })
+        await this.mirrorRecordMetadata(collection, docId, 'rekey', targetPath)
+        return nextKey
     }
     /**
      * Stamp-ignoring integrity audit of a file collection: re-hashes the full
@@ -1574,6 +1650,7 @@ export class FilesystemEngine {
     async updateDocMeta(collection, docId, mutate) {
         if (this.wormEnabled()) throw new Error('Metadata update is not allowed in WORM mode')
         await this.requireCollection(collection)
+        let targetPath = ''
         await this.withCollectionWriteLock(collection, async () => {
             const owner = Bun.randomUUIDv7()
             if (!(await this.locks.acquire(collection, docId, owner))) {
@@ -1581,11 +1658,13 @@ export class FilesystemEngine {
             }
             try {
                 if ((await this.collectionKind(collection)) !== 'file') {
-                    mutate(await this.metaTarget(collection, docId))
+                    targetPath = await this.metaTarget(collection, docId)
+                    mutate(targetPath)
                     return
                 }
                 const before = await this.files.readStoredFile(collection, docId)
                 if (!before) throw new Error(`Raw file not found: ${docId}`)
+                targetPath = before.path
                 const metadata = snapshotMetadataXattrs(before.path)
                 /** @type {StoredRecord | null} */
                 let after = null
@@ -1614,10 +1693,34 @@ export class FilesystemEngine {
                 await this.locks.release(collection, docId, owner)
             }
         })
+        await this.mirrorRecordMetadata(collection, docId, 'meta', targetPath)
     }
     /** @param {string} collection @param {string} docId @returns {Promise<Record<string, any>>} */
     async listDocMeta(collection, docId) {
         return this.files.readMeta(await this.metaTarget(collection, docId)) ?? {}
+    }
+    /**
+     * Returns the complete canonical metadata record plus developer metadata.
+     * System fields win over colliding developer keys so callers always
+     * receive canonical identifiers, timestamps, and raw-file descriptors.
+     * @param {string} collection @param {string} docId
+     * @returns {Promise<Record<string, any>>}
+     */
+    async getDocMetadata(collection, docId) {
+        const metadata = await this.listDocMeta(collection, docId)
+        const stored = await this.readStoredRecord(collection, /** @type {TTID} */ (docId))
+        if (!stored) return metadata
+        const canonical = Object.assign(Object.create(null), {
+            id: stored.id,
+            mtime: stored.updatedAt,
+            updatedAt: stored.updatedAt,
+            createdAt: stored.createdAt
+        })
+        if ((await this.collectionKind(collection)) === 'file') {
+            const { meta: _custom, ...fileMetadata } = stored.data
+            Object.assign(canonical, fileMetadata)
+        }
+        return Object.assign(Object.create(null), metadata, canonical)
     }
     /** @param {string} collection @param {StoreQuery | undefined} query @returns {any} */
     findDocs(collection, query) {

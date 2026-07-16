@@ -82,19 +82,6 @@
  */
 
 /**
- * @typedef {object} FyloS3IndexOptions
- * @property {string=} accessKeyId
- * @property {string=} secretAccessKey
- * @property {string=} sessionToken
- * @property {string=} endpoint
- * @property {string=} region
- */
-
-/**
- * @typedef {{ backend?: 'local-fs' } | { backend: 's3-client', s3?: FyloS3IndexOptions }} FyloIndexOptions
- */
-
-/**
  * @typedef {'document' | 'file'} FyloCollectionKind
  */
 

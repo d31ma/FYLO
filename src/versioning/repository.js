@@ -3,7 +3,7 @@ import { cp, mkdir, open, readFile, readdir, rename, rm, stat } from 'node:fs/pr
 import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import TTID from '../vendor/ttid.js'
-import { writeDurable } from '../storage/durable.js'
+import { isDurableWriteScratchPath, writeDurable } from '../storage/durable.js'
 import { FilesystemEngine } from '../storage/engine.js'
 import { tryReleaseFileLock, waitAcquireFileLock } from '../storage/fs-lock.js'
 import { rawFileId } from '../core/raw-file.js'
@@ -1916,7 +1916,7 @@ async function listFiles(root) {
                 await walk(full, relative)
                 continue
             }
-            if (entry.isFile()) files.push(relative)
+            if (entry.isFile() && !isDurableWriteScratchPath(entry.name)) files.push(relative)
         }
     }
     await walk(root)
@@ -1934,6 +1934,7 @@ async function findVersionedFile(storageRoot, namespaceRoot, id) {
     await assertSafeStoragePath(storageRoot, namespaceRoot, { finalType: 'directory' })
     const matches = []
     for (const entry of await readdir(namespaceRoot, { withFileTypes: true })) {
+        if (entry.isFile() && isDurableWriteScratchPath(entry.name)) continue
         if (rawFileId(entry.name) !== id) continue
         const target = path.join(namespaceRoot, entry.name)
         if (entry.isSymbolicLink() || !entry.isFile()) {

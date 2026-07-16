@@ -1,0 +1,24 @@
+{
+    "schemaVersion": 1,
+    "artifactPrefix": "fylo/web-releases",
+    "sites": {
+        "fylo": {
+            "appId": "dhq9jgfyq7uv2",
+            "branch": "master",
+            "sourceDir": "website/dist/web",
+            "origin": "https://fylo.del.ma",
+            "probes": [
+                { "path": "/", "contains": "FYLO" },
+                { "path": "/docs", "contains": "FYLO documentation" },
+                { "path": "/download", "contains": "Download FYLO" }
+            ]
+        },
+        "fxp": {
+            "appId": "dnjtojrhwtus2",
+            "branch": "master",
+            "sourceDir": "explorer/dist/web",
+            "origin": "https://fx.del.ma",
+            "probes": [{ "path": "/", "contains": "FX | Fylo Explorer" }]
+        }
+    }
+}

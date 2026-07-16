@@ -1,0 +1,197 @@
+name: Publish Pages Assets
+
+on:
+    workflow_run:
+        workflows: [Release]
+        types: [completed]
+    workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+    group: pages
+    cancel-in-progress: false
+
+jobs:
+    build:
+        if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+        runs-on: ubuntu-latest
+        permissions:
+            contents: write
+        outputs:
+            should_publish: ${{ steps.release.outputs.publish }}
+        steps:
+            - name: Check out release source
+              uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+              with:
+                  ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+                  fetch-depth: 0
+                  path: source
+
+            - name: Set up Bun
+              uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+              with:
+                  bun-version: 1.3.11
+
+            - name: Read package version
+              id: package
+              working-directory: source
+              run: echo "version=$(bun -p 'require(\"./package.json\").version')" >> "$GITHUB_OUTPUT"
+
+            - name: Verify published release
+              id: release
+              env:
+                  VERSION: ${{ steps.package.outputs.version }}
+                  SOURCE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+              run: |
+                  set -euo pipefail
+                  git -C source fetch --tags origin
+                  TAG_SHA=$(git -C source rev-list -n 1 "v$VERSION" 2>/dev/null || true)
+                  if [ -n "$TAG_SHA" ] && [ "$TAG_SHA" = "$SOURCE_SHA" ]; then
+                      echo "publish=true" >> "$GITHUB_OUTPUT"
+                  else
+                      echo "publish=false" >> "$GITHUB_OUTPUT"
+                      echo "::notice::Skipping Pages publish because v$VERSION does not identify $SOURCE_SHA."
+                  fi
+
+            - name: Build browser client
+              if: steps.release.outputs.publish == 'true'
+              working-directory: source
+              run: |
+                  bun install --frozen-lockfile
+                  bun run build:web
+
+            - name: Prepare Pages branch
+              if: steps.release.outputs.publish == 'true'
+              run: |
+                  set -euo pipefail
+                  if git -C source fetch origin gh-pages:refs/remotes/origin/gh-pages; then
+                      git -C source worktree add --detach "$GITHUB_WORKSPACE/site" origin/gh-pages
+                  else
+                      git -C source worktree add --detach "$GITHUB_WORKSPACE/site" HEAD
+                      git -C site checkout --orphan gh-pages
+                      git -C site rm -rf . || true
+                      find site -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+                  fi
+
+            - name: Stage browser assets
+              if: steps.release.outputs.publish == 'true'
+              env:
+                  VERSION: ${{ steps.package.outputs.version }}
+                  SOURCE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+              run: |
+                  set -euo pipefail
+                  if ! printf '%s\n' "$VERSION" | grep -Eq '^[0-9]+(\.[0-9]+){2}$'; then
+                      echo "Invalid package version: $VERSION" >&2
+                      exit 1
+                  fi
+
+                  stage_client() {
+                      destination="$1"
+                      rm -rf "$destination"
+                      mkdir -p "$destination"
+                      cp source/dist-web/fylo.mjs "$destination/fylo-web.mjs"
+                      cp source/clients/browser/fylo.js "$destination/fylo.js"
+                      (cd "$destination" && sha256sum fylo.js fylo-web.mjs > SHA256SUMS)
+                  }
+
+                  stage_client site/version/latest
+
+                  TAG_SHA=$(git -C source rev-list -n 1 "v$VERSION" 2>/dev/null || true)
+                  if [ -n "$TAG_SHA" ] && [ "$TAG_SHA" = "$SOURCE_SHA" ]; then
+                      immutable="site/version/$VERSION"
+                      candidate=$(mktemp -d "$RUNNER_TEMP/fylo-pages-version.XXXXXX")
+                      stage_client "$candidate"
+                      if [ -L "$immutable" ]; then
+                          echo "Refusing immutable version symlink: $immutable" >&2
+                          exit 1
+                      fi
+                      if [ -e "$immutable" ]; then
+                          for asset in fylo.js fylo-web.mjs SHA256SUMS; do
+                              if ! cmp -s "$candidate/$asset" "$immutable/$asset"; then
+                                  echo "Refusing to overwrite immutable $immutable: $asset differs" >&2
+                                  exit 1
+                              fi
+                          done
+                          rm -rf "$candidate"
+                      else
+                          mkdir -p "$(dirname "$immutable")"
+                          mv "$candidate" "$immutable"
+                      fi
+                  fi
+
+                  cp source/website/client/shared/assets/install.sh site/install.sh
+                  cp source/website/client/shared/assets/install.ps1 site/install.ps1
+
+                  touch site/.nojekyll
+
+                  {
+                      echo '<!doctype html>'
+                      echo '<html lang="en"><head><meta charset="utf-8"><title>Fylo browser client</title></head>'
+                      echo '<body><main><h1>Fylo browser client</h1><ul>'
+                      echo '<li><a href="version/latest/fylo.js">Latest loader</a></li>'
+                      if [ -d "site/version/$VERSION" ]; then
+                          echo "<li><a href=\"version/$VERSION/fylo.js\">Version $VERSION loader</a></li>"
+                      fi
+                      echo '</ul></main></body></html>'
+                  } > site/index.html
+
+            - name: Publish persistent Pages branch
+              if: steps.release.outputs.publish == 'true'
+              env:
+                  VERSION: ${{ steps.package.outputs.version }}
+              run: |
+                  set -euo pipefail
+                  git -C site add --all
+                  if git -C site diff --cached --quiet; then
+                      exit 0
+                  fi
+                  git -C site config user.name github-actions[bot]
+                  git -C site config user.email 41898282+github-actions[bot]@users.noreply.github.com
+                  git -C site commit -m "Publish Fylo browser client $VERSION"
+                  git -C site push origin HEAD:gh-pages
+
+            - name: Prepare Pages artifact
+              if: steps.release.outputs.publish == 'true'
+              run: |
+                  mkdir pages-artifact
+                  tar --exclude=.git -C site -cf - . | tar -C pages-artifact -xf -
+
+            - name: Configure Pages
+              if: steps.release.outputs.publish == 'true'
+              uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
+
+            - name: Upload Pages artifact
+              if: steps.release.outputs.publish == 'true'
+              uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
+              with:
+                  path: pages-artifact
+
+    deploy:
+        needs: build
+        if: needs.build.outputs.should_publish == 'true'
+        runs-on: ubuntu-latest
+        permissions:
+            contents: read
+            pages: write
+            id-token: write
+        environment:
+            name: github-pages
+            url: ${{ steps.deployment.outputs.page_url }}
+        steps:
+            - name: Deploy Pages
+              id: deployment
+              uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
+
+            - name: Check out release verification
+              uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+              with:
+                  ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+            - name: Set up Bun for release verification
+              uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+              with:
+                  bun-version: 1.3.11
+
+            - name: Verify pinned Pages assets
+              run: bun scripts/pages-smoke.mjs "$(bun -p 'require(\"./package.json\").version')"

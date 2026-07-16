@@ -27,7 +27,7 @@ addon. There are two kinds, sharing the same method names:
 
 | Platform         | File                     | How                                     |
 | ---------------- | ------------------------ | --------------------------------------- |
-| Browser (JS)     | `fylo-web.mjs` (release) | OPFS store                              |
+| Browser (JS)     | `browser/fylo.js` loader | OPFS store                              |
 | iOS (Swift)      | `swift/Fylo.swift`       | WKWebView hosting `fylo.mjs`            |
 | Android (Kotlin) | `kotlin/Fylo.kt`         | android.webkit.WebView                  |
 | Flutter (Dart)   | `flutter/fylo.dart`      | flutter_inappwebview hosting `fylo.mjs` |
@@ -121,8 +121,11 @@ use `getMeta(id)` / `setMeta(id, meta)`, except Python and Ruby, which use
 `get_metadata(id)` / `set_metadata(id, meta)`, and PHP, which uses
 `getMetadata(id)` / `setMetadata(id, meta)`.
 
-In result-unwrapping shims, `getMeta` returns the complete developer metadata
-record. Rust and Java return their raw response envelope as described above.
+In result-unwrapping shims, `getMeta` returns the complete canonical metadata
+record plus developer metadata. Every record includes `id`, `mtime`,
+`updatedAt`, and `createdAt`; raw files also include their stored file
+descriptor. Canonical fields take precedence over custom keys with the same
+name. Rust and Java return their raw response envelope as described above.
 `setMeta` bulk-edits the record: supplied keys are set, `null` values remove
 keys, and omitted keys remain unchanged. The metadata argument must be a plain native map/object with
 names of 1-64 characters, starting with a letter or digit and containing only
@@ -141,7 +144,8 @@ minutes.
 // Node shim; use the naming convention from the table in other languages.
 await db.users.setMeta(id, { source: 'import', reviewed: false })
 await db.users.setMeta(id, { source: null }) // remove one key
-const metadata = await db.users.getMeta(id) // { reviewed: false }
+const metadata = await db.users.getMeta(id)
+// { id, mtime, updatedAt, createdAt, reviewed: false }
 ```
 
 ## SQL
@@ -185,11 +189,16 @@ local-only engine** (built from `src/browser`, released as `fylo-web.mjs`). It
 reads and writes an OPFS/memory store directly — fully offline, no backend, no
 network. Each browser profile owns its own database.
 
-```js
-import { createBrowserClient } from './fylo-web.mjs'
+For a regular website, add a version-pinned loader to the document head:
 
-const db = createBrowserClient()
-await db.ready()
+```html
+<script src="https://d31ma.github.io/Fylo/version/26.29.04/fylo.js"></script>
+```
+
+Then open the browser-local database from your application code:
+
+```js
+const db = await Fylo.open()
 
 const id = await db.users.put({ name: 'Ada', role: 'admin' })
 await db.users.put(id).metadata({ source: 'browser' })
@@ -197,7 +206,19 @@ const metadata = await db.users.get(id).metadata()
 const doc = await db.users.latest(id)
 ```
 
-Grab `fylo-web.mjs` from a release.
+Use `https://d31ma.github.io/Fylo/version/latest/fylo.js` when you intentionally
+want the newest release. For direct ESM imports, the engine is published beside
+the loader:
+
+```js
+import { createBrowserClient } from 'https://d31ma.github.io/Fylo/version/26.29.04/fylo-web.mjs'
+
+const db = createBrowserClient()
+await db.ready()
+```
+
+Every release remains available under `version/<version>/`; `version/latest/`
+is updated only after a successful Release workflow.
 
 ## Mobile (iOS / Android)
 

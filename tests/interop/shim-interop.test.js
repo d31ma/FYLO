@@ -91,8 +91,9 @@ with Fylo(${JSON.stringify(root)}, binary=${JSON.stringify(binaryPath)}) as db:
     initial_meta = db.get_meta('users', doc_id)
     db.set_meta('users', doc_id, {'source': None})
     meta = db.get_meta('users', doc_id)
-    assert initial_meta == {'source': 'python', 'reviewed': False}, initial_meta
-    assert meta == {'reviewed': False}, meta
+    assert initial_meta['source'] == 'python' and initial_meta['reviewed'] is False, initial_meta
+    assert initial_meta['id'] == doc_id and initial_meta['createdAt'] > 0, initial_meta
+    assert 'source' not in meta and meta['reviewed'] is False, meta
     print(json.dumps({'ok': True, 'id': doc_id, 'doc': doc, 'found': found, 'meta': meta}))
 `
         const result = await run(['python3', '-c', script])
@@ -150,8 +151,9 @@ begin
   initial_meta = db.get_meta('users', id)
   db.set_meta('users', id, { 'source' => nil })
   meta = db.get_meta('users', id)
-  raise 'bad initial metadata' unless initial_meta == { 'source' => 'ruby', 'reviewed' => false }
-  raise 'bad updated metadata' unless meta == { 'reviewed' => false }
+  raise 'bad initial metadata' unless initial_meta['source'] == 'ruby' && initial_meta['reviewed'] == false
+  raise 'missing canonical metadata' unless initial_meta['id'] == id && initial_meta['createdAt'] > 0
+  raise 'bad updated metadata' unless !meta.key?('source') && meta['reviewed'] == false
   puts JSON.generate({ ok: true, id: id, doc: doc, found: found, meta: meta })
 ensure
   db.close

@@ -15,6 +15,8 @@ const LANGS = [
   { key: 'web', label: 'JS (Browser)', cmt: '//' },
 ]
 
+const FYLO_BROWSER_LOADER = 'https://d31ma.github.io/Fylo/version/26.29.04/fylo.js'
+
 // Native object/array literal renderers, one per language.
 function pyLit(v) {
   if (typeof v === 'number') return String(v)
@@ -334,10 +336,9 @@ export default class extends Tac {
   // JS (Browser): the local-only OPFS client, not a binary shim.
   webScaffold(body) {
     return [
-      "import { createBrowserClient } from './fylo-web.mjs'",
+      `// Add once to <head>: <script src="${FYLO_BROWSER_LOADER}"></script>`,
       '',
-      'const db = createBrowserClient()',
-      'await db.ready()',
+      'const db = await Fylo.open()',
       '',
       ...body,
     ].join('\n')

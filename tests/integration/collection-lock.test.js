@@ -1,7 +1,8 @@
 import { afterAll, describe, expect, test } from 'bun:test'
-import { rm } from 'node:fs/promises'
+import { mkdir, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import Fylo from '../../src/index.js'
+import { VersionRepository } from '../../src/versioning/repository.js'
 import { createTestRoot } from '../helpers/root.js'
 
 const root = await createTestRoot('fylo-colllock-')
@@ -46,4 +47,23 @@ describe('cross-process collection index lock', () => {
         }
         expect(titles).toEqual(expected.sort())
     }, 30_000)
+
+    test('document scans exclude durable scratch siblings from their validation set', async () => {
+        const collection = 'scratch-file-scan'
+        const fylo = new Fylo(root)
+        await fylo[collection].create()
+        const id = await fylo[collection].put({ title: 'durable record' })
+
+        const shard = path.join(root, '.collections', collection, 'docs', 'scratch')
+        await mkdir(shard, { recursive: true })
+        const scratch = path.join(shard, `${id}.json.019f694e-b56b-7000-abc8-c6c912344a03.tmp`)
+        await writeFile(scratch, '{}')
+
+        const files = await fylo.engine.documents.listDocumentFiles(
+            path.join(root, '.collections', collection, 'docs')
+        )
+
+        expect(files).not.toContain(scratch)
+        expect((await new VersionRepository(root).status()).clean).toBe(true)
+    })
 })
