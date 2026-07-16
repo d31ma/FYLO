@@ -57,7 +57,7 @@ export async function verifyPagesReleaseWithRetry(baseUrl, version, attempts = 6
 }
 
 async function main() {
-    const [version, baseUrl = 'https://d31ma.github.io/Fylo/'] = process.argv.slice(2)
+    const [version, baseUrl = 'https://d31ma.github.io/FYLO/'] = process.argv.slice(2)
     if (!version) throw new Error('Usage: bun scripts/pages-smoke.mjs <version> [pages-base-url]')
     console.log(JSON.stringify(await verifyPagesReleaseWithRetry(baseUrl, version)))
 }

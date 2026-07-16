@@ -192,7 +192,7 @@ network. Each browser profile owns its own database.
 For a regular website, add a version-pinned loader to the document head:
 
 ```html
-<script src="https://d31ma.github.io/Fylo/version/26.29.04/fylo.js"></script>
+<script src="https://d31ma.github.io/FYLO/version/26.29.04/fylo.js"></script>
 ```
 
 Then open the browser-local database from your application code:
@@ -206,12 +206,12 @@ const metadata = await db.users.get(id).metadata()
 const doc = await db.users.latest(id)
 ```
 
-Use `https://d31ma.github.io/Fylo/version/latest/fylo.js` when you intentionally
+Use `https://d31ma.github.io/FYLO/version/latest/fylo.js` when you intentionally
 want the newest release. For direct ESM imports, the engine is published beside
 the loader:
 
 ```js
-import { createBrowserClient } from 'https://d31ma.github.io/Fylo/version/26.29.04/fylo-web.mjs'
+import { createBrowserClient } from 'https://d31ma.github.io/FYLO/version/26.29.04/fylo-web.mjs'
 
 const db = createBrowserClient()
 await db.ready()

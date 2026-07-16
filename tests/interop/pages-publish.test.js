@@ -17,6 +17,26 @@ describe('GitHub Pages browser client publishing', () => {
         expect(workflow).toContain('site/install.sh')
         expect(workflow).toContain('site/install.ps1')
         expect(workflow).toContain('Verify published release')
+        expect(workflow).toContain('release_ref:')
+        expect(workflow).toContain('inputs.release_ref')
+        expect(workflow).toContain('SOURCE_SHA: ${{ steps.package.outputs.sha }}')
+        expect(workflow).toContain('::error::Refusing Pages publish')
+        expect(workflow).not.toContain('Skipping Pages publish')
+        expect(workflow).toContain('version: ${{ steps.package.outputs.version }}')
+        expect(workflow).toContain('ref: ${{ github.sha }}')
+        expect(workflow).toContain(
+            'bun scripts/pages-smoke.mjs "${{ needs.build.outputs.version }}"'
+        )
+        expect(workflow.match(/persist-credentials: false/g)).toHaveLength(2)
+        expect(workflow).toContain('GH_TOKEN: ${{ github.token }}')
+        expect(workflow).toContain('gh auth setup-git')
+        expect(workflow).toContain('needs: [build, deploy]')
+        expect(workflow).toContain('assert_managed_directory "$immutable"')
+        expect(workflow).toContain('assert_managed_file "$immutable/$asset"')
+        expect(workflow).toContain('Refusing managed directory symlink')
+        expect(workflow).toContain('Refusing managed file symlink')
+        expect(workflow).toContain(`bun -p 'require("./package.json").version'`)
+        expect(workflow).not.toContain(`require(\\"./package.json\\")`)
         expect(workflow).toContain("if: needs.build.outputs.should_publish == 'true'")
         expect(workflow).toContain(
             'actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b'
@@ -46,8 +66,8 @@ describe('GitHub Pages browser client publishing', () => {
     test('documents both pinned and latest Pages URLs', async () => {
         const clients = await Bun.file(path.join(root, 'clients/README.md')).text()
 
-        expect(clients).toContain('https://d31ma.github.io/Fylo/version/26.29.04/fylo.js')
-        expect(clients).toContain('https://d31ma.github.io/Fylo/version/latest/fylo.js')
+        expect(clients).toContain('https://d31ma.github.io/FYLO/version/26.29.04/fylo.js')
+        expect(clients).toContain('https://d31ma.github.io/FYLO/version/latest/fylo.js')
     })
 
     test('keeps website browser examples aligned with the Pages loader', async () => {
@@ -57,7 +77,7 @@ describe('GitHub Pages browser client publishing', () => {
         ])
 
         for (const example of examples) {
-            expect(example).toContain('https://d31ma.github.io/Fylo/version/26.29.04/fylo.js')
+            expect(example).toContain('https://d31ma.github.io/FYLO/version/26.29.04/fylo.js')
             expect(example).toContain('const db = await Fylo.open()')
             expect(example).not.toContain("createBrowserClient } from './fylo-web.mjs'")
         }

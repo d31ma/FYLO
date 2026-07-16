@@ -189,7 +189,7 @@ hosting the engine in a WebView) owns its own database.
 Add the version-pinned loader to the document head:
 
 ```html
-<script src="https://d31ma.github.io/Fylo/version/26.29.04/fylo.js"></script>
+<script src="https://d31ma.github.io/FYLO/version/26.29.04/fylo.js"></script>
 ```
 
 ```ts
@@ -201,9 +201,9 @@ const metadata = await db.users.get(id).metadata()
 const doc = await db.users.latest(id)
 ```
 
-Use `https://d31ma.github.io/Fylo/version/latest/fylo.js` to track the newest
+Use `https://d31ma.github.io/FYLO/version/latest/fylo.js` to track the newest
 successful release. Direct ESM consumers can import
-`https://d31ma.github.io/Fylo/version/26.29.04/fylo-web.mjs` instead.
+`https://d31ma.github.io/FYLO/version/26.29.04/fylo-web.mjs` instead.
 
 ### Fylo Explorer
 
