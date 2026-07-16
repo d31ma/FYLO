@@ -13,21 +13,36 @@ afterAll(async () => {
     await rm(root, { recursive: true, force: true })
 })
 
+/** @param {Record<string, any>} metadata @param {Record<string, any>} expected */
+function expectCustomMetadata(metadata, expected) {
+    expect(metadata).toMatchObject(expected)
+}
+
 describe('developer metadata (xattrs)', () => {
-    test('put(id, document).metadata() writes initial document metadata', async () => {
+    test('get(id).metadata() combines system timestamps with custom document metadata', async () => {
         await fylo.notes.create()
         const id = await Fylo.uniqueTTID()
         await fylo.notes.put(id, { title: 'hello' }).metadata({
             owner: 'chidelma',
-            source: 'import-batch-7'
+            source: 'import-batch-7',
+            id: 'custom-id',
+            createdAt: 0,
+            updatedAt: 0,
+            mtime: 0
         })
-        expect(await fylo.notes.get(id).metadata()).toEqual({
+        const metadata = await fylo.notes.get(id).metadata()
+        expect(metadata).toMatchObject({
             owner: 'chidelma',
             source: 'import-batch-7'
         })
+        expect(metadata.id).toBe(id)
+        expect(metadata.createdAt).toBeNumber()
+        expect(metadata.createdAt).toBeGreaterThan(0)
+        expect(metadata.mtime).toBeNumber()
+        expect(metadata.updatedAt).toBe(metadata.mtime)
 
         await fylo.notes.put(id, { title: 'hello again' })
-        expect(await fylo.notes.get(id).metadata()).toEqual({
+        expect(await fylo.notes.get(id).metadata()).toMatchObject({
             owner: 'chidelma',
             source: 'import-batch-7'
         })
@@ -36,14 +51,17 @@ describe('developer metadata (xattrs)', () => {
     test('put(id).metadata(record) bulk-writes; null removes; get(id).metadata() reads', async () => {
         const id = await fylo.notes.put({ title: 'bulk' })
         await fylo.notes.put(id).metadata({ owner: 'chidelma', stage: 'draft', priority: 2 })
-        expect(await fylo.notes.get(id).metadata()).toEqual({
+        expectCustomMetadata(await fylo.notes.get(id).metadata(), {
             owner: 'chidelma',
             stage: 'draft',
             priority: 2
         })
 
         await fylo.notes.put(id).metadata({ stage: null, priority: 3 })
-        expect(await fylo.notes.get(id).metadata()).toEqual({ owner: 'chidelma', priority: 3 })
+        expectCustomMetadata(await fylo.notes.get(id).metadata(), {
+            owner: 'chidelma',
+            priority: 3
+        })
     })
 
     test('put(id, file).metadata() writes initial raw-file metadata', async () => {
@@ -52,7 +70,19 @@ describe('developer metadata (xattrs)', () => {
         await fylo.assets
             .put(id, new File(['bytes'], 'a.txt', { type: 'text/plain' }))
             .metadata({ camera: 'A7 IV' })
-        expect(await fylo.assets.get(id).metadata()).toEqual({ camera: 'A7 IV' })
+        const metadata = await fylo.assets.get(id).metadata()
+        expect(metadata).toMatchObject({
+            id,
+            name: `${id}.txt`,
+            key: `/${id}.txt`,
+            extension: '.txt',
+            contentType: 'text/plain',
+            contentLength: 5,
+            camera: 'A7 IV'
+        })
+        expect(metadata.etag).toBeString()
+        expect(metadata.checksumSHA256).toBe(metadata.etag)
+        expect(metadata.lastModified).toBe(metadata.updatedAt)
     })
 
     test('initial raw-file metadata rolls bytes, xattrs, and partial indexes back together', async () => {
@@ -142,7 +172,7 @@ describe('developer metadata (xattrs)', () => {
             geo: { lat: 6.5, lng: 3.4 }
         }
         await fylo.notes.put(id).metadata(record)
-        expect(await fylo.notes.get(id).metadata()).toEqual(record)
+        expectCustomMetadata(await fylo.notes.get(id).metadata(), record)
     })
 
     test('hostile-looking strings round-trip as inert metadata values', async () => {
@@ -152,7 +182,7 @@ describe('developer metadata (xattrs)', () => {
             nested: { __proto__: 'literal', constructor: '<img src=x onerror=alert(1)>' }
         }
         await fylo.notes.put(id).metadata(record)
-        expect(await fylo.notes.get(id).metadata()).toEqual(record)
+        expectCustomMetadata(await fylo.notes.get(id).metadata(), record)
     })
 
     test('RLS authorizes metadata reads and denies metadata writes atomically', async () => {
@@ -178,11 +208,15 @@ describe('developer metadata (xattrs)', () => {
             const before = await guarded.engine.docMetaUpdatedAt(collection, id)
             const scoped = guarded.as({ subject: 'reader' })
 
-            expect(await scoped[collection].get(id).metadata()).toEqual({ secret: 'unchanged' })
+            expectCustomMetadata(await scoped[collection].get(id).metadata(), {
+                secret: 'unchanged'
+            })
             await expect(
                 scoped[collection].put(id).metadata({ secret: 'changed' })
             ).rejects.toThrow()
-            expect(await guarded[collection].get(id).metadata()).toEqual({ secret: 'unchanged' })
+            expectCustomMetadata(await guarded[collection].get(id).metadata(), {
+                secret: 'unchanged'
+            })
             expect(await guarded.engine.docMetaUpdatedAt(collection, id)).toBe(before)
         } finally {
             if (previousSchema === undefined) delete process.env.FYLO_SCHEMA
@@ -208,7 +242,7 @@ describe('developer metadata (xattrs)', () => {
             })
         ).rejects.toThrow(/60 KiB/)
 
-        expect(await fylo.notes.get(id).metadata()).toEqual(original)
+        expectCustomMetadata(await fylo.notes.get(id).metadata(), original)
         expect(await fylo.engine.docMetaUpdatedAt('notes', id)).toBe(originalUpdatedAt)
     })
 
@@ -272,7 +306,7 @@ describe('developer metadata (xattrs)', () => {
                 fylo.notes.put(id, { title: `revision ${revision}` }),
                 fylo.notes.put(id).metadata({ owner: 'preserved', revision })
             ])
-            expect(await fylo.notes.get(id).metadata()).toEqual({
+            expectCustomMetadata(await fylo.notes.get(id).metadata(), {
                 owner: 'preserved',
                 revision
             })
@@ -285,8 +319,7 @@ describe('developer metadata (xattrs)', () => {
 
         await fylo.assets.delete(id)
         await fylo.assets.restore(id)
-        // The internal object key and checksum are not exposed as developer metadata.
-        expect(await fylo.assets.get(id).metadata()).toEqual({ camera: 'A7 IV' })
+        expectCustomMetadata(await fylo.assets.get(id).metadata(), { camera: 'A7 IV' })
     })
 
     test('rejects invalid metadata names, shapes, and unserializable values', async () => {
@@ -320,13 +353,13 @@ describe('developer metadata (xattrs)', () => {
         const id = created.result
 
         const read = await runMachineRequest({ op: 'getMeta', collection: 'notes', id }, overrides)
-        expect(read.result).toEqual({ origin: 'exec', rating: 3 })
+        expectCustomMetadata(read.result, { origin: 'exec', rating: 3 })
 
         const updated = await runMachineRequest(
             { op: 'setMeta', collection: 'notes', id, meta: { rating: 4, origin: null } },
             overrides
         )
-        expect(updated.result).toEqual({ rating: 4 })
+        expectCustomMetadata(updated.result, { rating: 4 })
     })
 
     test('browser clients persist metadata in the portable sidecar store', async () => {
@@ -336,9 +369,12 @@ describe('developer metadata (xattrs)', () => {
         const id = await browser.people.put({ name: 'Ada' })
 
         await browser.people.put(id).metadata({ starred: true, rating: 5 })
-        expect(await browser.people.get(id).metadata()).toEqual({ starred: true, rating: 5 })
+        const initialMetadata = await browser.people.get(id).metadata()
+        expectCustomMetadata(initialMetadata, { starred: true, rating: 5 })
+        expect(initialMetadata).toMatchObject({ id, createdAt: expect.any(Number) })
+        expect(initialMetadata.updatedAt).toBe(initialMetadata.mtime)
         await browser.people.put(id).metadata({ starred: null })
-        expect(await browser.people.get(id).metadata()).toEqual({ rating: 5 })
+        expectCustomMetadata(await browser.people.get(id).metadata(), { rating: 5 })
 
         const failedId = await Fylo.uniqueTTID()
         await expect(
@@ -382,7 +418,7 @@ describe('developer metadata (xattrs)', () => {
             await repo.restoreCommit(head.id)
 
             const restored = new Fylo(versionRoot)
-            expect(await restored.media.get(id).metadata()).toEqual({ camera: 'A7 IV' })
+            expectCustomMetadata(await restored.media.get(id).metadata(), { camera: 'A7 IV' })
             expect((await restored.media.get(id).once())[id].key).toBe('/pics/snap.jpg')
         } finally {
             await rm(versionRoot, { recursive: true, force: true })
@@ -418,7 +454,9 @@ describe('developer metadata (xattrs)', () => {
             )
             expect((await repo.readRef('main')).head).toBe(beforeRef.head)
             const unchanged = new Fylo(versionRoot, { versioning: { autoCommit: false } })
-            expect(await unchanged.media.get(id).metadata()).toEqual({ camera: 'working-copy' })
+            expectCustomMetadata(await unchanged.media.get(id).metadata(), {
+                camera: 'working-copy'
+            })
             expect(new TextDecoder().decode(await unchanged.media.get(id).bytes())).toBe(
                 'immutable bytes'
             )

@@ -1,6 +1,19 @@
 import { mkdir, open, rename, rm } from 'node:fs/promises'
 import path from 'node:path'
 
+const DURABLE_SCRATCH_SUFFIX = /[.][0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}[.]tmp$/i
+
+/**
+ * Identifies the unique sibling created by {@link DurableFileWriter} before
+ * fsync + atomic rename. Scanners must not treat this transient file as data.
+ *
+ * @param {string} value basename or path
+ * @returns {boolean}
+ */
+export function isDurableWriteScratchPath(value) {
+    return DURABLE_SCRATCH_SUFFIX.test(path.basename(value))
+}
+
 /**
  * Detects platforms/filesystems that do not support fsync on directory handles.
  *

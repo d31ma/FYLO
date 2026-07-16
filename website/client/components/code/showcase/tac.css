@@ -84,6 +84,19 @@
   .showcase-tabs::-webkit-scrollbar {
     display: none;
   }
+  /* Match the docs page's full-bleed, swipeable language strip. */
+  .showcase-langs {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    margin-inline: -1rem;
+    padding-inline: 1rem;
+    scroll-padding-inline: 1rem;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .showcase-langs::-webkit-scrollbar {
+    display: none;
+  }
   .collection-field {
     width: 100%;
   }

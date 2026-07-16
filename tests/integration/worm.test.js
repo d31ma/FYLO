@@ -73,7 +73,7 @@ describe('strict WORM mode', () => {
         await expect(
             fylo[COLLECTION].put(documentId).metadata({ owner: 'changed' })
         ).rejects.toThrow('Metadata update is not allowed in WORM mode')
-        expect(await fylo[COLLECTION].get(documentId).metadata()).toEqual({})
+        expect(await fylo[COLLECTION].get(documentId).metadata()).toMatchObject({ id: documentId })
 
         const files = 'worm-files'
         await fylo[files].create({ kind: 'file' })
@@ -87,7 +87,7 @@ describe('strict WORM mode', () => {
         await expect(fylo[files].rekey(fileId, '/moved.txt')).rejects.toThrow(
             'Rekey is not allowed in WORM mode'
         )
-        expect(await fylo[files].get(fileId).metadata()).toEqual({ retention: 'locked' })
+        expect(await fylo[files].get(fileId).metadata()).toMatchObject({ retention: 'locked' })
         expect((await fylo[files].get(fileId).once())[fileId].key).toBe('/fixed.txt')
     })
 

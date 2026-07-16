@@ -44,14 +44,14 @@
 
 FYLO trades complexity for clarity. Documents are plain JSON files on disk. Indexes are zero-byte key entries that accelerate queries without duplicating data. If the index ever drifts, FYLO rebuilds it from the documents — the files are always the source of truth.
 
-| Principle                    | Implementation                                                                         |
-| ---------------------------- | -------------------------------------------------------------------------------------- |
-| **Documents are truth**      | One `.json` file per document, sharded by TTID prefix                                  |
-| **Indexes are accelerators** | Zero-payload prefix keys in a sorted catalog file                                      |
-| **Rebuildable, not sacred**  | `fylo.<collection>.rebuild()` reconstructs indexes from data                           |
-| **Zero-dependency core**     | Embedded SQLite catalog, memory-mapped I/O, native S3 sync — one self-contained binary |
-| **Filesystem-first**         | One engine. Sync to S3/GCS is your deployment choice                                   |
-| **Browser: local-only**      | OPFS engine in the browser — each device owns its own store, fully offline             |
+| Principle                    | Implementation                                                                           |
+| ---------------------------- | ---------------------------------------------------------------------------------------- |
+| **Documents are truth**      | One `.json` file per document, sharded by TTID prefix                                    |
+| **Indexes are accelerators** | Zero-payload prefix keys in a sorted catalog file                                        |
+| **Rebuildable, not sacred**  | `fylo.<collection>.rebuild()` reconstructs indexes from data                             |
+| **Zero-dependency core**     | Embedded SQLite catalog, memory-mapped I/O, native S3 backup — one self-contained binary |
+| **Filesystem-first**         | One engine. Back up to S3 or attach custom sync hooks when needed                        |
+| **Browser: local-only**      | OPFS engine in the browser — each device owns its own store, fully offline               |
 
 ---
 
@@ -90,15 +90,15 @@ Shims ship for Node, Python, Ruby, Go, Rust, C#, Java, PHP, and Dart (see
 Flutter use local-only clients that embed the engine on-device (OPFS) — see
 [Browser access](#browser-access) and [`clients/`](clients/).
 
-### Website Source
+### Web Applications
 
-The website source lives in the tracked `website/` directory. Install its
-dependencies separately when you need to build or preview the site:
+The marketing website and Fylo Explorer are separate Tachyon applications.
+Run either one from its own root:
 
 ```bash
 git clone https://github.com/d31ma/Fylo.git
-cd Fylo/website
-bun install --frozen-lockfile
+cd Fylo/website && bun install --frozen-lockfile && bun run serve
+cd ../explorer && bun install --frozen-lockfile && bun run serve
 ```
 
 ---
@@ -170,24 +170,12 @@ age/nr/3fc1ffffffffffff/4UUB32VGUDW
 - `eq` = exact match
 - `g3` = trigram (contains queries)
 
-### Index Backends
+### Index
 
-| Backend              | Description                                            | Best for                  |
-| -------------------- | ------------------------------------------------------ | ------------------------- |
-| `local-fs` (default) | mmap'd sorted file + WAL. Binary search, zero JS heap. | Embedded, single-process  |
-| `s3-client`          | Native S3 client. Each key is a zero-byte S3 object.   | Distributed, multi-writer |
-
-```ts
-// S3-backed indexes (documents stay on local filesystem)
-const fylo = new Fylo('/mnt/fylo', {
-    index: {
-        backend: 's3-client',
-        s3: { region: 'us-east-1' }
-    }
-})
-```
-
-Collection names map directly to S3 bucket names. Credentials resolve from `AWS_*` env vars, `FYLO_S3_*` aliases, or explicit `index.s3` options.
+The prefix index is always **local**: an mmap'd sorted file + WAL (binary
+search, zero JS heap). Documents are truth; the index is a local accelerator
+that can always be rebuilt from them. S3 is never in the query hot path — it is
+only a [backup target](#syncing--replication).
 
 ---
 
@@ -198,17 +186,24 @@ released as an asset) that reads and writes a browser-local store directly.
 There is no network access and no backend — each browser (and each mobile app
 hosting the engine in a WebView) owns its own database.
 
-```ts
-import { createBrowserClient } from './fylo-web.mjs'
+Add the version-pinned loader to the document head:
 
-const db = createBrowserClient()
-await db.ready()
+```html
+<script src="https://d31ma.github.io/Fylo/version/26.29.04/fylo.js"></script>
+```
+
+```ts
+const db = await Fylo.open()
 
 const id = await db.users.put({ name: 'Ada', role: 'admin' })
 await db.users.put(id).metadata({ source: 'browser', reviewed: false })
 const metadata = await db.users.get(id).metadata()
 const doc = await db.users.latest(id)
 ```
+
+Use `https://d31ma.github.io/Fylo/version/latest/fylo.js` to track the newest
+successful release. Direct ESM consumers can import
+`https://d31ma.github.io/Fylo/version/26.29.04/fylo-web.mjs` instead.
 
 ### Fylo Explorer
 
@@ -219,9 +214,9 @@ pick the root once in the OS dialog, and later visits reopen it automatically
 Chromium-only — Firefox and Safari do not implement real-folder access.
 
 ```bash
-cd website && bun run seed      # optional: demo root at website/db (gitignored)
-cd website && FYLO_EXPLORER_DEDICATED_ORIGIN=1 bun run bundle
-cd website && bun run preview   # local preview of the Explorer source
+cd explorer && bun run seed     # optional: demo root at explorer/db (gitignored)
+cd explorer && bun run serve    # http://localhost:8080
+cd explorer && bun run bundle   # production bundle at explorer/dist/web
 ```
 
 - **Read-only by default.** Reads go straight to the folder; the engine's own
@@ -247,14 +242,12 @@ cd website && bun run preview   # local preview of the Explorer source
 The Explorer rejects oversized work before reading it into memory:
 previews are limited to 32 MiB, imports to 16 MiB and 10,000 records, exports
 to 64 MiB and 10,000 records, and bucket uploads to 64 MiB. Use the CLI for
-larger operations. Explorer is retained as source and for local preview, but
-the shared Amplify marketing build removes its generated route, components,
-and runtime assets by default. Set `FYLO_EXPLORER_DEDICATED_ORIGIN=1` only in a
-build that will be published from a dedicated origin. Tachyon's generated
-component runtime currently uses `eval` for bindings and event dispatch, so a
-dedicated deployment's CSP must retain `unsafe-eval` until Tachyon offers a
-CSP-safe compiler mode. FYLO's own runtime import does not use `eval` or
-`new Function`.
+larger operations. Explorer is a standalone Tachyon app under `explorer/`; it
+builds directly at `/` for its dedicated origin and is not part of the marketing
+website bundle. Tachyon's generated component runtime currently uses `eval` for
+bindings and event dispatch, so the deployment CSP must retain `unsafe-eval`
+until Tachyon offers a CSP-safe compiler mode. FYLO's own runtime import does
+not use `eval` or `new Function`.
 
 For production deployments, serve Explorer from a dedicated origin that hosts
 no unrelated application code. A CSP limits what a compromised page can load,
@@ -277,7 +270,7 @@ should not share its JavaScript execution boundary.
 | `FYLO_LOGGING`        | Enable logging (`"1"`)                          | —              |
 | `FYLO_REDIS_URL`      | FYLO-specific Redis URL for query caching       | —              |
 
-S3 index credentials (resolved in order: explicit options → `AWS_*` → `FYLO_S3_*`):
+S3 backup credentials (resolved in order: explicit options → `AWS_*` → `FYLO_S3_*`):
 
 | Variable                    | AWS equivalent                             |
 | --------------------------- | ------------------------------------------ |
@@ -508,7 +501,9 @@ Developer-defined metadata rides along the same way, as `user.fylo.meta.*`
 xattrs on the document or raw file. `put` has two metadata-focused forms:
 `put(id, documentOrFile).metadata(record)` writes bytes and metadata together,
 and `put(id).metadata(record)` bulk-edits an existing record (`null` removes an
-entry). `get(id).metadata()` reads the whole record:
+entry). `get(id).metadata()` reads the complete canonical record plus custom
+metadata. Every record includes `id`, `mtime`, `updatedAt`, and `createdAt`;
+raw files also include their stored file descriptor:
 
 ```js
 const id = await Fylo.uniqueTTID()
@@ -516,8 +511,12 @@ await db.assets
     .put(id, file, { key: '/pics/beach.jpg' })
     .metadata({ camera: 'A7 IV', rating: 5, starred: true })
 await db.assets.put(id).metadata({ rating: 4, starred: null }) // update + remove
-await db.assets.get(id).metadata() // { camera: 'A7 IV', rating: 4 }
+await db.assets.get(id).metadata()
+// { id, name, key, extension, contentType, contentLength, etag, checksumSHA256,
+//   lastModified, mtime, updatedAt, createdAt, camera: 'A7 IV', rating: 4 }
 ```
+
+Canonical fields take precedence if a custom metadata key uses the same name.
 
 The existing generated-ID form (`put(dataOrFile, options)`) remains available.
 The record must be a plain object. Names are 1-64 characters of letters, digits,
@@ -815,6 +814,148 @@ const fylo = new Fylo('/mnt/fylo', {
 
 Strict WORM mode emits its initial write sync event only; mutation callbacks cannot occur because updates and deletes are rejected.
 
+### Built-in S3 backup
+
+Instead of writing hooks, point `sync.s3` at a bucket and FYLO mirrors the
+**whole root** (documents, buckets, index, catalog, vcs) to S3 as a backup. The
+local filesystem stays the source of truth; S3 is a copy, never queried.
+
+```ts
+const fylo = new Fylo('/mnt/fylo', {
+    sync: {
+        s3: {
+            bucket: 'fylo-backup',
+            prefix: 'prod/fylo', // required safety boundary in a shared bucket
+            region: 'us-east-1',
+            reconcileIntervalMs: 60_000, // minimum 1 second; omit to disable
+            concurrency: 4, // maximum simultaneous S3 requests
+            maxFileBytes: 64 * 1024 * 1024,
+            maxManifestBytes: 1024 * 1024,
+            retry: { attempts: 3, baseDelayMs: 100, maxDelayMs: 5_000 }
+        }
+    }
+})
+
+await fylo.reconcile() // force a full whole-root reconcile on demand (alias: backup())
+console.log(fylo.backupStatus()) // state, attempted runs, and last pass details
+await fylo.close() // cancels pending passes and drains active remote work
+```
+
+Two passes work together: touched files are **mirrored on write** (under the
+same `syncMode`), and `reconcile()` walks the whole root to make S3 match
+exactly — uploading changed files and deleting objects with no local
+counterpart. Credentials resolve from explicit options, then `AWS_*` env vars,
+then `FYLO_S3_*` aliases. `sync.s3` and custom `onWrite`/`onDelete` hooks can be
+used together.
+
+`backupStatus()` returns `undefined` when S3 backup is not configured. Otherwise
+its `runs` count includes both successful and failed reconcile attempts; inspect
+`state`, `lastSuccessAt`, `lastFailureAt`, and `lastError` together.
+
+Only one reconcile pass runs at a time. Requests received during a pass coalesce
+into at most one pending pass, while mirror, delete, and reconcile mutations
+share one ordered lane. Transient throttling, timeout, network, and 5xx failures
+use bounded exponential backoff with jitter; permanent 4xx failures fail
+immediately. Files larger than `maxFileBytes` and remote metadata manifests
+larger than `maxManifestBytes` are rejected before processing. Each pass emits
+`backup.reconcile.started`, `.succeeded`, or `.failed`;
+individual retry attempts emit `backup.retry`. See
+[`ops/s3-backup.md`](ops/s3-backup.md) for inspection and recovery guidance.
+
+`prefix` is required by default because reconciliation deletes stale objects
+inside its scope. Use a dedicated bucket or a unique prefix per FYLO root and
+grant only `s3:ListBucket` for that prefix plus `s3:GetObject`, `s3:PutObject`,
+and `s3:DeleteObject` for `arn:aws:s3:::BUCKET/PREFIX/*`. Bucket-root backup is
+available only as the explicit `allowBucketRoot: true` opt-in and should be used
+only with a dedicated bucket and a least-privilege IAM identity. Built-in S3
+backup fails closed on Windows because Windows ADS metadata cannot currently be
+captured from the same open descriptor as the file bytes.
+
+```json
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": "s3:ListBucket",
+            "Resource": "arn:aws:s3:::BUCKET",
+            "Condition": {
+                "StringLike": { "s3:prefix": ["prod/fylo", "prod/fylo/*"] }
+            }
+        },
+        {
+            "Effect": "Allow",
+            "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+            "Resource": "arn:aws:s3:::BUCKET/prod/fylo/*"
+        }
+    ]
+}
+```
+
+Every data object has a recovery manifest under
+`.fylo-backup/xattrs/<base64url-object-key>.json`. The manifest records the data
+key, byte length, SHA-256 digest, and every filesystem xattr as base64. A
+recovery tool downloads data objects (excluding `.fylo-backup/`), verifies the
+digest, then reapplies the recorded xattr names and bytes. This preserves raw
+file object keys, checksum stamps, and `user.fylo.meta.*` developer metadata;
+metadata-only writes and rekeys refresh the paired manifest immediately.
+
+#### S3 recovery runbook
+
+Recovery always targets a **new, nonexistent directory**. It lists every S3
+page, validates the key and sidecar before accepting bytes, streams with bounded
+memory and concurrency, restores xattrs, and atomically renames a complete
+staging root into place. It never merges into or overwrites an existing root.
+
+1. Stop writers to the affected root. Preserve the failed root separately; do
+   not point recovery at its path.
+2. Give the recovery identity only `s3:ListBucket` on the selected prefix and
+   `s3:GetObject` on `BUCKET/PREFIX/*`.
+3. Verify first. The command exits nonzero on a missing/invalid manifest,
+   unsafe key, empty prefix, size mismatch, checksum mismatch, cancellation, or
+   exhausted S3 retry.
+
+```bash
+bun scripts/s3-restore.mjs verify \
+  --bucket fylo-backup --prefix prod/fylo --region us-east-1
+```
+
+4. Restore to a new sibling path. Progress is emitted as NDJSON on stderr and
+   the final result as JSON on stdout.
+
+```bash
+bun scripts/s3-restore.mjs restore \
+  --bucket fylo-backup --prefix prod/fylo --region us-east-1 \
+  --destination /mnt/fylo-restored --concurrency 4
+```
+
+5. With application writers still stopped, open the restored root and run
+   collection verification. Switch the application mount/service configuration
+   during a maintenance window. Keep the old root and S3 backup until
+   post-recovery validation completes.
+
+The same workflow is available programmatically:
+
+```js
+import { FyloS3Restore } from '@d31ma/fylo'
+
+const recovery = new FyloS3Restore(
+    { bucket: 'fylo-backup', prefix: 'prod/fylo', region: 'us-east-1' },
+    '/mnt/fylo-restored'
+)
+await recovery.verify()
+await recovery.restore({ concurrency: 4, signal: abortController.signal })
+```
+
+Backup and restore are unavailable on Windows: backup cannot capture ADS xattrs
+from the same descriptor as the file bytes, and recovery cannot safely reapply
+the backup xattrs. Both operations fail closed before remote work starts.
+
+An interrupted or failed restore removes its uniquely named staging directory.
+If the process is killed before cleanup runs, remove only a matching
+`<destination>.fylo-restore-*.tmp` directory after confirming no recovery
+process is active; never rename an unverified staging directory into service.
+
 ---
 
 ## Remote Access
@@ -976,7 +1117,7 @@ echo '{"op":"inspectCollection","root":"/mnt/fylo","collection":"posts"}' | fylo
 }
 ```
 
-Supported operations: `executeSQL`, `createCollection`, `dropCollection`, `inspectCollection`, `rebuildCollection`, `getDoc`, `getLatest`, `findDocs`, `findDeletedDocs`, `restoreDoc`, `joinDocs`, `putData`, `batchPutData`, `patchDoc`, `patchDocs`, `delDoc`, `delDocs`, `importBulkData`, `checkout`, `branch`, `commit`, `log`, `status`, `diff`, `restoreCommit`, `merge`, `schemaInspect`, `schemaCurrent`, `schemaHistory`, `schemaDoctor`, `schemaValidate`, `schemaMaterialize`.
+Supported operations: `executeSQL`, `createCollection`, `dropCollection`, `inspectCollection`, `rebuildCollection`, `getDoc`, `getLatest`, `getMeta`, `setMeta`, `findDocs`, `findDeletedDocs`, `restoreDoc`, `joinDocs`, `putData`, `batchPutData`, `patchDoc`, `patchDocs`, `delDoc`, `delDocs`, `importBulkData`, `checkout`, `branch`, `commit`, `log`, `status`, `diff`, `restoreCommit`, `merge`, `schemaInspect`, `schemaCurrent`, `schemaHistory`, `schemaDoctor`, `schemaValidate`, `schemaMaterialize`.
 
 ### Compiled Executable
 
@@ -1031,7 +1172,7 @@ work while the others wait and then observe the recovered tree and ref.
 
 | Limitation                           | Detail                                                                                        |
 | ------------------------------------ | --------------------------------------------------------------------------------------------- |
-| **Filesystem-only engine**           | One engine writes to a local path. Remote replication is your responsibility.                 |
+| **Filesystem-first engine**          | One engine writes to a local path. S3 is a backup mirror, not a query or transaction backend. |
 | **Advisory locking**                 | Lock-files with TTL. Networked filesystems without atomic `link()` are not supported.         |
 | **Indexes are derived**              | External writes to data files won't update indexes. Use `db.<collection>.rebuild()`.          |
 | **Local strict WORM**                | FYLO rejects mutation and applies `0444`; privileged filesystem administrators can bypass it. |

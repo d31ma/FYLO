@@ -16,6 +16,10 @@
  *   | { type: 'file.checksum-mismatch', collection: string, docId: string, expected: string, actual: string }
  *   | { type: 'lock.takeover', lockPath: string, newOwner: string, previousOwner?: string }
  *   | { type: 'sync.failed', collection: string, docId: string, operation: string, path: string, detail: string }
+ *   | { type: 'backup.retry', operation: string, key: string, attempt: number, delayMs: number, detail: string }
+ *   | { type: 'backup.reconcile.started', source: 'manual' | 'scheduled', startedAt: string }
+ *   | { type: 'backup.reconcile.succeeded', source: 'manual' | 'scheduled', startedAt: string, completedAt: string }
+ *   | { type: 'backup.reconcile.failed', source: 'manual' | 'scheduled', startedAt: string, failedAt: string, detail: string }
  * )} FyloEvent
  * @typedef {(event: FyloEvent) => void | Promise<void>} FyloEventHandler
  */

@@ -16,15 +16,6 @@ const NGRAM_SIZE = 3
 const UINT64_MAX = (1n << 64n) - 1n
 const SIGN_MASK = 1n << 63n
 
-/**
- * @typedef {object} S3ClientIndexOptions
- * @property {string=} accessKeyId
- * @property {string=} secretAccessKey
- * @property {string=} sessionToken
- * @property {string=} endpoint
- * @property {string=} region
- */
-
 const LOCAL_FS_FORMAT = 'fylo.local-fs.index.v1'
 const LOCAL_FS_MANIFEST = 'manifest.json'
 const LOCAL_FS_SNAPSHOT = 'keys.snapshot'
@@ -105,38 +96,6 @@ function numericValue(value) {
  */
 function reverseString(value) {
     return Array.from(value).reverse().join('')
-}
-
-/**
- * @param {string[]} names
- * @returns {string | undefined}
- */
-function envValue(names) {
-    for (const name of names) {
-        const value = process.env[name]
-        if (value) return value
-    }
-    return undefined
-}
-
-/**
- * @param {S3ClientIndexOptions} options
- * @returns {S3ClientIndexOptions}
- */
-function resolveS3Options(options) {
-    return {
-        accessKeyId:
-            options.accessKeyId ?? envValue(['AWS_ACCESS_KEY_ID', 'FYLO_S3_ACCESS_KEY_ID']),
-        secretAccessKey:
-            options.secretAccessKey ??
-            envValue(['AWS_SECRET_ACCESS_KEY', 'FYLO_S3_SECRET_ACCESS_KEY']),
-        sessionToken:
-            options.sessionToken ?? envValue(['AWS_SESSION_TOKEN', 'FYLO_S3_SESSION_TOKEN']),
-        endpoint:
-            options.endpoint ??
-            envValue(['AWS_ENDPOINT_URL_S3', 'AWS_ENDPOINT_URL', 'FYLO_S3_ENDPOINT']),
-        region: options.region ?? envValue(['AWS_REGION', 'AWS_DEFAULT_REGION', 'FYLO_S3_REGION'])
-    }
 }
 
 /**
@@ -729,119 +688,6 @@ export class LocalFsPrefixIndexStore {
             collection,
             keys.map((key) => ({ op: '-', key }))
         )
-    }
-
-    /** @param {string} collection @returns {Promise<number>} */
-    async countDocuments(collection) {
-        const keys = await this.listKeys(collection)
-        // Index rows can contain non-document keys; only valid document ids count.
-        const candidates = keys.map((key) => decodeSegment(key.split('/').at(-1) ?? ''))
-        return new Set(await filterTTIDs(candidates)).size
-    }
-
-    /**
-     * @param {string} collection
-     * @param {string} fieldPath
-     * @param {Operand} operand
-     * @returns {Promise<Set<TTID> | null>}
-     */
-    async candidateDocIds(collection, fieldPath, operand) {
-        const prefixSpecs = await PrefixIndexCodec.queryPrefixes(collection, fieldPath, operand)
-        if (prefixSpecs === null) return null
-        /** @type {Set<TTID> | null} */
-        let candidates = null
-        for (const spec of prefixSpecs) {
-            const prefix = PrefixIndexCodec.prefix(fieldPath, spec.kind, spec.valuePrefix)
-            const keys = await this.listKeys(collection, prefix)
-            const next = new Set()
-            for (const key of keys) {
-                if (spec.range) {
-                    const value = PrefixIndexCodec.rangeValueFromKey(key)
-                    const inclusive = spec.range.op === '$gte' || spec.range.op === '$lte'
-                    if (inclusive ? value < spec.range.value : value <= spec.range.value) {
-                        continue
-                    }
-                }
-                next.add(docIdFromKey(prefix, key))
-            }
-            candidates = intersect(candidates, next)
-        }
-        return candidates
-    }
-}
-
-/**
- * Bun S3-backed prefix index store. Each FYLO collection maps directly to an
- * S3 bucket and index entries are represented by object keys.
- */
-export class BunS3ClientIndexStore {
-    /** @type {S3ClientIndexOptions} */
-    options
-    /**
-     * @param {S3ClientIndexOptions} [options]
-     */
-    constructor(options = {}) {
-        this.options = resolveS3Options(options)
-    }
-
-    /** @param {string} collection @returns {Bun.S3Client} */
-    client(collection) {
-        return new Bun.S3Client({
-            ...this.options,
-            bucket: collection
-        })
-    }
-
-    /** @param {string} _collection @returns {Promise<void>} */
-    async ensureCollection(_collection) {}
-
-    /** @param {string} collection @returns {Promise<void>} */
-    async resetCollection(collection) {
-        const client = this.client(collection)
-        let startAfter
-        do {
-            const page = await client.list({ prefix: '', startAfter })
-            const keys = page.contents?.map((item) => item.key).filter(Boolean) ?? []
-            await Promise.all(keys.map((key) => client.delete(key)))
-            startAfter = page.isTruncated ? keys.at(-1) : undefined
-        } while (startAfter)
-    }
-
-    /** @param {string} collection @param {string} key @returns {Promise<void>} */
-    async putKey(collection, key) {
-        await this.client(collection).write(key, '')
-    }
-
-    /** @param {string} collection @param {string} key @returns {Promise<void>} */
-    async deleteKey(collection, key) {
-        await this.client(collection).delete(key)
-    }
-
-    /** @param {string} collection @param {string} prefix @returns {Promise<string[]>} */
-    async listKeys(collection, prefix = '') {
-        const client = this.client(collection)
-        /** @type {string[]} */
-        const keys = []
-        let startAfter
-        do {
-            const page = await client.list({ prefix, startAfter })
-            const pageKeys = page.contents?.map((item) => item.key).filter(Boolean) ?? []
-            keys.push(...pageKeys)
-            startAfter = page.isTruncated ? pageKeys.at(-1) : undefined
-        } while (startAfter)
-        return keys
-    }
-
-    /** @param {string} collection @param {TTID} docId @param {Record<string, any>} doc @returns {Promise<void>} */
-    async putDocument(collection, docId, doc) {
-        const keys = await PrefixIndexCodec.entriesForDocument(collection, docId, doc)
-        await Promise.all(keys.map((key) => this.putKey(collection, key)))
-    }
-
-    /** @param {string} collection @param {TTID} docId @param {Record<string, any>} doc @returns {Promise<void>} */
-    async removeDocument(collection, docId, doc) {
-        const keys = await PrefixIndexCodec.entriesForDocument(collection, docId, doc)
-        await Promise.all(keys.map((key) => this.deleteKey(collection, key)))
     }
 
     /** @param {string} collection @returns {Promise<number>} */

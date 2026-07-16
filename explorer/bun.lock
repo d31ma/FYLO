@@ -1,0 +1,15 @@
+{
+  "lockfileVersion": 1,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "fylo-explorer",
+      "devDependencies": {
+        "@d31ma/tachyon": "github:d31ma/Tachyon#ef61b352b567b7b164fa74b6bc70e55858bb7421",
+      },
+    },
+  },
+  "packages": {
+    "@d31ma/tachyon": ["@d31ma/tachyon@github:d31ma/Tachyon#ef61b35", {}, "d31ma-Tachyon-ef61b35", "sha512-mJatqXrgGETAN6zvZLgHAOXa4mXA4FfJjEV/Q45GXYib0vMyHMnDoVXr2+Sj+ejPLN0q09hHf0ZUYoZ2qPzJpQ=="],
+  }
+}

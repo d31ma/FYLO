@@ -1,6 +1,6 @@
 # Changelog
 
-## 26.29.03 - 2026-07-15
+## 26.29.04 - 2026-07-16
 
 ### Breaking Changes
 
@@ -15,9 +15,15 @@
 - Raw-file buckets under `.buckets`, including rekeying, folder browsing,
   checksum verification, CLI `verify`, and migration from legacy file
   collections.
-- Browser File System Access support and Fylo Explorer source. Shared website
-  builds exclude Explorer; dedicated-origin builds opt in with
-  `FYLO_EXPLORER_DEDICATED_ORIGIN=1`.
+- Browser File System Access support and a standalone Fylo Explorer application
+  that builds from `explorer/` for its dedicated `fx.del.ma` origin.
+- Immutable, version-pinned browser loader and engine assets on GitHub Pages,
+  with a checked `latest` alias and SHA-256 manifests.
+- Built-in whole-root S3 backup with prefix-scoped reconciliation,
+  mirror-on-write, bounded retries and concurrency, status/events, and a
+  checksum- and xattr-verifying restore workflow.
+- Checksum-addressed Amplify artifacts, production smoke probes, and
+  checksum-verified rollback for the marketing and Explorer applications.
 - Cross-platform metadata persistence: native xattrs on macOS/Linux, a locked
   and recoverable NTFS ADS manifest on Windows, and an OPFS sidecar in browsers.
 - Durable VCS materialization transactions with object-hash verification,
@@ -40,6 +46,8 @@
   roll back or recover atomically across injected failures and process crashes.
 - Release assets are built and verified before draft publication makes the tag
   visible; failed drafts are cleaned up without moving an existing tag.
+- macOS/Linux and Windows installers now fail closed unless the downloaded
+  executable has exactly one valid matching SHA-256 entry.
 - Client interop now covers metadata round trips/removal and mobile lifecycle
   failures without regenerating tracked Python bytecode.
 
@@ -310,19 +318,19 @@ static members of the `Fylo` class. They are now named exports of
 The source tree has been reorganised from a flat-ish layout to a
 domain-driven structure. If you imported from internal paths, update:
 
-| Old path | New path |
-|---|---|
-| `src/adapters/cipher.js` | `src/security/cipher.js` |
-| `src/sync.js` (events) | `src/observability/events.js` |
-| `src/sync.js` (sync/worm) | `src/replication/sync.js` |
-| `src/engines/filesystem.js` | `src/storage/engine.js` |
-| `src/engines/filesystem/durable.js` | `src/storage/durable.js` |
-| `src/engines/filesystem/fs-lock.js` | `src/storage/fs-lock.js` |
-| `src/engines/filesystem/storage.js` | `src/storage/primitives.js` |
-| `src/engines/filesystem/types.js` | `src/storage/types.js` |
-| `src/engines/types.js` | `src/storage/types.js` |
-| `src/core/format.js` | `src/cli/format.js` |
-| `src/core/directory.js` | `src/storage/index-keys.js` |
+| Old path                            | New path                      |
+| ----------------------------------- | ----------------------------- |
+| `src/adapters/cipher.js`            | `src/security/cipher.js`      |
+| `src/sync.js` (events)              | `src/observability/events.js` |
+| `src/sync.js` (sync/worm)           | `src/replication/sync.js`     |
+| `src/engines/filesystem.js`         | `src/storage/engine.js`       |
+| `src/engines/filesystem/durable.js` | `src/storage/durable.js`      |
+| `src/engines/filesystem/fs-lock.js` | `src/storage/fs-lock.js`      |
+| `src/engines/filesystem/storage.js` | `src/storage/primitives.js`   |
+| `src/engines/filesystem/types.js`   | `src/storage/types.js`        |
+| `src/engines/types.js`              | `src/storage/types.js`        |
+| `src/core/format.js`                | `src/cli/format.js`           |
+| `src/core/directory.js`             | `src/storage/index-keys.js`   |
 
 ### Security
 
@@ -377,13 +385,13 @@ domain-driven structure. If you imported from internal paths, update:
 
 - **`onEvent` hook on the `Fylo` constructor.** Receives a discriminated
   union of structured events:
-  - `import.blocked` — `{ reason, url, detail? }`
-  - `cipher.configured` — `{ collection }`
-  - `index.rebuilt` — `{ collection, docsScanned, indexedDocs, worm }`
-  - `lock.takeover` — `{ lockPath, newOwner, previousOwner? }`
+    - `import.blocked` — `{ reason, url, detail? }`
+    - `cipher.configured` — `{ collection }`
+    - `index.rebuilt` — `{ collection, docsScanned, indexedDocs, worm }`
+    - `lock.takeover` — `{ lockPath, newOwner, previousOwner? }`
 
-  Throwing handlers are caught and logged to `console.error`; they do
-  not break the underlying operation.
+    Throwing handlers are caught and logged to `console.error`; they do
+    not break the underlying operation.
 
 ## 2.3.0
 
