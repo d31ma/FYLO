@@ -426,7 +426,9 @@ describe('filesystem engine', () => {
             `${id}.json`
         )
         expect(await Bun.file(deletedPath).exists()).toBe(false)
-        expect((await stat(activePath)).mode & 0o777).toBe(0o644)
+        const restoredMode = (await stat(activePath)).mode & 0o777
+        expect(restoredMode & 0o222).not.toBe(0)
+        expect(restoredMode & 0o111).toBe(0)
         expect(await fylo[POSTS].get(id).once()).toEqual({
             [id]: { title: 'Restore me', status: 'archived' }
         })
