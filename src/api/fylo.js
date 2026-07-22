@@ -1083,13 +1083,15 @@ export default class Fylo {
      * @returns {Promise<TTIDValue>}
      */
     async executePutFileSourceDirect(collection, source) {
-        const id = await Fylo.uniqueTTID(undefined)
-        await this.engine.putFile(collection, id, source)
+        let id = await Fylo.uniqueTTID(undefined)
+        while (!(await this.engine.putFile(collection, id, source, true))) {
+            id = await Fylo.uniqueTTID(undefined)
+        }
         await this.autoCommit({ operation: 'put', collection, docId: id })
         return id
     }
-    /** @param {string} collection @param {TTIDValue} _id @param {Record<string, any>} doc @param {TTIDValue | undefined} previousId @param {Record<string, any>=} meta @param {{ uid: number, mode?: number }=} access @returns {Promise<TTIDValue>} */
-    async executePutDataDirect(collection, _id, doc, previousId, meta, access) {
+    /** @param {string} collection @param {TTIDValue} _id @param {Record<string, any>} doc @param {TTIDValue | undefined} previousId @param {Record<string, any>=} meta @param {{ uid: number, mode?: number }=} access @param {boolean=} generated @returns {Promise<TTIDValue>} */
+    async executePutDataDirect(collection, _id, doc, previousId, meta, access, generated = false) {
         await this.ready()
         if (previousId)
             await this.engine.replaceDocumentVersion(
@@ -1101,7 +1103,11 @@ export default class Fylo {
                 meta,
                 access
             )
-        else await this.engine.putDocument(collection, _id, doc, meta, access)
+        else if (generated) {
+            while (!(await this.engine.putDocument(collection, _id, doc, meta, access, true))) {
+                _id = await Fylo.uniqueTTID(undefined)
+            }
+        } else await this.engine.putDocument(collection, _id, doc, meta, access)
         await this.autoCommit({
             operation: previousId ? 'patch' : 'put',
             collection,
@@ -1410,7 +1416,8 @@ export class CollectionFacade {
                                 doc,
                                 previousId,
                                 putOptions.meta,
-                                access
+                                access,
+                                previousId === undefined
                             )
                         },
                         async (writtenId, metadata, actorUid) =>

@@ -1190,21 +1190,23 @@ export class FilesystemEngine {
             indexedDocs
         }
     }
-    /** @param {string} collection @param {TTID} docId @param {Record<string, any>} doc @param {Record<string, any>=} meta @param {{ uid: number, mode?: number }=} access @returns {Promise<void>} */
-    async putDocument(collection, docId, doc, meta, access) {
+    /** @param {string} collection @param {TTID} docId @param {Record<string, any>} doc @param {Record<string, any>=} meta @param {{ uid: number, mode?: number }=} access @param {boolean=} createOnly @returns {Promise<boolean>} */
+    async putDocument(collection, docId, doc, meta, access, createOnly = false) {
         const metaUpdates = meta === undefined ? undefined : metaMutations(meta)
         await validateDocId(docId)
         await this.requireCollection(collection)
         await this.requireCollectionKind(collection, 'document')
         await this.assertNoLegacyWormArtifacts(collection)
-        await this.withCollectionWriteLock(collection, async () => {
+        return await this.withCollectionWriteLock(collection, async () => {
             const owner = Bun.randomUUIDv7()
             if (!(await this.locks.acquire(collection, docId, owner)))
                 throw new Error(`Unable to acquire filesystem lock for ${docId}`)
             const targetPath = this.docPath(collection, docId)
             try {
                 const existing = await this.documents.readStoredDoc(collection, docId)
-                if (await this.documents.readDeletedDoc(collection, docId)) {
+                const deleted = await this.documents.readDeletedDoc(collection, docId)
+                if (createOnly && (existing || deleted)) return false
+                if (deleted) {
                     throw new Error(`Document is soft-deleted; restore it before writing: ${docId}`)
                 }
                 if (existing && this.wormEnabled())
@@ -1260,6 +1262,7 @@ export class FilesystemEngine {
                     })
                 })
                 await this.invalidateQueryCache(collection)
+                return true
             } finally {
                 await this.locks.release(collection, docId, owner)
             }
@@ -1269,14 +1272,15 @@ export class FilesystemEngine {
      * @param {string} collection
      * @param {TTID} docId
      * @param {RawFileSource} source
-     * @returns {Promise<void>}
+     * @param {boolean=} createOnly
+     * @returns {Promise<boolean>}
      */
-    async putFile(collection, docId, source) {
+    async putFile(collection, docId, source, createOnly = false) {
         await validateDocId(docId)
         await this.requireCollection(collection)
         await this.requireCollectionKind(collection, 'file')
         await this.assertNoLegacyWormArtifacts(collection)
-        await this.withCollectionWriteLock(collection, async () => {
+        return await this.withCollectionWriteLock(collection, async () => {
             const owner = Bun.randomUUIDv7()
             if (!(await this.locks.acquire(collection, docId, owner))) {
                 throw new Error(`Unable to acquire filesystem lock for ${docId}`)
@@ -1286,10 +1290,13 @@ export class FilesystemEngine {
                     this.files.readStoredFile(collection, docId),
                     this.files.readDeletedFile(collection, docId)
                 ])
+                if (createOnly && (existing || deleted)) return false
                 if (deleted) {
                     throw new Error(`Document is soft-deleted; restore it before writing: ${docId}`)
                 }
-                if (existing) throw new Error(`Raw file already exists: ${docId}`)
+                if (existing) {
+                    throw new Error(`Raw file already exists: ${docId}`)
+                }
                 const { key, extension } = this.files.resolveMetadata(docId, source)
                 await this.assertObjectKeyAvailable(collection, key)
                 await this.transactions.capture(
@@ -1346,6 +1353,7 @@ export class FilesystemEngine {
                     })
                 })
                 await this.invalidateQueryCache(collection)
+                return true
             } finally {
                 await this.locks.release(collection, docId, owner)
             }
