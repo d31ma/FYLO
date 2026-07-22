@@ -207,7 +207,7 @@ hosting the engine in a WebView) owns its own database.
 Add the version-pinned loader to the document head:
 
 ```html
-<script src="https://d31ma.github.io/FYLO/version/26.29.04/fylo.js"></script>
+<script src="https://d31ma.github.io/FYLO/version/26.30.03/fylo.js"></script>
 ```
 
 ```ts
@@ -221,7 +221,7 @@ const doc = await db.users.latest(id)
 
 Use `https://d31ma.github.io/FYLO/version/latest/fylo.js` to track the newest
 successful release. Direct ESM consumers can import
-`https://d31ma.github.io/FYLO/version/26.29.04/fylo-web.mjs` instead.
+`https://d31ma.github.io/FYLO/version/26.30.03/fylo-web.mjs` instead.
 
 The browser index scanner also has an opt-in Wasm prototype. It keeps the
 existing OPFS snapshot + WAL format: Wasm scans the immutable snapshot inside

@@ -1,5 +1,30 @@
 # Changelog
 
+## 26.30.03 - 2026-07-22
+
+### Added
+
+- POSTIX per-document POSIX access controls for macOS/Linux native clients,
+  with UID-aware SQL access across the binary-backed language shims.
+- Native Windows crash recovery and secure NTFS path handling validated on
+  Windows Server 2022 and 2025.
+
+### Changed
+
+- Metadata now uses the fluent `put(...).metadata(...)` and
+  `get(...).metadata()` API, with matching client-shim operations.
+- Release inputs and GitHub Actions are immutably pinned, and the published
+  Windows executable is the exact binary tested on Windows.
+
+### Fixed
+
+- Generated TTID collisions across concurrent processes no longer overwrite a
+  first write; generated inserts retry atomically under the collection lock.
+- Transaction-state replacement on Windows retains the validated file handle
+  through the atomic rename, avoiding transient close/reopen failures.
+- Fylo and Explorer navigation, standalone-domain routing, CSS, components,
+  workers, and Wasm assets are preserved in their Amplify artifacts.
+
 ## 26.29.04 - 2026-07-16
 
 ### Breaking Changes
