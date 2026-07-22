@@ -92,13 +92,13 @@ release role does not need them.
 ## GitHub Pages verification
 
 The Pages workflow runs only after a successful Release workflow whose `v<version>` tag identifies
-the same commit. It publishes immutable paths such as `version/26.29.04/` and a mutable
+the same commit. It publishes immutable paths such as `version/26.30.03/` and a mutable
 `version/latest/`. Its post-deploy step downloads the loader, engine, shared and dedicated workers,
 Wasm module, and `SHA256SUMS`, then verifies every file by checksum and compares `latest`
 byte-for-byte with the immutable version:
 
 ```sh
-bun scripts/pages-smoke.mjs 26.29.04
+bun scripts/pages-smoke.mjs 26.30.03
 ```
 
 Use the pinned URL in documentation and production integrations. `latest` is a convenience URL,
