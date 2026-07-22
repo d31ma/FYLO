@@ -743,9 +743,11 @@ must also have permission to call `chown`; otherwise the put fails atomically.
 Denied direct operations throw `FyloPermissionError` with `code === 'EACCES'`,
 while queries and SQL omit unreadable records.
 
-This API is native-POSIX only. The browser shim and Explorer cannot call
-`chown`/`chmod`, so they do not expose `.as()` as an equivalent security
-boundary; browser access must remain behind an authenticated native gateway.
+This API is available only through the native POSIX desktop/server API and
+binary-backed shims. Browser, Explorer, and WebView-based mobile clients
+(Swift/Kotlin/Flutter) cannot call `chown`/`chmod`, so they do not expose
+`.as()` as an equivalent security boundary; those clients must remain behind
+an authenticated native POSIX gateway when POSTIX enforcement is required.
 
 Canonical metadata includes `uid` and `mode` for protected records:
 

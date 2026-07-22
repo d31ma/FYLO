@@ -175,9 +175,10 @@ against the local on-device store.
 
 ### SQL UID and mode
 
-Thin shims can send an authenticated POSIX UID with SQL execution. `mode` is
-accepted only for `INSERT`; omit it from `SELECT`, `UPDATE`, and `DELETE`.
-UID-only inserts default to `0o600`.
+Thin shims can send an application-authenticated POSIX UID claim with SQL
+execution. Fylo does not authenticate the claim. `mode` is accepted only for
+`INSERT`; omit it from `SELECT`, `UPDATE`, and `DELETE`. UID-only inserts
+default to `0o600`.
 
 | Language | Protected SQL call                                                                   |
 | -------- | ------------------------------------------------------------------------------------ |
