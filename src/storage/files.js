@@ -512,6 +512,7 @@ export class FilesystemFiles {
         await this.storage.move(source, target)
         await this.storage.setModifiedTime(target, deletedAt)
         await this.restampChecksum(target)
+        await this.storage.syncFile(target)
         await this.storage.chmod(target, 0o444)
         return target
     }
@@ -542,6 +543,7 @@ export class FilesystemFiles {
     async makeStoredFileReadOnly(collection, docId) {
         const target = await this.findPath(this.docsRoot(collection), docId)
         if (!target) throw new Error(`Raw file not found: ${docId}`)
+        await this.storage.syncFile(target)
         await this.storage.chmod(target, 0o444)
     }
 

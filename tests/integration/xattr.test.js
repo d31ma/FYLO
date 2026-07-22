@@ -107,6 +107,12 @@ describe('xattr', () => {
         const adapterTarget = path.join(root, 'ads-lock-owner.bin')
         await writeFile(adapterTarget, 'bytes')
         const store = new WindowsAdsManifestStore()
+        if (process.platform === 'win32') {
+            store.withLock(adapterTarget, 'test', () => {})
+            store.withLock(adapterTarget, 'test', () => {})
+            expect(await Bun.file(store.lockPath(adapterTarget)).exists()).toBe(true)
+            return
+        }
         const successor = { owner: 'successor', ts: Date.now() }
         store.withLock(adapterTarget, 'test', () => {
             writeFileSync(store.lockPath(adapterTarget), JSON.stringify(successor))

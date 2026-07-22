@@ -94,6 +94,13 @@ async function syncFileIfPresent(target) {
             await handle.close()
         }
     } catch (error) {
+        if (process.platform === 'win32' && hasCode(error, 'EPERM')) {
+            const metadata = await stat(target)
+            // WORM and soft-delete paths flush immediately before applying the
+            // read-only attribute. Windows cannot reopen them for a redundant
+            // commit-time FlushFileBuffers call.
+            if ((metadata.mode & 0o222) === 0) return
+        }
         if (!hasCode(error, 'ENOENT')) throw error
     }
 }

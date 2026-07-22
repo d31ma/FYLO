@@ -2,6 +2,7 @@ import { dlopen, FFIType, ptr, read } from 'bun:ffi'
 import os from 'node:os'
 import {
     closeSync,
+    fsyncSync,
     lstatSync,
     openSync,
     readFileSync,
@@ -221,6 +222,16 @@ function windowsStream(target) {
     return `${target}:fylo.xattrs`
 }
 
+/** @param {string} target */
+function flushWindowsStream(target) {
+    const descriptor = openSync(target, 'r+')
+    try {
+        fsyncSync(descriptor)
+    } finally {
+        closeSync(descriptor)
+    }
+}
+
 /** @param {string} target @param {string} [call] @returns {void} */
 function assertXattrTarget(target, call = 'xattr') {
     let metadata
@@ -382,6 +393,7 @@ export class WindowsAdsManifestStore {
             // between two named streams on the same base file. The validated
             // recovery payload is already in memory, so promote it directly.
             writeFileSync(windowsStream(target), recoveryPayload)
+            flushWindowsStream(windowsStream(target))
             try {
                 unlinkSync(recovery)
             } catch (error) {
@@ -417,7 +429,9 @@ export class WindowsAdsManifestStore {
             const recovery = this.recoveryPath(target)
             const payload = JSON.stringify(attributes)
             writeFileSync(recovery, payload)
+            flushWindowsStream(recovery)
             writeFileSync(windowsStream(target), payload)
+            flushWindowsStream(windowsStream(target))
             try {
                 unlinkSync(recovery)
             } catch (error) {

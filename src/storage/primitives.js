@@ -114,6 +114,15 @@ export class FilesystemStorage {
     async chmod(target, mode) {
         await chmod(target, mode)
     }
+    /** @param {string} target @returns {Promise<void>} */
+    async syncFile(target) {
+        const handle = await open(target, process.platform === 'win32' ? 'r+' : 'r')
+        try {
+            await handle.sync()
+        } finally {
+            await handle.close()
+        }
+    }
     /**
      * @param {string} target
      * @param {number} mtimeMs

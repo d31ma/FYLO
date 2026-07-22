@@ -211,6 +211,7 @@ export class FilesystemDocuments {
         })
         await this.storage.move(source, target)
         await this.storage.setModifiedTime(target, deletedAt)
+        await this.storage.syncFile(target)
         await this.storage.chmod(target, 0o444)
         return target
     }
@@ -249,6 +250,7 @@ export class FilesystemDocuments {
         const target = this.docPath(collection, docId)
         assertPathInside(this.docsRoot(collection), target)
         await assertSafeStoragePath(this.storageRoot, target, { finalType: 'file' })
+        await this.storage.syncFile(target)
         await this.storage.chmod(target, 0o444)
     }
     /**
