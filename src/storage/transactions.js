@@ -627,7 +627,17 @@ export class CollectionTransactionJournal {
 
     /** @param {string} collection @param {any} state */
     async writeState(collection, state) {
-        await writeDurable(this.statePath(collection), `${JSON.stringify(state)}\n`)
+        const root = this.root(collection)
+        await mkdir(root, { recursive: true })
+        const rootFd = openDirectoryNoFollow(root)
+        try {
+            // This record is replaced for every transaction phase. Use the
+            // rooted native rename path so Windows can replace it atomically
+            // even when another process has just finished reading it.
+            writeDurableAtRoot(rootFd, 'state.json', `${JSON.stringify(state)}\n`)
+        } finally {
+            closeSecureDescriptor(rootFd)
+        }
     }
 
     /** @param {any} transaction */
