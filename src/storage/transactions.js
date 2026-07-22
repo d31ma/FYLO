@@ -85,7 +85,9 @@ async function syncDirectory(directory) {
 /** @param {string} target */
 async function syncFileIfPresent(target) {
     try {
-        const handle = await open(target, 'r')
+        // Windows requires a write-capable handle for FlushFileBuffers even
+        // when the caller only wants to persist bytes written earlier.
+        const handle = await open(target, process.platform === 'win32' ? 'r+' : 'r')
         try {
             await handle.sync()
         } finally {
@@ -326,7 +328,7 @@ async function linkOrCopyDurable(source, target) {
             throw error
         }
         await copyFile(source, target)
-        const handle = await open(target, 'r')
+        const handle = await open(target, process.platform === 'win32' ? 'r+' : 'r')
         try {
             await handle.sync()
         } finally {
@@ -346,7 +348,7 @@ async function linkOrCopyDurable(source, target) {
 async function copyDurable(source, target) {
     await mkdir(path.dirname(target), { recursive: true })
     await copyFile(source, target)
-    const handle = await open(target, 'r')
+    const handle = await open(target, process.platform === 'win32' ? 'r+' : 'r')
     try {
         await handle.sync()
     } finally {
@@ -923,10 +925,12 @@ export class CollectionTransactionJournal {
             const scratch = `${target}.${Bun.randomUUIDv7()}.tmp`
             await copyDurable(backup, scratch)
             await rename(scratch, target)
-            await chmod(target, capture.mode & 0o777)
             await utimes(target, new Date(capture.mtimeMs), new Date(capture.mtimeMs))
             restoreXattrs(target, capture.xattrs ?? [])
             await syncFileIfPresent(target)
+            // Apply readonly/mode only after metadata and file flushing; a
+            // readonly Windows file cannot be reopened for either operation.
+            await chmod(target, capture.mode & 0o777)
             await syncDirectory(path.dirname(target))
         }
     }
@@ -1041,7 +1045,7 @@ export class CollectionTransactionJournal {
         const target = this.eventPath(transaction.collection)
         if (!(await exists(target))) return
         await truncate(target, transaction.eventOffset)
-        const handle = await open(target, 'r')
+        const handle = await open(target, process.platform === 'win32' ? 'r+' : 'r')
         try {
             await handle.sync()
         } finally {
