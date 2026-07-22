@@ -128,6 +128,24 @@ values:
   locks/                   ← advisory file locks
 ```
 
+FYLO keeps the logical transaction journal outside collection trees so it is
+not mistaken for a document, indexed, versioned, or mirrored to S3:
+
+```text
+<root>/.fylo-transactions/<namespace>/<collection>/
+  state.json               ← stable/writing generation marker
+  <transaction-id>/
+    transaction.json       ← operation, commit phase, before-image manifest
+    before/                 ← linked/copied files needed for rollback
+```
+
+Every transactional collection mutation publishes an odd `writing` generation
+before changing records and the next even `stable` generation after commit.
+Readers materialize against one stable generation and retry if it changes. On
+startup or first access, an active transaction is rolled back; a transaction
+with a durable committed marker is rolled forward. Index files remain derived
+and are rebuilt when recovery needs them.
+
 A collection's kind is recorded once in its catalog descriptor
 (`.fylo-catalog/collections/<name>.json`); names are unique across both
 namespaces, so `db.<name>` is unambiguous.
@@ -204,6 +222,41 @@ const doc = await db.users.latest(id)
 Use `https://d31ma.github.io/FYLO/version/latest/fylo.js` to track the newest
 successful release. Direct ESM consumers can import
 `https://d31ma.github.io/FYLO/version/26.29.04/fylo-web.mjs` instead.
+
+The browser index scanner also has an opt-in Wasm prototype. It keeps the
+existing OPFS snapshot + WAL format: Wasm scans the immutable snapshot inside
+the worker, while JavaScript applies live WAL additions/removals and falls back
+automatically if the module cannot load. Build all adjacent browser assets with:
+
+```bash
+bun run build:web:wasm
+```
+
+```ts
+const db = createBrowserClient({ storage: 'opfs', worker: true, wasm: true })
+await db.ready()
+```
+
+Chromium can instead mount a user-selected FYLO root directly:
+
+```ts
+const handle = await showDirectoryPicker({ mode: 'readwrite' })
+const db = createBrowserClient({
+    storage: { type: 'fsa', handle, access: 'readwrite' },
+    worker: true,
+    wasm: true
+})
+await db.ready()
+```
+
+Set `access: 'overlay'` for read-only exploration. Reads fall through to the
+selected directory while generated indexes, journals, and other writes remain
+in memory.
+
+Pass `wasm: { url: 'https://example.test/fylo-index.wasm' }` to override the
+adjacent module URL. `collection.inspect()` reports `indexAcceleration` as
+`active`, `fallback`, or `off`; the feature remains opt-in while the integration
+prototype is benchmarked on representative stores.
 
 ### Fylo Explorer
 
@@ -625,6 +678,82 @@ const id = await sql`INSERT INTO posts (title, published) VALUES (${'Hello'}, ${
 const posts = await sql`SELECT * FROM posts WHERE published = ${true}`
 ```
 
+`UPDATE` and `DELETE` statements are atomic within their collection: either
+every matched document, its xattrs, index entries, and local event records
+commit, or the statement restores all before-images. External sync hooks and
+queue publication run only after the local commit is durable.
+
+Use `EXPLAIN` to inspect the selected access path without executing the
+statement, or `EXPLAIN ANALYZE` to execute it and include elapsed time and the
+result:
+
+```ts
+const plan = await db._sql("EXPLAIN SELECT * FROM posts WHERE title = 'Hello'")
+// { operation: 'SELECT', collection: 'posts', access: [...], executed: false }
+
+const prepared = db.prepare('SELECT * FROM posts WHERE published = true')
+prepared.explain() // synchronous plan description
+const first = await prepared.execute()
+const second = await prepared.execute() // reuses the parsed plan
+```
+
+The CLI accepts the same syntax:
+
+```bash
+fylo sql "EXPLAIN SELECT * FROM posts WHERE published = true" --root /mnt/fylo
+```
+
+### Per-record UID and mode
+
+Fylo can bind a document or raw file to a developer-supplied POSIX UID when it
+is written. `mode` is accepted only by `put`; omitting it uses `0o600`.
+
+```js
+const id = await db.documents.put({ title: 'private' }).as({ uid: 1001, mode: 0o600 })
+
+await db.documents.get(id).as({ uid: 1001 })
+await db.documents.patch(id, { title: 'updated' }).as({ uid: 1001 })
+await db.documents.delete(id).as({ uid: 1001 })
+```
+
+SQL uses the same execution context without embedding credentials in the SQL
+text:
+
+```js
+const sqlId = await db.sql`
+    INSERT INTO documents (title) VALUES (${'private'})
+`.as({ uid: 1001, mode: 0o600 })
+
+await db.sql`UPDATE documents SET title = ${'updated'} WHERE title = ${'private'}`.as({
+    uid: 1001
+})
+```
+
+Fylo applies `chown` and `chmod` to the record and stores a portable access
+descriptor in `user.fylo.access`. Owner bits apply when the supplied UID
+matches; other bits apply to a different UID or an operation without `.as()`.
+Group bits are currently reserved and are not evaluated. A record written
+without `.as()` has no access descriptor and remains open to reads and writes.
+
+The UID is an authorization claim supplied by your application—Fylo does not
+authenticate it. Validate the caller before passing a UID. The Fylo process
+must also have permission to call `chown`; otherwise the put fails atomically.
+Denied direct operations throw `FyloPermissionError` with `code === 'EACCES'`,
+while queries and SQL omit unreadable records.
+
+This API is native-POSIX only. The browser shim and Explorer cannot call
+`chown`/`chmod`, so they do not expose `.as()` as an equivalent security
+boundary; browser access must remain behind an authenticated native gateway.
+
+Canonical metadata includes `uid` and `mode` for protected records:
+
+```js
+const { uid, mode, createdAt, updatedAt, mtime } = await db.documents
+    .get(id)
+    .as({ uid: 1001 })
+    .metadata()
+```
+
 ### Query Strategy
 
 | Operator                     | Index used                        | Fallback                 |
@@ -651,7 +780,6 @@ Schemas live under `FYLO_SCHEMA` in a per-collection layout:
       v2.schema.json       ← head is whichever manifest.current points at
     upgraders/
       v1-to-v2.js          ← export default async (doc) => upgradedDoc
-    rules.json             ← optional RLS rules
 ```
 
 `manifest.json`:
@@ -841,12 +969,14 @@ console.log(fylo.backupStatus()) // state, attempted runs, and last pass details
 await fylo.close() // cancels pending passes and drains active remote work
 ```
 
-Two passes work together: touched files are **mirrored on write** (under the
-same `syncMode`), and `reconcile()` walks the whole root to make S3 match
+Two passes work together: touched files are **mirrored after local commit**
+(under the same `syncMode`), and `reconcile()` walks the whole root to make S3 match
 exactly — uploading changed files and deleting objects with no local
 counterpart. Credentials resolve from explicit options, then `AWS_*` env vars,
 then `FYLO_S3_*` aliases. `sync.s3` and custom `onWrite`/`onDelete` hooks can be
-used together.
+used together. The local `.fylo-transactions/` recovery journal is intentionally
+excluded from backup; only committed data and durable database metadata belong
+in the remote mirror.
 
 `backupStatus()` returns `undefined` when S3 backup is not configured. Otherwise
 its `runs` count includes both successful and failed reconcile attempts; inspect
@@ -1166,21 +1296,27 @@ permanent coordination root; completed transaction directories are removed.
 Multiple processes may initialize concurrently: one recovery owner performs the
 work while the others wait and then observe the recovered tree and ref.
 
+Ordinary collection writes use a separate logical journal under
+`.fylo-transactions/`. If a process dies before the commit marker, recovery
+restores document bytes, file modes, mtimes, xattrs, and the event-journal
+offset, then rebuilds the derived index. If it dies after the marker, recovery
+keeps the committed files and completes publication of the stable generation.
+
 ---
 
 ## Limitations
 
-| Limitation                           | Detail                                                                                        |
-| ------------------------------------ | --------------------------------------------------------------------------------------------- |
-| **Filesystem-first engine**          | One engine writes to a local path. S3 is a backup mirror, not a query or transaction backend. |
-| **Advisory locking**                 | Lock-files with TTL. Networked filesystems without atomic `link()` are not supported.         |
-| **Indexes are derived**              | External writes to data files won't update indexes. Use `db.<collection>.rebuild()`.          |
-| **Local strict WORM**                | FYLO rejects mutation and applies `0444`; privileged filesystem administrators can bypass it. |
-| **Frequency leaks on encryption**    | HMAC blind indexes for `$eq` reveal value repetition even without decryption.                 |
-| **Process-global cipher**            | One key per process for all `$encrypted` fields. No per-collection key rotation built in.     |
-| **No cross-collection transactions** | Writes are serialized per collection. No atomic multi-collection commits.                     |
-| **Timestamp metadata**               | `createdAt` comes from TTID; `updatedAt` comes from file modification metadata.               |
-| **Bulk import for trusted sources**  | SSRF guard blocks private addresses and caps at 50 MiB. Not for user-provided URLs.           |
+| Limitation                           | Detail                                                                                                                      |
+| ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| **Filesystem-first engine**          | One engine writes to a local path. S3 is a backup mirror, not a query or transaction backend.                               |
+| **Advisory locking**                 | PID-aware lock files; live owners are never evicted by TTL. Filesystems without atomic `link()`/`rename()` are unsupported. |
+| **Indexes are derived**              | External writes to data files won't update indexes. Use `db.<collection>.rebuild()`.                                        |
+| **Local strict WORM**                | FYLO rejects mutation and applies `0444`; privileged filesystem administrators can bypass it.                               |
+| **Frequency leaks on encryption**    | HMAC blind indexes for `$eq` reveal value repetition even without decryption.                                               |
+| **Process-global cipher**            | One key per process for all `$encrypted` fields. No per-collection key rotation built in.                                   |
+| **No cross-collection transactions** | SQL mutations and ordinary writes are atomic within one collection; there is no atomic multi-collection commit.             |
+| **Timestamp metadata**               | `createdAt` comes from TTID; `updatedAt` comes from file modification metadata.                                             |
+| **Bulk import for trusted sources**  | SSRF guard blocks private addresses and caps at 50 MiB. Not for user-provided URLs.                                         |
 
 ---
 

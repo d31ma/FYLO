@@ -3,27 +3,27 @@
  *
  * Correctness model: read this before changing anything in here.
  *
- * This module implements *advisory* locking on top of `node:fs/promises`
- * primitives (`link`, `unlink`, `rename`). It is not built on POSIX
- * `fcntl(F_SETLK)` or `flock`; those would give true OS-level mutual
- * exclusion, but they are not available through `node:fs/promises` and
- * they do not survive across `bun build --compile` targets uniformly.
+ * This module implements *advisory* ownership with `node:fs/promises`
+ * primitives (`link`, `unlink`, `rename`). Stale takeover alone is serialized
+ * by a kernel `flock` sentinel loaded through Bun FFI on supported POSIX
+ * targets; unsupported targets fail closed instead of risking two winners.
  *
- * Without OS-level compare-and-swap, the takeover and heartbeat-refresh
- * paths each contain a small residual race window: between any
- * `readLockMeta(...)` (or other observation) and the subsequent `unlink`
- * or `rename`, a different process can take over the lock and have its
- * fresh write clobbered.
+ * Locks created by the current release carry a local process id. A live
+ * process is never evicted merely because a wall-clock TTL elapsed; this
+ * removes the unsafe live-owner takeover window. TTL takeover remains only
+ * for legacy lock files that have no process identity.
  *
  * The mitigations layered here:
  * - `link()`-based atomic create on the happy path (only one acquirer
  *   can win a contested fresh acquire).
- * - 5-minute TTL on collection writes, with a heartbeat refresh every
- *   `ttlMs/3`. The heartbeat keeps the trigger for takeover from
- *   firing during normal operation, so the race window only opens when
- *   a holder is genuinely dead (crashed) or paused for >5 minutes.
- * - Re-validation of the stale metadata immediately before the takeover
- *   `unlink`. This narrows the cross-process window to microseconds.
+ * - 5-minute TTL on legacy collection locks, with a heartbeat refresh every
+ *   `ttlMs/3` for compatibility with older FYLO processes.
+ * - Re-validation of stale metadata followed by an atomic rename into a
+ *   unique quarantine path before deletion. A contender never unlinks a
+ *   newly replaced lock at the canonical path.
+ * - A persistent kernel-locked takeover sentinel. The file may outlive a
+ *   process, but its ownership cannot: the kernel drops `flock` on exit or
+ *   SIGKILL, so dead contenders never strand future recovery.
  * - Heartbeat ticks re-check ownership and the cancellation flag right
  *   before `rename`, and `tryReleaseFileLock` drains in-flight ticks
  *   before unlinking so a stale tick cannot resurrect a released lock.
@@ -37,11 +37,13 @@
 
 import { link, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import path from 'node:path'
+import { tryAcquireProcessFileLock } from './secure-open.js'
 
 /**
  * @typedef {object} HeartbeatEntry
  * @property {ReturnType<typeof setInterval>} interval
  * @property {string} owner
+ * @property {string | undefined} processIdentity
  * @property {boolean} cancelled
  * @property {Promise<void> | null} inFlight
  */
@@ -72,15 +74,17 @@ class FileLockHeartbeatRegistry {
     /**
      * @param {string} lockPath
      * @param {string} owner
+     * @param {string | undefined} processIdentity
      * @param {number} ttlMs
      */
-    start(lockPath, owner, ttlMs) {
+    start(lockPath, owner, processIdentity, ttlMs) {
         void this.stop(lockPath)
         const intervalMs = Math.max(Math.floor(ttlMs / 3), 100)
         /** @type {HeartbeatEntry} */
         const entry = {
             interval: /** @type {any} */ (null),
             owner,
+            processIdentity,
             cancelled: false,
             inFlight: null
         }
@@ -109,7 +113,12 @@ class FileLockHeartbeatRegistry {
             if (entry.cancelled || !meta || meta.owner !== entry.owner) return
             await writeFile(
                 scratchPath,
-                JSON.stringify({ owner: entry.owner, pid: process.pid, ts: Date.now() })
+                JSON.stringify({
+                    owner: entry.owner,
+                    pid: process.pid,
+                    processIdentity: entry.processIdentity,
+                    ts: Date.now()
+                })
             )
             if (entry.cancelled) return
             const refreshedMeta = await readLockMeta(lockPath)
@@ -152,10 +161,11 @@ const heartbeatRegistry = new FileLockHeartbeatRegistry(heartbeats)
 /**
  * @param {string} lockPath
  * @param {string} owner
+ * @param {string | undefined} processIdentity
  * @param {number} ttlMs
  */
-function startHeartbeat(lockPath, owner, ttlMs) {
-    heartbeatRegistry.start(lockPath, owner, ttlMs)
+function startHeartbeat(lockPath, owner, processIdentity, ttlMs) {
+    heartbeatRegistry.start(lockPath, owner, processIdentity, ttlMs)
 }
 
 /**
@@ -176,7 +186,7 @@ async function stopHeartbeat(lockPath) {
  * object otherwise. Corrupt JSON yields null (treated as stale).
  *
  * @param {string} lockPath
- * @returns {Promise<{ owner: string, pid?: number, ts: number } | null>}
+ * @returns {Promise<{ owner: string, pid?: number, processIdentity?: string, ts: number } | null>}
  */
 async function readLockMeta(lockPath) {
     try {
@@ -202,19 +212,77 @@ async function readLockPayload(lockPath) {
  * A lock left by a process that no longer exists is immediately reclaimable;
  * startup recovery must not wait for a multi-minute TTL after SIGKILL. Locks
  * created by older FYLO versions have no pid and retain TTL-only semantics.
- * @param {{ pid?: number } | null} meta
- * @returns {boolean}
+ * @param {{ pid?: number, processIdentity?: string } | null} meta
+ * @returns {Promise<boolean>}
  */
-function lockOwnerIsAlive(meta) {
+async function lockOwnerIsAlive(meta) {
     if (!meta || !Number.isSafeInteger(meta.pid) || /** @type {number} */ (meta.pid) <= 0) {
         return true
     }
     try {
         process.kill(/** @type {number} */ (meta.pid), 0)
-        return true
     } catch (error) {
         return /** @type {NodeJS.ErrnoException} */ (error).code !== 'ESRCH'
     }
+    if (typeof meta.processIdentity !== 'string') return true
+    const observedIdentity = await processIdentity(/** @type {number} */ (meta.pid))
+    return observedIdentity === null || observedIdentity === meta.processIdentity
+}
+
+/**
+ * Returns an OS-issued process incarnation identifier. A PID alone is not an
+ * identity because kernels reuse it after exit (and across restarts).
+ *
+ * @param {number} pid
+ * @returns {Promise<string | null>}
+ */
+async function processIdentity(pid) {
+    try {
+        if (process.platform === 'linux') {
+            const [bootId, statLine] = await Promise.all([
+                readFile('/proc/sys/kernel/random/boot_id', 'utf8'),
+                readFile(`/proc/${pid}/stat`, 'utf8')
+            ])
+            const fields = statLine
+                .slice(statLine.lastIndexOf(')') + 2)
+                .trim()
+                .split(/\s+/)
+            const startTicks = fields[19]
+            if (!startTicks) return null
+            return `linux:${bootId.trim()}:${startTicks}`
+        }
+
+        const command =
+            process.platform === 'win32'
+                ? [
+                      'powershell.exe',
+                      '-NoProfile',
+                      '-NonInteractive',
+                      '-Command',
+                      `(Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}').CreationDate.ToUniversalTime().Ticks`
+                  ]
+                : ['ps', '-o', 'lstart=', '-p', String(pid)]
+        const child = Bun.spawn(command, { stdout: 'pipe', stderr: 'ignore' })
+        const output = (await new Response(child.stdout).text()).trim()
+        if ((await child.exited) !== 0 || output.length === 0) return null
+        return `${process.platform}:${output}`
+    } catch {
+        return null
+    }
+}
+
+/** @type {Promise<string | null> | undefined} */
+let ownProcessIdentity
+
+/** @returns {Promise<string | undefined>} */
+async function getOwnProcessIdentity() {
+    if (!ownProcessIdentity) ownProcessIdentity = processIdentity(process.pid)
+    return (await ownProcessIdentity) ?? undefined
+}
+
+/** @param {{ pid?: number } | null} meta */
+function hasProcessIdentity(meta) {
+    return Boolean(meta && Number.isSafeInteger(meta.pid) && /** @type {number} */ (meta.pid) > 0)
 }
 
 /**
@@ -289,20 +357,26 @@ export async function tryAcquireFileLock(lockPath, owner, ttlMsOrOptions = 30_00
     const options = typeof ttlMsOrOptions === 'number' ? { ttlMs: ttlMsOrOptions } : ttlMsOrOptions
     const ttlMs = options.ttlMs ?? 30_000
     await mkdir(path.dirname(lockPath), { recursive: true })
-    const payload = JSON.stringify({ owner, pid: process.pid, ts: Date.now() })
+    const identity = await getOwnProcessIdentity()
+    const payload = JSON.stringify({
+        owner,
+        pid: process.pid,
+        processIdentity: identity,
+        ts: Date.now()
+    })
     if (await tryCreateExclusive(lockPath, payload)) {
-        if (options.heartbeat) startHeartbeat(lockPath, owner, ttlMs)
+        if (options.heartbeat) startHeartbeat(lockPath, owner, identity, ttlMs)
         return true
     }
     const meta = await readLockMeta(lockPath)
+    if (hasProcessIdentity(meta) && (await lockOwnerIsAlive(meta))) return false
     if (
         meta &&
+        !hasProcessIdentity(meta) &&
         typeof meta.ts === 'number' &&
-        Date.now() - meta.ts <= ttlMs &&
-        lockOwnerIsAlive(meta)
-    ) {
+        Date.now() - meta.ts <= ttlMs
+    )
         return false
-    }
     const previousOwner = meta && typeof meta.owner === 'string' ? meta.owner : undefined
     if (meta) {
         const metaCheck = await readLockMeta(lockPath)
@@ -327,14 +401,41 @@ export async function tryAcquireFileLock(lockPath, owner, ttlMsOrOptions = 30_00
             // Stable invalid payload: reclaim below.
         }
     }
+    // Serialize takeover independently of the stale lock path. Without this
+    // claim, two contenders can both rename successive generations and both
+    // believe they acquired the lock.
+    const takeoverClaim = `${lockPath}.takeover`
+    const releaseTakeoverClaim = tryAcquireProcessFileLock(takeoverClaim)
+    if (!releaseTakeoverClaim) return false
+    const quarantine = uniqueLockScratchPath(lockPath, 'stale')
     try {
-        await unlink(lockPath)
-    } catch (err) {
-        const error = /** @type {NodeJS.ErrnoException} */ (err)
-        if (error.code !== 'ENOENT') throw err
-    }
-    const acquired = await tryCreateExclusive(lockPath, payload)
-    if (acquired) {
+        // The lock may have changed while this contender was claiming the
+        // takeover lane. Revalidate it under the claim before moving it.
+        const currentPayload = await readLockPayload(lockPath)
+        const observedPayload = meta ? JSON.stringify(meta) : await readLockPayload(lockPath)
+        if (currentPayload === null || observedPayload === null) return false
+        let currentMeta
+        try {
+            currentMeta = JSON.parse(currentPayload)
+        } catch {
+            currentMeta = null
+        }
+        if (meta) {
+            if (
+                !currentMeta ||
+                currentMeta.owner !== meta.owner ||
+                currentMeta.pid !== meta.pid ||
+                currentMeta.processIdentity !== meta.processIdentity ||
+                currentMeta.ts !== meta.ts
+            )
+                return false
+        } else if (currentPayload !== observedPayload) {
+            return false
+        }
+        await rename(lockPath, quarantine)
+        await unlink(quarantine)
+        const acquired = await tryCreateExclusive(lockPath, payload)
+        if (!acquired) return false
         if (options.onTakeover) {
             try {
                 options.onTakeover({ lockPath, newOwner: owner, previousOwner })
@@ -342,9 +443,15 @@ export async function tryAcquireFileLock(lockPath, owner, ttlMsOrOptions = 30_00
                 console.error('FYLO onTakeover callback threw:', err)
             }
         }
-        if (options.heartbeat) startHeartbeat(lockPath, owner, ttlMs)
+        if (options.heartbeat) startHeartbeat(lockPath, owner, identity, ttlMs)
+        return true
+    } catch (err) {
+        const error = /** @type {NodeJS.ErrnoException} */ (err)
+        if (error.code === 'ENOENT') return false
+        throw err
+    } finally {
+        releaseTakeoverClaim()
     }
-    return acquired
 }
 
 /**
@@ -382,11 +489,9 @@ export async function waitAcquireFileLock(lockPath, owner, options = {}) {
  * Releases the lock at `lockPath` if (and only if) the current payload
  * names this owner. Missing lock files are silently ignored.
  *
- * Note: release is not atomic with the ownership check. A concurrent
- * stale-lock takeover between our read and unlink could cause us to
- * delete someone else's lock. This is acceptable for FYLO's advisory
- * locking: callers rely on short operation durations plus TTL-based
- * correctness, not fine-grained release ordering.
+ * Current locks cannot be taken over while their pid is alive. Release moves
+ * the owned entry out of the lock namespace atomically before deleting it, so
+ * a waiting contender can only create a new generation after that move.
  *
  * @param {string} lockPath
  * @param {string} owner
@@ -396,8 +501,16 @@ export async function tryReleaseFileLock(lockPath, owner) {
     await stopHeartbeat(lockPath)
     const meta = await readLockMeta(lockPath)
     if (!meta || meta.owner !== owner) return
+    const released = uniqueLockScratchPath(lockPath, 'released')
     try {
-        await unlink(lockPath)
+        await rename(lockPath, released)
+    } catch (err) {
+        const error = /** @type {NodeJS.ErrnoException} */ (err)
+        if (error.code === 'ENOENT') return
+        throw err
+    }
+    try {
+        await unlink(released)
     } catch (err) {
         const error = /** @type {NodeJS.ErrnoException} */ (err)
         if (error.code !== 'ENOENT') throw err

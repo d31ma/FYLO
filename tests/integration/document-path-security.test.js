@@ -31,6 +31,9 @@ describe('document path security', () => {
         await expect(
             Promise.resolve(fylo.documents.put(id, { outside: 'overwritten' }))
         ).rejects.toThrow(/symbolic link|reparse point/)
+        expect(await fylo.engine.transactions.state('documents')).toMatchObject({
+            state: 'stable'
+        })
         await expect(fylo.documents.put(id).metadata({ owner: 'attacker' })).rejects.toThrow(
             /symbolic link|reparse point/
         )
@@ -40,5 +43,12 @@ describe('document path security', () => {
 
         expect(await readFile(outsideTarget, 'utf8')).toBe(sentinel)
         expect(getXattr(outsideTarget, 'user.fylo.meta.owner')).toBeNull()
+
+        await rm(path.join(docsRoot, id.slice(0, 2)))
+        await fylo.documents.put(id, { inside: 'retry-succeeded' })
+        expect((await fylo.documents.get(id).once())[id]).toEqual({
+            inside: 'retry-succeeded'
+        })
+        expect(await readFile(outsideTarget, 'utf8')).toBe(sentinel)
     })
 })

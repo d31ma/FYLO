@@ -11,7 +11,16 @@ Fylo has three independently deployed web surfaces:
 Do not upload a mutable `dist/web` directory directly. The Amplify release command normalizes
 file modes and timestamps, creates a deterministic ZIP, names it by its SHA-256 checksum, and
 archives it before deployment. A deployment is recorded as current only after Amplify succeeds
-and every configured production probe passes.
+and every configured production probe passes. These probes fetch the HTML routes plus required
+CSS, JavaScript, Tachyon component, web-component, worker, and Wasm files. Each asset must return
+the configured media type and content or binary marker, so an SPA fallback or stripped static
+directory triggers automatic rollback instead of being promoted as current.
+
+Web builds are reproducible only with the repository-pinned toolchains: Bun is read from
+`.bun-version` (and mirrored by each `packageManager` field), while Rust and the Wasm target are
+read from `rust-toolchain.toml`. `build-browser.mjs` rejects a different Bun version, installs the
+exact Rust toolchain through rustup, and builds the locked Cargo dependency graph. CI, Release,
+Pages, and the Explorer Amplify bundle all use that same build entry point and toolchain pins.
 
 ## One-time AWS setup
 
@@ -25,7 +34,7 @@ default encryption. Grant the release operator only these capabilities:
 Export the bucket name; AWS credentials and region continue to use the normal AWS CLI credential
 chain. Never place credentials in the repository or command history.
 
-The release host also needs Bun, the AWS CLI, and `zip`. Authenticate the AWS
+The release host also needs rustup, Bun at the version in `.bun-version`, the AWS CLI, and `zip`. Authenticate the AWS
 CLI before starting and confirm it is using the intended account and region.
 
 ```sh
@@ -84,8 +93,9 @@ release role does not need them.
 
 The Pages workflow runs only after a successful Release workflow whose `v<version>` tag identifies
 the same commit. It publishes immutable paths such as `version/26.29.04/` and a mutable
-`version/latest/`. Its post-deploy step downloads the pinned `fylo.js`, `fylo-web.mjs`, and
-`SHA256SUMS`, then verifies both files byte-for-byte:
+`version/latest/`. Its post-deploy step downloads the loader, engine, shared and dedicated workers,
+Wasm module, and `SHA256SUMS`, then verifies every file by checksum and compares `latest`
+byte-for-byte with the immutable version:
 
 ```sh
 bun scripts/pages-smoke.mjs 26.29.04

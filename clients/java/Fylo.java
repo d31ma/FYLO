@@ -173,11 +173,17 @@ public final class Fylo implements AutoCloseable {
     public String executeSQL(String sql) throws IOException {
         return op("executeSQL", "sql", sql);
     }
+    public String executeSQL(String sql, Map<String, Object> access) throws IOException {
+        return op("executeSQL", "sql", sql, "access", access);
+    }
 
     // Run raw SQL, built with concatenation/String.format. Values are inlined
     // verbatim — escape/validate untrusted input yourself.
     public String sql(String query) throws IOException {
         return executeSQL(query);
+    }
+    public String sql(String query, Map<String, Object> access) throws IOException {
+        return executeSQL(query, access);
     }
 
     /** Collection-scoped facade: db.collection("users").put(data). */

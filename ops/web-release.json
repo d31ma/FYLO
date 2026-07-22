@@ -8,9 +8,41 @@
             "sourceDir": "website/dist/web",
             "origin": "https://fylo.del.ma",
             "probes": [
-                { "path": "/", "contains": "FYLO" },
-                { "path": "/docs", "contains": "FYLO documentation" },
-                { "path": "/download", "contains": "Download FYLO" }
+                {
+                    "path": "/",
+                    "contains": "FYLO",
+                    "contentTypes": ["text/html"]
+                },
+                {
+                    "path": "/docs",
+                    "contains": "FYLO documentation",
+                    "contentTypes": ["text/html"]
+                },
+                {
+                    "path": "/download",
+                    "contains": "Download FYLO",
+                    "contentTypes": ["text/html"]
+                },
+                {
+                    "path": "/shared/assets/site.css",
+                    "contains": "--w-primary",
+                    "contentTypes": ["text/css"]
+                },
+                {
+                    "path": "/imports.js",
+                    "contains": "tachyon:navigate",
+                    "contentTypes": ["application/javascript", "text/javascript"]
+                },
+                {
+                    "path": "/components/hero/tac.js",
+                    "contains": "https://fylo.del.ma/install.sh",
+                    "contentTypes": ["application/javascript", "text/javascript"]
+                },
+                {
+                    "path": "/fylo-browser-worker.js",
+                    "contains": "self.addEventListener",
+                    "contentTypes": ["application/javascript", "text/javascript"]
+                }
             ]
         },
         "fxp": {
@@ -18,7 +50,58 @@
             "branch": "master",
             "sourceDir": "explorer/dist/web",
             "origin": "https://fx.del.ma",
-            "probes": [{ "path": "/", "contains": "FX | Fylo Explorer" }]
+            "probes": [
+                {
+                    "path": "/",
+                    "contains": "FX | Fylo Explorer",
+                    "contentTypes": ["text/html"]
+                },
+                {
+                    "path": "/shared/assets/explorer.css",
+                    "contains": ".explorer",
+                    "contentTypes": ["text/css"]
+                },
+                {
+                    "path": "/imports.js",
+                    "contains": "/shared/assets/fylo-web.mjs",
+                    "contentTypes": ["application/javascript", "text/javascript"]
+                },
+                {
+                    "path": "/components/explorer/app/tac.js",
+                    "contains": "/shared/assets/fylo-web.mjs",
+                    "contentTypes": ["application/javascript", "text/javascript"]
+                },
+                {
+                    "path": "/shared/assets/duvay/duvay-wc.min.js",
+                    "contains": "customElements.define",
+                    "contentTypes": ["application/javascript", "text/javascript"]
+                },
+                {
+                    "path": "/fylo-browser-worker.js",
+                    "contains": "self.addEventListener",
+                    "contentTypes": ["application/javascript", "text/javascript"]
+                },
+                {
+                    "path": "/shared/assets/fylo-web.mjs",
+                    "contains": "createWorkerClient",
+                    "contentTypes": ["application/javascript", "text/javascript"]
+                },
+                {
+                    "path": "/shared/assets/shared.js",
+                    "contains": "src/browser/worker/shared.js",
+                    "contentTypes": ["application/javascript", "text/javascript"]
+                },
+                {
+                    "path": "/shared/assets/dedicated.js",
+                    "contains": "src/browser/worker/dedicated.js",
+                    "contentTypes": ["application/javascript", "text/javascript"]
+                },
+                {
+                    "path": "/shared/assets/fylo-index.wasm",
+                    "startsWithHex": "0061736d",
+                    "contentTypes": ["application/wasm"]
+                }
+            ]
         }
     }
 }

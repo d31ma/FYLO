@@ -20,6 +20,12 @@
  *   | { type: 'backup.reconcile.started', source: 'manual' | 'scheduled', startedAt: string }
  *   | { type: 'backup.reconcile.succeeded', source: 'manual' | 'scheduled', startedAt: string, completedAt: string }
  *   | { type: 'backup.reconcile.failed', source: 'manual' | 'scheduled', startedAt: string, failedAt: string, detail: string }
+ *   | { type: 'transaction.rollback.started', collection: string, transactionId: string, operation: string, startedAt: string }
+ *   | { type: 'transaction.rollback.succeeded', collection: string, transactionId: string, operation: string, startedAt: string, completedAt: string }
+ *   | { type: 'transaction.rollback.failed', collection: string, transactionId: string, operation: string, startedAt: string, failedAt: string, detail: string }
+ *   | { type: 'transaction.recovery.started', collection: string, transactionId: string, operation: string, phase: 'active' | 'committed', startedAt: string }
+ *   | { type: 'transaction.recovery.succeeded', collection: string, transactionId: string, operation: string, phase: 'active' | 'committed', startedAt: string, completedAt: string }
+ *   | { type: 'transaction.recovery.failed', collection: string, transactionId: string, operation?: string, phase?: 'active' | 'committed', startedAt: string, failedAt: string, detail: string }
  * )} FyloEvent
  * @typedef {(event: FyloEvent) => void | Promise<void>} FyloEventHandler
  */

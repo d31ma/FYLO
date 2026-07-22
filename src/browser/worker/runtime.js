@@ -1,13 +1,13 @@
 import { BrowserCore } from '../core/engine.js'
 import { runBrowserRequest } from '../core/protocol.js'
-import { createMemoryFilesystem } from '../core/memory-filesystem.js'
-import { createOpfsFilesystem } from '../opfs-filesystem.js'
+import { createBrowserFilesystem, normalizeBrowserStorage } from '../storage.js'
+import { createWasmIndexScannerFactory } from '../wasm/index-scanner.js'
 
 /**
  * @typedef {import('../core/types.js').BrowserCoreOptions} BrowserCoreOptions
  * @typedef {import('../core/types.js').BrowserRequest} BrowserRequest
  * @typedef {import('../core/types.js').BrowserEvent} BrowserEvent
- * @typedef {{ id?: string, namespace?: string, type?: string, collection?: string, request?: BrowserRequest, storage?: 'memory' | 'opfs', root?: string, worm?: BrowserCoreOptions['worm'] }} WorkerEnvelope
+ * @typedef {{ id?: string, namespace?: string, instanceId?: string, type?: string, collection?: string, request?: BrowserRequest, storage?: import('../storage.js').BrowserStorage, root?: string, worm?: BrowserCoreOptions['worm'], wasm?: true | { url?: string | URL, module?: WebAssembly.Module } }} WorkerEnvelope
  */
 
 /**
@@ -24,24 +24,32 @@ export class FyloWorkerRuntime {
         this.coreSubscriptions = new Map()
     }
 
+    /** @param {WorkerEnvelope} envelope @returns {string} */
+    coreKey(envelope) {
+        const namespace = envelope.namespace ?? 'fylo'
+        return envelope.instanceId ? `${namespace}:${envelope.instanceId}` : namespace
+    }
+
     /**
      * @param {WorkerEnvelope} envelope
      * @returns {BrowserCore}
      */
     core(envelope) {
         const namespace = envelope.namespace ?? 'fylo'
-        const existing = this.cores.get(namespace)
+        const key = this.coreKey(envelope)
+        const existing = this.cores.get(key)
         if (existing) return existing
-        const fs =
-            envelope.storage === 'memory'
-                ? createMemoryFilesystem()
-                : createOpfsFilesystem({ namespace })
+        const storage = normalizeBrowserStorage(envelope.storage ?? 'opfs')
+        const fs = createBrowserFilesystem(storage, namespace)
         const core = new BrowserCore({
             fs,
             root: envelope.root ?? '/',
-            worm: envelope.worm
+            worm: envelope.worm,
+            indexScannerFactory: envelope.wasm
+                ? createWasmIndexScannerFactory(envelope.wasm)
+                : undefined
         })
-        this.cores.set(namespace, core)
+        this.cores.set(key, core)
         return core
     }
 
@@ -51,6 +59,7 @@ export class FyloWorkerRuntime {
      */
     async readyCore(envelope) {
         const core = this.core(envelope)
+        await core.ready()
         return core
     }
 
@@ -60,6 +69,16 @@ export class FyloWorkerRuntime {
      * @returns {Promise<void>}
      */
     async dispatch(port, envelope) {
+        if (envelope.type === 'close') {
+            await this.closeCore(envelope)
+            this.post(port, { id: envelope.id, ok: true, result: true })
+            return
+        }
+        if (envelope.type === 'ready') {
+            await this.readyCore(envelope)
+            this.post(port, { id: envelope.id, ok: true, result: true })
+            return
+        }
         if (envelope.type === 'subscribe') {
             await this.subscribe(port, envelope)
             this.post(port, { id: envelope.id, ok: true, result: true })
@@ -76,15 +95,29 @@ export class FyloWorkerRuntime {
         this.post(port, { id: envelope.id, ...response })
     }
 
+    /** @param {WorkerEnvelope} envelope @returns {Promise<void>} */
+    async closeCore(envelope) {
+        if (!envelope.instanceId) return
+        const coreKey = this.coreKey(envelope)
+        const core = this.cores.get(coreKey)
+        this.cores.delete(coreKey)
+        await core?.close()
+        for (const key of [...this.subscriptions.keys()]) {
+            if (!key.startsWith(`${coreKey}:`)) continue
+            this.subscriptions.delete(key)
+            this.coreSubscriptions.get(key)?.()
+            this.coreSubscriptions.delete(key)
+        }
+    }
+
     /**
      * @param {MessagePort | { postMessage: (message: any) => void }} port
      * @param {WorkerEnvelope} envelope
      */
     async subscribe(port, envelope) {
-        const namespace = envelope.namespace ?? 'fylo'
         const collection = envelope.collection
         if (!collection) throw new Error('FYLO worker subscribe requires collection')
-        const key = `${namespace}:${collection}`
+        const key = `${this.coreKey(envelope)}:${collection}`
         let ports = this.subscriptions.get(key)
         if (!ports) {
             ports = new Set()
@@ -98,7 +131,7 @@ export class FyloWorkerRuntime {
                  * @param {BrowserEvent} event
                  */
                 (event) => {
-                    this.broadcast(namespace, collection, event)
+                    this.broadcast(key, envelope.namespace ?? 'fylo', collection, event)
                 }
             )
             this.coreSubscriptions.set(key, unsubscribe)
@@ -110,10 +143,9 @@ export class FyloWorkerRuntime {
      * @param {WorkerEnvelope} envelope
      */
     unsubscribe(port, envelope) {
-        const namespace = envelope.namespace ?? 'fylo'
         const collection = envelope.collection
         if (!collection) return
-        const key = `${namespace}:${collection}`
+        const key = `${this.coreKey(envelope)}:${collection}`
         const ports = this.subscriptions.get(key)
         ports?.delete(port)
         if (ports && ports.size === 0) {
@@ -124,12 +156,13 @@ export class FyloWorkerRuntime {
     }
 
     /**
+     * @param {string} key
      * @param {string} namespace
      * @param {string} collection
      * @param {BrowserEvent} event
      */
-    broadcast(namespace, collection, event) {
-        const ports = this.subscriptions.get(`${namespace}:${collection}`)
+    broadcast(key, namespace, collection, event) {
+        const ports = this.subscriptions.get(key)
         if (!ports) return
         for (const port of ports) {
             this.post(port, {

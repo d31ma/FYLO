@@ -209,10 +209,6 @@ export async function doctorSchema(collection, schemaDir) {
                 issues.push(/** @type {Error} */ (error).message)
             }
         }
-        const rulesPath = path.join(collectionDir(collection, resolvedSchemaDir), 'rules.json')
-        if (!(await exists(rulesPath))) {
-            warnings.push(`No rules.json found for collection '${collection}'`)
-        }
     } catch (error) {
         issues.push(/** @type {Error} */ (error).message)
     }

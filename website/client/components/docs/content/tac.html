@@ -90,6 +90,11 @@
             (<code>FormattableString</code>) escape the interpolated values for you; the other
             languages inline them verbatim, so escape untrusted input yourself.
           </p>
+          <p>
+            Collection-scoped <code>UPDATE</code> and <code>DELETE</code> statements commit
+            atomically. Prefix <code>EXPLAIN</code> to inspect the access path without running the
+            statement, or use <code>EXPLAIN ANALYZE</code> to execute it with timing details.
+          </p>
           <pre class="code-block"><code>{code()}</code></pre>
         </article>
       </case>

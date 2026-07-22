@@ -71,7 +71,6 @@
 /**
  * @template {Record<string, any>} [T=Record<string, any>]
  * @typedef {object} FyloOptions
- * @property {boolean=} rls
  * @property {FyloSyncHooks<T>=} sync
  * @property {FyloSyncMode=} syncMode
  * @property {FyloWormOptions=} worm

@@ -2,7 +2,6 @@ import { afterAll, describe, expect, test } from 'bun:test'
 import { rm } from 'node:fs/promises'
 import Fylo from '../../src/index.js'
 import { createBrowserClient } from '../../src/browser/client.js'
-import { FsaFilesystem } from '../../src/browser/fsa-filesystem.js'
 import { mockDirectoryHandle } from './helpers/fsa-mock.js'
 import { createTestRoot } from '../helpers/root.js'
 
@@ -17,7 +16,11 @@ describe('desktop engine over a browser-written root (Explorer write mode)', () 
         // Browser engine writes directly into the real root (no overlay) —
         // exactly what the Explorer's opt-in write mode does.
         const db = createBrowserClient({
-            fs: new FsaFilesystem(mockDirectoryHandle(root)),
+            storage: {
+                type: 'fsa',
+                handle: mockDirectoryHandle(root),
+                access: 'readwrite'
+            },
             worker: false
         })
         await db.ready()

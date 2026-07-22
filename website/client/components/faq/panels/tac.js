@@ -20,7 +20,7 @@ export default class extends Tac {
         {
             key: 'explorer',
             q: 'Can I browse a FYLO database visually?',
-            a: "Yes — Fylo Explorer is a browser UI over a real FYLO root on your disk, opened through the File System Access API. Pick the folder once and browse collections, inspect documents, and filter with SQL WHERE expressions (role = 'admin' AND age >= 30). It is read-only by default — the engine rebuilds indexes into memory, never touching the folder — with opt-in writes that go through the engine. Chromium-only, since Firefox and Safari do not implement real-folder access."
+            a: "Yes — Fylo Explorer is a browser UI over a real FYLO root on your disk, opened through the File System Access API. Pick the folder once and browse collections, inspect documents, and filter with SQL WHERE expressions (role = 'admin' AND age >= 30). It is read-only by default — the engine rebuilds indexes into a copy-on-write overlay, never touching the folder — with opt-in writes that go through the engine. Document queries run in a worker with Wasm acceleration and automatic JavaScript fallback. Chromium-only, since Firefox and Safari do not implement real-folder access."
         },
         {
             key: 'replication',

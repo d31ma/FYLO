@@ -24,7 +24,8 @@ the recovery-point objective or retry volume increases materially.
    wedge the scheduler; a later manual or scheduled pass can recover.
 4. Confirm `lastSuccessAt` advances and the failed alert clears.
 
-With the default `syncMode: 'await-sync'`, a mirror failure is reported to the
+With the default `syncMode: 'await-sync'`, mirroring begins only after the local
+collection transaction commits. A mirror failure is reported to the
 writer after the local filesystem change has committed. With
 `syncMode: 'fire-and-forget'`, monitor `sync.failed` because the write caller
 does not wait for the mirror. A later reconcile repairs either case.

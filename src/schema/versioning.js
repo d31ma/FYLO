@@ -16,7 +16,6 @@
  *         v2.schema.json            ← head is whichever manifest.current points at
  *       upgraders/
  *         v1-to-v2.js               ← export default async (doc) => upgradedDoc
- *       rules.json                  ← (optional) RLS rules — see security/rules/loader.js
  *
  * Version labels are arbitrary strings ("v1", "v26.18.27-2", etc.). The
  * `manifest.versions` array is the source of truth for chain order — sorting

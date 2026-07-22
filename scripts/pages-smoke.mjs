@@ -2,7 +2,7 @@
 
 import { createHash } from 'node:crypto'
 
-const FILES = ['fylo.js', 'fylo-web.mjs']
+const FILES = ['fylo.js', 'fylo-web.mjs', 'shared.js', 'dedicated.js', 'fylo-index.wasm']
 
 async function verifyAssetSet(root, label, fetcher) {
     const checksumResponse = await fetcher(new URL('SHA256SUMS', root), { cache: 'no-store' })
@@ -11,7 +11,9 @@ async function verifyAssetSet(root, label, fetcher) {
     }
     const expected = new Map()
     for (const line of (await checksumResponse.text()).trim().split('\n')) {
-        const match = line.match(/^([a-f0-9]{64})  (fylo\.js|fylo-web\.mjs)$/)
+        const match = line.match(
+            /^([a-f0-9]{64})  (fylo\.js|fylo-web\.mjs|shared\.js|dedicated\.js|fylo-index\.wasm)$/
+        )
         if (!match) throw new Error(`Invalid ${label} SHA256SUMS entry: ${line}`)
         expected.set(match[2], match[1])
     }

@@ -11,6 +11,7 @@ import { lstat, mkdir, rename, rm } from 'node:fs/promises'
 import { resolveS3BackupOptions } from './s3-backup.js'
 import { writeDurableStream } from '../storage/durable.js'
 import { setXattr } from '../storage/xattr.js'
+import { readAccessDescriptor, restoreAccessDescriptor } from '../security/access.js'
 
 const BACKUP_METADATA_DIR = '.fylo-backup/xattrs/'
 const DEFAULT_MAX_OBJECT_BYTES = 1024 ** 4
@@ -399,6 +400,7 @@ export class FyloS3Restore {
                         if (result.checksumSHA256 !== manifest.sha256)
                             throw new Error(`checksum mismatch for backup object ${dataKey}`)
                         for (const [name, value] of manifest.xattrs) setXattr(target, name, value)
+                        await restoreAccessDescriptor(target, await readAccessDescriptor(target))
                     } else {
                         let length = 0
                         await this.withRetry(

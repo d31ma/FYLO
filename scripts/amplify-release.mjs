@@ -148,8 +148,8 @@ async function deployArchived(config, siteName, site, bucket, checksum, temporar
     const artifact = path.join(temporary, `${checksum}.zip`)
     await downloadArtifact(bucket, key, checksum, artifact)
     const jobId = await deployToAmplify(site, artifact)
-    await smokeSite(site)
-    return jobId
+    const probes = await smokeSite(site)
+    return { jobId, probes }
 }
 
 async function main() {
@@ -175,31 +175,61 @@ async function main() {
                 )
             }
             const target = current.previousChecksum
-            const jobId = await deployArchived(config, siteName, site, bucket, target, temporary)
+            const verification = await deployArchived(
+                config,
+                siteName,
+                site,
+                bucket,
+                target,
+                temporary
+            )
             await writeState(bucket, currentKey, {
                 ...current,
                 checksum: target,
                 previousChecksum: current.checksum,
                 deployedAt: new Date().toISOString(),
-                jobId
+                jobId: verification.jobId,
+                verifiedProbeCount: verification.probes.length
             })
-            console.log(JSON.stringify({ action, site: siteName, checksum: target, jobId }))
+            console.log(
+                JSON.stringify({
+                    action,
+                    site: siteName,
+                    checksum: target,
+                    jobId: verification.jobId,
+                    verifiedProbeCount: verification.probes.length
+                })
+            )
             return
         }
 
         const artifact = await createWebArtifact(path.resolve(site.sourceDir), temporary)
         const artifactKey = objectKey(config, siteName, `artifacts/${artifact.checksum}.zip`)
         await archiveArtifact(bucket, artifactKey, artifact.output, artifact.checksum)
-        let jobId
+        let verification
         try {
-            jobId = await deployToAmplify(site, artifact.output)
-            await smokeSite(site)
+            const jobId = await deployToAmplify(site, artifact.output)
+            const probes = await smokeSite(site)
+            verification = { jobId, probes }
         } catch (error) {
             if (current && current.checksum !== artifact.checksum) {
                 console.error(
                     `Deployment failed; restoring ${siteName} artifact ${current.checksum}`
                 )
-                await deployArchived(config, siteName, site, bucket, current.checksum, temporary)
+                try {
+                    await deployArchived(
+                        config,
+                        siteName,
+                        site,
+                        bucket,
+                        current.checksum,
+                        temporary
+                    )
+                } catch (rollbackError) {
+                    throw new Error(
+                        `Deployment failed (${error.message}); rollback verification also failed (${rollbackError.message})`
+                    )
+                }
             }
             throw error
         }
@@ -212,9 +242,18 @@ async function main() {
             deployedAt: new Date().toISOString(),
             appId: site.appId,
             branch: site.branch,
-            jobId
+            jobId: verification.jobId,
+            verifiedProbeCount: verification.probes.length
         })
-        console.log(JSON.stringify({ action, site: siteName, checksum: artifact.checksum, jobId }))
+        console.log(
+            JSON.stringify({
+                action,
+                site: siteName,
+                checksum: artifact.checksum,
+                jobId: verification.jobId,
+                verifiedProbeCount: verification.probes.length
+            })
+        )
     } finally {
         await rm(temporary, { recursive: true, force: true })
     }

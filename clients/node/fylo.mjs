@@ -170,8 +170,8 @@ export class Fylo {
     joinDocs(join) {
         return this._op('joinDocs', { join })
     }
-    executeSQL(sql) {
-        return this._op('executeSQL', { sql })
+    executeSQL(sql, access) {
+        return this._op('executeSQL', { sql, access })
     }
     /**
      * Tagged-template SQL — interpolated values are escaped, so
@@ -184,7 +184,19 @@ export class Fylo {
         for (let i = 0; i < values.length; i++) {
             statement += Fylo._sqlValue(values[i]) + strings[i + 1]
         }
-        return this.executeSQL(statement)
+        let access
+        let started = false
+        const operation = Promise.resolve().then(() => {
+            started = true
+            return this.executeSQL(statement, access)
+        })
+        return Object.assign(operation, {
+            as(input) {
+                if (started) throw new Error('as() must be called before SQL execution starts')
+                access = input
+                return operation
+            }
+        })
     }
     /** Escape one scalar into a SQL literal. */
     static _sqlValue(value) {

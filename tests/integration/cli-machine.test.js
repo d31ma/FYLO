@@ -78,6 +78,57 @@ describe('CLI machine interface', () => {
         expect(createPayload.requestId).toBe('create-1')
         expect(createPayload.result.collection).toBe('machine-posts')
 
+        if (process.getuid) {
+            const access = { uid: process.getuid(), mode: 0o600 }
+            const insertResponse = await run(
+                [
+                    'src/cli/index.js',
+                    'exec',
+                    '--request',
+                    JSON.stringify({
+                        op: 'executeSQL',
+                        root,
+                        sql: "INSERT INTO machine-posts (title, scope) VALUES ('Private SQL', 'machine-access')",
+                        access
+                    })
+                ],
+                repo
+            )
+            expect(insertResponse.exitCode).toBe(0)
+            const sqlId = JSON.parse(insertResponse.stdout).result
+
+            const anonymousResponse = await run(
+                [
+                    'src/cli/index.js',
+                    'exec',
+                    '--request',
+                    JSON.stringify({
+                        op: 'executeSQL',
+                        root,
+                        sql: "SELECT * FROM machine-posts WHERE scope = 'machine-access'"
+                    })
+                ],
+                repo
+            )
+            expect(JSON.parse(anonymousResponse.stdout).result).toEqual({})
+
+            const ownerResponse = await run(
+                [
+                    'src/cli/index.js',
+                    'exec',
+                    '--request',
+                    JSON.stringify({
+                        op: 'executeSQL',
+                        root,
+                        sql: "SELECT * FROM machine-posts WHERE scope = 'machine-access'",
+                        access: { uid: process.getuid() }
+                    })
+                ],
+                repo
+            )
+            expect(JSON.parse(ownerResponse.stdout).result[sqlId].title).toBe('Private SQL')
+        }
+
         const putResponse = await run(
             [
                 'src/cli/index.js',

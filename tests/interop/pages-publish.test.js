@@ -11,6 +11,9 @@ describe('GitHub Pages browser client publishing', () => {
         expect(workflow).toContain('site/version/latest')
         expect(workflow).toContain('site/version/$VERSION')
         expect(workflow).toContain('source/dist-web/fylo.mjs')
+        expect(workflow).toContain('source/dist-web/shared.js')
+        expect(workflow).toContain('source/dist-web/dedicated.js')
+        expect(workflow).toContain('source/dist-web/fylo-index.wasm')
         expect(workflow).toContain('source/clients/browser/fylo.js')
         expect(workflow).toContain('source/website/client/shared/assets/install.sh')
         expect(workflow).toContain('source/website/client/shared/assets/install.ps1')
@@ -46,7 +49,8 @@ describe('GitHub Pages browser client publishing', () => {
         )
         expect(workflow).toContain('actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e')
         expect(workflow).not.toMatch(/uses:\s+[^\s]+@v\d+/)
-        expect(workflow).toContain('bun-version: 1.3.11')
+        expect(workflow).toContain('bun-version-file: source/.bun-version')
+        expect(workflow).toContain('bun-version-file: .bun-version')
         expect(workflow).not.toContain('bun-version: latest')
         expect(workflow).toContain('permissions: {}')
         expect(workflow).toContain('contents: write')
@@ -78,7 +82,7 @@ describe('GitHub Pages browser client publishing', () => {
 
         for (const example of examples) {
             expect(example).toContain('https://d31ma.github.io/FYLO/version/26.29.04/fylo.js')
-            expect(example).toContain('const db = await Fylo.open()')
+            expect(example).toContain('const db = await Fylo.open({ wasm: true })')
             expect(example).not.toContain("createBrowserClient } from './fylo-web.mjs'")
         }
     })

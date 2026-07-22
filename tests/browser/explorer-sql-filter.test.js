@@ -49,6 +49,9 @@ describe('hosted Explorer', () => {
         expect(component).not.toContain('menuNonce')
         expect(component).not.toContain("event.type !== 'contextmenu'")
         expect(component).not.toContain("event.type === 'contextmenu'")
+        expect(component).toContain("type: 'fsa'")
+        expect(component).toContain('worker: true')
+        expect(component).toContain('wasm: true')
 
         for (const id of [
             'explorer-sql-input',

@@ -2081,6 +2081,11 @@ html[w-theme='light'] .explorer-version-cur {
     .explorer-bar {
         gap: 0.4rem 0.5rem;
     }
+    .explorer-nav {
+        order: 2;
+        flex-basis: 100%;
+        justify-content: center;
+    }
     .explorer-topbar {
         flex-wrap: wrap;
     }

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 import { createHash } from 'node:crypto'
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { FyloS3Restore } from '../../src/replication/s3-restore.js'
@@ -118,11 +118,22 @@ async function fixture(files, clientOptions) {
 describe('S3 recovery', () => {
     test('restores paginated objects with xattrs and atomically promotes the staging root', async () => {
         const keyXattr = Buffer.from('/hello.txt').toString('base64')
+        const accessXattr = Buffer.from(
+            JSON.stringify({
+                version: 1,
+                uid: process.getuid?.() ?? 0,
+                gid: process.getgid?.() ?? 0,
+                mode: 0o600
+            })
+        ).toString('base64')
         const { root, prefix, client } = await fixture({
             'catalog.json': { bytes: '{"format":1}' },
             '.buckets/assets/docs/hello': {
                 bytes: 'hello',
-                xattrs: { 'user.fylo.key': keyXattr }
+                xattrs: {
+                    'user.fylo.key': keyXattr,
+                    'user.fylo.access': accessXattr
+                }
             }
         })
         const events = []
@@ -134,6 +145,9 @@ describe('S3 recovery', () => {
         const restoredFile = path.join(root, '.buckets/assets/docs/hello')
         expect(await readFile(restoredFile, 'utf8')).toBe('hello')
         expect(Buffer.from(getXattr(restoredFile, 'user.fylo.key')).toString()).toBe('/hello.txt')
+        const access = await stat(restoredFile)
+        expect(access.uid).toBe(process.getuid?.() ?? 0)
+        expect(access.mode & 0o777).toBe(0o600)
         expect(client.listCalls).toBeGreaterThan(1)
         expect(result).toMatchObject({ status: 'complete', files: 2, bytes: 17 })
         expect(events.map((event) => event.phase)).toContain('promote')

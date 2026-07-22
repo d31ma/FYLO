@@ -775,10 +775,19 @@ export default class {
 
     async connect(handle, writable = false) {
         const { FsaFilesystem, createOverlayFilesystem, createBrowserClient } = await this.lib()
+        await this._db?.close?.()
         this._handle = handle
         const direct = new FsaFilesystem(handle)
         this._fs = writable ? direct : createOverlayFilesystem(direct)
-        this._db = createBrowserClient({ fs: this._fs, worker: false })
+        this._db = createBrowserClient({
+            storage: {
+                type: 'fsa',
+                handle,
+                access: writable ? 'readwrite' : 'overlay'
+            },
+            worker: true,
+            wasm: true
+        })
         this._rebuilt = new Set()
         await this._db.ready()
         // The on-disk namespace is the kind: .collections holds documents,
@@ -833,8 +842,17 @@ export default class {
                 // open document/file editor just becomes editable. Only the write
                 // plumbing changes — no navigation/selection state is touched
                 // (unlike connect(), which resets the whole view).
+                await this._db?.close?.()
                 this._fs = new FsaFilesystem(this._handle)
-                this._db = createBrowserClient({ fs: this._fs, worker: false })
+                this._db = createBrowserClient({
+                    storage: {
+                        type: 'fsa',
+                        handle: this._handle,
+                        access: 'readwrite'
+                    },
+                    worker: true,
+                    wasm: true
+                })
                 this._rebuilt = new Set()
                 await this._db.ready()
                 this.writable = true

@@ -123,7 +123,11 @@ describe('xattr', () => {
             JSON.stringify({ owner: 'dead', ts: Date.now() - 60_000 })
         )
         expect(store.read(adapterTarget, 'getxattr')).toEqual({})
-        expect(await Bun.file(store.lockPath(adapterTarget)).exists()).toBe(false)
+        // Kernel locks intentionally keep a persistent sentinel on Windows;
+        // ownership is the open handle and is released automatically on crash.
+        expect(await Bun.file(store.lockPath(adapterTarget)).exists()).toBe(
+            process.platform === 'win32'
+        )
     })
     test('Windows ADS updates serialize across processes without losing attributes', async () => {
         if (process.platform !== 'win32') return

@@ -21,6 +21,17 @@ import { parseStoredValue, stringifyStoredValue } from './value-codec.js'
 import { getXattr, listXattr, removeXattr, setXattr } from './xattr.js'
 import { rawFileKey } from '../core/raw-file.js'
 import { tryReleaseFileLock, waitAcquireFileLock } from './fs-lock.js'
+import { CollectionTransactionJournal } from './transactions.js'
+import {
+    ACCESS_XATTR,
+    FyloPermissionError,
+    applyAccessDescriptor,
+    descriptorAllows,
+    readAccessDescriptor,
+    restoreAccessDescriptor,
+    restoreAccessState,
+    snapshotAccessState
+} from '../security/access.js'
 
 /**
  * @typedef {import('../types/vendor.js').TTID} TTID
@@ -49,9 +60,8 @@ import { tryReleaseFileLock, waitAcquireFileLock } from './fs-lock.js'
  */
 
 /**
- * `writeDurable` replaces the target inode. Preserve only developer metadata
- * xattrs across JSON document rewrites; checksum xattrs are file-specific and
- * system metadata belongs to raw-file collections.
+ * `writeDurable` replaces the target inode. Preserve developer metadata and
+ * the protected-record access descriptor across JSON document rewrites.
  * @param {string} target
  * @returns {Array<[string, Uint8Array]>}
  */
@@ -59,7 +69,12 @@ function developerMetadataXattrs(target) {
     /** @type {Array<[string, Uint8Array]>} */
     const attributes = []
     for (const name of listXattr(target)) {
-        if (!name.startsWith(META_XATTR_PREFIX) && name !== META_UPDATED_XATTR) continue
+        if (
+            !name.startsWith(META_XATTR_PREFIX) &&
+            name !== META_UPDATED_XATTR &&
+            name !== ACCESS_XATTR
+        )
+            continue
         const value = getXattr(target, name)
         if (value !== null) attributes.push([name, value])
     }
@@ -81,7 +96,9 @@ function restoreMetadataXattrsExact(target, snapshot) {
     const expected = new Set(snapshot.map(([name]) => name))
     for (const name of listXattr(target)) {
         if (
-            (name.startsWith(META_XATTR_PREFIX) || name === META_UPDATED_XATTR) &&
+            (name.startsWith(META_XATTR_PREFIX) ||
+                name === META_UPDATED_XATTR ||
+                name === ACCESS_XATTR) &&
             !expected.has(name)
         ) {
             removeXattr(target, name)
@@ -121,6 +138,8 @@ export class FilesystemEngine {
     queryEngine
     /** @type {PrefixIndexStore} */
     index
+    /** @type {CollectionTransactionJournal} */
+    transactions
     /** @type {FyloSyncHooks | undefined} */
     sync
     /** @type {FyloSyncMode} */
@@ -195,6 +214,21 @@ export class FilesystemEngine {
         this.queryEngine = new FilesystemQueryEngine({
             index: this.index
         })
+        this.transactions = new CollectionTransactionJournal({
+            collectionRoot: this.collectionRoot.bind(this),
+            journalRoot: (collection) =>
+                path.join(
+                    this.root,
+                    '.fylo-transactions',
+                    this.namespaceDir(collection),
+                    collection
+                ),
+            eventPath: (collection) =>
+                path.join(this.collectionRoot(collection), 'events', `${collection}.ndjson`),
+            rebuild: this.rebuildCollectionIndexUnlocked.bind(this),
+            invalidate: this.invalidateQueryCache.bind(this),
+            onEvent: options.onEvent
+        })
     }
     /**
      * @param {string} collection
@@ -203,7 +237,10 @@ export class FilesystemEngine {
      */
     async publishDocumentEvent(collection, event) {
         await this.events.publish(collection, event)
-        await this.queue?.publishCollectionEvent(collection, event)
+        const publishQueue = async () => {
+            await this.queue?.publishCollectionEvent(collection, event)
+        }
+        if (!this.transactions.deferAfterCommit(publishQueue)) await publishQueue()
     }
     /**
      * On-disk namespace for a collection: `.buckets` for byte collections
@@ -323,7 +360,21 @@ export class FilesystemEngine {
      */
     async runSyncTask(collection, docId, operation, targetPath, task) {
         if (!this.sync?.onWrite && !this.sync?.onDelete && !this.backup) return
-        if (this.syncMode === 'fire-and-forget') {
+        const run = async () => {
+            if (this.syncMode !== 'fire-and-forget') {
+                try {
+                    await task()
+                } catch (cause) {
+                    throw new FyloSyncError({
+                        collection,
+                        docId,
+                        operation,
+                        path: targetPath,
+                        cause
+                    })
+                }
+                return
+            }
             void task().catch((cause) => {
                 const error = new FyloSyncError({
                     collection,
@@ -342,19 +393,8 @@ export class FilesystemEngine {
                     detail: cause instanceof Error ? cause.message : String(cause)
                 })
             })
-            return
         }
-        try {
-            await task()
-        } catch (cause) {
-            throw new FyloSyncError({
-                collection,
-                docId,
-                operation,
-                path: targetPath,
-                cause
-            })
-        }
+        if (!this.transactions.deferAfterCommit(run)) await run()
     }
     /** @param {FyloWriteSyncEvent} event @returns {Promise<void>} */
     async syncWrite(event) {
@@ -437,6 +477,55 @@ export class FilesystemEngine {
     /** @param {string} collection @returns {Promise<void>} */
     async requireCollection(collection) {
         if (!(await this.hasCollection(collection))) throw new CollectionNotFoundError(collection)
+        if (!this.transactions.isActive(collection)) await this.recoverCollection(collection)
+    }
+
+    /**
+     * Recovers an interrupted logical transaction under the same exclusive
+     * collection lock used by writers.
+     * @param {string} collection
+     * @returns {Promise<void>}
+     */
+    async recoverCollection(collection) {
+        const state = await this.transactions.state(collection)
+        if (state.state === 'stable') return
+        const owner = Bun.randomUUIDv7()
+        await this.storage.mkdir(this.metaRoot(collection))
+        await this.locks.acquireCollectionWrite(collection, owner)
+        try {
+            await this.transactions.recover(collection)
+        } finally {
+            await this.locks.releaseCollectionWrite(collection, owner)
+        }
+    }
+
+    /**
+     * Materializes one generation-consistent read, retrying if a concurrent
+     * transaction commits during the operation.
+     * @template T
+     * @param {string} collection
+     * @param {() => Promise<T>} read
+     * @returns {Promise<T>}
+     */
+    async readStable(collection, read) {
+        if (this.transactions.isActive(collection)) return await read()
+        return await this.transactions.readStable(collection, read, () =>
+            this.recoverCollection(collection)
+        )
+    }
+
+    /**
+     * Groups nested collection mutations into one durable rollback and
+     * generation boundary.
+     * @template T
+     * @param {string} collection
+     * @param {string} operation
+     * @param {() => Promise<T>} action
+     * @returns {Promise<T>}
+     */
+    async atomic(collection, operation, action) {
+        await this.requireCollection(collection)
+        return await this.withCollectionWriteLock(collection, action, operation)
     }
     /**
      * Refuses to reinterpret append-only WORM files as independent live docs
@@ -552,9 +641,19 @@ export class FilesystemEngine {
      * @param {Record<string, any>} nextDoc
      * @param {Record<string, any>} oldDoc
      * @param {Record<string, any>=} meta
+     * @param {number=} actorUid
+     * @param {{ uid: number, mode?: number }=} nextAccess
      * @returns {Promise<TTID>}
      */
-    async updateDocument(collection, docId, nextDoc, oldDoc, meta = undefined) {
+    async updateDocument(
+        collection,
+        docId,
+        nextDoc,
+        oldDoc,
+        meta = undefined,
+        actorUid = undefined,
+        nextAccess = undefined
+    ) {
         const metaUpdates = meta === undefined ? undefined : metaMutations(meta)
         await validateDocId(docId)
         if (this.wormEnabled()) throw new Error('Update is not allowed in WORM mode')
@@ -569,18 +668,35 @@ export class FilesystemEngine {
                 const existing =
                     oldDoc ?? (await this.documents.readStoredDoc(collection, docId))?.data
                 if (!existing) return docId
+                await this.assertDocumentAccess(collection, docId, actorUid, 'write')
+                await this.transactions.capture(targetPath)
                 await this.removeIndexes(collection, docId, existing)
                 const metadata = developerMetadataXattrs(targetPath)
+                const accessState = await snapshotAccessState(targetPath)
                 try {
                     await this.documents.writeStoredDoc(collection, docId, nextDoc)
                     restoreDeveloperMetadataXattrs(targetPath, metadata)
                     if (metaUpdates?.length) this.applyDocMetaMutations(targetPath, metaUpdates)
+                    if (nextAccess) {
+                        await applyAccessDescriptor(targetPath, {
+                            ...nextAccess,
+                            ...(accessState.descriptor
+                                ? {
+                                      uid: accessState.descriptor.uid,
+                                      gid: accessState.descriptor.gid
+                                  }
+                                : {})
+                        })
+                    } else {
+                        await restoreAccessState(targetPath, accessState)
+                    }
                     await this.rebuildIndexes(collection, docId, nextDoc)
                 } catch (error) {
                     try {
                         await this.removeIndexes(collection, docId, nextDoc)
                         await this.documents.writeStoredDoc(collection, docId, existing)
                         restoreDeveloperMetadataXattrs(targetPath, metadata)
+                        await restoreAccessState(targetPath, accessState)
                         await this.rebuildIndexes(collection, docId, existing)
                     } catch (rollbackError) {
                         throw new AggregateError(
@@ -612,8 +728,15 @@ export class FilesystemEngine {
             }
         })
     }
-    /** @template T @param {string} collection @param {() => Promise<T>} action @returns {Promise<T>} */
-    async withCollectionWriteLock(collection, action) {
+    /**
+     * @template T
+     * @param {string} collection
+     * @param {() => Promise<T>} action
+     * @param {string} [operation]
+     * @returns {Promise<T>}
+     */
+    async withCollectionWriteLock(collection, action, operation = 'write') {
+        if (this.transactions.isActive(collection)) return await action()
         const previous = this.writeLanes.get(collection) ?? Promise.resolve()
         /** @type {() => void} */
         let release = () => {}
@@ -668,7 +791,8 @@ export class FilesystemEngine {
                     })
                 }
             })
-            return await action()
+            await this.transactions.recover(collection)
+            return await this.transactions.run(collection, operation, action)
         } finally {
             try {
                 await this.locks.releaseCollectionWrite(collection, owner)
@@ -750,6 +874,13 @@ export class FilesystemEngine {
                 indexedDocs: 0
             }
         }
+        await this.requireCollection(collection)
+        return await this.readStable(collection, () =>
+            this.inspectCollectionAtGeneration(collection)
+        )
+    }
+    /** @param {string} collection @returns {Promise<CollectionInspectResult>} */
+    async inspectCollectionAtGeneration(collection) {
         const kind = await this.collectionKind(collection)
         const [docIds, deletedDocIds, indexedDocs] = await Promise.all([
             kind === 'file'
@@ -878,9 +1009,15 @@ export class FilesystemEngine {
         if ((await this.collectionKind(collection)) === 'file') return data
         return /** @type {Record<string, any>} */ (await materializeDoc(collection, data))
     }
-    /** @param {string} collection @param {StoreQuery | undefined} [query] @returns {Promise<Array<Record<string, Record<string, any>>>>} */
-    async docResults(collection, query) {
+    /** @param {string} collection @param {StoreQuery | undefined} [query] @param {number=} actorUid @returns {Promise<Array<Record<string, Record<string, any>>>>} */
+    async docResults(collection, query, actorUid = undefined) {
         await this.requireCollection(collection)
+        return await this.readStable(collection, () =>
+            this.docResultsAtGeneration(collection, query, actorUid)
+        )
+    }
+    /** @param {string} collection @param {StoreQuery | undefined} [query] @param {number=} actorUid @returns {Promise<Array<Record<string, Record<string, any>>>>} */
+    async docResultsAtGeneration(collection, query, actorUid = undefined) {
         const cacheVersion = await this.queryCacheVersion(collection)
         const cachedIds = await this.cachedQueryIds('active', collection, query, cacheVersion)
         const ids =
@@ -908,17 +1045,24 @@ export class FilesystemEngine {
             // fields still require a rebuild after a schema bump.
             const data = await this.materializeRecord(collection, stored.data)
             if (!this.queryEngine.matchesQuery(id, data, query, stored)) continue
-            results.push({ [id]: data })
             resultIds.push(id)
+            if (!(await this.canAccessDocument(collection, id, actorUid, 'read'))) continue
+            results.push({ [id]: data })
             if (limit && results.length >= limit) break
         }
         if (!cachedIds)
             await this.cacheQueryIds('active', collection, query, cacheVersion, resultIds)
         return results
     }
-    /** @param {string} collection @param {StoreQuery | undefined} [query] @returns {Promise<Array<Record<string, Record<string, any>>>>} */
-    async deletedDocResults(collection, query) {
+    /** @param {string} collection @param {StoreQuery | undefined} [query] @param {number=} actorUid @returns {Promise<Array<Record<string, Record<string, any>>>>} */
+    async deletedDocResults(collection, query, actorUid = undefined) {
         await this.requireCollection(collection)
+        return await this.readStable(collection, () =>
+            this.deletedDocResultsAtGeneration(collection, query, actorUid)
+        )
+    }
+    /** @param {string} collection @param {StoreQuery | undefined} [query] @param {number=} actorUid @returns {Promise<Array<Record<string, Record<string, any>>>>} */
+    async deletedDocResultsAtGeneration(collection, query, actorUid = undefined) {
         const cacheVersion = await this.queryCacheVersion(collection)
         const cachedIds = await this.cachedQueryIds('deleted', collection, query, cacheVersion)
         const ids =
@@ -946,8 +1090,14 @@ export class FilesystemEngine {
                 )
             )
                 continue
-            results.push({ [id]: data })
             resultIds.push(id)
+            if (
+                !(await this.canAccessDocument(collection, id, actorUid, 'read', {
+                    deleted: true
+                }))
+            )
+                continue
+            results.push({ [id]: data })
             if (limit && results.length >= limit) break
         }
         if (!cachedIds)
@@ -965,74 +1115,83 @@ export class FilesystemEngine {
     /** @param {string} collection @returns {Promise<CollectionRebuildResult>} */
     async rebuildCollection(collection) {
         await this.requireCollection(collection)
-        return await this.withCollectionWriteLock(collection, async () => {
-            await this.ensureCollection(collection)
-            const kind = await this.collectionKind(collection)
-            const docIds =
-                kind === 'file'
-                    ? await this.files.listFileIds(collection)
-                    : await this.documents.listDocIds(collection)
-            let indexedDocs = 0
-            const objectKeys = new Map()
-            await this.resetIndex(collection)
-            for (const docId of docIds) {
-                let stored
-                try {
-                    stored =
-                        kind === 'file'
-                            ? await this.files.readStoredFile(collection, docId)
-                            : await this.documents.readStoredDoc(collection, docId)
-                } catch (err) {
-                    // A raw file whose key xattr was stripped (copied without
-                    // xattrs) is repaired to its default `/<filename>` key —
-                    // bytes are truth; a custom key is not recoverable from them.
-                    if (
-                        kind !== 'file' ||
-                        !/metadata is missing/.test(/** @type {Error} */ (err).message)
-                    ) {
-                        throw err
-                    }
-                    const key = await this.files.repairKey(collection, docId)
-                    emitFyloEvent(this.onEvent, {
-                        type: 'file.key-repaired',
-                        collection,
-                        docId,
-                        key
-                    })
-                    stored = await this.files.readStoredFile(collection, docId)
-                }
-                if (!stored) continue
-                if (kind === 'file') {
-                    const key = String(stored.data.key)
-                    const existingId = objectKeys.get(key)
-                    if (existingId && existingId !== docId) {
-                        throw new Error(
-                            `Duplicate object key "${key}" belongs to ${existingId} and ${docId}`
-                        )
-                    }
-                    objectKeys.set(key, docId)
-                }
-                await this.index.putDocument(collection, docId, stored.data)
-                indexedDocs++
-            }
-            emitFyloEvent(this.onEvent, {
-                type: 'index.rebuilt',
-                collection,
-                docsScanned: docIds.length,
-                indexedDocs,
-                worm: this.wormEnabled()
-            })
-            return {
-                collection,
-                kind,
-                worm: this.wormEnabled(),
-                docsScanned: docIds.length,
-                indexedDocs
-            }
-        })
+        return await this.withCollectionWriteLock(
+            collection,
+            () => this.rebuildCollectionIndexUnlocked(collection),
+            'rebuild'
+        )
     }
-    /** @param {string} collection @param {TTID} docId @param {Record<string, any>} doc @param {Record<string, any>=} meta @returns {Promise<void>} */
-    async putDocument(collection, docId, doc, meta) {
+
+    /**
+     * Rebuilds only derived index state. The caller must hold the collection
+     * write lock; transaction recovery uses this path before readers resume.
+     * @param {string} collection
+     * @returns {Promise<CollectionRebuildResult>}
+     */
+    async rebuildCollectionIndexUnlocked(collection) {
+        await this.ensureCollection(collection)
+        const kind = await this.collectionKind(collection)
+        const docIds =
+            kind === 'file'
+                ? await this.files.listFileIds(collection)
+                : await this.documents.listDocIds(collection)
+        let indexedDocs = 0
+        const objectKeys = new Map()
+        await this.resetIndex(collection)
+        for (const docId of docIds) {
+            let stored
+            try {
+                stored =
+                    kind === 'file'
+                        ? await this.files.readStoredFile(collection, docId)
+                        : await this.documents.readStoredDoc(collection, docId)
+            } catch (err) {
+                if (
+                    kind !== 'file' ||
+                    !/metadata is missing/.test(/** @type {Error} */ (err).message)
+                ) {
+                    throw err
+                }
+                const key = await this.files.repairKey(collection, docId)
+                emitFyloEvent(this.onEvent, {
+                    type: 'file.key-repaired',
+                    collection,
+                    docId,
+                    key
+                })
+                stored = await this.files.readStoredFile(collection, docId)
+            }
+            if (!stored) continue
+            if (kind === 'file') {
+                const key = String(stored.data.key)
+                const existingId = objectKeys.get(key)
+                if (existingId && existingId !== docId) {
+                    throw new Error(
+                        `Duplicate object key "${key}" belongs to ${existingId} and ${docId}`
+                    )
+                }
+                objectKeys.set(key, docId)
+            }
+            await this.index.putDocument(collection, docId, stored.data)
+            indexedDocs++
+        }
+        emitFyloEvent(this.onEvent, {
+            type: 'index.rebuilt',
+            collection,
+            docsScanned: docIds.length,
+            indexedDocs,
+            worm: this.wormEnabled()
+        })
+        return {
+            collection,
+            kind,
+            worm: this.wormEnabled(),
+            docsScanned: docIds.length,
+            indexedDocs
+        }
+    }
+    /** @param {string} collection @param {TTID} docId @param {Record<string, any>} doc @param {Record<string, any>=} meta @param {{ uid: number, mode?: number }=} access @returns {Promise<void>} */
+    async putDocument(collection, docId, doc, meta, access) {
         const metaUpdates = meta === undefined ? undefined : metaMutations(meta)
         await validateDocId(docId)
         await this.requireCollection(collection)
@@ -1050,12 +1209,19 @@ export class FilesystemEngine {
                 }
                 if (existing && this.wormEnabled())
                     throw new Error('Update is not allowed in WORM mode')
+                if (existing) {
+                    await this.assertDocumentAccess(collection, docId, access?.uid, 'write')
+                }
+                await this.transactions.capture(targetPath)
                 if (existing) await this.removeIndexes(collection, docId, existing.data)
                 const metadata = existing ? developerMetadataXattrs(targetPath) : []
+                const previousAccess = existing ? await snapshotAccessState(targetPath) : null
                 try {
                     await this.documents.writeStoredDoc(collection, docId, doc)
                     restoreDeveloperMetadataXattrs(targetPath, metadata)
                     if (metaUpdates?.length) this.applyDocMetaMutations(targetPath, metaUpdates)
+                    if (access) await applyAccessDescriptor(targetPath, access)
+                    else await restoreAccessState(targetPath, previousAccess)
                     await this.rebuildIndexes(collection, docId, doc)
                 } catch (error) {
                     try {
@@ -1063,6 +1229,7 @@ export class FilesystemEngine {
                         if (existing) {
                             await this.documents.writeStoredDoc(collection, docId, existing.data)
                             restoreDeveloperMetadataXattrs(targetPath, metadata)
+                            await restoreAccessState(targetPath, previousAccess)
                             await this.rebuildIndexes(collection, docId, existing.data)
                         } else {
                             await this.documents.removeStoredDoc(collection, docId)
@@ -1123,10 +1290,14 @@ export class FilesystemEngine {
                     throw new Error(`Document is soft-deleted; restore it before writing: ${docId}`)
                 }
                 if (existing) throw new Error(`Raw file already exists: ${docId}`)
-                const { key } = this.files.resolveMetadata(docId, source)
+                const { key, extension } = this.files.resolveMetadata(docId, source)
                 await this.assertObjectKeyAvailable(collection, key)
+                await this.transactions.capture(
+                    path.join(this.docsRoot(collection), docId.slice(0, 2), `${docId}${extension}`)
+                )
                 const stored = await this.files.writeStoredFile(collection, docId, source)
                 try {
+                    if (source.access) await applyAccessDescriptor(stored.path, source.access)
                     await this.rebuildIndexes(collection, docId, stored.data)
                 } catch (error) {
                     /** @type {unknown[]} */
@@ -1194,31 +1365,48 @@ export class FilesystemEngine {
             }
         }
     }
-    /** @param {string} collection @param {TTID} oldId @param {TTID} newId @param {Record<string, any>} patch @param {Record<string, any>} oldDoc @returns {Promise<TTID>} */
-    async patchDocument(collection, oldId, newId, patch, oldDoc) {
+    /** @param {string} collection @param {TTID} oldId @param {TTID} newId @param {Record<string, any>} patch @param {Record<string, any>} oldDoc @param {number=} actorUid @returns {Promise<TTID>} */
+    async patchDocument(collection, oldId, newId, patch, oldDoc, actorUid) {
         if (this.wormEnabled()) throw new Error('Update is not allowed in WORM mode')
         await this.requireCollection(collection)
         await this.requireCollectionKind(collection, 'document')
         const existing = oldDoc ?? (await this.documents.readStoredDoc(collection, oldId))?.data
         if (!existing) return oldId
         const nextDoc = { ...existing, ...patch }
-        return await this.updateDocument(collection, oldId, nextDoc, existing)
+        return await this.updateDocument(collection, oldId, nextDoc, existing, undefined, actorUid)
     }
-    /** @param {string} collection @param {TTID} oldId @param {TTID} newId @param {Record<string, any>} doc @param {Record<string, any>} [oldDoc] @param {Record<string, any>} [meta] @returns {Promise<TTID>} */
-    async replaceDocumentVersion(collection, oldId, newId, doc, oldDoc, meta) {
+    /** @param {string} collection @param {TTID} oldId @param {TTID} newId @param {Record<string, any>} doc @param {Record<string, any>} [oldDoc] @param {Record<string, any>} [meta] @param {{ uid: number, mode?: number }=} access @returns {Promise<TTID>} */
+    async replaceDocumentVersion(collection, oldId, newId, doc, oldDoc, meta, access) {
         if (this.wormEnabled()) throw new Error('Update is not allowed in WORM mode')
         await this.requireCollection(collection)
         await this.requireCollectionKind(collection, 'document')
-        if (oldDoc) return await this.updateDocument(collection, oldId, doc, oldDoc, meta)
+        if (oldDoc)
+            return await this.updateDocument(
+                collection,
+                oldId,
+                doc,
+                oldDoc,
+                meta,
+                access?.uid,
+                access
+            )
         const stored = await this.documents.readStoredDoc(collection, oldId)
         if (!stored && (await this.documents.readDeletedDoc(collection, oldId))) {
             throw new Error(`Document is soft-deleted; restore it before writing: ${oldId}`)
         }
         if (!stored) return oldId
-        return await this.updateDocument(collection, oldId, doc, stored.data, meta)
+        return await this.updateDocument(
+            collection,
+            oldId,
+            doc,
+            stored.data,
+            meta,
+            access?.uid,
+            access
+        )
     }
-    /** @param {string} collection @param {TTID} docId @returns {Promise<void>} */
-    async deleteDocument(collection, docId) {
+    /** @param {string} collection @param {TTID} docId @param {number=} actorUid @returns {Promise<void>} */
+    async deleteDocument(collection, docId, actorUid) {
         await validateDocId(docId)
         if (this.wormEnabled()) throw new Error('Delete is not allowed in WORM mode')
         await this.requireCollection(collection)
@@ -1234,7 +1422,6 @@ export class FilesystemEngine {
                         ? await this.files.readStoredFile(collection, docId)
                         : await this.documents.readStoredDoc(collection, docId)
                 if (!existing) return
-                await this.removeIndexes(collection, docId, existing.data)
                 const deletedAt = Date.now()
                 // Capture the live docs/ path before the move so the S3 backup can
                 // drop the old object (files carry an arbitrary extension, so this
@@ -1243,6 +1430,16 @@ export class FilesystemEngine {
                     (kind === 'file'
                         ? await this.files.findPath(this.docsRoot(collection), docId)
                         : this.docPath(collection, docId)) ?? undefined
+                if (!previousPath) throw new Error(`Document path not found: ${docId}`)
+                await this.assertDocumentAccess(collection, docId, actorUid, 'write')
+                const pendingDeletedPath = path.join(
+                    this.deletedRoot(collection),
+                    docId.slice(0, 2),
+                    path.basename(previousPath)
+                )
+                await this.transactions.capture(previousPath)
+                await this.transactions.capture(pendingDeletedPath)
+                await this.removeIndexes(collection, docId, existing.data)
                 const deletedPath =
                     kind === 'file'
                         ? await this.files.softDeleteStoredFile(collection, docId, deletedAt)
@@ -1270,8 +1467,8 @@ export class FilesystemEngine {
             }
         })
     }
-    /** @param {string} collection @param {TTID} docId @returns {Promise<TTID>} */
-    async restoreDocument(collection, docId) {
+    /** @param {string} collection @param {TTID} docId @param {number=} actorUid @returns {Promise<TTID>} */
+    async restoreDocument(collection, docId, actorUid) {
         await validateDocId(docId)
         if (this.wormEnabled()) throw new Error('Restore is not allowed in WORM mode')
         await this.requireCollection(collection)
@@ -1297,10 +1494,26 @@ export class FilesystemEngine {
                 if (kind === 'file') {
                     await this.assertObjectKeyAvailable(collection, String(deleted.data.key), docId)
                 }
+                const deletedPath =
+                    kind === 'file'
+                        ? /** @type {import('./files.js').StoredRawFile} */ (deleted).path
+                        : this.deletedPath(collection, docId)
+                await this.assertDocumentAccess(collection, docId, actorUid, 'write', {
+                    deleted: true
+                })
+                const access = await readAccessDescriptor(deletedPath)
+                const activePath = path.join(
+                    this.docsRoot(collection),
+                    docId.slice(0, 2),
+                    path.basename(deletedPath)
+                )
+                await this.transactions.capture(deletedPath)
+                await this.transactions.capture(activePath)
                 const restoredPath =
                     kind === 'file'
                         ? await this.files.restoreStoredFile(collection, docId, Date.now())
                         : await this.documents.restoreStoredDoc(collection, docId, Date.now())
+                await restoreAccessDescriptor(restoredPath, access)
                 await this.rebuildIndexes(collection, docId, deleted.data)
                 await this.publishDocumentEvent(collection, {
                     ts: Date.now(),
@@ -1324,8 +1537,8 @@ export class FilesystemEngine {
             }
         })
     }
-    /** @param {string} collection @param {TTID} docId @param {boolean} [onlyId] @returns {any} */
-    getDoc(collection, docId, onlyId = false) {
+    /** @param {string} collection @param {TTID} docId @param {boolean} [onlyId] @param {number=} actorUid @returns {any} */
+    getDoc(collection, docId, onlyId = false, actorUid = undefined) {
         // Validation is async now (ttid binary), so it runs inside each async
         // entry below rather than in this sync builder.
         const engine = this
@@ -1335,6 +1548,7 @@ export class FilesystemEngine {
                 if (Object.keys(doc).length > 0) yield onlyId ? Object.keys(doc).shift() : doc
                 for await (const event of engine.events.listen(collection)) {
                     if (event.action !== 'insert' || event.id !== docId || !event.doc) continue
+                    await engine.assertDocumentAccess(collection, docId, actorUid, 'read')
                     const doc = await engine.decodeEncrypted(collection, event.doc)
                     yield onlyId ? event.id : { [event.id]: doc }
                 }
@@ -1344,55 +1558,72 @@ export class FilesystemEngine {
                 await validateDocId(docId)
                 await engine.requireCollection(collection)
                 await engine.assertNoLegacyWormArtifacts(collection)
-                const stored = await engine.readStoredRecord(collection, docId)
-                if (!stored) return {}
-                const data = await engine.materializeRecord(collection, stored.data)
-                return { [docId]: data }
+                return await engine.readStable(collection, async () => {
+                    const stored = await engine.readStoredRecord(collection, docId)
+                    if (!stored) return {}
+                    await engine.assertDocumentAccess(collection, docId, actorUid, 'read')
+                    const data = await engine.materializeRecord(collection, stored.data)
+                    return { [docId]: data }
+                })
             },
             async *onDelete() {
                 await validateDocId(docId)
                 await engine.requireCollection(collection)
                 for await (const event of engine.events.listen(collection)) {
-                    if (event.action === 'delete' && event.id === docId) yield event.id
+                    if (event.action !== 'delete' || event.id !== docId) continue
+                    if (
+                        await engine.canAccessDocument(collection, docId, actorUid, 'read', {
+                            deleted: true
+                        })
+                    ) {
+                        yield event.id
+                    }
                 }
             }
         }
     }
-    /** @param {string} collection @param {TTID} docId @param {boolean} [onlyId] @returns {Promise<Record<TTID, Record<string, any>> | TTID | null>} */
-    async getLatest(collection, docId, onlyId = false) {
+    /** @param {string} collection @param {TTID} docId @param {boolean} [onlyId] @param {number=} actorUid @returns {Promise<Record<TTID, Record<string, any>> | TTID | null>} */
+    async getLatest(collection, docId, onlyId = false, actorUid = undefined) {
         await validateDocId(docId)
         await this.requireCollection(collection)
         await this.assertNoLegacyWormArtifacts(collection)
-        const stored = await this.readStoredRecord(collection, docId)
-        if (!stored) return onlyId ? null : {}
-        if (onlyId) return stored.id
-        const data = await this.materializeRecord(collection, stored.data)
-        return { [stored.id]: data }
+        return await this.readStable(collection, async () => {
+            const stored = await this.readStoredRecord(collection, docId)
+            if (!stored) return onlyId ? null : {}
+            await this.assertDocumentAccess(collection, docId, actorUid, 'read')
+            if (onlyId) return stored.id
+            const data = await this.materializeRecord(collection, stored.data)
+            return { [stored.id]: data }
+        })
     }
-    /** @param {string} collection @param {TTID} docId @returns {Promise<Uint8Array>} */
-    async getFileBytes(collection, docId) {
+    /** @param {string} collection @param {TTID} docId @param {number=} actorUid @returns {Promise<Uint8Array>} */
+    async getFileBytes(collection, docId, actorUid = undefined) {
         await this.requireCollection(collection)
         await this.requireCollectionKind(collection, 'file')
-        return await this.files.readBytes(collection, docId)
+        await this.assertDocumentAccess(collection, docId, actorUid, 'read')
+        return await this.readStable(collection, () => this.files.readBytes(collection, docId))
     }
     /**
      * @param {string} collection
      * @param {TTID} docId
      * @param {{ start?: number, end?: number }} [range] half-open byte range [start, end)
+     * @param {number=} actorUid
      * @returns {Promise<ReadableStream<Uint8Array>>}
      */
-    async getFileStream(collection, docId, range) {
+    async getFileStream(collection, docId, range, actorUid = undefined) {
         await this.requireCollection(collection)
         await this.requireCollectionKind(collection, 'file')
+        await this.assertDocumentAccess(collection, docId, actorUid, 'read')
         return await this.files.readStream(collection, docId, range)
     }
     /**
      * Reassigns a raw file's durable object key in place — no byte rewrite,
      * new key indexed immediately. Prefix and root keys expand like `put()`.
      * @param {string} collection @param {string} docId @param {string} key
+     * @param {number=} actorUid
      * @returns {Promise<string>} the expanded key now assigned
      */
-    async rekeyFile(collection, docId, key) {
+    async rekeyFile(collection, docId, key, actorUid = undefined) {
         await validateDocId(docId)
         if (this.wormEnabled()) throw new Error('Rekey is not allowed in WORM mode')
         await this.requireCollection(collection)
@@ -1401,11 +1632,13 @@ export class FilesystemEngine {
         const nextKey = await this.withCollectionWriteLock(collection, async () => {
             const stored = await this.files.readStoredFile(collection, docId)
             if (!stored) throw new Error(`Raw file not found: ${docId}`)
+            await this.assertDocumentAccess(collection, docId, actorUid, 'write')
             targetPath = stored.path
             const next = rawFileKey(key, docId, stored.data.extension)
             if (next === stored.data.key) return next
             await this.assertObjectKeyAvailable(collection, next, docId)
             const data = { ...stored.data, key: next }
+            await this.transactions.capture(stored.path)
             setXattr(stored.path, KEY_XATTR, next)
             try {
                 await this.removeIndexes(collection, docId, stored.data)
@@ -1505,14 +1738,21 @@ export class FilesystemEngine {
      * key-xattr read each — no content is hashed for them.
      * @param {string} collection
      * @param {string} prefix folder path starting and ending with '/'
+     * @param {number=} actorUid
      * @returns {Promise<{ prefix: string, files: Record<string, Record<string, any>>, folders: string[] }>}
      */
-    async listFolder(collection, prefix) {
+    async listFolder(collection, prefix, actorUid = undefined) {
         if (typeof prefix !== 'string' || !prefix.startsWith('/') || !prefix.endsWith('/')) {
             throw new Error("Folder prefix must start and end with '/'")
         }
         await this.requireCollection(collection)
         await this.requireCollectionKind(collection, 'file')
+        return await this.readStable(collection, () =>
+            this.listFolderAtGeneration(collection, prefix, actorUid)
+        )
+    }
+    /** @param {string} collection @param {string} prefix @param {number=} actorUid */
+    async listFolderAtGeneration(collection, prefix, actorUid = undefined) {
         const candidates =
             (await this.index.candidateDocIds(collection, 'key', { $like: `${prefix}%` })) ??
             new Set(await this.files.listFileIds(collection))
@@ -1521,6 +1761,9 @@ export class FilesystemEngine {
         /** @type {Set<string>} */
         const folders = new Set()
         for (const docId of candidates) {
+            if (!(await this.canAccessDocument(collection, String(docId), actorUid, 'read'))) {
+                continue
+            }
             const target = await this.files.findPath(this.docsRoot(collection), String(docId))
             if (!target) continue
             let key
@@ -1564,17 +1807,90 @@ export class FilesystemEngine {
         }
     }
     /**
+     * Resolves the inode that carries a record's native owner, mode, and
+     * protected-record marker.
+     * @param {string} collection
+     * @param {string} docId
+     * @param {boolean} [deleted]
+     * @returns {Promise<string | null>}
+     */
+    async accessTarget(collection, docId, deleted = false) {
+        await validateDocId(docId)
+        await this.requireCollection(collection)
+        const kind = await this.collectionKind(collection)
+        if (kind === 'file') {
+            return await this.files.findPath(
+                deleted ? this.deletedRoot(collection) : this.docsRoot(collection),
+                docId
+            )
+        }
+        const target = deleted
+            ? this.deletedPath(collection, docId)
+            : this.docPath(collection, docId)
+        return (await this.storage.exists(target)) ? target : null
+    }
+    /**
+     * Open records have no descriptor and retain Fylo's existing unrestricted
+     * behavior. Protected records use owner bits for the matching UID and
+     * other bits for anonymous or non-owner callers; group evaluation is out
+     * of scope until callers can provide group membership.
+     * @param {string} collection
+     * @param {string} docId
+     * @param {number | undefined} actorUid
+     * @param {'read' | 'write'} operation
+     * @param {{ deleted?: boolean }} [options]
+     * @returns {Promise<import('../security/access.js').FyloAccessDescriptor | null>}
+     */
+    async assertDocumentAccess(collection, docId, actorUid, operation, options = {}) {
+        const target = await this.accessTarget(collection, docId, options.deleted === true)
+        if (!target) return null
+        const descriptor = await readAccessDescriptor(target)
+        if (!descriptor) return null
+        if (!descriptorAllows(descriptor, actorUid, operation)) {
+            throw new FyloPermissionError({ collection, docId, operation })
+        }
+        return descriptor
+    }
+    /**
+     * @param {string} collection
+     * @param {string} docId
+     * @param {number | undefined} actorUid
+     * @param {'read' | 'write'} operation
+     * @param {{ deleted?: boolean }} [options]
+     */
+    async canAccessDocument(collection, docId, actorUid, operation, options = {}) {
+        try {
+            await this.assertDocumentAccess(collection, docId, actorUid, operation, options)
+            return true
+        } catch (error) {
+            if (error instanceof FyloPermissionError) return false
+            throw error
+        }
+    }
+    /**
+     * @param {string} collection
+     * @param {string} docId
+     * @returns {Promise<import('../security/access.js').FyloAccessDescriptor | null>}
+     */
+    async documentAccessDescriptor(collection, docId) {
+        const target = await this.accessTarget(collection, docId)
+        return target ? await readAccessDescriptor(target) : null
+    }
+    /**
      * Bulk metadata write: sets every pair in `record` (values are stored
      * JSON-encoded, so they round-trip typed); a `null` value removes the
      * entry. One index refresh covers the whole batch.
-     * @param {string} collection @param {string} docId @param {Record<string, any>} record
+     * @param {string} collection @param {string} docId @param {Record<string, any>} record @param {number=} actorUid
      * @returns {Promise<void>}
      */
-    async setDocMetaRecord(collection, docId, record) {
+    async setDocMetaRecord(collection, docId, record, actorUid = undefined) {
         const mutations = metaMutations(record)
         if (mutations.length === 0) return
-        await this.updateDocMeta(collection, docId, (target) =>
-            this.applyDocMetaMutations(target, mutations)
+        await this.updateDocMeta(
+            collection,
+            docId,
+            (target) => this.applyDocMetaMutations(target, mutations),
+            actorUid
         )
     }
     /** @param {string} target @param {Array<[string, string | null]>} mutations */
@@ -1618,21 +1934,26 @@ export class FilesystemEngine {
     /**
      * Replaces the complete developer metadata record. Keys missing from the
      * authoritative record are removed through the same failure-atomic batch.
-     * @param {string} collection @param {string} docId @param {Record<string, any>} record
+     * @param {string} collection @param {string} docId @param {Record<string, any>} record @param {number=} actorUid
      * @returns {Promise<void>}
      */
-    async replaceDocMetaRecord(collection, docId, record) {
+    async replaceDocMetaRecord(collection, docId, record, actorUid = undefined) {
         metaMutations(record)
-        await this.updateDocMeta(collection, docId, (target) => {
-            const current = this.files.readMeta(target) ?? {}
-            /** @type {Record<string, any>} */
-            const replacement = { ...record }
-            for (const name of Object.keys(current)) {
-                if (!Object.hasOwn(record, name)) replacement[name] = null
-            }
-            const mutations = metaMutations(replacement)
-            if (mutations.length > 0) this.applyDocMetaMutations(target, mutations)
-        })
+        await this.updateDocMeta(
+            collection,
+            docId,
+            (target) => {
+                const current = this.files.readMeta(target) ?? {}
+                /** @type {Record<string, any>} */
+                const replacement = { ...record }
+                for (const name of Object.keys(current)) {
+                    if (!Object.hasOwn(record, name)) replacement[name] = null
+                }
+                const mutations = metaMutations(replacement)
+                if (mutations.length > 0) this.applyDocMetaMutations(target, mutations)
+            },
+            actorUid
+        )
     }
     /** @param {string} collection @param {string} docId @returns {Promise<number>} */
     async docMetaUpdatedAt(collection, docId) {
@@ -1644,10 +1965,10 @@ export class FilesystemEngine {
      * Applies a metadata mutation; file collections carry meta in their
      * indexed manifests, so the doc's index entries are refreshed under the
      * collection write lock.
-     * @param {string} collection @param {string} docId @param {(target: string) => void} mutate
+     * @param {string} collection @param {string} docId @param {(target: string) => void} mutate @param {number=} actorUid
      * @returns {Promise<void>}
      */
-    async updateDocMeta(collection, docId, mutate) {
+    async updateDocMeta(collection, docId, mutate, actorUid = undefined) {
         if (this.wormEnabled()) throw new Error('Metadata update is not allowed in WORM mode')
         await this.requireCollection(collection)
         let targetPath = ''
@@ -1657,14 +1978,17 @@ export class FilesystemEngine {
                 throw new Error(`Unable to acquire filesystem lock for ${docId}`)
             }
             try {
+                await this.assertDocumentAccess(collection, docId, actorUid, 'write')
                 if ((await this.collectionKind(collection)) !== 'file') {
                     targetPath = await this.metaTarget(collection, docId)
+                    await this.transactions.capture(targetPath)
                     mutate(targetPath)
                     return
                 }
                 const before = await this.files.readStoredFile(collection, docId)
                 if (!before) throw new Error(`Raw file not found: ${docId}`)
                 targetPath = before.path
+                await this.transactions.capture(targetPath)
                 const metadata = snapshotMetadataXattrs(before.path)
                 /** @type {StoredRecord | null} */
                 let after = null
@@ -1703,30 +2027,36 @@ export class FilesystemEngine {
      * Returns the complete canonical metadata record plus developer metadata.
      * System fields win over colliding developer keys so callers always
      * receive canonical identifiers, timestamps, and raw-file descriptors.
-     * @param {string} collection @param {string} docId
+     * @param {string} collection @param {string} docId @param {number=} actorUid
      * @returns {Promise<Record<string, any>>}
      */
-    async getDocMetadata(collection, docId) {
-        const metadata = await this.listDocMeta(collection, docId)
-        const stored = await this.readStoredRecord(collection, /** @type {TTID} */ (docId))
-        if (!stored) return metadata
-        const canonical = Object.assign(Object.create(null), {
-            id: stored.id,
-            mtime: stored.updatedAt,
-            updatedAt: stored.updatedAt,
-            createdAt: stored.createdAt
+    async getDocMetadata(collection, docId, actorUid = undefined) {
+        await this.requireCollection(collection)
+        return await this.readStable(collection, async () => {
+            await this.assertDocumentAccess(collection, docId, actorUid, 'read')
+            const metadata = await this.listDocMeta(collection, docId)
+            const stored = await this.readStoredRecord(collection, /** @type {TTID} */ (docId))
+            if (!stored) return metadata
+            const canonical = Object.assign(Object.create(null), {
+                id: stored.id,
+                mtime: stored.updatedAt,
+                updatedAt: stored.updatedAt,
+                createdAt: stored.createdAt
+            })
+            if ((await this.collectionKind(collection)) === 'file') {
+                const { meta: _custom, ...fileMetadata } = stored.data
+                Object.assign(canonical, fileMetadata)
+            }
+            const access = await this.documentAccessDescriptor(collection, docId)
+            if (access) Object.assign(canonical, { uid: access.uid, mode: access.mode })
+            return Object.assign(Object.create(null), metadata, canonical)
         })
-        if ((await this.collectionKind(collection)) === 'file') {
-            const { meta: _custom, ...fileMetadata } = stored.data
-            Object.assign(canonical, fileMetadata)
-        }
-        return Object.assign(Object.create(null), metadata, canonical)
     }
-    /** @param {string} collection @param {StoreQuery | undefined} query @returns {any} */
-    findDocs(collection, query) {
+    /** @param {string} collection @param {StoreQuery | undefined} query @param {number=} actorUid @returns {any} */
+    findDocs(collection, query, actorUid = undefined) {
         const engine = this
         const collectDocs = async function* () {
-            const docs = await engine.docResults(collection, query)
+            const docs = await engine.docResults(collection, query, actorUid)
             for (const doc of docs) {
                 const result = engine.queryEngine.processDoc(doc, query)
                 if (result !== undefined) yield result
@@ -1737,6 +2067,8 @@ export class FilesystemEngine {
                 for await (const result of collectDocs()) yield result
                 for await (const event of engine.events.listen(collection)) {
                     if (event.action !== 'insert' || !event.doc) continue
+                    if (!(await engine.canAccessDocument(collection, event.id, actorUid, 'read')))
+                        continue
                     const doc = await engine.decodeEncrypted(collection, event.doc)
                     const stored = await engine.readStoredRecord(collection, event.id)
                     if (!stored || !engine.queryEngine.matchesQuery(event.id, doc, query, stored))
@@ -1752,6 +2084,13 @@ export class FilesystemEngine {
                 await engine.requireCollection(collection)
                 for await (const event of engine.events.listen(collection)) {
                     if (event.action !== 'delete' || !event.doc) continue
+                    if (
+                        !(await engine.canAccessDocument(collection, event.id, actorUid, 'read', {
+                            deleted: true
+                        }))
+                    ) {
+                        continue
+                    }
                     const doc = await engine.decodeEncrypted(collection, event.doc)
                     if (
                         !engine.queryEngine.matchesQuery(event.id, doc, query, {
@@ -1765,11 +2104,11 @@ export class FilesystemEngine {
             }
         }
     }
-    /** @param {string} collection @param {StoreQuery | undefined} query @returns {any} */
-    findDeletedDocs(collection, query) {
+    /** @param {string} collection @param {StoreQuery | undefined} query @param {number=} actorUid @returns {any} */
+    findDeletedDocs(collection, query, actorUid = undefined) {
         const engine = this
         const collectDocs = async function* () {
-            const docs = await engine.deletedDocResults(collection, query)
+            const docs = await engine.deletedDocResults(collection, query, actorUid)
             for (const doc of docs) {
                 const result = engine.queryEngine.processDoc(doc, query)
                 if (result !== undefined) yield result
@@ -1784,19 +2123,20 @@ export class FilesystemEngine {
             }
         }
     }
-    /** @param {string} collection @returns {AsyncGenerator<Record<string, any>, void, unknown>} */
-    async *exportBulkData(collection) {
+    /** @param {string} collection @param {number=} actorUid @returns {AsyncGenerator<Record<string, any>, void, unknown>} */
+    async *exportBulkData(collection, actorUid = undefined) {
         const ids = await this.listQueryableDocIds(collection)
         for (const id of ids) {
+            if (!(await this.canAccessDocument(collection, id, actorUid, 'read'))) continue
             const stored = await this.readStoredRecord(collection, id)
             if (!stored) continue
             yield await this.materializeRecord(collection, stored.data)
         }
     }
-    /** @param {StoreJoin} join @returns {Promise<any>} */
-    async joinDocs(join) {
-        const leftDocs = await this.docResults(join.$leftCollection)
-        const rightDocs = await this.docResults(join.$rightCollection)
+    /** @param {StoreJoin} join @param {number=} actorUid @returns {Promise<any>} */
+    async joinDocs(join, actorUid = undefined) {
+        const leftDocs = await this.docResults(join.$leftCollection, undefined, actorUid)
+        const rightDocs = await this.docResults(join.$rightCollection, undefined, actorUid)
         /** @type {Record<string, Record<string, any>>} */
         const docs = {}
         /** @type {Record<string, (leftVal: unknown, rightVal: unknown) => boolean>} */

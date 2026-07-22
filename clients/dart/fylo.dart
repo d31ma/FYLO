@@ -121,11 +121,15 @@ class Fylo {
       _op('findDeletedDocs', {'collection': collection, 'query': query});
   Future<dynamic> joinDocs(Map<String, dynamic> join) =>
       _op('joinDocs', {'join': join});
-  Future<dynamic> executeSQL(String sql) => _op('executeSQL', {'sql': sql});
+  Future<dynamic> executeSQL(String sql, {int? uid, int? mode}) => _op('executeSQL', {
+        'sql': sql,
+        'access': uid == null ? null : {'uid': uid, if (mode != null) 'mode': mode}
+      });
 
   /// Run raw SQL, built with native interpolation: db.sql("… ${x}").
   /// Values are inlined verbatim — escape/validate untrusted input yourself.
-  Future<dynamic> sql(String query) => executeSQL(query);
+  Future<dynamic> sql(String query, {int? uid, int? mode}) =>
+      executeSQL(query, uid: uid, mode: mode);
 
   Future<dynamic> importBulkData(String collection, String url) =>
       _op('importBulkData', {'collection': collection, 'url': url});

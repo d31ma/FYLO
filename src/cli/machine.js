@@ -40,6 +40,7 @@ const MACHINE_PROTOCOL_VERSION = 1
  * @property {string=} id
  * @property {boolean=} onlyId
  * @property {string=} sql
+ * @property {{ uid: number, mode?: number }=} access SQL actor and INSERT-only mode
  * @property {Record<string, any>=} query
  * @property {Record<string, any>=} join
  * @property {Record<string, any>=} document
@@ -365,7 +366,14 @@ export async function executeMachineOperation(request, overrides = {}) {
     const fylo = createMachineFylo(request, overrides)
     switch (request.op) {
         case 'executeSQL':
-            return await fylo._sql(requireString(request, 'sql'))
+            return await fylo._sql(
+                requireString(request, 'sql'),
+                request.access === undefined
+                    ? undefined
+                    : /** @type {{ uid: number, mode?: number }} */ (
+                          requireObject(request, 'access')
+                      )
+            )
         case 'createCollection': {
             const collection = requireString(request, 'collection')
             const kind = request.kind ?? 'document'

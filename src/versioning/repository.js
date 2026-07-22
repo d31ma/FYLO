@@ -10,6 +10,7 @@ import { rawFileId } from '../core/raw-file.js'
 import { CHECKSUM_XATTR } from '../storage/files.js'
 import { getXattr, listXattr, setXattr } from '../storage/xattr.js'
 import { assertSafeStoragePath } from '../storage/safe-path.js'
+import { readAccessDescriptor, restoreAccessDescriptor } from '../security/access.js'
 
 const DEFAULT_BRANCH = 'main'
 const METADATA_DIR = '.fylo-vcs'
@@ -1628,7 +1629,10 @@ export class VersionRepository {
                     for (const entry of metadataEntries) {
                         const target = await findMaterializedFile(stageRoot, entry)
                         if (!target) continue
-                        applyXattrBlob(target, /** @type {Buffer} */ (objects.get(entry.hash)))
+                        await applyXattrBlob(
+                            target,
+                            /** @type {Buffer} */ (objects.get(entry.hash))
+                        )
                     }
                     if (collections.size > 0) {
                         const engine = new FilesystemEngine(stageRoot, {
@@ -2184,9 +2188,9 @@ function xattrBlobForFile(target) {
  *
  * @param {string} target
  * @param {Buffer} content
- * @returns {void}
+ * @returns {Promise<void>}
  */
-function applyXattrBlob(target, content) {
+async function applyXattrBlob(target, content) {
     const parsed = parseXattrBlob(content)
     if (parsed.version === 1 && typeof parsed.key === 'string') {
         setXattr(target, `${FYLO_XATTR_PREFIX}key`, parsed.key)
@@ -2196,6 +2200,7 @@ function applyXattrBlob(target, content) {
     for (const [name, encoded] of Object.entries(parsed.xattrs)) {
         setXattr(target, name, Buffer.from(encoded, 'base64'))
     }
+    await restoreAccessDescriptor(target, await readAccessDescriptor(target))
 }
 
 /**

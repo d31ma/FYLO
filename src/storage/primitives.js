@@ -323,8 +323,17 @@ export class FilesystemEventBus {
         const handle = await open(target, 'a')
         try {
             await handle.write(line)
+            await handle.sync()
         } finally {
             await handle.close()
+        }
+        const directory = await open(path.dirname(target), 'r')
+        try {
+            await directory.sync()
+        } catch (error) {
+            if (process.platform !== 'win32') throw error
+        } finally {
+            await directory.close()
         }
     }
     /**
