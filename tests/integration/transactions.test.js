@@ -420,7 +420,7 @@ describe('collection transactions', () => {
             await originalWriteState(name, state)
         }
 
-        const id = await Fylo.uniqueTTID()
+        const id = '4UUB1111111'
         await expect(
             Promise.resolve(fylo[collection].put(id, { state: 'committed' }))
         ).rejects.toThrow('generation publish failure')

@@ -107,11 +107,14 @@ describe('crash recovery and concurrency', () => {
         const collection = `sigkill-${Date.now()}`
         const writeRoot = await createTestRoot('fylo-sigkill-')
         try {
-            const proc = Bun.spawn(['bun', KILL_WORKER, writeRoot, collection, '500'], {
+            const ready = path.join(writeRoot, 'worker.ready')
+            const proc = Bun.spawn(['bun', KILL_WORKER, writeRoot, collection, '500', ready], {
                 stdout: 'pipe',
                 stderr: 'pipe'
             })
-            await Bun.sleep(250)
+            const deadline = Date.now() + 10_000
+            while (!(await Bun.file(ready).exists()) && Date.now() < deadline) await Bun.sleep(5)
+            expect(await Bun.file(ready).exists()).toBe(true)
             proc.kill('SIGKILL')
             await proc.exited
 

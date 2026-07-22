@@ -47,6 +47,7 @@ export const WINDOWS_NATIVE_CONSTANTS = Object.freeze({
     FILE_FLAG_OPEN_REPARSE_POINT: 0x00200000,
     OPEN_EXISTING: 3,
     // FILE_INFO_BY_HANDLE_CLASS (Win32), not the similarly named NT enum.
+    FILE_RENAME_INFO: 3,
     FILE_RENAME_INFO_EX: 22,
     FILE_DISPOSITION_INFO_EX: 21,
     FILE_RENAME_FLAG_REPLACE_IF_EXISTS: 0x1,
@@ -577,19 +578,17 @@ export function windowsRenameAtRoots(sourceRootFd, sourceRelative, targetRootFd,
             WINDOWS_NATIVE_LAYOUT.fileRenameHeaderBytes + encodedName.byteLength
         )
         const view = new DataView(info.buffer, info.byteOffset, info.byteLength)
-        view.setUint32(
-            0,
-            WINDOWS_NATIVE_CONSTANTS.FILE_RENAME_FLAG_REPLACE_IF_EXISTS |
-                WINDOWS_NATIVE_CONSTANTS.FILE_RENAME_FLAG_POSIX_SEMANTICS,
-            true
-        )
+        // The original FILE_RENAME_INFO contract is supported on every
+        // Windows release in our matrix and remains handle-relative. The Ex
+        // flags are rejected with ERROR_INVALID_PARAMETER on some NTFS hosts.
+        view.setUint8(0, 1) // ReplaceIfExists = TRUE
         setPointer(view, 8, handleForDescriptor(target.fd))
         view.setUint32(16, encodedName.byteLength, true)
         encodedName.copy(info, WINDOWS_NATIVE_LAYOUT.fileRenameHeaderBytes)
         if (
             !symbols().SetFileInformationByHandle(
                 handleForDescriptor(descriptor),
-                WINDOWS_NATIVE_CONSTANTS.FILE_RENAME_INFO_EX,
+                WINDOWS_NATIVE_CONSTANTS.FILE_RENAME_INFO,
                 ptr(info),
                 info.byteLength
             )
