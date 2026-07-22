@@ -11,6 +11,7 @@ import { assertSafeStoragePath } from './safe-path.js'
  * @property {(path: string) => Promise<string>} read
  * @property {(path: string, data: string) => Promise<void>} write
  * @property {(source: string, target: string) => Promise<void>} move
+ * @property {(path: string) => Promise<void>} syncFile
  * @property {(path: string, mode: number) => Promise<void>} chmod
  * @property {(path: string, mtimeMs: number) => Promise<void>} setModifiedTime
  * @property {(path: string) => Promise<{ mtimeMs: number }>} metadata
