@@ -20,6 +20,14 @@ published checksum matches. It verifies:
 Do not skip or replace this job with a Linux result. A Windows artifact is releasable only after
 both native Windows matrix entries succeed.
 
+The production contract covered by this gate is local x64 Windows on NTFS. FYLO uses a
+kernel-owned `LockFileEx` claim so process termination releases stale takeover ownership, then
+performs recovery through pinned directory handles and rejects junction/reparse-point traversal
+before rooted rename or deletion. POSTIX UID/mode enforcement and built-in S3 backup/restore remain
+POSIX-only capabilities; passing this gate does not enable either feature on Windows. Network
+shares and synchronized folders are outside the storage guarantee because they may not preserve
+the required local locking and atomic filesystem semantics.
+
 ## Local execution from Apple Silicon macOS
 
 The development host currently has `act` 0.2.87 and Docker Desktop. `act --list` can parse and

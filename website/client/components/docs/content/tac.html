@@ -149,8 +149,8 @@
                         FYLO does not authenticate — your app verifies identity, FYLO enforces
                         policy. Fields listed in a schema's <code>$encrypted</code> array are stored
                         with AES-GCM; equality lookups use HMAC blind indexes. POSTIX binds a POSIX
-                        UID and mode to each protected record on disk; the native POSIX
-                        desktop/server API and binary-backed shims enforce it consistently. Browser,
+                        UID and mode to each protected record on disk; the native binary and
+                        binary-backed shims enforce it on macOS/Linux POSIX hosts. Windows, Browser,
                         Explorer, and WebView/mobile clients do not provide POSTIX and must use an
                         authenticated native POSIX gateway. WORM (write-once) mode is enforced
                         separately.

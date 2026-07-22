@@ -115,11 +115,16 @@ name — `db.users.put(data)` (Node), `db.users.put(data)` (Python), `db.users.p
 (Ruby), `$db->users->put($data)` (PHP). The method-per-op API (`db.putData("users",
 data)`) stays available everywhere; the facade is additive sugar over it.
 
-Developer metadata uses `getMeta(collection, id)` and `setMeta(collection, id,
-meta)` (snake_case in Python/Ruby/Rust; PascalCase in Go/C#). Collection facades
-use `getMeta(id)` / `setMeta(id, meta)`, except Python and Ruby, which use
-`get_metadata(id)` / `set_metadata(id, meta)`, and PHP, which uses
-`getMetadata(id)` / `setMetadata(id, meta)`.
+The native JavaScript/browser facade offers the fluent signatures
+`put(id, documentOrFile).metadata(meta)`, `put(id).metadata(meta)`, and
+`get(id).metadata()`. Thin binary shims map those semantics to the machine
+protocol's explicit metadata calls: `getMeta(collection, id)` and
+`setMeta(collection, id, meta)` (snake_case in Python/Ruby/Rust; PascalCase in
+Go/C#). Collection facades use `getMeta(id)` / `setMeta(id, meta)`, except
+Python and Ruby, which use `get_metadata(id)` / `set_metadata(id, meta)`, and
+PHP, which uses `getMetadata(id)` / `setMetadata(id, meta)`. Creating data and
+metadata in one machine request uses `putData` with its top-level `meta` field;
+shim convenience methods do not change the merge or deletion rules.
 
 In result-unwrapping shims, `getMeta` returns the complete canonical metadata
 record plus developer metadata. Every record includes `id`, `mtime`,
@@ -204,8 +209,9 @@ The machine payload is the same for every shim:
 
 `SELECT` returns only rows readable by that UID. `UPDATE` and `DELETE` use the
 same UID for both candidate visibility and write authorization. This is a
-native-POSIX feature: browser and mobile local-only clients cannot enforce
-`chown`/`chmod` and therefore do not accept this access context.
+native-POSIX feature on macOS/Linux hosts. It is not enforced by the Windows
+binary, browser, Explorer, or mobile local-only clients because those surfaces
+cannot provide the required `chown`/`chmod` boundary.
 
 ## How the shims work
 

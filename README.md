@@ -571,6 +571,14 @@ await db.assets.get(id).metadata()
 
 Canonical fields take precedence if a custom metadata key uses the same name.
 
+Those fluent signatures belong to the native JavaScript and browser collection
+facades. Binary-backed language shims expose the same behavior as
+`getMeta(collection, id)` and `setMeta(collection, id, record)`, with
+language-specific casing and collection-scoped forms documented in
+[`clients/README.md`](clients/README.md). All surfaces use the same `getMeta`,
+`setMeta`, and metadata-bearing `putData` machine operations; the shims do not
+invent a second metadata store or merge policy.
+
 The existing generated-ID form (`put(dataOrFile, options)`) remains available.
 The record must be a plain object. Names are 1-64 characters of letters, digits,
 `.`, `_`, or `-`, starting with a letter or digit. Each value must be
@@ -743,11 +751,13 @@ must also have permission to call `chown`; otherwise the put fails atomically.
 Denied direct operations throw `FyloPermissionError` with `code === 'EACCES'`,
 while queries and SQL omit unreadable records.
 
-This API is available only through the native POSIX desktop/server API and
-binary-backed shims. Browser, Explorer, and WebView-based mobile clients
-(Swift/Kotlin/Flutter) cannot call `chown`/`chmod`, so they do not expose
-`.as()` as an equivalent security boundary; those clients must remain behind
-an authenticated native POSIX gateway when POSTIX enforcement is required.
+This API is available only when the native binary and its binary-backed shims
+run on a POSIX host such as macOS or Linux. It is not a Windows authorization
+boundary, even though Windows supports FYLO's local crash recovery. Browser,
+Explorer, and WebView-based mobile clients (Swift/Kotlin/Flutter) cannot call
+`chown`/`chmod`, so they do not expose `.as()` as an equivalent security
+boundary; those clients must remain behind an authenticated native POSIX
+gateway when POSTIX enforcement is required.
 
 Canonical metadata includes `uid` and `mode` for protected records:
 
@@ -930,6 +940,7 @@ const fylo = new Fylo('/mnt/fylo', {
             concurrency: 4, // maximum simultaneous S3 requests
             maxFileBytes: 64 * 1024 * 1024,
             maxManifestBytes: 1024 * 1024,
+            maxReconcileSnapshotBytes: 512 * 1024 * 1024, // default whole-pass snapshot cap
             retry: { attempts: 3, baseDelayMs: 100, maxDelayMs: 5_000 }
         }
     }
@@ -958,7 +969,13 @@ into at most one pending pass, while mirror, delete, and reconcile mutations
 share one ordered lane. Transient throttling, timeout, network, and 5xx failures
 use bounded exponential backoff with jitter; permanent 4xx failures fail
 immediately. Files larger than `maxFileBytes` and remote metadata manifests
-larger than `maxManifestBytes` are rejected before processing. Each pass emits
+larger than `maxManifestBytes` are rejected before processing. Reconciliation
+also materializes one immutable view of the local root before changing S3;
+`maxReconcileSnapshotBytes` caps the sum of file bytes and encoded xattr values
+held for that view (default 512 MiB). The cap is an accounting guard, not a
+process RSS ceiling: allow additional memory for object/map overhead, one more
+file validation snapshot up to `maxFileBytes`, S3 requests, and the Bun runtime.
+Each pass emits
 `backup.reconcile.started`, `.succeeded`, or `.failed`;
 individual retry attempts emit `backup.retry`. See
 [`ops/s3-backup.md`](ops/s3-backup.md) for inspection and recovery guidance.
@@ -1273,21 +1290,67 @@ restores document bytes, file modes, mtimes, xattrs, and the event-journal
 offset, then rebuilds the derived index. If it dies after the marker, recovery
 keeps the committed files and completes publication of the stable generation.
 
+Inspect a collection without reading journal files directly:
+
+```js
+const status = await fylo.recoveryStatus('posts')
+// {
+//   collection: 'posts',
+//   generation: 7,
+//   state: 'stable', // or 'writing' / 'corrupt'
+//   activity: { status: 'idle', lastAction: 'recovery', ... }
+// }
+```
+
+`state` and `generation` come from the durable collection-generation record;
+`transactionId` is also present while that record is `writing`. `activity`
+reports the latest rollback or startup recovery observed by the current FYLO
+instance: `rolling-back`, `recovering`, `idle`, or `failed`, with transaction,
+operation, phase, timestamps, and failure detail when available. A malformed
+durable record returns `state: 'corrupt'` with `detail`. Treat `writing`,
+when no collection transaction is currently in flight, `corrupt`, or
+`activity.status === 'failed'` after initialization as an operator incident:
+stop writers, preserve the root, inspect the emitted error, and repair the
+filesystem or restore a verified backup. Do not hand-edit the journal or
+generation record.
+
+Configure `onEvent` to forward recovery lifecycle events:
+
+- `transaction.rollback.started|succeeded|failed` covers rollback in the
+  process that attempted the operation;
+- `transaction.recovery.started|succeeded|failed` covers reopening an
+  interrupted journal; `phase: 'active'` rolls back and `phase: 'committed'`
+  rolls forward;
+- `index.rebuilt` confirms the derived index was regenerated during rollback
+  or recovery.
+
+Alert on every `.failed` event and record elapsed time from the paired
+timestamps. Event handlers are best-effort observability hooks, not a durable
+audit log; FYLO catches handler failures so monitoring code cannot break the
+storage operation.
+
+The same crash contract is release-gated on local macOS/Linux filesystems and
+native x64 Windows on NTFS. On Windows, kernel-owned `LockFileEx` claims are
+released when a process dies, and recovery uses directory handles while
+rejecting junction/reparse-point traversal before rename or deletion. This does
+not make arbitrary network shares, sync folders, or filesystems without local
+atomic link/rename semantics supported storage targets.
+
 ---
 
 ## Limitations
 
-| Limitation                           | Detail                                                                                                                      |
-| ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
-| **Filesystem-first engine**          | One engine writes to a local path. S3 is a backup mirror, not a query or transaction backend.                               |
-| **Advisory locking**                 | PID-aware lock files; live owners are never evicted by TTL. Filesystems without atomic `link()`/`rename()` are unsupported. |
-| **Indexes are derived**              | External writes to data files won't update indexes. Use `db.<collection>.rebuild()`.                                        |
-| **Local strict WORM**                | FYLO rejects mutation and applies `0444`; privileged filesystem administrators can bypass it.                               |
-| **Frequency leaks on encryption**    | HMAC blind indexes for `$eq` reveal value repetition even without decryption.                                               |
-| **Process-global cipher**            | One key per process for all `$encrypted` fields. No per-collection key rotation built in.                                   |
-| **No cross-collection transactions** | SQL mutations and ordinary writes are atomic within one collection; there is no atomic multi-collection commit.             |
-| **Timestamp metadata**               | `createdAt` comes from TTID; `updatedAt` comes from file modification metadata.                                             |
-| **Bulk import for trusted sources**  | SSRF guard blocks private addresses and caps at 50 MiB. Not for user-provided URLs.                                         |
+| Limitation                           | Detail                                                                                                                                                                                               |
+| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Filesystem-first engine**          | One engine writes to a local path. S3 is a backup mirror, not a query or transaction backend.                                                                                                        |
+| **Local-filesystem locking**         | PID-aware lock files plus kernel-owned takeover claims; live owners are never evicted by TTL. Use local POSIX filesystems or NTFS, not network/sync filesystems without equivalent atomic semantics. |
+| **Indexes are derived**              | External writes to data files won't update indexes. Use `db.<collection>.rebuild()`.                                                                                                                 |
+| **Local strict WORM**                | FYLO rejects mutation and applies `0444`; privileged filesystem administrators can bypass it.                                                                                                        |
+| **Frequency leaks on encryption**    | HMAC blind indexes for `$eq` reveal value repetition even without decryption.                                                                                                                        |
+| **Process-global cipher**            | One key per process for all `$encrypted` fields. No per-collection key rotation built in.                                                                                                            |
+| **No cross-collection transactions** | SQL mutations and ordinary writes are atomic within one collection; there is no atomic multi-collection commit.                                                                                      |
+| **Timestamp metadata**               | `createdAt` comes from TTID; `updatedAt` comes from file modification metadata.                                                                                                                      |
+| **Bulk import for trusted sources**  | SSRF guard blocks private addresses and caps at 50 MiB. Not for user-provided URLs.                                                                                                                  |
 
 ---
 
