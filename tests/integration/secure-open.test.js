@@ -11,7 +11,8 @@ import {
 } from '../../src/storage/secure-open.js'
 import {
     WINDOWS_NATIVE_CONSTANTS,
-    WINDOWS_NATIVE_LAYOUT
+    WINDOWS_NATIVE_LAYOUT,
+    windowsCrtCandidates
 } from '../../src/storage/windows-secure-open.js'
 
 const root = await mkdtemp(path.join(os.tmpdir(), 'fylo-secure-open-'))
@@ -71,6 +72,7 @@ describe('secure descriptor traversal availability', () => {
         ).not.toBe(0)
         expect(WINDOWS_NATIVE_CONSTANTS.FILE_RENAME_INFO_EX).toBe(22)
         expect(WINDOWS_NATIVE_CONSTANTS.FILE_DISPOSITION_INFO_EX).toBe(21)
+        expect(windowsCrtCandidates()).toEqual(['msvcrt.dll', 'ucrtbase.dll'])
     })
 
     test('a directory-to-symlink swap cannot redirect a rooted mutation', async () => {

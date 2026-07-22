@@ -69,6 +69,10 @@ function isInvalidHandle(value) {
 /** @type {Record<string, Function> | undefined} */
 let native
 
+export function windowsCrtCandidates() {
+    return ['msvcrt.dll', 'ucrtbase.dll']
+}
+
 function assertSupportedRuntime() {
     if (process.platform !== 'win32')
         throw new Error('Windows native filesystem APIs are unavailable')
@@ -134,7 +138,11 @@ function symbols() {
         RtlNtStatusToDosError: { args: [FFIType.i32], returns: FFIType.u32 }
     }).symbols
     let crt
-    for (const candidate of ['ucrtbase.dll', 'msvcrt.dll']) {
+    // Bun's Windows node:fs compatibility layer currently shares the legacy
+    // MSVCRT descriptor table. A descriptor created in UCRTBASE belongs to a
+    // different table and node:fs rejects it with EBADF even though its HANDLE
+    // is valid. Keep UCRTBASE as a fallback for future Bun distributions.
+    for (const candidate of windowsCrtCandidates()) {
         try {
             crt = dlopen(candidate, {
                 _get_osfhandle: { args: [FFIType.i32], returns: FFIType.i64 },
