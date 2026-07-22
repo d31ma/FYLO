@@ -28,7 +28,7 @@
 - [Querying](#querying)
 - [Schema Versioning](#schema-versioning)
 - [Encryption](#encryption)
-- [Auth & Row-Level Security](#auth--row-level-security)
+- [POSTIX Access Control](#postix-access-control-uid-and-mode)
 - [WORM Mode](#worm-mode)
 - [Syncing & Replication](#syncing--replication)
 - [Remote Access](#remote-access)
@@ -703,10 +703,12 @@ The CLI accepts the same syntax:
 fylo sql "EXPLAIN SELECT * FROM posts WHERE published = true" --root /mnt/fylo
 ```
 
-### Per-record UID and mode
+### POSTIX access control (UID and mode)
 
-Fylo can bind a document or raw file to a developer-supplied POSIX UID when it
-is written. `mode` is accepted only by `put`; omitting it uses `0o600`.
+POSTIX replaces the former row-level security API with filesystem-native,
+per-record access control. Fylo can bind a document or raw file to a
+developer-supplied POSIX UID when it is written. `mode` is accepted by
+document/file `put` and SQL `INSERT`; omitting it uses `0o600`.
 
 ```js
 const id = await db.documents.put({ title: 'private' }).as({ uid: 1001, mode: 0o600 })
@@ -850,39 +852,6 @@ Requirements:
 - `FYLO_ENCRYPTION_KEY` must be ≥32 characters
 - `FYLO_CIPHER_SALT` is recommended
 - Process-global: one key for all collections
-
----
-
-## Auth & Row-Level Security
-
-FYLO does not authenticate. Your app verifies identity; FYLO enforces policy.
-
-```ts
-const fylo = new Fylo('/mnt/fylo', {
-    auth: {
-        authorize({ auth, action, collection, data }) {
-            if (auth.roles?.includes('admin')) return true
-            if (action === 'doc:create') {
-                return (data as { tenantId?: string }).tenantId === auth.tenantId
-            }
-            return action === 'doc:read' || action === 'doc:find'
-        }
-    }
-})
-
-const user = await verifyRequest(request)
-const scoped = fylo.as({
-    subjectId: user.id,
-    tenantId: user.tenantId,
-    roles: user.roles
-})
-
-const posts = scoped.posts.find({
-    $ops: [{ tenantId: { $eq: user.tenantId } }]
-})
-```
-
-Actions: `doc:read`, `doc:create`, `doc:update`, `doc:delete`, `bulk:import`, `bulk:export`, `join:execute`, `sql:execute`, `collection:rebuild`.
 
 ---
 
