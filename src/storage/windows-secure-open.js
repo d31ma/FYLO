@@ -11,7 +11,8 @@ export const WINDOWS_NATIVE_LAYOUT = Object.freeze({
     objectAttributesBytes: 48,
     ioStatusBlockBytes: 16,
     overlappedBytes: 32,
-    fileRenameHeaderBytes: 20
+    fileRenameHeaderBytes: 20,
+    fileRenameStructBytes: 24
 })
 
 export const WINDOWS_NATIVE_CONSTANTS = Object.freeze({
@@ -55,6 +56,7 @@ export const WINDOWS_NATIVE_CONSTANTS = Object.freeze({
     FILE_DISPOSITION_FLAG_DELETE: 0x1,
     FILE_DISPOSITION_FLAG_POSIX_SEMANTICS: 0x2,
     FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE: 0x10,
+    FILE_RENAME_INFORMATION: 10,
     STATUS_OBJECT_NAME_NOT_FOUND: -1073741772,
     STATUS_OBJECT_PATH_NOT_FOUND: -1073741766,
     STATUS_NO_SUCH_FILE: -1073741809,
@@ -154,6 +156,10 @@ function symbols() {
                 FFIType.ptr,
                 FFIType.u32
             ],
+            returns: FFIType.i32
+        },
+        NtSetInformationFile: {
+            args: [FFIType.u64, FFIType.ptr, FFIType.ptr, FFIType.u32, FFIType.i32],
             returns: FFIType.i32
         },
         RtlNtStatusToDosError: { args: [FFIType.i32], returns: FFIType.u32 }
@@ -575,7 +581,7 @@ export function windowsRenameAtRoots(sourceRootFd, sourceRelative, targetRootFd,
         descriptor = opened.descriptor
         const encodedName = Buffer.from(target.name, 'utf16le')
         const info = Buffer.alloc(
-            WINDOWS_NATIVE_LAYOUT.fileRenameHeaderBytes + encodedName.byteLength
+            WINDOWS_NATIVE_LAYOUT.fileRenameStructBytes + encodedName.byteLength
         )
         const view = new DataView(info.buffer, info.byteOffset, info.byteLength)
         // The original FILE_RENAME_INFO contract is supported on every
@@ -585,18 +591,15 @@ export function windowsRenameAtRoots(sourceRootFd, sourceRelative, targetRootFd,
         setPointer(view, 8, handleForDescriptor(target.fd))
         view.setUint32(16, encodedName.byteLength, true)
         encodedName.copy(info, WINDOWS_NATIVE_LAYOUT.fileRenameHeaderBytes)
-        if (
-            !symbols().SetFileInformationByHandle(
-                handleForDescriptor(descriptor),
-                WINDOWS_NATIVE_CONSTANTS.FILE_RENAME_INFO,
-                ptr(info),
-                info.byteLength
-            )
-        ) {
-            throw new Error(
-                `Secure rooted rename failed for ${sourceRelative} (Win32 ${symbols().GetLastError()})`
-            )
-        }
+        const io = Buffer.alloc(WINDOWS_NATIVE_LAYOUT.ioStatusBlockBytes)
+        const status = symbols().NtSetInformationFile(
+            handleForDescriptor(descriptor),
+            ptr(io),
+            ptr(info),
+            info.byteLength,
+            WINDOWS_NATIVE_CONSTANTS.FILE_RENAME_INFORMATION
+        )
+        if (status < 0) ntFailure(status, `Secure rooted rename for ${sourceRelative}`)
         syncDescriptor(target.fd)
         if (source.fd !== target.fd) syncDescriptor(source.fd)
     } finally {

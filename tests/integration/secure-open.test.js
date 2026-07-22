@@ -63,13 +63,14 @@ describe('secure descriptor traversal availability', () => {
             objectAttributesBytes: 48,
             ioStatusBlockBytes: 16,
             overlappedBytes: 32,
-            fileRenameHeaderBytes: 20
+            fileRenameHeaderBytes: 20,
+            fileRenameStructBytes: 24
         })
         expect(
             WINDOWS_NATIVE_CONSTANTS.FILE_OPEN_REPARSE_POINT &
                 WINDOWS_NATIVE_CONSTANTS.FILE_OPEN_REPARSE_POINT
         ).not.toBe(0)
-        expect(WINDOWS_NATIVE_CONSTANTS.FILE_RENAME_INFO).toBe(3)
+        expect(WINDOWS_NATIVE_CONSTANTS.FILE_RENAME_INFORMATION).toBe(10)
         expect(WINDOWS_NATIVE_CONSTANTS.FILE_DISPOSITION_INFO_EX).toBe(21)
         expect(WINDOWS_NATIVE_CONSTANTS.FILE_ATTRIBUTE_REPARSE_POINT).toBe(0x400)
         expect(WINDOWS_NATIVE_CONSTANTS.FILE_ATTRIBUTE_READONLY).toBe(0x1)

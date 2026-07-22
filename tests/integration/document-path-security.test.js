@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from 'bun:test'
-import { mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, rmdir, symlink, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import Fylo from '../../src/index.js'
 import { getXattr } from '../../src/storage/xattr.js'
@@ -44,7 +44,9 @@ describe('document path security', () => {
         expect(await readFile(outsideTarget, 'utf8')).toBe(sentinel)
         expect(getXattr(outsideTarget, 'user.fylo.meta.owner')).toBeNull()
 
-        await rm(path.join(docsRoot, id.slice(0, 2)))
+        const shardLink = path.join(docsRoot, id.slice(0, 2))
+        if (process.platform === 'win32') await rmdir(shardLink)
+        else await rm(shardLink)
         await fylo.documents.put(id, { inside: 'retry-succeeded' })
         expect((await fylo.documents.get(id).once())[id]).toEqual({
             inside: 'retry-succeeded'
