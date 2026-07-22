@@ -95,43 +95,46 @@ function symbols() {
                 FFIType.u32,
                 FFIType.ptr
             ],
-            returns: FFIType.ptr
+            returns: FFIType.u64
         },
-        CloseHandle: { args: [FFIType.ptr], returns: FFIType.bool },
+        // Bun's `ptr` argument converter accepts buffers/pointer objects, not the
+        // integer HANDLE values returned by Win32. HANDLEs are pointer-sized
+        // unsigned integers on our required 64-bit Windows runtime.
+        CloseHandle: { args: [FFIType.u64], returns: FFIType.bool },
         LockFileEx: {
-            args: [FFIType.ptr, FFIType.u32, FFIType.u32, FFIType.u32, FFIType.u32, FFIType.ptr],
+            args: [FFIType.u64, FFIType.u32, FFIType.u32, FFIType.u32, FFIType.u32, FFIType.ptr],
             returns: FFIType.bool
         },
         UnlockFileEx: {
-            args: [FFIType.ptr, FFIType.u32, FFIType.u32, FFIType.u32, FFIType.ptr],
+            args: [FFIType.u64, FFIType.u32, FFIType.u32, FFIType.u32, FFIType.ptr],
             returns: FFIType.bool
         },
         GetLastError: { args: [], returns: FFIType.u32 },
         SetFileInformationByHandle: {
-            args: [FFIType.ptr, FFIType.i32, FFIType.ptr, FFIType.u32],
+            args: [FFIType.u64, FFIType.i32, FFIType.ptr, FFIType.u32],
             returns: FFIType.bool
         },
-        GetFileInformationByHandle: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.bool },
+        GetFileInformationByHandle: { args: [FFIType.u64, FFIType.ptr], returns: FFIType.bool },
         GetFileInformationByHandleEx: {
-            args: [FFIType.ptr, FFIType.i32, FFIType.ptr, FFIType.u32],
+            args: [FFIType.u64, FFIType.i32, FFIType.ptr, FFIType.u32],
             returns: FFIType.bool
         },
         ReadFile: {
-            args: [FFIType.ptr, FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.ptr],
+            args: [FFIType.u64, FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.ptr],
             returns: FFIType.bool
         },
         WriteFile: {
-            args: [FFIType.ptr, FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.ptr],
+            args: [FFIType.u64, FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.ptr],
             returns: FFIType.bool
         },
         SetFilePointerEx: {
-            args: [FFIType.ptr, FFIType.i64, FFIType.ptr, FFIType.u32],
+            args: [FFIType.u64, FFIType.i64, FFIType.ptr, FFIType.u32],
             returns: FFIType.bool
         },
-        SetEndOfFile: { args: [FFIType.ptr], returns: FFIType.bool },
-        FlushFileBuffers: { args: [FFIType.ptr], returns: FFIType.bool },
+        SetEndOfFile: { args: [FFIType.u64], returns: FFIType.bool },
+        FlushFileBuffers: { args: [FFIType.u64], returns: FFIType.bool },
         SetFileTime: {
-            args: [FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr],
+            args: [FFIType.u64, FFIType.ptr, FFIType.ptr, FFIType.ptr],
             returns: FFIType.bool
         }
     }).symbols

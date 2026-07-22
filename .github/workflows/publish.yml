@@ -51,6 +51,8 @@ jobs:
 
             - name: Install verified Windows vendor binaries
               shell: pwsh
+              env:
+                  GITHUB_TOKEN: ${{ github.token }}
               run: ./scripts/install-vendor-bins.ps1
 
             - name: Verify native lock crash and reclaim
