@@ -20,7 +20,9 @@ import {
     windowsOpenFileAtRoot,
     windowsOpenFileAtRootStrict,
     windowsOpenFileAtRootWithFlags,
+    windowsOpenRenameableFileAtRootWithFlags,
     windowsRenameAtRoots,
+    windowsRenameOpenFileAtRoot,
     windowsReadAllDescriptor,
     windowsReadDescriptor,
     windowsSetDescriptorMode,
@@ -456,6 +458,14 @@ export function openFileAtRootWithFlags(rootFd, relative, flags, mode = 0o600) {
     }
 }
 
+/** @param {number} rootFd @param {string} relative @param {number} flags @param {number} mode */
+export function openRenameableFileAtRootWithFlags(rootFd, relative, flags, mode = 0o600) {
+    if (process.platform === 'win32') {
+        return windowsOpenRenameableFileAtRootWithFlags(rootFd, relative, flags, mode)
+    }
+    return openFileAtRootWithFlags(rootFd, relative, flags, mode)
+}
+
 /** @param {number} rootFd @param {string} relative @param {boolean} [directory] */
 export function unlinkAtRoot(rootFd, relative, directory = false) {
     if (process.platform === 'win32') return windowsUnlinkAtRoot(rootFd, relative, directory)
@@ -500,4 +510,27 @@ export function renameAtRoots(sourceRootFd, sourceRelative, targetRootFd, target
         closeSync(source.fd)
         closeSync(target.fd)
     }
+}
+
+/**
+ * Renames a file while its already-open descriptor remains pinned. Windows
+ * uses that handle directly so security software cannot race a close/reopen
+ * between the durable write and FILE_RENAME_INFORMATION.
+ * @param {number} sourceRootFd
+ * @param {string} sourceRelative
+ * @param {number} sourceDescriptor
+ * @param {number} targetRootFd
+ * @param {string} targetRelative
+ */
+export function renameOpenFileAtRoot(
+    sourceRootFd,
+    sourceRelative,
+    sourceDescriptor,
+    targetRootFd,
+    targetRelative
+) {
+    if (process.platform === 'win32') {
+        return windowsRenameOpenFileAtRoot(sourceDescriptor, targetRootFd, targetRelative)
+    }
+    return renameAtRoots(sourceRootFd, sourceRelative, targetRootFd, targetRelative)
 }

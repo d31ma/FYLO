@@ -32,8 +32,10 @@ import {
     openDirectoryNoFollow,
     openFileAtRoot,
     openFileAtRootWithFlags,
+    openRenameableFileAtRootWithFlags,
     readSecureDescriptor,
     renameAtRoots,
+    renameOpenFileAtRoot,
     statSecureDescriptor,
     syncSecureDescriptor,
     timesSecureDescriptor,
@@ -485,7 +487,7 @@ function copyDescriptor(source, target) {
 /** @param {number} rootFd @param {string} relative @param {string | Buffer} content */
 function writeDurableAtRoot(rootFd, relative, content) {
     const scratch = `${relative}.${Bun.randomUUIDv7()}.tmp`
-    const descriptor = openFileAtRootWithFlags(
+    const descriptor = openRenameableFileAtRootWithFlags(
         rootFd,
         scratch,
         constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL,
@@ -504,10 +506,10 @@ function writeDurableAtRoot(rootFd, relative, content) {
             )
         }
         syncSecureDescriptor(descriptor)
+        renameOpenFileAtRoot(rootFd, scratch, descriptor, rootFd, relative)
     } finally {
         closeSecureDescriptor(descriptor)
     }
-    renameAtRoots(rootFd, scratch, rootFd, relative)
 }
 
 /**

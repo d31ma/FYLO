@@ -524,8 +524,8 @@ function openParent(rootFd, relative, create) {
     }
 }
 
-/** @param {any} rootFd @param {string} relative @param {number} flags @param {number} mode */
-export function windowsOpenFileAtRootWithFlags(rootFd, relative, flags, mode = 0o600) {
+/** @param {any} rootFd @param {string} relative @param {number} flags @param {number} mode @param {boolean} deleteAccess */
+function openFileAtRootWithFlags(rootFd, relative, flags, mode, deleteAccess) {
     const parent = openParent(rootFd, relative, Boolean(flags & constants.O_CREAT))
     let transferredParent = false
     try {
@@ -533,7 +533,8 @@ export function windowsOpenFileAtRootWithFlags(rootFd, relative, flags, mode = 0
             directory: false,
             flags,
             create: Boolean(flags & constants.O_CREAT),
-            mode
+            mode,
+            deleteAccess
         })
         if (opened.status < 0) ntFailure(opened.status, `Secure rooted file open for ${relative}`)
         opened.descriptor.parent = parent.fd
@@ -544,6 +545,16 @@ export function windowsOpenFileAtRootWithFlags(rootFd, relative, flags, mode = 0
     } finally {
         if (parent.ownsFd && !transferredParent) windowsCloseDescriptor(parent.fd)
     }
+}
+
+/** @param {any} rootFd @param {string} relative @param {number} flags @param {number} mode */
+export function windowsOpenFileAtRootWithFlags(rootFd, relative, flags, mode = 0o600) {
+    return openFileAtRootWithFlags(rootFd, relative, flags, mode, false)
+}
+
+/** @param {any} rootFd @param {string} relative @param {number} flags @param {number} mode */
+export function windowsOpenRenameableFileAtRootWithFlags(rootFd, relative, flags, mode = 0o600) {
+    return openFileAtRootWithFlags(rootFd, relative, flags, mode, true)
 }
 
 /** @param {any} rootFd @param {string} relative @param {boolean} directory */
@@ -616,6 +627,35 @@ export function windowsRenameAtRoots(sourceRootFd, sourceRelative, targetRootFd,
     } finally {
         windowsCloseDescriptor(descriptor)
         if (source.ownsFd) windowsCloseDescriptor(source.fd)
+        if (target.ownsFd) windowsCloseDescriptor(target.fd)
+    }
+}
+
+/** @param {any} descriptor @param {any} targetRootFd @param {string} targetRelative */
+export function windowsRenameOpenFileAtRoot(descriptor, targetRootFd, targetRelative) {
+    const target = openParent(targetRootFd, targetRelative, true)
+    try {
+        const encodedName = Buffer.from(target.name, 'utf16le')
+        const info = Buffer.alloc(
+            WINDOWS_NATIVE_LAYOUT.fileRenameStructBytes + encodedName.byteLength
+        )
+        const view = new DataView(info.buffer, info.byteOffset, info.byteLength)
+        view.setUint8(0, 1)
+        setPointer(view, 8, handleForDescriptor(target.fd))
+        view.setUint32(16, encodedName.byteLength, true)
+        encodedName.copy(info, WINDOWS_NATIVE_LAYOUT.fileRenameHeaderBytes)
+        const io = Buffer.alloc(WINDOWS_NATIVE_LAYOUT.ioStatusBlockBytes)
+        const status = symbols().NtSetInformationFile(
+            handleForDescriptor(descriptor),
+            ptr(io),
+            ptr(info),
+            info.byteLength,
+            WINDOWS_NATIVE_CONSTANTS.FILE_RENAME_INFORMATION
+        )
+        if (status < 0) ntFailure(status, `Secure rooted rename for ${targetRelative}`)
+        syncDescriptor(target.fd)
+        if (descriptor.parent && descriptor.parent !== target.fd) syncDescriptor(descriptor.parent)
+    } finally {
         if (target.ownsFd) windowsCloseDescriptor(target.fd)
     }
 }
