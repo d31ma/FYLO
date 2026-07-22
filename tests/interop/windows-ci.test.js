@@ -16,6 +16,7 @@ describe('native Windows release gate', () => {
             expect(workflow).toContain('tests/integration/crash-recovery.test.js')
             expect(workflow).toContain('tests/integration/document-path-security.test.js')
             expect(workflow).toContain('tests/integration/secure-open.test.js')
+            expect(workflow).toContain('--timeout 300000 --parallel=1')
             expect(workflow).toContain('tests/interop/windows-native-binary.test.js')
         })
     }

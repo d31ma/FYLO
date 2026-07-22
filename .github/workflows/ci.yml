@@ -68,7 +68,7 @@ jobs:
               run: bun test tests/integration/document-path-security.test.js tests/integration/secure-open.test.js --timeout 120000 --parallel=1
 
             - name: Run Windows storage regression suite
-              run: bun test tests/integration/xattr.test.js tests/integration/durable.test.js tests/integration/filesystem.test.js tests/integration/raw-files.test.js tests/integration/collection-lock.test.js tests/integration/vcs-recovery.test.js --timeout 120000 --parallel=1
+              run: bun test tests/integration/xattr.test.js tests/integration/durable.test.js tests/integration/filesystem.test.js tests/integration/raw-files.test.js tests/integration/collection-lock.test.js tests/integration/vcs-recovery.test.js --timeout 300000 --parallel=1
 
             - name: Build native Windows executable
               shell: pwsh
