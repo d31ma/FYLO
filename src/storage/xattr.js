@@ -10,8 +10,11 @@ import {
     writeFileSync
 } from 'node:fs'
 import {
-    windowsPathForDescriptor,
-    windowsTryAcquireProcessFileLock
+    windowsDeleteNamedStream,
+    windowsReadNamedStream,
+    windowsTryAcquireProcessFileLock,
+    windowsWithDescriptorLock,
+    windowsWriteNamedStream
 } from './windows-secure-open.js'
 
 /**
@@ -459,6 +462,53 @@ function parseWindowsManifest(text) {
 
 const windowsStore = new WindowsAdsManifestStore()
 
+const WINDOWS_DESCRIPTOR_MANIFEST_LIMIT = 16 * 1024 * 1024
+
+/** @param {any} descriptor */
+function readWindowsDescriptorManifestUnlocked(descriptor) {
+    const recovery = windowsReadNamedStream(
+        descriptor,
+        'fylo.xattrs.next',
+        WINDOWS_DESCRIPTOR_MANIFEST_LIMIT
+    )
+    if (recovery !== null) {
+        try {
+            const parsed = parseWindowsManifest(recovery.toString('utf8'))
+            windowsWriteNamedStream(descriptor, 'fylo.xattrs', recovery)
+            windowsDeleteNamedStream(descriptor, 'fylo.xattrs.next')
+            return parsed
+        } catch {
+            // An incomplete recovery stream does not invalidate an intact
+            // primary manifest; use the primary below.
+        }
+    }
+    const primary = windowsReadNamedStream(
+        descriptor,
+        'fylo.xattrs',
+        WINDOWS_DESCRIPTOR_MANIFEST_LIMIT
+    )
+    return primary === null ? {} : parseWindowsManifest(primary.toString('utf8'))
+}
+
+/** @param {any} descriptor */
+function readWindowsDescriptorManifest(descriptor) {
+    return windowsWithDescriptorLock(descriptor, () =>
+        readWindowsDescriptorManifestUnlocked(descriptor)
+    )
+}
+
+/** @param {any} descriptor @param {(attributes: Record<string, string>) => void} mutate */
+function updateWindowsDescriptorManifest(descriptor, mutate) {
+    windowsWithDescriptorLock(descriptor, () => {
+        const attributes = readWindowsDescriptorManifestUnlocked(descriptor)
+        mutate(attributes)
+        const payload = Buffer.from(JSON.stringify(attributes))
+        windowsWriteNamedStream(descriptor, 'fylo.xattrs.next', payload)
+        windowsWriteNamedStream(descriptor, 'fylo.xattrs', payload)
+        windowsDeleteNamedStream(descriptor, 'fylo.xattrs.next')
+    })
+}
+
 /**
  * @param {string} call
  * @param {string} target
@@ -593,7 +643,7 @@ export function listXattr(target) {
  */
 export function getXattrFd(fd, name) {
     if (windows) {
-        const encoded = windowsStore.read(windowsPathForDescriptor(fd), 'fgetxattr')[name]
+        const encoded = readWindowsDescriptorManifest(fd)[name]
         return typeof encoded === 'string' ? Uint8Array.from(Buffer.from(encoded, 'base64')) : null
     }
     if (!nativeGetXattrFd) throw new Error('Native descriptor xattrs are unavailable')
@@ -620,7 +670,7 @@ export function getXattrFd(fd, name) {
 
 /** @param {number} fd @returns {string[]} */
 export function listXattrFd(fd) {
-    if (windows) return Object.keys(windowsStore.read(windowsPathForDescriptor(fd), 'flistxattr'))
+    if (windows) return Object.keys(readWindowsDescriptorManifest(fd))
     if (!nativeListXattrFd) throw new Error('Native descriptor xattrs are unavailable')
     while (true) {
         const size = darwin ? nativeListXattrFd(fd, null, 0, 0) : nativeListXattrFd(fd, null, 0)
@@ -643,7 +693,7 @@ export function listXattrFd(fd) {
 /** @param {number} fd @param {string} name @param {Uint8Array} value */
 export function setXattrFd(fd, name, value) {
     if (windows) {
-        windowsStore.update(windowsPathForDescriptor(fd), 'fsetxattr', (attributes) => {
+        updateWindowsDescriptorManifest(fd, (attributes) => {
             attributes[name] = Buffer.from(value).toString('base64')
         })
         return
@@ -659,7 +709,7 @@ export function setXattrFd(fd, name, value) {
 /** @param {number} fd @param {string} name */
 export function removeXattrFd(fd, name) {
     if (windows) {
-        windowsStore.update(windowsPathForDescriptor(fd), 'fremovexattr', (attributes) => {
+        updateWindowsDescriptorManifest(fd, (attributes) => {
             delete attributes[name]
         })
         return

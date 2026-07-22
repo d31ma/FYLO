@@ -1,9 +1,9 @@
 import { afterAll, describe, expect, test } from 'bun:test'
-import { closeSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import {
+    closeSecureDescriptor,
     libcCandidates,
     loadSecureOpenSymbols,
     openDirectoryNoFollow,
@@ -11,8 +11,7 @@ import {
 } from '../../src/storage/secure-open.js'
 import {
     WINDOWS_NATIVE_CONSTANTS,
-    WINDOWS_NATIVE_LAYOUT,
-    windowsCrtCandidates
+    WINDOWS_NATIVE_LAYOUT
 } from '../../src/storage/windows-secure-open.js'
 
 const root = await mkdtemp(path.join(os.tmpdir(), 'fylo-secure-open-'))
@@ -72,7 +71,8 @@ describe('secure descriptor traversal availability', () => {
         ).not.toBe(0)
         expect(WINDOWS_NATIVE_CONSTANTS.FILE_RENAME_INFO_EX).toBe(22)
         expect(WINDOWS_NATIVE_CONSTANTS.FILE_DISPOSITION_INFO_EX).toBe(21)
-        expect(windowsCrtCandidates()).toEqual(['msvcrt.dll', 'ucrtbase.dll'])
+        expect(WINDOWS_NATIVE_CONSTANTS.FILE_ATTRIBUTE_REPARSE_POINT).toBe(0x400)
+        expect(WINDOWS_NATIVE_CONSTANTS.FILE_ATTRIBUTE_READONLY).toBe(0x1)
     })
 
     test('a directory-to-symlink swap cannot redirect a rooted mutation', async () => {
@@ -93,7 +93,7 @@ describe('secure descriptor traversal availability', () => {
             await symlink(outside, original, process.platform === 'win32' ? 'junction' : 'dir')
             expect(() => unlinkAtRoot(rootFd, 'docs/sentinel.txt')).toThrow()
         } finally {
-            closeSync(rootFd)
+            closeSecureDescriptor(rootFd)
         }
         expect(await readFile(path.join(outside, 'sentinel.txt'), 'utf8')).toBe('outside')
         expect(await readFile(path.join(displaced, 'sentinel.txt'), 'utf8')).toBe('inside')

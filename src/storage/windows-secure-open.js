@@ -1,5 +1,5 @@
 import { dlopen, FFIType, ptr, read } from 'bun:ffi'
-import { closeSync, constants, fsyncSync } from 'node:fs'
+import { constants } from 'node:fs'
 import path from 'node:path'
 
 // Native values are intentionally kept here instead of copied into callers.
@@ -41,6 +41,8 @@ export const WINDOWS_NATIVE_CONSTANTS = Object.freeze({
     SYNCHRONIZE: 0x100000,
     FILE_ATTRIBUTE_NORMAL: 0x80,
     FILE_ATTRIBUTE_DIRECTORY: 0x10,
+    FILE_ATTRIBUTE_REPARSE_POINT: 0x400,
+    FILE_ATTRIBUTE_READONLY: 0x1,
     FILE_FLAG_BACKUP_SEMANTICS: 0x02000000,
     FILE_FLAG_OPEN_REPARSE_POINT: 0x00200000,
     OPEN_EXISTING: 3,
@@ -68,10 +70,6 @@ function isInvalidHandle(value) {
 
 /** @type {Record<string, Function> | undefined} */
 let native
-
-export function windowsCrtCandidates() {
-    return ['msvcrt.dll', 'ucrtbase.dll']
-}
 
 function assertSupportedRuntime() {
     if (process.platform !== 'win32')
@@ -109,12 +107,31 @@ function symbols() {
             returns: FFIType.bool
         },
         GetLastError: { args: [], returns: FFIType.u32 },
-        GetFinalPathNameByHandleW: {
-            args: [FFIType.ptr, FFIType.ptr, FFIType.u32, FFIType.u32],
-            returns: FFIType.u32
-        },
         SetFileInformationByHandle: {
             args: [FFIType.ptr, FFIType.i32, FFIType.ptr, FFIType.u32],
+            returns: FFIType.bool
+        },
+        GetFileInformationByHandle: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.bool },
+        GetFileInformationByHandleEx: {
+            args: [FFIType.ptr, FFIType.i32, FFIType.ptr, FFIType.u32],
+            returns: FFIType.bool
+        },
+        ReadFile: {
+            args: [FFIType.ptr, FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.ptr],
+            returns: FFIType.bool
+        },
+        WriteFile: {
+            args: [FFIType.ptr, FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.ptr],
+            returns: FFIType.bool
+        },
+        SetFilePointerEx: {
+            args: [FFIType.ptr, FFIType.i64, FFIType.ptr, FFIType.u32],
+            returns: FFIType.bool
+        },
+        SetEndOfFile: { args: [FFIType.ptr], returns: FFIType.bool },
+        FlushFileBuffers: { args: [FFIType.ptr], returns: FFIType.bool },
+        SetFileTime: {
+            args: [FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr],
             returns: FFIType.bool
         }
     }).symbols
@@ -137,24 +154,7 @@ function symbols() {
         },
         RtlNtStatusToDosError: { args: [FFIType.i32], returns: FFIType.u32 }
     }).symbols
-    let crt
-    // Bun's Windows node:fs compatibility layer currently shares the legacy
-    // MSVCRT descriptor table. A descriptor created in UCRTBASE belongs to a
-    // different table and node:fs rejects it with EBADF even though its HANDLE
-    // is valid. Keep UCRTBASE as a fallback for future Bun distributions.
-    for (const candidate of windowsCrtCandidates()) {
-        try {
-            crt = dlopen(candidate, {
-                _get_osfhandle: { args: [FFIType.i32], returns: FFIType.i64 },
-                _open_osfhandle: { args: [FFIType.i64, FFIType.i32], returns: FFIType.i32 }
-            }).symbols
-            break
-        } catch {
-            // Windows installations supported by Bun have one of these CRTs.
-        }
-    }
-    if (!crt) throw new Error('Secure Windows filesystem operations require a compatible CRT')
-    native = { ...kernel32, ...ntdll, ...crt }
+    native = { ...kernel32, ...ntdll }
     return native
 }
 
@@ -163,31 +163,32 @@ function asBigInt(value) {
     return typeof value === 'bigint' ? value : BigInt(value)
 }
 
-/** @param {number} descriptor */
+/** @param {any} descriptor */
 function handleForDescriptor(descriptor) {
-    const value = asBigInt(symbols()._get_osfhandle(descriptor))
-    if (isInvalidHandle(value)) {
-        throw new Error('Secure Windows filesystem operation received an invalid descriptor')
-    }
-    return value
+    if (typeof descriptor === 'object' && descriptor?.__fyloWindowsHandle === true)
+        return descriptor.handle
+    throw new Error('Secure Windows filesystem operation received a non-native descriptor')
 }
 
-/** @param {bigint} handle @param {number} flags */
+/** @param {bigint} handle @param {number} flags @returns {any} */
 function descriptorForHandle(handle, flags) {
-    const descriptor = symbols()._open_osfhandle(handle, crtFlags(flags))
-    if (descriptor < 0) {
-        symbols().CloseHandle(handle)
-        throw new Error('Windows CRT refused a securely opened filesystem handle')
+    return {
+        __fyloWindowsHandle: true,
+        handle,
+        flags,
+        closed: false,
+        parent: null,
+        ownsParent: false,
+        name: ''
     }
-    return descriptor
 }
 
-/** @param {number} flags */
-function crtFlags(flags) {
-    let result = WINDOWS_NATIVE_CONSTANTS.O_BINARY
-    if (flags & constants.O_RDWR) result |= 2
-    else if (flags & constants.O_WRONLY) result |= 1
-    return result
+/** @param {any} descriptor */
+export function windowsCloseDescriptor(descriptor) {
+    if (!descriptor || descriptor.__fyloWindowsHandle !== true || descriptor.closed) return
+    descriptor.closed = true
+    symbols().CloseHandle(descriptor.handle)
+    if (descriptor.ownsParent) windowsCloseDescriptor(descriptor.parent)
 }
 
 /** @param {string} value */
@@ -226,7 +227,7 @@ function isMissingStatus(status) {
  * Opens one name relative to a pinned directory. FILE_OPEN_REPARSE_POINT is
  * mandatory: a junction or symlink is returned as the reparse object itself,
  * and FILE_DIRECTORY_FILE/NON_DIRECTORY_FILE then rejects it fail-closed.
- * @param {number} parentFd
+ * @param {any} parentFd
  * @param {string} name
  * @param {{ directory?: boolean, create?: boolean, flags?: number, mode?: number, deleteAccess?: boolean }} options
  */
@@ -309,6 +310,15 @@ function ntOpenRelative(parentFd, name, options = {}) {
     )
     if (status < 0) return { status, descriptor: -1 }
     const handle = read.u64(ptr(output), 0)
+    const info = Buffer.alloc(52)
+    if (!api.GetFileInformationByHandle(handle, ptr(info))) {
+        api.CloseHandle(handle)
+        throw new Error(`Secure handle validation failed (Win32 ${api.GetLastError()})`)
+    }
+    if (info.readUInt32LE(0) & WINDOWS_NATIVE_CONSTANTS.FILE_ATTRIBUTE_REPARSE_POINT) {
+        api.CloseHandle(handle)
+        throw new Error(`Secure rooted open rejected a reparse point: ${name}`)
+    }
     return { status, descriptor: descriptorForHandle(asBigInt(handle), flags) }
 }
 
@@ -327,12 +337,7 @@ function safeParts(relative) {
 
 /** @param {number} descriptor */
 function syncDescriptor(descriptor) {
-    try {
-        fsyncSync(descriptor)
-    } catch {
-        // Windows does not allow FlushFileBuffers on every directory handle;
-        // file handles are flushed by transaction callers before rename.
-    }
+    windowsSyncDescriptor(descriptor)
 }
 
 /** @param {string} target */
@@ -349,7 +354,7 @@ export function windowsTryAcquireProcessFileLock(target) {
         if (opened.status < 0) ntFailure(opened.status, `Secure lock sentinel open for ${target}`)
         descriptor = opened.descriptor
     } finally {
-        closeSync(parent)
+        windowsCloseDescriptor(parent)
     }
     const overlapped = Buffer.alloc(WINDOWS_NATIVE_LAYOUT.overlappedBytes)
     const api = symbols()
@@ -366,7 +371,7 @@ export function windowsTryAcquireProcessFileLock(target) {
         )
     ) {
         const code = api.GetLastError()
-        closeSync(descriptor)
+        windowsCloseDescriptor(descriptor)
         if (code === WINDOWS_NATIVE_CONSTANTS.ERROR_LOCK_VIOLATION) return null
         throw new Error(`LockFileEx failed for ${target} (Win32 ${code})`)
     }
@@ -377,7 +382,7 @@ export function windowsTryAcquireProcessFileLock(target) {
         try {
             api.UnlockFileEx(handle, 0, 1, 0, ptr(overlapped))
         } finally {
-            closeSync(descriptor)
+            windowsCloseDescriptor(descriptor)
         }
     }
 }
@@ -411,26 +416,28 @@ export function windowsOpenDirectoryNoFollow(target) {
     if (isInvalidHandle(rootHandle)) {
         throw new Error(`CreateFileW failed for trusted volume root (Win32 ${api.GetLastError()})`)
     }
+    /** @type {any} */
     let current = descriptorForHandle(rootHandle, constants.O_RDONLY)
     try {
         const suffix = resolved.slice(parsed.root.length)
         for (const component of safeParts(suffix)) {
             const opened = ntOpenRelative(current, component, { directory: true })
             if (opened.status < 0) ntFailure(opened.status, `Secure directory open for ${target}`)
-            closeSync(current)
+            windowsCloseDescriptor(current)
             current = opened.descriptor
         }
         const result = current
-        current = -1
+        current = null
         return result
     } finally {
-        if (current >= 0) closeSync(current)
+        windowsCloseDescriptor(current)
     }
 }
 
-/** @param {number} rootFd @param {string} relative @param {boolean} strict */
+/** @param {any} rootFd @param {string} relative @param {boolean} strict */
 function openAtRoot(rootFd, relative, strict) {
     const parts = safeParts(relative)
+    /** @type {any} */
     let current = rootFd
     let ownsCurrent = false
     try {
@@ -445,7 +452,13 @@ function openAtRoot(rootFd, relative, strict) {
                 if (!strict) return null
                 ntFailure(opened.status, `Secure rooted open for ${relative}`)
             }
-            if (ownsCurrent) closeSync(current)
+            if (index === parts.length - 1) {
+                opened.descriptor.parent = current
+                opened.descriptor.ownsParent = ownsCurrent
+                opened.descriptor.name = parts[index]
+                ownsCurrent = false
+            }
+            if (ownsCurrent) windowsCloseDescriptor(current)
             current = opened.descriptor
             ownsCurrent = true
         }
@@ -453,48 +466,25 @@ function openAtRoot(rootFd, relative, strict) {
         ownsCurrent = false
         return result
     } finally {
-        if (ownsCurrent) closeSync(current)
+        if (ownsCurrent) windowsCloseDescriptor(current)
     }
 }
 
-/** @param {number} rootFd @param {string} relative */
+/** @param {any} rootFd @param {string} relative */
 export function windowsOpenFileAtRoot(rootFd, relative) {
     return openAtRoot(rootFd, relative, false)
 }
 
-/** @param {number} rootFd @param {string} relative */
+/** @param {any} rootFd @param {string} relative */
 export function windowsOpenFileAtRootStrict(rootFd, relative) {
     return openAtRoot(rootFd, relative, true)
 }
 
-/**
- * Returns the kernel's current DOS path for a pinned descriptor. The result is
- * intended for Windows ADS access only; recovery mutations themselves remain
- * handle-relative.
- * @param {number} descriptor
- */
-export function windowsPathForDescriptor(descriptor) {
-    const api = symbols()
-    const handle = handleForDescriptor(descriptor)
-    const required = api.GetFinalPathNameByHandleW(handle, null, 0, 0)
-    if (!required) {
-        throw new Error(`GetFinalPathNameByHandleW failed (Win32 ${api.GetLastError()})`)
-    }
-    const buffer = Buffer.alloc((required + 1) * 2)
-    const written = api.GetFinalPathNameByHandleW(handle, ptr(buffer), required + 1, 0)
-    if (!written || written > required) {
-        throw new Error(`GetFinalPathNameByHandleW failed (Win32 ${api.GetLastError()})`)
-    }
-    const nativePath = buffer.subarray(0, written * 2).toString('utf16le')
-    if (nativePath.startsWith('\\\\?\\UNC\\')) return `\\\\${nativePath.slice(8)}`
-    if (nativePath.startsWith('\\\\?\\')) return nativePath.slice(4)
-    throw new Error('Windows returned a non-DOS descriptor path; ADS access failed closed')
-}
-
-/** @param {number} rootFd @param {string} relative @param {boolean} create */
+/** @param {any} rootFd @param {string} relative @param {boolean} create */
 function openParent(rootFd, relative, create) {
     const parts = safeParts(relative)
     const name = /** @type {string} */ (parts.pop())
+    /** @type {any} */
     let current = rootFd
     let ownsCurrent = false
     try {
@@ -502,20 +492,21 @@ function openParent(rootFd, relative, create) {
             const opened = ntOpenRelative(current, component, { directory: true, create })
             if (opened.status < 0)
                 ntFailure(opened.status, `Secure rooted parent open for ${relative}`)
-            if (ownsCurrent) closeSync(current)
+            if (ownsCurrent) windowsCloseDescriptor(current)
             current = opened.descriptor
             ownsCurrent = true
         }
         return { fd: current, ownsFd: ownsCurrent, name }
     } catch (error) {
-        if (ownsCurrent) closeSync(current)
+        if (ownsCurrent) windowsCloseDescriptor(current)
         throw error
     }
 }
 
-/** @param {number} rootFd @param {string} relative @param {number} flags @param {number} mode */
+/** @param {any} rootFd @param {string} relative @param {number} flags @param {number} mode */
 export function windowsOpenFileAtRootWithFlags(rootFd, relative, flags, mode = 0o600) {
     const parent = openParent(rootFd, relative, Boolean(flags & constants.O_CREAT))
+    let transferredParent = false
     try {
         const opened = ntOpenRelative(parent.fd, parent.name, {
             directory: false,
@@ -524,16 +515,20 @@ export function windowsOpenFileAtRootWithFlags(rootFd, relative, flags, mode = 0
             mode
         })
         if (opened.status < 0) ntFailure(opened.status, `Secure rooted file open for ${relative}`)
+        opened.descriptor.parent = parent.fd
+        opened.descriptor.ownsParent = parent.ownsFd
+        opened.descriptor.name = parent.name
+        transferredParent = parent.ownsFd
         return opened.descriptor
     } finally {
-        if (parent.ownsFd) closeSync(parent.fd)
+        if (parent.ownsFd && !transferredParent) windowsCloseDescriptor(parent.fd)
     }
 }
 
-/** @param {number} rootFd @param {string} relative @param {boolean} directory */
+/** @param {any} rootFd @param {string} relative @param {boolean} directory */
 export function windowsUnlinkAtRoot(rootFd, relative, directory = false) {
     const parent = openParent(rootFd, relative, false)
-    let descriptor = -1
+    let descriptor = null
     try {
         const opened = ntOpenRelative(parent.fd, parent.name, { directory, deleteAccess: true })
         if (isMissingStatus(opened.status)) return
@@ -559,16 +554,16 @@ export function windowsUnlinkAtRoot(rootFd, relative, directory = false) {
         }
         syncDescriptor(parent.fd)
     } finally {
-        if (descriptor >= 0) closeSync(descriptor)
-        if (parent.ownsFd) closeSync(parent.fd)
+        windowsCloseDescriptor(descriptor)
+        if (parent.ownsFd) windowsCloseDescriptor(parent.fd)
     }
 }
 
-/** @param {number} sourceRootFd @param {string} sourceRelative @param {number} targetRootFd @param {string} targetRelative */
+/** @param {any} sourceRootFd @param {string} sourceRelative @param {any} targetRootFd @param {string} targetRelative */
 export function windowsRenameAtRoots(sourceRootFd, sourceRelative, targetRootFd, targetRelative) {
     const source = openParent(sourceRootFd, sourceRelative, false)
     const target = openParent(targetRootFd, targetRelative, true)
-    let descriptor = -1
+    let descriptor = null
     try {
         const opened = ntOpenRelative(source.fd, source.name, { deleteAccess: true })
         if (opened.status < 0)
@@ -603,8 +598,243 @@ export function windowsRenameAtRoots(sourceRootFd, sourceRelative, targetRootFd,
         syncDescriptor(target.fd)
         if (source.fd !== target.fd) syncDescriptor(source.fd)
     } finally {
-        if (descriptor >= 0) closeSync(descriptor)
-        if (source.ownsFd) closeSync(source.fd)
-        if (target.ownsFd) closeSync(target.fd)
+        windowsCloseDescriptor(descriptor)
+        if (source.ownsFd) windowsCloseDescriptor(source.fd)
+        if (target.ownsFd) windowsCloseDescriptor(target.fd)
+    }
+}
+
+/** @param {any} descriptor */
+export function windowsStatDescriptor(descriptor) {
+    const info = Buffer.alloc(52)
+    if (!symbols().GetFileInformationByHandle(handleForDescriptor(descriptor), ptr(info))) {
+        throw new Error(`GetFileInformationByHandle failed (Win32 ${symbols().GetLastError()})`)
+    }
+    const attributes = info.readUInt32LE(0)
+    const size = Number((BigInt(info.readUInt32LE(32)) << 32n) | BigInt(info.readUInt32LE(36)))
+    if (!Number.isSafeInteger(size)) throw new Error('Secure Windows file size exceeds safe bounds')
+    const directory = Boolean(attributes & WINDOWS_NATIVE_CONSTANTS.FILE_ATTRIBUTE_DIRECTORY)
+    return {
+        size,
+        isDirectory: () => directory,
+        isFile: () => !directory
+    }
+}
+
+/** @param {any} descriptor @param {Uint8Array} buffer @param {number} offset @param {number} length @param {number} position */
+export function windowsReadDescriptor(descriptor, buffer, offset, length, position) {
+    if (length === 0) return 0
+    const api = symbols()
+    if (!api.SetFilePointerEx(handleForDescriptor(descriptor), BigInt(position), null, 0)) {
+        throw new Error(`SetFilePointerEx(read) failed (Win32 ${api.GetLastError()})`)
+    }
+    const count = Buffer.alloc(4)
+    const target = buffer.subarray(offset, offset + length)
+    if (!api.ReadFile(handleForDescriptor(descriptor), ptr(target), length, ptr(count), null)) {
+        const code = api.GetLastError()
+        // ERROR_HANDLE_EOF is an ordinary zero-byte read.
+        if (code === 38) return 0
+        throw new Error(`ReadFile failed (Win32 ${code})`)
+    }
+    return count.readUInt32LE(0)
+}
+
+/** @param {any} descriptor @param {Uint8Array} buffer @param {number} offset @param {number} length @param {number} position */
+export function windowsWriteDescriptor(descriptor, buffer, offset, length, position) {
+    if (length === 0) return 0
+    const api = symbols()
+    if (!api.SetFilePointerEx(handleForDescriptor(descriptor), BigInt(position), null, 0)) {
+        throw new Error(`SetFilePointerEx(write) failed (Win32 ${api.GetLastError()})`)
+    }
+    const count = Buffer.alloc(4)
+    const source = buffer.subarray(offset, offset + length)
+    if (!api.WriteFile(handleForDescriptor(descriptor), ptr(source), length, ptr(count), null)) {
+        throw new Error(`WriteFile failed (Win32 ${api.GetLastError()})`)
+    }
+    const written = count.readUInt32LE(0)
+    if (written === 0) throw new Error('WriteFile made no progress')
+    return written
+}
+
+/** @param {any} descriptor */
+export function windowsSyncDescriptor(descriptor) {
+    if (!symbols().FlushFileBuffers(handleForDescriptor(descriptor))) {
+        const code = symbols().GetLastError()
+        // Directory handles may reject FlushFileBuffers; files must not.
+        if (!windowsStatDescriptor(descriptor).isDirectory() || ![5, 6].includes(code)) {
+            throw new Error(`FlushFileBuffers failed (Win32 ${code})`)
+        }
+    }
+}
+
+/** @param {any} descriptor @param {number} length */
+export function windowsTruncateDescriptor(descriptor, length) {
+    const api = symbols()
+    if (!api.SetFilePointerEx(handleForDescriptor(descriptor), BigInt(length), null, 0)) {
+        throw new Error(`SetFilePointerEx(truncate) failed (Win32 ${api.GetLastError()})`)
+    }
+    if (!api.SetEndOfFile(handleForDescriptor(descriptor))) {
+        throw new Error(`SetEndOfFile failed (Win32 ${api.GetLastError()})`)
+    }
+}
+
+/** @param {number | Date} value */
+function windowsFileTime(value) {
+    const milliseconds = value instanceof Date ? value.getTime() : value
+    const ticks = BigInt(Math.trunc(milliseconds)) * 10_000n + 116_444_736_000_000_000n
+    const result = Buffer.alloc(8)
+    result.writeBigUInt64LE(ticks)
+    return result
+}
+
+/** @param {any} descriptor @param {number | Date} atime @param {number | Date} mtime */
+export function windowsSetDescriptorTimes(descriptor, atime, mtime) {
+    const access = windowsFileTime(atime)
+    const write = windowsFileTime(mtime)
+    if (!symbols().SetFileTime(handleForDescriptor(descriptor), null, ptr(access), ptr(write))) {
+        throw new Error(`SetFileTime failed (Win32 ${symbols().GetLastError()})`)
+    }
+}
+
+/** @param {any} descriptor @param {number} mode */
+export function windowsSetDescriptorMode(descriptor, mode) {
+    const api = symbols()
+    const basic = Buffer.alloc(40)
+    if (
+        !api.GetFileInformationByHandleEx(
+            handleForDescriptor(descriptor),
+            0,
+            ptr(basic),
+            basic.byteLength
+        )
+    ) {
+        throw new Error(`GetFileInformationByHandleEx failed (Win32 ${api.GetLastError()})`)
+    }
+    let attributes = basic.readUInt32LE(32)
+    if (mode & 0o222) attributes &= ~WINDOWS_NATIVE_CONSTANTS.FILE_ATTRIBUTE_READONLY
+    else attributes |= WINDOWS_NATIVE_CONSTANTS.FILE_ATTRIBUTE_READONLY
+    if (attributes === 0) attributes = WINDOWS_NATIVE_CONSTANTS.FILE_ATTRIBUTE_NORMAL
+    basic.writeUInt32LE(attributes, 32)
+    if (
+        !api.SetFileInformationByHandle(
+            handleForDescriptor(descriptor),
+            0,
+            ptr(basic),
+            basic.byteLength
+        )
+    ) {
+        throw new Error(
+            `SetFileInformationByHandle(FileBasicInfo) failed (Win32 ${api.GetLastError()})`
+        )
+    }
+}
+
+/** @param {any} descriptor @param {number} maxBytes */
+export function windowsReadAllDescriptor(descriptor, maxBytes = Number.MAX_SAFE_INTEGER) {
+    const size = windowsStatDescriptor(descriptor).size
+    if (size > maxBytes) throw new Error(`Secure Windows read exceeds ${maxBytes} bytes`)
+    const result = Buffer.alloc(size)
+    let offset = 0
+    while (offset < size) {
+        const count = windowsReadDescriptor(descriptor, result, offset, size - offset, offset)
+        if (count === 0) break
+        offset += count
+    }
+    return result.subarray(0, offset)
+}
+
+/** @param {any} descriptor @param {string} stream @param {number} flags @param {boolean} create @param {boolean} [deleteAccess] */
+function openNamedStream(descriptor, stream, flags, create, deleteAccess = false) {
+    if (!descriptor?.__fyloWindowsHandle || !/^fylo\.[a-z.]+$/.test(stream)) {
+        throw new Error('Secure Windows ADS access requires a rooted file handle')
+    }
+    // NTFS accepts a base file HANDLE as RootDirectory for a stream-only name;
+    // this binds ADS access to the pinned file identity, not its mutable path.
+    const opened = ntOpenRelative(descriptor, `:${stream}`, {
+        directory: false,
+        flags,
+        create,
+        deleteAccess
+    })
+    if (isMissingStatus(opened.status)) return null
+    if (opened.status < 0) ntFailure(opened.status, `Secure ADS open for ${stream}`)
+    return opened.descriptor
+}
+
+/** @param {any} descriptor @param {string} stream @param {number} maxBytes */
+export function windowsReadNamedStream(descriptor, stream, maxBytes) {
+    const opened = openNamedStream(descriptor, stream, constants.O_RDONLY, false)
+    if (!opened) return null
+    try {
+        return windowsReadAllDescriptor(opened, maxBytes)
+    } finally {
+        windowsCloseDescriptor(opened)
+    }
+}
+
+/** @param {any} descriptor @param {string} stream @param {Uint8Array} bytes */
+export function windowsWriteNamedStream(descriptor, stream, bytes) {
+    const opened = openNamedStream(descriptor, stream, constants.O_RDWR, true)
+    if (!opened) throw new Error(`Unable to create secure ADS ${stream}`)
+    try {
+        windowsTruncateDescriptor(opened, 0)
+        let offset = 0
+        while (offset < bytes.length) {
+            offset += windowsWriteDescriptor(opened, bytes, offset, bytes.length - offset, offset)
+        }
+        windowsSyncDescriptor(opened)
+    } finally {
+        windowsCloseDescriptor(opened)
+    }
+}
+
+/** @param {any} descriptor @param {string} stream */
+export function windowsDeleteNamedStream(descriptor, stream) {
+    const opened = openNamedStream(descriptor, stream, constants.O_RDONLY, false, true)
+    if (!opened) return
+    try {
+        const disposition = Buffer.alloc(4)
+        disposition.writeUInt32LE(
+            WINDOWS_NATIVE_CONSTANTS.FILE_DISPOSITION_FLAG_DELETE |
+                WINDOWS_NATIVE_CONSTANTS.FILE_DISPOSITION_FLAG_POSIX_SEMANTICS
+        )
+        if (
+            !symbols().SetFileInformationByHandle(
+                handleForDescriptor(opened),
+                WINDOWS_NATIVE_CONSTANTS.FILE_DISPOSITION_INFO_EX,
+                ptr(disposition),
+                4
+            )
+        ) {
+            throw new Error(`Secure ADS delete failed (Win32 ${symbols().GetLastError()})`)
+        }
+    } finally {
+        windowsCloseDescriptor(opened)
+    }
+}
+
+/** @param {any} descriptor @param {() => any} operation */
+export function windowsWithDescriptorLock(descriptor, operation) {
+    const api = symbols()
+    const overlapped = Buffer.alloc(WINDOWS_NATIVE_LAYOUT.overlappedBytes)
+    // Reserve a byte-range far beyond supported FYLO file sizes so metadata
+    // coordination never conflicts with document I/O.
+    overlapped.writeUInt32LE(0x7fffffff, 20)
+    if (
+        !api.LockFileEx(
+            handleForDescriptor(descriptor),
+            WINDOWS_NATIVE_CONSTANTS.LOCKFILE_EXCLUSIVE_LOCK,
+            0,
+            1,
+            0,
+            ptr(overlapped)
+        )
+    ) {
+        throw new Error(`LockFileEx(metadata) failed (Win32 ${api.GetLastError()})`)
+    }
+    try {
+        return operation()
+    } finally {
+        api.UnlockFileEx(handleForDescriptor(descriptor), 0, 1, 0, ptr(overlapped))
     }
 }

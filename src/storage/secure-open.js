@@ -1,18 +1,106 @@
 import { dlopen, FFIType, ptr, read } from 'bun:ffi'
-import { closeSync, constants, fchmodSync, fsyncSync, openSync, realpathSync } from 'node:fs'
+import {
+    closeSync,
+    constants,
+    fchmodSync,
+    fstatSync,
+    fsyncSync,
+    ftruncateSync,
+    futimesSync,
+    openSync,
+    readSync,
+    realpathSync,
+    writeSync
+} from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import {
+    windowsCloseDescriptor,
     windowsOpenDirectoryNoFollow,
     windowsOpenFileAtRoot,
     windowsOpenFileAtRootStrict,
     windowsOpenFileAtRootWithFlags,
     windowsRenameAtRoots,
+    windowsReadAllDescriptor,
+    windowsReadDescriptor,
+    windowsSetDescriptorMode,
+    windowsSetDescriptorTimes,
+    windowsStatDescriptor,
+    windowsSyncDescriptor,
+    windowsTruncateDescriptor,
     windowsTryAcquireProcessFileLock,
-    windowsUnlinkAtRoot
+    windowsUnlinkAtRoot,
+    windowsWriteDescriptor
 } from './windows-secure-open.js'
 
 const encoder = new TextEncoder()
+
+/** @param {any} descriptor */
+export function closeSecureDescriptor(descriptor) {
+    if (descriptor === null || descriptor === undefined) return
+    if (process.platform === 'win32') return windowsCloseDescriptor(descriptor)
+    closeSync(descriptor)
+}
+
+/** @param {any} descriptor */
+export function statSecureDescriptor(descriptor) {
+    return process.platform === 'win32' ? windowsStatDescriptor(descriptor) : fstatSync(descriptor)
+}
+
+/** @param {any} descriptor @param {Uint8Array} buffer @param {number} offset @param {number} length @param {number} position */
+export function readSecureDescriptor(descriptor, buffer, offset, length, position) {
+    return process.platform === 'win32'
+        ? windowsReadDescriptor(descriptor, buffer, offset, length, position)
+        : readSync(descriptor, buffer, offset, length, position)
+}
+
+/** @param {any} descriptor @param {Uint8Array} buffer @param {number} offset @param {number} length @param {number} position */
+export function writeSecureDescriptor(descriptor, buffer, offset, length, position) {
+    return process.platform === 'win32'
+        ? windowsWriteDescriptor(descriptor, buffer, offset, length, position)
+        : writeSync(descriptor, buffer, offset, length, position)
+}
+
+/** @param {any} descriptor */
+export function syncSecureDescriptor(descriptor) {
+    return process.platform === 'win32' ? windowsSyncDescriptor(descriptor) : fsyncSync(descriptor)
+}
+
+/** @param {any} descriptor @param {number} length */
+export function truncateSecureDescriptor(descriptor, length) {
+    return process.platform === 'win32'
+        ? windowsTruncateDescriptor(descriptor, length)
+        : ftruncateSync(descriptor, length)
+}
+
+/** @param {any} descriptor @param {number} mode */
+export function chmodSecureDescriptor(descriptor, mode) {
+    return process.platform === 'win32'
+        ? windowsSetDescriptorMode(descriptor, mode)
+        : fchmodSync(descriptor, mode)
+}
+
+/** @param {any} descriptor @param {number | Date} atime @param {number | Date} mtime */
+export function timesSecureDescriptor(descriptor, atime, mtime) {
+    return process.platform === 'win32'
+        ? windowsSetDescriptorTimes(descriptor, atime, mtime)
+        : futimesSync(descriptor, atime, mtime)
+}
+
+/** @param {any} descriptor @param {number} maxBytes */
+export function readAllSecureDescriptor(descriptor, maxBytes) {
+    if (process.platform === 'win32') return windowsReadAllDescriptor(descriptor, maxBytes)
+    const size = fstatSync(descriptor).size
+    if (size > maxBytes) throw new Error(`Secure read exceeds ${maxBytes} bytes`)
+    const result = Buffer.alloc(size)
+    let offset = 0
+    while (offset < size) {
+        const count = readSync(descriptor, result, offset, size - offset, offset)
+        if (count === 0) break
+        offset += count
+    }
+    return result.subarray(0, offset)
+}
 
 /** @param {NodeJS.Platform} platform @param {string} architecture */
 export function libcCandidates(platform, architecture) {
@@ -170,7 +258,7 @@ function openFailure(target, allowUnsafe, symbols) {
  * redirect the final descriptor outside the root inode.
  *
  * @param {string} target
- * @returns {number} caller-owned descriptor for the pinned directory
+ * @returns {any} caller-owned secure descriptor for the pinned directory
  */
 export function openDirectoryNoFollow(target) {
     if (process.platform === 'win32') return windowsOpenDirectoryNoFollow(target)

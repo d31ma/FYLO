@@ -14,14 +14,17 @@
 
 import path from 'node:path'
 import { createHash } from 'node:crypto'
-import { closeSync, fstatSync, readFileSync, readSync } from 'node:fs'
 import { readdir, stat } from 'node:fs/promises'
 import { isDurableWriteScratchPath } from '../storage/durable.js'
 import { getXattrFd, listXattrFd } from '../storage/xattr.js'
 import {
+    closeSecureDescriptor,
     openDirectoryNoFollow,
     openFileAtRoot,
-    openFileAtRootStrict
+    openFileAtRootStrict,
+    readAllSecureDescriptor,
+    readSecureDescriptor,
+    statSecureDescriptor
 } from '../storage/secure-open.js'
 import { emitFyloEvent } from '../observability/events.js'
 import { CoalescingScheduler } from './coalescing-scheduler.js'
@@ -322,20 +325,20 @@ export class FyloS3Backup {
      * @returns {Promise<{ bytes: Uint8Array, size: number, xattrs: Record<string, string> } | null>}
      */
     async snapshot(target) {
-        let fd = -1
+        let fd = null
         try {
             const rootFd = this.rootFd ?? openDirectoryNoFollow(this.root)
             this.rootFd = rootFd
-            fd = openFileAtRoot(rootFd, path.relative(this.root, target)) ?? -1
-            if (fd < 0) return null
-            const info = fstatSync(fd)
+            fd = openFileAtRoot(rootFd, path.relative(this.root, target))
+            if (fd === null) return null
+            const info = statSecureDescriptor(fd)
             if (!info.isFile()) return null
             if (info.size > this.maxFileBytes) {
                 throw new RangeError(
                     `S3 backup file exceeds sync.s3.maxFileBytes (${info.size} > ${this.maxFileBytes}): ${target}`
                 )
             }
-            const bytes = new Uint8Array(readFileSync(fd))
+            const bytes = new Uint8Array(readAllSecureDescriptor(fd, this.maxFileBytes))
             /** @type {Record<string, string>} */
             const xattrs = Object.create(null)
             for (const name of listXattrFd(fd).sort()) {
@@ -348,7 +351,7 @@ export class FyloS3Backup {
             if (code === 'ENOENT' || code === 'ELOOP' || code === 'ENOTDIR') return null
             throw error
         } finally {
-            if (fd >= 0) closeSync(fd)
+            if (fd !== null) closeSecureDescriptor(fd)
         }
     }
 
@@ -760,11 +763,11 @@ export class FyloS3Backup {
         const relative = path.join(LOCAL_TRANSACTION_DIR, namespace, collection, 'state.json')
         const rootFd = this.rootFd ?? openDirectoryNoFollow(this.root)
         this.rootFd = rootFd
-        let descriptor = -1
+        let descriptor = null
         try {
-            descriptor = openFileAtRootStrict(rootFd, relative) ?? -1
-            if (descriptor < 0) return { generation: 0, state: 'stable' }
-            const metadata = fstatSync(descriptor)
+            descriptor = openFileAtRootStrict(rootFd, relative)
+            if (descriptor === null) return { generation: 0, state: 'stable' }
+            const metadata = statSecureDescriptor(descriptor)
             if (!metadata.isFile())
                 throw new Error(`Backup generation state is not a file: ${collection}`)
             if (metadata.size > MAX_GENERATION_STATE_BYTES) {
@@ -773,7 +776,13 @@ export class FyloS3Backup {
             const bytes = Buffer.alloc(MAX_GENERATION_STATE_BYTES + 1)
             let offset = 0
             while (offset < bytes.length) {
-                const count = readSync(descriptor, bytes, offset, bytes.length - offset, offset)
+                const count = readSecureDescriptor(
+                    descriptor,
+                    bytes,
+                    offset,
+                    bytes.length - offset,
+                    offset
+                )
                 if (count === 0) break
                 offset += count
             }
@@ -804,7 +813,7 @@ export class FyloS3Backup {
         } catch (error) {
             throw error
         } finally {
-            if (descriptor >= 0) closeSync(descriptor)
+            if (descriptor !== null) closeSecureDescriptor(descriptor)
         }
     }
 
@@ -835,7 +844,7 @@ export class FyloS3Backup {
             failure = error
         }
         await this.mutationLane
-        if (this.rootFd !== undefined) closeSync(this.rootFd)
+        if (this.rootFd !== undefined) closeSecureDescriptor(this.rootFd)
         this.rootFd = undefined
         this.state = 'closed'
         this.status = { ...this.status, state: 'closed' }

@@ -1,15 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import {
-    closeSync,
-    fchmodSync,
-    fstatSync,
-    fsyncSync,
-    ftruncateSync,
-    futimesSync,
-    readSync,
-    writeSync
-} from 'node:fs'
-import {
     chmod,
     constants,
     copyFile,
@@ -37,11 +27,19 @@ import {
     setXattrFd
 } from './xattr.js'
 import {
+    chmodSecureDescriptor,
+    closeSecureDescriptor,
     openDirectoryNoFollow,
     openFileAtRoot,
     openFileAtRootWithFlags,
+    readSecureDescriptor,
     renameAtRoots,
-    unlinkAtRoot
+    statSecureDescriptor,
+    syncSecureDescriptor,
+    timesSecureDescriptor,
+    truncateSecureDescriptor,
+    unlinkAtRoot,
+    writeSecureDescriptor
 } from './secure-open.js'
 
 const FORMAT = 'fylo.collection-transaction.v1'
@@ -402,14 +400,14 @@ async function readCaptureSegments(transactionFd, transactionRoot) {
         const descriptor = openFileAtRoot(transactionFd, relative)
         if (descriptor === null) throw new Error('Transaction capture segment is missing')
         try {
-            const size = fstatSync(descriptor).size
+            const size = statSecureDescriptor(descriptor).size
             bytes += size
             if (bytes > MAX_MANIFEST_BYTES) {
                 throw new Error('Transaction capture segments exceed the manifest budget')
             }
             captures.push(readJsonDescriptor(descriptor, MAX_CAPTURE_SEGMENT_BYTES, relative))
         } finally {
-            closeSync(descriptor)
+            closeSecureDescriptor(descriptor)
         }
     }
     return captures
@@ -439,14 +437,14 @@ function restoreXattrsFd(descriptor, attributes) {
 
 /** @param {number} descriptor @param {number} maxBytes @param {string} label */
 function readJsonDescriptor(descriptor, maxBytes, label) {
-    const metadata = fstatSync(descriptor)
+    const metadata = statSecureDescriptor(descriptor)
     if (!metadata.isFile() || metadata.size > maxBytes) {
         throw new Error(`${label} is not a bounded regular file`)
     }
     const bytes = Buffer.alloc(Math.min(metadata.size + 1, maxBytes + 1))
     let offset = 0
     while (offset < bytes.length) {
-        const count = readSync(descriptor, bytes, offset, bytes.length - offset, offset)
+        const count = readSecureDescriptor(descriptor, bytes, offset, bytes.length - offset, offset)
         if (count === 0) break
         offset += count
     }
@@ -459,11 +457,17 @@ function copyDescriptor(source, target) {
     const buffer = Buffer.allocUnsafe(64 * 1024)
     let offset = 0
     while (true) {
-        const count = readSync(source, buffer, 0, buffer.length, offset)
+        const count = readSecureDescriptor(source, buffer, 0, buffer.length, offset)
         if (count === 0) return
         let written = 0
         while (written < count) {
-            written += writeSync(target, buffer, written, count - written, offset + written)
+            written += writeSecureDescriptor(
+                target,
+                buffer,
+                written,
+                count - written,
+                offset + written
+            )
         }
         offset += count
     }
@@ -482,11 +486,17 @@ function writeDurableAtRoot(rootFd, relative, content) {
         const bytes = Buffer.isBuffer(content) ? content : Buffer.from(content)
         let offset = 0
         while (offset < bytes.length) {
-            offset += writeSync(descriptor, bytes, offset, bytes.length - offset, offset)
+            offset += writeSecureDescriptor(
+                descriptor,
+                bytes,
+                offset,
+                bytes.length - offset,
+                offset
+            )
         }
-        fsyncSync(descriptor)
+        syncSecureDescriptor(descriptor)
     } finally {
-        closeSync(descriptor)
+        closeSecureDescriptor(descriptor)
     }
     renameAtRoots(rootFd, scratch, rootFd, relative)
 }
@@ -946,21 +956,27 @@ export class CollectionTransactionJournal {
                     0o600
                 )
                 copyDescriptor(backupFd, scratchFd)
-                fsyncSync(scratchFd)
+                syncSecureDescriptor(scratchFd)
             } finally {
-                closeSync(backupFd)
-                if (scratchFd !== undefined) closeSync(scratchFd)
+                closeSecureDescriptor(backupFd)
+                if (scratchFd !== undefined) closeSecureDescriptor(scratchFd)
             }
             renameAtRoots(collectionFd, scratch, collectionFd, capture.path)
-            const targetFd = openFileAtRoot(collectionFd, capture.path)
+            const targetFd = openFileAtRootWithFlags(collectionFd, capture.path, constants.O_RDWR)
             if (targetFd === null) throw new Error('Restored transaction target is missing')
             try {
-                fchmodSync(targetFd, capture.mode)
-                futimesSync(targetFd, new Date(capture.mtimeMs), new Date(capture.mtimeMs))
+                timesSecureDescriptor(
+                    targetFd,
+                    new Date(capture.mtimeMs),
+                    new Date(capture.mtimeMs)
+                )
                 restoreXattrsFd(targetFd, capture.xattrs ?? [])
-                fsyncSync(targetFd)
+                // Apply readonly/mode last: Windows must be able to write the
+                // ADS metadata streams before FILE_ATTRIBUTE_READONLY is set.
+                chmodSecureDescriptor(targetFd, capture.mode)
+                syncSecureDescriptor(targetFd)
             } finally {
-                closeSync(targetFd)
+                closeSecureDescriptor(targetFd)
             }
         }
     }
@@ -976,13 +992,13 @@ export class CollectionTransactionJournal {
             if (transaction.eventOffset === 0) return
             throw new Error('Transaction event journal is missing')
         }
-        closeSync(readable)
+        closeSecureDescriptor(readable)
         const descriptor = openFileAtRootWithFlags(collectionFd, relative, constants.O_RDWR)
         try {
-            ftruncateSync(descriptor, transaction.eventOffset)
-            fsyncSync(descriptor)
+            truncateSecureDescriptor(descriptor, transaction.eventOffset)
+            syncSecureDescriptor(descriptor)
         } finally {
-            closeSync(descriptor)
+            closeSecureDescriptor(descriptor)
         }
     }
 
@@ -1066,7 +1082,7 @@ export class CollectionTransactionJournal {
         try {
             journalFd = openDirectoryNoFollow(this.root(collection))
             transactionFd = openFileAtRoot(journalFd, id)
-            if (transactionFd === null || !fstatSync(transactionFd).isDirectory()) {
+            if (transactionFd === null || !statSecureDescriptor(transactionFd).isDirectory()) {
                 throw new Error('Transaction journal directory is missing')
             }
             const manifestFd = openFileAtRoot(transactionFd, 'transaction.json')
@@ -1078,7 +1094,7 @@ export class CollectionTransactionJournal {
                     'Transaction manifest'
                 )
             } finally {
-                closeSync(manifestFd)
+                closeSecureDescriptor(manifestFd)
             }
             const segmentedCaptures = await readCaptureSegments(
                 transactionFd,
@@ -1125,12 +1141,12 @@ export class CollectionTransactionJournal {
                 }
             } else {
                 try {
-                    const eventMetadata = fstatSync(eventFd)
+                    const eventMetadata = statSecureDescriptor(eventFd)
                     if (!eventMetadata.isFile() || transaction.eventOffset > eventMetadata.size) {
                         throw new Error('Transaction event offset is outside safe bounds')
                     }
                 } finally {
-                    closeSync(eventFd)
+                    closeSecureDescriptor(eventFd)
                 }
             }
             if (transaction.phase !== 'committed') {
@@ -1188,9 +1204,9 @@ export class CollectionTransactionJournal {
                 { cause: error }
             )
         } finally {
-            if (typeof collectionFd === 'number') closeSync(collectionFd)
-            if (typeof transactionFd === 'number') closeSync(transactionFd)
-            if (typeof journalFd === 'number') closeSync(journalFd)
+            if (collectionFd !== undefined) closeSecureDescriptor(collectionFd)
+            if (transactionFd !== undefined) closeSecureDescriptor(transactionFd)
+            if (journalFd !== undefined) closeSecureDescriptor(journalFd)
         }
     }
 
