@@ -894,6 +894,7 @@ require 'fylo.php';
 
 $binary = $argv[1];
 $root = $argv[2];
+$uid = (int) $argv[3];
 $db = new Fylo($root, $binary);
 $db->createCollection("users");
 $id = $db->putData("users", ["name" => "Ada", "role" => "admin", "age" => 30]);
@@ -902,11 +903,21 @@ $found = $db->findDocs("users", ['$ops' => [['age' => ['$gte' => 18]]]]);
 if ($doc[$id]["name"] !== "Ada" || empty($found)) {
     throw new Exception("bad result");
 }
+$sqlId = $db->sql("INSERT INTO users (name, scope) VALUES ('SQL Ada', 'private-sql')", ['uid' => $uid, 'mode' => 0600]);
+$private = $db->sql("SELECT * FROM users WHERE scope = 'private-sql'", ['uid' => $uid]);
+if (($private[$sqlId]['name'] ?? null) !== 'SQL Ada') {
+    throw new Exception("bad protected SQL result");
+}
 $db->close();
 echo '{"ok":true}' . "\n";
 `
         )
-        const result = await run(['php', 'driver.php', binaryPath, root], { cwd: ws })
+        const result = await run(
+            ['php', 'driver.php', binaryPath, root, String(process.getuid())],
+            {
+                cwd: ws
+            }
+        )
         expectShimOk('php shim', result)
     })
 
@@ -924,6 +935,7 @@ echo '{"ok":true}' . "\n";
 import (
 	"fmt"
 	"os"
+	"strconv"
 
 	fylo "interop/fylo"
 )
@@ -946,13 +958,25 @@ func main() {
 	if doc == nil || found == nil {
 		panic("bad result")
 	}
+	uid, err := strconv.Atoi(os.Args[3])
+	if err != nil {
+		panic(err)
+	}
+	sqlID, err := db.Sql("INSERT INTO users (name, scope) VALUES ('SQL Ada', 'private-sql')", map[string]any{"uid": uid, "mode": 0o600})
+	if err != nil {
+		panic(err)
+	}
+	private, err := db.Sql("SELECT * FROM users WHERE scope = 'private-sql'", map[string]any{"uid": uid})
+	if err != nil || sqlID == nil || private == nil {
+		panic("bad protected SQL result")
+	}
 	fmt.Println(` +
                 '`{"ok":true}`' +
                 `)
 }
 `
         )
-        const result = await run(['go', 'run', '.', binaryPath, root], {
+        const result = await run(['go', 'run', '.', binaryPath, root, String(process.getuid())], {
             cwd: ws,
             timeout: 120_000
         })
@@ -973,6 +997,7 @@ use fylo::{Fylo, Json};
 fn main() {
     let binary = std::env::args().nth(1).unwrap();
     let root = std::env::args().nth(2).unwrap();
+    let uid = std::env::args().nth(3).unwrap().parse::<u32>().unwrap();
     let mut db = Fylo::open(&root, &binary, false).unwrap();
     db.create_collection("users", "document").unwrap();
     let put = db
@@ -1010,6 +1035,22 @@ fn main() {
         .unwrap();
     assert!(put.contains("\"result\""));
     assert!(found.contains("\"ok\":true"));
+    let sql_put = db
+        .sql_as(
+            "INSERT INTO users (name, scope) VALUES ('SQL Ada', 'private-sql')",
+            uid,
+            Some(0o600),
+        )
+        .unwrap();
+    let private = db
+        .sql_as(
+            "SELECT * FROM users WHERE scope = 'private-sql'",
+            uid,
+            None,
+        )
+        .unwrap();
+    assert!(sql_put.contains("\"ok\":true"), "{sql_put}");
+    assert!(private.contains("SQL Ada"), "{private}");
     println!("{{\"ok\":true}}");
 }
 `
@@ -1019,7 +1060,9 @@ fn main() {
             timeout: 120_000
         })
         expectSuccess('rustc shim compile', compile)
-        const result = await run([executable, binaryPath, root], { timeout: 120_000 })
+        const result = await run([executable, binaryPath, root, String(process.getuid())], {
+            timeout: 120_000
+        })
         expectShimOk('rust shim', result)
     })
 
@@ -1036,12 +1079,22 @@ import java.util.Map;
 public class Interop {
     public static void main(String[] a) throws Exception {
         try (Fylo db = new Fylo(a[1], a[0], false)) {
+            int uid = Integer.parseInt(a[2]);
             db.createCollection("users");
             String put = db.putData("users", Map.of("name", "Ada", "role", "admin", "age", 30));
             String found = db.findDocs("users",
                 Map.of("$ops", List.of(Map.of("age", Map.of("$gte", 18)))));
             if (!put.contains("\"result\"") || !found.contains("\"ok\":true")) {
                 throw new Exception("bad result");
+            }
+            String sqlPut = db.sql(
+                "INSERT INTO users (name, scope) VALUES ('SQL Ada', 'private-sql')",
+                Map.of("uid", uid, "mode", 384));
+            String privateRows = db.sql(
+                "SELECT * FROM users WHERE scope = 'private-sql'",
+                Map.of("uid", uid));
+            if (!sqlPut.contains("\"result\"") || !privateRows.contains("SQL Ada")) {
+                throw new Exception("bad protected SQL result");
             }
             System.out.println("{\"ok\":true}");
         }
@@ -1054,9 +1107,12 @@ public class Interop {
             timeout: 120_000
         })
         expectSuccess('javac shim compile', compile)
-        const result = await run(['java', '-cp', ws, 'Interop', binaryPath, root], {
-            timeout: 120_000
-        })
+        const result = await run(
+            ['java', '-cp', ws, 'Interop', binaryPath, root, String(process.getuid())],
+            {
+                timeout: 120_000
+            }
+        )
         expectShimOk('java shim', result)
     })
 
@@ -1082,6 +1138,7 @@ public class Interop {
             String.raw`using System.Collections.Generic;
 
 var db = new Fylo.Fylo(args[1], args[0], false);
+var uid = int.Parse(args[2]);
 db.CreateCollection("users");
 var data = new Dictionary<string, object> { ["name"] = "Ada", ["role"] = "admin", ["age"] = 30 };
 db.PutData("users", data);
@@ -1093,13 +1150,22 @@ var query = new Dictionary<string, object>
     }
 };
 db.FindDocs("users", query);
+var sqlId = db.ExecuteSQL(
+    "INSERT INTO users (name, scope) VALUES ('SQL Ada', 'private-sql')",
+    new { uid, mode = 384 });
+var privateRows = db.ExecuteSQL(
+    "SELECT * FROM users WHERE scope = 'private-sql'",
+    new { uid });
+if (sqlId.GetString() is null || !privateRows.ToString().Contains("SQL Ada"))
+    throw new System.Exception("bad protected SQL result");
 System.Console.WriteLine("{\"ok\":true}");
 db.Dispose();
 `
         )
-        const result = await run(['dotnet', 'run', '--project', ws, '--', binaryPath, root], {
-            timeout: 180_000
-        })
+        const result = await run(
+            ['dotnet', 'run', '--project', ws, '--', binaryPath, root, String(process.getuid())],
+            { timeout: 180_000 }
+        )
         expectShimOk('csharp shim', result)
     })
 
@@ -1114,20 +1180,36 @@ db.Dispose();
 
 Future<void> main(List<String> args) async {
   final db = await Fylo.open(args[1], binary: args[0]);
+  final uid = int.parse(args[2]);
   await db.createCollection('users');
   final id = await db.putData('users', {'name': 'Ada', 'role': 'admin', 'age': 30}) as String;
   final doc = await db.getLatest('users', id) as Map;
   final found = await db.findDocs('users', {r'$ops': [{'age': {r'$gte': 18}}]}) as Map;
   if ((doc[id] as Map)['name'] != 'Ada' || found.isEmpty) throw StateError('bad result');
+  final sqlId = await db.sql(
+    "INSERT INTO users (name, scope) VALUES ('SQL Ada', 'private-sql')",
+    uid: uid,
+    mode: 384,
+  ) as String;
+  final privateRows = await db.sql(
+    "SELECT * FROM users WHERE scope = 'private-sql'",
+    uid: uid,
+  ) as Map;
+  if ((privateRows[sqlId] as Map)['name'] != 'SQL Ada') {
+    throw StateError('bad protected SQL result');
+  }
   await db.close();
   print('{"ok":true}');
 }
 `
         )
-        const result = await run(['dart', 'driver.dart', binaryPath, root], {
-            cwd: ws,
-            timeout: 120_000
-        })
+        const result = await run(
+            ['dart', 'driver.dart', binaryPath, root, String(process.getuid())],
+            {
+                cwd: ws,
+                timeout: 120_000
+            }
+        )
         expectShimOk('dart shim', result)
     })
 })

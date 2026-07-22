@@ -121,14 +121,14 @@ class Fylo:
     def join_docs(self, join):
         return self._op("joinDocs", join=join)
 
-    def execute_sql(self, sql):
-        return self._op("executeSQL", sql=sql)
+    def execute_sql(self, sql, access=None):
+        return self._op("executeSQL", sql=sql, access=access)
 
-    def sql(self, query):
+    def sql(self, query, access=None):
         """Run raw SQL, built with a native f-string: db.sql(f"... {x}").
         Values are inlined verbatim — escape/validate untrusted input yourself.
         """
-        return self.execute_sql(query)
+        return self.execute_sql(query, access)
 
     def import_bulk_data(self, collection, url, limit_or_options=None):
         return self._op(

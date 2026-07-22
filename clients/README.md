@@ -115,11 +115,16 @@ name — `db.users.put(data)` (Node), `db.users.put(data)` (Python), `db.users.p
 (Ruby), `$db->users->put($data)` (PHP). The method-per-op API (`db.putData("users",
 data)`) stays available everywhere; the facade is additive sugar over it.
 
-Developer metadata uses `getMeta(collection, id)` and `setMeta(collection, id,
-meta)` (snake_case in Python/Ruby/Rust; PascalCase in Go/C#). Collection facades
-use `getMeta(id)` / `setMeta(id, meta)`, except Python and Ruby, which use
-`get_metadata(id)` / `set_metadata(id, meta)`, and PHP, which uses
-`getMetadata(id)` / `setMetadata(id, meta)`.
+The native JavaScript/browser facade offers the fluent signatures
+`put(id, documentOrFile).metadata(meta)`, `put(id).metadata(meta)`, and
+`get(id).metadata()`. Thin binary shims map those semantics to the machine
+protocol's explicit metadata calls: `getMeta(collection, id)` and
+`setMeta(collection, id, meta)` (snake_case in Python/Ruby/Rust; PascalCase in
+Go/C#). Collection facades use `getMeta(id)` / `setMeta(id, meta)`, except
+Python and Ruby, which use `get_metadata(id)` / `set_metadata(id, meta)`, and
+PHP, which uses `getMetadata(id)` / `setMetadata(id, meta)`. Creating data and
+metadata in one machine request uses `putData` with its top-level `meta` field;
+shim convenience methods do not change the merge or deletion rules.
 
 In result-unwrapping shims, `getMeta` returns the complete canonical metadata
 record plus developer metadata. Every record includes `id`, `mtime`,
@@ -173,6 +178,41 @@ string, so values are inlined verbatim: **escape or validate untrusted input
 yourself**, or keep to app-generated SQL. On the mobile clients, `sql` runs
 against the local on-device store.
 
+### SQL UID and mode
+
+Thin shims can send an application-authenticated POSIX UID claim with SQL
+execution. Fylo does not authenticate the claim. `mode` is accepted only for
+`INSERT`; omit it from `SELECT`, `UPDATE`, and `DELETE`. UID-only inserts
+default to `0o600`.
+
+| Language | Protected SQL call                                                                   |
+| -------- | ------------------------------------------------------------------------------------ |
+| Node/TS  | ``await db.sql`INSERT INTO users (name) VALUES (${name})`.as({ uid, mode: 0o600 })`` |
+| Python   | `db.sql(query, {"uid": uid, "mode": 0o600})`                                         |
+| Ruby     | `db.sql(query, { "uid" => uid, "mode" => 0o600 })`                                   |
+| PHP      | `$db->sql($query, ['uid' => $uid, 'mode' => 0600])`                                  |
+| Go       | `db.Sql(query, map[string]any{"uid": uid, "mode": 0o600})`                           |
+| Rust     | `db.sql_as(query, uid, Some(0o600))`                                                 |
+| Java     | `db.sql(query, Map.of("uid", uid, "mode", 384))`                                     |
+| C#       | `db.Sql($"INSERT ...", new { uid, mode = 384 })`                                     |
+| Dart     | `db.sql(query, uid: uid, mode: 384)`                                                 |
+
+The machine payload is the same for every shim:
+
+```json
+{
+    "op": "executeSQL",
+    "sql": "INSERT INTO users (name) VALUES ('Ada')",
+    "access": { "uid": 1001, "mode": 384 }
+}
+```
+
+`SELECT` returns only rows readable by that UID. `UPDATE` and `DELETE` use the
+same UID for both candidate visibility and write authorization. This is a
+native-POSIX feature on macOS/Linux hosts. It is not enforced by the Windows
+binary, browser, Explorer, or mobile local-only clients because those surfaces
+cannot provide the required `chown`/`chmod` boundary.
+
 ## How the shims work
 
 Each thin shim spawns **one** long-lived process — `fylo exec --loop --root <db>` —
@@ -186,8 +226,8 @@ Pass `--root` once on spawn (the shims do this); per-request `root` is optional.
 
 Browsers can't spawn the binary, so the web client is different: it's a **bundled
 local-only engine** (built from `src/browser`, released as `fylo-web.mjs`). It
-reads and writes an OPFS/memory store directly — fully offline, no backend, no
-network. Each browser profile owns its own database.
+reads and writes OPFS, memory, or a user-selected File System Access directory
+directly — fully offline, no backend, no network.
 
 For a regular website, add a version-pinned loader to the document head:
 
@@ -216,6 +256,24 @@ import { createBrowserClient } from 'https://d31ma.github.io/FYLO/version/26.29.
 const db = createBrowserClient()
 await db.ready()
 ```
+
+Enable the worker-hosted Wasm index scanner, or mount a user-selected FYLO root:
+
+```js
+const local = createBrowserClient({ storage: 'opfs', worker: true, wasm: true })
+
+// Run from a user gesture. File System Access is currently Chromium-only.
+const handle = await showDirectoryPicker({ mode: 'readwrite' })
+const mounted = createBrowserClient({
+    storage: { type: 'fsa', handle, access: 'readwrite' },
+    worker: true,
+    wasm: true
+})
+await mounted.ready()
+```
+
+Use `access: 'overlay'` for read-only inspection: document/index writes remain
+in memory while reads fall through to the selected directory.
 
 Every release remains available under `version/<version>/`; `version/latest/`
 is updated only after a successful Release workflow.

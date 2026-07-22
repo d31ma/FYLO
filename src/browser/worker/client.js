@@ -8,9 +8,11 @@
 /**
  * @typedef {object} FyloWorkerClientOptions
  * @property {string} namespace
- * @property {'memory' | 'opfs'} storage
+ * @property {import('../storage.js').BrowserStorage} storage
+ * @property {string=} instanceId
  * @property {string=} root
  * @property {BrowserCoreOptions['worm']=} worm
+ * @property {true | { url?: string | URL, module?: WebAssembly.Module }=} wasm
  */
 
 export class FyloWorkerClient {
@@ -70,8 +72,10 @@ export class FyloWorkerClient {
             id,
             namespace: this.options.namespace,
             storage: this.options.storage,
+            instanceId: this.options.instanceId,
             root: this.options.root,
             worm: this.options.worm,
+            wasm: this.options.wasm,
             ...envelope
         }
         const promise = new Promise((resolve, reject) => {
@@ -99,6 +103,11 @@ export class FyloWorkerClient {
         return /** @type {BrowserResponse} */ (await this.send({ request }))
     }
 
+    /** @returns {Promise<void>} */
+    async ready() {
+        await this.send({ type: 'ready' })
+    }
+
     /**
      * @param {string} collection
      * @param {(event: BrowserEvent) => void} listener
@@ -124,6 +133,11 @@ export class FyloWorkerClient {
 
     /** @returns {Promise<void>} */
     async close() {
+        if (this.options.instanceId) {
+            try {
+                await this.send({ type: 'close' })
+            } catch {}
+        }
         if ('terminate' in this.port) this.port.terminate()
         if ('close' in this.port) this.port.close()
     }
@@ -135,15 +149,23 @@ export class FyloWorkerClient {
  */
 export function createWorkerClient(options) {
     if (typeof SharedWorker !== 'undefined') {
-        const worker = new SharedWorker(new URL('./shared.js', import.meta.url), {
+        const worker = new SharedWorker(siblingAssetUrl('./shared.js'), {
             type: 'module',
             name: 'fylo-browser'
         })
         return new FyloWorkerClient(worker.port, options)
     }
     if (typeof Worker !== 'undefined') {
-        const worker = new Worker(new URL('./dedicated.js', import.meta.url), { type: 'module' })
+        const worker = new Worker(siblingAssetUrl('./dedicated.js'), { type: 'module' })
         return new FyloWorkerClient(worker, options)
     }
     throw new Error('FYLO browser workers are not available in this runtime')
+}
+
+/** @param {string} path @returns {URL} */
+function siblingAssetUrl(path) {
+    const base = new URL(import.meta.url)
+    const asset = new URL(path, base)
+    asset.search = base.search
+    return asset
 }

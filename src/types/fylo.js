@@ -7,6 +7,7 @@
 /**
  * @template T
  * @typedef {AsyncIterable<TTID | Record<TTID, T>> & {
+ *   as: (access: { uid: number }) => GetDocResult<T>,
  *   once: <U = T>() => Promise<Record<TTID, U>>,
  *   onDelete: () => AsyncGenerator<TTID, void, unknown>
  * }} GetDocResult
@@ -15,6 +16,7 @@
 /**
  * @template T
  * @typedef {AsyncIterable<TTID | Record<TTID, T> | Record<string, TTID[]> | Record<TTID, Partial<T>> | undefined> & {
+ *   as: (access: { uid: number }) => FindDocsResult<T>,
  *   collect: <U = T>() => AsyncGenerator<TTID | Record<TTID, U> | Record<string, TTID[]> | Record<TTID, Partial<U>> | undefined, void, unknown>,
  *   onDelete: () => AsyncGenerator<TTID, void, unknown>
  * }} FindDocsResult
@@ -23,6 +25,7 @@
 /**
  * @template T
  * @typedef {AsyncIterable<TTID | Record<TTID, T> | undefined> & {
+ *   as: (access: { uid: number }) => DeletedDocsResult<T>,
  *   collect: <U = T>() => AsyncGenerator<TTID | Record<TTID, U> | undefined, void, unknown>
  * }} DeletedDocsResult
  */

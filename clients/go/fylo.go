@@ -147,14 +147,18 @@ func (f *Fylo) FindDeletedDocs(collection string, query map[string]any) (any, er
 func (f *Fylo) JoinDocs(join map[string]any) (any, error) {
 	return f.op("joinDocs", map[string]any{"join": join})
 }
-func (f *Fylo) ExecuteSQL(sql string) (any, error) {
-	return f.op("executeSQL", map[string]any{"sql": sql})
+func (f *Fylo) ExecuteSQL(sql string, access ...map[string]any) (any, error) {
+	fields := map[string]any{"sql": sql}
+	if len(access) > 0 {
+		fields["access"] = access[0]
+	}
+	return f.op("executeSQL", fields)
 }
 
 // Sql runs raw SQL, built with fmt.Sprintf. Values are inlined verbatim —
 // escape/validate untrusted input yourself.
-func (f *Fylo) Sql(query string) (any, error) {
-	return f.ExecuteSQL(query)
+func (f *Fylo) Sql(query string, access ...map[string]any) (any, error) {
+	return f.ExecuteSQL(query, access...)
 }
 func (f *Fylo) ImportBulkData(collection, url string) (any, error) {
 	return f.op("importBulkData", map[string]any{"collection": collection, "url": url})

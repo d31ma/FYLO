@@ -114,6 +114,15 @@ export class FilesystemStorage {
     async chmod(target, mode) {
         await chmod(target, mode)
     }
+    /** @param {string} target @returns {Promise<void>} */
+    async syncFile(target) {
+        const handle = await open(target, process.platform === 'win32' ? 'r+' : 'r')
+        try {
+            await handle.sync()
+        } finally {
+            await handle.close()
+        }
+    }
     /**
      * @param {string} target
      * @param {number} mtimeMs
@@ -323,8 +332,17 @@ export class FilesystemEventBus {
         const handle = await open(target, 'a')
         try {
             await handle.write(line)
+            await handle.sync()
         } finally {
             await handle.close()
+        }
+        const directory = await open(path.dirname(target), 'r')
+        try {
+            await directory.sync()
+        } catch (error) {
+            if (process.platform !== 'win32') throw error
+        } finally {
+            await directory.close()
         }
     }
     /**

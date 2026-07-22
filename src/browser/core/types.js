@@ -47,10 +47,15 @@
  */
 
 /**
+ * @typedef {import('../storage.js').BrowserStorage} BrowserStorage
+ */
+
+/**
  * @typedef {object} BrowserCoreOptions
  * @property {import('./filesystem.js').FyloFilesystem} fs
  * @property {string=} root
  * @property {{ mode?: BrowserWormMode }=} worm
+ * @property {{ ready(): Promise<void>, create(): Promise<{ loadSnapshot(snapshot: Uint8Array): void | Promise<void>, scanQueries(queries: Array<{ prefix: string, range?: { op: '$gt' | '$gte' | '$lt' | '$lte', value: string } }>): string[] | Promise<string[]>, close?(): void | Promise<void> }> }=} indexScannerFactory
  */
 
 /**

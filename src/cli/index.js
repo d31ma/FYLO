@@ -208,7 +208,9 @@ function parseArgs(argv) {
  * @returns {boolean}
  */
 function isSqlCommand(input) {
-    return /^(SELECT|INSERT|UPDATE|DELETE|CREATE|DROP)\b/i.test(input.trim())
+    return /^(?:EXPLAIN(?:\s+ANALYZE)?\s+)?(?:SELECT|INSERT|UPDATE|DELETE|CREATE|DROP)\b/i.test(
+        input.trim()
+    )
 }
 
 /**
@@ -217,6 +219,8 @@ function isSqlCommand(input) {
  */
 async function renderSqlResult(command, result) {
     switch (command.toUpperCase()) {
+        case 'EXPLAIN':
+            return JSON.stringify(result, null, 2)
         case 'CREATE':
             return 'Successfully created schema'
         case 'DROP':
@@ -273,7 +277,9 @@ function setTableOptions(args) {
  */
 async function runSql(sql, root) {
     const result = await createFylo(root)._sql(sql)
-    const operation = sql.match(/^(SELECT|INSERT|UPDATE|DELETE|CREATE|DROP)/i)?.[0]
+    const operation =
+        sql.match(/^EXPLAIN\b/i)?.[0] ??
+        sql.match(/^(SELECT|INSERT|UPDATE|DELETE|CREATE|DROP)/i)?.[0]
     if (!operation) throw new Error('Missing SQL operation')
     return await renderSqlResult(operation, result)
 }

@@ -2,7 +2,6 @@ import { afterAll, describe, expect, test } from 'bun:test'
 import { readdir, rm } from 'node:fs/promises'
 import Fylo from '../../src/index.js'
 import { createBrowserClient } from '../../src/browser/client.js'
-import { FsaFilesystem, createOverlayFilesystem } from '../../src/browser/fsa-filesystem.js'
 import { mockDirectoryHandle } from './helpers/fsa-mock.js'
 import { createTestRoot } from '../helpers/root.js'
 
@@ -34,8 +33,14 @@ describe('browser engine over a desktop-written root (FSA adapter)', () => {
         const before = await snapshotTree(root)
 
         // Open it with the browser engine via the FSA adapter + overlay.
-        const overlay = createOverlayFilesystem(new FsaFilesystem(mockDirectoryHandle(root)))
-        const db = createBrowserClient({ fs: overlay, worker: false })
+        const db = createBrowserClient({
+            storage: {
+                type: 'fsa',
+                handle: mockDirectoryHandle(root),
+                access: 'overlay'
+            },
+            worker: false
+        })
         await db.ready()
 
         const inspected = await db.users.inspect()

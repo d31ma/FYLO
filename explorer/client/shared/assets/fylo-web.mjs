@@ -857,6 +857,71 @@ class JoinBuilder {
   }
 }
 
+// src/query/planner.js
+function deepFreeze(value, seen = new WeakSet) {
+  if (!value || typeof value !== "object" || seen.has(value))
+    return value;
+  seen.add(value);
+  for (const child of Object.values(value))
+    deepFreeze(child, seen);
+  return Object.freeze(value);
+}
+function accessPaths(query) {
+  if (!query?.$ops?.length)
+    return [{ kind: "document-scan" }];
+  const access = [];
+  for (const operation of query.$ops) {
+    for (const [field, operand] of Object.entries(operation)) {
+      if (!operand || typeof operand !== "object")
+        continue;
+      const operators = Object.keys(operand);
+      const indexable = operators.some((operator) => ["$eq", "$gt", "$gte", "$lt", "$lte", "$like", "$contains"].includes(operator));
+      access.push(indexable ? { kind: "prefix-index", field, operators } : { kind: "document-filter", field, operators });
+    }
+  }
+  return access.length > 0 ? access : [{ kind: "document-scan" }];
+}
+
+class FyloQueryPlanner {
+  prepare(input) {
+    if (typeof input !== "string" || input.trim().length === 0) {
+      throw new Error("SQL statement must be a non-empty string");
+    }
+    let sql = input.trim();
+    let explain = false;
+    let analyze = false;
+    const explainMatch = sql.match(/^EXPLAIN(?:\s+(ANALYZE))?\s+/i);
+    if (explainMatch) {
+      explain = true;
+      analyze = Boolean(explainMatch[1]);
+      sql = sql.slice(explainMatch[0].length).trim();
+    }
+    const operation = sql.match(/^(SELECT|INSERT|UPDATE|DELETE|CREATE|DROP)\b/i)?.[1];
+    if (!operation)
+      throw new Error("Missing SQL Operation");
+    const ast = deepFreeze(Parser.parse(sql));
+    const collection = String(ast.$collection ?? ast.$leftCollection ?? "");
+    const query = operation.toUpperCase() === "UPDATE" ? ast.$where : ast;
+    return deepFreeze({
+      sql,
+      operation: operation.toUpperCase(),
+      collection,
+      ast,
+      explain,
+      analyze,
+      access: accessPaths(query)
+    });
+  }
+  describe(plan) {
+    return {
+      operation: plan.operation,
+      collection: plan.collection,
+      access: plan.access.map((step) => ({ ...step })),
+      executed: false
+    };
+  }
+}
+
 // src/browser/core/filesystem.js
 function runInLane(lanes, key, body) {
   const previous = lanes.get(key) ?? Promise.resolve();
@@ -1491,10 +1556,78 @@ async function writeIfMissing(fs, path, data) {
 }
 
 class BrowserPrefixIndex {
-  constructor(fs, rootForCollection) {
+  constructor(fs, rootForCollection, options = {}) {
     this.fs = fs;
     this.rootForCollection = rootForCollection;
     this.snapshotCache = new Map;
+    this.indexScannerFactory = options.indexScannerFactory;
+    this.scanners = new Map;
+    this.scannerSnapshots = new Map;
+    this.accelerationState = "loading";
+    this.accelerationError = null;
+  }
+  async ready() {
+    if (!this.indexScannerFactory || this.accelerationState === "fallback")
+      return;
+    try {
+      await this.indexScannerFactory.ready();
+      this.accelerationState = "active";
+    } catch (error) {
+      await this.disableAcceleration(error);
+    }
+  }
+  async close() {
+    const scanners = [...this.scanners.values()];
+    this.scanners.clear();
+    this.scannerSnapshots.clear();
+    for (const pending of scanners) {
+      try {
+        const scanner = await pending;
+        await scanner.close?.();
+      } catch {}
+    }
+  }
+  accelerationStatus() {
+    if (!this.indexScannerFactory)
+      return { mode: "javascript", state: "off" };
+    const status = { mode: "wasm", state: this.accelerationState };
+    return this.accelerationError ? { ...status, error: this.accelerationError } : status;
+  }
+  async disableAcceleration(error) {
+    this.accelerationState = "fallback";
+    this.accelerationError = error instanceof Error ? error.message : String(error);
+    await this.close();
+  }
+  async scannerFor(collection) {
+    if (!this.indexScannerFactory || this.accelerationState === "fallback")
+      return null;
+    if (this.accelerationState !== "active")
+      await this.ready();
+    if (this.accelerationState !== "active")
+      return null;
+    let scanner = this.scanners.get(collection);
+    if (!scanner) {
+      scanner = Promise.resolve(this.indexScannerFactory.create());
+      this.scanners.set(collection, scanner);
+    }
+    try {
+      return await scanner;
+    } catch (error) {
+      await this.disableAcceleration(error);
+      return null;
+    }
+  }
+  async forgetCollection(collection) {
+    this.snapshotCache.delete(collection);
+    this.scannerSnapshots.delete(collection);
+    const scanner = this.scanners.get(collection);
+    this.scanners.delete(collection);
+    if (!scanner)
+      return;
+    try {
+      const instance = await scanner;
+      await instance.close?.();
+    } catch {}
   }
   root(collection) {
     return join(this.rootForCollection(collection), "index");
@@ -1516,7 +1649,7 @@ class BrowserPrefixIndex {
     await writeIfMissing(this.fs, this.walPath(collection), "");
   }
   async resetCollection(collection) {
-    this.snapshotCache.delete(collection);
+    await this.forgetCollection(collection);
     await this.fs.rmdir(this.root(collection), { recursive: true });
     await this.ensureCollection(collection);
   }
@@ -1587,16 +1720,15 @@ class BrowserPrefixIndex {
     await this.fs.writeText(this.snapshotPath(collection), serializeSnapshot(keys));
     await this.fs.writeText(this.walPath(collection), "");
     this.snapshotCache.delete(collection);
+    this.scannerSnapshots.delete(collection);
   }
   async putDocument(collection, docId, doc) {
     const keys = await BrowserPrefixIndexCodec.entriesForDocument(collection, docId, doc);
     await this.appendMutations(collection, keys.map((key) => ({ op: "+", key })));
-    this.snapshotCache.delete(collection);
   }
   async removeDocument(collection, docId, doc) {
     const keys = await BrowserPrefixIndexCodec.entriesForDocument(collection, docId, doc);
     await this.appendMutations(collection, keys.map((key) => ({ op: "-", key })));
-    this.snapshotCache.delete(collection);
   }
   async countDocuments(collection) {
     const docIds = new Set;
@@ -1619,16 +1751,36 @@ class BrowserPrefixIndex {
     for (const entry of prefixes) {
       const rootPrefix = BrowserPrefixIndexCodec.prefix(fieldPath, entry.kind);
       const fullPrefix = BrowserPrefixIndexCodec.prefix(fieldPath, entry.kind, entry.valuePrefix);
-      const offset = this.findFirstKeyAtOrAfter(bytes, fullPrefix);
       const next = new Set;
-      for (const key of streamKeysFrom(bytes, offset)) {
+      const scanner = await this.scannerFor(collection);
+      if (scanner) {
+        try {
+          if (this.scannerSnapshots.get(collection) !== bytes) {
+            await scanner.loadSnapshot(bytes);
+            this.scannerSnapshots.set(collection, bytes);
+          }
+          for (const encodedDocId of await scanner.scanQueries([
+            { prefix: fullPrefix, range: entry.range }
+          ])) {
+            const docId = decodeSegment(encodedDocId);
+            if (!TTID.isTTID(docId))
+              throw new Error(`Invalid document ID: ${docId}`);
+            next.add(docId);
+          }
+        } catch (error) {
+          await this.disableAcceleration(error);
+          next.clear();
+          this.scanSnapshotWithJavaScript(bytes, fullPrefix, rootPrefix, entry.range, next);
+        }
+      } else {
+        this.scanSnapshotWithJavaScript(bytes, fullPrefix, rootPrefix, entry.range, next);
+      }
+      for (const key of overlay.removed) {
         if (!key.startsWith(fullPrefix))
-          break;
-        if (overlay.removed.has(key))
           continue;
         if (!includeKeyInRange(key, entry.range))
           continue;
-        next.add(docIdFromKey(rootPrefix, key));
+        next.delete(docIdFromKey(rootPrefix, key));
       }
       for (const key of overlay.added) {
         if (!key.startsWith(fullPrefix))
@@ -1640,6 +1792,16 @@ class BrowserPrefixIndex {
       candidates = intersect(candidates, next);
     }
     return candidates;
+  }
+  scanSnapshotWithJavaScript(bytes, fullPrefix, rootPrefix, range, target) {
+    const offset = this.findFirstKeyAtOrAfter(bytes, fullPrefix);
+    for (const key of streamKeysFrom(bytes, offset)) {
+      if (!key.startsWith(fullPrefix))
+        break;
+      if (!includeKeyInRange(key, range))
+        continue;
+      target.add(docIdFromKey(rootPrefix, key));
+    }
   }
   async loadWalOverlay(collection) {
     const added = new Set;
@@ -2007,12 +2169,15 @@ function explicitDocumentEntry(value) {
 }
 
 class BrowserCore {
+  planner = new FyloQueryPlanner;
   constructor(options) {
     this.fs = options.fs;
     this.root = options.root ?? "/";
     this.wormMode = options.worm?.mode ?? "off";
     this.writeLanes = new Map;
-    this.index = new BrowserPrefixIndex(this.fs, this.collectionRoot.bind(this));
+    this.index = new BrowserPrefixIndex(this.fs, this.collectionRoot.bind(this), {
+      indexScannerFactory: options.indexScannerFactory
+    });
     this.events = new BrowserEventBus(this.fs, this.collectionRoot.bind(this));
     this.documents = new BrowserDocuments(this.fs, this.docsRoot.bind(this), this.docPath.bind(this), this.deletedRoot.bind(this), this.deletedPath.bind(this), this.ensureCollection.bind(this));
     this.metadata = new BrowserMetadataStore(this.fs, this.collectionRoot.bind(this));
@@ -2027,8 +2192,12 @@ class BrowserCore {
       }
     });
   }
-  async ready() {}
-  async close() {}
+  async ready() {
+    await this.index.ready();
+  }
+  async close() {
+    await this.index.close();
+  }
   wormEnabled() {
     return this.wormMode === "strict";
   }
@@ -2087,6 +2256,7 @@ class BrowserCore {
     if (this.wormEnabled() && (await this.documents.listDocIds(collection)).length > 0) {
       throw new Error("Drop is not allowed for a non-empty WORM collection");
     }
+    await this.index.forgetCollection(collection);
     await this.fs.rmdir(this.collectionRoot(collection), { recursive: true });
   }
   async hasCollection(collection) {
@@ -2101,7 +2271,8 @@ class BrowserCore {
         worm: false,
         docsStored: 0,
         deletedDocs: 0,
-        indexedDocs: 0
+        indexedDocs: 0,
+        indexAcceleration: this.index.accelerationStatus()
       };
     }
     const [docIds, deletedDocIds, indexedDocs] = await Promise.all([
@@ -2115,7 +2286,8 @@ class BrowserCore {
       worm: this.wormEnabled(),
       docsStored: docIds.length,
       deletedDocs: deletedDocIds.length,
-      indexedDocs
+      indexedDocs,
+      indexAcceleration: this.index.accelerationStatus()
     };
   }
   async rebuildCollection(collection) {
@@ -2552,18 +2724,31 @@ class BrowserCore {
     return docs;
   }
   async executeSQL(SQL) {
-    const operationMatch = SQL.match(/^(SELECT|INSERT|UPDATE|DELETE|CREATE|DROP)/i);
-    const operation = operationMatch?.[0]?.toUpperCase();
-    if (!operation)
-      throw new Error("Missing SQL Operation");
+    const plan = this.planner.prepare(SQL);
+    if (plan.explain && !plan.analyze)
+      return this.planner.describe(plan);
+    const startedAt = performance.now();
+    const result = await this.executeSqlPlan(plan);
+    if (!plan.explain)
+      return result;
+    return {
+      ...this.planner.describe(plan),
+      executed: true,
+      elapsedMs: performance.now() - startedAt,
+      result
+    };
+  }
+  async executeSqlPlan(plan) {
+    const operation = plan.operation;
+    const parsed = structuredClone(plan.ast);
     switch (operation) {
       case "CREATE":
-        return await this.createCollection(Parser.parse(SQL).$collection);
+        return await this.createCollection(String(parsed.$collection));
       case "DROP":
-        return await this.dropCollection(Parser.parse(SQL).$collection);
+        return await this.dropCollection(String(parsed.$collection));
       case "SELECT": {
-        const query = Parser.parse(SQL);
-        if (SQL.includes("JOIN"))
+        const query = parsed;
+        if (plan.sql.includes("JOIN"))
           return await this.join(query);
         const selectedCollection = query.$collection;
         delete query.$collection;
@@ -2577,19 +2762,19 @@ class BrowserCore {
         return docs;
       }
       case "INSERT": {
-        const insert = Parser.parse(SQL);
+        const insert = parsed;
         const insertCollection = insert.$collection;
         delete insert.$collection;
         return await this.putData(String(insertCollection), insert.$values);
       }
       case "UPDATE": {
-        const update = Parser.parse(SQL);
+        const update = parsed;
         const updateCol = update.$collection;
         delete update.$collection;
         return await this.patchDocs(String(updateCol), update);
       }
       case "DELETE": {
-        const del = Parser.parse(SQL);
+        const del = parsed;
         const deleteCollection = del.$collection;
         delete del.$collection;
         return await this.delDocs(String(deleteCollection), del);
@@ -3209,6 +3394,193 @@ function createOpfsFilesystem(options = {}) {
   return new OpfsFilesystem(options);
 }
 
+// src/browser/fsa-filesystem.js
+class FsaFilesystem extends OpfsFilesystem {
+  constructor(rootHandle) {
+    super();
+    this.rootHandle = rootHandle;
+  }
+  async root() {
+    return this.rootHandle;
+  }
+}
+function createOverlayFilesystem(base) {
+  const layer = createMemoryFilesystem();
+  const removed = new Set;
+  const key = (path) => normalize(path);
+  const inBase = async (path) => !removed.has(key(path)) && await base.exists(path);
+  const copyUp = async (path) => {
+    if (!await layer.exists(path) && await inBase(path)) {
+      await layer.writeBytes(path, await base.readBytes(path));
+    }
+  };
+  return {
+    async exists(path) {
+      return await layer.exists(path) || await inBase(path);
+    },
+    async isDirectory(path) {
+      if (await layer.exists(path))
+        return await layer.isDirectory(path);
+      if (removed.has(key(path)))
+        return false;
+      return await base.isDirectory(path);
+    },
+    async mtimeMs(path) {
+      if (await layer.exists(path))
+        return await layer.mtimeMs(path);
+      return await base.mtimeMs(path);
+    },
+    async size(path) {
+      if (await layer.exists(path))
+        return await layer.size(path);
+      return await base.size(path);
+    },
+    async mkdir(path, options) {
+      await layer.mkdir(path, options);
+    },
+    async list(path) {
+      const names = new Set;
+      if (!removed.has(key(path))) {
+        try {
+          for (const name of await base.list(path)) {
+            if (!removed.has(key(`${path}/${name}`)))
+              names.add(name);
+          }
+        } catch {}
+      }
+      try {
+        for (const name of await layer.list(path))
+          names.add(name);
+      } catch {}
+      return [...names].sort();
+    },
+    async rmdir(path, options) {
+      removed.add(key(path));
+      try {
+        await layer.rmdir(path, options);
+      } catch {}
+    },
+    async readText(path) {
+      if (await layer.exists(path))
+        return await layer.readText(path);
+      return await base.readText(path);
+    },
+    async readBytes(path) {
+      if (await layer.exists(path))
+        return await layer.readBytes(path);
+      return await base.readBytes(path);
+    },
+    async writeText(path, data) {
+      removed.delete(key(path));
+      await layer.writeText(path, data);
+    },
+    async writeBytes(path, data) {
+      removed.delete(key(path));
+      await layer.writeBytes(path, data);
+    },
+    async appendText(path, data) {
+      await copyUp(path);
+      removed.delete(key(path));
+      await layer.appendText(path, data);
+    },
+    async remove(path) {
+      removed.add(key(path));
+      try {
+        await layer.remove(path);
+      } catch {}
+    },
+    async move(source, target) {
+      await copyUp(source);
+      await layer.move(source, target);
+      removed.add(key(source));
+      removed.delete(key(target));
+    },
+    async withSession(_path, body) {
+      return await body();
+    }
+  };
+}
+var RECENTS_DB = "fylo-explorer";
+var RECENTS_STORE = "roots";
+function openRecentsDb() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(RECENTS_DB, 1);
+    request.onupgradeneeded = () => request.result.createObjectStore(RECENTS_STORE);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+async function withRecents(mode, body) {
+  const db = await openRecentsDb();
+  try {
+    return await new Promise((resolve, reject) => {
+      const request = body(db.transaction(RECENTS_STORE, mode).objectStore(RECENTS_STORE));
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  } finally {
+    db.close();
+  }
+}
+async function pickFyloRoot(options = {}) {
+  const picker = globalThis.showDirectoryPicker;
+  if (typeof picker !== "function") {
+    throw new Error("File System Access is not available in this browser (Chromium-only)");
+  }
+  const handle = await picker.call(globalThis, {
+    id: "fylo-root",
+    mode: options.mode ?? "read"
+  });
+  await withRecents("readwrite", (store) => store.put(handle, handle.name));
+  return handle;
+}
+async function listRecentRoots() {
+  try {
+    return await withRecents("readonly", (store) => store.getAll()) ?? [];
+  } catch {
+    return [];
+  }
+}
+async function forgetRecentRoot(name) {
+  await withRecents("readwrite", (store) => store.delete(name));
+}
+async function ensureRootPermission(handle, options = {}) {
+  const mode = options.mode ?? "read";
+  const query = handle;
+  if (typeof query.queryPermission !== "function")
+    return true;
+  if (await query.queryPermission.call(handle, { mode }) === "granted")
+    return true;
+  return await query.requestPermission?.call(handle, { mode }) === "granted";
+}
+
+// src/browser/storage.js
+function normalizeBrowserStorage(storage) {
+  const value = typeof storage === "string" ? { type: storage } : storage;
+  if (!value || typeof value !== "object")
+    throw new Error("Invalid browser storage configuration");
+  if (value.type === "memory" || value.type === "opfs")
+    return { type: value.type };
+  if (value.type !== "fsa")
+    throw new Error(`Unsupported browser storage type: ${value.type}`);
+  if (!value.handle || value.handle.kind !== "directory") {
+    throw new Error("File System Access storage requires a directory handle");
+  }
+  const access = value.access ?? "overlay";
+  if (access !== "overlay" && access !== "readwrite") {
+    throw new Error(`Unsupported File System Access mode: ${access}`);
+  }
+  return { type: "fsa", handle: value.handle, access };
+}
+function createBrowserFilesystem(storage, namespace) {
+  if (storage.type === "memory")
+    return createMemoryFilesystem();
+  if (storage.type === "opfs")
+    return createOpfsFilesystem({ namespace });
+  const direct = new FsaFilesystem(storage.handle);
+  return storage.access === "readwrite" ? direct : createOverlayFilesystem(direct);
+}
+
 // src/browser/worker/client.js
 class FyloWorkerClient {
   constructor(port, options) {
@@ -3251,8 +3623,10 @@ class FyloWorkerClient {
       id,
       namespace: this.options.namespace,
       storage: this.options.storage,
+      instanceId: this.options.instanceId,
       root: this.options.root,
       worm: this.options.worm,
+      wasm: this.options.wasm,
       ...envelope
     };
     const promise = new Promise((resolve, reject) => {
@@ -3269,6 +3643,9 @@ class FyloWorkerClient {
   }
   async envelope(request) {
     return await this.send({ request });
+  }
+  async ready() {
+    await this.send({ type: "ready" });
   }
   subscribe(collection, listener) {
     let listeners = this.listeners.get(collection);
@@ -3288,6 +3665,11 @@ class FyloWorkerClient {
     };
   }
   async close() {
+    if (this.options.instanceId) {
+      try {
+        await this.send({ type: "close" });
+      } catch {}
+    }
     if ("terminate" in this.port)
       this.port.terminate();
     if ("close" in this.port)
@@ -3296,17 +3678,145 @@ class FyloWorkerClient {
 }
 function createWorkerClient(options) {
   if (typeof SharedWorker !== "undefined") {
-    const worker = new SharedWorker(new URL("./shared.js", import.meta.url), {
+    const worker = new SharedWorker(siblingAssetUrl("./shared.js"), {
       type: "module",
       name: "fylo-browser"
     });
     return new FyloWorkerClient(worker.port, options);
   }
   if (typeof Worker !== "undefined") {
-    const worker = new Worker(new URL("./dedicated.js", import.meta.url), { type: "module" });
+    const worker = new Worker(siblingAssetUrl("./dedicated.js"), { type: "module" });
     return new FyloWorkerClient(worker, options);
   }
   throw new Error("FYLO browser workers are not available in this runtime");
+}
+function siblingAssetUrl(path) {
+  const base = new URL(import.meta.url);
+  const asset = new URL(path, base);
+  asset.search = base.search;
+  return asset;
+}
+
+// src/browser/wasm/index-scanner.js
+var ENCODER4 = new TextEncoder;
+var DECODER4 = new TextDecoder;
+var WASM_ERROR = -1;
+var INITIAL_OUTPUT_CAPACITY = 64 * 1024;
+var MODULE_CACHE = new Map;
+
+class WasmIndexScannerFactory {
+  constructor(options = {}) {
+    this.module = options.module;
+    this.url = options.url ? new URL(String(options.url), import.meta.url) : siblingAssetUrl2("./fylo-index.wasm");
+    this.modulePromise = null;
+  }
+  async ready() {
+    await this.loadModule();
+  }
+  async loadModule() {
+    if (this.module)
+      return this.module;
+    if (this.modulePromise)
+      return await this.modulePromise;
+    const key = this.url.href;
+    let pending = MODULE_CACHE.get(key);
+    if (!pending) {
+      pending = fetch(this.url).then(async (response) => {
+        if (!response.ok) {
+          throw new Error(`Unable to load FYLO Wasm index scanner: ${response.status}`);
+        }
+        return await WebAssembly.compile(await response.arrayBuffer());
+      });
+      MODULE_CACHE.set(key, pending);
+      pending.catch(() => MODULE_CACHE.delete(key));
+    }
+    this.modulePromise = pending;
+    return await pending;
+  }
+  async create() {
+    const instance = await WebAssembly.instantiate(await this.loadModule(), {});
+    return new WasmIndexScanner(instance);
+  }
+}
+
+class WasmIndexScanner {
+  constructor(instance) {
+    const exports = instance.exports;
+    if (!(exports.memory instanceof WebAssembly.Memory)) {
+      throw new Error("FYLO Wasm index scanner did not export memory");
+    }
+    for (const name of ["allocate", "deallocate", "load_snapshot", "scan_queries"]) {
+      if (typeof exports[name] !== "function") {
+        throw new Error(`FYLO Wasm index scanner did not export ${name}`);
+      }
+    }
+    this.memory = exports.memory;
+    this.allocate = exports.allocate;
+    this.deallocate = exports.deallocate;
+    this.loadSnapshotExport = exports.load_snapshot;
+    this.scanQueriesExport = exports.scan_queries;
+    this.outputPointer = 0;
+    this.outputCapacity = 0;
+  }
+  loadSnapshot(snapshot) {
+    const bytes = snapshot instanceof Uint8Array ? snapshot : new Uint8Array(snapshot);
+    const pointer = this.allocate(bytes.byteLength);
+    try {
+      if (bytes.byteLength > 0) {
+        new Uint8Array(this.memory.buffer, pointer, bytes.byteLength).set(bytes);
+      }
+      if (this.loadSnapshotExport(pointer, bytes.byteLength) === WASM_ERROR) {
+        throw new Error("FYLO Wasm index scanner rejected the snapshot");
+      }
+    } finally {
+      this.deallocate(pointer, bytes.byteLength);
+    }
+  }
+  scanQueries(queries) {
+    const input = ENCODER4.encode(JSON.stringify(queries));
+    const inputPointer = this.allocate(input.byteLength);
+    new Uint8Array(this.memory.buffer, inputPointer, input.byteLength).set(input);
+    this.ensureOutput(Math.max(this.outputCapacity, INITIAL_OUTPUT_CAPACITY));
+    try {
+      let required = this.scanQueriesExport(inputPointer, input.byteLength, this.outputPointer, this.outputCapacity);
+      if (required === WASM_ERROR)
+        throw new Error("FYLO Wasm index scanner rejected the query");
+      if (required > this.outputCapacity) {
+        this.ensureOutput(required);
+        required = this.scanQueriesExport(inputPointer, input.byteLength, this.outputPointer, this.outputCapacity);
+      }
+      if (required === WASM_ERROR || required > this.outputCapacity) {
+        throw new Error("FYLO Wasm index scan failed after resizing its output buffer");
+      }
+      return DECODER4.decode(new Uint8Array(this.memory.buffer, this.outputPointer, required)).split(`
+`).filter(Boolean);
+    } finally {
+      this.deallocate(inputPointer, input.byteLength);
+    }
+  }
+  ensureOutput(capacity) {
+    if (capacity <= this.outputCapacity)
+      return;
+    if (this.outputPointer)
+      this.deallocate(this.outputPointer, this.outputCapacity);
+    this.outputCapacity = capacity;
+    this.outputPointer = this.allocate(capacity);
+  }
+  close() {
+    if (this.outputPointer)
+      this.deallocate(this.outputPointer, this.outputCapacity);
+    this.outputPointer = 0;
+    this.outputCapacity = 0;
+  }
+}
+function createWasmIndexScannerFactory(options) {
+  return new WasmIndexScannerFactory(options === true ? {} : options);
+}
+function siblingAssetUrl2(path) {
+  const base = new URL(import.meta.url);
+  const asset = new URL(path, base);
+  asset.search = base.search;
+  return asset;
 }
 
 // src/browser/fylo.js
@@ -3337,14 +3847,23 @@ class FyloBrowser {
   constructor(options = {}) {
     this.namespace = options.namespace ?? "fylo";
     this.root = options.root ?? "/";
-    this.worker = shouldUseWorker(options.worker ?? true) ? createWorkerClient({
+    const useWorker = shouldUseWorker(options.worker ?? true);
+    this.storage = normalizeBrowserStorage(options.storage ?? (useWorker ? "opfs" : "memory"));
+    this.worker = useWorker ? createWorkerClient({
       namespace: this.namespace,
-      storage: options.storage ?? "opfs",
+      storage: this.storage,
+      instanceId: this.storage.type === "fsa" ? `${Date.now()}-${crypto.randomUUID?.() ?? Math.random()}` : undefined,
       root: this.root,
-      worm: options.worm
+      worm: options.worm,
+      wasm: options.wasm
     }) : null;
-    const fs = options.fs ?? (options.storage === "opfs" ? createOpfsFilesystem({ namespace: this.namespace }) : createMemoryFilesystem());
-    this.core = this.worker ? null : new BrowserCore({ fs, root: this.root, worm: options.worm });
+    const fs = options.fs ?? createBrowserFilesystem(this.storage, this.namespace);
+    this.core = this.worker ? null : new BrowserCore({
+      fs,
+      root: this.root,
+      worm: options.worm,
+      indexScannerFactory: options.wasm ? createWasmIndexScannerFactory(options.wasm) : undefined
+    });
     this.sql = this.createSqlTag();
     const reserved = new Set([
       "then",
@@ -3365,6 +3884,7 @@ class FyloBrowser {
     });
   }
   async ready() {
+    await this.worker?.ready();
     await this.core?.ready();
   }
   async close() {
@@ -3920,165 +4440,6 @@ function createBrowserClient(options = {}) {
 }
 var fylo = createBrowserClient();
 var client_default = fylo;
-// src/browser/fsa-filesystem.js
-class FsaFilesystem extends OpfsFilesystem {
-  constructor(rootHandle) {
-    super();
-    this.rootHandle = rootHandle;
-  }
-  async root() {
-    return this.rootHandle;
-  }
-}
-function createOverlayFilesystem(base) {
-  const layer = createMemoryFilesystem();
-  const removed = new Set;
-  const key = (path) => normalize(path);
-  const inBase = async (path) => !removed.has(key(path)) && await base.exists(path);
-  const copyUp = async (path) => {
-    if (!await layer.exists(path) && await inBase(path)) {
-      await layer.writeBytes(path, await base.readBytes(path));
-    }
-  };
-  return {
-    async exists(path) {
-      return await layer.exists(path) || await inBase(path);
-    },
-    async isDirectory(path) {
-      if (await layer.exists(path))
-        return await layer.isDirectory(path);
-      if (removed.has(key(path)))
-        return false;
-      return await base.isDirectory(path);
-    },
-    async mtimeMs(path) {
-      if (await layer.exists(path))
-        return await layer.mtimeMs(path);
-      return await base.mtimeMs(path);
-    },
-    async size(path) {
-      if (await layer.exists(path))
-        return await layer.size(path);
-      return await base.size(path);
-    },
-    async mkdir(path, options) {
-      await layer.mkdir(path, options);
-    },
-    async list(path) {
-      const names = new Set;
-      if (!removed.has(key(path))) {
-        try {
-          for (const name of await base.list(path)) {
-            if (!removed.has(key(`${path}/${name}`)))
-              names.add(name);
-          }
-        } catch {}
-      }
-      try {
-        for (const name of await layer.list(path))
-          names.add(name);
-      } catch {}
-      return [...names].sort();
-    },
-    async rmdir(path, options) {
-      removed.add(key(path));
-      try {
-        await layer.rmdir(path, options);
-      } catch {}
-    },
-    async readText(path) {
-      if (await layer.exists(path))
-        return await layer.readText(path);
-      return await base.readText(path);
-    },
-    async readBytes(path) {
-      if (await layer.exists(path))
-        return await layer.readBytes(path);
-      return await base.readBytes(path);
-    },
-    async writeText(path, data) {
-      removed.delete(key(path));
-      await layer.writeText(path, data);
-    },
-    async writeBytes(path, data) {
-      removed.delete(key(path));
-      await layer.writeBytes(path, data);
-    },
-    async appendText(path, data) {
-      await copyUp(path);
-      removed.delete(key(path));
-      await layer.appendText(path, data);
-    },
-    async remove(path) {
-      removed.add(key(path));
-      try {
-        await layer.remove(path);
-      } catch {}
-    },
-    async move(source, target) {
-      await copyUp(source);
-      await layer.move(source, target);
-      removed.add(key(source));
-      removed.delete(key(target));
-    },
-    async withSession(_path, body) {
-      return await body();
-    }
-  };
-}
-var RECENTS_DB = "fylo-explorer";
-var RECENTS_STORE = "roots";
-function openRecentsDb() {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(RECENTS_DB, 1);
-    request.onupgradeneeded = () => request.result.createObjectStore(RECENTS_STORE);
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
-}
-async function withRecents(mode, body) {
-  const db = await openRecentsDb();
-  try {
-    return await new Promise((resolve, reject) => {
-      const request = body(db.transaction(RECENTS_STORE, mode).objectStore(RECENTS_STORE));
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
-    });
-  } finally {
-    db.close();
-  }
-}
-async function pickFyloRoot(options = {}) {
-  const picker = globalThis.showDirectoryPicker;
-  if (typeof picker !== "function") {
-    throw new Error("File System Access is not available in this browser (Chromium-only)");
-  }
-  const handle = await picker.call(globalThis, {
-    id: "fylo-root",
-    mode: options.mode ?? "read"
-  });
-  await withRecents("readwrite", (store) => store.put(handle, handle.name));
-  return handle;
-}
-async function listRecentRoots() {
-  try {
-    return await withRecents("readonly", (store) => store.getAll()) ?? [];
-  } catch {
-    return [];
-  }
-}
-async function forgetRecentRoot(name) {
-  await withRecents("readwrite", (store) => store.delete(name));
-}
-async function ensureRootPermission(handle, options = {}) {
-  const mode = options.mode ?? "read";
-  const query = handle;
-  if (typeof query.queryPermission !== "function")
-    return true;
-  if (await query.queryPermission.call(handle, { mode }) === "granted")
-    return true;
-  return await query.requestPermission?.call(handle, { mode }) === "granted";
-}
 // src/query/postgrest.js
 function queryFromSearch(search) {
   const query = {};
@@ -4154,11 +4515,13 @@ export {
   ensureRootPermission,
   client_default as default,
   createWorkerClient,
+  createWasmIndexScannerFactory,
   createOverlayFilesystem,
   createOpfsFilesystem,
   createMemoryFilesystem,
   createBrowserFylo,
   createBrowserClient,
+  WasmIndexScannerFactory,
   TTID,
   OpfsFilesystem,
   MemoryFilesystem,

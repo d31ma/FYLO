@@ -1,7 +1,7 @@
 import TTID from '../vendor/ttid.mjs'
 import { copySafeJson, safeRecord } from '../../query/safe-record.js'
 import { CollectionNotFoundError, validateCollectionName } from '../../core/collection.js'
-import { Parser } from '../../query/parser.js'
+import { FyloQueryPlanner } from '../../query/planner.js'
 import { runInLane } from './filesystem.js'
 import { BrowserDocuments } from './documents.js'
 import { validateMetadataRecord } from './metadata.js'
@@ -78,6 +78,7 @@ function explicitDocumentEntry(value) {
  * `.collections/<collection>/events/<collection>.ndjson`
  */
 export class BrowserCore {
+    planner = new FyloQueryPlanner()
     /**
      * @param {BrowserCoreOptions} options
      */
@@ -87,7 +88,9 @@ export class BrowserCore {
         this.wormMode = options.worm?.mode ?? 'off'
         /** @type {Map<string, Promise<unknown>>} */
         this.writeLanes = new Map()
-        this.index = new BrowserPrefixIndex(this.fs, this.collectionRoot.bind(this))
+        this.index = new BrowserPrefixIndex(this.fs, this.collectionRoot.bind(this), {
+            indexScannerFactory: options.indexScannerFactory
+        })
         this.events = new BrowserEventBus(this.fs, this.collectionRoot.bind(this))
         this.documents = new BrowserDocuments(
             this.fs,
@@ -110,10 +113,14 @@ export class BrowserCore {
     }
 
     /** @returns {Promise<void>} */
-    async ready() {}
+    async ready() {
+        await this.index.ready()
+    }
 
     /** @returns {Promise<void>} */
-    async close() {}
+    async close() {
+        await this.index.close()
+    }
 
     /** @returns {boolean} */
     wormEnabled() {
@@ -202,6 +209,7 @@ export class BrowserCore {
         if (this.wormEnabled() && (await this.documents.listDocIds(collection)).length > 0) {
             throw new Error('Drop is not allowed for a non-empty WORM collection')
         }
+        await this.index.forgetCollection(collection)
         await this.fs.rmdir(this.collectionRoot(collection), { recursive: true })
     }
 
@@ -212,7 +220,7 @@ export class BrowserCore {
 
     /**
      * @param {string} collection
-     * @returns {Promise<{ collection: string, exists: boolean, worm: boolean, docsStored: number, deletedDocs: number, indexedDocs: number }>}
+     * @returns {Promise<{ collection: string, exists: boolean, worm: boolean, docsStored: number, deletedDocs: number, indexedDocs: number, indexAcceleration: ReturnType<BrowserPrefixIndex['accelerationStatus']> }>}
      */
     async inspectCollection(collection) {
         const exists = await this.hasCollection(collection)
@@ -223,7 +231,8 @@ export class BrowserCore {
                 worm: false,
                 docsStored: 0,
                 deletedDocs: 0,
-                indexedDocs: 0
+                indexedDocs: 0,
+                indexAcceleration: this.index.accelerationStatus()
             }
         }
         const [docIds, deletedDocIds, indexedDocs] = await Promise.all([
@@ -237,7 +246,8 @@ export class BrowserCore {
             worm: this.wormEnabled(),
             docsStored: docIds.length,
             deletedDocs: deletedDocIds.length,
-            indexedDocs
+            indexedDocs,
+            indexAcceleration: this.index.accelerationStatus()
         }
     }
 
@@ -711,21 +721,32 @@ export class BrowserCore {
 
     /** @param {string} SQL @returns {Promise<unknown>} */
     async executeSQL(SQL) {
-        const operationMatch = SQL.match(/^(SELECT|INSERT|UPDATE|DELETE|CREATE|DROP)/i)
-        const operation = operationMatch?.[0]?.toUpperCase()
-        if (!operation) throw new Error('Missing SQL Operation')
+        const plan = this.planner.prepare(SQL)
+        if (plan.explain && !plan.analyze) return this.planner.describe(plan)
+        const startedAt = performance.now()
+        const result = await this.executeSqlPlan(plan)
+        if (!plan.explain) return result
+        return {
+            ...this.planner.describe(plan),
+            executed: true,
+            elapsedMs: performance.now() - startedAt,
+            result
+        }
+    }
+
+    /** @param {ReturnType<FyloQueryPlanner['prepare']>} plan */
+    async executeSqlPlan(plan) {
+        const operation = plan.operation
+        const parsed = /** @type {any} */ (structuredClone(plan.ast))
         switch (operation) {
             case 'CREATE':
-                return await this.createCollection(
-                    /** @type {{ $collection: string }} */ (Parser.parse(SQL)).$collection
-                )
+                return await this.createCollection(String(parsed.$collection))
             case 'DROP':
-                return await this.dropCollection(
-                    /** @type {{ $collection: string }} */ (Parser.parse(SQL)).$collection
-                )
+                return await this.dropCollection(String(parsed.$collection))
             case 'SELECT': {
-                const query = /** @type {StoreQuery} */ (Parser.parse(SQL))
-                if (SQL.includes('JOIN')) return await this.join(/** @type {StoreJoin} */ (query))
+                const query = /** @type {StoreQuery} */ (parsed)
+                if (plan.sql.includes('JOIN'))
+                    return await this.join(/** @type {StoreJoin} */ (query))
                 const selectedCollection = query.$collection
                 delete query.$collection
                 /** @type {TTIDValue[] | Record<string, any>} */
@@ -745,20 +766,20 @@ export class BrowserCore {
             case 'INSERT': {
                 const insert =
                     /** @type {import('../../query/types.js').StoreInsert<Record<string, any>>} */ (
-                        Parser.parse(SQL)
+                        parsed
                     )
                 const insertCollection = insert.$collection
                 delete insert.$collection
                 return await this.putData(String(insertCollection), insert.$values)
             }
             case 'UPDATE': {
-                const update = /** @type {StoreUpdate} */ (Parser.parse(SQL))
+                const update = /** @type {StoreUpdate} */ (parsed)
                 const updateCol = update.$collection
                 delete update.$collection
                 return await this.patchDocs(String(updateCol), update)
             }
             case 'DELETE': {
-                const del = /** @type {StoreDelete} */ (Parser.parse(SQL))
+                const del = /** @type {StoreDelete} */ (parsed)
                 const deleteCollection = del.$collection
                 delete del.$collection
                 return await this.delDocs(String(deleteCollection), del)

@@ -14,17 +14,27 @@
 
 import path from 'node:path'
 import { createHash } from 'node:crypto'
-import { closeSync, fstatSync, readFileSync } from 'node:fs'
 import { readdir, stat } from 'node:fs/promises'
 import { isDurableWriteScratchPath } from '../storage/durable.js'
 import { getXattrFd, listXattrFd } from '../storage/xattr.js'
-import { openDirectoryNoFollow, openFileAtRoot } from '../storage/secure-open.js'
+import {
+    closeSecureDescriptor,
+    openDirectoryNoFollow,
+    openFileAtRoot,
+    openFileAtRootStrict,
+    readAllSecureDescriptor,
+    readSecureDescriptor,
+    statSecureDescriptor
+} from '../storage/secure-open.js'
 import { emitFyloEvent } from '../observability/events.js'
 import { CoalescingScheduler } from './coalescing-scheduler.js'
 
 const BACKUP_METADATA_DIR = '.fylo-backup/xattrs/'
+const LOCAL_TRANSACTION_DIR = '.fylo-transactions'
 const DEFAULT_MAX_FILE_BYTES = 64 * 1024 * 1024
 const DEFAULT_MAX_MANIFEST_BYTES = 1024 * 1024
+const DEFAULT_MAX_RECONCILE_SNAPSHOT_BYTES = 512 * 1024 * 1024
+const MAX_GENERATION_STATE_BYTES = 16 * 1024
 const RETRYABLE_CODES = new Set([
     'ECONNRESET',
     'ECONNREFUSED',
@@ -137,6 +147,7 @@ async function readBounded(stream, maximum, overflowError) {
  * @property {number=} concurrency maximum simultaneous S3 requests (default 4)
  * @property {number=} maxFileBytes reject files larger than this before reading (default 64 MiB)
  * @property {number=} maxManifestBytes reject remote manifests larger than this (default 1 MiB)
+ * @property {number=} maxReconcileSnapshotBytes cap immutable reconcile materialization (default 512 MiB)
  * @property {{ attempts?: number, baseDelayMs?: number, maxDelayMs?: number }=} retry
  * @property {string=} accessKeyId
  * @property {string=} secretAccessKey
@@ -252,6 +263,8 @@ export class FyloS3Backup {
         this.concurrency = this.options.concurrency ?? 4
         this.maxFileBytes = this.options.maxFileBytes ?? DEFAULT_MAX_FILE_BYTES
         this.maxManifestBytes = this.options.maxManifestBytes ?? DEFAULT_MAX_MANIFEST_BYTES
+        this.maxReconcileSnapshotBytes =
+            this.options.maxReconcileSnapshotBytes ?? DEFAULT_MAX_RECONCILE_SNAPSHOT_BYTES
         this.retry = {
             attempts: this.options.retry?.attempts ?? 3,
             baseDelayMs: this.options.retry?.baseDelayMs ?? 100,
@@ -260,6 +273,7 @@ export class FyloS3Backup {
         positiveInteger(this.concurrency, 'concurrency')
         positiveInteger(this.maxFileBytes, 'maxFileBytes')
         positiveInteger(this.maxManifestBytes, 'maxManifestBytes')
+        positiveInteger(this.maxReconcileSnapshotBytes, 'maxReconcileSnapshotBytes')
         positiveInteger(this.retry.attempts, 'retry.attempts')
         positiveInteger(this.retry.baseDelayMs, 'retry.baseDelayMs', 0)
         positiveInteger(this.retry.maxDelayMs, 'retry.maxDelayMs', 0)
@@ -311,20 +325,20 @@ export class FyloS3Backup {
      * @returns {Promise<{ bytes: Uint8Array, size: number, xattrs: Record<string, string> } | null>}
      */
     async snapshot(target) {
-        let fd = -1
+        let fd = null
         try {
             const rootFd = this.rootFd ?? openDirectoryNoFollow(this.root)
             this.rootFd = rootFd
-            fd = openFileAtRoot(rootFd, path.relative(this.root, target)) ?? -1
-            if (fd < 0) return null
-            const info = fstatSync(fd)
+            fd = openFileAtRoot(rootFd, path.relative(this.root, target))
+            if (fd === null) return null
+            const info = statSecureDescriptor(fd)
             if (!info.isFile()) return null
             if (info.size > this.maxFileBytes) {
                 throw new RangeError(
                     `S3 backup file exceeds sync.s3.maxFileBytes (${info.size} > ${this.maxFileBytes}): ${target}`
                 )
             }
-            const bytes = new Uint8Array(readFileSync(fd))
+            const bytes = new Uint8Array(readAllSecureDescriptor(fd, this.maxFileBytes))
             /** @type {Record<string, string>} */
             const xattrs = Object.create(null)
             for (const name of listXattrFd(fd).sort()) {
@@ -337,7 +351,7 @@ export class FyloS3Backup {
             if (code === 'ENOENT' || code === 'ELOOP' || code === 'ENOTDIR') return null
             throw error
         } finally {
-            if (fd >= 0) closeSync(fd)
+            if (fd !== null) closeSecureDescriptor(fd)
         }
     }
 
@@ -538,6 +552,25 @@ export class FyloS3Backup {
 
     /** @returns {Promise<void>} */
     async reconcileOnce() {
+        return await this.reconcileAttempt(0)
+    }
+
+    /** @param {number} attempt @returns {Promise<void>} */
+    async reconcileAttempt(attempt) {
+        if (attempt >= 64) throw new Error('Unable to obtain a stable backup generation snapshot')
+        let generationsBefore
+        try {
+            generationsBefore = await this.collectionGenerations()
+        } catch (error) {
+            if (
+                !(error instanceof Error) ||
+                !error.message.startsWith('Backup snapshot deferred')
+            ) {
+                throw error
+            }
+            await this.sleep(Math.min(2 ** attempt, 100))
+            return await this.reconcileAttempt(attempt + 1)
+        }
         /** @type {Map<string, { path: string, size: number }>} */
         const local = new Map()
         const walk = async (/** @type {string} */ directory) => {
@@ -551,6 +584,7 @@ export class FyloS3Backup {
             }
             for (const entry of entries) {
                 if (entry.isSymbolicLink()) continue
+                if (directory === this.root && entry.name === LOCAL_TRANSACTION_DIR) continue
                 const target = path.join(directory, entry.name)
                 if (isDurableWriteScratchPath(target)) continue
                 if (entry.isDirectory()) await walk(target)
@@ -567,6 +601,42 @@ export class FyloS3Backup {
             }
         }
         await walk(this.root)
+        /** @type {Map<string, { bytes: Uint8Array, size: number, xattrs: Record<string, string> }>} */
+        const materialized = new Map()
+        let materializedBytes = 0
+        for (const [key, file] of local) {
+            const snapshot = await this.snapshot(file.path)
+            if (!snapshot) {
+                local.delete(key)
+                continue
+            }
+            materializedBytes += snapshot.bytes.byteLength
+            for (const value of Object.values(snapshot.xattrs)) {
+                materializedBytes += Buffer.byteLength(value)
+            }
+            if (materializedBytes > this.maxReconcileSnapshotBytes) {
+                throw new RangeError(
+                    `S3 reconcile snapshot exceeds sync.s3.maxReconcileSnapshotBytes (${materializedBytes} > ${this.maxReconcileSnapshotBytes})`
+                )
+            }
+            materialized.set(key, snapshot)
+        }
+        let generationsAfter
+        try {
+            generationsAfter = await this.collectionGenerations()
+        } catch (error) {
+            if (
+                !(error instanceof Error) ||
+                !error.message.startsWith('Backup snapshot deferred')
+            ) {
+                throw error
+            }
+            await this.sleep(Math.min(2 ** attempt, 100))
+            return await this.reconcileAttempt(attempt + 1)
+        }
+        if (!this.sameGenerations(generationsBefore, generationsAfter)) {
+            return await this.reconcileAttempt(attempt + 1)
+        }
 
         // List the current S3 objects (key -> size) under the prefix.
         /** @type {Map<string, number>} */
@@ -592,15 +662,28 @@ export class FyloS3Backup {
             startAfter = page.isTruncated ? contents.at(-1)?.key : undefined
         } while (startAfter)
 
+        // Listing can take long enough for non-transactional root files to
+        // change. Validate the full materialized view once more before the
+        // first remote mutation; any drift restarts the pass atomically.
+        for (const [key, file] of local) {
+            const current = await this.snapshot(file.path)
+            const captured = materialized.get(key)
+            if (
+                !current ||
+                !captured ||
+                fileManifest(key, current.bytes, current.xattrs) !==
+                    fileManifest(key, captured.bytes, captured.xattrs)
+            ) {
+                return await this.reconcileAttempt(attempt + 1)
+            }
+        }
+
         // Upload new/changed files; delete remote objects with no local file.
         /** @type {Array<() => Promise<void>>} */
         const mutations = []
-        for (const [key, file] of local) {
-            const snapshot = await this.snapshot(file.path)
-            if (!snapshot) {
-                local.delete(key)
-                continue
-            }
+        for (const [key] of local) {
+            const snapshot = materialized.get(key)
+            if (!snapshot) continue
             const manifest = fileManifest(key, snapshot.bytes, snapshot.xattrs)
             const manifestKey = this.manifestKey(key)
             let remoteManifest = ''
@@ -611,13 +694,10 @@ export class FyloS3Backup {
             }
             if (remote.get(key) !== snapshot.size || remoteManifest !== manifest) {
                 mutations.push(async () => {
-                    const current = await this.snapshot(file.path)
-                    if (!current) return
-                    const currentManifest = fileManifest(key, current.bytes, current.xattrs)
                     await Promise.all([
-                        this.withRetry('write', key, () => this.client.write(key, current.bytes)),
+                        this.withRetry('write', key, () => this.client.write(key, snapshot.bytes)),
                         this.withRetry('write', manifestKey, () =>
-                            this.client.write(manifestKey, currentManifest)
+                            this.client.write(manifestKey, manifest)
                         )
                     ])
                 })
@@ -655,6 +735,97 @@ export class FyloS3Backup {
         await mapLimit(mutations, this.concurrency, (mutation) => mutation())
     }
 
+    /** @returns {Promise<Map<string, number>>} */
+    async collectionGenerations() {
+        const result = new Map()
+        for (const namespace of ['.collections', '.buckets']) {
+            let entries = []
+            try {
+                entries = await readdir(path.join(this.root, namespace), { withFileTypes: true })
+            } catch (error) {
+                if (/** @type {NodeJS.ErrnoException} */ (error).code === 'ENOENT') continue
+                throw error
+            }
+            for (const entry of entries) {
+                if (!entry.isDirectory()) continue
+                const state = await this.collectionGeneration(namespace, entry.name)
+                if (state.state !== 'stable') {
+                    throw new Error(`Backup snapshot deferred by active transaction: ${entry.name}`)
+                }
+                result.set(`${namespace}/${entry.name}`, state.generation)
+            }
+        }
+        return result
+    }
+
+    /** @param {string} namespace @param {string} collection */
+    async collectionGeneration(namespace, collection) {
+        const relative = path.join(LOCAL_TRANSACTION_DIR, namespace, collection, 'state.json')
+        const rootFd = this.rootFd ?? openDirectoryNoFollow(this.root)
+        this.rootFd = rootFd
+        let descriptor = null
+        try {
+            descriptor = openFileAtRootStrict(rootFd, relative)
+            if (descriptor === null) return { generation: 0, state: 'stable' }
+            const metadata = statSecureDescriptor(descriptor)
+            if (!metadata.isFile())
+                throw new Error(`Backup generation state is not a file: ${collection}`)
+            if (metadata.size > MAX_GENERATION_STATE_BYTES) {
+                throw new Error(`Backup generation state exceeds bounds: ${collection}`)
+            }
+            const bytes = Buffer.alloc(MAX_GENERATION_STATE_BYTES + 1)
+            let offset = 0
+            while (offset < bytes.length) {
+                const count = readSecureDescriptor(
+                    descriptor,
+                    bytes,
+                    offset,
+                    bytes.length - offset,
+                    offset
+                )
+                if (count === 0) break
+                offset += count
+            }
+            if (offset > MAX_GENERATION_STATE_BYTES) {
+                throw new Error(`Backup generation state exceeds bounds: ${collection}`)
+            }
+            const state = JSON.parse(bytes.subarray(0, offset).toString('utf8'))
+            const keys = Object.keys(state).sort()
+            const expected =
+                state?.state === 'writing'
+                    ? ['format', 'generation', 'state', 'transactionId']
+                    : ['format', 'generation', 'state']
+            if (
+                state?.format !== 'fylo.collection-generation.v1' ||
+                !Number.isSafeInteger(state.generation) ||
+                state.generation < 0 ||
+                !['stable', 'writing'].includes(state.state) ||
+                keys.length !== expected.length ||
+                keys.some((key, index) => key !== [...expected].sort()[index]) ||
+                (state.state === 'writing' &&
+                    (typeof state.transactionId !== 'string' ||
+                        !state.transactionId ||
+                        path.basename(state.transactionId) !== state.transactionId))
+            ) {
+                throw new Error(`Backup generation state is corrupt: ${collection}`)
+            }
+            return state
+        } catch (error) {
+            throw error
+        } finally {
+            if (descriptor !== null) closeSecureDescriptor(descriptor)
+        }
+    }
+
+    /** @param {Map<string, number>} left @param {Map<string, number>} right */
+    sameGenerations(left, right) {
+        if (left.size !== right.size) return false
+        for (const [key, generation] of left) {
+            if (right.get(key) !== generation) return false
+        }
+        return true
+    }
+
     /** Start the periodic reconcile timer (no-op unless an interval is set). */
     start() {
         this.scheduler.start()
@@ -673,7 +844,7 @@ export class FyloS3Backup {
             failure = error
         }
         await this.mutationLane
-        if (this.rootFd !== undefined) closeSync(this.rootFd)
+        if (this.rootFd !== undefined) closeSecureDescriptor(this.rootFd)
         this.rootFd = undefined
         this.state = 'closed'
         this.status = { ...this.status, state: 'closed' }

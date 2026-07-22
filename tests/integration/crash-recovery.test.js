@@ -107,11 +107,14 @@ describe('crash recovery and concurrency', () => {
         const collection = `sigkill-${Date.now()}`
         const writeRoot = await createTestRoot('fylo-sigkill-')
         try {
-            const proc = Bun.spawn(['bun', KILL_WORKER, writeRoot, collection, '500'], {
+            const ready = path.join(writeRoot, 'worker.ready')
+            const proc = Bun.spawn(['bun', KILL_WORKER, writeRoot, collection, '500', ready], {
                 stdout: 'pipe',
                 stderr: 'pipe'
             })
-            await Bun.sleep(250)
+            const deadline = Date.now() + 10_000
+            while (!(await Bun.file(ready).exists()) && Date.now() < deadline) await Bun.sleep(5)
+            expect(await Bun.file(ready).exists()).toBe(true)
             proc.kill('SIGKILL')
             await proc.exited
 
@@ -152,8 +155,8 @@ describe('crash recovery and concurrency', () => {
         const lockRoot = await mkdtemp(path.join(os.tmpdir(), 'fylo-stalelock-'))
         try {
             const lockPath = path.join(lockRoot, 'collection.lock')
-            // Abandoned lock, within TTL -> blocks.
-            expect(await tryAcquireFileLock(lockPath, 'dead-owner', 50)).toBe(true)
+            // Legacy abandoned lock, within TTL -> blocks.
+            await writeFile(lockPath, JSON.stringify({ owner: 'dead-owner', ts: Date.now() }))
             expect(await tryAcquireFileLock(lockPath, 'new-owner', 60_000)).toBe(false)
             // After TTL elapses, a new acquirer may take over.
             await Bun.sleep(80)

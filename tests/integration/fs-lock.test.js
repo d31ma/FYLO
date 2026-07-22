@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from 'bun:test'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import TTID from '../helpers/ttid.js'
@@ -7,6 +7,8 @@ import { tryAcquireFileLock, tryReleaseFileLock } from '../../src/storage/fs-loc
 import { FilesystemLockManager, FilesystemStorage } from '../../src/storage/primitives.js'
 
 const root = await mkdtemp(path.join(os.tmpdir(), 'fylo-fslock-'))
+const CONTENDER_WORKER = path.join(import.meta.dir, 'fs-lock-contender.worker.js')
+const CLAIM_HOLDER_WORKER = path.join(import.meta.dir, 'fs-lock-claim-holder.worker.js')
 
 describe('tryAcquireFileLock / tryReleaseFileLock', () => {
     afterAll(async () => {
@@ -39,12 +41,80 @@ describe('tryAcquireFileLock / tryReleaseFileLock', () => {
         expect(await tryAcquireFileLock(lock, 'B', 60_000)).toBe(false)
         await tryReleaseFileLock(lock, 'A')
     })
-    test('stale lock is taken over after TTL expires', async () => {
+    test('a live process lock is not taken over merely because its TTL expires', async () => {
         const lock = path.join(root, 'stale.lock')
         expect(await tryAcquireFileLock(lock, 'A', 1)).toBe(true)
         await Bun.sleep(10)
+        expect(await tryAcquireFileLock(lock, 'B', 1)).toBe(false)
+        await tryReleaseFileLock(lock, 'A')
+    })
+    test('a stale legacy lock without a pid is reclaimed after TTL expires', async () => {
+        const lock = path.join(root, 'legacy-stale.lock')
+        await Bun.write(lock, JSON.stringify({ owner: 'old', ts: Date.now() - 10_000 }))
         expect(await tryAcquireFileLock(lock, 'B', 1)).toBe(true)
         await tryReleaseFileLock(lock, 'B')
+    })
+    test('multiprocess stale takeover elects exactly one winner', async () => {
+        const directory = await mkdtemp(path.join(root, 'takeover-'))
+        const lock = path.join(directory, 'contended.lock')
+        const release = path.join(directory, 'release')
+        await writeFile(lock, JSON.stringify({ owner: 'stale', ts: 0 }))
+        const workers = Array.from({ length: 12 }, (_, index) =>
+            Bun.spawn(['bun', CONTENDER_WORKER, lock, `owner-${index}`, directory, release], {
+                stdout: 'pipe',
+                stderr: 'pipe'
+            })
+        )
+        const deadline = Date.now() + 10_000
+        let results = []
+        while (Date.now() < deadline) {
+            results = (await readdir(directory)).filter((entry) => entry.endsWith('.result'))
+            if (results.length === workers.length) break
+            await Bun.sleep(10)
+        }
+        expect(results).toHaveLength(workers.length)
+        const outcomes = await Promise.all(
+            results.map(async (entry) =>
+                JSON.parse(await Bun.file(path.join(directory, entry)).text())
+            )
+        )
+        expect(outcomes.filter(Boolean)).toHaveLength(1)
+        await writeFile(release, '')
+        await Promise.all(workers.map((worker) => worker.exited))
+    }, 15_000)
+    test('does not mistake a reused live PID for the original lock owner', async () => {
+        const lock = path.join(root, 'pid-reuse.lock')
+        await writeFile(
+            lock,
+            JSON.stringify({
+                owner: 'previous-process',
+                pid: process.pid,
+                processIdentity: 'a-different-process-incarnation',
+                ts: Date.now()
+            })
+        )
+        expect(await tryAcquireFileLock(lock, 'replacement')).toBe(true)
+        await tryReleaseFileLock(lock, 'replacement')
+    })
+    test('a killed takeover contender cannot strand the takeover claim', async () => {
+        const directory = await mkdtemp(path.join(root, 'dead-claim-'))
+        const lock = path.join(directory, 'stale.lock')
+        const ready = path.join(directory, 'ready')
+        await writeFile(lock, JSON.stringify({ owner: 'stale', ts: 0 }))
+        const holder = Bun.spawn(['bun', CLAIM_HOLDER_WORKER, `${lock}.takeover`, ready], {
+            stdout: 'pipe',
+            stderr: 'pipe'
+        })
+        const deadline = Date.now() + 5_000
+        while (!(await Bun.file(ready).exists()) && Date.now() < deadline) await Bun.sleep(5)
+        expect(await Bun.file(ready).exists()).toBe(true)
+        expect(await tryAcquireFileLock(lock, 'blocked', 1)).toBe(false)
+        holder.kill('SIGKILL')
+        await holder.exited
+
+        expect(await Bun.file(`${lock}.takeover`).exists()).toBe(true)
+        expect(await tryAcquireFileLock(lock, 'recovered', 1)).toBe(true)
+        await tryReleaseFileLock(lock, 'recovered')
     })
     test('release with wrong owner is a no-op', async () => {
         const lock = path.join(root, 'owner-check.lock')

@@ -4,9 +4,10 @@ import { FyloWorkerRuntime, handleWorkerMessage } from '../../src/browser/worker
 
 /**
  * @param {FyloWorkerRuntime} runtime
+ * @param {Partial<ConstructorParameters<typeof FyloWorkerClient>[1]>} [options]
  * @returns {FyloWorkerClient}
  */
-function createClient(runtime) {
+function createClient(runtime, options = {}) {
     const channel = new MessageChannel()
     channel.port2.onmessage = (message) => {
         void handleWorkerMessage(runtime, channel.port2, message.data)
@@ -16,11 +17,37 @@ function createClient(runtime) {
     return new FyloWorkerClient(channel.port1, {
         namespace: 'tests',
         storage: 'memory',
-        root: '/'
+        root: '/',
+        ...options
     })
 }
 
 describe('FYLO worker client/runtime', () => {
+    test('propagates the browser build token to the worker module URL', async () => {
+        const original = globalThis.SharedWorker
+        let workerUrl
+        globalThis.SharedWorker = class {
+            constructor(url) {
+                workerUrl = url
+                this.port = {
+                    onmessage: null,
+                    start() {},
+                    postMessage() {},
+                    close() {}
+                }
+            }
+        }
+        try {
+            const token = 'v=release-test'
+            const module = await import(`../../src/browser/worker/client.js?${token}`)
+            module.createWorkerClient({ namespace: 'tests', storage: 'memory' })
+            expect(workerUrl.href).toEndWith(`/shared.js?${token}`)
+        } finally {
+            if (original === undefined) delete globalThis.SharedWorker
+            else globalThis.SharedWorker = original
+        }
+    })
+
     test('correlates request/response envelopes', async () => {
         const runtime = new FyloWorkerRuntime()
         const client = createClient(runtime)
@@ -32,6 +59,27 @@ describe('FYLO worker client/runtime', () => {
 
         expect(response.ok).toBe(true)
         expect(response.result).toEqual({ collection: 'users' })
+    })
+
+    test('waits for worker core initialization', async () => {
+        const runtime = new FyloWorkerRuntime()
+        const client = createClient(runtime)
+
+        await expect(client.ready()).resolves.toBeUndefined()
+        expect(runtime.cores.get('tests')?.index.accelerationStatus()).toEqual({
+            mode: 'javascript',
+            state: 'off'
+        })
+    })
+
+    test('releases isolated File System Access worker cores on close', async () => {
+        const runtime = new FyloWorkerRuntime()
+        const client = createClient(runtime, { instanceId: 'fsa-test' })
+
+        await client.ready()
+        expect(runtime.cores.has('tests:fsa-test')).toBe(true)
+        await client.close()
+        expect(runtime.cores.has('tests:fsa-test')).toBe(false)
     })
 
     test('fans collection events out to every subscribed port in the namespace', async () => {

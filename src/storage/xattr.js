@@ -2,6 +2,7 @@ import { dlopen, FFIType, ptr, read } from 'bun:ffi'
 import os from 'node:os'
 import {
     closeSync,
+    fsyncSync,
     lstatSync,
     openSync,
     readFileSync,
@@ -9,6 +10,13 @@ import {
     unlinkSync,
     writeFileSync
 } from 'node:fs'
+import {
+    windowsDeleteNamedStream,
+    windowsReadNamedStream,
+    windowsTryAcquireProcessFileLock,
+    windowsWithDescriptorLock,
+    windowsWriteNamedStream
+} from './windows-secure-open.js'
 
 /**
  * Extended-attribute access via libc, bound with bun:ffi.
@@ -35,6 +43,8 @@ const windows = process.platform === 'win32'
  *   lremovexattr?: (...args: (number | import('bun:ffi').Pointer | null)[]) => number,
  *   fgetxattr?: (...args: (number | import('bun:ffi').Pointer | null)[]) => number | bigint,
  *   flistxattr?: (...args: (number | import('bun:ffi').Pointer | null)[]) => number | bigint,
+ *   fsetxattr?: (...args: (number | import('bun:ffi').Pointer | null)[]) => number,
+ *   fremovexattr?: (...args: (number | import('bun:ffi').Pointer | null)[]) => number,
  *   __error?: () => import('bun:ffi').Pointer,
  *   __errno_location?: () => import('bun:ffi').Pointer,
  *   strerror: (code: number) => string,
@@ -99,6 +109,21 @@ const libc = /** @type {XattrSymbols | null} */ (
                                 args: [FFIType.i32, FFIType.ptr, FFIType.u64, FFIType.i32],
                                 returns: FFIType.i64
                             },
+                            fsetxattr: {
+                                args: [
+                                    FFIType.i32,
+                                    FFIType.ptr,
+                                    FFIType.ptr,
+                                    FFIType.u64,
+                                    FFIType.u32,
+                                    FFIType.i32
+                                ],
+                                returns: FFIType.i32
+                            },
+                            fremovexattr: {
+                                args: [FFIType.i32, FFIType.ptr, FFIType.i32],
+                                returns: FFIType.i32
+                            },
                             __error: { args: [], returns: FFIType.ptr },
                             strerror: { args: [FFIType.i32], returns: FFIType.cstring }
                         }
@@ -137,6 +162,20 @@ const libc = /** @type {XattrSymbols | null} */ (
                                 args: [FFIType.i32, FFIType.ptr, FFIType.u64],
                                 returns: FFIType.i64
                             },
+                            fsetxattr: {
+                                args: [
+                                    FFIType.i32,
+                                    FFIType.ptr,
+                                    FFIType.ptr,
+                                    FFIType.u64,
+                                    FFIType.i32
+                                ],
+                                returns: FFIType.i32
+                            },
+                            fremovexattr: {
+                                args: [FFIType.i32, FFIType.ptr],
+                                returns: FFIType.i32
+                            },
                             __errno_location: { args: [], returns: FFIType.ptr },
                             strerror: { args: [FFIType.i32], returns: FFIType.cstring }
                         }
@@ -150,6 +189,8 @@ const nativeListXattr = darwin ? libc?.listxattr : libc?.llistxattr
 const nativeRemoveXattr = darwin ? libc?.removexattr : libc?.lremovexattr
 const nativeGetXattrFd = libc?.fgetxattr
 const nativeListXattrFd = libc?.flistxattr
+const nativeSetXattrFd = libc?.fsetxattr
+const nativeRemoveXattrFd = libc?.fremovexattr
 const XATTR_NOFOLLOW = 0x0001
 
 const errnoLocation = /** @type {() => import('bun:ffi').Pointer} */ (
@@ -179,6 +220,16 @@ function errno() {
 /** @param {string} target */
 function windowsStream(target) {
     return `${target}:fylo.xattrs`
+}
+
+/** @param {string} target */
+function flushWindowsStream(target) {
+    const descriptor = openSync(target, 'r+')
+    try {
+        fsyncSync(descriptor)
+    } finally {
+        closeSync(descriptor)
+    }
 }
 
 /** @param {string} target @param {string} [call] @returns {void} */
@@ -243,6 +294,24 @@ export class WindowsAdsManifestStore {
         assertWindowsTarget(target, call)
         const lockPath = this.lockPath(target)
         const deadline = Date.now() + this.lockTimeoutMs
+        if (windows) {
+            let release = null
+            while (!release) {
+                release = windowsTryAcquireProcessFileLock(lockPath)
+                if (release) break
+                if (Date.now() >= deadline) {
+                    throw new Error(
+                        `${call}(${target}) timed out waiting for the ADS metadata lock`
+                    )
+                }
+                Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5)
+            }
+            try {
+                return operation()
+            } finally {
+                release()
+            }
+        }
         const owner = String(Bun.randomUUIDv7())
         while (true) {
             try {
@@ -324,6 +393,7 @@ export class WindowsAdsManifestStore {
             // between two named streams on the same base file. The validated
             // recovery payload is already in memory, so promote it directly.
             writeFileSync(windowsStream(target), recoveryPayload)
+            flushWindowsStream(windowsStream(target))
             try {
                 unlinkSync(recovery)
             } catch (error) {
@@ -359,7 +429,9 @@ export class WindowsAdsManifestStore {
             const recovery = this.recoveryPath(target)
             const payload = JSON.stringify(attributes)
             writeFileSync(recovery, payload)
+            flushWindowsStream(recovery)
             writeFileSync(windowsStream(target), payload)
+            flushWindowsStream(windowsStream(target))
             try {
                 unlinkSync(recovery)
             } catch (error) {
@@ -403,6 +475,53 @@ function parseWindowsManifest(text) {
 }
 
 const windowsStore = new WindowsAdsManifestStore()
+
+const WINDOWS_DESCRIPTOR_MANIFEST_LIMIT = 16 * 1024 * 1024
+
+/** @param {any} descriptor */
+function readWindowsDescriptorManifestUnlocked(descriptor) {
+    const recovery = windowsReadNamedStream(
+        descriptor,
+        'fylo.xattrs.next',
+        WINDOWS_DESCRIPTOR_MANIFEST_LIMIT
+    )
+    if (recovery !== null) {
+        try {
+            const parsed = parseWindowsManifest(recovery.toString('utf8'))
+            windowsWriteNamedStream(descriptor, 'fylo.xattrs', recovery)
+            windowsDeleteNamedStream(descriptor, 'fylo.xattrs.next')
+            return parsed
+        } catch {
+            // An incomplete recovery stream does not invalidate an intact
+            // primary manifest; use the primary below.
+        }
+    }
+    const primary = windowsReadNamedStream(
+        descriptor,
+        'fylo.xattrs',
+        WINDOWS_DESCRIPTOR_MANIFEST_LIMIT
+    )
+    return primary === null ? {} : parseWindowsManifest(primary.toString('utf8'))
+}
+
+/** @param {any} descriptor */
+function readWindowsDescriptorManifest(descriptor) {
+    return windowsWithDescriptorLock(descriptor, () =>
+        readWindowsDescriptorManifestUnlocked(descriptor)
+    )
+}
+
+/** @param {any} descriptor @param {(attributes: Record<string, string>) => void} mutate */
+function updateWindowsDescriptorManifest(descriptor, mutate) {
+    windowsWithDescriptorLock(descriptor, () => {
+        const attributes = readWindowsDescriptorManifestUnlocked(descriptor)
+        mutate(attributes)
+        const payload = Buffer.from(JSON.stringify(attributes))
+        windowsWriteNamedStream(descriptor, 'fylo.xattrs.next', payload)
+        windowsWriteNamedStream(descriptor, 'fylo.xattrs', payload)
+        windowsDeleteNamedStream(descriptor, 'fylo.xattrs.next')
+    })
+}
 
 /**
  * @param {string} call
@@ -537,7 +656,10 @@ export function listXattr(target) {
  * @returns {Uint8Array | null}
  */
 export function getXattrFd(fd, name) {
-    if (windows) throw new Error('Descriptor-bound xattrs are unavailable on Windows')
+    if (windows) {
+        const encoded = readWindowsDescriptorManifest(fd)[name]
+        return typeof encoded === 'string' ? Uint8Array.from(Buffer.from(encoded, 'base64')) : null
+    }
     if (!nativeGetXattrFd) throw new Error('Native descriptor xattrs are unavailable')
     const nameBytes = cstr(name)
     while (true) {
@@ -562,7 +684,7 @@ export function getXattrFd(fd, name) {
 
 /** @param {number} fd @returns {string[]} */
 export function listXattrFd(fd) {
-    if (windows) throw new Error('Descriptor-bound xattrs are unavailable on Windows')
+    if (windows) return Object.keys(readWindowsDescriptorManifest(fd))
     if (!nativeListXattrFd) throw new Error('Native descriptor xattrs are unavailable')
     while (true) {
         const size = darwin ? nativeListXattrFd(fd, null, 0, 0) : nativeListXattrFd(fd, null, 0)
@@ -580,6 +702,37 @@ export function listXattrFd(fd) {
         }
         if (errno() !== ERANGE) throwErrno('flistxattr', `fd ${fd}`)
     }
+}
+
+/** @param {number} fd @param {string} name @param {Uint8Array} value */
+export function setXattrFd(fd, name, value) {
+    if (windows) {
+        updateWindowsDescriptorManifest(fd, (attributes) => {
+            attributes[name] = Buffer.from(value).toString('base64')
+        })
+        return
+    }
+    if (!nativeSetXattrFd) throw new Error('Native descriptor xattrs are unavailable')
+    const buffer = value.length ? ptr(value) : null
+    const result = darwin
+        ? nativeSetXattrFd(fd, ptr(cstr(name)), buffer, value.length, 0, 0)
+        : nativeSetXattrFd(fd, ptr(cstr(name)), buffer, value.length, 0)
+    if (result !== 0) throwErrno('fsetxattr', `fd ${fd}`)
+}
+
+/** @param {number} fd @param {string} name */
+export function removeXattrFd(fd, name) {
+    if (windows) {
+        updateWindowsDescriptorManifest(fd, (attributes) => {
+            delete attributes[name]
+        })
+        return
+    }
+    if (!nativeRemoveXattrFd) throw new Error('Native descriptor xattrs are unavailable')
+    const result = darwin
+        ? nativeRemoveXattrFd(fd, ptr(cstr(name)), 0)
+        : nativeRemoveXattrFd(fd, ptr(cstr(name)))
+    if (result !== 0 && errno() !== ENOATTR) throwErrno('fremovexattr', `fd ${fd}`)
 }
 
 /**

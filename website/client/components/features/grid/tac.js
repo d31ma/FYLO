@@ -38,8 +38,8 @@ export default class extends Tac {
         {
             area: 'Security',
             color: 'error',
-            title: 'Encryption, RLS & WORM',
-            text: 'AES-GCM field encryption with HMAC blind indexes, app-supplied row-level security policies, and strict write-once WORM collections.'
+            title: 'Encryption, UID modes & WORM',
+            text: 'AES-GCM field encryption with HMAC blind indexes, per-record POSIX UID/mode enforcement, and strict write-once WORM collections.'
         },
         {
             area: 'Replication',
@@ -51,7 +51,7 @@ export default class extends Tac {
             area: 'Architecture',
             color: 'success',
             title: 'No server, no protocol',
-            text: 'Every client owns its database directly — the binary on desktop, an on-device OPFS engine in browsers and mobile. Nothing listens on a port; there is no auth surface to harden.'
+            text: 'Every client owns its database directly — the binary on desktop, OPFS on the web, or a user-selected folder through File System Access. Browser queries can run in a worker with Wasm acceleration. Nothing listens on a port.'
         },
         {
             area: 'Interop',

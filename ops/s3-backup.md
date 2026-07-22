@@ -24,7 +24,8 @@ the recovery-point objective or retry volume increases materially.
    wedge the scheduler; a later manual or scheduled pass can recover.
 4. Confirm `lastSuccessAt` advances and the failed alert clears.
 
-With the default `syncMode: 'await-sync'`, a mirror failure is reported to the
+With the default `syncMode: 'await-sync'`, mirroring begins only after the local
+collection transaction commits. A mirror failure is reported to the
 writer after the local filesystem change has committed. With
 `syncMode: 'fire-and-forget'`, monitor `sync.failed` because the write caller
 does not wait for the mirror. A later reconcile repairs either case.
@@ -35,10 +36,26 @@ does not wait for the mirror. A later reconcile repairs either case.
 - `maxFileBytes` is the hard per-file memory/request boundary. Increase it only
   after accounting for the process memory budget and configured concurrency.
 - `maxManifestBytes` bounds metadata fetched from the remote trust boundary.
+- `maxReconcileSnapshotBytes` caps the immutable local snapshot materialized by
+  a reconcile pass. It defaults to 512 MiB and counts file bytes plus encoded
+  xattr values across the whole root.
 - `retry.attempts`, `baseDelayMs`, and `maxDelayMs` bound transient retries.
 - Always `await fylo.close()` during graceful shutdown. It refuses new backup
   work, cancels retry waits and the one pending reconcile, drains active remote
   requests, and only then releases the pinned root descriptor.
+
+`maxReconcileSnapshotBytes` is not an RSS limit. Size the process for the cap
+plus map/object overhead, one additional validation snapshot up to
+`maxFileBytes`, concurrent request buffers, and the Bun runtime. Measure peak
+RSS with production-like file counts and xattr density before raising it. If a
+pass fails with `S3 reconcile snapshot exceeds
+sync.s3.maxReconcileSnapshotBytes`, confirm the failure in `backupStatus()` and
+the `backup.reconcile.failed` event. Then reduce the root's retained data or
+split independent datasets into separate FYLO roots; lower `concurrency` if
+request buffers are the pressure source. Raise the cap only after increasing
+the service/container memory limit and validating headroom. A later manual
+`await fylo.reconcile()` retries the entire immutable snapshot; no partial
+remote mutation is promoted from the rejected pass.
 
 Reconciliation deletes remote objects that have no local counterpart. Keep the
 default requirement for a unique `prefix` per FYLO root. Use

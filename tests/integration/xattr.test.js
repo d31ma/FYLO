@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from 'bun:test'
-import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import { chmod, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -107,12 +107,32 @@ describe('xattr', () => {
         const adapterTarget = path.join(root, 'ads-lock-owner.bin')
         await writeFile(adapterTarget, 'bytes')
         const store = new WindowsAdsManifestStore()
+        if (process.platform === 'win32') {
+            store.withLock(adapterTarget, 'test', () => {})
+            store.withLock(adapterTarget, 'test', () => {})
+            expect(await Bun.file(store.lockPath(adapterTarget)).exists()).toBe(true)
+            return
+        }
         const successor = { owner: 'successor', ts: Date.now() }
         store.withLock(adapterTarget, 'test', () => {
             writeFileSync(store.lockPath(adapterTarget), JSON.stringify(successor))
         })
         expect(JSON.parse(await readFile(store.lockPath(adapterTarget), 'utf8'))).toEqual(successor)
         await rm(store.lockPath(adapterTarget), { force: true })
+    })
+    test('Windows ADS metadata remains readable after the base file becomes read-only', async () => {
+        if (process.platform !== 'win32') return
+        const adapterTarget = path.join(root, 'ads-readonly.bin')
+        await writeFile(adapterTarget, 'bytes')
+        const store = new WindowsAdsManifestStore()
+        store.update(adapterTarget, 'setxattr', (attributes) => {
+            attributes.readonly = Buffer.from('preserved').toString('base64')
+        })
+        await chmod(adapterTarget, 0o444)
+
+        expect(store.read(adapterTarget, 'getxattr')).toEqual({
+            readonly: Buffer.from('preserved').toString('base64')
+        })
     })
     test('Windows ADS lock acquisition reclaims an abandoned owner generation', async () => {
         const adapterTarget = path.join(root, 'ads-stale-lock.bin')
@@ -123,7 +143,11 @@ describe('xattr', () => {
             JSON.stringify({ owner: 'dead', ts: Date.now() - 60_000 })
         )
         expect(store.read(adapterTarget, 'getxattr')).toEqual({})
-        expect(await Bun.file(store.lockPath(adapterTarget)).exists()).toBe(false)
+        // Kernel locks intentionally keep a persistent sentinel on Windows;
+        // ownership is the open handle and is released automatically on crash.
+        expect(await Bun.file(store.lockPath(adapterTarget)).exists()).toBe(
+            process.platform === 'win32'
+        )
     })
     test('Windows ADS updates serialize across processes without losing attributes', async () => {
         if (process.platform !== 'win32') return

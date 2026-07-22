@@ -1,8 +1,8 @@
 import { BrowserCore } from './core/engine.js'
 import { runBrowserRequest } from './core/protocol.js'
-import { createMemoryFilesystem } from './core/memory-filesystem.js'
-import { createOpfsFilesystem } from './opfs-filesystem.js'
+import { createBrowserFilesystem, normalizeBrowserStorage } from './storage.js'
 import { createWorkerClient } from './worker/client.js'
+import { createWasmIndexScannerFactory } from './wasm/index-scanner.js'
 import { CollectionNotFoundError } from '../core/collection.js'
 
 /**
@@ -69,27 +69,37 @@ export class FyloBrowser {
     /** @type {FyloWorkerClient | null} */
     worker
     /**
-     * @param {{ fs?: FyloFilesystem, storage?: 'memory' | 'opfs', namespace?: string, root?: string, worker?: boolean, worm?: BrowserCoreOptions['worm'] }=} options
+     * @param {{ fs?: FyloFilesystem, storage?: import('./storage.js').BrowserStorage, namespace?: string, root?: string, worker?: boolean, worm?: BrowserCoreOptions['worm'], wasm?: true | { url?: string | URL, module?: WebAssembly.Module } }=} options
      */
     constructor(options = {}) {
         this.namespace = options.namespace ?? 'fylo'
         this.root = options.root ?? '/'
-        this.worker = shouldUseWorker(options.worker ?? true)
+        const useWorker = shouldUseWorker(options.worker ?? true)
+        this.storage = normalizeBrowserStorage(options.storage ?? (useWorker ? 'opfs' : 'memory'))
+        this.worker = useWorker
             ? createWorkerClient({
                   namespace: this.namespace,
-                  storage: options.storage ?? 'opfs',
+                  storage: this.storage,
+                  instanceId:
+                      this.storage.type === 'fsa'
+                          ? `${Date.now()}-${crypto.randomUUID?.() ?? Math.random()}`
+                          : undefined,
                   root: this.root,
-                  worm: options.worm
+                  worm: options.worm,
+                  wasm: options.wasm
               })
             : null
-        const fs =
-            options.fs ??
-            (options.storage === 'opfs'
-                ? createOpfsFilesystem({ namespace: this.namespace })
-                : createMemoryFilesystem())
+        const fs = options.fs ?? createBrowserFilesystem(this.storage, this.namespace)
         this.core = this.worker
             ? null
-            : new BrowserCore({ fs, root: this.root, worm: options.worm })
+            : new BrowserCore({
+                  fs,
+                  root: this.root,
+                  worm: options.worm,
+                  indexScannerFactory: options.wasm
+                      ? createWasmIndexScannerFactory(options.wasm)
+                      : undefined
+              })
         this.sql = this.createSqlTag()
         const reserved = new Set([
             'then',
@@ -110,6 +120,7 @@ export class FyloBrowser {
 
     /** @returns {Promise<void>} */
     async ready() {
+        await this.worker?.ready()
         await this.core?.ready()
     }
 

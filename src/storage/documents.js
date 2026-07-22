@@ -11,6 +11,7 @@ import { assertSafeStoragePath } from './safe-path.js'
  * @property {(path: string) => Promise<string>} read
  * @property {(path: string, data: string) => Promise<void>} write
  * @property {(source: string, target: string) => Promise<void>} move
+ * @property {(path: string) => Promise<void>} syncFile
  * @property {(path: string, mode: number) => Promise<void>} chmod
  * @property {(path: string, mtimeMs: number) => Promise<void>} setModifiedTime
  * @property {(path: string) => Promise<{ mtimeMs: number }>} metadata
@@ -211,6 +212,7 @@ export class FilesystemDocuments {
         })
         await this.storage.move(source, target)
         await this.storage.setModifiedTime(target, deletedAt)
+        await this.storage.syncFile(target)
         await this.storage.chmod(target, 0o444)
         return target
     }
@@ -249,6 +251,7 @@ export class FilesystemDocuments {
         const target = this.docPath(collection, docId)
         assertPathInside(this.docsRoot(collection), target)
         await assertSafeStoragePath(this.storageRoot, target, { finalType: 'file' })
+        await this.storage.syncFile(target)
         await this.storage.chmod(target, 0o444)
     }
     /**

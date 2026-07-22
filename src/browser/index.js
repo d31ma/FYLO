@@ -15,6 +15,7 @@ export {
     ensureRootPermission
 } from './fsa-filesystem.js'
 export { FyloWorkerClient, createWorkerClient } from './worker/client.js'
+export { WasmIndexScannerFactory, createWasmIndexScannerFactory } from './wasm/index-scanner.js'
 export { BrowserCore } from './core/engine.js'
 export { createMemoryFilesystem, MemoryFilesystem } from './core/memory-filesystem.js'
 export { CollectionNotFoundError } from '../core/collection.js'

@@ -45,7 +45,10 @@ describe('web release operations', () => {
     test('verifies immutable and latest Pages assets, checksums, and equality', async () => {
         const files = new Map([
             ['fylo.js', 'loader'],
-            ['fylo-web.mjs', 'engine']
+            ['fylo-web.mjs', 'engine'],
+            ['shared.js', 'shared-worker'],
+            ['dedicated.js', 'dedicated-worker'],
+            ['fylo-index.wasm', 'wasm-scanner']
         ])
         const hashes = await Promise.all(
             [...files].map(async ([name, body]) => [
@@ -63,14 +66,17 @@ describe('web release operations', () => {
             verifyPagesRelease('https://pages.example/Fylo/', '26.29.03', fetcher)
         ).resolves.toEqual({
             version: '26.29.03',
-            files: ['fylo.js', 'fylo-web.mjs']
+            files: ['fylo.js', 'fylo-web.mjs', 'shared.js', 'dedicated.js', 'fylo-index.wasm']
         })
     })
 
     test('rejects stale latest Pages assets even when both manifests are internally valid', async () => {
         const immutable = new Map([
             ['fylo.js', 'loader'],
-            ['fylo-web.mjs', 'engine']
+            ['fylo-web.mjs', 'engine'],
+            ['shared.js', 'shared-worker'],
+            ['dedicated.js', 'dedicated-worker'],
+            ['fylo-index.wasm', 'wasm-scanner']
         ])
         const latest = new Map(immutable)
         latest.set('fylo-web.mjs', 'stale-engine')
@@ -96,7 +102,10 @@ describe('web release operations', () => {
     test('rejects a missing latest Pages asset', async () => {
         const files = new Map([
             ['fylo.js', 'loader'],
-            ['fylo-web.mjs', 'engine']
+            ['fylo-web.mjs', 'engine'],
+            ['shared.js', 'shared-worker'],
+            ['dedicated.js', 'dedicated-worker'],
+            ['fylo-index.wasm', 'wasm-scanner']
         ])
         const manifest = [...files]
             .map(
@@ -125,23 +134,128 @@ describe('web release operations', () => {
         )
     })
 
-    test('FXP probe accepts Explorer but rejects the real FYLO homepage artifact', async () => {
+    test('verifies configured CSS, JavaScript, component, worker, and Wasm assets', async () => {
+        const site = {
+            origin: 'https://fx.example',
+            probes: [
+                { path: '/', contains: 'Explorer', contentTypes: ['text/html'] },
+                {
+                    path: '/shared/assets/explorer.css',
+                    contains: '.explorer',
+                    contentTypes: ['text/css']
+                },
+                {
+                    path: '/imports.js',
+                    contains: 'shared/assets/fylo-web.mjs',
+                    contentTypes: ['application/javascript']
+                },
+                {
+                    path: '/components/explorer/app/tac.js',
+                    contains: 'class Explorer',
+                    contentTypes: ['application/javascript']
+                },
+                {
+                    path: '/shared/assets/shared.js',
+                    contains: 'src/browser/worker/shared.js',
+                    contentTypes: ['application/javascript']
+                },
+                {
+                    path: '/shared/assets/fylo-index.wasm',
+                    startsWithHex: '0061736d',
+                    contentTypes: ['application/wasm']
+                }
+            ]
+        }
+        const assets = new Map([
+            ['/', ['<title>Explorer</title>', 'text/html; charset=utf-8']],
+            ['/shared/assets/explorer.css', ['.explorer {}', 'text/css']],
+            ['/imports.js', ["import('/shared/assets/fylo-web.mjs')", 'application/javascript']],
+            [
+                '/components/explorer/app/tac.js',
+                ['export class Explorer {}', 'application/javascript']
+            ],
+            [
+                '/shared/assets/shared.js',
+                ['// src/browser/worker/shared.js', 'application/javascript']
+            ],
+            [
+                '/shared/assets/fylo-index.wasm',
+                [Uint8Array.from([0x00, 0x61, 0x73, 0x6d, 0x01]), 'application/wasm']
+            ]
+        ])
+        const fetcher = async (input) => {
+            const asset = assets.get(new URL(input).pathname)
+            return asset
+                ? new Response(asset[0], { headers: { 'content-type': asset[1] } })
+                : new Response('missing', { status: 404 })
+        }
+
+        await expect(smokeSite(site, fetcher)).resolves.toHaveLength(site.probes.length)
+    })
+
+    test('rejects stripped assets before deployment can be marked current', async () => {
+        const site = {
+            origin: 'https://fx.example',
+            probes: [
+                {
+                    path: '/shared/assets/explorer.css',
+                    contains: '.explorer',
+                    contentTypes: ['text/css']
+                }
+            ]
+        }
+
+        await expect(
+            smokeSite(
+                site,
+                async () =>
+                    new Response('<!doctype html><title>SPA fallback</title>', {
+                        headers: { 'content-type': 'text/html' }
+                    })
+            )
+        ).rejects.toThrow('unexpected content type')
+    })
+
+    test('production probe manifests accept complete FYLO and FXP bundles', async () => {
         const config = await Bun.file('ops/web-release.json').json()
         const root = path.resolve(import.meta.dir, '../..')
         await execFileAsync('bun', ['run', 'bundle'], { cwd: path.join(root, 'website') })
         await execFileAsync('bun', ['run', 'bundle'], { cwd: path.join(root, 'explorer') })
 
         const homepage = await Bun.file(path.join(root, 'website/dist/web/index.html')).text()
-        const explorer = await Bun.file(path.join(root, 'explorer/dist/web/index.html')).text()
-
-        const respondWith = (body) => async () => new Response(body)
-
-        await expect(smokeSite(config.sites.fxp, respondWith(homepage))).rejects.toThrow(
-            'expected marker'
-        )
-        await expect(smokeSite(config.sites.fxp, respondWith(explorer))).resolves.toEqual([
-            { status: 200, url: 'https://fx.del.ma/' }
+        const mime = new Map([
+            ['.css', 'text/css'],
+            ['.html', 'text/html'],
+            ['.js', 'application/javascript'],
+            ['.mjs', 'application/javascript'],
+            ['.wasm', 'application/wasm']
         ])
+        const staticFetcher = (directory) => async (input) => {
+            let relative = new URL(input).pathname.slice(1)
+            if (!relative || !path.extname(relative)) relative = path.join(relative, 'index.html')
+            const file = Bun.file(path.join(directory, relative))
+            if (!(await file.exists())) return new Response('missing', { status: 404 })
+            return new Response(await file.arrayBuffer(), {
+                headers: { 'content-type': mime.get(path.extname(relative)) ?? 'text/plain' }
+            })
+        }
+        const websiteFetcher = staticFetcher(path.join(root, 'website/dist/web'))
+        const explorerFetcher = staticFetcher(path.join(root, 'explorer/dist/web'))
+
+        await expect(smokeSite(config.sites.fylo, websiteFetcher)).resolves.toHaveLength(
+            config.sites.fylo.probes.length
+        )
+        await expect(
+            smokeSite(config.sites.fxp, async (input) => {
+                if (new URL(input).pathname === '/') {
+                    return new Response(homepage, { headers: { 'content-type': 'text/html' } })
+                }
+                return explorerFetcher(input)
+            })
+        ).rejects.toThrow('expected marker')
+        await expect(smokeSite(config.sites.fxp, explorerFetcher)).resolves.toHaveLength(
+            config.sites.fxp.probes.length
+        )
     })
 
     test('keeps operational runbooks available to a clean checkout', async () => {
@@ -183,6 +297,30 @@ describe('web release operations', () => {
         }
     })
 
+    test('uses one pinned Bun and Rust toolchain for every browser release path', async () => {
+        const bunVersion = (await Bun.file('.bun-version').text()).trim()
+        const rustToolchain = await Bun.file('rust-toolchain.toml').text()
+        const build = await Bun.file('scripts/build-browser.mjs').text()
+        const rootPackage = await Bun.file('package.json').json()
+        const websitePackage = await Bun.file('website/package.json').json()
+        const explorerPackage = await Bun.file('explorer/package.json').json()
+
+        expect(bunVersion).toBe('1.3.11')
+        expect(rustToolchain).toContain('channel = "1.97.1"')
+        expect(rustToolchain).toContain('targets = ["wasm32-unknown-unknown"]')
+        expect(build).toContain("readFile(new URL('../.bun-version'")
+        expect(build).toContain("readFile(new URL('../rust-toolchain.toml'")
+        expect(build).toContain("'--locked'")
+        for (const packageJson of [rootPackage, websitePackage, explorerPackage]) {
+            expect(packageJson.packageManager).toBe(`bun@${bunVersion}`)
+        }
+        for (const workflowPath of ['.github/workflows/ci.yml', '.github/workflows/publish.yml']) {
+            const workflow = await Bun.file(workflowPath).text()
+            expect(workflow).not.toContain('bun-version: latest')
+            expect(workflow).toContain('bun-version-file: .bun-version')
+        }
+    })
+
     test('pins both Amplify targets and preserves checksum-verified rollback artifacts', async () => {
         const config = await Bun.file('ops/web-release.json').json()
         const release = await Bun.file('scripts/amplify-release.mjs').text()
@@ -199,6 +337,8 @@ describe('web release operations', () => {
         expect(release).toContain("'get-job'")
         expect(release).toContain('Archived artifact checksum mismatch')
         expect(release).toContain('Deployment failed; restoring')
+        expect(release).toContain('rollback verification also failed')
         expect(release).toContain('previousChecksum')
+        expect(release).toContain('verifiedProbeCount')
     })
 })

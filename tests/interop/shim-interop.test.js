@@ -94,6 +94,11 @@ with Fylo(${JSON.stringify(root)}, binary=${JSON.stringify(binaryPath)}) as db:
     assert initial_meta['source'] == 'python' and initial_meta['reviewed'] is False, initial_meta
     assert initial_meta['id'] == doc_id and initial_meta['createdAt'] > 0, initial_meta
     assert 'source' not in meta and meta['reviewed'] is False, meta
+    access = {'uid': os.getuid(), 'mode': 0o600}
+    sql_id = db.sql("INSERT INTO users (name, score, scope) VALUES ('SQL Ada', 91, 'private-sql')", access)
+    assert db.sql("SELECT * FROM users WHERE scope = 'private-sql'") == {}
+    owner_rows = db.sql("SELECT * FROM users WHERE scope = 'private-sql'", {'uid': os.getuid()})
+    assert owner_rows[sql_id]['name'] == 'SQL Ada', owner_rows
     print(json.dumps({'ok': True, 'id': doc_id, 'doc': doc, 'found': found, 'meta': meta}))
 `
         const result = await run(['python3', '-c', script])
@@ -121,6 +126,16 @@ try {
   const meta = await db.getMeta('users', id)
   if (initialMeta.source !== 'node' || initialMeta.reviewed !== false) throw new Error('bad initial metadata')
   if ('source' in meta || meta.reviewed !== false) throw new Error('bad updated metadata')
+  const uid = process.getuid()
+  const sqlId = await db.sql\`INSERT INTO users (name, score, scope) VALUES (\${'SQL Ada'}, \${91}, \${'private-sql'})\`.as({ uid, mode: 0o600 })
+  const anonymousRows = await db.sql\`SELECT * FROM users WHERE scope = \${'private-sql'}\`
+  if (sqlId in anonymousRows) throw new Error('anonymous SQL leaked protected row')
+  const ownerRows = await db.sql\`SELECT * FROM users WHERE scope = \${'private-sql'}\`.as({ uid })
+  if (ownerRows[sqlId]?.name !== 'SQL Ada') throw new Error('owner SQL could not read row')
+  const updated = await db.sql\`UPDATE users SET score = \${92} WHERE scope = \${'private-sql'}\`.as({ uid })
+  if (updated !== 1) throw new Error('owner SQL could not update row')
+  const deleted = await db.sql\`DELETE FROM users WHERE scope = \${'private-sql'}\`.as({ uid })
+  if (deleted !== 1) throw new Error('owner SQL could not delete row')
   console.log(JSON.stringify({ ok: true, id, doc, found, meta }))
 } finally {
   await db.close()
@@ -154,6 +169,11 @@ begin
   raise 'bad initial metadata' unless initial_meta['source'] == 'ruby' && initial_meta['reviewed'] == false
   raise 'missing canonical metadata' unless initial_meta['id'] == id && initial_meta['createdAt'] > 0
   raise 'bad updated metadata' unless !meta.key?('source') && meta['reviewed'] == false
+  access = { 'uid' => Process.uid, 'mode' => 0o600 }
+  sql_id = db.sql("INSERT INTO users (name, score, scope) VALUES ('SQL Ada', 91, 'private-sql')", access)
+  raise 'anonymous SQL leaked protected row' unless db.sql("SELECT * FROM users WHERE scope = 'private-sql'").empty?
+  owner_rows = db.sql("SELECT * FROM users WHERE scope = 'private-sql'", { 'uid' => Process.uid })
+  raise 'owner SQL could not read row' unless owner_rows[sql_id]['name'] == 'SQL Ada'
   puts JSON.generate({ ok: true, id: id, doc: doc, found: found, meta: meta })
 ensure
   db.close

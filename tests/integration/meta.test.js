@@ -2,7 +2,6 @@ import { afterAll, describe, expect, test } from 'bun:test'
 import { readdir, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import Fylo from '../../src/index.js'
-import { _resetRulesCache } from '../../src/security/rules/loader.js'
 import { VersionRepository } from '../../src/versioning/repository.js'
 import { createTestRoot } from '../helpers/root.js'
 
@@ -183,48 +182,6 @@ describe('developer metadata (xattrs)', () => {
         }
         await fylo.notes.put(id).metadata(record)
         expectCustomMetadata(await fylo.notes.get(id).metadata(), record)
-    })
-
-    test('RLS authorizes metadata reads and denies metadata writes atomically', async () => {
-        const previousSchema = process.env.FYLO_SCHEMA
-        const schemaRoot = await createTestRoot('fylo-meta-rules-')
-        const rlsRoot = await createTestRoot('fylo-meta-rls-')
-        const collection = `metadata-rules-${Date.now()}`
-        try {
-            await Bun.write(
-                path.join(schemaRoot, collection, 'rules.json'),
-                JSON.stringify({
-                    version: 1,
-                    roles: [{ name: 'reader', apply_when: true, read: { filter: {} } }]
-                })
-            )
-            process.env.FYLO_SCHEMA = schemaRoot
-            _resetRulesCache()
-
-            const guarded = new Fylo(rlsRoot, { rls: true, versioning: { autoCommit: false } })
-            await guarded[collection].create()
-            const id = await guarded[collection].put({ owner: 'tenant-a' })
-            await guarded[collection].put(id).metadata({ secret: 'unchanged' })
-            const before = await guarded.engine.docMetaUpdatedAt(collection, id)
-            const scoped = guarded.as({ subject: 'reader' })
-
-            expectCustomMetadata(await scoped[collection].get(id).metadata(), {
-                secret: 'unchanged'
-            })
-            await expect(
-                scoped[collection].put(id).metadata({ secret: 'changed' })
-            ).rejects.toThrow()
-            expectCustomMetadata(await guarded[collection].get(id).metadata(), {
-                secret: 'unchanged'
-            })
-            expect(await guarded.engine.docMetaUpdatedAt(collection, id)).toBe(before)
-        } finally {
-            if (previousSchema === undefined) delete process.env.FYLO_SCHEMA
-            else process.env.FYLO_SCHEMA = previousSchema
-            _resetRulesCache()
-            await rm(schemaRoot, { recursive: true, force: true })
-            await rm(rlsRoot, { recursive: true, force: true })
-        }
     })
 
     test('a failed native metadata write restores the prior record and timestamp', async () => {

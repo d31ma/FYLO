@@ -339,6 +339,23 @@ describe('CLI', () => {
         expect(select.stdout).toContain('title')
         expect(select.stdout).toContain('CLI')
 
+        const explain = await run(
+            [
+                'src/cli/index.js',
+                'sql',
+                "EXPLAIN SELECT * FROM cli-posts WHERE title = 'CLI'",
+                '--root',
+                root
+            ],
+            repo
+        )
+        expect(explain.exitCode).toBe(0)
+        expect(JSON.parse(explain.stdout)).toMatchObject({
+            operation: 'SELECT',
+            collection: 'cli-posts',
+            executed: false
+        })
+
         const pagedSelect = await run(
             [
                 'src/cli/index.js',

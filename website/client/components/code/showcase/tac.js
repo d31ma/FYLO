@@ -333,12 +333,12 @@ export default class extends Tac {
     return cleaned || 'users'
   }
 
-  // JS (Browser): the local-only OPFS client, not a binary shim.
+  // JS (Browser): local OPFS/FSA storage, not a binary shim.
   webScaffold(body) {
     return [
       `// Add once to <head>: <script src="${FYLO_BROWSER_LOADER}"></script>`,
       '',
-      'const db = await Fylo.open()',
+      'const db = await Fylo.open({ wasm: true })',
       '',
       ...body,
     ].join('\n')

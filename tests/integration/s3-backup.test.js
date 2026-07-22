@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
-import { mkdtemp, mkdir, rename, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, open, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import Fylo from '../../src/index.js'
@@ -136,6 +136,7 @@ describe('built-in whole-root S3 backup', () => {
         expect(
             [...objects.keys()].some((k) => k.endsWith('.fylo-catalog/collections/assets.json'))
         ).toBe(true)
+        expect([...objects.keys()].some((k) => k.includes('.fylo-transactions/'))).toBe(false)
     })
 
     test('requires an explicit prefix unless bucket-root deletion is deliberately enabled', () => {
@@ -298,6 +299,151 @@ describe('built-in whole-root S3 backup', () => {
 
         await fylo.reconcile()
         expect(objects.get(key)?.toString()).toBe(changed)
+    })
+
+    test('reconcile never uploads bytes from an active transaction that rolls back', async () => {
+        const collection = `backup-transaction-${Date.now()}`
+        await fylo[collection].create()
+        const id = await fylo[collection].put({ state: 'committed' })
+        await fylo.reconcile()
+        const uploadedBodies = []
+        const client = fylo.engine.backup.client
+        const originalWrite = client.write.bind(client)
+        client.write = async (key, body) => {
+            uploadedBodies.push(Buffer.isBuffer(body) ? body.toString() : String(body))
+            return await originalWrite(key, body)
+        }
+        const updateDocument = fylo.engine.updateDocument.bind(fylo.engine)
+        let mutationStarted
+        const started = new Promise((resolve) => {
+            mutationStarted = resolve
+        })
+        let releaseMutation
+        const release = new Promise((resolve) => {
+            releaseMutation = resolve
+        })
+        fylo.engine.updateDocument = async (...args) => {
+            const result = await updateDocument(...args)
+            mutationStarted()
+            await release
+            throw new Error('rollback after transient bytes')
+        }
+        try {
+            const mutation = fylo
+                ._sql(`UPDATE ${collection} SET state = 'uncommitted' WHERE state = 'committed'`)
+                .catch((error) => error)
+            await started
+            const reconcile = fylo.reconcile()
+            await Bun.sleep(20)
+            releaseMutation()
+            expect(await mutation).toBeInstanceOf(Error)
+            await reconcile
+            expect(uploadedBodies.some((body) => body.includes('uncommitted'))).toBe(false)
+            expect((await fylo[collection].get(id).once())[id]).toEqual({ state: 'committed' })
+        } finally {
+            fylo.engine.updateDocument = updateDocument
+            client.write = originalWrite
+        }
+    })
+
+    test('one reconcile generation is immutable even when local generation advances mid-upload', async () => {
+        const collection = `backup-generation-${Date.now()}`
+        await fylo[collection].create()
+        const ids = [
+            await fylo[collection].put({ state: 'old', ordinal: 1 }),
+            await fylo[collection].put({ state: 'old', ordinal: 2 })
+        ]
+        await fylo.reconcile()
+        const backup = fylo.engine.backup
+        const dataKeys = ids.map((id) => backup.key(fylo.engine.docPath(collection, String(id))))
+        for (const key of dataKeys) {
+            objects.delete(key)
+            for (const [candidate, bytes] of objects) {
+                if (
+                    candidate.includes('.fylo-backup/xattrs/') &&
+                    JSON.parse(bytes.toString()).dataKey === key
+                ) {
+                    objects.delete(candidate)
+                }
+            }
+        }
+        const statePath = path.join(
+            root,
+            '.fylo-transactions',
+            '.collections',
+            collection,
+            'state.json'
+        )
+        const client = backup.client
+        const originalWrite = client.write.bind(client)
+        let advanced = false
+        client.write = async (key, body) => {
+            if (!advanced && dataKeys.includes(key)) {
+                advanced = true
+                for (const id of ids) {
+                    const target = fylo.engine.docPath(collection, String(id))
+                    const changed = (await readFile(target, 'utf8')).replace('"old"', '"new"')
+                    await writeFile(target, changed)
+                }
+                const state = JSON.parse(await readFile(statePath, 'utf8'))
+                await writeFile(
+                    statePath,
+                    JSON.stringify({ ...state, generation: state.generation + 2 })
+                )
+            }
+            return await originalWrite(key, body)
+        }
+        try {
+            await fylo.reconcile()
+        } finally {
+            client.write = originalWrite
+        }
+        expect(advanced).toBe(true)
+        const persistedStates = dataKeys.map((key) => JSON.parse(objects.get(key).toString()).state)
+        expect(persistedStates).toEqual(['old', 'old'])
+    })
+
+    test('reconcile rejects symlinked, oversized, and non-canonical generation state', async () => {
+        const collection = `backup-state-${Date.now()}`
+        await fylo[collection].create()
+        await fylo[collection].put({ state: 'known' })
+        const statePath = path.join(
+            root,
+            '.fylo-transactions',
+            '.collections',
+            collection,
+            'state.json'
+        )
+        const saved = `${statePath}.saved`
+        const outsideDirectory = await mkdtemp(path.join(os.tmpdir(), 'fylo-backup-state-'))
+        const outsideState = path.join(outsideDirectory, 'state.json')
+        const original = await readFile(statePath)
+
+        try {
+            await rename(statePath, saved)
+            await writeFile(outsideState, original)
+            await symlink(outsideState, statePath)
+            await expect(fylo.reconcile()).rejects.toThrow(/Secure open failed|symbolic link/)
+            expect(await readFile(outsideState)).toEqual(original)
+            await rm(statePath)
+            await rename(saved, statePath)
+
+            const descriptor = await open(statePath, 'w')
+            await descriptor.truncate(16 * 1024 + 1)
+            await descriptor.close()
+            await expect(fylo.reconcile()).rejects.toThrow('generation state exceeds bounds')
+            await writeFile(statePath, original)
+
+            const state = JSON.parse(original.toString())
+            await writeFile(statePath, JSON.stringify({ ...state, unexpected: true }))
+            await expect(fylo.reconcile()).rejects.toThrow('generation state is corrupt')
+            await writeFile(statePath, original)
+        } finally {
+            await rm(statePath, { force: true })
+            if (await Bun.file(saved).exists()) await rename(saved, statePath)
+            else await writeFile(statePath, original)
+            await rm(outsideDirectory, { recursive: true, force: true })
+        }
     })
 
     test('a rejected reconcile does not create a second unhandled rejection', async () => {

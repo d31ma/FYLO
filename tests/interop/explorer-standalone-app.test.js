@@ -41,6 +41,8 @@ describe('standalone Explorer app', () => {
 
         expect(packageJson.scripts.serve).toContain('@d31ma/tachyon/src/cli/index.js serve')
         expect(packageJson.scripts.bundle).toContain('@d31ma/tachyon/src/cli/index.js bundle')
+        expect(packageJson.scripts['browser:sync']).toContain('build-browser.mjs --wasm')
+        expect(packageJson.scripts['browser:sync']).toContain('sync-explorer-browser-assets.mjs')
         expect(page).toContain('<explorer-app />')
         expect(page).not.toContain('<link')
         expect(page).not.toContain('<script')
@@ -171,6 +173,9 @@ describe('standalone Explorer app', () => {
         expect(websitePackage.devDependencies['@d31ma/tachyon']).toBe(pinnedTachyon)
         expect(websiteLock).toContain('ef61b352b567b7b164fa74b6bc70e55858bb7421')
         expect(vendoredBundle).toBe(browserBundle)
+        for (const asset of ['shared.js', 'dedicated.js', 'fylo-index.wasm']) {
+            expect(await exists(path.join(explorer, 'client/shared/assets', asset))).toBe(true)
+        }
         expect(imports).not.toContain('Date.now()')
         expect(imports).toContain('__FYLO_ASSET_VERSION__')
     })

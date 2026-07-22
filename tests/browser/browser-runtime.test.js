@@ -59,6 +59,29 @@ describe('browser runtime', () => {
         expect(await fs.exists('/.collections/users/collection.json')).toBe(false)
     })
 
+    test('File System Access storage requires a directory handle', () => {
+        expect(() =>
+            createBrowserFylo({
+                worker: false,
+                storage: /** @type {any} */ ({ type: 'fsa', handle: { kind: 'file' } })
+            })
+        ).toThrow('requires a directory handle')
+    })
+
+    test('browser SQL supports non-executing EXPLAIN plans', async () => {
+        const local = createBrowserFylo({ worker: false })
+        await local.people.create()
+        await local.people.put({ name: 'Ada' })
+
+        const plan = await local._sql("EXPLAIN SELECT * FROM people WHERE name = 'Ada'")
+        expect(plan).toMatchObject({
+            operation: 'SELECT',
+            collection: 'people',
+            executed: false
+        })
+        expect(plan.access.some((step) => step.kind === 'prefix-index')).toBe(true)
+    })
+
     test('browser collection facades fail closed when the collection does not exist', async () => {
         const fylo = createBrowserFylo({ worker: false })
         const missing = `missing${Date.now()}`

@@ -224,4 +224,33 @@ describe('sync hooks', () => {
         const stored = await fylo['error-posts'].get(failedDocId).once()
         expect(stored[failedDocId]).toEqual({ title: 'Still written locally' })
     })
+
+    test('atomic SQL rollback never publishes partial sync side effects', async () => {
+        const root = await createRoot('fylo-sync-atomic-')
+        const calls = []
+        const fylo = new Fylo(root, {
+            versioning: { autoCommit: false },
+            sync: {
+                onWrite: async (event) => calls.push(event)
+            }
+        })
+        const collection = 'atomic-sync-posts'
+        await fylo[collection].create()
+        await fylo[collection].put({ state: 'before', ordinal: 1 })
+        await fylo[collection].put({ state: 'before', ordinal: 2 })
+        calls.length = 0
+
+        const updateDocument = fylo.engine.updateDocument.bind(fylo.engine)
+        let attempts = 0
+        fylo.engine.updateDocument = async (...args) => {
+            attempts++
+            if (attempts === 2) throw new Error('injected update failure')
+            return await updateDocument(...args)
+        }
+
+        await expect(
+            fylo._sql(`UPDATE ${collection} SET state = 'after' WHERE state = 'before'`)
+        ).rejects.toThrow('injected update failure')
+        expect(calls).toHaveLength(0)
+    })
 })

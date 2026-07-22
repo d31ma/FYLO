@@ -120,18 +120,20 @@ namespace Fylo
         // --- Query ---
         public JsonElement FindDocs(string collection, object query) =>
             Op($"{{\"op\":\"findDocs\",\"collection\":{J(collection)},\"query\":{J(query)}}}");
-        public JsonElement ExecuteSQL(string sql) =>
-            Op($"{{\"op\":\"executeSQL\",\"sql\":{J(sql)}}}");
+        public JsonElement ExecuteSQL(string sql, object access = null) =>
+            Op(access == null
+                ? $"{{\"op\":\"executeSQL\",\"sql\":{J(sql)}}}"
+                : $"{{\"op\":\"executeSQL\",\"sql\":{J(sql)},\"access\":{J(access)}}}");
 
         // Interpolated-string SQL — interpolated values are escaped, so
         //   db.Sql($"SELECT * FROM users WHERE name = {name}")
         // is injection-safe.
-        public JsonElement Sql(FormattableString query)
+        public JsonElement Sql(FormattableString query, object access = null)
         {
             object[] args = query.GetArguments();
             var escaped = new object[args.Length];
             for (int i = 0; i < args.Length; i++) escaped[i] = SqlValue(args[i]);
-            return ExecuteSQL(string.Format(query.Format, escaped));
+            return ExecuteSQL(string.Format(query.Format, escaped), access);
         }
 
         private static string SqlValue(object value)
