@@ -3500,59 +3500,6 @@ function createOverlayFilesystem(base) {
     }
   };
 }
-var RECENTS_DB = "fylo-explorer";
-var RECENTS_STORE = "roots";
-function openRecentsDb() {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(RECENTS_DB, 1);
-    request.onupgradeneeded = () => request.result.createObjectStore(RECENTS_STORE);
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
-}
-async function withRecents(mode, body) {
-  const db = await openRecentsDb();
-  try {
-    return await new Promise((resolve, reject) => {
-      const request = body(db.transaction(RECENTS_STORE, mode).objectStore(RECENTS_STORE));
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
-    });
-  } finally {
-    db.close();
-  }
-}
-async function pickFyloRoot(options = {}) {
-  const picker = globalThis.showDirectoryPicker;
-  if (typeof picker !== "function") {
-    throw new Error("File System Access is not available in this browser (Chromium-only)");
-  }
-  const handle = await picker.call(globalThis, {
-    id: "fylo-root",
-    mode: options.mode ?? "read"
-  });
-  await withRecents("readwrite", (store) => store.put(handle, handle.name));
-  return handle;
-}
-async function listRecentRoots() {
-  try {
-    return await withRecents("readonly", (store) => store.getAll()) ?? [];
-  } catch {
-    return [];
-  }
-}
-async function forgetRecentRoot(name) {
-  await withRecents("readwrite", (store) => store.delete(name));
-}
-async function ensureRootPermission(handle, options = {}) {
-  const mode = options.mode ?? "read";
-  const query = handle;
-  if (typeof query.queryPermission !== "function")
-    return true;
-  if (await query.queryPermission.call(handle, { mode }) === "granted")
-    return true;
-  return await query.requestPermission?.call(handle, { mode }) === "granted";
-}
 
 // src/browser/storage.js
 function normalizeBrowserStorage(storage) {
@@ -3581,122 +3528,6 @@ function createBrowserFilesystem(storage, namespace) {
   return storage.access === "readwrite" ? direct : createOverlayFilesystem(direct);
 }
 
-// src/browser/worker/client.js
-class FyloWorkerClient {
-  constructor(port, options) {
-    this.port = port;
-    this.options = options;
-    this.sequence = 0;
-    this.pending = new Map;
-    this.listeners = new Map;
-    const messagePort = this.port;
-    messagePort.onmessage = (event) => this.receive(event.data);
-    if ("start" in this.port)
-      this.port.start();
-  }
-  receive(message) {
-    const envelope = message;
-    if (envelope.type === "event") {
-      const key = String(envelope.collection);
-      for (const listener of this.listeners.get(key) ?? [])
-        listener(envelope.event);
-      return;
-    }
-    const id = String(envelope.id ?? "");
-    const pending = this.pending.get(id);
-    if (!pending)
-      return;
-    this.pending.delete(id);
-    if (envelope.ok === false) {
-      pending.reject(new Error(envelope.error?.message ?? "FYLO worker request failed"));
-      return;
-    }
-    pending.resolve(envelope);
-  }
-  nextId() {
-    this.sequence += 1;
-    return `${Date.now()}-${this.sequence}`;
-  }
-  send(envelope) {
-    const id = this.nextId();
-    const payload = {
-      id,
-      namespace: this.options.namespace,
-      storage: this.options.storage,
-      instanceId: this.options.instanceId,
-      root: this.options.root,
-      worm: this.options.worm,
-      wasm: this.options.wasm,
-      ...envelope
-    };
-    const promise = new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-    });
-    this.port.postMessage(payload);
-    return promise;
-  }
-  async request(request) {
-    const response = await this.envelope(request);
-    if (!response.ok)
-      throw new Error(response.error.message);
-    return response.result;
-  }
-  async envelope(request) {
-    return await this.send({ request });
-  }
-  async ready() {
-    await this.send({ type: "ready" });
-  }
-  subscribe(collection, listener) {
-    let listeners = this.listeners.get(collection);
-    if (!listeners) {
-      listeners = new Set;
-      this.listeners.set(collection, listeners);
-      this.send({ type: "subscribe", collection });
-    }
-    listeners.add(listener);
-    return () => {
-      const current = this.listeners.get(collection);
-      current?.delete(listener);
-      if (current && current.size === 0) {
-        this.listeners.delete(collection);
-        this.send({ type: "unsubscribe", collection });
-      }
-    };
-  }
-  async close() {
-    if (this.options.instanceId) {
-      try {
-        await this.send({ type: "close" });
-      } catch {}
-    }
-    if ("terminate" in this.port)
-      this.port.terminate();
-    if ("close" in this.port)
-      this.port.close();
-  }
-}
-function createWorkerClient(options) {
-  if (typeof SharedWorker !== "undefined") {
-    const worker = new SharedWorker(siblingAssetUrl("./shared.js"), {
-      type: "module",
-      name: "fylo-browser"
-    });
-    return new FyloWorkerClient(worker.port, options);
-  }
-  if (typeof Worker !== "undefined") {
-    const worker = new Worker(siblingAssetUrl("./dedicated.js"), { type: "module" });
-    return new FyloWorkerClient(worker, options);
-  }
-  throw new Error("FYLO browser workers are not available in this runtime");
-}
-function siblingAssetUrl(path) {
-  const base = new URL(import.meta.url);
-  const asset = new URL(path, base);
-  asset.search = base.search;
-  return asset;
-}
-
 // src/browser/wasm/index-scanner.js
 var ENCODER4 = new TextEncoder;
 var DECODER4 = new TextDecoder;
@@ -3707,7 +3538,7 @@ var MODULE_CACHE = new Map;
 class WasmIndexScannerFactory {
   constructor(options = {}) {
     this.module = options.module;
-    this.url = options.url ? new URL(String(options.url), import.meta.url) : siblingAssetUrl2("./fylo-index.wasm");
+    this.url = options.url ? new URL(String(options.url), import.meta.url) : siblingAssetUrl("./fylo-index.wasm");
     this.modulePromise = null;
   }
   async ready() {
@@ -3812,725 +3643,155 @@ class WasmIndexScanner {
 function createWasmIndexScannerFactory(options) {
   return new WasmIndexScannerFactory(options === true ? {} : options);
 }
-function siblingAssetUrl2(path) {
+function siblingAssetUrl(path) {
   const base = new URL(import.meta.url);
   const asset = new URL(path, base);
   asset.search = base.search;
   return asset;
 }
 
-// src/browser/fylo.js
-function browserMetadataPutOperation(write, writeMetadata) {
-  let metadata;
-  let hasMetadata = false;
-  let operation;
-  const start = () => operation ??= Promise.resolve().then(() => write(metadata, hasMetadata));
-  return {
-    then(onFulfilled, onRejected) {
-      return start().then(onFulfilled, onRejected);
-    },
-    async metadata(record) {
-      if (!operation) {
-        metadata = record;
-        hasMetadata = true;
-        return await start();
-      }
-      await start();
-      return await writeMetadata(record);
-    }
-  };
-}
-
-class FyloBrowser {
-  core;
-  worker;
-  constructor(options = {}) {
-    this.namespace = options.namespace ?? "fylo";
-    this.root = options.root ?? "/";
-    const useWorker = shouldUseWorker(options.worker ?? true);
-    this.storage = normalizeBrowserStorage(options.storage ?? (useWorker ? "opfs" : "memory"));
-    this.worker = useWorker ? createWorkerClient({
-      namespace: this.namespace,
-      storage: this.storage,
-      instanceId: this.storage.type === "fsa" ? `${Date.now()}-${crypto.randomUUID?.() ?? Math.random()}` : undefined,
-      root: this.root,
-      worm: options.worm,
-      wasm: options.wasm
-    }) : null;
-    const fs = options.fs ?? createBrowserFilesystem(this.storage, this.namespace);
-    this.core = this.worker ? null : new BrowserCore({
-      fs,
-      root: this.root,
-      worm: options.worm,
-      indexScannerFactory: options.wasm ? createWasmIndexScannerFactory(options.wasm) : undefined
-    });
-    this.sql = this.createSqlTag();
-    const reserved = new Set([
-      "then",
-      "constructor",
-      "prototype",
-      ...Object.getOwnPropertyNames(Object.prototype),
-      ...Object.getOwnPropertyNames(FyloBrowser.prototype),
-      ...Object.getOwnPropertyNames(this)
-    ]);
-    return new Proxy(this, {
-      get(target, prop, receiver) {
-        if (typeof prop === "symbol")
-          return Reflect.get(target, prop, receiver);
-        if (reserved.has(prop))
-          return Reflect.get(target, prop, receiver);
-        return new BrowserCollectionFacade2(target, prop);
-      }
-    });
+// src/browser/worker/runtime.js
+class FyloWorkerRuntime {
+  constructor() {
+    this.cores = new Map;
+    this.subscriptions = new Map;
+    this.coreSubscriptions = new Map;
   }
-  async ready() {
-    await this.worker?.ready();
-    await this.core?.ready();
+  coreKey(envelope) {
+    const namespace = envelope.namespace ?? "fylo";
+    return envelope.instanceId ? `${namespace}:${envelope.instanceId}` : namespace;
   }
-  async close() {
-    await this.worker?.close();
-    await this.core?.close();
-  }
-  createSqlTag() {
-    return async (strings, ...values) => {
-      let statement = strings[0] ?? "";
-      for (let index = 0;index < values.length; index++) {
-        statement += FyloBrowser.sqlValue(values[index]) + (strings[index + 1] ?? "");
-      }
-      return await this._sql(statement);
-    };
-  }
-  createCollectionProxy() {
-    const fylo = this;
-    const reserved = new Set([
-      "then",
-      "db",
-      "constructor",
-      "prototype",
-      "toString",
-      "valueOf",
-      ...Object.getOwnPropertyNames(Object.prototype),
-      ...Object.getOwnPropertyNames(FyloBrowser.prototype),
-      ...Object.getOwnPropertyNames(fylo)
-    ]);
-    return new Proxy({}, {
-      get(_target, prop) {
-        if (typeof prop === "symbol")
-          return;
-        if (reserved.has(prop)) {
-          throw new Error(`Collection name collides with reserved db property: ${prop}`);
-        }
-        return new BrowserCollectionFacade2(fylo, prop);
-      },
-      has(_target, prop) {
-        return typeof prop === "string" && !reserved.has(prop);
-      }
-    });
-  }
-  static sqlValue(value) {
-    if (value === null || value === undefined)
-      return "NULL";
-    if (typeof value === "number") {
-      if (!Number.isFinite(value))
-        throw new Error("SQL parameter must be a finite number");
-      return String(value);
-    }
-    if (typeof value === "boolean")
-      return value ? "true" : "false";
-    if (typeof value === "bigint")
-      return value.toString();
-    if (value instanceof Date)
-      return `'${value.toISOString().replaceAll("'", "''")}'`;
-    if (typeof value === "object")
-      throw new Error("SQL parameters must be scalar values");
-    return `'${String(value).replaceAll("'", "''")}'`;
-  }
-  async _sql(statement) {
-    return await this.dispatch({ op: "executeSQL", sql: statement });
-  }
-  async request(request) {
-    if (this.worker)
-      return await this.worker.envelope(request);
-    return await runBrowserRequest(this, request);
-  }
-  async dispatch(request) {
-    if (this.worker)
-      return await this.worker.request(request);
-    if (!this.core)
-      throw new Error("FYLO browser runtime is not initialised");
-    const response = await runBrowserRequest(this.core, request);
-    if (!response.ok)
-      throw browserProtocolError(response.error);
-    return response.result;
-  }
-  async createCollection(collection) {
-    await this.dispatch({ op: "createCollection", collection });
-  }
-  async dropCollection(collection) {
-    await this.dispatch({ op: "dropCollection", collection });
-  }
-  async inspectCollection(collection) {
-    return await this.dispatch({ op: "inspectCollection", collection });
-  }
-  async rebuildCollection(collection) {
-    return await this.dispatch({ op: "rebuildCollection", collection });
-  }
-  getDoc(collection, id, onlyId = false) {
-    const fylo = this;
-    if (!this.worker && this.core)
-      return this.core.getDoc(collection, id, onlyId);
-    return {
-      async* [Symbol.asyncIterator]() {
-        const doc = await this.once();
-        if (doc && (typeof doc === "string" || Object.keys(doc).length > 0))
-          yield doc;
-      },
-      async once() {
-        return await fylo.dispatch({ op: "getDoc", collection, id, onlyId });
-      },
-      async* onDelete() {}
-    };
-  }
-  async getLatest(collection, id, onlyId = false) {
-    return await this.dispatch({ op: "getLatest", collection, id, onlyId });
-  }
-  async getDocMeta(collection, id) {
-    return await this.dispatch({ op: "getMeta", collection, id });
-  }
-  async setDocMetaRecord(collection, id, meta) {
-    return await this.dispatch({ op: "setMeta", collection, id, meta });
-  }
-  findDocs(collection, query = {}) {
-    const fylo = this;
-    if (!this.worker && this.core)
-      return this.core.findDocs(collection, query);
-    return {
-      async* [Symbol.asyncIterator]() {
-        yield* this.collect();
-      },
-      async* collect() {
-        const docs = await fylo.dispatch({ op: "findDocs", collection, query });
-        if (Array.isArray(docs)) {
-          for (const id of docs)
-            yield id;
-          return;
-        }
-        for (const [id, doc] of Object.entries(docs)) {
-          yield { [id]: doc };
-        }
-      },
-      async* onDelete() {}
-    };
-  }
-  findDeletedDocs(collection, query = {}) {
-    const fylo = this;
-    if (!this.worker && this.core)
-      return this.core.findDeletedDocs(collection, query);
-    return {
-      async* [Symbol.asyncIterator]() {
-        yield* this.collect();
-      },
-      async* collect() {
-        const docs = await fylo.dispatch({ op: "findDeletedDocs", collection, query });
-        if (Array.isArray(docs)) {
-          for (const id of docs)
-            yield id;
-          return;
-        }
-        for (const [id, doc] of Object.entries(docs)) {
-          yield { [id]: doc };
-        }
-      }
-    };
-  }
-  async join(join2) {
-    return await this.dispatch({
-      op: "joinDocs",
-      join: join2
-    });
-  }
-  async putData(collection, data, meta, metaPresent = arguments.length >= 3) {
-    return await this.dispatch({
-      op: "putData",
-      collection,
-      data,
-      ...metaPresent ? { meta } : {}
-    });
-  }
-  async batchPutData(collection, batch) {
-    return await this.dispatch({ op: "batchPutData", collection, batch });
-  }
-  async patchDoc(collection, newDoc, oldDoc = {}) {
-    return await this.dispatch({ op: "patchDoc", collection, newDoc, oldDoc });
-  }
-  async patchDocs(collection, update) {
-    return await this.dispatch({
-      op: "patchDocs",
-      collection,
-      update
-    });
-  }
-  async delDoc(collection, id) {
-    await this.dispatch({ op: "delDoc", collection, id });
-  }
-  async restoreDoc(collection, id) {
-    const result = await this.dispatch({ op: "restoreDoc", collection, id });
-    return typeof result === "string" ? result : String(result.id);
-  }
-  async delDocs(collection, query) {
-    return await this.dispatch({ op: "delDocs", collection, delete: query });
-  }
-  subscribe(collection, listener) {
-    if (this.worker)
-      return this.worker.subscribe(collection, listener);
-    if (!this.core)
-      throw new Error("FYLO browser runtime is not initialised");
-    return this.core.subscribe(collection, listener);
-  }
-}
-
-class BrowserCollectionFacade2 {
-  fylo;
-  collection;
-  put;
-  patch;
-  delete;
-  find;
-  constructor(fylo, collection) {
-    this.fylo = fylo;
-    this.collection = collection;
-    const self = this;
-    const put = function(dataOrId, data) {
-      if (typeof dataOrId === "string") {
-        const id = dataOrId;
-        if (arguments.length === 1) {
-          return {
-            metadata: async (record) => await self.fylo.setDocMetaRecord(self.collection, id, record)
-          };
-        }
-        return browserMetadataPutOperation(async (record, present) => await self.fylo.putData(self.collection, { [id]: data }, record, present), async (record) => await self.fylo.setDocMetaRecord(self.collection, id, record).then(() => id));
-      }
-      return self.fylo.putData(self.collection, dataOrId);
-    };
-    put.batch = async (batch) => {
-      return await self.fylo.batchPutData(self.collection, batch);
-    };
-    this.put = put;
-    const patch = function(id, patchData, oldDoc = {}) {
-      return self.fylo.patchDoc(self.collection, { [id]: patchData }, oldDoc);
-    };
-    patch.many = async (update) => {
-      return await self.fylo.patchDocs(self.collection, update);
-    };
-    this.patch = patch;
-    const del = async (id) => {
-      await self.fylo.delDoc(self.collection, id);
-    };
-    del.many = async (query) => {
-      return await self.fylo.delDocs(self.collection, query);
-    };
-    this.delete = del;
-    const find = (query = {}) => {
-      return self.fylo.findDocs(self.collection, query);
-    };
-    find.deleted = (query = {}) => {
-      return self.fylo.findDeletedDocs(self.collection, query);
-    };
-    this.find = find;
-  }
-  get(id, onlyId = false) {
-    return {
-      ...this.fylo.getDoc(this.collection, id, onlyId),
-      metadata: async () => await this.fylo.getDocMeta(this.collection, id)
-    };
-  }
-  async latest(id, onlyId = false) {
-    return await this.fylo.getLatest(this.collection, id, onlyId);
-  }
-  async restore(id) {
-    return await this.fylo.restoreDoc(this.collection, id);
-  }
-  async inspect() {
-    return await this.fylo.inspectCollection(this.collection);
-  }
-  async rebuild() {
-    return await this.fylo.rebuildCollection(this.collection);
-  }
-  async create() {
-    await this.fylo.createCollection(this.collection);
-  }
-  async drop() {
-    await this.fylo.dropCollection(this.collection);
-  }
-  subscribe(listener) {
-    return this.fylo.subscribe(this.collection, listener);
-  }
-}
-function createBrowserFylo(options) {
-  return new FyloBrowser(options);
-}
-function browserProtocolError(error) {
-  if (!error || typeof error !== "object") {
-    return new Error("Unknown browser protocol error");
-  }
-  const err = error;
-  if (err.code === "FYLO_COLLECTION_NOT_FOUND") {
-    return new CollectionNotFoundError(typeof err.message === "string" ? err.message.replace(/^Collection not found: /, "") : "");
-  }
-  const failure = new Error(typeof err.message === "string" ? err.message : "Request failed");
-  failure.name = typeof err.name === "string" ? err.name : "Error";
-  return failure;
-}
-function shouldUseWorker(requested) {
-  return requested && typeof window !== "undefined" && typeof URL !== "undefined" && (typeof SharedWorker !== "undefined" || typeof Worker !== "undefined");
-}
-
-// src/browser/client.js
-var RESERVED = new Set([
-  "then",
-  "browser",
-  "collection",
-  "configure",
-  "close",
-  "ready",
-  "request",
-  "sql",
-  "_sql",
-  "inspect",
-  "rebuild",
-  "create",
-  "drop",
-  "toString",
-  "valueOf",
-  "constructor",
-  "prototype"
-]);
-function normalizeOptions(options = {}) {
-  return {
-    ...options,
-    storage: options.storage ?? (hasOpfs(globalThis.navigator) ? "opfs" : "memory"),
-    worker: options.worker ?? typeof window !== "undefined"
-  };
-}
-
-class BrowserFyloClient {
-  constructor(options = {}) {
-    this.options = normalizeOptions(options);
-    this.browser = createBrowserFylo(this.options);
-    this.readyPromise = null;
-    this.collections = new Map;
-    this.sql = async (strings, ...values) => {
-      await this.ready();
-      return await this.browser.sql(strings, ...values);
-    };
-  }
-  async ready() {
-    this.readyPromise ??= this.browser.ready();
-    await this.readyPromise;
-  }
-  async close() {
-    await this.browser.close();
-  }
-  async _sql(statement) {
-    await this.ready();
-    return await this.browser._sql(statement);
-  }
-  async request(request) {
-    await this.ready();
-    return await this.browser.request(request);
-  }
-  collection(collection) {
-    const existing = this.collections.get(collection);
+  core(envelope) {
+    const namespace = envelope.namespace ?? "fylo";
+    const key = this.coreKey(envelope);
+    const existing = this.cores.get(key);
     if (existing)
       return existing;
-    const facade = new BrowserDirectCollection(this, collection);
-    this.collections.set(collection, facade);
-    return facade;
+    const storage = normalizeBrowserStorage(envelope.storage ?? "opfs");
+    const fs = createBrowserFilesystem(storage, namespace);
+    const core = new BrowserCore({
+      fs,
+      root: envelope.root ?? "/",
+      worm: envelope.worm,
+      indexScannerFactory: envelope.wasm ? createWasmIndexScannerFactory(envelope.wasm) : undefined
+    });
+    this.cores.set(key, core);
+    return core;
   }
-  async createCollection(collection) {
-    await this.ready();
-    await this.browser.createCollection(collection);
+  async readyCore(envelope) {
+    const core = this.core(envelope);
+    await core.ready();
+    return core;
   }
-  async dropCollection(collection) {
-    await this.ready();
-    await this.browser.dropCollection(collection);
-  }
-  async inspectCollection(collection) {
-    await this.ready();
-    return await this.browser.inspectCollection(collection);
-  }
-  async rebuildCollection(collection) {
-    await this.ready();
-    return await this.browser.rebuildCollection(collection);
-  }
-}
-function directMetadataPutOperation(write, writeMetadata) {
-  let metadata;
-  let hasMetadata = false;
-  let operation;
-  const start = () => operation ??= Promise.resolve().then(() => write(metadata, hasMetadata));
-  return {
-    then(onFulfilled, onRejected) {
-      return start().then(onFulfilled, onRejected);
-    },
-    async metadata(record) {
-      if (!operation) {
-        metadata = record;
-        hasMetadata = true;
-        return await start();
-      }
-      await start();
-      return await writeMetadata(record);
+  async dispatch(port, envelope) {
+    if (envelope.type === "close") {
+      await this.closeCore(envelope);
+      this.post(port, { id: envelope.id, ok: true, result: true });
+      return;
     }
-  };
-}
-
-class BrowserDirectCollection {
-  find;
-  constructor(host, collection) {
-    this.host = host;
-    this.collection = collection;
-    const self = this;
-    const find = (query = {}) => self.findActive(query);
-    find.deleted = (query = {}) => self.findDeleted(query);
-    this.find = find;
+    if (envelope.type === "ready") {
+      await this.readyCore(envelope);
+      this.post(port, { id: envelope.id, ok: true, result: true });
+      return;
+    }
+    if (envelope.type === "subscribe") {
+      await this.subscribe(port, envelope);
+      this.post(port, { id: envelope.id, ok: true, result: true });
+      return;
+    }
+    if (envelope.type === "unsubscribe") {
+      this.unsubscribe(port, envelope);
+      this.post(port, { id: envelope.id, ok: true, result: true });
+      return;
+    }
+    const request = envelope.request;
+    if (!request)
+      throw new Error("FYLO worker request envelope is missing request");
+    const response = await runBrowserRequest(await this.readyCore(envelope), request);
+    this.post(port, { id: envelope.id, ...response });
   }
-  async create() {
-    await this.host.createCollection(this.collection);
+  async closeCore(envelope) {
+    if (!envelope.instanceId)
+      return;
+    const coreKey = this.coreKey(envelope);
+    const core = this.cores.get(coreKey);
+    this.cores.delete(coreKey);
+    await core?.close();
+    for (const key of [...this.subscriptions.keys()]) {
+      if (!key.startsWith(`${coreKey}:`))
+        continue;
+      this.subscriptions.delete(key);
+      this.coreSubscriptions.get(key)?.();
+      this.coreSubscriptions.delete(key);
+    }
   }
-  async drop() {
-    await this.host.dropCollection(this.collection);
+  async subscribe(port, envelope) {
+    const collection = envelope.collection;
+    if (!collection)
+      throw new Error("FYLO worker subscribe requires collection");
+    const key = `${this.coreKey(envelope)}:${collection}`;
+    let ports = this.subscriptions.get(key);
+    if (!ports) {
+      ports = new Set;
+      this.subscriptions.set(key, ports);
+    }
+    ports.add(port);
+    if (!this.coreSubscriptions.has(key)) {
+      const unsubscribe = (await this.readyCore(envelope)).subscribe(collection, (event) => {
+        this.broadcast(key, envelope.namespace ?? "fylo", collection, event);
+      });
+      this.coreSubscriptions.set(key, unsubscribe);
+    }
   }
-  async inspect() {
-    return await this.host.inspectCollection(this.collection);
+  unsubscribe(port, envelope) {
+    const collection = envelope.collection;
+    if (!collection)
+      return;
+    const key = `${this.coreKey(envelope)}:${collection}`;
+    const ports = this.subscriptions.get(key);
+    ports?.delete(port);
+    if (ports && ports.size === 0) {
+      this.subscriptions.delete(key);
+      this.coreSubscriptions.get(key)?.();
+      this.coreSubscriptions.delete(key);
+    }
   }
-  async rebuild() {
-    return await this.host.rebuildCollection(this.collection);
-  }
-  async#req(op, fields = {}) {
-    await this.host.ready();
-    const res = await this.host.request({ op, collection: this.collection, ...fields });
-    if (!res.ok)
-      throw new Error(res.error?.message ?? "browser request failed");
-    return res.result;
-  }
-  put(dataOrId, data) {
-    if (typeof dataOrId === "string") {
-      const id = dataOrId;
-      if (arguments.length === 1) {
-        return {
-          metadata: (record) => this.#req("setMeta", { id, meta: record })
-        };
-      }
-      return directMetadataPutOperation(async (record, present) => await this.#req("putData", {
-        data: { [id]: data },
-        ...present ? { meta: record } : {}
-      }), async (record) => {
-        await this.#req("setMeta", { id, meta: record });
-        return id;
+  broadcast(key, namespace, collection, event) {
+    const ports = this.subscriptions.get(key);
+    if (!ports)
+      return;
+    for (const port of ports) {
+      this.post(port, {
+        type: "event",
+        namespace,
+        collection,
+        event
       });
     }
-    return this.#req("putData", { data: dataOrId });
   }
-  batchPut(batch) {
-    return this.#req("batchPutData", { batch });
+  post(port, message) {
+    port.postMessage(message);
   }
-  patch(id, patch, oldDoc = {}) {
-    return this.#req("patchDoc", { newDoc: { [id]: patch }, oldDoc });
-  }
-  patchMany(update) {
-    return this.#req("patchDocs", { update });
-  }
-  async delete(id) {
-    await this.#req("delDoc", { id });
-  }
-  deleteMany(query) {
-    return this.#req("delDocs", { query });
-  }
-  async restore(id) {
-    const res = await this.#req("restoreDoc", { id });
-    return res?.id ?? res;
-  }
-  get(id, onlyId = false) {
-    const host = this.host;
-    const collection = this.collection;
-    return {
-      async* [Symbol.asyncIterator]() {
-        yield* this.collect();
-      },
-      async once() {
-        const res = await host.request({ op: "getDoc", collection, id, onlyId });
-        if (!res.ok)
-          throw new Error(res.error?.message ?? "browser getDoc failed");
-        return res.result;
-      },
-      metadata: async () => await this.#req("getMeta", { id }),
-      async* collect() {
-        const doc = await this.once();
-        if (doc && typeof doc === "object" && Object.keys(doc).length > 0)
-          yield doc;
-      },
-      async* onDelete() {}
-    };
-  }
-  async latest(id, onlyId = false) {
-    return await this.#req("getLatest", { id, onlyId });
-  }
-  findActive(query = {}) {
-    const host = this.host;
-    const collection = this.collection;
-    return {
-      async* [Symbol.asyncIterator]() {
-        yield* this.collect();
-      },
-      async* collect() {
-        const res = await host.request({ op: "findDocs", collection, query });
-        if (!res.ok)
-          throw new Error(res.error?.message ?? "browser findDocs failed");
-        const docs = res.result;
-        if (Array.isArray(docs)) {
-          for (const id of docs)
-            yield id;
-        } else if (docs && typeof docs === "object") {
-          for (const [id, doc] of Object.entries(docs))
-            yield { [id]: doc };
-        }
-      },
-      async* onDelete() {}
-    };
-  }
-  findDeleted(query = {}) {
-    const host = this.host;
-    const collection = this.collection;
-    return {
-      async* [Symbol.asyncIterator]() {
-        yield* this.collect();
-      },
-      async* collect() {
-        const res = await host.request({ op: "findDeletedDocs", collection, query });
-        if (!res.ok)
-          throw new Error(res.error?.message ?? "browser findDeletedDocs failed");
-        const docs = res.result;
-        if (docs && typeof docs === "object") {
-          for (const [id, doc] of Object.entries(docs)) {
-            yield { [id]: doc };
-          }
-        }
+}
+async function handleWorkerMessage(runtime, port, message) {
+  try {
+    await runtime.dispatch(port, message);
+  } catch (error) {
+    const failure = error;
+    runtime.post(port, {
+      id: message?.id,
+      ok: false,
+      error: {
+        name: failure.name || "Error",
+        message: failure.message || "Unknown error"
       }
-    };
-  }
-  subscribe(listener) {
-    return this.host.browser.subscribe(this.collection, listener);
+    });
   }
 }
-function createBrowserClient(options = {}) {
-  const client = new BrowserFyloClient(options);
-  return new Proxy(client, {
-    get(target, prop, receiver) {
-      if (typeof prop === "symbol")
-        return Reflect.get(target, prop, receiver);
-      if (RESERVED.has(prop) || prop in target)
-        return Reflect.get(target, prop, receiver);
-      return target.collection(prop);
-    },
-    has(target, prop) {
-      return typeof prop === "string" ? !RESERVED.has(prop) || prop in target : (prop in target);
-    }
-  });
-}
-var fylo = createBrowserClient();
-var client_default = fylo;
-// src/query/postgrest.js
-function queryFromSearch(search) {
-  const query = {};
-  const filters = safeRecord();
-  let hasFilters = false;
-  for (const [key, value] of new URLSearchParams(search)) {
-    if (key === "limit") {
-      const limit = Number(value);
-      if (!Number.isInteger(limit) || limit < 0)
-        throw new Error("Invalid limit");
-      query.$limit = limit;
-      continue;
-    }
-    if (key === "select") {
-      query.$select = value.split(",").map((item) => item.trim()).filter(Boolean);
-      continue;
-    }
-    if (key === "onlyIds") {
-      query.$onlyIds = value === "true";
-      continue;
-    }
-    const operand = parseFilterOperand(value);
-    if (operand) {
-      const current = Object.hasOwn(filters, key) ? filters[key] : safeRecord();
-      for (const [operator, expected] of Object.entries(operand)) {
-        current[operator] = expected;
-      }
-      filters[key] = current;
-      hasFilters = true;
-    }
-  }
-  if (hasFilters)
-    query.$ops = [filters];
-  return query;
-}
-function parseFilterOperand(value) {
-  const dot = value.indexOf(".");
-  if (dot === -1)
-    return { $eq: coerceValue(value) };
-  const op = value.slice(0, dot);
-  const raw = value.slice(dot + 1);
-  const map = {
-    eq: "$eq",
-    ne: "$ne",
-    gt: "$gt",
-    gte: "$gte",
-    lt: "$lt",
-    lte: "$lte",
-    like: "$like",
-    contains: "$contains"
-  };
-  const mapped = map[op];
-  if (!mapped)
-    return { $eq: coerceValue(value) };
-  return { [mapped]: mapped === "$like" ? raw : coerceValue(raw) };
-}
-function coerceValue(value) {
-  if (value === "true")
-    return true;
-  if (value === "false")
-    return false;
-  if (value === "null")
-    return null;
-  if (/^-?\d+(\.\d+)?$/.test(value))
-    return Number(value);
-  return value;
-}
-export {
-  queryFromSearch,
-  pickFyloRoot,
-  listRecentRoots,
-  forgetRecentRoot,
-  ensureRootPermission,
-  client_default as default,
-  createWorkerClient,
-  createWasmIndexScannerFactory,
-  createOverlayFilesystem,
-  createOpfsFilesystem,
-  createMemoryFilesystem,
-  createBrowserFylo,
-  createBrowserClient,
-  WasmIndexScannerFactory,
-  TTID,
-  OpfsFilesystem,
-  MemoryFilesystem,
-  FyloWorkerClient,
-  FyloBrowser,
-  FsaFilesystem,
-  CollectionNotFoundError,
-  BrowserFyloClient,
-  BrowserDirectCollection,
-  BrowserCore,
-  BrowserCollectionFacade2 as BrowserCollectionFacade
+
+// src/browser/worker/dedicated.js
+var runtime = new FyloWorkerRuntime;
+var workerScope = globalThis;
+workerScope.onmessage = (message) => {
+  handleWorkerMessage(runtime, workerScope, message.data);
 };
