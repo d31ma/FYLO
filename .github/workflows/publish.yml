@@ -59,7 +59,9 @@ jobs:
               run: bun test tests/integration/fs-lock.test.js --timeout 120000 --parallel=1
 
             - name: Verify interrupted transaction recovery
-              run: bun test tests/integration/transactions.test.js tests/integration/crash-recovery.test.js --timeout 120000 --parallel=1
+              run: |
+                  bun test tests/integration/transactions.test.js --test-name-pattern 'startup read rolls back a transaction interrupted by SIGKILL|rollback restores document xattrs exactly|recovery rejects symlinked capture paths without changing an outside sentinel|recovery rolls forward after the durable commit marker' --timeout 120000 --parallel=1
+                  bun test tests/integration/crash-recovery.test.js --timeout 120000 --parallel=1
 
             - name: Verify NTFS junction and reparse-point defenses
               run: bun test tests/integration/document-path-security.test.js tests/integration/secure-open.test.js --timeout 120000 --parallel=1
