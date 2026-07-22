@@ -19,6 +19,20 @@ describe('native Windows release gate', () => {
             expect(workflow).toContain('tests/interop/windows-native-binary.test.js')
         })
     }
+
+    test('Release publishes the exact native-tested Windows executable', async () => {
+        const workflow = await Bun.file('.github/workflows/publish.yml').text()
+
+        expect(workflow).toContain(
+            'bun build --compile ./src/cli/index.js --outfile ./dist-bin/fylo-windows-x64.exe'
+        )
+        expect(workflow).toContain('FYLO_WINDOWS_BINARY: dist-bin/fylo-windows-x64.exe')
+        expect(workflow).toContain("if: matrix.os == 'windows-2022'")
+        expect(workflow).toContain('name: windows-release-${{ github.sha }}')
+        expect(workflow).toContain('path: dist-bin/fylo-windows-x64.exe')
+        expect(workflow).toContain('Download native-tested Windows release executable')
+        expect(workflow).not.toContain('build bun-windows-x64')
+    })
 })
 
 describe('release supply-chain pinning', () => {

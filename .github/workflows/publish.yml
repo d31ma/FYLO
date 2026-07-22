@@ -74,12 +74,23 @@ jobs:
               shell: pwsh
               run: |
                   New-Item -ItemType Directory -Force dist-bin | Out-Null
-                  bun build --compile ./src/cli/index.js --outfile ./dist-bin/fylo.exe
+                  bun build --compile ./src/cli/index.js --outfile ./dist-bin/fylo-windows-x64.exe
 
             - name: Verify compiled Windows executable behavior
               env:
                   FYLO_REQUIRE_WINDOWS_NATIVE: '1'
+                  FYLO_WINDOWS_BINARY: dist-bin/fylo-windows-x64.exe
               run: bun test tests/interop/windows-native-binary.test.js --timeout 120000 --parallel=1
+
+            - name: Upload native-tested Windows release executable
+              if: matrix.os == 'windows-2022'
+              uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+              with:
+                  name: windows-release-${{ github.sha }}
+                  path: dist-bin/fylo-windows-x64.exe
+                  if-no-files-found: error
+                  compression-level: 0
+                  retention-days: 1
 
     test:
         name: Test before release
@@ -243,7 +254,13 @@ jobs:
             - name: Install dependencies
               run: bun install --frozen-lockfile
 
-            - name: Build cross-platform binaries
+            - name: Download native-tested Windows release executable
+              uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+              with:
+                  name: windows-release-${{ github.sha }}
+                  path: release-assets
+
+            - name: Build POSIX binaries
               run: |
                   set -euo pipefail
                   mkdir -p release-assets
@@ -256,7 +273,6 @@ jobs:
                   build bun-linux-arm64   fylo-linux-arm64
                   build bun-darwin-x64    fylo-macos-x64
                   build bun-darwin-arm64  fylo-macos-arm64
-                  build bun-windows-x64   fylo-windows-x64.exe
 
             - name: Build local-first web bundle
               run: bun run build:web:wasm

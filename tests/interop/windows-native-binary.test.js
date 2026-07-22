@@ -5,7 +5,7 @@ import path from 'node:path'
 
 const mustRunNatively = process.env.FYLO_REQUIRE_WINDOWS_NATIVE === '1'
 const nativeWindows = process.platform === 'win32' && process.arch === 'x64'
-const binary = path.resolve('dist-bin', 'fylo.exe')
+const binary = path.resolve(process.env.FYLO_WINDOWS_BINARY ?? path.join('dist-bin', 'fylo.exe'))
 const roots = []
 
 if (mustRunNatively && !nativeWindows) {

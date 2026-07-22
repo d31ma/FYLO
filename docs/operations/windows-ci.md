@@ -5,9 +5,9 @@ job in both CI and Release runs on GitHub-hosted x64 Windows Server 2022 and Win
 runners. Both matrix entries must pass before a release can publish artifacts.
 
 The gate uses the Bun version in `.bun-version` and fails immediately unless Bun reports
-`win32/x64`. The Windows vendor installer resolves each dependency's latest published release,
-downloads the executable and `SHA256SUMS` from that tagged release, and fails closed unless the
-published checksum matches. It verifies:
+`win32/x64`. The Windows vendor installer downloads fixed TTID and CHEX v26.28.02 assets and
+verifies them against SHA-256 digests anchored in the FYLO repository before execution. It never
+executes a remote installer or trusts a checksum fetched beside the binary. The gate verifies:
 
 - process-owned file-lock exclusion, crash release, and abandoned-lock reclamation;
 - rollback and recovery after a transaction process is forcibly terminated;
@@ -18,7 +18,10 @@ published checksum matches. It verifies:
   protocol.
 
 Do not skip or replace this job with a Linux result. A Windows artifact is releasable only after
-both native Windows matrix entries succeed.
+both native Windows matrix entries succeed. The Release workflow gives the executable its final
+`fylo-windows-x64.exe` name before testing, uploads the exact Windows Server 2022-tested bytes, and
+packages that artifact without rebuilding it on Linux. Windows Server 2025 independently builds
+and tests the same source and final executable path as an additional compatibility gate.
 
 The production contract covered by this gate is local x64 Windows on NTFS. FYLO uses a
 kernel-owned `LockFileEx` claim so process termination releases stale takeover ownership, then
