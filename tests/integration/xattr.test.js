@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from 'bun:test'
-import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import { chmod, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -119,6 +119,20 @@ describe('xattr', () => {
         })
         expect(JSON.parse(await readFile(store.lockPath(adapterTarget), 'utf8'))).toEqual(successor)
         await rm(store.lockPath(adapterTarget), { force: true })
+    })
+    test('Windows ADS metadata remains readable after the base file becomes read-only', async () => {
+        if (process.platform !== 'win32') return
+        const adapterTarget = path.join(root, 'ads-readonly.bin')
+        await writeFile(adapterTarget, 'bytes')
+        const store = new WindowsAdsManifestStore()
+        store.update(adapterTarget, 'setxattr', (attributes) => {
+            attributes.readonly = Buffer.from('preserved').toString('base64')
+        })
+        await chmod(adapterTarget, 0o444)
+
+        expect(store.read(adapterTarget, 'getxattr')).toEqual({
+            readonly: Buffer.from('preserved').toString('base64')
+        })
     })
     test('Windows ADS lock acquisition reclaims an abandoned owner generation', async () => {
         const adapterTarget = path.join(root, 'ads-stale-lock.bin')

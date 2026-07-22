@@ -57,6 +57,7 @@ export const WINDOWS_NATIVE_CONSTANTS = Object.freeze({
     FILE_DISPOSITION_FLAG_POSIX_SEMANTICS: 0x2,
     FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE: 0x10,
     FILE_RENAME_INFORMATION: 10,
+    STATUS_ACCESS_DENIED: -1073741790,
     STATUS_OBJECT_NAME_NOT_FOUND: -1073741772,
     STATUS_OBJECT_PATH_NOT_FOUND: -1073741766,
     STATUS_NO_SUCH_FILE: -1073741809,
@@ -356,11 +357,21 @@ export function windowsTryAcquireProcessFileLock(target) {
     const parent = windowsOpenDirectoryNoFollow(path.win32.dirname(path.win32.resolve(target)))
     let descriptor
     try {
-        const opened = ntOpenRelative(parent, path.win32.basename(target), {
+        let opened = ntOpenRelative(parent, path.win32.basename(target), {
             directory: false,
             create: true,
             flags: constants.O_CREAT | constants.O_RDWR
         })
+        // NTFS refuses write access to an ADS when the base file has the
+        // read-only attribute. The lock sentinel is persistent, so reopen the
+        // existing stream with read access; LockFileEx only requires read or
+        // write access and still supplies the same exclusive kernel lock.
+        if (opened.status === WINDOWS_NATIVE_CONSTANTS.STATUS_ACCESS_DENIED) {
+            opened = ntOpenRelative(parent, path.win32.basename(target), {
+                directory: false,
+                flags: constants.O_RDONLY
+            })
+        }
         if (opened.status < 0) ntFailure(opened.status, `Secure lock sentinel open for ${target}`)
         descriptor = opened.descriptor
     } finally {
