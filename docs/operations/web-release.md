@@ -8,6 +8,13 @@ Fylo has three independently deployed web surfaces:
 | Explorer                    | `explorer/dist/web`               | Amplify app `FXP`, `https://fx.del.ma`       |
 | Browser loader and engine   | `dist-web` plus `clients/browser` | GitHub Pages, `https://d31ma.github.io/FYLO` |
 
+The GitHub release also publishes the Explorer build as
+`fylo-explorer-<CalVer>.zip`. The archive is created from the contents of
+`explorer/dist/web`, places `index.html` at the ZIP root, is included in
+`SHA256SUMS`, and is verified before the draft release becomes public.
+Developers can extract it at the root of any static HTTPS origin that preserves
+the generated paths and MIME types.
+
 Do not upload a mutable `dist/web` directory directly. The Amplify release command normalizes
 file modes and timestamps, creates a deterministic ZIP, names it by its SHA-256 checksum, and
 archives it before deployment. A deployment is recorded as current only after Amplify succeeds

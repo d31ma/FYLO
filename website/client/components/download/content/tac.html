@@ -1,56 +1,70 @@
 <section class="download section" aria-labelledby="download-heading">
-  <div class="w-container w-container--lg">
-    <div class="download-head">
-      <span class="eyebrow">Get FYLO</span>
-      <h1 id="download-heading">Download FYLO</h1>
-      <p>
-        FYLO ships as a single self-contained binary — no runtime to install. Grab the build for
-        your platform, then use it from 13 languages: a
-        <a href="https://github.com/d31ma/Fylo/releases/latest">thin client</a> for Python,
-        Ruby, Node/TypeScript, PHP, Go, Rust, C#, Java, or Dart, plus local-first browser,
-        mobile (iOS/Android), and Flutter clients — all in the version-matched
-        <code>fylo-clients</code> bundle attached to each release.
-      </p>
+    <div class="w-container w-container--lg">
+        <div class="download-head">
+            <span class="eyebrow">Get FYLO</span>
+            <h1 id="download-heading">Download FYLO</h1>
+            <p>
+                FYLO ships as a single self-contained binary — no runtime to install. Grab the build
+                for your platform, then use it from 13 languages: a
+                <a href="https://github.com/d31ma/Fylo/releases/latest">thin client</a> for Python,
+                Ruby, Node/TypeScript, PHP, Go, Rust, C#, Java, or Dart, plus local-first browser,
+                mobile (iOS/Android), and Flutter clients — all in the version-matched
+                <code>fylo-clients</code> bundle attached to each release.
+            </p>
+        </div>
+
+        <div class="download-install">
+            <article class="download-panel">
+                <h2>Install (macOS &amp; Linux)</h2>
+                <p>
+                    Detects your OS and architecture, verifies the checksum, and puts
+                    <code>fylo</code> on your PATH.
+                </p>
+                <pre class="code-block"><code>{unixInstall()}</code></pre>
+            </article>
+
+            <article class="download-panel">
+                <h2>Install (Windows)</h2>
+                <p>
+                    Run in PowerShell — installs under <code>%LOCALAPPDATA%\Fylo</code> and updates
+                    your user PATH.
+                </p>
+                <pre class="code-block"><code>{windowsInstall()}</code></pre>
+            </article>
+        </div>
+
+        <h2 class="download-subhead">Or download a release asset directly</h2>
+        <div class="w-table-wrap w-table-wrap--responsive-scroll">
+            <table class="w-table w-table--striped">
+                <thead>
+                    <tr>
+                        <th>Platform</th>
+                        <th>File</th>
+                        <th>Download</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <loop :for="let asset of assets">
+                        <tr>
+                            <td data-label="Platform">{asset.label}</td>
+                            <td data-label="File"><code>{asset.file}</code></td>
+                            <td data-label="Download">
+                                <a
+                                    class="w-btn w-btn-outlined w-btn--sm"
+                                    :href="assetUrl(asset.file)"
+                                    >Download</a
+                                >
+                            </td>
+                        </tr>
+                    </loop>
+                </tbody>
+            </table>
+        </div>
+
+        <p class="download-note">
+            Every release is checksummed — see
+            <a :href="assetUrl('SHA256SUMS')">SHA256SUMS</a>. Older versions and release notes live
+            on <a href="https://github.com/d31ma/Fylo/releases">GitHub Releases</a>.
+        </p>
     </div>
-
-    <div class="download-install">
-      <article class="download-panel">
-        <h2>Install (macOS &amp; Linux)</h2>
-        <p>Detects your OS and architecture, verifies the checksum, and puts <code>fylo</code> on your PATH.</p>
-        <pre class="code-block"><code>{unixInstall()}</code></pre>
-      </article>
-
-      <article class="download-panel">
-        <h2>Install (Windows)</h2>
-        <p>Run in PowerShell — installs under <code>%LOCALAPPDATA%\Fylo</code> and updates your user PATH.</p>
-        <pre class="code-block"><code>{windowsInstall()}</code></pre>
-      </article>
-    </div>
-
-    <h2 class="download-subhead">Or download a binary directly</h2>
-    <div class="w-table-wrap w-table-wrap--responsive-scroll">
-      <table class="w-table w-table--striped">
-        <thead>
-          <tr><th>Platform</th><th>File</th><th>Download</th></tr>
-        </thead>
-        <tbody>
-          <loop :for="let asset of assets">
-            <tr>
-              <td data-label="Platform">{asset.label}</td>
-              <td data-label="File"><code>{asset.file}</code></td>
-              <td data-label="Download">
-                <a class="w-btn w-btn-outlined w-btn--sm" :href="assetUrl(asset.file)">Download</a>
-              </td>
-            </tr>
-          </loop>
-        </tbody>
-      </table>
-    </div>
-
-    <p class="download-note">
-      Every release is checksummed — see
-      <a :href="assetUrl('SHA256SUMS')">SHA256SUMS</a>. Older versions and release notes live on
-      <a href="https://github.com/d31ma/Fylo/releases">GitHub Releases</a>.
-    </p>
-  </div>
 </section>

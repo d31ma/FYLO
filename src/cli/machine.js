@@ -40,7 +40,7 @@ const MACHINE_PROTOCOL_VERSION = 1
  * @property {string=} id
  * @property {boolean=} onlyId
  * @property {string=} sql
- * @property {{ uid: number, mode?: number }=} access SQL actor and INSERT-only mode
+ * @property {{ uid?: number, gid?: number, mode?: number }=} access SQL actor and INSERT-only owner/group/mode
  * @property {Record<string, any>=} query
  * @property {Record<string, any>=} join
  * @property {Record<string, any>=} document
@@ -370,7 +370,7 @@ export async function executeMachineOperation(request, overrides = {}) {
                 requireString(request, 'sql'),
                 request.access === undefined
                     ? undefined
-                    : /** @type {{ uid: number, mode?: number }} */ (
+                    : /** @type {{ uid?: number, gid?: number, mode?: number }} */ (
                           requireObject(request, 'access')
                       )
             )

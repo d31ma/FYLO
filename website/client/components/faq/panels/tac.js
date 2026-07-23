@@ -36,6 +36,11 @@ export default class extends Tac {
             key: 'encryption',
             q: 'Is my data encrypted at rest?',
             a: 'Fields listed in a schema’s $encrypted array are stored with AES-GCM. Equality lookups use HMAC blind indexes, so queries work without decrypting — with the documented trade-off that value repetition counts are observable.'
+        },
+        {
+            key: 'groups',
+            q: 'Can multiple users share a document or file?',
+            a: 'Yes. Write it with .as({ gid: editorsGid, mode: 0o660 }), then authenticated group members read, update, or delete with .as({ uid: memberUid }). FYLO resolves membership from the host POSIX group database or your trusted groupsForUid resolver; callers cannot claim their own groups. Group write permission is required — 0o600 remains owner-only.'
         }
     ]
 }

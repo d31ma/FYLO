@@ -93,7 +93,7 @@ export function metaMutations(record) {
  * @property {number=} maxBytes
  * @property {string=} key
  * @property {Record<string, any>=} meta developer metadata written with the upload
- * @property {{ uid: number, mode?: number }=} access protected-record owner and mode
+ * @property {{ uid?: number, gid?: number, mode?: number }=} access protected-record owner, group, and mode
  *
  * @typedef {object} StoredRawFile
  * @property {string} id

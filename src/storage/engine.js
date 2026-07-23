@@ -26,7 +26,9 @@ import {
     ACCESS_XATTR,
     FyloPermissionError,
     applyAccessDescriptor,
+    createPosixGroupResolver,
     descriptorAllows,
+    normalizeResolvedGroupIds,
     readAccessDescriptor,
     restoreAccessDescriptor,
     restoreAccessState,
@@ -40,6 +42,7 @@ import {
  * @typedef {import('../replication/sync.js').FyloWriteSyncEvent<Record<string, any>>} FyloWriteSyncEvent
  * @typedef {import('../replication/sync.js').FyloDeleteSyncEvent} FyloDeleteSyncEvent
  * @typedef {import('../replication/sync.js').FyloWormOptions} FyloWormOptions
+ * @typedef {import('../replication/sync.js').FyloAccessOptions} FyloAccessOptions
  * @typedef {import('../observability/events.js').FyloEventHandler} FyloEventHandler
  * @typedef {import('./types.js').StorageEngine} StorageEngine
  * @typedef {import('./types.js').LockManager} LockManager
@@ -152,10 +155,12 @@ export class FilesystemEngine {
     catalogRoot
     /** @type {boolean} */
     repositoryGate
+    /** @type {NonNullable<FyloAccessOptions['groupsForUid']> | undefined} */
+    groupsForUid
     /**
      * Creates the filesystem-backed FYLO engine and its persistence collaborators.
      * @param {string} [root]
-     * @param {{ sync?: FyloSyncHooks, syncMode?: FyloSyncMode, worm?: FyloWormOptions, onEvent?: FyloEventHandler, queue?: LocalQueue, queryCache?: QueryCache, catalogRoot?: string, repositoryGate?: boolean }} [options]
+     * @param {{ sync?: FyloSyncHooks, syncMode?: FyloSyncMode, worm?: FyloWormOptions, access?: FyloAccessOptions, onEvent?: FyloEventHandler, queue?: LocalQueue, queryCache?: QueryCache, catalogRoot?: string, repositoryGate?: boolean }} [options]
      */
     constructor(
         root = process.env.FYLO_ROOT || path.join(process.cwd(), '.fylo-data'),
@@ -178,6 +183,7 @@ export class FilesystemEngine {
         this.worm = {
             mode: options.worm?.mode ?? 'off'
         }
+        this.groupsForUid = options.access?.groupsForUid ?? createPosixGroupResolver()
         this.onEvent = options.onEvent
         this.repositoryGate = options.repositoryGate !== false
         this.storage = new FilesystemStorage()
@@ -642,7 +648,7 @@ export class FilesystemEngine {
      * @param {Record<string, any>} oldDoc
      * @param {Record<string, any>=} meta
      * @param {number=} actorUid
-     * @param {{ uid: number, mode?: number }=} nextAccess
+     * @param {{ uid?: number, gid?: number, mode?: number }=} nextAccess
      * @returns {Promise<TTID>}
      */
     async updateDocument(
@@ -1190,7 +1196,7 @@ export class FilesystemEngine {
             indexedDocs
         }
     }
-    /** @param {string} collection @param {TTID} docId @param {Record<string, any>} doc @param {Record<string, any>=} meta @param {{ uid: number, mode?: number }=} access @param {boolean=} createOnly @returns {Promise<boolean>} */
+    /** @param {string} collection @param {TTID} docId @param {Record<string, any>} doc @param {Record<string, any>=} meta @param {{ uid?: number, gid?: number, mode?: number }=} access @param {boolean=} createOnly @returns {Promise<boolean>} */
     async putDocument(collection, docId, doc, meta, access, createOnly = false) {
         const metaUpdates = meta === undefined ? undefined : metaMutations(meta)
         await validateDocId(docId)
@@ -1383,7 +1389,7 @@ export class FilesystemEngine {
         const nextDoc = { ...existing, ...patch }
         return await this.updateDocument(collection, oldId, nextDoc, existing, undefined, actorUid)
     }
-    /** @param {string} collection @param {TTID} oldId @param {TTID} newId @param {Record<string, any>} doc @param {Record<string, any>} [oldDoc] @param {Record<string, any>} [meta] @param {{ uid: number, mode?: number }=} access @returns {Promise<TTID>} */
+    /** @param {string} collection @param {TTID} oldId @param {TTID} newId @param {Record<string, any>} doc @param {Record<string, any>} [oldDoc] @param {Record<string, any>} [meta] @param {{ uid?: number, gid?: number, mode?: number }=} access @returns {Promise<TTID>} */
     async replaceDocumentVersion(collection, oldId, newId, doc, oldDoc, meta, access) {
         if (this.wormEnabled()) throw new Error('Update is not allowed in WORM mode')
         await this.requireCollection(collection)
@@ -1839,9 +1845,8 @@ export class FilesystemEngine {
     }
     /**
      * Open records have no descriptor and retain Fylo's existing unrestricted
-     * behavior. Protected records use owner bits for the matching UID and
-     * other bits for anonymous or non-owner callers; group evaluation is out
-     * of scope until callers can provide group membership.
+     * behavior. Protected records use POSIX owner, group, then other
+     * precedence. Group membership comes only from the trusted engine resolver.
      * @param {string} collection
      * @param {string} docId
      * @param {number | undefined} actorUid
@@ -1854,7 +1859,11 @@ export class FilesystemEngine {
         if (!target) return null
         const descriptor = await readAccessDescriptor(target)
         if (!descriptor) return null
-        if (!descriptorAllows(descriptor, actorUid, operation)) {
+        const actorGids =
+            actorUid === undefined || actorUid === descriptor.uid || !this.groupsForUid
+                ? new Set()
+                : normalizeResolvedGroupIds(await this.groupsForUid(actorUid))
+        if (!descriptorAllows(descriptor, actorUid, actorGids, operation)) {
             throw new FyloPermissionError({ collection, docId, operation })
         }
         return descriptor
@@ -2056,7 +2065,12 @@ export class FilesystemEngine {
                 Object.assign(canonical, fileMetadata)
             }
             const access = await this.documentAccessDescriptor(collection, docId)
-            if (access) Object.assign(canonical, { uid: access.uid, mode: access.mode })
+            if (access)
+                Object.assign(canonical, {
+                    uid: access.uid,
+                    gid: access.gid,
+                    mode: access.mode
+                })
             return Object.assign(Object.create(null), metadata, canonical)
         })
     }

@@ -19,6 +19,15 @@
 /** @typedef {'put' | 'patch' | 'delete' | 'restore' | 'meta' | 'rekey'} FyloAutoCommitOperation */
 
 /**
+ * @typedef {(uid: number) => Iterable<number> | Promise<Iterable<number>>} FyloGroupResolver
+ *
+ * @typedef {object} FyloAccessOptions
+ * @property {FyloGroupResolver=} groupsForUid trusted application-owned group
+ *   membership resolver; Fylo never accepts group membership from an operation
+ *   caller
+ */
+
+/**
  * @typedef {object} FyloWormOptions
  * @property {FyloWormMode=} mode
  */
@@ -78,6 +87,7 @@
  * @property {boolean=} queue
  * @property {FyloEventHandler=} onEvent
  * @property {FyloVersioningOptions=} versioning
+ * @property {FyloAccessOptions=} access
  */
 
 /**

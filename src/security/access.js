@@ -1,10 +1,13 @@
+import { execFile } from 'node:child_process'
 import { chmod, chown, lstat } from 'node:fs/promises'
+import { promisify } from 'node:util'
 import { getXattr, removeXattr, setXattr } from '../storage/xattr.js'
 
 /** Internal marker that distinguishes protected records from open records. */
 export const ACCESS_XATTR = 'user.fylo.access'
 export const DEFAULT_ACCESS_MODE = 0o600
 const MAX_POSIX_UID = 0xffff_fffe
+const execFileAsync = promisify(execFile)
 
 /**
  * A stable permission failure for direct document/file operations.
@@ -33,7 +36,8 @@ export class FyloPermissionError extends Error {
 
 /**
  * @typedef {object} FyloAccessInput
- * @property {number} uid
+ * @property {number=} uid
+ * @property {number=} gid
  * @property {number=} mode
  *
  * @typedef {object} FyloAccessDescriptor
@@ -50,29 +54,54 @@ export class FyloPermissionError extends Error {
  */
 
 /**
+ * @overload
+ * @param {unknown} value
+ * @param {{ allowMode: false }} options
+ * @returns {{ uid: number }}
+ */
+/**
+ * @overload
+ * @param {unknown} value
+ * @param {{ allowMode: true }} options
+ * @returns {{ uid?: number, gid?: number, mode?: number }}
+ */
+/**
  * @param {unknown} value
  * @param {{ allowMode: boolean }} options
- * @returns {{ uid: number, mode?: number }}
+ * @returns {{ uid?: number, gid?: number, mode?: number }}
  */
 export function normalizeAccessInput(value, options) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
-        throw new TypeError('as() requires an object containing a numeric uid')
+        throw new TypeError('as() requires an access object')
     }
-    const input = /** @type {{ uid?: unknown, mode?: unknown }} */ (value)
-    const unexpected = Object.keys(input).filter((key) => key !== 'uid' && key !== 'mode')
+    const input = /** @type {{ uid?: unknown, gid?: unknown, mode?: unknown }} */ (value)
+    const unexpected = Object.keys(input).filter(
+        (key) => key !== 'uid' && key !== 'gid' && key !== 'mode'
+    )
     if (unexpected.length > 0) {
         throw new TypeError(`as() received unsupported field: ${unexpected[0]}`)
     }
-    if (
-        !Number.isSafeInteger(input.uid) ||
-        Number(input.uid) < 0 ||
-        Number(input.uid) > MAX_POSIX_UID
-    ) {
-        throw new TypeError(`as().uid must be an integer between 0 and ${MAX_POSIX_UID}`)
-    }
+    const hasUid = Object.hasOwn(input, 'uid')
+    const hasGid = Object.hasOwn(input, 'gid')
     const hasMode = Object.hasOwn(input, 'mode')
-    if (hasMode && !options.allowMode) {
-        throw new TypeError('mode is only supported by put(...).as({ uid, mode })')
+    if (!hasUid && !hasGid && !hasMode) {
+        throw new TypeError('as() requires at least one of uid, gid, or mode')
+    }
+    for (const field of /** @type {const} */ (['uid', 'gid'])) {
+        if (
+            Object.hasOwn(input, field) &&
+            (!Number.isSafeInteger(input[field]) ||
+                Number(input[field]) < 0 ||
+                Number(input[field]) > MAX_POSIX_UID)
+        ) {
+            throw new TypeError(`as().${field} must be an integer between 0 and ${MAX_POSIX_UID}`)
+        }
+    }
+    if ((hasGid || hasMode) && !options.allowMode) {
+        throw new TypeError('gid and mode are only supported by put(...).as(...)')
+    }
+    if (!hasUid && !options.allowMode) {
+        throw new TypeError('as().uid is required for read, update, and delete operations')
     }
     if (
         hasMode &&
@@ -81,7 +110,8 @@ export function normalizeAccessInput(value, options) {
         throw new TypeError('as().mode must be an integer between 0o000 and 0o777')
     }
     return {
-        uid: Number(input.uid),
+        ...(hasUid ? { uid: Number(input.uid) } : {}),
+        ...(hasGid ? { gid: Number(input.gid) } : {}),
         ...(hasMode ? { mode: Number(input.mode) } : {})
     }
 }
@@ -122,7 +152,8 @@ export async function readAccessDescriptor(target) {
 
 /**
  * Captures both the Fylo descriptor and the native inode projection so an
- * atomic replacement or rollback preserves an open record's owner and mode.
+ * atomic replacement or rollback preserves an open record's owner, group, and
+ * mode.
  * @param {string} target
  * @returns {Promise<FyloNativeAccessState>}
  */
@@ -141,12 +172,12 @@ export async function snapshotAccessState(target) {
  * is written before chmod so a restrictive mode cannot prevent its creation.
  *
  * @param {string} target
- * @param {{ uid: number, mode?: number, gid?: number }} access
+ * @param {{ uid?: number, mode?: number, gid?: number }} access
  * @returns {Promise<FyloAccessDescriptor>}
  */
 export async function applyAccessDescriptor(target, access) {
     if (process.platform === 'win32') {
-        throw new Error('UID/mode access control is only supported on POSIX platforms')
+        throw new Error('UID/GID/mode access control is only supported on POSIX platforms')
     }
     const before = await lstat(target)
     if (before.isSymbolicLink() || !before.isFile()) {
@@ -154,7 +185,7 @@ export async function applyAccessDescriptor(target, access) {
     }
     const descriptor = /** @type {FyloAccessDescriptor} */ ({
         version: 1,
-        uid: access.uid,
+        uid: access.uid ?? before.uid,
         gid: access.gid ?? before.gid,
         mode: access.mode ?? DEFAULT_ACCESS_MODE
     })
@@ -173,7 +204,7 @@ export async function applyAccessDescriptor(target, access) {
         } catch (rollbackError) {
             throw new AggregateError(
                 [error, rollbackError],
-                'Applying UID/mode failed and rollback was incomplete'
+                'Applying UID/GID/mode failed and rollback was incomplete'
             )
         }
         throw error
@@ -210,9 +241,81 @@ export async function restoreAccessState(target, state) {
 /**
  * @param {FyloAccessDescriptor} descriptor
  * @param {number | undefined} actorUid
+ * @param {Iterable<number>} actorGids
  * @param {'read' | 'write'} operation
  */
-export function descriptorAllows(descriptor, actorUid, operation) {
-    const bits = actorUid === descriptor.uid ? (descriptor.mode >> 6) & 0o7 : descriptor.mode & 0o7
+export function descriptorAllows(descriptor, actorUid, actorGids, operation) {
+    let bits
+    if (actorUid === descriptor.uid) bits = (descriptor.mode >> 6) & 0o7
+    else if (new Set(actorGids).has(descriptor.gid)) bits = (descriptor.mode >> 3) & 0o7
+    else bits = descriptor.mode & 0o7
     return (bits & (operation === 'read' ? 0o4 : 0o2)) !== 0
+}
+
+/**
+ * Validates identities returned by a trusted group resolver.
+ * @param {unknown} value
+ * @returns {Set<number>}
+ */
+export function normalizeResolvedGroupIds(value) {
+    if (
+        value === null ||
+        value === undefined ||
+        typeof (/** @type {any} */ (value)[Symbol.iterator]) !== 'function'
+    ) {
+        throw new TypeError('access.groupsForUid() must return an iterable of numeric GIDs')
+    }
+    const gids = new Set()
+    for (const gid of /** @type {Iterable<unknown>} */ (value)) {
+        if (!Number.isSafeInteger(gid) || Number(gid) < 0 || Number(gid) > MAX_POSIX_UID) {
+            throw new TypeError(`access.groupsForUid() returned a GID outside 0..${MAX_POSIX_UID}`)
+        }
+        gids.add(Number(gid))
+    }
+    return gids
+}
+
+/**
+ * Creates a trusted host-OS group resolver. The current process uses Node's
+ * credential APIs directly; arbitrary numeric UIDs are resolved through
+ * POSIX `id`. Results are briefly cached so collection scans do not spawn a
+ * process per record while still allowing membership changes to take effect.
+ *
+ * @param {{ ttlMs?: number }} [options]
+ * @returns {(uid: number) => Promise<Set<number>>}
+ */
+export function createPosixGroupResolver(options = {}) {
+    const ttlMs = options.ttlMs ?? 5_000
+    /** @type {Map<number, { expiresAt: number, gids: Set<number> }>} */
+    const cache = new Map()
+    return async (uid) => {
+        const cached = cache.get(uid)
+        if (cached && cached.expiresAt > Date.now()) return new Set(cached.gids)
+
+        /** @type {Set<number>} */
+        let gids
+        if (process.getuid?.() === uid) {
+            gids = normalizeResolvedGroupIds([
+                ...(process.getgroups?.() ?? []),
+                ...(process.getgid ? [process.getgid()] : [])
+            ])
+        } else {
+            try {
+                const { stdout } = await execFileAsync('id', ['-G', String(uid)], {
+                    encoding: 'utf8'
+                })
+                gids = normalizeResolvedGroupIds(
+                    stdout.trim().split(/\s+/).filter(Boolean).map(Number)
+                )
+            } catch (error) {
+                if (/** @type {{ code?: string | number }} */ (error).code === 1) gids = new Set()
+                else
+                    throw new Error(`Unable to resolve POSIX groups for UID ${uid}`, {
+                        cause: error
+                    })
+            }
+        }
+        cache.set(uid, { expiresAt: Date.now() + ttlMs, gids })
+        return new Set(gids)
+    }
 }

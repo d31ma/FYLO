@@ -42,6 +42,25 @@ describe('web release operations', () => {
         }
     })
 
+    test('web artifacts place the hostable site at the ZIP root', async () => {
+        const temporary = await mkdtemp(path.join(os.tmpdir(), 'fylo-artifact-root-test-'))
+        try {
+            const source = path.join(temporary, 'web')
+            await mkdir(path.join(source, 'shared', 'assets'), { recursive: true })
+            await writeFile(path.join(source, 'index.html'), '<title>FX | Fylo Explorer</title>')
+            await writeFile(path.join(source, 'shared', 'assets', 'app.js'), 'export default 1')
+            const artifact = await createWebArtifact(source, path.join(temporary, 'release'))
+            const { stdout } = await execFileAsync('unzip', ['-Z1', artifact.output])
+            const files = stdout.trim().split('\n')
+
+            expect(files).toContain('index.html')
+            expect(files).toContain('shared/assets/app.js')
+            expect(files).not.toContain('web/index.html')
+        } finally {
+            await rm(temporary, { recursive: true, force: true })
+        }
+    })
+
     test('verifies immutable and latest Pages assets, checksums, and equality', async () => {
         const files = new Map([
             ['fylo.js', 'loader'],

@@ -8,6 +8,7 @@
         "browser:sync": "bun ../scripts/build-browser.mjs --wasm && bun ../scripts/sync-explorer-browser-assets.mjs",
         "serve": "bun run browser:sync && bun node_modules/@d31ma/tachyon/src/cli/index.js serve",
         "bundle": "bun run browser:sync && bun node_modules/@d31ma/tachyon/src/cli/index.js bundle && bun ../scripts/fingerprint-assets.mjs",
+        "bundle:release": "bun ../scripts/sync-explorer-browser-assets.mjs && bun node_modules/@d31ma/tachyon/src/cli/index.js bundle && bun ../scripts/fingerprint-assets.mjs",
         "preview": "bun node_modules/@d31ma/tachyon/src/cli/index.js preview --watch",
         "seed": "bun seed.mjs"
     },

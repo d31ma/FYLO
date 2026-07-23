@@ -28,7 +28,7 @@
 - [Querying](#querying)
 - [Schema Versioning](#schema-versioning)
 - [Encryption](#encryption)
-- [POSTIX Access Control](#postix-access-control-uid-and-mode)
+- [POSTIX Access Control](#postix-access-control-uid-gid-and-mode)
 - [WORM Mode](#worm-mode)
 - [Syncing & Replication](#syncing--replication)
 - [Remote Access](#remote-access)
@@ -271,6 +271,23 @@ cd explorer && bun run seed     # optional: demo root at explorer/db (gitignored
 cd explorer && bun run serve    # http://localhost:8080
 cd explorer && bun run bundle   # production bundle at explorer/dist/web
 ```
+
+Every GitHub release also includes a versioned, checksum-covered
+`fylo-explorer-<CalVer>.zip` containing the contents of `explorer/dist/web`.
+Extract it directly into the root of a static host:
+
+```bash
+VERSION=26.30.03
+curl -fLO "https://github.com/d31ma/Fylo/releases/download/v${VERSION}/fylo-explorer-${VERSION}.zip"
+mkdir "fylo-explorer-${VERSION}"
+unzip "fylo-explorer-${VERSION}.zip" -d "fylo-explorer-${VERSION}"
+python3 -m http.server 8080 --directory "fylo-explorer-${VERSION}"
+```
+
+`index.html` is at the ZIP root. Production hosts should use a dedicated HTTPS
+origin, serve the extracted tree at `/`, and preserve the generated MIME types
+(especially `application/wasm` for `.wasm` files). `localhost` is suitable for
+local evaluation.
 
 - **Read-only by default.** Reads go straight to the folder; the engine's own
   writes (index rebuilds, journals) land in an in-memory overlay, so the root
@@ -711,19 +728,28 @@ The CLI accepts the same syntax:
 fylo sql "EXPLAIN SELECT * FROM posts WHERE published = true" --root /mnt/fylo
 ```
 
-### POSTIX access control (UID and mode)
+### POSTIX access control (UID, GID, and mode)
 
 POSTIX replaces the former row-level security API with filesystem-native,
-per-record access control. Fylo can bind a document or raw file to a
-developer-supplied POSIX UID when it is written. `mode` is accepted by
-document/file `put` and SQL `INSERT`; omitting it uses `0o600`.
+per-record access control. A document/file `put` or SQL `INSERT` can bind a
+developer-supplied POSIX UID, GID, both, or only a mode. Any omitted identity
+retains the new file's native owner/group; omitting `mode` uses `0o600`.
 
 ```js
 const id = await db.documents.put({ title: 'private' }).as({ uid: 1001, mode: 0o600 })
+const teamId = await db.documents.put({ title: 'team draft' }).as({ gid: editorsGid, mode: 0o660 })
+const managedId = await db.documents
+    .put({ title: 'managed' })
+    .as({ uid: 1001, gid: editorsGid, mode: 0o660 })
+const nativeOwnerId = await db.documents.put({ title: 'native owner' }).as({ mode: 0o600 })
 
 await db.documents.get(id).as({ uid: 1001 })
 await db.documents.patch(id, { title: 'updated' }).as({ uid: 1001 })
 await db.documents.delete(id).as({ uid: 1001 })
+
+// A trusted membership resolver proves that 1002 belongs to editorsGid.
+await db.documents.patch(teamId, { title: 'reviewed' }).as({ uid: 1002 })
+await db.documents.delete(teamId).as({ uid: 1002 })
 ```
 
 SQL uses the same execution context without embedding credentials in the SQL
@@ -731,25 +757,43 @@ text:
 
 ```js
 const sqlId = await db.sql`
-    INSERT INTO documents (title) VALUES (${'private'})
-`.as({ uid: 1001, mode: 0o600 })
+    INSERT INTO documents (title) VALUES (${'team draft'})
+`.as({ gid: editorsGid, mode: 0o660 })
 
-await db.sql`UPDATE documents SET title = ${'updated'} WHERE title = ${'private'}`.as({
-    uid: 1001
+await db.sql`UPDATE documents SET title = ${'updated'} WHERE title = ${'team draft'}`.as({
+    uid: 1002
 })
 ```
 
 Fylo applies `chown` and `chmod` to the record and stores a portable access
-descriptor in `user.fylo.access`. Owner bits apply when the supplied UID
-matches; other bits apply to a different UID or an operation without `.as()`.
-Group bits are currently reserved and are not evaluated. A record written
-without `.as()` has no access descriptor and remains open to reads and writes.
+descriptor in `user.fylo.access`. It evaluates mode classes with normal POSIX
+precedence: owner bits for the owner UID, otherwise group bits for a member of
+the record GID, otherwise other bits. Membership does not fall through to
+`other` when the selected owner/group bits deny an operation. Group members can
+modify and delete only when the group write bit is set, so use `0o660` rather
+than `0o600` for a group-readable and group-writable record.
 
-The UID is an authorization claim supplied by your application—Fylo does not
-authenticate it. Validate the caller before passing a UID. The Fylo process
-must also have permission to call `chown`; otherwise the put fails atomically.
-Denied direct operations throw `FyloPermissionError` with `code === 'EACCES'`,
-while queries and SQL omit unreadable records.
+By default Fylo resolves membership from the host POSIX group database. An
+application using virtual users or an external identity provider can supply a
+trusted resolver when it opens the database:
+
+```js
+const db = new Fylo('/mnt/fylo', {
+    access: {
+        groupsForUid: async (uid) => identityProvider.groupIdsFor(uid)
+    }
+})
+```
+
+Operation callers provide only `{ uid }`; they cannot assert their own group
+membership. Resolver failures fail closed. A record written without `.as()`
+has no access descriptor and remains open to reads and writes.
+
+The UID is still an authorization claim supplied by your application—Fylo does
+not authenticate it. Validate the caller before passing a UID. The Fylo
+process must also have permission to call `chown`; otherwise the put fails
+atomically. Denied direct operations throw `FyloPermissionError` with
+`code === 'EACCES'`, while queries and SQL omit unreadable records.
 
 This API is available only when the native binary and its binary-backed shims
 run on a POSIX host such as macOS or Linux. It is not a Windows authorization
@@ -759,10 +803,10 @@ Explorer, and WebView-based mobile clients (Swift/Kotlin/Flutter) cannot call
 boundary; those clients must remain behind an authenticated native POSIX
 gateway when POSTIX enforcement is required.
 
-Canonical metadata includes `uid` and `mode` for protected records:
+Canonical metadata includes `uid`, `gid`, and `mode` for protected records:
 
 ```js
-const { uid, mode, createdAt, updatedAt, mtime } = await db.documents
+const { uid, gid, mode, createdAt, updatedAt, mtime } = await db.documents
     .get(id)
     .as({ uid: 1001 })
     .metadata()

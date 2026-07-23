@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { existsSync } from 'node:fs'
-import { mkdir, mkdtemp, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -146,6 +146,38 @@ try {
         const parsed = JSON.parse(result.stdout)
         expect(parsed.ok).toBe(true)
         expect(parsed.found[parsed.id].name).toBe('Ada')
+    })
+
+    test('Node shim keeps the compiled loop alive after a raw-file path put (#65)', async () => {
+        await requireCommand('node')
+        const root = await tempRoot('fylo-node-raw-loop-')
+        const source = path.join(root, 'hello.txt')
+        await writeFile(source, 'hello attachment')
+        const script = `
+import { Fylo } from ${JSON.stringify(path.join(shimRoot, 'node', 'fylo.mjs'))}
+const db = new Fylo(${JSON.stringify(root)}, { binary: ${JSON.stringify(binaryPath)} })
+try {
+  await db.createCollection('assets', 'file')
+  const response = await db.request({
+    op: 'putData',
+    collection: 'assets',
+    file: { path: ${JSON.stringify(source)}, key: '/hello.txt' },
+    fileOptions: { maxBytes: 16 },
+  })
+  if (!response.ok) throw new Error(response.error?.message ?? 'raw-file put failed')
+  const first = await db.getDoc('assets', response.result)
+  const second = await db.getDoc('assets', response.result)
+  if (!first[response.result] || !second[response.result]) {
+    throw new Error('compiled loop lost the raw file')
+  }
+  console.log(JSON.stringify({ ok: true }))
+} finally {
+  await db.close()
+}
+`
+        const result = await run(['node', '--input-type=module', '-e', script])
+        expectSuccess('node raw-file loop regression', result)
+        expect(JSON.parse(result.stdout).ok).toBe(true)
     })
 
     test('Ruby shim drives the persistent loop', async () => {

@@ -178,12 +178,13 @@ string, so values are inlined verbatim: **escape or validate untrusted input
 yourself**, or keep to app-generated SQL. On the mobile clients, `sql` runs
 against the local on-device store.
 
-### SQL UID and mode
+### SQL UID, GID, and mode
 
 Thin shims can send an application-authenticated POSIX UID claim with SQL
-execution. Fylo does not authenticate the claim. `mode` is accepted only for
-`INSERT`; omit it from `SELECT`, `UPDATE`, and `DELETE`. UID-only inserts
-default to `0o600`.
+execution. Fylo does not authenticate the claim. `gid` and `mode` are accepted
+only for `INSERT`; omit them from `SELECT`, `UPDATE`, and `DELETE`. Inserts may
+use UID, GID, both, or mode alone. Omitted identities retain the new file's
+native owner/group, and an omitted mode defaults to `0o600`.
 
 | Language | Protected SQL call                                                                   |
 | -------- | ------------------------------------------------------------------------------------ |
@@ -197,21 +198,37 @@ default to `0o600`.
 | C#       | `db.Sql($"INSERT ...", new { uid, mode = 384 })`                                     |
 | Dart     | `db.sql(query, uid: uid, mode: 384)`                                                 |
 
+A group-owned insert uses group write bits:
+
+| Language | GID-only SQL INSERT                                               |
+| -------- | ----------------------------------------------------------------- |
+| Node/TS  | ``await db.sql`INSERT ...`.as({ gid: editorsGid, mode: 0o660 })`` |
+| Python   | `db.sql(query, {"gid": editors_gid, "mode": 0o660})`              |
+| Ruby     | `db.sql(query, { "gid" => editors_gid, "mode" => 0o660 })`        |
+| PHP      | `$db->sql($query, ['gid' => $editorsGid, 'mode' => 0660])`        |
+| Go       | `db.Sql(query, map[string]any{"gid": editorsGid, "mode": 0o660})` |
+| Rust     | `db.sql_access(query, None, Some(editors_gid), Some(0o660))`      |
+| Java     | `db.sql(query, Map.of("gid", editorsGid, "mode", 432))`           |
+| C#       | `db.Sql($"INSERT ...", new { gid = editorsGid, mode = 432 })`     |
+| Dart     | `db.sql(query, gid: editorsGid, mode: 432)`                       |
+
 The machine payload is the same for every shim:
 
 ```json
 {
     "op": "executeSQL",
     "sql": "INSERT INTO users (name) VALUES ('Ada')",
-    "access": { "uid": 1001, "mode": 384 }
+    "access": { "gid": 2001, "mode": 432 }
 }
 ```
 
 `SELECT` returns only rows readable by that UID. `UPDATE` and `DELETE` use the
-same UID for both candidate visibility and write authorization. This is a
-native-POSIX feature on macOS/Linux hosts. It is not enforced by the Windows
-binary, browser, Explorer, or mobile local-only clients because those surfaces
-cannot provide the required `chown`/`chmod` boundary.
+same UID for both candidate visibility and write authorization. Group
+membership is resolved by the trusted host POSIX group database; callers do
+not send GIDs for reads or mutations. This is a native-POSIX feature on
+macOS/Linux hosts. It is not enforced by the Windows binary, browser, Explorer,
+or mobile local-only clients because those surfaces cannot provide the
+required `chown`/`chmod` boundary.
 
 ## How the shims work
 
