@@ -1,6 +1,6 @@
 {
     "name": "fylo-explorer",
-    "version": "26.30.03",
+    "version": "26.30.04",
     "private": true,
     "packageManager": "bun@1.3.11",
     "scripts": {

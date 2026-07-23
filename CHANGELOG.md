@@ -1,5 +1,32 @@
 # Changelog
 
+## 26.30.04 - 2026-07-23
+
+### Added
+
+- POSTIX group ownership and POSIX owner/group/other permission evaluation,
+  backed by a trusted supplementary-group resolver with a short in-memory cache.
+- A versioned, checksum-covered standalone Explorer ZIP for self-hosted web
+  deployments.
+
+### Changed
+
+- Rust and Dart client shims, the machine protocol, SQL access writes, and
+  documentation now support GID-aware access metadata.
+- The marketing site now presents Explorer as a self-hosted release download
+  instead of linking to it from the shared site header.
+
+### Fixed
+
+- Compiled `fylo exec --loop` processes now remain available after raw-file
+  puts, restoring persistent Node and other binary-backed client sessions
+  (#65).
+- GID-only and mode-only writes preserve the document's existing ownership
+  fields while applying the requested access change atomically.
+- Secure Windows transaction-state replacement now tolerates short-lived
+  antivirus/indexer access denials with a bounded retry while remaining
+  fail-closed for persistent or unrelated errors.
+
 ## 26.30.03 - 2026-07-22
 
 ### Added

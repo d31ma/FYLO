@@ -64,6 +64,33 @@ export const WINDOWS_NATIVE_CONSTANTS = Object.freeze({
     O_BINARY: 0x8000
 })
 
+const WINDOWS_RENAME_RETRY_DELAYS_MS = Object.freeze([10, 20, 40, 80, 160, 320, 640])
+const windowsRenameWait = new Int32Array(new SharedArrayBuffer(4))
+
+/** @param {number} delayMs */
+function waitForWindowsRename(delayMs) {
+    Atomics.wait(windowsRenameWait, 0, 0, delayMs)
+}
+
+/**
+ * Antivirus and indexing filters can briefly deny an otherwise valid NTFS
+ * replacement. Retry only that observed transient status, using the same
+ * already-validated handles, and return every other status immediately.
+ *
+ * @param {() => number} rename
+ * @param {(delayMs: number) => void} [wait]
+ * @returns {number}
+ */
+export function retryWindowsRenameAccessDenied(rename, wait = waitForWindowsRename) {
+    let status = rename()
+    for (const delayMs of WINDOWS_RENAME_RETRY_DELAYS_MS) {
+        if (status !== WINDOWS_NATIVE_CONSTANTS.STATUS_ACCESS_DENIED) return status
+        wait(delayMs)
+        status = rename()
+    }
+    return status
+}
+
 /** @param {number | bigint} value */
 function isInvalidHandle(value) {
     const handle = asBigInt(value)
@@ -645,12 +672,14 @@ export function windowsRenameOpenFileAtRoot(descriptor, targetRootFd, targetRela
         view.setUint32(16, encodedName.byteLength, true)
         encodedName.copy(info, WINDOWS_NATIVE_LAYOUT.fileRenameHeaderBytes)
         const io = Buffer.alloc(WINDOWS_NATIVE_LAYOUT.ioStatusBlockBytes)
-        const status = symbols().NtSetInformationFile(
-            handleForDescriptor(descriptor),
-            ptr(io),
-            ptr(info),
-            info.byteLength,
-            WINDOWS_NATIVE_CONSTANTS.FILE_RENAME_INFORMATION
+        const status = retryWindowsRenameAccessDenied(() =>
+            symbols().NtSetInformationFile(
+                handleForDescriptor(descriptor),
+                ptr(io),
+                ptr(info),
+                info.byteLength,
+                WINDOWS_NATIVE_CONSTANTS.FILE_RENAME_INFORMATION
+            )
         )
         if (status < 0) ntFailure(status, `Secure rooted rename for ${targetRelative}`)
         syncDescriptor(target.fd)
