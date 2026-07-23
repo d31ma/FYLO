@@ -38,8 +38,8 @@ export default class extends Tac {
         {
             area: 'Security',
             color: 'error',
-            title: 'Encryption, UID modes & WORM',
-            text: 'AES-GCM field encryption with HMAC blind indexes, per-record POSIX UID/mode enforcement, and strict write-once WORM collections.'
+            title: 'Encryption, POSIX access & WORM',
+            text: 'AES-GCM field encryption with HMAC blind indexes, per-record POSIX UID/GID/mode enforcement, trusted group membership, and strict write-once WORM collections.'
         },
         {
             area: 'Replication',

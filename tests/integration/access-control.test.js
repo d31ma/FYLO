@@ -2,13 +2,23 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { rm, stat } from 'node:fs/promises'
 import path from 'node:path'
 import Fylo, { FyloPermissionError } from '../../src/index.js'
+import { descriptorAllows } from '../../src/security/access.js'
 import { VersionRepository } from '../../src/versioning/repository.js'
 import { createTestRoot } from '../helpers/root.js'
 
 const root = await createTestRoot('fylo-access-control-')
-const fylo = new Fylo(root, { versioning: { autoCommit: false } })
 const uid = process.getuid?.()
 const otherUid = uid === undefined ? undefined : uid + 1
+const outsiderUid = uid === undefined ? undefined : uid + 2
+const gid = process.getgroups?.()[0] ?? process.getgid?.()
+const fylo = new Fylo(root, {
+    versioning: { autoCommit: false },
+    access: {
+        groupsForUid(actorUid) {
+            return (actorUid === uid || actorUid === otherUid) && gid !== undefined ? [gid] : []
+        }
+    }
+})
 
 function documentPath(collection, id) {
     return path.join(root, '.collections', collection, 'docs', id.slice(0, 2), `${id}.json`)
@@ -56,15 +66,85 @@ describe.skipIf(uid === undefined)('per-document POSIX access control', () => {
         })
     })
 
+    test('gid-only put keeps the native owner and grants group members write access', async () => {
+        const id = await fylo.documents.put({ title: 'team draft' }).as({ gid, mode: 0o660 })
+        const target = documentPath('documents', id)
+        const native = await stat(target)
+
+        expect(native.uid).toBe(uid)
+        expect(native.gid).toBe(gid)
+        expect(native.mode & 0o777).toBe(0o660)
+        expect(await fylo.documents.get(id).as({ uid: otherUid })).toEqual({
+            [id]: { title: 'team draft' }
+        })
+
+        await fylo.documents.patch(id, { title: 'team update' }).as({ uid: otherUid })
+        expect(await fylo.documents.get(id).as({ uid })).toEqual({
+            [id]: { title: 'team update' }
+        })
+        await expect(
+            Promise.resolve(fylo.documents.delete(id).as({ uid: outsiderUid }))
+        ).rejects.toBeInstanceOf(FyloPermissionError)
+        await fylo.documents.delete(id).as({ uid: otherUid })
+    })
+
+    test('uid and gid can be assigned together while mode controls each class', async () => {
+        const id = await fylo.documents
+            .put({ title: 'owned team record' })
+            .as({ uid, gid, mode: 0o640 })
+
+        expect(await fylo.documents.get(id).as({ uid })).toEqual({
+            [id]: { title: 'owned team record' }
+        })
+        expect(await fylo.documents.get(id).as({ uid: otherUid })).toEqual({
+            [id]: { title: 'owned team record' }
+        })
+        await expect(
+            Promise.resolve(
+                fylo.documents.patch(id, { title: 'group denied' }).as({ uid: otherUid })
+            )
+        ).rejects.toBeInstanceOf(FyloPermissionError)
+    })
+
+    test('mode-only put protects the native owner and group projection', async () => {
+        const id = await fylo.documents.put({ title: 'native owner' }).as({ mode: 0o600 })
+        const native = await stat(documentPath('documents', id))
+        const metadata = await fylo.documents.get(id).as({ uid }).metadata()
+
+        expect(metadata).toMatchObject({
+            uid: native.uid,
+            gid: native.gid,
+            mode: 0o600
+        })
+        await expect(
+            Promise.resolve(fylo.documents.get(id).as({ uid: otherUid }))
+        ).rejects.toBeInstanceOf(FyloPermissionError)
+    })
+
+    test('group membership never overrides owner precedence or missing group bits', async () => {
+        expect(
+            descriptorAllows({ version: 1, uid, gid, mode: 0o040 }, uid, new Set([gid]), 'read')
+        ).toBe(false)
+
+        const groupWithoutWrite = await fylo.documents
+            .put({ title: 'group read only' })
+            .as({ gid, mode: 0o640 })
+        await expect(
+            Promise.resolve(
+                fylo.documents.patch(groupWithoutWrite, { title: 'denied' }).as({ uid: otherUid })
+            )
+        ).rejects.toBeInstanceOf(FyloPermissionError)
+    })
+
     test('other mode bits permit non-owner reads without granting writes', async () => {
         const id = await fylo.documents.put({ title: 'shared' }).as({ uid, mode: 0o604 })
 
-        expect(await fylo.documents.get(id).as({ uid: otherUid })).toEqual({
+        expect(await fylo.documents.get(id).as({ uid: outsiderUid })).toEqual({
             [id]: { title: 'shared' }
         })
         expect(await fylo.documents.get(id).once()).toEqual({ [id]: { title: 'shared' } })
         await expect(
-            Promise.resolve(fylo.documents.patch(id, { title: 'denied' }).as({ uid: otherUid }))
+            Promise.resolve(fylo.documents.patch(id, { title: 'denied' }).as({ uid: outsiderUid }))
         ).rejects.toBeInstanceOf(FyloPermissionError)
     })
 
@@ -96,6 +176,16 @@ describe.skipIf(uid === undefined)('per-document POSIX access control', () => {
                 fylo.documents.put(id).metadata({ owner: 'no' }).as({ uid, mode: 0o600 })
             )
         ).rejects.toThrow(/mode.*put/i)
+        await expect(Promise.resolve(fylo.documents.get(id).as({ uid, gid }))).rejects.toThrow(
+            /gid.*put/i
+        )
+        await expect(
+            Promise.resolve(fylo.documents.put({ title: 'empty' }).as({}))
+        ).rejects.toThrow(/at least one/i)
+        await expect(
+            Promise.resolve(fylo.documents.put({ title: 'invalid gid' }).as({ gid: -1 }))
+        ).rejects.toThrow(/gid.*integer/i)
+        await expect(fylo.sql`SELECT * FROM documents`.as({ gid })).rejects.toThrow(/gid.*INSERT/i)
     })
 
     test('owner can replace data and metadata while access remains record-scoped', async () => {
@@ -129,6 +219,14 @@ describe.skipIf(uid === undefined)('per-document POSIX access control', () => {
         await expect(fylo.files.get(id).as({ uid: otherUid }).bytes()).rejects.toBeInstanceOf(
             FyloPermissionError
         )
+
+        const groupId = await fylo.files
+            .put(new File(['team bytes'], 'team.txt', { type: 'text/plain' }))
+            .as({ gid, mode: 0o660 })
+        expect(
+            new TextDecoder().decode(await fylo.files.get(groupId).as({ uid: otherUid }).bytes())
+        ).toBe('team bytes')
+        await fylo.files.delete(groupId).as({ uid: otherUid })
     })
 
     test('find and SQL omit records that the caller cannot read', async () => {
@@ -191,6 +289,43 @@ describe.skipIf(uid === undefined)('per-document POSIX access control', () => {
             await fylo.sql`DELETE FROM documents WHERE scope = ${'sql-access'}`.as({ uid })
         ).toBe(1)
         expect(await fylo.documents.get(id).once()).toEqual({})
+
+        const groupId = await fylo.sql`
+            INSERT INTO documents (scope, title)
+            VALUES (${'sql-group-access'}, ${'group SQL'})
+        `.as({ gid, mode: 0o660 })
+        expect(await fylo.documents.get(groupId).as({ uid: otherUid })).toEqual({
+            [groupId]: { scope: 'sql-group-access', title: 'group SQL' }
+        })
+        expect(
+            await fylo.sql`
+                UPDATE documents SET title = ${'group SQL updated'}
+                WHERE scope = ${'sql-group-access'}
+            `.as({ uid: otherUid })
+        ).toBe(1)
+    })
+
+    test('group resolver failures fail closed', async () => {
+        const resolverRoot = await createTestRoot('fylo-access-resolver-')
+        const resolverFailure = new Error('identity provider unavailable')
+        const db = new Fylo(resolverRoot, {
+            versioning: { autoCommit: false },
+            access: {
+                groupsForUid() {
+                    throw resolverFailure
+                }
+            }
+        })
+        try {
+            await db.documents.create()
+            const id = await db.documents.put({ title: 'protected' }).as({ gid, mode: 0o660 })
+            await expect(Promise.resolve(db.documents.get(id).as({ uid: otherUid }))).rejects.toBe(
+                resolverFailure
+            )
+        } finally {
+            await db.close()
+            await rm(resolverRoot, { recursive: true, force: true })
+        }
     })
 
     test('patch preserves protected ownership and mode, and the owner can delete', async () => {

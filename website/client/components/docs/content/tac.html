@@ -149,11 +149,14 @@
                         FYLO does not authenticate — your app verifies identity, FYLO enforces
                         policy. Fields listed in a schema's <code>$encrypted</code> array are stored
                         with AES-GCM; equality lookups use HMAC blind indexes. POSTIX binds a POSIX
-                        UID and mode to each protected record on disk; the native binary and
-                        binary-backed shims enforce it on macOS/Linux POSIX hosts. Windows, Browser,
-                        Explorer, and WebView/mobile clients do not provide POSTIX and must use an
-                        authenticated native POSIX gateway. WORM (write-once) mode is enforced
-                        separately.
+                        UID, GID, and mode to each protected record on disk. Group membership is
+                        resolved by the trusted application or host POSIX group database; callers
+                        provide only their UID for reads and mutations. A shared writable record
+                        needs group write permission, typically <code>0o660</code>;
+                        <code>0o600</code> remains owner-only. The native binary and binary-backed
+                        shims enforce it on macOS/Linux POSIX hosts. Windows, Browser, Explorer, and
+                        WebView/mobile clients do not provide POSTIX and must use an authenticated
+                        native POSIX gateway. WORM (write-once) mode is enforced separately.
                     </p>
                     <pre class="code-block"><code>{securityCode()}</code></pre>
                 </article>

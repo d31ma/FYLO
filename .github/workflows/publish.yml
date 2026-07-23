@@ -251,8 +251,10 @@ jobs:
               with:
                   bun-version-file: .bun-version
 
-            - name: Install dependencies
-              run: bun install --frozen-lockfile
+            - name: Install release dependencies
+              run: |
+                  bun install --frozen-lockfile
+                  (cd explorer && bun install --frozen-lockfile)
 
             - name: Download native-tested Windows release executable
               uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
@@ -277,6 +279,33 @@ jobs:
             - name: Build local-first web bundle
               run: bun run build:web:wasm
 
+            - name: Package self-hosted Explorer
+              env:
+                  VERSION: ${{ needs.version.outputs.version }}
+              run: |
+                  set -euo pipefail
+                  if [[ ! "$VERSION" =~ ^[0-9]{2}\.[0-9]{2}\.[0-9]{2}$ ]]; then
+                    echo "Explorer release requires a CalVer package version, received $VERSION." >&2
+                    exit 1
+                  fi
+                  explorer_version=$(bun -p 'require("./explorer/package.json").version')
+                  if [[ "$explorer_version" != "$VERSION" ]]; then
+                    echo "Explorer version $explorer_version does not match release $VERSION." >&2
+                    exit 1
+                  fi
+
+                  (cd explorer && bun run bundle:release)
+                  artifact_json=$(bun scripts/web-artifact.mjs explorer/dist/web release-assets)
+                  artifact=$(jq -er '.output' <<<"$artifact_json")
+                  archive="release-assets/fylo-explorer-${VERSION}.zip"
+                  mv "$artifact" "$archive"
+
+                  unzip -tq "$archive"
+                  listing=$(unzip -Z1 "$archive")
+                  grep -Fxq 'index.html' <<<"$listing"
+                  index=$(unzip -p "$archive" index.html)
+                  grep -Fq 'FX | Fylo Explorer' <<<"$index"
+
             - name: Package language clients
               run: tar -czf release-assets/fylo-clients.tar.gz clients
 
@@ -292,11 +321,14 @@ jobs:
 
             - name: Checksum and verify release assets
               working-directory: release-assets
+              env:
+                  VERSION: ${{ needs.version.outputs.version }}
               run: |
                   set -euo pipefail
-                  expected=$(cat <<'EOF'
+                  expected=$(cat <<EOF
                   dedicated.js
                   fylo-clients.tar.gz
+                  fylo-explorer-${VERSION}.zip
                   fylo-index.wasm
                   fylo-linux-arm64
                   fylo-linux-x64

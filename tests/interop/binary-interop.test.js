@@ -998,6 +998,7 @@ fn main() {
     let binary = std::env::args().nth(1).unwrap();
     let root = std::env::args().nth(2).unwrap();
     let uid = std::env::args().nth(3).unwrap().parse::<u32>().unwrap();
+    let gid = std::env::args().nth(4).unwrap().parse::<u32>().unwrap();
     let mut db = Fylo::open(&root, &binary, false).unwrap();
     db.create_collection("users", "document").unwrap();
     let put = db
@@ -1051,6 +1052,15 @@ fn main() {
         .unwrap();
     assert!(sql_put.contains("\"ok\":true"), "{sql_put}");
     assert!(private.contains("SQL Ada"), "{private}");
+    let group_sql_put = db
+        .sql_access(
+            "INSERT INTO users (name, scope) VALUES ('Group SQL Ada', 'group-sql')",
+            None,
+            Some(gid),
+            Some(0o660),
+        )
+        .unwrap();
+    assert!(group_sql_put.contains("\"ok\":true"), "{group_sql_put}");
     println!("{{\"ok\":true}}");
 }
 `
@@ -1060,9 +1070,12 @@ fn main() {
             timeout: 120_000
         })
         expectSuccess('rustc shim compile', compile)
-        const result = await run([executable, binaryPath, root, String(process.getuid())], {
-            timeout: 120_000
-        })
+        const result = await run(
+            [executable, binaryPath, root, String(process.getuid()), String(process.getgid())],
+            {
+                timeout: 120_000
+            }
+        )
         expectShimOk('rust shim', result)
     })
 
@@ -1181,6 +1194,7 @@ db.Dispose();
 Future<void> main(List<String> args) async {
   final db = await Fylo.open(args[1], binary: args[0]);
   final uid = int.parse(args[2]);
+  final gid = int.parse(args[3]);
   await db.createCollection('users');
   final id = await db.putData('users', {'name': 'Ada', 'role': 'admin', 'age': 30}) as String;
   final doc = await db.getLatest('users', id) as Map;
@@ -1198,13 +1212,26 @@ Future<void> main(List<String> args) async {
   if ((privateRows[sqlId] as Map)['name'] != 'SQL Ada') {
     throw StateError('bad protected SQL result');
   }
+  final groupSqlId = await db.sql(
+    "INSERT INTO users (name, scope) VALUES ('Group SQL Ada', 'group-sql')",
+    gid: gid,
+    mode: 432,
+  ) as String;
+  if (groupSqlId.isEmpty) throw StateError('bad group SQL result');
   await db.close();
   print('{"ok":true}');
 }
 `
         )
         const result = await run(
-            ['dart', 'driver.dart', binaryPath, root, String(process.getuid())],
+            [
+                'dart',
+                'driver.dart',
+                binaryPath,
+                root,
+                String(process.getuid()),
+                String(process.getgid())
+            ],
             {
                 cwd: ws,
                 timeout: 120_000

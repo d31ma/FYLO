@@ -34,6 +34,22 @@ describe('native Windows release gate', () => {
         expect(workflow).toContain('Download native-tested Windows release executable')
         expect(workflow).not.toContain('build bun-windows-x64')
     })
+
+    test('Release publishes a CalVer-named self-hosted Explorer archive', async () => {
+        const workflow = await Bun.file('.github/workflows/publish.yml').text()
+        const explorerPackage = await Bun.file('explorer/package.json').json()
+
+        expect(explorerPackage.scripts['bundle:release']).toContain(
+            'sync-explorer-browser-assets.mjs'
+        )
+        expect(workflow).toContain('(cd explorer && bun install --frozen-lockfile)')
+        expect(workflow).toContain('(cd explorer && bun run bundle:release)')
+        expect(workflow).toContain('bun scripts/web-artifact.mjs explorer/dist/web release-assets')
+        expect(workflow).toContain('fylo-explorer-${VERSION}.zip')
+        expect(workflow).toContain('unzip -tq "$archive"')
+        expect(workflow).toContain("grep -Fq 'FX | Fylo Explorer'")
+        expect(workflow).toContain('sha256sum --check SHA256SUMS')
+    })
 })
 
 describe('release supply-chain pinning', () => {

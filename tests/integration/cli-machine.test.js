@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from 'bun:test'
-import { readFile, rm } from 'node:fs/promises'
+import { readFile, rm, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { createTestRoot } from '../helpers/root.js'
 
@@ -127,6 +127,37 @@ describe('CLI machine interface', () => {
                 repo
             )
             expect(JSON.parse(ownerResponse.stdout).result[sqlId].title).toBe('Private SQL')
+
+            const gid = process.getgroups()[0]
+            const groupInsertResponse = await run(
+                [
+                    'src/cli/index.js',
+                    'exec',
+                    '--request',
+                    JSON.stringify({
+                        op: 'executeSQL',
+                        root,
+                        sql: "INSERT INTO machine-posts (title, scope) VALUES ('Group SQL', 'machine-group-access')",
+                        access: { gid, mode: 0o660 }
+                    })
+                ],
+                repo
+            )
+            expect(groupInsertResponse.exitCode).toBe(0)
+            const groupId = JSON.parse(groupInsertResponse.stdout).result
+            const groupInfo = await stat(
+                path.join(
+                    root,
+                    '.collections',
+                    'machine-posts',
+                    'docs',
+                    groupId.slice(0, 2),
+                    `${groupId}.json`
+                )
+            )
+            expect(groupInfo.uid).toBe(process.getuid())
+            expect(groupInfo.gid).toBe(gid)
+            expect(groupInfo.mode & 0o777).toBe(0o660)
         }
 
         const putResponse = await run(

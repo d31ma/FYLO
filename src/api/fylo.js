@@ -1,4 +1,5 @@
 import path from 'node:path'
+import { createReadStream } from 'node:fs'
 import { readdir } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import TTID from '../vendor/ttid.js'
@@ -23,6 +24,40 @@ import {
 import { createQueryCache } from '../cache/query.js'
 import { VersionRepository } from '../versioning/repository.js'
 import '../core/extensions.js'
+
+/**
+ * Adapts an independent Node file stream without involving Bun's compiled
+ * FileBlob stream implementation. Pulling one chunk at a time preserves
+ * backpressure while a raw file is durably copied.
+ *
+ * @param {string} filename
+ * @returns {ReadableStream<Uint8Array>}
+ */
+function localFileStream(filename) {
+    const source = createReadStream(filename)
+    const iterator = source[Symbol.asyncIterator]()
+    return new ReadableStream({
+        async pull(controller) {
+            try {
+                const next = await iterator.next()
+                if (next.done) {
+                    controller.close()
+                    return
+                }
+                const value = next.value
+                controller.enqueue(
+                    value instanceof Uint8Array ? value : new Uint8Array(/** @type {any} */ (value))
+                )
+            } catch (error) {
+                controller.error(error)
+            }
+        },
+        async cancel() {
+            source.destroy()
+            await iterator.return?.()
+        }
+    })
+}
 
 /**
  * @typedef {import('../replication/sync.js').FyloOptions<Record<string, any>>} FyloOptions
@@ -67,7 +102,7 @@ import '../core/extensions.js'
  * @typedef {PromiseLike<TTIDValue> & {
  *   catch(onRejected?: (reason: any) => any): Promise<TTIDValue>,
  *   finally(onFinally?: () => void): Promise<TTIDValue>,
- *   as(access: { uid: number, mode?: number }): MetadataPutOperation,
+ *   as(access: { uid?: number, gid?: number, mode?: number }): MetadataPutOperation,
  *   metadata(record: Record<string, any>): Promise<TTIDValue>
  * }} MetadataPutOperation
  * @typedef {((data: Record<string, any> | RawFileInput, options?: RawFilePutOptions) => MetadataPutOperation) &
@@ -94,7 +129,7 @@ import '../core/extensions.js'
  * chaining therefore binds configuration before filesystem work begins while
  * preserving the native Promise returned by the historical API.
  *
- * @param {(metadata: Record<string, any> | undefined, access: { uid: number, mode?: number } | undefined) => Promise<TTIDValue>} write
+ * @param {(metadata: Record<string, any> | undefined, access: { uid?: number, gid?: number, mode?: number } | undefined) => Promise<TTIDValue>} write
  * @param {(id: TTIDValue, metadata: Record<string, any>, uid: number | undefined) => Promise<TTIDValue>} writeMetadata
  * @returns {MetadataPutOperation}
  */
@@ -104,7 +139,7 @@ function metadataPutOperation(write, writeMetadata) {
     let hasInitialMetadata = false
     /** @type {unknown} */
     let validationError
-    /** @type {{ uid: number, mode?: number } | undefined} */
+    /** @type {{ uid?: number, gid?: number, mode?: number } | undefined} */
     let access
     let started = false
     const operation = Promise.resolve().then(async () => {
@@ -113,7 +148,7 @@ function metadataPutOperation(write, writeMetadata) {
         return await write(hasInitialMetadata ? initialMetadata : undefined, access)
     })
     const enhanced = Object.assign(operation, {
-        as(/** @type {{ uid: number, mode?: number }} */ input) {
+        as(/** @type {{ uid?: number, gid?: number, mode?: number }} */ input) {
             if (started) throw new Error('as() must be called before the put operation starts')
             try {
                 access = normalizeAccessInput(input, { allowMode: true })
@@ -176,11 +211,11 @@ function deferredAccessOperation(run) {
  * Native Promise used by the SQL tag. Access is bound synchronously through
  * `.as()` before planning/execution begins on the next microtask.
  * @template T
- * @param {(access: { uid: number, mode?: number } | undefined) => Promise<T>} run
- * @returns {Promise<T> & { as(input: { uid: number, mode?: number }): any }}
+ * @param {(access: { uid?: number, gid?: number, mode?: number } | undefined) => Promise<T>} run
+ * @returns {Promise<T> & { as(input: { uid?: number, gid?: number, mode?: number }): any }}
  */
 function sqlAccessOperation(run) {
-    /** @type {{ uid: number, mode?: number } | undefined} */
+    /** @type {{ uid?: number, gid?: number, mode?: number } | undefined} */
     let access
     /** @type {unknown} */
     let validationError
@@ -191,7 +226,7 @@ function sqlAccessOperation(run) {
         return await run(access)
     })
     return Object.assign(operation, {
-        as(/** @type {{ uid: number, mode?: number }} */ input) {
+        as(/** @type {{ uid?: number, gid?: number, mode?: number }} */ input) {
             if (started) throw new Error('as() must be called before SQL execution starts')
             try {
                 access = normalizeAccessInput(input, { allowMode: true })
@@ -335,6 +370,7 @@ export default class Fylo {
             sync: options.sync,
             syncMode: options.syncMode,
             worm: options.worm,
+            access: options.access,
             onEvent: options.onEvent,
             queue: this.queue,
             queryCache: this.cache,
@@ -448,7 +484,7 @@ export default class Fylo {
     /**
      * Internal: execute a raw SQL string. Prefer the `fylo.sql`...`` template tag for application code.
      * @param {string} SQL
-     * @param {{ uid: number, mode?: number }=} access
+     * @param {{ uid?: number, gid?: number, mode?: number }=} access
      * @returns {Promise<unknown>}
      */
     async _sql(SQL, access = undefined) {
@@ -457,8 +493,20 @@ export default class Fylo {
         const normalizedAccess = access
             ? normalizeAccessInput(access, { allowMode: true })
             : undefined
-        if (normalizedAccess?.mode !== undefined && plan.operation !== 'INSERT') {
-            throw new TypeError('SQL mode is only supported for INSERT statements')
+        if (
+            plan.operation !== 'INSERT' &&
+            (normalizedAccess?.gid !== undefined || normalizedAccess?.mode !== undefined)
+        ) {
+            throw new TypeError('SQL gid and mode are only supported for INSERT statements')
+        }
+        if (
+            normalizedAccess &&
+            (plan.operation === 'SELECT' ||
+                plan.operation === 'UPDATE' ||
+                plan.operation === 'DELETE') &&
+            normalizedAccess.uid === undefined
+        ) {
+            throw new TypeError(`SQL ${plan.operation} as() requires a numeric uid`)
         }
         if (normalizedAccess && (plan.operation === 'CREATE' || plan.operation === 'DROP')) {
             throw new TypeError(`SQL ${plan.operation} does not support as({ uid })`)
@@ -476,7 +524,7 @@ export default class Fylo {
     }
     /**
      * @param {ReturnType<FyloQueryPlanner['prepare']>} plan
-     * @param {{ uid: number, mode?: number }=} access
+     * @param {{ uid?: number, gid?: number, mode?: number }=} access
      * @returns {Promise<unknown>}
      */
     async executeSqlPlan(plan, access = undefined) {
@@ -495,7 +543,7 @@ export default class Fylo {
                 const selectedCollection = query.$collection
                 delete query.$collection
                 const cursor = new CollectionFacade(this, String(selectedCollection)).find(query)
-                if (access) cursor.as({ uid: access.uid })
+                if (access) cursor.as({ uid: /** @type {number} */ (access.uid) })
                 /** @type {TTIDValue[] | Record<string, any>} */
                 let docs = query.$onlyIds ? [] : {}
                 for await (const data of cursor.collect()) {
@@ -521,7 +569,9 @@ export default class Fylo {
                 const updateCol = update.$collection
                 delete update.$collection
                 const operation = new CollectionFacade(this, String(updateCol)).patch.many(update)
-                return await (access ? operation.as({ uid: access.uid }) : operation)
+                return await (access
+                    ? operation.as({ uid: /** @type {number} */ (access.uid) })
+                    : operation)
             }
             case 'DELETE': {
                 const del = /** @type {StoreDelete} */ (parsed)
@@ -530,7 +580,9 @@ export default class Fylo {
                 const operation = new CollectionFacade(this, String(deleteCollection)).delete.many(
                     del
                 )
-                return await (access ? operation.as({ uid: access.uid }) : operation)
+                return await (access
+                    ? operation.as({ uid: /** @type {number} */ (access.uid) })
+                    : operation)
             }
             default:
                 throw new Error('Invalid Operation')
@@ -550,7 +602,7 @@ export default class Fylo {
     }
     createSqlTag() {
         const fylo = this
-        return /** @type {(strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown> & { as(input: { uid: number, mode?: number }): any }} */ (
+        return /** @type {(strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown> & { as(input: { uid?: number, gid?: number, mode?: number }): any }} */ (
             (strings, ...values) =>
                 sqlAccessOperation((access) => {
                     let statement = strings[0] ?? ''
@@ -962,7 +1014,11 @@ export default class Fylo {
                 throw new Error(`Raw file exceeded ${normalized.maxBytes} bytes`)
             }
             return {
-                stream: /** @type {ReadableStream<Uint8Array>} */ (file.stream()),
+                // Bun's compiled runtime can stop servicing a long-lived stdin
+                // iterator after Bun.file().stream() reaches EOF. Adapt the
+                // independent Node file stream instead so `fylo exec --loop`
+                // retains ownership of stdin for the next machine request.
+                stream: localFileStream(fileURLToPath(input)),
                 name: decodeURIComponent(input.pathname.split('/').pop() ?? ''),
                 contentType: file.type || undefined,
                 key: options.key,
@@ -1049,7 +1105,7 @@ export default class Fylo {
      * @param {string} collection
      * @param {RawFileInput} input
      * @param {RawFilePutOptions} [options]
-     * @param {{ uid: number, mode?: number }} [access]
+     * @param {{ uid?: number, gid?: number, mode?: number }} [access]
      * @returns {Promise<TTIDValue>}
      */
     async executePutFileDirect(collection, input, options, access) {
@@ -1064,7 +1120,7 @@ export default class Fylo {
      * @param {TTIDValue} id
      * @param {RawFileInput} input
      * @param {RawFilePutOptions} [options]
-     * @param {{ uid: number, mode?: number }} [access]
+     * @param {{ uid?: number, gid?: number, mode?: number }} [access]
      * @returns {Promise<TTIDValue>}
      */
     async executePutFileAtIdDirect(collection, id, input, options, access) {
@@ -1090,7 +1146,7 @@ export default class Fylo {
         await this.autoCommit({ operation: 'put', collection, docId: id })
         return id
     }
-    /** @param {string} collection @param {TTIDValue} _id @param {Record<string, any>} doc @param {TTIDValue | undefined} previousId @param {Record<string, any>=} meta @param {{ uid: number, mode?: number }=} access @param {boolean=} generated @returns {Promise<TTIDValue>} */
+    /** @param {string} collection @param {TTIDValue} _id @param {Record<string, any>} doc @param {TTIDValue | undefined} previousId @param {Record<string, any>=} meta @param {{ uid?: number, gid?: number, mode?: number }=} access @param {boolean=} generated @returns {Promise<TTIDValue>} */
     async executePutDataDirect(collection, _id, doc, previousId, meta, access, generated = false) {
         await this.ready()
         if (previousId)
