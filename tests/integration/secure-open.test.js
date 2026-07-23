@@ -11,7 +11,8 @@ import {
 } from '../../src/storage/secure-open.js'
 import {
     WINDOWS_NATIVE_CONSTANTS,
-    WINDOWS_NATIVE_LAYOUT
+    WINDOWS_NATIVE_LAYOUT,
+    retryWindowsRenameAccessDenied
 } from '../../src/storage/windows-secure-open.js'
 
 const root = await mkdtemp(path.join(os.tmpdir(), 'fylo-secure-open-'))
@@ -74,6 +75,59 @@ describe('secure descriptor traversal availability', () => {
         expect(WINDOWS_NATIVE_CONSTANTS.FILE_DISPOSITION_INFO_EX).toBe(21)
         expect(WINDOWS_NATIVE_CONSTANTS.FILE_ATTRIBUTE_REPARSE_POINT).toBe(0x400)
         expect(WINDOWS_NATIVE_CONSTANTS.FILE_ATTRIBUTE_READONLY).toBe(0x1)
+    })
+
+    test('retries transient Windows access denials with bounded backoff', () => {
+        const statuses = [
+            WINDOWS_NATIVE_CONSTANTS.STATUS_ACCESS_DENIED,
+            WINDOWS_NATIVE_CONSTANTS.STATUS_ACCESS_DENIED,
+            0
+        ]
+        const waits = []
+
+        const status = retryWindowsRenameAccessDenied(
+            () => /** @type {number} */ (statuses.shift()),
+            (delayMs) => waits.push(delayMs)
+        )
+
+        expect(status).toBe(0)
+        expect(waits).toEqual([10, 20])
+        expect(statuses).toEqual([])
+    })
+
+    test('does not retry permanent Windows rename failures', () => {
+        let attempts = 0
+        const permanentFailure = WINDOWS_NATIVE_CONSTANTS.STATUS_OBJECT_PATH_NOT_FOUND
+
+        const status = retryWindowsRenameAccessDenied(
+            () => {
+                attempts += 1
+                return permanentFailure
+            },
+            () => {
+                throw new Error('permanent failures must not wait')
+            }
+        )
+
+        expect(status).toBe(permanentFailure)
+        expect(attempts).toBe(1)
+    })
+
+    test('returns a persistent access denial after the bounded retry budget', () => {
+        let attempts = 0
+        const waits = []
+
+        const status = retryWindowsRenameAccessDenied(
+            () => {
+                attempts += 1
+                return WINDOWS_NATIVE_CONSTANTS.STATUS_ACCESS_DENIED
+            },
+            (delayMs) => waits.push(delayMs)
+        )
+
+        expect(status).toBe(WINDOWS_NATIVE_CONSTANTS.STATUS_ACCESS_DENIED)
+        expect(attempts).toBe(8)
+        expect(waits).toEqual([10, 20, 40, 80, 160, 320, 640])
     })
 
     test('a directory-to-symlink swap cannot redirect a rooted mutation', async () => {

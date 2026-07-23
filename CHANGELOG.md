@@ -23,6 +23,9 @@
   (#65).
 - GID-only and mode-only writes preserve the document's existing ownership
   fields while applying the requested access change atomically.
+- Secure Windows transaction-state replacement now tolerates short-lived
+  antivirus/indexer access denials with a bounded retry while remaining
+  fail-closed for persistent or unrelated errors.
 
 ## 26.30.03 - 2026-07-22
 
