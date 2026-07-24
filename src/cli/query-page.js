@@ -172,9 +172,13 @@ async function createState(values, scope, expiresAt) {
 export async function collectQueryPage(cursors, values, options) {
     const limit = options.limit ?? DEFAULT_QUERY_PAGE_ITEMS
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_QUERY_PAGE_ITEMS) {
-        throw new RangeError(
-            `Machine query page.limit must be an integer from 1 to ${MAX_QUERY_PAGE_ITEMS}`
+        const error = /** @type {RangeError & { code: string }} */ (
+            new RangeError(
+                `Machine query page.limit must be an integer from 1 to ${MAX_QUERY_PAGE_ITEMS}`
+            )
         )
+        error.code = 'EBADREQUEST'
+        throw error
     }
     const now = options.now ?? Date.now()
     for (const [candidateToken, candidate] of cursors) {

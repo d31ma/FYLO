@@ -1394,6 +1394,30 @@ returns `EQUERYSNAPSHOTTOOLARGE`. If a client observes an oversized or malformed
 response despite the negotiated contract, it must kill and restart the child
 because its framing can no longer be trusted.
 
+#### Stable machine error codes
+
+Every `ok: false` machine response carries a non-empty `error.code`. The set
+is additive: new codes may appear in later releases, and an existing code
+keeps its meaning. Clients should branch on `error.code`, never on message
+text.
+
+| Code                                                                   | Meaning                                                                    | Retry guidance                                               |
+| ---------------------------------------------------------------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| `EBADREQUEST`                                                          | The request shape, field types, access object, or page options are invalid | Do not retry; fix the request                                |
+| `EUNSUPPORTEDOP`                                                       | The operation is unknown to this runtime                                   | Do not retry; check the handshake capabilities               |
+| `EINVALIDDOCID`                                                        | The supplied document ID is not a valid TTID                               | Do not retry; fix the ID                                     |
+| `EACCES`                                                               | The access context is not permitted to perform the operation               | Do not retry with the same identity                          |
+| `EINVALIDCURSOR`                                                       | The pagination cursor is invalid, expired, or from another process         | Restart the traversal from page one                          |
+| `EROOTLOCKED` / `EROOTLEASELOST`                                       | Exclusive root ownership was unavailable or lost                           | Fail over per your supervisor policy                         |
+| `EBACKUPNOTCONFIGURED`                                                 | A backup operation was sent to a loop without backup configuration         | Do not retry without configuration                           |
+| `EFRAME_*`                                                             | Frame-contract violations, as documented above                             | Per the framing rules above                                  |
+| `EQUERYLOOPREQUIRED` / `EQUERYITEMTOOLARGE` / `EQUERYSNAPSHOTTOOLARGE` | Pagination contract violations, as documented above                        | Per the pagination rules above                               |
+| `EUNKNOWN`                                                             | An engine failure without a more specific classification                   | Treat conservatively; inspect `error.message` diagnostically |
+
+Storage-level failures may carry additional stable codes (for example
+`FYLO_COLLECTION_NOT_FOUND`); those retain their meaning across releases under
+the same additive policy.
+
 #### Exclusive root owner
 
 Long-lived supervisors that require exactly one authoritative process can opt
