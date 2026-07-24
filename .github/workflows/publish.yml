@@ -452,6 +452,7 @@ jobs:
                   set -euo pipefail
                   expected=$(cat <<EOF
                   dedicated.js
+                  fylo-${VERSION}.spdx.json
                   fylo-clients.tar.gz
                   fylo-explorer-${VERSION}.zip
                   fylo-index.wasm
@@ -459,7 +460,6 @@ jobs:
                   fylo-linux-x64
                   fylo-macos-arm64
                   fylo-macos-x64
-                  fylo-${VERSION}.spdx.json
                   fylo-web.mjs
                   fylo-windows-x64.exe
                   install.ps1
