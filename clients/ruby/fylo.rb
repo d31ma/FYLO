@@ -21,6 +21,9 @@
 require "json"
 require "open3"
 
+MAX_REQUEST_BYTES = 1024 * 1024
+MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+
 class FyloError < StandardError; end
 
 class Fylo
@@ -35,7 +38,11 @@ class Fylo
   end
 
   def initialize(root, binary: "fylo", worm: false)
-    args = [binary, "exec", "--loop", "--root", root]
+    args = [
+      binary, "exec", "--loop", "--root", root,
+      "--max-request-bytes", MAX_REQUEST_BYTES.to_s,
+      "--max-response-bytes", MAX_RESPONSE_BYTES.to_s
+    ]
     args << "--worm" if worm
     @stdin, @stdout, @wait = Open3.popen2(*args)
     @mutex = Mutex.new
@@ -43,14 +50,25 @@ class Fylo
 
   # Send one raw machine-protocol op; return the full response Hash.
   def request(op)
+    payload = JSON.generate(op)
+    raise FyloError, "FYLO request exceeds #{MAX_REQUEST_BYTES} bytes" if payload.bytesize > MAX_REQUEST_BYTES
     reply = @mutex.synchronize do
       raise FyloError, "fylo process has exited" unless @wait.alive?
-      @stdin.puts(JSON.generate(op))
+      @stdin.puts(payload)
       @stdin.flush
-      @stdout.gets
+      @stdout.gets(MAX_RESPONSE_BYTES + 2)
     end
     raise FyloError, "fylo closed the stream" if reply.nil?
-    JSON.parse(reply)
+    unless reply.end_with?("\n") && reply.bytesize - 1 <= MAX_RESPONSE_BYTES
+      Process.kill("KILL", @wait.pid) rescue nil
+      raise FyloError, "FYLO response exceeds #{MAX_RESPONSE_BYTES} bytes"
+    end
+    begin
+      JSON.parse(reply)
+    rescue JSON::ParserError, EncodingError => error
+      Process.kill("KILL", @wait.pid) rescue nil
+      raise FyloError, "fylo returned malformed UTF-8 or JSON: #{error.message}"
+    end
   end
 
   # --- Collections ---
@@ -122,6 +140,14 @@ class Fylo
 
   def find_deleted_docs(collection, query = {})
     op("findDeletedDocs", "collection" => collection, "query" => query)
+  end
+
+  def find_docs_page(collection, query, page = {})
+    op("findDocs", "collection" => collection, "query" => query, "page" => page)
+  end
+
+  def find_deleted_docs_page(collection, query = {}, page = {})
+    op("findDeletedDocs", "collection" => collection, "query" => query, "page" => page)
   end
 
   def join_docs(join)
@@ -240,6 +266,10 @@ class Fylo
 
     def find(query)
       @db.find_docs(@name, query)
+    end
+
+    def find_page(query, page = {})
+      @db.find_docs_page(@name, query, page)
     end
   end
 end

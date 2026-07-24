@@ -12,12 +12,14 @@ describe('native Windows release gate', () => {
             expect(workflow).toContain('./scripts/install-vendor-bins.ps1')
             expect(workflow).toContain("FYLO_REQUIRE_WINDOWS_NATIVE: '1'")
             expect(workflow).toContain('tests/integration/fs-lock.test.js')
+            expect(workflow).toContain('tests/integration/machine-hardening.test.js')
             expect(workflow).toContain('tests/integration/transactions.test.js')
             expect(workflow).toContain('tests/integration/crash-recovery.test.js')
             expect(workflow).toContain('tests/integration/document-path-security.test.js')
             expect(workflow).toContain('tests/integration/secure-open.test.js')
             expect(workflow).toContain('--timeout 300000 --parallel=1')
             expect(workflow).toContain('tests/interop/windows-native-binary.test.js')
+            expect(workflow).toContain('bun ./scripts/build-executable.mjs --outfile')
         })
     }
 
@@ -25,13 +27,16 @@ describe('native Windows release gate', () => {
         const workflow = await Bun.file('.github/workflows/publish.yml').text()
 
         expect(workflow).toContain(
-            'bun build --compile ./src/cli/index.js --outfile ./dist-bin/fylo-windows-x64.exe'
+            'bun ./scripts/build-executable.mjs --outfile ./dist-bin/fylo-windows-x64.exe'
         )
         expect(workflow).toContain('FYLO_WINDOWS_BINARY: dist-bin/fylo-windows-x64.exe')
         expect(workflow).toContain("if: matrix.os == 'windows-2022'")
         expect(workflow).toContain('name: windows-release-${{ github.sha }}')
         expect(workflow).toContain('path: dist-bin/fylo-windows-x64.exe')
         expect(workflow).toContain('Download native-tested Windows release executable')
+        expect(workflow).toContain(
+            'bun ./scripts/build-executable.mjs --target "$1" --outfile "release-assets/$2"'
+        )
         expect(workflow).not.toContain('build bun-windows-x64')
     })
 

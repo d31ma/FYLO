@@ -78,6 +78,8 @@ describe('Unix installer integrity', () => {
         const script = await Bun.file(installer).text()
         expect(script).toContain('A SHA-256 tool (sha256sum or shasum) is required')
         expect(script).toContain('curl -fsSL "${BASE}/SHA256SUMS"')
+        expect(script).toContain('FYLO_VERIFY_PROVENANCE')
+        expect(script).toContain('gh attestation verify "$tmp/fylo" --repo "$REPO"')
         expect(script).not.toContain('SHA256SUMS" || true')
     })
 

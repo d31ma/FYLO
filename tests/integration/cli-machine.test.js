@@ -1,6 +1,7 @@
 import { afterAll, describe, expect, test } from 'bun:test'
 import { readFile, rm, stat } from 'node:fs/promises'
 import path from 'node:path'
+import { runMachineRequest } from '../../src/cli/machine.js'
 import { createTestRoot } from '../helpers/root.js'
 
 const roots = []
@@ -43,6 +44,8 @@ describe('CLI machine interface', () => {
         const help = await run(['src/cli/index.js', '--help'], repo)
         expect(help.exitCode).toBe(0)
         expect(help.stdout).toContain('fylo exec --request')
+        expect(help.stdout).toContain('fylo backup verify')
+        expect(help.stdout).toContain('--backup-bucket')
         expect(help.stdout).toContain('fylo inspect <collection>')
         expect(help.stdout).toContain('fylo sql "<SQL>"')
         expect(help.stdout).not.toContain('fylo.exec')
@@ -265,6 +268,26 @@ describe('CLI machine interface', () => {
         )
         expect(restoreResponse.exitCode).toBe(0)
         expect(JSON.parse(restoreResponse.stdout).result).toEqual({ restored: true, id: docId })
+    })
+
+    test('reports disabled whole-root backup through the machine contract', async () => {
+        const response = await runMachineRequest(
+            { op: 'backupStatus' },
+            { root: await createRoot('fylo-machine-backup-status-') }
+        )
+        expect(response.ok).toBe(true)
+        expect(response.result).toEqual({
+            configured: false,
+            state: 'disabled',
+            runs: 0
+        })
+
+        const reconcile = await runMachineRequest(
+            { op: 'backupReconcile' },
+            { root: await createRoot('fylo-machine-backup-reconcile-') }
+        )
+        expect(reconcile.ok).toBe(false)
+        expect(reconcile.error.code).toBe('EBACKUPNOTCONFIGURED')
     })
 
     test('exec exposes version-control operations for language-agnostic callers', async () => {
@@ -566,6 +589,140 @@ describe('CLI machine interface', () => {
         expect(getResponse.exitCode).toBe(0)
         expect(JSON.parse(getResponse.stdout).result[id].key).toBe('/machine/imports/source.txt')
     })
+
+    test.skipIf(process.platform === 'win32' || !process.getuid)(
+        'scopes trusted virtual groups across cached document and raw-file operations',
+        async () => {
+            const root = await createRoot('fylo-machine-access-')
+            const overrides = { root, cache: new Map() }
+            const gid = process.getgid?.() ?? process.getgroups()[0]
+            const memberUid = process.getuid() + 10_001
+            const outsiderUid = memberUid + 1
+            const member = { uid: memberUid, groups: [gid] }
+            const noGroups = { uid: memberUid, groups: [] }
+            const outsider = { uid: outsiderUid, groups: [] }
+
+            for (const [collection, kind] of [
+                ['tenant-docs', 'document'],
+                ['tenant-files', 'file']
+            ]) {
+                const created = await runMachineRequest(
+                    { op: 'createCollection', collection, kind },
+                    overrides
+                )
+                expect(created.ok).toBe(true)
+            }
+
+            const putDoc = await runMachineRequest(
+                {
+                    op: 'putData',
+                    collection: 'tenant-docs',
+                    data: { tenant: 'domain-a', title: 'private' },
+                    access: { gid, mode: 0o660 }
+                },
+                overrides
+            )
+            expect(putDoc.ok).toBe(true)
+            const docId = String(putDoc.result)
+
+            const memberQuery = await runMachineRequest(
+                {
+                    op: 'findDocs',
+                    collection: 'tenant-docs',
+                    query: { tenant: 'domain-a' },
+                    access: member
+                },
+                overrides
+            )
+            expect(memberQuery.ok).toBe(true)
+            expect(memberQuery.result).toHaveProperty(docId)
+
+            const sameUidWithoutGroup = await runMachineRequest(
+                {
+                    op: 'findDocs',
+                    collection: 'tenant-docs',
+                    query: { tenant: 'domain-a' },
+                    access: noGroups
+                },
+                overrides
+            )
+            expect(sameUidWithoutGroup.ok).toBe(true)
+            expect(sameUidWithoutGroup.result).toEqual({})
+
+            const deniedDoc = await runMachineRequest(
+                {
+                    op: 'getDoc',
+                    collection: 'tenant-docs',
+                    id: docId,
+                    access: outsider
+                },
+                overrides
+            )
+            expect(deniedDoc.ok).toBe(false)
+            expect(deniedDoc.error.code).toBe('EACCES')
+
+            const patched = await runMachineRequest(
+                {
+                    op: 'patchDoc',
+                    collection: 'tenant-docs',
+                    id: docId,
+                    newDoc: { title: 'member update' },
+                    access: member
+                },
+                overrides
+            )
+            expect(patched.ok).toBe(true)
+
+            const source = path.join(root, 'attachment.txt')
+            await Bun.write(source, 'domain-a attachment')
+            const putFile = await runMachineRequest(
+                {
+                    op: 'putData',
+                    collection: 'tenant-files',
+                    file: { path: source, key: '/mail/attachment.txt' },
+                    access: { gid, mode: 0o660 }
+                },
+                overrides
+            )
+            expect(putFile.ok).toBe(true)
+            const fileId = String(putFile.result)
+
+            const memberFile = await runMachineRequest(
+                {
+                    op: 'getDoc',
+                    collection: 'tenant-files',
+                    id: fileId,
+                    access: member
+                },
+                overrides
+            )
+            expect(memberFile.ok).toBe(true)
+            expect(memberFile.result[fileId].key).toBe('/mail/attachment.txt')
+
+            const deniedFile = await runMachineRequest(
+                {
+                    op: 'delDoc',
+                    collection: 'tenant-files',
+                    id: fileId,
+                    access: outsider
+                },
+                overrides
+            )
+            expect(deniedFile.ok).toBe(false)
+            expect(deniedFile.error.code).toBe('EACCES')
+
+            const deletedFile = await runMachineRequest(
+                {
+                    op: 'delDoc',
+                    collection: 'tenant-files',
+                    id: fileId,
+                    access: member
+                },
+                overrides
+            )
+            expect(deletedFile.ok).toBe(true)
+        }
+    )
 
     test('exec returns structured JSON errors with non-zero exits', async () => {
         const repo = process.cwd()

@@ -96,14 +96,25 @@ function sha256(bytes) {
     return createHash('sha256').update(bytes).digest('hex')
 }
 
-/** @param {string} dataKey @param {Uint8Array} bytes @param {Record<string, string>} xattrs */
-function fileManifest(dataKey, bytes, xattrs) {
+export function backupPlatform() {
+    return process.platform === 'win32' ? 'windows-ntfs' : 'posix'
+}
+
+/**
+ * @param {string} dataKey
+ * @param {Uint8Array} bytes
+ * @param {Record<string, string>} xattrs
+ * @param {{ mode: number, mtimeMs: number }} native
+ */
+function fileManifest(dataKey, bytes, xattrs, native) {
     return JSON.stringify({
-        version: 1,
+        version: 2,
+        platform: backupPlatform(),
         dataKey,
         size: bytes.byteLength,
         sha256: sha256(bytes),
-        xattrs
+        xattrs,
+        native
     })
 }
 
@@ -224,11 +235,6 @@ export class FyloS3Backup {
      * @param {{ client?: Bun.S3Client, onEvent?: import('../observability/events.js').FyloEventHandler, sleep?: (ms: number) => Promise<void>, random?: () => number }} [deps] injectable boundaries for tests
      */
     constructor(options, root, deps = {}) {
-        if (process.platform === 'win32') {
-            throw new Error(
-                'Built-in S3 backup is unavailable on Windows because ADS metadata cannot be captured from an open file descriptor'
-            )
-        }
         this.options = resolveS3BackupOptions(options)
         this.onEvent = deps.onEvent
         this.sleep = deps.sleep ?? ((ms) => Bun.sleep(ms))
@@ -322,7 +328,7 @@ export class FyloS3Backup {
      * Read bytes and xattrs from one opened inode, rejecting symlinks and any
      * descriptor whose resolved target is outside the current FYLO root.
      * @param {string} target
-     * @returns {Promise<{ bytes: Uint8Array, size: number, xattrs: Record<string, string> } | null>}
+     * @returns {Promise<{ bytes: Uint8Array, size: number, xattrs: Record<string, string>, native: { mode: number, mtimeMs: number } } | null>}
      */
     async snapshot(target) {
         let fd = null
@@ -345,7 +351,12 @@ export class FyloS3Backup {
                 const value = getXattrFd(fd, name)
                 if (value !== null) xattrs[name] = Buffer.from(value).toString('base64')
             }
-            return { bytes, size: info.size, xattrs }
+            return {
+                bytes,
+                size: info.size,
+                xattrs,
+                native: { mode: info.mode & 0o777, mtimeMs: info.mtimeMs }
+            }
         } catch (error) {
             const code = /** @type {NodeJS.ErrnoException} */ (error).code
             if (code === 'ENOENT' || code === 'ELOOP' || code === 'ENOTDIR') return null
@@ -476,7 +487,7 @@ export class FyloS3Backup {
                 const snapshot = await this.snapshot(absPath)
                 if (!snapshot) return
                 const key = this.key(absPath)
-                const manifest = fileManifest(key, snapshot.bytes, snapshot.xattrs)
+                const manifest = fileManifest(key, snapshot.bytes, snapshot.xattrs, snapshot.native)
                 await Promise.all([
                     this.withRetry('write', key, () => this.client.write(key, snapshot.bytes)),
                     this.withRetry('write', this.manifestKey(key), () =>
@@ -601,7 +612,7 @@ export class FyloS3Backup {
             }
         }
         await walk(this.root)
-        /** @type {Map<string, { bytes: Uint8Array, size: number, xattrs: Record<string, string> }>} */
+        /** @type {Map<string, { bytes: Uint8Array, size: number, xattrs: Record<string, string>, native: { mode: number, mtimeMs: number } }>} */
         const materialized = new Map()
         let materializedBytes = 0
         for (const [key, file] of local) {
@@ -671,8 +682,8 @@ export class FyloS3Backup {
             if (
                 !current ||
                 !captured ||
-                fileManifest(key, current.bytes, current.xattrs) !==
-                    fileManifest(key, captured.bytes, captured.xattrs)
+                fileManifest(key, current.bytes, current.xattrs, current.native) !==
+                    fileManifest(key, captured.bytes, captured.xattrs, captured.native)
             ) {
                 return await this.reconcileAttempt(attempt + 1)
             }
@@ -684,7 +695,7 @@ export class FyloS3Backup {
         for (const [key] of local) {
             const snapshot = materialized.get(key)
             if (!snapshot) continue
-            const manifest = fileManifest(key, snapshot.bytes, snapshot.xattrs)
+            const manifest = fileManifest(key, snapshot.bytes, snapshot.xattrs, snapshot.native)
             const manifestKey = this.manifestKey(key)
             let remoteManifest = ''
             if (remoteManifests.has(manifestKey)) {

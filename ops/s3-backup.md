@@ -14,6 +14,23 @@ Forward `backup.reconcile.*` and `backup.retry` events from `onEvent` to the
 service's metrics/log pipeline. Alert when scheduled passes remain failed past
 the recovery-point objective or retry volume increases materially.
 
+A compiled supervisor exposes the same state without importing JavaScript:
+
+```sh
+fylo exec --loop --root /srv/fylo \
+  --exclusive-root \
+  --backup-bucket fylo-backup \
+  --backup-prefix production/root-a \
+  --backup-endpoint https://s3.example.internal
+```
+
+Send `{"op":"backupStatus"}` for non-mutating inspection and
+`{"op":"backupReconcile"}` to run and await one coalesced pass. The handshake
+reports whether backup is configured and advertises these operations. Bucket,
+prefix, endpoint, region, and limits are process startup configuration;
+credentials remain exclusively in `AWS_*`/`FYLO_S3_*` environment variables.
+An unconfigured reconcile returns `EBACKUPNOTCONFIGURED`.
+
 ## Recover a failed pass
 
 1. Confirm local storage is healthy and has capacity.
@@ -62,8 +79,25 @@ default requirement for a unique `prefix` per FYLO root. Use
 `allowBucketRoot: true` only for a dedicated bucket with a least-privilege IAM
 identity; never point two roots at the same reconciliation scope.
 
-Built-in backup and S3 restore both fail closed on Windows because ADS metadata
-cannot yet be captured and restored with the required descriptor guarantees.
+Manifest version 2 records the source platform, SHA-256 and size, native
+mode/mtime, and FYLO metadata captured from the same pinned descriptor as the
+bytes. POSIX xattrs and NTFS alternate data streams are restored only on the
+same platform family. Cross-family recovery fails explicitly instead of
+silently discarding UID/GID or NTFS access semantics.
 
-For disaster recovery from S3, follow the recovery runbook in the main README
-and verify into a new destination before promotion.
+For disaster recovery from S3, follow the recovery runbook in the main README.
+Use `fylo backup verify` before `fylo backup restore`, always target a new
+destination, and retain the old root until application verification succeeds.
+Restore acquires a canonical root reservation before listing S3, stages with
+private permissions, and removes staging data after failure. A competing
+exclusive machine owner returns `EROOTLOCKED`.
+
+## Release gate
+
+Release publication depends on the reusable live S3-compatible workflow. It
+builds a release-identified native executable, exercises more than one provider
+listing page against pinned MinIO, covers documents, raw files, developer
+metadata, tombstones, reconcile/status, offline verify/restore, and proves that
+provider-side corruption is detected. The workflow retains the binary digest,
+runtime identity, provider version, filesystem type, isolated prefix, and test
+log as release evidence.

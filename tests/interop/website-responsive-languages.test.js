@@ -28,9 +28,11 @@ describe('website POSIX access guidance', () => {
         expect(features).toContain('POSIX UID/GID/mode enforcement')
         expect(faq).toContain('gid: editorsGid, mode: 0o660')
         expect(faq).toContain('Group write permission')
+        expect(faq).toContain('request-scoped virtual groups')
         expect(docs).toContain('groupsForUid')
         expect(docs).toContain('.as({ uid: 1001, gid: editorsGid, mode: 0o660 })')
         expect(docs).toContain('.as({ mode: 0o600 })')
+        expect(docs).toContain('groups: [editorsGid]')
     })
 })
 

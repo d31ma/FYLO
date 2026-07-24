@@ -21,8 +21,11 @@
 //! has `From` impls for &str/String/i64/f64/bool). Method names follow Rust's
 //! snake_case; `request` is the raw escape hatch for ops without a method.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
+
+const MAX_REQUEST_BYTES: usize = 1024 * 1024;
+const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 
 pub struct Fylo {
     child: Child,
@@ -35,31 +38,62 @@ impl Fylo {
     pub fn open(root: &str, binary: &str, worm: bool) -> std::io::Result<Fylo> {
         let mut cmd = Command::new(binary);
         cmd.args(["exec", "--loop", "--root", root]);
+        cmd.arg("--max-request-bytes")
+            .arg(MAX_REQUEST_BYTES.to_string())
+            .arg("--max-response-bytes")
+            .arg(MAX_RESPONSE_BYTES.to_string());
         if worm {
             cmd.arg("--worm");
         }
         let mut child = cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).spawn()?;
         let stdin = child.stdin.take().expect("stdin piped");
         let stdout = BufReader::new(child.stdout.take().expect("stdout piped"));
-        Ok(Fylo { child, stdin: Some(stdin), stdout })
+        Ok(Fylo {
+            child,
+            stdin: Some(stdin),
+            stdout,
+        })
     }
 
     /// Send one machine-protocol operation (a JSON object string) and return the
     /// response line (also JSON). ponytail: one call in flight; not thread-safe.
     pub fn request(&mut self, op_json: &str) -> std::io::Result<String> {
+        let payload = op_json.trim_end();
+        if payload.as_bytes().len() > MAX_REQUEST_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("FYLO request exceeds {MAX_REQUEST_BYTES} bytes"),
+            ));
+        }
         let stdin = self
             .stdin
             .as_mut()
             .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "fylo closed"))?;
-        stdin.write_all(op_json.trim_end().as_bytes())?;
+        stdin.write_all(payload.as_bytes())?;
         stdin.write_all(b"\n")?;
         stdin.flush()?;
         let mut line = String::new();
-        let n = self.stdout.read_line(&mut line)?;
+        let read = (&mut self.stdout)
+            .take((MAX_RESPONSE_BYTES + 2) as u64)
+            .read_line(&mut line);
+        let n = match read {
+            Ok(n) => n,
+            Err(error) => {
+                let _ = self.child.kill();
+                return Err(error);
+            }
+        };
         if n == 0 {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
                 "fylo closed the stream",
+            ));
+        }
+        if !line.ends_with('\n') || line.as_bytes().len() - 1 > MAX_RESPONSE_BYTES {
+            let _ = self.child.kill();
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("FYLO response exceeds {MAX_RESPONSE_BYTES} bytes"),
             ));
         }
         Ok(line)
@@ -70,7 +104,10 @@ impl Fylo {
     fn checked(&mut self, json: String) -> std::io::Result<String> {
         let resp = self.request(&json)?;
         if !resp.contains("\"ok\":true") {
-            return Err(std::io::Error::new(std::io::ErrorKind::Other, resp.trim().to_string()));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                resp.trim().to_string(),
+            ));
         }
         Ok(resp)
     }
@@ -85,13 +122,22 @@ impl Fylo {
         ))
     }
     pub fn drop_collection(&mut self, collection: &str) -> std::io::Result<String> {
-        self.checked(format!(r#"{{"op":"dropCollection","collection":"{}"}}"#, esc(collection)))
+        self.checked(format!(
+            r#"{{"op":"dropCollection","collection":"{}"}}"#,
+            esc(collection)
+        ))
     }
     pub fn inspect_collection(&mut self, collection: &str) -> std::io::Result<String> {
-        self.checked(format!(r#"{{"op":"inspectCollection","collection":"{}"}}"#, esc(collection)))
+        self.checked(format!(
+            r#"{{"op":"inspectCollection","collection":"{}"}}"#,
+            esc(collection)
+        ))
     }
     pub fn rebuild_collection(&mut self, collection: &str) -> std::io::Result<String> {
-        self.checked(format!(r#"{{"op":"rebuildCollection","collection":"{}"}}"#, esc(collection)))
+        self.checked(format!(
+            r#"{{"op":"rebuildCollection","collection":"{}"}}"#,
+            esc(collection)
+        ))
     }
 
     // --- Documents (object args are built with Json) ---
@@ -131,7 +177,12 @@ impl Fylo {
             esc(id)
         ))
     }
-    pub fn patch_doc(&mut self, collection: &str, id: &str, new_doc: Json) -> std::io::Result<String> {
+    pub fn patch_doc(
+        &mut self,
+        collection: &str,
+        id: &str,
+        new_doc: Json,
+    ) -> std::io::Result<String> {
         self.checked(format!(
             r#"{{"op":"patchDoc","collection":"{}","id":"{}","newDoc":{}}}"#,
             esc(collection),
@@ -160,6 +211,32 @@ impl Fylo {
             r#"{{"op":"findDocs","collection":"{}","query":{}}}"#,
             esc(collection),
             query.encode()
+        ))
+    }
+    pub fn find_docs_page(
+        &mut self,
+        collection: &str,
+        query: Json,
+        page: Json,
+    ) -> std::io::Result<String> {
+        self.checked(format!(
+            r#"{{"op":"findDocs","collection":"{}","query":{},"page":{}}}"#,
+            esc(collection),
+            query.encode(),
+            page.encode()
+        ))
+    }
+    pub fn find_deleted_docs_page(
+        &mut self,
+        collection: &str,
+        query: Json,
+        page: Json,
+    ) -> std::io::Result<String> {
+        self.checked(format!(
+            r#"{{"op":"findDeletedDocs","collection":"{}","query":{},"page":{}}}"#,
+            esc(collection),
+            query.encode(),
+            page.encode()
         ))
     }
     pub fn execute_sql(&mut self, sql: &str) -> std::io::Result<String> {
@@ -218,7 +295,10 @@ impl Fylo {
     /// Collection-scoped facade with short method names, so
     /// `db.collection("users").put(data)` reads like the browser client.
     pub fn collection<'a>(&'a mut self, name: &str) -> Collection<'a> {
-        Collection { db: self, name: name.to_string() }
+        Collection {
+            db: self,
+            name: name.to_string(),
+        }
     }
 }
 
@@ -267,6 +347,9 @@ impl<'a> Collection<'a> {
     }
     pub fn find(&mut self, query: Json) -> std::io::Result<String> {
         self.db.find_docs(&self.name, query)
+    }
+    pub fn find_page(&mut self, query: Json, page: Json) -> std::io::Result<String> {
+        self.db.find_docs_page(&self.name, query, page)
     }
 }
 
@@ -320,8 +403,10 @@ impl Json {
                 format!("[{}]", items.join(","))
             }
             Json::Obj(o) => {
-                let pairs: Vec<String> =
-                    o.iter().map(|(k, v)| format!("\"{}\":{}", esc(k), v.encode())).collect();
+                let pairs: Vec<String> = o
+                    .iter()
+                    .map(|(k, v)| format!("\"{}\":{}", esc(k), v.encode()))
+                    .collect();
                 format!("{{{}}}", pairs.join(","))
             }
         }

@@ -40,7 +40,7 @@ export default class extends Tac {
         {
             key: 'groups',
             q: 'Can multiple users share a document or file?',
-            a: 'Yes. Write it with .as({ gid: editorsGid, mode: 0o660 }), then authenticated group members read, update, or delete with .as({ uid: memberUid }). FYLO resolves membership from the host POSIX group database or your trusted groupsForUid resolver; callers cannot claim their own groups. Group write permission is required — 0o600 remains owner-only.'
+            a: 'Yes. Write it with .as({ gid: editorsGid, mode: 0o660 }), then authenticated group members read, update, or delete with .as({ uid: memberUid }). FYLO resolves membership from the host POSIX group database or your trusted groupsForUid resolver. Binary-backed applications can also supply request-scoped virtual groups from authenticated server state; never accept those claims from an end-user payload. Group write permission is required — 0o600 remains owner-only.'
         }
     ]
 }

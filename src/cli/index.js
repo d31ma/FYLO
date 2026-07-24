@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import path from 'node:path'
+import os from 'node:os'
 import Fylo from '../index.js'
 import { runMachineRequestSource, serveStdioLoop } from './machine.js'
 import { renderTableOutput, writeCliText } from './output.js'
@@ -10,6 +11,8 @@ import {
     validateSchemaDocument
 } from '../schema/admin.js'
 import { VersionRepository } from '../versioning/repository.js'
+import { runtimeIdentity } from './runtime-identity.js'
+import { FyloS3Restore } from '../replication/s3-restore.js'
 
 /**
  * @typedef {import('../types/vendor.js').TTID} TTID
@@ -34,6 +37,20 @@ import { VersionRepository } from '../versioning/repository.js'
  * @property {string | undefined} message
  * @property {boolean} help
  * @property {boolean} loop
+ * @property {boolean} version
+ * @property {boolean} exclusiveRoot
+ * @property {'text' | 'json' | undefined} output
+ * @property {number | undefined} maxRequestBytes
+ * @property {number | undefined} maxResponseBytes
+ * @property {string | undefined} backupBucket
+ * @property {string | undefined} backupPrefix
+ * @property {string | undefined} backupEndpoint
+ * @property {string | undefined} backupRegion
+ * @property {boolean} backupAllowBucketRoot
+ * @property {number | undefined} backupConcurrency
+ * @property {number | undefined} backupReconcileIntervalMs
+ * @property {number | undefined} backupMaxObjectBytes
+ * @property {string | undefined} destination
  * @returns {string}
  */
 function usage() {
@@ -47,10 +64,13 @@ function usage() {
         '  fylo diff [<from>] [<to>] [--root <path>] [--json]',
         '  fylo restore-commit <commit-id> [--root <path>] [--force] [--json]',
         '  fylo merge <ref> [-m <message>] [--root <path>] [--json]',
+        '  fylo version [--output json]',
         '  fylo "<SQL>"',
         '  fylo sql "<SQL>"',
         '  fylo exec --request <json|@path|-> [--root <path>] [--worm]',
-        '  fylo exec --loop [--root <path>] [--worm]  (persistent NDJSON: one request/response per line)',
+        '  fylo exec --loop [--root <path>] [--worm] [--exclusive-root] [--backup-bucket <name> --backup-prefix <prefix>]',
+        '  fylo backup verify --backup-bucket <name> --backup-prefix <prefix> [--json]',
+        '  fylo backup restore --backup-bucket <name> --backup-prefix <prefix> --destination <new-path> [--json]',
         '  fylo inspect <collection> [--root <path>] [--worm] [--json]',
         '  fylo get <collection> <doc-id> [--root <path>] [--worm] [--json]',
         '  fylo latest <collection> <doc-id> [--root <path>] [--worm] [--json] [--id-only]',
@@ -77,6 +97,20 @@ function usage() {
         '  --page-size <n> Repeat headers every n rows in text output',
         '  --align <mode>  Cell alignment: left, center, right, or auto',
         '  --request <v>   Machine request payload, @file path, or - for stdin',
+        '  --exclusive-root Acquire an exclusive crash-safe root lease for exec --loop',
+        '  --max-request-bytes <n> Maximum NDJSON request bytes, excluding LF',
+        '  --max-response-bytes <n> Maximum NDJSON response bytes, excluding LF',
+        '  --backup-bucket <name> S3-compatible bucket for whole-root backup',
+        '  --backup-prefix <prefix> Required isolated object-key prefix',
+        '  --backup-endpoint <url> S3-compatible endpoint; credentials stay in AWS_*/FYLO_S3_* env',
+        '  --backup-region <name> S3-compatible region',
+        '  --backup-allow-bucket-root Permit destructive reconciliation at bucket root',
+        '  --backup-concurrency <n> Maximum concurrent backup/restore requests',
+        '  --backup-reconcile-interval-ms <n> Periodic whole-root reconcile interval',
+        '  --backup-max-object-bytes <n> Maximum object accepted by verify/restore',
+        '  --destination <path> New, non-existent whole-root restore destination',
+        '  --output <mode> Output mode for version: text or json',
+        '  --version       Print the FYLO runtime version',
         '  --no-pager      Disable interactive paging even on large text output',
         '  --help          Show this message'
     ].join('\n')
@@ -104,6 +138,21 @@ function parseArgs(argv) {
     let message
     let help = false
     let loop = false
+    let version = false
+    let exclusiveRoot = false
+    /** @type {'text' | 'json' | undefined} */
+    let output
+    let maxRequestBytes
+    let maxResponseBytes
+    let backupBucket
+    let backupPrefix
+    let backupEndpoint
+    let backupRegion
+    let backupAllowBucketRoot = false
+    let backupConcurrency
+    let backupReconcileIntervalMs
+    let backupMaxObjectBytes
+    let destination
     for (let index = 0; index < argv.length; index++) {
         const arg = argv[index]
         if (arg === '--root') {
@@ -178,6 +227,69 @@ function parseArgs(argv) {
             loop = true
             continue
         }
+        if (arg === '--exclusive-root') {
+            exclusiveRoot = true
+            continue
+        }
+        if (arg === '--max-request-bytes' || arg === '--max-response-bytes') {
+            const value = Number(argv[index + 1])
+            if (!Number.isSafeInteger(value) || value <= 0) {
+                throw new Error(`Missing or invalid value for ${arg}`)
+            }
+            if (arg === '--max-request-bytes') maxRequestBytes = value
+            else maxResponseBytes = value
+            index++
+            continue
+        }
+        if (
+            arg === '--backup-bucket' ||
+            arg === '--backup-prefix' ||
+            arg === '--backup-endpoint' ||
+            arg === '--backup-region' ||
+            arg === '--destination'
+        ) {
+            const value = argv[index + 1]
+            if (!value) throw new Error(`Missing value for ${arg}`)
+            if (arg === '--backup-bucket') backupBucket = value
+            else if (arg === '--backup-prefix') backupPrefix = value
+            else if (arg === '--backup-endpoint') backupEndpoint = value
+            else if (arg === '--backup-region') backupRegion = value
+            else destination = path.resolve(value)
+            index++
+            continue
+        }
+        if (arg === '--backup-allow-bucket-root') {
+            backupAllowBucketRoot = true
+            continue
+        }
+        if (
+            arg === '--backup-concurrency' ||
+            arg === '--backup-reconcile-interval-ms' ||
+            arg === '--backup-max-object-bytes'
+        ) {
+            const value = Number(argv[index + 1])
+            if (!Number.isSafeInteger(value) || value <= 0) {
+                throw new Error(`Missing or invalid value for ${arg}`)
+            }
+            if (arg === '--backup-concurrency') backupConcurrency = value
+            else if (arg === '--backup-reconcile-interval-ms') backupReconcileIntervalMs = value
+            else backupMaxObjectBytes = value
+            index++
+            continue
+        }
+        if (arg === '--output') {
+            const value = argv[index + 1]
+            if (value !== 'text' && value !== 'json') {
+                throw new Error('Missing or invalid value for --output')
+            }
+            output = value
+            index++
+            continue
+        }
+        if (arg === '--version') {
+            version = true
+            continue
+        }
         if (arg === '--help' || arg === '-h') {
             help = true
             continue
@@ -199,7 +311,49 @@ function parseArgs(argv) {
         request,
         message,
         help,
-        loop
+        loop,
+        version,
+        exclusiveRoot,
+        output,
+        maxRequestBytes,
+        maxResponseBytes,
+        backupBucket,
+        backupPrefix,
+        backupEndpoint,
+        backupRegion,
+        backupAllowBucketRoot,
+        backupConcurrency,
+        backupReconcileIntervalMs,
+        backupMaxObjectBytes,
+        destination
+    }
+}
+
+/** @param {ParsedArgs} args */
+function s3Options(args) {
+    const configured =
+        args.backupBucket !== undefined ||
+        args.backupPrefix !== undefined ||
+        args.backupEndpoint !== undefined ||
+        args.backupRegion !== undefined ||
+        args.backupAllowBucketRoot ||
+        args.backupConcurrency !== undefined ||
+        args.backupReconcileIntervalMs !== undefined
+    if (!configured) return undefined
+    if (!args.backupBucket) throw new Error('--backup-bucket is required')
+    if (!args.backupPrefix && !args.backupAllowBucketRoot) {
+        throw new Error(
+            '--backup-prefix is required unless --backup-allow-bucket-root is explicitly set'
+        )
+    }
+    return {
+        bucket: args.backupBucket,
+        prefix: args.backupPrefix,
+        endpoint: args.backupEndpoint,
+        region: args.backupRegion,
+        allowBucketRoot: args.backupAllowBucketRoot || undefined,
+        concurrency: args.backupConcurrency,
+        reconcileIntervalMs: args.backupReconcileIntervalMs
     }
 }
 
@@ -696,6 +850,43 @@ async function runRestore(collection, docId, root, json = false) {
 }
 
 /**
+ * Offline whole-root verification and restore. Credentials are resolved by
+ * FyloS3Restore from the standard AWS/FYLO environment chain and are never
+ * accepted in request frames or printed.
+ *
+ * @param {'verify' | 'restore'} action
+ * @param {ParsedArgs} args
+ */
+async function runBackupRecovery(action, args) {
+    const options = s3Options(args)
+    if (!options) {
+        throw new Error('Whole-root backup recovery requires --backup-bucket and --backup-prefix')
+    }
+    if (action === 'restore' && !args.destination) {
+        throw new Error('--destination is required for backup restore')
+    }
+    const destination =
+        args.destination ??
+        path.join(os.tmpdir(), `fylo-verify-${process.pid}-${Bun.randomUUIDv7()}`)
+    const recovery = new FyloS3Restore(options, destination)
+    const result = await recovery[action]({
+        concurrency: args.backupConcurrency,
+        maxObjectBytes: args.backupMaxObjectBytes,
+        onStatus(status) {
+            if (args.json) return
+            process.stderr.write(`${JSON.stringify(status)}\n`)
+        }
+    })
+    if (args.json) {
+        printJson(result)
+        return undefined
+    }
+    return action === 'verify'
+        ? `Verified ${result.files} backup objects (${result.bytes} bytes)`
+        : `Restored ${result.files} backup objects (${result.bytes} bytes) to ${destination}`
+}
+
+/**
  * @param {'inspect' | 'current' | 'history' | 'doctor' | 'validate' | 'materialize'} action
  * @param {string} collection
  * @param {string | undefined} input
@@ -795,6 +986,15 @@ async function runSchema(action, collection, input, schemaDir, json = false) {
  */
 async function main(args) {
     setTableOptions(args)
+    if (args.version || args.positionals[0] === 'version') {
+        const identity = runtimeIdentity({
+            maxRequestBytes: args.maxRequestBytes,
+            maxResponseBytes: args.maxResponseBytes
+        })
+        if (args.json || args.output === 'json') printJson(identity)
+        else console.log(identity.runtimeVersion)
+        return
+    }
     if (args.help || args.positionals.length === 0) {
         console.log(usage())
         return
@@ -910,6 +1110,15 @@ async function main(args) {
         if (output) await writeCliText(output, { pagerMode: cliRuntimeOptions.pagerMode })
         return
     }
+    if (command === 'backup') {
+        const action = rest[0]
+        if (action !== 'verify' && action !== 'restore') {
+            throw new Error('Missing or invalid backup command; expected verify or restore')
+        }
+        const output = await runBackupRecovery(action, args)
+        if (output) await writeCliText(output, { pagerMode: cliRuntimeOptions.pagerMode })
+        return
+    }
     if (command === 'schema') {
         const action = rest[0]
         const collection = rest[1]
@@ -936,8 +1145,24 @@ async function main(args) {
     }
     if (command === 'exec') {
         if (args.loop) {
-            await serveStdioLoop({ overrides: { root: args.root, worm: args.worm } })
+            const backup = s3Options(args)
+            const served = await serveStdioLoop({
+                overrides: {
+                    root: args.root,
+                    worm: args.worm,
+                    ...(backup ? { sync: { s3: backup } } : {})
+                },
+                frameLimits: {
+                    maxRequestBytes: args.maxRequestBytes,
+                    maxResponseBytes: args.maxResponseBytes
+                },
+                exclusiveRoot: args.exclusiveRoot
+            })
+            if (!served) process.exitCode = 1
             return
+        }
+        if (args.exclusiveRoot) {
+            throw new Error('--exclusive-root requires exec --loop')
         }
         const ok = await runMachineExec(args.request, { root: args.root, worm: args.worm })
         if (!ok) process.exitCode = 1
@@ -962,6 +1187,7 @@ const cliArgs = parseArgs(process.argv.slice(2))
 try {
     await main(cliArgs)
 } catch (error) {
-    console.error(/** @type {Error} */ (error).message)
+    const failure = /** @type {Error & { code?: string }} */ (error)
+    console.error(failure.code ? `${failure.code}: ${failure.message}` : failure.message)
     process.exit(1)
 }

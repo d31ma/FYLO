@@ -37,6 +37,25 @@ async function invoke(request) {
 describe('native Windows x64 executable', () => {
     const windowsTest = nativeWindows ? test : test.skip
 
+    windowsTest('reports the native release identity through the handshake', async () => {
+        const identity = await invoke({ op: 'handshake' })
+        const configuredCommit = process.env.FYLO_BUILD_COMMIT ?? process.env.GITHUB_SHA ?? ''
+        const releaseBuild = /^[0-9a-f]{40}$/i.test(configuredCommit)
+
+        expect(identity.buildTarget).toBe('windows-x64')
+        expect(identity.buildKind).toBe(releaseBuild ? 'release' : 'development-compiled')
+        expect(identity.commit).toBe(releaseBuild ? configuredCommit : 'unknown')
+        expect(identity.capabilities.exclusiveRoot).toBe(true)
+        expect(identity.capabilities.queryPagination.operations).toEqual([
+            'findDocs',
+            'findDeletedDocs'
+        ])
+        expect(identity.capabilities.wholeRootBackup).toMatchObject({
+            available: true,
+            metadataFormat: 'fylo.ntfs.v2'
+        })
+    })
+
     windowsTest('persists and reads a document through the compiled machine protocol', async () => {
         const root = await mkdtemp(path.join(os.tmpdir(), 'fylo-windows-binary-'))
         roots.push(root)

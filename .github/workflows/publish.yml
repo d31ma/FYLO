@@ -56,7 +56,10 @@ jobs:
               run: ./scripts/install-vendor-bins.ps1
 
             - name: Verify native lock crash and reclaim
-              run: bun test tests/integration/fs-lock.test.js --timeout 120000 --parallel=1
+              run: |
+                  bun test tests/integration/fs-lock.test.js --timeout 120000 --parallel=1
+                  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+                  bun test tests/integration/machine-hardening.test.js --test-name-pattern 'exclusive root ownership' --timeout 120000 --parallel=1
 
             - name: Verify interrupted transaction recovery
               run: |
@@ -68,19 +71,25 @@ jobs:
               run: bun test tests/integration/document-path-security.test.js tests/integration/secure-open.test.js --timeout 120000 --parallel=1
 
             - name: Run Windows storage regression suite
-              run: bun test tests/integration/xattr.test.js tests/integration/durable.test.js tests/integration/filesystem.test.js tests/integration/raw-files.test.js tests/integration/collection-lock.test.js tests/integration/vcs-recovery.test.js --timeout 300000 --parallel=1
+              run: bun test tests/integration/xattr.test.js tests/integration/durable.test.js tests/integration/filesystem.test.js tests/integration/raw-files.test.js tests/integration/collection-lock.test.js tests/integration/vcs-recovery.test.js tests/integration/s3-backup.test.js tests/integration/s3-restore.test.js --timeout 300000 --parallel=1
 
             - name: Build native Windows executable
               shell: pwsh
               run: |
                   New-Item -ItemType Directory -Force dist-bin | Out-Null
-                  bun build --compile ./src/cli/index.js --outfile ./dist-bin/fylo-windows-x64.exe
+                  bun ./scripts/build-executable.mjs --outfile ./dist-bin/fylo-windows-x64.exe
 
             - name: Verify compiled Windows executable behavior
               env:
                   FYLO_REQUIRE_WINDOWS_NATIVE: '1'
                   FYLO_WINDOWS_BINARY: dist-bin/fylo-windows-x64.exe
-              run: bun test tests/interop/windows-native-binary.test.js --timeout 120000 --parallel=1
+                  FYLO_REQUIRE_NATIVE_RELEASE: '1'
+                  FYLO_BINARY: dist-bin/fylo-windows-x64.exe
+                  FYLO_EXPECT_TARGET: windows-x64
+              run: |
+                  bun test tests/interop/windows-native-binary.test.js --timeout 120000 --parallel=1
+                  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+                  bun test tests/interop/native-release-root-lease.test.js --timeout 120000 --parallel=1
 
             - name: Upload native-tested Windows release executable
               if: matrix.os == 'windows-2022'
@@ -88,6 +97,66 @@ jobs:
               with:
                   name: windows-release-${{ github.sha }}
                   path: dist-bin/fylo-windows-x64.exe
+                  if-no-files-found: error
+                  compression-level: 0
+                  retention-days: 1
+
+    macos-storage:
+        name: Native packaged macOS lease (${{ matrix.target }})
+        runs-on: ${{ matrix.os }}
+        timeout-minutes: 20
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - os: macos-15
+                      target: macos-arm64
+                      asset: fylo-macos-arm64
+                    - os: macos-15-intel
+                      target: macos-x64
+                      asset: fylo-macos-x64
+
+        steps:
+            - name: Checkout
+              uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+            - name: Setup Bun
+              uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+              with:
+                  bun-version-file: .bun-version
+
+            - name: Install dependencies and vendor binaries
+              run: |
+                  bun install --frozen-lockfile
+                  sh ./scripts/install-vendor-bins.sh
+                  echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+            - name: Assert native runner architecture
+              env:
+                  EXPECTED_TARGET: ${{ matrix.target }}
+              run: |
+                  actual="macos-$(bun -p 'process.arch')"
+                  test "$actual" = "$EXPECTED_TARGET"
+
+            - name: Build exact native release executable
+              env:
+                  ASSET: ${{ matrix.asset }}
+              run: |
+                  mkdir -p dist-bin
+                  bun ./scripts/build-executable.mjs --outfile "dist-bin/$ASSET"
+
+            - name: Verify exact native root lease and identity
+              env:
+                  FYLO_REQUIRE_NATIVE_RELEASE: '1'
+                  FYLO_BINARY: dist-bin/${{ matrix.asset }}
+                  FYLO_EXPECT_TARGET: ${{ matrix.target }}
+              run: bun test tests/interop/native-release-root-lease.test.js --timeout 120000 --parallel=1
+
+            - name: Upload native-tested macOS executable
+              uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+              with:
+                  name: macos-release-${{ matrix.target }}-${{ github.sha }}
+                  path: dist-bin/${{ matrix.asset }}
                   if-no-files-found: error
                   compression-level: 0
                   retention-days: 1
@@ -229,15 +298,26 @@ jobs:
                     echo "exists=false" >> "$GITHUB_OUTPUT"
                   fi
 
+    live-s3:
+        name: Live S3-compatible release gate
+        uses: ./.github/workflows/s3-live.yml
+
     release-assets:
         name: Build release assets
         runs-on: ubuntu-latest
-        needs: [test, binary-interop, windows-storage, version]
+        permissions:
+            contents: read
+            id-token: write
+            attestations: write
+            artifact-metadata: write
+        needs: [test, binary-interop, windows-storage, macos-storage, live-s3, version]
         if: >-
             ${{
               needs.test.result == 'success' &&
               needs.binary-interop.result == 'success' &&
               needs.windows-storage.result == 'success' &&
+              needs.macos-storage.result == 'success' &&
+              needs.live-s3.result == 'success' &&
               needs.version.result == 'success' &&
               needs.version.outputs.tag_exists == 'false'
             }}
@@ -262,19 +342,52 @@ jobs:
                   name: windows-release-${{ github.sha }}
                   path: release-assets
 
-            - name: Build POSIX binaries
+            - name: Download native-tested macOS arm64 release executable
+              uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+              with:
+                  name: macos-release-macos-arm64-${{ github.sha }}
+                  path: release-assets
+
+            - name: Download native-tested macOS x64 release executable
+              uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+              with:
+                  name: macos-release-macos-x64-${{ github.sha }}
+                  path: release-assets
+
+            - name: Build Linux binaries
               run: |
                   set -euo pipefail
                   mkdir -p release-assets
                   build() {
                     echo "::group::$2"
-                    bun build --compile --target="$1" ./src/cli/index.js --outfile "release-assets/$2"
+                    bun ./scripts/build-executable.mjs --target "$1" --outfile "release-assets/$2"
                     echo "::endgroup::"
                   }
                   build bun-linux-x64     fylo-linux-x64
                   build bun-linux-arm64   fylo-linux-arm64
-                  build bun-darwin-x64    fylo-macos-x64
-                  build bun-darwin-arm64  fylo-macos-arm64
+
+            - name: Verify exact native Linux release identity
+              run: |
+                  set -euo pipefail
+                  chmod +x release-assets/fylo-linux-x64
+                  release-assets/fylo-linux-x64 version --output json | tee linux-release-identity.json
+                  jq -e \
+                    --arg commit "$GITHUB_SHA" \
+                    '.buildKind == "release" and
+                     .commit == $commit and
+                     .buildTarget == "linux-x64" and
+                     .capabilities.handshake == true and
+                     .capabilities.exclusiveRoot == true' \
+                    linux-release-identity.json
+                  printf '%s\n' '{"op":"handshake"}' |
+                    release-assets/fylo-linux-x64 exec --loop |
+                    jq -e --arg commit "$GITHUB_SHA" \
+                      '.ok == true and .result.buildKind == "release" and .result.commit == $commit'
+                  FYLO_REQUIRE_NATIVE_RELEASE=1 \
+                    FYLO_BINARY=release-assets/fylo-linux-x64 \
+                    FYLO_EXPECT_TARGET=linux-x64 \
+                    bun test tests/interop/native-release-root-lease.test.js \
+                      --timeout 120000 --parallel=1
 
             - name: Build local-first web bundle
               run: bun run build:web:wasm
@@ -319,6 +432,18 @@ jobs:
                   cp website/client/shared/assets/install.sh release-assets/install.sh
                   cp website/client/shared/assets/install.ps1 release-assets/install.ps1
 
+            - name: Generate SPDX software bill of materials
+              uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+              with:
+                  path: .
+                  format: spdx-json
+                  output-file: release-assets/fylo-${{ needs.version.outputs.version }}.spdx.json
+                  artifact-name: fylo-${{ needs.version.outputs.version }}.spdx.json
+                  upload-artifact: false
+                  upload-release-assets: false
+                  dependency-snapshot: false
+                  syft-version: v1.49.0
+
             - name: Checksum and verify release assets
               working-directory: release-assets
               env:
@@ -334,6 +459,7 @@ jobs:
                   fylo-linux-x64
                   fylo-macos-arm64
                   fylo-macos-x64
+                  fylo-${VERSION}.spdx.json
                   fylo-web.mjs
                   fylo-windows-x64.exe
                   install.ps1
@@ -347,6 +473,26 @@ jobs:
                     sha256sum "$asset"
                   done <<<"$expected" > SHA256SUMS
                   sha256sum --check SHA256SUMS
+
+            - name: Attest release build provenance
+              uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+              with:
+                  subject-path: release-assets/*
+
+            - name: Attest release SBOM
+              uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0
+              with:
+                  subject-path: release-assets/*
+                  sbom-path: release-assets/fylo-${{ needs.version.outputs.version }}.spdx.json
+
+            - name: Verify generated attestations
+              env:
+                  GH_TOKEN: ${{ github.token }}
+              run: |
+                  set -euo pipefail
+                  while IFS= read -r asset; do
+                    gh attestation verify "$asset" --repo "$GITHUB_REPOSITORY"
+                  done < <(find release-assets -maxdepth 1 -type f -print | sort)
 
             - name: Upload verified release assets
               uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

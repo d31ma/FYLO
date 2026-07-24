@@ -1,6 +1,12 @@
 import path from 'node:path'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { pathToFileURL } from 'node:url'
 import Fylo from '../index.js'
+import {
+    createPosixGroupResolver,
+    normalizeAccessInput,
+    normalizeResolvedGroupIds
+} from '../security/access.js'
 import {
     doctorSchema,
     inspectSchema,
@@ -8,8 +14,17 @@ import {
     validateSchemaDocument
 } from '../schema/admin.js'
 import { VersionRepository } from '../versioning/repository.js'
-
-const MACHINE_PROTOCOL_VERSION = 1
+import {
+    BoundedNdjsonDecoder,
+    MACHINE_PROTOCOL_VERSION,
+    MachineFrameError,
+    encodedJsonBytes,
+    normalizeMachineFrameLimits,
+    parseMachineFrame
+} from './protocol.js'
+import { acquireRootLease } from './root-lease.js'
+import { runtimeIdentity } from './runtime-identity.js'
+import { closeQueryCursorStates, collectQueryPage, queryCursorScope } from './query-page.js'
 
 /**
  * @typedef {import('../replication/sync.js').FyloWormOptions} FyloWormOptions
@@ -17,7 +32,7 @@ const MACHINE_PROTOCOL_VERSION = 1
  */
 
 /**
- * @typedef {'executeSQL' | 'createCollection' | 'dropCollection' | 'inspectCollection' | 'rebuildCollection' | 'verifyCollection' | 'getDoc' | 'getLatest' | 'getMeta' | 'setMeta' | 'findDocs' | 'findDeletedDocs' | 'restoreDoc' | 'joinDocs' | 'putData' | 'batchPutData' | 'patchDoc' | 'patchDocs' | 'delDoc' | 'delDocs' | 'importBulkData' | 'checkout' | 'branch' | 'commit' | 'log' | 'status' | 'diff' | 'restoreCommit' | 'merge' | 'schemaInspect' | 'schemaCurrent' | 'schemaHistory' | 'schemaDoctor' | 'schemaValidate' | 'schemaMaterialize'} MachineOperation
+ * @typedef {'handshake' | 'backupStatus' | 'backupReconcile' | 'executeSQL' | 'createCollection' | 'dropCollection' | 'inspectCollection' | 'rebuildCollection' | 'verifyCollection' | 'getDoc' | 'getLatest' | 'getMeta' | 'setMeta' | 'findDocs' | 'findDeletedDocs' | 'restoreDoc' | 'joinDocs' | 'putData' | 'batchPutData' | 'patchDoc' | 'patchDocs' | 'delDoc' | 'delDocs' | 'importBulkData' | 'checkout' | 'branch' | 'commit' | 'log' | 'status' | 'diff' | 'restoreCommit' | 'merge' | 'schemaInspect' | 'schemaCurrent' | 'schemaHistory' | 'schemaDoctor' | 'schemaValidate' | 'schemaMaterialize'} MachineOperation
  */
 
 /**
@@ -40,8 +55,9 @@ const MACHINE_PROTOCOL_VERSION = 1
  * @property {string=} id
  * @property {boolean=} onlyId
  * @property {string=} sql
- * @property {{ uid?: number, gid?: number, mode?: number }=} access SQL actor and INSERT-only owner/group/mode
+ * @property {{ uid?: number, gid?: number, mode?: number, groups?: number[] }=} access trusted actor, optional per-request supplementary groups, and put/INSERT-only owner/group/mode
  * @property {Record<string, any>=} query
+ * @property {{ limit?: number, cursor?: string }=} page bounded query continuation
  * @property {Record<string, any>=} join
  * @property {Record<string, any>=} document
  * @property {Record<string, any>=} data
@@ -63,8 +79,10 @@ const MACHINE_PROTOCOL_VERSION = 1
  * @property {string=} root
  * @property {boolean=} worm
  * @property {FyloVersioningOptions=} versioning
+ * @property {import('../replication/sync.js').FyloSyncHooks=} sync
  * @property {boolean=} allowFilePaths
  * @property {Map<string, any>=} cache Warm instances reused across requests (stdio loop)
+ * @property {{ maxRequestBytes?: number, maxResponseBytes?: number }=} frameLimits
  */
 
 /**
@@ -93,6 +111,15 @@ const MACHINE_PROTOCOL_VERSION = 1
  */
 function isRecord(value) {
     return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+class MachineOperationError extends Error {
+    /** @param {string} code @param {string} message */
+    constructor(code, message) {
+        super(message)
+        this.name = 'MachineOperationError'
+        this.code = code
+    }
 }
 
 /**
@@ -132,6 +159,75 @@ function requireObjectArray(request, field) {
         throw new Error(`Machine request field "${String(field)}" must be an array of objects`)
     }
     return value
+}
+
+const machineAccessContext = new AsyncLocalStorage()
+const resolvePosixGroups = createPosixGroupResolver()
+
+/**
+ * Group resolution for cached machine-mode engines. A trusted per-request
+ * context takes precedence over the host account database and is isolated
+ * across concurrent requests by AsyncLocalStorage.
+ *
+ * @param {number} uid
+ * @returns {Promise<Set<number>>}
+ */
+async function resolveMachineGroups(uid) {
+    const context = machineAccessContext.getStore()
+    if (context) {
+        if (context.uid !== uid) return new Set()
+        return new Set(context.groups)
+    }
+    return await resolvePosixGroups(uid)
+}
+
+/**
+ * Validate a machine access object and strip the machine-only `groups` field
+ * before forwarding the native `.as(...)` context.
+ *
+ * @param {MachineRequest} request
+ * @param {{ allowMode: boolean }} options
+ * @returns {{ uid?: number, gid?: number, mode?: number } | undefined}
+ */
+function machineAccess(request, options) {
+    if (request.access === undefined) return undefined
+    const input = requireObject(request, 'access')
+    const { groups, ...nativeAccess } = input
+    if (groups !== undefined) {
+        if (!Array.isArray(groups)) {
+            throw new TypeError('Machine access.groups must be an array of numeric GIDs')
+        }
+        if (!Object.hasOwn(nativeAccess, 'uid')) {
+            throw new TypeError('Machine access.groups requires access.uid')
+        }
+        normalizeResolvedGroupIds(groups)
+    }
+    return options.allowMode
+        ? normalizeAccessInput(nativeAccess, { allowMode: true })
+        : normalizeAccessInput(nativeAccess, { allowMode: false })
+}
+
+/**
+ * @param {MachineRequest} request
+ * @returns {{ uid: number, groups: Set<number> } | undefined}
+ */
+function machineTrustedGroupContext(request) {
+    if (!isRecord(request.access) || !Object.hasOwn(request.access, 'groups')) return undefined
+    const access = machineAccess(request, { allowMode: true })
+    return {
+        uid: /** @type {number} */ (access?.uid),
+        groups: normalizeResolvedGroupIds(request.access.groups)
+    }
+}
+
+/**
+ * @template T
+ * @param {PromiseLike<T> & { as?: (access: any) => any }} operation
+ * @param {{ uid?: number, gid?: number, mode?: number } | undefined} access
+ * @returns {Promise<T>}
+ */
+async function runWithAccess(operation, access) {
+    return await (access && operation.as ? operation.as(access) : operation)
 }
 
 /**
@@ -244,12 +340,22 @@ function createMachineFylo(request, overrides = {}) {
             /** @type {unknown} */ (
                 new Fylo(resolvedRoot, {
                     ...(worm ? { worm } : {}),
-                    ...(versioning ? { versioning } : {})
+                    ...(versioning ? { versioning } : {}),
+                    ...(overrides.sync ? { sync: overrides.sync } : {}),
+                    access: { groupsForUid: resolveMachineGroups }
                 })
             )
         )
     if (!overrides.cache) return build()
-    const key = `fylo:${resolvedRoot}:${JSON.stringify(worm ?? null)}:${JSON.stringify(versioning ?? null)}`
+    const backupIdentity = overrides.sync?.s3
+        ? {
+              bucket: overrides.sync.s3.bucket,
+              prefix: overrides.sync.s3.prefix,
+              endpoint: overrides.sync.s3.endpoint,
+              region: overrides.sync.s3.region
+          }
+        : null
+    const key = `fylo:${resolvedRoot}:${JSON.stringify(worm ?? null)}:${JSON.stringify(versioning ?? null)}:${JSON.stringify(backupIdentity)}`
     let instance = overrides.cache.get(key)
     if (!instance) {
         instance = build()
@@ -279,12 +385,15 @@ function createMachineRepository(request, overrides = {}) {
  * @param {import('../api/fylo.js').FyloCollections} fylo
  * @param {string} collection
  * @param {Record<string, any>} query
+ * @param {{ uid: number } | undefined} access
  * @returns {Promise<Record<string, any> | string[]>}
  */
-async function collectFindDocs(fylo, collection, query) {
+async function collectFindDocs(fylo, collection, query, access) {
     /** @type {Record<string, any> | string[]} */
     let docs = query.$onlyIds ? [] : {}
-    for await (const value of fylo[collection].find(query).collect()) {
+    const cursor = fylo[collection].find(query)
+    if (access) cursor.as(access)
+    for await (const value of cursor.collect()) {
         if (value === undefined) continue
         if (typeof value === 'object' && value !== null) {
             docs = /** @type {{ appendGroup(target: any, value: any): any }} */ (
@@ -301,12 +410,15 @@ async function collectFindDocs(fylo, collection, query) {
  * @param {import('../api/fylo.js').FyloCollections} fylo
  * @param {string} collection
  * @param {Record<string, any>} query
+ * @param {{ uid: number } | undefined} access
  * @returns {Promise<Record<string, any> | string[]>}
  */
-async function collectDeletedDocs(fylo, collection, query) {
+async function collectDeletedDocs(fylo, collection, query, access) {
     /** @type {Record<string, any> | string[]} */
     let docs = query.$onlyIds ? [] : {}
-    for await (const value of fylo[collection].find.deleted(query).collect()) {
+    const cursor = fylo[collection].find.deleted(query)
+    if (access) cursor.as(access)
+    for await (const value of cursor.collect()) {
         if (value === undefined) continue
         if (typeof value === 'object' && value !== null) {
             docs = /** @type {{ appendGroup(target: any, value: any): any }} */ (
@@ -320,16 +432,75 @@ async function collectDeletedDocs(fylo, collection, query) {
 }
 
 /**
+ * @param {import('../api/fylo.js').FyloCollections} fylo
+ * @param {MachineRequest} request
+ * @param {MachineCliOverrides} overrides
+ * @param {boolean} deleted
+ * @param {{ uid: number } | undefined} access
+ */
+async function collectMachineQueryPage(fylo, request, overrides, deleted, access) {
+    const collection = requireString(request, 'collection')
+    const query = deleted
+        ? isRecord(request.query)
+            ? request.query
+            : {}
+        : requireObject(request, 'query')
+    if (!isRecord(request.page)) {
+        throw new TypeError('Machine query page must be an object')
+    }
+    const cursorToken = request.page.cursor
+    if (cursorToken !== undefined && typeof cursorToken !== 'string') {
+        throw new TypeError('Machine query page.cursor must be a string')
+    }
+    const cache = overrides.cache
+    if (!cache) {
+        throw new MachineFrameError(
+            'EQUERYLOOPREQUIRED',
+            'Machine query pagination requires fylo exec --loop'
+        )
+    }
+    const cursorKey = 'machine:query-cursors'
+    /** @type {Map<string, import('./query-page.js').QueryCursorState>} */
+    let cursors = cache.get(cursorKey)
+    if (!cursors) {
+        cursors = new Map()
+        cache.set(cursorKey, cursors)
+    }
+    let source
+    if (!cursorToken) {
+        const cursor = deleted ? fylo[collection].find.deleted(query) : fylo[collection].find(query)
+        if (access) cursor.as(access)
+        source = cursor.collect()
+    }
+    return await collectQueryPage(cursors, source, {
+        onlyIds: query.$onlyIds === true,
+        scope: queryCursorScope({
+            op: request.op,
+            collection,
+            query,
+            access: request.access
+        }),
+        cursor: cursorToken,
+        limit: request.page.limit,
+        maxResponseBytes: normalizeMachineFrameLimits(overrides.frameLimits).maxResponseBytes
+    })
+}
+
+/**
  * @param {MachineRequest} request
  * @param {MachineCliOverrides=} overrides
  * @returns {Promise<unknown>}
  */
-export async function executeMachineOperation(request, overrides = {}) {
+async function executeMachineOperationInContext(request, overrides = {}) {
     if (!isRecord(request)) throw new Error('Machine request body must be a JSON object')
     if (typeof request.op !== 'string') {
         throw new Error('Machine request field "op" must be a string')
     }
     switch (request.op) {
+        case 'handshake':
+            return runtimeIdentity(overrides.frameLimits, {
+                backupConfigured: Boolean(overrides.sync?.s3)
+            })
         case 'checkout':
             return await createMachineRepository(request, overrides).checkout(
                 requireString(request, 'branch'),
@@ -365,14 +536,28 @@ export async function executeMachineOperation(request, overrides = {}) {
     }
     const fylo = createMachineFylo(request, overrides)
     switch (request.op) {
+        case 'backupStatus':
+            return (
+                fylo.backupStatus() ?? {
+                    configured: false,
+                    state: 'disabled',
+                    runs: 0
+                }
+            )
+        case 'backupReconcile': {
+            if (!fylo.backupStatus()) {
+                throw new MachineOperationError(
+                    'EBACKUPNOTCONFIGURED',
+                    'Whole-root S3 backup is not configured'
+                )
+            }
+            await fylo.reconcile()
+            return fylo.backupStatus()
+        }
         case 'executeSQL':
             return await fylo._sql(
                 requireString(request, 'sql'),
-                request.access === undefined
-                    ? undefined
-                    : /** @type {{ uid?: number, gid?: number, mode?: number }} */ (
-                          requireObject(request, 'access')
-                      )
+                machineAccess(request, { allowMode: true })
             )
         case 'createCollection': {
             const collection = requireString(request, 'collection')
@@ -394,86 +579,167 @@ export async function executeMachineOperation(request, overrides = {}) {
             return await fylo[requireString(request, 'collection')].rebuild()
         case 'verifyCollection':
             return await fylo[requireString(request, 'collection')].verify()
-        case 'getMeta':
-            return await fylo[requireString(request, 'collection')]
-                .get(requireString(request, 'id'))
-                .metadata()
+        case 'getMeta': {
+            const access = machineAccess(request, { allowMode: false })
+            const operation = fylo[requireString(request, 'collection')].get(
+                requireString(request, 'id')
+            )
+            if (access) operation.as(/** @type {{ uid: number }} */ (access))
+            return await operation.metadata()
+        }
         case 'setMeta': {
             const collection = requireString(request, 'collection')
             const id = requireString(request, 'id')
-            await fylo[collection].put(id).metadata(requireObject(request, 'meta'))
-            return await fylo[collection].get(id).metadata()
-        }
-        case 'getDoc':
-            return await fylo[requireString(request, 'collection')]
-                .get(requireString(request, 'id'))
-                .once()
-        case 'getLatest':
-            return await fylo[requireString(request, 'collection')].latest(
-                requireString(request, 'id'),
-                request.onlyId === true
+            const access = machineAccess(request, { allowMode: false })
+            await runWithAccess(
+                fylo[collection].put(id).metadata(requireObject(request, 'meta')),
+                access
             )
-        case 'findDocs':
+            const operation = fylo[collection].get(id)
+            if (access) operation.as(/** @type {{ uid: number }} */ (access))
+            return await operation.metadata()
+        }
+        case 'getDoc': {
+            const access = machineAccess(request, { allowMode: false })
+            const operation = fylo[requireString(request, 'collection')].get(
+                requireString(request, 'id')
+            )
+            if (access) operation.as(/** @type {{ uid: number }} */ (access))
+            return await operation.once()
+        }
+        case 'getLatest': {
+            const access = machineAccess(request, { allowMode: false })
+            return await runWithAccess(
+                fylo[requireString(request, 'collection')].latest(
+                    requireString(request, 'id'),
+                    request.onlyId === true
+                ),
+                access
+            )
+        }
+        case 'findDocs': {
+            const access = machineAccess(request, { allowMode: false })
+            if (request.page !== undefined) {
+                return await collectMachineQueryPage(
+                    fylo,
+                    request,
+                    overrides,
+                    false,
+                    /** @type {{ uid: number } | undefined} */ (access)
+                )
+            }
             return await collectFindDocs(
                 fylo,
                 requireString(request, 'collection'),
-                requireObject(request, 'query')
+                requireObject(request, 'query'),
+                /** @type {{ uid: number } | undefined} */ (access)
             )
-        case 'findDeletedDocs':
+        }
+        case 'findDeletedDocs': {
+            const access = machineAccess(request, { allowMode: false })
+            if (request.page !== undefined) {
+                return await collectMachineQueryPage(
+                    fylo,
+                    request,
+                    overrides,
+                    true,
+                    /** @type {{ uid: number } | undefined} */ (access)
+                )
+            }
             return await collectDeletedDocs(
                 fylo,
                 requireString(request, 'collection'),
-                isRecord(request.query) ? request.query : {}
+                isRecord(request.query) ? request.query : {},
+                /** @type {{ uid: number } | undefined} */ (access)
             )
-        case 'joinDocs':
+        }
+        case 'joinDocs': {
+            const access = machineAccess(request, { allowMode: false })
             return await fylo.join(
                 /** @type {import('../query/types.js').StoreJoin<Record<string, any>, Record<string, any>>} */ (
                     requireObject(request, 'join')
-                )
+                ),
+                access?.uid
             )
+        }
         case 'putData': {
             const collection = requireString(request, 'collection')
             const file = machineFileInput(request, overrides)
+            const access = machineAccess(request, { allowMode: true })
             if (file) {
-                return await fylo[collection].put(file, {
-                    ...request.fileOptions,
-                    key: request.file?.key ?? request.fileOptions?.key,
-                    meta: request.meta ?? request.fileOptions?.meta
-                })
+                return await runWithAccess(
+                    fylo[collection].put(file, {
+                        ...request.fileOptions,
+                        key: request.file?.key ?? request.fileOptions?.key,
+                        meta: request.meta ?? request.fileOptions?.meta
+                    }),
+                    access
+                )
             }
-            return await fylo[collection].put(
-                requireObject(request, 'data'),
-                request.meta ? { meta: request.meta } : undefined
+            return await runWithAccess(
+                fylo[collection].put(
+                    requireObject(request, 'data'),
+                    request.meta ? { meta: request.meta } : undefined
+                ),
+                access
             )
         }
-        case 'batchPutData':
-            return await fylo[requireString(request, 'collection')].put.batch(
-                requireObjectArray(request, 'batch')
+        case 'batchPutData': {
+            const collection = requireString(request, 'collection')
+            const access = machineAccess(request, { allowMode: true })
+            const batch = requireObjectArray(request, 'batch')
+            if (!access) return await fylo[collection].put.batch(batch)
+            return await fylo.runCoalesced(() =>
+                Promise.all(batch.map((data) => runWithAccess(fylo[collection].put(data), access)))
             )
-        case 'patchDoc':
-            return await fylo[requireString(request, 'collection')].patch(
-                requireString(request, 'id'),
-                requireObject(request, 'newDoc'),
-                isRecord(request.oldDoc) ? request.oldDoc : {}
+        }
+        case 'patchDoc': {
+            const access = machineAccess(request, { allowMode: false })
+            return await runWithAccess(
+                fylo[requireString(request, 'collection')].patch(
+                    requireString(request, 'id'),
+                    requireObject(request, 'newDoc'),
+                    isRecord(request.oldDoc) ? request.oldDoc : {}
+                ),
+                access
             )
-        case 'patchDocs':
-            return await fylo[requireString(request, 'collection')].patch.many(
-                /** @type {import('../query/types.js').StoreUpdate<Record<string, any>>} */ (
-                    requireObject(request, 'update')
-                )
+        }
+        case 'patchDocs': {
+            const access = machineAccess(request, { allowMode: false })
+            return await runWithAccess(
+                fylo[requireString(request, 'collection')].patch.many(
+                    /** @type {import('../query/types.js').StoreUpdate<Record<string, any>>} */ (
+                        requireObject(request, 'update')
+                    )
+                ),
+                access
             )
-        case 'delDoc':
-            await fylo[requireString(request, 'collection')].delete(requireString(request, 'id'))
+        }
+        case 'delDoc': {
+            const access = machineAccess(request, { allowMode: false })
+            await runWithAccess(
+                fylo[requireString(request, 'collection')].delete(requireString(request, 'id')),
+                access
+            )
             return { deleted: true }
-        case 'restoreDoc':
-            await fylo[requireString(request, 'collection')].restore(requireString(request, 'id'))
+        }
+        case 'restoreDoc': {
+            const id = requireString(request, 'id')
+            const access = machineAccess(request, { allowMode: false })
+            await runWithAccess(fylo[requireString(request, 'collection')].restore(id), access)
             return { restored: true, id: requireString(request, 'id') }
-        case 'delDocs':
-            return await fylo[requireString(request, 'collection')].delete.many(
-                /** @type {import('../query/types.js').StoreDelete<Record<string, any>>} */ (
-                    requireObject(request, 'delete')
-                )
+        }
+        case 'delDocs': {
+            const access = machineAccess(request, { allowMode: false })
+            return await runWithAccess(
+                fylo[requireString(request, 'collection')].delete.many(
+                    /** @type {import('../query/types.js').StoreDelete<Record<string, any>>} */ (
+                        requireObject(request, 'delete')
+                    )
+                ),
+                access
             )
+        }
         case 'importBulkData':
             return await fylo[requireString(request, 'collection')].import(
                 new URL(requireString(request, 'url')),
@@ -523,6 +789,44 @@ export async function executeMachineOperation(request, overrides = {}) {
 }
 
 /**
+ * Execute one machine request with any trusted virtual-group assertion scoped
+ * to this asynchronous operation. The context never persists on a cached
+ * engine and cannot leak into a following request.
+ *
+ * @param {MachineRequest} request
+ * @param {MachineCliOverrides=} overrides
+ * @returns {Promise<unknown>}
+ */
+export async function executeMachineOperation(request, overrides = {}) {
+    if (!isRecord(request)) throw new Error('Machine request body must be a JSON object')
+    const context = machineTrustedGroupContext(request)
+    return await machineAccessContext.run(context, () =>
+        executeMachineOperationInContext(request, overrides)
+    )
+}
+
+/**
+ * @param {unknown} error
+ * @param {{ op?: MachineOperation | null, requestId?: string | null, durationMs?: number }=} context
+ * @returns {MachineErrorResponse}
+ */
+function machineErrorResponse(error, context = {}) {
+    const failure = /** @type {Error & { code?: string }} */ (error)
+    return {
+        protocolVersion: MACHINE_PROTOCOL_VERSION,
+        ok: false,
+        op: context.op ?? null,
+        requestId: context.requestId ?? null,
+        durationMs: context.durationMs ?? 0,
+        error: {
+            name: failure.name || 'Error',
+            message: failure.message || 'Unknown error',
+            ...(typeof failure.code === 'string' ? { code: failure.code } : {})
+        }
+    }
+}
+
+/**
  * @param {unknown} request
  * @param {MachineCliOverrides=} overrides
  * @returns {Promise<MachineSuccessResponse | MachineErrorResponse>}
@@ -544,22 +848,14 @@ export async function runMachineRequest(request, overrides = {}) {
             result
         }
     } catch (error) {
-        const failure = /** @type {Error & { code?: string }} */ (error)
-        return {
-            protocolVersion: MACHINE_PROTOCOL_VERSION,
-            ok: false,
+        return machineErrorResponse(error, {
             op:
                 typeof safeRequest.op === 'string'
                     ? /** @type {MachineOperation} */ (safeRequest.op)
                     : null,
             requestId: typeof safeRequest.requestId === 'string' ? safeRequest.requestId : null,
-            durationMs: Date.now() - startedAt,
-            error: {
-                name: failure.name || 'Error',
-                message: failure.message || 'Unknown error',
-                ...(typeof failure.code === 'string' ? { code: failure.code } : {})
-            }
-        }
+            durationMs: Date.now() - startedAt
+        })
     }
 }
 
@@ -605,53 +901,122 @@ export async function runMachineRequestSource(requestSource, overrides = {}) {
         }
         return await runMachineRequest(JSON.parse(requestText), overrides)
     } catch (error) {
-        const failure = /** @type {Error & { code?: string }} */ (error)
-        return {
-            protocolVersion: MACHINE_PROTOCOL_VERSION,
-            ok: false,
-            op: null,
-            requestId: null,
-            durationMs: 0,
-            error: {
-                name: failure.name || 'Error',
-                message: failure.message || 'Unknown error',
-                ...(typeof failure.code === 'string' ? { code: failure.code } : {})
-            }
-        }
+        return machineErrorResponse(error)
     }
 }
 
 /**
- * Persistent NDJSON loop: read one MachineRequest per line from `input`, write
- * one MachineResponse per line to `write`, keeping engine instances warm across
- * requests via a shared cache. One malformed/failed request never kills the loop.
+ * @param {MachineSuccessResponse | MachineErrorResponse} response
+ * @param {number} maximum
+ */
+function encodeMachineResponse(response, maximum) {
+    let bytes = encodedJsonBytes(response)
+    if (bytes.byteLength > maximum) {
+        bytes = encodedJsonBytes(
+            machineErrorResponse(
+                new MachineFrameError(
+                    'EFRAME_RESPONSE_TOO_LARGE',
+                    `Machine response exceeds ${maximum} bytes; narrow or paginate the operation`
+                ),
+                { op: response.op, requestId: response.requestId }
+            )
+        )
+    }
+    if (bytes.byteLength > maximum) {
+        throw new RangeError(`Machine response limit ${maximum} cannot hold an error envelope`)
+    }
+    return `${Buffer.from(bytes).toString('utf8')}\n`
+}
+
+/**
+ * Persistent bounded NDJSON loop. Request and response limits exclude the LF
+ * delimiter. Malformed frames resume only at a known LF boundary; truncated
+ * EOF emits one error and terminates naturally.
  *
  * @param {object} [options]
  * @param {AsyncIterable<Uint8Array | string>} [options.input] Defaults to process.stdin
- * @param {(line: string) => void} [options.write] Defaults to stdout
+ * @param {(line: string) => void | Promise<void>} [options.write] Defaults to stdout
  * @param {MachineCliOverrides} [options.overrides]
- * @returns {Promise<void>}
+ * @param {{ maxRequestBytes?: number, maxResponseBytes?: number }} [options.frameLimits]
+ * @param {boolean} [options.exclusiveRoot]
+ * @returns {Promise<boolean>} false when exclusive ownership cannot be acquired or is lost
  */
 export async function serveStdioLoop(options = {}) {
     const input = options.input ?? process.stdin
-    const write = options.write ?? ((line) => process.stdout.write(line))
-    const overrides = { ...(options.overrides ?? {}), cache: options.overrides?.cache ?? new Map() }
-    const decoder = new TextDecoder()
-    let buffer = ''
-    const handleLine = async (/** @type {string} */ line) => {
-        const trimmed = line.trim()
-        if (!trimmed) return
-        const response = await runMachineRequestSource(trimmed, overrides)
-        write(`${JSON.stringify(response)}\n`)
+    const write =
+        options.write ??
+        ((line) => new Promise((resolve) => process.stdout.write(line, () => resolve())))
+    const frameLimits = normalizeMachineFrameLimits(options.frameLimits)
+    const overrides = {
+        ...(options.overrides ?? {}),
+        cache: options.overrides?.cache ?? new Map(),
+        frameLimits
     }
-    for await (const chunk of input) {
-        buffer += typeof chunk === 'string' ? chunk : decoder.decode(chunk, { stream: true })
-        let newline
-        while ((newline = buffer.indexOf('\n')) !== -1) {
-            const line = buffer.slice(0, newline)
-            buffer = buffer.slice(newline + 1)
-            await handleLine(line)
+    const decoder = new BoundedNdjsonDecoder(frameLimits.maxRequestBytes)
+    const emit = async (/** @type {MachineSuccessResponse | MachineErrorResponse} */ response) => {
+        await write(encodeMachineResponse(response, frameLimits.maxResponseBytes))
+    }
+    /** @type {import('./root-lease.js').FyloRootLease | undefined} */
+    let lease
+    if (options.exclusiveRoot) {
+        const requestedRoot = path.resolve(overrides.root ?? Fylo.defaultRoot())
+        const repositoryRoot = VersionRepository.resolveRepositoryRoot(requestedRoot)
+        try {
+            lease = await acquireRootLease(repositoryRoot)
+        } catch (error) {
+            await emit(machineErrorResponse(error))
+            return false
         }
     }
-    await handleLine(buffer)
+
+    const handle = async (
+        /** @type {{ frame?: Uint8Array, error?: MachineFrameError }} */ event
+    ) => {
+        if (event.error) {
+            await emit(machineErrorResponse(event.error))
+            return true
+        }
+        let request
+        try {
+            request = parseMachineFrame(/** @type {Uint8Array} */ (event.frame))
+        } catch (error) {
+            await emit(machineErrorResponse(error))
+            return true
+        }
+        if (request === null) return true
+        if (lease) {
+            try {
+                await lease.assertOwned()
+            } catch (error) {
+                await emit(machineErrorResponse(error))
+                return false
+            }
+        }
+        await emit(await runMachineRequest(request, overrides))
+        return true
+    }
+
+    try {
+        for await (const chunk of input) {
+            for (const event of decoder.push(chunk)) {
+                if (!(await handle(event))) return false
+            }
+        }
+        for (const event of decoder.finish()) {
+            if (!(await handle(event))) return false
+        }
+        return true
+    } finally {
+        const cache = overrides.cache
+        if (cache) {
+            const cursors = cache.get('machine:query-cursors')
+            if (cursors instanceof Map) closeQueryCursorStates(cursors)
+            const closers = [...cache.values()]
+                .filter((value) => value && typeof value.close === 'function')
+                .map((value) => Promise.resolve(value.close()))
+            await Promise.allSettled(closers)
+            cache.clear()
+        }
+        await lease?.release()
+    }
 }

@@ -23,7 +23,13 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"strconv"
 	"sync"
+)
+
+const (
+	maxRequestBytes  = 1024 * 1024
+	maxResponseBytes = 8 * 1024 * 1024
 )
 
 type Fylo struct {
@@ -39,7 +45,11 @@ func Open(root, binary string, worm bool) (*Fylo, error) {
 	if binary == "" {
 		binary = "fylo"
 	}
-	args := []string{"exec", "--loop", "--root", root}
+	args := []string{
+		"exec", "--loop", "--root", root,
+		"--max-request-bytes", strconv.Itoa(maxRequestBytes),
+		"--max-response-bytes", strconv.Itoa(maxResponseBytes),
+	}
 	if worm {
 		args = append(args, "--worm")
 	}
@@ -55,7 +65,10 @@ func Open(root, binary string, worm bool) (*Fylo, error) {
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-	return &Fylo{cmd: cmd, pipe: stdin, in: bufio.NewWriter(stdin), out: bufio.NewReader(stdout)}, nil
+	return &Fylo{
+		cmd: cmd, pipe: stdin, in: bufio.NewWriter(stdin),
+		out: bufio.NewReaderSize(stdout, maxResponseBytes+2),
+	}, nil
 }
 
 // op builds a request, sends it, and returns `result` (or an error on failure).
@@ -144,6 +157,12 @@ func (f *Fylo) FindDocs(collection string, query map[string]any) (any, error) {
 func (f *Fylo) FindDeletedDocs(collection string, query map[string]any) (any, error) {
 	return f.op("findDeletedDocs", map[string]any{"collection": collection, "query": query})
 }
+func (f *Fylo) FindDocsPage(collection string, query, page map[string]any) (any, error) {
+	return f.op("findDocs", map[string]any{"collection": collection, "query": query, "page": page})
+}
+func (f *Fylo) FindDeletedDocsPage(collection string, query, page map[string]any) (any, error) {
+	return f.op("findDeletedDocs", map[string]any{"collection": collection, "query": query, "page": page})
+}
 func (f *Fylo) JoinDocs(join map[string]any) (any, error) {
 	return f.op("joinDocs", map[string]any{"join": join})
 }
@@ -170,6 +189,9 @@ func (f *Fylo) Request(op map[string]any) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	if len(line) > maxRequestBytes {
+		return nil, fmt.Errorf("FYLO request exceeds %d bytes", maxRequestBytes)
+	}
 	f.mu.Lock() // ponytail: one call in flight; drop the lock only if you pipeline
 	defer f.mu.Unlock()
 	if _, err := f.in.Write(append(line, '\n')); err != nil {
@@ -178,12 +200,17 @@ func (f *Fylo) Request(op map[string]any) (map[string]any, error) {
 	if err := f.in.Flush(); err != nil {
 		return nil, err
 	}
-	reply, err := f.out.ReadBytes('\n')
-	if err != nil {
-		return nil, fmt.Errorf("fylo closed the stream: %w", err)
+	reply, err := f.out.ReadSlice('\n')
+	if err != nil || len(reply) == 0 || reply[len(reply)-1] != '\n' || len(reply)-1 > maxResponseBytes {
+		_ = f.cmd.Process.Kill()
+		if err != nil {
+			return nil, fmt.Errorf("fylo response framing failed: %w", err)
+		}
+		return nil, fmt.Errorf("FYLO response exceeds %d bytes", maxResponseBytes)
 	}
 	var resp map[string]any
 	if err := json.Unmarshal(reply, &resp); err != nil {
+		_ = f.cmd.Process.Kill()
 		return nil, err
 	}
 	return resp, nil
@@ -227,4 +254,7 @@ func (c *Collection) Delete(id string) (any, error)  { return c.fylo.DelDoc(c.na
 func (c *Collection) Restore(id string) (any, error) { return c.fylo.RestoreDoc(c.name, id) }
 func (c *Collection) Find(query map[string]any) (any, error) {
 	return c.fylo.FindDocs(c.name, query)
+}
+func (c *Collection) FindPage(query, page map[string]any) (any, error) {
+	return c.fylo.FindDocsPage(c.name, query, page)
 }
