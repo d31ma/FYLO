@@ -1,5 +1,21 @@
 # Changelog
 
+## 26.30.05-1 - 2026-07-24
+
+### Added
+
+- Every `ok: false` machine-protocol response now carries a stable, documented
+  `error.code`: `EBADREQUEST` for request-shape/access/page validation
+  failures, `EUNSUPPORTEDOP` for unknown operations, `EINVALIDDOCID` for
+  invalid document IDs, and the deterministic `EUNKNOWN` fallback for
+  unclassified engine failures (#79). The code set is additive and documented
+  in the machine-interface README.
+
+### Fixed
+
+- The pinned `fylo-web.mjs` browser example in the client shim guide now
+  references the current release instead of 26.30.04.
+
 ## 26.30.05 - 2026-07-24
 
 ### Added
