@@ -19,6 +19,7 @@
 
 using System;
 using System.Diagnostics;
+using System.IO;
 using System.Text;
 using System.Text.Json;
 
@@ -31,7 +32,12 @@ namespace Fylo
 
     public sealed class Fylo : IDisposable
     {
+        private const int MaxRequestBytes = 1024 * 1024;
+        private const int MaxResponseBytes = 8 * 1024 * 1024;
+        private static readonly UTF8Encoding StrictUtf8 = new UTF8Encoding(false, true);
         private readonly Process _proc;
+        private readonly Stream _stdout;
+        private readonly byte[] _responseBuffer = new byte[MaxResponseBytes + 1];
         private readonly object _lock = new object();
 
         public Fylo(string root, string binary = "fylo", bool worm = false)
@@ -50,8 +56,13 @@ namespace Fylo
             psi.ArgumentList.Add("--loop");
             psi.ArgumentList.Add("--root");
             psi.ArgumentList.Add(root);
+            psi.ArgumentList.Add("--max-request-bytes");
+            psi.ArgumentList.Add(MaxRequestBytes.ToString());
+            psi.ArgumentList.Add("--max-response-bytes");
+            psi.ArgumentList.Add(MaxResponseBytes.ToString());
             if (worm) psi.ArgumentList.Add("--worm");
             _proc = Process.Start(psi) ?? throw new InvalidOperationException("failed to start fylo");
+            _stdout = _proc.StandardOutput.BaseStream;
         }
 
         /// <summary>Send one raw machine-protocol op (JSON string); returns the full response.</summary>
@@ -60,12 +71,35 @@ namespace Fylo
             lock (_lock) // ponytail: one call in flight; drop the lock only if you pipeline
             {
                 if (_proc.HasExited) throw new InvalidOperationException("fylo process has exited");
-                _proc.StandardInput.Write(opJson.TrimEnd());
+                string payload = opJson.TrimEnd();
+                if (Encoding.UTF8.GetByteCount(payload) > MaxRequestBytes)
+                    throw new FyloException($"FYLO request exceeds {MaxRequestBytes} bytes");
+                _proc.StandardInput.Write(payload);
                 _proc.StandardInput.Write('\n');
                 _proc.StandardInput.Flush();
-                string? line = _proc.StandardOutput.ReadLine();
-                if (line == null) throw new InvalidOperationException("fylo closed the stream");
-                return JsonDocument.Parse(line);
+                int length = 0;
+                while (length <= MaxResponseBytes)
+                {
+                    int next = _stdout.ReadByte();
+                    if (next < 0) throw new InvalidOperationException("fylo closed the stream");
+                    if (next == '\n')
+                    {
+                        try
+                        {
+                            string line = StrictUtf8.GetString(_responseBuffer, 0, length);
+                            return JsonDocument.Parse(line);
+                        }
+                        catch (Exception error) when (
+                            error is DecoderFallbackException || error is JsonException)
+                        {
+                            _proc.Kill();
+                            throw new FyloException("fylo returned malformed UTF-8 or JSON");
+                        }
+                    }
+                    _responseBuffer[length++] = (byte)next;
+                }
+                _proc.Kill();
+                throw new FyloException($"FYLO response exceeds {MaxResponseBytes} bytes");
             }
         }
 
@@ -120,6 +154,10 @@ namespace Fylo
         // --- Query ---
         public JsonElement FindDocs(string collection, object query) =>
             Op($"{{\"op\":\"findDocs\",\"collection\":{J(collection)},\"query\":{J(query)}}}");
+        public JsonElement FindDocsPage(string collection, object query, object page) =>
+            Op($"{{\"op\":\"findDocs\",\"collection\":{J(collection)},\"query\":{J(query)},\"page\":{J(page)}}}");
+        public JsonElement FindDeletedDocsPage(string collection, object query, object page) =>
+            Op($"{{\"op\":\"findDeletedDocs\",\"collection\":{J(collection)},\"query\":{J(query)},\"page\":{J(page)}}}");
         public JsonElement ExecuteSQL(string sql, object access = null) =>
             Op(access == null
                 ? $"{{\"op\":\"executeSQL\",\"sql\":{J(sql)}}}"
@@ -195,5 +233,6 @@ namespace Fylo
         public JsonElement Delete(string id) => _db.DelDoc(_name, id);
         public JsonElement Restore(string id) => _db.RestoreDoc(_name, id);
         public JsonElement Find(object query) => _db.FindDocs(_name, query);
+        public JsonElement FindPage(object query, object page) => _db.FindDocsPage(_name, query, page);
     }
 }

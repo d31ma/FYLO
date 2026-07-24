@@ -21,6 +21,9 @@ import json
 import subprocess
 import threading
 
+MAX_REQUEST_BYTES = 1024 * 1024
+MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+
 
 class FyloError(RuntimeError):
     pass
@@ -28,31 +31,48 @@ class FyloError(RuntimeError):
 
 class Fylo:
     def __init__(self, root, binary="fylo", worm=False):
-        args = [binary, "exec", "--loop", "--root", root]
+        args = [
+            binary,
+            "exec",
+            "--loop",
+            "--root",
+            root,
+            "--max-request-bytes",
+            str(MAX_REQUEST_BYTES),
+            "--max-response-bytes",
+            str(MAX_RESPONSE_BYTES),
+        ]
         if worm:
             args.append("--worm")
         self._proc = subprocess.Popen(
             args,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",  # protocol is UTF-8; don't fall back to the Windows code page
-            bufsize=1,
+            bufsize=0,
         )
         self._lock = threading.Lock()
 
     def request(self, op):
         """Send one raw machine-protocol op; return the full response dict."""
-        line = json.dumps(op)
+        line = json.dumps(op, separators=(",", ":")).encode("utf-8")
+        if len(line) > MAX_REQUEST_BYTES:
+            raise FyloError(f"FYLO request exceeds {MAX_REQUEST_BYTES} bytes")
         with self._lock:  # ponytail: one call in flight; drop the lock only if you pipeline
             if self._proc.poll() is not None:
                 raise FyloError("fylo process has exited")
-            self._proc.stdin.write(line + "\n")
+            self._proc.stdin.write(line + b"\n")
             self._proc.stdin.flush()
-            reply = self._proc.stdout.readline()
+            reply = self._proc.stdout.readline(MAX_RESPONSE_BYTES + 2)
         if not reply:
             raise FyloError("fylo closed the stream (stderr may have details)")
-        return json.loads(reply)
+        if not reply.endswith(b"\n") or len(reply) - 1 > MAX_RESPONSE_BYTES:
+            self._proc.kill()
+            raise FyloError(f"FYLO response exceeds {MAX_RESPONSE_BYTES} bytes")
+        try:
+            return json.loads(reply[:-1].decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            self._proc.kill()
+            raise FyloError("fylo returned malformed UTF-8 or JSON") from error
 
     def _op(self, op, **fields):
         payload = {"op": op}
@@ -117,6 +137,14 @@ class Fylo:
 
     def find_deleted_docs(self, collection, query=None):
         return self._op("findDeletedDocs", collection=collection, query=query or {})
+
+    def find_docs_page(self, collection, query, page=None):
+        return self._op("findDocs", collection=collection, query=query, page=page or {})
+
+    def find_deleted_docs_page(self, collection, query=None, page=None):
+        return self._op(
+            "findDeletedDocs", collection=collection, query=query or {}, page=page or {}
+        )
 
     def join_docs(self, join):
         return self._op("joinDocs", join=join)
@@ -204,3 +232,6 @@ class _Collection:
 
     def find(self, query):
         return self._db.find_docs(self._name, query)
+
+    def find_page(self, query, page=None):
+        return self._db.find_docs_page(self._name, query, page)

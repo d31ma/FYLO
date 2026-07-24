@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs'
 import { cp, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import packageManifest from '../../package.json' with { type: 'json' }
 
 const roots = []
 const workspaces = []
@@ -86,6 +87,39 @@ afterAll(async () => {
 })
 
 describe('compiled binary language interop', () => {
+    test('compiled CLI and loop expose the same immutable runtime identity', async () => {
+        const version = await run([binaryPath, '--version'])
+        expectSuccess('compiled --version', version)
+        expect(version.stdout.trim()).toBe(packageManifest.version)
+
+        const cli = await run([binaryPath, 'version', '--output', 'json'])
+        expectSuccess('compiled version JSON', cli)
+        const cliIdentity = JSON.parse(cli.stdout)
+
+        const loop = await run([binaryPath, 'exec', '--loop'], {
+            stdin: '{"op":"handshake"}\n'
+        })
+        expectSuccess('compiled handshake', loop)
+        const handshake = JSON.parse(loop.stdout)
+        const configuredCommit = process.env.FYLO_BUILD_COMMIT ?? process.env.GITHUB_SHA ?? ''
+        const releaseBuild = /^[0-9a-f]{40}$/i.test(configuredCommit)
+
+        expect(handshake.protocolVersion).toBe(cliIdentity.protocolVersion)
+        expect(handshake.result).toEqual(cliIdentity)
+        expect(cliIdentity.runtimeVersion).toBe(packageManifest.version)
+        expect(cliIdentity.buildKind).toBe(releaseBuild ? 'release' : 'development-compiled')
+        expect(cliIdentity.buildTarget).toBe(
+            `${process.platform === 'darwin' ? 'macos' : process.platform}-${process.arch}`
+        )
+        if (cliIdentity.buildKind === 'release') {
+            expect(cliIdentity.commit).toMatch(/^[0-9a-f]{40}$/)
+        } else {
+            expect(cliIdentity.commit).toBe('unknown')
+        }
+        expect(cliIdentity.dependencies.chex.requiredVersion).toBe('26.28.02')
+        expect(cliIdentity.dependencies.ttid.requiredVersion).toBe('26.28.02')
+    })
+
     test('Python can drive FYLO through the machine JSON protocol', async () => {
         await requireCommand('python3')
         const root = await tempRoot('fylo-python-')

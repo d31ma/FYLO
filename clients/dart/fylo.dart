@@ -20,6 +20,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 class FyloException implements Exception {
   final String message;
@@ -29,40 +30,93 @@ class FyloException implements Exception {
 }
 
 class Fylo {
+  static const int maxRequestBytes = 1024 * 1024;
+  static const int maxResponseBytes = 8 * 1024 * 1024;
   final Process _proc;
   final IOSink _stdin;
   final List<Completer<Map<String, dynamic>>> _queue = [];
+  final Uint8List _responseBuffer = Uint8List(maxResponseBytes);
+  int _responseLength = 0;
+  bool _responseOversized = false;
 
-  Fylo._(this._proc, this._stdin, Stream<String> lines) {
-    lines.listen((line) {
-      if (line.trim().isEmpty) return;
-      if (_queue.isNotEmpty) {
-        _queue.removeAt(0).complete(jsonDecode(line) as Map<String, dynamic>);
+  Fylo._(this._proc, this._stdin, Stream<List<int>> bytes) {
+    bytes.listen((chunk) {
+      for (final byte in chunk) {
+        if (byte != 0x0a) {
+          if (!_responseOversized) {
+            if (_responseLength >= maxResponseBytes) {
+              _responseLength = 0;
+              _responseOversized = true;
+            } else {
+              _responseBuffer[_responseLength++] = byte;
+            }
+          }
+          continue;
+        }
+        if (_responseOversized) {
+          _failAll(
+              FyloException('FYLO response exceeds $maxResponseBytes bytes'));
+          _proc.kill();
+          return;
+        }
+        if (_queue.isNotEmpty) {
+          final completer = _queue.removeAt(0);
+          try {
+            final line = utf8.decode(
+                Uint8List.sublistView(_responseBuffer, 0, _responseLength),
+                allowMalformed: false);
+            completer.complete(jsonDecode(line) as Map<String, dynamic>);
+          } catch (error) {
+            completer.completeError(
+                FyloException('fylo returned malformed UTF-8 or JSON'));
+            _failAll(FyloException('fylo returned malformed UTF-8 or JSON'));
+            _proc.kill();
+            return;
+          }
+        }
+        _responseLength = 0;
+        _responseOversized = false;
       }
     }, onDone: () {
-      final err = FyloException('fylo process exited');
-      for (final c in _queue) {
-        if (!c.isCompleted) c.completeError(err);
-      }
-      _queue.clear();
+      _failAll(FyloException('fylo process exited'));
     });
+  }
+
+  void _failAll(FyloException error) {
+    for (final completer in _queue) {
+      if (!completer.isCompleted) completer.completeError(error);
+    }
+    _queue.clear();
   }
 
   /// Start a warm fylo process rooted at [root]. [binary] defaults to `fylo`.
   static Future<Fylo> open(String root,
       {String binary = 'fylo', bool worm = false}) async {
-    final args = ['exec', '--loop', '--root', root, if (worm) '--worm'];
+    final args = [
+      'exec',
+      '--loop',
+      '--root',
+      root,
+      '--max-request-bytes',
+      '$maxRequestBytes',
+      '--max-response-bytes',
+      '$maxResponseBytes',
+      if (worm) '--worm'
+    ];
     final proc = await Process.start(binary, args);
-    final lines =
-        proc.stdout.transform(utf8.decoder).transform(const LineSplitter());
-    return Fylo._(proc, proc.stdin, lines);
+    return Fylo._(proc, proc.stdin, proc.stdout);
   }
 
   /// Send one raw machine-protocol op; resolves with the full response object.
   Future<Map<String, dynamic>> request(Map<String, dynamic> op) {
+    final payload = utf8.encode(jsonEncode(op));
+    if (payload.length > maxRequestBytes) {
+      return Future.error(
+          FyloException('FYLO request exceeds $maxRequestBytes bytes'));
+    }
     final completer = Completer<Map<String, dynamic>>();
     _queue.add(completer);
-    _stdin.add(utf8.encode('${jsonEncode(op)}\n'));
+    _stdin.add([...payload, 0x0a]);
     return completer.future;
   }
 
@@ -81,7 +135,8 @@ class Fylo {
   }
 
   // --- Collections ---
-  Future<dynamic> createCollection(String collection, [String kind = 'document']) =>
+  Future<dynamic> createCollection(String collection,
+          [String kind = 'document']) =>
       _op('createCollection', {'collection': collection, 'kind': kind});
   Future<dynamic> dropCollection(String collection) =>
       _op('dropCollection', {'collection': collection});
@@ -99,11 +154,13 @@ class Fylo {
       _op('getDoc', {'collection': collection, 'id': id});
   Future<dynamic> getMeta(String collection, String id) =>
       _op('getMeta', {'collection': collection, 'id': id});
-  Future<dynamic> setMeta(String collection, String id, Map<String, dynamic> meta) =>
+  Future<dynamic> setMeta(
+          String collection, String id, Map<String, dynamic> meta) =>
       _op('setMeta', {'collection': collection, 'id': id, 'meta': meta});
   Future<dynamic> getLatest(String collection, String id) =>
       _op('getLatest', {'collection': collection, 'id': id});
-  Future<dynamic> patchDoc(String collection, String id, Map<String, dynamic> newDoc) =>
+  Future<dynamic> patchDoc(
+          String collection, String id, Map<String, dynamic> newDoc) =>
       _op('patchDoc', {'collection': collection, 'id': id, 'newDoc': newDoc});
   Future<dynamic> patchDocs(String collection, Map<String, dynamic> update) =>
       _op('patchDocs', {'collection': collection, 'update': update});
@@ -117,11 +174,20 @@ class Fylo {
   // --- Query ---
   Future<dynamic> findDocs(String collection, Map<String, dynamic> query) =>
       _op('findDocs', {'collection': collection, 'query': query});
-  Future<dynamic> findDeletedDocs(String collection, Map<String, dynamic> query) =>
+  Future<dynamic> findDeletedDocs(
+          String collection, Map<String, dynamic> query) =>
       _op('findDeletedDocs', {'collection': collection, 'query': query});
+  Future<dynamic> findDocsPage(String collection, Map<String, dynamic> query,
+          Map<String, dynamic> page) =>
+      _op('findDocs', {'collection': collection, 'query': query, 'page': page});
+  Future<dynamic> findDeletedDocsPage(String collection,
+          Map<String, dynamic> query, Map<String, dynamic> page) =>
+      _op('findDeletedDocs',
+          {'collection': collection, 'query': query, 'page': page});
   Future<dynamic> joinDocs(Map<String, dynamic> join) =>
       _op('joinDocs', {'join': join});
-  Future<dynamic> executeSQL(String sql, {int? uid, int? gid, int? mode}) => _op('executeSQL', {
+  Future<dynamic> executeSQL(String sql, {int? uid, int? gid, int? mode}) =>
+      _op('executeSQL', {
         'sql': sql,
         'access': uid == null && gid == null && mode == null
             ? null
@@ -158,18 +224,24 @@ class FyloCollection {
 
   FyloCollection(this._db, this._name);
 
-  Future<dynamic> create([String kind = 'document']) => _db.createCollection(_name, kind);
+  Future<dynamic> create([String kind = 'document']) =>
+      _db.createCollection(_name, kind);
   Future<dynamic> drop() => _db.dropCollection(_name);
   Future<dynamic> inspect() => _db.inspectCollection(_name);
   Future<dynamic> rebuild() => _db.rebuildCollection(_name);
   Future<dynamic> put(Map<String, dynamic> data) => _db.putData(_name, data);
   Future<dynamic> get(String id) => _db.getDoc(_name, id);
   Future<dynamic> getMeta(String id) => _db.getMeta(_name, id);
-  Future<dynamic> setMeta(String id, Map<String, dynamic> meta) => _db.setMeta(_name, id, meta);
+  Future<dynamic> setMeta(String id, Map<String, dynamic> meta) =>
+      _db.setMeta(_name, id, meta);
   Future<dynamic> latest(String id) => _db.getLatest(_name, id);
   Future<dynamic> patch(String id, Map<String, dynamic> newDoc) =>
       _db.patchDoc(_name, id, newDoc);
   Future<dynamic> delete(String id) => _db.delDoc(_name, id);
   Future<dynamic> restore(String id) => _db.restoreDoc(_name, id);
-  Future<dynamic> find(Map<String, dynamic> query) => _db.findDocs(_name, query);
+  Future<dynamic> find(Map<String, dynamic> query) =>
+      _db.findDocs(_name, query);
+  Future<dynamic> findPage(
+          Map<String, dynamic> query, Map<String, dynamic> page) =>
+      _db.findDocsPage(_name, query, page);
 }

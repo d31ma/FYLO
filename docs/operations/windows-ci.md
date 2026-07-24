@@ -26,10 +26,12 @@ and tests the same source and final executable path as an additional compatibili
 The production contract covered by this gate is local x64 Windows on NTFS. FYLO uses a
 kernel-owned `LockFileEx` claim so process termination releases stale takeover ownership, then
 performs recovery through pinned directory handles and rejects junction/reparse-point traversal
-before rooted rename or deletion. POSTIX UID/mode enforcement and built-in S3 backup/restore remain
-POSIX-only capabilities; passing this gate does not enable either feature on Windows. Network
-shares and synchronized folders are outside the storage guarantee because they may not preserve
-the required local locking and atomic filesystem semantics.
+before rooted rename or deletion. POSIX UID/GID ownership enforcement remains a POSIX-only
+capability. Built-in S3 backup/restore is enabled on local NTFS using platform-tagged v2 manifests:
+the native gate exercises byte digests, FYLO alternate-data-stream metadata, mode/mtime restoration,
+pagination, and cross-platform rejection. It does not translate NTFS permissions into POSIX
+ownership. Network shares and synchronized folders are outside the storage guarantee because they
+may not preserve the required local locking and atomic filesystem semantics.
 
 ## Local execution from Apple Silicon macOS
 

@@ -699,8 +699,14 @@ export function windowsStatDescriptor(descriptor) {
     const size = Number((BigInt(info.readUInt32LE(32)) << 32n) | BigInt(info.readUInt32LE(36)))
     if (!Number.isSafeInteger(size)) throw new Error('Secure Windows file size exceeds safe bounds')
     const directory = Boolean(attributes & WINDOWS_NATIVE_CONSTANTS.FILE_ATTRIBUTE_DIRECTORY)
+    const writeTime = info.readBigUInt64LE(20)
+    const mtimeMs = Number(writeTime / 10_000n - 11_644_473_600_000n)
+    const writable = !(attributes & WINDOWS_NATIVE_CONSTANTS.FILE_ATTRIBUTE_READONLY)
+    const mode = directory ? (writable ? 0o777 : 0o555) : writable ? 0o666 : 0o444
     return {
         size,
+        mode,
+        mtimeMs,
         isDirectory: () => directory,
         isFile: () => !directory
     }

@@ -5,6 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { FyloS3Restore } from '../../src/replication/s3-restore.js'
 import { getXattr } from '../../src/storage/xattr.js'
+import { acquireRootReservation } from '../../src/cli/root-lease.js'
 
 /** @type {string[]} */
 const cleanup = []
@@ -18,11 +19,31 @@ afterEach(async () => {
 function manifest(dataKey, bytes, xattrs = {}) {
     return Buffer.from(
         JSON.stringify({
-            version: 1,
+            version: process.platform === 'win32' ? 2 : 1,
+            ...(process.platform === 'win32'
+                ? {
+                      platform: 'windows-ntfs',
+                      native: { mode: 0o600, mtimeMs: Date.now() }
+                  }
+                : {}),
             dataKey,
             size: bytes.byteLength,
             sha256: createHash('sha256').update(bytes).digest('hex'),
             xattrs
+        })
+    )
+}
+
+function platformManifest(dataKey, bytes, platform) {
+    return Buffer.from(
+        JSON.stringify({
+            version: 2,
+            platform,
+            dataKey,
+            size: bytes.byteLength,
+            sha256: createHash('sha256').update(bytes).digest('hex'),
+            xattrs: {},
+            native: { mode: 0o600, mtimeMs: Date.now() }
         })
     )
 }
@@ -132,7 +153,7 @@ describe('S3 recovery', () => {
                 bytes: 'hello',
                 xattrs: {
                     'user.fylo.key': keyXattr,
-                    'user.fylo.access': accessXattr
+                    ...(process.platform === 'win32' ? {} : { 'user.fylo.access': accessXattr })
                 }
             }
         })
@@ -147,7 +168,8 @@ describe('S3 recovery', () => {
         expect(Buffer.from(getXattr(restoredFile, 'user.fylo.key')).toString()).toBe('/hello.txt')
         const access = await stat(restoredFile)
         expect(access.uid).toBe(process.getuid?.() ?? 0)
-        expect(access.mode & 0o777).toBe(0o600)
+        // NTFS projects only the read-only bit: a writable file reports 0o666.
+        expect(access.mode & 0o777).toBe(process.platform === 'win32' ? 0o666 : 0o600)
         expect(client.listCalls).toBeGreaterThan(1)
         expect(result).toMatchObject({ status: 'complete', files: 2, bytes: 17 })
         expect(events.map((event) => event.phase)).toContain('promote')
@@ -163,6 +185,37 @@ describe('S3 recovery', () => {
         await expect(restore.restore()).rejects.toThrow('destination already exists')
         expect(await readFile(path.join(root, 'keep.txt'), 'utf8')).toBe('do not replace')
         expect(client.listCalls).toBe(0)
+    })
+
+    test('refuses a destination reserved by another live root owner', async () => {
+        const { root, prefix, client } = await fixture({ 'one.txt': { bytes: 'one' } })
+        const owner = await acquireRootReservation(root)
+        try {
+            const restore = new FyloS3Restore({ bucket: 'backup', prefix }, root, { client })
+            await expect(restore.restore()).rejects.toMatchObject({ code: 'EROOTLOCKED' })
+            expect(client.listCalls).toBe(0)
+        } finally {
+            await owner.release()
+        }
+    })
+
+    test('rejects a backup manifest created for a different filesystem family', async () => {
+        const { root, prefix, objects, client } = await fixture({})
+        const dataKey = `${prefix}/one.txt`
+        const bytes = Buffer.from('one')
+        objects.set(dataKey, bytes)
+        objects.set(
+            manifestKey(prefix, dataKey),
+            platformManifest(
+                dataKey,
+                bytes,
+                process.platform === 'win32' ? 'posix' : 'windows-ntfs'
+            )
+        )
+        const restore = new FyloS3Restore({ bucket: 'backup', prefix }, root, { client })
+
+        await expect(restore.verify()).rejects.toThrow('incompatible')
+        expect(await Bun.file(root).exists()).toBe(false)
     })
 
     test('rejects traversal keys and leaves neither destination nor staging data', async () => {

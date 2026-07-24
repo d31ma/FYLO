@@ -76,6 +76,15 @@ if [ "$expected" != "$actual" ]; then
     exit 1
 fi
 
+if [ "${FYLO_VERIFY_PROVENANCE:-0}" = "1" ]; then
+    if ! command -v gh >/dev/null 2>&1; then
+        echo "FYLO_VERIFY_PROVENANCE=1 requires GitHub CLI (gh). Aborting." >&2
+        exit 1
+    fi
+    echo "Verifying signed GitHub artifact provenance..."
+    gh attestation verify "$tmp/fylo" --repo "$REPO"
+fi
+
 chmod +x "$tmp/fylo"
 mv -f "$tmp/fylo" "$dest/fylo"
 

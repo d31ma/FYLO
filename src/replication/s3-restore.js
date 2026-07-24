@@ -7,11 +7,12 @@
 
 import path from 'node:path'
 import { createHash } from 'node:crypto'
-import { lstat, mkdir, rename, rm } from 'node:fs/promises'
-import { resolveS3BackupOptions } from './s3-backup.js'
+import { chmod, lstat, mkdir, rename, rm, utimes } from 'node:fs/promises'
+import { backupPlatform, resolveS3BackupOptions } from './s3-backup.js'
 import { writeDurableStream } from '../storage/durable.js'
 import { setXattr } from '../storage/xattr.js'
 import { readAccessDescriptor, restoreAccessDescriptor } from '../security/access.js'
+import { acquireRootReservation } from '../cli/root-lease.js'
 
 const BACKUP_METADATA_DIR = '.fylo-backup/xattrs/'
 const DEFAULT_MAX_OBJECT_BYTES = 1024 ** 4
@@ -42,7 +43,7 @@ const DEFAULT_MAX_XATTR_BYTES = 1024 ** 2
  */
 
 /** @typedef {{ concurrency: number, maxObjectBytes: number, maxManifestBytes: number, maxXattrBytes: number, attempts: number, baseDelayMs: number, signal?: AbortSignal }} ResolvedRestoreOptions */
-/** @typedef {{ size: number, sha256: string, xattrs: Array<[string, Uint8Array]> }} ValidatedManifest */
+/** @typedef {{ size: number, sha256: string, xattrs: Array<[string, Uint8Array]>, native: { mode: number, mtimeMs: number } | null }} ValidatedManifest */
 /** @typedef {(status: Partial<FyloS3RestoreStatus> & Pick<FyloS3RestoreStatus, 'phase'>) => void} StatusReporter */
 
 /** @param {unknown} value @param {string} name */
@@ -119,8 +120,22 @@ function validateManifest(value, dataKey, limits) {
         throw new Error(`invalid backup manifest for ${dataKey}`)
     }
     const manifest = /** @type {Record<string, unknown>} */ (value)
-    if (manifest.version !== 1 || manifest.dataKey !== dataKey) {
+    if (![1, 2].includes(Number(manifest.version)) || manifest.dataKey !== dataKey) {
         throw new Error(`invalid backup manifest identity for ${dataKey}`)
+    }
+    if (manifest.version === 1 && backupPlatform() !== 'posix') {
+        throw new Error(`legacy POSIX backup manifest is incompatible with ${backupPlatform()}`)
+    }
+    if (
+        manifest.version === 2 &&
+        (manifest.platform !== backupPlatform() ||
+            !manifest.native ||
+            typeof manifest.native !== 'object' ||
+            Array.isArray(manifest.native))
+    ) {
+        throw new Error(
+            `backup manifest platform ${String(manifest.platform)} is incompatible with ${backupPlatform()}`
+        )
     }
     if (!Number.isSafeInteger(manifest.size) || Number(manifest.size) < 0) {
         throw new Error(`invalid backup manifest size for ${dataKey}`)
@@ -135,6 +150,14 @@ function validateManifest(value, dataKey, limits) {
         throw new Error(`invalid backup xattrs for ${dataKey}`)
     }
     const entries = Object.entries(/** @type {Record<string, unknown>} */ (manifest.xattrs))
+    if (
+        backupPlatform() === 'windows-ntfs' &&
+        Object.hasOwn(/** @type {Record<string, unknown>} */ (manifest.xattrs), 'user.fylo.access')
+    ) {
+        throw new Error(
+            `POSIX UID/GID access metadata is incompatible with Windows NTFS restore for ${dataKey}`
+        )
+    }
     if (entries.length > 256) throw new Error(`too many backup xattrs for ${dataKey}`)
     let xattrBytes = 0
     /** @type {Array<[string, Uint8Array]>} */
@@ -149,10 +172,27 @@ function validateManifest(value, dataKey, limits) {
         }
         return [name, bytes]
     })
+    let native = null
+    if (manifest.version === 2) {
+        const value = /** @type {Record<string, unknown>} */ (manifest.native)
+        if (
+            !Number.isSafeInteger(value.mode) ||
+            Number(value.mode) < 0 ||
+            Number(value.mode) > 0o777 ||
+            typeof value.mtimeMs !== 'number' ||
+            !Number.isFinite(value.mtimeMs) ||
+            Number(value.mtimeMs) < 0 ||
+            Object.keys(value).sort().join(',') !== 'mode,mtimeMs'
+        ) {
+            throw new Error(`invalid backup native metadata for ${dataKey}`)
+        }
+        native = { mode: Number(value.mode), mtimeMs: Number(value.mtimeMs) }
+    }
     return {
         size: Number(manifest.size),
         sha256: manifest.sha256,
-        xattrs
+        xattrs,
+        native
     }
 }
 
@@ -191,11 +231,6 @@ export class FyloS3Restore {
      * @param {{ client?: Bun.S3Client }} [deps]
      */
     constructor(options, destination, deps = {}) {
-        if (process.platform === 'win32') {
-            throw new Error(
-                'S3 recovery is unavailable on Windows because backup xattrs cannot be restored safely'
-            )
-        }
         this.options = resolveS3BackupOptions(options)
         if (!this.options.bucket || typeof this.options.bucket !== 'string') {
             throw new TypeError('S3 restore bucket must be a non-empty string')
@@ -372,12 +407,15 @@ export class FyloS3Restore {
         /** @type {StatusReporter} */
         const status = (event) => options.onStatus?.({ ...counters, ...event })
         const staging = `${this.destination}.fylo-restore-${Bun.randomUUIDv7()}.tmp`
+        /** @type {import('../cli/root-lease.js').FyloRootLease | undefined} */
+        let reservation
         try {
             if (mode === 'restore') {
                 if (await pathExists(this.destination)) {
                     throw new Error(`S3 restore destination already exists: ${this.destination}`)
                 }
-                await mkdir(staging, { recursive: false })
+                reservation = await acquireRootReservation(this.destination)
+                await mkdir(staging, { recursive: false, mode: 0o700 })
             }
             for await (const keys of this.dataPages(settings, status)) {
                 await mapLimit(keys, settings.concurrency, async (dataKey) => {
@@ -400,7 +438,13 @@ export class FyloS3Restore {
                         if (result.checksumSHA256 !== manifest.sha256)
                             throw new Error(`checksum mismatch for backup object ${dataKey}`)
                         for (const [name, value] of manifest.xattrs) setXattr(target, name, value)
-                        await restoreAccessDescriptor(target, await readAccessDescriptor(target))
+                        const access = await readAccessDescriptor(target)
+                        if (access) await restoreAccessDescriptor(target, access)
+                        if (manifest.native) {
+                            await chmod(target, manifest.native.mode)
+                            const modified = new Date(manifest.native.mtimeMs)
+                            await utimes(target, modified, modified)
+                        }
                     } else {
                         let length = 0
                         await this.withRetry(
@@ -456,6 +500,8 @@ export class FyloS3Restore {
             })
             if (mode === 'restore') await rm(staging, { recursive: true, force: true })
             throw error
+        } finally {
+            await reservation?.release()
         }
     }
 

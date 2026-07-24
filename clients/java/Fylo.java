@@ -16,20 +16,25 @@
 // Java's camelCase convention; object arguments are native Maps/Lists, encoded
 // to JSON by the built-in `toJson`. request(json) is the raw escape hatch.
 
-import java.io.BufferedReader;
+import java.io.BufferedInputStream;
 import java.io.BufferedWriter;
 import java.io.IOException;
-import java.io.InputStreamReader;
+import java.io.InputStream;
 import java.io.OutputStreamWriter;
+import java.nio.ByteBuffer;
+import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
 public final class Fylo implements AutoCloseable {
+    private static final int MAX_REQUEST_BYTES = 1024 * 1024;
+    private static final int MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
     private final Process proc;
     private final BufferedWriter in;
-    private final BufferedReader out;
+    private final InputStream out;
+    private final byte[] responseBuffer = new byte[MAX_RESPONSE_BYTES + 1];
 
     public Fylo(String root) throws IOException {
         this(root, "fylo", false);
@@ -37,25 +42,49 @@ public final class Fylo implements AutoCloseable {
 
     public Fylo(String root, String binary, boolean worm) throws IOException {
         List<String> args = new ArrayList<>(List.of(binary, "exec", "--loop", "--root", root));
+        args.add("--max-request-bytes");
+        args.add(Integer.toString(MAX_REQUEST_BYTES));
+        args.add("--max-response-bytes");
+        args.add(Integer.toString(MAX_RESPONSE_BYTES));
         if (worm) args.add("--worm");
         this.proc = new ProcessBuilder(args)
                 .redirectError(ProcessBuilder.Redirect.INHERIT)
                 .start();
         this.in = new BufferedWriter(
                 new OutputStreamWriter(proc.getOutputStream(), StandardCharsets.UTF_8));
-        this.out = new BufferedReader(
-                new InputStreamReader(proc.getInputStream(), StandardCharsets.UTF_8));
+        this.out = new BufferedInputStream(proc.getInputStream());
     }
 
     /** Send one raw machine-protocol op (JSON string); returns the response line. */
     public synchronized String request(String opJson) throws IOException {
         if (!proc.isAlive()) throw new IOException("fylo process has exited");
-        in.write(opJson.stripTrailing());
+        String payload = opJson.stripTrailing();
+        if (payload.getBytes(StandardCharsets.UTF_8).length > MAX_REQUEST_BYTES) {
+            throw new IOException("FYLO request exceeds " + MAX_REQUEST_BYTES + " bytes");
+        }
+        in.write(payload);
         in.write('\n');
         in.flush();
-        String line = out.readLine();
-        if (line == null) throw new IOException("fylo closed the stream");
-        return line;
+        int length = 0;
+        while (length <= MAX_RESPONSE_BYTES) {
+            int next = out.read();
+            if (next < 0) throw new IOException("fylo closed the stream");
+            if (next == '\n') {
+                try {
+                    return StandardCharsets.UTF_8.newDecoder()
+                            .onMalformedInput(CodingErrorAction.REPORT)
+                            .onUnmappableCharacter(CodingErrorAction.REPORT)
+                            .decode(ByteBuffer.wrap(responseBuffer, 0, length))
+                            .toString();
+                } catch (java.nio.charset.CharacterCodingException error) {
+                    proc.destroyForcibly();
+                    throw new IOException("fylo returned malformed UTF-8", error);
+                }
+            }
+            responseBuffer[length++] = (byte) next;
+        }
+        proc.destroyForcibly();
+        throw new IOException("FYLO response exceeds " + MAX_RESPONSE_BYTES + " bytes");
     }
 
     // Build an op from native fields, send it, and error on a failure response.
@@ -170,6 +199,12 @@ public final class Fylo implements AutoCloseable {
     public String findDocs(String collection, Map<String, Object> query) throws IOException {
         return op("findDocs", "collection", collection, "query", query);
     }
+    public String findDocsPage(String collection, Map<String, Object> query, Map<String, Object> page) throws IOException {
+        return op("findDocs", "collection", collection, "query", query, "page", page);
+    }
+    public String findDeletedDocsPage(String collection, Map<String, Object> query, Map<String, Object> page) throws IOException {
+        return op("findDeletedDocs", "collection", collection, "query", query, "page", page);
+    }
     public String executeSQL(String sql) throws IOException {
         return op("executeSQL", "sql", sql);
     }
@@ -238,6 +273,9 @@ public final class Fylo implements AutoCloseable {
         }
         public String find(Map<String, Object> query) throws IOException {
             return findDocs(name, query);
+        }
+        public String findPage(Map<String, Object> query, Map<String, Object> page) throws IOException {
+            return findDocsPage(name, query, page);
         }
     }
 

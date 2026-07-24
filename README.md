@@ -69,6 +69,11 @@ curl -fsSL https://github.com/d31ma/Fylo/releases/latest/download/install.sh | s
 sh ./scripts/install-vendor-bins.sh
 ```
 
+Set `FYLO_VERIFY_PROVENANCE=1` before running the installer to require signed
+GitHub artifact provenance in addition to the release checksum. This opt-in
+requires an authenticated GitHub CLI and fails closed before installation; see
+the [release provenance runbook](docs/operations/release-provenance.md).
+
 Then drive it from your language through a thin, dependency-free
 [client shim](clients/). Node example:
 
@@ -785,9 +790,34 @@ const db = new Fylo('/mnt/fylo', {
 })
 ```
 
-Operation callers provide only `{ uid }`; they cannot assert their own group
-membership. Resolver failures fail closed. A record written without `.as()`
-has no access descriptor and remains open to reads and writes.
+In-process operation callers provide only `{ uid }`; they cannot assert their
+own group membership. Resolver failures fail closed.
+
+The standalone binary also supports application-authenticated virtual
+identities over its local NDJSON boundary. Every document and raw-file
+CRUD/query request accepts `access`; the shipped Node client exposes it through
+the same fluent syntax:
+
+```js
+const teamId = await db.messages.put({ title: 'team draft' }).as({ gid: editorsGid, mode: 0o660 })
+
+const actor = {
+    uid: authenticatedUser.uid,
+    groups: await identityProvider.groupIdsFor(authenticatedUser.uid)
+}
+await db.messages.patch(teamId, { title: 'reviewed' }).as(actor)
+await db.attachments
+    .putFile({ path: sourcePath, key: '/mail/attachment.pdf' })
+    .as({ gid: editorsGid, mode: 0o660 })
+```
+
+`access.groups` is a trusted, request-scoped supplementary-GID assertion for
+machine mode only. The cached binary clears it after each request and falls
+back to the host POSIX group resolver when it is omitted. Treat stdin as a
+privileged application boundary: derive both `uid` and `groups` from
+authenticated server state and never copy either from an end-user payload. A
+record written without `.as()` or machine `access` has no descriptor and
+remains open to reads and writes.
 
 The UID is still an authorization claim supplied by your application—Fylo does
 not authenticate it. Validate the caller before passing a UID. The Fylo
@@ -1029,9 +1059,7 @@ inside its scope. Use a dedicated bucket or a unique prefix per FYLO root and
 grant only `s3:ListBucket` for that prefix plus `s3:GetObject`, `s3:PutObject`,
 and `s3:DeleteObject` for `arn:aws:s3:::BUCKET/PREFIX/*`. Bucket-root backup is
 available only as the explicit `allowBucketRoot: true` opt-in and should be used
-only with a dedicated bucket and a least-privilege IAM identity. Built-in S3
-backup fails closed on Windows because Windows ADS metadata cannot currently be
-captured from the same open descriptor as the file bytes.
+only with a dedicated bucket and a least-privilege IAM identity.
 
 ```json
 {
@@ -1054,13 +1082,14 @@ captured from the same open descriptor as the file bytes.
 }
 ```
 
-Every data object has a recovery manifest under
+Every data object has a versioned, platform-specific recovery manifest under
 `.fylo-backup/xattrs/<base64url-object-key>.json`. The manifest records the data
-key, byte length, SHA-256 digest, and every filesystem xattr as base64. A
-recovery tool downloads data objects (excluding `.fylo-backup/`), verifies the
-digest, then reapplies the recorded xattr names and bytes. This preserves raw
-file object keys, checksum stamps, and `user.fylo.meta.*` developer metadata;
-metadata-only writes and rekeys refresh the paired manifest immediately.
+key, byte length, SHA-256 digest, native mode/mtime, and FYLO metadata from the
+same pinned descriptor as the bytes. POSIX manifests preserve xattrs, including
+access descriptors and `user.fylo.meta.*` developer metadata. NTFS manifests
+preserve FYLO alternate-data-stream metadata and the native read-only/writeable
+mode projection. Recovery rejects a manifest created for a different platform
+family instead of silently dropping ownership or access semantics.
 
 #### S3 recovery runbook
 
@@ -1078,17 +1107,24 @@ staging root into place. It never merges into or overwrites an existing root.
    exhausted S3 retry.
 
 ```bash
-bun scripts/s3-restore.mjs verify \
-  --bucket fylo-backup --prefix prod/fylo --region us-east-1
+fylo backup verify \
+  --backup-bucket fylo-backup \
+  --backup-prefix prod/fylo \
+  --backup-region us-east-1 \
+  --json
 ```
 
 4. Restore to a new sibling path. Progress is emitted as NDJSON on stderr and
    the final result as JSON on stdout.
 
 ```bash
-bun scripts/s3-restore.mjs restore \
-  --bucket fylo-backup --prefix prod/fylo --region us-east-1 \
-  --destination /mnt/fylo-restored --concurrency 4
+fylo backup restore \
+  --backup-bucket fylo-backup \
+  --backup-prefix prod/fylo \
+  --backup-region us-east-1 \
+  --destination /mnt/fylo-restored \
+  --backup-concurrency 4 \
+  --json
 ```
 
 5. With application writers still stopped, open the restored root and run
@@ -1109,9 +1145,17 @@ await recovery.verify()
 await recovery.restore({ concurrency: 4, signal: abortController.signal })
 ```
 
-Backup and restore are unavailable on Windows: backup cannot capture ADS xattrs
-from the same descriptor as the file bytes, and recovery cannot safely reapply
-the backup xattrs. Both operations fail closed before remote work starts.
+The binary also accepts `--backup-endpoint` for any S3-compatible provider.
+Credentials are read from `AWS_*` or `FYLO_S3_*` environment variables and are
+never placed in machine requests, handshakes, logs, or status results. A restore
+holds the same canonical root reservation used by an exclusive machine loop;
+an active owner returns `EROOTLOCKED` before any remote request.
+
+Windows backup and restore require local x64 Windows on NTFS. Native Windows CI
+tests the exact descriptor/ADS path and restored FYLO access metadata. POSIX and
+NTFS manifests are intentionally not portable across families because neither
+native UID/GID ownership nor NTFS access semantics can be translated without
+loss.
 
 An interrupted or failed restore removes its uniquely named staging directory.
 If the process is killed before cleanup runs, remove only a matching
@@ -1279,7 +1323,102 @@ echo '{"op":"inspectCollection","root":"/mnt/fylo","collection":"posts"}' | fylo
 }
 ```
 
-Supported operations: `executeSQL`, `createCollection`, `dropCollection`, `inspectCollection`, `rebuildCollection`, `getDoc`, `getLatest`, `getMeta`, `setMeta`, `findDocs`, `findDeletedDocs`, `restoreDoc`, `joinDocs`, `putData`, `batchPutData`, `patchDoc`, `patchDocs`, `delDoc`, `delDocs`, `importBulkData`, `checkout`, `branch`, `commit`, `log`, `status`, `diff`, `restoreCommit`, `merge`, `schemaInspect`, `schemaCurrent`, `schemaHistory`, `schemaDoctor`, `schemaValidate`, `schemaMaterialize`.
+Before sending ordinary operations, supervisors can identify the exact runtime
+and discover its framing contract:
+
+```bash
+fylo --version
+fylo version --output json
+printf '%s\n' '{"op":"handshake"}' | fylo exec --loop --root /mnt/fylo
+```
+
+`version --output json` and the `handshake` result share one stable identity:
+FYLO runtime and protocol versions, immutable release commit and target,
+required CHEX/TTID versions plus their current availability, effective frame
+limits, and supported capabilities. Source and locally compiled development
+executions explicitly report an unknown commit; release builds embed the
+immutable source revision and build target. A handshake is side-effect-free
+and does not create the configured root or initialize a collection.
+
+Supported operations: `handshake`, `executeSQL`, `createCollection`, `dropCollection`, `inspectCollection`, `rebuildCollection`, `getDoc`, `getLatest`, `getMeta`, `setMeta`, `findDocs`, `findDeletedDocs`, `restoreDoc`, `joinDocs`, `putData`, `batchPutData`, `patchDoc`, `patchDocs`, `delDoc`, `delDocs`, `importBulkData`, `backupStatus`, `backupReconcile`, `checkout`, `branch`, `commit`, `log`, `status`, `diff`, `restoreCommit`, `merge`, `schemaInspect`, `schemaCurrent`, `schemaHistory`, `schemaDoctor`, `schemaValidate`, `schemaMaterialize`.
+
+Document and raw-file CRUD/query operations accept an optional `access`
+object. Puts accept `{ uid?, gid?, mode? }`; reads, metadata, queries, updates,
+deletes, and restores accept `{ uid }`. A trusted binary-backed application
+may additionally include `groups: number[]` with `uid` for virtual POSIX
+membership. Denied direct operations return `error.code: "EACCES"`; collection
+queries omit unreadable records.
+
+#### Bounded NDJSON frames
+
+Persistent loops use one UTF-8 JSON object per LF-delimited line. The secure
+defaults are 1 MiB per request and 8 MiB per response; the LF delimiter does
+not count. A supervisor may lower or raise them, up to 64 MiB, and then confirm
+the effective values in the handshake:
+
+```bash
+fylo exec --loop --root /mnt/fylo \
+  --max-request-bytes 1048576 \
+  --max-response-bytes 8388608
+```
+
+FYLO uses a fixed-capacity input buffer. It rejects invalid UTF-8
+(`EFRAME_UTF8`), malformed JSON (`EFRAME_JSON`), duplicate object keys
+(`EFRAME_DUPLICATE_KEY`), and oversized requests
+(`EFRAME_REQUEST_TOO_LARGE`). When an LF boundary is known, it emits one error
+response and safely resumes with the next frame. An incomplete final frame
+returns `EFRAME_TRUNCATED` at EOF and the loop ends; retry it only after
+starting a new child.
+
+Responses never silently cross the advertised maximum. `findDocs` and
+`findDeletedDocs` support bounded continuation on a persistent loop:
+
+```json
+{"op":"findDocs","collection":"posts","query":{"$ops":[]},"page":{"limit":256}}
+{"op":"findDocs","collection":"posts","query":{"$ops":[]},"page":{"limit":256,"cursor":"<opaque>"}}
+```
+
+The result is `{ items, nextCursor, page: { count, limit } }`. The first request
+materializes an immutable, disk-backed snapshot ordered by TTID binary text, so
+concurrent mutations cannot duplicate or skip entries. Cursors are scoped to
+the operation, collection, query, and access identity; they expire after 15
+minutes and become invalid when the loop exits. On `EINVALIDCURSOR` or child
+restart, discard partial state and restart from page one. Snapshot storage is
+private, cleaned on completion/expiry/shutdown, capped at 1 GiB, and never
+loads the complete result into the JavaScript heap.
+
+Unpaged operations that exceed the frame still return
+`EFRAME_RESPONSE_TOO_LARGE` while preserving stream synchronization. A single
+query item that cannot fit returns `EQUERYITEMTOOLARGE`; an oversized snapshot
+returns `EQUERYSNAPSHOTTOOLARGE`. If a client observes an oversized or malformed
+response despite the negotiated contract, it must kill and restart the child
+because its framing can no longer be trusted.
+
+#### Exclusive root owner
+
+Long-lived supervisors that require exactly one authoritative process can opt
+in to a root-wide lease:
+
+```bash
+fylo exec --loop --root /mnt/fylo --exclusive-root
+```
+
+FYLO canonicalizes the root, acquires a non-blocking kernel file lock before it
+reads stdin, and holds it for the complete loop lifetime. A competing process
+receives `EROOTLOCKED` and exits without executing a read or write. Normal
+shutdown releases the lock. After a crash or `SIGKILL`, the operating system
+releases it; persistent metadata is only diagnostic/fencing state and is not a
+PID-file claim, so PID reuse and stale metadata cannot retain ownership. Every
+request verifies the unique owner generation, and a replaced former owner
+fails closed with `EROOTLEASELOST`.
+
+The lease contract is supported on native local filesystems on macOS, Linux,
+and Windows. Containers on the same host can share it only when they share the
+same canonical bind-mounted root and host kernel lock domain. Network,
+clustered, object-backed, and independently synchronized filesystems are not a
+distributed lock service and are unsupported for `--exclusive-root`; use an
+external lease/consensus service there. Windows UNC/network shares have the
+same restriction.
 
 ### Compiled Executable
 

@@ -23,13 +23,25 @@ class FyloError extends Exception {}
 
 class Fylo
 {
+    private const MAX_REQUEST_BYTES = 1048576;
+    private const MAX_RESPONSE_BYTES = 8388608;
     private $proc;
     private $stdin;
     private $stdout;
 
     public function __construct(string $root, string $binary = 'fylo', bool $worm = false)
     {
-        $args = [$binary, 'exec', '--loop', '--root', $root];
+        $args = [
+            $binary,
+            'exec',
+            '--loop',
+            '--root',
+            $root,
+            '--max-request-bytes',
+            (string) self::MAX_REQUEST_BYTES,
+            '--max-response-bytes',
+            (string) self::MAX_RESPONSE_BYTES,
+        ];
         if ($worm) {
             $args[] = '--worm';
         }
@@ -45,13 +57,26 @@ class Fylo
     /** Send one raw machine-protocol op; return the full decoded response. */
     public function request(array $op)
     {
-        fwrite($this->stdin, json_encode($op) . "\n");
+        $payload = json_encode($op, JSON_THROW_ON_ERROR);
+        if (strlen($payload) > self::MAX_REQUEST_BYTES) {
+            throw new FyloError('FYLO request exceeds ' . self::MAX_REQUEST_BYTES . ' bytes');
+        }
+        fwrite($this->stdin, $payload . "\n");
         fflush($this->stdin);
-        $reply = fgets($this->stdout);
+        $reply = fgets($this->stdout, self::MAX_RESPONSE_BYTES + 2);
         if ($reply === false) {
             throw new FyloError('fylo closed the stream');
         }
-        return json_decode($reply, true);
+        if (substr($reply, -1) !== "\n" || strlen($reply) - 1 > self::MAX_RESPONSE_BYTES) {
+            proc_terminate($this->proc, 9);
+            throw new FyloError('FYLO response exceeds ' . self::MAX_RESPONSE_BYTES . ' bytes');
+        }
+        try {
+            return json_decode(substr($reply, 0, -1), true, 512, JSON_THROW_ON_ERROR);
+        } catch (JsonException $error) {
+            proc_terminate($this->proc, 9);
+            throw new FyloError('fylo returned malformed UTF-8 or JSON', 0, $error);
+        }
     }
 
     // --- Collections ---
@@ -126,6 +151,14 @@ class Fylo
     public function findDeletedDocs(string $collection, array $query = [])
     {
         return $this->op('findDeletedDocs', ['collection' => $collection, 'query' => $query]);
+    }
+    public function findDocsPage(string $collection, array $query, array $page = [])
+    {
+        return $this->op('findDocs', ['collection' => $collection, 'query' => $query, 'page' => $page]);
+    }
+    public function findDeletedDocsPage(string $collection, array $query = [], array $page = [])
+    {
+        return $this->op('findDeletedDocs', ['collection' => $collection, 'query' => $query, 'page' => $page]);
     }
     public function joinDocs(array $join)
     {
@@ -246,5 +279,9 @@ class FyloCollection
     public function find(array $query)
     {
         return $this->db->findDocs($this->name, $query);
+    }
+    public function findPage(array $query, array $page = [])
+    {
+        return $this->db->findDocsPage($this->name, $query, $page);
     }
 }

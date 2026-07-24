@@ -263,6 +263,12 @@ describe('built-in whole-root S3 backup', () => {
                 /** @type {Buffer} */ (xattrManifestFor(/** @type {string} */ (dataKey)))
             )
         )
+        expect(manifest.version).toBe(2)
+        expect(manifest.platform).toBe(process.platform === 'win32' ? 'windows-ntfs' : 'posix')
+        expect(manifest.native).toMatchObject({
+            mode: expect.any(Number),
+            mtimeMs: expect.any(Number)
+        })
         expect(manifest.dataKey).toBe(dataKey)
         expect(Object.keys(manifest.xattrs)).toContain('user.fylo.key')
         expect(Object.keys(manifest.xattrs)).toContain('user.fylo.meta.owner')
@@ -423,7 +429,9 @@ describe('built-in whole-root S3 backup', () => {
             await rename(statePath, saved)
             await writeFile(outsideState, original)
             await symlink(outsideState, statePath)
-            await expect(fylo.reconcile()).rejects.toThrow(/Secure open failed|symbolic link/)
+            await expect(fylo.reconcile()).rejects.toThrow(
+                /Secure open failed|symbolic link|reparse point/
+            )
             expect(await readFile(outsideState)).toEqual(original)
             await rm(statePath)
             await rename(saved, statePath)

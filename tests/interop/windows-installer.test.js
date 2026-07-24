@@ -21,6 +21,8 @@ describe('Windows installer integrity', () => {
         expect(script).not.toContain('best-effort')
         expect(script).not.toMatch(/catch\s*\{/)
         expect(script).toContain('Checksum metadata does not contain')
+        expect(script).toContain('FYLO_VERIFY_PROVENANCE')
+        expect(script).toContain('gh attestation verify $download --repo $repo')
         expect(script).toContain('Test-Path -LiteralPath $exe -PathType Leaf')
         expect(script.indexOf('Test-Path -LiteralPath $exe -PathType Leaf')).toBeLessThan(
             script.indexOf('Installed fylo to $exe')

@@ -9,7 +9,7 @@
     },
     "scripts": {
         "vendor:install": "sh ./scripts/install-vendor-bins.sh",
-        "build:exe": "mkdir -p ./dist-bin && bun build --compile ./src/cli/index.js --outfile ./dist-bin/fylo",
+        "build:exe": "bun ./scripts/build-executable.mjs",
         "build:web": "bun ./scripts/build-browser.mjs",
         "build:web:wasm": "bun ./scripts/build-browser.mjs --wasm",
         "test": "bun --env-file=tests/.env.test test tests/integration tests/collection tests/browser --timeout 120000",

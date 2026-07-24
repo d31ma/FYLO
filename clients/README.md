@@ -71,13 +71,14 @@ follow **each language's own paradigm** — `snake_case` in Python/Ruby/Rust,
 `camelCase` in Node/PHP/Java/Swift/Kotlin/Dart, `PascalCase` in Go/C# (their
 exported/public methods must be capitalized):
 
-| Op         | Python / Ruby / Rust | Node / PHP / Java / Swift / Kotlin / Dart | Go / C#      |
-| ---------- | -------------------- | ----------------------------------------- | ------------ |
-| putData    | `put_data`           | `putData`                                 | `PutData`    |
-| getMeta    | `get_meta`           | `getMeta`                                 | `GetMeta`    |
-| setMeta    | `set_meta`           | `setMeta`                                 | `SetMeta`    |
-| findDocs   | `find_docs`          | `findDocs`                                | `FindDocs`   |
-| executeSQL | `execute_sql`        | `executeSQL`                              | `ExecuteSQL` |
+| Op           | Python / Ruby / Rust | Node / PHP / Java / Dart | Go / C#        |
+| ------------ | -------------------- | ------------------------ | -------------- |
+| putData      | `put_data`           | `putData`                | `PutData`      |
+| getMeta      | `get_meta`           | `getMeta`                | `GetMeta`      |
+| setMeta      | `set_meta`           | `setMeta`                | `SetMeta`      |
+| findDocs     | `find_docs`          | `findDocs`               | `FindDocs`     |
+| findDocsPage | `find_docs_page`     | `findDocsPage`           | `FindDocsPage` |
+| executeSQL   | `execute_sql`        | `executeSQL`             | `ExecuteSQL`   |
 
 The larger dynamic shims cover the full common machine-operation set, including
 batch, bulk, deleted-document, and join helpers. Compact compiled-language
@@ -178,13 +179,56 @@ string, so values are inlined verbatim: **escape or validate untrusted input
 yourself**, or keep to app-generated SQL. On the mobile clients, `sql` runs
 against the local on-device store.
 
-### SQL UID, GID, and mode
+### POSIX access context
 
-Thin shims can send an application-authenticated POSIX UID claim with SQL
-execution. Fylo does not authenticate the claim. `gid` and `mode` are accepted
-only for `INSERT`; omit them from `SELECT`, `UPDATE`, and `DELETE`. Inserts may
-use UID, GID, both, or mode alone. Omitted identities retain the new file's
-native owner/group, and an omitted mode defaults to `0o600`.
+Machine document and raw-file CRUD/query operations accept an
+application-authenticated POSIX access context. Fylo does not authenticate
+these claims. Puts may use UID, GID, both, or mode alone. Omitted identities
+retain the new file's native owner/group, and an omitted mode defaults to
+`0o600`. Reads, metadata calls, queries, updates, deletes, and restores accept
+UID but not GID or mode.
+
+The Node shim exposes chainable `.as(...)` on every applicable method:
+
+```js
+const id = await db.messages
+    .put({ tenant: 'domain-a', subject: 'Hello' })
+    .as({ gid: domainGid, mode: 0o660 })
+
+const actor = {
+    uid: authenticatedUser.uid,
+    groups: await memberships.groupIdsFor(authenticatedUser.uid)
+}
+await db.messages.get(id).as(actor)
+await db.messages.patch(id, { subject: 'Updated' }).as(actor)
+await db.messages.delete(id).as(actor)
+
+const attachmentId = await db.attachments
+    .putFile(
+        { path: '/srv/uploads/message.pdf', key: '/domain-a/message.pdf' },
+        { maxBytes: 10_000_000 }
+    )
+    .as({ gid: domainGid, mode: 0o660 })
+```
+
+`access.groups` is available only on the local machine-protocol boundary and
+must be derived from trusted application state. Never forward a UID or group
+list from an end-user request. The binary scopes the list to that one request;
+an omitted list uses the host POSIX group resolver, and an empty list grants no
+group memberships. Raw `request(...)` callers use the same JSON shape:
+
+```json
+{
+    "op": "patchDoc",
+    "collection": "messages",
+    "id": "01...",
+    "newDoc": { "subject": "Updated" },
+    "access": { "uid": 1001, "groups": [2001] }
+}
+```
+
+SQL uses the same context. `gid` and `mode` are accepted only for `INSERT`;
+omit them from `SELECT`, `UPDATE`, and `DELETE`.
 
 | Language | Protected SQL call                                                                   |
 | -------- | ------------------------------------------------------------------------------------ |
@@ -224,11 +268,11 @@ The machine payload is the same for every shim:
 
 `SELECT` returns only rows readable by that UID. `UPDATE` and `DELETE` use the
 same UID for both candidate visibility and write authorization. Group
-membership is resolved by the trusted host POSIX group database; callers do
-not send GIDs for reads or mutations. This is a native-POSIX feature on
-macOS/Linux hosts. It is not enforced by the Windows binary, browser, Explorer,
-or mobile local-only clients because those surfaces cannot provide the
-required `chown`/`chmod` boundary.
+membership comes from request-scoped trusted `groups` when supplied by the
+application, otherwise from the host POSIX group database. This is a
+native-POSIX feature on macOS/Linux hosts. It is not enforced by the Windows
+binary, browser, Explorer, or mobile local-only clients because those surfaces
+cannot provide the required `chown`/`chmod` boundary.
 
 ## How the shims work
 
@@ -238,6 +282,51 @@ per line, one response object per line, in order. The process keeps the engine
 (indexes, catalog) warm across every call, so you pay startup once, not per
 operation. No port, no network, no auth surface; the child dies with your app.
 Pass `--root` once on spawn (the shims do this); per-request `root` is optional.
+
+The machine protocol defaults to a 1 MiB request frame and an 8 MiB response
+frame, excluding the LF delimiter. The Node shim enforces those bounds on both
+sides and performs a side-effect-free handshake when it starts:
+
+```js
+const db = new Fylo('/mnt/fylo', {
+    binary: '/opt/fylo/bin/fylo',
+    exclusiveRoot: true,
+    maxRequestBytes: 1024 * 1024,
+    maxResponseBytes: 8 * 1024 * 1024
+})
+
+const identity = await db.handshake()
+console.log(identity.runtimeVersion, identity.commit, identity.machine)
+```
+
+`exclusiveRoot` makes a competing loop reject its startup handshake with
+`EROOTLOCKED`. The configured frame limits are passed to the child and must
+match the effective values returned by its handshake. The Node shim rejects an
+oversized outbound request without killing a healthy child; an oversized or
+malformed inbound frame kills the child and rejects every pending request
+because response synchronization is no longer trustworthy.
+
+Every shipped binary-backed shim uses the same 1 MiB/8 MiB contract, rejects an
+oversized outbound request, and caps input before LF. Supervisors that
+implement their own protocol driver should issue `{"op":"handshake"}` first
+and restart the child after any ambiguous response framing. See the root
+[machine-interface contract](../README.md#machine-interface-cross-language)
+for exact error, retry, filesystem, and crash-recovery semantics.
+
+Large active and deleted-document queries use `findDocsPage` and
+`findDeletedDocsPage` (idiomatic casing per the table above). Start with a page
+such as `{ limit: 256 }`, consume `result.items`, and pass
+`{ limit: 256, cursor: result.nextCursor }` until `nextCursor` is null. The
+collection facade exposes `findPage`. Keep every continuation on the same shim
+instance: the opaque cursor belongs to that persistent binary process and to
+the exact query/access scope. If the child restarts, the cursor expires, or the
+binary returns `EINVALIDCURSOR`, discard the partial traversal and restart page
+one. The snapshot is immutable, so writes during traversal appear only in a new
+traversal.
+
+Pagination is a binary machine-protocol feature. Browser, mobile, and Flutter
+clients query their embedded local engine directly and do not accept these
+process-bound cursors.
 
 ## Browser (`fylo-web.mjs`)
 
