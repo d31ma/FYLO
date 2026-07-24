@@ -35,6 +35,17 @@ try {
         throw "Checksum mismatch for $asset. Aborting."
     }
 
+    if ($env:FYLO_VERIFY_PROVENANCE -eq '1') {
+        if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
+            throw 'FYLO_VERIFY_PROVENANCE=1 requires GitHub CLI (gh). Aborting.'
+        }
+        Write-Host 'Verifying signed GitHub artifact provenance...'
+        & gh attestation verify $download --repo $repo
+        if ($LASTEXITCODE -ne 0) {
+            throw "Artifact provenance verification failed for $asset. Aborting."
+        }
+    }
+
     Move-Item -LiteralPath $download -Destination $exe -Force
 } finally {
     if (Test-Path -LiteralPath $download) {
