@@ -338,7 +338,7 @@ directly — fully offline, no backend, no network.
 For a regular website, add a version-pinned loader to the document head:
 
 ```html
-<script src="https://d31ma.github.io/FYLO/version/26.30.04/fylo.js"></script>
+<script src="https://d31ma.github.io/FYLO/version/26.30.05/fylo.js"></script>
 ```
 
 Then open the browser-local database from your application code:

@@ -1,5 +1,46 @@
 # Changelog
 
+## 26.30.05 - 2026-07-24
+
+### Added
+
+- A machine-readable runtime identity: `fylo version --output json`,
+  `--version`, and a side-effect-free machine `handshake` operation share one
+  stable identity covering runtime/protocol versions, the immutable release
+  commit and build target, CHEX/TTID requirements, effective frame limits, and
+  capabilities.
+- Bounded NDJSON machine-protocol frames with strict UTF-8, duplicate-key
+  rejection, and configurable 1 MiB request / 8 MiB response limits (up to
+  64 MiB), enforced symmetrically by all nine binary-backed language shims.
+- Bounded query pagination for `findDocs`/`findDeletedDocs` over an immutable
+  disk-backed snapshot with access-scoped, expiring cursors; shims expose
+  `findDocsPage`/`findPage` in each language's casing.
+- An exclusive crash-safe root-owner lease (`--exclusive-root`) backed by a
+  kernel file lock with generation fencing; competitors fail closed with
+  `EROOTLOCKED` and replaced owners with `EROOTLEASELOST`.
+- POSTIX access context on every machine document and raw-file CRUD/query
+  operation, including request-scoped trusted virtual groups for
+  binary-backed applications; the Node shim exposes chainable `.as(...)`.
+- Whole-root S3 backup, verification, status, reconcile, and restore through
+  the standalone binary (`fylo backup verify|restore`, `backupStatus`,
+  `backupReconcile`) with credentials confined to `AWS_*`/`FYLO_S3_*`
+  environment variables.
+- Windows NTFS backup/restore parity using platform-tagged v2 manifests that
+  capture bytes, alternate-data-stream metadata, and native mode/mtime from
+  one pinned descriptor; cross-platform-family recovery fails explicitly.
+- A live S3-compatible release gate against pinned MinIO, native packaged
+  macOS arm64/x64 lease verification, signed build provenance attestations,
+  an SPDX SBOM per release, and opt-in `FYLO_VERIFY_PROVENANCE=1` installer
+  verification.
+
+### Changed
+
+- Release executables are built through `scripts/build-executable.mjs`, which
+  embeds the immutable release commit, target, and build kind; development
+  builds report an unknown commit instead of silently claiming one.
+- The standalone S3 restore wrapper `scripts/s3-restore.mjs` is replaced by
+  `fylo backup verify` and `fylo backup restore`.
+
 ## 26.30.04 - 2026-07-23
 
 ### Added
