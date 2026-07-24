@@ -429,7 +429,9 @@ describe('built-in whole-root S3 backup', () => {
             await rename(statePath, saved)
             await writeFile(outsideState, original)
             await symlink(outsideState, statePath)
-            await expect(fylo.reconcile()).rejects.toThrow(/Secure open failed|symbolic link/)
+            await expect(fylo.reconcile()).rejects.toThrow(
+                /Secure open failed|symbolic link|reparse point/
+            )
             expect(await readFile(outsideState)).toEqual(original)
             await rm(statePath)
             await rename(saved, statePath)

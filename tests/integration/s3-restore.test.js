@@ -168,7 +168,8 @@ describe('S3 recovery', () => {
         expect(Buffer.from(getXattr(restoredFile, 'user.fylo.key')).toString()).toBe('/hello.txt')
         const access = await stat(restoredFile)
         expect(access.uid).toBe(process.getuid?.() ?? 0)
-        expect(access.mode & 0o777).toBe(0o600)
+        // NTFS projects only the read-only bit: a writable file reports 0o666.
+        expect(access.mode & 0o777).toBe(process.platform === 'win32' ? 0o666 : 0o600)
         expect(client.listCalls).toBeGreaterThan(1)
         expect(result).toMatchObject({ status: 'complete', files: 2, bytes: 17 })
         expect(events.map((event) => event.phase)).toContain('promote')
