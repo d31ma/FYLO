@@ -290,6 +290,37 @@ describe('CLI machine interface', () => {
         expect(reconcile.error.code).toBe('EBACKUPNOTCONFIGURED')
     })
 
+    test('every machine failure carries a stable error code (#79)', async () => {
+        const root = await createRoot('fylo-machine-error-codes-')
+        const overrides = { root, cache: new Map() }
+        await runMachineRequest({ op: 'createCollection', collection: 'coded' }, overrides)
+
+        const probes = [
+            [{ op: 'noSuchOperation' }, 'EUNSUPPORTEDOP'],
+            [{ op: 'getDoc', id: '0'.repeat(26) }, 'EBADREQUEST'],
+            [{ op: 'getDoc', collection: 'coded', id: 'SOMEID' }, 'EINVALIDDOCID'],
+            [{ op: 'putData', collection: 'coded', data: { a: 1 }, access: 7 }, 'EBADREQUEST'],
+            [
+                { op: 'putData', collection: 'coded', data: { a: 1 }, access: { groups: [1] } },
+                'EBADREQUEST'
+            ],
+            [{ op: 'findDocs', collection: 'coded', query: {}, page: { limit: 0 } }, 'EBADREQUEST']
+        ]
+        for (const [request, code] of probes) {
+            const response = await runMachineRequest(request, overrides)
+            expect(response.ok).toBe(false)
+            expect(response.error.code).toBe(code)
+        }
+
+        const unclassified = await runMachineRequest(
+            { op: 'importBulkData', collection: 'coded', url: 'not a url', format: 'json' },
+            overrides
+        )
+        expect(unclassified.ok).toBe(false)
+        expect(typeof unclassified.error.code).toBe('string')
+        expect(unclassified.error.code.length).toBeGreaterThan(0)
+    })
+
     test('exec exposes version-control operations for language-agnostic callers', async () => {
         const repo = process.cwd()
         const root = await createRoot('fylo-machine-vcs-')

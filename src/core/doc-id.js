@@ -6,7 +6,13 @@ import TTID from '../vendor/ttid.js'
  * @returns {Promise<void>}
  */
 export async function validateDocId(docId) {
-    if (!(await TTID.isTTID(docId))) throw new Error(`Invalid document ID: ${docId}`)
+    if (!(await TTID.isTTID(docId))) {
+        const error = /** @type {Error & { code: string }} */ (
+            new Error(`Invalid document ID: ${docId}`)
+        )
+        error.code = 'EINVALIDDOCID'
+        throw error
+    }
 }
 
 /**

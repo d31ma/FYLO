@@ -102,7 +102,7 @@ import { closeQueryCursorStates, collectQueryPage, queryCursorScope } from './qu
  * @property {MachineOperation | null} op
  * @property {string | null} requestId
  * @property {number} durationMs
- * @property {{ name: string, message: string, code?: string }} error
+ * @property {{ name: string, message: string, code: string }} error
  */
 
 /**
@@ -130,7 +130,10 @@ class MachineOperationError extends Error {
 function requireString(request, field) {
     const value = request[field]
     if (typeof value !== 'string' || value.trim().length === 0) {
-        throw new Error(`Machine request field "${String(field)}" must be a non-empty string`)
+        throw new MachineOperationError(
+            'EBADREQUEST',
+            `Machine request field "${String(field)}" must be a non-empty string`
+        )
     }
     return value
 }
@@ -143,7 +146,10 @@ function requireString(request, field) {
 function requireObject(request, field) {
     const value = request[field]
     if (!isRecord(value)) {
-        throw new Error(`Machine request field "${String(field)}" must be an object`)
+        throw new MachineOperationError(
+            'EBADREQUEST',
+            `Machine request field "${String(field)}" must be an object`
+        )
     }
     return value
 }
@@ -156,7 +162,10 @@ function requireObject(request, field) {
 function requireObjectArray(request, field) {
     const value = request[field]
     if (!Array.isArray(value) || value.some((item) => !isRecord(item))) {
-        throw new Error(`Machine request field "${String(field)}" must be an array of objects`)
+        throw new MachineOperationError(
+            'EBADREQUEST',
+            `Machine request field "${String(field)}" must be an array of objects`
+        )
     }
     return value
 }
@@ -193,18 +202,22 @@ function machineAccess(request, options) {
     if (request.access === undefined) return undefined
     const input = requireObject(request, 'access')
     const { groups, ...nativeAccess } = input
-    if (groups !== undefined) {
-        if (!Array.isArray(groups)) {
-            throw new TypeError('Machine access.groups must be an array of numeric GIDs')
+    try {
+        if (groups !== undefined) {
+            if (!Array.isArray(groups)) {
+                throw new TypeError('Machine access.groups must be an array of numeric GIDs')
+            }
+            if (!Object.hasOwn(nativeAccess, 'uid')) {
+                throw new TypeError('Machine access.groups requires access.uid')
+            }
+            normalizeResolvedGroupIds(groups)
         }
-        if (!Object.hasOwn(nativeAccess, 'uid')) {
-            throw new TypeError('Machine access.groups requires access.uid')
-        }
-        normalizeResolvedGroupIds(groups)
+        return options.allowMode
+            ? normalizeAccessInput(nativeAccess, { allowMode: true })
+            : normalizeAccessInput(nativeAccess, { allowMode: false })
+    } catch (error) {
+        throw new MachineOperationError('EBADREQUEST', /** @type {Error} */ (error).message)
     }
-    return options.allowMode
-        ? normalizeAccessInput(nativeAccess, { allowMode: true })
-        : normalizeAccessInput(nativeAccess, { allowMode: false })
 }
 
 /**
@@ -238,28 +251,43 @@ async function runWithAccess(operation, access) {
 function machineFileInput(request, overrides) {
     if (request.file === undefined) return null
     if (!isRecord(request.file)) {
-        throw new Error('Machine request field "file" must be an object')
+        throw new MachineOperationError(
+            'EBADREQUEST',
+            'Machine request field "file" must be an object'
+        )
     }
     const filePath = request.file.path
     const fileUrl = request.file.url
     if ((filePath === undefined) === (fileUrl === undefined)) {
-        throw new Error('Machine file input requires exactly one of "path" or "url"')
+        throw new MachineOperationError(
+            'EBADREQUEST',
+            'Machine file input requires exactly one of "path" or "url"'
+        )
     }
     if (filePath !== undefined) {
         if (typeof filePath !== 'string' || !path.isAbsolute(filePath)) {
-            throw new Error('Machine file path must be an absolute path')
+            throw new MachineOperationError(
+                'EBADREQUEST',
+                'Machine file path must be an absolute path'
+            )
         }
         if (overrides.allowFilePaths === false) {
-            throw new Error('Local file paths are not allowed through this transport')
+            throw new MachineOperationError(
+                'EBADREQUEST',
+                'Local file paths are not allowed through this transport'
+            )
         }
         return pathToFileURL(filePath)
     }
     if (typeof fileUrl !== 'string') {
-        throw new Error('Machine file URL must be a string')
+        throw new MachineOperationError('EBADREQUEST', 'Machine file URL must be a string')
     }
     const parsed = new URL(fileUrl)
     if (parsed.protocol === 'file:' && overrides.allowFilePaths === false) {
-        throw new Error('Local file paths are not allowed through this transport')
+        throw new MachineOperationError(
+            'EBADREQUEST',
+            'Local file paths are not allowed through this transport'
+        )
     }
     return parsed
 }
@@ -272,11 +300,17 @@ function normalizeWormOptions(worm) {
     if (worm === undefined || worm === false) return undefined
     if (worm === true) return { mode: 'strict' }
     if (!isRecord(worm)) {
-        throw new Error('Machine request field "worm" must be a boolean or object')
+        throw new MachineOperationError(
+            'EBADREQUEST',
+            'Machine request field "worm" must be a boolean or object'
+        )
     }
     const mode = worm.mode ?? 'strict'
     if (mode !== 'off' && mode !== 'strict') {
-        throw new Error('Machine request field "worm.mode" must be "off" or "strict"')
+        throw new MachineOperationError(
+            'EBADREQUEST',
+            'Machine request field "worm.mode" must be "off" or "strict"'
+        )
     }
     return { mode }
 }
@@ -288,19 +322,28 @@ function normalizeWormOptions(worm) {
 function normalizeVersioningOptions(versioning) {
     if (versioning === undefined) return undefined
     if (!isRecord(versioning)) {
-        throw new Error('Machine request field "versioning" must be an object')
+        throw new MachineOperationError(
+            'EBADREQUEST',
+            'Machine request field "versioning" must be an object'
+        )
     }
     /** @type {FyloVersioningOptions} */
     const normalized = {}
     if (Object.hasOwn(versioning, 'resolve')) {
         if (typeof versioning.resolve !== 'boolean') {
-            throw new Error('Machine request field "versioning.resolve" must be a boolean')
+            throw new MachineOperationError(
+                'EBADREQUEST',
+                'Machine request field "versioning.resolve" must be a boolean'
+            )
         }
         normalized.resolve = versioning.resolve
     }
     if (Object.hasOwn(versioning, 'autoCommit')) {
         if (typeof versioning.autoCommit !== 'boolean') {
-            throw new Error('Machine request field "versioning.autoCommit" must be a boolean')
+            throw new MachineOperationError(
+                'EBADREQUEST',
+                'Machine request field "versioning.autoCommit" must be a boolean'
+            )
         }
         normalized.autoCommit = versioning.autoCommit
     }
@@ -309,7 +352,8 @@ function normalizeVersioningOptions(versioning) {
             typeof versioning.repositoryRoot !== 'string' ||
             versioning.repositoryRoot.length === 0
         ) {
-            throw new Error(
+            throw new MachineOperationError(
+                'EBADREQUEST',
                 'Machine request field "versioning.repositoryRoot" must be a non-empty string'
             )
         }
@@ -446,11 +490,11 @@ async function collectMachineQueryPage(fylo, request, overrides, deleted, access
             : {}
         : requireObject(request, 'query')
     if (!isRecord(request.page)) {
-        throw new TypeError('Machine query page must be an object')
+        throw new MachineOperationError('EBADREQUEST', 'Machine query page must be an object')
     }
     const cursorToken = request.page.cursor
     if (cursorToken !== undefined && typeof cursorToken !== 'string') {
-        throw new TypeError('Machine query page.cursor must be a string')
+        throw new MachineOperationError('EBADREQUEST', 'Machine query page.cursor must be a string')
     }
     const cache = overrides.cache
     if (!cache) {
@@ -492,9 +536,13 @@ async function collectMachineQueryPage(fylo, request, overrides, deleted, access
  * @returns {Promise<unknown>}
  */
 async function executeMachineOperationInContext(request, overrides = {}) {
-    if (!isRecord(request)) throw new Error('Machine request body must be a JSON object')
+    if (!isRecord(request))
+        throw new MachineOperationError('EBADREQUEST', 'Machine request body must be a JSON object')
     if (typeof request.op !== 'string') {
-        throw new Error('Machine request field "op" must be a string')
+        throw new MachineOperationError(
+            'EBADREQUEST',
+            'Machine request field "op" must be a string'
+        )
     }
     switch (request.op) {
         case 'handshake':
@@ -563,7 +611,10 @@ async function executeMachineOperationInContext(request, overrides = {}) {
             const collection = requireString(request, 'collection')
             const kind = request.kind ?? 'document'
             if (kind !== 'document' && kind !== 'file') {
-                throw new Error('Machine request field "kind" must be "document" or "file"')
+                throw new MachineOperationError(
+                    'EBADREQUEST',
+                    'Machine request field "kind" must be "document" or "file"'
+                )
             }
             await fylo[collection].create({ kind })
             return { collection, kind }
@@ -784,7 +835,10 @@ async function executeMachineOperationInContext(request, overrides = {}) {
                 request.schemaDir
             )
         default:
-            throw new Error(`Unsupported machine operation: ${request.op}`)
+            throw new MachineOperationError(
+                'EUNSUPPORTEDOP',
+                `Unsupported machine operation: ${request.op}`
+            )
     }
 }
 
@@ -798,7 +852,8 @@ async function executeMachineOperationInContext(request, overrides = {}) {
  * @returns {Promise<unknown>}
  */
 export async function executeMachineOperation(request, overrides = {}) {
-    if (!isRecord(request)) throw new Error('Machine request body must be a JSON object')
+    if (!isRecord(request))
+        throw new MachineOperationError('EBADREQUEST', 'Machine request body must be a JSON object')
     const context = machineTrustedGroupContext(request)
     return await machineAccessContext.run(context, () =>
         executeMachineOperationInContext(request, overrides)
@@ -821,7 +876,10 @@ function machineErrorResponse(error, context = {}) {
         error: {
             name: failure.name || 'Error',
             message: failure.message || 'Unknown error',
-            ...(typeof failure.code === 'string' ? { code: failure.code } : {})
+            code:
+                typeof failure.code === 'string' && failure.code.length > 0
+                    ? failure.code
+                    : 'EUNKNOWN'
         }
     }
 }
@@ -878,7 +936,10 @@ export async function readTextStream(stream) {
 export async function loadMachineRequestText(requestSource) {
     if (!requestSource || requestSource === '-') {
         if (process.stdin.isTTY) {
-            throw new Error('Machine request requires --request <json|@path> or stdin input')
+            throw new MachineOperationError(
+                'EBADREQUEST',
+                'Machine request requires --request <json|@path> or stdin input'
+            )
         }
         return await readTextStream(process.stdin)
     }
@@ -897,7 +958,7 @@ export async function runMachineRequestSource(requestSource, overrides = {}) {
     try {
         const requestText = await loadMachineRequestText(requestSource)
         if (!requestText.trim()) {
-            throw new Error('Machine request payload is empty')
+            throw new MachineOperationError('EBADREQUEST', 'Machine request payload is empty')
         }
         return await runMachineRequest(JSON.parse(requestText), overrides)
     } catch (error) {
