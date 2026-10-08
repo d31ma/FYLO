@@ -106,6 +106,67 @@ impl Drop for Fixture {
 }
 
 #[test]
+fn a_completed_same_payload_manifest_swap_cannot_authorize_a_private_record() {
+    let fixture = Fixture::new();
+    let engine = fixture.reader();
+    let outsider = fixture.outsider();
+    let first = fixture.document_path();
+    let bytes = fs::read(&first).unwrap();
+    fixture
+        .writer()
+        .put_document(
+            "records",
+            OTHER_RAW_ID,
+            &bytes,
+            PutDocumentOptions {
+                metadata: BTreeMap::from([("copy".into(), json!("private-metadata"))]),
+                access: WriteAccess {
+                    mode: Some(0o600),
+                    ..WriteAccess::default()
+                },
+            },
+        )
+        .unwrap();
+    let second = NativeRoot::open_profiled(fixture.options())
+        .unwrap()
+        .collection("records")
+        .unwrap()
+        .read_document(OTHER_RAW_ID)
+        .unwrap()
+        .path;
+    assert_eq!(fs::read(&first).unwrap(), fs::read(&second).unwrap());
+    assert_eq!(
+        engine
+            .get_as("records", OTHER_RAW_ID, &outsider)
+            .unwrap_err()
+            .code(),
+        EngineErrorCode::Access
+    );
+    let first_manifest = fs::read(sidecar_path(&first)).unwrap();
+    let second_manifest = fs::read(sidecar_path(&second)).unwrap();
+    fs::write(sidecar_path(&first), &second_manifest).unwrap();
+    fs::write(sidecar_path(&second), &first_manifest).unwrap();
+    for id in [ID, OTHER_RAW_ID] {
+        assert_eq!(
+            engine
+                .get_as("records", id, &outsider)
+                .unwrap_err()
+                .storage_code(),
+            Some(NativeStorageErrorCode::CorruptMetadata)
+        );
+        assert_eq!(
+            engine
+                .metadata_as("records", id, &outsider)
+                .unwrap_err()
+                .storage_code(),
+            Some(NativeStorageErrorCode::CorruptMetadata)
+        );
+    }
+    assert_eq!(fs::read(sidecar_path(&first)).unwrap(), second_manifest);
+    assert_eq!(fs::read(sidecar_path(&second)).unwrap(), first_manifest);
+}
+
+#[test]
 fn profiled_reads_keep_payload_custom_canonical_and_access_together() {
     let fixture = Fixture::new();
     let engine = fixture.reader();

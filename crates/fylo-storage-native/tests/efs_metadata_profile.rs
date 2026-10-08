@@ -106,6 +106,186 @@ fn attributes(payload: &Path) -> BTreeMap<String, String> {
     serde_json::from_slice(&fs::read(sidecar(payload)).unwrap()).unwrap()
 }
 
+fn swap_manifests(first: &Path, second: &Path) {
+    let first_bytes = fs::read(sidecar(first)).unwrap();
+    let second_bytes = fs::read(sidecar(second)).unwrap();
+    fs::write(sidecar(first), second_bytes).unwrap();
+    fs::write(sidecar(second), first_bytes).unwrap();
+}
+
+#[test]
+fn identical_document_payloads_cannot_exchange_record_manifests() {
+    let fixture = Fixture::empty();
+    let writer = fixture.seed();
+    let records = fixture.reader().collection("records").unwrap();
+    let first = records.read_document(ID).unwrap();
+    writer
+        .put_document(
+            "records",
+            RAW_ID,
+            &first.bytes,
+            PutDocumentOptions {
+                metadata: BTreeMap::from([("reviewer".into(), json!("different-record"))]),
+                access: WriteAccess {
+                    mode: Some(0o600),
+                    ..WriteAccess::default()
+                },
+            },
+        )
+        .unwrap();
+    let second = records.read_document(RAW_ID).unwrap();
+    assert_eq!(first.bytes, second.bytes);
+    swap_manifests(&first.path, &second.path);
+    for id in [ID, RAW_ID] {
+        assert_eq!(
+            records.read_document(id).unwrap_err().code(),
+            NativeStorageErrorCode::CorruptMetadata
+        );
+        assert_eq!(
+            records.read_custom_metadata(id).unwrap_err().code(),
+            NativeStorageErrorCode::CorruptMetadata
+        );
+    }
+}
+
+#[test]
+fn the_same_document_id_in_another_collection_cannot_supply_its_manifest() {
+    let fixture = Fixture::empty();
+    let writer = fixture.seed();
+    let records = fixture.reader().collection("records").unwrap();
+    let first = records.read_document(ID).unwrap();
+    writer
+        .create_collection("other_records", CollectionKind::Document, None)
+        .unwrap();
+    writer
+        .put_document(
+            "other_records",
+            ID,
+            &first.bytes,
+            PutDocumentOptions {
+                metadata: BTreeMap::from([("reviewer".into(), json!("different-collection"))]),
+                access: WriteAccess {
+                    mode: Some(0o600),
+                    ..WriteAccess::default()
+                },
+            },
+        )
+        .unwrap();
+    let other = fixture.reader().collection("other_records").unwrap();
+    let second = other.read_document(ID).unwrap();
+    assert_eq!(first.bytes, second.bytes);
+    swap_manifests(&first.path, &second.path);
+    assert_eq!(
+        records.read_document(ID).unwrap_err().code(),
+        NativeStorageErrorCode::CorruptMetadata
+    );
+    assert_eq!(
+        other.read_document(ID).unwrap_err().code(),
+        NativeStorageErrorCode::CorruptMetadata
+    );
+}
+
+#[test]
+fn a_document_payload_change_without_its_bound_manifest_is_corrupt() {
+    let fixture = Fixture::empty();
+    let _writer = fixture.seed();
+    let records = fixture.reader().collection("records").unwrap();
+    let first = records.read_document(ID).unwrap();
+    let manifest = fs::read(sidecar(&first.path)).unwrap();
+    fs::write(&first.path, br#"{"name":"other payload","score":42}"#).unwrap();
+    assert_eq!(
+        records.read_document(ID).unwrap_err().code(),
+        NativeStorageErrorCode::CorruptMetadata
+    );
+    assert_eq!(fs::read(sidecar(&first.path)).unwrap(), manifest);
+}
+
+#[test]
+fn identical_raw_payloads_with_equal_times_cannot_exchange_manifests() {
+    let fixture = Fixture::empty();
+    let writer = fixture.seed();
+    let assets = fixture.reader().collection("assets").unwrap();
+    let first = assets.read_raw_file(RAW_ID).unwrap();
+    let other_id = "4VRNF52JPCQ";
+    writer
+        .put_raw_file(
+            "assets",
+            other_id,
+            &first.bytes,
+            &PutRawFileOptions {
+                key: "/other-record.bin".into(),
+                extension: ".bin".into(),
+                metadata: BTreeMap::from([("source".into(), json!("different-record"))]),
+                access: WriteAccess {
+                    mode: Some(0o600),
+                    ..WriteAccess::default()
+                },
+            },
+        )
+        .unwrap();
+    let second = assets.read_raw_file(other_id).unwrap();
+    fs::File::open(&second.path)
+        .unwrap()
+        .set_times(
+            fs::FileTimes::new()
+                .set_modified(fs::metadata(&first.path).unwrap().modified().unwrap()),
+        )
+        .unwrap();
+    let mut second_attributes = attributes(&second.path);
+    second_attributes.insert(
+        "user.fylo.checksum".into(),
+        attributes(&first.path)["user.fylo.checksum"].clone(),
+    );
+    fs::write(
+        sidecar(&second.path),
+        serde_json::to_vec(&second_attributes).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        assets.read_raw_file(other_id).unwrap().modified_millis,
+        first.modified_millis
+    );
+    assert_eq!(first.bytes, second.bytes);
+    swap_manifests(&first.path, &second.path);
+    for id in [RAW_ID, other_id] {
+        assert_eq!(
+            assets.read_raw_file(id).unwrap_err().code(),
+            NativeStorageErrorCode::CorruptMetadata
+        );
+    }
+}
+
+#[test]
+fn an_unbound_efs_manifest_cannot_be_adopted_or_laundered_by_metadata_writes() {
+    let fixture = Fixture::empty();
+    let writer = fixture.seed();
+    let records = fixture.reader().collection("records").unwrap();
+    let path = records.read_document(ID).unwrap().path;
+    let payload = fs::read(&path).unwrap();
+    let mut unbound = attributes(&path);
+    unbound.remove("user.fylo.record-identity");
+    let unbound = serde_json::to_vec(&unbound).unwrap();
+    fs::write(sidecar(&path), &unbound).unwrap();
+    assert_eq!(
+        records.read_document(ID).unwrap_err().code(),
+        NativeStorageErrorCode::CorruptMetadata
+    );
+    assert!(
+        writer
+            .set_record_metadata(
+                "records",
+                ID,
+                json!({"reviewer":"cannot repair identity"})
+                    .as_object()
+                    .unwrap(),
+                Some(&fixture.actor())
+            )
+            .is_err()
+    );
+    assert_eq!(fs::read(&path).unwrap(), payload);
+    assert_eq!(fs::read(sidecar(&path)).unwrap(), unbound);
+}
+
 fn assert_private_sidecar(payload: &Path) {
     let manifest = fs::symlink_metadata(sidecar(payload)).unwrap();
     assert!(manifest.file_type().is_file());
