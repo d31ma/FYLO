@@ -856,10 +856,34 @@ impl NativeRoot {
         read_bounded(file.take(max_bytes.saturating_add(1)), max_bytes)
     }
 
+    fn read_generation_file(&self, path: &Path) -> Result<Vec<u8>, NativeStorageError> {
+        if self.profile == FilesystemProfile::Native {
+            return self.read_file(path, MAX_GENERATION_BYTES);
+        }
+        let mismatch = NativeStorageErrorCode::ConcurrentWrite;
+        let (mut file, _) =
+            self.open_file_with_identity_error(path, (MAX_GENERATION_BYTES, mismatch))?;
+        let bytes = read_bounded(
+            (&mut file).take(MAX_GENERATION_BYTES.saturating_add(1)),
+            MAX_GENERATION_BYTES,
+        )?;
+        self.verify_file_identity_with_error(path, (&file, mismatch))?;
+        self.assert_profile_owned()?;
+        Ok(bytes)
+    }
+
     fn open_file(
         &self,
         path: &Path,
         max_bytes: u64,
+    ) -> Result<(File, Metadata), NativeStorageError> {
+        self.open_file_with_identity_error(path, (max_bytes, NativeStorageErrorCode::UnsafePath))
+    }
+
+    fn open_file_with_identity_error(
+        &self,
+        path: &Path,
+        (max_bytes, mismatch): (u64, NativeStorageErrorCode),
     ) -> Result<(File, Metadata), NativeStorageError> {
         self.assert_profile_owned()?;
         let before = self.verify_path(path, ExpectedType::File)?;
@@ -878,9 +902,16 @@ impl NativeRoot {
         #[cfg(unix)]
         if self.profile == FilesystemProfile::EfsSidecarV1 {
             use std::os::unix::fs::MetadataExt;
-            if !opened.is_file() || (before.dev(), before.ino()) != (opened.dev(), opened.ino()) {
+            if !opened.is_file() {
                 return Err(NativeStorageError::new(
-                    NativeStorageErrorCode::UnsafePath, "EFS path changed while opening a file",
+                    NativeStorageErrorCode::UnsafePath,
+                    "EFS path changed while opening a file",
+                ));
+            }
+            if (before.dev(), before.ino()) != (opened.dev(), opened.ino()) {
+                return Err(NativeStorageError::new(
+                    mismatch,
+                    "EFS path changed while opening a file",
                 ));
             }
         }
@@ -894,7 +925,7 @@ impl NativeRoot {
                 ),
             ));
         }
-        self.verify_open_file_identity(path, &file)?;
+        self.verify_file_identity_with_error(path, (&file, mismatch))?;
         Ok((file, opened))
     }
 
@@ -905,21 +936,29 @@ impl NativeRoot {
     /// WebAssembly target can answer it: a browser host has no inodes, and WASI
     /// scopes the guest to preopened directories it cannot escape or symlink
     /// out of. The path check alone is the guarantee there (ADR 0008).
-    #[cfg(target_family = "wasm")]
     fn verify_open_file_identity(
         &self,
         path: &Path,
-        _file: &File,
+        file: &File,
+    ) -> Result<(), NativeStorageError> {
+        self.verify_file_identity_with_error(path, (file, NativeStorageErrorCode::UnsafePath))
+    }
+
+    #[cfg(target_family = "wasm")]
+    fn verify_file_identity_with_error(
+        &self,
+        path: &Path,
+        (_file, _mismatch): (&File, NativeStorageErrorCode),
     ) -> Result<(), NativeStorageError> {
         self.verify_path(path, ExpectedType::File)?;
         Ok(())
     }
 
     #[cfg(not(target_family = "wasm"))]
-    fn verify_open_file_identity(
+    fn verify_file_identity_with_error(
         &self,
         path: &Path,
-        file: &File,
+        (file, mismatch): (&File, NativeStorageErrorCode),
     ) -> Result<(), NativeStorageError> {
         self.verify_path(path, ExpectedType::File)?;
         let opened = FileIdentity::from_file(file.try_clone().map_err(NativeStorageError::io)?)
@@ -929,7 +968,7 @@ impl NativeRoot {
             Ok(())
         } else {
             Err(NativeStorageError::new(
-                NativeStorageErrorCode::UnsafePath,
+                mismatch,
                 "storage path changed while an open file was being read",
             ))
         }
@@ -1186,7 +1225,7 @@ impl NativeCollection {
                 transaction_id: None,
             });
         }
-        let bytes = self.root.read_file(&path, MAX_GENERATION_BYTES)?;
+        let bytes = self.root.read_generation_file(&path)?;
         let state: GenerationState = serde_json::from_slice(&bytes).map_err(|error| {
             NativeStorageError::new(
                 NativeStorageErrorCode::CorruptMetadata,

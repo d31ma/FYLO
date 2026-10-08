@@ -22,9 +22,9 @@ use fylo_query::{
     SqlPlan, StructuredQuery, index_entries_for_document,
 };
 use fylo_storage_native::{
-    AccessDescriptor, CollectionKind, GenerationStatus, IndexVerification, NativeAccess,
-    NativeCollection, NativeRoot, NativeStorageError, NativeStorageErrorCode, NativeWriteRoot,
-    PutDocumentOptions, RepositoryHistory, RootConfig, RootOpenOptions, StoredRawFile,
+    AccessDescriptor, CollectionKind, GenerationState, GenerationStatus, IndexVerification,
+    NativeAccess, NativeCollection, NativeRoot, NativeStorageError, NativeStorageErrorCode,
+    NativeWriteRoot, PutDocumentOptions, RepositoryHistory, RootConfig, RootOpenOptions, StoredRawFile,
     VersionVerification, WriteAccess, WriteActor,
 };
 use schema::SchemaTools;
@@ -1433,12 +1433,13 @@ impl ReadOnlyEngine {
         read: impl Fn() -> Result<T, EngineError>,
     ) -> Result<T, EngineError> {
         for _ in 0..MAX_STABLE_READ_ATTEMPTS {
-            let before = collection.generation().map_err(EngineError::storage)?;
-            if before.state == GenerationStatus::Writing {
+            let Some(before) = Self::read_attempt_generation(collection)? else {
                 continue;
-            }
+            };
             let value = read();
-            let after = collection.generation().map_err(EngineError::storage)?;
+            let Some(after) = Self::read_attempt_generation(collection)? else {
+                continue;
+            };
             if stable_generation_observed(after.state, before.generation, after.generation) {
                 return value;
             }
@@ -1447,6 +1448,17 @@ impl ReadOnlyEngine {
             EngineErrorCode::ConcurrentWrite,
             "collection changed during a read-only operation",
         ))
+    }
+
+    fn read_attempt_generation(
+        collection: &NativeCollection,
+    ) -> Result<Option<GenerationState>, EngineError> {
+        match collection.generation() {
+            Ok(state) if state.state == GenerationStatus::Writing => Ok(None),
+            Ok(state) => Ok(Some(state)),
+            Err(error) if error.code() == NativeStorageErrorCode::ConcurrentWrite => Ok(None),
+            Err(error) => Err(EngineError::storage(error)),
+        }
     }
 
     fn decode_document(

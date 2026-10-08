@@ -28,6 +28,9 @@ impl SidecarAttributes {
     ) -> Result<(BTreeMap<String, Vec<u8>>, File), NativeStorageError> {
         root.assert_profile_owned()?;
         let sidecar = crate::sidecar_path(path);
+        if !crate::path_exists_no_follow(&sidecar)? {
+            return Err(corrupt());
+        }
         let (mut file, metadata) = root.open_file(&sidecar, MAX_BYTES)?;
         Self::verify_owner(root, &payload.metadata().map_err(NativeStorageError::io)?, false)?;
         Self::verify_owner(root, &metadata, true)?;
