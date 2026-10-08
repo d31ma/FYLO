@@ -5,6 +5,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Cursor;
+use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -60,6 +61,9 @@ fn assert_storage_report(frame: &Value, profile: &str, owned: bool, kernel_enfor
             "remoteQualified": false,
         },
     }));
+    if profile == "efs-sidecar-v1" {
+        assert_eq!(frame["result"]["capabilities"]["serverlessQueue"], false);
+    }
 }
 
 fn snapshot(path: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
@@ -102,9 +106,12 @@ fn efs_startup_owns_and_initializes_an_empty_root_before_the_first_frame() {
         json!({"op":"handshake"}), json!({"op":"createCollection","collection":"records"}),
         json!({"op":"putData","collection":"records","id":ID,"data":{"name":"Ada"},"meta":{"reviewed":true}}),
         json!({"op":"getDoc","collection":"records","id":ID}),
+        json!({"op":"queuePublish","topic":"jobs","payload":{"work":"blocked"}}),
     ]);
-    assert_eq!(frames.len(), 4);
-    for frame in &frames { assert_eq!(frame["ok"], true, "{frame}"); }
+    assert_eq!(frames.len(), 5);
+    for frame in &frames[..4] { assert_eq!(frame["ok"], true, "{frame}"); }
+    assert_eq!(frames[4]["ok"], false);
+    assert_eq!(frames[4]["error"]["code"], "ENATIVE_UNSUPPORTED");
     // EFS admission requires an owned, enforced local lease; remote qualification stays false.
     assert_storage_report(&frames[0], "efs-sidecar-v1", true, true);
     assert!(fixture.root.join(".fylo-catalog/filesystem-profile.json").is_file());
@@ -147,6 +154,43 @@ fn efs_session_refuses_unknown_or_mixed_request_roots_without_mutating_them() {
 }
 
 #[test]
+fn efs_default_admission_accepts_only_aliases_of_its_canonical_repository() {
+    let fixture = Fixture::new();
+    let alias = fixture.parent.join("root-alias");
+    symlink(&fixture.root, &alias).unwrap();
+    let canonical = fs::canonicalize(&fixture.root).unwrap();
+    let current = std::env::current_dir().unwrap();
+    let mut relative_alias = PathBuf::new();
+    for component in current.components() {
+        if matches!(component, std::path::Component::Normal(_)) {
+            relative_alias.push("..");
+        }
+    }
+    relative_alias.push(alias.strip_prefix(Path::new("/")).unwrap());
+    assert!(!relative_alias.is_absolute());
+    assert_eq!(fs::canonicalize(&relative_alias).unwrap(), canonical);
+    for (sequence, default) in [alias.clone(), relative_alias].into_iter().enumerate() {
+        let collection = format!("records{sequence}");
+        let frames = run(
+            RootOpenOptions::new(default).with_profile(FilesystemProfile::EfsSidecarV1),
+            ApplicationConfig::default(), FrameLimits::default(), false, true,
+            &[
+                json!({"op":"handshake"}),
+                json!({"op":"createCollection","collection":collection,"root":canonical}),
+                json!({"op":"putData","collection":collection,"id":ID,"root":alias,"data":{"name":"Ada"}}),
+                json!({"op":"getDoc","collection":collection,"id":ID,"root":canonical}),
+                json!({"op":"handshake"}),
+            ],
+        );
+        for frame in &frames { assert_eq!(frame["ok"], true, "{frame}"); }
+        assert_storage_report(&frames[0], "efs-sidecar-v1", true, true);
+        assert_storage_report(&frames[4], "efs-sidecar-v1", true, true);
+        assert_eq!(frames[3]["result"][ID]["name"], "Ada");
+    }
+    assert!(RootLease::acquire_with_profile(&canonical, FilesystemProfile::EfsSidecarV1).is_ok());
+}
+
+#[test]
 fn profiled_machine_retains_frame_limits_root_config_schema_and_credentials() {
     let fixture = Fixture::new();
     let schema = fixture.parent.join("schemas");
@@ -178,6 +222,29 @@ fn profiled_machine_retains_frame_limits_root_config_schema_and_credentials() {
     let body: Value = serde_json::from_slice(&stored.bytes).unwrap();
     assert_ne!(body["secret"], "fixture-plaintext");
     assert_eq!(body["name"], "Ada");
+}
+
+#[test]
+fn a_supplied_native_lease_for_another_repository_cannot_admit_or_recover_this_root() {
+    let fixture = Fixture::new();
+    let other = fixture.parent.join("other-root");
+    fs::create_dir_all(&other).unwrap();
+    let lease = RootLease::acquire(&other).unwrap();
+    let writer = NativeWriteRoot::open(&fixture.root).unwrap();
+    writer.create_collection("records", fylo_storage_native::CollectionKind::Document, None).unwrap();
+    let state = fixture.root.join(".fylo-transactions/.collections/records/state.json");
+    fs::create_dir_all(state.parent().unwrap()).unwrap();
+    fs::write(&state, br#"{"format":"fylo.collection-generation.v1","generation":1,"state":"writing","transactionId":"foreign-lease-must-not-recover"}"#).unwrap();
+    let before = snapshot(&fixture.root);
+    let frames = run(
+        RootOpenOptions::new(&fixture.root).with_lease(lease.clone()),
+        ApplicationConfig::default(), FrameLimits::default(), false, true,
+        &[json!({"op":"handshake"})],
+    );
+    assert_eq!(frames[0]["ok"], false);
+    assert_eq!(frames[0]["error"]["code"], "EROOTLEASELOST");
+    assert_eq!(snapshot(&fixture.root), before);
+    lease.assert_owned().unwrap();
 }
 
 #[test]

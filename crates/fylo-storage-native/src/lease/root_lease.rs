@@ -1,5 +1,5 @@
 use super::root_lease_inner::RootLeaseInner;
-use crate::NativeStorageError;
+use crate::{FilesystemProfile, NativeStorageError};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -17,6 +17,23 @@ impl RootLease {
         Ok(Self {
             inner: Arc::new(inner),
         })
+    }
+
+    /// Acquire a root owner using explicit profile admission.
+    ///
+    /// # Errors
+    /// Rejects profile mismatch or unsupported EFS locking before owner publication.
+    pub fn acquire_with_profile(
+        root: impl AsRef<Path>,
+        profile: FilesystemProfile,
+    ) -> Result<Self, NativeStorageError> {
+        Ok(Self {
+            inner: Arc::new(RootLeaseInner::acquire_with_profile(root, profile)?),
+        })
+    }
+
+    pub(crate) fn owner_generation(&self) -> &str {
+        self.inner.owner_generation()
     }
 
     #[must_use]

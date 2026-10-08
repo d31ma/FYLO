@@ -153,6 +153,129 @@ impl NativeWriteRoot {
         })
     }
 
+    /// Open a selected profile, initializing only a new empty owned EFS root.
+    ///
+    /// # Errors
+    /// Rejects missing owners, mismatched descriptors and unconverted roots.
+    pub fn open_profiled(options: super::RootOpenOptions) -> Result<Self, NativeStorageError> {
+        if options.profile == super::FilesystemProfile::EfsSidecarV1 {
+            let repository = fs::canonicalize(
+                options.repository.as_deref().unwrap_or(&options.root),
+            ).map_err(NativeStorageError::io)?;
+            let canonical = fs::canonicalize(&options.root).map_err(NativeStorageError::io)?;
+            let lease = options.lease.as_ref().ok_or_else(|| NativeStorageError::new(
+                NativeStorageErrorCode::RootLeaseLost, "EFS writer requires its owning lease",
+            ))?;
+            lease.assert_owned()?;
+            if !lease.kernel_enforced() || lease.root() != repository {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::RootLeaseLost, "EFS writer kernel owner differs",
+                ));
+            }
+            if super::profile_manifest::ProfileManifest::read(&repository)?.is_none() {
+                if canonical != repository {
+                    return Err(NativeStorageError::new(
+                        NativeStorageErrorCode::CorruptMetadata,
+                        "an EFS worktree cannot initialize the canonical root descriptor",
+                    ));
+                }
+                super::profile_manifest::ProfileManifest::initialize(&repository, lease)?;
+            }
+        }
+        Ok(Self {
+            root: NativeRoot::open_profiled(options)?,
+            config: super::RootConfig::default(),
+        })
+    }
+
+    /// Selected immutable metadata representation.
+    #[must_use]
+    pub const fn filesystem_profile(&self) -> super::FilesystemProfile {
+        self.root.filesystem_profile()
+    }
+
+    /// Clone of the root owner, retaining the same lease generation.
+    #[must_use]
+    pub fn owning_lease(&self) -> Option<super::RootLease> {
+        self.root.owning_lease()
+    }
+
+    fn lock_collection(&self, path: &Path) -> Result<CollectionWriteLock, NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        CollectionWriteLock::acquire_profiled(&self.root, &path.join("locks"), "collection.lock")
+    }
+
+    fn move_record_pair(&self, source: &Path, target: &Path) -> Result<(), NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        if self.filesystem_profile() == super::FilesystemProfile::Native {
+            return fs::rename(source, target).map_err(NativeStorageError::io);
+        }
+        let source_manifest = super::sidecar_path(source);
+        let target_manifest = super::sidecar_path(target);
+        super::sidecar_attributes::SidecarAttributes::read_path(&self.root, source)?;
+        if path_exists_no_follow(target)? || path_exists_no_follow(&target_manifest)? {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                "EFS pair destination or orphan manifest already exists",
+            ));
+        }
+        fs::rename(source, target).map_err(NativeStorageError::io)?;
+        sync_parent(source)?;
+        sync_parent(target)?;
+        failpoint("after-record-payload-rename")?;
+        fs::rename(&source_manifest, &target_manifest).map_err(NativeStorageError::io)?;
+        sync_parent(&source_manifest)?;
+        sync_parent(&target_manifest)?;
+        failpoint("after-record-sidecar-rename")?;
+        self.root.assert_profile_owned()
+    }
+
+    fn publish_payload(
+        &self, path: &Path, bytes: &[u8], access: WriteAccess,
+    ) -> Result<(), NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        if self.filesystem_profile() == super::FilesystemProfile::EfsSidecarV1 {
+            durable_replace_with_mode(path, bytes, access.mode.unwrap_or(0o600))
+        } else {
+            durable_replace(path, bytes)
+        }
+    }
+
+    fn require_pair_destination_absent(&self, target: &Path) -> Result<(), NativeStorageError> {
+        if self.filesystem_profile() == super::FilesystemProfile::EfsSidecarV1
+            && (path_exists_no_follow(target)?
+                || path_exists_no_follow(&super::sidecar_path(target))?)
+        {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                "EFS pair destination or orphan manifest already exists",
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_access(&self, access: WriteAccess) -> Result<WriteAccess, NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        let access = access.validate()?;
+        if let Some((uid, gid)) = self.root.efs_identity() {
+            if access.mode.is_some_and(|mode| mode & 0o400 == 0) {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::Unsupported,
+                    "EFS record modes must retain owner-read capability",
+                ));
+            }
+            if access.uid.is_some_and(|value| value != uid)
+                || access.gid.is_some_and(|value| value != gid)
+            {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::Unsupported,
+                    "EFS profile rejects cross-owner UID/GID projection",
+                ));
+            }
+        }
+        Ok(access)
+    }
+
     /// Apply host-supplied runtime knobs to this writer.
     #[must_use]
     pub fn with_config(mut self, config: super::RootConfig) -> Self {
@@ -205,8 +328,9 @@ impl NativeWriteRoot {
     /// Returns an error for a live writer, corrupt journal, unsafe path, or
     /// failed durable repair.
     pub fn recover_collection(&self, collection: &str) -> Result<bool, NativeStorageError> {
+        self.root.assert_profile_owned()?;
         let collection = self.root.collection(collection)?;
-        let _lock = CollectionWriteLock::acquire(&collection.path)?;
+        let _lock = self.lock_collection(&collection.path)?;
         self.recover_locked(&collection)
     }
 
@@ -227,6 +351,7 @@ impl NativeWriteRoot {
         encoded: &[u8],
         options: PutDocumentOptions,
     ) -> Result<(), NativeStorageError> {
+        self.root.assert_profile_owned()?;
         super::validate_canonical_ttid(identifier)?;
         let document = Document::parse(encoded, DocumentLimits::default()).map_err(|error| {
             NativeStorageError::new(
@@ -248,7 +373,7 @@ impl NativeWriteRoot {
         }
         let PutDocumentOptions { metadata, access } = options;
         validate_custom_metadata(&metadata)?;
-        let access = access.validate()?;
+        let access = self.validate_access(access)?;
         let collection = self.writable_collection(collection_name)?;
         if collection.kind != CollectionKind::Document {
             return Err(NativeStorageError::new(
@@ -256,7 +381,7 @@ impl NativeWriteRoot {
                 "put_document requires a document collection",
             ));
         }
-        let _lock = CollectionWriteLock::acquire(&collection.path)?;
+        let _lock = self.lock_collection(&collection.path)?;
         self.recover_locked(&collection)?;
         let target = collection
             .path
@@ -269,6 +394,7 @@ impl NativeWriteRoot {
                 "document identifier already exists",
             ));
         }
+        self.require_pair_destination_absent(&target)?;
         let mut transaction = Transaction::begin(self, &collection, "put-document")?;
         let outcome = (|| {
             transaction.capture(&target)?;
@@ -279,19 +405,26 @@ impl NativeWriteRoot {
                 )
             })?;
             ensure_directory(&self.root, parent)?;
-            durable_replace(&target, &canonical)?;
+            self.publish_payload(&target, &canonical, access)?;
+            if self.filesystem_profile() == super::FilesystemProfile::EfsSidecarV1 {
+                failpoint("after-record-payload-rename")?;
+            }
+            super::record_attributes::RecordAttributes::initialize(&self.root, &target)?;
             for (name, value) in &metadata {
                 if value.is_null() {
                     continue;
                 }
                 let encoded = serde_json::to_vec(value).map_err(|error| json_error(&error))?;
-                write_fylo_attribute(
+                super::record_attributes::RecordAttributes::write(&self.root,
                     &target,
                     &format!("{}{name}", super::META_XATTR_PREFIX),
                     &encoded,
                 )?;
             }
-            apply_access(&target, access)?;
+            apply_profiled_access(&self.root, &target, access)?;
+            if self.filesystem_profile() == super::FilesystemProfile::EfsSidecarV1 {
+                failpoint("after-record-sidecar-rename")?;
+            }
             capture_index(&mut transaction, &collection)?;
             // The identifier is proven absent above, so nothing to remove.
             self.apply_index_delta(
@@ -327,6 +460,7 @@ impl NativeWriteRoot {
         bytes: &[u8],
         options: &PutRawFileOptions,
     ) -> Result<(), NativeStorageError> {
+        self.root.assert_profile_owned()?;
         super::validate_canonical_ttid(identifier)?;
         if bytes.len() as u64 > super::MAX_RAW_FILE_BYTES {
             return Err(NativeStorageError::new(
@@ -337,7 +471,7 @@ impl NativeWriteRoot {
         super::validate_raw_extension(&format!("{identifier}{}", options.extension), identifier)?;
         super::validate_raw_key(&options.key)?;
         validate_custom_metadata(&options.metadata)?;
-        let access = options.access.validate()?;
+        let access = self.validate_access(options.access)?;
         let collection = self.writable_collection(collection_name)?;
         if collection.kind != CollectionKind::File {
             return Err(NativeStorageError::new(
@@ -345,7 +479,7 @@ impl NativeWriteRoot {
                 "put_raw_file requires a file collection",
             ));
         }
-        let _lock = CollectionWriteLock::acquire(&collection.path)?;
+        let _lock = self.lock_collection(&collection.path)?;
         self.recover_locked(&collection)?;
         if collection.raw_file_ids()?.iter().any(|id| id == identifier) {
             return Err(NativeStorageError::new(
@@ -358,6 +492,7 @@ impl NativeWriteRoot {
             .join("docs")
             .join(crate::shard_of(identifier, collection.shard_width()))
             .join(format!("{identifier}{}", options.extension));
+        self.require_pair_destination_absent(&target)?;
         let mut transaction = Transaction::begin(self, &collection, "put-file")?;
         let outcome = (|| {
             transaction.capture(&target)?;
@@ -368,14 +503,18 @@ impl NativeWriteRoot {
                 )
             })?;
             ensure_directory(&self.root, parent)?;
-            durable_replace(&target, bytes)?;
-            write_fylo_attribute(&target, super::KEY_XATTR, options.key.as_bytes())?;
+            self.publish_payload(&target, bytes, access)?;
+            if self.filesystem_profile() == super::FilesystemProfile::EfsSidecarV1 {
+                failpoint("after-record-payload-rename")?;
+            }
+            super::record_attributes::RecordAttributes::initialize(&self.root, &target)?;
+            super::record_attributes::RecordAttributes::write(&self.root, &target, super::KEY_XATTR, options.key.as_bytes())?;
             for (name, value) in &options.metadata {
                 if value.is_null() {
                     continue;
                 }
                 let encoded = serde_json::to_vec(value).map_err(|error| json_error(&error))?;
-                write_fylo_attribute(
+                super::record_attributes::RecordAttributes::write(&self.root,
                     &target,
                     &format!("{}{name}", super::META_XATTR_PREFIX),
                     &encoded,
@@ -387,7 +526,7 @@ impl NativeWriteRoot {
             // mtime the next reader cannot match, permanently invalidating the
             // checksum cache and making index rebuilds non-deterministic. POSIX
             // xattr writes leave mtime alone, so the order is harmless there.
-            apply_access(&target, access)?;
+            apply_profiled_access(&self.root, &target, access)?;
             let metadata = fs::metadata(&target).map_err(NativeStorageError::io)?;
             let checksum = super::sha256_hex(bytes);
             let stamp = format!(
@@ -395,12 +534,17 @@ impl NativeWriteRoot {
                 metadata.len(),
                 super::modified_millis(&metadata)?
             );
-            write_fylo_attribute(&target, super::CHECKSUM_XATTR, stamp.as_bytes())?;
+            super::record_attributes::RecordAttributes::write(&self.root, &target, super::CHECKSUM_XATTR, stamp.as_bytes())?;
             // Writing the stamp is itself a stream write on Windows, so it
             // invalidates the mtime it just recorded. Restoring the recorded
             // time makes the stamp self-consistent; on POSIX the attribute
             // write never moved mtime, so this changes nothing.
-            restore_modified(&target, &metadata)?;
+            if self.filesystem_profile() == super::FilesystemProfile::Native {
+                restore_modified(&target, &metadata)?;
+            }
+            if self.filesystem_profile() == super::FilesystemProfile::EfsSidecarV1 {
+                failpoint("after-record-sidecar-rename")?;
+            }
             capture_index(&mut transaction, &collection)?;
             // The identifier is proven absent above, so nothing to remove.
             self.apply_index_delta(
@@ -436,6 +580,7 @@ impl NativeWriteRoot {
         encoded: &[u8],
         actor: Option<&WriteActor>,
     ) -> Result<(), NativeStorageError> {
+        self.root.assert_profile_owned()?;
         validate_ttid_shape(identifier)?;
         let document = Document::parse(encoded, DocumentLimits::default()).map_err(|error| {
             NativeStorageError::new(
@@ -456,7 +601,7 @@ impl NativeWriteRoot {
                 "patch_document requires a document collection",
             ));
         }
-        let _lock = CollectionWriteLock::acquire(&collection.path)?;
+        let _lock = self.lock_collection(&collection.path)?;
         self.recover_locked(&collection)?;
         let stored = collection.read_document(identifier)?;
         require_write_access(stored.access, actor)?;
@@ -503,9 +648,10 @@ impl NativeWriteRoot {
         changes: &Map<String, Value>,
         actor: Option<&WriteActor>,
     ) -> Result<(), NativeStorageError> {
+        self.root.assert_profile_owned()?;
         validate_ttid_shape(identifier)?;
         let collection = self.document_collection(collection_name, "patch_document_fields")?;
-        let _lock = CollectionWriteLock::acquire(&collection.path)?;
+        let _lock = self.lock_collection(&collection.path)?;
         self.recover_locked(&collection)?;
         let stored = collection.read_document(identifier)?;
         require_write_access(stored.access, actor)?;
@@ -533,6 +679,7 @@ impl NativeWriteRoot {
         actor: Option<&WriteActor>,
         insert_access: WriteAccess,
     ) -> Result<SqlMutationResult, NativeStorageError> {
+        self.root.assert_profile_owned()?;
         let plan = prepare_sql(sql, QueryLimits::default()).map_err(|error| query_error(&error))?;
         if plan.explain && !plan.analyze {
             return Err(NativeStorageError::new(
@@ -570,6 +717,7 @@ impl NativeWriteRoot {
         record: &Map<String, Value>,
         actor: Option<&WriteActor>,
     ) -> Result<(), NativeStorageError> {
+        self.root.assert_profile_owned()?;
         self.write_record_metadata(collection_name, identifier, record, actor, false)
     }
 
@@ -589,6 +737,7 @@ impl NativeWriteRoot {
         record: &Map<String, Value>,
         actor: Option<&WriteActor>,
     ) -> Result<(), NativeStorageError> {
+        self.root.assert_profile_owned()?;
         self.write_record_metadata(collection_name, identifier, record, actor, true)
     }
 
@@ -603,7 +752,7 @@ impl NativeWriteRoot {
         validate_ttid_shape(identifier)?;
         validate_custom_metadata(&record.clone().into_iter().collect())?;
         let collection = self.writable_collection(collection_name)?;
-        let _lock = CollectionWriteLock::acquire(&collection.path)?;
+        let _lock = self.lock_collection(&collection.path)?;
         self.recover_locked(&collection)?;
         let (target, access) = record_target(&collection, identifier)?;
         require_write_access(access, actor)?;
@@ -614,7 +763,7 @@ impl NativeWriteRoot {
             }
         }
         let record = &record;
-        let updated_at = next_meta_updated_at(&target)?;
+        let updated_at = next_meta_updated_at(&self.root, &target)?;
         // A document's index keys come from its fields alone, so this is a
         // no-op delta there; a raw file indexes `meta` and `lastModified`.
         let before = record_index_keys(&collection, identifier)?;
@@ -625,13 +774,13 @@ impl NativeWriteRoot {
             for (name, value) in record {
                 let attribute = format!("{}{name}", super::META_XATTR_PREFIX);
                 if value.is_null() {
-                    remove_fylo_attribute(&target, &attribute)?;
+                    super::record_attributes::RecordAttributes::remove(&self.root, &target, &attribute)?;
                 } else {
                     let encoded = serde_json::to_vec(value).map_err(|error| json_error(&error))?;
-                    write_fylo_attribute(&target, &attribute, &encoded)?;
+                    super::record_attributes::RecordAttributes::write(&self.root, &target, &attribute, &encoded)?;
                 }
             }
-            write_fylo_attribute(
+            super::record_attributes::RecordAttributes::write(&self.root,
                 &target,
                 super::META_UPDATED_XATTR,
                 updated_at.to_string().as_bytes(),
@@ -660,6 +809,7 @@ impl NativeWriteRoot {
         access: WriteAccess,
         actor: Option<&WriteActor>,
     ) -> Result<(), NativeStorageError> {
+        self.root.assert_profile_owned()?;
         validate_ttid_shape(identifier)?;
         if access.is_empty() {
             return Err(NativeStorageError::new(
@@ -667,15 +817,16 @@ impl NativeWriteRoot {
                 "set_record_access requires at least one of uid, gid, or mode",
             ));
         }
+        let access = self.validate_access(access)?;
         let collection = self.writable_collection(collection_name)?;
-        let _lock = CollectionWriteLock::acquire(&collection.path)?;
+        let _lock = self.lock_collection(&collection.path)?;
         self.recover_locked(&collection)?;
         let (target, descriptor) = record_target(&collection, identifier)?;
         require_write_access(descriptor, actor)?;
         let mut transaction = Transaction::begin(self, &collection, "set-access")?;
         let outcome = (|| {
             transaction.capture(&target)?;
-            apply_access(&target, access)?;
+            apply_profiled_access(&self.root, &target, self.validate_access(access)?)?;
             transaction.commit()
         })();
         finish_transaction(transaction, outcome, "access")
@@ -694,9 +845,10 @@ impl NativeWriteRoot {
         identifier: &str,
         actor: Option<&WriteActor>,
     ) -> Result<(), NativeStorageError> {
+        self.root.assert_profile_owned()?;
         validate_ttid_shape(identifier)?;
         let collection = self.writable_collection(collection_name)?;
-        let _lock = CollectionWriteLock::acquire(&collection.path)?;
+        let _lock = self.lock_collection(&collection.path)?;
         self.recover_locked(&collection)?;
         let (source, access) = record_target(&collection, identifier)?;
         require_write_access(access, actor)?;
@@ -714,6 +866,7 @@ impl NativeWriteRoot {
                 "retained document tombstone already exists",
             ));
         }
+        self.require_pair_destination_absent(&target)?;
         let before = record_index_keys(&collection, identifier)?;
         let mut transaction = Transaction::begin(self, &collection, "delete-document")?;
         let outcome = (|| {
@@ -727,7 +880,7 @@ impl NativeWriteRoot {
                 )
             })?;
             ensure_directory(&self.root, parent)?;
-            fs::rename(&source, &target).map_err(NativeStorageError::io)?;
+            self.move_record_pair(&source, &target)?;
             sync_parent(&source)?;
             sync_parent(&target)?;
             failpoint("after-delete-rename")?;
@@ -763,9 +916,10 @@ impl NativeWriteRoot {
         identifier: &str,
         actor: Option<&WriteActor>,
     ) -> Result<(), NativeStorageError> {
+        self.root.assert_profile_owned()?;
         validate_ttid_shape(identifier)?;
         let collection = self.writable_collection(collection_name)?;
-        let _lock = CollectionWriteLock::acquire(&collection.path)?;
+        let _lock = self.lock_collection(&collection.path)?;
         self.recover_locked(&collection)?;
         match record_target(&collection, identifier) {
             Ok(_) => {
@@ -799,6 +953,7 @@ impl NativeWriteRoot {
             .join("docs")
             .join(crate::shard_of(identifier, collection.shard_width()))
             .join(filename);
+        self.require_pair_destination_absent(&target)?;
         let mut transaction = Transaction::begin(self, &collection, "restore-document")?;
         let outcome = (|| {
             transaction.capture(&source)?;
@@ -811,7 +966,7 @@ impl NativeWriteRoot {
                 )
             })?;
             ensure_directory(&self.root, parent)?;
-            fs::rename(&source, &target).map_err(NativeStorageError::io)?;
+            self.move_record_pair(&source, &target)?;
             sync_parent(&source)?;
             sync_parent(&target)?;
             failpoint("after-restore-rename")?;
@@ -844,6 +999,7 @@ impl NativeWriteRoot {
         collection_name: &str,
         width: u32,
     ) -> Result<usize, NativeStorageError> {
+        self.root.assert_profile_owned()?;
         if !(crate::MIN_SHARD_WIDTH..=crate::MAX_SHARD_WIDTH).contains(&width) {
             return Err(NativeStorageError::new(
                 NativeStorageErrorCode::Unsupported,
@@ -860,7 +1016,7 @@ impl NativeWriteRoot {
         if recorded == width && previous.is_empty() {
             return Ok(0);
         }
-        let _lock = CollectionWriteLock::acquire(&collection.path)?;
+        let _lock = self.lock_collection(&collection.path)?;
         self.recover_locked(&collection)?;
         let mut leaving: Vec<u32> = previous;
         if recorded != width && !leaving.contains(&recorded) {
@@ -876,6 +1032,7 @@ impl NativeWriteRoot {
             for namespace in ["docs", ".deleted"] {
                 let root = collection.path.join(namespace);
                 for (source, target) in reshard_moves(&root, width, &leaving)? {
+                    self.require_pair_destination_absent(&target)?;
                     transaction.capture(&source)?;
                     transaction.capture(&target)?;
                     let parent = target.parent().ok_or_else(|| {
@@ -885,7 +1042,7 @@ impl NativeWriteRoot {
                         )
                     })?;
                     ensure_directory(&self.root, parent)?;
-                    fs::rename(&source, &target).map_err(NativeStorageError::io)?;
+                    self.move_record_pair(&source, &target)?;
                     sync_parent(&source)?;
                     sync_parent(&target)?;
                     failpoint("after-reshard-rename")?;
@@ -908,6 +1065,7 @@ impl NativeWriteRoot {
         width: u32,
         leaving: &[u32],
     ) -> Result<(), NativeStorageError> {
+        self.root.assert_profile_owned()?;
         let path = self
             .root
             .catalog_root()
@@ -941,8 +1099,9 @@ impl NativeWriteRoot {
     /// Returns an error for a missing collection, an unsafe path, lock
     /// contention, or an interrupted durable write.
     pub fn rebuild_collection(&self, collection_name: &str) -> Result<(), NativeStorageError> {
+        self.root.assert_profile_owned()?;
         let collection = self.root.collection(collection_name)?;
-        let _lock = CollectionWriteLock::acquire(&collection.path)?;
+        let _lock = self.lock_collection(&collection.path)?;
         self.recover_locked(&collection)?;
         let mut transaction = Transaction::begin(self, &collection, "rebuild-index")?;
         let outcome = (|| {
@@ -967,6 +1126,7 @@ impl NativeWriteRoot {
         &self,
         collection_name: &str,
     ) -> Result<Value, NativeStorageError> {
+        self.root.assert_profile_owned()?;
         let collection = self.root.collection(collection_name)?;
         if collection.kind != CollectionKind::File {
             return Err(NativeStorageError::new(
@@ -1010,7 +1170,7 @@ impl NativeWriteRoot {
                         // The checksum is a rebuildable cache. A read-only file
                         // can still be verified even when the cache cannot be
                         // refreshed, exactly like the JavaScript engine.
-                        let _ = stamp_raw_file_checksum(&check.path, &check.actual);
+                        let _ = stamp_raw_file_checksum(&self.root, &check.path, &check.actual);
                         stamped += 1;
                     }
                 }
@@ -1070,6 +1230,7 @@ impl NativeWriteRoot {
         kind: CollectionKind,
         versioned: Option<bool>,
     ) -> Result<bool, NativeStorageError> {
+        self.root.assert_profile_owned()?;
         super::validate_collection_name(collection_name)?;
         let existing = self.collection_if_present(collection_name)?;
         if let Some(collection) = &existing
@@ -1161,6 +1322,7 @@ impl NativeWriteRoot {
     /// Returns an error for a missing collection, an unsafe path, or a failed
     /// removal.
     pub fn drop_collection(&self, collection_name: &str) -> Result<(), NativeStorageError> {
+        self.root.assert_profile_owned()?;
         super::validate_collection_name(collection_name)?;
         let Some(collection) = self.collection_if_present(collection_name)? else {
             return Err(NativeStorageError::new(
@@ -1171,7 +1333,7 @@ impl NativeWriteRoot {
         // Recover first: dropping a collection mid-transaction would discard
         // the journal that says what the interrupted write still owes.
         {
-            let _lock = CollectionWriteLock::acquire(&collection.path)?;
+            let _lock = self.lock_collection(&collection.path)?;
             self.recover_locked(&collection)?;
         }
         remove_dir_durable(&collection.path)?;
@@ -1193,6 +1355,7 @@ impl NativeWriteRoot {
     ///
     /// Returns an error when the system clock is outside the TTID range.
     pub fn allocate_identifier(&self) -> Result<String, NativeStorageError> {
+        self.root.assert_profile_owned()?;
         generate_ttid()
     }
 
@@ -1318,7 +1481,7 @@ impl NativeWriteRoot {
         let query = StructuredQuery::from_value(&query_value, QueryLimits::default())
             .map_err(|error| query_error(&error))?;
         let collection = self.document_collection(&plan.collection, "SQL UPDATE")?;
-        let _lock = CollectionWriteLock::acquire(&collection.path)?;
+        let _lock = self.lock_collection(&collection.path)?;
         self.recover_locked(&collection)?;
         let mut documents = matching_documents(&collection, &query, actor)?;
         for document in &mut documents {
@@ -1344,7 +1507,7 @@ impl NativeWriteRoot {
         let query = StructuredQuery::from_value(&plan.ast, QueryLimits::default())
             .map_err(|error| query_error(&error))?;
         let collection = self.document_collection(&plan.collection, "SQL DELETE")?;
-        let _lock = CollectionWriteLock::acquire(&collection.path)?;
+        let _lock = self.lock_collection(&collection.path)?;
         self.recover_locked(&collection)?;
         let documents = matching_documents(&collection, &query, actor)?;
         self.write_sql_deletes(&collection, &documents)?;
@@ -1392,6 +1555,9 @@ impl NativeWriteRoot {
         if documents.is_empty() {
             return Ok(());
         }
+        for document in documents {
+            self.require_pair_destination_absent(&deleted_document_path(collection, &document.identifier))?;
+        }
         let before = record_index_keys_for(collection, documents)?;
         let mut transaction = Transaction::begin(self, collection, "delete-many")?;
         let outcome = (|| {
@@ -1401,7 +1567,7 @@ impl NativeWriteRoot {
                 let target = deleted_document_path(collection, &document.identifier);
                 transaction.capture(&target)?;
                 ensure_deleted_parent(self, &target)?;
-                fs::rename(&document.path, &target).map_err(NativeStorageError::io)?;
+                self.move_record_pair(&document.path, &target)?;
                 sync_parent(&document.path)?;
                 sync_parent(&target)?;
                 failpoint("after-delete-rename")?;
@@ -1417,6 +1583,7 @@ impl NativeWriteRoot {
         &self,
         collection: &super::NativeCollection,
     ) -> Result<bool, NativeStorageError> {
+        self.root.assert_profile_owned()?;
         let generation = collection.generation()?;
         if generation.state == super::GenerationStatus::Stable {
             cleanup_orphan_transactions(self, collection)?;
@@ -1436,7 +1603,7 @@ impl NativeWriteRoot {
         manifest.validate(collection.name(), &identifier)?;
         let captures = read_captures(&root)?;
         if manifest.phase == TransactionPhase::Active {
-            restore_captures(&collection.path, &root, &captures)?;
+            restore_captures(&self.root, &collection.path, &root, &captures)?;
         }
         self.rebuild_index(collection)?;
         write_generation(
@@ -1462,6 +1629,7 @@ impl NativeWriteRoot {
         before: &BTreeSet<String>,
         after: &BTreeSet<String>,
     ) -> Result<(), NativeStorageError> {
+        self.root.assert_profile_owned()?;
         let mut appended = Vec::new();
         for (sign, key) in before
             .difference(after)
@@ -1486,6 +1654,7 @@ impl NativeWriteRoot {
         &self,
         collection: &super::NativeCollection,
     ) -> Result<(), NativeStorageError> {
+        self.root.assert_profile_owned()?;
         let mut keys = BTreeSet::new();
         match collection.kind {
             CollectionKind::Document => {
@@ -1545,12 +1714,12 @@ fn verify_raw_file_checksum(
     let (mut file, _) = collection
         .root
         .open_file(&path, super::MAX_RAW_FILE_BYTES)?;
-    let attributes = super::read_fylo_attributes(&file, &path)?;
+    let attributes = super::record_attributes::RecordAttributes::read(&collection.root, &file, &path)?;
     let bytes = super::read_bounded(
         (&mut file).take(super::MAX_RAW_FILE_BYTES.saturating_add(1)),
         super::MAX_RAW_FILE_BYTES,
     )?;
-    collection.root.verify_open_file_identity(&path, &file)?;
+    attributes.verify(&collection.root, &file, &path)?;
     let expected = attributes
         .get(super::CHECKSUM_XATTR)
         .and_then(|value| std::str::from_utf8(value).ok())
@@ -1569,15 +1738,18 @@ fn verify_raw_file_checksum(
     })
 }
 
-fn stamp_raw_file_checksum(path: &Path, checksum: &str) -> Result<(), NativeStorageError> {
+fn stamp_raw_file_checksum(root: &NativeRoot, path: &Path, checksum: &str) -> Result<(), NativeStorageError> {
     let metadata = fs::metadata(path).map_err(NativeStorageError::io)?;
     let stamp = format!(
         "{checksum}:{}:{}",
         metadata.len(),
         super::modified_millis(&metadata)?
     );
-    write_fylo_attribute(path, super::CHECKSUM_XATTR, stamp.as_bytes())?;
-    restore_modified(path, &metadata)
+    super::record_attributes::RecordAttributes::write(root, path, super::CHECKSUM_XATTR, stamp.as_bytes())?;
+    if root.filesystem_profile() == super::FilesystemProfile::Native {
+        restore_modified(path, &metadata)?;
+    }
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -1639,9 +1811,9 @@ fn record_target(
     }
 }
 
-fn next_meta_updated_at(path: &Path) -> Result<u64, NativeStorageError> {
+fn next_meta_updated_at(root: &NativeRoot, path: &Path) -> Result<u64, NativeStorageError> {
     let file = File::open(path).map_err(NativeStorageError::io)?;
-    let previous = super::read_fylo_attributes(&file, path)?
+    let previous = super::record_attributes::RecordAttributes::read(root, &file, path)?
         .get(super::META_UPDATED_XATTR)
         .and_then(|value| std::str::from_utf8(value).ok())
         .and_then(|value| value.parse::<u64>().ok())
@@ -1714,6 +1886,9 @@ fn reshard_moves(
                 continue;
             }
             let filename = record.file_name().to_string_lossy().into_owned();
+            if super::is_scratch_file(&filename) {
+                continue;
+            }
             let Some(identifier) = super::raw_file_identifier(&filename) else {
                 continue;
             };
@@ -2064,6 +2239,7 @@ impl<'a> Transaction<'a> {
         collection: &'a super::NativeCollection,
         operation: &str,
     ) -> Result<Self, NativeStorageError> {
+        writer.root.assert_profile_owned()?;
         let generation = collection.generation()?;
         if generation.state != super::GenerationStatus::Stable {
             return Err(NativeStorageError::new(
@@ -2127,6 +2303,7 @@ impl<'a> Transaction<'a> {
 
     /// Undo a transaction that published its journal but changed nothing.
     fn abandon(&mut self) -> Result<(), NativeStorageError> {
+        self.writer.root.assert_profile_owned()?;
         if self.finished {
             return Ok(());
         }
@@ -2140,6 +2317,7 @@ impl<'a> Transaction<'a> {
     }
 
     fn capture(&mut self, target: &Path) -> Result<(), NativeStorageError> {
+        self.writer.root.assert_profile_owned()?;
         let relative = target.strip_prefix(&self.collection.path).map_err(|_| {
             NativeStorageError::new(
                 NativeStorageErrorCode::UnsafePath,
@@ -2164,12 +2342,11 @@ impl<'a> Transaction<'a> {
         // restore, and the remove-if-absent paths all cover it without any of
         // them learning what a sidecar is. Bounded at one level: a sidecar's
         // own sidecar is never captured.
-        #[cfg(all(
-            not(unix),
-            not(windows),
-            not(all(target_arch = "wasm32", target_os = "unknown"))
-        ))]
-        if !target
+        if (self.writer.filesystem_profile() == super::FilesystemProfile::EfsSidecarV1
+            || cfg!(all(
+                not(unix), not(windows),
+                not(all(target_arch = "wasm32", target_os = "unknown"))
+            ))) && !target
             .as_os_str()
             .to_string_lossy()
             .ends_with(super::SIDECAR_SUFFIX)
@@ -2181,15 +2358,44 @@ impl<'a> Transaction<'a> {
         let capture = if present {
             self.writer.root.verify_path(target, ExpectedType::File)?;
             let metadata = fs::symlink_metadata(target).map_err(NativeStorageError::io)?;
+            if self.writer.filesystem_profile() == super::FilesystemProfile::EfsSidecarV1 {
+                super::sidecar_attributes::SidecarAttributes::verify_owner(
+                    &self.writer.root, &metadata,
+                    target.as_os_str().to_string_lossy().ends_with(super::SIDECAR_SUFFIX),
+                )?;
+            }
             let backup = PathBuf::from("before").join(format!("{index:06}.bin"));
-            copy_durable(target, &self.root.join(&backup))?;
+            if self.writer.filesystem_profile() == super::FilesystemProfile::EfsSidecarV1 {
+                let before_image = copy_durable_with_mode(
+                    target, &self.root.join(&backup), Some(0o600),
+                    Some(metadata.modified().map_err(NativeStorageError::io)?),
+                )?;
+                let captured = before_image.metadata().map_err(NativeStorageError::io)?;
+                super::sidecar_attributes::SidecarAttributes::verify_owner(
+                    &self.writer.root, &captured, true,
+                )?;
+                if captured.modified().map_err(NativeStorageError::io)?
+                    != metadata.modified().map_err(NativeStorageError::io)?
+                {
+                    return Err(NativeStorageError::new(
+                        NativeStorageErrorCode::CorruptMetadata,
+                        "EFS before-image did not preserve the exact timestamp",
+                    ));
+                }
+            } else {
+                copy_durable(target, &self.root.join(&backup))?;
+            }
             Capture {
                 path: portable_path(relative)?,
                 present: true,
                 backup: Some(portable_path(&backup)?),
                 mode: Some(native_mode(&metadata)),
                 mtime_ms: Some(modified_millis(&metadata)?),
-                xattrs: Some(capture_attributes(target)?),
+                xattrs: Some(if self.writer.filesystem_profile() == super::FilesystemProfile::EfsSidecarV1 {
+                    Vec::new()
+                } else {
+                    capture_attributes(target)?
+                }),
             }
         } else {
             Capture {
@@ -2211,6 +2417,7 @@ impl<'a> Transaction<'a> {
     }
 
     fn commit(&mut self) -> Result<(), NativeStorageError> {
+        self.writer.root.assert_profile_owned()?;
         failpoint("before-commit-marker")?;
         self.manifest.phase = TransactionPhase::Committed;
         write_json_durable(&self.root.join("transaction.json"), &self.manifest)?;
@@ -2226,13 +2433,14 @@ impl<'a> Transaction<'a> {
     }
 
     fn rollback(&mut self) -> Result<(), NativeStorageError> {
+        self.writer.root.assert_profile_owned()?;
         if self.finished {
             return Ok(());
         }
         // A failed recovery is worse than the crash it recovers from, so each
         // step names itself: an operator seeing only the platform's message has
         // no way to tell which durable operation refused.
-        restore_captures(&self.collection.path, &self.root, &self.captures)
+        restore_captures(&self.writer.root, &self.collection.path, &self.root, &self.captures)
             .map_err(|error| rollback_step("restoring captures", &error))?;
         self.writer
             .rebuild_index(self.collection)
@@ -2259,6 +2467,8 @@ impl Drop for Transaction<'_> {
 #[serde(rename_all = "camelCase")]
 struct LockRecord {
     owner: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    root_owner: Option<String>,
     pid: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     process_identity: Option<String>,
@@ -2268,19 +2478,17 @@ struct LockRecord {
 struct CollectionWriteLock {
     path: PathBuf,
     owner: String,
+    owning_root: Option<NativeRoot>,
 }
 
 impl CollectionWriteLock {
-    fn acquire(collection_root: &Path) -> Result<Self, NativeStorageError> {
-        Self::acquire_at(&collection_root.join("locks"), "collection.lock")
-    }
-
     fn acquire_at(locks: &Path, name: &str) -> Result<Self, NativeStorageError> {
         fs::create_dir_all(locks).map_err(NativeStorageError::io)?;
         let path = locks.join(name);
         let owner = unique_name("rust-owner");
         let record = LockRecord {
             owner: owner.clone(),
+            root_owner: None,
             pid: super::process_id(),
             process_identity: process_identity(super::process_id()),
             ts: unix_millis()?,
@@ -2294,12 +2502,65 @@ impl CollectionWriteLock {
                 ));
             }
         }
-        Ok(Self { path, owner })
+        Ok(Self { path, owner, owning_root: None })
+    }
+
+    fn acquire_profiled(
+        root: &NativeRoot, locks: &Path, name: &str,
+    ) -> Result<Self, NativeStorageError> {
+        root.assert_profile_owned()?;
+        if root.filesystem_profile() == super::FilesystemProfile::Native {
+            let mut lock = Self::acquire_at(locks, name)?;
+            if root.owning_lease().is_some() {
+                lock.owning_root = Some(root.clone());
+            }
+            return Ok(lock);
+        }
+        let lease = root.owning_lease().ok_or_else(|| NativeStorageError::new(
+            NativeStorageErrorCode::RootLeaseLost, "EFS collection owner is absent",
+        ))?;
+        ensure_directory(root, locks)?;
+        let path = locks.join(name);
+        let owner = unique_name("rust-owner");
+        let record = LockRecord {
+            owner: owner.clone(),
+            root_owner: Some(lease.owner_generation().to_owned()),
+            pid: super::process_id(),
+            process_identity: None,
+            ts: unix_millis()?,
+        };
+        if !try_create_lock(&path, &record)? {
+            root.verify_path(&path, ExpectedType::File)?;
+            let existing: LockRecord = read_bounded_json(&path, 16 * 1024)?;
+            if existing.root_owner.as_deref() == Some(lease.owner_generation()) {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::ConcurrentWrite,
+                    "collection lock belongs to this live root-owner generation",
+                ));
+            }
+            // A verified cooperative root owner may clear a prior generation.
+            // A local PID or boot identity is never remote-owner death proof.
+            root.assert_profile_owned()?;
+            let stale = path.with_extension(format!("stale.{}", unique_name("lock")));
+            fs::rename(&path, &stale).map_err(NativeStorageError::io)?;
+            fs::remove_file(stale).map_err(NativeStorageError::io)?;
+            sync_parent(&path)?;
+            if !try_create_lock(&path, &record)? {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::ConcurrentWrite, "EFS collection lock was contested",
+                ));
+            }
+        }
+        root.assert_profile_owned()?;
+        Ok(Self { path, owner, owning_root: Some(root.clone()) })
     }
 }
 
 impl Drop for CollectionWriteLock {
     fn drop(&mut self) {
+        if self.owning_root.as_ref().is_some_and(|root| root.assert_profile_owned().is_err()) {
+            return;
+        }
         let Ok(record) = read_bounded_json::<LockRecord>(&self.path, 16 * 1024) else {
             return;
         };
@@ -2367,6 +2628,7 @@ fn reclaim_stale_lock(path: &Path, contender: &LockRecord) -> Result<(), NativeS
     let claim = path.with_extension("lock.takeover");
     let claim_record = LockRecord {
         owner: contender.owner.clone(),
+        root_owner: contender.root_owner.clone(),
         pid: contender.pid,
         process_identity: contender.process_identity.clone(),
         ts: contender.ts,
@@ -2472,6 +2734,7 @@ fn write_generation(
     collection: &super::NativeCollection,
     generation: &GenerationRecord,
 ) -> Result<(), NativeStorageError> {
+    writer.root.assert_profile_owned()?;
     let path = generation_path(writer, collection);
     ensure_directory(&writer.root, path.parent().expect("generation has parent"))?;
     write_json_durable(&path, &generation)
@@ -2581,11 +2844,57 @@ fn rollback_step(step: &str, error: &NativeStorageError) -> NativeStorageError {
 }
 
 fn restore_captures(
+    root: &NativeRoot,
     collection_root: &Path,
     transaction_root: &Path,
     captures: &[Capture],
 ) -> Result<(), NativeStorageError> {
+    root.assert_profile_owned()?;
+    let efs = root.filesystem_profile() == super::FilesystemProfile::EfsSidecarV1;
+    if efs && captures.iter().any(|capture|
+        capture.xattrs.as_ref().is_some_and(|attributes| !attributes.is_empty()))
+    {
+        return Err(NativeStorageError::new(
+            NativeStorageErrorCode::CorruptMetadata,
+            "EFS journal unexpectedly contains native extended attributes",
+        ));
+    }
+    if efs {
+        for capture in captures.iter().filter(|capture| capture.present) {
+            let mode = capture.mode.ok_or_else(|| NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata, "EFS before-image mode is absent",
+            ))?;
+            let manifest = capture.path.ends_with(super::SIDECAR_SUFFIX);
+            if mode > 0o777 || mode & 0o400 == 0 || (manifest && mode != 0o600) {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::CorruptMetadata, "EFS before-image mode is inconsistent",
+                ));
+            }
+            let backup = transaction_root.join(safe_relative_path(
+                capture.backup.as_deref().ok_or_else(|| NativeStorageError::new(
+                    NativeStorageErrorCode::CorruptMetadata, "EFS before-image backup is absent",
+                ))?,
+            )?);
+            let (mut file, metadata) = root.open_file(&backup, super::MAX_RAW_FILE_BYTES)?;
+            if manifest {
+                let maximum = 16 * 1024 * 1024;
+                let bytes = super::read_bounded((&mut file).take(maximum + 1), maximum)?;
+                super::sidecar_attributes::SidecarAttributes::decode(&bytes)?;
+            }
+            super::sidecar_attributes::SidecarAttributes::verify_owner(root, &metadata, true)?;
+            let expected = capture.mtime_ms.ok_or_else(|| NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata, "EFS before-image timestamp is absent",
+            ))?;
+            if !expected.is_finite() || expected < 0.0 || modified_millis(&metadata)? != expected {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::CorruptMetadata, "EFS before-image timestamp is inconsistent",
+                ));
+            }
+            root.verify_open_file_identity(&backup, &file)?;
+        }
+    }
     for capture in captures.iter().rev() {
+        root.assert_profile_owned()?;
         let relative = safe_relative_path(&capture.path)?;
         let target = collection_root.join(&relative);
         if !capture.present {
@@ -2614,12 +2923,28 @@ fn restore_captures(
             target.parent().expect("capture has parent"),
         )
         .map_err(|error| step("preparing the parent of", &error))?;
-        copy_durable(&backup, &target)
-            .map_err(|error| step("restoring the before-image of", &error))?;
-        restore_attributes(&target, capture.xattrs.as_deref().unwrap_or_default())
-            .map_err(|error| step("restoring the attributes of", &error))?;
-        if let Some(mode) = capture.mode {
-            set_mode(&target, mode).map_err(|error| step("restoring the mode of", &error))?;
+        if efs {
+            // The private before-image inode retains the original exact mtime;
+            // the existing f64 mtimeMs schema remains wire-compatible.
+            let modified = fs::symlink_metadata(&backup).map_err(NativeStorageError::io)?
+                .modified().map_err(NativeStorageError::io)?;
+            let restored = copy_durable_with_mode(
+                &backup, &target, Some(capture.mode.unwrap_or(0o600)), Some(modified),
+            ).map_err(|error| step("restoring the private before-image of", &error))?;
+            crate::sync_handle(&restored).map_err(NativeStorageError::io)?;
+            super::sidecar_attributes::SidecarAttributes::verify_owner(
+                root, &restored.metadata().map_err(NativeStorageError::io)?,
+                target.as_os_str().to_string_lossy().ends_with(super::SIDECAR_SUFFIX),
+            )?;
+            root.verify_open_file_identity(&target, &restored)?;
+        } else {
+            copy_durable(&backup, &target)
+                .map_err(|error| step("restoring the before-image of", &error))?;
+            restore_attributes(&target, capture.xattrs.as_deref().unwrap_or_default())
+                .map_err(|error| step("restoring the attributes of", &error))?;
+            if let Some(mode) = capture.mode {
+                set_mode(&target, mode).map_err(|error| step("restoring the mode of", &error))?;
+            }
         }
         sync_parent(&target).map_err(|error| step("flushing the parent of", &error))?;
     }
@@ -2650,6 +2975,7 @@ fn cleanup_orphan_transactions(
 }
 
 pub(crate) fn ensure_directory(root: &NativeRoot, path: &Path) -> Result<(), NativeStorageError> {
+    root.assert_profile_owned()?;
     if path_exists_no_follow(path)? {
         root.verify_path(path, ExpectedType::Directory)?;
         return Ok(());
@@ -2702,6 +3028,46 @@ fn ensure_plain_parent(root: &Path, target: &Path) -> Result<(), NativeStorageEr
         }
     }
     Ok(())
+}
+
+pub(crate) fn durable_replace_private(path: &Path, bytes: &[u8]) -> Result<(), NativeStorageError> {
+    durable_replace_with_mode(path, bytes, 0o600)
+}
+
+fn durable_replace_with_mode(
+    path: &Path, bytes: &[u8], mode: u32,
+) -> Result<(), NativeStorageError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        failpoint("before-file-write")?;
+        let scratch = sibling_scratch(path);
+        let result = (|| {
+            let mut file = OpenOptions::new().create_new(true).write(true)
+                .mode(mode & 0o600).open(&scratch).map_err(NativeStorageError::io)?;
+            file.set_permissions(fs::Permissions::from_mode(mode & 0o600))
+                .map_err(NativeStorageError::io)?;
+            file.write_all(bytes).map_err(NativeStorageError::io)?;
+            file.set_permissions(fs::Permissions::from_mode(mode)).map_err(NativeStorageError::io)?;
+            crate::sync_handle(&file).map_err(NativeStorageError::io)?;
+            failpoint("after-file-sync")?;
+            fs::rename(&scratch, path).map_err(NativeStorageError::io)?;
+            failpoint("after-file-rename")?;
+            sync_parent(path)
+        })();
+        if result.is_err() && path_exists_no_follow(&scratch)? {
+            fs::remove_file(&scratch).map_err(NativeStorageError::io)?;
+            sync_parent(&scratch)?;
+        }
+        result
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (path, bytes, mode);
+        Err(NativeStorageError::new(
+            NativeStorageErrorCode::Unsupported, "private EFS metadata requires POSIX files",
+        ))
+    }
 }
 
 fn durable_replace(path: &Path, bytes: &[u8]) -> Result<(), NativeStorageError> {
@@ -2851,7 +3217,7 @@ fn require_write_access(
 }
 
 #[cfg(unix)]
-fn remove_fylo_attribute(path: &Path, name: &str) -> Result<(), NativeStorageError> {
+pub(crate) fn remove_fylo_attribute(path: &Path, name: &str) -> Result<(), NativeStorageError> {
     use xattr::FileExt;
 
     let file = OpenOptions::new()
@@ -2887,7 +3253,7 @@ fn missing_xattr(error: &std::io::Error) -> bool {
 }
 
 #[cfg(windows)]
-fn remove_fylo_attribute(path: &Path, name: &str) -> Result<(), NativeStorageError> {
+pub(crate) fn remove_fylo_attribute(path: &Path, name: &str) -> Result<(), NativeStorageError> {
     use std::ffi::OsString;
 
     let mut stream = OsString::from(path.as_os_str());
@@ -2925,7 +3291,7 @@ fn remove_fylo_attribute(path: &Path, name: &str) -> Result<(), NativeStorageErr
     not(windows),
     not(all(target_arch = "wasm32", target_os = "unknown"))
 ))]
-fn remove_fylo_attribute(path: &Path, name: &str) -> Result<(), NativeStorageError> {
+pub(crate) fn remove_fylo_attribute(path: &Path, name: &str) -> Result<(), NativeStorageError> {
     let sidecar = super::sidecar_path(path);
     let mut attributes = read_sidecar(&sidecar)?;
     if attributes.remove(name).is_none() {
@@ -2936,7 +3302,7 @@ fn remove_fylo_attribute(path: &Path, name: &str) -> Result<(), NativeStorageErr
 
 /// Drop one attribute from the host's manifest.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn remove_fylo_attribute(path: &Path, name: &str) -> Result<(), NativeStorageError> {
+pub(crate) fn remove_fylo_attribute(path: &Path, name: &str) -> Result<(), NativeStorageError> {
     let mut attributes = read_host_manifest(path)?;
     if attributes.remove(name).is_none() {
         return Ok(());
@@ -2945,7 +3311,7 @@ fn remove_fylo_attribute(path: &Path, name: &str) -> Result<(), NativeStorageErr
 }
 
 #[cfg(unix)]
-fn write_fylo_attribute(path: &Path, name: &str, value: &[u8]) -> Result<(), NativeStorageError> {
+pub(crate) fn write_fylo_attribute(path: &Path, name: &str, value: &[u8]) -> Result<(), NativeStorageError> {
     use xattr::FileExt;
 
     let file = OpenOptions::new()
@@ -2960,7 +3326,7 @@ fn write_fylo_attribute(path: &Path, name: &str, value: &[u8]) -> Result<(), Nat
 }
 
 #[cfg(windows)]
-fn write_fylo_attribute(path: &Path, name: &str, value: &[u8]) -> Result<(), NativeStorageError> {
+pub(crate) fn write_fylo_attribute(path: &Path, name: &str, value: &[u8]) -> Result<(), NativeStorageError> {
     use std::ffi::OsString;
 
     let mut stream = OsString::from(path.as_os_str());
@@ -3002,7 +3368,7 @@ fn write_fylo_attribute(path: &Path, name: &str, value: &[u8]) -> Result<(), Nat
     not(windows),
     not(all(target_arch = "wasm32", target_os = "unknown"))
 ))]
-fn write_fylo_attribute(path: &Path, name: &str, value: &[u8]) -> Result<(), NativeStorageError> {
+pub(crate) fn write_fylo_attribute(path: &Path, name: &str, value: &[u8]) -> Result<(), NativeStorageError> {
     let sidecar = super::sidecar_path(path);
     let mut attributes = read_sidecar(&sidecar)?;
     attributes.insert(name.into(), BASE64.encode(value));
@@ -3016,7 +3382,7 @@ fn write_fylo_attribute(path: &Path, name: &str, value: &[u8]) -> Result<(), Nat
 /// to its alternate data stream: a record's attributes are a handful of small
 /// values and replacing all of them is atomic where a partial update is not.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn write_fylo_attribute(path: &Path, name: &str, value: &[u8]) -> Result<(), NativeStorageError> {
+pub(crate) fn write_fylo_attribute(path: &Path, name: &str, value: &[u8]) -> Result<(), NativeStorageError> {
     let mut attributes = read_host_manifest(path)?;
     attributes.insert(name.into(), BASE64.encode(value));
     write_host_manifest(path, &attributes)
@@ -3129,6 +3495,129 @@ fn copy_durable(source: &Path, target: &Path) -> Result<(), NativeStorageError> 
     }
     fs::rename(scratch, target).map_err(NativeStorageError::io)?;
     sync_parent(target)
+}
+
+
+fn copy_durable_with_mode(
+    source: &Path,
+    target: &Path,
+    mode: Option<u32>,
+    modified: Option<std::time::SystemTime>,
+) -> Result<File, NativeStorageError> {
+    let source_path = source;
+    let before = if mode.is_some() {
+        let metadata = fs::symlink_metadata(source_path).map_err(NativeStorageError::io)?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::UnsafePath, "private copy source is not a regular file",
+            ));
+        }
+        Some(metadata)
+    } else {
+        None
+    };
+    let mut source = File::open(source_path).map_err(NativeStorageError::io)?;
+    let metadata = source.metadata().map_err(NativeStorageError::io)?;
+    #[cfg(unix)]
+    if let Some(before) = before.as_ref() {
+        use std::os::unix::fs::MetadataExt;
+        if (before.dev(), before.ino()) != (metadata.dev(), metadata.ino()) {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::UnsafePath, "private copy source changed while opening",
+            ));
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = before;
+    if let Some(modified) = modified {
+        if metadata.modified().map_err(NativeStorageError::io)? != modified {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata, "private copy source timestamp changed",
+            ));
+        }
+    }
+    if !metadata.is_file() {
+        return Err(NativeStorageError::new(
+            NativeStorageErrorCode::WrongType,
+            "transaction backup source is not a regular file",
+        ));
+    }
+    if metadata.len() > super::MAX_RAW_FILE_BYTES {
+        return Err(NativeStorageError::new(
+            NativeStorageErrorCode::FileTooLarge,
+            "transaction backup exceeds the raw-file limit",
+        ));
+    }
+    let scratch = sibling_scratch(target);
+    let mut options = OpenOptions::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(mode.map_or(0o666, |value| value & 0o600));
+    }
+    let result = (|| {
+        let mut output = options.create_new(true).write(true).open(&scratch)
+            .map_err(NativeStorageError::io)?;
+        #[cfg(unix)]
+        if let Some(mode) = mode {
+            use std::os::unix::fs::PermissionsExt;
+            output.set_permissions(fs::Permissions::from_mode(mode & 0o600))
+                .map_err(NativeStorageError::io)?;
+        }
+        std::io::copy(&mut (&mut source).take(super::MAX_RAW_FILE_BYTES + 1), &mut output)
+            .map_err(NativeStorageError::io)?;
+        if mode.is_some() {
+            let after = source.metadata().map_err(NativeStorageError::io)?;
+            let current = fs::symlink_metadata(source_path).map_err(NativeStorageError::io)?;
+            if current.file_type().is_symlink() || !current.is_file()
+                || after.len() != metadata.len()
+                || after.modified().map_err(NativeStorageError::io)?
+                    != metadata.modified().map_err(NativeStorageError::io)?
+            {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::CorruptMetadata, "private copy source changed while reading",
+                ));
+            }
+            #[cfg(not(target_family = "wasm"))]
+            if crate::FileIdentity::from_file(source.try_clone().map_err(NativeStorageError::io)?)
+                .map_err(NativeStorageError::io)?
+                != crate::FileIdentity::from_path(source_path).map_err(NativeStorageError::io)?
+            {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::UnsafePath, "private copy source identity changed",
+                ));
+            }
+        }
+        if let Some(modified) = modified {
+            output.set_times(fs::FileTimes::new().set_modified(modified))
+                .map_err(NativeStorageError::io)?;
+        }
+        #[cfg(unix)]
+        if let Some(mode) = mode {
+            use std::os::unix::fs::PermissionsExt;
+            output.set_permissions(fs::Permissions::from_mode(mode))
+                .map_err(NativeStorageError::io)?;
+        }
+        #[cfg(not(unix))]
+        if mode.is_some() {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::Unsupported, "private copy requires POSIX mode projection",
+            ));
+        }
+        crate::sync_handle(&output).map_err(NativeStorageError::io)?;
+        // The legacy Windows Native restore permits replacement of a readonly destination.
+        if let Ok(existing) = fs::symlink_metadata(target) {
+            clear_readonly(target, &existing)?;
+        }
+        fs::rename(&scratch, target).map_err(NativeStorageError::io)?;
+        sync_parent(target)?;
+        Ok(output)
+    })();
+    if result.is_err() && path_exists_no_follow(&scratch)? {
+        fs::remove_file(&scratch).map_err(NativeStorageError::io)?;
+        sync_parent(&scratch)?;
+    }
+    result
 }
 
 /// Append to an existing durable file without rewriting it.
@@ -3262,7 +3751,7 @@ fn restore_modified(path: &Path, recorded: &fs::Metadata) -> Result<(), NativeSt
     file.set_times(times).map_err(NativeStorageError::io)
 }
 
-fn sync_directory(path: &Path) -> Result<(), NativeStorageError> {
+pub(crate) fn sync_directory(path: &Path) -> Result<(), NativeStorageError> {
     let directory = open_directory(path).map_err(NativeStorageError::io)?;
     match crate::sync_handle(&directory) {
         Ok(()) => Ok(()),
@@ -3611,6 +4100,52 @@ fn restore_attributes(
     }
 }
 
+fn apply_profiled_access(
+    root: &NativeRoot, path: &Path, access: WriteAccess,
+) -> Result<(), NativeStorageError> {
+    if root.filesystem_profile() == super::FilesystemProfile::Native {
+        return apply_access(path, access);
+    }
+    root.assert_profile_owned()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt, chown};
+        let (file, metadata) = root.open_file(path, super::MAX_RAW_FILE_BYTES)?;
+        super::sidecar_attributes::SidecarAttributes::verify_owner(root, &metadata, false)?;
+        let (uid, gid) = root.efs_identity().ok_or_else(|| NativeStorageError::new(
+            NativeStorageErrorCode::CorruptMetadata, "EFS descriptor is absent",
+        ))?;
+        if access.uid.is_some_and(|value| value != uid)
+            || access.gid.is_some_and(|value| value != gid)
+        {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::Unsupported, "EFS UID/GID projection is immutable",
+            ));
+        }
+        if access.is_empty() {
+            return Ok(());
+        }
+        let mode = access.mode.unwrap_or(DEFAULT_ACCESS_MODE);
+        let descriptor = super::AccessDescriptor { version: 1, uid, gid, mode };
+        let encoded = serde_json::to_vec(&descriptor).map_err(|error| json_error(&error))?;
+        super::record_attributes::RecordAttributes::write(
+            root, path, super::ACCESS_XATTR, &encoded,
+        )?;
+        failpoint("after-access-marker")?;
+        chown(path, Some(metadata.uid()), Some(metadata.gid())).map_err(NativeStorageError::io)?;
+        failpoint("after-chown")?;
+        file.set_permissions(fs::Permissions::from_mode(mode)).map_err(NativeStorageError::io)?;
+        failpoint("after-chmod")?;
+        crate::sync_handle(&file).map_err(NativeStorageError::io)?;
+        root.verify_open_file_identity(path, &file)?;
+        root.assert_profile_owned()
+    }
+    #[cfg(not(unix))]
+    Err(NativeStorageError::new(
+        NativeStorageErrorCode::Unsupported, "EFS mode projection requires POSIX files",
+    ))
+}
+
 #[cfg(unix)]
 fn apply_access(path: &Path, access: WriteAccess) -> Result<(), NativeStorageError> {
     use std::os::unix::fs::{MetadataExt, PermissionsExt, chown};
@@ -3675,7 +4210,7 @@ fn set_mode(_path: &Path, _mode: u32) -> Result<(), NativeStorageError> {
 /// The list is the contract the crash matrix enumerates, so a new failpoint
 /// must be declared here to be injectable — which is also what stops it from
 /// being added without coverage.
-pub const FAILPOINTS: [&str; 15] = [
+pub const FAILPOINTS: [&str; 17] = [
     "before-file-write",
     "after-file-rename",
     "after-file-sync",
@@ -3691,9 +4226,11 @@ pub const FAILPOINTS: [&str; 15] = [
     "before-commit-marker",
     "after-commit-marker",
     "after-commit-object",
+    "after-record-payload-rename",
+    "after-record-sidecar-rename",
 ];
 
-fn failpoint(name: &str) -> Result<(), NativeStorageError> {
+pub(crate) fn failpoint(name: &str) -> Result<(), NativeStorageError> {
     debug_assert!(
         FAILPOINTS.contains(&name),
         "undeclared failpoint: {name}; add it to FAILPOINTS so the crash matrix covers it"

@@ -125,6 +125,39 @@ fn profiled_reads_keep_payload_custom_canonical_and_access_together() {
 }
 
 #[test]
+fn raw_descriptor_fields_override_colliding_custom_metadata_inside_the_envelope() {
+    let fixture = Fixture::new();
+    fixture.writer().set_record_metadata("assets", RAW_ID, json!({
+        "id": "spoofed-id",
+        "createdAt": 0,
+        "updatedAt": 0,
+        "mtime": 0,
+        "name": "spoofed-name",
+        "key": "/spoofed-key",
+        "extension": ".txt",
+        "contentType": "text/plain",
+        "contentLength": 0,
+        "etag": "spoofed-etag",
+        "checksumSHA256": "spoofed-checksum",
+        "lastModified": 0,
+        "label": "preserved-custom-value",
+    }).as_object().unwrap(), None).unwrap();
+    let engine = fixture.reader();
+    let actor = fixture.outsider();
+    let raw = engine.get_file_as("assets", RAW_ID, &actor).unwrap();
+    assert_eq!(raw.bytes, b"first-payload");
+    assert_eq!(raw.custom_metadata["key"], "/spoofed-key");
+    let metadata = engine.metadata_as("assets", RAW_ID, &actor).unwrap();
+    for (name, value) in serde_json::to_value(&raw.file).unwrap().as_object().unwrap() {
+        assert_eq!(&metadata[name], value, "custom metadata replaced raw descriptor field {name}");
+    }
+    for (name, value) in serde_json::to_value(&raw.metadata).unwrap().as_object().unwrap() {
+        assert_eq!(&metadata[name], value, "custom metadata replaced canonical field {name}");
+    }
+    assert_eq!(metadata["label"], "preserved-custom-value");
+}
+
+#[test]
 fn stable_missing_and_corrupt_manifests_never_fall_back_to_public_access() {
     for corruption in ["missing", "malformed"] {
         let fixture = Fixture::new();

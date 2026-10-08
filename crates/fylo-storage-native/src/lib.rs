@@ -18,6 +18,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+mod filesystem_profile;
+mod profile_manifest;
+mod record_attributes;
+mod root_open_options;
+mod sidecar_attributes;
 mod index_cache;
 mod lease;
 mod queue;
@@ -25,6 +30,8 @@ mod write;
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub use fylo_vfs::host_now_unix_ms;
+pub use filesystem_profile::FilesystemProfile;
+pub use root_open_options::RootOpenOptions;
 pub use lease::RootLease;
 pub use queue::{
     NativeQueue, QueueAckResult, QueueClaimOptions, QueueDeadLetter, QueueDelivery,
@@ -88,6 +95,9 @@ pub struct NativeRoot {
     canonical: PathBuf,
     catalog_root: PathBuf,
     repository_root: PathBuf,
+    profile: FilesystemProfile,
+    lease: Option<RootLease>,
+    descriptor: Option<profile_manifest::ProfileManifest>,
 }
 
 impl NativeRoot {
@@ -116,6 +126,16 @@ impl NativeRoot {
     }
 
     fn open_with_roots(path: &Path, repository_root: &Path) -> Result<Self, NativeStorageError> {
+        Self::open_profiled(RootOpenOptions::new(path).with_repository(repository_root))
+    }
+
+    /// Open an explicitly selected representation without initializing it.
+    ///
+    /// # Errors
+    /// Rejects mismatched descriptors, unsafe roots or an absent/lost EFS owner.
+    pub fn open_profiled(options: RootOpenOptions) -> Result<Self, NativeStorageError> {
+        let path = options.root.as_path();
+        let repository_root = options.repository.as_deref().unwrap_or(path);
         let canonical = fs::canonicalize(path).map_err(NativeStorageError::io)?;
         let metadata = fs::metadata(&canonical).map_err(NativeStorageError::io)?;
         if !metadata.is_dir() {
@@ -134,11 +154,107 @@ impl NativeRoot {
                 "FYLO repository root is not a directory",
             ));
         }
+        if let Some(lease) = options.lease.as_ref() {
+            lease.assert_owned()?;
+            if lease.root() != repository_root {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::RootLeaseLost,
+                    "supplied lease does not own the selected canonical repository",
+                ));
+            }
+        }
+        if options.profile == FilesystemProfile::EfsSidecarV1 {
+            let lease = options.lease.as_ref().ok_or_else(|| NativeStorageError::new(
+                NativeStorageErrorCode::RootLeaseLost,
+                "EFS profile requires its owning root lease",
+            ))?;
+            lease.assert_owned()?;
+            if !lease.kernel_enforced() || lease.root() != repository_root
+                || !canonical.starts_with(&repository_root)
+            {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::RootLeaseLost,
+                    "EFS worktree does not belong to the owning kernel lease",
+                ));
+            }
+        }
+        let descriptor = profile_manifest::ProfileManifest::admit_selection(
+            &repository_root, options.profile,
+        )?;
+        if options.profile == FilesystemProfile::EfsSidecarV1 && descriptor.is_none() {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                "EFS profile descriptor is absent; read opens never initialize it",
+            ));
+        }
         Ok(Self {
             canonical,
             catalog_root: repository_root.clone(),
             repository_root,
+            profile: options.profile,
+            lease: options.lease,
+            descriptor,
         })
+    }
+
+    /// Selected immutable metadata representation.
+    #[must_use]
+    pub const fn filesystem_profile(&self) -> FilesystemProfile {
+        self.profile
+    }
+
+    /// Clone of the owning lease, retaining the same root-owner generation.
+    #[must_use]
+    pub fn owning_lease(&self) -> Option<RootLease> {
+        self.lease.clone()
+    }
+
+    pub(crate) fn assert_profile_owned(&self) -> Result<(), NativeStorageError> {
+        if let Some(lease) = self.lease.as_ref() {
+            lease.assert_owned()?;
+            if lease.root() != self.repository_root {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::RootLeaseLost,
+                    "supplied lease no longer owns this repository",
+                ));
+            }
+        }
+        if self.profile == FilesystemProfile::EfsSidecarV1 {
+            let lease = self.lease.as_ref().ok_or_else(|| NativeStorageError::new(
+                NativeStorageErrorCode::RootLeaseLost, "EFS owner is absent",
+            ))?;
+            lease.assert_owned()?;
+            if !lease.kernel_enforced() || lease.root() != self.repository_root {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::RootLeaseLost, "EFS owning kernel lease differs",
+                ));
+            }
+            let expected = self.descriptor.as_ref().ok_or_else(|| NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata, "EFS descriptor is absent",
+            ))?;
+            let current = profile_manifest::ProfileManifest::read(&self.repository_root)?;
+            if current.as_ref() != Some(expected) {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::CorruptMetadata,
+                    "EFS profile descriptor was removed or changed after admission",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn efs_identity(&self) -> Option<(u32, u32)> {
+        self.descriptor.as_ref().map(|value| (value.uid, value.gid))
+    }
+
+    pub(crate) fn options_for(&self, path: &Path) -> RootOpenOptions {
+        let mut options = RootOpenOptions::new(path)
+            .with_repository(&self.repository_root)
+            .with_profile(self.profile);
+        if let Some(lease) = self.owning_lease() {
+            options = options.with_lease(lease);
+        }
+        options
     }
 
     /// Return the canonical root identity.
@@ -166,6 +282,7 @@ impl NativeRoot {
     /// Returns an error for invalid names, corrupt descriptors, unsafe paths,
     /// or missing collection directories.
     pub fn collection(&self, name: &str) -> Result<NativeCollection, NativeStorageError> {
+        self.assert_profile_owned()?;
         validate_collection_name(name)?;
         let descriptor_path = self
             .catalog_root
@@ -231,6 +348,7 @@ impl NativeRoot {
     /// Returns an error for corrupt refs/manifests, unsafe paths, cycles,
     /// invalid identifiers, or an excessive limit.
     pub fn version_history(&self, limit: usize) -> Result<RepositoryHistory, NativeStorageError> {
+        self.assert_profile_owned()?;
         if limit == 0 || limit > 1000 {
             return Err(NativeStorageError::new(
                 NativeStorageErrorCode::CorruptMetadata,
@@ -359,6 +477,7 @@ impl NativeRoot {
         &self,
         limit: usize,
     ) -> Result<VersionVerification, NativeStorageError> {
+        self.assert_profile_owned()?;
         if limit == 0 || limit > 1000 {
             return Err(NativeStorageError::new(
                 NativeStorageErrorCode::CorruptMetadata,
@@ -686,6 +805,7 @@ impl NativeRoot {
         target: &Path,
         maximum: u64,
     ) -> Result<Vec<u8>, NativeStorageError> {
+        self.assert_profile_owned()?;
         let relative = target.strip_prefix(&self.repository_root).map_err(|_| {
             NativeStorageError::new(
                 NativeStorageErrorCode::UnsafePath,
@@ -741,6 +861,7 @@ impl NativeRoot {
         path: &Path,
         max_bytes: u64,
     ) -> Result<(File, Metadata), NativeStorageError> {
+        self.assert_profile_owned()?;
         let before = self.verify_path(path, ExpectedType::File)?;
         if before.len() > max_bytes {
             return Err(NativeStorageError::new(
@@ -754,6 +875,15 @@ impl NativeRoot {
         }
         let file = File::open(path).map_err(NativeStorageError::io)?;
         let opened = file.metadata().map_err(NativeStorageError::io)?;
+        #[cfg(unix)]
+        if self.profile == FilesystemProfile::EfsSidecarV1 {
+            use std::os::unix::fs::MetadataExt;
+            if !opened.is_file() || (before.dev(), before.ino()) != (opened.dev(), opened.ino()) {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::UnsafePath, "EFS path changed while opening a file",
+                ));
+            }
+        }
         if opened.len() > max_bytes {
             return Err(NativeStorageError::new(
                 NativeStorageErrorCode::FileTooLarge,
@@ -1040,6 +1170,7 @@ impl NativeCollection {
     ///
     /// Returns an error for corrupt, oversized, linked, or inaccessible state.
     pub fn generation(&self) -> Result<GenerationState, NativeStorageError> {
+        self.root.assert_profile_owned()?;
         let path = self
             .root
             .canonical
@@ -1073,6 +1204,7 @@ impl NativeCollection {
     /// Returns an error when linked components, unexpected files, invalid
     /// identifiers, or filesystem failures are encountered.
     pub fn document_ids(&self) -> Result<Vec<String>, NativeStorageError> {
+        self.root.assert_profile_owned()?;
         if self.kind != CollectionKind::Document {
             return Err(NativeStorageError::new(
                 NativeStorageErrorCode::Unsupported,
@@ -1089,6 +1221,7 @@ impl NativeCollection {
     /// Returns an error for non-document collections or unsafe/corrupt
     /// tombstone paths.
     pub fn deleted_document_ids(&self) -> Result<Vec<String>, NativeStorageError> {
+        self.root.assert_profile_owned()?;
         if self.kind != CollectionKind::Document {
             return Err(NativeStorageError::new(
                 NativeStorageErrorCode::Unsupported,
@@ -1169,6 +1302,7 @@ impl NativeCollection {
     /// Returns an error for non-file collections, linked or malformed
     /// entries, duplicate identifiers, or filesystem failures.
     pub fn raw_file_ids(&self) -> Result<Vec<String>, NativeStorageError> {
+        self.root.assert_profile_owned()?;
         if self.kind != CollectionKind::File {
             return Err(NativeStorageError::new(
                 NativeStorageErrorCode::Unsupported,
@@ -1185,6 +1319,7 @@ impl NativeCollection {
     /// Returns an error for non-file collections or unsafe/corrupt tombstone
     /// paths.
     pub fn deleted_raw_file_ids(&self) -> Result<Vec<String>, NativeStorageError> {
+        self.root.assert_profile_owned()?;
         if self.kind != CollectionKind::File {
             return Err(NativeStorageError::new(
                 NativeStorageErrorCode::Unsupported,
@@ -1257,6 +1392,7 @@ impl NativeCollection {
     /// Returns an error for invalid IDs, unsafe paths, oversized files, or I/O
     /// failures.
     pub fn read_document(&self, identifier: &str) -> Result<StoredBytes, NativeStorageError> {
+        self.root.assert_profile_owned()?;
         validate_ttid_shape(identifier)?;
         if self.kind != CollectionKind::Document {
             return Err(NativeStorageError::new(
@@ -1280,6 +1416,7 @@ impl NativeCollection {
         &self,
         identifier: &str,
     ) -> Result<BTreeMap<String, Value>, NativeStorageError> {
+        self.root.assert_profile_owned()?;
         validate_ttid_shape(identifier)?;
         let path = if self.kind == CollectionKind::Document {
             self.read_document(identifier)?.path
@@ -1287,8 +1424,8 @@ impl NativeCollection {
             self.read_raw_file(identifier)?.path
         };
         let (file, _) = self.root.open_file(&path, MAX_RAW_FILE_BYTES)?;
-        let attributes = read_fylo_attributes(&file, &path)?;
-        self.root.verify_open_file_identity(&path, &file)?;
+        let attributes = record_attributes::RecordAttributes::read(&self.root, &file, &path)?;
+        attributes.verify(&self.root, &file, &path)?;
         decode_custom_metadata(&attributes)
     }
 
@@ -1303,6 +1440,7 @@ impl NativeCollection {
         &self,
         identifier: &str,
     ) -> Result<StoredBytes, NativeStorageError> {
+        self.root.assert_profile_owned()?;
         validate_ttid_shape(identifier)?;
         if self.kind != CollectionKind::Document {
             return Err(NativeStorageError::new(
@@ -1332,12 +1470,12 @@ impl NativeCollection {
             ));
         }
         let (mut file, metadata) = self.root.open_file(&path, MAX_DOCUMENT_BYTES)?;
-        let attributes = read_fylo_attributes(&file, &path)?;
+        let attributes = record_attributes::RecordAttributes::read(&self.root, &file, &path)?;
         let bytes = read_bounded(
             (&mut file).take(MAX_DOCUMENT_BYTES.saturating_add(1)),
             MAX_DOCUMENT_BYTES,
         )?;
-        self.root.verify_open_file_identity(&path, &file)?;
+        attributes.verify(&self.root, &file, &path)?;
         Ok(StoredBytes {
             bytes,
             modified_millis: modified_millis(&metadata)?,
@@ -1349,7 +1487,9 @@ impl NativeCollection {
     /// Read one raw file with its durable object key, custom metadata,
     /// checksum, and native ownership/mode metadata.
     ///
-    /// The data and xattrs are read from the same verified open file on Unix.
+    /// Native Unix data and xattrs use the same verified open file. The EFS
+    /// profile retains separate verified payload and manifest handles; trusted
+    /// engine reads additionally check the stable generation before and after.
     /// Windows reads the existing `fylo.xattrs` ADS representation; native
     /// Windows race-hardening remains qualification-gated.
     ///
@@ -1358,6 +1498,7 @@ impl NativeCollection {
     /// Returns an error for invalid IDs, duplicate files, missing durable
     /// keys, corrupt metadata, unsafe paths, oversized files, or I/O failures.
     pub fn read_raw_file(&self, identifier: &str) -> Result<StoredRawFile, NativeStorageError> {
+        self.root.assert_profile_owned()?;
         validate_ttid_shape(identifier)?;
         if self.kind != CollectionKind::File {
             return Err(NativeStorageError::new(
@@ -1379,6 +1520,7 @@ impl NativeCollection {
         &self,
         identifier: &str,
     ) -> Result<StoredRawFile, NativeStorageError> {
+        self.root.assert_profile_owned()?;
         validate_ttid_shape(identifier)?;
         if self.kind != CollectionKind::File {
             return Err(NativeStorageError::new(
@@ -1398,8 +1540,8 @@ impl NativeCollection {
         let filename = path_utf8_name(&path, "raw-file")?;
         let extension = validate_raw_extension(filename, identifier)?.to_owned();
         let (mut file, metadata) = self.root.open_file(&path, MAX_RAW_FILE_BYTES)?;
-        let attributes = read_fylo_attributes(&file, &path)?;
-        self.root.verify_open_file_identity(&path, &file)?;
+        let attributes = record_attributes::RecordAttributes::read(&self.root, &file, &path)?;
+        attributes.verify(&self.root, &file, &path)?;
         let key = required_utf8_attribute(&attributes, KEY_XATTR, identifier)?;
         validate_raw_key(&key)?;
         let custom_metadata = decode_custom_metadata(&attributes)?;
@@ -1408,15 +1550,23 @@ impl NativeCollection {
             (&mut file).take(MAX_RAW_FILE_BYTES.saturating_add(1)),
             MAX_RAW_FILE_BYTES,
         )?;
-        self.root.verify_open_file_identity(&path, &file)?;
+        attributes.verify(&self.root, &file, &path)?;
         let computed_checksum = sha256_hex(&bytes);
         let modified_millis = modified_millis(&metadata)?;
-        let checksum_sha256 = cached_checksum(
-            attributes.get(CHECKSUM_XATTR),
-            metadata.len(),
-            modified_millis,
-        )
-        .unwrap_or(computed_checksum);
+        let cached = cached_checksum(
+            attributes.get(CHECKSUM_XATTR), metadata.len(), modified_millis,
+        );
+        let checksum_sha256 = if self.root.profile == FilesystemProfile::EfsSidecarV1 {
+            if cached.as_deref() != Some(computed_checksum.as_str()) {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::CorruptMetadata,
+                    "EFS raw payload checksum, size or mtime does not match its manifest",
+                ));
+            }
+            computed_checksum
+        } else {
+            cached.unwrap_or(computed_checksum)
+        };
         Ok(StoredRawFile {
             bytes,
             key,
@@ -1497,6 +1647,7 @@ impl NativeCollection {
     /// Returns an error for unsafe paths, oversized files, I/O failures, or an
     /// invalid snapshot.
     pub fn index_snapshot(&self) -> Result<IndexSnapshot, NativeStorageError> {
+        self.root.assert_profile_owned()?;
         self.shared_index_snapshot()
             .map(|snapshot| (*snapshot).clone())
     }
@@ -1513,6 +1664,7 @@ impl NativeCollection {
     pub fn shared_index_snapshot(
         &self,
     ) -> Result<std::sync::Arc<IndexSnapshot>, NativeStorageError> {
+        self.root.assert_profile_owned()?;
         self.index_snapshot_with_cache(index_cache::IndexCache::shared())
     }
 
@@ -1548,6 +1700,7 @@ impl NativeCollection {
     /// Returns an error for corrupt keys, orphaned identifiers, unsafe paths,
     /// or storage failures.
     pub fn verify_index_references(&self) -> Result<IndexVerification, NativeStorageError> {
+        self.root.assert_profile_owned()?;
         let live: BTreeSet<String> = match self.kind {
             CollectionKind::Document => self.document_ids()?.into_iter().collect(),
             CollectionKind::File => self.raw_file_ids()?.into_iter().collect(),

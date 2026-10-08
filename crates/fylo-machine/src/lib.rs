@@ -22,9 +22,9 @@ use base64::Engine as _;
 use fylo_engine::{AccessContext, EngineError, ReadOnlyEngine, WriteEngine};
 use fylo_query::{JoinSpec, QueryLimits, SqlOperation, StructuredQuery, prepare_sql};
 use fylo_storage_native::{
-    CollectionKind, NativeQueue, NativeStorageError, NativeStorageErrorCode, NativeWriteRoot,
-    PutRawFileOptions, QueueClaimOptions, QueuePublishOptions, RootLease, SqlMutationResultKind,
-    WriteAccess, WriteActor,
+    CollectionKind, FilesystemProfile, NativeQueue, NativeRoot, NativeStorageError,
+    NativeStorageErrorCode, NativeWriteRoot, PutRawFileOptions, QueueClaimOptions, QueuePublishOptions,
+    RootLease, RootOpenOptions, SqlMutationResultKind, WriteAccess, WriteActor,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -307,6 +307,24 @@ pub fn serve_application<R: BufRead, W: Write>(
     )
 }
 
+/// Serve using an immutable root profile and the existing application configuration.
+///
+/// EFS profile selection is a host decision. Requests cannot change the selected
+/// profile or switch to an unadmitted repository. EFS sessions acquire the owning
+/// repository lease before initial recovery, including one-frame sessions.
+///
+/// # Errors
+///
+/// Returns an error when the transport fails; admission failures are protocol frames.
+pub fn serve_profiled<R: BufRead, W: Write>(
+    transport: (&mut R, &mut W),
+    root: RootOpenOptions,
+    application: ApplicationConfig,
+    session: (FrameLimits, bool, bool),
+) -> std::io::Result<()> {
+    serve_profiled_session(transport, Some(root), application, session)
+}
+
 fn serve_session<R: BufRead, W: Write>(
     input: &mut R,
     output: &mut W,
@@ -317,25 +335,69 @@ fn serve_session<R: BufRead, W: Write>(
     config: ApplicationConfig,
 ) -> std::io::Result<()> {
     let default_root = default_root.or_else(|| config.root.clone());
+    serve_profiled_session(
+        (input, output),
+        default_root.map(RootOpenOptions::new),
+        config,
+        (limits, exclusive_root, persistent),
+    )
+}
+
+fn serve_profiled_session<R: BufRead, W: Write>(
+    (input, output): (&mut R, &mut W),
+    options: Option<RootOpenOptions>,
+    config: ApplicationConfig,
+    (limits, exclusive_root, persistent): (FrameLimits, bool, bool),
+) -> std::io::Result<()> {
+    let profile = options
+        .as_ref()
+        .map_or(FilesystemProfile::Native, RootOpenOptions::filesystem_profile);
+    let mut default_root = options.as_ref().map(|options| {
+        options
+            .repository_root()
+            .unwrap_or_else(|| options.root())
+            .to_path_buf()
+    });
+    let supplied_lease = options.as_ref().and_then(RootOpenOptions::owning_lease);
     let limits = limits.clamped();
     let mut leases = std::collections::BTreeMap::new();
-    let startup_error = if exclusive_root {
+    let startup_error = if exclusive_root
+        || profile == FilesystemProfile::EfsSidecarV1
+        || supplied_lease.is_some()
+    {
         match default_root.as_ref() {
             None => Some(MachineError::new(
                 "EBADREQUEST",
                 "--exclusive-root requires a default FYLO root",
             )),
-            Some(root) => match RootLease::acquire(root) {
+            Some(root) => match supplied_lease.map_or_else(
+                || RootLease::acquire_with_profile(root, profile),
+                |lease| lease.assert_owned().map(|()| lease),
+            ) {
                 Err(error) => Some(storage_error(&error)),
                 Ok(lease) => {
-                    let recovery = NativeWriteRoot::open(root)
-                        .and_then(|writer| writer.recover_repository_materialization());
+                    let options = options
+                        .expect("a resolved root has open options")
+                        .with_lease(lease.clone());
+                    let recovery = assert_repository_lease(root, &lease).and_then(|()| {
+                        NativeWriteRoot::open_profiled(options)
+                            .and_then(|writer| writer.recover_repository_materialization())
+                            .map_err(|error| storage_error(&error))
+                    });
                     match recovery {
                         Ok(()) => {
-                            leases.insert(root.clone(), lease);
+                            let admitted_root = if profile == FilesystemProfile::EfsSidecarV1 {
+                                lease.root().to_path_buf()
+                            } else {
+                                root.clone()
+                            };
+                            leases.insert(admitted_root.clone(), lease);
+                            if profile == FilesystemProfile::EfsSidecarV1 {
+                                default_root = Some(admitted_root);
+                            }
                             None
                         }
-                        Err(error) => Some(storage_error(&error)),
+                        Err(error) => Some(error),
                     }
                 }
             },
@@ -345,6 +407,7 @@ fn serve_session<R: BufRead, W: Write>(
     };
     let mut session = Session {
         default_root,
+        filesystem_profile: profile,
         limits,
         config,
         leases: std::cell::RefCell::new(leases),
@@ -363,6 +426,7 @@ fn serve_session<R: BufRead, W: Write>(
 
 struct Session {
     default_root: Option<PathBuf>,
+    filesystem_profile: FilesystemProfile,
     limits: FrameLimits,
     config: ApplicationConfig,
     leases: std::cell::RefCell<std::collections::BTreeMap<PathBuf, RootLease>>,
@@ -573,6 +637,14 @@ impl Session {
                 Value::Bool(RootLease::platform_enforces_exclusivity()),
             ),
             (
+                "filesystemMetadata".into(),
+                json!({
+                    "version": 1,
+                    "profiles": ["native", "efs-sidecar-v1"],
+                    "efsQualified": false
+                }),
+            ),
+            (
                 "queryPagination".into(),
                 json!({
                     "version": 1,
@@ -602,7 +674,14 @@ impl Session {
                     "integrity": "sha256-full-content"
                 }),
             ),
-            ("serverlessQueue".into(), serverless_queue_capability()),
+            (
+                "serverlessQueue".into(),
+                if self.filesystem_profile == FilesystemProfile::Native {
+                    serverless_queue_capability()
+                } else {
+                    Value::Bool(false)
+                },
+            ),
         ]);
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         let capabilities = {
@@ -620,6 +699,16 @@ impl Session {
             );
             capabilities
         };
+        let leases = self.leases.borrow();
+        let lease = self.default_root.as_ref().and_then(|root| leases.get(root));
+        // This reports metadata ownership and the actual local advisory-lock
+        // acquisition. It makes no remote fencing or NFS/EFS qualification claim.
+        let owned = self
+            .default_root
+            .as_ref()
+            .zip(lease)
+            .is_some_and(|(root, lease)| assert_repository_lease(root, lease).is_ok());
+        let kernel_enforced = lease.is_some_and(RootLease::kernel_enforced);
         json!({
             "protocolVersion": PROTOCOL_VERSION,
             "runtimeVersion": RUNTIME_VERSION.trim(),
@@ -647,17 +736,25 @@ impl Session {
                 "truncatedFrame": "error-and-terminate",
                 "malformedFrame": "error-and-resume-at-next-LF"
             },
-            "capabilities": capabilities
+            "capabilities": capabilities,
+            "storage": {
+                "filesystemProfile": self.filesystem_profile.as_str(),
+                "rootLock": {
+                    "owned": owned,
+                    "kernelEnforced": kernel_enforced,
+                    "remoteQualified": false
+                }
+            }
         })
     }
 
     /// Resolve the request's root, taking an exclusive kernel lease the first
     /// time this session touches it.
     ///
-    /// The lease is held for the life of the session, so a JavaScript owner
-    /// cannot open the root underneath us and we cannot open one it holds. The
-    /// recorded generation is re-checked per frame, which is a cheap read of a
-    /// resident file.
+    /// The advisory lease is held for the life of the session. Cooperating
+    /// native clients cannot admit a competing owner; this is not a remote
+    /// fencing guarantee. Recorded ownership and the root profile are checked
+    /// before resolving engines, writers, or queues.
     fn root(&self, request: &Value) -> Result<PathBuf, MachineError> {
         let root = request
             .get("root")
@@ -667,25 +764,69 @@ impl Session {
             .ok_or_else(|| {
                 MachineError::new("EBADREQUEST", "machine request requires a FYLO root")
             })?;
+        let root = if self.filesystem_profile == FilesystemProfile::EfsSidecarV1 {
+            let canonical = fylo_vfs::canonicalize(&root).map_err(|_| {
+                MachineError::new("EBADREQUEST", "cannot resolve the EFS request repository root")
+            })?;
+            if self.default_root.as_ref() != Some(&canonical) {
+                return Err(MachineError::new(
+                    "EBADREQUEST",
+                    "an EFS-profile session cannot override its admitted repository root",
+                ));
+            }
+            canonical
+        } else {
+            root
+        };
         let mut leases = self.leases.borrow_mut();
         if let Some(lease) = leases.get(&root) {
-            lease
-                .assert_owned()
-                .map_err(|error| storage_error(&error))?;
+            assert_repository_lease(&root, lease)?;
+            NativeRoot::open_profiled(
+                RootOpenOptions::new(&root)
+                    .with_profile(self.filesystem_profile)
+                    .with_lease(lease.clone()),
+            )
+            .map_err(|error| storage_error(&error))?;
             return Ok(root);
         }
-        let lease = RootLease::acquire(&root).map_err(|error| storage_error(&error))?;
-        NativeWriteRoot::open(&root)
-            .and_then(|writer| writer.recover_repository_materialization())
+        let lease = RootLease::acquire_with_profile(&root, self.filesystem_profile)
             .map_err(|error| storage_error(&error))?;
+        assert_repository_lease(&root, &lease)?;
+        NativeWriteRoot::open_profiled(
+            RootOpenOptions::new(&root)
+                .with_profile(self.filesystem_profile)
+                .with_lease(lease.clone()),
+        )
+        .and_then(|writer| writer.recover_repository_materialization())
+        .map_err(|error| storage_error(&error))?;
         leases.insert(root.clone(), lease);
         Ok(root)
+    }
+
+    fn root_options(
+        &self,
+        root: PathBuf,
+        repository_root: PathBuf,
+    ) -> Result<RootOpenOptions, MachineError> {
+        let lease = self
+            .leases
+            .borrow()
+            .get(&repository_root)
+            .cloned()
+            .ok_or_else(|| {
+                MachineError::new("EROOTLEASELOST", "the repository root has not been admitted")
+            })?;
+        assert_repository_lease(&repository_root, &lease)?;
+        Ok(RootOpenOptions::new(root)
+            .with_repository(repository_root)
+            .with_profile(self.filesystem_profile)
+            .with_lease(lease))
     }
 
     fn engine(&self, request: &Value) -> Result<ReadOnlyEngine, MachineError> {
         let repository_root = self.root(request)?;
         let active_root = active_worktree(&repository_root)?;
-        let engine = ReadOnlyEngine::open_with_repository(active_root, repository_root)
+        let engine = ReadOnlyEngine::open_profiled(self.root_options(active_root, repository_root)?)
             .map_err(|error| engine_error(&error))?;
         match self.schema_path(request) {
             Some(schema) => engine
@@ -941,7 +1082,7 @@ impl Session {
     fn writer(&self, request: &Value) -> Result<NativeWriteRoot, MachineError> {
         let repository_root = self.root(request)?;
         let active_root = active_worktree(&repository_root)?;
-        NativeWriteRoot::open_with_repository(active_root, repository_root)
+        NativeWriteRoot::open_profiled(self.root_options(active_root, repository_root)?)
             .map(|writer| writer.with_config(self.config.storage))
             .map_err(|error| storage_error(&error))
     }
@@ -949,24 +1090,21 @@ impl Session {
     fn write_engine(&self, request: &Value) -> Result<WriteEngine, MachineError> {
         let repository_root = self.root(request)?;
         let root = active_worktree(&repository_root)?;
-        let schema = self.schema_path(request);
-        let engine = match (schema, self.config.credentials.as_ref()) {
-            (Some(schema), Some((secret, salt))) => {
-                WriteEngine::open_with_repository_and_encryption(
-                    root,
-                    repository_root,
+        let engine = WriteEngine::open_profiled(self.root_options(root, repository_root)?)
+            .map_err(|error| engine_error(&error))?;
+        let engine = match self.schema_path(request) {
+            Some(schema) => engine
+                .with_schema_configuration(
                     schema,
-                    secret,
-                    salt,
+                    self.config
+                        .credentials
+                        .as_ref()
+                        .map(|(secret, salt)| (secret.as_str(), salt.as_str())),
                 )
-            }
-            (Some(schema), None) => {
-                WriteEngine::open_with_repository_and_schema(root, repository_root, schema)
-            }
-            (None, _) => WriteEngine::open_with_repository(root, repository_root),
+                .map_err(|error| engine_error(&error))?,
+            None => engine,
         }
-        .map(|engine| engine.with_config(self.config.storage))
-        .map_err(|error| engine_error(&error))?;
+        .with_config(self.config.storage);
         Ok(match &self.config.chex_binary {
             Some(binary) => engine.with_chex_binary(binary),
             None => engine,
@@ -1539,6 +1677,12 @@ impl Session {
 
     fn queue(&self, request: &Value) -> Result<NativeQueue, MachineError> {
         let root = self.root(request)?;
+        if self.filesystem_profile == FilesystemProfile::EfsSidecarV1 {
+            return Err(MachineError::new(
+                NativeStorageErrorCode::Unsupported.as_str(),
+                "queue operations are not supported for the EFS metadata profile",
+            ));
+        }
         let lease = self
             .leases
             .borrow()
@@ -2036,6 +2180,23 @@ impl Clock {
                 .saturating_sub(started),
         }
     }
+}
+
+fn assert_repository_lease(
+    repository_root: &std::path::Path,
+    lease: &RootLease,
+) -> Result<(), MachineError> {
+    lease.assert_owned().map_err(|error| storage_error(&error))?;
+    let canonical = fylo_vfs::canonicalize(repository_root).map_err(|_| {
+        MachineError::new("EROOTLEASELOST", "cannot resolve the owning repository root")
+    })?;
+    if canonical != lease.root() {
+        return Err(MachineError::new(
+            "EROOTLEASELOST",
+            "the supplied root lease belongs to another repository",
+        ));
+    }
+    Ok(())
 }
 
 fn active_worktree(repository_root: &std::path::Path) -> Result<PathBuf, MachineError> {
@@ -3596,6 +3757,7 @@ mod tests {
     fn one_shot_sessions_reject_paged_queries() {
         let session = Session {
             default_root: None,
+            filesystem_profile: FilesystemProfile::Native,
             limits: FrameLimits::default(),
             config: ApplicationConfig::default(),
             leases: std::cell::RefCell::new(std::collections::BTreeMap::new()),

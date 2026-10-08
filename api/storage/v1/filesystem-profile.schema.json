@@ -1,0 +1,32 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "https://fylo.del.ma/api/storage/v1/filesystem-profile.schema.json",
+    "title": "FYLO explicit EFS sidecar root profile",
+    "description": "Candidate descriptor. This schema does not qualify a filesystem or runtime.",
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+        "format",
+        "profile",
+        "uid",
+        "gid"
+    ],
+    "properties": {
+        "format": {
+            "const": "fylo.filesystem-profile.v1"
+        },
+        "profile": {
+            "const": "efs-sidecar-v1"
+        },
+        "uid": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4294967295
+        },
+        "gid": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4294967295
+        }
+    }
+}

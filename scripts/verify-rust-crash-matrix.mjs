@@ -751,7 +751,10 @@ async function fixtureFiles(root) {
 }
 
 async function efsInventory(root) {
-    const files = await fixtureFiles(join(root, '.collections'))
+    const files = [
+        ...await fixtureFiles(join(root, '.collections')),
+        ...await fixtureFiles(join(root, '.buckets'))
+    ].sort()
     const records = files.filter((file) =>
         file.split(sep).some((part) => part === 'docs' || part === '.deleted') &&
         !file.endsWith('.fylo-attrs') && !file.endsWith('.tmp')
@@ -774,7 +777,7 @@ async function efsInventory(root) {
         inventory.push({
             path: relative(root, file),
             id: basename(file).split('.')[0],
-            collection: relative(join(root, '.collections'), file).split(sep)[0],
+            collection: relative(root, file).split(sep).slice(0, 2).join('/'),
             hash: createHash('sha256').update(await readFile(file)).digest('hex'),
             attributes,
             uid: payload.uid,

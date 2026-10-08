@@ -33,6 +33,7 @@
 - [Remote Access](#remote-access)
 - [CLI & Machine Interface](#cli--machine-interface)
 - [Recovery & Rebuild](#recovery--rebuild)
+- [EFS metadata candidate](#efs-metadata-candidate)
 - [Limitations](#limitations)
 - [License](#license)
 
@@ -1391,6 +1392,41 @@ not make arbitrary network shares, sync folders, or filesystems without local
 atomic link/rename semantics supported storage targets.
 
 ---
+
+## EFS metadata candidate
+
+FYLO's broader direction is provider-independent serverless runtime capability.
+This storage work is a first backend slice inside FYLO, not an external AWS shim.
+Invocation lifetime, fencing, retries and cold-start recovery need their own
+explicit core contracts. PaaS retains AWS infrastructure configuration.
+
+An isolated candidate adds explicit `--filesystem-profile efs-sidecar-v1` for
+filesystems without native xattrs. Existing constructors, shims and CLI calls
+default to `native`. Selection does not promote EFS or change the local-filesystem
+support boundary described above. No native compiler/tests or actual EFS/Lambda
+qualification have completed for this candidate.
+
+The profile uses a versioned root descriptor and mandatory private
+`<payload>.fylo-attrs` JSON/base64 files, including an empty `{}` manifest.
+Readers and writers require the same admitted root owner. Payload, metadata and
+authorization share a stable-generation read; paired mutations use the existing
+journal. Initialization is restricted to a new empty root. A native open refuses
+a marked EFS root; old binaries must remain restricted to their original roots.
+No live conversion is provided.
+
+The initial identity policy preserves the actual root UID/GID and rejects
+unsupported ownership changes. The initial sidecar backend requires owner-readable
+payload modes; unsupported projections fail before record mutation. Advisory-lock
+admission does not establish remote
+fencing or NFS cache coherence. Record-identity binding for same-payload manifest
+swaps is under review. EFS queue execution also remains blocked: the current
+queue entry point opens the native profile, and its source path is outside the
+initial adapter grant. Queue state must still be included in every full backup.
+
+See [ADR 0010](docs/adr/0010-explicit-efs-metadata-profile.md), the
+[storage contract](api/storage/v1/README.md) and the
+[qualification plan](docs/operations/efs-profile-qualification.md). A successful
+local fixture, mount or infrastructure plan is not a production support claim.
 
 ## Limitations
 

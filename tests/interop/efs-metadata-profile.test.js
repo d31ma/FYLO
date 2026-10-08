@@ -280,8 +280,16 @@ describe.skipIf(!required || process.platform === 'win32')('explicit EFS metadat
             const changed = await database.result({ op: 'commit', message: 'branch metadata change' })
             expect(changed.id).not.toBe(first.id)
             await database.result({ op: 'restoreCommit', id: first.id, force: true })
-            expect(await database.result({ op: 'getMeta', collection: 'records', id }))
-                .toEqual(original)
+            const restoredMetadata = await database.result({
+                op: 'getMeta', collection: 'records', id
+            })
+            const { updatedAt: originalTime, mtime: originalMtime, ...originalStable } = original
+            const { updatedAt: restoredTime, mtime: restoredMtime, ...restoredStable } = restoredMetadata
+            expect(restoredStable).toEqual(originalStable)
+            // Version-2 VCS preserves attributes, while payload time reflects
+            // materialization. Whole-root copies and rollback retain mtime.
+            expect(restoredTime).toBe(restoredMtime)
+            expect(originalTime).toBe(originalMtime)
             const restored = await pairSnapshot(await recordPath(branch.root, id))
             expect(restored.manifest).toEqual(before.manifest)
             expect(restored.mode).toBe(before.mode)

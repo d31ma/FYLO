@@ -24,8 +24,8 @@ use fylo_query::{
 use fylo_storage_native::{
     AccessDescriptor, CollectionKind, GenerationStatus, IndexVerification, NativeAccess,
     NativeCollection, NativeRoot, NativeStorageError, NativeStorageErrorCode, NativeWriteRoot,
-    PutDocumentOptions, RepositoryHistory, RootConfig, StoredRawFile, VersionVerification,
-    WriteAccess, WriteActor,
+    PutDocumentOptions, RepositoryHistory, RootConfig, RootOpenOptions, StoredRawFile,
+    VersionVerification, WriteAccess, WriteActor,
 };
 use schema::SchemaTools;
 use serde::Serialize;
@@ -58,6 +58,24 @@ pub struct WriteEngine {
 pub use fylo_storage_native::RootConfig as EngineConfig;
 
 impl WriteEngine {
+    /// Attach schema tooling and field encryption to the already opened root.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid schema metadata or encryption credentials.
+    pub fn with_schema_configuration(
+        mut self,
+        schema_root: impl AsRef<Path>,
+        credentials: Option<(&str, &str)>,
+    ) -> Result<Self, EngineError> {
+        let schema_root = schema_root.as_ref().to_path_buf();
+        self.encryption = Some(
+            EncryptionReader::open(&schema_root, credentials).map_err(EngineError::encryption)?,
+        );
+        self.schema = Some(std::rc::Rc::new(SchemaTools::new(schema_root)));
+        Ok(self)
+    }
+
     /// Select the schema validator executable without consulting process settings.
     #[must_use]
     pub fn with_chex_binary(mut self, binary: impl Into<PathBuf>) -> Self {
@@ -94,8 +112,18 @@ impl WriteEngine {
     ///
     /// Returns an error when the root cannot be opened safely.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, EngineError> {
+        Self::open_profiled(RootOpenOptions::new(path))
+    }
+
+    /// Open a root using its explicit metadata profile and owning lease.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error before recovery or writes for a mismatched profile,
+    /// invalid lease, or unsafe root.
+    pub fn open_profiled(options: RootOpenOptions) -> Result<Self, EngineError> {
         Ok(Self {
-            writer: NativeWriteRoot::open(path).map_err(EngineError::storage)?,
+            writer: NativeWriteRoot::open_profiled(options).map_err(EngineError::storage)?,
             encryption: None,
             schema: None,
         })
@@ -111,12 +139,7 @@ impl WriteEngine {
         path: impl AsRef<Path>,
         repository_root: impl AsRef<Path>,
     ) -> Result<Self, EngineError> {
-        Ok(Self {
-            writer: NativeWriteRoot::open_with_repository(path, repository_root)
-                .map_err(EngineError::storage)?,
-            encryption: None,
-            schema: None,
-        })
+        Self::open_profiled(RootOpenOptions::new(path).with_repository(repository_root))
     }
 
     /// Open a write engine with schema tooling but no decryption key.
@@ -131,14 +154,7 @@ impl WriteEngine {
         path: impl AsRef<Path>,
         schema_root: impl AsRef<Path>,
     ) -> Result<Self, EngineError> {
-        let schema_root = schema_root.as_ref().to_path_buf();
-        Ok(Self {
-            writer: NativeWriteRoot::open(path).map_err(EngineError::storage)?,
-            encryption: Some(
-                EncryptionReader::open(&schema_root, None).map_err(EngineError::encryption)?,
-            ),
-            schema: Some(std::rc::Rc::new(SchemaTools::new(schema_root))),
-        })
+        Self::open(path)?.with_schema_configuration(schema_root, None)
     }
 
     /// Open a materialized branch worktree with schema tooling.
@@ -151,15 +167,8 @@ impl WriteEngine {
         repository_root: impl AsRef<Path>,
         schema_root: impl AsRef<Path>,
     ) -> Result<Self, EngineError> {
-        let schema_root = schema_root.as_ref().to_path_buf();
-        Ok(Self {
-            writer: NativeWriteRoot::open_with_repository(path, repository_root)
-                .map_err(EngineError::storage)?,
-            encryption: Some(
-                EncryptionReader::open(&schema_root, None).map_err(EngineError::encryption)?,
-            ),
-            schema: Some(std::rc::Rc::new(SchemaTools::new(schema_root))),
-        })
+        Self::open_with_repository(path, repository_root)?
+            .with_schema_configuration(schema_root, None)
     }
 
     /// Open a write engine with JavaScript-compatible field encryption.
@@ -174,15 +183,7 @@ impl WriteEngine {
         secret: &str,
         salt: &str,
     ) -> Result<Self, EngineError> {
-        let schema_root = schema_root.as_ref().to_path_buf();
-        Ok(Self {
-            writer: NativeWriteRoot::open(path).map_err(EngineError::storage)?,
-            encryption: Some(
-                EncryptionReader::open(&schema_root, Some((secret, salt)))
-                    .map_err(EngineError::encryption)?,
-            ),
-            schema: Some(std::rc::Rc::new(SchemaTools::new(schema_root))),
-        })
+        Self::open(path)?.with_schema_configuration(schema_root, Some((secret, salt)))
     }
 
     /// Open a materialized branch worktree with schema-driven encryption.
@@ -198,16 +199,8 @@ impl WriteEngine {
         secret: &str,
         salt: &str,
     ) -> Result<Self, EngineError> {
-        let schema_root = schema_root.as_ref().to_path_buf();
-        Ok(Self {
-            writer: NativeWriteRoot::open_with_repository(path, repository_root)
-                .map_err(EngineError::storage)?,
-            encryption: Some(
-                EncryptionReader::open(&schema_root, Some((secret, salt)))
-                    .map_err(EngineError::encryption)?,
-            ),
-            schema: Some(std::rc::Rc::new(SchemaTools::new(schema_root))),
-        })
+        Self::open_with_repository(path, repository_root)?
+            .with_schema_configuration(schema_root, Some((secret, salt)))
     }
 
     /// Canonical root identity.
@@ -447,8 +440,19 @@ impl ReadOnlyEngine {
     ///
     /// Returns an error when the root cannot be opened safely.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, EngineError> {
+        Self::open_profiled(RootOpenOptions::new(path))
+    }
+
+    /// Open an existing root with an explicit profile and owning lease.
+    ///
+    /// This read-only constructor never initializes an EFS profile descriptor.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for unsafe roots, incompatible profiles, or invalid leases.
+    pub fn open_profiled(options: RootOpenOptions) -> Result<Self, EngineError> {
         Ok(Self {
-            root: NativeRoot::open(path).map_err(EngineError::storage)?,
+            root: NativeRoot::open_profiled(options).map_err(EngineError::storage)?,
             encryption: None,
         })
     }
@@ -463,11 +467,7 @@ impl ReadOnlyEngine {
         path: impl AsRef<Path>,
         repository_root: impl AsRef<Path>,
     ) -> Result<Self, EngineError> {
-        Ok(Self {
-            root: NativeRoot::open_with_repository(path, repository_root)
-                .map_err(EngineError::storage)?,
-            encryption: None,
-        })
+        Self::open_profiled(RootOpenOptions::new(path).with_repository(repository_root))
     }
 
     /// Open a read-only engine with a schema root but without a decryption key.
@@ -483,12 +483,7 @@ impl ReadOnlyEngine {
         path: impl AsRef<Path>,
         schema_root: impl AsRef<Path>,
     ) -> Result<Self, EngineError> {
-        Ok(Self {
-            root: NativeRoot::open(path).map_err(EngineError::storage)?,
-            encryption: Some(
-                EncryptionReader::open(schema_root, None).map_err(EngineError::encryption)?,
-            ),
-        })
+        Self::open(path)?.with_schema_configuration(schema_root, None)
     }
 
     /// Open a read-only engine with JavaScript-compatible field decryption.
@@ -503,13 +498,7 @@ impl ReadOnlyEngine {
         secret: &str,
         salt: &str,
     ) -> Result<Self, EngineError> {
-        Ok(Self {
-            root: NativeRoot::open(path).map_err(EngineError::storage)?,
-            encryption: Some(
-                EncryptionReader::open(schema_root, Some((secret, salt)))
-                    .map_err(EngineError::encryption)?,
-            ),
-        })
+        Self::open(path)?.with_schema_configuration(schema_root, Some((secret, salt)))
     }
 
     /// Canonical root identity.
@@ -577,25 +566,33 @@ impl ReadOnlyEngine {
             .collection(collection)
             .map_err(EngineError::storage)?;
         Self::read_stable(&collection, || {
-            let stored = collection
-                .read_document(identifier)
-                .map_err(EngineError::storage)?;
-            require_read_access(stored.access, actor)?;
-            let document = self.decode_document(
-                collection.name(),
-                Document::parse(&stored.bytes, DocumentLimits::default())
-                    .map_err(EngineError::format)?,
-            )?;
-            let timestamps = TtidTimestamps::decode(identifier).map_err(EngineError::format)?;
-            Ok(ReadDocument {
-                metadata: CanonicalMetadata {
-                    id: identifier.to_owned(),
-                    created_at: timestamps.created_at,
-                    updated_at: stored.modified_millis,
-                    mtime: stored.modified_millis,
-                },
-                document,
-            })
+            self.read_document_with_access(&collection, identifier, actor)
+        })
+    }
+
+    fn read_document_with_access(
+        &self,
+        collection: &NativeCollection,
+        identifier: &str,
+        actor: Option<&AccessContext>,
+    ) -> Result<ReadDocument, EngineError> {
+        let stored = collection
+            .read_document(identifier)
+            .map_err(EngineError::storage)?;
+        require_read_access(stored.access, actor)?;
+        let document = self.decode_document(
+            collection.name(),
+            Document::parse(&stored.bytes, DocumentLimits::default()).map_err(EngineError::format)?,
+        )?;
+        let timestamps = TtidTimestamps::decode(identifier).map_err(EngineError::format)?;
+        Ok(ReadDocument {
+            metadata: CanonicalMetadata {
+                id: identifier.to_owned(),
+                created_at: timestamps.created_at,
+                updated_at: stored.modified_millis,
+                mtime: stored.modified_millis,
+            },
+            document,
         })
     }
 
@@ -637,37 +634,32 @@ impl ReadOnlyEngine {
             .root
             .collection(collection)
             .map_err(EngineError::storage)?;
-        if handle.kind() == CollectionKind::File {
-            let file = match actor {
-                Some(actor) => self.get_file_as(collection, identifier, actor)?,
-                None => self.get_file(collection, identifier)?,
-            };
+        Self::read_stable(&handle, || {
+            if handle.kind() == CollectionKind::File {
+                let stored = handle
+                    .read_raw_file(identifier)
+                    .map_err(EngineError::storage)?;
+                require_read_access(stored.access_descriptor, actor)?;
+                let file = build_read_file(identifier, stored)?;
+                let mut merged = file.metadata.merge_with_custom(&file.custom_metadata);
+                let descriptor = serde_json::to_value(&file.file).map_err(|error| {
+                    EngineError::new(EngineErrorCode::CorruptData, error.to_string())
+                })?;
+                if let Some(fields) = descriptor.as_object() {
+                    for (name, value) in fields {
+                        merged.insert(name.clone(), value.clone());
+                    }
+                }
+                return Ok(Value::Object(merged));
+            }
+            let record = self.read_document_with_access(&handle, identifier, actor)?;
             let custom: Map<String, Value> = handle
                 .read_custom_metadata(identifier)
                 .map_err(EngineError::storage)?
                 .into_iter()
                 .collect();
-            let mut merged = file.metadata.merge_with_custom(&custom);
-            let descriptor = serde_json::to_value(&file.file).map_err(|error| {
-                EngineError::new(EngineErrorCode::CorruptData, error.to_string())
-            })?;
-            if let Some(fields) = descriptor.as_object() {
-                for (name, value) in fields {
-                    merged.entry(name.clone()).or_insert_with(|| value.clone());
-                }
-            }
-            return Ok(Value::Object(merged));
-        }
-        let record = match actor {
-            Some(actor) => self.get_as(collection, identifier, actor)?,
-            None => self.get(collection, identifier)?,
-        };
-        let custom: Map<String, Value> = handle
-            .read_custom_metadata(identifier)
-            .map_err(EngineError::storage)?
-            .into_iter()
-            .collect();
-        Ok(Value::Object(record.metadata.merge_with_custom(&custom)))
+            Ok(Value::Object(record.metadata.merge_with_custom(&custom)))
+        })
     }
 
     /// Read one unwrapped raw file with canonical, custom, and native metadata.

@@ -9,18 +9,26 @@ use std::process::ExitCode;
 
 use fylo_engine::{AccessContext, ReadOnlyEngine};
 use fylo_format::TtidTimestamps;
-use fylo_machine::{ApplicationConfig, FrameLimits, serve_application};
+use fylo_machine::{ApplicationConfig, FrameLimits, serve_application, serve_profiled};
 use fylo_query::{QueryLimits, ScanQuery, StructuredQuery, prepare_sql};
+use fylo_storage_native::{FilesystemProfile, RootLease, RootOpenOptions};
 use serde_json::{Map, Value, json};
 
 const VERSION: &str = include_str!("../../../VERSION");
 
 fn main() -> ExitCode {
     let mut arguments: Vec<String> = env::args().skip(1).collect();
-    // The configuration selector is also accepted before the subcommand.
-    if arguments.first().is_some_and(|arg| arg == "--config") && arguments.len() >= 3 {
-        arguments.rotate_left(2);
+    // Host selectors may precede the subcommand; keep their values out of positionals.
+    let mut selectors = Vec::new();
+    while arguments
+        .first()
+        .is_some_and(|arg| matches!(arg.as_str(), "--config" | "--filesystem-profile"))
+        && arguments.len() >= 3
+    {
+        selectors.push(arguments.remove(0));
+        selectors.push(arguments.remove(0));
     }
+    arguments.extend(selectors);
     if arguments.is_empty()
         || arguments.first().is_some_and(|command| command == "help")
         || arguments
@@ -49,6 +57,7 @@ fn run(arguments: &[String]) -> Result<String, String> {
     let Some(command) = arguments.first().map(String::as_str) else {
         return Err(usage());
     };
+    let profile = filesystem_profile(arguments)?;
     if command == "version" || arguments.iter().any(|argument| argument == "--version") {
         return version_output(arguments);
     }
@@ -64,7 +73,7 @@ fn run(arguments: &[String]) -> Result<String, String> {
         return run_compat_cli(arguments, &application);
     }
     let root = compat_root(arguments, &application)?;
-    let engine = open_engine(&root, &application)?;
+    let engine = open_engine(&root, &application, profile)?;
     match command {
         "log" => history_output(&engine, arguments),
         "verify-history" => version_verification_output(&engine, arguments),
@@ -167,16 +176,34 @@ fn version_output(arguments: &[String]) -> Result<String, String> {
     if arguments.iter().any(|argument| argument == "--json")
         || option(arguments, "--output") == Some("json")
     {
+        let profile = filesystem_profile(arguments)?;
+        let application = if profile == FilesystemProfile::Native {
+            ApplicationConfig::default()
+        } else {
+            machine_config(arguments)?
+        };
+        let options = machine_options(
+            option(arguments, "--root").map(PathBuf::from),
+            profile,
+            &application,
+        )?;
         return pretty(&machine_result(
             &json!({ "op": "handshake" }),
-            None,
-            &ApplicationConfig::default(),
+            options,
+            &application,
         )?);
     }
     Ok(VERSION.trim().to_owned())
 }
 
 fn run_machine(arguments: &[String]) -> ExitCode {
+    let profile = match filesystem_profile(arguments) {
+        Ok(profile) => profile,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
     if arguments.iter().any(|argument| argument == "--worm") {
         eprintln!("fylo-rust exec does not support process-local WORM mode");
         return ExitCode::FAILURE;
@@ -189,7 +216,7 @@ fn run_machine(arguments: &[String]) -> ExitCode {
         }
     };
     if arguments.iter().any(|argument| argument == "--loop") {
-        return run_machine_loop(arguments, application);
+        return run_machine_loop(arguments, application, profile);
     }
     let source = match required_option(arguments, "--request") {
         Ok(source) => source,
@@ -220,7 +247,14 @@ fn run_machine(arguments: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    match machine_frame(&request, root, limits, &application) {
+    let options = match machine_options(root, profile, &application) {
+        Ok(options) => options,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match machine_frame(&request, options, limits, &application) {
         Ok(frame) => {
             println!("{}", serde_json::to_string(&frame).unwrap_or_default());
             if frame.get("ok") == Some(&Value::Bool(true)) {
@@ -236,10 +270,21 @@ fn run_machine(arguments: &[String]) -> ExitCode {
     }
 }
 
-fn run_machine_loop(arguments: &[String], config: ApplicationConfig) -> ExitCode {
+fn run_machine_loop(
+    arguments: &[String],
+    config: ApplicationConfig,
+    profile: FilesystemProfile,
+) -> ExitCode {
     let root = option(arguments, "--root").map(PathBuf::from);
     let limits = match machine_limits(arguments) {
         Ok(limits) => limits,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let options = match machine_options(root, profile, &config) {
+        Ok(options) => options,
         Err(error) => {
             eprintln!("{error}");
             return ExitCode::FAILURE;
@@ -250,15 +295,23 @@ fn run_machine_loop(arguments: &[String], config: ApplicationConfig) -> ExitCode
     let exclusive = arguments
         .iter()
         .any(|argument| argument == "--exclusive-root");
-    let result = serve_application(
-        &mut input,
-        &mut output,
-        root,
-        limits,
-        config,
-        exclusive,
-        true,
-    );
+    let result = match options {
+        Some(options) => serve_profiled(
+            (&mut input, &mut output),
+            options,
+            config,
+            (limits, exclusive, true),
+        ),
+        None => serve_application(
+            &mut input,
+            &mut output,
+            None,
+            limits,
+            config,
+            exclusive,
+            true,
+        ),
+    };
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
@@ -270,7 +323,7 @@ fn run_machine_loop(arguments: &[String], config: ApplicationConfig) -> ExitCode
 
 fn machine_frame(
     request: &Value,
-    root: Option<PathBuf>,
+    options: Option<RootOpenOptions>,
     limits: FrameLimits,
     application: &ApplicationConfig,
 ) -> Result<Value, String> {
@@ -278,15 +331,23 @@ fn machine_frame(
     input.push(b'\n');
     let mut reader = Cursor::new(input);
     let mut output = Vec::new();
-    serve_application(
-        &mut reader,
-        &mut output,
-        root,
-        limits,
-        application.clone(),
-        false,
-        false,
-    )
+    match options {
+        Some(options) => serve_profiled(
+            (&mut reader, &mut output),
+            options,
+            application.clone(),
+            (limits, false, false),
+        ),
+        None => serve_application(
+            &mut reader,
+            &mut output,
+            None,
+            limits,
+            application.clone(),
+            false,
+            false,
+        ),
+    }
     .map_err(|error| error.to_string())?;
     let text = std::str::from_utf8(&output).map_err(|error| error.to_string())?;
     serde_json::from_str(text.trim_end()).map_err(|error| error.to_string())
@@ -294,10 +355,10 @@ fn machine_frame(
 
 fn machine_result(
     request: &Value,
-    root: Option<PathBuf>,
+    options: Option<RootOpenOptions>,
     application: &ApplicationConfig,
 ) -> Result<Value, String> {
-    let frame = machine_frame(request, root, FrameLimits::default(), application)?;
+    let frame = machine_frame(request, options, FrameLimits::default(), application)?;
     if frame.get("ok") == Some(&Value::Bool(true)) {
         return Ok(frame.get("result").cloned().unwrap_or(Value::Null));
     }
@@ -339,6 +400,33 @@ fn machine_config(arguments: &[String]) -> Result<ApplicationConfig, String> {
             Some(fylo_machine::parse_shard_width(width).map_err(|error| error.to_string())?);
     }
     Ok(config)
+}
+
+fn filesystem_profile(arguments: &[String]) -> Result<FilesystemProfile, String> {
+    let count = arguments
+        .iter()
+        .filter(|argument| argument.as_str() == "--filesystem-profile")
+        .count();
+    if count == 0 {
+        return Ok(FilesystemProfile::Native);
+    }
+    if count != 1 {
+        return Err("--filesystem-profile may be specified only once".into());
+    }
+    FilesystemProfile::parse(required_option(arguments, "--filesystem-profile")?)
+        .map_err(|error| error.to_string())
+}
+
+fn machine_options(
+    root: Option<PathBuf>,
+    profile: FilesystemProfile,
+    application: &ApplicationConfig,
+) -> Result<Option<RootOpenOptions>, String> {
+    let root = root.or_else(|| application.root.clone());
+    if profile == FilesystemProfile::EfsSidecarV1 && root.is_none() {
+        return Err("--filesystem-profile efs-sidecar-v1 requires --root or fylo.root".into());
+    }
+    Ok(root.map(|root| RootOpenOptions::new(root).with_profile(profile)))
 }
 
 fn machine_limits(arguments: &[String]) -> Result<FrameLimits, String> {
@@ -391,7 +479,10 @@ fn run_compat_cli(arguments: &[String], application: &ApplicationConfig) -> Resu
     let values = positionals(arguments);
     let command = values.first().map(String::as_str).unwrap_or_default();
     let root = compat_root(arguments, application)?;
-    fs::create_dir_all(&root).map_err(|error| format!("cannot create FYLO root: {error}"))?;
+    let profile = filesystem_profile(arguments)?;
+    if profile == FilesystemProfile::Native {
+        fs::create_dir_all(&root).map_err(|error| format!("cannot create FYLO root: {error}"))?;
+    }
     let mut request = Map::new();
     let mut sql = None;
     match command {
@@ -531,7 +622,8 @@ fn run_compat_cli(arguments: &[String], application: &ApplicationConfig) -> Resu
         }
         _ => return Err(format!("unknown command: {command}\n{}", usage())),
     }
-    let result = machine_result(&Value::Object(request), Some(root), application)?;
+    let options = machine_options(Some(root), profile, application)?;
+    let result = machine_result(&Value::Object(request), options, application)?;
     if arguments.iter().any(|argument| argument == "--json") {
         if command == "latest" && arguments.iter().any(|argument| argument == "--id-only") {
             return pretty(&json!({ "id": result }));
@@ -1175,6 +1267,7 @@ fn required_positional<'a>(
 fn positionals(arguments: &[String]) -> Vec<String> {
     const VALUE_FLAGS: &[&str] = &[
         "--config",
+        "--filesystem-profile",
         "--shard-width",
         "--root",
         "--schema-dir",
@@ -1283,19 +1376,30 @@ fn history_limit(arguments: &[String]) -> Result<usize, String> {
         .map_err(|error| format!("invalid --limit: {error}"))
 }
 
-fn open_engine(root: &Path, application: &ApplicationConfig) -> Result<ReadOnlyEngine, String> {
-    let Some(schema_root) = application.schema.as_ref() else {
-        return ReadOnlyEngine::open(root).map_err(|error| error.to_string());
-    };
-    match application.credentials.as_ref() {
-        Some((secret, salt)) => {
-            ReadOnlyEngine::open_with_encryption(root, schema_root, secret, salt)
-                .map_err(|error| error.to_string())
-        }
-        None => {
-            ReadOnlyEngine::open_with_schema(root, schema_root).map_err(|error| error.to_string())
-        }
+fn open_engine(
+    root: &Path,
+    application: &ApplicationConfig,
+    profile: FilesystemProfile,
+) -> Result<ReadOnlyEngine, String> {
+    let mut options = RootOpenOptions::new(root).with_profile(profile);
+    if profile == FilesystemProfile::EfsSidecarV1 {
+        let lease = RootLease::acquire_with_profile(root, profile)
+            .map_err(|error| error.to_string())?;
+        options = options.with_lease(lease);
     }
+    let engine = ReadOnlyEngine::open_profiled(options).map_err(|error| error.to_string())?;
+    let Some(schema_root) = application.schema.as_ref() else {
+        return Ok(engine);
+    };
+    engine
+        .with_schema_configuration(
+            schema_root,
+            application
+                .credentials
+                .as_ref()
+                .map(|(secret, salt)| (secret.as_str(), salt.as_str())),
+        )
+        .map_err(|error| error.to_string())
 }
 
 fn get_file_output(engine: &ReadOnlyEngine, arguments: &[String]) -> Result<String, String> {
@@ -1399,6 +1503,10 @@ fn retired_command(command: &str) -> String {
 
 fn usage() -> String {
     "Usage:\n  fylo checkout [-b] <branch> [--root <path>] [--json]\n  fylo branch [--root <path>] [--json]\n  fylo commit -m <message> [--root <path>] [--json]\n  fylo log [--root <path>] [--json]\n  fylo status [--root <path>] [--json]\n  fylo diff [<from>] [<to>] [--root <path>] [--json]\n  fylo restore-commit <commit-id> [--root <path>] [--force] [--json]\n  fylo merge <ref> [-m <message>] [--root <path>] [--json]\n  fylo version [--output json]\n  fylo \"<SQL>\"\n  fylo sql \"<SQL>\"\n  fylo exec --request <json|@path|-> [--root <path>]\n  fylo exec --loop [--root <path>] [--exclusive-root]\n  fylo inspect <collection> [--root <path>] [--json]\n  fylo get <collection> <doc-id> [--root <path>] [--json]\n  fylo latest <collection> <doc-id> [--root <path>] [--json] [--id-only]\n  fylo rebuild <collection> [--root <path>] [--json]\n  fylo reshard <collection> --width <n> [--root <path>] [--json]\n  fylo verify <collection> [--root <path>] [--json]\n  fylo deleted <collection> [--root <path>] [--json]\n  fylo restore <collection> <doc-id> [--root <path>] [--json]\n  fylo schema inspect <collection> [--schema-dir <path>] [--json]\n  fylo schema current <collection> [--schema-dir <path>] [--json]\n  fylo schema history <collection> [--schema-dir <path>] [--json]\n  fylo schema doctor <collection> [--schema-dir <path>] [--json]\n  fylo schema validate <collection> <json|@path|-> [--schema-dir <path>] [--json]\n  fylo schema materialize <collection> <json|@path|-> [--schema-dir <path>] [--json]\n\nOptions:\n  --config <path> Load application.json (default: ./application.json)\n  --root <path>   Override fylo.root for this command\n  --schema-dir <path> Override fylo.schema for schema admin commands\n  --json          Emit machine-readable JSON output\n  --id-only       Return only the resolved document id for latest\n  -b              Create a new branch during checkout\n  -m, --message <v> Commit message\n  --force         Allow restore-commit to overwrite uncommitted changes\n  --request <v>   Machine request payload, @file path, or - for stdin\n  --exclusive-root Acquire an exclusive crash-safe root lease for exec --loop\n  --strict-schema Validate writes against the collection head schema (fylo.strict)\n  --shard-width <n> Shard width for collections created by this session (fylo.shard.width)\n  --width <n>     Destination shard width for reshard\n  --max-request-bytes <n> Maximum NDJSON request bytes, excluding LF\n  --max-response-bytes <n> Maximum NDJSON response bytes, excluding LF\n  --output <mode> Output mode for version: text or json\n  --version       Print the FYLO runtime version\n  --help          Show this message"
+        .replace(
+            "  --root <path>   Override fylo.root for this command",
+            "  --root <path>   Override fylo.root for this command\n  --filesystem-profile <native|efs-sidecar-v1> Select metadata profile explicitly",
+        )
         .replace(
             "  --request <v>   Machine request payload, @file path, or - for stdin",
             "  --page-size <n> Repeat headers every n rows in text output\n  --align <mode>  Cell alignment: left, center, right, or auto\n  --request <v>   Machine request payload, @file path, or - for stdin",

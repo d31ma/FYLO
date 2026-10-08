@@ -1,5 +1,5 @@
 use super::lease_metadata::LeaseMetadata;
-use crate::{NativeStorageError, NativeStorageErrorCode};
+use crate::{FilesystemProfile, NativeStorageError, NativeStorageErrorCode};
 use fylo_vfs::{File, OpenOptions};
 use std::fs::TryLockError;
 use std::path::{Path, PathBuf};
@@ -15,11 +15,25 @@ pub(super) struct RootLeaseInner {
 
 impl RootLeaseInner {
     pub(super) fn acquire(root: impl AsRef<Path>) -> Result<Self, NativeStorageError> {
-        fylo_vfs::create_dir_all(root.as_ref()).map_err(NativeStorageError::io)?;
+        Self::acquire_with_profile(root, FilesystemProfile::Native)
+    }
+
+    pub(super) fn acquire_with_profile(
+        root: impl AsRef<Path>,
+        profile: FilesystemProfile,
+    ) -> Result<Self, NativeStorageError> {
+        if profile == FilesystemProfile::Native {
+            fylo_vfs::create_dir_all(root.as_ref()).map_err(NativeStorageError::io)?;
+        } else if !fylo_vfs::metadata(root.as_ref()).map_err(NativeStorageError::io)?.is_dir() {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::WrongType, "EFS profile requires an existing directory",
+            ));
+        }
         let canonical = fylo_vfs::canonicalize(root.as_ref()).map_err(NativeStorageError::io)?;
+        crate::profile_manifest::ProfileManifest::admit_selection(&canonical, profile)?;
         let (lock_path, metadata_path) = Self::lease_paths(&canonical)?;
         let lock_file = Self::open_lock_file(&lock_path)?;
-        let kernel_enforced = Self::lock_root(&lock_file, &metadata_path, &canonical)?;
+        let kernel_enforced = Self::lock_root(&lock_file, &metadata_path, &canonical, profile)?;
         let owner = crate::write::unique_name("rust-root-owner");
         let metadata = LeaseMetadata::new(&canonical, &owner)?;
         metadata.write(&metadata_path)?;
@@ -30,6 +44,10 @@ impl RootLeaseInner {
             metadata_path,
             kernel_enforced,
         })
+    }
+
+    pub(super) fn owner_generation(&self) -> &str {
+        &self.owner
     }
 
     pub(super) fn root(&self) -> &Path {
@@ -83,6 +101,7 @@ impl RootLeaseInner {
         lock_file: &File,
         metadata_path: &Path,
         canonical: &Path,
+        profile: FilesystemProfile,
     ) -> Result<bool, NativeStorageError> {
         match lock_file.try_lock() {
             Ok(()) => Ok(true),
@@ -91,7 +110,14 @@ impl RootLeaseInner {
                 LeaseMetadata::describe_owner(metadata_path, canonical),
             )),
             Err(TryLockError::Error(error)) if error.kind() == std::io::ErrorKind::Unsupported => {
-                Ok(false)
+                if profile == FilesystemProfile::EfsSidecarV1 {
+                    Err(NativeStorageError::new(
+                        NativeStorageErrorCode::Unsupported,
+                        "EFS profile requires supported kernel advisory locking",
+                    ))
+                } else {
+                    Ok(false)
+                }
             }
             Err(TryLockError::Error(error)) => Err(NativeStorageError::io(error)),
         }

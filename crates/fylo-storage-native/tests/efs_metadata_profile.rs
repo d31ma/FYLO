@@ -282,6 +282,13 @@ fn missing_corrupt_duplicate_and_oversized_manifests_fail_closed() {
         br#"{"user.fylo.access":"e30=","user.fylo.access":"e30="}"#.to_vec(),
         serde_json::to_vec(&json!({"user.fylo.meta.large": too_large})).unwrap(),
         vec![b' '; 16 * 1024 * 1024 + 1],
+        serde_json::to_vec(&json!({"user.fylo.meta.": BASE64.encode(b"true")})).unwrap(),
+        serde_json::to_vec(&BTreeMap::from([(
+            format!("user.fylo.meta.{}", "x".repeat(65)), BASE64.encode(b"true"),
+        )])).unwrap(),
+        serde_json::to_vec(&json!({"user.fylo.meta.a\0b": BASE64.encode(b"true")})).unwrap(),
+        serde_json::to_vec(&json!({"user.fylo.meta.a/b": BASE64.encode(b"true")})).unwrap(),
+        serde_json::to_vec(&json!({"user.fylo.meta.a\\b": BASE64.encode(b"true")})).unwrap(),
     ];
     for invalid in invalid_cases {
         fs::write(&manifest, invalid).unwrap();
@@ -345,6 +352,62 @@ fn cross_owner_projection_and_denied_actor_do_not_mutate_either_member() {
 }
 
 #[test]
+fn unsupported_owner_unreadable_modes_are_rejected_before_record_mutation() {
+    fn snapshot(root: &Path) -> BTreeMap<PathBuf, (Vec<u8>, u32, u32, u32, SystemTime)> {
+        fn visit(
+            root: &Path, path: &Path,
+            entries: &mut BTreeMap<PathBuf, (Vec<u8>, u32, u32, u32, SystemTime)>,
+        ) {
+            let metadata = fs::symlink_metadata(path).unwrap();
+            entries.insert(
+                path.strip_prefix(root).unwrap().to_path_buf(),
+                (
+                    if metadata.is_file() { fs::read(path).unwrap() } else { Vec::new() },
+                    metadata.mode(), metadata.uid(), metadata.gid(),
+                    metadata.modified().unwrap(),
+                ),
+            );
+            if metadata.is_dir() {
+                for entry in fs::read_dir(path).unwrap() {
+                    visit(root, &entry.unwrap().path(), entries);
+                }
+            }
+        }
+        let mut entries = BTreeMap::new();
+        visit(root, root, &mut entries);
+        entries
+    }
+
+    let fixture = Fixture::empty();
+    let writer = fixture.seed();
+    let before = snapshot(&fixture.root);
+    let owner = fixture.parent.join(".root.fylo-root-owner.lock.json");
+    let owner_before = fs::read(&owner).unwrap();
+    for mode in [0o000, 0o200, 0o030] {
+        let access = WriteAccess { mode: Some(mode), ..WriteAccess::default() };
+        let error = writer.set_record_access("records", ID, access, None).unwrap_err();
+        assert_eq!(error.code(), NativeStorageErrorCode::Unsupported);
+        assert_eq!(snapshot(&fixture.root), before);
+        let error = writer.put_document(
+            "records", RAW_ID, br#"{"name":"refused"}"#,
+            PutDocumentOptions { access, ..PutDocumentOptions::default() },
+        ).unwrap_err();
+        assert_eq!(error.code(), NativeStorageErrorCode::Unsupported);
+        assert_eq!(snapshot(&fixture.root), before);
+        let error = writer.put_raw_file(
+            "assets", "4VRNF52JPCR", b"refused",
+            &PutRawFileOptions {
+                key: "/refused.bin".into(), extension: ".bin".into(), access,
+                ..PutRawFileOptions::default()
+            },
+        ).unwrap_err();
+        assert_eq!(error.code(), NativeStorageErrorCode::Unsupported);
+        assert_eq!(snapshot(&fixture.root), before);
+        assert_eq!(fs::read(&owner).unwrap(), owner_before);
+    }
+}
+
+#[test]
 fn a_lost_root_owner_cannot_continue_writing_or_recovering() {
     let fixture = Fixture::empty();
     let writer = fixture.seed();
@@ -397,10 +460,45 @@ fn profiled_repository_materialization_and_restore_keep_metadata_history() {
     branch_writer.restore_repository_commit(&first, true).unwrap();
     let restored = records.read_document(ID).unwrap();
     assert_eq!(restored.bytes, before.bytes);
-    assert_eq!(restored.modified_millis, before.modified_millis);
+    // Existing version-2 objects archive attributes, not historical payload
+    // mtime; restoration retains Native materialization-time semantics.
     assert_eq!(restored.access, before.access);
     assert_eq!(attributes(&restored.path), attrs);
     assert_eq!(records.read_custom_metadata(ID).unwrap()["reviewer"], "before");
     assert_eq!(records.document_ids().unwrap(), [ID]);
     assert_private_sidecar(&restored.path);
+}
+
+
+#[test]
+fn an_open_root_refuses_removed_or_changed_profile_descriptors() {
+    let fixture = Fixture::empty();
+    let writer = fixture.seed();
+    let records = fixture.reader().collection("records").unwrap();
+    let before = records.read_document(ID).unwrap();
+    let sidecar_before = fs::read(sidecar(&before.path)).unwrap();
+    let descriptor = fixture.root.join(".fylo-catalog/filesystem-profile.json");
+    let original = fs::read(&descriptor).unwrap();
+    let mut mismatched: Value = serde_json::from_slice(&original).unwrap();
+    mismatched["uid"] = json!(fs::metadata(&fixture.root).unwrap().uid().wrapping_add(1));
+    let mut unknown: Value = serde_json::from_slice(&original).unwrap();
+    unknown["unrecognized"] = json!(true);
+    for invalid in [b"{}".to_vec(), serde_json::to_vec(&mismatched).unwrap(),
+        serde_json::to_vec(&unknown).unwrap()]
+    {
+        fs::write(&descriptor, invalid).unwrap();
+        assert!(records.read_document(ID).is_err());
+        assert!(writer.set_record_metadata(
+            "records", ID, json!({"reviewer": "must refuse"}).as_object().unwrap(), None
+        ).is_err());
+        assert!(writer.recover_collection("records").is_err());
+        assert_eq!(fs::read(&before.path).unwrap(), before.bytes);
+        assert_eq!(fs::read(sidecar(&before.path)).unwrap(), sidecar_before);
+        fs::write(&descriptor, &original).unwrap();
+    }
+    fs::remove_file(&descriptor).unwrap();
+    assert!(records.read_document(ID).is_err());
+    assert!(writer.recover_collection("records").is_err());
+    assert_eq!(fs::read(&before.path).unwrap(), before.bytes);
+    assert_eq!(fs::read(sidecar(&before.path)).unwrap(), sidecar_before);
 }

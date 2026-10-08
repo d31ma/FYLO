@@ -62,3 +62,35 @@ into another empty path.
 Production promotion requires retained Linux, macOS, and Windows drill reports
 for the exact candidate artifact and qualified filesystem. A local successful
 copy documents implementation readiness but does not promote a support tier.
+
+## Unqualified EFS sidecar candidate
+
+`efs-sidecar-v1` adds requirements to this inventory without promoting network
+filesystems to a support tier. No actual EFS/Lambda restore drill has qualified
+the isolated candidate. Follow its
+[qualification plan](efs-profile-qualification.md) before proposing support.
+
+Quiesce every writer, including other functions and old binaries; reserved
+concurrency on one Lambda function is insufficient. Preserve the root descriptor
+`.fylo-catalog/filesystem-profile.json`, every payload and mandatory
+`<payload>.fylo-attrs` manifest, retained tombstones, catalog/index state,
+transaction before-images, VCS objects/staging and complete queue state.
+Sidecar files are durable metadata even when they contain `{}`. Preserve actual
+UID/GID, modes and timestamps for payloads and sidecars. EFS lacks xattrs; that
+does not permit dropping sidecars during a snapshot or native migration.
+
+Keep deployment encryption keys, issuer/session material and external restore
+configuration under their existing protected boundary. A complete root snapshot
+does not authorize exporting these values or replacing them with bare-root mode.
+
+Restore into a separate empty root with the same selected profile and matching
+binary. Compare exact path/type/size/hash and supported native metadata before
+open, recover twice, verify indexes/history and compare non-empty queries plus
+access/revocation results. Queue execution is currently blocked at the native
+queue-open seam, so preserve and inventory its bytes without claiming an EFS
+queue-readability pass. Retain this gap until the queue adapter is qualified.
+
+Cold migration and any reverse conversion need separate owner-reviewed tooling
+and authorization. Retain the original native root and exact prior binary for
+rollback; never allow an older writer to open the new marked root. Failed
+comparison or uncertainty leaves both roots intact.

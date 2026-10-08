@@ -57,3 +57,38 @@ Topic and consumer-group names contain at most 127 UTF-8 bytes. Queue reads are
 bounded before the engine leases or aggregates records so the response frame
 limit cannot strand an unreturnable delivery. Header discovery and queue stats
 also stop at 64 MiB of message-file scan work per request.
+
+## Candidate filesystem profile reporting
+
+The isolated adapter adds explicit CLI selection
+`--filesystem-profile efs-sidecar-v1` and an additive embedded `serve_profiled`
+entry point. Legacy wrappers and unselected calls keep the native profile.
+Profile selection is immutable for the session; request fields cannot enable a
+different backend or authorize another root. EFS admission occurs before startup
+recovery and every subsequent engine or writer construction, even without
+`--exclusive-root`. Unsupported locking fails before owner metadata publication.
+
+The candidate handshake adds `capabilities.filesystemMetadata` with `version:1`,
+`profiles:["native","efs-sidecar-v1"]` and `efsQualified:false`. These identify
+candidate implementations, not a filesystem support tier. `result.storage`
+reports `filesystemProfile` and `rootLock` fields `owned`, `kernelEnforced` and
+`remoteQualified:false`. `owned` describes current owner-metadata verification;
+`kernelEnforced` means the actual kernel-mediated advisory-lock acquisition
+succeeded. Neither proves mandatory fencing, current remote lock ownership or
+independent-client cache coherence. Native sessions without an owning lease
+report both local lock flags false.
+
+Frame limits, schema/encryption configuration, operation names and stable errors
+retain their existing contracts. EFS queue operations currently fail closed at
+the native queue-open seam; its `serverlessQueue` capability is false while the
+native default remains unchanged. Queue support needs a scoped source extension
+and later qualification. See the
+[EFS candidate plan](../../../docs/operations/efs-profile-qualification.md).
+
+These storage fields do not describe an ephemeral invocation lifetime.
+`persistent=false` disables pagination cursors; the current streaming loop still
+reads until EOF and flushes while its session owns leases. FYLO's proposed general
+serverless entry point must accept exactly one bounded core frame, acquire its
+own lease, keep leased handles private and buffer its result until checked
+teardown. Existing streaming APIs retain their behavior. That runtime API is a
+separate scoped source/compatibility slice, not implemented by this flag.
