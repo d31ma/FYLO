@@ -155,7 +155,7 @@ impl ProfileManifest {
         #[cfg(unix)]
         {
             use std::os::unix::fs::DirBuilderExt;
-            fs::DirBuilder::new().mode(0o700).create(&parent).map_err(NativeStorageError::io)?;
+            std::fs::DirBuilder::new().mode(0o700).create(&parent).map_err(NativeStorageError::io)?;
         }
         #[cfg(not(unix))]
         fs::create_dir(&parent).map_err(NativeStorageError::io)?;
