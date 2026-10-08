@@ -647,6 +647,33 @@ fn custom_metadata_limits_and_binding_name_collisions_remain_user_scoped() {
 }
 
 #[test]
+fn a_record_without_user_or_access_attributes_still_has_a_bound_manifest() {
+    let fixture = Fixture::empty();
+    let writer = fixture.writer();
+    writer
+        .create_collection("records", CollectionKind::Document, None)
+        .unwrap();
+    writer
+        .put_document(
+            "records",
+            ID,
+            br#"{"value":1}"#,
+            PutDocumentOptions::default(),
+        )
+        .unwrap();
+    let records = fixture.reader().collection("records").unwrap();
+    let path = records.read_document(ID).unwrap().path;
+    let manifest = attributes(&path);
+    assert_eq!(manifest.len(), 1);
+    assert!(manifest.contains_key("user.fylo.record-identity"));
+    assert!(records.read_custom_metadata(ID).unwrap().is_empty());
+    writer
+        .commit_if_dirty("binding-only metadata must persist in history")
+        .unwrap()
+        .unwrap();
+}
+
+#[test]
 fn unbound_materialization_backup_cannot_replace_the_current_worktree() {
     let fixture = Fixture::empty();
     let writer = fixture.seed();
