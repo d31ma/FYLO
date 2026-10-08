@@ -431,6 +431,101 @@ fn a_writing_generation_blocks_metadata_and_payload_as_one_read_attempt() {
     );
 }
 
+fn assert_public_payload_and_metadata(engine: &ReadOnlyEngine, actor: &AccessContext) {
+    match engine.get_as("records", ID, actor) {
+        Ok(record) => {
+            assert_eq!(record.document.fields()["visibility"], "public");
+        }
+        Err(error) => assert!(
+            matches!(
+                error.code(),
+                EngineErrorCode::Access | EngineErrorCode::ConcurrentWrite
+            ),
+            "{error}"
+        ),
+    }
+    for (collection, id) in [("records", ID), ("assets", RAW_ID)] {
+        match engine.metadata_as(collection, id, actor) {
+            Ok(metadata) => {
+                assert_eq!(metadata["id"], id);
+                assert_eq!(
+                    metadata["visibility"], "public",
+                    "private metadata escaped: {collection}"
+                );
+                assert_eq!(metadata["copy"], "public");
+            }
+            Err(error) => assert!(
+                matches!(
+                    error.code(),
+                    EngineErrorCode::Access | EngineErrorCode::ConcurrentWrite
+                ),
+                "{error}"
+            ),
+        }
+    }
+}
+
+fn cycle_record_visibility(
+    writer: &NativeWriteRoot,
+    owner: &WriteActor,
+    collection: &str,
+    id: &str,
+) {
+    writer
+        .set_record_access(
+            collection,
+            id,
+            WriteAccess {
+                mode: Some(0o600),
+                ..WriteAccess::default()
+            },
+            Some(owner),
+        )
+        .unwrap();
+    if collection == "records" {
+        writer
+            .patch_document(collection, id, br#"{"visibility":"private"}"#, Some(owner))
+            .unwrap();
+    }
+    writer
+        .replace_record_metadata(
+            collection,
+            id,
+            json!({"visibility":"private","copy":"private"})
+                .as_object()
+                .unwrap(),
+            Some(owner),
+        )
+        .unwrap();
+    std::thread::yield_now();
+    if collection == "records" {
+        writer
+            .patch_document(collection, id, br#"{"visibility":"public"}"#, Some(owner))
+            .unwrap();
+    }
+    writer
+        .replace_record_metadata(
+            collection,
+            id,
+            json!({"visibility":"public","copy":"public"})
+                .as_object()
+                .unwrap(),
+            Some(owner),
+        )
+        .unwrap();
+    writer
+        .set_record_access(
+            collection,
+            id,
+            WriteAccess {
+                mode: Some(0o644),
+                ..WriteAccess::default()
+            },
+            Some(owner),
+        )
+        .unwrap();
+}
+
 #[test]
 fn revocation_never_exposes_private_payload_or_metadata_from_a_later_generation() {
     let fixture = Fixture::new();
@@ -467,37 +562,7 @@ fn revocation_never_exposes_private_payload_or_metadata_from_a_later_generation(
                     let engine = opened.unwrap();
                     let actor = AccessContext::new(actor_uid, []);
                     for _ in 0..600 {
-                        match engine.get_as("records", ID, &actor) {
-                            Ok(record) => {
-                                assert_eq!(record.document.fields()["visibility"], "public")
-                            }
-                            Err(error) => assert!(
-                                matches!(
-                                    error.code(),
-                                    EngineErrorCode::Access | EngineErrorCode::ConcurrentWrite
-                                ),
-                                "{error}"
-                            ),
-                        }
-                        for (collection, id) in [("records", ID), ("assets", RAW_ID)] {
-                            match engine.metadata_as(collection, id, &actor) {
-                                Ok(metadata) => {
-                                    assert_eq!(metadata["id"], id);
-                                    assert_eq!(
-                                        metadata["visibility"], "public",
-                                        "private metadata escaped: {collection}"
-                                    );
-                                    assert_eq!(metadata["copy"], "public");
-                                }
-                                Err(error) => assert!(
-                                    matches!(
-                                        error.code(),
-                                        EngineErrorCode::Access | EngineErrorCode::ConcurrentWrite
-                                    ),
-                                    "{error}"
-                                ),
-                            }
-                        }
+                        assert_public_payload_and_metadata(&engine, &actor);
                         std::thread::yield_now();
                     }
                 });
@@ -512,64 +577,7 @@ fn revocation_never_exposes_private_payload_or_metadata_from_a_later_generation(
         }
         for _ in 0..40 {
             for (collection, id) in [("records", ID), ("assets", RAW_ID)] {
-                writer
-                    .set_record_access(
-                        collection,
-                        id,
-                        WriteAccess {
-                            mode: Some(0o600),
-                            ..WriteAccess::default()
-                        },
-                        Some(&owner),
-                    )
-                    .unwrap();
-                if collection == "records" {
-                    writer
-                        .patch_document(
-                            collection,
-                            id,
-                            br#"{"visibility":"private"}"#,
-                            Some(&owner),
-                        )
-                        .unwrap();
-                }
-                writer
-                    .replace_record_metadata(
-                        collection,
-                        id,
-                        json!({"visibility":"private","copy":"private"})
-                            .as_object()
-                            .unwrap(),
-                        Some(&owner),
-                    )
-                    .unwrap();
-                std::thread::yield_now();
-                if collection == "records" {
-                    writer
-                        .patch_document(collection, id, br#"{"visibility":"public"}"#, Some(&owner))
-                        .unwrap();
-                }
-                writer
-                    .replace_record_metadata(
-                        collection,
-                        id,
-                        json!({"visibility":"public","copy":"public"})
-                            .as_object()
-                            .unwrap(),
-                        Some(&owner),
-                    )
-                    .unwrap();
-                writer
-                    .set_record_access(
-                        collection,
-                        id,
-                        WriteAccess {
-                            mode: Some(0o644),
-                            ..WriteAccess::default()
-                        },
-                        Some(&owner),
-                    )
-                    .unwrap();
+                cycle_record_visibility(&writer, &owner, collection, id);
             }
         }
         for (reader, _) in readers {
