@@ -270,7 +270,7 @@ impl SidecarAttributes {
     fn hash_file(file: &File, maximum: u64) -> Result<String, NativeStorageError> {
         use std::os::unix::fs::FileExt;
         let mut digest = Sha256::new();
-        let mut buffer = [0_u8; 65_536];
+        let mut buffer = vec![0_u8; 65_536];
         let mut offset = 0_u64;
         loop {
             let count = file

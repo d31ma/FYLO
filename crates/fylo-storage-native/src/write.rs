@@ -433,18 +433,7 @@ impl NativeWriteRoot {
                 failpoint("after-record-payload-rename")?;
             }
             super::record_attributes::RecordAttributes::initialize(&self.root, &target)?;
-            for (name, value) in &metadata {
-                if value.is_null() {
-                    continue;
-                }
-                let encoded = serde_json::to_vec(value).map_err(|error| json_error(&error))?;
-                super::record_attributes::RecordAttributes::write(
-                    &self.root,
-                    &target,
-                    &format!("{}{name}", super::META_XATTR_PREFIX),
-                    &encoded,
-                )?;
-            }
+            self.write_custom_metadata_attributes(&target, &metadata)?;
             apply_profiled_access(&self.root, &target, access)?;
             if self.filesystem_profile() == super::FilesystemProfile::EfsSidecarV1 {
                 failpoint("after-record-sidecar-rename")?;
@@ -538,18 +527,7 @@ impl NativeWriteRoot {
                 super::KEY_XATTR,
                 options.key.as_bytes(),
             )?;
-            for (name, value) in &options.metadata {
-                if value.is_null() {
-                    continue;
-                }
-                let encoded = serde_json::to_vec(value).map_err(|error| json_error(&error))?;
-                super::record_attributes::RecordAttributes::write(
-                    &self.root,
-                    &target,
-                    &format!("{}{name}", super::META_XATTR_PREFIX),
-                    &encoded,
-                )?;
-            }
+            self.write_custom_metadata_attributes(&target, &options.metadata)?;
             // Every attribute write must land before the checksum stamp is
             // computed. On Windows an alternate-data-stream write updates the
             // file's last-write time, so a stamp taken earlier would record an
@@ -599,6 +577,34 @@ impl NativeWriteRoot {
             return Err(error);
         }
         Ok(())
+    }
+
+    fn write_custom_metadata_attributes(
+        &self,
+        target: &Path,
+        metadata: &std::collections::BTreeMap<String, Value>,
+    ) -> Result<(), NativeStorageError> {
+        for (name, value) in metadata {
+            self.write_metadata_value(target, (name, value))?;
+        }
+        Ok(())
+    }
+
+    fn write_metadata_value(
+        &self,
+        target: &Path,
+        (name, value): (&str, &Value),
+    ) -> Result<(), NativeStorageError> {
+        if value.is_null() {
+            return Ok(());
+        }
+        let encoded = serde_json::to_vec(value).map_err(|error| json_error(&error))?;
+        super::record_attributes::RecordAttributes::write(
+            &self.root,
+            target,
+            &format!("{}{name}", super::META_XATTR_PREFIX),
+            &encoded,
+        )
     }
 
     /// Replace one existing document body while preserving its TTID and access
@@ -2269,6 +2275,85 @@ struct Capture {
     xattrs: Option<Vec<CapturedAttribute>>,
 }
 
+impl Capture {
+    fn validate_backups(
+        root: &NativeRoot,
+        transaction_root: &Path,
+        captures: &[Self],
+    ) -> Result<(), NativeStorageError> {
+        for capture in captures.iter().filter(|capture| capture.present) {
+            capture.validate_backup(root, transaction_root)?;
+        }
+        Ok(())
+    }
+
+    fn validate_backup(
+        &self,
+        root: &NativeRoot,
+        transaction_root: &Path,
+    ) -> Result<(), NativeStorageError> {
+        self.validate_mode()?;
+        let backup = transaction_root.join(safe_relative_path(
+            self.backup.as_deref().ok_or_else(|| {
+                NativeStorageError::new(
+                    NativeStorageErrorCode::CorruptMetadata,
+                    "EFS before-image backup is absent",
+                )
+            })?,
+        )?);
+        let (mut file, metadata) = root.open_file(&backup, super::MAX_RAW_FILE_BYTES)?;
+        self.validate_manifest(&mut file)?;
+        super::sidecar_attributes::SidecarAttributes::verify_owner(root, &metadata, true)?;
+        self.validate_timestamp(&metadata)?;
+        root.verify_open_file_identity(&backup, &file)
+    }
+
+    fn validate_mode(&self) -> Result<(), NativeStorageError> {
+        let mode = self.mode.ok_or_else(|| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                "EFS before-image mode is absent",
+            )
+        })?;
+        let manifest = self.path.ends_with(super::SIDECAR_SUFFIX);
+        if mode > 0o777 || mode & 0o400 == 0 || (manifest && mode != 0o600) {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                "EFS before-image mode is inconsistent",
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_manifest(&self, file: &mut File) -> Result<(), NativeStorageError> {
+        if self.path.ends_with(super::SIDECAR_SUFFIX) {
+            let maximum = 16 * 1024 * 1024;
+            let bytes = super::read_bounded(file.take(maximum + 1), maximum)?;
+            super::sidecar_attributes::SidecarAttributes::decode(&bytes)?;
+        }
+        Ok(())
+    }
+
+    fn validate_timestamp(&self, metadata: &fs::Metadata) -> Result<(), NativeStorageError> {
+        let expected = self.mtime_ms.ok_or_else(|| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                "EFS before-image timestamp is absent",
+            )
+        })?;
+        if !expected.is_finite()
+            || expected < 0.0
+            || modified_millis(metadata)?.partial_cmp(&expected) != Some(std::cmp::Ordering::Equal)
+        {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                "EFS before-image timestamp is inconsistent",
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct CapturedAttribute {
@@ -2371,22 +2456,7 @@ impl<'a> Transaction<'a> {
 
     fn capture(&mut self, target: &Path) -> Result<(), NativeStorageError> {
         self.writer.root.assert_profile_owned()?;
-        let relative = target.strip_prefix(&self.collection.path).map_err(|_| {
-            NativeStorageError::new(
-                NativeStorageErrorCode::UnsafePath,
-                "transaction target escapes its collection",
-            )
-        })?;
-        if relative.as_os_str().is_empty()
-            || relative
-                .components()
-                .any(|component| !matches!(component, std::path::Component::Normal(_)))
-        {
-            return Err(NativeStorageError::new(
-                NativeStorageErrorCode::UnsafePath,
-                "transaction target is not a safe relative path",
-            ));
-        }
+        let relative = self.capture_relative_path(target)?;
         if !self.captured.insert(relative.to_owned()) {
             return Ok(());
         }
@@ -2479,6 +2549,26 @@ impl<'a> Transaction<'a> {
         self.captures.push(capture);
         failpoint("after-capture")?;
         Ok(())
+    }
+
+    fn capture_relative_path<'b>(&self, target: &'b Path) -> Result<&'b Path, NativeStorageError> {
+        let relative = target.strip_prefix(&self.collection.path).map_err(|_| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::UnsafePath,
+                "transaction target escapes its collection",
+            )
+        })?;
+        if relative.as_os_str().is_empty()
+            || relative
+                .components()
+                .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::UnsafePath,
+                "transaction target is not a safe relative path",
+            ));
+        }
+        Ok(relative)
     }
 
     fn commit(&mut self) -> Result<(), NativeStorageError> {
@@ -3043,49 +3133,7 @@ fn restore_captures(
         ));
     }
     if efs {
-        for capture in captures.iter().filter(|capture| capture.present) {
-            let mode = capture.mode.ok_or_else(|| {
-                NativeStorageError::new(
-                    NativeStorageErrorCode::CorruptMetadata,
-                    "EFS before-image mode is absent",
-                )
-            })?;
-            let manifest = capture.path.ends_with(super::SIDECAR_SUFFIX);
-            if mode > 0o777 || mode & 0o400 == 0 || (manifest && mode != 0o600) {
-                return Err(NativeStorageError::new(
-                    NativeStorageErrorCode::CorruptMetadata,
-                    "EFS before-image mode is inconsistent",
-                ));
-            }
-            let backup = transaction_root.join(safe_relative_path(
-                capture.backup.as_deref().ok_or_else(|| {
-                    NativeStorageError::new(
-                        NativeStorageErrorCode::CorruptMetadata,
-                        "EFS before-image backup is absent",
-                    )
-                })?,
-            )?);
-            let (mut file, metadata) = root.open_file(&backup, super::MAX_RAW_FILE_BYTES)?;
-            if manifest {
-                let maximum = 16 * 1024 * 1024;
-                let bytes = super::read_bounded((&mut file).take(maximum + 1), maximum)?;
-                super::sidecar_attributes::SidecarAttributes::decode(&bytes)?;
-            }
-            super::sidecar_attributes::SidecarAttributes::verify_owner(root, &metadata, true)?;
-            let expected = capture.mtime_ms.ok_or_else(|| {
-                NativeStorageError::new(
-                    NativeStorageErrorCode::CorruptMetadata,
-                    "EFS before-image timestamp is absent",
-                )
-            })?;
-            if !expected.is_finite() || expected < 0.0 || modified_millis(&metadata)? != expected {
-                return Err(NativeStorageError::new(
-                    NativeStorageErrorCode::CorruptMetadata,
-                    "EFS before-image timestamp is inconsistent",
-                ));
-            }
-            root.verify_open_file_identity(&backup, &file)?;
-        }
+        Capture::validate_backups(root, transaction_root, captures)?;
     }
     if efs {
         validate_bound_captures(root, collection_root, transaction_root, captures)?;
@@ -3735,18 +3783,9 @@ fn copy_durable_with_mode(
     modified: Option<std::time::SystemTime>,
 ) -> Result<File, NativeStorageError> {
     let source_path = source;
-    let before = if mode.is_some() {
-        let metadata = fs::symlink_metadata(source_path).map_err(NativeStorageError::io)?;
-        if metadata.file_type().is_symlink() || !metadata.is_file() {
-            return Err(NativeStorageError::new(
-                NativeStorageErrorCode::UnsafePath,
-                "private copy source is not a regular file",
-            ));
-        }
-        Some(metadata)
-    } else {
-        None
-    };
+    let before = mode
+        .map(|_| private_copy_source_metadata(source_path))
+        .transpose()?;
     let mut source = File::open(source_path).map_err(NativeStorageError::io)?;
     let metadata = source.metadata().map_err(NativeStorageError::io)?;
     #[cfg(unix)]
@@ -3761,13 +3800,13 @@ fn copy_durable_with_mode(
     }
     #[cfg(not(unix))]
     let _ = before;
-    if let Some(modified) = modified {
-        if metadata.modified().map_err(NativeStorageError::io)? != modified {
-            return Err(NativeStorageError::new(
-                NativeStorageErrorCode::CorruptMetadata,
-                "private copy source timestamp changed",
-            ));
-        }
+    if let Some(modified) = modified
+        && metadata.modified().map_err(NativeStorageError::io)? != modified
+    {
+        return Err(NativeStorageError::new(
+            NativeStorageErrorCode::CorruptMetadata,
+            "private copy source timestamp changed",
+        ));
     }
     if !metadata.is_file() {
         return Err(NativeStorageError::new(
@@ -3795,31 +3834,14 @@ fn copy_durable_with_mode(
             .open(&scratch)
             .map_err(NativeStorageError::io)?;
         #[cfg(unix)]
-        if let Some(mode) = mode {
-            use std::os::unix::fs::PermissionsExt;
-            output
-                .set_permissions(fs::Permissions::from_mode(mode & 0o600))
-                .map_err(NativeStorageError::io)?;
-        }
+        set_private_copy_mode(&output, mode.map(|value| value & 0o600))?;
         std::io::copy(
             &mut (&mut source).take(super::MAX_RAW_FILE_BYTES + 1),
             &mut output,
         )
         .map_err(NativeStorageError::io)?;
         if mode.is_some() {
-            let after = source.metadata().map_err(NativeStorageError::io)?;
-            let current = fs::symlink_metadata(source_path).map_err(NativeStorageError::io)?;
-            if current.file_type().is_symlink()
-                || !current.is_file()
-                || after.len() != metadata.len()
-                || after.modified().map_err(NativeStorageError::io)?
-                    != metadata.modified().map_err(NativeStorageError::io)?
-            {
-                return Err(NativeStorageError::new(
-                    NativeStorageErrorCode::CorruptMetadata,
-                    "private copy source changed while reading",
-                ));
-            }
+            verify_private_copy_contents(source_path, &source, &metadata)?;
             #[cfg(not(target_family = "wasm"))]
             if crate::FileIdentity::from_file(source.try_clone().map_err(NativeStorageError::io)?)
                 .map_err(NativeStorageError::io)?
@@ -3836,20 +3858,7 @@ fn copy_durable_with_mode(
                 .set_times(fs::FileTimes::new().set_modified(modified))
                 .map_err(NativeStorageError::io)?;
         }
-        #[cfg(unix)]
-        if let Some(mode) = mode {
-            use std::os::unix::fs::PermissionsExt;
-            output
-                .set_permissions(fs::Permissions::from_mode(mode))
-                .map_err(NativeStorageError::io)?;
-        }
-        #[cfg(not(unix))]
-        if mode.is_some() {
-            return Err(NativeStorageError::new(
-                NativeStorageErrorCode::Unsupported,
-                "private copy requires POSIX mode projection",
-            ));
-        }
+        set_private_copy_mode(&output, mode)?;
         crate::sync_handle(&output).map_err(NativeStorageError::io)?;
         // The legacy Windows Native restore permits replacement of a readonly destination.
         if let Ok(existing) = fs::symlink_metadata(target) {
@@ -3864,6 +3873,60 @@ fn copy_durable_with_mode(
         sync_parent(&scratch)?;
     }
     result
+}
+
+fn private_copy_source_metadata(source: &Path) -> Result<fs::Metadata, NativeStorageError> {
+    let metadata = fs::symlink_metadata(source).map_err(NativeStorageError::io)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(NativeStorageError::new(
+            NativeStorageErrorCode::UnsafePath,
+            "private copy source is not a regular file",
+        ));
+    }
+    Ok(metadata)
+}
+
+fn verify_private_copy_contents(
+    source_path: &Path,
+    source: &File,
+    metadata: &fs::Metadata,
+) -> Result<(), NativeStorageError> {
+    let after = source.metadata().map_err(NativeStorageError::io)?;
+    let current = fs::symlink_metadata(source_path).map_err(NativeStorageError::io)?;
+    if current.file_type().is_symlink()
+        || !current.is_file()
+        || after.len() != metadata.len()
+        || after.modified().map_err(NativeStorageError::io)?
+            != metadata.modified().map_err(NativeStorageError::io)?
+    {
+        return Err(NativeStorageError::new(
+            NativeStorageErrorCode::CorruptMetadata,
+            "private copy source changed while reading",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_private_copy_mode(output: &File, mode: Option<u32>) -> Result<(), NativeStorageError> {
+    use std::os::unix::fs::PermissionsExt;
+    if let Some(mode) = mode {
+        output
+            .set_permissions(fs::Permissions::from_mode(mode))
+            .map_err(NativeStorageError::io)?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_private_copy_mode(_output: &File, mode: Option<u32>) -> Result<(), NativeStorageError> {
+    if mode.is_some() {
+        return Err(NativeStorageError::new(
+            NativeStorageErrorCode::Unsupported,
+            "private copy requires POSIX mode projection",
+        ));
+    }
+    Ok(())
 }
 
 /// Append to an existing durable file without rewriting it.

@@ -684,11 +684,7 @@ impl NativeWriteRoot {
             targets: Vec::new(),
             reference,
         };
-        for document in tree.values() {
-            let data_directory = self.collection_data_directory(&document.collection);
-            collections.insert((data_directory.to_owned(), document.collection.clone()));
-            target_collections.insert(document.collection.clone(), data_directory.to_owned());
-        }
+        self.collect_tree_collections(tree, &mut collections, &mut target_collections);
         for data_directory in DATA_DIRECTORIES {
             let root = self.path().join(data_directory);
             let Ok(entries) = fs::read_dir(root) else {
@@ -768,6 +764,19 @@ impl NativeWriteRoot {
         self.root.assert_profile_owned()?;
         cleanup_materialization(repository, &transaction)?;
         Ok(())
+    }
+
+    fn collect_tree_collections(
+        &self,
+        tree: &BTreeMap<String, TreeDocument>,
+        collections: &mut BTreeSet<(String, String)>,
+        target_collections: &mut BTreeMap<String, String>,
+    ) {
+        for document in tree.values() {
+            let data_directory = self.collection_data_directory(&document.collection);
+            collections.insert((data_directory.to_owned(), document.collection.clone()));
+            target_collections.insert(document.collection.clone(), data_directory.to_owned());
+        }
     }
 
     fn materialize_repository_transition(
@@ -1073,22 +1082,23 @@ impl NativeWriteRoot {
                     };
                 for (namespace, kind) in [("docs", "active"), (".deleted", "deleted")] {
                     self.snapshot_namespace(
-                        repository,
-                        persist,
-                        shard_width,
-                        &collection_root.join(namespace),
-                        &collection,
-                        kind,
+                        (repository, persist),
+                        (
+                            shard_width,
+                            &collection_root.join(namespace),
+                            &collection,
+                            kind,
+                        ),
                         &mut entries,
                     )?;
                 }
-                if let Some(before) = generation {
-                    if self.root.collection(&collection)?.generation()? != before {
-                        return Err(NativeStorageError::new(
-                            NativeStorageErrorCode::ConcurrentWrite,
-                            "snapshot generation changed",
-                        ));
-                    }
+                if let Some(before) = generation
+                    && self.root.collection(&collection)?.generation()? != before
+                {
+                    return Err(NativeStorageError::new(
+                        NativeStorageErrorCode::ConcurrentWrite,
+                        "snapshot generation changed",
+                    ));
                 }
             }
         }
@@ -1103,12 +1113,8 @@ impl NativeWriteRoot {
 
     fn snapshot_namespace(
         &self,
-        repository: &Path,
-        persist: bool,
-        shard_width: u32,
-        namespace_root: &Path,
-        collection: &str,
-        kind: &'static str,
+        (repository, persist): (&Path, bool),
+        (shard_width, namespace_root, collection, kind): (u32, &Path, &str, &'static str),
         entries: &mut Vec<SnapshotEntry>,
     ) -> Result<(), NativeStorageError> {
         let Ok(shards) = fs::read_dir(namespace_root) else {
@@ -1153,39 +1159,15 @@ impl NativeWriteRoot {
                         "version blob exceeds the native commit size limit",
                     ));
                 }
-                let (bytes, metadata_blob) = if self.filesystem_profile()
-                    == crate::FilesystemProfile::EfsSidecarV1
-                {
-                    use std::io::Read as _;
-                    let path = record.path();
-                    let (mut file, metadata) = self.root.open_file(&path, MAX_BLOB_BYTES)?;
-                    let attributes =
-                        crate::record_attributes::RecordAttributes::read(&self.root, &file, &path)?;
-                    let bytes =
-                        crate::read_bounded((&mut file).take(MAX_BLOB_BYTES + 1), MAX_BLOB_BYTES)?;
-                    attributes.verify(&self.root, &file, &path)?;
-                    attributes.verify_contents(&self.root, &path, &bytes)?;
-                    profiled_metadata_access(&self.root, &attributes)?;
-                    if path.starts_with(self.path().join(".buckets"))
-                        && crate::cached_checksum(
-                            attributes.get(crate::CHECKSUM_XATTR),
-                            metadata.len(),
-                            crate::modified_millis(&metadata)?,
+                let (bytes, metadata_blob) =
+                    if self.filesystem_profile() == crate::FilesystemProfile::EfsSidecarV1 {
+                        self.read_profiled_snapshot(&record.path())?
+                    } else {
+                        (
+                            fs::read(record.path()).map_err(NativeStorageError::io)?,
+                            metadata_blob(&record.path())?,
                         )
-                        .as_deref()
-                            != Some(crate::sha256_hex(&bytes).as_str())
-                    {
-                        return Err(corrupt_tree(
-                            "raw snapshot payload does not match its manifest",
-                        ));
-                    }
-                    (bytes, encode_profiled_metadata_blob(&attributes)?)
-                } else {
-                    (
-                        fs::read(record.path()).map_err(NativeStorageError::io)?,
-                        metadata_blob(&record.path())?,
-                    )
-                };
+                    };
                 let hash = crate::sha256_hex(&bytes);
                 if persist {
                     write_object(repository, &hash, &bytes)?;
@@ -1215,6 +1197,33 @@ impl NativeWriteRoot {
             }
         }
         Ok(())
+    }
+
+    fn read_profiled_snapshot(
+        &self,
+        path: &Path,
+    ) -> Result<(Vec<u8>, Option<Vec<u8>>), NativeStorageError> {
+        use std::io::Read as _;
+        let (mut file, metadata) = self.root.open_file(path, MAX_BLOB_BYTES)?;
+        let attributes = crate::record_attributes::RecordAttributes::read(&self.root, &file, path)?;
+        let bytes = crate::read_bounded((&mut file).take(MAX_BLOB_BYTES + 1), MAX_BLOB_BYTES)?;
+        attributes.verify(&self.root, &file, path)?;
+        attributes.verify_contents(&self.root, path, &bytes)?;
+        profiled_metadata_access(&self.root, &attributes)?;
+        if path.starts_with(self.path().join(".buckets"))
+            && crate::cached_checksum(
+                attributes.get(crate::CHECKSUM_XATTR),
+                metadata.len(),
+                crate::modified_millis(&metadata)?,
+            )
+            .as_deref()
+                != Some(crate::sha256_hex(&bytes).as_str())
+        {
+            return Err(corrupt_tree(
+                "raw snapshot payload does not match its manifest",
+            ));
+        }
+        Ok((bytes, encode_profiled_metadata_blob(&attributes)?))
     }
 
     /// Namespace directory a collection's records live in.

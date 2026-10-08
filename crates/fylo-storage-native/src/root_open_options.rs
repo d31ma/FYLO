@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use crate::{FilesystemProfile, RootLease};
 
-/// Additive root admission options, separate from the existing RootConfig.
+/// Additive root admission options, separate from the existing `RootConfig`.
 #[derive(Clone, Debug)]
 pub struct RootOpenOptions {
     pub(crate) root: PathBuf,
