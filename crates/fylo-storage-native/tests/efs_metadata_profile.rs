@@ -295,12 +295,30 @@ fn assert_private_sidecar(payload: &Path) {
 }
 
 fn snapshot(root: &Path) -> BTreeMap<PathBuf, (Vec<u8>, u32, u32, u32, SystemTime)> {
-    fn visit(root: &Path, path: &Path, entries: &mut BTreeMap<PathBuf, (Vec<u8>, u32, u32, u32, SystemTime)>) {
+    fn visit(
+        root: &Path,
+        path: &Path,
+        entries: &mut BTreeMap<PathBuf, (Vec<u8>, u32, u32, u32, SystemTime)>,
+    ) {
         let metadata = fs::symlink_metadata(path).unwrap();
-        entries.insert(path.strip_prefix(root).unwrap().to_owned(), (
-            if metadata.is_file() { fs::read(path).unwrap() } else { Vec::new() },
-            metadata.mode(), metadata.uid(), metadata.gid(), metadata.modified().unwrap(),
-        ));
+        entries.insert(
+            path.strip_prefix(root).unwrap().to_owned(),
+            (
+                if metadata.is_file() {
+                    fs::read(path).unwrap()
+                } else {
+                    Vec::new()
+                },
+                metadata.mode(),
+                metadata.uid(),
+                metadata.gid(),
+                if metadata.is_file() {
+                    metadata.modified().unwrap()
+                } else {
+                    UNIX_EPOCH
+                },
+            ),
+        );
         if metadata.is_dir() {
             for entry in fs::read_dir(path).unwrap() {
                 visit(root, &entry.unwrap().path(), entries);
@@ -314,7 +332,9 @@ fn snapshot(root: &Path) -> BTreeMap<PathBuf, (Vec<u8>, u32, u32, u32, SystemTim
 
 fn stopped_pair_transaction(fixture: &Fixture, payload: &Path) -> PathBuf {
     let collection = fixture.root.join(".collections/records");
-    let state = fixture.root.join(".fylo-transactions/.collections/records/state.json");
+    let state = fixture
+        .root
+        .join(".fylo-transactions/.collections/records/state.json");
     let generation: Value = serde_json::from_slice(&fs::read(&state).unwrap()).unwrap();
     let prior = generation["generation"].as_u64().unwrap();
     let transaction = state.parent().unwrap().join("bound-recovery-fixture");
@@ -327,7 +347,10 @@ fn stopped_pair_transaction(fixture: &Fixture, payload: &Path) -> PathBuf {
         let target = transaction.join(&backup);
         fs::copy(original, &target).unwrap();
         fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
-        fs::File::open(&target).unwrap().set_times(fs::FileTimes::new().set_modified(modified)).unwrap();
+        fs::File::open(&target)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(modified))
+            .unwrap();
         let capture = json!({
             "path": original.strip_prefix(&collection).unwrap().to_str().unwrap(),
             "present": true, "backup": backup,
@@ -335,17 +358,31 @@ fn stopped_pair_transaction(fixture: &Fixture, payload: &Path) -> PathBuf {
             "mtimeMs": modified.duration_since(UNIX_EPOCH).unwrap().as_secs_f64() * 1000.0,
             "xattrs": []
         });
-        fs::write(transaction.join(format!("captures/{index:06}.json")), serde_json::to_vec(&capture).unwrap()).unwrap();
+        fs::write(
+            transaction.join(format!("captures/{index:06}.json")),
+            serde_json::to_vec(&capture).unwrap(),
+        )
+        .unwrap();
     }
-    fs::write(transaction.join("transaction.json"), serde_json::to_vec(&json!({
-        "format": "fylo.collection-transaction.v1", "id": "bound-recovery-fixture",
-        "collection": "records", "operation": "patch-document", "phase": "active",
-        "generationBefore": prior, "eventOffset": 0, "captures": []
-    })).unwrap()).unwrap();
-    fs::write(state, serde_json::to_vec(&json!({
-        "format": "fylo.collection-generation.v1", "generation": prior + 1,
-        "state": "writing", "transactionId": "bound-recovery-fixture"
-    })).unwrap()).unwrap();
+    fs::write(
+        transaction.join("transaction.json"),
+        serde_json::to_vec(&json!({
+            "format": "fylo.collection-transaction.v1", "id": "bound-recovery-fixture",
+            "collection": "records", "operation": "patch-document", "phase": "active",
+            "generationBefore": prior, "eventOffset": 0, "captures": []
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        state,
+        serde_json::to_vec(&json!({
+            "format": "fylo.collection-generation.v1", "generation": prior + 1,
+            "state": "writing", "transactionId": "bound-recovery-fixture"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
     transaction
 }
 
@@ -358,10 +395,29 @@ fn bound_roots_publish_v2_and_refuse_v1_without_adopting_data() {
     assert_eq!(descriptor["format"], "fylo.filesystem-profile.v2");
     descriptor["format"] = json!("fylo.filesystem-profile.v1");
     fs::write(&marker, serde_json::to_vec(&descriptor).unwrap()).unwrap();
-    let before = snapshot(&fixture.root);
-    assert_eq!(NativeRoot::open_profiled(fixture.options()).err().unwrap().code(), NativeStorageErrorCode::Unsupported);
-    assert_eq!(NativeWriteRoot::open_profiled(fixture.options()).err().unwrap().code(), NativeStorageErrorCode::Unsupported);
-    assert_eq!(snapshot(&fixture.root), before);
+    let before = snapshot(&fixture.parent);
+    assert_eq!(
+        RootLease::acquire_with_profile(&fixture.root, FilesystemProfile::EfsSidecarV1)
+            .err()
+            .unwrap()
+            .code(),
+        NativeStorageErrorCode::Unsupported
+    );
+    assert_eq!(
+        NativeRoot::open_profiled(fixture.options())
+            .err()
+            .unwrap()
+            .code(),
+        NativeStorageErrorCode::Unsupported
+    );
+    assert_eq!(
+        NativeWriteRoot::open_profiled(fixture.options())
+            .err()
+            .unwrap()
+            .code(),
+        NativeStorageErrorCode::Unsupported
+    );
+    assert_eq!(snapshot(&fixture.parent), before);
 }
 
 #[test]
@@ -371,15 +427,29 @@ fn every_binding_field_and_encoding_must_match_before_metadata_exposure() {
     let records = fixture.reader().collection("records").unwrap();
     let path = records.read_document(ID).unwrap().path;
     let original = attributes(&path);
-    let binding: Value = serde_json::from_slice(&BASE64.decode(&original["user.fylo.record-identity"]).unwrap()).unwrap();
+    let binding: Value = serde_json::from_slice(
+        &BASE64
+            .decode(&original["user.fylo.record-identity"])
+            .unwrap(),
+    )
+    .unwrap();
     assert_eq!(binding[0], "fylo.record-identity.v1");
     assert_eq!(binding[1], ".collections");
     assert_eq!(binding[2], "records");
     assert_eq!(binding[3], ID);
     let mut corrupt_values = vec![b"null".to_vec(), b"[]".to_vec()];
-    for (index, replacement) in ["unknown", ".buckets", "other_records", RAW_ID, &"0".repeat(64)].into_iter().enumerate() {
+    for (index, replacement) in [
+        json!("unknown"),
+        json!(".buckets"),
+        json!("other_records"),
+        json!(RAW_ID),
+        json!("0".repeat(64)),
+    ]
+    .into_iter()
+    .enumerate()
+    {
         let mut changed = binding.clone();
-        changed[index] = json!(replacement);
+        changed[index] = replacement;
         corrupt_values.push(serde_json::to_vec(&changed).unwrap());
     }
     corrupt_values.push(serde_json::to_vec_pretty(&binding).unwrap());
@@ -388,9 +458,24 @@ fn every_binding_field_and_encoding_must_match_before_metadata_exposure() {
         changed.insert("user.fylo.record-identity".into(), BASE64.encode(value));
         fs::write(sidecar(&path), serde_json::to_vec(&changed).unwrap()).unwrap();
         let before = snapshot(&fixture.root);
-        assert_eq!(records.read_document(ID).unwrap_err().code(), NativeStorageErrorCode::CorruptMetadata);
-        assert_eq!(records.read_custom_metadata(ID).unwrap_err().code(), NativeStorageErrorCode::CorruptMetadata);
-        assert!(writer.replace_record_metadata("records", ID, json!({}).as_object().unwrap(), Some(&fixture.actor())).is_err());
+        assert_eq!(
+            records.read_document(ID).unwrap_err().code(),
+            NativeStorageErrorCode::CorruptMetadata
+        );
+        assert_eq!(
+            records.read_custom_metadata(ID).unwrap_err().code(),
+            NativeStorageErrorCode::CorruptMetadata
+        );
+        assert!(
+            writer
+                .replace_record_metadata(
+                    "records",
+                    ID,
+                    json!({}).as_object().unwrap(),
+                    Some(&fixture.actor())
+                )
+                .is_err()
+        );
         assert_eq!(snapshot(&fixture.root), before);
     }
 }
@@ -402,13 +487,30 @@ fn payload_updates_refresh_binding_and_user_attribute_removal_retains_it() {
     let records = fixture.reader().collection("records").unwrap();
     let path = records.read_document(ID).unwrap().path;
     let before = attributes(&path)["user.fylo.record-identity"].clone();
-    writer.patch_document("records", ID, br#"{"name":"after","score":43}"#, Some(&fixture.actor())).unwrap();
+    writer
+        .patch_document(
+            "records",
+            ID,
+            br#"{"name":"after","score":43}"#,
+            Some(&fixture.actor()),
+        )
+        .unwrap();
     let after = records.read_document(ID).unwrap();
     assert_ne!(attributes(&after.path)["user.fylo.record-identity"], before);
-    writer.replace_record_metadata("records", ID, json!({}).as_object().unwrap(), Some(&fixture.actor())).unwrap();
+    writer
+        .replace_record_metadata(
+            "records",
+            ID,
+            json!({}).as_object().unwrap(),
+            Some(&fixture.actor()),
+        )
+        .unwrap();
     assert!(records.read_custom_metadata(ID).unwrap().is_empty());
     assert!(attributes(&after.path).contains_key("user.fylo.record-identity"));
-    assert_eq!(serde_json::from_slice::<Value>(&records.read_document(ID).unwrap().bytes).unwrap()["score"], 43);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&records.read_document(ID).unwrap().bytes).unwrap()["score"],
+        43
+    );
 }
 
 #[test]
@@ -434,24 +536,126 @@ fn corrupt_or_unbound_before_images_refuse_recovery_before_any_target_mutation()
     for missing_binding in [false, true] {
         let fixture = Fixture::empty();
         let writer = fixture.seed();
-        let path = fixture.reader().collection("records").unwrap().read_document(ID).unwrap().path;
+        let path = fixture
+            .reader()
+            .collection("records")
+            .unwrap()
+            .read_document(ID)
+            .unwrap()
+            .path;
         let transaction = stopped_pair_transaction(&fixture, &path);
         let manifest = transaction.join("before/000000.bin");
-        let mut values: BTreeMap<String, String> = serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+        let mut values: BTreeMap<String, String> =
+            serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
         if missing_binding {
             values.remove("user.fylo.record-identity");
         } else {
-            let mut binding: Value = serde_json::from_slice(&BASE64.decode(&values["user.fylo.record-identity"]).unwrap()).unwrap();
+            let mut binding: Value = serde_json::from_slice(
+                &BASE64.decode(&values["user.fylo.record-identity"]).unwrap(),
+            )
+            .unwrap();
             binding[3] = json!(RAW_ID);
-            values.insert("user.fylo.record-identity".into(), BASE64.encode(serde_json::to_vec(&binding).unwrap()));
+            values.insert(
+                "user.fylo.record-identity".into(),
+                BASE64.encode(serde_json::to_vec(&binding).unwrap()),
+            );
         }
         let modified = fs::metadata(&manifest).unwrap().modified().unwrap();
         fs::write(&manifest, serde_json::to_vec(&values).unwrap()).unwrap();
-        fs::File::open(&manifest).unwrap().set_times(fs::FileTimes::new().set_modified(modified)).unwrap();
+        fs::File::open(&manifest)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(modified))
+            .unwrap();
         let before = snapshot(&fixture.root);
-        assert_eq!(writer.recover_collection("records").unwrap_err().code(), NativeStorageErrorCode::CorruptMetadata);
+        assert_eq!(
+            writer.recover_collection("records").unwrap_err().code(),
+            NativeStorageErrorCode::CorruptMetadata
+        );
         assert_eq!(snapshot(&fixture.root), before);
     }
+}
+
+#[test]
+fn custom_metadata_limits_and_binding_name_collisions_remain_user_scoped() {
+    let fixture = Fixture::empty();
+    let writer = fixture.seed();
+    let records = fixture.reader().collection("records").unwrap();
+    let path = records.read_document(ID).unwrap().path;
+    let binding = attributes(&path)["user.fylo.record-identity"].clone();
+    let limit = "x".repeat(60 * 1024 - 2);
+    writer
+        .replace_record_metadata(
+            "records",
+            ID,
+            json!({
+                "limit": limit, "record-identity": "ordinary custom value"
+            })
+            .as_object()
+            .unwrap(),
+            Some(&fixture.actor()),
+        )
+        .unwrap();
+    assert_eq!(
+        records.read_custom_metadata(ID).unwrap()["record-identity"],
+        "ordinary custom value"
+    );
+    assert_eq!(attributes(&path)["user.fylo.record-identity"], binding);
+    let before = snapshot(&fixture.root);
+    assert_eq!(
+        writer
+            .set_record_metadata(
+                "records",
+                ID,
+                json!({
+                    "too_large": "x".repeat(60 * 1024 - 1)
+                })
+                .as_object()
+                .unwrap(),
+                Some(&fixture.actor())
+            )
+            .unwrap_err()
+            .code(),
+        NativeStorageErrorCode::FileTooLarge
+    );
+    assert_eq!(snapshot(&fixture.root), before);
+}
+
+#[test]
+fn unbound_materialization_backup_cannot_replace_the_current_worktree() {
+    let fixture = Fixture::empty();
+    let writer = fixture.seed();
+    writer.commit_if_dirty("bound baseline").unwrap().unwrap();
+    let path = fixture
+        .reader()
+        .collection("records")
+        .unwrap()
+        .read_document(ID)
+        .unwrap()
+        .path;
+    let transaction = fixture.root.join(".fylo-vcs/staging/binding-recovery");
+    let backup = transaction
+        .join("previous")
+        .join(path.strip_prefix(&fixture.root).unwrap());
+    fs::create_dir_all(backup.parent().unwrap()).unwrap();
+    fs::copy(&path, &backup).unwrap();
+    let mut unbound = attributes(&path);
+    unbound.remove("user.fylo.record-identity");
+    fs::write(sidecar(&backup), serde_json::to_vec(&unbound).unwrap()).unwrap();
+    fs::set_permissions(sidecar(&backup), fs::Permissions::from_mode(0o600)).unwrap();
+    fs::write(transaction.join("transaction.json"), serde_json::to_vec(&json!({
+        "version": 1, "phase": "backup-moved", "targetRoot": ".",
+        "targets": [{"relative": ".collections/records", "collection": "records", "hadCurrent": true, "shouldInstall": true}],
+        "ref": null
+    })).unwrap()).unwrap();
+    let before = snapshot(&fixture.root);
+    assert_eq!(
+        writer
+            .recover_repository_materialization()
+            .unwrap_err()
+            .code(),
+        NativeStorageErrorCode::CorruptMetadata
+    );
+    assert_eq!(snapshot(&fixture.root), before);
 }
 
 #[test]
