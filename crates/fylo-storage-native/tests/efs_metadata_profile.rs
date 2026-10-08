@@ -497,6 +497,32 @@ fn payload_updates_refresh_binding_and_user_attribute_removal_retains_it() {
         .unwrap();
     let after = records.read_document(ID).unwrap();
     assert_ne!(attributes(&after.path)["user.fylo.record-identity"], before);
+    let patched = attributes(&after.path)["user.fylo.record-identity"].clone();
+    writer
+        .patch_document_fields(
+            "records",
+            ID,
+            json!({"score": 44}).as_object().unwrap(),
+            Some(&fixture.actor()),
+        )
+        .unwrap();
+    let field_patched = attributes(&after.path)["user.fylo.record-identity"].clone();
+    assert_ne!(field_patched, patched);
+    assert_eq!(
+        writer
+            .execute_sql_mutation(
+                "UPDATE records SET score = 45 WHERE score = 44",
+                Some(&fixture.actor()),
+                WriteAccess::default()
+            )
+            .unwrap()
+            .affected,
+        1
+    );
+    assert_ne!(
+        attributes(&after.path)["user.fylo.record-identity"],
+        field_patched
+    );
     writer
         .replace_record_metadata(
             "records",
@@ -509,7 +535,7 @@ fn payload_updates_refresh_binding_and_user_attribute_removal_retains_it() {
     assert!(attributes(&after.path).contains_key("user.fylo.record-identity"));
     assert_eq!(
         serde_json::from_slice::<Value>(&records.read_document(ID).unwrap().bytes).unwrap()["score"],
-        43
+        45
     );
 }
 
