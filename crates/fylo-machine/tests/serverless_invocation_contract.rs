@@ -392,8 +392,10 @@ fn invocation_retains_host_storage_schema_credentials_and_published_frame_limits
     assert_eq!(response["result"][ID]["secret"], "fixture-plaintext");
     let inspect = success(&runtime, json!({"op":"schemaInspect","collection":"records"}));
     assert_eq!(inspect["result"]["schemaDir"], json!(schema));
-    let stored = NativeRoot::open(&fixture.root).unwrap().collection("records").unwrap().read_document(ID).unwrap();
-    assert_eq!(stored.path.parent().unwrap().file_name().unwrap(), "4V");
+    let collection = NativeRoot::open(&fixture.root).unwrap().collection("records").unwrap();
+    let stored = collection.read_document(ID).unwrap();
+    assert_eq!(collection.shard_width(), 2);
+    assert_eq!(stored.path.parent().unwrap().file_name().unwrap(), "CO");
     let body: Value = serde_json::from_slice(&stored.bytes).unwrap();
     assert_ne!(body["secret"], "fixture-plaintext");
     fixture.assert_released(FilesystemProfile::Native);
