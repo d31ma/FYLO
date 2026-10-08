@@ -106,14 +106,14 @@ fn frame(request: &Value) -> Vec<u8> {
     bytes
 }
 
-fn execute(runtime: &InvocationRuntime, request: Value) -> Value {
-    let bytes = runtime.execute(&frame(&request)).unwrap();
+fn execute(runtime: &InvocationRuntime, request: &Value) -> Value {
+    let bytes = runtime.execute(&frame(request)).unwrap();
     assert_eq!(bytes.last(), Some(&b'\n'));
-    assert_eq!(bytes.iter().filter(|byte| **byte == b'\n').count(), 1);
+    assert_eq!(bytes.split(|byte| *byte == b'\n').skip(1).count(), 1);
     serde_json::from_slice(&bytes).unwrap()
 }
 
-fn success(runtime: &InvocationRuntime, request: Value) -> Value {
+fn success(runtime: &InvocationRuntime, request: &Value) -> Value {
     let response = execute(runtime, request);
     assert_eq!(response["ok"], true, "{response}");
     response
@@ -151,7 +151,7 @@ fn invocation_refuses_external_schema_validation_before_owner_or_helper_publicat
         assert_eq!(snapshot(&fixture.parent), before);
         let materialized = success(
             &invocation,
-            json!({
+            &json!({
                 "op":"schemaMaterialize","collection":"records","document":{"input":true}
             }),
         );
@@ -231,11 +231,11 @@ fn snapshot(path: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
 fn create_record(runtime: &InvocationRuntime) {
     success(
         runtime,
-        json!({"op":"createCollection","collection":"records"}),
+        &json!({"op":"createCollection","collection":"records"}),
     );
     success(
         runtime,
-        json!({"op":"putData","collection":"records","id":ID,"data":{"name":"Ada"}}),
+        &json!({"op":"putData","collection":"records","id":ID,"data":{"name":"Ada"}}),
     );
 }
 
@@ -297,7 +297,9 @@ fn invocation_budget_requires_a_future_deadline_and_nonzero_usable_cleanup_reser
     let before = snapshot(&fixture.parent);
     for budget in [
         (
-            Instant::now() - Duration::from_secs(1),
+            Instant::now()
+                .checked_sub(Duration::from_secs(1))
+                .expect("test setup requires a deadline one second in the past"),
             Duration::from_millis(1),
         ),
         (Instant::now() + Duration::from_secs(30), Duration::ZERO),
@@ -419,7 +421,7 @@ fn request_root_and_schema_overrides_cannot_mutate_an_unadmitted_root_or_replace
     }
     success(
         &runtime,
-        json!({"op":"createCollection","collection":"records"}),
+        &json!({"op":"createCollection","collection":"records"}),
     );
     fixture.assert_released(FilesystemProfile::Native);
 }
@@ -440,15 +442,15 @@ fn canonical_host_and_request_aliases_admit_only_the_same_physical_root() {
         );
         success(
             &runtime,
-            json!({"op":"createCollection","collection":"records","root":canonical}),
+            &json!({"op":"createCollection","collection":"records","root":canonical}),
         );
         success(
             &runtime,
-            json!({"op":"putData","collection":"records","id":ID,"root":alias,"data":{"name":"Ada"}}),
+            &json!({"op":"putData","collection":"records","id":ID,"root":alias,"data":{"name":"Ada"}}),
         );
         let response = success(
             &runtime,
-            json!({"op":"getDoc","collection":"records","id":ID}),
+            &json!({"op":"getDoc","collection":"records","id":ID}),
         );
         assert_eq!(response["result"][ID]["name"], "Ada");
         fixture.assert_released(profile);
@@ -459,7 +461,7 @@ fn canonical_host_and_request_aliases_admit_only_the_same_physical_root() {
 fn checked_invocation_completion_releases_the_root_before_success_or_domain_error_is_returned() {
     let fixture = Fixture::new();
     let runtime = fixture.runtime(FilesystemProfile::Native);
-    let response = success(&runtime, json!({"op":"handshake"}));
+    let response = success(&runtime, &json!({"op":"handshake"}));
     assert_eq!(
         response["result"]["storage"]["rootLock"],
         json!({
@@ -467,7 +469,7 @@ fn checked_invocation_completion_releases_the_root_before_success_or_domain_erro
         })
     );
     fixture.assert_released(FilesystemProfile::Native);
-    let response = execute(&runtime, json!({"op":"unknown-invocation-operation"}));
+    let response = execute(&runtime, &json!({"op":"unknown-invocation-operation"}));
     assert_eq!(response["ok"], false);
     assert_eq!(response["error"]["code"], "EUNSUPPORTEDOP");
     fixture.assert_released(FilesystemProfile::Native);
@@ -493,7 +495,7 @@ fn a_contending_owner_prevents_recovery_and_mutation_but_does_not_poison_the_run
     lease.release_checked().unwrap();
     success(
         &runtime,
-        json!({"op":"createCollection","collection":"records"}),
+        &json!({"op":"createCollection","collection":"records"}),
     );
     fixture.assert_released(FilesystemProfile::Native);
 }
@@ -504,7 +506,7 @@ fn cold_and_warm_invocations_revalidate_changed_index_inputs_and_keep_no_query_c
     let runtime = fixture.runtime(FilesystemProfile::Native);
     create_record(&runtime);
     let query = json!({"op":"findDocs","collection":"records","query":{}});
-    let first = success(&runtime, query.clone());
+    let first = success(&runtime, &query);
     assert_eq!(first["result"].as_object().unwrap().len(), 1);
     // A separate admitted owner changes the same collection after its index was cached.
     let lease = RootLease::acquire(&fixture.root).unwrap();
@@ -524,8 +526,8 @@ fn cold_and_warm_invocations_revalidate_changed_index_inputs_and_keep_no_query_c
         .unwrap();
     drop(writer);
     lease.release_checked().unwrap();
-    let warm = success(&runtime, query.clone());
-    let cold = success(&fixture.runtime(FilesystemProfile::Native), query);
+    let warm = success(&runtime, &query);
+    let cold = success(&fixture.runtime(FilesystemProfile::Native), &query);
     assert_eq!(warm["result"], cold["result"]);
     assert_eq!(warm["result"].as_object().unwrap().len(), 2);
     assert_eq!(warm["result"][SECOND_ID]["name"], "Grace");
@@ -535,7 +537,7 @@ fn cold_and_warm_invocations_revalidate_changed_index_inputs_and_keep_no_query_c
     ] {
         let response = execute(
             &runtime,
-            json!({"op":"findDocs","collection":"records","query":{},"page":page}),
+            &json!({"op":"findDocs","collection":"records","query":{},"page":page}),
         );
         assert_eq!(response["error"]["code"], "EQUERYLOOPREQUIRED");
         fixture.assert_released(FilesystemProfile::Native);
@@ -551,7 +553,7 @@ fn cold_invocation_recovers_the_touched_collection_before_a_point_read() {
         let transaction = committed_recovery_fixture(&fixture.root);
         let response = success(
             &fixture.runtime(profile),
-            json!({"op":"getDoc","collection":"records","id":ID}),
+            &json!({"op":"getDoc","collection":"records","id":ID}),
         );
         assert_eq!(response["result"][ID]["name"], "Ada");
         assert!(!transaction.exists());
@@ -647,25 +649,25 @@ fn invocation_retains_host_storage_schema_credentials_and_published_frame_limits
         application,
         limits,
     );
-    let handshake = success(&runtime, json!({"op":"handshake"}));
+    let handshake = success(&runtime, &json!({"op":"handshake"}));
     assert_eq!(handshake["result"]["machine"]["maxRequestBytes"], 8192);
     assert_eq!(handshake["result"]["machine"]["maxResponseBytes"], 16384);
     success(
         &runtime,
-        json!({"op":"createCollection","collection":"records"}),
+        &json!({"op":"createCollection","collection":"records"}),
     );
     success(
         &runtime,
-        json!({"op":"putData","collection":"records","id":ID,"data":{"secret":"fixture-plaintext","name":"Ada"}}),
+        &json!({"op":"putData","collection":"records","id":ID,"data":{"secret":"fixture-plaintext","name":"Ada"}}),
     );
     let response = success(
         &runtime,
-        json!({"op":"getDoc","collection":"records","id":ID}),
+        &json!({"op":"getDoc","collection":"records","id":ID}),
     );
     assert_eq!(response["result"][ID]["secret"], "fixture-plaintext");
     let inspect = success(
         &runtime,
-        json!({"op":"schemaInspect","collection":"records"}),
+        &json!({"op":"schemaInspect","collection":"records"}),
     );
     assert_eq!(inspect["result"]["schemaDir"], json!(schema));
     let collection = NativeRoot::open(&fixture.root)
@@ -686,11 +688,11 @@ fn response_and_error_frames_stay_bounded_and_small_limits_never_expose_an_overs
     let normal = fixture.runtime(FilesystemProfile::Native);
     success(
         &normal,
-        json!({"op":"createCollection","collection":"records"}),
+        &json!({"op":"createCollection","collection":"records"}),
     );
     success(
         &normal,
-        json!({"op":"putData","collection":"records","id":ID,"data":{"large":"x".repeat(4096)}}),
+        &json!({"op":"putData","collection":"records","id":ID,"data":{"large":"x".repeat(4096)}}),
     );
     let bounded = runtime(
         fixture.options(FilesystemProfile::Native),
@@ -732,7 +734,7 @@ fn an_uncertain_response_after_mutation_does_not_automatically_replay_the_operat
     let normal = fixture.runtime(FilesystemProfile::Native);
     success(
         &normal,
-        json!({"op":"createCollection","collection":"records"}),
+        &json!({"op":"createCollection","collection":"records"}),
     );
     let tiny = runtime(
         fixture.options(FilesystemProfile::Native),
@@ -752,7 +754,7 @@ fn an_uncertain_response_after_mutation_does_not_automatically_replay_the_operat
     fixture.assert_released(FilesystemProfile::Native);
     let response = success(
         &normal,
-        json!({"op":"findDocs","collection":"records","query":{}}),
+        &json!({"op":"findDocs","collection":"records","query":{}}),
     );
     let records = response["result"].as_object().unwrap();
     assert_eq!(records.len(), 1);
