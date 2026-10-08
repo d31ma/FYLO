@@ -87,8 +87,26 @@ and later qualification. See the
 
 These storage fields do not describe an ephemeral invocation lifetime.
 `persistent=false` disables pagination cursors; the current streaming loop still
-reads until EOF and flushes while its session owns leases. FYLO's proposed general
-serverless entry point must accept exactly one bounded core frame, acquire its
-own lease, keep leased handles private and buffer its result until checked
-teardown. Existing streaming APIs retain their behavior. That runtime API is a
-separate scoped source/compatibility slice, not implemented by this flag.
+reads until EOF and flushes while its session owns leases. The additive isolated
+`InvocationOptions`/`InvocationRuntime` source candidate accepts exactly one
+bounded nonempty LF core frame. The host selects immutable root/profile/application
+configuration, an absolute monotonic deadline and a nonzero cleanup reserve.
+The host root/repository must already exist and resolve to the same directory.
+External leases, unrelated request roots and request schema overrides are refused.
+Canonical aliases of the admitted root are allowed.
+
+This invocation slice refuses `log`, `commit`, `checkout`, `branch`, `status`,
+`diff`, `restoreCommit` and `merge` before admission. The reused core handshake
+retains legacy capability fields; those fields do not qualify these operations
+for invocation use. Malformed input and forbidden configuration return I/O errors.
+
+The runtime acquires its own kernel-admitted cooperative lease, recovers before
+dispatch and keeps engines/handles private. Recovery enumerates at most 10,000
+unique collection names per main/active root. It buffers the existing response and
+requires unique checked teardown before returning bytes. Cleanup or unlock
+uncertainty returns an error without completed response bytes; mutation retry is
+never automatic. Checks cannot preempt blocking I/O or prove distributed fencing.
+Returned output is bounded; intermediate serializer allocations have no hard cap.
+Existing streaming APIs retain their behavior. Native behavior tests and remote
+qualification remain pending. See
+[ADR 0011](../../../docs/adr/0011-serverless-invocation-contract.md).

@@ -5,9 +5,13 @@
 //! permission, or transaction semantics.
 
 mod application;
+mod invocation_options;
+mod invocation_runtime;
 mod strict;
 
 pub use application::ApplicationConfig;
+pub use invocation_options::InvocationOptions;
+pub use invocation_runtime::InvocationRuntime;
 
 use std::io::{BufRead, Read, Write};
 #[cfg(not(target_arch = "wasm32"))]
@@ -325,6 +329,33 @@ pub fn serve_profiled<R: BufRead, W: Write>(
     serve_profiled_session(transport, Some(root), application, session)
 }
 
+fn execute_invocation_frame(
+    request: &Value,
+    root: RootOpenOptions,
+    config: ApplicationConfig,
+    (limits, budget): (FrameLimits, (std::time::Instant, std::time::Duration)),
+) -> std::io::Result<Vec<u8>> {
+    let lease = root.owning_lease().ok_or_else(|| {
+        std::io::Error::other("invocation session requires its internal root owner")
+    })?;
+    let default_root = root.root().to_path_buf();
+    let session = Session {
+        default_root: Some(default_root.clone()),
+        filesystem_profile: root.filesystem_profile(),
+        limits,
+        config,
+        leases: std::cell::RefCell::new(std::collections::BTreeMap::from([(default_root, lease)])),
+        cursors: std::cell::RefCell::new(std::collections::BTreeMap::new()),
+        cursor_sequence: std::cell::Cell::new(0),
+        startup_error: None,
+        persistent: false,
+    };
+    drop(root);
+    // Returning data drops this private session and every transient engine.
+    // The caller retains the unique lease for checked finalization afterward.
+    session.execute_invocation(request, budget)
+}
+
 fn serve_session<R: BufRead, W: Write>(
     input: &mut R,
     output: &mut W,
@@ -445,6 +476,161 @@ struct CursorState {
 }
 
 impl Session {
+    const MAX_INVOCATION_COLLECTIONS: usize = 10_000;
+
+    fn execute_invocation(
+        &self,
+        request: &Value,
+        budget: (std::time::Instant, std::time::Duration),
+    ) -> std::io::Result<Vec<u8>> {
+        let started = Clock::start();
+        self.recover_invocation(budget)?;
+        InvocationOptions::check_work_budget(budget)?;
+        let result = self.dispatch(request);
+        InvocationOptions::check_work_budget(budget)?;
+        self.buffer_invocation_response(request, started, result)
+    }
+
+    fn buffer_invocation_response(
+        &self,
+        request: &Value,
+        started: Clock,
+        result: Result<Value, MachineError>,
+    ) -> std::io::Result<Vec<u8>> {
+        let operation = optional_string(request, "op");
+        let request_id = optional_string(request, "requestId");
+        // A slice cursor cannot grow past the configured frame plus its LF.
+        // Partial output stays private if even a failure frame does not fit.
+        let mut bytes = vec![0; self.limits.max_response_bytes + 1];
+        let written = {
+            let mut output = std::io::Cursor::new(bytes.as_mut_slice());
+            match result {
+                Ok(result) => self.write_success(
+                    &mut output, operation.as_deref(), request_id.as_deref(), started, &result,
+                ),
+                Err(error) => Self::write_failure(
+                    &mut output, operation.as_deref(), request_id.as_deref(), started, &error,
+                ),
+            }?;
+            usize::try_from(output.position()).map_err(std::io::Error::other)?
+        };
+        bytes.truncate(written);
+        bytes.shrink_to_fit();
+        Ok(bytes)
+    }
+
+    fn recover_invocation(
+        &self,
+        budget: (std::time::Instant, std::time::Duration),
+    ) -> std::io::Result<()> {
+        InvocationOptions::check_work_budget(budget)?;
+        let repository = self.default_root.as_ref().ok_or_else(|| {
+            std::io::Error::other("invocation session has no admitted repository")
+        })?;
+        let options = self.root_options(repository.clone(), repository.clone())
+            .map_err(Self::invocation_machine_error)?;
+        NativeWriteRoot::open_profiled(options)
+            .and_then(|writer| writer.recover_repository_materialization())
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        InvocationOptions::check_work_budget(budget)?;
+        let active = active_worktree(repository).map_err(Self::invocation_machine_error)?;
+        self.recover_invocation_root(repository, budget)?;
+        if active != *repository {
+            self.recover_invocation_root(&active, budget)?;
+        }
+        Ok(())
+    }
+
+    fn recover_invocation_root(
+        &self,
+        root: &std::path::Path,
+        budget: (std::time::Instant, std::time::Duration),
+    ) -> std::io::Result<()> {
+        InvocationOptions::check_work_budget(budget)?;
+        let repository = self.default_root.as_ref().ok_or_else(|| {
+            std::io::Error::other("invocation session has no admitted repository")
+        })?;
+        let options = self.root_options(root.to_path_buf(), repository.clone())
+            .map_err(Self::invocation_machine_error)?;
+        let native = NativeRoot::open_profiled(options.clone())
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        let names = Self::invocation_collection_names(&native, budget)?;
+        let writer = NativeWriteRoot::open_profiled(options)
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        for (name, has_live_directory) in names {
+            InvocationOptions::check_work_budget(budget)?;
+            match writer.recover_collection(&name) {
+                Ok(_) => {}
+                Err(error) if !has_live_directory && error.code() == NativeStorageErrorCode::NotFound => {}
+                Err(error) => return Err(std::io::Error::other(error.to_string())),
+            }
+        }
+        Ok(())
+    }
+
+    fn invocation_collection_names(
+        root: &NativeRoot,
+        budget: (std::time::Instant, std::time::Duration),
+    ) -> std::io::Result<std::collections::BTreeMap<String, bool>> {
+        let mut names = std::collections::BTreeMap::new();
+        for namespace in [".collections", ".buckets"] {
+            Self::collect_invocation_names(&root.path().join(namespace), false, &mut names, budget)?;
+        }
+        let catalog = root.catalog_root().join(".fylo-catalog");
+        if Self::invocation_directory_exists(&catalog)? {
+            Self::collect_invocation_names(&catalog.join("collections"), true, &mut names, budget)?;
+        }
+        Ok(names)
+    }
+
+    fn collect_invocation_names(
+        directory: &std::path::Path,
+        catalog: bool,
+        names: &mut std::collections::BTreeMap<String, bool>,
+        budget: (std::time::Instant, std::time::Duration),
+    ) -> std::io::Result<()> {
+        if !Self::invocation_directory_exists(directory)? {
+            return Ok(());
+        }
+        for entry in fylo_vfs::read_dir(directory)? {
+            InvocationOptions::check_work_budget(budget)?;
+            let entry = entry?;
+            let kind = entry.file_type()?;
+            if kind.is_symlink() || (catalog && !kind.is_file()) || (!catalog && !kind.is_dir()) {
+                return Err(std::io::Error::other("invocation collection entry has an unsafe type"));
+            }
+            let file_name = entry.file_name();
+            let file_name = file_name.to_str().ok_or_else(|| {
+                std::io::Error::other("invocation collection name is not UTF-8")
+            })?;
+            let name = if catalog {
+                file_name.strip_suffix(".json").ok_or_else(|| {
+                    std::io::Error::other("invocation catalog entry is not a collection descriptor")
+                })?
+            } else {
+                file_name
+            };
+            names.entry(name.to_owned()).and_modify(|live| *live |= !catalog).or_insert(!catalog);
+            if names.len() > Self::MAX_INVOCATION_COLLECTIONS {
+                return Err(std::io::Error::other("invocation collection recovery exceeds its bounded collection count"));
+            }
+        }
+        Ok(())
+    }
+
+    fn invocation_directory_exists(path: &std::path::Path) -> std::io::Result<bool> {
+        match fylo_vfs::symlink_metadata(path) {
+            Ok(metadata) if !metadata.file_type().is_symlink() && metadata.is_dir() => Ok(true),
+            Ok(_) => Err(std::io::Error::other("invocation collection directory has an unsafe type")),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn invocation_machine_error(error: MachineError) -> std::io::Error {
+        std::io::Error::other(format!("{}: {}", error.code, error.message))
+    }
+
     fn handle_frame<R: BufRead, W: Write>(
         &mut self,
         input: &mut R,

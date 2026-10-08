@@ -64,6 +64,42 @@ impl RootLeaseInner {
         verified.ok_or_else(Self::ownership_lost)
     }
 
+    pub(super) fn release_checked(self) -> Result<(), NativeStorageError> {
+        self.require_kernel_lock()?;
+        self.remove_owner_metadata()?;
+        self.unlock_checked()
+    }
+
+    fn require_kernel_lock(&self) -> Result<(), NativeStorageError> {
+        if self.kernel_enforced {
+            return Ok(());
+        }
+        Err(NativeStorageError::new(
+            NativeStorageErrorCode::Unsupported,
+            "checked root release requires successful kernel advisory lock admission",
+        ))
+    }
+
+    fn remove_owner_metadata(&self) -> Result<(), NativeStorageError> {
+        self.assert_owned()?;
+        fylo_vfs::remove_file(&self.metadata_path).map_err(NativeStorageError::io)?;
+        self.sync_metadata_parent()
+    }
+
+    fn sync_metadata_parent(&self) -> Result<(), NativeStorageError> {
+        let parent = self.metadata_path.parent().ok_or_else(|| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::UnsafePath,
+                "root owner metadata has no parent directory",
+            )
+        })?;
+        crate::write::sync_directory(parent)
+    }
+
+    fn unlock_checked(&self) -> Result<(), NativeStorageError> {
+        self.lock_file.unlock().map_err(NativeStorageError::io)
+    }
+
     fn ownership_lost() -> NativeStorageError {
         NativeStorageError::new(
             NativeStorageErrorCode::RootLeaseLost,

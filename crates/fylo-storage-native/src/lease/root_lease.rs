@@ -1,5 +1,5 @@
 use super::root_lease_inner::RootLeaseInner;
-use crate::{FilesystemProfile, NativeStorageError};
+use crate::{FilesystemProfile, NativeStorageError, NativeStorageErrorCode};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -56,6 +56,26 @@ impl RootLease {
     /// Returns an error if the recorded generation no longer belongs to this lease.
     pub fn assert_owned(&self) -> Result<(), NativeStorageError> {
         self.inner.assert_owned()
+    }
+
+    /// Finish this unique root owner before exposing an invocation response.
+    ///
+    /// # Errors
+    ///
+    /// Rejects surviving lease clones, missing kernel admission, lost ownership,
+    /// or failed owner metadata cleanup or unlock.
+    pub fn release_checked(self) -> Result<(), NativeStorageError> {
+        let inner = Self::take_unique(self.inner)?;
+        inner.release_checked()
+    }
+
+    fn take_unique(inner: Arc<RootLeaseInner>) -> Result<RootLeaseInner, NativeStorageError> {
+        Arc::try_unwrap(inner).map_err(|_| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::RootLeaseLost,
+                "checked root release requires all other lease handles to be dropped",
+            )
+        })
     }
 
     fn platform_lock_available() -> bool {

@@ -1400,6 +1400,19 @@ This storage work is a first backend slice inside FYLO, not an external AWS shim
 Invocation lifetime, fencing, retries and cold-start recovery need their own
 explicit core contracts. PaaS retains AWS infrastructure configuration.
 
+The isolated general invocation source candidate adds typed `InvocationOptions`
+and `InvocationRuntime` inside FYLO. It handles one bounded core frame with
+trusted host configuration and a monotonic deadline/cleanup reserve, then returns
+buffered response bytes only after private handles are gone and the owning lease
+has completed unique checked release. Legacy streaming APIs keep their behavior.
+The host selects an existing root/repository. This initial invocation slice
+refuses repository/version operations listed in the
+[machine contract](api/machine/v1/README.md); its reused handshake retains the
+legacy capability fields. Recovery is capped at 10,000 collection names per root.
+The 22 invocation contract tests are authored but unexecuted; distributed fencing,
+general idempotency and provider support are not established. See
+[ADR 0011](docs/adr/0011-serverless-invocation-contract.md).
+
 An isolated candidate adds explicit `--filesystem-profile efs-sidecar-v1` for
 filesystems without native xattrs. Existing constructors, shims and CLI calls
 default to `native`. Selection does not promote EFS or change the local-filesystem

@@ -1,0 +1,160 @@
+use std::io;
+
+use fylo_storage_native::RootLease;
+use serde_json::Value;
+
+use crate::{InvocationOptions, StrictValue};
+
+/// Exactly-one-frame native execution with checked teardown before response.
+///
+/// Only immutable host configuration survives between calls. Advisory root
+/// ownership coordinates cooperating clients; it is not distributed fencing.
+pub struct InvocationRuntime {
+    options: InvocationOptions,
+}
+
+impl InvocationRuntime {
+    /// Prepare configuration without acquiring a root lease or recovering data.
+    ///
+    /// # Errors
+    /// Rejects a budget already inside its cleanup reserve.
+    pub fn new(options: InvocationOptions) -> io::Result<Self> {
+        InvocationOptions::check_work_budget(options.budget())?;
+        Ok(Self { options })
+    }
+
+    /// Execute one bounded, nonempty LF-delimited core frame.
+    ///
+    /// # Errors
+    /// Returns no completed response for invalid admission, exhausted budget,
+    /// oversized output, or uncertain checked cleanup/unlock. A mutation may
+    /// already have happened; this method never automatically replays it.
+    pub fn execute(&self, frame: &[u8]) -> io::Result<Vec<u8>> {
+        InvocationOptions::check_work_budget(self.options.budget())?;
+        let request = self.prepare_request(frame)?;
+        InvocationOptions::check_work_budget(self.options.budget())?;
+        let root = self.options.root();
+        let lease = RootLease::acquire_with_profile(root.root(), root.filesystem_profile())
+            .map_err(Self::storage_error)?;
+        // Retain every inner result until all private owning handles are gone.
+        let result = self.execute_owned(&lease, &request);
+        lease.release_checked().map_err(Self::storage_error)?;
+        self.options.check_completion_deadline()?;
+        result
+    }
+
+    fn execute_owned(&self, lease: &RootLease, request: &Value) -> io::Result<Vec<u8>> {
+        self.require_kernel_owner(lease)?;
+        let root = self.options.root().clone().with_lease(lease.clone());
+        crate::execute_invocation_frame(
+            request,
+            root,
+            self.options.application().clone(),
+            (self.options.limits(), self.options.budget()),
+        )
+    }
+
+    fn require_kernel_owner(&self, lease: &RootLease) -> io::Result<()> {
+        if !lease.kernel_enforced() {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "invocations require actual kernel advisory-lock admission",
+            ));
+        }
+        if lease.root() != self.options.root().root() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "acquired lease differs from the admitted invocation root",
+            ));
+        }
+        lease.assert_owned().map_err(Self::storage_error)
+    }
+
+    fn prepare_request(&self, frame: &[u8]) -> io::Result<Value> {
+        let payload = self.require_single_frame(frame)?;
+        let mut request = serde_json::from_slice::<StrictValue>(payload)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?
+            .into_inner();
+        self.require_host_configuration(&request)?;
+        Self::require_supported_scope(&request)?;
+        // A verified alias uses the canonical private session default. This
+        // also avoids acquiring a second native lease for its textual alias.
+        if let Some(object) = request.as_object_mut() {
+            object.remove("root");
+        }
+        Ok(request)
+    }
+
+    fn require_single_frame<'a>(&self, frame: &'a [u8]) -> io::Result<&'a [u8]> {
+        let Some((&delimiter, payload)) = frame.split_last() else {
+            return Err(Self::invalid_frame());
+        };
+        if delimiter != b'\n' || payload.is_empty() || payload.contains(&b'\n') {
+            return Err(Self::invalid_frame());
+        }
+        if payload.len() > self.options.limits().max_request_bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invocation request exceeds the configured frame limit",
+            ));
+        }
+        Ok(payload)
+    }
+
+    fn require_host_configuration(&self, request: &Value) -> io::Result<()> {
+        if request.get("schemaDir").is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invocations cannot override host schema configuration",
+            ));
+        }
+        if let Some(root) = request.get("root") {
+            let root = root.as_str().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "invocation root override must be a canonical alias string",
+                )
+            })?;
+            if fylo_vfs::canonicalize(root)? != self.options.root().root() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "invocations cannot override the admitted physical root",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn require_supported_scope(request: &Value) -> io::Result<()> {
+        if matches!(
+            request.get("op").and_then(Value::as_str),
+            Some(
+                "log"
+                    | "commit"
+                    | "checkout"
+                    | "branch"
+                    | "status"
+                    | "diff"
+                    | "restoreCommit"
+                    | "merge"
+            )
+        ) {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "this invocation slice excludes version/repository operations whose additional read sets are not qualified",
+            ));
+        }
+        Ok(())
+    }
+
+    fn invalid_frame() -> io::Error {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invocations require exactly one nonempty LF-delimited frame",
+        )
+    }
+
+    fn storage_error(error: fylo_storage_native::NativeStorageError) -> io::Error {
+        io::Error::other(error.to_string())
+    }
+}
