@@ -182,28 +182,29 @@ describe.skipIf(!required || process.platform === 'win32')('explicit EFS metadat
         expect(before.manifestMode).toBe(0o600)
         expect(before.manifestUid).toBe(before.uid)
         expect(before.manifestGid).toBe(before.gid)
+        const owner = { uid: before.uid, groups: [before.gid] }
         const database = new ProfileLoop(root)
         try {
             await database.result({ op: 'handshake' })
             const rawBefore = await database.result({ op: 'getMeta', collection: 'assets', id: rawId })
-            await database.result({ op: 'delDoc', collection: 'records', id })
+            await database.result({ op: 'delDoc', collection: 'records', id, access: owner })
             expect(await stat(beforePath).catch(() => null)).toBeNull()
             expect(await stat(beforePath + '.fylo-attrs').catch(() => null)).toBeNull()
             const retained = (await filesUnder(root)).find((file) =>
                 file.endsWith(id + '.json') && file.split(path.sep).includes('.deleted')
             )
             expect(await pairSnapshot(retained)).toEqual(before)
-            await database.result({ op: 'restoreDoc', collection: 'records', id })
+            await database.result({ op: 'restoreDoc', collection: 'records', id, access: owner })
             expect(await stat(retained + '.fylo-attrs').catch(() => null)).toBeNull()
             expect(await pairSnapshot(await recordPath(root, id))).toEqual(before)
             await database.result({
-                op: 'executeSQL', sql: "DELETE FROM records WHERE name = 'Ada'"
+                op: 'executeSQL', sql: "DELETE FROM records WHERE name = 'Ada'", access: owner
             })
-            await database.result({ op: 'restoreDoc', collection: 'records', id })
+            await database.result({ op: 'restoreDoc', collection: 'records', id, access: owner })
             await database.result({ op: 'reshardCollection', collection: 'records', width: 3 })
             expect(await pairSnapshot(await recordPath(root, id))).toEqual(before)
-            await database.result({ op: 'delDoc', collection: 'assets', id: rawId })
-            await database.result({ op: 'restoreDoc', collection: 'assets', id: rawId })
+            await database.result({ op: 'delDoc', collection: 'assets', id: rawId, access: owner })
+            await database.result({ op: 'restoreDoc', collection: 'assets', id: rawId, access: owner })
             await database.result({ op: 'reshardCollection', collection: 'assets', width: 3 })
             const rawAfter = await database.result({ op: 'getMeta', collection: 'assets', id: rawId })
             expect(rawAfter).toEqual(rawBefore)
@@ -231,11 +232,12 @@ describe.skipIf(!required || process.platform === 'win32')('explicit EFS metadat
         await seed(root)
         const payload = await recordPath(root, id)
         const before = await pairSnapshot(payload)
+        const owner = { uid: before.uid, groups: [before.gid] }
         const database = new ProfileLoop(root)
         try {
             await database.result({ op: 'handshake' })
             const first = await database.result({
-                op: 'setMeta', collection: 'records', id, meta: { reviewer: 'after', nested: null }
+                op: 'setMeta', collection: 'records', id, meta: { reviewer: 'after', nested: null }, access: owner
             })
             expect(first.reviewer).toBe('after')
             expect(first.nested).toBeUndefined()
@@ -244,6 +246,12 @@ describe.skipIf(!required || process.platform === 'win32')('explicit EFS metadat
             expect(after.mtimeMs).toBe(before.mtimeMs)
             expect(after.mode).toBe(before.mode)
             expect(after.manifestMode).toBe(0o600)
+            const anonymous = await database.request({
+                op: 'setMeta', collection: 'records', id, meta: { reviewer: 'anonymous' }
+            })
+            expect(anonymous).toMatchObject({ ok: false, error: { code: 'EACCES' } })
+            expect(await database.result({ op: 'getMeta', collection: 'records', id }))
+                .toEqual(first)
             const foreign = (before.uid + 1) >>> 0
             for (const op of ['getDoc', 'getMeta']) {
                 expect(await database.request({
@@ -266,6 +274,7 @@ describe.skipIf(!required || process.platform === 'win32')('explicit EFS metadat
         const root = await freshRoot()
         await seed(root)
         const before = await pairSnapshot(await recordPath(root, id))
+        const owner = { uid: before.uid, groups: [before.gid] }
         const database = new ProfileLoop(root)
         try {
             await database.result({ op: 'handshake' })
@@ -275,7 +284,7 @@ describe.skipIf(!required || process.platform === 'win32')('explicit EFS metadat
             const branch = await database.result({ op: 'checkout', branch: 'review', create: true })
             expect(await pairSnapshot(await recordPath(branch.root, id))).toEqual(before)
             await database.result({
-                op: 'setMeta', collection: 'records', id, meta: { reviewer: 'branch' }
+                op: 'setMeta', collection: 'records', id, meta: { reviewer: 'branch' }, access: owner
             })
             const changed = await database.result({ op: 'commit', message: 'branch metadata change' })
             expect(changed.id).not.toBe(first.id)
