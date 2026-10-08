@@ -17,9 +17,10 @@ const expectedTarget =
 const roots = []
 
 class ReleaseLoop {
-    constructor(root, env = {}, config) {
+    constructor(root, env = {}, config, filesystemProfile) {
         const args = ['exec', '--loop', '--root', root, '--exclusive-root']
         if (config) args.push('--config', config)
+        if (filesystemProfile) args.push('--filesystem-profile', filesystemProfile)
         this.child = spawn(binary, args, {
             stdio: ['pipe', 'pipe', 'pipe'],
             env: { ...process.env, ...env }
@@ -267,3 +268,118 @@ describe.skipIf(!required)('exact native release root lease', () => {
         }
     )
 })
+
+
+// The exact candidate must be selected explicitly; this does not qualify EFS.
+describe.skipIf(!required || process.env.FYLO_REQUIRE_EFS_PROFILE !== '1')(
+    'explicit metadata profile root admission',
+    () => {
+        test.skipIf(process.platform === 'win32')(
+            'EFS owners contend through canonical aliases and preserve owner metadata',
+            async () => {
+                const parent = await mkdtemp(path.join(os.tmpdir(), 'fylo-efs-shared-parent-'))
+                roots.push(parent)
+                const root = path.join(parent, 'root')
+                await mkdir(root)
+                const alias = path.join(parent, 'alias')
+                await symlink(root, alias, 'dir')
+                const owner = new ReleaseLoop(root, {}, undefined, 'efs-sidecar-v1')
+                let contender
+                try {
+                    expect((await owner.request({ op: 'handshake' })).ok).toBe(true)
+                    const metadataPath = path.join(parent, '.root.fylo-root-owner.lock.json')
+                    const before = await readFile(metadataPath)
+                    contender = new ReleaseLoop(alias, {}, undefined, 'efs-sidecar-v1')
+                    expect(await contender.request({ op: 'handshake' })).toMatchObject({
+                        ok: false, error: { code: 'EROOTLOCKED' }
+                    })
+                    expect(await readFile(metadataPath)).toEqual(before)
+                    expect((await owner.request({ op: 'handshake' })).ok).toBe(true)
+                } finally {
+                    if (contender) await contender.stop()
+                    await owner.stop()
+                }
+                const replacement = new ReleaseLoop(alias, {}, undefined, 'efs-sidecar-v1')
+                try {
+                    expect((await replacement.request({ op: 'handshake' })).ok).toBe(true)
+                } finally {
+                    await replacement.stop()
+                }
+            }
+        )
+
+        test('bad profile fails before replacing the recorded owner', async () => {
+            const parent = await mkdtemp(path.join(os.tmpdir(), 'fylo-bad-profile-owner-'))
+            roots.push(parent)
+            const root = path.join(parent, 'root')
+            await mkdir(root)
+            const metadataPath = path.join(parent, '.root.fylo-root-owner.lock.json')
+            const canonical = await realpath(root)
+            const before = JSON.stringify({
+                version: 1, root: canonical, owner: 'must-survive-admission', pid: process.pid
+            })
+            await writeFile(metadataPath, before)
+            const rejected = spawn(binary, [
+                'exec', '--loop', '--root', root, '--exclusive-root',
+                '--filesystem-profile', 'unknown-profile'
+            ], { stdio: ['pipe', 'pipe', 'pipe'] })
+            const stdout = []
+            const stderr = []
+            rejected.stdout.on('data', (chunk) => stdout.push(chunk))
+            rejected.stderr.on('data', (chunk) => stderr.push(chunk))
+            rejected.stdin.end(JSON.stringify({ op: 'handshake' }) + '\n')
+            let timer
+            let exitCode
+            try {
+                const exited = once(rejected, 'exit')
+                const exitedValues = await Promise.race([
+                    exited,
+                    new Promise((_, reject) => {
+                        timer = setTimeout(() => {
+                            rejected.kill('SIGKILL')
+                            reject(new Error('unknown profile was not rejected'))
+                        }, 5_000)
+                    })
+                ])
+                exitCode = exitedValues[0]
+            } finally {
+                clearTimeout(timer)
+            }
+            const output = Buffer.concat(stdout).toString()
+            expect(
+                exitCode !== 0 || output.split('\n').filter(Boolean).every((line) =>
+                    JSON.parse(line).ok === false
+                )
+            ).toBe(true)
+            expect(Buffer.concat(stderr).toString() + output).toMatch(/profile/i)
+            expect(await readFile(metadataPath, 'utf8')).toBe(before)
+            expect(await readFile(
+                path.join(root, '.fylo-catalog/filesystem-profile.json')
+            ).catch(() => null)).toBeNull()
+        })
+
+        test('losing the owner generation stops the EFS machine mutation', async () => {
+            const parent = await mkdtemp(path.join(os.tmpdir(), 'fylo-efs-lost-owner-'))
+            roots.push(parent)
+            const root = path.join(parent, 'root')
+            await mkdir(root)
+            const owner = new ReleaseLoop(root, {}, undefined, 'efs-sidecar-v1')
+            try {
+                expect((await owner.request({ op: 'handshake' })).ok).toBe(true)
+                expect((await owner.request({
+                    op: 'createCollection', collection: 'records', kind: 'document'
+                })).ok).toBe(true)
+                const metadataPath = path.join(parent, '.root.fylo-root-owner.lock.json')
+                const metadata = JSON.parse(await readFile(metadataPath, 'utf8'))
+                metadata.owner = 'replacement-owner-generation'
+                await writeFile(metadataPath, JSON.stringify(metadata))
+                expect(await owner.request({
+                    op: 'putData', collection: 'records', id: '4VRNF52JPCO',
+                    data: { body: 'must not be acknowledged' }
+                })).toMatchObject({ ok: false, error: { code: 'EROOTLEASELOST' } })
+            } finally {
+                await owner.stop()
+            }
+        })
+    }
+)

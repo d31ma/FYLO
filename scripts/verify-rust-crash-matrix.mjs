@@ -6,9 +6,13 @@
 // cannot be added without either being exercised here or failing this gate,
 // which is the property a hand-maintained list cannot give.
 import { CargoArtifacts } from './cargo-artifacts.mjs'
-import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
+import { spawn } from 'node:child_process'
+import { once } from 'node:events'
+import { createInterface } from 'node:readline'
 import { platform, tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join, relative, sep } from 'node:path'
 import { parseArgs } from 'node:util'
 
 import { Fylo } from '../clients/node/fylo.mjs'
@@ -16,7 +20,8 @@ import { Fylo } from '../clients/node/fylo.mjs'
 const { values: options } = parseArgs({
     options: {
         'binary-dir': { type: 'string' },
-        'skip-build': { type: 'boolean', default: false }
+        'skip-build': { type: 'boolean', default: false },
+        'filesystem-profile': { type: 'string', default: 'native' }
     }
 })
 if (options['skip-build'] && !options['binary-dir']) {
@@ -24,6 +29,11 @@ if (options['skip-build'] && !options['binary-dir']) {
 }
 if (options['binary-dir'] && !options['skip-build']) {
     throw new Error('--binary-dir requires --skip-build; build the selected binaries first')
+}
+
+const filesystemProfile = options['filesystem-profile']
+if (!['native', 'efs-sidecar-v1'].includes(filesystemProfile)) {
+    throw new Error('unknown filesystem profile: ' + filesystemProfile)
 }
 
 const workspace = await realpath(await mkdtemp(join(tmpdir(), 'fylo-rust-crash-')))
@@ -44,6 +54,66 @@ const machineBinary = join(
     platform() === 'win32' ? 'fylo-rust.exe' : 'fylo-rust'
 )
 
+class EfsMachine {
+    constructor(root, overrides = {}) {
+        this.child = spawn(machineBinary, [
+            'exec', '--loop', '--root', root, '--exclusive-root',
+            '--filesystem-profile', 'efs-sidecar-v1'
+        ], { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, ...overrides } })
+        this.waiters = []
+        this.responses = []
+        this.stderr = ''
+        this.exited = once(this.child, 'exit')
+        this.child.stderr.setEncoding('utf8')
+        this.child.stderr.on('data', (chunk) => { this.stderr += chunk })
+        const reader = createInterface({ input: this.child.stdout })
+        reader.on('line', (line) => {
+            try {
+                const response = JSON.parse(line)
+                const waiter = this.waiters.shift()
+                if (waiter) waiter.resolve(response)
+                else this.responses.push(response)
+            } catch (error) {
+                this.rejectPending(error)
+            }
+        })
+        this.child.on('error', (error) => this.rejectPending(error))
+        this.child.stdin.on('error', (error) => this.rejectPending(error))
+        this.child.on('exit', () => this.rejectPending(
+            new Error('EFS machine exited: ' + this.stderr)
+        ))
+    }
+
+    rejectPending(error) {
+        for (const waiter of this.waiters.splice(0)) waiter.reject(error)
+    }
+
+    async request(request) {
+        assert(
+            this.child.exitCode === null && this.child.signalCode === null,
+            'EFS machine already exited: ' + this.stderr
+        )
+        const response = this.responses.length
+            ? Promise.resolve(this.responses.shift())
+            : new Promise((resolve, reject) => this.waiters.push({ resolve, reject }))
+        this.child.stdin.write(JSON.stringify(request) + '\n')
+        return await withDeadline(response, 'EFS request ' + request.op)
+    }
+
+    async close() {
+        if (this.child.exitCode !== null || this.child.signalCode !== null) return
+        this.child.stdin.end()
+        try {
+            await withDeadline(this.exited, 'EFS machine close')
+        } catch (error) {
+            this.child.kill('SIGKILL')
+            await this.exited
+            throw error
+        }
+    }
+}
+
+
 try {
     if (!options['skip-build'])
         await command([
@@ -60,6 +130,16 @@ try {
             'fylo-rust'
         ])
 
+    if (filesystemProfile === 'efs-sidecar-v1') {
+        await verifyEfsCrashScenarios(binary, workspace)
+    } else {
+        await verifyNativeCrashScenarios()
+    }
+} finally {
+    await rm(workspace, { recursive: true, force: true })
+}
+
+async function verifyNativeCrashScenarios() {
     await mkdir(template, { recursive: true })
     const seedFile = join(workspace, 'seed.bin')
     await writeFile(seedFile, new Uint8Array([1, 2, 3, 4]))
@@ -357,11 +437,14 @@ try {
         'after-file-sync': 'extended attributes',
         'after-chown': 'POSIX ownership',
         'after-chmod': 'POSIX ownership',
-        'after-access-marker': 'POSIX ownership'
+        'after-access-marker': 'POSIX ownership',
+        'after-record-payload-rename': 'EFS metadata profile',
+        'after-record-sidecar-rename': 'EFS metadata profile'
     }
     const available = {
         'extended attributes': extendedAttributes,
-        'POSIX ownership': platform() !== 'win32'
+        'POSIX ownership': platform() !== 'win32',
+        'EFS metadata profile': false
     }
     if (!extendedAttributes) {
         console.error(
@@ -385,8 +468,6 @@ try {
         `Recovered ${interrupted} interrupted native mutations across ${failpoints.length} failpoints ` +
             `and validated ${queueInterruptions} interrupted queue operations`
     )
-} finally {
-    await rm(workspace, { recursive: true, force: true })
 }
 
 async function verifyQueueCrashScenarios(binary, source, workspace) {
@@ -622,4 +703,322 @@ async function command(arguments_) {
 
 function assert(condition, message) {
     if (!condition) throw new Error(message)
+}
+
+
+// Explicit EFS lane: the main CLI owns profile admission and the real machine
+// API owns writes. The native preview CLI above remains native by default.
+
+async function withDeadline(promise, label) {
+    let timer
+    try {
+        return await Promise.race([
+            promise,
+            new Promise((_, reject) => {
+                timer = setTimeout(() => reject(new Error(label + ' timed out')), 10_000)
+            })
+        ])
+    } finally {
+        clearTimeout(timer)
+    }
+}
+
+async function efsDatabase(root, callback) {
+    const database = new EfsMachine(root)
+    try {
+        await requestRequired(database, { op: 'handshake' })
+        return await callback(database)
+    } finally {
+        await database.close()
+    }
+}
+
+async function fixtureFiles(root) {
+    const entries = await readdir(root, { withFileTypes: true }).catch((error) => {
+        if (error.code === 'ENOENT') return []
+        throw error
+    })
+    const files = []
+    for (const entry of entries) {
+        const file = join(root, entry.name)
+        if (entry.isDirectory()) files.push(...await fixtureFiles(file))
+        else {
+            assert(entry.isFile(), 'non-regular EFS fixture entry: ' + file)
+            files.push(file)
+        }
+    }
+    return files.sort()
+}
+
+async function efsInventory(root) {
+    const files = await fixtureFiles(join(root, '.collections'))
+    const records = files.filter((file) =>
+        file.split(sep).some((part) => part === 'docs' || part === '.deleted') &&
+        !file.endsWith('.fylo-attrs') && !file.endsWith('.tmp')
+    )
+    const recordSet = new Set(records)
+    for (const manifest of files.filter((file) => file.endsWith('.fylo-attrs'))) {
+        assert(recordSet.has(manifest.slice(0, -'.fylo-attrs'.length)),
+            'orphan EFS metadata: ' + manifest)
+    }
+    const inventory = []
+    for (const file of records) {
+        const payload = await stat(file)
+        const manifest = await stat(file + '.fylo-attrs')
+        assert((manifest.mode & 0o777) === 0o600, 'nonprivate EFS manifest: ' + file)
+        assert(manifest.uid === payload.uid && manifest.gid === payload.gid,
+            'EFS metadata owner differs from payload: ' + file)
+        const attributes = JSON.parse(await readFile(file + '.fylo-attrs', 'utf8'))
+        assert(attributes && typeof attributes === 'object' && !Array.isArray(attributes),
+            'malformed EFS metadata map: ' + file)
+        inventory.push({
+            path: relative(root, file),
+            id: basename(file).split('.')[0],
+            collection: relative(join(root, '.collections'), file).split(sep)[0],
+            hash: createHash('sha256').update(await readFile(file)).digest('hex'),
+            attributes,
+            uid: payload.uid,
+            gid: payload.gid,
+            mode: payload.mode & 0o777,
+            mtimeMs: Math.trunc(payload.mtimeMs),
+            manifestMode: manifest.mode & 0o777
+        })
+    }
+    return inventory
+}
+
+function comparableInventory(inventory) {
+    return inventory.map(({ mtimeMs, attributes, ...record }) => {
+        // Successful reference mutations use another wall-clock instant.
+        // Rollback must retain exact originals; committed timestamps are
+        // checked against originals and the interrupted mutation interval.
+        const stable = { ...attributes }
+        delete stable['user.fylo.meta-updated-at']
+        delete stable['user.fylo.checksum']
+        return { ...record, attributes: stable }
+    })
+}
+
+function sameInventory(left, right) {
+    return JSON.stringify(left) === JSON.stringify(right)
+}
+
+function assertCommittedTimes(before, after, started, finished, label) {
+    for (const record of after) {
+        const previous = before.find((item) =>
+            item.collection === record.collection && item.id === record.id
+        )
+        if (previous && previous.hash === record.hash) {
+            assert(record.mtimeMs === previous.mtimeMs,
+                label + ': metadata/move changed unchanged payload mtime')
+        } else {
+            assert(record.mtimeMs >= started - 1 && record.mtimeMs <= finished + 1,
+                label + ': changed payload time is outside the mutation interval')
+        }
+        const stamp = record.attributes['user.fylo.meta-updated-at']
+        const oldStamp = previous?.attributes['user.fylo.meta-updated-at']
+        if (stamp && oldStamp && stamp !== oldStamp) {
+            assert(
+                Number(Buffer.from(stamp, 'base64').toString()) >
+                    Number(Buffer.from(oldStamp, 'base64').toString()),
+                label + ': metadata update timestamp did not advance'
+            )
+        }
+    }
+}
+
+async function efsJournals(root) {
+    const manifests = (await fixtureFiles(join(root, '.fylo-transactions')))
+        .filter((file) => basename(file) === 'transaction.json')
+    return await Promise.all(manifests.map(async (file) =>
+        JSON.parse(await readFile(file, 'utf8'))
+    ))
+}
+
+async function recoverEfs(root) {
+    await efsDatabase(root, async (database) => {
+        for (const name of [collection, fileCollection]) {
+            // Existing public rebuild performs collection recovery first.
+            await requestRequired(database, { op: 'rebuildCollection', collection: name })
+            const inspected = await requestRequired(database, {
+                op: 'inspectCollection', collection: name
+            })
+            assert(Number(inspected.indexedDocs) === Number(inspected.docsStored),
+                name + ': EFS recovered index differs from records')
+        }
+    })
+    assert((await efsJournals(root)).length === 0, 'EFS recovery left a journal')
+}
+
+async function verifyEfsCrashScenarios(preview, workspace) {
+    assert(platform() !== 'win32', 'EFS profile qualification needs POSIX metadata')
+    const source = join(workspace, 'efs-template')
+    await mkdir(source)
+    const input = join(workspace, 'efs-input.bin')
+    await writeFile(input, new Uint8Array([1, 2, 3, 4]))
+    await efsDatabase(source, async (database) => {
+        await requestRequired(database, { op: 'createCollection', collection, kind: 'document' })
+        await requestRequired(database, {
+            op: 'createCollection', collection: fileCollection, kind: 'file'
+        })
+        for (const [id, name] of [
+            [identifier, 'Ada'], [secondIdentifier, 'Grace'], [deletedIdentifier, 'Linus']
+        ]) {
+            await requestRequired(database, {
+                op: 'putData', collection, id, data: { name, score: 42 },
+                meta: { reviewer: 'seed', typed: { nested: [1, true] } },
+                access: { mode: 0o640 }
+            })
+        }
+        await requestRequired(database, { op: 'delDoc', collection, id: deletedIdentifier })
+        await requestRequired(database, {
+            op: 'putData', collection: fileCollection, id: fileIdentifier,
+            file: { path: input, key: '/seed.bin' }, meta: { source: 'seed' },
+            access: { mode: 0o640 }
+        })
+        await requestRequired(database, { op: 'commit', message: 'EFS crash seed' })
+    })
+    await efsInventory(source)
+    const { failpoints } = JSON.parse((await run(preview, ['failpoints'])).stdout)
+    const pairPoints = ['after-record-payload-rename', 'after-record-sidecar-rename']
+    for (const name of pairPoints) {
+        assert(failpoints.includes(name), 'candidate did not declare EFS pair failpoint: ' + name)
+    }
+    const scenarios = [
+        { name: 'put-document', request: {
+            op: 'putData', collection, id: '4VRNF52JPD0',
+            data: { name: 'Hopper', score: 7 }, meta: { reviewer: 'created' },
+            access: { mode: 0o640 }
+        } },
+        { name: 'put-file', request: {
+            op: 'putData', collection: fileCollection, id: crashFileIdentifier,
+            file: { path: input, key: '/crash.bin' }, meta: { source: 'created' },
+            access: { mode: 0o640 }
+        } },
+        { name: 'patch-document', request: {
+            op: 'patchDoc', collection, id: identifier, newDoc: { score: 99 }
+        } },
+        { name: 'metadata', request: {
+            op: 'setMeta', collection, id: identifier,
+            meta: { reviewer: 'after', typed: null, added: [1, true] }
+        } },
+        { name: 'delete-document', pairMove: true, request: {
+            op: 'delDoc', collection, id: identifier
+        } },
+        { name: 'delete-file', pairMove: true, request: {
+            op: 'delDoc', collection: fileCollection, id: fileIdentifier
+        } },
+        { name: 'restore', pairMove: true, request: {
+            op: 'restoreDoc', collection, id: deletedIdentifier
+        } },
+        { name: 'sql-delete', pairMove: true, request: {
+            op: 'executeSQL', sql: "DELETE FROM records WHERE name = 'Grace'"
+        } },
+        { name: 'reshard', pairMove: true, request: {
+            op: 'reshardCollection', collection, width: 3
+        } },
+        { name: 'commit', prepare: {
+            op: 'setMeta', collection, id: identifier, meta: { reviewer: 'pending commit' }
+        }, request: { op: 'commit', message: 'EFS interrupted commit' } }
+    ]
+    const reached = new Set()
+    let interrupted = 0
+    for (const failpoint of failpoints) {
+        for (const scenario of scenarios) {
+            for (const action of ['abort', 'enospc', 'edquot']) {
+                const label = failpoint + '/' + scenario.name + '/' + action
+                const root = join(workspace, 'efs-' + failpoint + '-' + scenario.name + '-' + action)
+                const expectedRoot = root + '-reference'
+                await cloneRoot(source, root)
+                if (scenario.prepare) {
+                    await efsDatabase(root, (database) => requestRequired(database, scenario.prepare))
+                }
+                const before = await efsInventory(root)
+                await cloneRoot(root, expectedRoot)
+                await efsDatabase(expectedRoot, (database) =>
+                    requestRequired(database, scenario.request)
+                )
+                const expectedAfter = await efsInventory(expectedRoot)
+                const writer = new EfsMachine(root, {
+                    FYLO_RUST_FAILPOINT: failpoint, FYLO_RUST_FAILPOINT_ACTION: action
+                })
+                const started = Date.now()
+                let response
+                let crashed = false
+                try {
+                    await requestRequired(writer, { op: 'handshake' })
+                    try {
+                        response = await writer.request(scenario.request)
+                    } catch (error) {
+                        await withDeadline(writer.exited, label + ' aborted process')
+                        assert(action === 'abort' && writer.child.signalCode !== null,
+                            label + ': request failed without an injected process abort: ' + error)
+                        crashed = true
+                    }
+                    if (!crashed && !response.ok) {
+                        assert(response.error?.code !== 'ENATIVE_UNSUPPORTED',
+                            label + ': EFS required mutation was unsupported')
+                        assert(action !== 'abort', label + ': abort returned an ordinary error')
+                        if (action === 'enospc') {
+                            assert(/disk|space|full/i.test(response.error?.message),
+                                label + ': full-volume error lost its identity')
+                        }
+                        if (action === 'edquot') {
+                            assert(/quota/i.test(response.error?.message),
+                                label + ': quota error lost its identity')
+                        }
+                        assert((await efsJournals(root)).length === 0,
+                            label + ': failed live writer left recovery work')
+                        assert(sameInventory(await efsInventory(root), before),
+                            label + ': live rollback changed payload/metadata/native mode/time')
+                    }
+                } finally {
+                    await writer.close()
+                }
+                const finished = Date.now()
+                if (!crashed && response.ok) {
+                    await rm(root, { recursive: true, force: true })
+                    await rm(expectedRoot, { recursive: true, force: true })
+                    continue
+                }
+                reached.add(failpoint)
+                interrupted++
+                const journals = await efsJournals(root)
+                if (crashed && ['before-commit-marker', 'after-commit-marker'].includes(failpoint)) {
+                    const phase = failpoint === 'after-commit-marker' ? 'committed' : 'active'
+                    assert(journals.some((journal) => journal.phase === phase),
+                        label + ': interrupted journal did not retain ' + phase + ' phase')
+                }
+                if (crashed && scenario.pairMove && pairPoints.includes(failpoint)) {
+                    assert(journals.some((journal) =>
+                        journal.captures.filter((capture) =>
+                            capture.path.endsWith('.fylo-attrs')
+                        ).length >= 2
+                    ), label + ': source and destination sidecars were not both captured')
+                }
+                await recoverEfs(root)
+                const recovered = await efsInventory(root)
+                const isBefore = sameInventory(recovered, before)
+                const isAfter = sameInventory(
+                    comparableInventory(recovered), comparableInventory(expectedAfter)
+                )
+                assert(isBefore || isAfter, label + ': recovery produced a mixed payload/metadata pair')
+                if (crashed && failpoint === 'before-commit-marker') {
+                    assert(isBefore, label + ': active journal did not restore complete before-images')
+                }
+                if (crashed && failpoint === 'after-commit-marker') {
+                    assert(isAfter, label + ': committed journal lost durable pair state')
+                }
+                if (!isBefore) assertCommittedTimes(before, recovered, started, finished, label)
+                await recoverEfs(root)
+                assert(sameInventory(await efsInventory(root), recovered),
+                    label + ': repeated recovery changed metadata, permissions or timestamps')
+                await rm(root, { recursive: true, force: true })
+                await rm(expectedRoot, { recursive: true, force: true })
+            }
+        }
+    }
+    const missing = failpoints.filter((name) => !reached.has(name))
+    assert(missing.length === 0, 'EFS crash scenarios missed declared transitions: ' + missing.join(', '))
+    console.log('Validated ' + interrupted + ' EFS-profile interrupted mutations; remote qualification pending')
 }
