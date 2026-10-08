@@ -29,6 +29,7 @@ class ReleaseLoop {
         this.responses = []
         this.waiters = []
         this.exited = once(this.child, 'exit')
+        this.closed = once(this.child, 'close')
         this.child.stderr.setEncoding('utf8')
         this.child.stderr.on('data', (chunk) => {
             this.stderr += chunk
@@ -53,10 +54,12 @@ class ReleaseLoop {
     }
 
     async stop(crash = false) {
-        if (this.child.exitCode !== null) return
-        if (crash) this.child.kill(process.platform === 'win32' ? undefined : 'SIGKILL')
-        else this.child.stdin.end()
-        await this.exited
+        if (this.child.exitCode === null && this.child.signalCode === null) {
+            if (crash) this.child.kill(process.platform === 'win32' ? undefined : 'SIGKILL')
+            else this.child.stdin.end()
+            await this.exited
+        }
+        await this.closed
     }
 }
 
@@ -233,38 +236,45 @@ describe.skipIf(!required)('exact native release root lease', () => {
             )
             await writeFile(
                 validator,
-                `#!/bin/sh\nprintf '%s\\n' "$$" > "$FYLO_CHEX_PID_FILE"\nIFS= read -r request || exit 1\nprintf '%s\\n' '{"ok":true,"result":{"body":"validated"}}'\nwhile :; do sleep 1; done\n`
+                `#!/bin/sh\nprintf '%s\\n' "$$" > "$FYLO_CHEX_PID_FILE"\nIFS= read -r request || exit 1\nprintf '%s\\n' '{"ok":true,"result":{"body":"validated"}}'\nexec sleep 3600\n`
             )
             await chmod(validator, 0o755)
 
             const config = path.join(root, 'application.json')
             await writeFile(config, JSON.stringify({ fylo: { chex: { binary: validator } } }))
             const loop = new ReleaseLoop(root, { FYLO_CHEX_PID_FILE: pidFile }, config)
-            const response = await loop.request({
-                op: 'schemaValidate',
-                collection: 'messages',
-                schemaDir: schema,
-                document: { body: 'input' }
-            })
-            expect(response).toMatchObject({
-                ok: true,
-                result: { valid: true, document: { body: 'validated' } }
-            })
+            try {
+                const response = await loop.request({
+                    op: 'schemaValidate',
+                    collection: 'messages',
+                    schemaDir: schema,
+                    document: { body: 'input' }
+                })
+                expect(response).toMatchObject({
+                    ok: true,
+                    result: { valid: true, document: { body: 'validated' } }
+                })
 
-            const validatorPid = Number((await readFile(pidFile, 'utf8')).trim())
-            await deadline(
-                waitForProcessExit(validatorPid),
-                1_000,
-                'schema validator outlived the request that owned it'
-            )
-            const stdoutClosed = once(loop.reader, 'close')
-            loop.child.kill('SIGKILL')
-            await deadline(loop.exited, 5_000, 'machine loop did not exit after SIGKILL')
-            await deadline(
-                stdoutClosed,
-                1_000,
-                'machine stdout remained open after its process exited'
-            )
+                const validatorPid = Number((await readFile(pidFile, 'utf8')).trim())
+                expect(Number.isSafeInteger(validatorPid)).toBe(true)
+                expect(validatorPid).toBeGreaterThan(0)
+                await deadline(
+                    waitForProcessExit(validatorPid),
+                    1_000,
+                    'schema validator outlived the request that owned it'
+                )
+                const stdoutClosed = once(loop.reader, 'close')
+                loop.child.kill('SIGKILL')
+                await deadline(loop.exited, 5_000, 'machine loop did not exit after SIGKILL')
+                await deadline(
+                    stdoutClosed,
+                    1_000,
+                    'machine stdout remained open after its process exited'
+                )
+                await deadline(loop.closed, 1_000, 'machine stdio remained open after process exit')
+            } finally {
+                await deadline(loop.stop(true), 5_000, 'validator fixture machine did not close')
+            }
         }
     )
 })

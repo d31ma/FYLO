@@ -283,6 +283,13 @@ describe.skipIf(!required || process.platform === 'win32')('explicit EFS metadat
             const original = await database.result({ op: 'getMeta', collection: 'records', id, access: owner })
             const first = await database.result({ op: 'commit', message: 'before metadata change' })
             expect(first.id).toBeString()
+            const firstHistory = await database.result({ op: 'log', limit: 10 })
+            expect(Array.isArray(firstHistory)).toBe(true)
+            expect(firstHistory.length).toBeGreaterThan(0)
+            expect(firstHistory.length).toBeLessThanOrEqual(10)
+            expect(firstHistory[0]).toMatchObject({
+                id: first.id, message: 'before metadata change'
+            })
             const branch = await database.result({ op: 'checkout', branch: 'review', create: true })
             expect(await pairSnapshot(await recordPath(branch.root, id))).toEqual(before)
             await database.result({
@@ -309,7 +316,10 @@ describe.skipIf(!required || process.platform === 'win32')('explicit EFS metadat
             const inspection = await database.result({ op: 'inspectCollection', collection: 'records' })
             expect(Number(inspection.docsStored)).toBe(1)
             const history = await database.result({ op: 'log', limit: 10 })
-            expect(history.commits.length).toBeGreaterThan(0)
+            expect(Array.isArray(history)).toBe(true)
+            expect(history.length).toBe(firstHistory.length)
+            expect(history).toEqual(firstHistory)
+            expect(await database.result({ op: 'log', limit: 1 })).toEqual([firstHistory[0]])
         } finally {
             await database.close()
         }

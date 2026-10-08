@@ -45,6 +45,15 @@ Within protocol v1:
 - changing idempotency, durability, or retry behavior requires a new protocol
   version or an explicit compatibility RFC.
 
+## Repository history
+
+The `log` operation returns its commit array directly in `result`, in
+newest-to-oldest first-parent order. Each commit has `id`, `branch`, `parents`,
+`message`, `createdAt` and `root`. `limit` defaults to 50 and must be between 1
+and 1000. `restoreCommit` moves the active branch head to the selected commit;
+subsequent `log` requests traverse that commit's first-parent history. Stored
+commit manifests remain immutable.
+
 ## Embedded serverless queue
 
 Protocol v1 exposes a brokerless filesystem queue through `queuePublish`,

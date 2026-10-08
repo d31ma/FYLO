@@ -32,6 +32,14 @@ Resolve record binding and add same-payload cross-record swap fixtures before
 closing identity-swap behavior. Unsupported-lock refusal needs an actual
 controlled filesystem fixture; supported local contention is not that test.
 
+CHEX teardown currently kills and waits for its direct child; it does not own
+or terminate validator grandchildren. The local validator fixture uses a single
+PID and checks direct-child reaping, machine exit, and stdio closure. Passing
+that fixture does not qualify validators that spawn subprocesses. Their cleanup
+needs a separately scoped production lifecycle change and a regression with a
+recorded long-lived descendant, inherited stdio, and immediate owner teardown.
+Keep the native supervisor's zero-survivor check throughout that qualification.
+
 ## Actual EFS gate
 
 A separately authorized disposable environment is required. Lambda can mount
