@@ -40,6 +40,12 @@ needs a separately scoped production lifecycle change and a regression with a
 recorded long-lived descendant, inherited stdio, and immediate owner teardown.
 Keep the native supervisor's zero-survivor check throughout that qualification.
 
+The uncompiled invocation successor contains this risk by refusing explicit
+`schemaValidate` requests and strict-schema host configuration before lease
+acquisition. These refusal and native-compatibility regressions need their own
+admitted lane. Embedded schema materialization remains separate from external
+validator lifetime qualification.
+
 ## Actual EFS gate
 
 A separately authorized disposable environment is required. Lambda can mount

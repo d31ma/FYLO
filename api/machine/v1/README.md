@@ -109,6 +109,12 @@ This invocation slice refuses `log`, `commit`, `checkout`, `branch`, `status`,
 retains legacy capability fields; those fields do not qualify these operations
 for invocation use. Malformed input and forbidden configuration return I/O errors.
 
+The invocation candidate also refuses `schemaValidate` and host configuration
+with `strict_schema=true` before acquiring a lease. External validator deadlines
+and checked descendant cleanup are not qualified. Embedded `schemaMaterialize`,
+non-strict schema inspection and encryption configuration retain their existing
+scope. Persistent streaming and native schema validation remain available.
+
 The runtime acquires its own kernel-admitted cooperative lease, recovers before
 dispatch and keeps engines/handles private. Recovery enumerates at most 10,000
 unique collection names per main/active root. It buffers the existing response and

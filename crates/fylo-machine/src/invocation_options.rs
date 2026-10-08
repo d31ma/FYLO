@@ -30,6 +30,7 @@ impl InvocationOptions {
     ) -> io::Result<Self> {
         Self::require_unleased(&root)?;
         Self::check_work_budget((deadline, cleanup_reserve))?;
+        Self::require_bounded_validation(&application)?;
         let root = Self::canonical_root(root)?;
         Ok(Self {
             root,
@@ -88,6 +89,16 @@ impl InvocationOptions {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "invocations cannot borrow an external root lease",
+            ));
+        }
+        Ok(())
+    }
+
+    fn require_bounded_validation(application: &ApplicationConfig) -> io::Result<()> {
+        if application.storage.strict_schema {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "this invocation slice excludes strict schema validation until external helper deadlines and checked descendant cleanup are qualified",
             ));
         }
         Ok(())

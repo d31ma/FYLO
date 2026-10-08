@@ -76,6 +76,7 @@ impl InvocationRuntime {
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?
             .into_inner();
         self.require_host_configuration(&request)?;
+        Self::require_bounded_validation(&request)?;
         Self::require_supported_scope(&request)?;
         // A verified alias uses the canonical private session default. This
         // also avoids acquiring a second native lease for its textual alias.
@@ -142,6 +143,16 @@ impl InvocationRuntime {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "this invocation slice excludes version/repository operations whose additional read sets are not qualified",
+            ));
+        }
+        Ok(())
+    }
+
+    fn require_bounded_validation(request: &Value) -> io::Result<()> {
+        if request.get("op").and_then(Value::as_str) == Some("schemaValidate") {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "this invocation slice excludes external schema validation until helper deadlines and checked descendant cleanup are qualified",
             ));
         }
         Ok(())
