@@ -1089,11 +1089,11 @@ impl NativeWriteRoot {
         };
         for shard in shards {
             let shard = shard.map_err(NativeStorageError::io)?;
-            let kind = shard.file_type().map_err(NativeStorageError::io)?;
-            if kind.is_symlink() {
+            let file_type = shard.file_type().map_err(NativeStorageError::io)?;
+            if file_type.is_symlink() {
                 return Err(unsafe_repository_path());
             }
-            if !kind.is_dir() {
+            if !file_type.is_dir() {
                 continue;
             }
             for record in fs::read_dir(shard.path()).map_err(NativeStorageError::io)? {
