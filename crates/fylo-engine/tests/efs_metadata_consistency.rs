@@ -7,13 +7,13 @@ use std::fs;
 use std::os::unix::fs::{MetadataExt, symlink};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Barrier};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::mpsc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use fylo_engine::{AccessContext, EngineErrorCode, ReadOnlyEngine, WriteEngine};
 use fylo_storage_native::{
     CollectionKind, FilesystemProfile, NativeRoot, NativeStorageErrorCode, NativeWriteRoot,
-    PutDocumentOptions, PutRawFileOptions, RootLease, RootOpenOptions, WriteAccess, sidecar_path,
+    PutDocumentOptions, PutRawFileOptions, RootLease, RootOpenOptions, WriteAccess, WriteActor, sidecar_path,
 };
 use serde_json::json;
 
@@ -75,6 +75,11 @@ impl Fixture {
         NativeWriteRoot::open_profiled(self.options()).unwrap()
     }
 
+    fn owner(&self) -> WriteActor {
+        let metadata = fs::metadata(&self.root).unwrap();
+        WriteActor::new(metadata.uid(), [metadata.gid()])
+    }
+
     fn reader(&self) -> ReadOnlyEngine {
         ReadOnlyEngine::open_profiled(self.options()).unwrap()
     }
@@ -127,6 +132,7 @@ fn profiled_reads_keep_payload_custom_canonical_and_access_together() {
 #[test]
 fn raw_descriptor_fields_override_colliding_custom_metadata_inside_the_envelope() {
     let fixture = Fixture::new();
+    let owner = fixture.owner();
     fixture.writer().set_record_metadata("assets", RAW_ID, json!({
         "id": "spoofed-id",
         "createdAt": 0,
@@ -141,7 +147,7 @@ fn raw_descriptor_fields_override_colliding_custom_metadata_inside_the_envelope(
         "checksumSHA256": "spoofed-checksum",
         "lastModified": 0,
         "label": "preserved-custom-value",
-    }).as_object().unwrap(), None).unwrap();
+    }).as_object().unwrap(), Some(&owner)).unwrap();
     let engine = fixture.reader();
     let actor = fixture.outsider();
     let raw = engine.get_file_as("assets", RAW_ID, &actor).unwrap();
@@ -161,13 +167,14 @@ fn raw_descriptor_fields_override_colliding_custom_metadata_inside_the_envelope(
 fn stable_missing_and_corrupt_manifests_never_fall_back_to_public_access() {
     for corruption in ["missing", "malformed"] {
         let fixture = Fixture::new();
+        let owner = fixture.owner();
         let engine = fixture.reader();
         let actor = fixture.outsider();
         let writer = fixture.writer();
         writer.set_record_access("records", ID,
-            WriteAccess { mode: Some(0o600), ..WriteAccess::default() }, None).unwrap();
+            WriteAccess { mode: Some(0o600), ..WriteAccess::default() }, Some(&owner)).unwrap();
         writer.set_record_access("assets", RAW_ID,
-            WriteAccess { mode: Some(0o600), ..WriteAccess::default() }, None).unwrap();
+            WriteAccess { mode: Some(0o600), ..WriteAccess::default() }, Some(&owner)).unwrap();
         assert_eq!(engine.get_as("records", ID, &actor).unwrap_err().code(), EngineErrorCode::Access);
         for path in [fixture.document_path(), fixture.raw_path(RAW_ID)] {
             if corruption == "missing" {
@@ -222,15 +229,22 @@ fn a_writing_generation_blocks_metadata_and_payload_as_one_read_attempt() {
 #[test]
 fn revocation_never_exposes_private_payload_or_metadata_from_a_later_generation() {
     let fixture = Fixture::new();
+    let owner = fixture.owner();
     let actor_uid = fs::metadata(fixture.document_path()).unwrap().uid().wrapping_add(1).max(1);
-    let barrier = Arc::new(Barrier::new(3));
+    // Finish fallible owner setup before any scoped reader can wait.
+    let writer = fixture.writer();
+    writer.replace_record_metadata("assets", RAW_ID, json!({"visibility":"public","copy":"public"}).as_object().unwrap(), Some(&owner)).unwrap();
+    let startup_timeout = Duration::from_secs(5);
+    let (ready_sender, ready_receiver) = mpsc::channel();
     std::thread::scope(|scope| {
         let readers: Vec<_> = (0..2).map(|_| {
-            let barrier = barrier.clone();
+            let ready_sender = ready_sender.clone();
+            let (start_sender, start_receiver) = mpsc::sync_channel(1);
             let options = fixture.options();
-            scope.spawn(move || {
+            let reader = scope.spawn(move || {
                 let opened = ReadOnlyEngine::open_profiled(options);
-                barrier.wait();
+                ready_sender.send(()).unwrap();
+                start_receiver.recv_timeout(startup_timeout).unwrap();
                 let engine = opened.unwrap();
                 let actor = AccessContext::new(actor_uid, []);
                 for _ in 0..600 {
@@ -250,27 +264,31 @@ fn revocation_never_exposes_private_payload_or_metadata_from_a_later_generation(
                     }
                     std::thread::yield_now();
                 }
-            })
+            });
+            (reader, start_sender)
         }).collect();
-        let writer = fixture.writer();
-        writer.replace_record_metadata("assets", RAW_ID, json!({"visibility":"public","copy":"public"}).as_object().unwrap(), None).unwrap();
-        barrier.wait();
+        for _ in 0..2 {
+            ready_receiver.recv_timeout(startup_timeout).unwrap();
+        }
+        for (_, start_sender) in &readers {
+            start_sender.send(()).unwrap();
+        }
         for _ in 0..40 {
             for (collection, id) in [("records", ID), ("assets", RAW_ID)] {
-                writer.set_record_access(collection, id, WriteAccess { mode: Some(0o600), ..WriteAccess::default() }, None).unwrap();
+                writer.set_record_access(collection, id, WriteAccess { mode: Some(0o600), ..WriteAccess::default() }, Some(&owner)).unwrap();
                 if collection == "records" {
-                    writer.patch_document(collection, id, br#"{"visibility":"private"}"#, None).unwrap();
+                    writer.patch_document(collection, id, br#"{"visibility":"private"}"#, Some(&owner)).unwrap();
                 }
-                writer.replace_record_metadata(collection, id, json!({"visibility":"private","copy":"private"}).as_object().unwrap(), None).unwrap();
+                writer.replace_record_metadata(collection, id, json!({"visibility":"private","copy":"private"}).as_object().unwrap(), Some(&owner)).unwrap();
                 std::thread::yield_now();
                 if collection == "records" {
-                    writer.patch_document(collection, id, br#"{"visibility":"public"}"#, None).unwrap();
+                    writer.patch_document(collection, id, br#"{"visibility":"public"}"#, Some(&owner)).unwrap();
                 }
-                writer.replace_record_metadata(collection, id, json!({"visibility":"public","copy":"public"}).as_object().unwrap(), None).unwrap();
-                writer.set_record_access(collection, id, WriteAccess { mode: Some(0o644), ..WriteAccess::default() }, None).unwrap();
+                writer.replace_record_metadata(collection, id, json!({"visibility":"public","copy":"public"}).as_object().unwrap(), Some(&owner)).unwrap();
+                writer.set_record_access(collection, id, WriteAccess { mode: Some(0o644), ..WriteAccess::default() }, Some(&owner)).unwrap();
             }
         }
-        for reader in readers { reader.join().unwrap(); }
+        for (reader, _) in readers { reader.join().unwrap(); }
     });
     let engine = fixture.reader();
     let actor = fixture.outsider();
