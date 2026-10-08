@@ -112,16 +112,18 @@ impl InvocationOptions {
                 "invocation root must be an existing directory",
             ));
         }
-        if let Some(repository) = root.repository_root() {
-            if fylo_vfs::canonicalize(repository)? != canonical {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "invocation root and repository must be the same physical directory",
-                ));
-            }
+        if let Some(repository) = root.repository_root()
+            && fylo_vfs::canonicalize(repository)? != canonical
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invocation root and repository must be the same physical directory",
+            ));
         }
-        Ok(RootOpenOptions::new(&canonical)
+        let canonical_root = RootOpenOptions::new(&canonical)
             .with_repository(&canonical)
-            .with_profile(root.filesystem_profile()))
+            .with_profile(root.filesystem_profile());
+        drop(root);
+        Ok(canonical_root)
     }
 }

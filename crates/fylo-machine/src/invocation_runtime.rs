@@ -35,10 +35,12 @@ impl InvocationRuntime {
         InvocationOptions::check_work_budget(self.options.budget())?;
         let root = self.options.root();
         let lease = RootLease::acquire_with_profile(root.root(), root.filesystem_profile())
-            .map_err(Self::storage_error)?;
+            .map_err(|error| Self::storage_error(&error))?;
         // Retain every inner result until all private owning handles are gone.
         let result = self.execute_owned(&lease, &request);
-        lease.release_checked().map_err(Self::storage_error)?;
+        lease
+            .release_checked()
+            .map_err(|error| Self::storage_error(&error))?;
         self.options.check_completion_deadline()?;
         result
     }
@@ -67,7 +69,9 @@ impl InvocationRuntime {
                 "acquired lease differs from the admitted invocation root",
             ));
         }
-        lease.assert_owned().map_err(Self::storage_error)
+        lease
+            .assert_owned()
+            .map_err(|error| Self::storage_error(&error))
     }
 
     fn prepare_request(&self, frame: &[u8]) -> io::Result<Value> {
@@ -165,7 +169,7 @@ impl InvocationRuntime {
         )
     }
 
-    fn storage_error(error: fylo_storage_native::NativeStorageError) -> io::Error {
+    fn storage_error(error: &fylo_storage_native::NativeStorageError) -> io::Error {
         io::Error::other(error.to_string())
     }
 }

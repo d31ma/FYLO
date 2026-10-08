@@ -538,12 +538,13 @@ impl Session {
         })?;
         let options = self
             .root_options(repository.clone(), repository.clone())
-            .map_err(Self::invocation_machine_error)?;
+            .map_err(|error| Self::invocation_machine_error(&error))?;
         NativeWriteRoot::open_profiled(options)
             .and_then(|writer| writer.recover_repository_materialization())
             .map_err(|error| std::io::Error::other(error.to_string()))?;
         InvocationOptions::check_work_budget(budget)?;
-        let active = active_worktree(repository).map_err(Self::invocation_machine_error)?;
+        let active =
+            active_worktree(repository).map_err(|error| Self::invocation_machine_error(&error))?;
         self.recover_invocation_root(repository, budget)?;
         if active != *repository {
             self.recover_invocation_root(&active, budget)?;
@@ -562,7 +563,7 @@ impl Session {
         })?;
         let options = self
             .root_options(root.to_path_buf(), repository.clone())
-            .map_err(Self::invocation_machine_error)?;
+            .map_err(|error| Self::invocation_machine_error(&error))?;
         let native = NativeRoot::open_profiled(options.clone())
             .map_err(|error| std::io::Error::other(error.to_string()))?;
         let names = Self::invocation_collection_names(&native, budget)?;
@@ -653,7 +654,7 @@ impl Session {
         }
     }
 
-    fn invocation_machine_error(error: MachineError) -> std::io::Error {
+    fn invocation_machine_error(error: &MachineError) -> std::io::Error {
         std::io::Error::other(format!("{}: {}", error.code, error.message))
     }
 
@@ -841,7 +842,7 @@ impl Session {
         }
     }
 
-    fn handshake(&self) -> Value {
+    fn handshake_capabilities(&self) -> serde_json::Map<String, Value> {
         let capabilities = serde_json::Map::from_iter([
             ("handshake".into(), Value::Bool(true)),
             (
@@ -911,6 +912,11 @@ impl Session {
             );
             capabilities
         };
+        capabilities
+    }
+
+    fn handshake(&self) -> Value {
+        let capabilities = self.handshake_capabilities();
         let leases = self.leases.borrow();
         let lease = self.default_root.as_ref().and_then(|root| leases.get(root));
         // This reports metadata ownership and the actual local advisory-lock
