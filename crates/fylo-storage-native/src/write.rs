@@ -2865,7 +2865,7 @@ fn validate_bound_captures(
     transaction: &Path,
     captures: &[Capture],
 ) -> Result<(), NativeStorageError> {
-    let mut by_path = BTreeMap::new();
+    let mut by_path = std::collections::BTreeMap::new();
     let mut records = BTreeSet::new();
     for capture in captures {
         if by_path.insert(capture.path.as_str(), capture).is_some() {
