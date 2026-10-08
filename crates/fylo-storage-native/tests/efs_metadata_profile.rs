@@ -1053,14 +1053,14 @@ fn cross_owner_projection_and_denied_actor_do_not_mutate_either_member() {
             )
             .is_err()
     );
-    let foreign_gid = native.gid().wrapping_add(1).max(1);
+    let unrelated_group = native.gid().wrapping_add(1).max(1);
     assert!(
         writer
             .set_record_access(
                 "records",
                 ID,
                 WriteAccess {
-                    gid: Some(foreign_gid),
+                    gid: Some(unrelated_group),
                     ..WriteAccess::default()
                 },
                 None
