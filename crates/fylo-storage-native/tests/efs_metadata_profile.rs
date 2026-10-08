@@ -53,6 +53,11 @@ impl Fixture {
         NativeWriteRoot::open_profiled(self.options()).unwrap()
     }
 
+    fn actor(&self) -> WriteActor {
+        let owner = fs::metadata(&self.root).unwrap();
+        WriteActor::new(owner.uid(), [owner.gid()])
+    }
+
     fn reader(&self) -> NativeRoot {
         NativeRoot::open_profiled(self.options()).unwrap()
     }
@@ -191,17 +196,18 @@ fn document_and_raw_metadata_are_mandatory_private_manifests() {
 fn metadata_replacement_and_removal_preserve_payload_time_and_access() {
     let fixture = Fixture::empty();
     let writer = fixture.seed();
+    let actor = fixture.actor();
     let records = fixture.reader().collection("records").unwrap();
     let before = records.read_document(ID).unwrap();
     let before_bytes = fs::read(&before.path).unwrap();
     writer.set_record_metadata(
-        "records", ID, json!({"reviewer": null, "nested": [1, true, "x"]}).as_object().unwrap(), None
+        "records", ID, json!({"reviewer": null, "nested": [1, true, "x"]}).as_object().unwrap(), Some(&actor)
     ).unwrap();
     let metadata = records.read_custom_metadata(ID).unwrap();
     assert!(!metadata.contains_key("reviewer"));
     assert_eq!(metadata["nested"], json!([1, true, "x"]));
     let first_stamp = attributes(&before.path)["user.fylo.meta-updated-at"].clone();
-    writer.replace_record_metadata("records", ID, json!({}).as_object().unwrap(), None).unwrap();
+    writer.replace_record_metadata("records", ID, json!({}).as_object().unwrap(), Some(&actor)).unwrap();
     assert!(records.read_custom_metadata(ID).unwrap().is_empty());
     assert!(sidecar(&before.path).is_file(), "attribute removal removed mandatory manifest");
     let after = records.read_document(ID).unwrap();
@@ -220,25 +226,26 @@ fn metadata_replacement_and_removal_preserve_payload_time_and_access() {
 fn delete_restore_sql_delete_and_reshard_move_entire_pairs() {
     let fixture = Fixture::empty();
     let writer = fixture.seed();
+    let actor = fixture.actor();
     let records = fixture.reader().collection("records").unwrap();
     let before = records.read_document(ID).unwrap();
     let manifest = fs::read(sidecar(&before.path)).unwrap();
-    writer.delete_document("records", ID, None).unwrap();
+    writer.delete_document("records", ID, Some(&actor)).unwrap();
     assert!(!before.path.exists());
     assert!(!sidecar(&before.path).exists());
     let deleted = records.read_deleted_document(ID).unwrap();
     assert_eq!(fs::read(sidecar(&deleted.path)).unwrap(), manifest);
     assert_eq!(deleted.access, before.access);
-    writer.restore_document("records", ID, None).unwrap();
+    writer.restore_document("records", ID, Some(&actor)).unwrap();
     assert!(!deleted.path.exists());
     assert!(!sidecar(&deleted.path).exists());
     assert_eq!(fs::read(sidecar(&before.path)).unwrap(), manifest);
     writer.execute_sql_mutation(
-        "DELETE FROM records WHERE name = 'Ada'", None, WriteAccess::default()
+        "DELETE FROM records WHERE name = 'Ada'", Some(&actor), WriteAccess::default()
     ).unwrap();
     let deleted = records.read_deleted_document(ID).unwrap();
     assert_eq!(fs::read(sidecar(&deleted.path)).unwrap(), manifest);
-    writer.restore_document("records", ID, None).unwrap();
+    writer.restore_document("records", ID, Some(&actor)).unwrap();
     assert_eq!(writer.reshard_collection("records", 3).unwrap(), 1);
     let moved = fixture.reader().collection("records").unwrap().read_document(ID).unwrap();
     assert_ne!(moved.path, before.path);
@@ -251,11 +258,11 @@ fn delete_restore_sql_delete_and_reshard_move_entire_pairs() {
 
     let assets = fixture.reader().collection("assets").unwrap();
     let raw_before = assets.read_raw_file(RAW_ID).unwrap();
-    writer.delete_document("assets", RAW_ID, None).unwrap();
+    writer.delete_document("assets", RAW_ID, Some(&actor)).unwrap();
     let raw_deleted = assets.read_deleted_raw_file(RAW_ID).unwrap();
     assert_eq!(raw_deleted.key, raw_before.key);
     assert_eq!(raw_deleted.custom_metadata, raw_before.custom_metadata);
-    writer.restore_document("assets", RAW_ID, None).unwrap();
+    writer.restore_document("assets", RAW_ID, Some(&actor)).unwrap();
     assert_eq!(writer.reshard_collection("assets", 3).unwrap(), 1);
     let raw_after = fixture.reader().collection("assets").unwrap().read_raw_file(RAW_ID).unwrap();
     assert_eq!(raw_after.key, raw_before.key);
@@ -337,6 +344,10 @@ fn cross_owner_projection_and_denied_actor_do_not_mutate_either_member() {
     assert!(writer.set_record_access(
         "records", ID, WriteAccess { gid: Some(foreign_gid), ..WriteAccess::default() }, None
     ).is_err());
+    let anonymous = writer.set_record_metadata(
+        "records", ID, json!({"reviewer": "anonymous"}).as_object().unwrap(), None
+    ).unwrap_err();
+    assert_eq!(anonymous.code(), NativeStorageErrorCode::PermissionDenied);
     let denied = WriteActor::new(foreign_uid, []);
     let error = writer.set_record_metadata(
         "records", ID, json!({"reviewer": "denied"}).as_object().unwrap(), Some(&denied)
@@ -432,6 +443,7 @@ fn a_lost_root_owner_cannot_continue_writing_or_recovering() {
 fn profiled_repository_materialization_and_restore_keep_metadata_history() {
     let fixture = Fixture::empty();
     let writer = fixture.seed();
+    let actor = fixture.actor();
     let before = fixture.reader().collection("records").unwrap().read_document(ID).unwrap();
     let attrs = attributes(&before.path);
     let first = writer.commit_if_dirty("profiled baseline").unwrap().unwrap();
@@ -453,7 +465,7 @@ fn profiled_repository_materialization_and_restore_keep_metadata_history() {
     assert_private_sidecar(&copied.path);
     let branch_writer = NativeWriteRoot::open_profiled(options()).unwrap();
     branch_writer.set_record_metadata(
-        "records", ID, json!({"reviewer": "branch"}).as_object().unwrap(), None
+        "records", ID, json!({"reviewer": "branch"}).as_object().unwrap(), Some(&actor)
     ).unwrap();
     let second = branch_writer.commit_if_dirty("profiled metadata change").unwrap().unwrap();
     assert_ne!(second, first);
