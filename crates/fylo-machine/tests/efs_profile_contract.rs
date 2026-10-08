@@ -218,7 +218,8 @@ fn profiled_machine_retains_frame_limits_root_config_schema_and_credentials() {
     let native = NativeRoot::open_profiled(fixture.options().with_lease(lease)).unwrap();
     let collection = native.collection("records").unwrap();
     let stored = collection.read_document(ID).unwrap();
-    assert_eq!(stored.path.parent().unwrap().file_name().unwrap(), "4V");
+    assert_eq!(collection.shard_width(), 2);
+    assert_eq!(stored.path.parent().unwrap().file_name().unwrap(), "CO");
     let body: Value = serde_json::from_slice(&stored.bytes).unwrap();
     assert_ne!(body["secret"], "fixture-plaintext");
     assert_eq!(body["name"], "Ada");
