@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{FilesystemProfile, NativeStorageError, NativeStorageErrorCode, RootLease};
 
-const FORMAT: &str = "fylo.filesystem-profile.v1";
+const FORMAT: &str = "fylo.filesystem-profile.v2";
 
 #[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -104,6 +104,12 @@ impl ProfileManifest {
             }
         }
         let descriptor: Self = serde_json::from_slice(&bytes).map_err(|_| corrupt_marker())?;
+        if descriptor.format == "fylo.filesystem-profile.v1" {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::Unsupported,
+                "unbound experimental v1 roots are refused; no automatic adoption or migration",
+            ));
+        }
         if descriptor.format != FORMAT || descriptor.profile != "efs-sidecar-v1" {
             return Err(corrupt_marker());
         }

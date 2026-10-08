@@ -28,8 +28,16 @@ materialization. Existing version-2 metadata objects do not store historical
 payload mtime; require existing native VCS semantics rather than inventing fields
 or silently weakening rollback and snapshot comparisons.
 
-Resolve record binding and add same-payload cross-record swap fixtures before
-closing identity-swap behavior. Unsupported-lock refusal needs an actual
+The v2 binding contract is accepted only for this isolated unreleased candidate.
+Require reciprocal v1/v2 reader refusal without mutation, same-payload/time
+cross-record and cross-collection swaps, every binding field/encoding, payload
+drift, missing binding and metadata-write laundering. Verify reserved-binding
+retention and unchanged custom-key/byte limits. Exercise valid and corrupted
+before-image pairs, partial capture, VCS staging/rollback/rollforward, deleted
+records, idempotent recovery and quiesced copies. Native defaults and metadata
+bytes must remain compatible. Source checks do not qualify these behaviors;
+the historical local pass applies only to its pinned older checkpoint.
+Unsupported-lock refusal needs an actual
 controlled filesystem fixture; supported local contention is not that test.
 
 CHEX teardown currently kills and waits for its direct child; it does not own

@@ -230,6 +230,22 @@ impl NativeWriteRoot {
         self.root.assert_profile_owned()
     }
 
+    fn overwrite_record(&self, path: &Path, bytes: &[u8]) -> Result<(), NativeStorageError> {
+        if self.filesystem_profile() == super::FilesystemProfile::Native {
+            return overwrite_in_place(path, bytes);
+        }
+        let mut attributes =
+            super::sidecar_attributes::SidecarAttributes::read_path(&self.root, path)?;
+        overwrite_in_place(path, bytes)?;
+        super::sidecar_attributes::SidecarAttributes::refresh_binding(
+            &self.root,
+            path,
+            &mut attributes,
+        )?;
+        super::sidecar_attributes::SidecarAttributes::replace(&self.root, path, &attributes)?;
+        failpoint("after-metadata-write")
+    }
+
     fn publish_payload(
         &self, path: &Path, bytes: &[u8], access: WriteAccess,
     ) -> Result<(), NativeStorageError> {
@@ -611,7 +627,7 @@ impl NativeWriteRoot {
         let outcome = (|| {
             transaction.capture(&target)?;
             capture_index(&mut transaction, &collection)?;
-            overwrite_in_place(&target, &canonical)?;
+            self.overwrite_record(&target, &canonical)?;
             self.apply_index_delta(
                 &collection,
                 &before,
@@ -1418,7 +1434,7 @@ impl NativeWriteRoot {
         let outcome = (|| {
             transaction.capture(target)?;
             capture_index(&mut transaction, collection)?;
-            overwrite_in_place(target, canonical)?;
+            self.overwrite_record(target, canonical)?;
             self.apply_index_delta(
                 collection,
                 &before,
@@ -1535,7 +1551,7 @@ impl NativeWriteRoot {
             capture_documents(&mut transaction, documents)?;
             capture_index(&mut transaction, collection)?;
             for document in documents {
-                overwrite_in_place(&document.path, &document.encoded)?;
+                self.overwrite_record(&document.path, &document.encoded)?;
             }
             self.apply_index_delta(
                 collection,
@@ -2843,6 +2859,96 @@ fn rollback_step(step: &str, error: &NativeStorageError) -> NativeStorageError {
     )
 }
 
+fn validate_bound_captures(
+    root: &NativeRoot,
+    collection: &Path,
+    transaction: &Path,
+    captures: &[Capture],
+) -> Result<(), NativeStorageError> {
+    let mut by_path = BTreeMap::new();
+    let mut records = BTreeSet::new();
+    for capture in captures {
+        if by_path.insert(capture.path.as_str(), capture).is_some() {
+            return Err(bound_capture_error());
+        }
+        records.insert(
+            capture
+                .path
+                .strip_suffix(super::SIDECAR_SUFFIX)
+                .unwrap_or(&capture.path),
+        );
+    }
+    for relative in records {
+        let target = collection.join(safe_relative_path(relative)?);
+        if super::sidecar_attributes::SidecarAttributes::is_record_area(root, &target) {
+            super::sidecar_attributes::SidecarAttributes::record_identity(root, &target)?;
+            validate_bound_capture_pair(
+                root,
+                (&target, transaction),
+                by_path.get(relative).copied(),
+                by_path
+                    .get(format!("{relative}{}", super::SIDECAR_SUFFIX).as_str())
+                    .copied(),
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn bound_capture_error() -> NativeStorageError {
+    NativeStorageError::new(
+        NativeStorageErrorCode::CorruptMetadata,
+        "EFS before-image record pair or binding is inconsistent",
+    )
+}
+
+fn capture_backup(transaction: &Path, capture: &Capture) -> Result<PathBuf, NativeStorageError> {
+    Ok(transaction.join(safe_relative_path(
+        capture.backup.as_deref().ok_or_else(bound_capture_error)?,
+    )?))
+}
+
+fn validate_bound_capture_pair(
+    root: &NativeRoot,
+    (target, transaction): (&Path, &Path),
+    payload: Option<&Capture>,
+    manifest: Option<&Capture>,
+) -> Result<(), NativeStorageError> {
+    if payload.is_some_and(|capture| !capture.present) {
+        if manifest.is_none_or(|capture| capture.present) {
+            return Err(bound_capture_error());
+        }
+        return Ok(());
+    }
+    let manifest = manifest.ok_or_else(bound_capture_error)?;
+    if !manifest.present {
+        return if payload.is_none() {
+            Ok(())
+        } else {
+            Err(bound_capture_error())
+        };
+    }
+    let manifest_path = capture_backup(transaction, manifest)?;
+    let (mut file, _) = root.open_file(&manifest_path, 16 * 1024 * 1024)?;
+    let bytes = super::read_bounded((&mut file).take(16 * 1024 * 1024 + 1), 16 * 1024 * 1024)?;
+    let attributes = super::sidecar_attributes::SidecarAttributes::decode(&bytes)?;
+    let payload_path = payload
+        .map(|capture| capture_backup(transaction, capture))
+        .transpose()?
+        .unwrap_or_else(|| target.to_owned());
+    let (payload_file, metadata) = root.open_file(&payload_path, super::MAX_RAW_FILE_BYTES)?;
+    super::sidecar_attributes::SidecarAttributes::verify_owner(root, &metadata, payload.is_some())?;
+    super::sidecar_attributes::SidecarAttributes::verify_file_binding(
+        root,
+        &payload_file,
+        target,
+        &attributes,
+    )?;
+    root.verify_open_file_identity(&manifest_path, &file)?;
+    root.verify_open_file_identity(&payload_path, &payload_file)?;
+    root.assert_profile_owned()
+}
+
 fn restore_captures(
     root: &NativeRoot,
     collection_root: &Path,
@@ -2892,6 +2998,9 @@ fn restore_captures(
             }
             root.verify_open_file_identity(&backup, &file)?;
         }
+    }
+    if efs {
+        validate_bound_captures(root, collection_root, transaction_root, captures)?;
     }
     for capture in captures.iter().rev() {
         root.assert_profile_owned()?;

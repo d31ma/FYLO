@@ -50,12 +50,28 @@ impl RecordAttributes {
         Ok(())
     }
 
+    pub(crate) fn verify_contents(
+        &self,
+        root: &NativeRoot,
+        path: &Path,
+        bytes: &[u8],
+    ) -> Result<(), NativeStorageError> {
+        if root.filesystem_profile() == FilesystemProfile::EfsSidecarV1 {
+            SidecarAttributes::verify_bytes_binding(root, path, bytes, &self.values)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn write(
-        root: &NativeRoot, path: &Path, name: &str, value: &[u8],
+        root: &NativeRoot,
+        path: &Path,
+        name: &str,
+        value: &[u8],
     ) -> Result<(), NativeStorageError> {
         match root.filesystem_profile() {
             FilesystemProfile::Native => crate::write::write_fylo_attribute(path, name, value),
             FilesystemProfile::EfsSidecarV1 => {
+                Self::require_user_attribute(name)?;
                 let mut attributes = SidecarAttributes::read_path(root, path)?;
                 attributes.insert(name.into(), value.to_vec());
                 SidecarAttributes::replace(root, path, &attributes)?;
@@ -65,18 +81,30 @@ impl RecordAttributes {
     }
 
     pub(crate) fn remove(
-        root: &NativeRoot, path: &Path, name: &str,
+        root: &NativeRoot,
+        path: &Path,
+        name: &str,
     ) -> Result<(), NativeStorageError> {
         match root.filesystem_profile() {
             FilesystemProfile::Native => crate::write::remove_fylo_attribute(path, name),
             FilesystemProfile::EfsSidecarV1 => {
+                Self::require_user_attribute(name)?;
                 let mut attributes = SidecarAttributes::read_path(root, path)?;
                 attributes.remove(name);
-                // Empty manifests remain mandatory; there is no error fallback.
                 SidecarAttributes::replace(root, path, &attributes)?;
                 crate::write::failpoint("after-metadata-write")
             }
         }
+    }
+
+    fn require_user_attribute(name: &str) -> Result<(), NativeStorageError> {
+        if name == crate::sidecar_attributes::IDENTITY_ATTRIBUTE {
+            return Err(NativeStorageError::new(
+                crate::NativeStorageErrorCode::Unsupported,
+                "record binding is reserved storage metadata",
+            ));
+        }
+        Ok(())
     }
 }
 

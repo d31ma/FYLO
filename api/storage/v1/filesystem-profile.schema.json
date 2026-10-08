@@ -13,7 +13,7 @@
     ],
     "properties": {
         "format": {
-            "const": "fylo.filesystem-profile.v1"
+            "const": "fylo.filesystem-profile.v2"
         },
         "profile": {
             "const": "efs-sidecar-v1"

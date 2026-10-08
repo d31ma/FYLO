@@ -27,7 +27,10 @@ recovery, queries, writes and version operations.
 An EFS root has `.fylo-catalog/filesystem-profile.json` with exactly `format`,
 `profile`, `uid` and `gid`, described by the
 [profile schema](../../api/storage/v1/filesystem-profile.schema.json).
-`format` is `fylo.filesystem-profile.v1`; `profile` is `efs-sidecar-v1`.
+`format` is `fylo.filesystem-profile.v2`; `profile` remains `efs-sidecar-v1`.
+The isolated bound candidate refuses all unbound experimental v1 descriptors
+before lease publication or recovery. Fresh empty roots and matching v2 roots
+are its only admissions; no adoption or conversion is implemented.
 UID/GID record the actual immutable root identity, not replacements for OS
 ownership. The deployment proposes EFS access-point identity 1001/1001; storage
 does not hard-code it or claim it as a measured production property.
@@ -46,11 +49,20 @@ not permit reclaiming a collection lock from the same live generation. Native
 lock serialization omits this field and retains its existing liveness policy.
 
 Every record has a mandatory `<payload>.fylo-attrs` file using the existing
-sorted attribute-name/base64 JSON representation, including `{}` when empty.
-Removing the final attribute keeps that file. EFS errors never trigger native
+sorted attribute-name/base64 JSON representation. Reserved
+`user.fylo.record-identity` contains canonical compact UTF-8 JSON
+`["fylo.record-identity.v1",namespace,collection,ttid,sha256]` inside its base64
+value. Namespace is `.collections` or `.buckets`; the digest covers persisted
+payload bytes, including ciphertext. Canonical collection and TTID bind a
+record independently of root, shard, deleted position and branch/staging path.
+Removing the final user attribute retains this protected binding rather than
+literal `{}`. The reserved value has its own 512-byte bound and does not reduce
+existing custom-attribute budgets; the outer manifest limit remains. EFS errors never trigger native
 or empty-metadata fallback. Missing, malformed, oversized, duplicate-name,
 noncanonical-base64, nonregular or symlinked manifests are errors. Reads verify
-payload and manifest file identities. Metadata scratch and manifest files use
+payload and manifest file identities, identity binding and actual returned
+payload bytes before access decisions or metadata exposure. Hashing uses
+bounded offset-preserving reads. Metadata scratch and manifest files use
 mode 0600 under the trusted engine identity. Payload scratch starts with restricted
 owner permissions and gains its intended mode before publication.
 
@@ -86,8 +98,12 @@ This candidate adds no historical timestamp guarantee to VCS.
 
 ## Compatibility and unresolved gates
 
-Old binaries cannot be assumed to honor the descriptor. Restrict them to the
-original native root. No in-place or automatic reverse conversion exists.
+The prior candidate's exact v1 check rejects v2; the new candidate rejects v1.
+This is a stored-format refusal boundary, not a runtime compatibility pass.
+Unrelated old binaries cannot be assumed to honor the descriptor. Restrict them
+to their original native roots. A new v2 reader would refuse an existing v1
+experimental root, even if it contains real user data; its bytes remain intact.
+No live-root inventory, in-place upgrade or automatic reverse conversion exists.
 Separately authorized cold migration must compare payloads, metadata, history,
 queries and permissions, keeping the original root and prior binary for rollback.
 
@@ -96,11 +112,14 @@ checks, not remote fencing. Independent-client visibility, lock loss, interrupte
 mutation, restore fidelity and Lambda latency need actual qualification.
 Reserved concurrency 1 does not fence another function, process or old binary.
 
-The pinned representation lacks logical-record identity binding. Strict raw
-checksum/length/mtime checks can reject distinct-payload swaps, but identical
-payloads with matching times remain indistinguishable after a completed manifest
-swap. FD checks alone cannot close this gap. A reserved record-binding proposal
-is under coordinator review; it is not silently considered qualified here.
+The accepted isolated v2 source adds record/payload binding. Old pairs are
+verified before overwrites, then the digest is refreshed within the existing
+transaction. Valid delete/restore/reshard moves preserve identity. Version
+export/materialization and before-image recovery verify pairs before publication
+or restoration; missing/unbound history is refused instead of inferred.
+No journal schema, native metadata bytes or stored revisions are silently
+rewritten. Binding is unkeyed consistency checking, not authentication against
+an owner changing both halves. Native and remote behavior remain unqualified.
 
 Retain tests before repair. Authored tests are not an actual RED run. Compilation,
 native regressions and crash gates require their own qualified lane. Follow the

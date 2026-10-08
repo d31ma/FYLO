@@ -802,8 +802,11 @@ impl NativeWriteRoot {
                 let metadata = tree.values().find(|entry| entry.kind == "metadata"
                     && entry.collection == document.collection && entry.id == document.id)
                     .map(|entry| read_version_object(repository, &entry.hash)).transpose()?;
-                let attributes = metadata.as_deref().map(decode_profiled_metadata_blob)
-                    .transpose()?.unwrap_or_default();
+                let metadata = metadata.ok_or_else(|| corrupt_tree("bound version record has no metadata"))?;
+                let attributes = decode_profiled_metadata_blob(&metadata)?;
+                crate::sidecar_attributes::SidecarAttributes::verify_bytes_binding(
+                    &stage_root, &target, &bytes, &attributes,
+                )?;
                 let mode = profiled_metadata_access(&stage_root, &attributes)?
                     .map_or(0o600, |access| access.mode);
                 durable_replace_with_mode(&target, &bytes, mode)?;
@@ -1138,6 +1141,7 @@ impl NativeWriteRoot {
                             (&mut file).take(MAX_BLOB_BYTES + 1), MAX_BLOB_BYTES,
                         )?;
                         attributes.verify(&self.root, &file, &path)?;
+                        attributes.verify_contents(&self.root, &path, &bytes)?;
                         profiled_metadata_access(&self.root, &attributes)?;
                         if path.starts_with(self.path().join(".buckets"))
                             && crate::cached_checksum(
@@ -1612,6 +1616,7 @@ fn rollback_materialization(
     context.assert_profile_owned()?;
     let root = context.repository_root();
     let target_root = materialization_target_root(root, manifest)?;
+    verify_profiled_worktree(context, &transaction.join("previous"))?;
     for target in manifest.targets.iter().rev() {
         context.assert_profile_owned()?;
         let relative = safe_materialization_target(target)?;
@@ -1658,6 +1663,9 @@ fn rollforward_materialization(
     context.assert_profile_owned()?;
     let root = context.repository_root();
     let target_root = materialization_target_root(root, manifest)?;
+    verify_profiled_worktree(context, &target_root)?;
+    verify_profiled_worktree(context, &transaction.join("next"))?;
+    verify_profiled_worktree(context, &transaction.join("previous"))?;
     for target in &manifest.targets {
         context.assert_profile_owned()?;
         let relative = safe_materialization_target(target)?;
@@ -1789,6 +1797,41 @@ fn branch_worktree(root: &Path, branch: &str) -> Result<PathBuf, NativeStorageEr
     Ok(target)
 }
 
+fn verify_profiled_worktree(
+    context: &crate::NativeRoot,
+    path: &Path,
+) -> Result<(), NativeStorageError> {
+    if context.filesystem_profile() == crate::FilesystemProfile::Native || !path_exists(path)? {
+        return Ok(());
+    }
+    let root = crate::NativeRoot::open_profiled(context.options_for(path))?;
+    for namespace in DATA_DIRECTORIES {
+        let data = path.join(namespace);
+        if path_exists(&data)? {
+            verify_profiled_directory(&root, &data)?;
+        }
+    }
+    context.assert_profile_owned()
+}
+
+fn verify_profiled_directory(
+    context: &crate::NativeRoot,
+    path: &Path,
+) -> Result<(), NativeStorageError> {
+    context.verify_path(path, crate::ExpectedType::Directory)?;
+    for entry in fs::read_dir(path).map_err(NativeStorageError::io)? {
+        let entry = entry.map_err(NativeStorageError::io)?;
+        let kind = entry.file_type().map_err(NativeStorageError::io)?;
+        if kind.is_dir() {
+            verify_profiled_directory(context, &entry.path())?;
+        } else {
+            context.verify_path(&entry.path(), crate::ExpectedType::File)?;
+            crate::sidecar_attributes::SidecarAttributes::verify_member(context, &entry.path())?;
+        }
+    }
+    context.assert_profile_owned()
+}
+
 fn copy_worktree(
     context: &crate::NativeRoot, source: &Path, target: &Path,
 ) -> Result<(), NativeStorageError> {
@@ -1848,6 +1891,7 @@ fn copy_directory(context: &crate::NativeRoot, source: &Path, target: &Path) -> 
             && context.filesystem_profile() == crate::FilesystemProfile::EfsSidecarV1
         {
             let (source, metadata) = context.open_file(&entry.path(), crate::MAX_RAW_FILE_BYTES)?;
+            crate::sidecar_attributes::SidecarAttributes::verify_member(context, &entry.path())?;
             crate::sidecar_attributes::SidecarAttributes::verify_owner(
                 context, &metadata,
                 entry.path().as_os_str().to_string_lossy().ends_with(crate::SIDECAR_SUFFIX),

@@ -1515,6 +1515,7 @@ impl NativeCollection {
             MAX_DOCUMENT_BYTES,
         )?;
         attributes.verify(&self.root, &file, &path)?;
+        attributes.verify_contents(&self.root, &path, &bytes)?;
         Ok(StoredBytes {
             bytes,
             modified_millis: modified_millis(&metadata)?,
@@ -1590,6 +1591,7 @@ impl NativeCollection {
             MAX_RAW_FILE_BYTES,
         )?;
         attributes.verify(&self.root, &file, &path)?;
+        attributes.verify_contents(&self.root, &path, &bytes)?;
         let computed_checksum = sha256_hex(&bytes);
         let modified_millis = modified_millis(&metadata)?;
         let cached = cached_checksum(
