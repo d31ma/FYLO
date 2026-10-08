@@ -110,7 +110,7 @@ fn validator_application(fixture: &Fixture) -> ApplicationConfig {
 }
 
 #[test]
-fn invocation_refuses_external_schema_operations_before_owner_or_helper_publication() {
+fn invocation_refuses_external_schema_validation_before_owner_or_helper_publication() {
     for profile in [FilesystemProfile::Native, FilesystemProfile::EfsSidecarV1] {
         let fixture = Fixture::new();
         let application = validator_application(&fixture);
@@ -120,13 +120,16 @@ fn invocation_refuses_external_schema_operations_before_owner_or_helper_publicat
             FrameLimits::default(),
         );
         let before = snapshot(&fixture.parent);
-        for op in ["schemaValidate", "schemaMaterialize"] {
-            let result = invocation.execute(&frame(&json!({
-                "op":op,"collection":"records","document":{"input":true}
-            })));
-            assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::Unsupported);
-            assert_eq!(snapshot(&fixture.parent), before);
-        }
+        let result = invocation.execute(&frame(&json!({
+            "op":"schemaValidate","collection":"records","document":{"input":true}
+        })));
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::Unsupported);
+        assert_eq!(snapshot(&fixture.parent), before);
+        let materialized = success(&invocation, json!({
+            "op":"schemaMaterialize","collection":"records","document":{"input":true}
+        }));
+        assert_eq!(materialized["result"]["document"], json!({"input":true}));
+        assert!(!fixture.parent.join("owned-validator.sh.started").exists());
     }
 }
 
