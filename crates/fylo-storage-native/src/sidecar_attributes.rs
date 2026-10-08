@@ -377,10 +377,13 @@ impl SidecarAttributes {
 
     #[cfg(not(unix))]
     pub(crate) fn verify_owner(
-        _root: &NativeRoot, _metadata: &fylo_vfs::Metadata, _manifest: bool,
+        _root: &NativeRoot,
+        _metadata: &fylo_vfs::Metadata,
+        _manifest: bool,
     ) -> Result<(), NativeStorageError> {
         Err(NativeStorageError::new(
-            NativeStorageErrorCode::Unsupported, "EFS sidecars require POSIX identity",
+            NativeStorageErrorCode::Unsupported,
+            "EFS sidecars require POSIX identity",
         ))
     }
 }
@@ -405,6 +408,7 @@ impl<'de> Visitor<'de> for SidecarAttributes {
 
 fn corrupt() -> NativeStorageError {
     NativeStorageError::new(
-        NativeStorageErrorCode::CorruptMetadata, "EFS attribute manifest is corrupt",
+        NativeStorageErrorCode::CorruptMetadata,
+        "EFS attribute manifest is corrupt",
     )
 }

@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
 use std::ops::Deref;
+use std::path::{Path, PathBuf};
 
 use fylo_vfs::File;
 
@@ -15,7 +15,9 @@ pub(crate) struct RecordAttributes {
 
 impl RecordAttributes {
     pub(crate) fn read(
-        root: &NativeRoot, file: &File, path: &Path,
+        root: &NativeRoot,
+        file: &File,
+        path: &Path,
     ) -> Result<Self, NativeStorageError> {
         root.assert_profile_owned()?;
         let (values, sidecar) = match root.filesystem_profile() {
@@ -25,11 +27,18 @@ impl RecordAttributes {
                 (values, Some(sidecar))
             }
         };
-        Ok(Self { values, sidecar, sidecar_path: crate::sidecar_path(path) })
+        Ok(Self {
+            values,
+            sidecar,
+            sidecar_path: crate::sidecar_path(path),
+        })
     }
 
     pub(crate) fn verify(
-        &self, root: &NativeRoot, payload: &File, path: &Path,
+        &self,
+        root: &NativeRoot,
+        payload: &File,
+        path: &Path,
     ) -> Result<(), NativeStorageError> {
         root.assert_profile_owned()?;
         root.verify_open_file_identity(path, payload)?;
@@ -37,7 +46,9 @@ impl RecordAttributes {
             root.verify_path(&self.sidecar_path, crate::ExpectedType::File)?;
             root.verify_open_file_identity(&self.sidecar_path, sidecar)?;
             SidecarAttributes::verify_owner(
-                root, &sidecar.metadata().map_err(NativeStorageError::io)?, true,
+                root,
+                &sidecar.metadata().map_err(NativeStorageError::io)?,
+                true,
             )?;
         }
         Ok(())

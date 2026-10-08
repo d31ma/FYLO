@@ -24,9 +24,13 @@ impl RootLeaseInner {
     ) -> Result<Self, NativeStorageError> {
         if profile == FilesystemProfile::Native {
             fylo_vfs::create_dir_all(root.as_ref()).map_err(NativeStorageError::io)?;
-        } else if !fylo_vfs::metadata(root.as_ref()).map_err(NativeStorageError::io)?.is_dir() {
+        } else if !fylo_vfs::metadata(root.as_ref())
+            .map_err(NativeStorageError::io)?
+            .is_dir()
+        {
             return Err(NativeStorageError::new(
-                NativeStorageErrorCode::WrongType, "EFS profile requires an existing directory",
+                NativeStorageErrorCode::WrongType,
+                "EFS profile requires an existing directory",
             ));
         }
         let canonical = fylo_vfs::canonicalize(root.as_ref()).map_err(NativeStorageError::io)?;

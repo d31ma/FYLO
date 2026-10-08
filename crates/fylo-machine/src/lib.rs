@@ -27,8 +27,9 @@ use fylo_engine::{AccessContext, EngineError, ReadOnlyEngine, WriteEngine};
 use fylo_query::{JoinSpec, QueryLimits, SqlOperation, StructuredQuery, prepare_sql};
 use fylo_storage_native::{
     CollectionKind, FilesystemProfile, NativeQueue, NativeRoot, NativeStorageError,
-    NativeStorageErrorCode, NativeWriteRoot, PutRawFileOptions, QueueClaimOptions, QueuePublishOptions,
-    RootLease, RootOpenOptions, SqlMutationResultKind, WriteAccess, WriteActor,
+    NativeStorageErrorCode, NativeWriteRoot, PutRawFileOptions, QueueClaimOptions,
+    QueuePublishOptions, RootLease, RootOpenOptions, SqlMutationResultKind, WriteAccess,
+    WriteActor,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -380,9 +381,10 @@ fn serve_profiled_session<R: BufRead, W: Write>(
     config: ApplicationConfig,
     (limits, exclusive_root, persistent): (FrameLimits, bool, bool),
 ) -> std::io::Result<()> {
-    let profile = options
-        .as_ref()
-        .map_or(FilesystemProfile::Native, RootOpenOptions::filesystem_profile);
+    let profile = options.as_ref().map_or(
+        FilesystemProfile::Native,
+        RootOpenOptions::filesystem_profile,
+    );
     let mut default_root = options.as_ref().map(|options| {
         options
             .repository_root()
@@ -392,50 +394,49 @@ fn serve_profiled_session<R: BufRead, W: Write>(
     let supplied_lease = options.as_ref().and_then(RootOpenOptions::owning_lease);
     let limits = limits.clamped();
     let mut leases = std::collections::BTreeMap::new();
-    let startup_error = if exclusive_root
-        || profile == FilesystemProfile::EfsSidecarV1
-        || supplied_lease.is_some()
-    {
-        match default_root.as_ref() {
-            None => Some(MachineError::new(
-                "EBADREQUEST",
-                "--exclusive-root requires a default FYLO root",
-            )),
-            Some(root) => match supplied_lease.map_or_else(
-                || RootLease::acquire_with_profile(root, profile),
-                |lease| lease.assert_owned().map(|()| lease),
-            ) {
-                Err(error) => Some(storage_error(&error)),
-                Ok(lease) => {
-                    let options = options
-                        .expect("a resolved root has open options")
-                        .with_lease(lease.clone());
-                    let recovery = assert_repository_lease(root, &lease).and_then(|()| {
-                        NativeWriteRoot::open_profiled(options)
-                            .and_then(|writer| writer.recover_repository_materialization())
-                            .map_err(|error| storage_error(&error))
-                    });
-                    match recovery {
-                        Ok(()) => {
-                            let admitted_root = if profile == FilesystemProfile::EfsSidecarV1 {
-                                lease.root().to_path_buf()
-                            } else {
-                                root.clone()
-                            };
-                            leases.insert(admitted_root.clone(), lease);
-                            if profile == FilesystemProfile::EfsSidecarV1 {
-                                default_root = Some(admitted_root);
+    let startup_error =
+        if exclusive_root || profile == FilesystemProfile::EfsSidecarV1 || supplied_lease.is_some()
+        {
+            match default_root.as_ref() {
+                None => Some(MachineError::new(
+                    "EBADREQUEST",
+                    "--exclusive-root requires a default FYLO root",
+                )),
+                Some(root) => match supplied_lease.map_or_else(
+                    || RootLease::acquire_with_profile(root, profile),
+                    |lease| lease.assert_owned().map(|()| lease),
+                ) {
+                    Err(error) => Some(storage_error(&error)),
+                    Ok(lease) => {
+                        let options = options
+                            .expect("a resolved root has open options")
+                            .with_lease(lease.clone());
+                        let recovery = assert_repository_lease(root, &lease).and_then(|()| {
+                            NativeWriteRoot::open_profiled(options)
+                                .and_then(|writer| writer.recover_repository_materialization())
+                                .map_err(|error| storage_error(&error))
+                        });
+                        match recovery {
+                            Ok(()) => {
+                                let admitted_root = if profile == FilesystemProfile::EfsSidecarV1 {
+                                    lease.root().to_path_buf()
+                                } else {
+                                    root.clone()
+                                };
+                                leases.insert(admitted_root.clone(), lease);
+                                if profile == FilesystemProfile::EfsSidecarV1 {
+                                    default_root = Some(admitted_root);
+                                }
+                                None
                             }
-                            None
+                            Err(error) => Some(error),
                         }
-                        Err(error) => Some(error),
                     }
-                }
-            },
-        }
-    } else {
-        None
-    };
+                },
+            }
+        } else {
+            None
+        };
     let mut session = Session {
         default_root,
         filesystem_profile: profile,
@@ -506,10 +507,18 @@ impl Session {
             let mut output = std::io::Cursor::new(bytes.as_mut_slice());
             match result {
                 Ok(result) => self.write_success(
-                    &mut output, operation.as_deref(), request_id.as_deref(), started, &result,
+                    &mut output,
+                    operation.as_deref(),
+                    request_id.as_deref(),
+                    started,
+                    &result,
                 ),
                 Err(error) => Self::write_failure(
-                    &mut output, operation.as_deref(), request_id.as_deref(), started, &error,
+                    &mut output,
+                    operation.as_deref(),
+                    request_id.as_deref(),
+                    started,
+                    &error,
                 ),
             }?;
             usize::try_from(output.position()).map_err(std::io::Error::other)?
@@ -527,7 +536,8 @@ impl Session {
         let repository = self.default_root.as_ref().ok_or_else(|| {
             std::io::Error::other("invocation session has no admitted repository")
         })?;
-        let options = self.root_options(repository.clone(), repository.clone())
+        let options = self
+            .root_options(repository.clone(), repository.clone())
             .map_err(Self::invocation_machine_error)?;
         NativeWriteRoot::open_profiled(options)
             .and_then(|writer| writer.recover_repository_materialization())
@@ -550,7 +560,8 @@ impl Session {
         let repository = self.default_root.as_ref().ok_or_else(|| {
             std::io::Error::other("invocation session has no admitted repository")
         })?;
-        let options = self.root_options(root.to_path_buf(), repository.clone())
+        let options = self
+            .root_options(root.to_path_buf(), repository.clone())
             .map_err(Self::invocation_machine_error)?;
         let native = NativeRoot::open_profiled(options.clone())
             .map_err(|error| std::io::Error::other(error.to_string()))?;
@@ -561,7 +572,8 @@ impl Session {
             InvocationOptions::check_work_budget(budget)?;
             match writer.recover_collection(&name) {
                 Ok(_) => {}
-                Err(error) if !has_live_directory && error.code() == NativeStorageErrorCode::NotFound => {}
+                Err(error)
+                    if !has_live_directory && error.code() == NativeStorageErrorCode::NotFound => {}
                 Err(error) => return Err(std::io::Error::other(error.to_string())),
             }
         }
@@ -574,7 +586,12 @@ impl Session {
     ) -> std::io::Result<std::collections::BTreeMap<String, bool>> {
         let mut names = std::collections::BTreeMap::new();
         for namespace in [".collections", ".buckets"] {
-            Self::collect_invocation_names(&root.path().join(namespace), false, &mut names, budget)?;
+            Self::collect_invocation_names(
+                &root.path().join(namespace),
+                false,
+                &mut names,
+                budget,
+            )?;
         }
         let catalog = root.catalog_root().join(".fylo-catalog");
         if Self::invocation_directory_exists(&catalog)? {
@@ -597,12 +614,14 @@ impl Session {
             let entry = entry?;
             let kind = entry.file_type()?;
             if kind.is_symlink() || (catalog && !kind.is_file()) || (!catalog && !kind.is_dir()) {
-                return Err(std::io::Error::other("invocation collection entry has an unsafe type"));
+                return Err(std::io::Error::other(
+                    "invocation collection entry has an unsafe type",
+                ));
             }
             let file_name = entry.file_name();
-            let file_name = file_name.to_str().ok_or_else(|| {
-                std::io::Error::other("invocation collection name is not UTF-8")
-            })?;
+            let file_name = file_name
+                .to_str()
+                .ok_or_else(|| std::io::Error::other("invocation collection name is not UTF-8"))?;
             let name = if catalog {
                 file_name.strip_suffix(".json").ok_or_else(|| {
                     std::io::Error::other("invocation catalog entry is not a collection descriptor")
@@ -610,9 +629,14 @@ impl Session {
             } else {
                 file_name
             };
-            names.entry(name.to_owned()).and_modify(|live| *live |= !catalog).or_insert(!catalog);
+            names
+                .entry(name.to_owned())
+                .and_modify(|live| *live |= !catalog)
+                .or_insert(!catalog);
             if names.len() > Self::MAX_INVOCATION_COLLECTIONS {
-                return Err(std::io::Error::other("invocation collection recovery exceeds its bounded collection count"));
+                return Err(std::io::Error::other(
+                    "invocation collection recovery exceeds its bounded collection count",
+                ));
             }
         }
         Ok(())
@@ -621,7 +645,9 @@ impl Session {
     fn invocation_directory_exists(path: &std::path::Path) -> std::io::Result<bool> {
         match fylo_vfs::symlink_metadata(path) {
             Ok(metadata) if !metadata.file_type().is_symlink() && metadata.is_dir() => Ok(true),
-            Ok(_) => Err(std::io::Error::other("invocation collection directory has an unsafe type")),
+            Ok(_) => Err(std::io::Error::other(
+                "invocation collection directory has an unsafe type",
+            )),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
             Err(error) => Err(error),
         }
@@ -952,7 +978,10 @@ impl Session {
             })?;
         let root = if self.filesystem_profile == FilesystemProfile::EfsSidecarV1 {
             let canonical = fylo_vfs::canonicalize(&root).map_err(|_| {
-                MachineError::new("EBADREQUEST", "cannot resolve the EFS request repository root")
+                MachineError::new(
+                    "EBADREQUEST",
+                    "cannot resolve the EFS request repository root",
+                )
             })?;
             if self.default_root.as_ref() != Some(&canonical) {
                 return Err(MachineError::new(
@@ -1000,7 +1029,10 @@ impl Session {
             .get(&repository_root)
             .cloned()
             .ok_or_else(|| {
-                MachineError::new("EROOTLEASELOST", "the repository root has not been admitted")
+                MachineError::new(
+                    "EROOTLEASELOST",
+                    "the repository root has not been admitted",
+                )
             })?;
         assert_repository_lease(&repository_root, &lease)?;
         Ok(RootOpenOptions::new(root)
@@ -1012,8 +1044,9 @@ impl Session {
     fn engine(&self, request: &Value) -> Result<ReadOnlyEngine, MachineError> {
         let repository_root = self.root(request)?;
         let active_root = active_worktree(&repository_root)?;
-        let engine = ReadOnlyEngine::open_profiled(self.root_options(active_root, repository_root)?)
-            .map_err(|error| engine_error(&error))?;
+        let engine =
+            ReadOnlyEngine::open_profiled(self.root_options(active_root, repository_root)?)
+                .map_err(|error| engine_error(&error))?;
         match self.schema_path(request) {
             Some(schema) => engine
                 .with_schema_configuration(
@@ -2372,9 +2405,14 @@ fn assert_repository_lease(
     repository_root: &std::path::Path,
     lease: &RootLease,
 ) -> Result<(), MachineError> {
-    lease.assert_owned().map_err(|error| storage_error(&error))?;
+    lease
+        .assert_owned()
+        .map_err(|error| storage_error(&error))?;
     let canonical = fylo_vfs::canonicalize(repository_root).map_err(|_| {
-        MachineError::new("EROOTLEASELOST", "cannot resolve the owning repository root")
+        MachineError::new(
+            "EROOTLEASELOST",
+            "cannot resolve the owning repository root",
+        )
     })?;
     if canonical != lease.root() {
         return Err(MachineError::new(

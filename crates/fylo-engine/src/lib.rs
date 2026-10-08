@@ -24,8 +24,8 @@ use fylo_query::{
 use fylo_storage_native::{
     AccessDescriptor, CollectionKind, GenerationState, GenerationStatus, IndexVerification,
     NativeAccess, NativeCollection, NativeRoot, NativeStorageError, NativeStorageErrorCode,
-    NativeWriteRoot, PutDocumentOptions, RepositoryHistory, RootConfig, RootOpenOptions, StoredRawFile,
-    VersionVerification, WriteAccess, WriteActor,
+    NativeWriteRoot, PutDocumentOptions, RepositoryHistory, RootConfig, RootOpenOptions,
+    StoredRawFile, VersionVerification, WriteAccess, WriteActor,
 };
 use schema::SchemaTools;
 use serde::Serialize;
@@ -582,7 +582,8 @@ impl ReadOnlyEngine {
         require_read_access(stored.access, actor)?;
         let document = self.decode_document(
             collection.name(),
-            Document::parse(&stored.bytes, DocumentLimits::default()).map_err(EngineError::format)?,
+            Document::parse(&stored.bytes, DocumentLimits::default())
+                .map_err(EngineError::format)?,
         )?;
         let timestamps = TtidTimestamps::decode(identifier).map_err(EngineError::format)?;
         Ok(ReadDocument {

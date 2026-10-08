@@ -66,12 +66,14 @@ impl ProfileManifest {
             }
         }
         #[cfg(not(target_family = "wasm"))]
-        let identity = crate::FileIdentity::from_file(
-            file.try_clone().map_err(NativeStorageError::io)?,
-        ).map_err(NativeStorageError::io)?;
+        let identity =
+            crate::FileIdentity::from_file(file.try_clone().map_err(NativeStorageError::io)?)
+                .map_err(NativeStorageError::io)?;
         let mut bytes = Vec::new();
-        (&mut file).take(crate::MAX_DESCRIPTOR_BYTES + 1)
-            .read_to_end(&mut bytes).map_err(NativeStorageError::io)?;
+        (&mut file)
+            .take(crate::MAX_DESCRIPTOR_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(NativeStorageError::io)?;
         if bytes.len() as u64 > crate::MAX_DESCRIPTOR_BYTES {
             return Err(NativeStorageError::new(
                 NativeStorageErrorCode::FileTooLarge,
@@ -84,8 +86,10 @@ impl ProfileManifest {
         }
         let final_metadata = fs::symlink_metadata(&path).map_err(NativeStorageError::io)?;
         let final_parent = fs::symlink_metadata(&parent).map_err(NativeStorageError::io)?;
-        if !final_metadata.is_file() || final_metadata.file_type().is_symlink()
-            || !final_parent.is_dir() || final_parent.file_type().is_symlink()
+        if !final_metadata.is_file()
+            || final_metadata.file_type().is_symlink()
+            || !final_parent.is_dir()
+            || final_parent.file_type().is_symlink()
         {
             return Err(unsafe_marker());
         }
@@ -96,7 +100,8 @@ impl ProfileManifest {
             if (opened.dev(), opened.ino()) != (final_metadata.dev(), final_metadata.ino())
                 || (final_metadata.uid(), final_metadata.gid()) != (uid, gid)
                 || final_metadata.mode() & 0o7777 != 0o600
-                || (original_parent.dev(), original_parent.ino()) != (final_parent.dev(), final_parent.ino())
+                || (original_parent.dev(), original_parent.ino())
+                    != (final_parent.dev(), final_parent.ino())
                 || (final_parent.uid(), final_parent.gid()) != (uid, gid)
                 || final_parent.mode() & 0o022 != 0
             {
@@ -131,7 +136,11 @@ impl ProfileManifest {
             (FilesystemProfile::EfsSidecarV1, Some(descriptor)) => Ok(Some(descriptor)),
             (FilesystemProfile::EfsSidecarV1, None) => {
                 Self::identity(root)?;
-                if fs::read_dir(root).map_err(NativeStorageError::io)?.next().is_some() {
+                if fs::read_dir(root)
+                    .map_err(NativeStorageError::io)?
+                    .next()
+                    .is_some()
+                {
                     return Err(NativeStorageError::new(
                         NativeStorageErrorCode::Unsupported,
                         "EFS profile initialization requires a fresh empty root",
@@ -155,13 +164,19 @@ impl ProfileManifest {
         }
         let (uid, gid) = Self::identity(root)?;
         let descriptor = Self {
-            uid, gid, format: FORMAT.into(), profile: "efs-sidecar-v1".into(),
+            uid,
+            gid,
+            format: FORMAT.into(),
+            profile: "efs-sidecar-v1".into(),
         };
         let parent = root.join(".fylo-catalog");
         #[cfg(unix)]
         {
             use std::os::unix::fs::DirBuilderExt;
-            std::fs::DirBuilder::new().mode(0o700).create(&parent).map_err(NativeStorageError::io)?;
+            std::fs::DirBuilder::new()
+                .mode(0o700)
+                .create(&parent)
+                .map_err(NativeStorageError::io)?;
         }
         #[cfg(not(unix))]
         fs::create_dir(&parent).map_err(NativeStorageError::io)?;

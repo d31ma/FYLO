@@ -19,24 +19,24 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 mod filesystem_profile;
+mod index_cache;
+mod lease;
 mod profile_manifest;
+mod queue;
 mod record_attributes;
 mod root_open_options;
 mod sidecar_attributes;
-mod index_cache;
-mod lease;
-mod queue;
 mod write;
 
+pub use filesystem_profile::FilesystemProfile;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub use fylo_vfs::host_now_unix_ms;
-pub use filesystem_profile::FilesystemProfile;
-pub use root_open_options::RootOpenOptions;
 pub use lease::RootLease;
 pub use queue::{
     NativeQueue, QueueAckResult, QueueClaimOptions, QueueDeadLetter, QueueDelivery,
     QueueNackResult, QueuePublishOptions, QueuePublishResult, QueueStats,
 };
+pub use root_open_options::RootOpenOptions;
 pub use write::FAILPOINTS;
 pub use write::version::RepositoryStatus;
 pub use write::{NativeWriteRoot, PutDocumentOptions, PutRawFileOptions, WriteAccess, WriteActor};
@@ -164,12 +164,15 @@ impl NativeRoot {
             }
         }
         if options.profile == FilesystemProfile::EfsSidecarV1 {
-            let lease = options.lease.as_ref().ok_or_else(|| NativeStorageError::new(
-                NativeStorageErrorCode::RootLeaseLost,
-                "EFS profile requires its owning root lease",
-            ))?;
+            let lease = options.lease.as_ref().ok_or_else(|| {
+                NativeStorageError::new(
+                    NativeStorageErrorCode::RootLeaseLost,
+                    "EFS profile requires its owning root lease",
+                )
+            })?;
             lease.assert_owned()?;
-            if !lease.kernel_enforced() || lease.root() != repository_root
+            if !lease.kernel_enforced()
+                || lease.root() != repository_root
                 || !canonical.starts_with(&repository_root)
             {
                 return Err(NativeStorageError::new(
@@ -178,9 +181,8 @@ impl NativeRoot {
                 ));
             }
         }
-        let descriptor = profile_manifest::ProfileManifest::admit_selection(
-            &repository_root, options.profile,
-        )?;
+        let descriptor =
+            profile_manifest::ProfileManifest::admit_selection(&repository_root, options.profile)?;
         if options.profile == FilesystemProfile::EfsSidecarV1 && descriptor.is_none() {
             return Err(NativeStorageError::new(
                 NativeStorageErrorCode::CorruptMetadata,
@@ -220,18 +222,25 @@ impl NativeRoot {
             }
         }
         if self.profile == FilesystemProfile::EfsSidecarV1 {
-            let lease = self.lease.as_ref().ok_or_else(|| NativeStorageError::new(
-                NativeStorageErrorCode::RootLeaseLost, "EFS owner is absent",
-            ))?;
+            let lease = self.lease.as_ref().ok_or_else(|| {
+                NativeStorageError::new(
+                    NativeStorageErrorCode::RootLeaseLost,
+                    "EFS owner is absent",
+                )
+            })?;
             lease.assert_owned()?;
             if !lease.kernel_enforced() || lease.root() != self.repository_root {
                 return Err(NativeStorageError::new(
-                    NativeStorageErrorCode::RootLeaseLost, "EFS owning kernel lease differs",
+                    NativeStorageErrorCode::RootLeaseLost,
+                    "EFS owning kernel lease differs",
                 ));
             }
-            let expected = self.descriptor.as_ref().ok_or_else(|| NativeStorageError::new(
-                NativeStorageErrorCode::CorruptMetadata, "EFS descriptor is absent",
-            ))?;
+            let expected = self.descriptor.as_ref().ok_or_else(|| {
+                NativeStorageError::new(
+                    NativeStorageErrorCode::CorruptMetadata,
+                    "EFS descriptor is absent",
+                )
+            })?;
             let current = profile_manifest::ProfileManifest::read(&self.repository_root)?;
             if current.as_ref() != Some(expected) {
                 return Err(NativeStorageError::new(
@@ -1595,7 +1604,9 @@ impl NativeCollection {
         let computed_checksum = sha256_hex(&bytes);
         let modified_millis = modified_millis(&metadata)?;
         let cached = cached_checksum(
-            attributes.get(CHECKSUM_XATTR), metadata.len(), modified_millis,
+            attributes.get(CHECKSUM_XATTR),
+            metadata.len(),
+            modified_millis,
         );
         let checksum_sha256 = if self.root.profile == FilesystemProfile::EfsSidecarV1 {
             if cached.as_deref() != Some(computed_checksum.as_str()) {

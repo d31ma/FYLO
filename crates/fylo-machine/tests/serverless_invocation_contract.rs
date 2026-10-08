@@ -14,8 +14,8 @@ use fylo_machine::{
     ApplicationConfig, FrameLimits, InvocationOptions, InvocationRuntime, serve_application,
 };
 use fylo_storage_native::{
-    FilesystemProfile, NativeRoot, NativeStorageErrorCode, NativeWriteRoot,
-    PutDocumentOptions, RootConfig, RootLease, RootOpenOptions,
+    FilesystemProfile, NativeRoot, NativeStorageErrorCode, NativeWriteRoot, PutDocumentOptions,
+    RootConfig, RootLease, RootOpenOptions,
 };
 use serde_json::{Value, json};
 
@@ -31,10 +31,14 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         let parent = std::env::temp_dir().join(format!(
             "fylo-invocation-{}-{stamp}-{}",
-            std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed),
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed),
         ));
         let root = parent.join("root");
         fs::create_dir_all(&root).unwrap();
@@ -46,16 +50,26 @@ impl Fixture {
     }
 
     fn runtime(&self, profile: FilesystemProfile) -> InvocationRuntime {
-        runtime(self.options(profile), ApplicationConfig::default(), FrameLimits::default())
+        runtime(
+            self.options(profile),
+            ApplicationConfig::default(),
+            FrameLimits::default(),
+        )
     }
 
     fn metadata_path(&self) -> PathBuf {
-        fs::canonicalize(&self.root).unwrap().parent().unwrap()
+        fs::canonicalize(&self.root)
+            .unwrap()
+            .parent()
+            .unwrap()
             .join(".root.fylo-root-owner.lock.json")
     }
 
     fn assert_released(&self, profile: FilesystemProfile) {
-        assert!(!self.metadata_path().exists(), "checked completion left owner metadata");
+        assert!(
+            !self.metadata_path().exists(),
+            "checked completion left owner metadata"
+        );
         let contender = RootLease::acquire_with_profile(&self.root, profile).unwrap();
         assert!(contender.kernel_enforced());
         contender.release_checked().unwrap();
@@ -68,11 +82,21 @@ impl Drop for Fixture {
     }
 }
 
-fn runtime(root: RootOpenOptions, application: ApplicationConfig, limits: FrameLimits) -> InvocationRuntime {
+fn runtime(
+    root: RootOpenOptions,
+    application: ApplicationConfig,
+    limits: FrameLimits,
+) -> InvocationRuntime {
     let options = InvocationOptions::new(
-        root, application, limits,
-        (Instant::now() + Duration::from_secs(30), Duration::from_millis(100)),
-    ).unwrap();
+        root,
+        application,
+        limits,
+        (
+            Instant::now() + Duration::from_secs(30),
+            Duration::from_millis(100),
+        ),
+    )
+    .unwrap();
     InvocationRuntime::new(options).unwrap()
 }
 
@@ -125,9 +149,12 @@ fn invocation_refuses_external_schema_validation_before_owner_or_helper_publicat
         })));
         assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::Unsupported);
         assert_eq!(snapshot(&fixture.parent), before);
-        let materialized = success(&invocation, json!({
-            "op":"schemaMaterialize","collection":"records","document":{"input":true}
-        }));
+        let materialized = success(
+            &invocation,
+            json!({
+                "op":"schemaMaterialize","collection":"records","document":{"input":true}
+            }),
+        );
         assert_eq!(materialized["result"]["document"], json!({"input":true}));
         assert!(!fixture.parent.join("owned-validator.sh.started").exists());
     }
@@ -189,7 +216,10 @@ fn snapshot(path: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
             if metadata.is_dir() {
                 visit(base, &path, files);
             } else if metadata.is_file() {
-                files.insert(path.strip_prefix(base).unwrap().to_path_buf(), fs::read(path).unwrap());
+                files.insert(
+                    path.strip_prefix(base).unwrap().to_path_buf(),
+                    fs::read(path).unwrap(),
+                );
             }
         }
     }
@@ -199,8 +229,14 @@ fn snapshot(path: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
 }
 
 fn create_record(runtime: &InvocationRuntime) {
-    success(runtime, json!({"op":"createCollection","collection":"records"}));
-    success(runtime, json!({"op":"putData","collection":"records","id":ID,"data":{"name":"Ada"}}));
+    success(
+        runtime,
+        json!({"op":"createCollection","collection":"records"}),
+    );
+    success(
+        runtime,
+        json!({"op":"putData","collection":"records","id":ID,"data":{"name":"Ada"}}),
+    );
 }
 
 fn committed_recovery_fixture(root: &Path) -> PathBuf {
@@ -211,15 +247,25 @@ fn committed_recovery_fixture(root: &Path) -> PathBuf {
     let transaction = state.parent().unwrap().join("invocation-cold-recovery");
     fs::create_dir_all(transaction.join("captures")).unwrap();
     fs::create_dir_all(transaction.join("before")).unwrap();
-    fs::write(transaction.join("transaction.json"), serde_json::to_vec(&json!({
-        "format":"fylo.collection-transaction.v1", "id":"invocation-cold-recovery",
-        "collection":"records", "operation":"put-document", "phase":"committed",
-        "generationBefore":before, "eventOffset":0, "captures":[],
-    })).unwrap()).unwrap();
-    fs::write(&state, serde_json::to_vec(&json!({
-        "format":"fylo.collection-generation.v1", "generation":before + 1,
-        "state":"writing", "transactionId":"invocation-cold-recovery",
-    })).unwrap()).unwrap();
+    fs::write(
+        transaction.join("transaction.json"),
+        serde_json::to_vec(&json!({
+            "format":"fylo.collection-transaction.v1", "id":"invocation-cold-recovery",
+            "collection":"records", "operation":"put-document", "phase":"committed",
+            "generationBefore":before, "eventOffset":0, "captures":[],
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    fs::write(
+        &state,
+        serde_json::to_vec(&json!({
+            "format":"fylo.collection-generation.v1", "generation":before + 1,
+            "state":"writing", "transactionId":"invocation-cold-recovery",
+        }))
+        .unwrap(),
+    )
+    .unwrap();
     transaction
 }
 
@@ -230,8 +276,13 @@ fn invocation_options_refuse_external_lease_clones_for_every_profile() {
         let lease = RootLease::acquire_with_profile(&fixture.root, profile).unwrap();
         let before = snapshot(&fixture.parent);
         let options = InvocationOptions::new(
-            fixture.options(profile).with_lease(lease.clone()), ApplicationConfig::default(),
-            FrameLimits::default(), (Instant::now() + Duration::from_secs(30), Duration::from_secs(1)),
+            fixture.options(profile).with_lease(lease.clone()),
+            ApplicationConfig::default(),
+            FrameLimits::default(),
+            (
+                Instant::now() + Duration::from_secs(30),
+                Duration::from_secs(1),
+            ),
         );
         assert!(options.is_err());
         assert_eq!(snapshot(&fixture.parent), before);
@@ -245,14 +296,25 @@ fn invocation_budget_requires_a_future_deadline_and_nonzero_usable_cleanup_reser
     let fixture = Fixture::new();
     let before = snapshot(&fixture.parent);
     for budget in [
-        (Instant::now() - Duration::from_secs(1), Duration::from_millis(1)),
+        (
+            Instant::now() - Duration::from_secs(1),
+            Duration::from_millis(1),
+        ),
         (Instant::now() + Duration::from_secs(30), Duration::ZERO),
-        (Instant::now() + Duration::from_secs(1), Duration::from_secs(2)),
+        (
+            Instant::now() + Duration::from_secs(1),
+            Duration::from_secs(2),
+        ),
     ] {
-        assert!(InvocationOptions::new(
-            fixture.options(FilesystemProfile::Native), ApplicationConfig::default(),
-            FrameLimits::default(), budget,
-        ).is_err());
+        assert!(
+            InvocationOptions::new(
+                fixture.options(FilesystemProfile::Native),
+                ApplicationConfig::default(),
+                FrameLimits::default(),
+                budget,
+            )
+            .is_err()
+        );
     }
     assert_eq!(snapshot(&fixture.parent), before);
 }
@@ -261,29 +323,56 @@ fn invocation_budget_requires_a_future_deadline_and_nonzero_usable_cleanup_reser
 fn expired_warm_runtime_refuses_mutation_before_acquiring_a_lease() {
     let fixture = Fixture::new();
     let options = InvocationOptions::new(
-        fixture.options(FilesystemProfile::Native), ApplicationConfig::default(),
-        FrameLimits::default(), (Instant::now() + Duration::from_millis(100), Duration::from_millis(1)),
-    ).unwrap();
+        fixture.options(FilesystemProfile::Native),
+        ApplicationConfig::default(),
+        FrameLimits::default(),
+        (
+            Instant::now() + Duration::from_millis(100),
+            Duration::from_millis(1),
+        ),
+    )
+    .unwrap();
     let runtime = InvocationRuntime::new(options).unwrap();
     let before = snapshot(&fixture.parent);
     std::thread::sleep(Duration::from_millis(120));
-    assert!(runtime.execute(&frame(&json!({"op":"createCollection","collection":"records"}))).is_err());
+    assert!(
+        runtime
+            .execute(&frame(
+                &json!({"op":"createCollection","collection":"records"})
+            ))
+            .is_err()
+    );
     assert_eq!(snapshot(&fixture.parent), before);
 }
 
 #[test]
 fn invocation_rejects_empty_truncated_multiple_and_oversized_frames_before_mutation() {
     let fixture = Fixture::new();
-    let limits = FrameLimits { max_request_bytes: 128, max_response_bytes: 4096 };
-    let runtime = runtime(fixture.options(FilesystemProfile::Native), ApplicationConfig::default(), limits);
+    let limits = FrameLimits {
+        max_request_bytes: 128,
+        max_response_bytes: 4096,
+    };
+    let runtime = runtime(
+        fixture.options(FilesystemProfile::Native),
+        ApplicationConfig::default(),
+        limits,
+    );
     let valid = frame(&json!({"op":"createCollection","collection":"records"}));
     let mut multiple = valid.clone();
     multiple.extend_from_slice(&frame(&json!({"op":"handshake"})));
     let mut trailing_blank = valid.clone();
     trailing_blank.push(b'\n');
-    let oversized = frame(&json!({"op":"createCollection","collection":"records","pad":"x".repeat(256)}));
+    let oversized =
+        frame(&json!({"op":"createCollection","collection":"records","pad":"x".repeat(256)}));
     let before = snapshot(&fixture.parent);
-    for bytes in [Vec::new(), b"\n".to_vec(), valid[..valid.len()-1].to_vec(), multiple, trailing_blank, oversized] {
+    for bytes in [
+        Vec::new(),
+        b"\n".to_vec(),
+        valid[..valid.len() - 1].to_vec(),
+        multiple,
+        trailing_blank,
+        oversized,
+    ] {
         assert!(runtime.execute(&bytes).is_err());
         assert_eq!(snapshot(&fixture.parent), before);
     }
@@ -296,16 +385,23 @@ fn host_repository_must_be_the_same_actual_root_before_invocation_admission() {
     fs::create_dir_all(&other).unwrap();
     let before = snapshot(&fixture.parent);
     let options = InvocationOptions::new(
-        fixture.options(FilesystemProfile::Native).with_repository(&other),
-        ApplicationConfig::default(), FrameLimits::default(),
-        (Instant::now() + Duration::from_secs(30), Duration::from_millis(100)),
+        fixture
+            .options(FilesystemProfile::Native)
+            .with_repository(&other),
+        ApplicationConfig::default(),
+        FrameLimits::default(),
+        (
+            Instant::now() + Duration::from_secs(30),
+            Duration::from_millis(100),
+        ),
     );
     assert!(options.and_then(InvocationRuntime::new).is_err());
     assert_eq!(snapshot(&fixture.parent), before);
 }
 
 #[test]
-fn request_root_and_schema_overrides_cannot_mutate_an_unadmitted_root_or_replace_host_configuration() {
+fn request_root_and_schema_overrides_cannot_mutate_an_unadmitted_root_or_replace_host_configuration()
+ {
     let fixture = Fixture::new();
     let other = fixture.parent.join("other-root");
     fs::create_dir_all(&other).unwrap();
@@ -321,7 +417,10 @@ fn request_root_and_schema_overrides_cannot_mutate_an_unadmitted_root_or_replace
         assert!(runtime.execute(&frame(&request)).is_err());
         assert_eq!(snapshot(&fixture.parent), before);
     }
-    success(&runtime, json!({"op":"createCollection","collection":"records"}));
+    success(
+        &runtime,
+        json!({"op":"createCollection","collection":"records"}),
+    );
     fixture.assert_released(FilesystemProfile::Native);
 }
 
@@ -333,12 +432,24 @@ fn canonical_host_and_request_aliases_admit_only_the_same_physical_root() {
         symlink(&fixture.root, &alias).unwrap();
         let canonical = fs::canonicalize(&fixture.root).unwrap();
         let runtime = runtime(
-            RootOpenOptions::new(&alias).with_profile(profile).with_repository(&canonical),
-            ApplicationConfig::default(), FrameLimits::default(),
+            RootOpenOptions::new(&alias)
+                .with_profile(profile)
+                .with_repository(&canonical),
+            ApplicationConfig::default(),
+            FrameLimits::default(),
         );
-        success(&runtime, json!({"op":"createCollection","collection":"records","root":canonical}));
-        success(&runtime, json!({"op":"putData","collection":"records","id":ID,"root":alias,"data":{"name":"Ada"}}));
-        let response = success(&runtime, json!({"op":"getDoc","collection":"records","id":ID}));
+        success(
+            &runtime,
+            json!({"op":"createCollection","collection":"records","root":canonical}),
+        );
+        success(
+            &runtime,
+            json!({"op":"putData","collection":"records","id":ID,"root":alias,"data":{"name":"Ada"}}),
+        );
+        let response = success(
+            &runtime,
+            json!({"op":"getDoc","collection":"records","id":ID}),
+        );
         assert_eq!(response["result"][ID]["name"], "Ada");
         fixture.assert_released(profile);
     }
@@ -349,9 +460,12 @@ fn checked_invocation_completion_releases_the_root_before_success_or_domain_erro
     let fixture = Fixture::new();
     let runtime = fixture.runtime(FilesystemProfile::Native);
     let response = success(&runtime, json!({"op":"handshake"}));
-    assert_eq!(response["result"]["storage"]["rootLock"], json!({
-        "owned":true, "kernelEnforced":true, "remoteQualified":false,
-    }));
+    assert_eq!(
+        response["result"]["storage"]["rootLock"],
+        json!({
+            "owned":true, "kernelEnforced":true, "remoteQualified":false,
+        })
+    );
     fixture.assert_released(FilesystemProfile::Native);
     let response = execute(&runtime, json!({"op":"unknown-invocation-operation"}));
     assert_eq!(response["ok"], false);
@@ -365,14 +479,22 @@ fn a_contending_owner_prevents_recovery_and_mutation_but_does_not_poison_the_run
     let runtime = fixture.runtime(FilesystemProfile::Native);
     let lease = RootLease::acquire(&fixture.root).unwrap();
     let before = snapshot(&fixture.parent);
-    let outcome = runtime.execute(&frame(&json!({"op":"createCollection","collection":"records"})));
+    let outcome = runtime.execute(&frame(
+        &json!({"op":"createCollection","collection":"records"}),
+    ));
     if let Ok(response) = outcome {
-        assert_eq!(serde_json::from_slice::<Value>(&response).unwrap()["ok"], false);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&response).unwrap()["ok"],
+            false
+        );
     }
     assert_eq!(snapshot(&fixture.parent), before);
     lease.assert_owned().unwrap();
     lease.release_checked().unwrap();
-    success(&runtime, json!({"op":"createCollection","collection":"records"}));
+    success(
+        &runtime,
+        json!({"op":"createCollection","collection":"records"}),
+    );
     fixture.assert_released(FilesystemProfile::Native);
 }
 
@@ -386,8 +508,20 @@ fn cold_and_warm_invocations_revalidate_changed_index_inputs_and_keep_no_query_c
     assert_eq!(first["result"].as_object().unwrap().len(), 1);
     // A separate admitted owner changes the same collection after its index was cached.
     let lease = RootLease::acquire(&fixture.root).unwrap();
-    let writer = NativeWriteRoot::open_profiled(fixture.options(FilesystemProfile::Native).with_lease(lease.clone())).unwrap();
-    writer.put_document("records", SECOND_ID, br#"{"name":"Grace"}"#, PutDocumentOptions::default()).unwrap();
+    let writer = NativeWriteRoot::open_profiled(
+        fixture
+            .options(FilesystemProfile::Native)
+            .with_lease(lease.clone()),
+    )
+    .unwrap();
+    writer
+        .put_document(
+            "records",
+            SECOND_ID,
+            br#"{"name":"Grace"}"#,
+            PutDocumentOptions::default(),
+        )
+        .unwrap();
     drop(writer);
     lease.release_checked().unwrap();
     let warm = success(&runtime, query.clone());
@@ -395,8 +529,14 @@ fn cold_and_warm_invocations_revalidate_changed_index_inputs_and_keep_no_query_c
     assert_eq!(warm["result"], cold["result"]);
     assert_eq!(warm["result"].as_object().unwrap().len(), 2);
     assert_eq!(warm["result"][SECOND_ID]["name"], "Grace");
-    for page in [json!({"limit":1}), json!({"limit":1,"cursor":"previous-invocation"})] {
-        let response = execute(&runtime, json!({"op":"findDocs","collection":"records","query":{},"page":page}));
+    for page in [
+        json!({"limit":1}),
+        json!({"limit":1,"cursor":"previous-invocation"}),
+    ] {
+        let response = execute(
+            &runtime,
+            json!({"op":"findDocs","collection":"records","query":{},"page":page}),
+        );
         assert_eq!(response["error"]["code"], "EQUERYLOOPREQUIRED");
         fixture.assert_released(FilesystemProfile::Native);
     }
@@ -409,12 +549,21 @@ fn cold_invocation_recovers_the_touched_collection_before_a_point_read() {
         let runtime = fixture.runtime(profile);
         create_record(&runtime);
         let transaction = committed_recovery_fixture(&fixture.root);
-        let response = success(&fixture.runtime(profile), json!({"op":"getDoc","collection":"records","id":ID}));
+        let response = success(
+            &fixture.runtime(profile),
+            json!({"op":"getDoc","collection":"records","id":ID}),
+        );
         assert_eq!(response["result"][ID]["name"], "Ada");
         assert!(!transaction.exists());
-        let generation: Value = serde_json::from_slice(&fs::read(
-            fixture.root.join(".fylo-transactions/.collections/records/state.json"),
-        ).unwrap()).unwrap();
+        let generation: Value = serde_json::from_slice(
+            &fs::read(
+                fixture
+                    .root
+                    .join(".fylo-transactions/.collections/records/state.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
         assert_eq!(generation["state"], "stable");
         fixture.assert_released(profile);
     }
@@ -432,7 +581,10 @@ fn corrupt_collection_recovery_refuses_mutation_and_releases_the_internal_lease(
         "op":"putData","collection":"records","id":SECOND_ID,"data":{"name":"must not replay"},
     })));
     if let Ok(response) = outcome {
-        assert_eq!(serde_json::from_slice::<Value>(&response).unwrap()["ok"], false);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&response).unwrap()["ok"],
+            false
+        );
     }
     assert_eq!(snapshot(&fixture.root), before);
     fixture.assert_released(FilesystemProfile::Native);
@@ -447,9 +599,14 @@ fn repository_recovery_failure_occurs_before_dispatch_and_releases_the_internal_
     fs::create_dir_all(fixture.root.join(".fylo-vcs")).unwrap();
     symlink(&target, fixture.root.join(".fylo-vcs/staging")).unwrap();
     let before = snapshot(&fixture.root);
-    let outcome = runtime.execute(&frame(&json!({"op":"createCollection","collection":"records"})));
+    let outcome = runtime.execute(&frame(
+        &json!({"op":"createCollection","collection":"records"}),
+    ));
     if let Ok(response) = outcome {
-        assert_eq!(serde_json::from_slice::<Value>(&response).unwrap()["ok"], false);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&response).unwrap()["ok"],
+            false
+        );
     }
     assert_eq!(snapshot(&fixture.root), before);
     assert!(fs::read_dir(target).unwrap().next().is_none());
@@ -461,24 +618,60 @@ fn invocation_retains_host_storage_schema_credentials_and_published_frame_limits
     let fixture = Fixture::new();
     let schema = fixture.parent.join("schemas");
     fs::create_dir_all(schema.join("records/history")).unwrap();
-    fs::write(schema.join("records/manifest.json"), br#"{"current":"v1","versions":[{"v":"v1"}]}"#).unwrap();
-    fs::write(schema.join("records/history/v1.schema.json"), br#"{"$encrypted":["secret"]}"#).unwrap();
+    fs::write(
+        schema.join("records/manifest.json"),
+        br#"{"current":"v1","versions":[{"v":"v1"}]}"#,
+    )
+    .unwrap();
+    fs::write(
+        schema.join("records/history/v1.schema.json"),
+        br#"{"$encrypted":["secret"]}"#,
+    )
+    .unwrap();
     let application = ApplicationConfig {
-        root: Some(fixture.root.clone()), storage: RootConfig { strict_schema:false, shard_width:Some(2) },
-        schema: Some(schema.clone()), credentials:Some((FIXTURE_KEY.into(), "fixture-salt".into())), chex_binary:None,
+        root: Some(fixture.root.clone()),
+        storage: RootConfig {
+            strict_schema: false,
+            shard_width: Some(2),
+        },
+        schema: Some(schema.clone()),
+        credentials: Some((FIXTURE_KEY.into(), "fixture-salt".into())),
+        chex_binary: None,
     };
-    let limits = FrameLimits { max_request_bytes:8192, max_response_bytes:16384 };
-    let runtime = runtime(fixture.options(FilesystemProfile::Native), application, limits);
+    let limits = FrameLimits {
+        max_request_bytes: 8192,
+        max_response_bytes: 16384,
+    };
+    let runtime = runtime(
+        fixture.options(FilesystemProfile::Native),
+        application,
+        limits,
+    );
     let handshake = success(&runtime, json!({"op":"handshake"}));
     assert_eq!(handshake["result"]["machine"]["maxRequestBytes"], 8192);
     assert_eq!(handshake["result"]["machine"]["maxResponseBytes"], 16384);
-    success(&runtime, json!({"op":"createCollection","collection":"records"}));
-    success(&runtime, json!({"op":"putData","collection":"records","id":ID,"data":{"secret":"fixture-plaintext","name":"Ada"}}));
-    let response = success(&runtime, json!({"op":"getDoc","collection":"records","id":ID}));
+    success(
+        &runtime,
+        json!({"op":"createCollection","collection":"records"}),
+    );
+    success(
+        &runtime,
+        json!({"op":"putData","collection":"records","id":ID,"data":{"secret":"fixture-plaintext","name":"Ada"}}),
+    );
+    let response = success(
+        &runtime,
+        json!({"op":"getDoc","collection":"records","id":ID}),
+    );
     assert_eq!(response["result"][ID]["secret"], "fixture-plaintext");
-    let inspect = success(&runtime, json!({"op":"schemaInspect","collection":"records"}));
+    let inspect = success(
+        &runtime,
+        json!({"op":"schemaInspect","collection":"records"}),
+    );
     assert_eq!(inspect["result"]["schemaDir"], json!(schema));
-    let collection = NativeRoot::open(&fixture.root).unwrap().collection("records").unwrap();
+    let collection = NativeRoot::open(&fixture.root)
+        .unwrap()
+        .collection("records")
+        .unwrap();
     let stored = collection.read_document(ID).unwrap();
     assert_eq!(collection.shard_width(), 2);
     assert_eq!(stored.path.parent().unwrap().file_name().unwrap(), "CO");
@@ -491,18 +684,45 @@ fn invocation_retains_host_storage_schema_credentials_and_published_frame_limits
 fn response_and_error_frames_stay_bounded_and_small_limits_never_expose_an_oversized_buffer() {
     let fixture = Fixture::new();
     let normal = fixture.runtime(FilesystemProfile::Native);
-    success(&normal, json!({"op":"createCollection","collection":"records"}));
-    success(&normal, json!({"op":"putData","collection":"records","id":ID,"data":{"large":"x".repeat(4096)}}));
-    let bounded = runtime(fixture.options(FilesystemProfile::Native), ApplicationConfig::default(),
-        FrameLimits { max_request_bytes:8192, max_response_bytes:512 });
-    let bytes = bounded.execute(&frame(&json!({"op":"getDoc","collection":"records","id":ID}))).unwrap();
+    success(
+        &normal,
+        json!({"op":"createCollection","collection":"records"}),
+    );
+    success(
+        &normal,
+        json!({"op":"putData","collection":"records","id":ID,"data":{"large":"x".repeat(4096)}}),
+    );
+    let bounded = runtime(
+        fixture.options(FilesystemProfile::Native),
+        ApplicationConfig::default(),
+        FrameLimits {
+            max_request_bytes: 8192,
+            max_response_bytes: 512,
+        },
+    );
+    let bytes = bounded
+        .execute(&frame(
+            &json!({"op":"getDoc","collection":"records","id":ID}),
+        ))
+        .unwrap();
     assert!(bytes.len() <= 513);
     let response: Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(response["error"]["code"], "EFRAME_RESPONSE_TOO_LARGE");
     fixture.assert_released(FilesystemProfile::Native);
-    let tiny = runtime(fixture.options(FilesystemProfile::Native), ApplicationConfig::default(),
-        FrameLimits { max_request_bytes:8192, max_response_bytes:1 });
-    assert!(tiny.execute(&frame(&json!({"op":"unknown-operation","requestId":"x".repeat(2048)}))).is_err());
+    let tiny = runtime(
+        fixture.options(FilesystemProfile::Native),
+        ApplicationConfig::default(),
+        FrameLimits {
+            max_request_bytes: 8192,
+            max_response_bytes: 1,
+        },
+    );
+    assert!(
+        tiny.execute(&frame(
+            &json!({"op":"unknown-operation","requestId":"x".repeat(2048)})
+        ))
+        .is_err()
+    );
     fixture.assert_released(FilesystemProfile::Native);
 }
 
@@ -510,13 +730,30 @@ fn response_and_error_frames_stay_bounded_and_small_limits_never_expose_an_overs
 fn an_uncertain_response_after_mutation_does_not_automatically_replay_the_operation() {
     let fixture = Fixture::new();
     let normal = fixture.runtime(FilesystemProfile::Native);
-    success(&normal, json!({"op":"createCollection","collection":"records"}));
-    let tiny = runtime(fixture.options(FilesystemProfile::Native), ApplicationConfig::default(),
-        FrameLimits { max_request_bytes:8192, max_response_bytes:1 });
+    success(
+        &normal,
+        json!({"op":"createCollection","collection":"records"}),
+    );
+    let tiny = runtime(
+        fixture.options(FilesystemProfile::Native),
+        ApplicationConfig::default(),
+        FrameLimits {
+            max_request_bytes: 8192,
+            max_response_bytes: 1,
+        },
+    );
     // No caller identifier: an automatic replay would create another document.
-    assert!(tiny.execute(&frame(&json!({"op":"putData","collection":"records","data":{"name":"one mutation"}}))).is_err());
+    assert!(
+        tiny.execute(&frame(
+            &json!({"op":"putData","collection":"records","data":{"name":"one mutation"}})
+        ))
+        .is_err()
+    );
     fixture.assert_released(FilesystemProfile::Native);
-    let response = success(&normal, json!({"op":"findDocs","collection":"records","query":{}}));
+    let response = success(
+        &normal,
+        json!({"op":"findDocs","collection":"records","query":{}}),
+    );
     let records = response["result"].as_object().unwrap();
     assert_eq!(records.len(), 1);
     assert_eq!(records.values().next().unwrap()["name"], "one mutation");
@@ -525,20 +762,45 @@ fn an_uncertain_response_after_mutation_does_not_automatically_replay_the_operat
 #[test]
 fn existing_native_streaming_accepts_multiple_frames_and_preserves_legacy_defaults() {
     let fixture = Fixture::new();
-    let requests = [json!({"op":"handshake"}), json!({"op":"createCollection","collection":"records"})];
+    let requests = [
+        json!({"op":"handshake"}),
+        json!({"op":"createCollection","collection":"records"}),
+    ];
     let mut input = Cursor::new(requests.iter().flat_map(frame).collect::<Vec<_>>());
     let mut output = Vec::new();
-    serve_application(&mut input, &mut output, Some(fixture.root.clone()), FrameLimits::default(),
-        ApplicationConfig::default(), false, true).unwrap();
-    let frames: Vec<Value> = output.split(|byte| *byte == b'\n').filter(|bytes| !bytes.is_empty())
-        .map(|bytes| serde_json::from_slice(bytes).unwrap()).collect();
+    serve_application(
+        &mut input,
+        &mut output,
+        Some(fixture.root.clone()),
+        FrameLimits::default(),
+        ApplicationConfig::default(),
+        false,
+        true,
+    )
+    .unwrap();
+    let frames: Vec<Value> = output
+        .split(|byte| *byte == b'\n')
+        .filter(|bytes| !bytes.is_empty())
+        .map(|bytes| serde_json::from_slice(bytes).unwrap())
+        .collect();
     assert_eq!(frames.len(), 2);
     assert_eq!(frames[0]["ok"], true);
     assert_eq!(frames[1]["ok"], true);
-    assert_eq!(frames[0]["result"]["storage"]["filesystemProfile"], "native");
+    assert_eq!(
+        frames[0]["result"]["storage"]["filesystemProfile"],
+        "native"
+    );
     assert_eq!(frames[0]["result"]["storage"]["rootLock"]["owned"], false);
-    assert_eq!(frames[0]["result"]["storage"]["rootLock"]["kernelEnforced"], false);
-    assert!(!fixture.root.join(".fylo-catalog/filesystem-profile.json").exists());
+    assert_eq!(
+        frames[0]["result"]["storage"]["rootLock"]["kernelEnforced"],
+        false
+    );
+    assert!(
+        !fixture
+            .root
+            .join(".fylo-catalog/filesystem-profile.json")
+            .exists()
+    );
 }
 
 #[test]
@@ -551,7 +813,10 @@ fn unique_checked_release_removes_its_owner_metadata_and_admits_an_alias_contend
     let lock_path = fixture.metadata_path().with_extension("");
     lease.release_checked().unwrap();
     assert!(!fixture.metadata_path().exists());
-    assert!(lock_path.is_file(), "checked release removed the shared lock inode");
+    assert!(
+        lock_path.is_file(),
+        "checked release removed the shared lock inode"
+    );
     let contender = RootLease::acquire(&alias).unwrap();
     assert_eq!(contender.root(), fs::canonicalize(&fixture.root).unwrap());
     contender.release_checked().unwrap();
@@ -563,23 +828,36 @@ fn escaped_clone_refuses_checked_release_and_keeps_the_actual_root_locked() {
     let lease = RootLease::acquire(&fixture.root).unwrap();
     let escaped = lease.clone();
     let before = fs::read(fixture.metadata_path()).unwrap();
-    assert_eq!(lease.release_checked().unwrap_err().code(), NativeStorageErrorCode::RootLeaseLost);
+    assert_eq!(
+        lease.release_checked().unwrap_err().code(),
+        NativeStorageErrorCode::RootLeaseLost
+    );
     assert_eq!(fs::read(fixture.metadata_path()).unwrap(), before);
     escaped.assert_owned().unwrap();
-    assert_eq!(RootLease::acquire(&fixture.root).unwrap_err().code(), NativeStorageErrorCode::RootLocked);
+    assert_eq!(
+        RootLease::acquire(&fixture.root).unwrap_err().code(),
+        NativeStorageErrorCode::RootLocked
+    );
     drop(escaped);
-    RootLease::acquire(&fixture.root).unwrap().release_checked().unwrap();
+    RootLease::acquire(&fixture.root)
+        .unwrap()
+        .release_checked()
+        .unwrap();
 }
 
 #[test]
 fn checked_release_preserves_foreign_owner_metadata_on_ownership_loss() {
     let fixture = Fixture::new();
     let lease = RootLease::acquire(&fixture.root).unwrap();
-    let mut owner: Value = serde_json::from_slice(&fs::read(fixture.metadata_path()).unwrap()).unwrap();
+    let mut owner: Value =
+        serde_json::from_slice(&fs::read(fixture.metadata_path()).unwrap()).unwrap();
     owner["owner"] = json!("foreign-generation-must-remain");
     let foreign = serde_json::to_vec(&owner).unwrap();
     fs::write(fixture.metadata_path(), &foreign).unwrap();
-    assert_eq!(lease.release_checked().unwrap_err().code(), NativeStorageErrorCode::RootLeaseLost);
+    assert_eq!(
+        lease.release_checked().unwrap_err().code(),
+        NativeStorageErrorCode::RootLeaseLost
+    );
     assert_eq!(fs::read(fixture.metadata_path()).unwrap(), foreign);
 }
 
@@ -601,12 +879,20 @@ fn checked_release_fails_closed_on_missing_corrupt_or_symlinked_owner_metadata()
             }
             _ => unreachable!(),
         }
-        assert_eq!(lease.release_checked().unwrap_err().code(), NativeStorageErrorCode::RootLeaseLost);
+        assert_eq!(
+            lease.release_checked().unwrap_err().code(),
+            NativeStorageErrorCode::RootLeaseLost
+        );
         match invalid {
             "missing" => assert!(!metadata.exists()),
             "corrupt" => assert_eq!(fs::read(&metadata).unwrap(), b"not JSON"),
             "symlink" => {
-                assert!(fs::symlink_metadata(&metadata).unwrap().file_type().is_symlink());
+                assert!(
+                    fs::symlink_metadata(&metadata)
+                        .unwrap()
+                        .file_type()
+                        .is_symlink()
+                );
                 assert_eq!(fs::read(&outside).unwrap(), original);
             }
             _ => unreachable!(),
@@ -621,5 +907,8 @@ fn legacy_drop_still_leaves_diagnostic_metadata_and_allows_the_next_owner() {
     let before = fs::read(fixture.metadata_path()).unwrap();
     drop(lease);
     assert_eq!(fs::read(fixture.metadata_path()).unwrap(), before);
-    RootLease::acquire(&fixture.root).unwrap().release_checked().unwrap();
+    RootLease::acquire(&fixture.root)
+        .unwrap()
+        .release_checked()
+        .unwrap();
 }

@@ -1383,8 +1383,8 @@ fn open_engine(
 ) -> Result<ReadOnlyEngine, String> {
     let mut options = RootOpenOptions::new(root).with_profile(profile);
     if profile == FilesystemProfile::EfsSidecarV1 {
-        let lease = RootLease::acquire_with_profile(root, profile)
-            .map_err(|error| error.to_string())?;
+        let lease =
+            RootLease::acquire_with_profile(root, profile).map_err(|error| error.to_string())?;
         options = options.with_lease(lease);
     }
     let engine = ReadOnlyEngine::open_profiled(options).map_err(|error| error.to_string())?;
