@@ -155,11 +155,11 @@ fn the_same_document_id_in_another_collection_cannot_supply_its_manifest() {
     let records = fixture.reader().collection("records").unwrap();
     let first = records.read_document(ID).unwrap();
     writer
-        .create_collection("other_records", CollectionKind::Document, None)
+        .create_collection("other-records", CollectionKind::Document, None)
         .unwrap();
     writer
         .put_document(
-            "other_records",
+            "other-records",
             ID,
             &first.bytes,
             PutDocumentOptions {
@@ -171,7 +171,7 @@ fn the_same_document_id_in_another_collection_cannot_supply_its_manifest() {
             },
         )
         .unwrap();
-    let other = fixture.reader().collection("other_records").unwrap();
+    let other = fixture.reader().collection("other-records").unwrap();
     let second = other.read_document(ID).unwrap();
     assert_eq!(first.bytes, second.bytes);
     swap_manifests(&first.path, &second.path);
