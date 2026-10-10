@@ -367,55 +367,52 @@ should not share its JavaScript execution boundary.
 
 ## Configuration
 
-| Variable              | Purpose                                         | Default        |
-| --------------------- | ----------------------------------------------- | -------------- |
-| `FYLO_ROOT`           | Filesystem root for collections                 | `./.fylo-data` |
-| `FYLO_SCHEMA`         | Directory containing JSON validation schemas    | —              |
-| `FYLO_STRICT`         | Validate documents with chex before writes      | —              |
-| `FYLO_SHARD_WIDTH`    | Shard width for newly created collections (1–4) | `1`            |
-| `FYLO_ENCRYPTION_KEY` | AES-GCM key for `$encrypted` fields (≥32 chars) | —              |
-| `FYLO_CIPHER_SALT`    | Salt for blind index derivation                 | —              |
+Native runtime settings live in `application.json` under the `fylo` key. Each
+underscore in a former `FYLO_*` setting becomes a nested key; for example,
+`FYLO_SHARD_WIDTH` becomes `fylo.shard.width`. Environment settings are no longer
+implicit overrides.
 
-Copy `.env.example` to `.env` and fill in your values.
+```json
+{
+    "fylo": {
+        "root": "./data",
+        "schema": "./schemas",
+        "strict": true,
+        "shard": { "width": 1 },
+        "encryption": { "key": "${FYLO_ENCRYPTION_KEY}" },
+        "cipher": { "salt": "${FYLO_CIPHER_SALT}" }
+    }
+}
+```
 
-Every binary-backed SDK shim can scope a `.env` file to one FYLO child. For
-example, Node/TypeScript uses:
+Keep only secrets in an adjacent `.env`, and explicitly reference them using a
+whole-value `${NAME}` string. Injected environment secrets take precedence over
+the adjacent file; unrelated variables are ignored. Omit encryption and cipher
+entries when they are not needed. [application.example.json](application.example.json)
+is a minimal starting point that does not require secrets.
+
+The CLI discovers `application.json` in its working directory, or accepts
+`--config /path/to/application.json`. Every binary-backed SDK shim can select a
+configuration file for its own FYLO child:
 
 ```js
 const db = new Fylo('/mnt/fylo', {
     binary: '/opt/fylo/bin/fylo',
-    env: './config/mail.fylo.env'
+    config: './config/mail/application.json'
 })
 ```
 
-Each shim also accepts its language's native environment map/dictionary. In
-Node/TypeScript, pass only the settings this child needs:
+Explicit constructor roots and CLI flags win over JSON settings, followed by
+engine defaults. Paths in JSON resolve relative to that file. An absent default
+file uses defaults; an explicitly selected missing file, invalid configuration,
+or unresolved secret reference fails initialization. Loading configuration never
+mutates the process environment.
 
-```js
-const db = new Fylo('/mnt/fylo', {
-    env: {
-        FYLO_SCHEMA: '/srv/mail/schemas',
-        FYLO_STRICT: '1'
-    }
-})
-```
-
-The configured values override inherited variables for that child without
-mutating the host process environment. An explicit constructor root,
-`shardWidth`, or enabled `strictSchema` is passed as a CLI flag and takes
-precedence over its environment equivalent. A missing or malformed `.env` file
-fails before FYLO is spawned. See [the SDK shim guide](clients/README.md) for
-Python, Ruby, PHP, Go, Rust, Java, C#, and Dart syntax.
-
-Treat both the environment file path and map as trusted bootstrap configuration.
-Never accept either from a request, tenant setting, upload, or other untrusted
-input: arbitrary environment keys can alter `PATH`, dynamic-loader behavior,
-and the program that the child starts. Use an absolute, administrator-controlled
-binary path; copy only explicitly approved `FYLO_*` values instead of spreading
-`process.env`; and audit inherited variables, removing unrelated keys where the
-shim supports null/nil removal. Keep populated files out of source control,
-store secrets in a secret manager when possible, and make local secret files
-owner-readable only (for example, `chmod 600`).
+Treat configuration and binary paths as trusted bootstrap input. Keep secret
+files private and out of source control. Browser/mobile clients continue using
+explicit storage-host options and never implicitly load local JSON or `.env`
+files. See the [configuration and migration guide](docs/configuration.md) and
+[SDK shim examples](clients/README.md).
 
 ## CRUD Operations
 
@@ -874,10 +871,10 @@ const { uid, gid, mode, createdAt, updatedAt, mtime } = await db.documents
 
 ## Schema Versioning
 
-Schemas live under `FYLO_SCHEMA` in a per-collection layout:
+Schemas live under `fylo.schema` in a per-collection layout:
 
 ```text
-<FYLO_SCHEMA>/
+<fylo.schema>/
   <collection>/
     manifest.json          ← { current, versions: [{v, sha256?, addedAt?}] }
     history/
@@ -931,7 +928,7 @@ Behavior:
 - Reads materialize old docs to head shape in memory
 - Strict writes validate against head schema via the `chex` binary
 - Documents missing `_v` are treated as oldest version (legacy upgrade on read)
-- Any collection directory under `FYLO_SCHEMA` that contains a `manifest.json` is auto-created on `new Fylo(...)`; await `fylo.ready()` if you need the bootstrap to settle before issuing reads from a synchronous probe (mutation/query methods await internally)
+- Any collection directory under `fylo.schema` that contains a `manifest.json` is auto-created on `new Fylo(...)`; await `fylo.ready()` if you need the bootstrap to settle before issuing reads from a synchronous probe (mutation/query methods await internally)
 - FYLO schemas do not support arrays of objects — declare each nested object as its own collection. A schema that would accept `items: [{ name: '...' }]` will throw `FYLO schema '...' does not support arrays of objects at '$.items'` on first read. Arrays of scalars and nested objects (as fields) are fine.
 
 ---
@@ -958,8 +955,8 @@ unencrypted — check the stored document if a field is not being encrypted.
 
 Requirements:
 
-- `FYLO_ENCRYPTION_KEY` must be ≥32 characters
-- `FYLO_CIPHER_SALT` is recommended
+- The secret referenced by `fylo.encryption.key` must contain at least 32 UTF-8 bytes
+- `fylo.encryption.key` and `fylo.cipher.salt` must be configured together as secret references; literal credentials in JSON are rejected
 - Process-global: one key for all collections
 
 Decryption is schema-driven and does not depend on write history: a read-only

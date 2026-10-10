@@ -1,6 +1,7 @@
 import { cp, mkdir, readFile, rm } from 'node:fs/promises'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { resolve } from 'node:path'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
 const engineOnly = process.argv.includes('--engine-only')
@@ -60,7 +61,13 @@ if (withWasm) {
         await buildWasm(manifest, rustflags)
         await rm(new URL(`../dist-web/${published}`, import.meta.url), { force: true })
         await cp(
-            new URL(`../target/wasm32-unknown-unknown/release/${built}`, import.meta.url),
+            resolve(
+                root,
+                process.env.CARGO_TARGET_DIR ?? 'target',
+                'wasm32-unknown-unknown',
+                'release',
+                built
+            ),
             new URL(`../dist-web/${published}`, import.meta.url)
         )
     }

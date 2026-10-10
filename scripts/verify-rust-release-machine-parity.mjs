@@ -24,10 +24,12 @@ const releasedOperations = canonicalOperations.filter(
 )
 const workspace = await mkdtemp(join(tmpdir(), 'fylo-release-machine-parity-'))
 const schemaRoot = join(workspace, 'schema')
+const applicationConfig = join(workspace, 'application.json')
 const rawSource = join(workspace, 'source.bin')
 
 try {
     await createSchemaFixture(schemaRoot)
+    await writeFile(applicationConfig, JSON.stringify({ fylo: { schema: schemaRoot } }))
     await writeFile(rawSource, new Uint8Array([0, 1, 2, 3, 254, 255]))
 
     const released = await runScenario('released', releasedBinary, join(workspace, 'released'))
@@ -48,7 +50,7 @@ try {
 
 async function runScenario(label, binary, root) {
     await mkdir(root, { recursive: true })
-    let machine = new Machine(binary, root, { FYLO_SCHEMA: schemaRoot })
+    let machine = new Machine(binary, root)
     const operations = new Set()
     const transcript = []
     const identifiers = new Map()
@@ -403,7 +405,7 @@ async function runScenario(label, binary, root) {
             create: true
         })
         await machine.close()
-        machine = new Machine(binary, root, { FYLO_SCHEMA: schemaRoot })
+        machine = new Machine(binary, root)
         if (label === 'rust') {
             const branchAdaMetadata = await request(
                 'get-ada-meta-after-checkout-feature',
@@ -440,7 +442,7 @@ async function runScenario(label, binary, root) {
         await request('merge-current-feature', { op: 'merge', source: 'feature/parity' })
         await request('checkout-main', { op: 'checkout', branch: 'main' })
         await machine.close()
-        machine = new Machine(binary, root, { FYLO_SCHEMA: schemaRoot })
+        machine = new Machine(binary, root)
         await request('diff-commits', { op: 'diff', from: initial.id, to: feature.id })
         await request('restore-initial', { op: 'restoreCommit', id: initial.id, force: true })
         await request('get-grace-after-restore', {
@@ -493,13 +495,19 @@ async function runScenario(label, binary, root) {
 }
 
 class Machine {
-    constructor(binary, root, environment) {
+    constructor(binary, root) {
         this.sequence = 0
-        this.child = Bun.spawn([binary, 'exec', '--loop', '--root', root], {
+        const args = [binary, 'exec', '--loop', '--root', root]
+        const environment = { ...process.env }
+        if (binary === rustBinary) args.push('--config', applicationConfig)
+        // The immutable legacy release predates application.json; only that
+        // comparison baseline still receives its historical configuration API.
+        else environment.FYLO_SCHEMA = schemaRoot
+        this.child = Bun.spawn(args, {
             // Keep packaged Bun releases away from a repository-local `.env`.
             // The corpus is intentionally self-contained inside its root.
             cwd: root,
-            env: { ...process.env, ...environment },
+            env: environment,
             stdin: 'pipe',
             stdout: 'pipe',
             stderr: 'pipe'

@@ -628,7 +628,7 @@ export default class {
 
     schemaCode() {
         return [
-            '<FYLO_SCHEMA>/users/',
+            '<fylo.schema>/users/',
             '  manifest.json          ← { "current": "v2", "versions": [...] }',
             '  history/',
             '    v1.schema.json       ← chex regex schema',
@@ -643,7 +643,7 @@ export default class {
             '# Encryption is declared in the schema; record access is bound at write time.',
             '',
             '# 1. Encrypt fields: list them in the collection schema.',
-            '#    <FYLO_SCHEMA>/users/history/v1.schema.json',
+            '#    <fylo.schema>/users/history/v1.schema.json',
             '{ "$encrypted": ["email", "ssn"], "name": "^.+$", "email": "^.+@.+$" }',
             '',
             '# 2. POSTIX: bind a POSIX UID, GID, and mode to a record:',

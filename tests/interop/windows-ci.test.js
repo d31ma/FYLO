@@ -110,7 +110,7 @@ describe('release supply-chain pinning', () => {
         for (const installer of [shell, powershell]) {
             expect(installer).toContain('v26.32.03')
             expect(installer).toContain('v26.32.02')
-            expect(installer).toContain('v26.33.01')
+            expect(installer).toContain('v26.33.02')
             expect(installer).not.toContain('releases/latest')
             expect(installer).not.toContain('SHA256SUMS')
         }
@@ -118,9 +118,9 @@ describe('release supply-chain pinning', () => {
         expect(powershell).toContain(
             '41c06d2305e40ceb34baefc214610a869defc772501047e39c23427e0ff8565f'
         )
-        expect(shell).toContain('0ecafafd0468b8e559e98f1192e88df2cc5c53fb195e8ff8305b4d2f3b2ee584')
+        expect(shell).toContain('08b90a516ccb665664c3b986e71769cdcc738960e45a0bd8c73ab691a0cda1cd')
         expect(powershell).toContain(
-            '15b624f77c4e582a41332e44aadc7451369b960f8081da7fd670e11eb76a6424'
+            '00198a58534faff29f2373a2649c58f176e3305aa77242f59cee6530c7c371d5'
         )
         expect(kotlin).toContain("KOTLIN_VERSION='2.1.10'")
         expect(kotlin).toContain(

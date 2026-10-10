@@ -1,4 +1,4 @@
-# Transitional FYLO Amplify policy for the legacy-to-Tachyon-26.33.01 rollout.
+# Transitional FYLO Amplify policy for releases through Tachyon 26.33.02.
 # Keep this policy until both current.json checksums are final-policy compatible.
 customHeaders:
     - pattern: '**/*'

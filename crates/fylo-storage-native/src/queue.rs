@@ -6,6 +6,38 @@
 //! durable before it is returned, so a worker crash causes redelivery after
 //! the visibility lease rather than message loss.
 
+mod dedupe_record;
+mod queue_ack_result;
+mod queue_claim_options;
+#[cfg(test)]
+mod queue_claim_samples;
+mod queue_dead_letter;
+mod queue_delivery;
+mod queue_manifest;
+mod queue_nack_result;
+mod queue_publish_options;
+mod queue_publish_result;
+mod queue_stats;
+mod receipt_key;
+mod scan_budget;
+mod stored_message;
+mod stored_message_header;
+
+use dedupe_record::DedupeRecord;
+pub use queue_ack_result::QueueAckResult;
+pub use queue_claim_options::QueueClaimOptions;
+pub use queue_dead_letter::QueueDeadLetter;
+pub use queue_delivery::QueueDelivery;
+use queue_manifest::QueueManifest;
+pub use queue_nack_result::QueueNackResult;
+pub use queue_publish_options::QueuePublishOptions;
+pub use queue_publish_result::QueuePublishResult;
+pub use queue_stats::QueueStats;
+use receipt_key::ReceiptKey;
+use scan_budget::ScanBudget;
+use stored_message::StoredMessage;
+use stored_message_header::StoredMessageHeader;
+
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::io::Read as _;
@@ -14,7 +46,7 @@ use std::path::{Path, PathBuf};
 use base64::Engine as _;
 use fylo_vfs as fs;
 use hmac::{Hmac, KeyInit, Mac};
-use serde::de::{DeserializeOwned, IgnoredAny};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -39,200 +71,11 @@ const MAX_DEAD_LETTER_BYTES: u64 = MAX_MESSAGE_BYTES + 8192;
 const MAX_STATE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_PENDING_MESSAGES: usize = 10_000;
 const MAX_ACKNOWLEDGED_RECEIPTS: usize = 1_000;
-const MAX_CLAIM_MESSAGES: usize = 1_000;
-const DEFAULT_VISIBILITY_TIMEOUT_MS: u64 = 30_000;
-const MIN_VISIBILITY_TIMEOUT_MS: u64 = 100;
-const MAX_VISIBILITY_TIMEOUT_MS: u64 = 24 * 60 * 60 * 1000;
-const DEFAULT_MAX_ATTEMPTS: u32 = 3;
-const MAX_ATTEMPTS: u32 = 100;
 const MAX_DELAY_MS: u64 = 30 * 24 * 60 * 60 * 1000;
 const MAX_DEAD_LETTERS: usize = 1_000;
-const DEFAULT_READ_BUDGET_BYTES: usize = 8 * 1024 * 1024;
 const MAX_DIRECTORY_ENTRIES: usize = 100_000;
 const MAX_QUEUE_SCAN_BYTES: u64 = 64 * 1024 * 1024;
 const DELIVERY_ENVELOPE_ALLOWANCE: u64 = 512;
-
-/// Options applied while publishing one immutable message.
-#[derive(Clone, Debug, Default)]
-pub struct QueuePublishOptions {
-    /// Do not make the message claimable before this delay elapses.
-    pub delay_ms: u64,
-    /// Optional producer key that makes retries return the original message.
-    pub idempotency_key: Option<String>,
-}
-
-/// Result of a durable queue publication.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct QueuePublishResult {
-    /// Stable globally ordered message identifier.
-    pub id: String,
-    /// Whether an existing idempotent publication was returned.
-    pub deduplicated: bool,
-}
-
-/// Claim behavior for one consumer group poll.
-#[derive(Clone, Copy, Debug)]
-pub struct QueueClaimOptions {
-    /// Maximum messages returned by one call.
-    pub max_messages: usize,
-    /// Time during which another worker in the group cannot claim the message.
-    pub visibility_timeout_ms: u64,
-    /// Delivery attempts before the message enters this group's dead letter set.
-    pub max_attempts: u32,
-    /// Maximum aggregate encoded delivery bytes returned by one claim.
-    pub max_bytes: usize,
-}
-
-impl Default for QueueClaimOptions {
-    fn default() -> Self {
-        Self {
-            max_messages: 1,
-            visibility_timeout_ms: DEFAULT_VISIBILITY_TIMEOUT_MS,
-            max_attempts: DEFAULT_MAX_ATTEMPTS,
-            max_bytes: DEFAULT_READ_BUDGET_BYTES,
-        }
-    }
-}
-
-/// One leased delivery returned to a worker.
-#[derive(Clone, Debug, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct QueueDelivery {
-    /// Message identifier.
-    pub id: String,
-    /// Topic supplied by the producer.
-    pub topic: String,
-    /// Original publication time in Unix milliseconds.
-    pub published_at: u64,
-    /// One-based delivery attempt for this consumer group.
-    pub attempt: u32,
-    /// Opaque receipt required by acknowledgement, rejection, and extension.
-    pub receipt: String,
-    /// Unix millisecond at which this claim becomes visible again.
-    pub lease_expires_at: u64,
-    /// Producer payload.
-    pub payload: Value,
-}
-
-/// Acknowledgement result.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct QueueAckResult {
-    /// The message is durably retired for this group.
-    pub acknowledged: bool,
-    /// The same successful receipt was acknowledged recently.
-    pub duplicate: bool,
-}
-
-/// Negative-acknowledgement result.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct QueueNackResult {
-    /// The message exhausted its attempts and entered the group DLQ.
-    pub dead_lettered: bool,
-    /// Earliest next claim time, absent after dead lettering.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub available_at: Option<u64>,
-}
-
-/// Durable group-specific dead-letter record.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct QueueDeadLetter {
-    format: String,
-    /// Source message identifier.
-    pub id: String,
-    /// Consumer group that exhausted delivery.
-    pub group: String,
-    /// Source topic.
-    pub topic: String,
-    /// Total attempts made by this group.
-    pub attempts: u32,
-    /// Bounded diagnostic supplied by the worker.
-    pub reason: String,
-    /// Dead-letter time in Unix milliseconds.
-    pub dead_lettered_at: u64,
-    /// Original publication time.
-    pub published_at: u64,
-    /// Original payload.
-    pub payload: Value,
-}
-
-/// Queue depth and consumer-group state.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct QueueStats {
-    /// Immutable messages published to the topic.
-    pub published: usize,
-    /// Messages currently claimable by the selected group.
-    pub available: usize,
-    /// Messages waiting for their publication or retry delay.
-    pub delayed: usize,
-    /// Messages with active visibility leases.
-    pub in_flight: usize,
-    /// Messages durably acknowledged or dead-lettered for the group.
-    pub retired: usize,
-    /// Group-specific dead letters.
-    pub dead_lettered: usize,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct QueueManifest {
-    format: String,
-    next_sequence: u64,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ReceiptKey {
-    format: String,
-    key: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct StoredMessage {
-    format: String,
-    id: String,
-    topic: String,
-    published_at: u64,
-    available_at: u64,
-    payload: Value,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct StoredMessageHeader {
-    format: String,
-    id: String,
-    topic: String,
-    published_at: u64,
-    available_at: u64,
-    #[serde(rename = "payload")]
-    _payload: IgnoredAny,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct ScanBudget {
-    remaining: u64,
-}
-
-impl ScanBudget {
-    const fn new(bytes: u64) -> Self {
-        Self { remaining: bytes }
-    }
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct DedupeRecord {
-    format: String,
-    topic: String,
-    payload_hash: String,
-    message: StoredMessage,
-}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -500,7 +343,7 @@ impl NativeQueue {
     ) -> Result<Vec<QueueDelivery>, NativeStorageError> {
         validate_name(topic, "topic")?;
         validate_name(group, "consumer group")?;
-        validate_claim_options(options)?;
+        options.validate()?;
         self.ensure_layout()?;
         let now = unix_millis()?;
         let mut state = self.read_consumer(topic, group)?;
@@ -685,7 +528,7 @@ impl NativeQueue {
         visibility_timeout_ms: u64,
     ) -> Result<u64, NativeStorageError> {
         validate_identity(topic, group, id, receipt)?;
-        validate_visibility_timeout(visibility_timeout_ms)?;
+        QueueClaimOptions::validate_visibility_timeout(visibility_timeout_ms)?;
         let mut state = self.read_consumer(topic, group)?;
         self.reject_expired_receipt(&mut state, id)?;
         require_receipt(&state, id, receipt)?;
@@ -776,7 +619,12 @@ impl NativeQueue {
         group: &str,
         limit: usize,
     ) -> Result<Vec<QueueDeadLetter>, NativeStorageError> {
-        self.dead_letters_bounded(topic, group, limit, DEFAULT_READ_BUDGET_BYTES)
+        self.dead_letters_bounded(
+            topic,
+            group,
+            limit,
+            QueueClaimOptions::DEFAULT_READ_BUDGET_BYTES,
+        )
     }
 
     /// Read dead letters within an aggregate encoded-byte budget.
@@ -800,7 +648,7 @@ impl NativeQueue {
                 "queue dead-letter limit must be between 1 and 1000",
             ));
         }
-        validate_response_budget(max_bytes)?;
+        QueueClaimOptions::validate_response_budget(max_bytes)?;
         let ids = self.dead_letter_ids(topic, group)?;
         let mut used = 0usize;
         ids.into_iter()
@@ -1360,35 +1208,6 @@ fn validate_identity(
     Ok(())
 }
 
-fn validate_claim_options(options: QueueClaimOptions) -> Result<(), NativeStorageError> {
-    if options.max_messages == 0 || options.max_messages > MAX_CLAIM_MESSAGES {
-        return Err(limit_error("queue claim limit must be between 1 and 1000"));
-    }
-    validate_visibility_timeout(options.visibility_timeout_ms)?;
-    if options.max_attempts == 0 || options.max_attempts > MAX_ATTEMPTS {
-        return Err(limit_error("queue max attempts must be between 1 and 100"));
-    }
-    validate_response_budget(options.max_bytes)
-}
-
-fn validate_response_budget(max_bytes: usize) -> Result<(), NativeStorageError> {
-    if max_bytes == 0 || max_bytes > DEFAULT_READ_BUDGET_BYTES {
-        return Err(limit_error(
-            "queue response budget must be between 1 byte and 8 MiB",
-        ));
-    }
-    Ok(())
-}
-
-fn validate_visibility_timeout(value: u64) -> Result<(), NativeStorageError> {
-    if !(MIN_VISIBILITY_TIMEOUT_MS..=MAX_VISIBILITY_TIMEOUT_MS).contains(&value) {
-        return Err(limit_error(
-            "queue visibility timeout must be between 100 and 86400000 milliseconds",
-        ));
-    }
-    Ok(())
-}
-
 fn validate_delay(value: u64) -> Result<(), NativeStorageError> {
     if value > MAX_DELAY_MS {
         return Err(limit_error(
@@ -1399,10 +1218,15 @@ fn validate_delay(value: u64) -> Result<(), NativeStorageError> {
 }
 
 fn validate_stored_message(message: &StoredMessage) -> Result<(), NativeStorageError> {
-    if message.format != MESSAGE_FORMAT
-        || !valid_message_id(&message.id)
-        || validate_name(&message.topic, "topic").is_err()
-        || message.available_at < message.published_at
+    if stored_message_invalid_conditions(
+        &message.format,
+        &message.id,
+        &message.topic,
+        message.published_at,
+        message.available_at,
+    )
+    .into_iter()
+    .any(|condition| condition)
     {
         return Err(queue_error("queue message is corrupt"));
     }
@@ -1410,14 +1234,34 @@ fn validate_stored_message(message: &StoredMessage) -> Result<(), NativeStorageE
 }
 
 fn validate_stored_message_header(message: &StoredMessageHeader) -> Result<(), NativeStorageError> {
-    if message.format != MESSAGE_FORMAT
-        || !valid_message_id(&message.id)
-        || validate_name(&message.topic, "topic").is_err()
-        || message.available_at < message.published_at
+    if stored_message_invalid_conditions(
+        &message.format,
+        &message.id,
+        &message.topic,
+        message.published_at,
+        message.available_at,
+    )
+    .into_iter()
+    .any(|condition| condition)
     {
         return Err(queue_error("queue message is corrupt"));
     }
     Ok(())
+}
+
+fn stored_message_invalid_conditions(
+    format: &str,
+    id: &str,
+    topic: &str,
+    published_at: u64,
+    available_at: u64,
+) -> [bool; 4] {
+    [
+        format != MESSAGE_FORMAT,
+        !valid_message_id(id),
+        validate_name(topic, "topic").is_err(),
+        available_at < published_at,
+    ]
 }
 
 fn validate_message_size(message: &StoredMessage) -> Result<(), NativeStorageError> {
@@ -1432,20 +1276,30 @@ fn validate_message_size(message: &StoredMessage) -> Result<(), NativeStorageErr
 
 fn valid_delivery_state(state: &DeliveryState) -> bool {
     match state {
-        DeliveryState::Available { attempt, .. } => *attempt <= MAX_ATTEMPTS,
+        DeliveryState::Available { attempt, .. } => *attempt <= QueueClaimOptions::MAXIMUM_ATTEMPTS,
         DeliveryState::InFlight {
             receipt,
             attempt,
             max_attempts,
             ..
-        } => {
-            valid_receipt(receipt)
-                && (1..=MAX_ATTEMPTS).contains(attempt)
-                && (1..=MAX_ATTEMPTS).contains(max_attempts)
-                && attempt <= max_attempts
-        }
+        } => in_flight_delivery_valid_conditions(receipt, *attempt, *max_attempts)
+            .into_iter()
+            .all(|condition| condition),
         DeliveryState::Completed => true,
     }
+}
+
+fn in_flight_delivery_valid_conditions(
+    receipt: &str,
+    attempt: u32,
+    max_attempts: u32,
+) -> [bool; 4] {
+    [
+        valid_receipt(receipt),
+        (1..=QueueClaimOptions::MAXIMUM_ATTEMPTS).contains(&attempt),
+        (1..=QueueClaimOptions::MAXIMUM_ATTEMPTS).contains(&max_attempts),
+        attempt <= max_attempts,
+    ]
 }
 
 fn validate_dead_letter(
@@ -1461,7 +1315,7 @@ fn validate_dead_letter(
         || !valid_message_id(&record.id)
         || validate_name(&record.topic, "topic").is_err()
         || validate_name(&record.group, "consumer group").is_err()
-        || !(1..=MAX_ATTEMPTS).contains(&record.attempts)
+        || !(1..=QueueClaimOptions::MAXIMUM_ATTEMPTS).contains(&record.attempts)
         || record.reason.len() > 4096
     {
         return Err(queue_error("queue dead letter is corrupt"));
@@ -1608,14 +1462,367 @@ fn limit_error(message: impl Into<String>) -> NativeStorageError {
 
 #[cfg(test)]
 mod tests {
+    use super::queue_claim_samples::QueueClaimSamples;
     use super::*;
     use crate::write::{read_bounded_json, unique_name};
+    use fylo_test_support::{McdcCase, assert_unique_cause_mcdc};
+
+    fn stored_message_case(name: &'static str, message: &StoredMessage) -> McdcCase<4> {
+        McdcCase::new(
+            name,
+            stored_message_invalid_conditions(
+                &message.format,
+                &message.id,
+                &message.topic,
+                message.published_at,
+                message.available_at,
+            ),
+            validate_stored_message(message).is_err(),
+        )
+    }
+
+    #[test]
+    fn mcdc_queue_stored_message_rejection() {
+        let valid = StoredMessage {
+            format: MESSAGE_FORMAT.into(),
+            id: "Q00000000000000000001".into(),
+            topic: "jobs".into(),
+            published_at: 100,
+            available_at: 100,
+            payload: Value::Null,
+        };
+        let cases = [
+            stored_message_case("valid_baseline", &valid),
+            stored_message_case(
+                "wrong_format",
+                &StoredMessage {
+                    format: "unknown".into(),
+                    ..valid.clone()
+                },
+            ),
+            stored_message_case(
+                "invalid_id",
+                &StoredMessage {
+                    id: "Q1".into(),
+                    ..valid.clone()
+                },
+            ),
+            stored_message_case(
+                "invalid_topic",
+                &StoredMessage {
+                    topic: "bad/name".into(),
+                    ..valid.clone()
+                },
+            ),
+            stored_message_case(
+                "available_before_publish",
+                &StoredMessage {
+                    available_at: 99,
+                    ..valid
+                },
+            ),
+        ];
+        assert_unique_cause_mcdc(
+            "queue.stored_message_rejection",
+            [
+                "format_mismatch",
+                "invalid_message_id",
+                "invalid_topic",
+                "available_before_publish",
+            ],
+            &cases,
+        );
+    }
+
+    fn delivery_case(
+        name: &'static str,
+        receipt: String,
+        attempt: u32,
+        max_attempts: u32,
+    ) -> McdcCase<4> {
+        let state = DeliveryState::InFlight {
+            receipt,
+            lease_expires_at: 1,
+            attempt,
+            max_attempts,
+        };
+        let DeliveryState::InFlight {
+            receipt,
+            attempt,
+            max_attempts,
+            ..
+        } = &state
+        else {
+            unreachable!("the MC/DC fixture constructs an in-flight delivery")
+        };
+        McdcCase::new(
+            name,
+            in_flight_delivery_valid_conditions(receipt, *attempt, *max_attempts),
+            valid_delivery_state(&state),
+        )
+    }
+
+    #[test]
+    fn mcdc_queue_in_flight_delivery_integrity() {
+        let valid_receipt = "a".repeat(64);
+        let cases = [
+            delivery_case("valid_baseline", valid_receipt.clone(), 1, 1),
+            delivery_case("invalid_receipt", String::new(), 1, 1),
+            delivery_case("attempt_zero", valid_receipt.clone(), 0, 1),
+            delivery_case(
+                "max_attempts_too_large",
+                valid_receipt.clone(),
+                1,
+                QueueClaimOptions::MAXIMUM_ATTEMPTS + 1,
+            ),
+            delivery_case("attempt_exceeds_max", valid_receipt, 2, 1),
+        ];
+        assert_unique_cause_mcdc(
+            "queue.in_flight_delivery_integrity",
+            [
+                "valid_receipt",
+                "attempt_in_range",
+                "max_attempts_in_range",
+                "attempt_not_above_max",
+            ],
+            &cases,
+        );
+    }
 
     fn queue() -> (PathBuf, NativeQueue) {
         let root = std::env::temp_dir().join(unique_name("fylo-queue-test"));
         std::fs::create_dir_all(&root).unwrap();
         let queue = NativeQueue::open(&root).unwrap();
         (root, queue)
+    }
+
+    fn claim_rejection(options: QueueClaimOptions) -> (NativeStorageErrorCode, String, bool) {
+        let (root, queue) = queue();
+        let error = queue
+            .claim(QueueClaimSamples::TOPIC, QueueClaimSamples::GROUP, options)
+            .unwrap_err();
+        let result = (
+            error.code(),
+            error.to_string(),
+            root.join(QueueClaimSamples::DIRECTORY).exists(),
+        );
+        drop(queue);
+        std::fs::remove_dir_all(root).unwrap();
+        result
+    }
+
+    #[test]
+    fn queue_claim_defaults_remain_stable() {
+        let options = QueueClaimOptions::default();
+        assert_eq!(options.max_messages, 1);
+        assert_eq!(options.visibility_timeout_ms, 30_000);
+        assert_eq!(options.max_attempts, 3);
+        assert_eq!(options.max_bytes, QueueClaimSamples::MAXIMUM_BYTES);
+    }
+
+    #[test]
+    fn queue_publish_defaults_remain_stable() {
+        let options = QueuePublishOptions::default();
+        assert_eq!(options.delay_ms, 0);
+        assert_eq!(options.idempotency_key, None);
+    }
+
+    #[test]
+    fn queue_claim_rejects_zero_messages_before_other_invalid_options() {
+        assert_eq!(
+            claim_rejection(QueueClaimOptions {
+                max_messages: 0,
+                visibility_timeout_ms: 0,
+                max_attempts: 0,
+                max_bytes: 0,
+            }),
+            QueueClaimSamples::rejected(QueueClaimSamples::MESSAGE_LIMIT_ERROR),
+        );
+    }
+
+    #[test]
+    fn queue_claim_rejects_excess_messages() {
+        assert_eq!(
+            claim_rejection(QueueClaimOptions {
+                max_messages: QueueClaimSamples::MAXIMUM_MESSAGES + 1,
+                ..QueueClaimOptions::default()
+            }),
+            QueueClaimSamples::rejected(QueueClaimSamples::MESSAGE_LIMIT_ERROR),
+        );
+    }
+
+    #[test]
+    fn queue_claim_rejects_short_visibility_before_attempts_and_budget() {
+        assert_eq!(
+            claim_rejection(QueueClaimOptions {
+                visibility_timeout_ms: QueueClaimSamples::MINIMUM_VISIBILITY_TIMEOUT_MILLISECONDS
+                    - 1,
+                max_attempts: 0,
+                max_bytes: 0,
+                ..QueueClaimOptions::default()
+            }),
+            QueueClaimSamples::rejected(QueueClaimSamples::VISIBILITY_LIMIT_ERROR),
+        );
+    }
+
+    #[test]
+    fn queue_claim_rejects_excess_visibility() {
+        assert_eq!(
+            claim_rejection(QueueClaimOptions {
+                visibility_timeout_ms: QueueClaimSamples::MAXIMUM_VISIBILITY_TIMEOUT_MILLISECONDS
+                    + 1,
+                ..QueueClaimOptions::default()
+            }),
+            QueueClaimSamples::rejected(QueueClaimSamples::VISIBILITY_LIMIT_ERROR),
+        );
+    }
+
+    #[test]
+    fn queue_claim_rejects_zero_attempts_before_budget() {
+        assert_eq!(
+            claim_rejection(QueueClaimOptions {
+                max_attempts: 0,
+                max_bytes: 0,
+                ..QueueClaimOptions::default()
+            }),
+            QueueClaimSamples::rejected(QueueClaimSamples::ATTEMPT_LIMIT_ERROR),
+        );
+    }
+
+    #[test]
+    fn queue_claim_rejects_excess_attempts() {
+        assert_eq!(
+            claim_rejection(QueueClaimOptions {
+                max_attempts: QueueClaimSamples::MAXIMUM_ATTEMPTS + 1,
+                ..QueueClaimOptions::default()
+            }),
+            QueueClaimSamples::rejected(QueueClaimSamples::ATTEMPT_LIMIT_ERROR),
+        );
+    }
+
+    #[test]
+    fn queue_claim_rejects_zero_budget() {
+        assert_eq!(
+            claim_rejection(QueueClaimOptions {
+                max_bytes: 0,
+                ..QueueClaimOptions::default()
+            }),
+            QueueClaimSamples::rejected(QueueClaimSamples::BUDGET_LIMIT_ERROR),
+        );
+    }
+
+    #[test]
+    fn queue_claim_rejects_excess_budget() {
+        assert_eq!(
+            claim_rejection(QueueClaimOptions {
+                max_bytes: QueueClaimSamples::MAXIMUM_BYTES + 1,
+                ..QueueClaimOptions::default()
+            }),
+            QueueClaimSamples::rejected(QueueClaimSamples::BUDGET_LIMIT_ERROR),
+        );
+    }
+
+    #[test]
+    fn queue_claim_accepts_lower_option_boundaries() {
+        let (root, queue) = queue();
+        let deliveries = queue
+            .claim(
+                QueueClaimSamples::TOPIC,
+                QueueClaimSamples::GROUP,
+                QueueClaimOptions {
+                    max_messages: 1,
+                    visibility_timeout_ms:
+                        QueueClaimSamples::MINIMUM_VISIBILITY_TIMEOUT_MILLISECONDS,
+                    max_attempts: 1,
+                    max_bytes: 1,
+                },
+            )
+            .unwrap();
+        assert!(deliveries.is_empty());
+        drop(queue);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn queue_claim_accepts_upper_option_boundaries() {
+        let (root, queue) = queue();
+        let deliveries = queue
+            .claim(
+                QueueClaimSamples::TOPIC,
+                QueueClaimSamples::GROUP,
+                QueueClaimOptions {
+                    max_messages: QueueClaimSamples::MAXIMUM_MESSAGES,
+                    visibility_timeout_ms:
+                        QueueClaimSamples::MAXIMUM_VISIBILITY_TIMEOUT_MILLISECONDS,
+                    max_attempts: QueueClaimSamples::MAXIMUM_ATTEMPTS,
+                    max_bytes: QueueClaimSamples::MAXIMUM_BYTES,
+                },
+            )
+            .unwrap();
+        assert!(deliveries.is_empty());
+        drop(queue);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn queue_result_envelopes_preserve_camel_case_field_order() {
+        let published = QueuePublishResult {
+            id: "message".into(),
+            deduplicated: false,
+        };
+        let acknowledged = QueueAckResult {
+            acknowledged: true,
+            duplicate: false,
+        };
+        let rejected = QueueNackResult {
+            dead_lettered: true,
+            available_at: None,
+        };
+        let retry = QueueNackResult {
+            dead_lettered: false,
+            available_at: Some(100),
+        };
+        assert_eq!(
+            serde_json::to_string(&published).unwrap(),
+            r#"{"id":"message","deduplicated":false}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&acknowledged).unwrap(),
+            r#"{"acknowledged":true,"duplicate":false}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&rejected).unwrap(),
+            r#"{"deadLettered":true}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&retry).unwrap(),
+            r#"{"deadLettered":false,"availableAt":100}"#
+        );
+    }
+
+    #[test]
+    fn queue_delivery_envelope_preserves_camel_case_field_order() {
+        let delivery = QueueDelivery {
+            id: "message".into(),
+            topic: "jobs".into(),
+            published_at: 100,
+            attempt: 1,
+            receipt: "receipt".into(),
+            lease_expires_at: 200,
+            payload: Value::Null,
+        };
+        assert_eq!(
+            serde_json::to_string(&delivery).unwrap(),
+            r#"{"id":"message","topic":"jobs","publishedAt":100,"attempt":1,"receipt":"receipt","leaseExpiresAt":200,"payload":null}"#
+        );
+    }
+
+    #[test]
+    fn queue_stats_envelope_preserves_camel_case_field_order() {
+        assert_eq!(
+            serde_json::to_string(&QueueStats::default()).unwrap(),
+            r#"{"published":0,"available":0,"delayed":0,"inFlight":0,"retired":0,"deadLettered":0}"#
+        );
     }
 
     #[test]
@@ -1817,7 +2024,7 @@ mod tests {
                 .unwrap();
         }
         let options = QueueClaimOptions {
-            visibility_timeout_ms: MIN_VISIBILITY_TIMEOUT_MS,
+            visibility_timeout_ms: QueueClaimOptions::MINIMUM_VISIBILITY_TIMEOUT_MILLISECONDS,
             max_attempts: 1,
             ..QueueClaimOptions::default()
         };
@@ -1834,7 +2041,7 @@ mod tests {
             .unwrap()
             .remove(0);
         std::thread::sleep(std::time::Duration::from_millis(
-            MIN_VISIBILITY_TIMEOUT_MS + 25,
+            QueueClaimOptions::MINIMUM_VISIBILITY_TIMEOUT_MILLISECONDS + 25,
         ));
 
         assert_eq!(
@@ -2329,7 +2536,8 @@ mod tests {
             },
             {
                 let mut value = valid.clone();
-                value["pending"][id]["maxAttempts"] = Value::from(MAX_ATTEMPTS + 1);
+                value["pending"][id]["maxAttempts"] =
+                    Value::from(QueueClaimOptions::MAXIMUM_ATTEMPTS + 1);
                 value
             },
             {

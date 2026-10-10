@@ -23,6 +23,9 @@ zeroize.workspace = true
 [target.'cfg(unix)'.dev-dependencies]
 xattr.workspace = true
 
+[dev-dependencies]
+fylo-test-support = { path = "../fylo-test-support" }
+
 [target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
 getrandom.workspace = true
 

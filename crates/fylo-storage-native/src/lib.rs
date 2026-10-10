@@ -10,7 +10,7 @@ use std::fmt;
 use std::io::{Read, Take};
 use std::path::{Component, Path, PathBuf};
 
-use fylo_format::decode_ttid;
+use fylo_format::TtidTimestamps;
 use fylo_query::{IndexSnapshot, QueryLimits};
 #[cfg(not(target_family = "wasm"))]
 use same_file::Handle as FileIdentity;
@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+mod index_cache;
 mod lease;
 mod queue;
 mod write;
@@ -1496,73 +1497,44 @@ impl NativeCollection {
     /// Returns an error for unsafe paths, oversized files, I/O failures, or an
     /// invalid snapshot.
     pub fn index_snapshot(&self) -> Result<IndexSnapshot, NativeStorageError> {
+        self.shared_index_snapshot()
+            .map(|snapshot| (*snapshot).clone())
+    }
+
+    /// Read index inputs and reuse an immutable view when their bytes are unchanged.
+    ///
+    /// The process retains at most one 64 MiB entry, including inputs and the
+    /// merged view. Caller-held views and temporary read buffers are separate.
+    /// Every call checks paths and reads both inputs, including on a cache hit.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same path, size, I/O, and validation errors as `index_snapshot`.
+    pub fn shared_index_snapshot(
+        &self,
+    ) -> Result<std::sync::Arc<IndexSnapshot>, NativeStorageError> {
+        self.index_snapshot_with_cache(index_cache::IndexCache::shared())
+    }
+
+    fn index_snapshot_with_cache(
+        &self,
+        cache: &index_cache::IndexCache,
+    ) -> Result<std::sync::Arc<IndexSnapshot>, NativeStorageError> {
         let index = self.path.join("index");
         let snapshot_path = index.join("keys.snapshot");
         let snapshot_bytes = self.root.read_file(
             &snapshot_path,
             QueryLimits::default().max_snapshot_bytes as u64,
         )?;
-        let snapshot = IndexSnapshot::from_bytes(&snapshot_bytes, QueryLimits::default()).map_err(
-            |error| {
-                NativeStorageError::new(
-                    NativeStorageErrorCode::CorruptIndex,
-                    format!("prefix index snapshot is corrupt: {error}"),
-                )
-            },
-        )?;
-        let mut keys: BTreeSet<Vec<u8>> = snapshot
-            .as_bytes()
-            .split(|byte| *byte == b'\n')
-            .filter(|key| !key.is_empty())
-            .map(<[u8]>::to_vec)
-            .collect();
         let wal_path = index.join("keys.wal");
-        if path_exists_no_follow(&wal_path)? {
-            let wal = self.root.read_file(&wal_path, MAX_INDEX_WAL_BYTES)?;
-            let complete_length = wal
-                .iter()
-                .rposition(|byte| *byte == b'\n')
-                .map_or(0, |position| position + 1);
-            for line in wal[..complete_length].split(|byte| *byte == b'\n') {
-                if line.len() < 3 || line[1] != b'\t' {
-                    continue;
-                }
-                let key = line[2..].to_vec();
-                if key.is_empty() {
-                    continue;
-                }
-                match line[0] {
-                    b'+' => {
-                        keys.insert(key);
-                    }
-                    b'-' => {
-                        keys.remove(&key);
-                    }
-                    _ => {}
-                }
-            }
-        }
-        let required = keys.iter().try_fold(0_usize, |total, key| {
-            total
-                .checked_add(key.len())
-                .and_then(|size| size.checked_add(1))
-        });
-        let Some(required) = required else {
-            return Err(NativeStorageError::new(
-                NativeStorageErrorCode::FileTooLarge,
-                "merged prefix index size overflow",
-            ));
+        let wal_bytes = if path_exists_no_follow(&wal_path)? {
+            Some(self.root.read_file(&wal_path, MAX_INDEX_WAL_BYTES)?)
+        } else {
+            None
         };
-        let mut merged = Vec::with_capacity(required);
-        for key in keys {
-            merged.extend_from_slice(&key);
-            merged.push(b'\n');
-        }
-        IndexSnapshot::from_bytes(&merged, QueryLimits::default()).map_err(|error| {
-            NativeStorageError::new(
-                NativeStorageErrorCode::CorruptIndex,
-                format!("merged prefix index is corrupt: {error}"),
-            )
+        cache.load(index_cache::IndexInputs {
+            snapshot: snapshot_bytes,
+            log: wal_bytes,
         })
     }
 
@@ -2615,17 +2587,13 @@ pub fn wall_clock() -> std::time::SystemTime {
 
 /// Runtime knobs a host supplies when it opens a root.
 ///
-/// These were process environment variables, which only a process has. A
-/// browser or mobile host has no environment, so every knob is now an explicit
-/// value and the environment is consulted at exactly one place — the CLI
-/// composition root, through [`RootConfig::from_env`].
+/// Every setting is explicit. Native composition roots load application.json;
+/// browser and mobile embeddings supply their configuration directly.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct RootConfig {
     /// Validate a document against its collection's head schema on write.
     ///
-    /// The JavaScript engine stamped `_v` only under `FYLO_STRICT`, so this
-    /// stays opt-in: an unconditional stamp would make one put produce
-    /// different bytes in the two engines.
+    /// This stays opt-in so enabling schema stamps is an explicit storage policy.
     pub strict_schema: bool,
     /// Shard width for collections that do not exist yet.
     ///
@@ -2633,28 +2601,6 @@ pub struct RootConfig {
     /// property of the root, so letting a per-host value decide would let two
     /// hosts disagree and relocate every record back and forth.
     pub shard_width: Option<u32>,
-}
-
-impl RootConfig {
-    /// Read the knobs from the process environment.
-    ///
-    /// Only a composition root should call this. On a host without an
-    /// environment — WebAssembly included — every read fails and the default
-    /// applies, which is the same answer an unset variable gives natively.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when `FYLO_SHARD_WIDTH` is set to something that is not
-    /// an integer within range.
-    pub fn from_env() -> Result<Self, NativeStorageError> {
-        Ok(Self {
-            strict_schema: std::env::var("FYLO_STRICT").is_ok_and(|value| !value.is_empty()),
-            shard_width: match std::env::var("FYLO_SHARD_WIDTH") {
-                Ok(raw) if !raw.is_empty() => Some(parse_shard_width(&raw)?),
-                _ => None,
-            },
-        })
-    }
 }
 
 /// This process's identifier, or zero where the platform has none.
@@ -2865,7 +2811,7 @@ fn validate_ttid_shape(identifier: &str) -> Result<(), NativeStorageError> {
                 && segment.len() <= 11
                 && segment.bytes().all(|byte| byte.is_ascii_alphanumeric())
         });
-    if !valid || decode_ttid(identifier).is_err() {
+    if !valid || TtidTimestamps::decode(identifier).is_err() {
         return Err(NativeStorageError::new(
             NativeStorageErrorCode::InvalidDocumentId,
             "invalid FYLO document identifier",

@@ -12,7 +12,7 @@ use std::time::UNIX_EPOCH;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use fylo_format::{Document, DocumentLimits, decode_ttid};
+use fylo_format::{Document, DocumentLimits, TtidTimestamps};
 use fylo_query::{
     IndexLookupValue, QueryLimits, SqlOperation, StructuredQuery, index_entries_for_document,
     prepare_sql,
@@ -1597,7 +1597,7 @@ fn matching_documents(
     for identifier in collection.document_ids()? {
         let stored = collection.read_document(&identifier)?;
         let fields = parse_document_fields(&stored.bytes)?;
-        let timestamps = decode_ttid(&identifier).map_err(|error| {
+        let timestamps = TtidTimestamps::decode(&identifier).map_err(|error| {
             NativeStorageError::new(
                 NativeStorageErrorCode::InvalidDocumentId,
                 format!("document TTID is invalid: {error}"),
@@ -1956,7 +1956,7 @@ enum TransactionPhase {
     Committed,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct TransactionManifest {
     format: String,
@@ -1971,12 +1971,10 @@ struct TransactionManifest {
 
 impl TransactionManifest {
     fn validate(&self, collection: &str, identifier: &str) -> Result<(), NativeStorageError> {
-        if self.format != TRANSACTION_FORMAT
-            || self.id != identifier
-            || self.collection != collection
-            || self.operation.is_empty()
-            || self.operation.len() > 256
-            || !self.captures.is_empty()
+        if self
+            .invalid_conditions(collection, identifier)
+            .into_iter()
+            .any(|condition| condition)
         {
             return Err(NativeStorageError::new(
                 NativeStorageErrorCode::CorruptMetadata,
@@ -1984,6 +1982,17 @@ impl TransactionManifest {
             ));
         }
         Ok(())
+    }
+
+    fn invalid_conditions(&self, collection: &str, identifier: &str) -> [bool; 6] {
+        [
+            self.format != TRANSACTION_FORMAT,
+            self.id != identifier,
+            self.collection != collection,
+            self.operation.is_empty(),
+            self.operation.len() > 256,
+            !self.captures.is_empty(),
+        ]
     }
 }
 
@@ -2729,7 +2738,7 @@ fn raw_file_index_fields(
     identifier: &str,
     stored: &super::StoredRawFile,
 ) -> Result<Map<String, Value>, NativeStorageError> {
-    let timestamps = decode_ttid(identifier).map_err(|error| {
+    let timestamps = TtidTimestamps::decode(identifier).map_err(|error| {
         NativeStorageError::new(
             NativeStorageErrorCode::InvalidDocumentId,
             format!("raw-file TTID is invalid: {error}"),
@@ -3742,6 +3751,7 @@ fn json_error(error: &serde_json::Error) -> NativeStorageError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fylo_test_support::{McdcCase, assert_unique_cause_mcdc};
     use serde_json::json;
 
     struct TestRoot(PathBuf);
@@ -3762,6 +3772,88 @@ mod tests {
         fn drop(&mut self) {
             fs::remove_dir_all(&self.0).unwrap();
         }
+    }
+
+    fn transaction_manifest_case(
+        name: &'static str,
+        manifest: &TransactionManifest,
+    ) -> McdcCase<6> {
+        McdcCase::new(
+            name,
+            manifest.invalid_conditions("users", "txn-1"),
+            manifest.validate("users", "txn-1").is_err(),
+        )
+    }
+
+    #[test]
+    fn mcdc_storage_transaction_manifest_rejection() {
+        let valid = TransactionManifest {
+            format: TRANSACTION_FORMAT.into(),
+            id: "txn-1".into(),
+            collection: "users".into(),
+            operation: "put".into(),
+            phase: TransactionPhase::Active,
+            generation_before: 7,
+            event_offset: 0,
+            captures: Vec::new(),
+        };
+        let cases = [
+            transaction_manifest_case("valid_baseline", &valid),
+            transaction_manifest_case(
+                "wrong_format",
+                &TransactionManifest {
+                    format: "unknown".into(),
+                    ..valid.clone()
+                },
+            ),
+            transaction_manifest_case(
+                "wrong_id",
+                &TransactionManifest {
+                    id: "txn-2".into(),
+                    ..valid.clone()
+                },
+            ),
+            transaction_manifest_case(
+                "wrong_collection",
+                &TransactionManifest {
+                    collection: "audit".into(),
+                    ..valid.clone()
+                },
+            ),
+            transaction_manifest_case(
+                "empty_operation",
+                &TransactionManifest {
+                    operation: String::new(),
+                    ..valid.clone()
+                },
+            ),
+            transaction_manifest_case(
+                "operation_too_long",
+                &TransactionManifest {
+                    operation: "x".repeat(257),
+                    ..valid.clone()
+                },
+            ),
+            transaction_manifest_case(
+                "unexpected_capture",
+                &TransactionManifest {
+                    captures: vec![Value::Null],
+                    ..valid
+                },
+            ),
+        ];
+        assert_unique_cause_mcdc(
+            "storage.transaction_manifest_rejection",
+            [
+                "format_mismatch",
+                "identifier_mismatch",
+                "collection_mismatch",
+                "operation_empty",
+                "operation_too_long",
+                "captures_present",
+            ],
+            &cases,
+        );
     }
 
     #[test]

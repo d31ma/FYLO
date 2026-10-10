@@ -24,7 +24,7 @@ const nativeClients = await Promise.all(
 )
 const machineSource = await readFile('crates/fylo-machine/src/lib.rs', 'utf8')
 const querySource = await readFile('crates/fylo-query/src/lib.rs', 'utf8')
-const formatSource = await readFile('crates/fylo-format/src/lib.rs', 'utf8')
+const formatErrorSource = await readFile('crates/fylo-format/src/format_error_code.rs', 'utf8')
 const storageSource = await readFile('crates/fylo-storage-native/src/lib.rs', 'utf8')
 const storageWriteSource = await readFile('crates/fylo-storage-native/src/write.rs', 'utf8')
 const queueSource = await readFile('crates/fylo-storage-native/src/queue.rs', 'utf8')
@@ -36,7 +36,7 @@ const releaseSource = await readFile('.github/workflows/publish.yml', 'utf8')
 const implementationSources = [
     machineSource,
     querySource,
-    formatSource,
+    formatErrorSource,
     storageSource,
     storageWriteSource,
     queueSource,

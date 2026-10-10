@@ -75,11 +75,11 @@
                     role="region"
                     aria-labelledby="faq-environment-trigger"
                 >
-                    Yes. Every binary-backed shim accepts an optional .env path or native map and
-                    applies it only to the FYLO child it starts. The shim merges those values over
-                    the inherited environment without mutating the host process, so an application
-                    and its dependencies can use separate roots, schemas, and credentials. Explicit
-                    constructor and CLI arguments take precedence.
+                    Yes. Every binary-backed shim accepts a config path to an application.json with
+                    nested settings under fylo. Each child can select separate roots, schemas, and
+                    explicit secret references without mutating the host environment. Keep only
+                    secrets in the adjacent .env. Explicit constructor and CLI arguments take
+                    precedence over JSON settings.
                 </div>
             </div>
             <div class="w-expand" data-faq="explorer">

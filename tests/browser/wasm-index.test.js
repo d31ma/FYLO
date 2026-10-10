@@ -185,7 +185,7 @@ describe('browser Wasm index integration', () => {
         const second = new BrowserCore({ fs, root: '/', indexScannerFactory: secondFactory })
         await second.ready()
         expect(
-            Object.keys(await collect(second, { $ops: [{ name: { $eq: 'Restarted' } }] }))
+            Object.keys(await collect(second, { $ops: [{ name: { $like: 'Restarted' } }] }))
         ).toEqual([id])
         expect(secondFactory.scanners).toHaveLength(1)
         expect(secondFactory.scanners[0].loads).toBe(1)
@@ -200,9 +200,9 @@ describe('browser Wasm index integration', () => {
         const id = await fylo.users.put({ name: 'Fallback', score: 7 })
         await fylo.index.compact('users')
 
-        expect(Object.keys(await collect(fylo, { $ops: [{ name: { $eq: 'Fallback' } }] }))).toEqual(
-            [id]
-        )
+        expect(
+            Object.keys(await collect(fylo, { $ops: [{ name: { $like: 'Fallback' } }] }))
+        ).toEqual([id])
         expect(fylo.index.accelerationStatus()).toMatchObject({
             mode: 'wasm',
             state: 'fallback',
@@ -227,9 +227,9 @@ describe('browser Wasm index integration', () => {
         const id = await fylo.users.put({ name: 'Fallback', score: 7 })
         await fylo.index.compact('users')
 
-        expect(Object.keys(await collect(fylo, { $ops: [{ name: { $eq: 'Fallback' } }] }))).toEqual(
-            [id]
-        )
+        expect(
+            Object.keys(await collect(fylo, { $ops: [{ name: { $like: 'Fallback' } }] }))
+        ).toEqual([id])
         expect(fylo.index.accelerationStatus()).toMatchObject({
             mode: 'wasm',
             state: 'fallback',

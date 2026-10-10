@@ -1,142 +1,144 @@
-<script>
-    let __fyloPage = true
-</script>
-<link rel="stylesheet" href="/shared/assets/duvay/duvay.min.css" />
-<link rel="stylesheet" href="/shared/assets/site.css" />
-<style>
-    #home-content {
-        display: none;
-    }
-</style>
+<doc-layout>
+    <span class="eyebrow">Reference</span>
+    <h1>Native configuration</h1>
+    <p class="doc-lede">
+        Configure the native Rust engine in application.json; keep secrets in an adjacent .env.
+    </p>
 
-<div class="doc-shell">
-    <docs-nav />
-
-    <div class="doc-main doc-page">
-        <span class="eyebrow">Reference</span>
-        <h1>Native configuration</h1>
-        <p class="doc-lede">
-            Environment variables consumed by the native Rust engine and its release tooling.
-        </p>
-
-        <div class="doc-section doc-section--wide">
-            <h2>Environment</h2>
-            <div class="doc-table-wrap">
-                <table class="doc-table">
-                    <thead>
-                        <tr>
-                            <th>Variable</th>
-                            <th>Purpose</th>
-                            <th>Default</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <tr>
-                            <td><code>FYLO_ROOT</code></td>
-                            <td>Filesystem root for collections</td>
-                            <td><code>./.fylo-data</code></td>
-                        </tr>
-                        <tr>
-                            <td><code>FYLO_SCHEMA</code></td>
-                            <td>Directory containing JSON validation schemas</td>
-                            <td>—</td>
-                        </tr>
-                        <tr>
-                            <td><code>FYLO_STRICT</code></td>
-                            <td>Validate documents with chex before writes</td>
-                            <td>—</td>
-                        </tr>
-                        <tr>
-                            <td><code>FYLO_SHARD_WIDTH</code></td>
-                            <td>
-                                Trailing TTID characters used for newly created collection shards
-                            </td>
-                            <td><code>1</code></td>
-                        </tr>
-                        <tr>
-                            <td><code>FYLO_ENCRYPTION_KEY</code></td>
-                            <td>AES-GCM key for <code>$encrypted</code> fields (≥32 chars)</td>
-                            <td>—</td>
-                        </tr>
-                        <tr>
-                            <td><code>FYLO_CIPHER_SALT</code></td>
-                            <td>Salt for blind index derivation</td>
-                            <td>—</td>
-                        </tr>
-                        <tr>
-                            <td><code>FYLO_VERIFY_PROVENANCE</code></td>
-                            <td>Require signed artifact provenance during install</td>
-                            <td>—</td>
-                        </tr>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-
-        <div class="doc-section">
-            <h2>Process model</h2>
-            <p>
-                The <code>fylo</code> executable is the only native engine. JavaScript and the other
-                language packages are thin NDJSON clients and never open a root directly. Use
-                <code>--exclusive-root</code> for long-lived processes that require one
-                authoritative owner.
-            </p>
-            <p>
-                Binary-backed SDK applications can provide a <code>.env</code> path or native
-                environment map when constructing the shim. Those values are scoped to the child
-                process and override inherited values without modifying the host environment.
-            </p>
-        </div>
-
-        <div class="doc-section">
-            <h2>Resolution and isolation</h2>
-            <p>FYLO resolves native configuration in this order:</p>
-            <ol>
-                <li>Explicit constructor and command-line arguments.</li>
-                <li>The shim's optional <code>.env</code> file or environment map.</li>
-                <li>Variables inherited from the host process.</li>
-                <li>Engine defaults.</li>
-            </ol>
-            <p>
-                Each shim builds a fresh environment for its own child. This lets an application and
-                its dependencies run independently configured FYLO roots in one process without
-                changing global environment state. A null or nil map value removes an inherited key
-                for that child.
-            </p>
-        </div>
-
-        <div class="doc-section">
-            <h2><code>.env</code> syntax</h2>
-            <pre class="code-block"><code># Blank lines and comments are ignored.
-export FYLO_SCHEMA="/srv/app/schemas" # inline comments are supported
-FYLO_STRICT=1
-FYLO_SHARD_WIDTH=2</code></pre>
-            <p>
-                Values may be quoted or unquoted. Variable expansion, command substitution, and
-                executable shell syntax are intentionally unsupported. Missing files and malformed
-                entries fail before the native child starts.
-            </p>
-            <div class="doc-note doc-note--warn">
-                <p>
-                    Environment files and maps are administrator-controlled bootstrap input. Never
-                    derive either from a request, tenant setting, upload, or job payload: arbitrary
-                    keys can change <code>PATH</code>, dynamic-loader behavior, and which program
-                    starts. Use an absolute, administrator-controlled binary path, allowlist the
-                    required <code>FYLO_*</code> keys, and copy inherited values explicitly rather
-                    than forwarding an entire environment.
-                </p>
-                <p>
-                    Keep populated files out of source control. Prefer a secret manager for
-                    credentials; when a file is required, add its exact name or pattern to the
-                    consuming application's ignore rules and make it owner-readable only (for
-                    example, <code>chmod 600</code>).
-                </p>
-            </div>
-        </div>
-
-        <div class="doc-pager">
-            <a href="/docs/recovery">← Recovery &amp; rebuild</a>
-            <a href="/docs/replication">Backup &amp; sync →</a>
+    <div class="doc-section doc-section--wide">
+        <h2>Settings under <code>fylo</code></h2>
+        <div class="doc-table-wrap">
+            <table class="doc-table">
+                <thead>
+                    <tr>
+                        <th>JSON key</th>
+                        <th>Purpose</th>
+                        <th>Default</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>fylo.root</code></td>
+                        <td>Filesystem root for collections</td>
+                        <td><code>./.fylo-data</code></td>
+                    </tr>
+                    <tr>
+                        <td><code>fylo.schema</code></td>
+                        <td>Directory containing JSON validation schemas</td>
+                        <td>—</td>
+                    </tr>
+                    <tr>
+                        <td><code>fylo.strict</code></td>
+                        <td>Validate documents with chex before writes</td>
+                        <td>—</td>
+                    </tr>
+                    <tr>
+                        <td><code>fylo.shard.width</code></td>
+                        <td>Trailing TTID characters used for newly created collection shards</td>
+                        <td><code>1</code></td>
+                    </tr>
+                    <tr>
+                        <td><code>fylo.encryption.key</code></td>
+                        <td>Secret reference for <code>$encrypted</code> fields (at least 32 UTF-8 bytes)</td>
+                        <td>—</td>
+                    </tr>
+                    <tr>
+                        <td><code>fylo.cipher.salt</code></td>
+                        <td>Salt for blind index derivation</td>
+                        <td>—</td>
+                    </tr>
+                    <tr>
+                        <td><code>fylo.chex.binary</code></td>
+                        <td>Path to the schema validator executable</td>
+                        <td>—</td>
+                    </tr>
+                </tbody>
+            </table>
         </div>
     </div>
-</div>
+
+    <div class="doc-section">
+        <h2>Process model</h2>
+        <p>
+            The <code>fylo</code> executable is the only native engine. JavaScript and the other
+            language packages are thin NDJSON clients and never open a root directly. Use
+            <code>--exclusive-root</code> for long-lived processes that require one authoritative
+            owner.
+        </p>
+        <p>
+            Binary-backed SDK applications can select an <code>application.json</code> with the
+            optional <code>config</code> path. Each FYLO child can use a different file without
+            modifying global environment state. Browser and mobile clients retain explicit host
+            options; they do not implicitly read local configuration or secret files.
+        </p>
+    </div>
+
+    <div class="doc-section">
+        <h2>Resolution and isolation</h2>
+        <p>FYLO resolves native configuration in this order:</p>
+        <ol>
+            <li>Explicit constructor and command-line arguments.</li>
+            <li>The selected <code>application.json</code>.</li>
+            <li>Engine defaults.</li>
+        </ol>
+        <p>
+            The CLI discovers <code>application.json</code> in its working directory, or uses
+            <code>--config /path/to/application.json</code>. Paths inside JSON resolve relative to
+            that file. An absent default file uses defaults; an explicitly selected missing file,
+            malformed JSON, invalid setting, or unresolved secret reference fails initialization.
+            The former <code>FYLO_*</code> environment settings are no longer implicit overrides.
+        </p>
+    </div>
+
+    <div class="doc-section">
+        <h2>JSON settings, explicit secret references</h2>
+        <pre class="code-block"><code>&#123;
+    "fylo": &#123;
+        "root": "./data",
+        "schema": "./schemas",
+        "strict": true,
+        "shard": &#123; "width": 2 &#125;,
+        "encryption": &#123; "key": "$&#123;FYLO_ENCRYPTION_KEY&#125;" &#125;,
+        "cipher": &#123; "salt": "$&#123;FYLO_CIPHER_SALT&#125;" &#125;
+    &#125;
+&#125;</code></pre>
+        <p>
+            Each underscore in a former setting becomes a nested key: <code>FYLO_SHARD_WIDTH</code>
+            becomes <code>fylo.shard.width</code>. Keep only secrets in the adjacent
+            <code>.env</code>. Configure the encryption key and cipher salt together as secret
+            references, or omit both. Literal credentials in JSON are rejected.
+        </p>
+        <pre class="code-block"><code># .env beside application.json
+FYLO_ENCRYPTION_KEY=replace-with-a-secret-of-at-least-32-characters
+FYLO_CIPHER_SALT=replace-with-a-secret-salt</code></pre>
+        <p>
+            Exact whole-value <code>$&#123;NAME&#125;</code> references resolve from the inherited environment
+            first, then the adjacent <code>.env</code>. Unreferenced variables are ignored. No
+            shell commands, recursive expansion, or embedded interpolation are performed. Missing
+            references fail with sanitized errors; resolution never mutates the process environment.
+        </p>
+        <div class="doc-note doc-note--warn">
+            <p>
+                Configuration and binary paths are administrator-controlled bootstrap input. Never
+                derive them from a request, tenant setting, upload, or job payload. Secret loading
+                does not inject <code>.env</code> values into <code>PATH</code> or dynamic-loader
+                variables. Never publish native secrets in website JSON or client bundles.
+            </p>
+            <p>
+                Keep populated files out of source control. Prefer a secret manager for credentials;
+                when a file is required, add its exact name or pattern to the consuming
+                application's ignore rules and make it owner-readable only (for example,
+                <code>chmod 600</code>).
+            </p>
+        </div>
+        <p>
+            Installer and release-tool variables, including <code>FYLO_VERIFY_PROVENANCE</code>,
+            are separate from engine configuration and remain unchanged.
+        </p>
+    </div>
+
+    <div class="doc-pager">
+        <a href="/docs/recovery">← Recovery & rebuild</a>
+        <a href="/docs/replication">Backup & sync →</a>
+    </div>
+</doc-layout>

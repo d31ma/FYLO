@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test } from './browser-test.mjs'
 import { writeFile } from 'node:fs/promises'
 
 // Published initialization budgets. Firefox compiles and instantiates the
@@ -25,8 +25,8 @@ test('runs the Wasm kernel over a real OPFS index and survives restart', async (
     ).toBeVisible()
     const evidence = await page.evaluate(() => globalThis.__FYLO_WASM_EVIDENCE__)
     await recordEvidence(testInfo, 'wasm-opfs-evidence.json', evidence)
-    test.skip(!evidence.supported, evidence.reason)
-    expect(evidence.status).toBe('passed')
+    expect(evidence.supported, evidence.reason).toBe(true)
+    expect(evidence.status, evidence.reason).toBe('passed')
     expect(evidence.acceleration.state).toBe('active')
     expect(evidence.acceleration.metrics.snapshotReads).toBeGreaterThan(0)
     expect(evidence.acceleration.metrics.snapshotLoads).toBeGreaterThan(0)
@@ -51,8 +51,8 @@ test('falls back with an observable reason when Wasm fetch fails', async ({ page
     ).toBeVisible()
     const evidence = await page.evaluate(() => globalThis.__FYLO_WASM_EVIDENCE__)
     await recordEvidence(testInfo, 'wasm-fallback-evidence.json', evidence)
-    test.skip(!evidence.supported, evidence.reason)
-    expect(evidence.status).toBe('passed')
+    expect(evidence.supported, evidence.reason).toBe(true)
+    expect(evidence.status, evidence.reason).toBe('passed')
     expect(evidence.acceleration).toMatchObject({
         mode: 'wasm',
         state: 'fallback',

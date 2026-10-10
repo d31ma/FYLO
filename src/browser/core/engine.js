@@ -5,12 +5,12 @@ import { CollectionNotFoundError, validateCollectionName } from '../../core/coll
 import { FyloQueryPlanner } from '../../query/planner.js'
 import { runInLane } from './filesystem.js'
 import { BrowserDocuments } from './documents.js'
-import { validateMetadataRecord } from './metadata.js'
-import { BrowserMetadataStore } from './metadata.js'
-import { BrowserEventBus } from './event-bus.js'
+import { MetadataRecord } from './metadata-record.js'
+import { BrowserMetadataStore } from './browser-metadata-store.js'
+import { BrowserEventBus } from './browser-event-bus.js'
 import { BrowserPrefixIndex } from './prefix-index.js'
 import { BrowserQueryEngine } from './query.js'
-import { assertPathInside, join } from './path.js'
+import { BrowserPath } from './browser-path.js'
 import '../../core/extensions.js'
 
 /**
@@ -186,17 +186,17 @@ export class BrowserCore {
     /** @param {string} collection @returns {string} */
     collectionRoot(collection) {
         this.assertCollectionName(collection)
-        return join(this.root, '.collections', collection)
+        return BrowserPath.join(this.root, '.collections', collection)
     }
 
     /** @param {string} collection @returns {string} */
     docsRoot(collection) {
-        return join(this.collectionRoot(collection), 'docs')
+        return BrowserPath.join(this.collectionRoot(collection), 'docs')
     }
 
     /** @param {string} collection @returns {string} */
     deletedRoot(collection) {
-        return join(this.collectionRoot(collection), '.deleted')
+        return BrowserPath.join(this.collectionRoot(collection), '.deleted')
     }
 
     /** @param {string} collection @returns {string} */
@@ -208,8 +208,8 @@ export class BrowserCore {
     docPath(collection, docId) {
         validateDocId(docId)
         const root = this.docsRoot(collection)
-        const target = join(root, shardOf(docId), `${docId}.json`)
-        assertPathInside(root, target)
+        const target = BrowserPath.join(root, shardOf(docId), `${docId}.json`)
+        BrowserPath.assertPathInside(root, target)
         return target
     }
 
@@ -217,8 +217,8 @@ export class BrowserCore {
     deletedPath(collection, docId) {
         validateDocId(docId)
         const root = this.deletedRoot(collection)
-        const target = join(root, shardOf(docId), `${docId}.json`)
-        assertPathInside(root, target)
+        const target = BrowserPath.join(root, shardOf(docId), `${docId}.json`)
+        BrowserPath.assertPathInside(root, target)
         return target
     }
 
@@ -239,7 +239,9 @@ export class BrowserCore {
         await this.fs.mkdir(this.docsRoot(collection), { recursive: true })
         await this.fs.mkdir(this.deletedRoot(collection), { recursive: true })
         await this.fs.mkdir(this.metadata.root(collection), { recursive: true })
-        await this.fs.mkdir(join(this.collectionRoot(collection), 'events'), { recursive: true })
+        await this.fs.mkdir(BrowserPath.join(this.collectionRoot(collection), 'events'), {
+            recursive: true
+        })
         await this.index.ensureCollection(collection)
     }
 
@@ -332,7 +334,7 @@ export class BrowserCore {
      * @returns {Promise<TTIDValue>}
      */
     async putData(collection, data, meta) {
-        if (meta !== undefined) validateMetadataRecord(meta)
+        if (meta !== undefined) MetadataRecord.validate(meta)
         await this.requireCollection(collection)
         const explicit = explicitDocumentEntry(data)
         const id = explicit?.[0] ?? /** @type {TTIDValue} */ (TTID.generate())

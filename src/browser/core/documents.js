@@ -1,6 +1,6 @@
 import TTID from '../vendor/ttid.mjs'
 import { legacyShardOf } from '../../core/shard.js'
-import { assertPathInside, basename, join } from './path.js'
+import { BrowserPath } from './browser-path.js'
 
 /**
  * @typedef {string} TTIDValue
@@ -65,7 +65,7 @@ export class BrowserDocuments {
         this.validateDocId(docId)
         const root = this.docsRoot(collection)
         const target = await this.existingPath(root, this.docPath(collection, docId), docId)
-        assertPathInside(root, target)
+        BrowserPath.assertPathInside(root, target)
         if (!(await this.fs.exists(target))) return null
         const text = await this.fs.readText(target)
         const raw = this.parseJsonDocumentText(text)
@@ -87,7 +87,7 @@ export class BrowserDocuments {
         this.validateDocId(docId)
         const root = this.deletedRoot(collection)
         const target = await this.existingPath(root, this.deletedPath(collection, docId), docId)
-        assertPathInside(root, target)
+        BrowserPath.assertPathInside(root, target)
         if (!(await this.fs.exists(target))) return null
         const text = await this.fs.readText(target)
         const raw = this.parseJsonDocumentText(text)
@@ -111,7 +111,7 @@ export class BrowserDocuments {
         this.validateDocId(docId)
         await this.ensureCollection(collection)
         const target = this.docPath(collection, docId)
-        assertPathInside(this.docsRoot(collection), target)
+        BrowserPath.assertPathInside(this.docsRoot(collection), target)
         const text = JSON.stringify(data)
         this.assertJsonDocumentText(text)
         await this.fs.writeText(target, text)
@@ -131,7 +131,7 @@ export class BrowserDocuments {
         this.validateDocId(docId)
         const root = this.docsRoot(collection)
         const target = await this.existingPath(root, this.docPath(collection, docId), docId)
-        assertPathInside(root, target)
+        BrowserPath.assertPathInside(root, target)
         if (await this.fs.exists(target)) await this.fs.remove(target)
     }
 
@@ -149,8 +149,8 @@ export class BrowserDocuments {
             docId
         )
         const target = this.deletedPath(collection, docId)
-        assertPathInside(this.docsRoot(collection), source)
-        assertPathInside(this.deletedRoot(collection), target)
+        BrowserPath.assertPathInside(this.docsRoot(collection), source)
+        BrowserPath.assertPathInside(this.deletedRoot(collection), target)
         if (!(await this.fs.exists(source))) {
             throw new Error(`Document not found: ${docId}`)
         }
@@ -179,8 +179,8 @@ export class BrowserDocuments {
             docId
         )
         const target = this.docPath(collection, docId)
-        assertPathInside(this.deletedRoot(collection), source)
-        assertPathInside(this.docsRoot(collection), target)
+        BrowserPath.assertPathInside(this.deletedRoot(collection), source)
+        BrowserPath.assertPathInside(this.docsRoot(collection), target)
         if (!(await this.fs.exists(source))) {
             throw new Error(`No tombstone to restore: ${docId}`)
         }
@@ -216,15 +216,15 @@ export class BrowserDocuments {
      */
     async existingPath(root, canonical, docId) {
         if (await this.fs.exists(canonical)) return canonical
-        const legacy = join(root, legacyShardOf(docId), `${docId}.json`)
-        assertPathInside(root, legacy)
+        const legacy = BrowserPath.join(root, legacyShardOf(docId), `${docId}.json`)
+        BrowserPath.assertPathInside(root, legacy)
         return legacy !== canonical && (await this.fs.exists(legacy)) ? legacy : canonical
     }
 
     /** @param {string} root @param {string} canonical @param {TTIDValue} docId */
     async removeLegacyCopy(root, canonical, docId) {
-        const legacy = join(root, legacyShardOf(docId), `${docId}.json`)
-        assertPathInside(root, legacy)
+        const legacy = BrowserPath.join(root, legacyShardOf(docId), `${docId}.json`)
+        BrowserPath.assertPathInside(root, legacy)
         if (legacy !== canonical && (await this.fs.exists(legacy))) await this.fs.remove(legacy)
     }
 
@@ -295,12 +295,12 @@ async function listBucketedDocIds(fs, root) {
     const ids = []
     const buckets = await fs.list(root)
     for (const bucket of buckets) {
-        const bucketPath = join(root, bucket)
+        const bucketPath = BrowserPath.join(root, bucket)
         if (!(await fs.isDirectory(bucketPath))) continue
         const files = await fs.list(bucketPath)
         for (const file of files) {
             if (!file.endsWith('.json')) continue
-            const id = basename(file).slice(0, -'.json'.length)
+            const id = BrowserPath.basename(file).slice(0, -'.json'.length)
             if (TTID.isTTID(id)) ids.push(id)
         }
     }

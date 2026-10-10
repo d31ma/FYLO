@@ -1,4 +1,4 @@
-const TITLE = 'FYLO — The document store that speaks your language.'
+const TITLE = 'FYLO — Query the files you already own.'
 document.title = TITLE
 
 export default class {}

@@ -5,11 +5,26 @@
 // declared point must be reached by some scenario. A new failpoint therefore
 // cannot be added without either being exercised here or failing this gate,
 // which is the property a hand-maintained list cannot give.
+import { CargoArtifacts } from './cargo-artifacts.mjs'
 import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
 import { platform, tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { parseArgs } from 'node:util'
 
 import { Fylo } from '../clients/node/fylo.mjs'
+
+const { values: options } = parseArgs({
+    options: {
+        'binary-dir': { type: 'string' },
+        'skip-build': { type: 'boolean', default: false }
+    }
+})
+if (options['skip-build'] && !options['binary-dir']) {
+    throw new Error('--skip-build requires --binary-dir pointing to freshly built binaries')
+}
+if (options['binary-dir'] && !options['skip-build']) {
+    throw new Error('--binary-dir requires --skip-build; build the selected binaries first')
+}
 
 const workspace = await realpath(await mkdtemp(join(tmpdir(), 'fylo-rust-crash-')))
 const template = join(workspace, 'template')
@@ -21,32 +36,29 @@ const fileIdentifier = '4VRNF52JPCQ'
 const crashFileIdentifier = '4VRNF52JPCS'
 const deletedIdentifier = '4VRNF52JPCR'
 const binary = join(
-    process.cwd(),
-    'target',
-    'debug',
+    options['binary-dir'] ?? CargoArtifacts.path('debug'),
     platform() === 'win32' ? 'fylo-write-preview.exe' : 'fylo-write-preview'
 )
 const machineBinary = join(
-    process.cwd(),
-    'target',
-    'debug',
+    options['binary-dir'] ?? CargoArtifacts.path('debug'),
     platform() === 'win32' ? 'fylo-rust.exe' : 'fylo-rust'
 )
 
 try {
-    await command([
-        process.execPath,
-        './scripts/run-rust.mjs',
-        'cargo',
-        'build',
-        '--locked',
-        '-p',
-        'fylo-cli',
-        '--bin',
-        'fylo-write-preview',
-        '--bin',
-        'fylo-rust'
-    ])
+    if (!options['skip-build'])
+        await command([
+            process.execPath,
+            './scripts/run-rust.mjs',
+            'cargo',
+            'build',
+            '--locked',
+            '-p',
+            'fylo-cli',
+            '--bin',
+            'fylo-write-preview',
+            '--bin',
+            'fylo-rust'
+        ])
 
     await mkdir(template, { recursive: true })
     const seedFile = join(workspace, 'seed.bin')

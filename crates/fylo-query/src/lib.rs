@@ -14,7 +14,9 @@ mod index;
 mod join;
 mod sql;
 
-pub use index::{IndexLookupValue, equality_prefix, index_entries_for_document};
+pub use index::{
+    IndexLookupValue, equality_candidate_prefixes, equality_prefix, index_entries_for_document,
+};
 pub use join::{JoinComparator, JoinMode, JoinSpec, value_by_path};
 pub use sql::{AccessPath, SqlOperation, SqlPlan, prepare_sql};
 

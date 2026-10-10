@@ -4,7 +4,10 @@
 //! limits, and stable error mapping; it does not reimplement query,
 //! permission, or transaction semantics.
 
+mod application;
 mod strict;
+
+pub use application::ApplicationConfig;
 
 use std::io::{BufRead, Read, Write};
 #[cfg(not(target_arch = "wasm32"))]
@@ -192,7 +195,7 @@ pub fn serve<R: BufRead, W: Write>(
         limits,
         false,
         true,
-        RootConfig::from_env().unwrap_or_default(),
+        ApplicationConfig::default(),
     )
 }
 
@@ -217,7 +220,7 @@ pub fn serve_once<R: BufRead, W: Write>(
         limits,
         false,
         false,
-        RootConfig::from_env().unwrap_or_default(),
+        ApplicationConfig::default(),
     )
 }
 
@@ -244,15 +247,14 @@ pub fn serve_exclusive<R: BufRead, W: Write>(
         limits,
         true,
         true,
-        RootConfig::from_env().unwrap_or_default(),
+        ApplicationConfig::default(),
     )
 }
 
 /// Serve one bounded session with host-supplied runtime knobs.
 ///
-/// [`serve`], [`serve_once`], and [`serve_exclusive`] read those knobs from the
-/// process environment. A host that has none — a browser or mobile embedding —
-/// passes them here instead.
+/// Native, browser, and mobile hosts pass these explicit storage settings;
+/// no environment variables are consulted.
 ///
 /// # Errors
 ///
@@ -264,7 +266,45 @@ pub fn serve_configured<R: BufRead, W: Write>(
     limits: FrameLimits,
     config: RootConfig,
 ) -> std::io::Result<()> {
-    serve_session(input, output, default_root, limits, false, true, config)
+    serve_session(
+        input,
+        output,
+        default_root,
+        limits,
+        false,
+        true,
+        ApplicationConfig {
+            storage: config,
+            ..ApplicationConfig::default()
+        },
+    )
+}
+
+/// Serve using one resolved application configuration without changing the environment.
+///
+/// An explicit default root takes precedence over the configured root.
+///
+/// # Errors
+///
+/// Returns an error when the transport fails.
+pub fn serve_application<R: BufRead, W: Write>(
+    input: &mut R,
+    output: &mut W,
+    default_root: Option<PathBuf>,
+    limits: FrameLimits,
+    application: ApplicationConfig,
+    exclusive_root: bool,
+    persistent: bool,
+) -> std::io::Result<()> {
+    serve_session(
+        input,
+        output,
+        default_root,
+        limits,
+        exclusive_root,
+        persistent,
+        application,
+    )
 }
 
 fn serve_session<R: BufRead, W: Write>(
@@ -274,8 +314,9 @@ fn serve_session<R: BufRead, W: Write>(
     limits: FrameLimits,
     exclusive_root: bool,
     persistent: bool,
-    config: RootConfig,
+    config: ApplicationConfig,
 ) -> std::io::Result<()> {
+    let default_root = default_root.or_else(|| config.root.clone());
     let limits = limits.clamped();
     let mut leases = std::collections::BTreeMap::new();
     let startup_error = if exclusive_root {
@@ -323,7 +364,7 @@ fn serve_session<R: BufRead, W: Write>(
 struct Session {
     default_root: Option<PathBuf>,
     limits: FrameLimits,
-    config: RootConfig,
+    config: ApplicationConfig,
     leases: std::cell::RefCell<std::collections::BTreeMap<PathBuf, RootLease>>,
     cursors: std::cell::RefCell<std::collections::BTreeMap<String, CursorState>>,
     cursor_sequence: std::cell::Cell<u64>,
@@ -644,8 +685,20 @@ impl Session {
     fn engine(&self, request: &Value) -> Result<ReadOnlyEngine, MachineError> {
         let repository_root = self.root(request)?;
         let active_root = active_worktree(&repository_root)?;
-        ReadOnlyEngine::open_with_repository(active_root, repository_root)
-            .map_err(|error| engine_error(&error))
+        let engine = ReadOnlyEngine::open_with_repository(active_root, repository_root)
+            .map_err(|error| engine_error(&error))?;
+        match self.schema_path(request) {
+            Some(schema) => engine
+                .with_schema_configuration(
+                    schema,
+                    self.config
+                        .credentials
+                        .as_ref()
+                        .map(|(key, salt)| (key.as_str(), salt.as_str())),
+                )
+                .map_err(|error| engine_error(&error)),
+            None => Ok(engine),
+        }
     }
 
     fn get_document(&self, request: &Value) -> Result<Value, MachineError> {
@@ -889,28 +942,22 @@ impl Session {
         let repository_root = self.root(request)?;
         let active_root = active_worktree(&repository_root)?;
         NativeWriteRoot::open_with_repository(active_root, repository_root)
-            .map(|writer| writer.with_config(self.config))
+            .map(|writer| writer.with_config(self.config.storage))
             .map_err(|error| storage_error(&error))
     }
 
     fn write_engine(&self, request: &Value) -> Result<WriteEngine, MachineError> {
         let repository_root = self.root(request)?;
         let root = active_worktree(&repository_root)?;
-        let schema = request
-            .get("schemaDir")
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned)
-            .or_else(|| configured("FYLO_SCHEMA"))
-            .filter(|schema| std::path::Path::new(schema).is_dir());
-        let credentials = configured("FYLO_ENCRYPTION_KEY").zip(configured("FYLO_CIPHER_SALT"));
-        match (schema, credentials) {
+        let schema = self.schema_path(request);
+        let engine = match (schema, self.config.credentials.as_ref()) {
             (Some(schema), Some((secret, salt))) => {
                 WriteEngine::open_with_repository_and_encryption(
                     root,
                     repository_root,
                     schema,
-                    &secret,
-                    &salt,
+                    secret,
+                    salt,
                 )
             }
             (Some(schema), None) => {
@@ -918,8 +965,20 @@ impl Session {
             }
             (None, _) => WriteEngine::open_with_repository(root, repository_root),
         }
-        .map(|engine| engine.with_config(self.config))
-        .map_err(|error| engine_error(&error))
+        .map(|engine| engine.with_config(self.config.storage))
+        .map_err(|error| engine_error(&error))?;
+        Ok(match &self.config.chex_binary {
+            Some(binary) => engine.with_chex_binary(binary),
+            None => engine,
+        })
+    }
+
+    fn schema_path(&self, request: &Value) -> Option<PathBuf> {
+        request
+            .get("schemaDir")
+            .and_then(Value::as_str)
+            .map(PathBuf::from)
+            .or_else(|| self.config.schema.clone())
     }
 
     /// `SELECT` is answered by the read engine; every mutation goes through the
@@ -2639,16 +2698,9 @@ fn host_allowed(hostname: &str, allowed: Option<&[String]>) -> bool {
 #[cfg(not(target_arch = "wasm32"))]
 fn is_private(address: IpAddr) -> bool {
     match address {
-        IpAddr::V4(address) => {
-            let [first, second, ..] = address.octets();
-            first == 0
-                || first == 10
-                || first == 127
-                || (first == 169 && second == 254)
-                || (first == 172 && (16..=31).contains(&second))
-                || (first == 192 && second == 168)
-                || (first == 100 && (64..=127).contains(&second))
-        }
+        IpAddr::V4(address) => private_ipv4_conditions(address)
+            .into_iter()
+            .any(|condition| condition),
         IpAddr::V6(address) => address.to_ipv4_mapped().map_or_else(
             || {
                 address.is_unspecified()
@@ -2659,6 +2711,20 @@ fn is_private(address: IpAddr) -> bool {
             |address| is_private(IpAddr::V4(address)),
         ),
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn private_ipv4_conditions(address: std::net::Ipv4Addr) -> [bool; 7] {
+    let [first, second, ..] = address.octets();
+    [
+        first == 0,
+        first == 10,
+        first == 127,
+        first == 169 && second == 254,
+        first == 172 && (16..=31).contains(&second),
+        first == 192 && second == 168,
+        first == 100 && (64..=127).contains(&second),
+    ]
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -2787,13 +2853,6 @@ fn fill_page(
         page.count += 1;
     }
     page
-}
-
-/// An empty environment variable is falsy in JavaScript, and a repository
-/// `.env` commonly declares these names with empty values. Treating one as
-/// configured would open the engine with credentials that cannot work.
-fn configured(name: &str) -> Option<String> {
-    std::env::var(name).ok().filter(|value| !value.is_empty())
 }
 
 fn cursor_scope(request: &Value) -> String {
@@ -3003,7 +3062,46 @@ fn executable_on_path(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fylo_test_support::{McdcCase, assert_unique_cause_mcdc};
     use std::io::Cursor;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn private_ipv4_case(name: &'static str, address: [u8; 4]) -> McdcCase<7> {
+        let address = std::net::Ipv4Addr::from(address);
+        McdcCase::new(
+            name,
+            private_ipv4_conditions(address),
+            is_private(IpAddr::V4(address)),
+        )
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn mcdc_machine_private_ipv4_rejection() {
+        let cases = [
+            private_ipv4_case("public_baseline", [8, 8, 8, 8]),
+            private_ipv4_case("this_network", [0, 1, 2, 3]),
+            private_ipv4_case("private_10", [10, 1, 2, 3]),
+            private_ipv4_case("loopback", [127, 0, 0, 1]),
+            private_ipv4_case("link_local", [169, 254, 1, 1]),
+            private_ipv4_case("private_172", [172, 16, 1, 1]),
+            private_ipv4_case("private_192", [192, 168, 1, 1]),
+            private_ipv4_case("carrier_grade_nat", [100, 64, 1, 1]),
+        ];
+        assert_unique_cause_mcdc(
+            "machine.private_ipv4_rejection",
+            [
+                "this_network",
+                "private_10",
+                "loopback",
+                "link_local",
+                "private_172",
+                "private_192",
+                "carrier_grade_nat",
+            ],
+            &cases,
+        );
+    }
 
     fn run(input: &str) -> Vec<Value> {
         let mut reader = Cursor::new(input.as_bytes().to_vec());
@@ -3499,7 +3597,7 @@ mod tests {
         let session = Session {
             default_root: None,
             limits: FrameLimits::default(),
-            config: RootConfig::default(),
+            config: ApplicationConfig::default(),
             leases: std::cell::RefCell::new(std::collections::BTreeMap::new()),
             cursors: std::cell::RefCell::new(std::collections::BTreeMap::new()),
             cursor_sequence: std::cell::Cell::new(0),

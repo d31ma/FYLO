@@ -1,0 +1,9 @@
+{
+    "fylo": {
+        "root": "./.fylo-data",
+        "strict": false,
+        "shard": {
+            "width": 1
+        }
+    }
+}

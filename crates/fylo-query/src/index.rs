@@ -162,6 +162,32 @@ pub fn equality_prefix(field_path: &str, value: &Value) -> Option<String> {
     Some(format!("{}/eq/{token}/", encode_field_path(field_path)))
 }
 
+/// Plaintext index prefixes whose union contains every loose-equality match.
+///
+/// Always verify candidate documents with the original predicate. Returns
+/// `None` for null and containers, which require a document scan. Encrypted
+/// fields must also use the caller's scan fallback.
+#[must_use]
+pub fn equality_candidate_prefixes(field_path: &str, value: &Value) -> Option<Vec<String>> {
+    if value.is_null() {
+        return None;
+    }
+    let field_path = field_path
+        .split(['.', '/'])
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>()
+        .join("/");
+    let mut prefixes = vec![equality_prefix(&field_path, value)?];
+    if let Some(numeric) = numeric_value(value) {
+        let field = encode_field_path(&field_path);
+        prefixes.push(format!("{field}/n/{}/", sortable_float64(numeric)));
+        if numeric == 0.0 {
+            prefixes.push(format!("{field}/n/{}/", sortable_float64(-numeric)));
+        }
+    }
+    Some(prefixes)
+}
+
 fn index_key(field_path: &str, kind: &str, value: &str, document_id: &str) -> String {
     format!(
         "{}/{kind}/{}/{}",
@@ -312,6 +338,171 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::{IndexSnapshot, QueryLimits, ScanQuery, StructuredQuery};
+
+    fn assert_equality_candidate_parity(field_path: &str, values: &[Value]) {
+        let mut documents = values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| {
+                (
+                    format!("document-{index:04}"),
+                    json!({"nested": {"value": value}})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        documents.push(("missing".to_owned(), Map::new()));
+        let mut entries = BTreeSet::new();
+        for (identifier, document) in &documents {
+            entries.extend(
+                index_entries_for_document(identifier, document, |_, value| {
+                    Ok::<_, std::convert::Infallible>(IndexLookupValue::plain(value))
+                })
+                .unwrap(),
+            );
+        }
+        let bytes = entries.into_iter().collect::<Vec<_>>().join("\n");
+        let snapshot = IndexSnapshot::from_bytes(bytes.as_bytes(), QueryLimits::default()).unwrap();
+        for expected in values {
+            let query = StructuredQuery::from_value(
+                &json!({"$ops": [{(field_path): {"$eq": expected}}]}),
+                QueryLimits::default(),
+            )
+            .unwrap();
+            let Some(prefixes) = equality_candidate_prefixes(field_path, expected) else {
+                assert!(expected.is_null() || expected.is_array() || expected.is_object());
+                continue;
+            };
+            let mut candidates = BTreeSet::new();
+            for prefix in prefixes {
+                let matches = snapshot
+                    .scan(
+                        &[ScanQuery {
+                            prefix,
+                            range: None,
+                        }],
+                        QueryLimits::default(),
+                    )
+                    .unwrap();
+                candidates.extend(
+                    matches
+                        .into_iter()
+                        .map(|identifier| String::from_utf8(identifier).unwrap()),
+                );
+            }
+            let scan_matches = documents
+                .iter()
+                .filter(|(_, document)| query.matches(document, 0, 0))
+                .map(|(identifier, _)| identifier.clone())
+                .collect::<BTreeSet<_>>();
+            assert!(
+                scan_matches.is_subset(&candidates),
+                "missing candidates for {field_path} = {expected}: {:?}",
+                scan_matches.difference(&candidates).collect::<Vec<_>>()
+            );
+            let verified = documents
+                .iter()
+                .filter(|(identifier, document)| {
+                    candidates.contains(identifier) && query.matches(document, 0, 0)
+                })
+                .map(|(identifier, _)| identifier.clone())
+                .collect::<BTreeSet<_>>();
+            assert_eq!(verified, scan_matches);
+        }
+    }
+
+    #[test]
+    fn equality_candidates_preserve_loose_scalar_equality() {
+        let values = json!([
+            null,
+            true,
+            false,
+            0,
+            -0.0,
+            1,
+            -1,
+            2.5,
+            16,
+            1e20,
+            1e-300,
+            -1e-300,
+            f64::MAX,
+            9_007_199_254_740_993_u64,
+            "",
+            " ",
+            "\t\n",
+            "0",
+            "-0",
+            "0.0",
+            "+0",
+            "1",
+            "01",
+            "+1",
+            "1.0",
+            "1e0",
+            "-1",
+            "2.5",
+            "0x10",
+            "0b10000",
+            "0o20",
+            "16",
+            "true",
+            "false",
+            "null",
+            "NaN",
+            "Infinity",
+            "-Infinity",
+            "inf",
+            "1e999",
+            "1e-300",
+            "-1e-300",
+            "1.7976931348623157e308",
+            "not-a-number",
+            "100000000000000000000",
+            "9007199254740993",
+            [1, "01", true],
+            []
+        ]);
+        assert_equality_candidate_parity("nested/value", values.as_array().unwrap());
+    }
+
+    #[test]
+    fn equality_candidates_preserve_nested_paths_and_encoded_strings() {
+        let values = vec![
+            json!("a/b"),
+            json!("a%2Fb"),
+            json!("\u{00e9}/\u{1f680}"),
+            json!("long/value/".repeat(30)),
+            json!("x".repeat(180)),
+            json!("x".repeat(181)),
+            json!("1"),
+            json!(1),
+        ];
+        for path in [
+            "nested/value",
+            "nested.value",
+            "/nested//value/",
+            ".nested./value.",
+        ] {
+            assert_equality_candidate_parity(path, &values);
+        }
+    }
+
+    #[test]
+    fn equality_candidates_require_scan_for_null_and_containers() {
+        for value in [Value::Null, json!([]), json!({}), json!([1])] {
+            assert!(equality_candidate_prefixes("field", &value).is_none());
+        }
+        let query = StructuredQuery::from_value(
+            &json!({"$ops": [{"field": {"$eq": null}}]}),
+            QueryLimits::default(),
+        )
+        .unwrap();
+        assert!(query.matches(&Map::new(), 0, 0));
+    }
 
     #[test]
     fn matches_javascript_prefix_index_expansion() {

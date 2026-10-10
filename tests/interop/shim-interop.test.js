@@ -1,16 +1,14 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { existsSync } from 'node:fs'
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 
 const roots = []
 const repoRoot = process.cwd()
-const binaryPath = path.join(
-    repoRoot,
-    'dist-bin',
-    process.platform === 'win32' ? 'fylo.exe' : 'fylo'
-)
+const binaryPath = process.env.FYLO_BINARY
+    ? path.resolve(process.env.FYLO_BINARY)
+    : path.join(repoRoot, 'dist-bin', process.platform === 'win32' ? 'fylo.exe' : 'fylo')
 const shimRoot = path.join(repoRoot, 'clients')
 
 /**
@@ -93,36 +91,37 @@ describe('client shim interop via fylo exec --loop', () => {
         }
     })
 
-    test('every binary-backed language shim exposes child-scoped environment configuration', async () => {
+    test('every binary-backed language shim exposes native application configuration', async () => {
         const contracts = new Map([
-            ['node/fylo.mjs', ['childEnvironment', 'env?: string']],
-            ['python/fylo.py', ['_child_environment', 'env=None']],
-            ['ruby/fylo.rb', ['child_environment', 'env: nil']],
-            ['php/fylo.php', ['childEnvironment', 'string|array|null $env']],
-            ['go/fylo.go', ['OpenWithOptions', 'type Environment struct']],
-            ['rust/fylo.rs', ['ProcessEnvironment', 'open_with_options']],
-            ['java/Fylo.java', ['class Options', 'applyChildEnvironment']],
-            ['csharp/Fylo.cs', ['class Options', 'ApplyChildEnvironment']],
-            ['dart/fylo.dart', ['_childEnvironment', 'Object? env']]
+            ['node/fylo.mjs', ['config?: string']],
+            ['python/fylo.py', ['config=None']],
+            ['ruby/fylo.rb', ['config: nil']],
+            ['php/fylo.php', ['?string $config']],
+            ['go/fylo.go', ['OpenWithOptions', 'Config']],
+            ['rust/fylo.rs', ['config: Option<PathBuf>', 'open_with_options']],
+            ['java/Fylo.java', ['class Options', 'String config']],
+            ['csharp/Fylo.cs', ['class Options', 'string Config']],
+            ['dart/fylo.dart', ['String? config']]
         ])
         for (const [relative, markers] of contracts) {
             const source = await readFile(path.join(shimRoot, relative), 'utf8')
             for (const marker of markers) expect(source, relative).toContain(marker)
+            expect(source, relative).toContain('--config')
         }
     })
 
-    test('the published environment template uses native FYLO variable names and defaults', async () => {
-        const [example, ignore] = await Promise.all([
+    test('the published configuration templates separate settings from secrets', async () => {
+        const [example, application, ignore] = await Promise.all([
             readFile(path.join(repoRoot, '.env.example'), 'utf8'),
+            readFile(path.join(repoRoot, 'application.example.json'), 'utf8'),
             readFile(path.join(repoRoot, '.gitignore'), 'utf8')
         ])
-        expect(example).toContain('FYLO_SCHEMA=')
-        expect(example).toContain('FYLO_SHARD_WIDTH=1')
-        expect(example).not.toContain('FYLO_SCHEMA_DIR')
-        expect(example).not.toContain('CHEX_SCHEMA_DIR')
-        expect(example).not.toContain('FYLO_LOGGING')
-        expect(ignore.split(/\r?\n/)).toContain('fylo.env')
-        expect(ignore.split(/\r?\n/)).toContain('*.fylo.env')
+        expect(example).toContain('FYLO_ENCRYPTION_KEY=')
+        expect(example).toContain('FYLO_CIPHER_SALT=')
+        expect(example).not.toContain('FYLO_SHARD_WIDTH=')
+        expect(example).not.toContain('FYLO_ROOT=')
+        expect(JSON.parse(application).fylo.shard.width).toBe(1)
+        expect(ignore.split(/\r?\n/)).toContain('.env')
     })
 
     test('every binary-backed language shim exposes the durable queue lifecycle', async () => {
@@ -479,172 +478,188 @@ try {
         expect(JSON.parse(result.stdout).ok).toBe(true)
     })
 
-    test('Node shim scopes a .env file or environment map to its FYLO child', async () => {
+    test('Node shim reads application.json without environment overrides or process mutation', async () => {
         await requireCommand('node')
-        const fileRoot = await tempRoot('fylo-node-env-file-')
-        const mappedRoot = await tempRoot('fylo-node-env-map-')
-        const optionRoot = await tempRoot('fylo-node-env-option-')
-        const envFile = path.join(fileRoot, 'fylo.env')
-        const malformedFile = path.join(fileRoot, 'malformed.env')
+        const fileRoot = await tempRoot('fylo-node-config with spaces-')
+        const optionRoot = await tempRoot('fylo-node-config-option-')
+        const config = path.join(fileRoot, 'application.json')
         await writeFile(
-            envFile,
-            [
-                '# File values override the inherited child environment.',
-                'export FYLO_SHARD_WIDTH = "2" # quoted values and comments are supported',
-                'FYLO_ROOT=/this/root/must/not/win',
-                ''
-            ].join('\n')
+            config,
+            JSON.stringify({
+                application: { name: 'host-app' },
+                fylo: { root: '/this/root/must/not/win', shard: { width: 2 } }
+            })
         )
-        await writeFile(malformedFile, 'FYLO_SHARD_WIDTH="2"\nBROKEN\n')
         const script = `
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { Fylo } from ${JSON.stringify(path.join(shimRoot, 'node', 'fylo.mjs'))}
-
-const inherited = process.env.FYLO_SHARD_WIDTH
-const fromFile = new Fylo(${JSON.stringify(fileRoot)}, {
-  binary: ${JSON.stringify(binaryPath)},
-  env: ${JSON.stringify(envFile)},
-})
-let fileId
-try {
-  await fromFile.createCollection('users')
-  fileId = await fromFile.putData('users', { source: 'file' })
-} finally {
-  await fromFile.close()
-}
-if (!existsSync(join(${JSON.stringify(fileRoot)}, '.collections', 'users', 'docs', fileId.slice(-2), fileId + '.json'))) {
-  throw new Error('.env shard width was not applied to the FYLO child')
-}
-if (process.env.FYLO_SHARD_WIDTH !== inherited) {
-  throw new Error('FYLO .env configuration mutated process.env')
-}
-
-const fromMap = new Fylo(${JSON.stringify(mappedRoot)}, {
-  binary: ${JSON.stringify(binaryPath)},
-  env: { ...process.env, FYLO_SHARD_WIDTH: 3 },
-})
-let mappedId
-try {
-  await fromMap.createCollection('users')
-  mappedId = await fromMap.putData('users', { source: 'map' })
-} finally {
-  await fromMap.close()
-}
-if (!existsSync(join(${JSON.stringify(mappedRoot)}, '.collections', 'users', 'docs', mappedId.slice(-3), mappedId + '.json'))) {
-  throw new Error('environment map was not applied to the FYLO child')
-}
-
-const fromOption = new Fylo(${JSON.stringify(optionRoot)}, {
-  binary: ${JSON.stringify(binaryPath)},
-  env: ${JSON.stringify(envFile)},
-  shardWidth: 1,
-})
-let optionId
-try {
-  await fromOption.createCollection('users')
-  optionId = await fromOption.putData('users', { source: 'option' })
-} finally {
-  await fromOption.close()
-}
-if (!existsSync(join(${JSON.stringify(optionRoot)}, '.collections', 'users', 'docs', optionId.slice(-1), optionId + '.json'))) {
-  throw new Error('explicit shardWidth did not override the child environment')
-}
-
-let malformedRejected = false
-try {
-  new Fylo(${JSON.stringify(fileRoot)}, {
-    binary: ${JSON.stringify(binaryPath)},
-    env: ${JSON.stringify(malformedFile)},
+const inherited = JSON.stringify(process.env)
+for (const [root, options, width] of [
+  [${JSON.stringify(fileRoot)}, {}, 2],
+  [${JSON.stringify(optionRoot)}, { shardWidth: 1 }, 1],
+]) {
+  const db = new Fylo(root, {
+    binary: ${JSON.stringify(binaryPath)}, config: ${JSON.stringify(config)}, ...options,
   })
-} catch (error) {
-  malformedRejected = error instanceof SyntaxError && error.message.includes('malformed.env:2')
+  let id
+  try {
+    await db.createCollection('users')
+    id = await db.putData('users', { source: 'config' })
+  } finally {
+    await db.close()
+  }
+  if (!existsSync(join(root, '.collections', 'users', 'docs', id.slice(-width), id + '.json'))) {
+    throw new Error('application.json or explicit option precedence was not applied')
+  }
 }
-if (!malformedRejected) throw new Error('malformed .env file did not fail before spawn')
-
-let missingRejected = false
-try {
-  new Fylo(${JSON.stringify(fileRoot)}, {
-    binary: ${JSON.stringify(binaryPath)},
-    env: ${JSON.stringify(path.join(fileRoot, 'missing.env'))},
-  })
-} catch (error) {
-  missingRejected = error.message.includes('cannot read FYLO environment file')
-}
-if (!missingRejected) throw new Error('missing .env file did not fail before spawn')
-
-const secretSentinel = 'SHOULD_NOT_APPEAR_IN_AN_ERROR'
-let nulRejectedWithoutLeak = false
-try {
-  new Fylo(${JSON.stringify(fileRoot)}, {
-    binary: ${JSON.stringify(binaryPath)},
-    env: { FYLO_ENCRYPTION_KEY: secretSentinel + '\\0tail' },
-  })
-} catch (error) {
-  nulRejectedWithoutLeak = error.message.includes('FYLO_ENCRYPTION_KEY') &&
-    !error.message.includes(secretSentinel)
-}
-if (!nulRejectedWithoutLeak) {
-  throw new Error('NUL environment value was accepted or leaked its secret value')
-}
-console.log(JSON.stringify({ ok: true, inherited }))
+if (JSON.stringify(process.env) !== inherited) throw new Error('configuration mutated process.env')
+console.log(JSON.stringify({ ok: true }))
 `
         const result = await run(['node', '--input-type=module', '-e', script], {
-            env: { FYLO_SHARD_WIDTH: '4' }
+            env: { FYLO_SHARD_WIDTH: '4', FYLO_ROOT: '/this/env/root/must/not/win' }
         })
-        expectSuccess('Node child environment scoping', result)
-        expect(JSON.parse(result.stdout)).toEqual({ ok: true, inherited: '4' })
+        expectSuccess('Node application configuration', result)
+        expect(JSON.parse(result.stdout)).toEqual({ ok: true })
     })
 
-    test.skipIf(process.platform === 'win32')(
-        'Node shim preserves reserved object-property names in a child environment file',
-        async () => {
-            await requireCommand('node')
-            const root = await tempRoot('fylo-node-env-reserved-')
-            const environmentFile = path.join(root, 'reserved.fylo.env')
-            const probe = path.join(root, 'environment-probe.mjs')
-            await writeFile(environmentFile, '__proto__=preserved\n')
-            await writeFile(
-                probe,
-                `#!/usr/bin/env node
-if (!Object.prototype.hasOwnProperty.call(process.env, '__proto__') || process.env['__proto__'] !== 'preserved') {
-  process.stderr.write('reserved environment key was not preserved')
-  process.exit(2)
-}
-let buffer = ''
-process.stdin.setEncoding('utf8')
-process.stdin.on('data', (chunk) => {
-  buffer += chunk
-  const newline = buffer.indexOf('\\n')
-  if (newline < 0) return
-  buffer = buffer.slice(newline + 1)
-  process.stdout.write(JSON.stringify({
-    ok: true,
-    result: { machine: { maxRequestBytes: 1048576, maxResponseBytes: 8388608 } }
-  }) + '\\n')
-})
-process.stdin.on('end', () => process.exit(0))
-`
+    test('Node shim rejects legacy env and malformed config options before spawning', async () => {
+        const { Fylo } = await import('../../clients/node/fylo.mjs')
+        for (const env of ['legacy.env', { SECRET: 'must-not-be-logged' }, undefined]) {
+            expect(() => new Fylo('/unused', { binary: '/missing-binary', env })).toThrow(
+                'env is no longer supported; use config'
             )
-            await chmod(probe, 0o700)
+        }
+        for (const config of ['', '   ', null, {}, [], 123, 'secret-value\0tail']) {
+            let failure
+            try {
+                new Fylo('/unused', { binary: '/missing-binary', config })
+            } catch (error) {
+                failure = error
+            }
+            expect(failure).toBeInstanceOf(TypeError)
+            expect(failure.message).toContain(
+                'config must be a non-empty application.json file path'
+            )
+            expect(failure.message).not.toContain('secret-value')
+        }
+        for (const shardWidth of [0, -1, 5, 1.5]) {
+            expect(() => new Fylo('/unused', { binary: '/missing-binary', shardWidth })).toThrow(
+                'shardWidth must be an integer from 1 to 4'
+            )
+        }
+    })
+
+    test('Node shim propagates missing, malformed, and invalid application configuration failures', async () => {
+        await requireCommand('node')
+        const root = await tempRoot('fylo-node-config-invalid-')
+        const cases = [
+            ['missing.json', undefined],
+            ['malformed.json', '{"fylo":'],
+            ['invalid.json', JSON.stringify({ fylo: { shard: { width: '2' } } })],
+            ['unknown.json', JSON.stringify({ fylo: { shard_width: 2 } })]
+        ]
+        for (const [name, source] of cases) {
+            const config = path.join(root, name)
+            if (source !== undefined) await writeFile(config, source)
             const script = `
 import { Fylo } from ${JSON.stringify(path.join(shimRoot, 'node', 'fylo.mjs'))}
 const db = new Fylo(${JSON.stringify(root)}, {
-  binary: ${JSON.stringify(probe)},
-  env: ${JSON.stringify(environmentFile)},
+  binary: ${JSON.stringify(binaryPath)}, config: ${JSON.stringify(config)},
 })
-try {
-  await db.ready
-  console.log(JSON.stringify({ ok: true }))
-} finally {
-  await db.close()
-}
+let rejected = false
+try { await db.ready } catch { rejected = true } finally { await db.close() }
+if (!rejected) throw new Error('invalid configuration was accepted')
+console.log(JSON.stringify({ ok: true }))
 `
             const result = await run(['node', '--input-type=module', '-e', script])
-            expectSuccess('Node reserved environment key', result)
+            expectSuccess('Node configuration failure: ' + name, result)
             expect(JSON.parse(result.stdout)).toEqual({ ok: true })
         }
-    )
+    })
+
+    test('Node shim leaves secret resolution to the native application configuration loader', async () => {
+        await requireCommand('node')
+        const root = await tempRoot('fylo-node-config-secret-')
+        const config = path.join(root, 'application.json')
+        const schema = path.join(root, 'schema')
+        await mkdir(path.join(schema, 'users', 'history'), { recursive: true })
+        await writeFile(
+            path.join(schema, 'users', 'manifest.json'),
+            JSON.stringify({ current: 'v1' })
+        )
+        await writeFile(
+            path.join(schema, 'users', 'history', 'v1.schema.json'),
+            JSON.stringify({ type: 'object', $encrypted: ['name'] })
+        )
+        await writeFile(
+            config,
+            JSON.stringify({
+                fylo: {
+                    schema,
+                    encryption: { key: '$' + '{FYLO_INTEROP_SECRET}' },
+                    cipher: { salt: '$' + '{FYLO_INTEROP_SALT}' }
+                }
+            })
+        )
+        await writeFile(
+            path.join(root, '.env'),
+            [
+                'FYLO_INTEROP_SECRET=interop-local-secret-at-least-thirty-two-bytes',
+                'FYLO_INTEROP_SALT=local-file-salt',
+                ''
+            ].join('\n')
+        )
+        const script = `
+import { Fylo } from ${JSON.stringify(path.join(shimRoot, 'node', 'fylo.mjs'))}
+const inherited = JSON.stringify(process.env)
+const db = new Fylo(${JSON.stringify(root)}, {
+  binary: ${JSON.stringify(binaryPath)}, config: ${JSON.stringify(config)},
+})
+try {
+  await db.createCollection('users')
+  const id = await db.putData('users', { name: 'Secret Ada' })
+  const doc = await db.getLatest('users', id)
+  if (doc[id]?.name !== 'Secret Ada') throw new Error('secret-backed configuration failed round trip')
+  if (JSON.stringify(process.env) !== inherited) throw new Error('.env mutated host process.env')
+  console.log(JSON.stringify({ ok: true, id }))
+} finally { await db.close() }
+`
+        const result = await run(['node', '--input-type=module', '-e', script])
+        expectSuccess('Node secret references', result)
+        const { id } = JSON.parse(result.stdout)
+        const document = await readFile(
+            path.join(root, '.collections', 'users', 'docs', id.slice(-1), id + '.json'),
+            'utf8'
+        )
+        expect(document).not.toContain('Secret Ada')
+        expect(result.stderr).not.toContain('interop-local-secret-at-least-thirty-two-bytes')
+
+        // A referenced deployment secret overrides the adjacent .env value.
+        await writeFile(
+            path.join(root, '.env'),
+            ['FYLO_INTEROP_SECRET=wrong-secret', 'FYLO_INTEROP_SALT=wrong-salt', ''].join('\n')
+        )
+        const reopen = `
+import { Fylo } from ${JSON.stringify(path.join(shimRoot, 'node', 'fylo.mjs'))}
+const db = new Fylo(${JSON.stringify(root)}, {
+  binary: ${JSON.stringify(binaryPath)}, config: ${JSON.stringify(config)},
+})
+try {
+  const doc = await db.getLatest('users', ${JSON.stringify(id)})
+  if (doc[${JSON.stringify(id)}]?.name !== 'Secret Ada') throw new Error('injected secret did not take precedence')
+  console.log(JSON.stringify({ ok: true }))
+} finally { await db.close() }
+`
+        const reopened = await run(['node', '--input-type=module', '-e', reopen], {
+            env: {
+                FYLO_INTEROP_SECRET: 'interop-local-secret-at-least-thirty-two-bytes',
+                FYLO_INTEROP_SALT: 'local-file-salt'
+            }
+        })
+        expectSuccess('Node injected secret precedence', reopened)
+        expect(JSON.parse(reopened.stdout)).toEqual({ ok: true })
+    })
 
     test.skipIf(process.platform === 'win32' || !process.getuid)(
         'Node shim applies trusted virtual-group access to documents and raw files (#68)',
@@ -796,9 +811,11 @@ end
         expect(parsed.found[parsed.id].name).toBe('Ada')
     })
 
-    test('Ruby shim can remove an inherited variable from its FYLO child', async () => {
+    test('Ruby shim forwards application configuration and ignores legacy setting variables', async () => {
         await requireCommand('ruby')
-        const root = await tempRoot('fylo-ruby-env-unset-')
+        const root = await tempRoot('fylo-ruby-config-')
+        const config = path.join(root, 'application.json')
+        await writeFile(config, JSON.stringify({ fylo: { shard: { width: 2 } } }))
         const script = `
 $LOAD_PATH.unshift(${JSON.stringify(path.join(shimRoot, 'ruby'))})
 require 'fylo'
@@ -807,14 +824,14 @@ require 'json'
 db = Fylo.new(
   ${JSON.stringify(root)},
   binary: ${JSON.stringify(binaryPath)},
-  env: { 'FYLO_SHARD_WIDTH' => nil }
+  config: ${JSON.stringify(config)}
 )
 begin
   db.create_collection('users')
-  id = db.put_data('users', { 'source' => 'ruby-unset' })
+  id = db.put_data('users', { 'source' => 'ruby-config' })
   docs = File.join(${JSON.stringify(root)}, '.collections', 'users', 'docs')
   puts JSON.generate({
-    one: File.exist?(File.join(docs, id[-1], id + '.json')),
+    two: File.exist?(File.join(docs, id[-2, 2], id + '.json')),
     four: File.exist?(File.join(docs, id[-4, 4], id + '.json'))
   })
 ensure
@@ -824,7 +841,7 @@ end
         const result = await run(['ruby', '-e', script], {
             env: { FYLO_SHARD_WIDTH: '4' }
         })
-        expectSuccess('Ruby child environment removal', result)
-        expect(JSON.parse(result.stdout)).toEqual({ one: true, four: false })
+        expectSuccess('Ruby application configuration', result)
+        expect(JSON.parse(result.stdout)).toEqual({ two: true, four: false })
     })
 })

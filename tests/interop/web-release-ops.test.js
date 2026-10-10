@@ -1110,9 +1110,8 @@ describe('web release operations', () => {
         await execFileAsync('bun', ['run', 'bundle'], { cwd: path.join(root, 'website') })
 
         const homepage = await Bun.file(path.join(root, 'website/dist/web/index.html')).text()
-        const islands = await Bun.file(
-            path.join(root, 'website/dist/web/.tachyon/islands.js')
-        ).text()
+        const legacyRuntime = Bun.file(path.join(root, 'website/dist/web/.tachyon/islands.js'))
+        const clientRuntime = Bun.file(path.join(root, 'website/dist/web/.tachyon/tac-client.js'))
         const serviceWorker = await Bun.file(
             path.join(root, 'website/dist/web/tachyon-sw.js')
         ).text()
@@ -1120,11 +1119,21 @@ describe('web release operations', () => {
             path.join(root, 'website/dist/web/.tachyon/register-sw.js')
         ).text()
         const ownershipGuard = "marker.closest('tachyon-island') !== root"
-        expect(islands.split(ownershipGuard)).toHaveLength(2)
+        if (await legacyRuntime.exists()) {
+            expect((await legacyRuntime.text()).split(ownershipGuard)).toHaveLength(2)
+        } else {
+            expect(await clientRuntime.exists()).toBe(true)
+            const source = await clientRuntime.text()
+            expect(source).toContain("document.getElementById('tachyon-view')")
+            expect(source).toContain('const componentRecords = new Map()')
+            expect(source).toContain('const ownedEnvironment =')
+            expect(source).not.toContain('tachyon-expr[data-tachyon-expression]')
+        }
         expect(homepage.split('/shared/scripts/imports.js')).toHaveLength(2)
-        expect(serviceWorker).toContain('event.respondWith(fromNetwork(request))')
+        expect(serviceWorker).toContain('event.respondWith(fromNetwork(request, asset))')
         expect(serviceWorker).not.toContain('cacheFirst')
-        expect(serviceWorker).not.toContain('async function fromCache')
+        expect(serviceWorker).toContain('async function cacheRead(request, asset)')
+        expect(serviceWorker).toContain('matchesAsset')
         expect(serviceWorker).toContain('url.origin !== self.location.origin')
         expect(serviceWorker).toContain("url.pathname.startsWith('/.tachyon/live-reload')")
         expect(serviceWorker).toContain('name.startsWith(PREFIX) && name !== CACHE')
@@ -1171,9 +1180,19 @@ describe('web release operations', () => {
             const html = await Bun.file(path.join(root, 'website/dist/web', relative)).text()
             const inlineScripts = [...html.matchAll(/<script(?![^>]*\bsrc=)([^>]*)>/g)]
             expect(inlineScripts.length).toBeGreaterThan(0)
-            expect(inlineScripts.every((match) => /\btype="speculationrules"/.test(match[1]))).toBe(
-                true
+            const renderPlans = inlineScripts.filter(
+                (match) =>
+                    /\bid="tachyon-view"/.test(match[1]) &&
+                    /\btype="application\/json"/.test(match[1]) &&
+                    /\bdata-tachyon-runtime(?:\s|>|$)/.test(match[1])
             )
+            expect(renderPlans).toHaveLength(1)
+            expect(
+                inlineScripts.every(
+                    (match) =>
+                        renderPlans.includes(match) || /\btype="speculationrules"/.test(match[1])
+                )
+            ).toBe(true)
             expect(html).not.toMatch(/\son[a-z]+=/i)
             expect(html).not.toMatch(/\sstyle=/i)
             for (const match of html.matchAll(/<style>([\s\S]*?)<\/style>/g)) {
@@ -1198,28 +1217,33 @@ describe('web release operations', () => {
         const listeners = new Map()
         const stored = new Map()
         const keyFor = (request) => (typeof request === 'string' ? request : request.url)
-        const response = (body) => ({
-            ok: true,
-            type: 'basic',
-            clone: () => response(body),
-            text: async () => body
-        })
         const cache = {
-            match: async (request) => stored.get(keyFor(request)),
-            put: async (request, value) => stored.set(keyFor(request), value)
+            match: async (request) => stored.get(keyFor(request))?.clone(),
+            put: async (request, value) => stored.set(keyFor(request), value.clone()),
+            delete: async (request) => stored.delete(keyFor(request)),
+            keys: async () => [...stored.keys()].map((url) => new Request(url))
         }
         const pageUrl = 'https://fylo.example/'
         const runtimeUrl = 'https://fylo.example/shared/scripts/imports.js'
         const networkBodies = new Map([
-            [pageUrl, 'new-page'],
-            [runtimeUrl, 'new-runtime']
+            [pageUrl, await Bun.file(path.join(root, 'website/dist/web/index.html')).text()],
+            [
+                runtimeUrl,
+                await Bun.file(path.join(root, 'website/dist/web/shared/scripts/imports.js')).text()
+            ]
         ])
-        stored.set(pageUrl, response('old-page'))
-        stored.set(runtimeUrl, response('old-runtime'))
+        stored.set(pageUrl, new Response('old-page'))
+        stored.set(runtimeUrl, new Response('old-runtime'))
         let online = true
         let networkRequests = 0
         runInNewContext(source, {
             URL,
+            Request,
+            Response,
+            Headers,
+            crypto: globalThis.crypto,
+            setTimeout,
+            clearTimeout,
             caches: {
                 keys: async () => [],
                 delete: async () => true,
@@ -1228,7 +1252,7 @@ describe('web release operations', () => {
             fetch: async (request) => {
                 networkRequests++
                 if (!online) throw new Error('offline')
-                return response(networkBodies.get(keyFor(request)))
+                return new Response(networkBodies.get(keyFor(request)))
             },
             self: {
                 location: { origin: 'https://fylo.example' },
@@ -1243,17 +1267,17 @@ describe('web release operations', () => {
             listeners.get('fetch')({ request, respondWith: (promise) => (result = promise) })
             return result
         }
-        const pageRequest = { method: 'GET', mode: 'navigate', url: pageUrl }
-        const runtimeRequest = { method: 'GET', mode: 'cors', url: runtimeUrl }
-        expect(await (await dispatch(pageRequest)).text()).toBe('new-page')
-        expect(await (await dispatch(runtimeRequest)).text()).toBe('new-runtime')
+        const pageRequest = new Request(pageUrl)
+        const runtimeRequest = new Request(runtimeUrl)
+        expect(await (await dispatch(pageRequest)).text()).toBe(networkBodies.get(pageUrl))
+        expect(await (await dispatch(runtimeRequest)).text()).toBe(networkBodies.get(runtimeUrl))
         expect(networkRequests).toBe(2)
-        expect(await stored.get(pageUrl).text()).toBe('new-page')
-        expect(await stored.get(runtimeUrl).text()).toBe('new-runtime')
+        expect(await stored.get(pageUrl).clone().text()).toBe(networkBodies.get(pageUrl))
+        expect(await stored.get(runtimeUrl).clone().text()).toBe(networkBodies.get(runtimeUrl))
 
         online = false
-        expect(await (await dispatch(pageRequest)).text()).toBe('new-page')
-        expect(await (await dispatch(runtimeRequest)).text()).toBe('new-runtime')
+        expect(await (await dispatch(pageRequest)).text()).toBe(networkBodies.get(pageUrl))
+        expect(await (await dispatch(runtimeRequest)).text()).toBe(networkBodies.get(runtimeUrl))
         expect(networkRequests).toBe(4)
     })
 
@@ -1325,12 +1349,13 @@ describe('web release operations', () => {
         expect(build).toContain("readFile(new URL('../.bun-version'")
         expect(build).toContain("readFile(new URL('../rust-toolchain.toml'")
         expect(build).toContain("'--locked'")
-        expect(vendorInstaller).toContain("TACHYON_VERSION='v26.33.01'")
+        expect(vendorInstaller).toContain("TACHYON_VERSION='v26.33.02'")
         expect(websitePackage.scripts.bundle).toContain('ty bundle')
         expect(websitePackage.scripts.bundle).toContain('patch-tachyon-runtime.mjs')
         expect(tachyonPatch).toContain("marker.closest('tachyon-island') !== root")
-        expect(tachyonPatch).toContain('refusing to apply the 26.33.01 nested-island patch')
-        expect(tachyonPatch).toContain('refusing to apply the 26.33.01 network-first patch')
+        expect(tachyonPatch).toContain("path.join(web, '.tachyon', 'tac-client.js')")
+        expect(tachyonPatch).toContain('refusing to apply the supported nested-island patch')
+        expect(tachyonPatch).toContain('refusing to apply the supported network-first patch')
         expect(tachyonPatch).toContain('/shared/scripts/imports.js')
         expect(explorerPackage.scripts.bundle).toContain('@d31ma/tachyon/src/cli/index.js bundle')
         expect(websitePackage.devDependencies?.['@d31ma/tachyon']).toBeUndefined()
@@ -1367,12 +1392,14 @@ describe('web release operations', () => {
             expect(policy).toContain('key: Permissions-Policy')
             expect(policy).toContain('key: Content-Security-Policy')
             expect(policy).toContain("script-src 'self' 'inline-speculation-rules'")
-            expect(policy).toContain("style-src 'self' 'sha256-")
+            expect(policy).toContain("style-src 'self'")
             expect(policy).not.toContain("'unsafe-inline'")
             expect(policy).toContain('value: no-cache, must-revalidate')
         }
         expect(transitionPolicy).toContain("'unsafe-eval'")
         expect(finalPolicy).not.toContain("'unsafe-eval'")
+        expect(transitionPolicy).toContain("style-src 'self' 'sha256-")
+        expect(finalPolicy).not.toContain("style-src 'self' 'sha256-")
         expect(transitionPolicy).toContain("'sha256-BFiBhqPWHJntZh+bkcvub23pJ3N2o+3u+92sBneTe5g='")
         expect(finalPolicy).not.toContain("'sha256-BFiBhqPWHJntZh+bkcvub23pJ3N2o+3u+92sBneTe5g='")
         const transitionLines = transitionPolicy.split('\n')

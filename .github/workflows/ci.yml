@@ -115,8 +115,19 @@ jobs:
                   rustup component add llvm-tools-preview --toolchain "$toolchain"
                   bun ./scripts/run-rust.mjs cargo install cargo-llvm-cov --version 0.8.6 --locked
 
+            - name: Enforce registered unique-cause MC/DC proofs
+              run: bun run rust:mcdc
+
             - name: Enforce the measured whole-workspace coverage floor
               run: bun run rust:coverage
+
+            - name: Retain machine-readable MC/DC evidence
+              uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+              with:
+                  name: rust-mcdc-${{ github.sha }}
+                  path: target/mcdc/report.json
+                  if-no-files-found: error
+                  retention-days: 90
 
             - name: Retain machine-readable coverage evidence
               uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

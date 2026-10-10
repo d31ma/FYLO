@@ -3,6 +3,84 @@ import { createMemoryFilesystem } from '../../src/browser/core/memory-filesystem
 import { BrowserCore } from '../../src/browser/core/engine.js'
 
 describe('BrowserPrefixIndex', () => {
+    test('equality and contains preserve loose numeric, null, and container matches', async () => {
+        const fs = createMemoryFilesystem()
+        const fylo = new BrowserCore({ fs, root: '/' })
+        await fylo.users.create()
+        const documents = new Map()
+        for (const document of [
+            { score: 1 },
+            { score: '1' },
+            { score: '01' },
+            { score: true },
+            { score: null },
+            {},
+            { score: 0 },
+            { score: -0 },
+            { score: '' },
+            { score: ' ' },
+            { score: false },
+            { score: [] },
+            { score: [null] },
+            { score: ['1'] },
+            { score: ['01'] },
+            { score: ['a', 'b'] },
+            { score: {} },
+            { score: 'Ada' }
+        ]) {
+            documents.set(await fylo.users.put(document), document)
+        }
+        for (const value of [
+            1,
+            '1',
+            '01',
+            true,
+            null,
+            0,
+            -0,
+            '',
+            ' ',
+            false,
+            'a,b',
+            '[object Object]',
+            'Ada'
+        ]) {
+            const expected = [...documents]
+                .filter(([, document]) => document.score == value)
+                .map(([id]) => id)
+                .sort()
+            const actual = await collect(fylo, { $ops: [{ score: { $eq: value } }] })
+            expect(Object.keys(actual).sort()).toEqual(expected)
+            const containsExpected = [...documents]
+                .filter(
+                    ([, document]) =>
+                        Array.isArray(document.score) &&
+                        document.score.some((item) => item == value)
+                )
+                .map(([id]) => id)
+                .sort()
+            const containsActual = await collect(fylo, { $ops: [{ score: { $contains: value } }] })
+            expect(Object.keys(containsActual).sort()).toEqual(containsExpected)
+        }
+        await fylo.close()
+    })
+
+    test('combines loose contains fallback with an indexed conjunct', async () => {
+        const fylo = new BrowserCore({ fs: createMemoryFilesystem(), root: '/' })
+        await fylo.users.create()
+        const included = await fylo.users.put({ values: ['01'], name: 'Included' })
+        await fylo.users.put({ values: ['01'], name: 'Excluded' })
+        await fylo.users.put({ values: [2], name: 'Included' })
+        expect(
+            Object.keys(
+                await collect(fylo, {
+                    $ops: [{ values: { $contains: 1, $ne: 0 }, name: { $like: 'Incl%' } }]
+                })
+            )
+        ).toEqual([included])
+        await fylo.close()
+    })
+
     test('stores server-compatible manifest, snapshot, and WAL files', async () => {
         const fs = createMemoryFilesystem()
         const fylo = new BrowserCore({ fs, root: '/' })

@@ -2,7 +2,7 @@ const TITLE = 'Schemas & migrations — FYLO'
 document.title = TITLE
 
 export default class {
-    layoutCode = `<FYLO_SCHEMA>/
+    layoutCode = `<fylo.schema>/
   <collection>/
     manifest.json          # { current, versions: [{ v, sha256?, addedAt? }] }
     history/

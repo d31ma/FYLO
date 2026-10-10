@@ -59,6 +59,10 @@ describe('Rust CI qualification contract', () => {
         expect(workflow).toContain('coverage:')
         expect(workflow).toContain('cargo-llvm-cov --version 0.8.6 --locked')
         expect(workflow).toContain('target/coverage.lcov')
+        expect(manifest.scripts['rust:mcdc']).toBe('bun ./scripts/verify-rust-mcdc.mjs')
+        expect(workflow).toContain('bun run rust:mcdc')
+        expect(workflow).toContain('name: rust-mcdc-${{ github.sha }}')
+        expect(workflow).toContain('target/mcdc/report.json')
         expect(manifest.scripts['rust:coverage']).toContain('--fail-under-lines 50')
         expect(manifest.scripts['rust:coverage']).toContain('--fail-under-functions 43')
         expect(manifest.scripts['rust:coverage']).toContain('--fail-under-regions 48')
@@ -67,6 +71,27 @@ describe('Rust CI qualification contract', () => {
         expect(workflow).toContain('cargo-auditable --version 0.7.0 --locked')
         expect(workflow).toContain('cargo cyclonedx --all --format json')
         expect(workflow).toContain('cargo auditable build')
+    })
+
+    test('MC/DC qualification is source-linked, fail-closed, and explicitly scoped', async () => {
+        const [manifest, verifier, guide] = await Promise.all([
+            Bun.file('tests/mcdc/decisions.json').json(),
+            Bun.file('scripts/verify-rust-mcdc.mjs').text(),
+            Bun.file('docs/operations/mcdc-qualification.md').text()
+        ])
+
+        expect(manifest.criterion).toBe('unique-cause-mcdc')
+        expect(manifest.scope).toContain('not whole-core')
+        expect(manifest.decisions).toHaveLength(6)
+        expect(
+            manifest.decisions.reduce((sum, decision) => sum + decision.conditions.length, 0)
+        ).toBe(27)
+        expect(new Set(manifest.decisions.map(({ id }) => id)).size).toBe(6)
+        expect(verifier).toContain('another condition changed in the independence pair')
+        expect(verifier).toContain('compiled MC/DC proof tests')
+        expect(verifier).toContain('emitted MC/DC proof files')
+        expect(guide).toContain('Fylo does not yet match SQLite')
+        expect(guide).toContain('100% branch and MC/DC coverage of its core')
     })
 
     test('scheduled qualification exercises memory and concurrency sanitizers', async () => {

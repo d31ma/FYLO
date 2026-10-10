@@ -1,0 +1,89 @@
+<section class="home-section home-example" aria-labelledby="example-heading">
+    <div class="w-container w-container--xl">
+        <div class="home-section-heading">
+            <p class="home-kicker">A familiar API. Your own files.</p>
+            <h2 id="example-heading">Start with a document.</h2>
+            <p>Write, query, and version your data from the language you already use.</p>
+        </div>
+        <div class="home-example-panel">
+            <div class="home-panel-label">
+                <span>01 / Write your first document</span
+                ><a href="/docs/clients">Client setup →</a>
+            </div>
+            <docs-sample topic="first-write" hydrate="load" />
+        </div>
+        <p class="home-example-note">
+            Native clients call the Rust binary. Browser and mobile clients run locally on-device.
+            <a href="/docs/browser">Explore the differences →</a>
+        </p>
+    </div>
+</section>
+
+<section class="home-section" aria-labelledby="config-heading">
+    <div class="w-container w-container--xl home-config-grid">
+        <div class="home-config-copy">
+            <p class="home-kicker">Explicit configuration</p>
+            <h2 id="config-heading">Settings in JSON.<br />Secrets stay separate.</h2>
+            <p>
+                Configure the native engine in <code>application.json</code>. Everything lives under
+                <code>fylo</code>, with nested keys for related settings.
+            </p>
+            <p>
+                Keep only secrets in an adjacent <code>.env</code> file or your secret manager.
+                Reference them from JSON; environment variables no longer implicitly configure FYLO.
+            </p>
+            <a class="home-text-link" href="/docs/operations">Read the configuration guide →</a>
+        </div>
+        <div class="home-config-panel">
+            <div class="home-panel-label">
+                <span>02 / application.json</span><span class="home-panel-tag">Native engine</span>
+            </div>
+            <pre class="code-block"><code>&#123;
+  "fylo": &#123;
+    "root": "./data",
+    "shard": &#123; "width": 1 &#125;,
+    "encryption": &#123;
+      "key": "$&#123;FYLO_ENCRYPTION_KEY&#125;"
+    &#125;,
+    "cipher": &#123;
+      "salt": "$&#123;FYLO_CIPHER_SALT&#125;"
+    &#125;
+  &#125;
+&#125;</code></pre>
+            <p class="home-config-note">
+                Encryption is optional. Omit both <code>encryption</code> and <code>cipher</code> if
+                you do not need it.
+            </p>
+        </div>
+    </div>
+</section>
+
+<section class="home-section home-next" aria-labelledby="next-heading">
+    <div class="w-container w-container--xl">
+        <div class="home-section-heading">
+            <p class="home-kicker">Go a little deeper</p>
+            <h2 id="next-heading">A clear path from here.</h2>
+        </div>
+        <div class="home-guide-grid">
+            <a class="home-guide" href="/docs"
+                ><span>Get started</span>
+                <h3>From install to first query <span aria-hidden="true">↗</span></h3>
+                <p>Install the binary, add a client, and see what lands on disk.</p></a
+            >
+            <a class="home-guide" href="/docs/querying"
+                ><span>Understand the engine</span>
+                <h3>Queries and indexes <span aria-hidden="true">↗</span></h3>
+                <p>SQL, structured queries, and the access paths behind each operation.</p></a
+            >
+            <a class="home-guide" href="/docs/queue"
+                ><span>Build background work</span>
+                <h3>A queue beside your data <span aria-hidden="true">↗</span></h3>
+                <p>Topics, consumer groups, leases, retries, and bounded consumers.</p></a
+            >
+        </div>
+        <p class="home-boundaries">
+            Know the tradeoffs before you build.
+            <a href="/docs/limitations">Read FYLO’s limitations →</a>
+        </p>
+    </div>
+</section>

@@ -1,3 +1,4 @@
+import { CargoArtifacts } from './cargo-artifacts.mjs'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { platform, tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -22,9 +23,7 @@ try {
     }
     const binary = process.env.FYLO_RUST_BINARY
         ? resolve(process.env.FYLO_RUST_BINARY)
-        : join(
-              process.cwd(),
-              'target',
+        : CargoArtifacts.path(
               'debug',
               platform() === 'win32' ? 'fylo-rust.exe' : 'fylo-rust'
           )

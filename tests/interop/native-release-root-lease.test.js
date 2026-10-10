@@ -17,8 +17,10 @@ const expectedTarget =
 const roots = []
 
 class ReleaseLoop {
-    constructor(root, env = {}) {
-        this.child = spawn(binary, ['exec', '--loop', '--root', root, '--exclusive-root'], {
+    constructor(root, env = {}, config) {
+        const args = ['exec', '--loop', '--root', root, '--exclusive-root']
+        if (config) args.push('--config', config)
+        this.child = spawn(binary, args, {
             stdio: ['pipe', 'pipe', 'pipe'],
             env: { ...process.env, ...env }
         })
@@ -234,10 +236,9 @@ describe.skipIf(!required)('exact native release root lease', () => {
             )
             await chmod(validator, 0o755)
 
-            const loop = new ReleaseLoop(root, {
-                FYLO_CHEX_BINARY: validator,
-                FYLO_CHEX_PID_FILE: pidFile
-            })
+            const config = path.join(root, 'application.json')
+            await writeFile(config, JSON.stringify({ fylo: { chex: { binary: validator } } }))
+            const loop = new ReleaseLoop(root, { FYLO_CHEX_PID_FILE: pidFile }, config)
             const response = await loop.request({
                 op: 'schemaValidate',
                 collection: 'messages',
