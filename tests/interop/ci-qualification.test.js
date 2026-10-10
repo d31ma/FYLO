@@ -13,7 +13,12 @@ describe('Rust CI qualification contract', () => {
         expect(workflow).toContain('miri:')
         expect(workflow).toContain('rust:crash:matrix')
         expect(workflow).toContain('run-rust-soak.mjs --iterations 100')
-        expect(workflow).toContain('browser: [chromium, firefox, webkit]')
+        for (const browser of ['chromium', 'firefox']) {
+            expect(workflow).toContain(
+                `- browser: ${browser}\n                      os: ubuntu-24.04`
+            )
+        }
+        expect(workflow).toContain('- browser: webkit\n                      os: macos-15')
         expect(workflow).toContain('windows-2022')
         expect(workflow).toContain('windows-2025')
     })

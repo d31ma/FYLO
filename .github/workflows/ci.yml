@@ -357,12 +357,20 @@ jobs:
 
     browser:
         name: Browser Wasm and OPFS (${{ matrix.browser }})
-        runs-on: ubuntu-24.04
+        runs-on: ${{ matrix.os }}
         timeout-minutes: 30
         strategy:
             fail-fast: false
             matrix:
-                browser: [chromium, firefox, webkit]
+                include:
+                    - browser: chromium
+                      os: ubuntu-24.04
+                    - browser: firefox
+                      os: ubuntu-24.04
+                    # Linux WebKit builds expose no navigator.storage, so OPFS
+                    # cannot run there; the Safari engine is qualified on macOS.
+                    - browser: webkit
+                      os: macos-15
 
         steps:
             - name: Checkout
