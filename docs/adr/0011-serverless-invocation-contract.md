@@ -82,6 +82,20 @@ cleanup or unlock uncertainty returns an error without completed response bytes.
 Always attempt checked teardown after an admitted request, including execution
 or response-encoding errors. No automatic mutation replay is added.
 
+A root held by another invocation is waited for, with backoff up to 200 ms,
+until the work budget reaches its cleanup reserve; the lock error is returned
+only then, before any mutation. Concurrent provider invocations therefore
+serialize instead of failing at once.
+
+`putData` requires a caller-chosen `id`. An invocation can fail after its
+mutation committed (an exhausted budget, an oversized response or a lost
+reply), so callers must be able to retry. With a caller-chosen identifier a
+retried create is refused as already existing rather than duplicated; the
+caller then reads the record with its own credentials to confirm the earlier
+attempt. Updates that set fields (`patchDoc`, `setMeta`) are idempotent when
+retried with the same values. Deletes, restores and SQL statements are not
+retry-safe and need their own reconciliation by the caller.
+
 ## Limits
 
 Deadline checks are cooperative. They do not preempt blocking filesystem I/O,

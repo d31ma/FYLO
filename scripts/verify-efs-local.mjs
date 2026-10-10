@@ -188,7 +188,7 @@ async function lambdaSmoke() {
             '--file-system-configs', `Arn=${accessPoint},LocalMountPath=/mnt/state`,
             '--environment', 'Variables={FYLO_ROOT=/mnt/state}')
         const invoke = async (request) => {
-            const out = join(context, 'response.json')
+            const out = join(context, `response-${crypto.randomUUID()}.json`)
             await aws('lambda', 'invoke', '--function-name', NAME, '--cli-binary-format', 'raw-in-base64-out',
                 '--payload', JSON.stringify(request), out)
             return JSON.parse(await readFile(out, 'utf8'))
@@ -205,6 +205,14 @@ async function lambdaSmoke() {
         }
         assert(responses.at(-1).outcome.result['4VRNF52JPCO']?.name === 'Ada',
             'a Lambda write was not readable by the next invocation')
+        // Concurrent invocations serialize on the root instead of failing.
+        const concurrent = await Promise.all(['4VRNF52JPCP', '4VRNF52JPCQ'].map((id) =>
+            invoke({ op: 'putData', collection: 'records', id, data: { name: id } })))
+        assert(concurrent.every((response) => response.outcome?.ok === true),
+            `concurrent Lambda writes did not both commit: ${JSON.stringify(concurrent)}`)
+        const retried = await invoke({ op: 'putData', collection: 'records', id: '4VRNF52JPCO', data: { name: 'Ada' } })
+        assert(retried.outcome?.ok === false && /already exists/.test(retried.outcome?.error?.message),
+            `a retried create was not refused as existing: ${JSON.stringify(retried)}`)
         console.log(`Lambda warm getDoc ${responses.at(-1).elapsedMs} ms, peak RSS ${responses.at(-1).peakRssKb} kB`)
     } finally {
         await docker(['rm', '-f', ...(await docker(['ps', '-aq', '--filter', 'name=floci-'], { quiet: true })).stdout.split(/\s+/).filter(Boolean)],

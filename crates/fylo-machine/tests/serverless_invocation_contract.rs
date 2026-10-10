@@ -478,10 +478,24 @@ fn checked_invocation_completion_releases_the_root_before_success_or_domain_erro
 #[test]
 fn a_contending_owner_prevents_recovery_and_mutation_but_does_not_poison_the_runtime() {
     let fixture = Fixture::new();
-    let runtime = fixture.runtime(FilesystemProfile::Native);
+    // A contended invocation waits for the root until its budget runs out, so
+    // this one gets a short budget; the next provider call gets a fresh one.
+    let contended = InvocationRuntime::new(
+        InvocationOptions::new(
+            fixture.options(FilesystemProfile::Native),
+            ApplicationConfig::default(),
+            FrameLimits::default(),
+            (
+                Instant::now() + Duration::from_millis(400),
+                Duration::from_millis(100),
+            ),
+        )
+        .unwrap(),
+    )
+    .unwrap();
     let lease = RootLease::acquire(&fixture.root).unwrap();
     let before = snapshot(&fixture.parent);
-    let outcome = runtime.execute(&frame(
+    let outcome = contended.execute(&frame(
         &json!({"op":"createCollection","collection":"records"}),
     ));
     if let Ok(response) = outcome {
@@ -494,7 +508,7 @@ fn a_contending_owner_prevents_recovery_and_mutation_but_does_not_poison_the_run
     lease.assert_owned().unwrap();
     lease.release_checked().unwrap();
     success(
-        &runtime,
+        &fixture.runtime(FilesystemProfile::Native),
         &json!({"op":"createCollection","collection":"records"}),
     );
     fixture.assert_released(FilesystemProfile::Native);
@@ -744,14 +758,28 @@ fn an_uncertain_response_after_mutation_does_not_automatically_replay_the_operat
             max_response_bytes: 1,
         },
     );
-    // No caller identifier: an automatic replay would create another document.
-    assert!(
-        tiny.execute(&frame(
-            &json!({"op":"putData","collection":"records","data":{"name":"one mutation"}})
+    // No caller identifier: a retry would create another document, so the
+    // create is refused before anything is written.
+    let refused = normal
+        .execute(&frame(
+            &json!({"op":"putData","collection":"records","data":{"name":"no id"}}),
         ))
-        .is_err()
-    );
+        .unwrap_err();
+    assert_eq!(refused.kind(), std::io::ErrorKind::InvalidInput);
+    // With an identifier, the uncertain first attempt committed and the
+    // caller's retry is refused as existing instead of duplicated.
+    let create =
+        json!({"op":"putData","collection":"records","id":ID,"data":{"name":"one mutation"}});
+    assert!(tiny.execute(&frame(&create)).is_err());
     fixture.assert_released(FilesystemProfile::Native);
+    let retry = execute(&normal, &create);
+    assert_eq!(retry["ok"], false);
+    assert!(
+        retry["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("already exists")
+    );
     let response = success(
         &normal,
         &json!({"op":"findDocs","collection":"records","query":{}}),
@@ -759,6 +787,48 @@ fn an_uncertain_response_after_mutation_does_not_automatically_replay_the_operat
     let records = response["result"].as_object().unwrap();
     assert_eq!(records.len(), 1);
     assert_eq!(records.values().next().unwrap()["name"], "one mutation");
+}
+
+#[test]
+fn a_concurrent_invocation_waits_for_the_root_within_its_budget() {
+    let fixture = Fixture::new();
+    let runtime = fixture.runtime(FilesystemProfile::Native);
+    success(
+        &runtime,
+        &json!({"op":"createCollection","collection":"records"}),
+    );
+    let holder = RootLease::acquire(&fixture.root).unwrap();
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(300));
+        holder.release_checked().unwrap();
+    });
+    success(
+        &runtime,
+        &json!({"op":"putData","collection":"records","id":ID,"data":{"name":"waited"}}),
+    );
+    release.join().unwrap();
+    // A budget that ends while the root is still held returns the lock error.
+    let holder = RootLease::acquire(&fixture.root).unwrap();
+    let short = InvocationRuntime::new(
+        InvocationOptions::new(
+            fixture.options(FilesystemProfile::Native),
+            ApplicationConfig::default(),
+            FrameLimits::default(),
+            (
+                Instant::now() + Duration::from_millis(400),
+                Duration::from_millis(100),
+            ),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let error = short
+        .execute(&frame(
+            &json!({"op":"getDoc","collection":"records","id":ID}),
+        ))
+        .unwrap_err();
+    assert!(error.to_string().contains("EROOTLOCKED"), "{error}");
+    holder.release_checked().unwrap();
 }
 
 #[test]

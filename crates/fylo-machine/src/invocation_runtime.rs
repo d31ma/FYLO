@@ -1,6 +1,7 @@
 use std::io;
+use std::time::{Duration, Instant};
 
-use fylo_storage_native::RootLease;
+use fylo_storage_native::{NativeStorageErrorCode, RootLease};
 use serde_json::Value;
 
 use crate::{InvocationOptions, StrictValue};
@@ -33,9 +34,7 @@ impl InvocationRuntime {
         InvocationOptions::check_work_budget(self.options.budget())?;
         let request = self.prepare_request(frame)?;
         InvocationOptions::check_work_budget(self.options.budget())?;
-        let root = self.options.root();
-        let lease = RootLease::acquire_with_profile(root.root(), root.filesystem_profile())
-            .map_err(|error| Self::storage_error(&error))?;
+        let lease = self.acquire_lease()?;
         // Retain every inner result until all private owning handles are gone.
         let result = self.execute_owned(&lease, &request);
         lease
@@ -43,6 +42,33 @@ impl InvocationRuntime {
             .map_err(|error| Self::storage_error(&error))?;
         self.options.check_completion_deadline()?;
         result
+    }
+
+    /// Wait for a root another invocation holds, within this budget.
+    ///
+    /// Concurrent provider invocations are normal, and refusing them at once
+    /// pushes every caller into its own retry loop. Waiting never extends past
+    /// the cleanup reserve; when the budget runs out the lock error is returned
+    /// and nothing was mutated.
+    fn acquire_lease(&self) -> io::Result<RootLease> {
+        let root = self.options.root();
+        let (deadline, reserve) = self.options.budget();
+        let mut pause = Duration::from_millis(10);
+        loop {
+            match RootLease::acquire_with_profile(root.root(), root.filesystem_profile()) {
+                Ok(lease) => return Ok(lease),
+                Err(error) if error.code() == NativeStorageErrorCode::RootLocked => {
+                    let usable = deadline
+                        .checked_duration_since(Instant::now())
+                        .and_then(|remaining| remaining.checked_sub(reserve))
+                        .filter(|usable| !usable.is_zero())
+                        .ok_or_else(|| Self::storage_error(&error))?;
+                    std::thread::sleep(pause.min(usable));
+                    pause = (pause * 2).min(Duration::from_millis(200));
+                }
+                Err(error) => return Err(Self::storage_error(&error)),
+            }
+        }
     }
 
     fn execute_owned(&self, lease: &RootLease, request: &Value) -> io::Result<Vec<u8>> {
@@ -82,6 +108,7 @@ impl InvocationRuntime {
         self.require_host_configuration(&request)?;
         Self::require_bounded_validation(&request)?;
         Self::require_supported_scope(&request)?;
+        Self::require_retry_safe_create(&request)?;
         // A verified alias uses the canonical private session default. This
         // also avoids acquiring a second native lease for its textual alias.
         if let Some(object) = request.as_object_mut() {
@@ -147,6 +174,23 @@ impl InvocationRuntime {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "this invocation slice excludes version/repository operations whose additional read sets are not qualified",
+            ));
+        }
+        Ok(())
+    }
+
+    /// An invocation can fail after its mutation committed (an exhausted budget
+    /// or an oversized response), so callers must be able to retry. A create
+    /// with a caller-chosen identifier is safe to retry: a repeat is refused
+    /// as already existing and nothing is duplicated. A server-allocated
+    /// identifier would create a second record on every retry.
+    fn require_retry_safe_create(request: &Value) -> io::Result<()> {
+        if request.get("op").and_then(Value::as_str) == Some("putData")
+            && request.get("id").is_none()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invocation creates need a caller-chosen id so a retry cannot create a duplicate",
             ));
         }
         Ok(())
