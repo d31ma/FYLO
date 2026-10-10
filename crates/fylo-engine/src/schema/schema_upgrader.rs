@@ -1,8 +1,8 @@
 use std::path::Path;
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(not(target_arch = "wasm32"))]
 use std::rc::Rc;
 
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(not(target_arch = "wasm32"))]
 use boa_engine::{
     Context, JsValue, Source, js_string,
     module::{Module, SimpleModuleLoader},
@@ -31,17 +31,18 @@ impl<'a> SchemaUpgrader<'a> {
         self.execute(&path, &source, document)
     }
 
-    /// The browser engine has no filesystem behind `std::fs`, so `source`
-    /// has already failed with the missing-upgrader error; this arm only keeps
-    /// the JavaScript runtime out of the module.
-    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    /// Neither Wasm artifact supports schema materialization (see
+    /// `docs/releases/artifact-matrix.md`), so neither links the JavaScript
+    /// runtime, which would otherwise be most of the module. In the browser
+    /// `source` has already failed with the missing-upgrader error.
+    #[cfg(target_arch = "wasm32")]
     fn execute(
         &self,
         _path: &Path,
         _source: &str,
         _document: &Map<String, Value>,
     ) -> Result<Map<String, Value>, String> {
-        Err(self.failed("the browser engine has no JavaScript upgrader runtime"))
+        Err(self.failed("Wasm builds have no JavaScript upgrader runtime"))
     }
 
     fn source(&self, path: &Path) -> Result<String, String> {
@@ -64,7 +65,7 @@ impl<'a> SchemaUpgrader<'a> {
     }
 }
 
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[cfg(not(target_arch = "wasm32"))]
 impl SchemaUpgrader<'_> {
     const LOOP_LIMIT: u64 = 10_000_000;
 
