@@ -448,3 +448,34 @@ fn validation_ignores_non_string_error_message() {
         "document does not match its schema"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn dropping_the_validator_ends_the_processes_it_started() {
+    let fixture = SchemaFixture::new();
+    fs::write(fixture.0.join("people.schema.json"), b"{}").unwrap();
+    let marker = fixture.0.join("descendant.pid");
+    // A long-lived grandchild that inherits the validator's pipes.
+    let tools = fixture.validator_script(&format!(
+        "sleep 300 &\necho $! > '{}'\nwhile IFS= read -r request; do\nprintf '%s\\n' '{{\"ok\":true,\"result\":{{}}}}'\ndone\n",
+        marker.display()
+    ));
+    tools
+        .validate_against_head("people", &Map::default())
+        .unwrap();
+    let descendant = fs::read_to_string(&marker).unwrap().trim().to_owned();
+    let alive = || {
+        std::process::Command::new("kill")
+            .args(["-0", &descendant])
+            .status()
+            .unwrap()
+            .success()
+    };
+    assert!(alive(), "the fixture's descendant did not start");
+    drop(tools);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while alive() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(!alive(), "validator teardown left its descendant running");
+}

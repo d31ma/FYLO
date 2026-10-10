@@ -41,7 +41,11 @@ impl Chex {
     }
 
     fn child(binary: &Path) -> Result<Child, String> {
-        Command::new(binary)
+        let mut command = Command::new(binary);
+        // Its own process group, so teardown can reach any process it starts.
+        #[cfg(unix)]
+        std::os::unix::process::CommandExt::process_group(&mut command, 0);
+        command
             .args(["exec", "--loop"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -91,6 +95,22 @@ impl Chex {
 
 impl Drop for Chex {
     fn drop(&mut self) {
+        // A validator's own children would otherwise outlive it and keep the
+        // inherited pipes open. End the whole tree, then reap the validator.
+        #[cfg(unix)]
+        if let Some(group) = i32::try_from(self.child.id())
+            .ok()
+            .and_then(rustix::process::Pid::from_raw)
+        {
+            let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
+        }
+        // Windows has no process groups to signal; `taskkill /T` ends the tree.
+        #[cfg(windows)]
+        let _ = Command::new("taskkill")
+            .args(["/T", "/F", "/PID", &self.child.id().to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
         let _ = self.child.kill();
         let _ = self.child.wait();
     }

@@ -20,6 +20,10 @@ serde_json.workspace = true
 sha2.workspace = true
 zeroize.workspace = true
 
+# A validator may start its own children; teardown ends its process group.
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["process"] }
+
 [target.'cfg(unix)'.dev-dependencies]
 xattr.workspace = true
 

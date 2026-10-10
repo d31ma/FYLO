@@ -634,6 +634,7 @@ dependencies = [
  "getrandom 0.4.3",
  "hmac",
  "pbkdf2",
+ "rustix",
  "serde",
  "serde_json",
  "sha2",
