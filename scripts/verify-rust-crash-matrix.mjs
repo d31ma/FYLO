@@ -21,9 +21,20 @@ const { values: options } = parseArgs({
     options: {
         'binary-dir': { type: 'string' },
         'skip-build': { type: 'boolean', default: false },
-        'filesystem-profile': { type: 'string', default: 'native' }
+        'filesystem-profile': { type: 'string', default: 'native' },
+        // EFS profile only: cases run in parallel, optionally split across clients.
+        concurrency: { type: 'string', default: '1' },
+        shard: { type: 'string', default: '0/1' },
+        // Hang guard per machine request; a network filesystem needs more.
+        'request-timeout-ms': { type: 'string', default: '10000' }
     }
 })
+const requestTimeout = Number(options['request-timeout-ms'])
+const concurrency = Number(options.concurrency)
+const [shard, shards] = options.shard.split('/').map(Number)
+if (!(concurrency >= 1) || !(shards >= 1) || !(shard >= 0 && shard < shards)) {
+    throw new Error('--concurrency must be >= 1 and --shard must be i/n with 0 <= i < n')
+}
 if (options['skip-build'] && !options['binary-dir']) {
     throw new Error('--skip-build requires --binary-dir pointing to freshly built binaries')
 }
@@ -737,7 +748,7 @@ async function withDeadline(promise, label) {
         return await Promise.race([
             promise,
             new Promise((_, reject) => {
-                timer = setTimeout(() => reject(new Error(label + ' timed out')), 10_000)
+                timer = setTimeout(() => reject(new Error(label + ' timed out')), requestTimeout)
             })
         ])
     } finally {
@@ -973,104 +984,124 @@ async function verifyEfsCrashScenarios(preview, workspace) {
     ]
     const reached = new Set()
     let interrupted = 0
-    for (const failpoint of failpoints) {
-        for (const scenario of scenarios) {
-            for (const action of ['abort', 'enospc', 'edquot']) {
-                const label = failpoint + '/' + scenario.name + '/' + action
-                const root = join(workspace, 'efs-' + failpoint + '-' + scenario.name + '-' + action)
-                const expectedRoot = root + '-reference'
-                await cloneRoot(source, root)
-                if (scenario.prepare) {
-                    await efsDatabase(root, (database) => requestRequired(database, scenario.prepare))
+    const runCase = async ({ failpoint, scenario, action }) => {
+        const label = failpoint + '/' + scenario.name + '/' + action
+        const root = join(workspace, 'efs-' + failpoint + '-' + scenario.name + '-' + action)
+        const expectedRoot = root + '-reference'
+        await cloneRoot(source, root)
+        if (scenario.prepare) {
+            await efsDatabase(root, (database) => requestRequired(database, scenario.prepare))
+        }
+        const before = await efsInventory(root)
+        await cloneRoot(root, expectedRoot)
+        await efsDatabase(expectedRoot, (database) =>
+            requestRequired(database, scenario.request)
+        )
+        const expectedAfter = await efsInventory(expectedRoot)
+        const writer = new EfsMachine(root, {
+            FYLO_RUST_FAILPOINT: failpoint, FYLO_RUST_FAILPOINT_ACTION: action
+        })
+        const started = Date.now()
+        let response
+        let crashed = false
+        try {
+            await requestRequired(writer, { op: 'handshake' })
+            try {
+                response = await writer.request(scenario.request)
+            } catch (error) {
+                await withDeadline(writer.exited, label + ' aborted process')
+                assert(action === 'abort' && writer.child.signalCode !== null,
+                    label + ': request failed without an injected process abort: ' + error)
+                crashed = true
+            }
+            if (!crashed && !response.ok) {
+                assert(response.error?.code !== 'ENATIVE_UNSUPPORTED',
+                    label + ': EFS required mutation was unsupported')
+                assert(action !== 'abort', label + ': abort returned an ordinary error')
+                if (action === 'enospc') {
+                    assert(/disk|space|full/i.test(response.error?.message),
+                        label + ': full-volume error lost its identity')
                 }
-                const before = await efsInventory(root)
-                await cloneRoot(root, expectedRoot)
-                await efsDatabase(expectedRoot, (database) =>
-                    requestRequired(database, scenario.request)
-                )
-                const expectedAfter = await efsInventory(expectedRoot)
-                const writer = new EfsMachine(root, {
-                    FYLO_RUST_FAILPOINT: failpoint, FYLO_RUST_FAILPOINT_ACTION: action
-                })
-                const started = Date.now()
-                let response
-                let crashed = false
-                try {
-                    await requestRequired(writer, { op: 'handshake' })
-                    try {
-                        response = await writer.request(scenario.request)
-                    } catch (error) {
-                        await withDeadline(writer.exited, label + ' aborted process')
-                        assert(action === 'abort' && writer.child.signalCode !== null,
-                            label + ': request failed without an injected process abort: ' + error)
-                        crashed = true
-                    }
-                    if (!crashed && !response.ok) {
-                        assert(response.error?.code !== 'ENATIVE_UNSUPPORTED',
-                            label + ': EFS required mutation was unsupported')
-                        assert(action !== 'abort', label + ': abort returned an ordinary error')
-                        if (action === 'enospc') {
-                            assert(/disk|space|full/i.test(response.error?.message),
-                                label + ': full-volume error lost its identity')
-                        }
-                        if (action === 'edquot') {
-                            assert(/quota/i.test(response.error?.message),
-                                label + ': quota error lost its identity')
-                        }
-                        // An orphan journal under a stable generation is not
-                        // recovery work: the next opener deletes it without
-                        // restoring anything, as the native gate's
-                        // `recovered === false` check also accepts.
-                        assert((await efsUnstableGenerations(root)).length === 0,
-                            label + ': failed live writer left recovery work: ' + response.error?.message)
-                        assert(sameInventory(await efsInventory(root), before),
-                            label + ': live rollback changed payload/metadata/native mode/time')
-                    }
-                } finally {
-                    await writer.close()
+                if (action === 'edquot') {
+                    assert(/quota/i.test(response.error?.message),
+                        label + ': quota error lost its identity')
                 }
-                const finished = Date.now()
-                if (!crashed && response.ok) {
-                    await rm(root, { recursive: true, force: true })
-                    await rm(expectedRoot, { recursive: true, force: true })
-                    continue
-                }
-                reached.add(failpoint)
-                interrupted++
-                const journals = await efsJournals(root)
-                if (crashed && ['before-commit-marker', 'after-commit-marker'].includes(failpoint)) {
-                    const phase = failpoint === 'after-commit-marker' ? 'committed' : 'active'
-                    assert(journals.some((journal) => journal.phase === phase),
-                        label + ': interrupted journal did not retain ' + phase + ' phase')
-                }
-                if (crashed && scenario.pairMove && pairPoints.includes(failpoint)) {
-                    assert(journals.some((journal) =>
-                        journal.captures.filter((capture) =>
-                            capture.path.endsWith('.fylo-attrs')
-                        ).length >= 2
-                    ), label + ': source and destination sidecars were not both captured')
-                }
-                await recoverEfs(root)
-                const recovered = await efsInventory(root)
-                const isBefore = sameInventory(recovered, before)
-                const isAfter = sameInventory(
-                    comparableInventory(recovered), comparableInventory(expectedAfter)
-                )
-                assert(isBefore || isAfter, label + ': recovery produced a mixed payload/metadata pair')
-                if (crashed && failpoint === 'before-commit-marker') {
-                    assert(isBefore, label + ': active journal did not restore complete before-images')
-                }
-                if (crashed && failpoint === 'after-commit-marker') {
-                    assert(isAfter, label + ': committed journal lost durable pair state')
-                }
-                if (!isBefore) assertCommittedTimes(before, recovered, started, finished, label)
-                await recoverEfs(root)
-                assert(sameInventory(await efsInventory(root), recovered),
-                    label + ': repeated recovery changed metadata, permissions or timestamps')
-                await rm(root, { recursive: true, force: true })
-                await rm(expectedRoot, { recursive: true, force: true })
+                // An orphan journal under a stable generation is not
+                // recovery work: the next opener deletes it without
+                // restoring anything, as the native gate's
+                // `recovered === false` check also accepts.
+                assert((await efsUnstableGenerations(root)).length === 0,
+                    label + ': failed live writer left recovery work: ' + response.error?.message)
+                assert(sameInventory(await efsInventory(root), before),
+                    label + ': live rollback changed payload/metadata/native mode/time')
+            }
+        } finally {
+            await writer.close()
+        }
+        const finished = Date.now()
+        if (!crashed && response.ok) {
+            await rm(root, { recursive: true, force: true })
+            await rm(expectedRoot, { recursive: true, force: true })
+            return
+        }
+        reached.add(failpoint)
+        interrupted++
+        const journals = await efsJournals(root)
+        if (crashed && ['before-commit-marker', 'after-commit-marker'].includes(failpoint)) {
+            const phase = failpoint === 'after-commit-marker' ? 'committed' : 'active'
+            assert(journals.some((journal) => journal.phase === phase),
+                label + ': interrupted journal did not retain ' + phase + ' phase')
+        }
+        if (crashed && scenario.pairMove && pairPoints.includes(failpoint)) {
+            assert(journals.some((journal) =>
+                journal.captures.filter((capture) =>
+                    capture.path.endsWith('.fylo-attrs')
+                ).length >= 2
+            ), label + ': source and destination sidecars were not both captured')
+        }
+        await recoverEfs(root)
+        const recovered = await efsInventory(root)
+        const isBefore = sameInventory(recovered, before)
+        const isAfter = sameInventory(
+            comparableInventory(recovered), comparableInventory(expectedAfter)
+        )
+        assert(isBefore || isAfter, label + ': recovery produced a mixed payload/metadata pair')
+        if (crashed && failpoint === 'before-commit-marker') {
+            assert(isBefore, label + ': active journal did not restore complete before-images')
+        }
+        if (crashed && failpoint === 'after-commit-marker') {
+            assert(isAfter, label + ': committed journal lost durable pair state')
+        }
+        if (!isBefore) assertCommittedTimes(before, recovered, started, finished, label)
+        await recoverEfs(root)
+        assert(sameInventory(await efsInventory(root), recovered),
+            label + ': repeated recovery changed metadata, permissions or timestamps')
+        await rm(root, { recursive: true, force: true })
+        await rm(expectedRoot, { recursive: true, force: true })
+    }
+    // Cases share nothing but the read-only template, so they run concurrently:
+    // on a network filesystem each one waits on round trips, not the CPU.
+    const jobs = failpoints
+        .flatMap((failpoint) => scenarios.flatMap((scenario) =>
+            ['abort', 'enospc', 'edquot'].map((action) => ({ failpoint, scenario, action }))))
+        .filter((_, index) => index % shards === shard)
+    let next = 0
+    let failure
+    await Promise.all(Array.from({ length: concurrency }, async () => {
+        while (failure === undefined && next < jobs.length) {
+            try {
+                await runCase(jobs[next++])
+            } catch (error) {
+                failure ??= error
             }
         }
+    }))
+    if (failure !== undefined) throw failure
+    if (shards > 1) {
+        // A shard reaches only some transitions; the union is checked across shards.
+        console.log('Shard ' + shard + '/' + shards + ' reached: ' + JSON.stringify([...reached].sort()))
+        console.log('Validated ' + interrupted + ' EFS-profile interrupted mutations in this shard')
+        return
     }
     const missing = failpoints.filter((name) => !reached.has(name))
     assert(missing.length === 0, 'EFS crash scenarios missed declared transitions: ' + missing.join(', '))
