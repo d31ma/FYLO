@@ -674,13 +674,10 @@ fn numeric_value(value: FieldValue<'_>) -> Option<f64> {
         FieldValue::Present(Value::Null) => Some(0.0),
         FieldValue::Present(Value::Bool(value)) => Some(u8::from(*value).into()),
         FieldValue::Present(Value::Number(value)) => value.as_f64(),
+        // The same coercion the index writer uses, so a predicate never
+        // matches a value the range index cannot hold.
         FieldValue::Present(Value::String(value)) => {
-            let trimmed = value.trim();
-            if trimmed.is_empty() {
-                Some(0.0)
-            } else {
-                trimmed.parse().ok()
-            }
+            index::javascript_number(value).filter(|number| number.is_finite())
         }
         FieldValue::Present(Value::Array(values)) if values.is_empty() => Some(0.0),
         FieldValue::Present(Value::Array(values)) if values.len() == 1 => {

@@ -9,7 +9,7 @@ import { MetadataRecord } from './metadata-record.js'
 import { BrowserMetadataStore } from './browser-metadata-store.js'
 import { BrowserEventBus } from './browser-event-bus.js'
 import { BrowserPrefixIndex } from './prefix-index.js'
-import { BrowserQueryEngine } from './query.js'
+import { BrowserQueryEngine, documentNumber } from './query.js'
 import { BrowserPath } from './browser-path.js'
 import '../../core/extensions.js'
 
@@ -18,12 +18,58 @@ import '../../core/extensions.js'
  * @type {Record<string, (leftValue: unknown, rightValue: unknown) => boolean>}
  */
 const JOIN_COMPARATORS = {
-    $eq: (leftValue, rightValue) => leftValue === rightValue,
-    $ne: (leftValue, rightValue) => leftValue !== rightValue,
-    $gt: (leftValue, rightValue) => Number(leftValue) > Number(rightValue),
-    $lt: (leftValue, rightValue) => Number(leftValue) < Number(rightValue),
-    $gte: (leftValue, rightValue) => Number(leftValue) >= Number(rightValue),
-    $lte: (leftValue, rightValue) => Number(leftValue) <= Number(rightValue)
+    $eq: (leftValue, rightValue) => joinEqual(leftValue, rightValue),
+    $ne: (leftValue, rightValue) => !joinEqual(leftValue, rightValue),
+    $gt: (leftValue, rightValue) => joinNumber(leftValue) > joinNumber(rightValue),
+    $lt: (leftValue, rightValue) => joinNumber(leftValue) < joinNumber(rightValue),
+    $gte: (leftValue, rightValue) => joinNumber(leftValue) >= joinNumber(rightValue),
+    $lte: (leftValue, rightValue) => joinNumber(leftValue) <= joinNumber(rightValue)
+}
+
+/**
+ * Structural equality; a missing field equals nothing. Mirrors `strict_equals`
+ * in `crates/fylo-query/src/join.rs`.
+ * @param {unknown} left
+ * @param {unknown} right
+ * @returns {boolean}
+ */
+function joinEqual(left, right) {
+    if (left === undefined || right === undefined) return false
+    return structurallyEqual(left, right)
+}
+
+/** @param {unknown} left @param {unknown} right @returns {boolean} */
+function structurallyEqual(left, right) {
+    if (left === null || right === null || typeof left !== 'object' || typeof right !== 'object')
+        return left === right
+    if (Array.isArray(left) !== Array.isArray(right)) return false
+    const leftKeys = Object.keys(left)
+    const rightRecord = /** @type {Record<string, unknown>} */ (right)
+    return (
+        leftKeys.length === Object.keys(right).length &&
+        leftKeys.every(
+            (key) =>
+                Object.hasOwn(right, key) &&
+                structurallyEqual(
+                    /** @type {Record<string, unknown>} */ (left)[key],
+                    rightRecord[key]
+                )
+        )
+    )
+}
+
+/**
+ * The number an ordering join compares, or `NaN` so every ordering answers
+ * false. Mirrors `coerce_number` in `crates/fylo-query/src/join.rs`.
+ * @param {unknown} value
+ * @returns {number}
+ */
+function joinNumber(value) {
+    if (value === null) return 0
+    if (typeof value === 'boolean') return value ? 1 : 0
+    if (typeof value === 'number') return value
+    if (typeof value === 'string') return documentNumber(value) ?? Number.NaN
+    return Number.NaN
 }
 
 /**

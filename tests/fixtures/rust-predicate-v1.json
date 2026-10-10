@@ -74,6 +74,90 @@
             "query": { "$ops": [{ "score": { "$gte": 0, "$lte": 0 } }] },
             "timestamps": { "createdAt": 1, "updatedAt": 1 },
             "expected": true
+        },
+        {
+            "name": "hex string equals its number",
+            "document": { "n": "0x10" },
+            "query": { "$ops": [{ "n": { "$eq": 16 } }] },
+            "timestamps": { "createdAt": 1, "updatedAt": 1 },
+            "expected": true
+        },
+        {
+            "name": "hex string orders as its number",
+            "document": { "n": "0x10" },
+            "query": { "$ops": [{ "n": { "$gte": 16 } }] },
+            "timestamps": { "createdAt": 1, "updatedAt": 1 },
+            "expected": true
+        },
+        {
+            "name": "signed hex string is not a number",
+            "document": { "n": "-0x10" },
+            "query": { "$ops": [{ "n": { "$eq": -16 } }] },
+            "timestamps": { "createdAt": 1, "updatedAt": 1 },
+            "expected": false
+        },
+        {
+            "name": "Infinity string is not a number",
+            "document": { "n": "Infinity" },
+            "query": { "$ops": [{ "n": { "$gt": 5 } }] },
+            "timestamps": { "createdAt": 1, "updatedAt": 1 },
+            "expected": false
+        },
+        {
+            "name": "one-element array never loosely equals",
+            "document": { "age": [30] },
+            "query": { "$ops": [{ "age": { "$eq": 30 } }] },
+            "timestamps": { "createdAt": 1, "updatedAt": 1 },
+            "expected": false
+        },
+        {
+            "name": "array never equals its joined string",
+            "document": { "t": [1, 2] },
+            "query": { "$ops": [{ "t": { "$eq": "1,2" } }] },
+            "timestamps": { "createdAt": 1, "updatedAt": 1 },
+            "expected": false
+        },
+        {
+            "name": "array not-equal holds",
+            "document": { "age": [30] },
+            "query": { "$ops": [{ "age": { "$ne": 30 } }] },
+            "timestamps": { "createdAt": 1, "updatedAt": 1 },
+            "expected": true
+        },
+        {
+            "name": "one-element boolean array orders as a number",
+            "document": { "f": [true] },
+            "query": { "$ops": [{ "f": { "$gte": 1 } }] },
+            "timestamps": { "createdAt": 1, "updatedAt": 1 },
+            "expected": true
+        },
+        {
+            "name": "array index path does not resolve",
+            "document": { "tags": ["a", "b"] },
+            "query": { "$ops": [{ "tags.0": { "$eq": "a" } }] },
+            "timestamps": { "createdAt": 1, "updatedAt": 1 },
+            "expected": false
+        },
+        {
+            "name": "array length path does not resolve",
+            "document": { "tags": ["a", "b"] },
+            "query": { "$ops": [{ "tags.length": { "$eq": 2 } }] },
+            "timestamps": { "createdAt": 1, "updatedAt": 1 },
+            "expected": false
+        },
+        {
+            "name": "empty path segments are skipped",
+            "document": { "a": { "b": 1 } },
+            "query": { "$ops": [{ "a..b": { "$eq": 1 } }] },
+            "timestamps": { "createdAt": 1, "updatedAt": 1 },
+            "expected": true
+        },
+        {
+            "name": "contains compares loosely",
+            "document": { "tags": ["7"] },
+            "query": { "$ops": [{ "tags": { "$contains": 7 } }] },
+            "timestamps": { "createdAt": 1, "updatedAt": 1 },
+            "expected": true
         }
     ],
     "resultCases": [

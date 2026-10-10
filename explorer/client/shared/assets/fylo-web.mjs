@@ -2169,6 +2169,39 @@ function matchesLike(value, pattern, options = {}) {
 }
 
 // src/browser/core/query.js
+function documentNumber(text) {
+  const trimmed = text.trim();
+  if (/^[+-]0[xXbBoO]/.test(trimmed))
+    return null;
+  const numeric = Number(trimmed);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+function numericValue2(value) {
+  if (value === null)
+    return 0;
+  if (typeof value === "boolean")
+    return value ? 1 : 0;
+  if (typeof value === "number")
+    return value;
+  if (typeof value === "string")
+    return documentNumber(value);
+  if (Array.isArray(value) && value.length === 0)
+    return 0;
+  if (Array.isArray(value) && value.length === 1)
+    return numericValue2(value[0]);
+  return null;
+}
+function looseEqual(actual, expected) {
+  if (actual === undefined || actual === null)
+    return expected === null;
+  if (typeof actual === "object" || expected === null || typeof expected === "object")
+    return false;
+  if (typeof actual === typeof expected)
+    return actual === expected;
+  const left = numericValue2(actual);
+  return left !== null && left === numericValue2(expected);
+}
+
 class BrowserQueryEngine {
   constructor(context) {
     this.context = context;
@@ -2177,8 +2210,13 @@ class BrowserQueryEngine {
     return fieldPath.replaceAll("/", ".").split(".").reduce((acc, key) => {
       if (acc === undefined || acc === null || typeof acc !== "object")
         return;
+      if (Array.isArray(acc))
+        return;
       return Object.hasOwn(acc, key) ? acc[key] : undefined;
     }, target);
+  }
+  predicateValue(target, fieldPath) {
+    return this.getValueByPath(target, fieldPath.split(/[./]/).filter((segment) => segment !== "").join("."));
   }
   normalizeFieldPath(fieldPath) {
     return fieldPath.replaceAll(".", "/");
@@ -2224,14 +2262,14 @@ class BrowserQueryEngine {
   }
   matchesOperand(value, operand) {
     const predicates = {
-      $eq: (expected) => value == expected,
-      $ne: (expected) => value != expected,
+      $eq: (expected) => looseEqual(value, expected),
+      $ne: (expected) => !looseEqual(value, expected),
       $gt: (expected) => this.matchesNumber(value, "$gt", expected),
       $gte: (expected) => this.matchesNumber(value, "$gte", expected),
       $lt: (expected) => this.matchesNumber(value, "$lt", expected),
       $lte: (expected) => this.matchesNumber(value, "$lte", expected),
       $like: (expected) => typeof value === "string" && this.matchesLike(value, expected),
-      $contains: (expected) => Array.isArray(value) && value.some((item) => item == expected)
+      $contains: (expected) => Array.isArray(value) && value.some((item) => looseEqual(item, expected))
     };
     const supplied = operand;
     for (const [operator, predicate] of Object.entries(predicates)) {
@@ -2243,7 +2281,11 @@ class BrowserQueryEngine {
     return true;
   }
   matchesNumber(value, operator, expected) {
-    const numeric = Number(value);
+    const numeric = numericValue2(value);
+    const bound = numericValue2(expected);
+    if (numeric === null || bound === null)
+      return false;
+    expected = bound;
     if (operator === "$gt")
       return numeric > expected;
     if (operator === "$gte")
@@ -2325,7 +2367,7 @@ class BrowserQueryEngine {
       return true;
     return query.$ops.some((operation) => {
       for (const field of Object.keys(operation)) {
-        const value = this.getValueByPath(doc, field);
+        const value = this.predicateValue(doc, field);
         const operand = operation[field];
         if (!operand || !this.matchesOperand(value, operand))
           return false;
@@ -2408,13 +2450,38 @@ Object.assign(Object, { appendGroup });
 
 // src/browser/core/engine.js
 var JOIN_COMPARATORS = {
-  $eq: (leftValue, rightValue) => leftValue === rightValue,
-  $ne: (leftValue, rightValue) => leftValue !== rightValue,
-  $gt: (leftValue, rightValue) => Number(leftValue) > Number(rightValue),
-  $lt: (leftValue, rightValue) => Number(leftValue) < Number(rightValue),
-  $gte: (leftValue, rightValue) => Number(leftValue) >= Number(rightValue),
-  $lte: (leftValue, rightValue) => Number(leftValue) <= Number(rightValue)
+  $eq: (leftValue, rightValue) => joinEqual(leftValue, rightValue),
+  $ne: (leftValue, rightValue) => !joinEqual(leftValue, rightValue),
+  $gt: (leftValue, rightValue) => joinNumber(leftValue) > joinNumber(rightValue),
+  $lt: (leftValue, rightValue) => joinNumber(leftValue) < joinNumber(rightValue),
+  $gte: (leftValue, rightValue) => joinNumber(leftValue) >= joinNumber(rightValue),
+  $lte: (leftValue, rightValue) => joinNumber(leftValue) <= joinNumber(rightValue)
 };
+function joinEqual(left, right) {
+  if (left === undefined || right === undefined)
+    return false;
+  return structurallyEqual(left, right);
+}
+function structurallyEqual(left, right) {
+  if (left === null || right === null || typeof left !== "object" || typeof right !== "object")
+    return left === right;
+  if (Array.isArray(left) !== Array.isArray(right))
+    return false;
+  const leftKeys = Object.keys(left);
+  const rightRecord = right;
+  return leftKeys.length === Object.keys(right).length && leftKeys.every((key) => Object.hasOwn(right, key) && structurallyEqual(left[key], rightRecord[key]));
+}
+function joinNumber(value) {
+  if (value === null)
+    return 0;
+  if (typeof value === "boolean")
+    return value ? 1 : 0;
+  if (typeof value === "number")
+    return value;
+  if (typeof value === "string")
+    return documentNumber(value) ?? Number.NaN;
+  return Number.NaN;
+}
 var JOIN_MODES = {
   inner: (leftData, rightData) => Object.assign(safeRecord(), leftData, rightData),
   outer: (leftData, rightData) => Object.assign(safeRecord(), leftData, rightData),

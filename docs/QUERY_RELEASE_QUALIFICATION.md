@@ -333,9 +333,13 @@ should retain checkpoints outside temporary storage so evidence survives reboot.
    Process-kill failpoints do not establish physical power-loss durability.
 5. Retain representative end-to-end baselines before setting performance release
    thresholds or promoting LIKE/range/BM25/SIMD experiments.
-6. Decide whether to unify the existing JavaScript/Rust coercion semantics, with
-   explicit compatibility tests and migration policy; this task did not silently
-   change those public predicates.
+6. Decided 2026-10-10: the browser JavaScript engine follows the native Rust
+   semantics. Rust predicates and joins now coerce strings with the index
+   writer's JavaScript `Number` rules (hex/binary/octal accepted, signed radix
+   and non-finite values rejected). Arrays and objects never loosely equal a
+   scalar, and predicate paths do not index into arrays. The divergent inputs
+   are pinned in `tests/fixtures/rust-predicate-v1.json`, which both engines run.
+   No reindex is needed: stored index keys were already identical.
 
 See [index reuse](QUERY_INDEX_REUSE.md) for the cache safety contract and
 [the PoC report](TIN_INSPIRED_SEARCH_POC.md) for experimental results and gates.

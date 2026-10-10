@@ -2,6 +2,52 @@ import { matchesLike } from '../../query/like.js'
 import { copySafeRecord, safeRecord } from '../../query/safe-record.js'
 
 /**
+ * JavaScript `Number` for a string, restricted the way the Rust index writer
+ * restricts it: signed radix literals and non-finite results are not numbers.
+ * @param {string} text
+ * @returns {number | null}
+ */
+export function documentNumber(text) {
+    const trimmed = text.trim()
+    if (/^[+-]0[xXbBoO]/.test(trimmed)) return null
+    const numeric = Number(trimmed)
+    return Number.isFinite(numeric) ? numeric : null
+}
+
+/**
+ * The number a predicate compares, or `null` when the value has none. Mirrors
+ * `numeric_value` in `crates/fylo-query/src/lib.rs`.
+ * @param {unknown} value
+ * @returns {number | null}
+ */
+function numericValue(value) {
+    if (value === null) return 0
+    if (typeof value === 'boolean') return value ? 1 : 0
+    if (typeof value === 'number') return value
+    if (typeof value === 'string') return documentNumber(value)
+    if (Array.isArray(value) && value.length === 0) return 0
+    if (Array.isArray(value) && value.length === 1) return numericValue(value[0])
+    return null
+}
+
+/**
+ * FYLO's loose equality. Mirrors `loose_equal` in `crates/fylo-query/src/lib.rs`:
+ * arrays and objects never equal anything, a missing field equals only null,
+ * and mixed scalars compare as numbers.
+ * @param {unknown} actual
+ * @param {unknown} expected
+ * @returns {boolean}
+ */
+function looseEqual(actual, expected) {
+    if (actual === undefined || actual === null) return expected === null
+    if (typeof actual === 'object' || expected === null || typeof expected === 'object')
+        return false
+    if (typeof actual === typeof expected) return actual === expected
+    const left = numericValue(actual)
+    return left !== null && left === numericValue(expected)
+}
+
+/**
  * Browser-safe query evaluator for the FYLO browser core.
  *
  * This mirrors `FilesystemQueryEngine` without importing the server Cipher
@@ -37,8 +83,26 @@ export class BrowserQueryEngine {
             .split('.')
             .reduce((acc, key) => {
                 if (acc === undefined || acc === null || typeof acc !== 'object') return undefined
+                if (Array.isArray(acc)) return undefined
                 return Object.hasOwn(acc, key) ? acc[key] : undefined
             }, target)
+    }
+
+    /**
+     * The value a predicate tests. Unlike a join path, empty segments are
+     * skipped, as `value_at_path` in `crates/fylo-query/src/lib.rs` does.
+     * @param {Record<string, any>} target
+     * @param {string} fieldPath
+     * @returns {unknown}
+     */
+    predicateValue(target, fieldPath) {
+        return this.getValueByPath(
+            target,
+            fieldPath
+                .split(/[./]/)
+                .filter((segment) => segment !== '')
+                .join('.')
+        )
     }
 
     /** @param {string} fieldPath @returns {string} */
@@ -111,18 +175,15 @@ export class BrowserQueryEngine {
          * @type {Record<string, (expected: any) => boolean>}
          */
         const predicates = {
-            // eslint-disable-next-line eqeqeq -- loose compare is the documented FYLO semantic
-            $eq: (expected) => value == expected,
-            // eslint-disable-next-line eqeqeq
-            $ne: (expected) => value != expected,
+            $eq: (expected) => looseEqual(value, expected),
+            $ne: (expected) => !looseEqual(value, expected),
             $gt: (expected) => this.matchesNumber(value, '$gt', expected),
             $gte: (expected) => this.matchesNumber(value, '$gte', expected),
             $lt: (expected) => this.matchesNumber(value, '$lt', expected),
             $lte: (expected) => this.matchesNumber(value, '$lte', expected),
             $like: (expected) => typeof value === 'string' && this.matchesLike(value, expected),
             $contains: (expected) =>
-                // eslint-disable-next-line eqeqeq
-                Array.isArray(value) && value.some((item) => item == expected)
+                Array.isArray(value) && value.some((item) => looseEqual(item, expected))
         }
         const supplied = /** @type {Record<string, any>} */ (operand)
         for (const [operator, predicate] of Object.entries(predicates)) {
@@ -139,7 +200,10 @@ export class BrowserQueryEngine {
      * @returns {boolean}
      */
     matchesNumber(value, operator, expected) {
-        const numeric = Number(value)
+        const numeric = numericValue(value)
+        const bound = numericValue(expected)
+        if (numeric === null || bound === null) return false
+        expected = bound
         if (operator === '$gt') return numeric > expected
         if (operator === '$gte') return numeric >= expected
         if (operator === '$lt') return numeric < expected
@@ -257,7 +321,7 @@ export class BrowserQueryEngine {
         if (!query?.$ops || query.$ops.length === 0) return true
         return query.$ops.some((operation) => {
             for (const field of Object.keys(operation)) {
-                const value = this.getValueByPath(doc, field)
+                const value = this.predicateValue(doc, field)
                 const operand = operation[field]
                 if (!operand || !this.matchesOperand(value, operand)) return false
             }

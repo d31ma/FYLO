@@ -341,8 +341,26 @@ pub fn value_by_path<'a>(document: &'a Map<String, Value>, path: &str) -> Option
 /// including another absent field.
 fn strict_equals(left: Option<&Value>, right: Option<&Value>) -> bool {
     match (left, right) {
-        (Some(left), Some(right)) => left == right,
+        (Some(left), Some(right)) => json_equal(left, right),
         _ => false,
+    }
+}
+
+/// Structural equality in which `1` and `1.0` are the same number, as they are
+/// once JavaScript has parsed the document.
+fn json_equal(left: &Value, right: &Value) -> bool {
+    match (left, right) {
+        (Value::Number(left), Value::Number(right)) => left.as_f64() == right.as_f64(),
+        (Value::Array(left), Value::Array(right)) => {
+            left.len() == right.len() && left.iter().zip(right).all(|(l, r)| json_equal(l, r))
+        }
+        (Value::Object(left), Value::Object(right)) => {
+            left.len() == right.len()
+                && left
+                    .iter()
+                    .all(|(key, l)| right.get(key).is_some_and(|r| json_equal(l, r)))
+        }
+        _ => left == right,
     }
 }
 
@@ -356,12 +374,7 @@ fn coerce_number(value: Option<&Value>) -> Option<f64> {
         Value::Bool(flag) => Some(if *flag { 1.0 } else { 0.0 }),
         Value::Null => Some(0.0),
         Value::String(text) => {
-            let trimmed = text.trim();
-            if trimmed.is_empty() {
-                Some(0.0)
-            } else {
-                trimmed.parse::<f64>().ok()
-            }
+            crate::index::javascript_number(text).filter(|number| number.is_finite())
         }
         Value::Array(_) | Value::Object(_) => None,
     }
@@ -491,5 +504,17 @@ mod tests {
             Some(&json!("Lagos"))
         );
         assert_eq!(value_by_path(document, "profile.zip"), None);
+    }
+
+    #[test]
+    fn comparisons_use_document_number_coercion() {
+        let eq = JoinComparator::Eq;
+        assert!(eq.matches(Some(&json!(1)), Some(&json!(1.0))));
+        assert!(eq.matches(Some(&json!({"a": [1]})), Some(&json!({"a": [1.0]}))));
+        assert!(!eq.matches(None, None));
+        let gte = JoinComparator::Gte;
+        assert!(gte.matches(Some(&json!("0x10")), Some(&json!(16))));
+        assert!(!gte.matches(Some(&json!("-0x10")), Some(&json!(-16))));
+        assert!(!gte.matches(Some(&json!("Infinity")), Some(&json!(1))));
     }
 }

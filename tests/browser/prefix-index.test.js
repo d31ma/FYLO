@@ -2,6 +2,23 @@ import { describe, expect, test } from 'bun:test'
 import { createMemoryFilesystem } from '../../src/browser/core/memory-filesystem.js'
 import { BrowserCore } from '../../src/browser/core/engine.js'
 
+// FYLO's loose equality, which the native engine defines: a missing field
+// equals only null, arrays and objects never equal a scalar, and mixed scalars
+// compare as finite numbers.
+const scalarNumber = (value) => {
+    if (typeof value !== 'string') return Number(value)
+    const numeric = Number(value.trim())
+    return Number.isFinite(numeric) ? numeric : null
+}
+const fyloEqual = (actual, expected) => {
+    if (actual === undefined || actual === null) return expected === null
+    if (typeof actual === 'object' || expected === null || typeof expected === 'object')
+        return false
+    if (typeof actual === typeof expected) return actual === expected
+    const left = scalarNumber(actual)
+    return left !== null && left === scalarNumber(expected)
+}
+
 describe('BrowserPrefixIndex', () => {
     test('equality and contains preserve loose numeric, null, and container matches', async () => {
         const fs = createMemoryFilesystem()
@@ -46,7 +63,7 @@ describe('BrowserPrefixIndex', () => {
             'Ada'
         ]) {
             const expected = [...documents]
-                .filter(([, document]) => document.score == value)
+                .filter(([, document]) => fyloEqual(document.score, value))
                 .map(([id]) => id)
                 .sort()
             const actual = await collect(fylo, { $ops: [{ score: { $eq: value } }] })
@@ -55,7 +72,7 @@ describe('BrowserPrefixIndex', () => {
                 .filter(
                     ([, document]) =>
                         Array.isArray(document.score) &&
-                        document.score.some((item) => item == value)
+                        document.score.some((item) => fyloEqual(item, value))
                 )
                 .map(([id]) => id)
                 .sort()
@@ -159,6 +176,17 @@ describe('BrowserPrefixIndex', () => {
             id
         ])
         expect(Object.keys(await collect(fylo, { $ops: [{ score: { $gte: 40 } }] }))).toEqual([id])
+    })
+
+    test('a range never matches a value the range index cannot hold', async () => {
+        const fylo = new BrowserCore({ fs: createMemoryFilesystem(), root: '/' })
+        await fylo.users.create()
+        const ten = await fylo.users.put({ n: 10 })
+        await fylo.users.put({ n: 'Infinity' })
+        const hex = await fylo.users.put({ n: '0x10' })
+        const found = await collect(fylo, { $ops: [{ n: { $gt: 5 } }] })
+        expect(Object.keys(found).sort()).toEqual([ten, hex].sort())
+        await fylo.close()
     })
 })
 

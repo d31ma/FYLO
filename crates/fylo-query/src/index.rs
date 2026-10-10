@@ -243,7 +243,7 @@ fn numeric_value(value: &Value) -> Option<f64> {
 }
 
 #[allow(clippy::cast_precision_loss)] // JavaScript Number coercion intentionally targets f64.
-fn javascript_number(value: &str) -> Option<f64> {
+pub(crate) fn javascript_number(value: &str) -> Option<f64> {
     let value = value.trim();
     if value.is_empty() {
         return Some(0.0);
