@@ -50,15 +50,25 @@ if (!engineOnly) {
 // build: the index kernel has no such shim to satisfy the flag.
 const CUSTOM_ENTROPY = '--cfg getrandom_backend="custom"'
 
+// The whole engine is transfer-bound in a browser, so it is optimized for size;
+// the index kernel is the scan hot path and keeps the release profile's speed.
+const ENGINE_PROFILE = { CARGO_PROFILE_RELEASE_OPT_LEVEL: 's' }
+
 const WASM_ARTIFACTS = [
-    ['fylo_browser_index.wasm', 'fylo-index.wasm', 'src/browser/wasm/Cargo.toml', ''],
-    ['fylo_wasm.wasm', 'fylo-browser.wasm', 'crates/fylo-wasm/Cargo.toml', CUSTOM_ENTROPY]
+    ['fylo_browser_index.wasm', 'fylo-index.wasm', 'src/browser/wasm/Cargo.toml', '', {}],
+    [
+        'fylo_wasm.wasm',
+        'fylo-browser.wasm',
+        'crates/fylo-wasm/Cargo.toml',
+        CUSTOM_ENTROPY,
+        ENGINE_PROFILE
+    ]
 ]
 
 if (withWasm) {
     const artifacts = engineOnly ? WASM_ARTIFACTS.slice(1) : WASM_ARTIFACTS
-    for (const [built, published, manifest, rustflags] of artifacts) {
-        await buildWasm(manifest, rustflags)
+    for (const [built, published, manifest, rustflags, profile] of artifacts) {
+        await buildWasm(manifest, rustflags, profile)
         await rm(new URL(`../dist-web/${published}`, import.meta.url), { force: true })
         await cp(
             resolve(
@@ -83,7 +93,7 @@ if (engineOnly) {
     )
 }
 
-async function buildWasm(manifest, rustflags) {
+async function buildWasm(manifest, rustflags, profile) {
     const toolchain = await rustToolchain()
     const rustc = await capture('rustup', ['which', 'rustc', '--toolchain', toolchain]).catch(
         async () => {
@@ -108,6 +118,7 @@ async function buildWasm(manifest, rustflags) {
         ],
         {
             ...process.env,
+            ...profile,
             RUSTC: rustc.trim(),
             RUSTFLAGS: [process.env.RUSTFLAGS, rustflags].filter(Boolean).join(' ')
         }

@@ -48,7 +48,7 @@ case "$(uname -s)-$(uname -m)" in
         CHEX_ASSET='chex-windows-x64.exe'
         CHEX_SHA256='3aa465447849d1f0d43318cd7c0e3c69a7db8cc06055a0c6ba0b4d53c24334bc'
         TACHYON_ASSET='ty-windows-x64.exe'
-        TACHYON_SHA256='00198a58534faff29f2373a2649c58f176e3305aa77242f59cee6530c7c371d5'
+        TACHYON_SHA256='8b8cc73a8407e5397e66d7fab6f3946162847c4b5639d089d0f16af57f3631f8'
         EXECUTABLE_SUFFIX='.exe'
         ;;
     *)

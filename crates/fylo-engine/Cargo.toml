@@ -9,7 +9,6 @@ publish = false
 
 [dependencies]
 aes-gcm.workspace = true
-boa_engine.workspace = true
 fylo-format = { version = "0.1.0", path = "../fylo-format" }
 fylo-query = { version = "0.1.0", path = "../fylo-query" }
 fylo-storage-native = { version = "0.1.0", path = "../fylo-storage-native" }
@@ -30,7 +29,11 @@ xattr.workspace = true
 [dev-dependencies]
 fylo-test-support = { version = "0.1.0", path = "../fylo-test-support" }
 
+# Schema upgraders run in an embedded JavaScript runtime. The browser engine
+# reads no schema files (`std::fs` is unsupported there), so it never runs one
+# and does not link the runtime, which is most of its Wasm budget.
 [target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
+boa_engine.workspace = true
 getrandom.workspace = true
 
 # A browser build takes entropy from the host VFS table rather than from Web

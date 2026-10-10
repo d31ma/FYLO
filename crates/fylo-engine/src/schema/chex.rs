@@ -41,6 +41,31 @@ impl Chex {
     }
 
     fn child(binary: &Path) -> Result<Child, String> {
+        // A just-written executable can briefly be busy when another thread
+        // forks while its write handle is still open (ETXTBSY); that clears
+        // as soon as the forked child execs or exits.
+        let mut attempt = 0;
+        loop {
+            match Self::start(binary) {
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::ExecutableFileBusy && attempt < 20 =>
+                {
+                    attempt += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                outcome => {
+                    return outcome.map_err(|error| {
+                        format!(
+                            "cannot start the CHEX validator ({}): {error}",
+                            binary.display()
+                        )
+                    });
+                }
+            }
+        }
+    }
+
+    fn start(binary: &Path) -> std::io::Result<Child> {
         let mut command = Command::new(binary);
         // Its own process group, so teardown can reach any process it starts.
         #[cfg(unix)]
@@ -51,12 +76,6 @@ impl Chex {
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .spawn()
-            .map_err(|error| {
-                format!(
-                    "cannot start the CHEX validator ({}): {error}",
-                    binary.display()
-                )
-            })
     }
 
     fn encode(request: &ValidationRequest<'_>) -> Result<String, String> {

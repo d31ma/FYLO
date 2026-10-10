@@ -1,10 +1,13 @@
 use std::path::Path;
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use std::rc::Rc;
 
-use boa_engine::module::{Module, SimpleModuleLoader};
-use boa_engine::object::JsObject;
-use boa_engine::object::builtins::JsPromise;
-use boa_engine::{Context, JsValue, Source, js_string};
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+use boa_engine::{
+    Context, JsValue, Source, js_string,
+    module::{Module, SimpleModuleLoader},
+    object::{JsObject, builtins::JsPromise},
+};
 use serde_json::{Map, Value};
 
 use super::schema_paths::SchemaPaths;
@@ -18,8 +21,6 @@ pub(super) struct SchemaUpgrader<'a> {
 }
 
 impl<'a> SchemaUpgrader<'a> {
-    const LOOP_LIMIT: u64 = 10_000_000;
-
     pub(super) fn new(paths: &'a SchemaPaths<'a>, from: &'a str, to: &'a str) -> Self {
         Self { paths, from, to }
     }
@@ -27,12 +28,20 @@ impl<'a> SchemaUpgrader<'a> {
     pub(super) fn run(&self, document: &Map<String, Value>) -> Result<Map<String, Value>, String> {
         let path = self.paths.upgrader(self.from, self.to);
         let source = self.source(&path)?;
-        let loader = Self::loader(self.paths.root)?;
-        let mut context = Self::context(&loader)?;
-        let module = Self::module(&path, &source, &loader, &mut context)?;
-        let returned = self.call(&module, document, &mut context)?;
-        let returned = self.resolve(returned, &mut context)?;
-        self.document(&returned, &mut context)
+        self.execute(&path, &source, document)
+    }
+
+    /// The browser engine has no filesystem behind `std::fs`, so `source`
+    /// has already failed with the missing-upgrader error; this arm only keeps
+    /// the JavaScript runtime out of the module.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    fn execute(
+        &self,
+        _path: &Path,
+        _source: &str,
+        _document: &Map<String, Value>,
+    ) -> Result<Map<String, Value>, String> {
+        Err(self.failed("the browser engine has no JavaScript upgrader runtime"))
     }
 
     fn source(&self, path: &Path) -> Result<String, String> {
@@ -48,6 +57,29 @@ impl<'a> SchemaUpgrader<'a> {
         let source = String::from_utf8(bytes)
             .map_err(|_| format!("upgrader {} is not valid UTF-8", path.display()))?;
         Ok(UpgraderSource::normalize(&source))
+    }
+
+    fn failed(&self, error: impl std::fmt::Display) -> String {
+        format!("upgrader {}->{} failed: {error}", self.from, self.to)
+    }
+}
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+impl SchemaUpgrader<'_> {
+    const LOOP_LIMIT: u64 = 10_000_000;
+
+    fn execute(
+        &self,
+        path: &Path,
+        source: &str,
+        document: &Map<String, Value>,
+    ) -> Result<Map<String, Value>, String> {
+        let loader = Self::loader(self.paths.root)?;
+        let mut context = Self::context(&loader)?;
+        let module = Self::module(path, source, &loader, &mut context)?;
+        let returned = self.call(&module, document, &mut context)?;
+        let returned = self.resolve(returned, &mut context)?;
+        self.document(&returned, &mut context)
     }
 
     fn loader(root: &Path) -> Result<Rc<SimpleModuleLoader>, String> {
@@ -127,10 +159,6 @@ impl<'a> SchemaUpgrader<'a> {
                 .map_err(|error| self.failed(error)),
             None => Ok(returned),
         }
-    }
-
-    fn failed(&self, error: impl std::fmt::Display) -> String {
-        format!("upgrader {}->{} failed: {error}", self.from, self.to)
     }
 
     fn document(
