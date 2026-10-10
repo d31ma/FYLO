@@ -32,6 +32,7 @@
         "rust:interop:cli": "bun ./scripts/verify-rust-cli-compat.mjs",
         "rust:interop:release-machine": "bun ./scripts/verify-rust-release-machine-parity.mjs",
         "rust:crash:matrix": "bun ./scripts/verify-rust-crash-matrix.mjs",
+        "efs:local": "bun ./scripts/verify-efs-local.mjs",
         "rust:rollback:released": "bun ./scripts/verify-rust-released-rollback.mjs",
         "rust:soak:smoke": "bun ./scripts/run-rust-soak.mjs --iterations 100 --output target/soak/rust-soak-smoke.json",
         "rust:soak:72h": "bun ./scripts/run-rust-soak.mjs --profile release --duration-hours 72 --output target/soak/rust-soak-72h.json",
