@@ -896,9 +896,12 @@ async function recoverEfs(root) {
 async function verifyEfsCrashScenarios(preview, workspace) {
     assert(platform() !== 'win32', 'EFS profile qualification needs POSIX metadata')
     const source = join(workspace, 'efs-template')
-    // Records carry owner-only access descriptors, so mutating one needs the owner.
-    const owner = { uid: process.getuid(), groups: [process.getgid()] }
     await mkdir(source)
+    // Records carry owner-only access descriptors, so mutating one needs the
+    // owner. That is the filesystem's owner, not this process: an EFS access
+    // point maps every client to its own POSIX identity.
+    const { uid, gid } = await stat(source)
+    const owner = { uid, groups: [gid] }
     const input = join(workspace, 'efs-input.bin')
     await writeFile(input, new Uint8Array([1, 2, 3, 4]))
     await efsDatabase(source, async (database) => {
