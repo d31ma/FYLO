@@ -29,7 +29,7 @@ xattr.workspace = true
 rustix.workspace = true
 
 [dev-dependencies]
-fylo-test-support = { path = "../fylo-test-support" }
+fylo-test-support = { version = "0.1.0", path = "../fylo-test-support" }
 
 [lints]
 workspace = true

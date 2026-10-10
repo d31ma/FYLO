@@ -16,7 +16,7 @@ fn absent_manifest_has_explicit_nulls_and_no_versions() {
         json!({
             "collection":"people", "schemaDir":fixture.0,
             "versioned":false,"current":null,"manifest":null,"versions":[],
-            "manifestPath":fixture.0.join("people/manifest.json")
+            "manifestPath":fixture.path("people/manifest.json")
         })
     );
 }
@@ -43,7 +43,7 @@ fn inspection_preserves_optional_field_omissions_and_hashes() {
     fixture.manifest(&json!({"current":"v1","versions":[{
         "v":"v1","addedAt":null,"sha256":null,"ignored":true
     }]}));
-    let path = fixture.0.join("people/history/v1.schema.json");
+    let path = fixture.path("people/history/v1.schema.json");
     fs::write(&path, b"{}").unwrap();
     let inspection = fixture.tools().inspect("people").unwrap();
     assert_eq!(
@@ -66,8 +66,8 @@ fn doctor_reports_findings_in_original_order() {
         {"v":"v1","sha256":"wrong"},{"v":"v1"}
     ]}));
     let report = fixture.tools().doctor("people");
-    let path = json!(fixture.0.join("people/history/v1.schema.json"));
-    let upgrader = json!(fixture.0.join("people/upgraders/v1-to-v1.js"));
+    let path = json!(fixture.path("people/history/v1.schema.json"));
+    let upgrader = json!(fixture.path("people/upgraders/v1-to-v1.js"));
     assert_eq!(report["ok"], false);
     assert_eq!(report["warnings"], json!([]));
     assert_eq!(
@@ -86,7 +86,7 @@ fn doctor_reports_findings_in_original_order() {
 #[test]
 fn corrupt_manifest_is_a_doctor_issue_without_inspection() {
     let fixture = SchemaFixture::new();
-    fs::write(fixture.0.join("people/manifest.json"), b"{").unwrap();
+    fs::write(fixture.path("people/manifest.json"), b"{").unwrap();
     let report = fixture.tools().doctor("people");
     assert_eq!(report["ok"], false);
     assert_eq!(report["inspect"], Value::Null);
@@ -211,7 +211,7 @@ fn materialize_rejects_a_non_callable_default_export() {
             .unwrap_err(),
         format!(
             "Upgrader at {} must default-export an async (doc) => doc function",
-            fixture.0.join("people/upgraders/v1-to-v2.js").display()
+            fixture.path("people/upgraders/v1-to-v2.js").display()
         )
     );
 }
@@ -242,7 +242,7 @@ fn materialize_reports_invalid_upgrader_utf8() {
             .unwrap_err(),
         format!(
             "upgrader {} is not valid UTF-8",
-            fixture.0.join("people/upgraders/v1-to-v2.js").display()
+            fixture.path("people/upgraders/v1-to-v2.js").display()
         )
     );
 }
@@ -258,7 +258,7 @@ fn validation_reports_missing_head_before_starting_chex() {
             .unwrap_err(),
         format!(
             "head schema is missing: {}",
-            fixture.0.join("people/history/v2.schema.json").display()
+            fixture.path("people/history/v2.schema.json").display()
         )
     );
 }
@@ -269,7 +269,7 @@ fn manifest_symlink_is_rejected() {
     let fixture = SchemaFixture::new();
     let target = fixture.0.join("target.json");
     fs::write(&target, b"{}").unwrap();
-    std::os::unix::fs::symlink(target, fixture.0.join("people/manifest.json")).unwrap();
+    std::os::unix::fs::symlink(target, fixture.path("people/manifest.json")).unwrap();
     assert_eq!(
         fixture.tools().inspect("people").unwrap_err(),
         "schema path is not a regular file"
@@ -281,7 +281,7 @@ fn manifest_symlink_is_rejected() {
 fn validation_uses_chex_result_and_stamps_head_version() {
     let fixture = SchemaFixture::new();
     fixture.versions();
-    fs::write(fixture.0.join("people/history/v2.schema.json"), b"{}").unwrap();
+    fs::write(fixture.path("people/history/v2.schema.json"), b"{}").unwrap();
     let tools = fixture.validator(r#"{"ok":true,"result":{"name":"Samuel"}}"#);
     assert_eq!(
         tools
@@ -344,7 +344,7 @@ fn materialize_runs_each_version_in_manifest_order() {
     fixture.manifest(&json!({"current":"v3","versions":[{"v":"v1"},{"v":"v2"},{"v":"v3"}]}));
     fixture.upgrader(b"export default doc => ({ order: 'first' });");
     fs::write(
-        fixture.0.join("people/upgraders/v2-to-v3.js"),
+        fixture.path("people/upgraders/v2-to-v3.js"),
         b"export default doc => ({ order: doc.order + '-second' });",
     )
     .unwrap();

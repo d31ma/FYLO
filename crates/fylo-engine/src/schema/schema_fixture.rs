@@ -21,6 +21,14 @@ impl SchemaFixture {
         Self(directory)
     }
 
+    /// A fixture path joined per component, as the engine builds it; one
+    /// `join("a/b")` would keep `/` separators on Windows.
+    pub(super) fn path(&self, relative: &str) -> PathBuf {
+        relative
+            .split('/')
+            .fold(self.0.clone(), |path, component| path.join(component))
+    }
+
     pub(super) fn tools(&self) -> SchemaTools {
         SchemaTools::new(&self.0)
     }
