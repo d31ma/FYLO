@@ -938,89 +938,172 @@ function runInLane(lanes, key, body) {
   return next;
 }
 
-// src/browser/core/path.js
-var SEPARATOR = "/";
-function isMeaningful(segment) {
-  return segment.length > 0 && segment !== ".";
-}
-function normalize(value) {
-  if (typeof value !== "string")
-    return "";
-  const isAbsolute = value.startsWith(SEPARATOR);
-  const out = [];
-  for (const segment of value.split(SEPARATOR)) {
-    if (!isMeaningful(segment))
-      continue;
-    if (segment === "..") {
-      if (out.length > 0 && out[out.length - 1] !== "..") {
-        out.pop();
-      } else if (!isAbsolute) {
-        out.push("..");
-      }
-      continue;
+// src/browser/core/browser-path.js
+class BrowserPath {
+  static #separator = "/";
+  static #currentDirectory = ".";
+  static #parentDirectory = "..";
+  static #emptyPath = "";
+  static #stringType = "string";
+  static #unsafePathMessage = "Unsafe document path: ";
+  static #emptyLength = 0;
+  static #firstIndex = 0;
+  static normalize(value) {
+    return this.#normalizeInput(value);
+  }
+  static join(...segments) {
+    const strings = this.#stringParts(segments);
+    const parts = this.#withoutEmpty(strings);
+    return this.normalize(parts.join(this.#separator));
+  }
+  static dirname(value) {
+    const normalized = this.normalize(value);
+    const index = normalized.lastIndexOf(this.#separator);
+    const parent = normalized.slice(0, this.#parentEnd(index));
+    return this.#parentOrDot(parent, index);
+  }
+  static basename(value) {
+    const normalized = this.normalize(value);
+    return normalized.slice(normalized.lastIndexOf(this.#separator) + 1);
+  }
+  static resolve(from, value) {
+    const target = this.#resolutionTarget(from, value);
+    return this.normalize(this.#resolutionInput(from, target));
+  }
+  static relative(from, to) {
+    const fromSegments = this.#pathSegments(from);
+    const toSegments = this.#pathSegments(to);
+    const common = this.#commonLength(fromSegments, toSegments);
+    const parents = Array(fromSegments.length - common).fill(this.#parentDirectory);
+    return [...parents, ...toSegments.slice(common)].join(this.#separator);
+  }
+  static assertPathInside(parent, target) {
+    const normalizedParent = this.normalize(parent);
+    const normalizedTarget = this.normalize(target);
+    this.#checkDifferentPaths(normalizedParent, normalizedTarget, target);
+  }
+  static #normalizeInput(value) {
+    if (typeof value !== this.#stringType)
+      return this.#emptyPath;
+    return this.#normalizeString(value);
+  }
+  static #normalizeString(value) {
+    const absolute = value.startsWith(this.#separator);
+    const parts = this.#resolveSegments(value, absolute);
+    const joined = parts.join(this.#separator);
+    const relative = this.#relativeOrDot(joined);
+    return this.#rootedPath(joined, relative, absolute);
+  }
+  static #resolveSegments(value, absolute) {
+    const parts = [];
+    for (const segment of value.split(this.#separator)) {
+      this.#appendSegment(parts, segment, absolute);
     }
-    out.push(segment);
+    return parts;
   }
-  const joined = out.join(SEPARATOR);
-  if (isAbsolute)
-    return SEPARATOR + joined;
-  return joined || ".";
-}
-function join(...segments) {
-  const parts = [];
-  for (const segment of segments) {
-    if (typeof segment !== "string")
-      continue;
-    if (segment.length === 0)
-      continue;
-    parts.push(segment);
+  static #appendSegment(parts, segment, absolute) {
+    switch (segment) {
+      case this.#emptyPath:
+      case this.#currentDirectory:
+        break;
+      case this.#parentDirectory:
+        this.#resolveParent(parts, absolute);
+        break;
+      default:
+        parts.push(segment);
+    }
   }
-  if (parts.length === 0)
-    return ".";
-  return normalize(parts.join(SEPARATOR));
-}
-function dirname(value) {
-  const normalised = normalize(value);
-  if (normalised === SEPARATOR)
-    return SEPARATOR;
-  const index = normalised.lastIndexOf(SEPARATOR);
-  if (index < 0)
-    return ".";
-  if (index === 0)
-    return SEPARATOR;
-  return normalised.slice(0, index);
-}
-function basename(value) {
-  const normalised = normalize(value);
-  if (normalised === SEPARATOR)
-    return "";
-  const index = normalised.lastIndexOf(SEPARATOR);
-  if (index < 0)
-    return normalised;
-  return normalised.slice(index + 1);
-}
-function relative(from, to) {
-  const fromSegments = normalize(from).split(SEPARATOR).filter((segment) => segment.length > 0);
-  const toSegments = normalize(to).split(SEPARATOR).filter((segment) => segment.length > 0);
-  let common = 0;
-  while (common < fromSegments.length && common < toSegments.length && fromSegments[common] === toSegments[common]) {
-    common++;
+  static #resolveParent(parts, absolute) {
+    const canRemove = this.#canRemoveParent(parts);
+    this.#removeParent(parts, canRemove);
+    this.#appendParent(parts, this.#needsParent(canRemove, absolute));
   }
-  const out = [];
-  for (let index = common;index < fromSegments.length; index++)
-    out.push("..");
-  for (let index = common;index < toSegments.length; index++)
-    out.push(toSegments[index]);
-  return out.join(SEPARATOR);
-}
-function assertPathInside(parent, target) {
-  const resolvedParent = normalize(parent);
-  const resolvedTarget = normalize(target);
-  if (resolvedTarget === resolvedParent)
-    return;
-  const offset = relative(resolvedParent, resolvedTarget);
-  if (offset.startsWith("..") || offset.startsWith(SEPARATOR)) {
-    throw new Error(`Unsafe document path: ${target}`);
+  static #canRemoveParent(parts) {
+    return parts.length > this.#emptyLength && parts[parts.length - 1] !== this.#parentDirectory;
+  }
+  static #needsParent(canRemove, absolute) {
+    return !canRemove && !absolute;
+  }
+  static #removeParent(parts, canRemove) {
+    if (canRemove)
+      parts.pop();
+  }
+  static #appendParent(parts, needed) {
+    if (needed)
+      parts.push(this.#parentDirectory);
+  }
+  static #stringParts(segments) {
+    return segments.filter(this.#isString);
+  }
+  static #isString(value) {
+    return typeof value === BrowserPath.#stringType;
+  }
+  static #withoutEmpty(segments) {
+    return segments.filter(this.#hasText);
+  }
+  static #hasText(segment) {
+    return segment.length > BrowserPath.#emptyLength;
+  }
+  static #relativeOrDot(joined) {
+    if (joined.length === this.#emptyLength)
+      return this.#currentDirectory;
+    return joined;
+  }
+  static #rootedPath(joined, relative, absolute) {
+    if (absolute)
+      return this.#separator + joined;
+    return relative;
+  }
+  static #parentEnd(index) {
+    if (index === this.#firstIndex)
+      return 1;
+    return index;
+  }
+  static #parentOrDot(parent, index) {
+    if (index < this.#firstIndex)
+      return this.#currentDirectory;
+    return parent;
+  }
+  static #resolutionTarget(from, value) {
+    if (typeof value !== this.#stringType)
+      return { value: from, standalone: true };
+    return { value, standalone: value.startsWith(this.#separator) };
+  }
+  static #resolutionInput(from, target) {
+    if (target.standalone)
+      return target.value;
+    return `${from}${this.#separator}${target.value}`;
+  }
+  static #pathSegments(path) {
+    return this.#withoutEmpty(this.normalize(path).split(this.#separator));
+  }
+  static #commonLength(from, to) {
+    let common = 0;
+    while (this.#sameSegment(from, to, common))
+      common++;
+    return common;
+  }
+  static #sameSegment(from, to, index) {
+    return index < Math.min(from.length, to.length) && from[index] === to[index];
+  }
+  static #checkDifferentPaths(parent, normalized, target) {
+    if (parent === normalized)
+      return;
+    this.#checkOffset(this.relative(parent, normalized), target);
+  }
+  static #checkOffset(offset, target) {
+    this.#rejectParentPath(offset, target);
+    this.#rejectAbsolutePath(offset, target);
+  }
+  static #rejectParentPath(offset, target) {
+    if (offset.startsWith(this.#parentDirectory)) {
+      throw new Error(`${this.#unsafePathMessage}${target}`);
+    }
+  }
+  static #rejectAbsolutePath(offset, target) {
+    if (offset.startsWith(this.#separator)) {
+      throw new Error(`${this.#unsafePathMessage}${target}`);
+    }
   }
 }
 
@@ -1042,7 +1125,7 @@ class BrowserDocuments {
     this.validateDocId(docId);
     const root = this.docsRoot(collection);
     const target = await this.existingPath(root, this.docPath(collection, docId), docId);
-    assertPathInside(root, target);
+    BrowserPath.assertPathInside(root, target);
     if (!await this.fs.exists(target))
       return null;
     const text = await this.fs.readText(target);
@@ -1059,7 +1142,7 @@ class BrowserDocuments {
     this.validateDocId(docId);
     const root = this.deletedRoot(collection);
     const target = await this.existingPath(root, this.deletedPath(collection, docId), docId);
-    assertPathInside(root, target);
+    BrowserPath.assertPathInside(root, target);
     if (!await this.fs.exists(target))
       return null;
     const text = await this.fs.readText(target);
@@ -1076,7 +1159,7 @@ class BrowserDocuments {
     this.validateDocId(docId);
     await this.ensureCollection(collection);
     const target = this.docPath(collection, docId);
-    assertPathInside(this.docsRoot(collection), target);
+    BrowserPath.assertPathInside(this.docsRoot(collection), target);
     const text = JSON.stringify(data);
     this.assertJsonDocumentText(text);
     await this.fs.writeText(target, text);
@@ -1090,7 +1173,7 @@ class BrowserDocuments {
     this.validateDocId(docId);
     const root = this.docsRoot(collection);
     const target = await this.existingPath(root, this.docPath(collection, docId), docId);
-    assertPathInside(root, target);
+    BrowserPath.assertPathInside(root, target);
     if (await this.fs.exists(target))
       await this.fs.remove(target);
   }
@@ -1098,8 +1181,8 @@ class BrowserDocuments {
     this.validateDocId(docId);
     const source = await this.existingPath(this.docsRoot(collection), this.docPath(collection, docId), docId);
     const target = this.deletedPath(collection, docId);
-    assertPathInside(this.docsRoot(collection), source);
-    assertPathInside(this.deletedRoot(collection), target);
+    BrowserPath.assertPathInside(this.docsRoot(collection), source);
+    BrowserPath.assertPathInside(this.deletedRoot(collection), target);
     if (!await this.fs.exists(source)) {
       throw new Error(`Document not found: ${docId}`);
     }
@@ -1116,8 +1199,8 @@ class BrowserDocuments {
     this.validateDocId(docId);
     const source = await this.existingPath(this.deletedRoot(collection), this.deletedPath(collection, docId), docId);
     const target = this.docPath(collection, docId);
-    assertPathInside(this.deletedRoot(collection), source);
-    assertPathInside(this.docsRoot(collection), target);
+    BrowserPath.assertPathInside(this.deletedRoot(collection), source);
+    BrowserPath.assertPathInside(this.docsRoot(collection), target);
     if (!await this.fs.exists(source)) {
       throw new Error(`No tombstone to restore: ${docId}`);
     }
@@ -1133,13 +1216,13 @@ class BrowserDocuments {
   async existingPath(root, canonical, docId) {
     if (await this.fs.exists(canonical))
       return canonical;
-    const legacy = join(root, legacyShardOf(docId), `${docId}.json`);
-    assertPathInside(root, legacy);
+    const legacy = BrowserPath.join(root, legacyShardOf(docId), `${docId}.json`);
+    BrowserPath.assertPathInside(root, legacy);
     return legacy !== canonical && await this.fs.exists(legacy) ? legacy : canonical;
   }
   async removeLegacyCopy(root, canonical, docId) {
-    const legacy = join(root, legacyShardOf(docId), `${docId}.json`);
-    assertPathInside(root, legacy);
+    const legacy = BrowserPath.join(root, legacyShardOf(docId), `${docId}.json`);
+    BrowserPath.assertPathInside(root, legacy);
     if (legacy !== canonical && await this.fs.exists(legacy))
       await this.fs.remove(legacy);
   }
@@ -1175,14 +1258,14 @@ async function listBucketedDocIds(fs, root) {
   const ids = [];
   const buckets = await fs.list(root);
   for (const bucket of buckets) {
-    const bucketPath = join(root, bucket);
+    const bucketPath = BrowserPath.join(root, bucket);
     if (!await fs.isDirectory(bucketPath))
       continue;
     const files = await fs.list(bucketPath);
     for (const file of files) {
       if (!file.endsWith(".json"))
         continue;
-      const id = basename(file).slice(0, -".json".length);
+      const id = BrowserPath.basename(file).slice(0, -".json".length);
       if (TTID.isTTID(id))
         ids.push(id);
     }
@@ -1190,99 +1273,227 @@ async function listBucketedDocIds(fs, root) {
   return ids;
 }
 
-// src/browser/core/metadata.js
-var META_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
-var MAX_META_VALUE_BYTES = 60 * 1024;
-function validateMetadataRecord(record) {
-  if (typeof record !== "object" || record === null || Array.isArray(record)) {
-    throw new Error("Metadata must be a plain object of name/value pairs");
+// src/browser/core/metadata-record.js
+class MetadataRecord {
+  static #name = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+  static #maximumValueBytes = 60 * 1024;
+  static validate(record) {
+    this.#checkRecord(record);
+    this.#checkEntries(record);
   }
-  for (const [name, value] of Object.entries(record)) {
-    if (!META_NAME.test(name)) {
+  static #checkRecord(record) {
+    this.#requireRecord(typeof record === "object");
+    this.#requireRecord(record !== null);
+    this.#requireRecord(!Array.isArray(record));
+  }
+  static #requireRecord(valid) {
+    if (!valid)
+      throw new Error("Metadata must be a plain object of name/value pairs");
+  }
+  static #checkEntries(record) {
+    for (const [name, value] of Object.entries(record)) {
+      this.#checkName(name);
+      this.#checkValue(value);
+    }
+  }
+  static #checkName(name) {
+    if (!this.#name.test(name)) {
       throw new Error('Metadata name must be 1-64 characters: letters, digits, ".", "_" or "-", starting with a letter or digit');
     }
-    if (value !== null) {
-      const encoded = JSON.stringify(value);
-      if (encoded === undefined)
-        throw new Error("Metadata values must be JSON-serializable");
-      if (new TextEncoder().encode(encoded).byteLength > MAX_META_VALUE_BYTES) {
-        throw new Error("Metadata values must be at most 60 KiB when JSON-encoded");
-      }
+  }
+  static #checkValue(value) {
+    if (value !== null)
+      this.#checkEncodedValue(value);
+  }
+  static #checkEncodedValue(value) {
+    const encoded = JSON.stringify(value);
+    this.#requireJson(encoded);
+    this.#checkSize(new TextEncoder().encode(encoded).byteLength);
+  }
+  static #requireJson(encoded) {
+    if (encoded === undefined)
+      throw new Error("Metadata values must be JSON-serializable");
+  }
+  static #checkSize(bytes) {
+    if (bytes > this.#maximumValueBytes) {
+      throw new Error("Metadata values must be at most 60 KiB when JSON-encoded");
     }
   }
 }
 
+// src/browser/core/browser-metadata-store.js
 class BrowserMetadataStore {
   constructor(fs, collectionRoot) {
     this.fs = fs;
     this.collectionRoot = collectionRoot;
   }
   root(collection) {
-    return join(this.collectionRoot(collection), ".metadata");
+    return BrowserPath.join(this.collectionRoot(collection), ".metadata");
   }
   path(collection, id) {
-    if (!TTID.isTTID(id))
-      throw new Error(`Invalid document ID: ${id}`);
-    const root = this.root(collection);
-    const target = join(root, shardOf(id), `${id}.json`);
-    assertPathInside(root, target);
-    return target;
+    this.#checkId(id);
+    return this.#shardPath(collection, id, shardOf(id));
   }
   async read(collection, id) {
     const target = await this.existingPath(collection, id);
-    if (!await this.fs.exists(target))
-      return { values: safeRecord(), updatedAt: 0 };
-    const parsed = JSON.parse(await this.fs.readText(target));
-    return {
-      values: parsed && typeof parsed.values === "object" && !Array.isArray(parsed.values) ? copySafeJson(parsed.values) : safeRecord(),
-      updatedAt: typeof parsed?.updatedAt === "number" ? parsed.updatedAt : 0
-    };
+    return await this.#readIfPresent(target, await this.fs.exists(target));
   }
   async mutate(collection, id, mutations) {
-    validateMetadataRecord(mutations);
+    MetadataRecord.validate(mutations);
     const current = await this.read(collection, id);
     const values = copySafeJson(current.values);
-    for (const [name, value] of Object.entries(mutations)) {
-      if (value === null)
-        delete values[name];
-      else
-        values[name] = copySafeJson(value);
-    }
+    this.#applyMutations(values, mutations);
     return await this.write(collection, id, values, Math.max(Date.now(), current.updatedAt + 1));
   }
   async write(collection, id, values, updatedAt) {
     const target = this.path(collection, id);
-    await this.fs.mkdir(join(this.root(collection), shardOf(id)), { recursive: true });
+    await this.fs.mkdir(BrowserPath.join(this.root(collection), shardOf(id)), {
+      recursive: true
+    });
     await this.fs.writeText(target, JSON.stringify({ values, updatedAt }));
     const legacy = this.legacyPath(collection, id);
-    if (legacy !== target && await this.fs.exists(legacy))
-      await this.fs.remove(legacy);
+    await this.#removeExistingFile(legacy, await this.#legacyExists(legacy, target));
     return { values, updatedAt };
   }
   legacyPath(collection, id) {
-    const root = this.root(collection);
-    const target = join(root, legacyShardOf(id), `${id}.json`);
-    assertPathInside(root, target);
-    return target;
+    return this.#shardPath(collection, id, legacyShardOf(id));
   }
   async existingPath(collection, id) {
     const canonical = this.path(collection, id);
-    if (await this.fs.exists(canonical))
+    return await this.#existingPath(collection, id, canonical, await this.fs.exists(canonical));
+  }
+  #checkId(id) {
+    if (!TTID.isTTID(id))
+      throw new Error(`Invalid document ID: ${id}`);
+  }
+  #shardPath(collection, id, shard) {
+    const root = this.root(collection);
+    const target = BrowserPath.join(root, shard, `${id}.json`);
+    BrowserPath.assertPathInside(root, target);
+    return target;
+  }
+  async#readIfPresent(target, exists) {
+    if (!exists)
+      return { values: safeRecord(), updatedAt: 0 };
+    return await this.#readSidecar(target);
+  }
+  async#readSidecar(target) {
+    const parsed = JSON.parse(await this.fs.readText(target));
+    return {
+      values: this.#values(parsed?.values),
+      updatedAt: this.#updatedAt(parsed?.updatedAt)
+    };
+  }
+  #values(value) {
+    const object = this.#objectValues(value);
+    return this.#copyRecord(object);
+  }
+  #objectValues(value) {
+    if (typeof value !== "object")
+      return safeRecord();
+    return value;
+  }
+  #copyRecord(value) {
+    if (Array.isArray(value))
+      return safeRecord();
+    return copySafeJson(value);
+  }
+  #updatedAt(value) {
+    if (typeof value === "number")
+      return value;
+    return 0;
+  }
+  #applyMutations(values, mutations) {
+    for (const [name, value] of Object.entries(mutations)) {
+      this.#applyMutation(values, name, value);
+    }
+  }
+  #applyMutation(values, name, value) {
+    if (value === null)
+      delete values[name];
+    else
+      values[name] = copySafeJson(value);
+  }
+  async#legacyExists(legacy, canonical) {
+    if (legacy === canonical)
+      return false;
+    return await this.fs.exists(legacy);
+  }
+  async#removeExistingFile(path, exists) {
+    if (exists)
+      await this.fs.remove(path);
+  }
+  async#existingPath(collection, id, canonical, exists) {
+    if (exists)
       return canonical;
+    return await this.#findLegacyPath(collection, id, canonical);
+  }
+  async#findLegacyPath(collection, id, canonical) {
     const legacy = this.legacyPath(collection, id);
-    return legacy !== canonical && await this.fs.exists(legacy) ? legacy : canonical;
+    return this.#selectPath(canonical, legacy, await this.#legacyExists(legacy, canonical));
+  }
+  #selectPath(canonical, legacy, exists) {
+    if (exists)
+      return legacy;
+    return canonical;
   }
 }
 
-// src/browser/core/event-bus.js
+// src/browser/core/browser-event-stream.js
+class BrowserEventStream {
+  static #emptyLength = 0;
+  #queue = [];
+  #wake = () => {};
+  constructor(subscribe) {
+    this.subscribe = subscribe;
+  }
+  iterate() {
+    return this.#withSubscription();
+  }
+  async* #withSubscription() {
+    const unsubscribe = this.subscribe(this.#receive.bind(this));
+    try {
+      yield* this.#readEvents();
+    } finally {
+      unsubscribe();
+    }
+  }
+  #receive(event) {
+    this.#queue.push(event);
+    this.#wake();
+  }
+  async* #readEvents() {
+    while (true) {
+      await this.#waitForEvent();
+      yield* this.#drainQueue();
+    }
+  }
+  async#waitForEvent() {
+    if (this.#queue.length === BrowserEventStream.#emptyLength) {
+      await this.#waitForPublication();
+    }
+  }
+  #waitForPublication() {
+    return new Promise((resolve) => {
+      this.#wake = () => resolve(undefined);
+    });
+  }
+  async* #drainQueue() {
+    while (this.#queue.length > BrowserEventStream.#emptyLength) {
+      yield this.#queue.shift();
+    }
+  }
+}
+
+// src/browser/core/browser-event-bus.js
 class BrowserEventBus {
-  constructor(fs, rootForCollection) {
-    this.fs = fs;
+  constructor(filesystem, rootForCollection) {
+    this.fs = filesystem;
     this.rootForCollection = rootForCollection;
     this.target = new EventTarget;
   }
   journalPath(collection) {
-    return join(this.rootForCollection(collection), "events", `${collection}.ndjson`);
+    return BrowserPath.join(this.rootForCollection(collection), "events", `${collection}.ndjson`);
   }
   async publish(collection, event) {
     await this.fs.appendText(this.journalPath(collection), `${JSON.stringify(event)}
@@ -1296,26 +1507,9 @@ class BrowserEventBus {
     this.target.addEventListener(collection, handler);
     return () => this.target.removeEventListener(collection, handler);
   }
-  async* listen(collection) {
-    const queue = [];
-    let wake = () => {};
-    const unsubscribe = this.subscribe(collection, (event) => {
-      queue.push(event);
-      wake();
-    });
-    try {
-      while (true) {
-        if (queue.length === 0) {
-          await new Promise((resolve) => {
-            wake = () => resolve(undefined);
-          });
-        }
-        while (queue.length > 0)
-          yield queue.shift();
-      }
-    } finally {
-      unsubscribe();
-    }
+  listen(collection) {
+    const stream = new BrowserEventStream(this.subscribe.bind(this, collection));
+    return stream.iterate();
   }
 }
 
@@ -1680,16 +1874,16 @@ class BrowserPrefixIndex {
     } catch {}
   }
   root(collection) {
-    return join(this.rootForCollection(collection), "index");
+    return BrowserPath.join(this.rootForCollection(collection), "index");
   }
   manifestPath(collection) {
-    return join(this.root(collection), LOCAL_FS_MANIFEST);
+    return BrowserPath.join(this.root(collection), LOCAL_FS_MANIFEST);
   }
   snapshotPath(collection) {
-    return join(this.root(collection), LOCAL_FS_SNAPSHOT);
+    return BrowserPath.join(this.root(collection), LOCAL_FS_SNAPSHOT);
   }
   walPath(collection) {
-    return join(this.root(collection), LOCAL_FS_WAL);
+    return BrowserPath.join(this.root(collection), LOCAL_FS_WAL);
   }
   async ensureCollection(collection) {
     await this.fs.mkdir(this.root(collection), { recursive: true });
@@ -2227,16 +2421,16 @@ var JOIN_MODES = {
   left: (leftData) => leftData,
   right: (leftData, rightData) => rightData
 };
-function groupJoinedDocs(join2, docs) {
+function groupJoinedDocs(join, docs) {
   const groupedDocs = safeRecord();
   for (const ids of Object.keys(docs)) {
     const data = docs[ids];
-    const key = String(data[join2.$groupby]);
+    const key = String(data[join.$groupby]);
     if (!Object.hasOwn(groupedDocs, key))
       groupedDocs[key] = safeRecord();
     groupedDocs[key][ids] = data;
   }
-  if (!join2.$onlyIds)
+  if (!join.$onlyIds)
     return groupedDocs;
   const groupedIds = safeRecord();
   for (const key of Object.keys(groupedDocs)) {
@@ -2315,13 +2509,13 @@ class BrowserCore {
   }
   collectionRoot(collection) {
     this.assertCollectionName(collection);
-    return join(this.root, ".collections", collection);
+    return BrowserPath.join(this.root, ".collections", collection);
   }
   docsRoot(collection) {
-    return join(this.collectionRoot(collection), "docs");
+    return BrowserPath.join(this.collectionRoot(collection), "docs");
   }
   deletedRoot(collection) {
-    return join(this.collectionRoot(collection), ".deleted");
+    return BrowserPath.join(this.collectionRoot(collection), ".deleted");
   }
   metaRoot(collection) {
     return this.collectionRoot(collection);
@@ -2329,15 +2523,15 @@ class BrowserCore {
   docPath(collection, docId) {
     validateDocId(docId);
     const root = this.docsRoot(collection);
-    const target = join(root, shardOf(docId), `${docId}.json`);
-    assertPathInside(root, target);
+    const target = BrowserPath.join(root, shardOf(docId), `${docId}.json`);
+    BrowserPath.assertPathInside(root, target);
     return target;
   }
   deletedPath(collection, docId) {
     validateDocId(docId);
     const root = this.deletedRoot(collection);
-    const target = join(root, shardOf(docId), `${docId}.json`);
-    assertPathInside(root, target);
+    const target = BrowserPath.join(root, shardOf(docId), `${docId}.json`);
+    BrowserPath.assertPathInside(root, target);
     return target;
   }
   async withCollectionWriteLane(collection, action) {
@@ -2349,7 +2543,9 @@ class BrowserCore {
     await this.fs.mkdir(this.docsRoot(collection), { recursive: true });
     await this.fs.mkdir(this.deletedRoot(collection), { recursive: true });
     await this.fs.mkdir(this.metadata.root(collection), { recursive: true });
-    await this.fs.mkdir(join(this.collectionRoot(collection), "events"), { recursive: true });
+    await this.fs.mkdir(BrowserPath.join(this.collectionRoot(collection), "events"), {
+      recursive: true
+    });
     await this.index.ensureCollection(collection);
   }
   async createCollection(collection) {
@@ -2423,7 +2619,7 @@ class BrowserCore {
   }
   async putData(collection, data, meta) {
     if (meta !== undefined)
-      validateMetadataRecord(meta);
+      MetadataRecord.validate(meta);
     await this.requireCollection(collection);
     const explicit = explicitDocumentEntry(data);
     const id = explicit?.[0] ?? TTID.generate();
@@ -2755,31 +2951,31 @@ class BrowserCore {
     this.assertCollectionName(collection);
     return this.events.subscribe(collection, listener);
   }
-  async join(join2) {
-    const leftDocs = await this.docResults(join2.$leftCollection);
-    const rightDocs = await this.docResults(join2.$rightCollection);
+  async join(join) {
+    const leftDocs = await this.docResults(join.$leftCollection);
+    const rightDocs = await this.docResults(join.$rightCollection);
     const docs = safeRecord();
     for (const leftEntry of leftDocs) {
       const [leftId, leftData] = Object.entries(leftEntry)[0];
       for (const rightEntry of rightDocs) {
         const [rightId, rightData] = Object.entries(rightEntry)[0];
-        if (!this.joinRowMatches(join2, leftData, rightData))
+        if (!this.joinRowMatches(join, leftData, rightData))
           continue;
-        docs[`${leftId}, ${rightId}`] = this.projectJoinRow(join2, leftData, rightData);
-        if (join2.$limit && Object.keys(docs).length >= join2.$limit)
+        docs[`${leftId}, ${rightId}`] = this.projectJoinRow(join, leftData, rightData);
+        if (join.$limit && Object.keys(docs).length >= join.$limit)
           break;
       }
-      if (join2.$limit && Object.keys(docs).length >= join2.$limit)
+      if (join.$limit && Object.keys(docs).length >= join.$limit)
         break;
     }
-    if (join2.$groupby)
-      return groupJoinedDocs(join2, docs);
-    if (join2.$onlyIds)
+    if (join.$groupby)
+      return groupJoinedDocs(join, docs);
+    if (join.$onlyIds)
       return Array.from(new Set(Object.keys(docs).flat()));
     return docs;
   }
-  joinRowMatches(join2, leftData, rightData) {
-    for (const [field, operand] of Object.entries(join2.$on)) {
+  joinRowMatches(join, leftData, rightData) {
+    for (const [field, operand] of Object.entries(join.$on)) {
       if (!operand)
         continue;
       for (const opKey of Object.keys(JOIN_COMPARATORS)) {
@@ -2794,13 +2990,13 @@ class BrowserCore {
     }
     return false;
   }
-  projectJoinRow(join2, leftData, rightData) {
-    const combine = JOIN_MODES[join2.$mode];
+  projectJoinRow(join, leftData, rightData) {
+    const combine = JOIN_MODES[join.$mode];
     let projected = combine ? combine(leftData, rightData) : undefined;
-    if (join2.$select?.length)
-      projected = this.queryEngine.selectValues(join2.$select, projected);
-    if (join2.$rename)
-      projected = this.queryEngine.renameFields(join2.$rename, projected);
+    if (join.$select?.length)
+      projected = this.queryEngine.selectValues(join.$select, projected);
+    if (join.$rename)
+      projected = this.queryEngine.renameFields(join.$rename, projected);
     return projected;
   }
   async executeSQL(SQL) {
@@ -3097,7 +3293,7 @@ class MemoryFilesystem {
     this.mtimes.set("/", Date.now());
   }
   key(path) {
-    const normalised = normalize(path);
+    const normalised = BrowserPath.normalize(path);
     if (!normalised.startsWith("/"))
       return `/${normalised === "." ? "" : normalised}`;
     return normalised;
@@ -3133,7 +3329,7 @@ class MemoryFilesystem {
       }
       return;
     }
-    const parent = dirname(key);
+    const parent = BrowserPath.dirname(key);
     if (!this.dirs.has(parent))
       throw notFound(parent);
     this.dirs.add(key);
@@ -3217,7 +3413,7 @@ class MemoryFilesystem {
     return bytes.byteLength;
   }
   ensureParents(key) {
-    const parent = dirname(key);
+    const parent = BrowserPath.dirname(key);
     if (this.files.has(parent))
       throw notDirectory(parent);
     if (this.dirs.has(parent))
@@ -3312,7 +3508,7 @@ class OpfsFilesystem {
     this.dirCache = new Map;
   }
   key(path) {
-    const normalised = normalize(path);
+    const normalised = BrowserPath.normalize(path);
     return normalised.startsWith("/") ? normalised.slice(1) : normalised;
   }
   async root() {
@@ -3340,7 +3536,7 @@ class OpfsFilesystem {
     return handle;
   }
   async fileHandle(path, create = false) {
-    const dir = await this.directoryHandle(dirname(path), create);
+    const dir = await this.directoryHandle(BrowserPath.dirname(path), create);
     return await dir.getFileHandle(this.basename(path), { create });
   }
   basename(path) {
@@ -3396,7 +3592,7 @@ class OpfsFilesystem {
     return names.sort();
   }
   async rmdir(path, options = {}) {
-    const parent = await this.directoryHandle(dirname(path), false);
+    const parent = await this.directoryHandle(BrowserPath.dirname(path), false);
     try {
       await parent.removeEntry(this.basename(path), { recursive: options.recursive === true });
     } catch (err) {
@@ -3444,7 +3640,7 @@ class OpfsFilesystem {
     await this.writeBytes(path, merged);
   }
   async remove(path) {
-    const parent = await this.directoryHandle(dirname(path), false);
+    const parent = await this.directoryHandle(BrowserPath.dirname(path), false);
     try {
       await parent.removeEntry(this.basename(path));
     } catch (err) {
@@ -3478,7 +3674,7 @@ class FsaFilesystem extends OpfsFilesystem {
 function createOverlayFilesystem(base) {
   const layer = createMemoryFilesystem();
   const removed = new Set;
-  const key = (path) => normalize(path);
+  const key = (path) => BrowserPath.normalize(path);
   const inBase = async (path) => !removed.has(key(path)) && await base.exists(path);
   const copyUp = async (path) => {
     if (!await layer.exists(path) && await inBase(path)) {

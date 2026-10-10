@@ -314,14 +314,13 @@ should retain checkpoints outside temporary storage so evidence survives reboot.
 
 ## Remaining release gates
 
-1. Run Linux and Windows native CI and all SDK/browser jobs on an exact committed
-   candidate. Existing remote results at `e2361625` do not validate this dirty
-   worktree. The scheduled fuzz failure was reproduced and corrected locally;
-   the remote run remains failed until a new candidate is verified.
-   A local probe found Docker installed but its daemon unavailable, with no active
-   local Linux/Windows environment established; no VM/container service was started.
-2. Keep the full browser matrix green on the committed candidate using the
-   isolated WebKit profile fixture. The local OPFS blocker is resolved; private
+1. Passed on `develop` at `65d774b` (CI run `38083366120`): Linux, macOS, and
+   Windows 2022/2025 native CI, Miri, coverage, SBOM, dependency policy, the
+   compiled binary and published clients, and the EFS profile on local NFS 4.1
+   with Lambda in Floci. Floci does not enforce IAM, VPC isolation, or access-point
+   identities, so those properties still need a real AWS run.
+2. Passed in the same run: Chromium and Firefox on ubuntu-24.04 and WebKit on
+   macos-15 (Linux WebKit builds expose no `navigator.storage`). Private
    browsing/ephemeral contexts remain outside the qualified surface.
 3. Measure cold storage on an isolated test volume, representative datasets beyond
    the 10,000-document local fixture (including above-budget real-document indexes),
