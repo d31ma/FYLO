@@ -1320,3 +1320,35 @@ fn an_open_root_refuses_removed_or_changed_profile_descriptors() {
     assert_eq!(fs::read(&before.path).unwrap(), before.bytes);
     assert_eq!(fs::read(sidecar(&before.path)).unwrap(), sidecar_before);
 }
+
+#[test]
+fn a_descriptor_changed_after_admission_is_refused_even_when_recently_verified() {
+    let fixture = Fixture::empty();
+    let writer = fixture.seed();
+    let marker = fixture.root.join(".fylo-catalog/filesystem-profile.json");
+    let original = fs::read(&marker).unwrap();
+    // Same length and owner, different bytes: only a fresh read can tell.
+    let mut descriptor: Value = serde_json::from_slice(&original).unwrap();
+    descriptor["profile"] = json!("efs-sidecar-v9");
+    let changed = serde_json::to_vec(&descriptor).unwrap();
+    assert_eq!(changed.len(), original.len());
+    fs::write(&marker, &changed).unwrap();
+    let refused = writer.put_document(
+        "records",
+        "4VRNF52JPCQ",
+        br#"{"name":"Grace"}"#,
+        PutDocumentOptions::default(),
+    );
+    assert_eq!(
+        refused.err().unwrap().code(),
+        NativeStorageErrorCode::CorruptMetadata
+    );
+    assert!(
+        !fixture
+            .root
+            .join(".collections/records/docs")
+            .read_dir()
+            .unwrap()
+            .any(|shard| { shard.unwrap().path().join("4VRNF52JPCQ.json").exists() })
+    );
+}

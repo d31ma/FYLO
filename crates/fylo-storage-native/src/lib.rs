@@ -228,7 +228,8 @@ impl NativeRoot {
                     "EFS owner is absent",
                 )
             })?;
-            lease.assert_owned()?;
+            // Ownership was asserted above; reading the owner record again would
+            // only repeat a network round trip.
             if !lease.kernel_enforced() || lease.root() != self.repository_root {
                 return Err(NativeStorageError::new(
                     NativeStorageErrorCode::RootLeaseLost,

@@ -49,6 +49,11 @@ impl ProfileManifest {
                 "filesystem profile descriptor exceeds its limit",
             ));
         }
+        #[cfg(unix)]
+        let unchanged = match verified::check(root, &path, &original_parent, &metadata)? {
+            Ok(descriptor) => return Ok(Some(descriptor)),
+            Err(key) => key,
+        };
         let mut file = File::open(&path).map_err(NativeStorageError::io)?;
         let opened = file.metadata().map_err(NativeStorageError::io)?;
         if !opened.is_file() {
@@ -119,6 +124,8 @@ impl ProfileManifest {
             return Err(corrupt_marker());
         }
         descriptor.verify_identity(root)?;
+        #[cfg(unix)]
+        verified::remember(path, unchanged, &descriptor);
         Ok(Some(descriptor))
     }
 
@@ -227,4 +234,79 @@ fn unsafe_marker() -> NativeStorageError {
         NativeStorageErrorCode::UnsafePath,
         "filesystem profile descriptor is not a stable regular file",
     )
+}
+
+/// The descriptor is re-checked before every profiled mutation. Over NFS each
+/// full read is several round trips (open, read, close and identity checks),
+/// and a write makes hundreds of checks. A descriptor whose root, parent and
+/// file metadata are unchanged since a full verification has unchanged bytes:
+/// any rewrite, replacement or ownership or mode change moves `ctime` or the
+/// inode. So an unchanged key reuses the verified descriptor, and anything
+/// else takes the full path.
+#[cfg(unix)]
+mod verified {
+    use std::os::unix::fs::MetadataExt;
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+
+    use fylo_vfs::{self as fs, Metadata};
+
+    use super::ProfileManifest;
+    use crate::NativeStorageError;
+
+    #[derive(Clone, Eq, PartialEq)]
+    pub(super) struct Key([i64; 17]);
+
+    impl Key {
+        fn of(root: &Path, parent: &Metadata, file: &Metadata) -> Result<Self, NativeStorageError> {
+            let root = fs::symlink_metadata(root).map_err(NativeStorageError::io)?;
+            let stamp = |value: u64| i64::try_from(value).unwrap_or(i64::MAX);
+            Ok(Self([
+                stamp(root.dev()),
+                stamp(root.ino()),
+                i64::from(root.uid()),
+                i64::from(root.gid()),
+                stamp(parent.dev()),
+                stamp(parent.ino()),
+                i64::from(parent.uid()),
+                i64::from(parent.gid()),
+                i64::from(parent.mode()),
+                stamp(file.dev()),
+                stamp(file.ino()),
+                i64::from(file.mode()),
+                stamp(file.size()),
+                file.mtime(),
+                file.mtime_nsec(),
+                file.ctime(),
+                file.ctime_nsec(),
+            ]))
+        }
+    }
+
+    // ponytail: one entry; a process serves one profiled root at a time.
+    static VERIFIED: Mutex<Option<(PathBuf, Key, ProfileManifest)>> = Mutex::new(None);
+
+    /// The verified descriptor when nothing changed, otherwise the key to
+    /// remember after a full verification.
+    pub(super) fn check(
+        root: &Path,
+        path: &Path,
+        parent: &Metadata,
+        file: &Metadata,
+    ) -> Result<Result<ProfileManifest, Key>, NativeStorageError> {
+        let key = Key::of(root, parent, file)?;
+        let verified = VERIFIED.lock().ok();
+        let hit = verified
+            .as_ref()
+            .and_then(|verified| verified.as_ref())
+            .filter(|(cached_path, cached_key, _)| cached_path == path && *cached_key == key)
+            .map(|(_, _, descriptor)| descriptor.clone());
+        Ok(hit.ok_or(key))
+    }
+
+    pub(super) fn remember(path: PathBuf, key: Key, descriptor: &ProfileManifest) {
+        if let Ok(mut verified) = VERIFIED.lock() {
+            *verified = Some((path, key, descriptor.clone()));
+        }
+    }
 }

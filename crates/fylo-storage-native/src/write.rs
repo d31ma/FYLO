@@ -441,6 +441,7 @@ impl NativeWriteRoot {
             capture_index(&mut transaction, &collection)?;
             // The identifier is proven absent above, so nothing to remove.
             self.apply_index_delta(
+                &mut transaction,
                 &collection,
                 &BTreeSet::new(),
                 &record_index_keys(&collection, identifier)?,
@@ -561,6 +562,7 @@ impl NativeWriteRoot {
             capture_index(&mut transaction, &collection)?;
             // The identifier is proven absent above, so nothing to remove.
             self.apply_index_delta(
+                &mut transaction,
                 &collection,
                 &BTreeSet::new(),
                 &record_index_keys(&collection, identifier)?,
@@ -654,6 +656,7 @@ impl NativeWriteRoot {
             capture_index(&mut transaction, &collection)?;
             self.overwrite_record(&target, &canonical)?;
             self.apply_index_delta(
+                &mut transaction,
                 &collection,
                 &before,
                 &record_index_keys(&collection, identifier)?,
@@ -832,6 +835,7 @@ impl NativeWriteRoot {
                 updated_at.to_string().as_bytes(),
             )?;
             self.apply_index_delta(
+                &mut transaction,
                 &collection,
                 &before,
                 &record_index_keys(&collection, identifier)?,
@@ -931,7 +935,7 @@ impl NativeWriteRoot {
             sync_parent(&target)?;
             failpoint("after-delete-rename")?;
             // The record now lives under `.deleted`, which is not indexed.
-            self.apply_index_delta(&collection, &before, &BTreeSet::new())?;
+            self.apply_index_delta(&mut transaction, &collection, &before, &BTreeSet::new())?;
             transaction.commit()
         })();
         if let Err(error) = outcome {
@@ -1019,6 +1023,7 @@ impl NativeWriteRoot {
             // A live record at this identifier is refused above, so the
             // tombstone's keys are additions.
             self.apply_index_delta(
+                &mut transaction,
                 &collection,
                 &BTreeSet::new(),
                 &record_index_keys(&collection, identifier)?,
@@ -1096,7 +1101,7 @@ impl NativeWriteRoot {
                 }
                 remove_emptied_shards(&root)?;
             }
-            capture_index(&mut transaction, &collection)?;
+            capture_index_files(&mut transaction, &collection)?;
             self.rebuild_index(&collection)?;
             transaction.commit()
         })();
@@ -1151,7 +1156,7 @@ impl NativeWriteRoot {
         self.recover_locked(&collection)?;
         let mut transaction = Transaction::begin(self, &collection, "rebuild-index")?;
         let outcome = (|| {
-            capture_index(&mut transaction, &collection)?;
+            capture_index_files(&mut transaction, &collection)?;
             self.rebuild_index(&collection)?;
             transaction.commit()
         })();
@@ -1466,6 +1471,7 @@ impl NativeWriteRoot {
             capture_index(&mut transaction, collection)?;
             self.overwrite_record(target, canonical)?;
             self.apply_index_delta(
+                &mut transaction,
                 collection,
                 &before,
                 &record_index_keys(collection, identifier)?,
@@ -1584,6 +1590,7 @@ impl NativeWriteRoot {
                 self.overwrite_record(&document.path, &document.encoded)?;
             }
             self.apply_index_delta(
+                &mut transaction,
                 collection,
                 &before,
                 &record_index_keys_for(collection, documents)?,
@@ -1622,7 +1629,7 @@ impl NativeWriteRoot {
                 failpoint("after-delete-rename")?;
             }
             // Every record moved under `.deleted`, which is not indexed.
-            self.apply_index_delta(collection, &before, &BTreeSet::new())?;
+            self.apply_index_delta(&mut transaction, collection, &before, &BTreeSet::new())?;
             transaction.commit()
         })();
         finish_transaction(transaction, outcome, "SQL DELETE")
@@ -1674,6 +1681,7 @@ impl NativeWriteRoot {
     /// that point, which is what a create and a delete respectively see.
     fn apply_index_delta(
         &self,
+        transaction: &mut Transaction<'_>,
         collection: &super::NativeCollection,
         before: &BTreeSet<String>,
         after: &BTreeSet<String>,
@@ -1696,7 +1704,7 @@ impl NativeWriteRoot {
         let index = collection.path.join("index");
         ensure_directory(&self.root, &index)?;
         append_synced(&index.join("keys.wal"), &appended)?;
-        compact_index_if_large(collection)
+        compact_index_if_large(transaction, collection)
     }
 
     fn rebuild_index(
@@ -2058,7 +2066,10 @@ fn record_index_keys(
 /// `O(log n)` compactions and each is amortized `O(1)` per write. Compaction
 /// merges the same bytes the reader already merges, so unlike a rebuild it
 /// never reads a record.
-fn compact_index_if_large(collection: &super::NativeCollection) -> Result<(), NativeStorageError> {
+fn compact_index_if_large(
+    transaction: &mut Transaction<'_>,
+    collection: &super::NativeCollection,
+) -> Result<(), NativeStorageError> {
     let index = collection.path.join("index");
     let wal = index.join("keys.wal");
     let snapshot = index.join("keys.snapshot");
@@ -2072,6 +2083,7 @@ fn compact_index_if_large(collection: &super::NativeCollection) -> Result<(), Na
         return Ok(());
     }
     let merged = collection.index_snapshot()?;
+    transaction.capture(&snapshot)?;
     durable_replace(&snapshot, merged.as_bytes())?;
     durable_replace(&wal, b"")
 }
@@ -2088,12 +2100,24 @@ fn record_index_keys_for(
     Ok(keys)
 }
 
+/// Capture what an index delta changes: the WAL it appends to. The snapshot is
+/// captured only if compaction is about to rewrite it, so a write no longer
+/// copies the whole snapshot. Rollback and recovery rebuild the index from the
+/// records either way; the capture covers a rollback whose rebuild fails.
 fn capture_index(
     transaction: &mut Transaction<'_>,
     collection: &super::NativeCollection,
 ) -> Result<(), NativeStorageError> {
-    transaction.capture(&collection.path.join("index").join("keys.snapshot"))?;
     transaction.capture(&collection.path.join("index").join("keys.wal"))
+}
+
+/// Capture both index files, for a transaction that rewrites the whole index.
+fn capture_index_files(
+    transaction: &mut Transaction<'_>,
+    collection: &super::NativeCollection,
+) -> Result<(), NativeStorageError> {
+    transaction.capture(&collection.path.join("index").join("keys.snapshot"))?;
+    capture_index(transaction, collection)
 }
 
 fn finish_transaction(
@@ -2475,6 +2499,8 @@ impl<'a> Transaction<'a> {
                 .as_os_str()
                 .to_string_lossy()
                 .ends_with(super::SIDECAR_SUFFIX)
+            // Index files are derived and never carry a sidecar.
+            && relative.components().next() != Some(std::path::Component::Normal("index".as_ref()))
         {
             self.capture(&super::sidecar_path(target))?;
         }
@@ -2918,12 +2944,28 @@ fn write_generation(
     write_json_durable(&path, &generation)
 }
 
+fn is_capture_scratch(name: &std::ffi::OsStr) -> bool {
+    name.to_str().is_some_and(|name| {
+        name.len() > 12
+            && name.as_bytes()[..6].iter().all(u8::is_ascii_digit)
+            && name[6..].starts_with(".json.rust-")
+            && name
+                .rsplit_once('.')
+                .is_some_and(|(_, extension)| extension == "tmp")
+    })
+}
+
 fn read_captures(root: &Path) -> Result<Vec<Capture>, NativeStorageError> {
     let directory = root.join("captures");
     let mut entries = fs::read_dir(&directory)
         .map_err(NativeStorageError::io)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(NativeStorageError::io)?;
+    // A capture is published by renaming its synced scratch file. A crash
+    // before that rename leaves the scratch behind, and the capture it would
+    // have recorded never took effect: a target is captured before it is
+    // mutated. The scratch is therefore not part of the sequence.
+    entries.retain(|entry| !is_capture_scratch(&entry.file_name()));
     entries.sort_by_key(fs::DirEntry::file_name);
     if entries.len() > 10_000 {
         return Err(NativeStorageError::new(
@@ -4556,11 +4598,21 @@ pub const FAILPOINTS: [&str; 17] = [
 ];
 
 pub(crate) fn failpoint(name: &str) -> Result<(), NativeStorageError> {
+    static HITS: AtomicU64 = AtomicU64::new(0);
     debug_assert!(
         FAILPOINTS.contains(&name),
         "undeclared failpoint: {name}; add it to FAILPOINTS so the crash matrix covers it"
     );
     if std::env::var("FYLO_RUST_FAILPOINT").ok().as_deref() != Some(name) {
+        return Ok(());
+    }
+    // `FYLO_RUST_FAILPOINT_SKIP=n` passes the first n hits, so a gate can reach
+    // every occurrence of a transition within one operation, not just the first.
+    let skip = std::env::var("FYLO_RUST_FAILPOINT_SKIP")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(0);
+    if HITS.fetch_add(1, Ordering::Relaxed) < skip {
         return Ok(());
     }
     match std::env::var("FYLO_RUST_FAILPOINT_ACTION").ok().as_deref() {
@@ -4612,6 +4664,31 @@ fn json_error(error: &serde_json::Error) -> NativeStorageError {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_unpublished_capture_scratch_is_not_part_of_the_sequence() {
+        let root = std::env::temp_dir().join(format!("fylo-capture-scratch-{}", unique_name("t")));
+        let captures = root.join("captures");
+        fs::create_dir_all(&captures).unwrap();
+        fs::write(
+            captures.join("000000.json"),
+            br#"{"path":"docs/a.json","present":false}"#,
+        )
+        .unwrap();
+        fs::write(captures.join("000001.json.rust-7-1a2b-3.tmp"), b"{").unwrap();
+        assert_eq!(read_captures(&root).unwrap().len(), 1);
+        fs::write(
+            captures.join("000003.json"),
+            br#"{"path":"docs/b.json","present":false}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            read_captures(&root).unwrap_err().code(),
+            NativeStorageErrorCode::CorruptMetadata,
+            "a gap in published captures stays corrupt"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
     use super::*;
     use fylo_test_support::{McdcCase, assert_unique_cause_mcdc};
     use serde_json::json;

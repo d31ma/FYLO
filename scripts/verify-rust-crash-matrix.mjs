@@ -56,6 +56,10 @@ const secondIdentifier = '4VRNF52JPCP'
 const fileIdentifier = '4VRNF52JPCQ'
 const crashFileIdentifier = '4VRNF52JPCS'
 const deletedIdentifier = '4VRNF52JPCR'
+const COMPACTION_POINTS = ['before-file-write', 'after-file-sync', 'after-file-rename', 'after-capture']
+const COMPACTION_ID = '4VRNF52JPDZ'
+const wideDocument = (seed) =>
+    Object.fromEntries(Array.from({ length: 24 }, (_, field) => [`field${field}`, `${seed}-value-${field}`]))
 const binary = join(
     options['binary-dir'] ?? CargoArtifacts.path('debug'),
     platform() === 'win32' ? 'fylo-write-preview.exe' : 'fylo-write-preview'
@@ -476,10 +480,125 @@ async function verifyNativeCrashScenarios() {
         `no scenario reaches these declared failpoints: ${missing.join(', ')}`
     )
     const queueInterruptions = await verifyQueueCrashScenarios(machineBinary, template, workspace)
+    const compactions = await verifyNativeCompactionInterruptions()
     console.log(
-        `Recovered ${interrupted} interrupted native mutations across ${failpoints.length} failpoints ` +
+        `Recovered ${interrupted} interrupted native mutations across ${failpoints.length} failpoints, ` +
+            `${compactions} interrupted index compactions, ` +
             `and validated ${queueInterruptions} interrupted queue operations`
     )
+}
+
+// Index compaction rewrites the snapshot inside an ordinary write. Every other
+// scenario stops at a transition's first hit and never fills the WAL, so these
+// seed a WAL just under the compaction threshold and interrupt every hit of
+// every file transition in the one write that crosses it.
+
+async function seedNearCompaction(root, request) {
+    const walPath = join(root, '.collections', collection, 'index', 'keys.wal')
+    const walBytes = async () => (await stat(walPath).catch(() => ({ size: 0 }))).size
+    await request({ op: 'createCollection', collection, kind: 'document' })
+    await request({ op: 'createCollection', collection: fileCollection, kind: 'file' })
+    await request({ op: 'putData', collection, id: secondIdentifier, data: wideDocument('survivor') })
+    for (let seed = 0; (await walBytes()) < 60 * 1024; seed++) {
+        await request({ op: 'putData', collection, data: wideDocument(seed) })
+    }
+    assert((await walBytes()) < 64 * 1024, 'compaction seed overshot the WAL threshold')
+    return walBytes
+}
+
+async function verifyNativeCompactionInterruptions() {
+    const source = join(workspace, 'compaction-template')
+    await mkdir(source, { recursive: true })
+    const seed = new Fylo(source, { binary: machineBinary, exclusiveRoot: true })
+    await seed.ready
+    const seededWal = await seedNearCompaction(source, (request) => requestRequired(seed, request))
+        .finally(() => seed.close())
+    const walBefore = await seededWal()
+    const scenario = {
+        name: 'compacting-put',
+        args: (root) => ['put-document', '--root', root, '--collection', collection, '--id', COMPACTION_ID,
+            '--document', JSON.stringify(wideDocument('crossing'))]
+    }
+    let interrupted = 0
+    for (const failpoint of COMPACTION_POINTS) {
+        for (let skip = 0; ; skip++) {
+            const root = join(workspace, `compaction-${failpoint}-${skip}`)
+            await cloneRoot(source, root)
+            const failed = await run(binary, scenario.args(root), {
+                FYLO_RUST_FAILPOINT: failpoint,
+                FYLO_RUST_FAILPOINT_ACTION: 'abort',
+                FYLO_RUST_FAILPOINT_SKIP: String(skip)
+            })
+            if (failed.exitCode === 0) {
+                const walAfter = (await stat(join(root, '.collections', collection, 'index', 'keys.wal'))).size
+                assert(walAfter < walBefore, `${failpoint}: the crossing write did not compact the index`)
+                await rm(root, { recursive: true, force: true })
+                break
+            }
+            await assertRecoverable(binary, root, `${failpoint}#${skip}`, scenario, 'abort')
+            await rm(root, { recursive: true, force: true })
+            interrupted++
+        }
+    }
+    assert(interrupted > 0, 'no compaction transition was interrupted')
+    return interrupted
+}
+
+async function verifyEfsCompactionInterruptions() {
+    const source = join(workspace, 'efs-compaction-template')
+    await mkdir(source)
+    const walBefore = await efsDatabase(source, async (database) => {
+        const walBytes = await seedNearCompaction(source, (request) =>
+            requestRequired(database, request.op === 'putData' ? { ...request, access: { mode: 0o640 } } : request))
+        return walBytes()
+    })
+    const request = {
+        op: 'putData', collection, id: COMPACTION_ID, data: wideDocument('crossing'), access: { mode: 0o640 }
+    }
+    let interrupted = 0
+    for (const failpoint of COMPACTION_POINTS) {
+        for (let skip = 0; ; skip++) {
+            const label = 'compaction ' + failpoint + '#' + skip
+            const root = join(workspace, 'efs-compaction-' + failpoint + '-' + skip)
+            await cloneRoot(source, root)
+            const before = await efsInventory(root)
+            const writer = new EfsMachine(root, {
+                FYLO_RUST_FAILPOINT: failpoint,
+                FYLO_RUST_FAILPOINT_ACTION: 'abort',
+                FYLO_RUST_FAILPOINT_SKIP: String(skip)
+            })
+            let crashed = false
+            try {
+                await requestRequired(writer, { op: 'handshake' })
+                const response = await writer.request(request)
+                assert(response.ok, label + ': uninterrupted write failed: ' + JSON.stringify(response.error))
+            } catch (error) {
+                await withDeadline(writer.exited, label + ' aborted process')
+                assert(writer.child.signalCode !== null, label + ': failed without an injected abort: ' + error)
+                crashed = true
+            } finally {
+                await writer.close()
+            }
+            if (!crashed) {
+                const walAfter = (await stat(join(root, '.collections', collection, 'index', 'keys.wal'))).size
+                assert(walAfter < walBefore, label + ': the crossing write did not compact the index')
+                await rm(root, { recursive: true, force: true })
+                break
+            }
+            await recoverEfs(root)
+            const recovered = await efsInventory(root)
+            const added = recovered.filter((entry) => entry.id === COMPACTION_ID)
+            assert(sameInventory(recovered.filter((entry) => entry.id !== COMPACTION_ID), before),
+                label + ': recovery changed records the write did not touch')
+            assert(added.length <= 1, label + ': recovery duplicated the written record')
+            await recoverEfs(root)
+            assert(sameInventory(await efsInventory(root), recovered), label + ': repeated recovery changed state')
+            await rm(root, { recursive: true, force: true })
+            interrupted++
+        }
+    }
+    assert(interrupted > 0, 'no EFS compaction transition was interrupted')
+    return interrupted
 }
 
 async function verifyQueueCrashScenarios(binary, source, workspace) {
@@ -1105,5 +1224,7 @@ async function verifyEfsCrashScenarios(preview, workspace) {
     }
     const missing = failpoints.filter((name) => !reached.has(name))
     assert(missing.length === 0, 'EFS crash scenarios missed declared transitions: ' + missing.join(', '))
-    console.log('Validated ' + interrupted + ' EFS-profile interrupted mutations; remote qualification pending')
+    const compactions = await verifyEfsCompactionInterruptions()
+    console.log('Validated ' + interrupted + ' EFS-profile interrupted mutations and ' + compactions +
+        ' interrupted index compactions; remote qualification pending')
 }
