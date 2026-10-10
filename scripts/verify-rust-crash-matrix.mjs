@@ -133,6 +133,7 @@ try {
     if (filesystemProfile === 'efs-sidecar-v1') {
         await verifyEfsCrashScenarios(binary, workspace)
     } else {
+        assertProcessIdentityAvailable()
         await verifyNativeCrashScenarios()
     }
 } finally {
@@ -701,6 +702,27 @@ async function command(arguments_) {
     if (exitCode !== 0) throw new Error(`command failed (${exitCode}): ${arguments_.join(' ')}`)
 }
 
+/**
+ * On macOS and BSD a native lock names its owner by start time, read through
+ * `ps`. Where `ps` cannot run (sandbox-exec refuses the setuid binary) an
+ * aborted writer's lock is unprovably stale for the lock TTL, so recovery
+ * fails closed with ENATIVE_CONCURRENT_WRITE. That is correct engine
+ * behaviour, not a crash-recovery result, so refuse to run instead.
+ */
+function assertProcessIdentityAvailable() {
+    if (['linux', 'win32'].includes(platform())) return
+    let identity = ''
+    try {
+        const probe = Bun.spawnSync(['ps', '-o', 'lstart=', '-p', String(process.pid)])
+        if (probe.exitCode === 0) identity = probe.stdout.toString().trim()
+    } catch {}
+    assert(
+        identity !== '',
+        'process identity is unavailable here (`ps` cannot run, e.g. under sandbox-exec); ' +
+            'abort-case lock recovery cannot be verified in this environment'
+    )
+}
+
 function assert(condition, message) {
     if (!condition) throw new Error(message)
 }
@@ -833,11 +855,29 @@ function assertCommittedTimes(before, after, started, finished, label) {
 async function efsJournals(root) {
     const manifests = (await fixtureFiles(join(root, '.fylo-transactions')))
         .filter((file) => basename(file) === 'transaction.json')
-    return await Promise.all(manifests.map(async (file) =>
-        JSON.parse(await readFile(file, 'utf8'))
-    ))
+    // The manifest is written once at begin; each capture is its own durable
+    // file under `captures/`, which is what recovery reads.
+    return await Promise.all(manifests.map(async (file) => {
+        const captures = (await fixtureFiles(join(file, '..', 'captures')))
+            .filter((capture) => capture.endsWith('.json'))
+        return {
+            ...JSON.parse(await readFile(file, 'utf8')),
+            captures: await Promise.all(captures.map(async (capture) =>
+                JSON.parse(await readFile(capture, 'utf8'))
+            ))
+        }
+    }))
 }
 
+async function efsUnstableGenerations(root) {
+    const states = (await fixtureFiles(join(root, '.fylo-transactions')))
+        .filter((file) => basename(file) === 'state.json')
+    const unstable = []
+    for (const file of states) {
+        if (JSON.parse(await readFile(file, 'utf8')).state !== 'stable') unstable.push(file)
+    }
+    return unstable
+}
 async function recoverEfs(root) {
     await efsDatabase(root, async (database) => {
         for (const name of [collection, fileCollection]) {
@@ -856,6 +896,8 @@ async function recoverEfs(root) {
 async function verifyEfsCrashScenarios(preview, workspace) {
     assert(platform() !== 'win32', 'EFS profile qualification needs POSIX metadata')
     const source = join(workspace, 'efs-template')
+    // Records carry owner-only access descriptors, so mutating one needs the owner.
+    const owner = { uid: process.getuid(), groups: [process.getgid()] }
     await mkdir(source)
     const input = join(workspace, 'efs-input.bin')
     await writeFile(input, new Uint8Array([1, 2, 3, 4]))
@@ -873,7 +915,9 @@ async function verifyEfsCrashScenarios(preview, workspace) {
                 access: { mode: 0o640 }
             })
         }
-        await requestRequired(database, { op: 'delDoc', collection, id: deletedIdentifier })
+        await requestRequired(database, {
+            op: 'delDoc', collection, id: deletedIdentifier, access: owner
+        })
         await requestRequired(database, {
             op: 'putData', collection: fileCollection, id: fileIdentifier,
             file: { path: input, key: '/seed.bin' }, meta: { source: 'seed' },
@@ -899,29 +943,29 @@ async function verifyEfsCrashScenarios(preview, workspace) {
             access: { mode: 0o640 }
         } },
         { name: 'patch-document', request: {
-            op: 'patchDoc', collection, id: identifier, newDoc: { score: 99 }
+            op: 'patchDoc', collection, id: identifier, newDoc: { score: 99 }, access: owner
         } },
         { name: 'metadata', request: {
             op: 'setMeta', collection, id: identifier,
-            meta: { reviewer: 'after', typed: null, added: [1, true] }
+            meta: { reviewer: 'after', typed: null, added: [1, true] }, access: owner
         } },
         { name: 'delete-document', pairMove: true, request: {
-            op: 'delDoc', collection, id: identifier
+            op: 'delDoc', collection, id: identifier, access: owner
         } },
         { name: 'delete-file', pairMove: true, request: {
-            op: 'delDoc', collection: fileCollection, id: fileIdentifier
+            op: 'delDoc', collection: fileCollection, id: fileIdentifier, access: owner
         } },
         { name: 'restore', pairMove: true, request: {
-            op: 'restoreDoc', collection, id: deletedIdentifier
+            op: 'restoreDoc', collection, id: deletedIdentifier, access: owner
         } },
         { name: 'sql-delete', pairMove: true, request: {
-            op: 'executeSQL', sql: "DELETE FROM records WHERE name = 'Grace'"
+            op: 'executeSQL', sql: "DELETE FROM records WHERE name = 'Grace'", access: owner
         } },
         { name: 'reshard', pairMove: true, request: {
             op: 'reshardCollection', collection, width: 3
         } },
         { name: 'commit', prepare: {
-            op: 'setMeta', collection, id: identifier, meta: { reviewer: 'pending commit' }
+            op: 'setMeta', collection, id: identifier, meta: { reviewer: 'pending commit' }, access: owner
         }, request: { op: 'commit', message: 'EFS interrupted commit' } }
     ]
     const reached = new Set()
@@ -970,8 +1014,12 @@ async function verifyEfsCrashScenarios(preview, workspace) {
                             assert(/quota/i.test(response.error?.message),
                                 label + ': quota error lost its identity')
                         }
-                        assert((await efsJournals(root)).length === 0,
-                            label + ': failed live writer left recovery work')
+                        // An orphan journal under a stable generation is not
+                        // recovery work: the next opener deletes it without
+                        // restoring anything, as the native gate's
+                        // `recovered === false` check also accepts.
+                        assert((await efsUnstableGenerations(root)).length === 0,
+                            label + ': failed live writer left recovery work: ' + response.error?.message)
                         assert(sameInventory(await efsInventory(root), before),
                             label + ': live rollback changed payload/metadata/native mode/time')
                     }
