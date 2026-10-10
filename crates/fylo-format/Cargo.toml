@@ -9,7 +9,10 @@ publish = false
 
 [dependencies]
 serde.workspace = true
-serde_json.workspace = true
+# Exact float round trips (fuzz run 36122996084) are a document-format
+# guarantee. Scoped here rather than workspace-wide so the browser index kernel,
+# which never decodes JSON numbers, does not carry the precise float parser.
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 
 [lints]
 workspace = true

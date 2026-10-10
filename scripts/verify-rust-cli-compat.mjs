@@ -23,10 +23,7 @@ try {
     }
     const binary = process.env.FYLO_RUST_BINARY
         ? resolve(process.env.FYLO_RUST_BINARY)
-        : CargoArtifacts.path(
-              'debug',
-              platform() === 'win32' ? 'fylo-rust.exe' : 'fylo-rust'
-          )
+        : CargoArtifacts.path('debug', platform() === 'win32' ? 'fylo-rust.exe' : 'fylo-rust')
     const releasedBinary = process.env.FYLO_RELEASED_BINARY
         ? resolve(process.env.FYLO_RELEASED_BINARY)
         : null

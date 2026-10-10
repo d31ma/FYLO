@@ -7,7 +7,9 @@ class SiteCommand {
         if (!['bundle', 'preview'].includes(command)) {
             throw new Error('Usage: run-site.mjs <bundle|preview> [options]')
         }
-        const output = arguments_.some((value) => value === '--out-dir' || value.startsWith('--out-dir='))
+        const output = arguments_.some(
+            (value) => value === '--out-dir' || value.startsWith('--out-dir=')
+        )
             ? []
             : ['--out-dir', SiteArtifacts.web()]
         const child = spawn(process.env.TAC_BIN ?? 'ty', [command, ...output, ...arguments_], {
@@ -17,7 +19,9 @@ class SiteCommand {
         for (const signal of ['SIGINT', 'SIGTERM']) {
             process.on(signal, () => child.kill(signal))
         }
-        child.once('error', (error) => { throw error })
+        child.once('error', (error) => {
+            throw error
+        })
         child.once('exit', (code) => process.exit(code ?? 1))
     }
 }

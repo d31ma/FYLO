@@ -45,7 +45,7 @@ rustls = { version = "0.23.43", default-features = false, features = ["ring", "s
 ryu-js = "1.0.3"
 same-file = "1.0.6"
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = { version = "1.0.151", features = ["preserve_order", "float_roundtrip"] }
+serde_json = { version = "1.0.151", features = ["preserve_order"] }
 sha2 = "0.11.0"
 xattr = "1.6.1"
 zeroize = "1.8.2"

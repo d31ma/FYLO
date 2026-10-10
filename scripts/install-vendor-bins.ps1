@@ -47,9 +47,9 @@ Install-VerifiedGitHubBinary `
     -Executable 'chex.exe'
 Install-VerifiedGitHubBinary `
     -Repository 'd31ma/Tachyon' `
-    -Version 'v26.33.02' `
+    -Version 'v26.36.01' `
     -Asset 'ty-windows-x64.exe' `
-    -ExpectedSha256 '00198a58534faff29f2373a2649c58f176e3305aa77242f59cee6530c7c371d5' `
+    -ExpectedSha256 '8b8cc73a8407e5397e66d7fab6f3946162847c4b5639d089d0f16af57f3631f8' `
     -Executable 'ty.exe'
 
 $env:Path = "$Destination;$env:Path"
@@ -59,6 +59,6 @@ if ($env:GITHUB_PATH) {
 & (Join-Path $Destination 'ttid.exe') --help | Out-Null
 & (Join-Path $Destination 'chex.exe') --help | Out-Null
 $tachyonVersion = & (Join-Path $Destination 'ty.exe') --version
-if ($tachyonVersion.Trim() -ne '26.33.02') {
+if ($tachyonVersion.Trim() -ne '26.36.01') {
     throw "Unexpected TACHYON version: $tachyonVersion"
 }

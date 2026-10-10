@@ -29,8 +29,9 @@ been promoted.
   returning either success or error, using the existing bounded retry loop.
   Unchanged-generation corruption and unsafe paths still fail closed.
 - The retained scheduled-fuzz artifact from GitHub run `36122996084` exposed drift
-  of a large finite JSON number after encoding and reparsing. The shared
-  `serde_json/float_roundtrip` feature fixes this. Regression tests cover the exact
+  of a large finite JSON number after encoding and reparsing. The
+  `serde_json/float_roundtrip` feature, enabled by `fylo-format` and so present in
+  every build that parses documents, fixes this. Regression tests cover the exact
   90-byte artifact and 4,096 deterministic floating-point bit patterns. This is
   preservation of decoded finite floating-point values, not arbitrary-precision
   integers or exact preservation of all decimal digits in the input.

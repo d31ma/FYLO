@@ -19,7 +19,9 @@ import { Fylo as MachineFylo } from '../clients/node/fylo.mjs'
 const releasedBinary = resolve(requiredOption('--released-binary'))
 const rustBinary = resolve(requiredOption('--rust-binary'))
 const expectedRustCommit = option('--expected-rust-commit')
-const output = resolve(option('--output') ?? CargoArtifacts.path('rollback/released-compatibility.json'))
+const output = resolve(
+    option('--output') ?? CargoArtifacts.path('rollback/released-compatibility.json')
+)
 const workspace = await mkdtemp(join(tmpdir(), 'fylo-rust-released-rollback-'))
 const root = join(workspace, 'root')
 const collection = 'records'
