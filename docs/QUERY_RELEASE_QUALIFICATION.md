@@ -401,6 +401,70 @@ This harness copy differs from `benchmarks/tin-poc` in three ways:
 An earlier attempt on 2026-10-10 was discarded. Its quiet-machine check matched
 only build tools, so it missed the probe that skewed it.
 
+## Cloud Run and Azure Functions, local only, 2026-10-11
+
+`bun run cloudrun:local` and `bun run azure:local`
+(`scripts/verify-serverless-local.mjs`) run the EFS-profile crash suite, the
+two-instance root lease drill, and the HTTP invocation adapter
+(`crates/fylo-machine/examples/http_invocation.rs`) as two instances on each
+platform's shared storage. Run on an arm64 WSL2 host with Docker 29.8:
+
+| Mount | Crash suite | Lease across instances | Two service instances |
+|---|---|---|---|
+| Cloud Run, Filestore (NFSv3, no-lock) | pass (288 + 43) | fail: both admitted | fail: alternating writers, and concurrent writers get `EROOTLEASELOST` |
+| Cloud Run, Cloud Storage (gcsfuse) | fail: no hard links | fail: both admitted | fail: no hard links |
+| Azure Files, SMB, Samba stand-in (`nobrl` or not) | fail: link refused | fail: both admitted, or `EACCES` | fail: link refused |
+| Azure Files, NFS 4.1 | pass (288 + 43) | pass | fail: alternating writers |
+
+- **No hard links.** Collection locks are taken by hard-linking a temporary
+  file into place (`try_create_lock` in `write.rs`). The fallback for missing
+  links only catches `Unsupported`. gcsfuse, the real client, returns `EPERM`,
+  so every write fails on Cloud Storage. The Samba stand-in returns `EACCES`
+  with the same result. Real Azure Files may answer with a different errno; if
+  it is `EOPNOTSUPP`, FYLO would take the exclusive-create fallback instead.
+  That is not tested here. gcsfuse also needs `file-mode=600,dir-mode=755`,
+  or the profile descriptor is refused as unsafe.
+- **No cross-instance locks.** Cloud Run mounts NFS in no-lock mode, and gcsfuse
+  and `nobrl` keep locks local. Two instances both get the root lease. The
+  owner metadata catches this afterwards as `EROOTLEASELOST`; no acknowledged
+  write was lost. On SMB with byte-range locks, the second instance is refused
+  with `EACCES` instead of `EROOTLOCKED`, so invocations fail instead of
+  waiting their turn.
+- **Alternating writers on NFS.** A write fails with "private copy source
+  timestamp changed" when the previous write came from another client. Writes
+  from one instance always pass, even when they all run at once. Mounting with
+  `actimeo=0` makes every check pass, so the cause is the client's attribute
+  cache. This NFS 4.1 mount uses the same default caching as the EFS lane's
+  clients. Lambda mounts EFS with its own options, presumably with default
+  caching too (inferred), so EFS likely has the same exposure. Neither the NFS
+  drill nor Floci alternates writers.
+- **Lock file outside the mount.** The root lease lock sits beside the root,
+  not inside it. The Floci lane sets `FYLO_ROOT=/mnt/state`, the mount point
+  itself, so its lock lands in the container's own `/mnt`. That has two
+  consequences:
+  - In Floci, invocations that run in separate containers do not contend on
+    a shared lock.
+  - On real Lambda, `/mnt` is presumably read-only (inferred, not checked).
+
+  Moving the root to `/mnt/state/root` fails with `ENOENT`, because the EFS
+  profile requires an existing root directory and nothing in the Lambda
+  setup creates one. The lane is unchanged.
+- **Emulator limits.** No official emulator exists for either platform.
+  - Cloud Run is the container run with its contract: `PORT`, `K_*`, 512 MiB,
+    and SIGTERM with a 10 s grace period.
+  - Azure is the Functions host from Core Tools 4.15.2. It runs on arm64,
+    unlike the MCR images, and uses Azurite for `AzureWebJobsStorage`.
+  - The storage stand-ins:
+    - Filestore: a kernel NFS server.
+    - Cloud Storage: fake-gcs-server. It has no `objects.move`, so atomic
+      rename is off.
+    - Azure Files: Samba on FAT, so links are refused. The errno and the mount
+      options Azure applies are unconfirmed.
+  - Instances mount for themselves in privileged containers.
+  - Cloud Run gen1 (gVisor) is not covered, because volume mounts need gen2.
+  - Once, a second NFS 4.1 client failed to mount with `Cannot allocate
+    memory`; the rerun passed.
+
 ## Remaining release gates
 
 1. Passed on `develop` at `65d774b` (CI run `38083366120`): Linux, macOS, and
