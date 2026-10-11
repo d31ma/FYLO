@@ -253,6 +253,20 @@ async function crossClientDrill() {
         read.ok && read.result?.['4VRNF52JPCO']?.name === 'Ada',
         `a write was not visible to the other client after close: ${JSON.stringify(read)}`
     )
+    // Each write follows one from the other client, so a before-image taken
+    // from a stale attribute cache would fail it.
+    for (const [index, client] of ['a', 'b', 'a', 'b', 'a', 'b'].entries()) {
+        const [put] = await machine(client, [
+            {
+                op: 'putData',
+                collection: 'records',
+                id: `4VRNF52JT${index}0`,
+                data: { name: client },
+                access: { mode: 0o640 }
+            }
+        ])
+        assert(put?.ok, `a write after the other client's write failed: ${JSON.stringify(put)}`)
+    }
 }
 
 /** Run the invocation rehearsal as a Lambda function in Floci, with an EFS mount. */

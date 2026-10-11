@@ -411,10 +411,10 @@ platform's shared storage. Run on an arm64 WSL2 host with Docker 29.8:
 
 | Mount | Crash suite | Lease across instances | Two service instances |
 |---|---|---|---|
-| Cloud Run, Filestore (NFSv3, no-lock) | pass (288 + 43) | fail: both admitted | fail: alternating writers, and concurrent writers get `EROOTLEASELOST` |
+| Cloud Run, Filestore (NFSv3, no-lock) | pass (288 + 43) | fail: both admitted | fail: concurrent writers get `EROOTLEASELOST` |
 | Cloud Run, Cloud Storage (gcsfuse) | fail: no hard links | fail: both admitted | fail: no hard links |
 | Azure Files, SMB, Samba stand-in (`nobrl` or not) | fail: link refused | fail: both admitted, or `EACCES` | fail: link refused |
-| Azure Files, NFS 4.1 | pass (288 + 43) | pass | fail: alternating writers |
+| Azure Files, NFS 4.1 | pass (288 + 43) | pass | pass |
 
 - **No hard links.** Collection locks are taken by hard-linking a temporary
   file into place (`try_create_lock` in `write.rs`). The fallback for missing
@@ -430,14 +430,14 @@ platform's shared storage. Run on an arm64 WSL2 host with Docker 29.8:
   write was lost. On SMB with byte-range locks, the second instance is refused
   with `EACCES` instead of `EROOTLOCKED`, so invocations fail instead of
   waiting their turn.
-- **Alternating writers on NFS.** A write fails with "private copy source
-  timestamp changed" when the previous write came from another client. Writes
-  from one instance always pass, even when they all run at once. Mounting with
-  `actimeo=0` makes every check pass, so the cause is the client's attribute
-  cache. This NFS 4.1 mount uses the same default caching as the EFS lane's
-  clients. Lambda mounts EFS with its own options, presumably with default
-  caching too (inferred), so EFS likely has the same exposure. Neither the NFS
-  drill nor Floci alternates writers.
+- **Alternating writers on NFS, fixed.** About a third of writes failed with
+  "private copy source timestamp changed" when the previous write came from
+  another client. The before-image capture read the timestamp with a path
+  stat, which NFS answered from a stale attribute cache, then compared it with
+  the opened file. The EFS profile now takes the metadata from the opened
+  file, which close-to-open consistency revalidates. That affected EFS too:
+  its NFS lane now alternates writers between two clients. That step failed
+  with this error before the fix and passes after it.
 - **Lock file outside the mount.** The root lease lock sits beside the root,
   not inside it. The Floci lane sets `FYLO_ROOT=/mnt/state`, the mount point
   itself, so its lock lands in the container's own `/mnt`. That has two

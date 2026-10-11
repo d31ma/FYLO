@@ -2508,7 +2508,19 @@ impl<'a> Transaction<'a> {
         let index = self.captures.len();
         let capture = if present {
             self.writer.root.verify_path(target, ExpectedType::File)?;
-            let metadata = fs::symlink_metadata(target).map_err(NativeStorageError::io)?;
+            let metadata =
+                if self.writer.filesystem_profile() == super::FilesystemProfile::EfsSidecarV1 {
+                    // Over NFS a path stat can be answered from the attribute
+                    // cache and predate another client's last write. Opening
+                    // revalidates it (close-to-open), so the handle's metadata is
+                    // what the before-image copy will see.
+                    self.writer
+                        .root
+                        .open_file(target, super::MAX_RAW_FILE_BYTES)?
+                        .1
+                } else {
+                    fs::symlink_metadata(target).map_err(NativeStorageError::io)?
+                };
             if self.writer.filesystem_profile() == super::FilesystemProfile::EfsSidecarV1 {
                 super::sidecar_attributes::SidecarAttributes::verify_owner(
                     &self.writer.root,
