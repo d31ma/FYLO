@@ -312,6 +312,95 @@ checks. It is explicitly not a recovered original or final report. Monitoring
 was paused, and no replacement run was launched. Any future authorized attempt
 should retain checkpoints outside temporary storage so evidence survives reboot.
 
+## Develop baselines, 2026-10-11
+
+These are the retained end-to-end baselines for `develop`. The harness binaries
+were built from a tree whose `crates/`, `Cargo.toml`, and `Cargo.lock` match
+`1b64fbdf` byte for byte. The only later engine change before this record,
+`2d350d66`, touches `fylo-machine`, which none of the harness crates depend on.
+Host: Apple M4 (10 cores), 16 GiB, macOS 26.6.2, Rust 1.97.1, release
+opt-level 3. Fixtures lived on an APFS sparse image stored on the external ANNEX
+SSD.
+
+**This was not a quiet machine.** A long-running Tachyon probe used about two
+cores throughout, and other builds came and went. The one-minute load average
+was 4.4 to 7.7 at the start and end of each run. The owner chose to measure
+under that load rather than keep waiting. The 5,000-document run was repeated
+three times to show the noise. Reads stayed within about 10% between runs, but
+write medians varied up to threefold. Treat write numbers as upper bounds.
+
+Each run used two collections, a 912-byte body per document, 3 warmups, and 30
+timed samples. Full identifier and body oracles passed every run, as did the
+post-mutation checks.
+
+| Operation (ms) | 5k p50 | 5k p95 | 25k p50 | 25k p95 |
+| --- | ---: | ---: | ---: | ---: |
+| Selective equality (50 / 250 rows) | 29.336 | 32.711 | 390.619 | 418.980 |
+| Same, parsed cache evicted | 52.884 | 57.852 | 507.743 | 517.451 |
+| Broad equality (2,500 / 12,500 rows) | 1,413.771 | 1,870.106 | 25,602.660 | 33,544.294 |
+| Range fallback scan (5,000 / 25,000 rows) | 2,966.787 | 3,531.461 | 44,017.625 | 46,134.963 |
+| Engine open plus selective query | 38.099 | 57.137 | 390.103 | 405.730 |
+| Alternating collections, two queries | 103.621 | 157.000 | 1,031.379 | 1,039.192 |
+| Durable put | 10.407 | 13.861 | 11.163 | 14.283 |
+| Durable patch | 20.487 | 48.708 | 18.728 | 21.435 |
+| Durable delete | 13.230 | 27.211 | 15.282 | 19.334 |
+
+The 5k columns are the median of three runs' p50 and p95. The ranges across
+runs were: selective p50 28.979–31.722, broad p50 1,400.441–1,426.519, range
+p50 2,892.763–3,245.993, and put p50 7.998–25.457. The 25k column is a single
+run.
+
+**Reads scale worse than linearly.** Five times the data made selective queries
+13.3x slower, range scans 14.8x slower, and broad queries 18.1x slower. Write
+latency stayed flat. Building the fixture took 223 s for 10,000 documents and
+4,010 s for 50,000, an 18x increase. The 25,000-per-collection process peaked
+at 1,497,284,608 bytes (1.39 GiB) of RSS, against 106–117 MB for each 5k run.
+The snapshot was 20,293,586 bytes, below the 64 MiB admission budget. Any
+release threshold should be set per dataset size, not extrapolated from these
+two points.
+
+**Cold reads, 25k root, 12 samples.** The image was detached and re-attached
+before every sample, and each sample ran in a fresh process. OS-wide caches
+were not purged, because that needs sudo. Each sample read 22.9 MB from the
+image device, so the reads did reach storage.
+
+| Cold sample (ms) | p50 | p95 |
+| --- | ---: | ---: |
+| Engine open | 1.202 | 8.579 |
+| First selective query (250 rows) | 721.214 | 767.421 |
+| Second selective query | 382.604 | 494.737 |
+| Process wall time | 1,116.507 | 1,284.496 |
+
+The first cold query cost about 1.85x a warm one. Peak RSS was 169.8 MB.
+
+**Bounded multi-process load (30 s).** Two leased writers and two read-only
+processes ran against one root.
+- Writes: 1,178 committed writes and 58 rebuilds.
+- Reads: 19,278 coherent successful reads.
+- Expected rejections: 11,180 lease rejections, 7,784 exhausted concurrent-write
+  retries, and 492 changed-path rejections.
+- Settled checks: all 100 passed, with zero duplicate owners and zero lost
+  writes.
+- Above-budget snapshot (379,273 indexed documents): five oversized loads
+  took 95.2–182.7 ms, and none was retained.
+- Peak RSS was 420.2 MB.
+
+This repeats the 2026-09-26 bounded check. It is still not a sustained-load
+qualification.
+
+Raw results, logs with load samples, runner scripts, and harness hashes are kept
+in the ignored `benchmarks/baselines-20261011/`. Binary SHA256 values:
+- `end-to-end`: `f9c437facebe8c5c1ec59b5f1b13c5cfb67496c32a46292acbbaa82562a84f8d`
+- `bounded-load`: `0b90455ac66219bce4b72245a4c7848082fa575b3b290e4d747524620291805d`
+
+This harness copy differs from `benchmarks/tin-poc` in three ways:
+- document ids start at `4VRNF520000`
+- it is capped at 79,000 documents
+- it adds `FYLO_BENCH_KEEP_ROOT` and a `cold` mode
+
+An earlier attempt on 2026-10-10 was discarded. Its quiet-machine check matched
+only build tools, so it missed the probe that skewed it.
+
 ## Remaining release gates
 
 1. Passed on `develop` at `65d774b` (CI run `38083366120`): Linux, macOS, and
@@ -322,17 +411,21 @@ should retain checkpoints outside temporary storage so evidence survives reboot.
 2. Passed in the same run: Chromium and Firefox on ubuntu-24.04 and WebKit on
    macos-15 (Linux WebKit builds expose no `navigator.storage`). Private
    browsing/ephemeral contexts remain outside the qualified surface.
-3. Measure cold storage on an isolated test volume, representative datasets beyond
-   the 10,000-document local fixture (including above-budget real-document indexes),
-   sustained memory pressure, and sustained multi-process load. Bounded contention
+3. Measure above-budget real-document indexes, sustained memory pressure, and
+   sustained multi-process load. Cold reads on an isolated image volume and a
+   50,000-document fixture were measured on 2026-10-11 (see "Develop baselines"
+   above). Bounded contention
    and above-admission snapshot checks passed locally, but do not establish these
    longer-running properties. Global OS caches were deliberately not purged on
    the shared machine.
 4. Run the 72-hour release soak, sustained fault campaigns, and signed
    release-artifact tests.
    Process-kill failpoints do not establish physical power-loss durability.
-5. Retain representative end-to-end baselines before setting performance release
-   thresholds or promoting LIKE/range/BM25/SIMD experiments.
+5. Baselines retained 2026-10-11 for 5,000 and 25,000 documents per collection
+   (see "Develop baselines" above), measured under background load. Setting
+   performance release thresholds still needs a quiet-host rerun, and so does
+   promoting the LIKE/range/BM25/SIMD experiments. The superlinear read
+   scaling should be explained first.
 6. Decided 2026-10-10: the browser JavaScript engine follows the native Rust
    semantics. Rust predicates and joins now coerce strings with the index
    writer's JavaScript `Number` rules (hex/binary/octal accepted, signed radix
