@@ -2806,11 +2806,11 @@ fn try_create_lock(path: &Path, record: &LockRecord) -> Result<bool, NativeStora
             true
         }
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
-        // A host filesystem has no links. Link-then-check exists because
+        // The filesystem has no links. Link-then-check exists because
         // exclusive create is unreliable over NFS, and a filesystem with no
-        // links is not NFS — so the exclusive create the host does offer is
-        // the atomic primitive here.
-        Err(error) if error.kind() == std::io::ErrorKind::Unsupported => {
+        // links is not NFS — so the exclusive create it does offer is the
+        // atomic primitive here.
+        Err(error) if link_refused(&error) => {
             let encoded = serde_json::to_vec(record).map_err(|error| json_error(&error))?;
             match write_new_synced(path, &encoded) {
                 Ok(()) => {
@@ -2825,6 +2825,17 @@ fn try_create_lock(path: &Path, record: &LockRecord) -> Result<bool, NativeStora
     };
     fs::remove_file(scratch).map_err(NativeStorageError::io)?;
     Ok(result)
+}
+
+/// How a filesystem says it has no links: the host and SMB servers answer
+/// `Unsupported` (`EOPNOTSUPP`), gcsfuse `EPERM` and Samba `EACCES`. The
+/// scratch was just created beside the target, so a permission error here is
+/// the filesystem refusing the link, not the directory refusing the writer.
+fn link_refused(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::Unsupported | std::io::ErrorKind::PermissionDenied
+    )
 }
 
 fn reclaim_stale_lock(path: &Path, contender: &LockRecord) -> Result<(), NativeStorageError> {
@@ -4676,6 +4687,20 @@ fn json_error(error: &serde_json::Error) -> NativeStorageError {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_filesystem_refusing_links_takes_the_exclusive_create_fallback() {
+        use std::io::{Error, ErrorKind};
+        for kind in [ErrorKind::Unsupported, ErrorKind::PermissionDenied] {
+            assert!(link_refused(&Error::from(kind)), "{kind:?}");
+        }
+        #[cfg(unix)]
+        for (name, errno) in [("EPERM", 1), ("EACCES", 13)] {
+            assert!(link_refused(&Error::from_raw_os_error(errno)), "{name}");
+        }
+        assert!(!link_refused(&Error::from(ErrorKind::AlreadyExists)));
+        assert!(!link_refused(&Error::from(ErrorKind::NotFound)));
+    }
+
     #[test]
     fn an_unpublished_capture_scratch_is_not_part_of_the_sequence() {
         let root = std::env::temp_dir().join(format!("fylo-capture-scratch-{}", unique_name("t")));
