@@ -348,16 +348,14 @@ async function lambdaSmoke() {
             '--security-groups',
             group
         )
-        const accessPoint = (
-            await aws(
-                'efs',
-                'create-access-point',
-                '--file-system-id',
-                fileSystem,
-                '--root-directory',
-                'Path=/fylo'
-            )
-        ).AccessPointArn
+        const accessPoint = await aws(
+            'efs',
+            'create-access-point',
+            '--file-system-id',
+            fileSystem,
+            '--root-directory',
+            'Path=/fylo'
+        )
         await aws(
             'lambda',
             'create-function',
@@ -374,9 +372,9 @@ async function lambdaSmoke() {
             '--vpc-config',
             `SubnetIds=${subnet},SecurityGroupIds=${group}`,
             '--file-system-configs',
-            `Arn=${accessPoint},LocalMountPath=/mnt/state`,
+            `Arn=${accessPoint.AccessPointArn},LocalMountPath=/mnt/state`,
             '--environment',
-            'Variables={FYLO_ROOT=/mnt/state}'
+            'Variables={FYLO_ROOT=/mnt/state/root}'
         )
         const invoke = async (request) => {
             const out = join(context, `response-${crypto.randomUUID()}.json`)
@@ -431,6 +429,30 @@ async function lambdaSmoke() {
             retried.outcome?.ok === false && /already exists/.test(retried.outcome?.error?.message),
             `a retried create was not refused as existing: ${JSON.stringify(retried)}`
         )
+        // The root owner lock sits beside the root, so it must be on the EFS
+        // volume, where invocations in separate containers contend on it.
+        const [volume] = (
+            await docker(
+                [
+                    'volume',
+                    'ls',
+                    '-q',
+                    '--filter',
+                    `name=floci-aws-efs-${accessPoint.AccessPointId}`
+                ],
+                { quiet: true }
+            )
+        ).stdout.split(/\s+/)
+        assert(volume, `no Floci EFS volume for ${accessPoint.AccessPointId}`)
+        const efs = (
+            await docker(['run', '--rm', '-v', `${volume}:/efs:ro`, BASE, 'ls', '-a', '/efs'], {
+                quiet: true
+            })
+        ).stdout
+        assert(
+            /^\.root\.fylo-root-owner\.lock$/m.test(efs),
+            `the root owner lock is not on the EFS volume: ${efs}`
+        )
         console.log(
             `Lambda warm getDoc ${responses.at(-1).elapsedMs} ms, peak RSS ${responses.at(-1).peakRssKb} kB`
         )
@@ -440,6 +462,21 @@ async function lambdaSmoke() {
                 'rm',
                 '-f',
                 ...(await docker(['ps', '-aq', '--filter', 'name=floci-'], { quiet: true })).stdout
+                    .split(/\s+/)
+                    .filter(Boolean)
+            ],
+            { check: false, quiet: true }
+        )
+        // Floci keeps one volume per EFS access point after its containers go.
+        await docker(
+            [
+                'volume',
+                'rm',
+                ...(
+                    await docker(['volume', 'ls', '-q', '--filter', 'name=floci-aws-efs-'], {
+                        quiet: true
+                    })
+                ).stdout
                     .split(/\s+/)
                     .filter(Boolean)
             ],

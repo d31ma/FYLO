@@ -23,6 +23,10 @@ type Headers = Vec<(String, String)>;
 fn main() -> io::Result<()> {
     let api = std::env::var("AWS_LAMBDA_RUNTIME_API").map_err(io::Error::other)?;
     let root = std::env::var("FYLO_ROOT").unwrap_or_else(|_| "/mnt/state/root".into());
+    // The root sits one level under the EFS mount so its owner lock, which
+    // lives beside the root, lands on EFS too. The profile needs the root to
+    // exist, and nothing else provisions it on Lambda.
+    std::fs::create_dir_all(&root)?;
     let cold = Instant::now();
     let mut warm = false;
     loop {
