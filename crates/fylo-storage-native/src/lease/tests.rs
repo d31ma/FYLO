@@ -203,3 +203,18 @@ fn retains_the_process_id_wire_name() {
     assert_eq!(record["pid"], serde_json::json!(crate::process_id()));
     assert!(record.get("processId").is_none());
 }
+
+#[test]
+fn a_lock_refused_as_permission_denied_is_reported_as_root_locked() {
+    // cifs reports a byte-range lock held by another SMB client as EACCES.
+    let refused = super::root_lease_inner::RootLeaseInner::lock_root(
+        Err(std::fs::TryLockError::Error(std::io::Error::from(
+            std::io::ErrorKind::PermissionDenied,
+        ))),
+        &std::env::temp_dir().join(".db.fylo-root-owner.lock.json"),
+        &std::env::temp_dir().join("db"),
+        crate::FilesystemProfile::EfsSidecarV1,
+    )
+    .unwrap_err();
+    assert_eq!(refused.code(), NativeStorageErrorCode::RootLocked);
+}

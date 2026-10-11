@@ -413,7 +413,7 @@ platform's shared storage. Run on an arm64 WSL2 host with Docker 29.8:
 |---|---|---|---|
 | Cloud Run, Filestore (NFSv3, no-lock) | pass (288 + 43) | fail: both admitted | fail: concurrent writers get `EROOTLEASELOST` |
 | Cloud Run, Cloud Storage (gcsfuse) | fail: no hard links | fail: both admitted | fail: no hard links |
-| Azure Files, SMB, Samba stand-in (`nobrl` or not) | fail: link refused | fail: both admitted, or `EACCES` | fail: link refused |
+| Azure Files, SMB, Samba stand-in (`nobrl` or not) | fail: link refused | `nobrl`: fail, both admitted; byte-range locks: second refused with `EROOTLOCKED`, writes then fail on links | fail: link refused |
 | Azure Files, NFS 4.1 | pass (288 + 43) | pass | pass |
 
 - **No hard links.** Collection locks are taken by hard-linking a temporary
@@ -427,9 +427,12 @@ platform's shared storage. Run on an arm64 WSL2 host with Docker 29.8:
 - **No cross-instance locks.** Cloud Run mounts NFS in no-lock mode, and gcsfuse
   and `nobrl` keep locks local. Two instances both get the root lease. The
   owner metadata catches this afterwards as `EROOTLEASELOST`; no acknowledged
-  write was lost. On SMB with byte-range locks, the second instance is refused
-  with `EACCES` instead of `EROOTLOCKED`, so invocations fail instead of
-  waiting their turn.
+  write was lost. On SMB with byte-range locks, cifs reports a held lock as
+  `EACCES`. The root lease used to surface that as `ENATIVE_IO`, so invocations
+  failed instead of waiting their turn. It now reports `EROOTLOCKED`; the
+  Samba drill shows the second instance refused with it and taking over once
+  the holder is killed. Invocations waiting their turn end to end is not shown
+  here, because the stand-in still refuses the hard links writes need.
 - **Alternating writers on NFS, fixed.** About a third of writes failed with
   "private copy source timestamp changed" when the previous write came from
   another client. The before-image capture read the timestamp with a path

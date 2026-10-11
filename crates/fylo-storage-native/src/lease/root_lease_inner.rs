@@ -37,7 +37,8 @@ impl RootLeaseInner {
         crate::profile_manifest::ProfileManifest::admit_selection(&canonical, profile)?;
         let (lock_path, metadata_path) = Self::lease_paths(&canonical)?;
         let lock_file = Self::open_lock_file(&lock_path)?;
-        let kernel_enforced = Self::lock_root(&lock_file, &metadata_path, &canonical, profile)?;
+        let kernel_enforced =
+            Self::lock_root(lock_file.try_lock(), &metadata_path, &canonical, profile)?;
         let owner = crate::write::unique_name("rust-root-owner");
         let metadata = LeaseMetadata::new(&canonical, &owner)?;
         metadata.write(&metadata_path)?;
@@ -137,18 +138,23 @@ impl RootLeaseInner {
             .map_err(NativeStorageError::io)
     }
 
-    fn lock_root(
-        lock_file: &File,
+    pub(super) fn lock_root(
+        attempt: Result<(), TryLockError>,
         metadata_path: &Path,
         canonical: &Path,
         profile: FilesystemProfile,
     ) -> Result<bool, NativeStorageError> {
-        match lock_file.try_lock() {
+        match attempt {
             Ok(()) => Ok(true),
-            Err(TryLockError::WouldBlock) => Err(NativeStorageError::new(
-                NativeStorageErrorCode::RootLocked,
-                LeaseMetadata::describe_owner(metadata_path, canonical),
-            )),
+            // The lock file is already open read-write, so a refusal here is
+            // another holder: SMB (cifs) reports a held byte-range lock as
+            // EACCES rather than EWOULDBLOCK.
+            Err(TryLockError::WouldBlock) => Err(Self::root_locked(metadata_path, canonical)),
+            Err(TryLockError::Error(error))
+                if error.kind() == std::io::ErrorKind::PermissionDenied =>
+            {
+                Err(Self::root_locked(metadata_path, canonical))
+            }
             Err(TryLockError::Error(error)) if error.kind() == std::io::ErrorKind::Unsupported => {
                 if profile == FilesystemProfile::EfsSidecarV1 {
                     Err(NativeStorageError::new(
@@ -161,6 +167,13 @@ impl RootLeaseInner {
             }
             Err(TryLockError::Error(error)) => Err(NativeStorageError::io(error)),
         }
+    }
+
+    fn root_locked(metadata_path: &Path, canonical: &Path) -> NativeStorageError {
+        NativeStorageError::new(
+            NativeStorageErrorCode::RootLocked,
+            LeaseMetadata::describe_owner(metadata_path, canonical),
+        )
     }
 }
 
