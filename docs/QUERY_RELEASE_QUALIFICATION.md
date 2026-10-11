@@ -441,17 +441,15 @@ platform's shared storage. Run on an arm64 WSL2 host with Docker 29.8:
   file, which close-to-open consistency revalidates. That affected EFS too:
   its NFS lane now alternates writers between two clients. That step failed
   with this error before the fix and passes after it.
-- **Lock file outside the mount.** The root lease lock sits beside the root,
-  not inside it. The Floci lane sets `FYLO_ROOT=/mnt/state`, the mount point
-  itself, so its lock lands in the container's own `/mnt`. That has two
-  consequences:
-  - In Floci, invocations that run in separate containers do not contend on
-    a shared lock.
-  - On real Lambda, `/mnt` is presumably read-only (inferred, not checked).
-
-  Moving the root to `/mnt/state/root` fails with `ENOENT`, because the EFS
-  profile requires an existing root directory and nothing in the Lambda
-  setup creates one. The lane is unchanged.
+- **Lock file outside the mount, fixed.** The root lease lock sits beside the
+  root, not inside it. The Floci lane used to set `FYLO_ROOT=/mnt/state`, the
+  mount point itself, so the lock landed in the container's own `/mnt`.
+  Invocations in separate containers then never contended on a shared lock,
+  and on real Lambda `/mnt` is presumably read-only (inferred, not checked).
+  The root is now `/mnt/state/root`. The Lambda rehearsal creates it on cold
+  start, because the EFS profile needs an existing root and nothing else
+  provisions one. The lane asserts that the lock file is on the access
+  point's volume.
 - **Emulator limits.** No official emulator exists for either platform.
   - Cloud Run is the container run with its contract: `PORT`, `K_*`, 512 MiB,
     and SIGTERM with a 10 s grace period.
