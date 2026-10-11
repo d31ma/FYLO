@@ -779,6 +779,28 @@ async function assertRecoverable(binary, root, failpoint, scenario, action) {
     const label = `${failpoint}/${scenario.name}/${action}`
     const recoveryCollection = scenario.name === 'put-file' ? fileCollection : collection
 
+    if (action === 'abort') {
+        // Nobody runs `recover` after a real crash: the next client to read
+        // must get the recovered collection, not a phantom concurrent write.
+        // A clone keeps the explicit `recover` path below covered too.
+        const probe = `${root}-read-first`
+        await cloneRoot(root, probe)
+        const reader = new Fylo(probe, { binary: machineBinary, exclusiveRoot: true })
+        await reader.ready
+        try {
+            const inspection = await reader.inspectCollection(recoveryCollection)
+            assert(
+                Number(inspection.indexedDocs) === Number(inspection.docsStored),
+                `${label}: the first read after a crash saw a disagreeing index: ${JSON.stringify(inspection)}`
+            )
+        } catch (error) {
+            throw new Error(`${label}: the first read after a crash failed: ${error}`)
+        } finally {
+            await reader.close()
+            await rm(probe, { recursive: true, force: true })
+        }
+    }
+
     const first = await run(binary, ['recover', '--root', root, '--collection', recoveryCollection])
     assert(first.exitCode === 0, `${label}: Rust recovery failed: ${first.stderr}`)
     if (action !== 'abort') {

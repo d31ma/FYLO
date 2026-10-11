@@ -545,9 +545,9 @@ impl Session {
         InvocationOptions::check_work_budget(budget)?;
         let active =
             active_worktree(repository).map_err(|error| Self::invocation_machine_error(&error))?;
-        self.recover_invocation_root(repository, budget)?;
+        self.recover_invocation_root(repository, repository, budget)?;
         if active != *repository {
-            self.recover_invocation_root(&active, budget)?;
+            self.recover_invocation_root(&active, repository, budget)?;
         }
         Ok(())
     }
@@ -555,14 +555,12 @@ impl Session {
     fn recover_invocation_root(
         &self,
         root: &std::path::Path,
+        repository: &std::path::Path,
         budget: (std::time::Instant, std::time::Duration),
     ) -> std::io::Result<()> {
         InvocationOptions::check_work_budget(budget)?;
-        let repository = self.default_root.as_ref().ok_or_else(|| {
-            std::io::Error::other("invocation session has no admitted repository")
-        })?;
         let options = self
-            .root_options(root.to_path_buf(), repository.clone())
+            .root_options(root.to_path_buf(), repository.to_path_buf())
             .map_err(|error| Self::invocation_machine_error(&error))?;
         let native = NativeRoot::open_profiled(options.clone())
             .map_err(|error| std::io::Error::other(error.to_string()))?;
@@ -773,6 +771,41 @@ impl Session {
     }
 
     fn dispatch(&self, request: &Value) -> Result<Value, MachineError> {
+        match self.dispatch_once(request) {
+            Err(error)
+                if error.code == "EENGINE_CONCURRENT_WRITE" && self.recover_stranded(request) =>
+            {
+                self.dispatch_once(request)
+            }
+            result => result,
+        }
+    }
+
+    /// Roll back or forward a transaction nobody is finishing, so a read
+    /// does not report a concurrent write forever.
+    ///
+    /// This session holds the root lease, so a collection still marked as
+    /// writing was left by a crashed writer or by a rollback that itself ran
+    /// out of space. Recovery takes each collection lock and refuses a live
+    /// writer, in which case the original error stands. It runs only after a
+    /// read fails, so it costs nothing on the read path.
+    fn recover_stranded(&self, request: &Value) -> bool {
+        let Ok(repository) = self.root(request) else {
+            return false;
+        };
+        let Ok(active) = active_worktree(&repository) else {
+            return false;
+        };
+        // ponytail: fixed budget; this is a one-off repair, not an invocation.
+        let budget = (
+            std::time::Instant::now() + std::time::Duration::from_mins(5),
+            std::time::Duration::from_millis(1),
+        );
+        self.recover_invocation_root(&active, &repository, budget)
+            .is_ok()
+    }
+
+    fn dispatch_once(&self, request: &Value) -> Result<Value, MachineError> {
         let Some(operation) = request.get("op").and_then(Value::as_str) else {
             return Err(MachineError::new(
                 "EBADREQUEST",
