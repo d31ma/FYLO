@@ -593,8 +593,17 @@ async function serviceDrill(name, mount) {
         if (together) responses.push(...(await Promise.all(ids.map(put))))
         else for (const [index, id] of ids.entries()) responses.push(await put(id, index))
         const failed = responses.filter((response) => !ok(response))
-        const listed = JSON.stringify((await invoke(b, findAll))?.outcome?.result ?? '')
-        const lost = ids.filter((id, index) => ok(responses[index]) && !listed.includes(id))
+        // A failed read proves nothing about the writes: report it, never as an
+        // empty listing.
+        const listing = await invoke(b, findAll)
+        const listed = ok(listing) ? JSON.stringify(listing.outcome.result) : null
+        expect(
+            listed !== null,
+            `writes ${label}: findDocs on b failed, survivors unknown: ${brief(listing?.outcome ?? listing)}`
+        )
+        const lost = ids.filter(
+            (id, index) => listed !== null && ok(responses[index]) && !listed.includes(id)
+        )
         expect(
             failed.length === 0,
             `writes ${label}: ${failed.length}/${ids.length} failed, first ${brief(failed[0]?.outcome ?? failed[0])}`
@@ -625,11 +634,15 @@ async function serviceDrill(name, mount) {
     const outcomes = await Promise.all(pending)
     const committed = burst.filter((_, index) => ok(outcomes[index]))
     const survivors = await invoke(b, findAll)
-    const kept = JSON.stringify(survivors?.outcome?.result ?? '')
-    const vanished = committed.filter((id) => !kept.includes(id))
+    const kept = ok(survivors) ? JSON.stringify(survivors.outcome.result) : null
+    const vanished = committed.filter((id) => kept !== null && !kept.includes(id))
     expect(
-        ok(survivors) && vanished.length === 0,
-        `acknowledged writes vanished after SIGTERM: ${vanished.join(', ') || brief(survivors?.outcome ?? survivors)}`
+        kept !== null,
+        `findDocs on b after SIGTERM failed, ${committed.length} acknowledged writes unverified: ${brief(survivors?.outcome ?? survivors)}`
+    )
+    expect(
+        vanished.length === 0,
+        `acknowledged writes vanished after SIGTERM: ${vanished.join(', ')}`
     )
     const fresh = await invoke(b, {
         op: 'putData',

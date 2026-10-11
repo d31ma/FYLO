@@ -2817,7 +2817,9 @@ fn try_create_lock(path: &Path, record: &LockRecord) -> Result<bool, NativeStora
                     sync_parent(path)?;
                     true
                 }
-                Err(error) if error.code() == NativeStorageErrorCode::Io => false,
+                // Only an existing lock is contention; any other create
+                // failure is reported, never mistaken for a held lock.
+                Err(error) if error.source.as_ref().is_some_and(create_lost_to_existing) => false,
                 Err(error) => return Err(error),
             }
         }
@@ -2836,6 +2838,18 @@ fn link_refused(error: &std::io::Error) -> bool {
         error.kind(),
         std::io::ErrorKind::Unsupported | std::io::ErrorKind::PermissionDenied
     )
+}
+
+/// An exclusive create lost to an existing entry. A host filesystem reports a
+/// raw errno (`src/browser/host-vfs.mjs` sends -17), which std cannot classify
+/// on `wasm32-unknown-unknown`.
+fn create_lost_to_existing(error: &std::io::Error) -> bool {
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    const EEXIST: Option<i32> = Some(17);
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    const EEXIST: Option<i32> = None;
+    error.kind() == std::io::ErrorKind::AlreadyExists
+        || (EEXIST.is_some() && error.raw_os_error() == EEXIST)
 }
 
 fn reclaim_stale_lock(path: &Path, contender: &LockRecord) -> Result<(), NativeStorageError> {
