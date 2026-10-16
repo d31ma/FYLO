@@ -3,6 +3,7 @@ dist
 dist-bin
 target/
 .env
+application.json
 fylo.env
 *.fylo.env
 db

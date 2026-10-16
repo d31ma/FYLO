@@ -16,14 +16,15 @@
 //     --wasm target/wasm32-wasip1/release/fylo-rust.wasm \
 //     [--output target/interchange/report.json]
 
+import { CargoArtifacts } from './cargo-artifacts.mjs'
 import { spawn } from 'node:child_process'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 
-const binary = resolve(requiredOption('--binary'))
-const wasm = resolve(requiredOption('--wasm'))
-const output = resolve(option('--output') ?? 'target/interchange/artifact-interchange.json')
+const binary = resolve(option('--binary') ?? CargoArtifacts.path('release', process.platform === 'win32' ? 'fylo-rust.exe' : 'fylo-rust'))
+const wasm = resolve(option('--wasm') ?? CargoArtifacts.path('wasm32-wasip1/release/fylo-rust.wasm'))
+const output = resolve(option('--output') ?? CargoArtifacts.path('interchange/artifact-interchange.json'))
 const runner = new URL('./run-wasi-machine.mjs', import.meta.url).pathname
 
 // One script over every operation class a shim actually drives: collection
@@ -246,12 +247,6 @@ function keysOf(value) {
 
 function assert(value, message) {
     if (!value) throw new Error(message)
-}
-
-function requiredOption(name) {
-    const value = option(name)
-    if (value === undefined) throw new Error(`missing ${name}`)
-    return value
 }
 
 function option(name) {

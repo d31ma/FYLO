@@ -10,13 +10,15 @@ const evidence = {
     frames: [],
     trace: [],
     bridgeError: '',
-    surface: {}
+    surface: {},
+    step: 'open-opfs-root'
 }
 
 try {
     // Report the storage surface before anything else: whether the sync access
     // handle and the async directory API disagree is the whole question.
     const directory = await navigator.storage.getDirectory()
+    evidence.step = 'start-workers'
     evidence.surface = {
         syncAccessHandle: typeof FileSystemFileHandle?.prototype?.createSyncAccessHandle,
         getDirectoryHandleSync: typeof directory.getDirectoryHandleSync,
@@ -69,7 +71,7 @@ try {
         worker.postMessage({
             id: 1,
             buffer,
-            moduleUrl: '/target/wasm32-unknown-unknown/release/fylo_wasm.wasm',
+            moduleUrl: '/dist-web/fylo-browser.wasm',
             root,
             ndjson:
                 [
@@ -78,7 +80,28 @@ try {
                     { op: 'putData', collection: 'notes', data: { name: 'Ada' }, root },
                     { op: 'putData', collection: 'notes', data: { name: 'Grace' }, root },
                     { op: 'findDocs', collection: 'notes', query: {}, root },
-                    { op: 'inspectCollection', collection: 'notes', root }
+                    { op: 'inspectCollection', collection: 'notes', root },
+                    { op: 'createCollection', collection: 'equality', root },
+                    ...[
+                        { name: 'number', score: 1, profile: { score: 1 } },
+                        { name: 'string', score: '1', profile: { score: '1' } },
+                        { name: 'padded', score: '01', profile: { score: '01' } },
+                        { name: 'boolean', score: true, profile: { score: true } },
+                        { name: 'null', score: null },
+                        { name: 'missing' },
+                        { name: 'other', score: 2 }
+                    ].map((data) => ({ op: 'putData', collection: 'equality', data, root })),
+                    ...[
+                        { score: { $eq: 1 } },
+                        { score: { $eq: null } },
+                        { 'profile.score': { $eq: 1 } },
+                        { 'profile/score': { $eq: 1 } }
+                    ].map((operation) => ({
+                        op: 'findDocs',
+                        collection: 'equality',
+                        query: { $ops: [operation] },
+                        root
+                    }))
                 ]
                     .map((request) => JSON.stringify(request))
                     .join('\n') + '\n'
@@ -104,7 +127,12 @@ try {
         else evidence.status = /directory bridge/.test(evidence.reason) ? 'unsupported' : 'failed'
     }
 } catch (error) {
-    evidence.status = 'failed'
+    evidence.status =
+        evidence.step === 'open-opfs-root' &&
+        ['UnknownError', 'SecurityError', 'NotSupportedError'].includes(error?.name)
+            ? 'unsupported'
+            : 'failed'
+    evidence.supported = evidence.status !== 'unsupported'
     evidence.reason = error instanceof Error ? `${error.message}` : String(error)
 }
 

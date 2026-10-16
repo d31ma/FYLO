@@ -1,3 +1,4 @@
+import { CargoArtifacts } from './cargo-artifacts.mjs'
 import { spawn } from 'node:child_process'
 import { readFile } from 'node:fs/promises'
 import { delimiter, dirname } from 'node:path'
@@ -12,7 +13,10 @@ if (process.argv.length < 3) {
     throw new Error('Usage: bun scripts/run-rust.mjs <cargo|rustc|rustdoc> [...arguments]')
 }
 
-const [command, ...args] = process.argv.slice(2)
+const [command, ...arguments_] = process.argv.slice(2)
+const args = arguments_.map((value, index) =>
+    arguments_[index - 1] === '--output-path' ? CargoArtifacts.report(value) : value
+)
 const rustc = await rustupWhich('rustc')
 const rustdoc = await rustupWhich('rustdoc')
 const toolchainBin = dirname(rustc)

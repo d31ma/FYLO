@@ -9,6 +9,7 @@
 //
 // Usage: node scripts/verify-browser-wasm-host.mjs [--module <path>] [--output <path>]
 
+import { CargoArtifacts } from './cargo-artifacts.mjs'
 import {
     closeSync,
     openSync,
@@ -47,9 +48,9 @@ import {
 } from '../src/browser/host-vfs.mjs'
 
 const modulePath = resolve(
-    option('--module') ?? 'target/wasm32-unknown-unknown/release/fylo_wasm.wasm'
+    option('--module') ?? CargoArtifacts.path('wasm32-unknown-unknown/release/fylo_wasm.wasm')
 )
-const output = resolve(option('--output') ?? 'target/browser/browser-wasm-host.json')
+const output = resolve(option('--output') ?? CargoArtifacts.path('browser/browser-wasm-host.json'))
 const root = mkdtempSync(join(tmpdir(), 'fylo-browser-'))
 
 try {

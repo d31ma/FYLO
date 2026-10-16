@@ -1,8 +1,12 @@
-import { lstat, mkdir, mkdtemp, readdir, rename, rm, writeFile } from 'node:fs/promises'
+import { CargoArtifacts } from './cargo-artifacts.mjs'
+import { copyFile, lstat, mkdir, mkdtemp, readdir, rename, rm, writeFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
+import { createReadStream } from 'node:fs'
 import { arch, cpus, platform, release, tmpdir, totalmem } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 
 import { Fylo } from '../clients/node/fylo.mjs'
+import { SoakProcesses } from './rust-soak/processes.mjs'
 
 const options = parseArguments(process.argv.slice(2))
 const workspace = await mkdtemp(join(tmpdir(), 'fylo-rust-soak-'))
@@ -11,12 +15,23 @@ const collection = 'records'
 const primaryId = '4VRNF52JPK1'
 const secondaryId = '4VRNF52JPK2'
 const deletedId = '4VRNF52JPK3'
-const binary = resolve(
+const sourceBinary = resolve(
     process.env.FYLO_RUST_BINARY ??
-        join('target', 'release', platform() === 'win32' ? 'fylo-rust.exe' : 'fylo-rust')
+        join(
+            process.env.CARGO_TARGET_DIR ?? 'target',
+            'release',
+            platform() === 'win32' ? 'fylo-rust.exe' : 'fylo-rust'
+        )
 )
+const binary = join(workspace, platform() === 'win32' ? 'fylo-rust.exe' : 'fylo-rust')
+const configuration = join(workspace, 'application.json')
 const startedAt = new Date()
-const deadline = options.durationMs === null ? null : Date.now() + options.durationMs
+const preparationStarted = performance.now()
+const cancellation = new AbortController()
+const processes = new SoakProcesses(options, cancellation.signal)
+let workloadStarted = null
+let workloadEnded = null
+let binarySha256 = null
 const metrics = {
     iterations: 0,
     machineOperations: 0,
@@ -34,14 +49,18 @@ let finalReport = null
 for (const signal of ['SIGINT', 'SIGTERM']) {
     process.on(signal, () => {
         interruptedSignal ??= signal
+        cancellation.abort(interruptedSignal)
     })
 }
 
 try {
     await buildBinary()
+    await snapshotBinary()
+    await writeFile(configuration, '{"fylo":{}}\n')
     await seedRoot()
     initialBytes = await directoryBytes(root)
     client = await openClient()
+    workloadStarted = performance.now()
 
     while (shouldContinue()) {
         const sequence = metrics.iterations + 1
@@ -52,21 +71,34 @@ try {
             await sampleResources()
             await closeClient()
             client = await openClient()
+            await verifyRestart(sequence)
             metrics.restarts++
         }
         if (sequence % options.checkpointEvery === 0) {
             await sampleResources()
-            await writeReport(false)
+            const report = await writeReport(false)
+            enforceResources(report.gates)
         }
     }
     if (interruptedSignal) throw new Error(`soak interrupted by ${interruptedSignal}`)
 } catch (error) {
     failure = error
 } finally {
-    await sampleResources()
-    await closeClient()
+    workloadEnded = performance.now()
+    for (const cleanup of [sampleResources, closeClient, () => processes.stopAll()]) {
+        try {
+            await cleanup()
+        } catch (error) {
+            failure ??= error
+        }
+    }
+    if (interruptedSignal) failure ??= new Error(`soak interrupted by ${interruptedSignal}`)
     finalReport = await writeReport(failure === null)
-    if (failure === null || !options.keepRootsOnFailure) {
+    if (finalReport.status !== 'passed') {
+        failure ??= new Error(`soak gates failed: ${JSON.stringify(finalReport.gates)}`)
+        finalReport = await writeReport(false)
+    }
+    if ((failure === null || !options.keepRootsOnFailure) && processes.children.size === 0) {
         await rm(workspace, { recursive: true, force: true })
     }
 }
@@ -84,7 +116,7 @@ console.log(
 function shouldContinue() {
     if (interruptedSignal) return false
     if (options.iterations !== null) return metrics.iterations < options.iterations
-    return Date.now() < deadline
+    return performance.now() - workloadStarted < options.durationMs
 }
 
 async function runIteration(sequence) {
@@ -146,7 +178,7 @@ async function runIteration(sequence) {
 
 async function operation(request) {
     const started = performance.now()
-    const response = await client.request({
+    const response = await processes.request(client, {
         ...request,
         requestId: `soak-${metrics.machineOperations}`
     })
@@ -167,18 +199,42 @@ function check(value, message) {
 
 async function buildBinary() {
     if (process.env.FYLO_SKIP_RUST_BUILD === '1') return
-    await command([
-        process.execPath,
-        './scripts/run-rust.mjs',
-        'cargo',
-        'build',
-        '--release',
-        '--locked',
-        '-p',
-        'fylo-cli',
-        '--bin',
-        'fylo-rust'
-    ])
+    if (process.env.FYLO_RUST_BINARY) {
+        throw new Error(
+            'FYLO_RUST_BINARY requires FYLO_SKIP_RUST_BUILD=1 to qualify that exact binary'
+        )
+    }
+    await processes.command(
+        [
+            process.execPath,
+            './scripts/run-rust.mjs',
+            'cargo',
+            'build',
+            '--release',
+            '--locked',
+            '--target-dir',
+            resolve(process.env.CARGO_TARGET_DIR ?? 'target'),
+            '-p',
+            'fylo-cli',
+            '--bin',
+            'fylo-rust'
+        ],
+        { timeoutMs: options.buildTimeoutMs, label: 'Rust build' }
+    )
+}
+
+async function binaryHash(path) {
+    const digest = createHash('sha256')
+    for await (const chunk of createReadStream(path)) digest.update(chunk)
+    return digest.digest('hex')
+}
+
+async function snapshotBinary() {
+    binarySha256 = await binaryHash(sourceBinary)
+    await copyFile(sourceBinary, binary)
+    if ((await binaryHash(binary)) !== binarySha256) {
+        throw new Error('source binary changed while creating the qualification snapshot')
+    }
 }
 
 async function seedRoot() {
@@ -205,12 +261,12 @@ async function seedRoot() {
             data: { name: 'Linus', active: true }
         })
     } finally {
-        await database.close()
+        await processes.close(database)
     }
 }
 
 async function required(database, request) {
-    const response = await database.request(request)
+    const response = await processes.request(database, request)
     if (!response.ok) {
         throw new Error(
             `seed ${request.op} failed (${response.error?.code}): ${response.error?.message}`
@@ -220,45 +276,85 @@ async function required(database, request) {
 }
 
 async function openClient() {
-    const opened = new Fylo(root, { binary, exclusiveRoot: true })
-    await opened.ready
-    return opened
+    if ((await binaryHash(binary)) !== binarySha256) {
+        throw new Error('qualification binary snapshot changed')
+    }
+    const opened = new Fylo(root, { binary, config: configuration, exclusiveRoot: true })
+    processes.own(opened._proc)
+    try {
+        await processes.bounded(opened.ready, options.operationTimeoutMs, 'native handshake')
+        return opened
+    } catch (error) {
+        await processes.stop(opened._proc)
+        throw error
+    }
 }
 
 async function closeClient() {
     if (!client) return
     const closing = client
     client = null
-    await closing.close()
+    await processes.close(closing)
+}
+
+async function verifyRestart(sequence) {
+    const primary = await operation({ op: 'getDoc', collection, id: primaryId })
+    check(primary[primaryId]?.sequence === sequence, 'restart lost the primary sequence')
+    check(primary[primaryId]?.parity === (sequence % 2 === 0), 'restart lost primary parity')
+    const secondary = await operation({ op: 'getDoc', collection, id: secondaryId })
+    check(secondary[secondaryId]?.active === (sequence % 2 === 0), 'restart lost SQL state')
+    const restored = await operation({ op: 'getDoc', collection, id: deletedId })
+    check(restored[deletedId]?.name === 'Linus', 'restart lost the restored document')
+    const metadata = await operation({ op: 'getMeta', collection, id: primaryId })
+    check(metadata.checkpoint === String(sequence), 'restart lost metadata checkpoint')
+}
+
+function enforceResources(gates) {
+    for (const name of ['rustPeakRssWithinLimit', 'diskGrowthWithinLimit']) {
+        if (!gates[name]) throw new Error(`soak resource limit failed: ${name}`)
+    }
 }
 
 async function sampleResources() {
     if (!client) return
     metrics.peakRssBytes = Math.max(metrics.peakRssBytes, await processRssBytes(client._proc.pid))
+    if (metrics.peakRssBytes > 512 * 1024 * 1024) {
+        throw new Error('soak resource limit failed: rustPeakRssWithinLimit')
+    }
 }
 
 async function writeReport(completed) {
     const endedAt = new Date()
     const finalBytes = await directoryBytesIfExists(root)
     const baseline = initialBytes ?? 0
-    const durationMs = endedAt.getTime() - startedAt.getTime()
+    const rootsRetainedOnFailure = Boolean(
+        failure && (options.keepRootsOnFailure || processes.children.size > 0)
+    )
+    const durationMs =
+        workloadStarted === null ? 0 : (workloadEnded ?? performance.now()) - workloadStarted
     const gates = {
+        notInterrupted: interruptedSignal === null,
         durationSatisfied: options.profile !== 'release' || durationMs >= 72 * 60 * 60 * 1000,
         operationMinimumSatisfied:
             options.profile !== 'release' || metrics.machineOperations >= 100_000,
         modelAssertionsExecuted: metrics.assertions > 0,
+        restartExecuted: options.profile !== 'release' || metrics.restarts > 0,
         rustPeakRssWithinLimit:
             metrics.peakRssBytes > 0 && metrics.peakRssBytes <= 512 * 1024 * 1024,
         diskGrowthWithinLimit: finalBytes - baseline <= 1024 * 1024 * 1024
     }
     const report = {
-        format: 'fylo.rust-soak.v1',
+        format: 'fylo.rust-soak.v2',
         profile: options.profile,
         status: completed && Object.values(gates).every(Boolean) ? 'passed' : 'incomplete',
         startedAt: startedAt.toISOString(),
         endedAt: endedAt.toISOString(),
         durationMs,
+        preparationMs: (workloadStarted ?? performance.now()) - preparationStarted,
+        wallDurationMs: endedAt.getTime() - startedAt.getTime(),
         binary,
+        sourceBinary,
+        binarySha256,
         environment: {
             os: platform(),
             release: release(),
@@ -290,11 +386,11 @@ async function writeReport(completed) {
         gates,
         interruption: interruptedSignal,
         error: failure instanceof Error ? failure.message : failure ? String(failure) : null,
-        rootsRetainedOnFailure: Boolean(failure && options.keepRootsOnFailure),
-        retainedWorkspace: failure && options.keepRootsOnFailure ? workspace : null
+        rootsRetainedOnFailure,
+        retainedWorkspace: rootsRetainedOnFailure ? workspace : null
     }
     await mkdir(dirname(options.output), { recursive: true })
-    const temporary = `${options.output}.tmp`
+    const temporary = `${options.output}.${process.pid}.tmp`
     await writeFile(temporary, `${JSON.stringify(report, null, 2)}\n`)
     await rename(temporary, options.output)
     return report
@@ -359,23 +455,16 @@ async function processRssBytes(pid) {
                   `(Get-Process -Id ${pid} -ErrorAction SilentlyContinue).WorkingSet64`
               ]
             : ['ps', '-o', 'rss=', '-p', String(pid)]
-    const child = Bun.spawn(arguments_, { stdout: 'pipe', stderr: 'ignore' })
-    const [stdout, exitCode] = await Promise.all([new Response(child.stdout).text(), child.exited])
-    if (exitCode !== 0) return 0
-    const value = Number(stdout.trim())
-    if (!Number.isFinite(value) || value <= 0) return 0
-    return platform() === 'win32' ? Math.round(value) : Math.round(value * 1024)
-}
-
-async function command(arguments_) {
-    const child = Bun.spawn(arguments_, {
-        cwd: process.cwd(),
-        env: process.env,
-        stdout: 'inherit',
-        stderr: 'inherit'
+    const stdout = await processes.command(arguments_, {
+        capture: true,
+        timeoutMs: options.sampleTimeoutMs,
+        label: 'resource sample',
+        interruptible: false
     })
-    const exitCode = await child.exited
-    if (exitCode !== 0) throw new Error(`command failed (${exitCode}): ${arguments_.join(' ')}`)
+    const value = Number(stdout.trim())
+    if (!Number.isFinite(value) || value <= 0)
+        throw new Error('resource sample returned no positive RSS')
+    return platform() === 'win32' ? Math.round(value) : Math.round(value * 1024)
 }
 
 function parseArguments(arguments_) {
@@ -402,10 +491,22 @@ function parseArguments(arguments_) {
         profile,
         iterations,
         durationMs: durationHours === null ? null : durationHours * 60 * 60 * 1000,
-        output: option(arguments_, '--output') ?? 'target/soak/rust-soak.json',
+        output: CargoArtifacts.report(
+            option(arguments_, '--output') ?? CargoArtifacts.path('soak/rust-soak.json')
+        ),
         checkpointEvery: boundedOption(arguments_, '--checkpoint-every', 100, 1, 1_000_000),
         restartEvery: boundedOption(arguments_, '--restart-every', 1000, 1, 1_000_000),
         deleteEvery: boundedOption(arguments_, '--delete-every', 10, 1, 1_000_000),
+        operationTimeoutMs: boundedOption(
+            arguments_,
+            '--operation-timeout-ms',
+            30_000,
+            100,
+            600_000
+        ),
+        shutdownTimeoutMs: boundedOption(arguments_, '--shutdown-timeout-ms', 5_000, 100, 60_000),
+        buildTimeoutMs: boundedOption(arguments_, '--build-timeout-ms', 600_000, 100, 3_600_000),
+        sampleTimeoutMs: boundedOption(arguments_, '--sample-timeout-ms', 5_000, 100, 60_000),
         keepRootsOnFailure: !arguments_.includes('--discard-roots-on-failure')
     }
 }

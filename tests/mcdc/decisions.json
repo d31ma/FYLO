@@ -1,0 +1,86 @@
+{
+    "schemaVersion": 1,
+    "criterion": "unique-cause-mcdc",
+    "scope": "Registered safety-critical Rust decisions; this is not whole-core MC/DC coverage.",
+    "decisions": [
+        {
+            "id": "engine.read_access_policy",
+            "package": "fylo-engine",
+            "source": "crates/fylo-engine/src/lib.rs",
+            "sourceMarker": "fn read_access_conditions(",
+            "test": "mcdc_tests::mcdc_engine_read_access_policy",
+            "safety": "Portable UID/GID/mode reads must fail closed while preserving public records.",
+            "conditions": ["unprotected", "owner_read", "group_read", "other_read"]
+        },
+        {
+            "id": "engine.stable_generation_observation",
+            "package": "fylo-engine",
+            "source": "crates/fylo-engine/src/lib.rs",
+            "sourceMarker": "fn stable_generation_observed(",
+            "test": "mcdc_tests::mcdc_engine_stable_generation_observation",
+            "safety": "A read may return only when the post-read generation is stable and unchanged.",
+            "conditions": ["after_is_stable", "generation_unchanged"]
+        },
+        {
+            "id": "machine.private_ipv4_rejection",
+            "package": "fylo-machine",
+            "source": "crates/fylo-machine/src/lib.rs",
+            "sourceMarker": "fn private_ipv4_conditions(",
+            "test": "tests::mcdc_machine_private_ipv4_rejection",
+            "safety": "Remote imports must reject every supported private or special-use IPv4 class.",
+            "conditions": [
+                "this_network",
+                "private_10",
+                "loopback",
+                "link_local",
+                "private_172",
+                "private_192",
+                "carrier_grade_nat"
+            ]
+        },
+        {
+            "id": "queue.in_flight_delivery_integrity",
+            "package": "fylo-storage-native",
+            "source": "crates/fylo-storage-native/src/queue.rs",
+            "sourceMarker": "fn in_flight_delivery_valid_conditions(",
+            "test": "queue::tests::mcdc_queue_in_flight_delivery_integrity",
+            "safety": "Corrupt receipts and invalid delivery-attempt bounds must never be accepted as live leases.",
+            "conditions": [
+                "valid_receipt",
+                "attempt_in_range",
+                "max_attempts_in_range",
+                "attempt_not_above_max"
+            ]
+        },
+        {
+            "id": "queue.stored_message_rejection",
+            "package": "fylo-storage-native",
+            "source": "crates/fylo-storage-native/src/queue.rs",
+            "sourceMarker": "fn stored_message_invalid_conditions(",
+            "test": "queue::tests::mcdc_queue_stored_message_rejection",
+            "safety": "Queue hydration must reject corrupt format, identity, topic, or publication ordering independently.",
+            "conditions": [
+                "format_mismatch",
+                "invalid_message_id",
+                "invalid_topic",
+                "available_before_publish"
+            ]
+        },
+        {
+            "id": "storage.transaction_manifest_rejection",
+            "package": "fylo-storage-native",
+            "source": "crates/fylo-storage-native/src/write.rs",
+            "sourceMarker": "fn invalid_conditions(&self, collection: &str, identifier: &str) -> [bool; 6]",
+            "test": "write::tests::mcdc_storage_transaction_manifest_rejection",
+            "safety": "Recovery must reject a transaction manifest when any schema or identity invariant is violated.",
+            "conditions": [
+                "format_mismatch",
+                "identifier_mismatch",
+                "collection_mismatch",
+                "operation_empty",
+                "operation_too_long",
+                "captures_present"
+            ]
+        }
+    ]
+}

@@ -1,21 +1,9 @@
-<script>
-    let __fyloPage = true
-</script>
-<link rel="stylesheet" href="/shared/assets/duvay/duvay.min.css" />
-<link rel="stylesheet" href="/shared/assets/site.css" />
-
 <site-header />
 
-<main id="home-content">
+<main id="home-content" class="home-main">
     <hero hydrate="load" />
-    <stats-strip hydrate="load" />
-    <code-showcase heading="From install to query in one minute" hydrate="load" />
     <features-grid hydrate="load" />
-    <arch-section hydrate="load" />
-    <faq-panels hydrate="load" />
-    <cta-banner />
+    <home-quickstart />
 </main>
 
-<slot />
-
-<site-footer hydrate="load" />
+<site-footer />

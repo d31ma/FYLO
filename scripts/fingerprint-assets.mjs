@@ -7,11 +7,12 @@
  * hash and forces a fresh fetch. Run from either app directory after bundling.
  */
 
+import { SiteArtifacts } from './site-artifacts.mjs'
 import { copyFile, readdir, readFile, writeFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import path from 'node:path'
 
-const output = path.join(globalThis.process.cwd(), 'dist', 'web')
+const output = SiteArtifacts.web()
 const ASSET_REF = /(?:href|src)="(\/shared\/assets\/[^"?#]+)"/g
 const ASSET_VERSION_PLACEHOLDER = '__FYLO_ASSET_VERSION__'
 

@@ -174,9 +174,9 @@ describe('standalone Explorer app', () => {
         expect(websitePackage.scripts.bundle).toContain('ty bundle')
         expect(websitePackage.devDependencies?.['@d31ma/tachyon']).toBeUndefined()
         expect(await exists(path.join(website, 'bun.lock'))).toBe(false)
-        expect(installer).toContain("TACHYON_VERSION='v26.33.01'")
+        expect(installer).toContain("TACHYON_VERSION='v26.33.02'")
         expect(installer).toContain(
-            "TACHYON_SHA256='0ecafafd0468b8e559e98f1192e88df2cc5c53fb195e8ff8305b4d2f3b2ee584'"
+            "TACHYON_SHA256='08b90a516ccb665664c3b986e71769cdcc738960e45a0bd8c73ab691a0cda1cd'"
         )
         expect(vendoredBundle).toBe(browserBundle)
         for (const asset of ['shared.js', 'dedicated.js', 'fylo-index.wasm']) {

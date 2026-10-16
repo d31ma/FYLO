@@ -129,7 +129,7 @@ fn run_patch(arguments: &[String], writer: &NativeWriteRoot) -> Result<(), Strin
     let identifier = required_option(arguments, "--id")?;
     let document = required_option(arguments, "--document")?;
     let actor = actor(arguments)?;
-    if let Some(engine) = write_engine(writer.path())? {
+    if let Some(engine) = write_engine(writer.path(), arguments)? {
         let fields = serde_json::from_str(document)
             .map_err(|error| format!("invalid --document: {error}"))?;
         let context = access_context(arguments)?;
@@ -163,31 +163,23 @@ fn access_context(arguments: &[String]) -> Result<Option<AccessContext>, String>
     Ok(Some(AccessContext::new(uid, groups)))
 }
 
-/// Route document bodies through the engine only when a usable schema root and
-/// both credentials are present, matching the read-only preview CLI.
-fn write_engine(root: &Path) -> Result<Option<WriteEngine>, String> {
-    let Some(schema_root) = configured("FYLO_SCHEMA") else {
+/// Use the same explicit application configuration as the published CLI.
+fn write_engine(root: &Path, arguments: &[String]) -> Result<Option<WriteEngine>, String> {
+    let config =
+        fylo_machine::ApplicationConfig::load(option(arguments, "--config").map(Path::new))?;
+    let Some(schema_root) = config.schema.as_ref() else {
         return Ok(None);
     };
-    if !Path::new(&schema_root).is_dir() {
-        return Ok(None);
+    let mut engine = match config.credentials.as_ref() {
+        Some((secret, salt)) => WriteEngine::open_with_encryption(root, schema_root, secret, salt),
+        None => WriteEngine::open_with_schema(root, schema_root),
     }
-    let Some((secret, salt)) =
-        configured("FYLO_ENCRYPTION_KEY").zip(configured("FYLO_CIPHER_SALT"))
-    else {
-        return WriteEngine::open_with_schema(root, schema_root)
-            .map(Some)
-            .map_err(|error| error.to_string());
-    };
-    WriteEngine::open_with_encryption(root, schema_root, &secret, &salt)
-        .map(Some)
-        .map_err(|error| error.to_string())
-}
-
-/// An empty environment variable is falsy in JavaScript, and a repository
-/// `.env` commonly declares these names with empty values.
-fn configured(name: &str) -> Option<String> {
-    env::var(name).ok().filter(|value| !value.is_empty())
+    .map_err(|error| error.to_string())?
+    .with_config(config.storage);
+    if let Some(binary) = config.chex_binary {
+        engine = engine.with_chex_binary(binary);
+    }
+    Ok(Some(engine))
 }
 
 fn run_metadata(
@@ -233,7 +225,7 @@ fn run_put(command: &str, arguments: &[String], writer: &NativeWriteRoot) -> Res
     };
     if command == "put-document" {
         let document = required_option(arguments, "--document")?;
-        if let Some(engine) = write_engine(writer.path())? {
+        if let Some(engine) = write_engine(writer.path(), arguments)? {
             let fields = serde_json::from_str(document)
                 .map_err(|error| format!("invalid --document: {error}"))?;
             return engine

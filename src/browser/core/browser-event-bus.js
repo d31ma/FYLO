@@ -1,22 +1,18 @@
-import { join } from './path.js'
+import { BrowserPath } from './browser-path.js'
+import { BrowserEventStream } from './browser-event-stream.js'
 
 /**
  * @typedef {import('./filesystem.js').FyloFilesystem} FyloFilesystem
  * @typedef {import('./types.js').BrowserEvent} BrowserEvent
  */
 
-/**
- * Append-only event journal for FYLO browser. It persists NDJSON using the same
- * collection event path shape as the Bun filesystem engine and also provides
- * in-process pub/sub for direct, worker-less browser usage.
- */
 export class BrowserEventBus {
     /**
-     * @param {FyloFilesystem} fs
+     * @param {FyloFilesystem} filesystem
      * @param {(collection: string) => string} rootForCollection
      */
-    constructor(fs, rootForCollection) {
-        this.fs = fs
+    constructor(filesystem, rootForCollection) {
+        this.fs = filesystem
         this.rootForCollection = rootForCollection
         /** @type {EventTarget} */
         this.target = new EventTarget()
@@ -24,7 +20,11 @@ export class BrowserEventBus {
 
     /** @param {string} collection @returns {string} */
     journalPath(collection) {
-        return join(this.rootForCollection(collection), 'events', `${collection}.ndjson`)
+        return BrowserPath.join(
+            this.rootForCollection(collection),
+            'events',
+            `${collection}.ndjson`
+        )
     }
 
     /**
@@ -55,26 +55,8 @@ export class BrowserEventBus {
      * @param {string} collection
      * @returns {AsyncGenerator<BrowserEvent, void, unknown>}
      */
-    async *listen(collection) {
-        /** @type {BrowserEvent[]} */
-        const queue = []
-        /** @type {() => void} */
-        let wake = () => {}
-        const unsubscribe = this.subscribe(collection, (event) => {
-            queue.push(event)
-            wake()
-        })
-        try {
-            while (true) {
-                if (queue.length === 0) {
-                    await new Promise((resolve) => {
-                        wake = () => resolve(undefined)
-                    })
-                }
-                while (queue.length > 0) yield /** @type {BrowserEvent} */ (queue.shift())
-            }
-        } finally {
-            unsubscribe()
-        }
+    listen(collection) {
+        const stream = new BrowserEventStream(this.subscribe.bind(this, collection))
+        return stream.iterate()
     }
 }

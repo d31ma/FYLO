@@ -6,7 +6,7 @@ set -eu
 
 TTID_VERSION='v26.32.03'
 CHEX_VERSION='v26.32.02'
-TACHYON_VERSION='v26.33.01'
+TACHYON_VERSION='v26.33.02'
 DESTINATION=${FYLO_VENDOR_BIN_DIR:-"$HOME/.local/bin"}
 
 case "$(uname -s)-$(uname -m)" in
@@ -16,7 +16,7 @@ case "$(uname -s)-$(uname -m)" in
         CHEX_ASSET='chex-linux-x64'
         CHEX_SHA256='ed0b71cb5d75a35e13e29b4a160e68d6f3e6221e3da6d80ca5a0361f92e5579b'
         TACHYON_ASSET='ty-linux-x64'
-        TACHYON_SHA256='6f4c264f4c350dcead359835e7f99b71a1859903c7f94ddf4d9a64f30587054a'
+        TACHYON_SHA256='c662da31be584364b1d0554df232336a047b90ba66ab9bde9c87e248bb184616'
         ;;
     Linux-aarch64|Linux-arm64)
         TTID_ASSET='ttid-linux-arm64'
@@ -24,7 +24,7 @@ case "$(uname -s)-$(uname -m)" in
         CHEX_ASSET='chex-linux-arm64'
         CHEX_SHA256='1ec31aa7201d6ab3af8114725406050dd48fc6ca052c74a7be378510a1ec96af'
         TACHYON_ASSET='ty-linux-arm64'
-        TACHYON_SHA256='ce1ce3fc4fc41f63251df45d657d39024afc9476aba2c2cb226680a4418a2735'
+        TACHYON_SHA256='2e78dd4b46a300196e64d6563cbf53b77aa4fc407e51834568f7dccc6167e293'
         ;;
     Darwin-arm64)
         TTID_ASSET='ttid-macos-arm64'
@@ -32,7 +32,7 @@ case "$(uname -s)-$(uname -m)" in
         CHEX_ASSET='chex-macos-arm64'
         CHEX_SHA256='a3869779fdc12210fdf9c8cc54d4ea136912516a76de47621d304dbbeaac47ce'
         TACHYON_ASSET='ty-macos-arm64'
-        TACHYON_SHA256='0ecafafd0468b8e559e98f1192e88df2cc5c53fb195e8ff8305b4d2f3b2ee584'
+        TACHYON_SHA256='08b90a516ccb665664c3b986e71769cdcc738960e45a0bd8c73ab691a0cda1cd'
         ;;
     Darwin-x86_64)
         TTID_ASSET='ttid-macos-x64'
@@ -40,7 +40,7 @@ case "$(uname -s)-$(uname -m)" in
         CHEX_ASSET='chex-macos-x64'
         CHEX_SHA256='1b410bf166ffddf2921f661a18c3e90ba2ab74818f7a125fff4d20f0c3566806'
         TACHYON_ASSET='ty-macos-x64'
-        TACHYON_SHA256='4b59a8ce28ddd7f59567dc7643595c2e0b84395d032c7a8fb7ff48b6c01faaa5'
+        TACHYON_SHA256='b5fd0495a18a1923a132275d15358e170e66516e0f47b1f54f159031cec5d457'
         ;;
     MINGW*-x86_64|MSYS*-x86_64|CYGWIN*-x86_64)
         TTID_ASSET='ttid-windows-x64.exe'
@@ -48,7 +48,7 @@ case "$(uname -s)-$(uname -m)" in
         CHEX_ASSET='chex-windows-x64.exe'
         CHEX_SHA256='3aa465447849d1f0d43318cd7c0e3c69a7db8cc06055a0c6ba0b4d53c24334bc'
         TACHYON_ASSET='ty-windows-x64.exe'
-        TACHYON_SHA256='15b624f77c4e582a41332e44aadc7451369b960f8081da7fd670e11eb76a6424'
+        TACHYON_SHA256='00198a58534faff29f2373a2649c58f176e3305aa77242f59cee6530c7c371d5'
         EXECUTABLE_SUFFIX='.exe'
         ;;
     *)
@@ -100,5 +100,5 @@ install_binary 'd31ma/Tachyon' "$TACHYON_VERSION" "$TACHYON_ASSET" "$TACHYON_SHA
 
 "$DESTINATION/ttid$EXECUTABLE_SUFFIX" --help >/dev/null
 "$DESTINATION/chex$EXECUTABLE_SUFFIX" --help >/dev/null
-test "$("$DESTINATION/ty$EXECUTABLE_SUFFIX" --version)" = "26.33.01"
+test "$("$DESTINATION/ty$EXECUTABLE_SUFFIX" --version)" = "26.33.02"
 echo "Verified TTID, CHEX, and TACHYON in $DESTINATION."

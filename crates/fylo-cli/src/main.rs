@@ -8,15 +8,19 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use fylo_engine::{AccessContext, ReadOnlyEngine};
-use fylo_format::decode_ttid;
-use fylo_machine::{FrameLimits, RootConfig, serve_configured, serve_exclusive, serve_once};
+use fylo_format::TtidTimestamps;
+use fylo_machine::{ApplicationConfig, FrameLimits, serve_application};
 use fylo_query::{QueryLimits, ScanQuery, StructuredQuery, prepare_sql};
 use serde_json::{Map, Value, json};
 
 const VERSION: &str = include_str!("../../../VERSION");
 
 fn main() -> ExitCode {
-    let arguments: Vec<String> = env::args().skip(1).collect();
+    let mut arguments: Vec<String> = env::args().skip(1).collect();
+    // The configuration selector is also accepted before the subcommand.
+    if arguments.first().is_some_and(|arg| arg == "--config") && arguments.len() >= 3 {
+        arguments.rotate_left(2);
+    }
     if arguments.is_empty()
         || arguments.first().is_some_and(|command| command == "help")
         || arguments
@@ -46,21 +50,21 @@ fn run(arguments: &[String]) -> Result<String, String> {
         return Err(usage());
     };
     if command == "version" || arguments.iter().any(|argument| argument == "--version") {
-        if arguments.iter().any(|argument| argument == "--json")
-            || option(arguments, "--output") == Some("json")
-        {
-            return pretty(&machine_result(&json!({ "op": "handshake" }), None)?);
-        }
-        return Ok(VERSION.trim().to_owned());
+        return version_output(arguments);
     }
     if RETIRED_COMMANDS.contains(&command) {
         return Err(retired_command(command));
     }
-    if uses_compat_cli(arguments) {
-        return run_compat_cli(arguments);
+    let compatibility_command = uses_compat_cli(arguments);
+    if !compatibility_command && !is_read_command(command) {
+        return Err(usage());
     }
-    let root = required_option(arguments, "--root")?;
-    let engine = open_engine(root)?;
+    let application = machine_config(arguments)?;
+    if compatibility_command {
+        return run_compat_cli(arguments, &application);
+    }
+    let root = compat_root(arguments, &application)?;
+    let engine = open_engine(&root, &application)?;
     match command {
         "log" => history_output(&engine, arguments),
         "verify-history" => version_verification_output(&engine, arguments),
@@ -142,13 +146,50 @@ fn run(arguments: &[String]) -> Result<String, String> {
     }
 }
 
+fn is_read_command(command: &str) -> bool {
+    matches!(
+        command,
+        "log"
+            | "verify-history"
+            | "inspect"
+            | "get"
+            | "get-file"
+            | "get-deleted"
+            | "get-deleted-file"
+            | "scan-index"
+            | "verify-index"
+            | "find"
+            | "sql"
+    )
+}
+
+fn version_output(arguments: &[String]) -> Result<String, String> {
+    if arguments.iter().any(|argument| argument == "--json")
+        || option(arguments, "--output") == Some("json")
+    {
+        return pretty(&machine_result(
+            &json!({ "op": "handshake" }),
+            None,
+            &ApplicationConfig::default(),
+        )?);
+    }
+    Ok(VERSION.trim().to_owned())
+}
+
 fn run_machine(arguments: &[String]) -> ExitCode {
     if arguments.iter().any(|argument| argument == "--worm") {
         eprintln!("fylo-rust exec does not support process-local WORM mode");
         return ExitCode::FAILURE;
     }
+    let application = match machine_config(arguments) {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
     if arguments.iter().any(|argument| argument == "--loop") {
-        return run_machine_loop(arguments);
+        return run_machine_loop(arguments, application);
     }
     let source = match required_option(arguments, "--request") {
         Ok(source) => source,
@@ -179,7 +220,7 @@ fn run_machine(arguments: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    match machine_frame(&request, root, limits) {
+    match machine_frame(&request, root, limits, &application) {
         Ok(frame) => {
             println!("{}", serde_json::to_string(&frame).unwrap_or_default());
             if frame.get("ok") == Some(&Value::Bool(true)) {
@@ -195,7 +236,7 @@ fn run_machine(arguments: &[String]) -> ExitCode {
     }
 }
 
-fn run_machine_loop(arguments: &[String]) -> ExitCode {
+fn run_machine_loop(arguments: &[String], config: ApplicationConfig) -> ExitCode {
     let root = option(arguments, "--root").map(PathBuf::from);
     let limits = match machine_limits(arguments) {
         Ok(limits) => limits,
@@ -206,21 +247,18 @@ fn run_machine_loop(arguments: &[String]) -> ExitCode {
     };
     let mut input = BufReader::new(io::stdin().lock());
     let mut output = io::stdout().lock();
-    let config = match machine_config(arguments) {
-        Ok(config) => config,
-        Err(error) => {
-            eprintln!("{error}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let result = if arguments
+    let exclusive = arguments
         .iter()
-        .any(|argument| argument == "--exclusive-root")
-    {
-        serve_exclusive(&mut input, &mut output, root, limits)
-    } else {
-        serve_configured(&mut input, &mut output, root, limits, config)
-    };
+        .any(|argument| argument == "--exclusive-root");
+    let result = serve_application(
+        &mut input,
+        &mut output,
+        root,
+        limits,
+        config,
+        exclusive,
+        true,
+    );
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
@@ -234,18 +272,32 @@ fn machine_frame(
     request: &Value,
     root: Option<PathBuf>,
     limits: FrameLimits,
+    application: &ApplicationConfig,
 ) -> Result<Value, String> {
     let mut input = serde_json::to_vec(&request).map_err(|error| error.to_string())?;
     input.push(b'\n');
     let mut reader = Cursor::new(input);
     let mut output = Vec::new();
-    serve_once(&mut reader, &mut output, root, limits).map_err(|error| error.to_string())?;
+    serve_application(
+        &mut reader,
+        &mut output,
+        root,
+        limits,
+        application.clone(),
+        false,
+        false,
+    )
+    .map_err(|error| error.to_string())?;
     let text = std::str::from_utf8(&output).map_err(|error| error.to_string())?;
     serde_json::from_str(text.trim_end()).map_err(|error| error.to_string())
 }
 
-fn machine_result(request: &Value, root: Option<PathBuf>) -> Result<Value, String> {
-    let frame = machine_frame(request, root, FrameLimits::default())?;
+fn machine_result(
+    request: &Value,
+    root: Option<PathBuf>,
+    application: &ApplicationConfig,
+) -> Result<Value, String> {
+    let frame = machine_frame(request, root, FrameLimits::default(), application)?;
     if frame.get("ok") == Some(&Value::Bool(true)) {
         return Ok(frame.get("result").cloned().unwrap_or(Value::Null));
     }
@@ -263,20 +315,27 @@ fn machine_result(request: &Value, root: Option<PathBuf>) -> Result<Value, Strin
 
 /// Resolve the engine's runtime knobs for this invocation.
 ///
-/// The CLI is the one composition root that still has a process environment,
-/// so it is the only place that reads one. An explicit flag wins over the
-/// variable so a caller can override an inherited environment without
-/// unsetting it.
-fn machine_config(arguments: &[String]) -> Result<RootConfig, String> {
-    let mut config = RootConfig::from_env().map_err(|error| error.to_string())?;
+/// Explicit flags override application-owned settings without mutating the
+/// caller's process environment. Environment variables are only secret sources.
+fn machine_config(arguments: &[String]) -> Result<ApplicationConfig, String> {
+    if arguments.iter().any(|arg| arg == "--config") {
+        required_option(arguments, "--config")?;
+    }
+    let mut config = ApplicationConfig::load(option(arguments, "--config").map(Path::new))?;
+    if let Some(root) = option(arguments, "--root") {
+        config.root = Some(PathBuf::from(root));
+    }
+    if let Some(schema) = option(arguments, "--schema-dir") {
+        config.schema = Some(PathBuf::from(schema));
+    }
     if arguments
         .iter()
         .any(|argument| argument == "--strict-schema")
     {
-        config.strict_schema = true;
+        config.storage.strict_schema = true;
     }
     if let Some(width) = option(arguments, "--shard-width") {
-        config.shard_width =
+        config.storage.shard_width =
             Some(fylo_machine::parse_shard_width(width).map_err(|error| error.to_string())?);
     }
     Ok(config)
@@ -325,13 +384,13 @@ fn uses_compat_cli(arguments: &[String]) -> bool {
 // splitting it across registries would make command-to-protocol drift harder
 // to review against the JavaScript CLI.
 #[allow(clippy::too_many_lines)]
-fn run_compat_cli(arguments: &[String]) -> Result<String, String> {
+fn run_compat_cli(arguments: &[String], application: &ApplicationConfig) -> Result<String, String> {
     if arguments.iter().any(|argument| argument == "--worm") {
         return Err("process-local WORM mode was retired; use UID/GID/mode permissions".into());
     }
     let values = positionals(arguments);
     let command = values.first().map(String::as_str).unwrap_or_default();
-    let root = compat_root(arguments)?;
+    let root = compat_root(arguments, application)?;
     fs::create_dir_all(&root).map_err(|error| format!("cannot create FYLO root: {error}"))?;
     let mut request = Map::new();
     let mut sql = None;
@@ -472,7 +531,7 @@ fn run_compat_cli(arguments: &[String]) -> Result<String, String> {
         }
         _ => return Err(format!("unknown command: {command}\n{}", usage())),
     }
-    let result = machine_result(&Value::Object(request), Some(root))?;
+    let result = machine_result(&Value::Object(request), Some(root), application)?;
     if arguments.iter().any(|argument| argument == "--json") {
         if command == "latest" && arguments.iter().any(|argument| argument == "--id-only") {
             return pretty(&json!({ "id": result }));
@@ -805,7 +864,10 @@ fn render_table(result: &Value, arguments: &[String]) -> Result<String, String> 
     }
     let alignment = table_alignment(option(arguments, "--align"))?;
     let page_size = table_page_size(option(arguments, "--page-size"))?;
-    let row_key_label = if documents.keys().any(|key| decode_ttid(key).is_ok()) {
+    let row_key_label = if documents
+        .keys()
+        .any(|key| TtidTimestamps::decode(key).is_ok())
+    {
         "_id"
     } else {
         "_key"
@@ -1081,12 +1143,12 @@ fn character_display_width(character: char) -> usize {
     }
 }
 
-fn compat_root(arguments: &[String]) -> Result<PathBuf, String> {
+fn compat_root(arguments: &[String], application: &ApplicationConfig) -> Result<PathBuf, String> {
     if let Some(root) = option(arguments, "--root") {
         return Ok(PathBuf::from(root));
     }
-    if let Some(root) = env::var_os("FYLO_ROOT") {
-        return Ok(PathBuf::from(root));
+    if let Some(root) = application.root.as_ref() {
+        return Ok(root.clone());
     }
     env::current_dir()
         .map(|directory| directory.join(".fylo-data"))
@@ -1112,6 +1174,8 @@ fn required_positional<'a>(
 
 fn positionals(arguments: &[String]) -> Vec<String> {
     const VALUE_FLAGS: &[&str] = &[
+        "--config",
+        "--shard-width",
         "--root",
         "--schema-dir",
         "--request",
@@ -1219,19 +1283,13 @@ fn history_limit(arguments: &[String]) -> Result<usize, String> {
         .map_err(|error| format!("invalid --limit: {error}"))
 }
 
-fn open_engine(root: &str) -> Result<ReadOnlyEngine, String> {
-    let Ok(schema_root) = env::var("FYLO_SCHEMA") else {
+fn open_engine(root: &Path, application: &ApplicationConfig) -> Result<ReadOnlyEngine, String> {
+    let Some(schema_root) = application.schema.as_ref() else {
         return ReadOnlyEngine::open(root).map_err(|error| error.to_string());
     };
-    if !Path::new(&schema_root).is_dir() {
-        return ReadOnlyEngine::open(root).map_err(|error| error.to_string());
-    }
-    let credentials = env::var("FYLO_ENCRYPTION_KEY")
-        .ok()
-        .zip(env::var("FYLO_CIPHER_SALT").ok());
-    match credentials {
+    match application.credentials.as_ref() {
         Some((secret, salt)) => {
-            ReadOnlyEngine::open_with_encryption(root, schema_root, &secret, &salt)
+            ReadOnlyEngine::open_with_encryption(root, schema_root, secret, salt)
                 .map_err(|error| error.to_string())
         }
         None => {
@@ -1340,7 +1398,7 @@ fn retired_command(command: &str) -> String {
 }
 
 fn usage() -> String {
-    "Usage:\n  fylo checkout [-b] <branch> [--root <path>] [--json]\n  fylo branch [--root <path>] [--json]\n  fylo commit -m <message> [--root <path>] [--json]\n  fylo log [--root <path>] [--json]\n  fylo status [--root <path>] [--json]\n  fylo diff [<from>] [<to>] [--root <path>] [--json]\n  fylo restore-commit <commit-id> [--root <path>] [--force] [--json]\n  fylo merge <ref> [-m <message>] [--root <path>] [--json]\n  fylo version [--output json]\n  fylo \"<SQL>\"\n  fylo sql \"<SQL>\"\n  fylo exec --request <json|@path|-> [--root <path>]\n  fylo exec --loop [--root <path>] [--exclusive-root]\n  fylo inspect <collection> [--root <path>] [--json]\n  fylo get <collection> <doc-id> [--root <path>] [--json]\n  fylo latest <collection> <doc-id> [--root <path>] [--json] [--id-only]\n  fylo rebuild <collection> [--root <path>] [--json]\n  fylo reshard <collection> --width <n> [--root <path>] [--json]\n  fylo verify <collection> [--root <path>] [--json]\n  fylo deleted <collection> [--root <path>] [--json]\n  fylo restore <collection> <doc-id> [--root <path>] [--json]\n  fylo schema inspect <collection> [--schema-dir <path>] [--json]\n  fylo schema current <collection> [--schema-dir <path>] [--json]\n  fylo schema history <collection> [--schema-dir <path>] [--json]\n  fylo schema doctor <collection> [--schema-dir <path>] [--json]\n  fylo schema validate <collection> <json|@path|-> [--schema-dir <path>] [--json]\n  fylo schema materialize <collection> <json|@path|-> [--schema-dir <path>] [--json]\n\nOptions:\n  --root <path>   Override FYLO_ROOT for this command\n  --schema-dir <path> Override FYLO_SCHEMA for schema admin commands\n  --json          Emit machine-readable JSON output\n  --id-only       Return only the resolved document id for latest\n  -b              Create a new branch during checkout\n  -m, --message <v> Commit message\n  --force         Allow restore-commit to overwrite uncommitted changes\n  --request <v>   Machine request payload, @file path, or - for stdin\n  --exclusive-root Acquire an exclusive crash-safe root lease for exec --loop\n  --strict-schema Validate writes against the collection head schema (FYLO_STRICT)\n  --shard-width <n> Shard width for collections created by this session (FYLO_SHARD_WIDTH)\n  --width <n>     Destination shard width for reshard\n  --max-request-bytes <n> Maximum NDJSON request bytes, excluding LF\n  --max-response-bytes <n> Maximum NDJSON response bytes, excluding LF\n  --output <mode> Output mode for version: text or json\n  --version       Print the FYLO runtime version\n  --help          Show this message"
+    "Usage:\n  fylo checkout [-b] <branch> [--root <path>] [--json]\n  fylo branch [--root <path>] [--json]\n  fylo commit -m <message> [--root <path>] [--json]\n  fylo log [--root <path>] [--json]\n  fylo status [--root <path>] [--json]\n  fylo diff [<from>] [<to>] [--root <path>] [--json]\n  fylo restore-commit <commit-id> [--root <path>] [--force] [--json]\n  fylo merge <ref> [-m <message>] [--root <path>] [--json]\n  fylo version [--output json]\n  fylo \"<SQL>\"\n  fylo sql \"<SQL>\"\n  fylo exec --request <json|@path|-> [--root <path>]\n  fylo exec --loop [--root <path>] [--exclusive-root]\n  fylo inspect <collection> [--root <path>] [--json]\n  fylo get <collection> <doc-id> [--root <path>] [--json]\n  fylo latest <collection> <doc-id> [--root <path>] [--json] [--id-only]\n  fylo rebuild <collection> [--root <path>] [--json]\n  fylo reshard <collection> --width <n> [--root <path>] [--json]\n  fylo verify <collection> [--root <path>] [--json]\n  fylo deleted <collection> [--root <path>] [--json]\n  fylo restore <collection> <doc-id> [--root <path>] [--json]\n  fylo schema inspect <collection> [--schema-dir <path>] [--json]\n  fylo schema current <collection> [--schema-dir <path>] [--json]\n  fylo schema history <collection> [--schema-dir <path>] [--json]\n  fylo schema doctor <collection> [--schema-dir <path>] [--json]\n  fylo schema validate <collection> <json|@path|-> [--schema-dir <path>] [--json]\n  fylo schema materialize <collection> <json|@path|-> [--schema-dir <path>] [--json]\n\nOptions:\n  --config <path> Load application.json (default: ./application.json)\n  --root <path>   Override fylo.root for this command\n  --schema-dir <path> Override fylo.schema for schema admin commands\n  --json          Emit machine-readable JSON output\n  --id-only       Return only the resolved document id for latest\n  -b              Create a new branch during checkout\n  -m, --message <v> Commit message\n  --force         Allow restore-commit to overwrite uncommitted changes\n  --request <v>   Machine request payload, @file path, or - for stdin\n  --exclusive-root Acquire an exclusive crash-safe root lease for exec --loop\n  --strict-schema Validate writes against the collection head schema (fylo.strict)\n  --shard-width <n> Shard width for collections created by this session (fylo.shard.width)\n  --width <n>     Destination shard width for reshard\n  --max-request-bytes <n> Maximum NDJSON request bytes, excluding LF\n  --max-response-bytes <n> Maximum NDJSON response bytes, excluding LF\n  --output <mode> Output mode for version: text or json\n  --version       Print the FYLO runtime version\n  --help          Show this message"
         .replace(
             "  --request <v>   Machine request payload, @file path, or - for stdin",
             "  --page-size <n> Repeat headers every n rows in text output\n  --align <mode>  Cell alignment: left, center, right, or auto\n  --request <v>   Machine request payload, @file path, or - for stdin",

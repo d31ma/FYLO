@@ -1,0 +1,612 @@
+{
+  "snapshot_id": "2026-10-11T2125Z",
+  "project": {
+    "name": "FYLO",
+    "claude_project_id": "chan_01MmbfpTbTQTkHwET9p2Jmk9",
+    "codex_project_id": null,
+    "canonical_repo": {
+      "path": "/Volumes/ANNEX/Users/iyor/Library/CloudStorage/Google Drive/myOrganizations/DELMA/FYLO",
+      "exists": true,
+      "verified_git_root": "/Volumes/ANNEX/Users/iyor/Library/CloudStorage/Google Drive/myOrganizations/DELMA/FYLO",
+      "head": "e236162508f6789f980fa7ca136a6671938030cb",
+      "branch": "main",
+      "dirty_paths": [
+        "M .env.example",
+        " M .github/workflows/ci.yml",
+        " M .gitignore",
+        " M Cargo.lock",
+        " M Cargo.toml",
+        " M README.md",
+        " M clients/README.md",
+        " M clients/csharp/Fylo.cs",
+        " M clients/dart/fylo.dart",
+        " M clients/go/fylo.go",
+        " M clients/java/Fylo.java",
+        " M clients/node/fylo.mjs",
+        " M clients/php/fylo.php",
+        " M clients/python/fylo.py",
+        " M clients/ruby/fylo.rb",
+        " M clients/rust/fylo.rs",
+        " M crates/fylo-cli/src/bin/fylo-write-preview.rs",
+        " M crates/fylo-cli/src/main.rs",
+        " M crates/fylo-engine/Cargo.toml",
+        " M crates/fylo-engine/src/encryption.rs",
+        " M crates/fylo-engine/src/lib.rs",
+        " M crates/fylo-engine/src/schema.rs",
+        " M crates/fylo-format/src/lib.rs",
+        " M crates/fylo-format/tests/compatibility.rs",
+        " M crates/fylo-machine/Cargo.toml",
+        " M crates/fylo-machine/src/lib.rs",
+        " M crates/fylo-query/src/index.rs",
+        " M crates/fylo-query/src/lib.rs",
+        " M crates/fylo-storage-native/Cargo.toml",
+        " M crates/fylo-storage-native/src/lease.rs",
+        " M crates/fylo-storage-native/src/lib.rs",
+        " M crates/fylo-storage-native/src/queue.rs",
+        " M crates/fylo-storage-native/src/write.rs",
+        " M docs/adr/0006-shard-records-by-the-trailing-creation-characters.md",
+        " M docs/adr/0008-fylo-wasm-browser-and-mobile-engine.md",
+        " M docs/operations/ci-qualification.md",
+        " M docs/operations/shard-layout-downgrade.md",
+        " M explorer/client/shared/assets/dedicated.js",
+        " M explorer/client/shared/assets/fylo-index.wasm",
+        " M explorer/client/shared/assets/fylo-web.mjs",
+        " M explorer/client/shared/assets/shared.js",
+        " M ops/fylo-amplify-custom-headers-transition-v1.yml",
+        " M ops/fylo-amplify-custom-headers-v1.yml",
+        " M ops/web-release.json",
+        " M package.json",
+        " M scripts/build-browser.mjs",
+        " M scripts/build-executable.mjs",
+        " M scripts/fingerprint-assets.mjs",
+        " M scripts/install-vendor-bins.ps1",
+        " M scripts/install-vendor-bins.sh",
+        " M scripts/patch-tachyon-runtime.mjs",
+        " M scripts/run-rust-soak.mjs",
+        " M scripts/run-rust.mjs",
+        " M scripts/stage-rust-candidate.mjs",
+        " M scripts/verify-artifact-interchange.mjs",
+        " M scripts/verify-browser-wasm-budgets.mjs",
+        " M scripts/verify-browser-wasm-host.mjs",
+        " M scripts/verify-rust-cli-compat.mjs",
+        " M scripts/verify-rust-contracts.mjs",
+        " M scripts/verify-rust-crash-matrix.mjs",
+        " M scripts/verify-rust-language-clients.mjs",
+        " M scripts/verify-rust-release-machine-parity.mjs",
+        " M scripts/verify-rust-released-rollback.mjs",
+        " M src/browser/core/documents.js",
+        " M src/browser/core/engine.js",
+        " D src/browser/core/event-bus.js",
+        " M src/browser/core/memory-filesystem.js",
+        " D src/browser/core/metadata.js",
+        " D src/browser/core/path.js",
+        " M src/browser/core/prefix-index.js",
+        " M src/browser/core/query.js",
+        " M src/browser/fsa-filesystem.js",
+        " M src/browser/opfs-filesystem.js",
+        " M src/security/cipher.js",
+        " M tests/browser/e2e/wasm-engine.spec.mjs",
+        " M tests/browser/e2e/wasm-opfs.spec.mjs",
+        " M tests/browser/fixtures/wasm-engine.mjs",
+        " M tests/browser/fsa-desktop-root.test.js",
+        " M tests/browser/fsa-write-back.test.js",
+        " M tests/browser/prefix-index.test.js",
+        " M tests/browser/wasm-index.test.js",
+        " M tests/interop/ci-qualification.test.js",
+        " M tests/interop/explorer-standalone-app.test.js",
+        " M tests/interop/native-release-root-lease.test.js",
+        " M tests/interop/shim-interop.test.js",
+        " M tests/interop/web-release-ops.test.js",
+        " M tests/interop/website-responsive-languages.test.js",
+        " M tests/interop/windows-ci.test.js",
+        " M website/client/components/docs/content/tac.js",
+        " M website/client/components/docs/guides/tac.html",
+        " D website/client/components/docs/nav/tac.html",
+        " M website/client/components/docs/sample/tac.html",
+        " M website/client/components/docs/sample/tac.js",
+        " M website/client/components/download/content/tac.html",
+        " M website/client/components/faq/panels/tac.html",
+        " M website/client/components/features/grid/tac.css",
+        " M website/client/components/features/grid/tac.html",
+        " M website/client/components/features/grid/tac.js",
+        " M website/client/components/hero/tac.css",
+        " M website/client/components/hero/tac.html",
+        " M website/client/components/hero/tac.js",
+        " M website/client/components/site/footer/tac.html",
+        " M website/client/components/site/header/tac.css",
+        " M website/client/components/site/header/tac.html",
+        " M website/client/pages/docs/browser/tac.html",
+        " M website/client/pages/docs/buckets/tac.html",
+        " M website/client/pages/docs/cli/tac.html",
+        " M website/client/pages/docs/clients/tac.html",
+        " M website/client/pages/docs/concepts/tac.html",
+        " M website/client/pages/docs/documents/tac.html",
+        " M website/client/pages/docs/errors/tac.html",
+        " M website/client/pages/docs/limitations/tac.html",
+        " M website/client/pages/docs/operations/tac.html",
+        " M website/client/pages/docs/protocol/tac.html",
+        " M website/client/pages/docs/querying/tac.html",
+        " M website/client/pages/docs/queue/tac.html",
+        " M website/client/pages/docs/recovery/tac.html",
+        " M website/client/pages/docs/replication/tac.html",
+        " M website/client/pages/docs/schemas/tac.html",
+        " M website/client/pages/docs/schemas/tac.js",
+        " M website/client/pages/docs/security/tac.html",
+        " M website/client/pages/docs/tac.html",
+        " M website/client/pages/docs/versioning/tac.html",
+        " M website/client/pages/download/tac.html",
+        " M website/client/pages/tac.html",
+        " M website/client/pages/tac.js",
+        " M website/client/shared/assets/duvay/duvay.min.css",
+        " M website/client/shared/assets/site.css",
+        " M website/client/shared/scripts/imports.js",
+        " M website/package.json",
+        "?? application.example.json",
+        "?? crates/fylo-cli/tests/",
+        "?? crates/fylo-engine/src/equality_operation.rs",
+        "?? crates/fylo-engine/src/equality_plan.rs",
+        "?? crates/fylo-engine/src/schema/",
+        "?? crates/fylo-engine/tests/equality_planning.rs",
+        "?? crates/fylo-engine/tests/index_reuse_concurrency.rs",
+        "?? crates/fylo-format/src/canonical_metadata.rs",
+        "?? crates/fylo-format/src/document.rs",
+        "?? crates/fylo-format/src/document_limits.rs",
+        "?? crates/fylo-format/src/document_validator.rs",
+        "?? crates/fylo-format/src/format_error.rs",
+        "?? crates/fylo-format/src/format_error_code.rs",
+        "?? crates/fylo-format/src/ttid_timestamps.rs",
+        "?? crates/fylo-format/tests/boundaries.rs",
+        "?? crates/fylo-format/tests/document_contract.rs",
+        "?? crates/fylo-format/tests/numeric_roundtrip.rs",
+        "?? crates/fylo-machine/src/application.rs",
+        "?? crates/fylo-machine/src/application/",
+        "?? crates/fylo-storage-native/src/index_cache.rs",
+        "?? crates/fylo-storage-native/src/index_cache/",
+        "?? crates/fylo-storage-native/src/lease/",
+        "?? crates/fylo-storage-native/src/queue/",
+        "?? crates/fylo-test-support/",
+        "?? docs/COHESION_REFACTOR.md",
+        "?? docs/QUERY_INDEX_REUSE.md",
+        "?? docs/QUERY_RELEASE_QUALIFICATION.md",
+        "?? docs/TIN_INSPIRED_SEARCH_POC.md",
+        "?? docs/cohesion/",
+        "?? docs/configuration.md",
+        "?? docs/operations/mcdc-qualification.md",
+        "?? scripts/cargo-artifacts.mjs",
+        "?? scripts/run-site.mjs",
+        "?? scripts/rust-soak/",
+        "?? scripts/site-artifacts.mjs",
+        "?? scripts/verify-rust-mcdc.mjs",
+        "?? src/browser/core/browser-event-bus.js",
+        "?? src/browser/core/browser-event-stream.js",
+        "?? src/browser/core/browser-metadata-store.js",
+        "?? src/browser/core/browser-path.js",
+        "?? src/browser/core/metadata-record.js",
+        "?? tests/browser/e2e/browser-test.mjs",
+        "?? tests/browser/event-bus.test.js",
+        "?? tests/browser/helpers/event-samples.js",
+        "?? tests/browser/helpers/metadata-samples.js",
+        "?? tests/browser/helpers/path-samples.js",
+        "?? tests/browser/metadata-store.test.js",
+        "?? tests/browser/path.test.js",
+        "?? tests/fixtures/soak-process.mjs",
+        "?? tests/fixtures/tachyon-verified-service-worker.txt",
+        "?? tests/interop/rust-soak-processes.test.js",
+        "?? tests/interop/rust-soak.test.js",
+        "?? tests/interop/tachyon-runtime-patch.test.js",
+        "?? tests/interop/website-homepage.test.js",
+        "?? tests/interop/website-navigation.test.js",
+        "?? tests/interop/website-scroll-strips.test.js",
+        "?? tests/mcdc/",
+        "?? website/client/components/doc/",
+        "?? website/client/components/home/",
+        "?? website/client/shared/assets/duvay/provenance.json",
+        "?? website/client/shared/assets/fylo-mark.svg",
+        "?? website/client/shared/assets/github.svg",
+        "?? website/client/shared/scripts/scroll-strips.js",
+        "?? website/tac.config.js"
+      ]
+    },
+    "origin_develop_cached": "c388bc05d50bd2a5708d4ee3f6058323ff75400a",
+    "local_develop": "c388bc05d50bd2a5708d4ee3f6058323ff75400a",
+    "index_path": "/Volumes/ANNEX/Users/iyor/Library/CloudStorage/Google Drive/myOrganizations/DELMA/FYLO/CODEX_HANDOFF/2026-10-11T2125Z/INDEX.md",
+    "preserved_files_sha256": {
+      "AGENTS.md": "bb84fbf0ce9fb172cc3dd2be72df071d1517ae2302c322a0520cf6ba9bfa473c",
+      "CLAUDE.md": "bb84fbf0ce9fb172cc3dd2be72df071d1517ae2302c322a0520cf6ba9bfa473c",
+      "CLAUDE_HANDOFF.md": "551bf9adfd37a06e430f78646d6e9947fa4a4d7d9176b113aa2ed4104de43c12"
+    },
+    "thread_count": 7,
+    "priority_batch_1_count": 1
+  },
+  "threads": [
+    {
+      "project": "FYLO",
+      "implementation_project": "FYLO",
+      "title": "Hard-link fallback fix",
+      "title_verified": true,
+      "title_source": "recorded Claude project inventory 2026-10-11T21:10:15.047Z",
+      "claude_project_id": "chan_01MmbfpTbTQTkHwET9p2Jmk9",
+      "claude_thread_id": "cmsg_01MmbfpTbTQTkHwET9p2Jmk9CVpTv6czHFTPoX1tfSFumc",
+      "claude_session_id": "cse_01UjEPzK7bBTyBpfUKxr5NCk",
+      "local_session_id": "d4bd896b-fcf4-4635-9655-e986f5f01d5d",
+      "claude_url": "https://claude.ai/epitaxy/project/chan_01MmbfpTbTQTkHwET9p2Jmk9?thread=cmsg_01MmbfpTbTQTkHwET9p2Jmk9CVpTv6czHFTPoX1tfSFumc",
+      "state": "waiting_merge_hold",
+      "priority_batch": 1,
+      "handoff_path": "/Volumes/ANNEX/Users/iyor/Library/CloudStorage/Google Drive/myOrganizations/DELMA/FYLO/CODEX_HANDOFF/2026-10-11T2125Z/d4bd896b-fcf4-4635-9655-e986f5f01d5d.md",
+      "actual_repo_root": "/Volumes/ANNEX/Users/iyor/Library/CloudStorage/Google Drive/myOrganizations/DELMA/FYLO",
+      "source_pin_reported": "1353cc30",
+      "source_pin_object": "1353cc307005c676f1e90fb685f759d1b97da5a6",
+      "actual_worktrees": [
+        {
+          "path": "/Volumes/ANNEX/Users/iyor/Library/CloudStorage/Google Drive/myOrganizations/DELMA/FYLO/.claude/worktrees/wizardly-dubinsky-fc1d70",
+          "head": "1353cc307005c676f1e90fb685f759d1b97da5a6",
+          "branch": "claude/wizardly-dubinsky-fc1d70",
+          "read_only_snapshot": {
+            "path": "/Volumes/ANNEX/Users/iyor/Library/CloudStorage/Google Drive/myOrganizations/DELMA/FYLO/.claude/worktrees/wizardly-dubinsky-fc1d70",
+            "exists": true,
+            "verified_git_root": "/Volumes/ANNEX/Users/iyor/Library/CloudStorage/Google Drive/myOrganizations/DELMA/FYLO/.claude/worktrees/wizardly-dubinsky-fc1d70",
+            "head": "1353cc307005c676f1e90fb685f759d1b97da5a6",
+            "branch": "claude/wizardly-dubinsky-fc1d70",
+            "dirty_paths": []
+          }
+        }
+      ],
+      "session_wrapper_cwd": "/Volumes/ANNEX/Users/iyor/Library/CloudStorage/Google Drive/myOrganizations/DELMA/FYLO/.claude/worktrees/wizardly-dubinsky-fc1d70",
+      "session_wrapper_is_source": false,
+      "latest_record_at": "2026-10-11T21:26:27.660Z",
+      "latest_status": {
+        "at": "2026-10-11T21:12:28.212Z",
+        "text": "Hard-link fallback fix (merge on hold)\n\n\u2713 Widened the lock fallback to EPERM and EACCES, with a regression test\n\u2713 Traced the SMB failures: no proof the fallback loses data\n\u2713 Committed source-only fixes: lock create errors, drill read failures (1353cc30)\n\u2731 Waiting on the Surface: WSL unresponsive, comparison run stuck\n\u25cb Validate (clippy, storage and wasm tests, prettier), then merge"
+      },
+      "latest_reply": {
+        "at": "2026-10-11T21:12:24.819Z",
+        "text": "Both corrections are committed on my branch (1353cc30) and nowhere else: nothing is merged, pushed or built. The merge hold stays.\n\n**Where a failed read turned into \"lost writes\":** `serviceDrill` in `scripts/verify-serverless-local.mjs`, in two places. After each write phase, `listed` is built from b's `findDocs` result, falling back to an empty string when that call fails. After the SIGTERM, `kept` is built the same way, and the failure message shows `vanished` in place of b's error whenever anything counts as missing. Both now record a failed read as \"findDocs on b failed, survivors unknown\" with b's actual error. Writes count as missing only when they're absent from a listing that succeeded.\n\n**The try_create_lock change:** the fallback treated any `Io` error from its exclusive create as \"lock held\". Now only an existing entry counts as contention, and every other create error is returned. The browser host sends a raw `-17` for an existing entry (`src/browser/host-vfs.mjs:33`), which std can't classify on wasm, so I match 17 explicitly on that target only. That's what kept the host path working under the old rule.\n\n**Ownership:** no other branch or open thread touches `write.rs` or the serverless lane script. The SMB lock and Floci threads are resolved, and develop's only change since my rebase is a docs commit.\n\n**Still pending validation:** rustfmt passes and the script parses. Clippy, the storage tests (including wasm) and prettier haven't run, because they need the Surface.\n\n**The missing observation is still b's `findDocs` result after the SIGTERM.** If the stuck comparison run finishes, it still has the old drill, so its log shows that result only if nothing counts as missing."
+      },
+      "latest_assistant": {
+        "at": "2026-10-11T21:11:26.870Z",
+        "text": "Now the harness correction."
+      },
+      "session_log": "/Users/iyor/.claude/projects/-Volumes-ANNEX-Users-iyor-Library-CloudStorage-Google-Drive-myOrganizations-DELMA-FYLO--claude-worktrees-wizardly-dubinsky-fc1d70/d4bd896b-fcf4-4635-9655-e986f5f01d5d.jsonl",
+      "recent_human_scope": [
+        {
+          "at": "2026-10-11T20:08:22.464Z",
+          "text": "Um, can we check the status on the surface build slots? Um, yeah, just to make sure that we can go"
+        },
+        {
+          "at": "2026-10-11T20:52:30.942Z",
+          "text": "While the links-allowed comparison lane is pending, analyze retained SMB failure evidence and relevant source without launching another lane. Separate timestamp rejection, lease loss and acknowledged writes disappearing. Trace expected durability and identify retained records distinguishing a fallback defect from filesystem or harness behavior. Keep the merge hold; do not weaken checks, touch real data or resume older paused Codex work. Report evidence-backed conclusions and the smallest missing observation from the existing disposable comparison run. No new tests, containers, builds, merge or push."
+        },
+        {
+          "at": "2026-10-11T21:10:08.127Z",
+          "text": "Agreed: retained evidence establishes a read failure risk, not confirmed loss of acknowledged writes. Keep raw findDocs success/error results and write acknowledgments separate; never turn a failed read into an empty result. Please identify the exact existing call/error path and propose the smallest harness correction plus the try_create_lock error-classification diff, preserving non-AlreadyExists errors. State ownership and validation pending; prepare source-only corrections only if disjoint ownership and existing scope permit. Keep the merge hold. No new lane, heavy validation, real-data changes, WSL restart or duplicate hanging WSL probes. The missing observation remains instance B\u2019s actual findDocs result after SIGTERM."
+        }
+      ],
+      "dormant": true,
+      "details": {
+        "pending": "Validate 1353cc30 source-only corrections: preserve failed findDocs outcomes and distinguish AlreadyExists from other lock-create errors (including wasm raw 17). Keep merge hold until missing comparison observation and tests are reconciled.",
+        "next": "Read preserved acknowledgments/findDocs results separately. Establish what the interrupted comparison run actually did after WSL recovery; never turn a read failure into an empty result. No real-data testing or weakened fencing.",
+        "dependencies": [
+          "Surface/WSL recovery under Assistant SSH task 01a12c31-5976-747d-845c-00610048b0cc (parent-verified current owner)",
+          "Instance B actual successful/failed findDocs after SIGTERM; old comparison drill may mask this",
+          "Clippy, storage+wasm tests and prettier pending; merge hold remains",
+          "Current WSL recovery belongs directly to Assistant SSH task 01a12c31-5976-747d-845c-00610048b0cc (parent-verified current owner); Claude and this dormant mirror must issue no further restart."
+        ],
+        "tests": "Original storage tests/clippy/fmt passed except root-only baseline failure. Retained SMB drill cannot establish acknowledged-write loss because it masks failed reads. Corrections committed 1353cc30; rustfmt and script parse reported passing, heavy validation not run.",
+        "approvals": [
+          "21:10 user allowed disjoint source-only corrections; no new lane, heavy tests, real-data changes, restart, merge or push",
+          "Earlier parallel finding-fix instructions do not clear current merge hold",
+          "Do not resurrect older stopped Codex diagnostic"
+        ],
+        "hints": [
+          "wizardly-dubinsky-fc1d70"
+        ],
+        "evidence": [
+          "/Volumes/ANNEX/build/fylo-serverless",
+          "/private/tmp/claude-501/-Volumes-ANNEX-Users-iyor-Library-CloudStorage-Google-Drive-myOrganizations-DELMA-FYLO--claude-worktrees-wizardly-dubinsky-fc1d70/d4bd896b-fcf4-4635-9655-e986f5f01d5d/tasks"
+        ]
+      },
+      "initial_prompt": "Dormant mirror of Claude FYLO / Hard-link fallback fix (thread cmsg_01MmbfpTbTQTkHwET9p2Jmk9CVpTv6czHFTPoX1tfSFumc). Handoff: /Volumes/ANNEX/Users/iyor/Library/CloudStorage/Google Drive/myOrganizations/DELMA/FYLO/CODEX_HANDOFF/2026-10-11T2125Z/d4bd896b-fcf4-4635-9655-e986f5f01d5d.md. Do not run tools, edit files, build, resume jobs, send messages, merge, push, release or restart anything now. Acknowledge standby only. On explicit later takeover, first read this handoff and refresh session/source/dirty-state/ownership/resource evidence; Claude and local jobs may still be active. Historical completion and approvals do not authorize duplicate work.",
+      "current_wsl_recovery_owner": "Assistant SSH task 01a12c31-5976-747d-845c-00610048b0cc (parent-verified current owner)"
+    },
+    {
+      "project": "FYLO",
+      "implementation_project": "FYLO",
+      "title": "Original performance baselines and disk-full check",
+      "title_verified": false,
+      "title_source": "task label from previously inspected session; current UI title unverified",
+      "claude_project_id": "chan_01MmbfpTbTQTkHwET9p2Jmk9",
+      "claude_thread_id": "cmsg_01MmbfpTbTQTkHwET9p2Jmk924nG9BZGG1ZfGfModTrDLa",
+      "claude_session_id": null,
+      "local_session_id": "54c6aa0b-f6eb-47a4-9f5e-3109fc360edc",
+      "claude_url": "https://claude.ai/epitaxy/project/chan_01MmbfpTbTQTkHwET9p2Jmk9?thread=cmsg_01MmbfpTbTQTkHwET9p2Jmk924nG9BZGG1ZfGfModTrDLa",
+      "state": "superseded_standby",
+      "priority_batch": 2,
+      "handoff_path": "/Volumes/ANNEX/Users/iyor/Library/CloudStorage/Google Drive/myOrganizations/DELMA/FYLO/CODEX_HANDOFF/2026-10-11T2125Z/54c6aa0b-f6eb-47a4-9f5e-3109fc360edc.md",
+      "actual_repo_root": "/Volumes/ANNEX/Users/iyor/Library/CloudStorage/Google Drive/myOrganizations/DELMA/FYLO",
+      "source_pin_reported": null,
+      "source_pin_object": null,
+      "actual_worktrees": [],
+      "session_wrapper_cwd": "/Volumes/ANNEX/Users/iyor/Library/CloudStorage/Google Drive/myOrganizations/DELMA/FYLO",
+      "session_wrapper_is_source": false,
+      "latest_record_at": "2026-10-11T01:52:27.725Z",
+      "latest_status": {
+        "at": "2026-10-11T01:30:35.978Z",
+        "text": "Performance baselines and disk-full check\n\n\u2713 Freed ANNEX space: 2.7 GB \u2192 45 GB free (old build caches only)\n\u2713 Disk-full recovery runs and the 10,000-document baseline recorded\n\u2731 Resumed: 50,000-document baseline, cold reads, multi-process load"
+      },
+      "latest_reply": {
+        "at": "2026-10-11T00:22:55.846Z",
+        "text": "ANNEX now has 45 GB free, up from 2.7 GB, and the benchmarks are running again.\n\nTo free the space I deleted only build caches that rebuild themselves: the Go build cache (22 GB) and three old Rust build folders (`gate-target`, `cargo-target` and `focused-cargo-targets`, about 19 GB together). I left the Tachyon worktrees and the old `simplify/scratch` folders alone, because they may hold uncommitted work.\n\nAfter the baselines, the same run will fill a small test disk on purpose to check that FYLO recovers cleanly when a write runs out of space. I'm keeping it to one heavy job at a time on the Mac."
+      },
+      "latest_assistant": {
+        "at": "2026-10-11T01:30:39.571Z",
+        "text": "I've restarted the benchmarks. Closing the app had stopped the 50,000-document run before it saved anything.\n\nThe disk-full recovery tests and the 10,000-document baseline had already saved their results, so those won't run again. Still to run: the 50,000-document baseline, the cold reads with nothing cached, and the multi-process load test. I'll report everything together, including whether FYLO recovered cleanly from a full disk, once the run finishes.\n\nANNEX still has 26 GB free, so I didn't need to delete anything else. Nothing else heavy is running on the Mac."
+      },
+      "session_log": "/Users/iyor/.claude/projects/-Volumes-ANNEX-Users-iyor-Library-CloudStorage-Google-Drive-myOrganizations-DELMA-FYLO/54c6aa0b-f6eb-47a4-9f5e-3109fc360edc.jsonl",
+      "recent_human_scope": [],
+      "dormant": true,
+      "details": {
+        "pending": "No active assignment to resume. Historical follow-up may be stale; verify before treating it as a decision.",
+        "next": "Keep this mirror dormant. Do not revive completed, intentionally paused or superseded work.",
+        "dependencies": [],
+        "tests": "See latest completion report below; historical results are scoped to their original commit/machine, not current checkout qualification.",
+        "approvals": [
+          "This migration grants no execution or publishing authority."
+        ],
+        "evidence": [
+          "/Users/iyor/.claude/projects/-Volumes-ANNEX-Users-iyor-Library-CloudStorage-Google-Drive-myOrganizations-DELMA-FYLO/54c6aa0b-f6eb-47a4-9f5e-3109fc360edc.jsonl"
+        ]
+      },
+      "initial_prompt": "Dormant mirror of Claude FYLO / Original performance baselines and disk-full check (thread cmsg_01MmbfpTbTQTkHwET9p2Jmk924nG9BZGG1ZfGfModTrDLa). Handoff: /Volumes/ANNEX/Users/iyor/Library/CloudStorage/Google Drive/myOrganizations/DELMA/FYLO/CODEX_HANDOFF/2026-10-11T2125Z/54c6aa0b-f6eb-47a4-9f5e-3109fc360edc.md. Do not run tools, edit files, build, resume jobs, send messages, merge, push, release or restart anything now. Acknowledge standby only. On explicit later takeover, first read this handoff and refresh session/source/dirty-state/ownership/resource evidence; Claude and local jobs may still be active. Historical completion and approvals do not authorize duplicate work."
+    },
+    {
+      "project": "FYLO",
+      "implementation_project": "FYLO",
+      "title": "Cloud Run and Azure Functions emulation",
+      "title_verified": true,
+      "title_source": "recorded Claude project inventory 2026-10-11T21:10:15.047Z",
+      "claude_project_id": "chan_01MmbfpTbTQTkHwET9p2Jmk9",
+      "claude_thread_id": "cmsg_01MmbfpTbTQTkHwET9p2Jmk98N7R1Qz2UUZzeGQzAKV8x1",
+      "claude_session_id": "cse_015yFrcSHjy838Pm82oGhi4y",
+      "local_session_id": "76d5fc4c-a350-4d5e-9f5b-774c1cd2e08f",
+      "claude_url": "https://claude.ai/epitaxy/project/chan_01MmbfpTbTQTkHwET9p2Jmk9?thread=cmsg_01MmbfpTbTQTkHwET9p2Jmk98N7R1Qz2UUZzeGQzAKV8x1",
+      "state": "completed",
+      "priority_batch": 2,
+      "handoff_path": "/Volumes/ANNEX/Users/iyor/Library/CloudStorage/Google Drive/myOrganizations/DELMA/FYLO/CODEX_HANDOFF/2026-10-11T2125Z/76d5fc4c-a350-4d5e-9f5b-774c1cd2e08f.md",
+      "actual_repo_root": "/Volumes/ANNEX/Users/iyor/Library/CloudStorage/Google Drive/myOrganizations/DELMA/FYLO",
+      "source_pin_reported": "913c5db",
+      "source_pin_object": "913c5db5815e0098f68174863db9023b37786a2b",
+      "actual_worktrees": [],
+      "session_wrapper_cwd": "/Volumes/ANNEX/Users/iyor/Library/CloudStorage/Google Drive/myOrganizations/DELMA/FYLO/.claude/worktrees/confident-cohen-d3d7c8",
+      "session_wrapper_is_source": false,
+      "latest_record_at": "2026-10-11T17:25:42.374Z",
+      "latest_status": {
+        "at": "2026-10-11T17:25:24.397Z",
+        "text": "Fix the NFS stale-attribute write failure\n\n\u2713 Found it: the before-image capture stats the path, which NFS answers from cache\n\u2713 Changed the EFS profile to take metadata from the opened file instead\n\u2713 NFS 4.1 lane now passes alternating writers with default caching\n\u2713 New EFS-lane step fails without the fix and passes with it\n\u2713 Storage and machine tests, clippy and fmt pass (one root-only test fails on develop too)\n**\u2713 Merged into develop (913c5db)**"
+      },
+      "latest_reply": {
+        "at": "2026-10-11T17:25:35.545Z",
+        "text": "Fixed and merged into develop ([913c5db](https://github.com/d31ma/FYLO/commit/913c5db5)).\n\n- **Fix:** before taking a before-image, the EFS profile now reads the file's timestamp from the opened file. Opening forces NFS to refresh its cached attributes, so it no longer trusts the stale path lookup.\n- **NFS 4.1 lane:** two instances writing in turn now pass with default caching.\n- **EFS lane:** it now alternates writers between two NFS clients. I confirmed this new step fails with the old code (same \"timestamp changed\" error) and passes with the fix, so CI will catch it if it comes back.\n- **Tests:** storage and machine tests, clippy and fmt pass on the Surface. One permissions test fails because the build container runs as root, and it fails on develop the same way. In my first test run, 7 invocation tests also failed once; they passed in the three runs after that, so I'm treating it as load flakiness.\n\nThree smaller findings are still open: hard-link errors not reaching FYLO's fallback, SMB reporting a lock conflict as a permission error, and the Floci lane's lock file sitting outside EFS."
+      },
+      "latest_assistant": {
+        "at": "2026-10-11T17:25:42.374Z",
+        "text": "The fix is merged into develop as 913c5db and pushed. FYLO no longer fails writes when two instances write in turn on NFS 4.1. This mattered beyond Azure because EFS runs on the same NFS client behaviour, so Lambda deployments were exposed too.\n\n- **Cause:** before taking a before-image of a file, FYLO read its timestamp with a path lookup. NFS can answer that from a cache that is stale after the other instance's write, so the timestamp didn't match the opened file. About a third of alternating writes failed with \"private copy source timestamp changed\".\n- **Fix:** the EFS profile now reads the timestamp from the opened file, because opening forces NFS to refresh it. The change is in `crates/fylo-storage-native/src/write.rs`.\n- **EFS lane (`bun run efs:local`):** it now alternates writes between two NFS clients. That step fails with the old code and passes with the fix, so CI will catch it if it comes back.\n- **Azure Files over NFS 4.1:** the two-instance writes that used to fail now pass with normal caching.\n- **Tests:** the storage and machine crate tests, clippy and fmt pass on the Surface, with one exception. A file-permissions test fails because the build container runs as root, and it fails the same way on develop. In my first run, 7 invocation tests also failed once; they passed in the three runs after that, so I'm treating it as load flakiness.\n\nThree smaller findings from the emulation work are still open:\n- **Hard-link fallback:** gcsfuse and SMB refuse hard links with errors FYLO's fallback doesn't recognise, so every write fails on those mounts.\n- **SMB lock conflicts:** SMB reports a lock conflict as a permission error. A second instance therefore fails instead of waiting for the root.\n- **Floci lock file:** the lane's lock file sits outside the EFS mount. Moving the root inside the mount breaks the lane, so I left it as it was."
+      },
+      "session_log": "/Users/iyor/.claude/projects/-Volumes-ANNEX-Users-iyor-Library-CloudStorage-Google-Drive-myOrganizations-DELMA-FYLO--claude-worktrees-confident-cohen-d3d7c8/76d5fc4c-a350-4d5e-9f5b-774c1cd2e08f.jsonl",
+      "recent_human_scope": [],
+      "dormant": true,
+      "details": {
+        "pending": "No active assignment to resume. Historical follow-up may be stale; verify before treating it as a decision.",
+        "next": "Keep this mirror dormant. Do not revive completed, intentionally paused or superseded work.",
+        "dependencies": [],
+        "tests": "See latest completion report below; historical results are scoped to their original commit/machine, not current checkout qualification.",
+        "approvals": [
+          "This migration grants no execution or publishing authority."
+        ],
+        "evidence": [
+          "/Users/iyor/.claude/projects/-Volumes-ANNEX-Users-iyor-Library-CloudStorage-Google-Drive-myOrganizations-DELMA-FYLO--claude-worktrees-confident-cohen-d3d7c8/76d5fc4c-a350-4d5e-9f5b-774c1cd2e08f.jsonl"
+        ]
+      },
+      "initial_prompt": "Dormant mirror of Claude FYLO / Cloud Run and Azure Functions emulation (thread cmsg_01MmbfpTbTQTkHwET9p2Jmk98N7R1Qz2UUZzeGQzAKV8x1). Handoff: /Volumes/ANNEX/Users/iyor/Library/CloudStorage/Google Drive/myOrganizations/DELMA/FYLO/CODEX_HANDOFF/2026-10-11T2125Z/76d5fc4c-a350-4d5e-9f5b-774c1cd2e08f.md. Do not run tools, edit files, build, resume jobs, send messages, merge, push, release or restart anything now. Acknowledge standby only. On explicit later takeover, first read this handoff and refresh session/source/dirty-state/ownership/resource evidence; Claude and local jobs may still be active. Historical completion and approvals do not authorize duplicate work."
+    },
+    {
+      "project": "FYLO",
+      "implementation_project": "FYLO",
+      "title": "SMB lock conflict error",
+      "title_verified": true,
+      "title_source": "recorded Claude project inventory 2026-10-11T21:10:15.047Z",
+      "claude_project_id": "chan_01MmbfpTbTQTkHwET9p2Jmk9",
+      "claude_thread_id": "cmsg_01MmbfpTbTQTkHwET9p2Jmk9PkG91biCRpBRb5KmS14u4B",
+      "claude_session_id": "cse_01X33ULKy8Q3gUZvzF6XNpBR",
+      "local_session_id": "22398703-a941-4e76-9d63-2e33b3e43915",
+      "claude_url": "https://claude.ai/epitaxy/project/chan_01MmbfpTbTQTkHwET9p2Jmk9?thread=cmsg_01MmbfpTbTQTkHwET9p2Jmk9PkG91biCRpBRb5KmS14u4B",
+      "state": "completed",
+      "priority_batch": 2,
+      "handoff_path": "/Volumes/ANNEX/Users/iyor/Library/CloudStorage/Google Drive/myOrganizations/DELMA/FYLO/CODEX_HANDOFF/2026-10-11T2125Z/22398703-a941-4e76-9d63-2e33b3e43915.md",
+      "actual_repo_root": "/Volumes/ANNEX/Users/iyor/Library/CloudStorage/Google Drive/myOrganizations/DELMA/FYLO",
+      "source_pin_reported": "324d29b",
+      "source_pin_object": "324d29bd0c49ce6b08f2bdfa15a9953abfb2c235",
+      "actual_worktrees": [],
+      "session_wrapper_cwd": "/Volumes/ANNEX/Users/iyor/Library/CloudStorage/Google Drive/myOrganizations/DELMA/FYLO/.claude/worktrees/nifty-dewdney-7b8628",
+      "session_wrapper_is_source": false,
+      "latest_record_at": "2026-10-11T18:06:12.596Z",
+      "latest_status": {
+        "at": "2026-10-11T18:05:50.410Z",
+        "text": "SMB lock conflict reported as permission error\n\n\u2713 Found it: the root lease maps only WouldBlock to EROOTLOCKED, cifs answers EACCES\n\u2713 Mapped EACCES from the lock call to EROOTLOCKED, added a regression test\n\u2713 Lease tests, fmt and clippy pass in my own clone on the Surface\n\u2713 SMB drill: second instance got ENATIVE_IO before, EROOTLOCKED now\n**\u2713 Updated the qualification doc and merged into develop (324d29b)**"
+      },
+      "latest_reply": {
+        "at": "2026-10-11T18:06:10.160Z",
+        "text": "This was already set up. Each of the three findings got its own thread, and this thread is the SMB one. It's finished and merged into develop (324d29b). The hard-link fallback and the Floci lock file are being fixed in their own threads."
+      },
+      "latest_assistant": {
+        "at": "2026-10-11T18:06:12.596Z",
+        "text": "That was already set up: each of the three open findings got its own thread, and this thread is the SMB one.\n\nThe SMB fix is finished and merged into develop as 324d29b. When another instance holds the lock, FYLO now reports a lock conflict instead of a permission error. The other two findings, the hard-link fallback and the Floci lock file, are being fixed in their own threads."
+      },
+      "session_log": "/Users/iyor/.claude/projects/-Volumes-ANNEX-Users-iyor-Library-CloudStorage-Google-Drive-myOrganizations-DELMA-FYLO--claude-worktrees-nifty-dewdney-7b8628/22398703-a941-4e76-9d63-2e33b3e43915.jsonl",
+      "recent_human_scope": [],
+      "dormant": true,
+      "details": {
+        "pending": "No active assignment to resume. Historical follow-up may be stale; verify before treating it as a decision.",
+        "next": "Keep this mirror dormant. Do not revive completed, intentionally paused or superseded work.",
+        "dependencies": [],
+        "tests": "See latest completion report below; historical results are scoped to their original commit/machine, not current checkout qualification.",
+        "approvals": [
+          "This migration grants no execution or publishing authority."
+        ],
+        "evidence": [
+          "/Users/iyor/.claude/projects/-Volumes-ANNEX-Users-iyor-Library-CloudStorage-Google-Drive-myOrganizations-DELMA-FYLO--claude-worktrees-nifty-dewdney-7b8628/22398703-a941-4e76-9d63-2e33b3e43915.jsonl"
+        ]
+      },
+      "initial_prompt": "Dormant mirror of Claude FYLO / SMB lock conflict error (thread cmsg_01MmbfpTbTQTkHwET9p2Jmk9PkG91biCRpBRb5KmS14u4B). Handoff: /Volumes/ANNEX/Users/iyor/Library/CloudStorage/Google Drive/myOrganizations/DELMA/FYLO/CODEX_HANDOFF/2026-10-11T2125Z/22398703-a941-4e76-9d63-2e33b3e43915.md. Do not run tools, edit files, build, resume jobs, send messages, merge, push, release or restart anything now. Acknowledge standby only. On explicit later takeover, first read this handoff and refresh session/source/dirty-state/ownership/resource evidence; Claude and local jobs may still be active. Historical completion and approvals do not authorize duplicate work."
+    },
+    {
+      "project": "FYLO",
+      "implementation_project": "FYLO",
+      "title": "Floci lock file on EFS",
+      "title_verified": true,
+      "title_source": "recorded Claude project inventory 2026-10-11T21:10:15.047Z",
+      "claude_project_id": "chan_01MmbfpTbTQTkHwET9p2Jmk9",
+      "claude_thread_id": "cmsg_01MmbfpTbTQTkHwET9p2Jmk9PtvwqyKivPqMiPsj6GpUTv",
+      "claude_session_id": "cse_01WmDbbohV7SYU1y7oHH7FWa",
+      "local_session_id": "28abb90f-82a9-458e-94e3-86bceca1c6df",
+      "claude_url": "https://claude.ai/epitaxy/project/chan_01MmbfpTbTQTkHwET9p2Jmk9?thread=cmsg_01MmbfpTbTQTkHwET9p2Jmk9PtvwqyKivPqMiPsj6GpUTv",
+      "state": "completed",
+      "priority_batch": 2,
+      "handoff_path": "/Volumes/ANNEX/Users/iyor/Library/CloudStorage/Google Drive/myOrganizations/DELMA/FYLO/CODEX_HANDOFF/2026-10-11T2125Z/28abb90f-82a9-458e-94e3-86bceca1c6df.md",
+      "actual_repo_root": "/Volumes/ANNEX/Users/iyor/Library/CloudStorage/Google Drive/myOrganizations/DELMA/FYLO",
+      "source_pin_reported": "c388bc0",
+      "source_pin_object": "c388bc05d50bd2a5708d4ee3f6058323ff75400a",
+      "actual_worktrees": [],
+      "session_wrapper_cwd": "/Volumes/ANNEX/Users/iyor/Library/CloudStorage/Google Drive/myOrganizations/DELMA/FYLO/.claude/worktrees/hopeful-euclid-369905",
+      "session_wrapper_is_source": false,
+      "latest_record_at": "2026-10-11T18:50:31.528Z",
+      "latest_status": {
+        "at": "2026-10-11T18:50:19.704Z",
+        "text": "Move Floci lock file onto EFS\n\n\u2713 Found it: the lane overrides the root to the mount point itself\n\u2713 Moved the root to /mnt/state/root; the Lambda example creates it\n\u2713 Lane now asserts the lock file is on the EFS volume\n\u2713 Full efs:local lane passed on the Surface (693 s)\n**\u2713 Rebased on the SMB fix and merged into develop (c388bc0)**"
+      },
+      "latest_reply": {
+        "at": "2026-10-11T18:50:23.237Z",
+        "text": "I've fixed it and merged it into develop ([c388bc0](https://github.com/d31ma/FYLO/commit/c388bc05)). There's no PR.\n\n- **Cause:** the Floci lane set the root to the EFS mount point itself. FYLO keeps the root's lock file beside the root, so the lock landed in the container's own `/mnt`, outside EFS.\n- **Fix:** the root is now `/mnt/state/root`. The Lambda example creates that directory on cold start, which is what failed with `ENOENT` last time. Concurrent invocations now contend on a lock that lives on EFS, and the concurrent-write step still commits both writes.\n- **New check:** the lane now confirms the lock file is actually on the EFS volume. I didn't run the old setup against it to watch it fail.\n- **Lane result:** the full `efs:local` lane passed on the Surface in 693 s, using the Surface's own cache dir instead of the Mac path from the brief. Every step passed: crash suite, cross-client drill, and Floci Lambda.\n\nI rebased onto the SMB lock-conflict fix before merging, and the qualification doc now marks this finding fixed."
+      },
+      "latest_assistant": {
+        "at": "2026-10-11T18:50:31.528Z",
+        "text": "The Floci test lane's lock file now sits on the EFS mount, and the full `efs:local` lane passes with the change. I merged it into develop (c388bc0) and pushed develop, with no PR. The SMB lock-conflict fix had already landed on develop, so I rebased onto it first.\n\n- **Cause:** the lane used the EFS mount point itself as FYLO's root. FYLO puts the root's lock file next to the root, so it ended up in the container's own `/mnt`, outside EFS.\n- **Fix:** the root is now `/mnt/state/root`, and the Lambda example creates that directory when it cold-starts. Last time, moving the root failed with `ENOENT` because nothing created that directory.\n- **New check:** the lane now confirms the lock file is actually on the EFS volume. Concurrent invocations now compete for that lock on EFS, and both concurrent writes still commit. I didn't run the old setup to watch the new check fail.\n- **Lane result:** the full lane passed on the Surface in 693 s, covering the crash suite, the cross-client drill and the Lambda step in Floci. I used a cache directory on the Surface rather than the Mac `/Volumes/ANNEX` path in your command.\n- **Untested combination:** that lane run was before the rebase, so the merged tree with the SMB fix hasn't been through the lane. The SMB change is in the lock error handling and I don't expect it to affect this lane.\n\nThe qualification doc now marks this finding as fixed. Project memory now lists only the hard-link fallback as an open finding and records the Surface setup steps for this lane."
+      },
+      "session_log": "/Users/iyor/.claude/projects/-Volumes-ANNEX-Users-iyor-Library-CloudStorage-Google-Drive-myOrganizations-DELMA-FYLO--claude-worktrees-hopeful-euclid-369905/28abb90f-82a9-458e-94e3-86bceca1c6df.jsonl",
+      "recent_human_scope": [],
+      "dormant": true,
+      "details": {
+        "pending": "No active assignment to resume. Historical follow-up may be stale; verify before treating it as a decision.",
+        "next": "Keep this mirror dormant. Do not revive completed, intentionally paused or superseded work.",
+        "dependencies": [],
+        "tests": "See latest completion report below; historical results are scoped to their original commit/machine, not current checkout qualification.",
+        "approvals": [
+          "This migration grants no execution or publishing authority."
+        ],
+        "evidence": [
+          "/Users/iyor/.claude/projects/-Volumes-ANNEX-Users-iyor-Library-CloudStorage-Google-Drive-myOrganizations-DELMA-FYLO--claude-worktrees-hopeful-euclid-369905/28abb90f-82a9-458e-94e3-86bceca1c6df.jsonl"
+        ]
+      },
+      "initial_prompt": "Dormant mirror of Claude FYLO / Floci lock file on EFS (thread cmsg_01MmbfpTbTQTkHwET9p2Jmk9PtvwqyKivPqMiPsj6GpUTv). Handoff: /Volumes/ANNEX/Users/iyor/Library/CloudStorage/Google Drive/myOrganizations/DELMA/FYLO/CODEX_HANDOFF/2026-10-11T2125Z/28abb90f-82a9-458e-94e3-86bceca1c6df.md. Do not run tools, edit files, build, resume jobs, send messages, merge, push, release or restart anything now. Acknowledge standby only. On explicit later takeover, first read this handoff and refresh session/source/dirty-state/ownership/resource evidence; Claude and local jobs may still be active. Historical completion and approvals do not authorize duplicate work."
+    },
+    {
+      "project": "FYLO",
+      "implementation_project": "FYLO",
+      "title": "Rerunning FYLO performance baselines on develop",
+      "title_verified": false,
+      "title_source": "task label from previously inspected session; current UI title unverified",
+      "claude_project_id": "chan_01MmbfpTbTQTkHwET9p2Jmk9",
+      "claude_thread_id": "cmsg_01MmbfpTbTQTkHwET9p2Jmk9RboYoRMfo41KrnVsjm2vnd",
+      "claude_session_id": null,
+      "local_session_id": "b0a0133a-4ac9-4dd8-8a08-dedb6493454c",
+      "claude_url": "https://claude.ai/epitaxy/project/chan_01MmbfpTbTQTkHwET9p2Jmk9?thread=cmsg_01MmbfpTbTQTkHwET9p2Jmk9RboYoRMfo41KrnVsjm2vnd",
+      "state": "completed",
+      "priority_batch": 2,
+      "handoff_path": "/Volumes/ANNEX/Users/iyor/Library/CloudStorage/Google Drive/myOrganizations/DELMA/FYLO/CODEX_HANDOFF/2026-10-11T2125Z/b0a0133a-4ac9-4dd8-8a08-dedb6493454c.md",
+      "actual_repo_root": "/Volumes/ANNEX/Users/iyor/Library/CloudStorage/Google Drive/myOrganizations/DELMA/FYLO",
+      "source_pin_reported": "2744dbce",
+      "source_pin_object": "2744dbce586c741c89396033582d4339405bc4c6",
+      "actual_worktrees": [],
+      "session_wrapper_cwd": "/Volumes/ANNEX/Users/iyor/Library/CloudStorage/Google Drive/myOrganizations/DELMA/FYLO/.claude/worktrees/hungry-carson-0dfcba",
+      "session_wrapper_is_source": false,
+      "latest_record_at": "2026-10-11T06:23:53.204Z",
+      "latest_status": {
+        "at": "2026-10-11T06:23:31.969Z",
+        "text": "Rerunning FYLO performance baselines on develop\n\n\u2713 Confirmed the benchmark builds match develop's engine code\n\u2713 Ran the 5k baseline three times\n\u2713 Ran 25k baseline, cold reads and multi-process load (all passed)\n\u2713 Wrote the results into the qualification doc\n**\u2713 Merged into develop and pushed (2744dbce)**"
+      },
+      "latest_reply": {
+        "at": "2026-10-11T06:23:33.871Z",
+        "text": "Nothing needed from you. The baselines are done and merged into develop. They're recorded in [QUERY_RELEASE_QUALIFICATION.md](https://github.com/d31ma/FYLO/blob/develop/docs/QUERY_RELEASE_QUALIFICATION.md#develop-baselines-2026-10-11) under \"Develop baselines\".\n\nEvery correctness check passed, including the multi-process test with no lost writes. Writes stay around 11 ms even at 25,000 documents per collection. Reads slow down faster than the data grows: five times the data made queries 13 to 18 times slower. Release thresholds should wait until that is explained and rerun on a quiet Mac, because the stray Tachyon probe was still running throughout."
+      },
+      "latest_assistant": {
+        "at": "2026-10-11T06:23:43.461Z",
+        "text": "The performance baselines are done and merged into develop as commit `2744dbce`. They're recorded under \"Develop baselines\" in [QUERY_RELEASE_QUALIFICATION.md](https://github.com/d31ma/FYLO/blob/develop/docs/QUERY_RELEASE_QUALIFICATION.md).\n\nThe Mac was never quiet: the stray Tachyon probe ran the whole time, as you approved. The doc says so, and records the machine's load next to every run.\n\n- **Correctness:** every check passed in every run, including the multi-process test, which had no lost writes.\n- **Writes:** about 11 ms at 25,000 documents per collection, close to the 5,000-document runs. Across the three 5,000-document runs, the median write time varied up to threefold, so the doc treats the write numbers as upper bounds.\n- **Reads:** five times the data made queries 13 to 18 times slower. A targeted query took 29 ms at 5,000 documents and 391 ms at 25,000. A full scan took 3 seconds and 44 seconds.\n- **Cold reads:** a query against 25,000 documents with nothing cached took about 720 ms, roughly twice the warm time.\n\nRelease thresholds should wait until two things happen. Someone needs to explain why reads slow down faster than the data grows. Then the baselines should be rerun on a quiet Mac.\n\nThe doc also updates two items in its list of remaining release gates to reflect these measurements. The raw results and logs are in `benchmarks/baselines-20261011/` in the FYLO folder, which git ignores. I kept the 25,000-document test database on ANNEX, because it took over an hour to build and a rerun can reuse it.\n\nI've marked this thread resolved."
+      },
+      "session_log": "/Users/iyor/.claude/projects/-Volumes-ANNEX-Users-iyor-Library-CloudStorage-Google-Drive-myOrganizations-DELMA-FYLO--claude-worktrees-hungry-carson-0dfcba/b0a0133a-4ac9-4dd8-8a08-dedb6493454c.jsonl",
+      "recent_human_scope": [],
+      "dormant": true,
+      "details": {
+        "pending": "No active assignment to resume. Historical follow-up may be stale; verify before treating it as a decision.",
+        "next": "Keep this mirror dormant. Do not revive completed, intentionally paused or superseded work.",
+        "dependencies": [],
+        "tests": "See latest completion report below; historical results are scoped to their original commit/machine, not current checkout qualification.",
+        "approvals": [
+          "This migration grants no execution or publishing authority."
+        ],
+        "evidence": [
+          "/Users/iyor/.claude/projects/-Volumes-ANNEX-Users-iyor-Library-CloudStorage-Google-Drive-myOrganizations-DELMA-FYLO--claude-worktrees-hungry-carson-0dfcba/b0a0133a-4ac9-4dd8-8a08-dedb6493454c.jsonl"
+        ]
+      },
+      "initial_prompt": "Dormant mirror of Claude FYLO / Rerunning FYLO performance baselines on develop (thread cmsg_01MmbfpTbTQTkHwET9p2Jmk9RboYoRMfo41KrnVsjm2vnd). Handoff: /Volumes/ANNEX/Users/iyor/Library/CloudStorage/Google Drive/myOrganizations/DELMA/FYLO/CODEX_HANDOFF/2026-10-11T2125Z/b0a0133a-4ac9-4dd8-8a08-dedb6493454c.md. Do not run tools, edit files, build, resume jobs, send messages, merge, push, release or restart anything now. Acknowledge standby only. On explicit later takeover, first read this handoff and refresh session/source/dirty-state/ownership/resource evidence; Claude and local jobs may still be active. Historical completion and approvals do not authorize duplicate work."
+    },
+    {
+      "project": "FYLO",
+      "implementation_project": "FYLO",
+      "title": "Disk-full recovery check",
+      "title_verified": false,
+      "title_source": "task label from previously inspected session; current UI title unverified",
+      "claude_project_id": "chan_01MmbfpTbTQTkHwET9p2Jmk9",
+      "claude_thread_id": "cmsg_01MmbfpTbTQTkHwET9p2Jmk9NyPkK7tFp9YEHS9DUzvAjA",
+      "claude_session_id": null,
+      "local_session_id": "0b4550a0-efe8-494d-97a3-d08fb2a8eb8d",
+      "claude_url": "https://claude.ai/epitaxy/project/chan_01MmbfpTbTQTkHwET9p2Jmk9?thread=cmsg_01MmbfpTbTQTkHwET9p2Jmk9NyPkK7tFp9YEHS9DUzvAjA",
+      "state": "completed",
+      "priority_batch": 2,
+      "handoff_path": "/Volumes/ANNEX/Users/iyor/Library/CloudStorage/Google Drive/myOrganizations/DELMA/FYLO/CODEX_HANDOFF/2026-10-11T2125Z/0b4550a0-efe8-494d-97a3-d08fb2a8eb8d.md",
+      "actual_repo_root": "/Volumes/ANNEX/Users/iyor/Library/CloudStorage/Google Drive/myOrganizations/DELMA/FYLO",
+      "source_pin_reported": "fb5b25f1",
+      "source_pin_object": "fb5b25f1bdcb1ac1e606e7862074645aafc68d64",
+      "actual_worktrees": [],
+      "session_wrapper_cwd": "/Volumes/ANNEX/Users/iyor/Library/CloudStorage/Google Drive/myOrganizations/DELMA/FYLO/.claude/worktrees/intelligent-williamson-a8db91",
+      "session_wrapper_is_source": false,
+      "latest_record_at": "2026-10-11T02:50:03.310Z",
+      "latest_status": {
+        "at": "2026-10-11T02:49:51.517Z",
+        "text": "Disk-full recovery check\n\n\u2713 Reproduced \"write failed and rollback failed\" on a 4 MB test disk (Surface)\n\u2713 Found the gap: reads stay stuck on \"concurrent write\" after a failed rollback or crash\n\u2713 Fixed: a stuck read now recovers the stranded write and retries\n\u2713 Disk-full sweeps clean: 101 runs, 0 failures, no manual recover\n\u2713 Crash matrix (270 recoveries), clippy, fmt and machine tests pass\n**\u2713 Merged into develop and pushed**"
+      },
+      "latest_reply": {
+        "at": "2026-10-11T02:49:56.775Z",
+        "text": "Nothing is needed from you. FYLO's data survived a full disk, but reads stayed stuck afterwards, so I fixed that and merged the fix into `develop`.\n\n**What I found:** I filled a 4 MB test disk on the Surface at every point during a write. The \"write failed and rollback failed\" error showed up for puts, patches, deletes and SQL. No data was lost: once space was freed, an explicit recover or the next write repaired the store every time. Until one of those happened, though, every read failed with a false \"concurrent write\" error. A crash mid-write left reads stuck the same way. The existing crash test missed this because it always ran recover before reading.\n\n**The fix:** when a read finds a write that nothing is finishing, it now finishes the repair itself and tries the read again. The crash test now also reads before recovering.\n\n**Checked on the Surface:** 101 disk-full runs with 0 failures and no manual recover, plus the crash test (all 270 interrupted writes recovered), clippy, fmt and the machine tests. The Mac was never used.\n\nReads still fail while the disk is actually full, because the repair needs space. They work again as soon as space is freed. I haven't run the disk-full test on macOS because the benchmark thread asked me to keep off the Mac."
+      },
+      "latest_assistant": {
+        "at": "2026-10-11T02:50:03.310Z",
+        "text": "FYLO recovered its data after the disk filled. Reads stayed stuck afterwards, though, so I fixed that and merged the fix into `develop`.\n\n- **What happened when the disk filled:** I filled a 4 MB test disk on the Windows Surface at every point during puts, patches, deletes and SQL writes. The \"write failed and rollback failed\" error showed up, because the rollback also needs disk space.\n- **No data was lost:** once space was freed, running `recover` or making the next write repaired the store every time.\n- **What was broken:** until that happened, every read failed with a false \"concurrent write\" error. A crash mid-write left reads stuck the same way. The existing crash test missed this because it always runs `recover` before it reads anything.\n- **The fix:** when a read finds a write that nothing is finishing, it now finishes the repair itself and tries the read again. This only runs after a read has already failed, so normal reads are no slower.\n- **Test change:** the crash test now also does a read before running `recover`, so this case is covered on every platform.\n\nOn the Surface, 101 disk-full runs passed with no `recover` step. The crash test recovered all 270 interrupted writes. Clippy, fmt and the machine tests also pass.\n\nReads still fail while the disk is actually full, because the repair needs space, and they work again once space is freed. I didn't run anything on the Mac, so the disk-full test hasn't been run on macOS."
+      },
+      "session_log": "/Users/iyor/.claude/projects/-Volumes-ANNEX-Users-iyor-Library-CloudStorage-Google-Drive-myOrganizations-DELMA-FYLO--claude-worktrees-intelligent-williamson-a8db91/0b4550a0-efe8-494d-97a3-d08fb2a8eb8d.jsonl",
+      "recent_human_scope": [],
+      "dormant": true,
+      "details": {
+        "pending": "No active assignment to resume. Historical follow-up may be stale; verify before treating it as a decision.",
+        "next": "Keep this mirror dormant. Do not revive completed, intentionally paused or superseded work.",
+        "dependencies": [],
+        "tests": "See latest completion report below; historical results are scoped to their original commit/machine, not current checkout qualification.",
+        "approvals": [
+          "This migration grants no execution or publishing authority."
+        ],
+        "evidence": [
+          "/Users/iyor/.claude/projects/-Volumes-ANNEX-Users-iyor-Library-CloudStorage-Google-Drive-myOrganizations-DELMA-FYLO--claude-worktrees-intelligent-williamson-a8db91/0b4550a0-efe8-494d-97a3-d08fb2a8eb8d.jsonl"
+        ]
+      },
+      "initial_prompt": "Dormant mirror of Claude FYLO / Disk-full recovery check (thread cmsg_01MmbfpTbTQTkHwET9p2Jmk9NyPkK7tFp9YEHS9DUzvAjA). Handoff: /Volumes/ANNEX/Users/iyor/Library/CloudStorage/Google Drive/myOrganizations/DELMA/FYLO/CODEX_HANDOFF/2026-10-11T2125Z/0b4550a0-efe8-494d-97a3-d08fb2a8eb8d.md. Do not run tools, edit files, build, resume jobs, send messages, merge, push, release or restart anything now. Acknowledge standby only. On explicit later takeover, first read this handoff and refresh session/source/dirty-state/ownership/resource evidence; Claude and local jobs may still be active. Historical completion and approvals do not authorize duplicate work."
+    }
+  ]
+}

@@ -1,3 +1,4 @@
+import { CargoArtifacts } from './cargo-artifacts.mjs'
 import { gzipSync } from 'node:zlib'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
@@ -11,7 +12,7 @@ const outputArgument = process.argv.indexOf('--output')
 const output =
     outputArgument === -1
         ? null
-        : resolve(process.argv[outputArgument + 1] ?? 'target/wasm-budget.json')
+        : resolve(process.argv[outputArgument + 1] ?? CargoArtifacts.path('wasm-budget.json'))
 
 const assets = {
     wasm: await measure('dist-web/fylo-index.wasm'),

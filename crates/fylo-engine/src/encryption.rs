@@ -79,7 +79,7 @@ impl EncryptionReader {
         }
         let key = self.key.as_ref().ok_or_else(|| {
             format!(
-                "cannot decrypt collection {collection}: FYLO_ENCRYPTION_KEY and FYLO_CIPHER_SALT are required"
+                "cannot decrypt collection {collection}: fylo.encryption.key and fylo.cipher.salt are required"
             )
         })?;
         for (field, value) in &mut fields {
@@ -103,7 +103,7 @@ impl EncryptionReader {
         }
         let key = self.key.as_ref().ok_or_else(|| {
             format!(
-                "cannot encrypt collection {collection}: FYLO_ENCRYPTION_KEY and FYLO_CIPHER_SALT are required"
+                "cannot encrypt collection {collection}: fylo.encryption.key and fylo.cipher.salt are required"
             )
         })?;
         for (field, value) in &mut fields {
@@ -159,7 +159,7 @@ impl EncryptionReader {
 
     pub(crate) fn blind_index(&self, value: &str) -> Result<String, String> {
         let key = self.hmac_key.as_ref().ok_or_else(|| {
-            "FYLO_ENCRYPTION_KEY and FYLO_CIPHER_SALT are required for blind indexes".to_owned()
+            "fylo.encryption.key and fylo.cipher.salt are required for blind indexes".to_owned()
         })?;
         let mut hmac = <Hmac<Sha256> as hmac::KeyInit>::new_from_slice(key.as_slice())
             .map_err(|_| "invalid HMAC-SHA256 key".to_owned())?;
@@ -219,10 +219,10 @@ struct SchemaManifest {
 
 fn derive_keys(secret: &str, salt: &str) -> Result<(SecretKey, SecretKey), String> {
     if secret.len() < 32 {
-        return Err("FYLO_ENCRYPTION_KEY must be at least 32 characters long".into());
+        return Err("fylo.encryption.key must be at least 32 UTF-8 bytes long".into());
     }
     if salt.is_empty() {
-        return Err("FYLO_CIPHER_SALT must not be empty".into());
+        return Err("fylo.cipher.salt must not be empty".into());
     }
     let material = Zeroizing::new(pbkdf2_hmac_array::<Sha256, 64>(
         secret.as_bytes(),

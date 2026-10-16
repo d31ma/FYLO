@@ -1,6 +1,6 @@
 import { OpfsFilesystem } from './opfs-filesystem.js'
 import { createMemoryFilesystem } from './core/memory-filesystem.js'
-import { normalize } from './core/path.js'
+import { BrowserPath } from './core/browser-path.js'
 
 /**
  * @typedef {import('./core/filesystem.js').FyloFilesystem} FyloFilesystem
@@ -42,7 +42,7 @@ export function createOverlayFilesystem(base) {
     const layer = createMemoryFilesystem()
     /** @type {Set<string>} removed base paths (exact, normalized) */
     const removed = new Set()
-    const key = (/** @type {string} */ path) => normalize(path)
+    const key = (/** @type {string} */ path) => BrowserPath.normalize(path)
     const inBase = async (/** @type {string} */ path) =>
         !removed.has(key(path)) && (await base.exists(path))
 
@@ -176,7 +176,7 @@ async function withRecents(mode, body) {
  * Show the OS folder picker once and remember the handle, so later visits
  * reopen the root without a picker (Chromium can persist the permission via
  * "Allow on every visit"). The browser's one-time picker gesture is the web
- * equivalent of reading FYLO_ROOT from the environment.
+ * equivalent of selecting fylo.root in native application configuration.
  *
  * @param {{ mode?: 'read' | 'readwrite' }} [options]
  * @returns {Promise<FileSystemDirectoryHandle>}

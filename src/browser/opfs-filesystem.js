@@ -1,4 +1,4 @@
-import { dirname, join, normalize } from './core/path.js'
+import { BrowserPath } from './core/browser-path.js'
 
 /**
  * @typedef {import('./core/filesystem.js').FyloFilesystem} FyloFilesystem
@@ -54,7 +54,7 @@ export class OpfsFilesystem {
      * @returns {string}
      */
     key(path) {
-        const normalised = normalize(path)
+        const normalised = BrowserPath.normalize(path)
         return normalised.startsWith('/') ? normalised.slice(1) : normalised
     }
 
@@ -95,7 +95,7 @@ export class OpfsFilesystem {
      * @returns {Promise<FileSystemFileHandle>}
      */
     async fileHandle(path, create = false) {
-        const dir = await this.directoryHandle(dirname(path), create)
+        const dir = await this.directoryHandle(BrowserPath.dirname(path), create)
         return await dir.getFileHandle(this.basename(path), { create })
     }
 
@@ -169,7 +169,7 @@ export class OpfsFilesystem {
 
     /** @param {string} path @param {{ recursive?: boolean }} [options] @returns {Promise<void>} */
     async rmdir(path, options = {}) {
-        const parent = await this.directoryHandle(dirname(path), false)
+        const parent = await this.directoryHandle(BrowserPath.dirname(path), false)
         try {
             await parent.removeEntry(this.basename(path), { recursive: options.recursive === true })
         } catch (err) {
@@ -231,7 +231,7 @@ export class OpfsFilesystem {
 
     /** @param {string} path @returns {Promise<void>} */
     async remove(path) {
-        const parent = await this.directoryHandle(dirname(path), false)
+        const parent = await this.directoryHandle(BrowserPath.dirname(path), false)
         try {
             await parent.removeEntry(this.basename(path))
         } catch (err) {

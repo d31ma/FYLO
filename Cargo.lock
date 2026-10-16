@@ -630,6 +630,7 @@ dependencies = [
  "fylo-format",
  "fylo-query",
  "fylo-storage-native",
+ "fylo-test-support",
  "getrandom 0.4.3",
  "hmac",
  "pbkdf2",
@@ -656,6 +657,7 @@ dependencies = [
  "fylo-engine",
  "fylo-query",
  "fylo-storage-native",
+ "fylo-test-support",
  "fylo-vfs",
  "reqwest",
  "rustls",
@@ -680,6 +682,7 @@ dependencies = [
  "base64",
  "fylo-format",
  "fylo-query",
+ "fylo-test-support",
  "fylo-vfs",
  "getrandom 0.4.3",
  "hmac",
@@ -689,6 +692,13 @@ dependencies = [
  "serde_json",
  "sha2",
  "xattr",
+]
+
+[[package]]
+name = "fylo-test-support"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]

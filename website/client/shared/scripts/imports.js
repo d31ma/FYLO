@@ -1,8 +1,11 @@
 // Browser entry — owns the theme lifecycle and injects favicon + SEO metadata
 // into the generated shell. The site is authored entirely with DuVay's CSS
 // classes (no web components), so only duvay.min.css is needed.
+import { installScrollStrips } from './scroll-strips.js'
+
 const THEME_KEY = 'w-theme'
 const THEME_ICON = { dark: '☾', light: '☀' }
+const THEME_LABEL = { dark: 'Dark', light: 'Light' }
 
 function applyTheme(theme) {
     document.documentElement.setAttribute('w-theme', theme)
@@ -12,41 +15,29 @@ function applyTheme(theme) {
     for (const el of document.querySelectorAll('[w-theme-icon]')) {
         el.textContent = THEME_ICON[theme] || THEME_ICON.dark
     }
+    for (const el of document.querySelectorAll('[w-theme-label]')) {
+        el.textContent = THEME_LABEL[theme] || THEME_LABEL.light
+    }
 }
 
 function currentTheme() {
     try {
-        return localStorage.getItem(THEME_KEY) || 'dark'
+        return localStorage.getItem(THEME_KEY) || 'light'
     } catch (_) {
-        return 'dark'
+        return 'light'
     }
 }
 
 if (typeof document !== 'undefined') {
-    // Apply the persisted theme before first paint; FYLO defaults to dark.
+    const syncScrollStrips = installScrollStrips()
+    // Match the DuVay site structure: light by default, with a persisted choice.
     applyTheme(currentTheme())
 
     // Delegated toggles — survive any Tac rerender since nothing is bound to nodes.
-    const closeMenu = () => {
-        const header = document.querySelector('.site-header')
-        if (!header || !header.classList.contains('menu-open')) return
-        header.classList.remove('menu-open')
-        header.querySelector('[w-menu-toggle]')?.setAttribute('aria-expanded', 'false')
-    }
     document.addEventListener('click', (event) => {
         if (event.target.closest('[w-theme-toggle]')) {
             applyTheme(currentTheme() === 'dark' ? 'light' : 'dark')
-            return
         }
-        const burger = event.target.closest('[w-menu-toggle]')
-        if (burger) {
-            const header = burger.closest('.site-header')
-            const open = header.classList.toggle('menu-open')
-            burger.setAttribute('aria-expanded', String(open))
-            return
-        }
-        // Any other click (including a menu link) closes the open mobile menu.
-        closeMenu()
     })
 
     // Keep every multi-language sample on a docs page on the same language.
@@ -56,7 +47,11 @@ if (typeof document !== 'undefined') {
     let syncingLang = false
     const revealInScroller = (active, scroller) => {
         if (!active || !scroller || scroller.scrollWidth <= scroller.clientWidth) return
-        const offset = active.offsetLeft - (scroller.clientWidth - active.offsetWidth) / 2
+        const offset =
+            scroller.scrollLeft +
+            active.getBoundingClientRect().left -
+            scroller.getBoundingClientRect().left -
+            (scroller.clientWidth - active.offsetWidth) / 2
         scroller.scrollTo({ left: Math.max(0, offset) })
     }
     const revealLanguageSelections = () => {
@@ -86,14 +81,11 @@ if (typeof document !== 'undefined') {
             requestAnimationFrame(revealLanguageSelections)
         }
     })
-    // Close the mobile menu on SPA navigation.
-    window.addEventListener('popstate', closeMenu)
-
     // Keep <title> in sync with the route. SPA navigation doesn't re-run page
     // constructors, so a page's own `document.title` only fires the first time its
     // module loads — after that the title would stick. Drive it from here instead.
     const ROUTE_TITLES = {
-        '/': 'FYLO — The document store that speaks your language.',
+        '/': 'FYLO — Query the files you already own.',
         '/docs': 'Docs — FYLO',
         '/docs/concepts': 'Concepts — FYLO',
         '/docs/clients': 'Language clients — FYLO',
@@ -132,6 +124,42 @@ if (typeof document !== 'undefined') {
             else link.removeAttribute('aria-current')
         }
     }
+    const headingId = (heading, used) => {
+        const base =
+            heading.id ||
+            heading.textContent
+                .trim()
+                .toLowerCase()
+                .replace(/[^a-z0-9]+/g, '-')
+                .replace(/^-|-$/g, '') ||
+            'section'
+        let id = base
+        let suffix = 2
+        while (used.has(id)) id = `${base}-${suffix++}`
+        used.add(id)
+        heading.id = id
+        return id
+    }
+    const syncDocToc = () => {
+        const toc = document.querySelector('[data-doc-toc-list]')
+        if (!toc) return
+        const used = new Set()
+        const headings = [...document.querySelectorAll('.doc-main .doc-section > h2')].map(
+            (heading) => ({ id: headingId(heading, used), label: heading.textContent.trim() })
+        )
+        const signature = JSON.stringify(headings)
+        if (toc.dataset.signature === signature) return
+        toc.dataset.signature = signature
+        toc.replaceChildren(
+            ...headings.map(({ id, label }) => {
+                const link = document.createElement('a')
+                link.href = `#${id}`
+                link.textContent = label
+                return link
+            })
+        )
+        toc.closest('.doc-toc').hidden = headings.length < 2
+    }
     // On narrow screens the docs sidebar collapses to a horizontal strip, where
     // the current page can sit off-screen with nothing to suggest it exists.
     const revealActive = () => {
@@ -142,7 +170,9 @@ if (typeof document !== 'undefined') {
     const syncRoute = () => {
         syncTitle()
         syncDocNav()
+        syncDocToc()
         revealActive()
+        syncScrollStrips()
     }
     window.addEventListener('tachyon:navigate', syncRoute)
     window.addEventListener('popstate', syncRoute)
@@ -156,8 +186,15 @@ if (typeof document !== 'undefined') {
                 el.textContent = THEME_ICON[theme] || THEME_ICON.dark
             }
         }
+        for (const el of document.querySelectorAll('[w-theme-label]')) {
+            if (el.textContent !== (THEME_LABEL[theme] || THEME_LABEL.light)) {
+                el.textContent = THEME_LABEL[theme] || THEME_LABEL.light
+            }
+        }
         // A morph can also rebuild the docs sidebar and drop `active`.
         syncDocNav()
+        syncDocToc()
+        syncScrollStrips()
     }).observe(document.documentElement, { childList: true, subtree: true })
 
     // Favicon — the FYLO mark: a document whose contents are a branch history.
@@ -182,7 +219,7 @@ if (typeof document !== 'undefined') {
         { name: 'author', content: 'FYLO contributors' },
         { name: 'robots', content: 'index, follow' },
         { property: 'og:type', content: 'website' },
-        { property: 'og:title', content: 'FYLO — The document store that speaks your language.' },
+        { property: 'og:title', content: 'FYLO — Query the files you already own.' },
         {
             property: 'og:description',
             content:
@@ -191,7 +228,7 @@ if (typeof document !== 'undefined') {
         { property: 'og:url', content: 'https://fylo.del.ma' },
         { property: 'og:site_name', content: 'FYLO' },
         { name: 'twitter:card', content: 'summary' },
-        { name: 'twitter:title', content: 'FYLO — The document store that speaks your language.' },
+        { name: 'twitter:title', content: 'FYLO — Query the files you already own.' },
         {
             name: 'twitter:description',
             content:

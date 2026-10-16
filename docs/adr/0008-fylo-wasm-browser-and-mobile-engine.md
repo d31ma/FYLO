@@ -88,7 +88,7 @@ documented difference in the browser support tier.
 | `hard_link` lock creation, `ps` owner liveness | One origin owns one OPFS root. Web Locks plus exclusive access handles replace the PID-aware lock file, which is strictly simpler. |
 | POSIX uid/gid/mode (13 sites) | Not offered. `machineAccess` is already absent outside macOS and Linux, so the capability set already expresses this. |
 | Setting and reading mtime | Stored explicitly. Narrowing `updatedAt`, `mtime`, `lastModified`, and `deletedAt` to whole milliseconds made these plain stored integers rather than filesystem-precision floats. |
-| Subprocess schema validation (`FYLO_CHEX_BINARY`) | Not offered in the browser build; schema validation there requires an in-process validator or is unavailable. |
+| Subprocess schema validation (`fylo.chex.binary`) | Not offered in the browser build; schema validation there requires an in-process validator or is unavailable. |
 | `fsync` | `FileSystemSyncAccessHandle.flush()`. |
 | Symlink containment checks (22 sites) | No-ops. OPFS has no links, so the class of attack does not exist. |
 

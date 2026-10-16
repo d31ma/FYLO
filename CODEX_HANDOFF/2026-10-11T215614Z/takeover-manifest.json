@@ -1,0 +1,126 @@
+{
+  "schema_version": 3,
+  "checkpoint_at": "2026-10-11T21:56:14.144606+00:00",
+  "checkpoint_id": "2026-10-11T215614Z",
+  "authorization": "Parent relayed immediate user-authorized takeover of ALL remaining unfinished work, including Mac and native Windows. This supersedes prior standby restrictions for the seven retained threads. This documentation task executes no project work.",
+  "claude_usage_exhausted_reported_by_user": true,
+  "claude_background_processes_stopped_verified": false,
+  "recovery_owner": "Assistant SSH task 01a12c31-5976-747d-845c-00610048b0cc",
+  "recovery_last_verified_by_parent": "Stopped 21:38, restarted 21:42, service health diagnosis pending; this inspector has no newer health clearance.",
+  "current_resource_read": "ANNEX 8 GiB available and internal volume 2 GiB available at fresh read. Reconcile shared heavy-job lock and lane floors before heavy execution. This is current pressure, not revival of the old cleanup task.",
+  "new_local_root_sessions": [],
+  "additional_active_logical_threads_found": [],
+  "inventory_coverage": "35 discoverable local root sessions plus one previously corroborated cloud-only completion. The other 28 local roots remain completed, superseded, or historical/unassigned. RC and integration child agents are unfinished scopes within retained chats, not additional logical chats. New cloud-only threads cannot be ruled out without UI access.",
+  "shared_job_artifacts": [
+    {
+      "path": "/private/tmp/claude-501/coh6/gate14-win.txt",
+      "mtime": "2026-10-11T21:47:37.144989+00:00",
+      "bytes": 416,
+      "tail": "lane: b\r\ntip: 6096c4dd refactor(design-check): read classes and apply design switches in one place each\r\nfmt exit 0\r\nclippy exit 0\r\ncore lib exit 101\r\ncore it events exit 0\r\npolicy exit 0\r\ndoc exit 0\r\nlane released\r\ntest result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 522 filtered out; finished in 19.81s\r\ntest result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 15.97s\r\ndone\n"
+    },
+    {
+      "path": "/private/tmp/claude-501/coh6/g14-core-lib.u8",
+      "mtime": "2026-10-11T21:47:41.763477+00:00",
+      "bytes": 754,
+      "tail": "\ufeffcargo :    Compiling tachyon-core v0.0.0-phase4 (F:\\tachyon-work\\wt\\COHESION-6\\crates\\tachyon-core)\nAt F:\\tachyon-work\\cohesion-14-gate.ps1:11 char:1\n+ cargo test --locked -j 4 -p tachyon-core --lib *> \"$log\\core-lib.log\" ...\n+ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n    + CategoryInfo          : NotSpecified: (   Compiling ta...s\\tachyon-core):String) [], RemoteException\n    + FullyQualifiedErrorId : NativeCommandError\n \nerror: failed to write file \\\\?\\F:\\tachyon-work\\target-COHESION-6\\debug\\incremental\\tachyon_core-0zlfpgyhtfxul\\s-hn4eh5\nbrpu-0jbmplo-working\\dep-graph.part.bin: The semaphore timeout period has expired. (os error 121)\"\n\nerror: could not compile `tachyon-core` (lib test) due to 1 previous error\n"
+    },
+    {
+      "path": "/Volumes/ANNEX/build/rc-gate/summary.txt",
+      "mtime": "2026-10-11T21:04:30.706023+00:00",
+      "bytes": 1709,
+      "tail": "2026-10-11T20:03:07Z start 674132fb7 ci(release): link to the changelog when release notes exceed GitHub's limit\n2026-10-11T20:07:29Z deps exit=0\n2026-10-11T20:07:31Z content exit=0\n2026-10-11T20:07:31Z styles exit=0\n2026-10-11T20:08:19Z build-debug exit=0\n2026-10-11T20:11:42Z build-release exit=0\n2026-10-11T20:11:45Z types exit=0\n2026-10-11T20:11:47Z phase3-browser exit=0\n2026-10-11T20:11:48Z tac-client exit=0\n2026-10-11T20:11:49Z app-events exit=0\n2026-10-11T20:11:50Z hot-update exit=0\n2026-10-11T20:11:53Z events-browser exit=0\n2026-10-11T20:11:57Z service-worker exit=0\n2026-10-11T20:11:59Z island-expr exit=0\n2026-10-11T20:13:32Z storage-runtime exit=0\n2026-10-11T20:13:41Z web-components exit=0\n2026-10-11T20:13:53Z authored-node exit=0\n2026-10-11T20:13:54Z behavior-adapt exit=0\n2026-10-11T20:13:55Z chex-schema exit=1\n2026-10-11T20:20:24Z responsive exit=0\n2026-10-11T20:20:28Z ledger exit=1\n2026-10-11T20:20:33Z doctor exit=0\n2026-10-11T20:20:33Z runtimes-present exit=0\n2026-10-11T20:20:50Z behavior-jvm-nat exit=0\n2026-10-11T20:22:45Z polyglot exit=0\n2026-10-11T20:22:52Z swift-web exit=0\n2026-10-11T20:22:55Z java-web exit=0\n2026-10-11T20:23:03Z kotlin-web exit=0\n2026-10-11T20:27:35Z ignored-gates exit=0\n2026-10-11T20:28:24Z managed-res exit=0\n2026-10-11T20:28:32Z local-events exit=0\n2026-10-11T20:28:43Z native-events exit=0\n2026-10-11T20:29:00Z website exit=0\n2026-10-11T21:03:09Z snippets exit=1\n2026-10-11T21:03:25Z website-browser exit=0\n2026-10-11T21:04:29Z cached-client exit=0\n2026-10-11T21:04:30Z phase4-macos exit=1\n2026-10-11T21:04:30Z ios-native exit=1\n2026-10-11T21:04:30Z companion exit=1\n2026-10-11T21:04:30Z workspace-test skipped: 11 GiB free\n2026-10-11T21:04:30Z ALLDONE\n"
+    },
+    {
+      "path": "/Volumes/ANNEX/build/caduceus-work/MAC-LOCK/pid",
+      "mtime": "2026-10-11T21:53:44.850205+00:00",
+      "bytes": 6,
+      "tail": "60117\n"
+    },
+    {
+      "path": "/Volumes/ANNEX/build/caduceus-work/wt/full-logs/e2e/hold-server.log",
+      "mtime": "2026-10-11T21:54:57.601485+00:00",
+      "bytes": 53,
+      "tail": "[e2e] Go server and client on http://localhost:19875\n"
+    },
+    {
+      "path": "/Volumes/ANNEX/build/caduceus-work/land-a.log",
+      "mtime": "2026-10-11T21:41:50.652754+00:00",
+      "bytes": 689,
+      "tail": "origin 843de215fc24c5b52c9a0fcf354cbccaaad00bd6 -> 23720147407d97b21ffc0a3de7ca10cb980c08b1\nquick check failed (17)\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 18.10s\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 549 filtered out; finished in 0.55s\ntest result: ok. 272 passed; 0 failed; 0 ignored; 0 measured; 2708 filtered out; finished in 8.83s\n\ntest structure_violations_cannot_grow_above_the_baseline ... FAILED\nfiles with more than one type, free functions or file-level values grew from 2954 to 2955; run `cargo run -p cohesion-scan` to list them\ntest result: FAILED. 22 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.91s\n"
+    }
+  ],
+  "usage_limit_evidence": [
+    {
+      "thread": "RC version bump and changelog",
+      "at": "2026-10-11T21:55:42.060Z",
+      "text": "You've hit your weekly limit \u00b7 resets Oct 17 at 5am (America/Toronto)"
+    },
+    {
+      "thread": "Async Go services in Tachyon build",
+      "at": "2026-10-11T21:55:21.736Z",
+      "text": "You've hit your weekly limit \u00b7 resets Oct 17 at 5am (America/Toronto)"
+    },
+    {
+      "thread": "Refactor CADUCEUS to Tachyon build",
+      "at": "2026-10-11T21:55:24.790Z",
+      "text": "You've hit your weekly limit \u00b7 resets Oct 17 at 5am (America/Toronto)"
+    }
+  ],
+  "threads": [
+    {
+      "project": "FYLO",
+      "title": "Hard-link fallback fix",
+      "local_session_id": "d4bd896b-fcf4-4635-9655-e986f5f01d5d",
+      "claude_thread_id": "cmsg_01MmbfpTbTQTkHwET9p2Jmk9CVpTv6czHFTPoX1tfSFumc",
+      "codex_chat_id": "01a12ce6-dd89-70b7-8f96-802fb8a740fb",
+      "activation_scope": "authorized_takeover_all_unfinished_scope_after_source_process_resource_preflight",
+      "prior_handoff_path": "/Volumes/ANNEX/Users/iyor/Library/CloudStorage/Google Drive/myOrganizations/DELMA/FYLO/CODEX_HANDOFF/2026-10-11T215040Z/d4bd896b-fcf4-4635-9655-e986f5f01d5d.md",
+      "handoff_path": "/Volumes/ANNEX/Users/iyor/Library/CloudStorage/Google Drive/myOrganizations/DELMA/FYLO/CODEX_HANDOFF/2026-10-11T215614Z/d4bd896b-fcf4-4635-9655-e986f5f01d5d.md",
+      "latest_record_at": "2026-10-11T21:47:14.734Z",
+      "latest_status": {
+        "at": "2026-10-11T21:47:10.033Z",
+        "text": "Hard-link fallback fix (handed off to Codex)\n\n\u2713 Widened the lock fallback to EPERM and EACCES, with a regression test\n\u2713 Traced the SMB failures: no proof the fallback loses data\n\u2713 Committed source-only fixes on the unpushed branch (1353cc30)\n\u2713 Comparison run lost when WSL dropped; no WSL recovery attempted\n**\u2713 Posted the handoff checkpoint; WSL work handed to Codex**"
+      },
+      "latest_reply": {
+        "at": "2026-10-11T21:47:08.660Z",
+        "text": "**Handoff checkpoint.** The WSL work in this thread is handed to Codex, and I've stopped. Nothing was deleted, and I took no new or relaunched WSL action.\n\n**Mac (source of truth)**\n- Worktree: `/Volumes/ANNEX/Users/iyor/Library/CloudStorage/Google Drive/myOrganizations/DELMA/FYLO/.claude/worktrees/wizardly-dubinsky-fc1d70`\n- Branch: `claude/wizardly-dubinsky-fc1d70`, HEAD `1353cc307005c676f1e90fb685f759d1b97da5a6`, on base `324d29bd`. It's clean, with no uncommitted files. It hasn't been pushed and isn't merged; develop is at `c388bc05` (docs only since my base).\n  - `2ef50a36`: the lock fallback also handles EPERM and EACCES, with a classification unit test.\n  - `1353cc30`: only an existing entry counts as a held lock (host raw `-17` matched on wasm), and the drill reports a failed `findDocs` separately. This commit hasn't been built or tested.\n- Helper files: `/Volumes/ANNEX/build/fylo-serverless/hardlink-run.sh`, `hardlink-tmpfs.sh` and `hardlink.patch` (diff of `2ef50a36` against `324d29bd`).\n\n**Surface (WSL `Ubuntu-24.04-ANNEX`, user ayode)**\n- Clone `~/build/fylo-hardlink`: reset to `324d29bd`, with these uncommitted changes:\n  - `write.rs` holds the `2ef50a36` version, not `1353cc30`.\n  - `verify-serverless-local.mjs` has `NAME = 'fylo-hardlink'`, plus the tmpfs-share tweak in `startSamba`, which is still applied and not restored.\n- Cache: `~/build/fylo-hardlink-cache`. It's a partial copy; root-owned incremental `.lock` files weren't copied.\n- Logs under `~/build/`:\n  - `fylo-hardlink-lane--platform-cloudrun-mount-cloudrun-gcs-.log`\n  - `fylo-hardlink-lane--platform-azure-mount-azure-smb-nobrl-.log`\n  - `fylo-hardlink-lane-azure-smb.log`\n  - `fylo-hardlink-tests.log`\n  - `fylo-hardlink-lane-azure-smb-tmpfs.log`, which may be missing or partial.\n\n**Jobs:** none of mine are running. The tmpfs comparison run died when the WSL connection dropped (`ERROR_NETNAME_DELETED`). Any Docker containers or networks named `fylo-hardlink-*` that it left are mine; I haven't checked. The `wsl-heavy.lock` slot holders were CADUCEUS jobs, not mine.\n\n**Pending:**\n- Validating `1353cc30`: clippy, the storage and wasm tests, and prettier.\n- The missing observation: instance B's `findDocs` result after the SIGTERM.\n- Updating the qualification doc, then merging into develop. The merge hold is yours to lift.\n\n**Unresolved approvals:** my earlier attempt to cancel my own queued Surface job was refused, and I didn't retry it. Nothing else is waiting on you."
+      },
+      "latest_assistant": {
+        "at": "2026-10-11T21:38:23.857Z",
+        "text": "I've told Samuel in the thread that the links-allowed comparison run produced no result. The WSL connection on the Surface dropped with \"network name is no longer available\" before the SMB lane printed anything. So instance B's `findDocs` result after the SIGTERM is still the missing observation.\n\nWhere things stand:\n- **Fix:** the lock fallback now also runs when a filesystem refuses the hard link with EPERM (gcsfuse) or EACCES (Samba). A regression test covers that classification. On the gcsfuse and SMB lanes the refused-link failure is gone.\n- **Validation of the fix:** storage tests, clippy and fmt passed on the Surface, except one test that only fails because the build container runs as root. It fails on develop the same way.\n- **Merge into develop is on hold, at Samuel's request.** The SMB byte-range lane reported acknowledged writes as lost. Tracing the source showed the drill reports a failed read as lost writes, so data loss isn't established.\n- **Follow-up corrections:** committed on my branch only (`1353cc30`), not built or tested, nothing merged or pushed. In the lock fallback, only \"already exists\" now counts as a held lock, and every other create error is reported. The drill now reports a failed read separately and doesn't treat it as an empty listing.\n- **Not yet run:** clippy, storage and wasm tests, and prettier on those corrections. All need the Surface.\n- **Loose end:** my private copy on the Surface still points the Samba share at tmpfs. I'll restore it before it's used again.\n\nI'm not probing or relaunching anything on the Surface until Samuel says so."
+      },
+      "fresh_local_git": [
+        {
+          "path": "/Volumes/ANNEX/Users/iyor/Library/CloudStorage/Google Drive/myOrganizations/DELMA/FYLO/.claude/worktrees/wizardly-dubinsky-fc1d70",
+          "exists": true,
+          "verified_git_root": "/Volumes/ANNEX/Users/iyor/Library/CloudStorage/Google Drive/myOrganizations/DELMA/FYLO/.claude/worktrees/wizardly-dubinsky-fc1d70",
+          "head": "1353cc307005c676f1e90fb685f759d1b97da5a6",
+          "branch": "claude/wizardly-dubinsky-fc1d70",
+          "dirty_paths": []
+        }
+      ],
+      "child_agents": [],
+      "background_jobs": [],
+      "last_actions": [
+        {
+          "at": "2026-10-11T21:46:50.887Z",
+          "description": "Collect Mac checkpoint state",
+          "command": "pwd; git status --short --branch | head; git log --oneline -3; git rev-parse HEAD; git ls-remote --heads origin claude/wizardly-dubinsky-fc1d70 claude/project-thread-5btcu5 2>/dev/null; git rev-parse origin/develop develop; ls -la /Volumes/ANNEX/build/fylo-serverless/hardlink*"
+        },
+        {
+          "at": "2026-10-11T21:46:57.159Z",
+          "description": "Record handoff state in project memory",
+          "command": "f=\"/Users/iyor/.claude/projects/-Volumes-ANNEX-Users-iyor-Library-CloudStorage-Google-Drive-myOrganizations-DELMA-FYLO/memory/fylo-serverless-local-lanes.md\"; python3 - \"$f\" <<'EOF'\nimport sys\np=sys.argv[1]; s=open(p).read()\nold=\"  - hard-link EPERM/EACCES not reaching the fallback;\"\nnew=\"  - hard-link EPERM/EACCES fallback: fixed on unpushed branch claude/wizardly-dubinsky-fc1d70 (2ef50a36, 1353cc30), merge held by Samuel pending B's findDocs result after SIGTERM; WSL work handed to Codex 2026-10-11;\"\nassert old in s\nopen(p,'w').write(s.replace(old,new))\nEOF\ngrep -n \"hard-link\" \"$f\""
+        }
+      ],
+      "unchanged_dependencies_from_previous_checkpoint": [
+        "Remote HEAD/dirty/Docker/locks PENDING fresh verification",
+        "Prior queued-job cancellation was denied; do not retry by another route",
+        "No proof acknowledged writes were lost; failed read must not become empty list",
+        "User merge hold remains"
+      ],
+      "takeover_findings": "Mac clean unpushed 1353cc30; remote source reportedly older 324d29bd plus 2ef50a36 write.rs and tmpfs/NAME edits. Remote artifacts/process/Docker not fresh-verified by this inspector. Comparison lost with no result; validation and missing findDocs outcome remain. Merge hold continues until explicitly cleared.",
+      "retained_prior_source_evidence": "Mac clean branch claude/wizardly-dubinsky-fc1d70 HEAD 1353cc307005c676f1e90fb685f759d1b97da5a6, base 324d29bd; unpushed. WSL ~/build/fylo-hardlink is REPORTED base 324d29bd with uncommitted write.rs from 2ef50a36 and scripts/verify-serverless-local.mjs NAME change plus tmpfs Samba tweak. Cache ~/build/fylo-hardlink-cache is partial; root-owned incremental lock files not copied."
+    }
+  ]
+}

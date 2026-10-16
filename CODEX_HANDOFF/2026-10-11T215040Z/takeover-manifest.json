@@ -1,0 +1,58 @@
+{
+  "checkpoint_at": "2026-10-11T21:50:40.888100+00:00",
+  "recovery": {
+    "owner": "Assistant SSH task 01a12c31-5976-747d-845c-00610048b0cc",
+    "verified_by_parent": "WSL stopped at 21:38 UTC and restarted at 21:42 UTC; services are not healthy; health diagnosis continues.",
+    "healthy": false,
+    "claude_may_restart": false,
+    "post_recovery_source_verification": "PENDING: actual remote HEADs, dirty paths, surviving processes, Docker state, locks and service health. Restart is not qualification."
+  },
+  "threads": [
+    {
+      "project": "FYLO",
+      "title": "Hard-link fallback fix",
+      "local_session_id": "d4bd896b-fcf4-4635-9655-e986f5f01d5d",
+      "claude_thread_id": "cmsg_01MmbfpTbTQTkHwET9p2Jmk9CVpTv6czHFTPoX1tfSFumc",
+      "codex_project_id": null,
+      "codex_chat_id": "01a12ce6-dd89-70b7-8f96-802fb8a740fb",
+      "status": "unfinished_wsl_handed_off_merge_hold",
+      "prior_handoff_path": "/Volumes/ANNEX/Users/iyor/Library/CloudStorage/Google Drive/myOrganizations/DELMA/FYLO/CODEX_HANDOFF/2026-10-11T2125Z/d4bd896b-fcf4-4635-9655-e986f5f01d5d.md",
+      "handoff_path": "/Volumes/ANNEX/Users/iyor/Library/CloudStorage/Google Drive/myOrganizations/DELMA/FYLO/CODEX_HANDOFF/2026-10-11T215040Z/d4bd896b-fcf4-4635-9655-e986f5f01d5d.md",
+      "latest_record_at": "2026-10-11T21:47:14.734Z",
+      "notes": {
+        "status": "unfinished_wsl_handed_off_merge_hold",
+        "wsl_scope": "Surface private copy and disposable comparison/validation evidence; merge hold remains.",
+        "receipt": "21:47:08 Claude checkpoint: handed WSL work to Codex, stopped; no owned jobs running as reported. Leftover fylo-hardlink Docker containers/networks remain uninspected.",
+        "source": "Mac clean branch claude/wizardly-dubinsky-fc1d70 HEAD 1353cc307005c676f1e90fb685f759d1b97da5a6, base 324d29bd; unpushed. WSL ~/build/fylo-hardlink is REPORTED base 324d29bd with uncommitted write.rs from 2ef50a36 and scripts/verify-serverless-local.mjs NAME change plus tmpfs Samba tweak. Cache ~/build/fylo-hardlink-cache is partial; root-owned incremental lock files not copied.",
+        "pending": "Preserve remote dirty edits, reconcile to 1353cc30 without destructive reset; review tmpfs harness tweak; clippy/storage/wasm/prettier validation; missing instance B findDocs after SIGTERM; qualification doc. Merge requires lifting hold.",
+        "stale": "Comparison is confirmed lost with ERROR_NETNAME_DELETED, no result. Old handoff remote dirty unknown is superseded by REPORTED two-file changes, still not post-recovery verified. 1353cc30 remains unbuilt/untested.",
+        "blockers": [
+          "Remote HEAD/dirty/Docker/locks PENDING fresh verification",
+          "Prior queued-job cancellation was denied; do not retry by another route",
+          "No proof acknowledged writes were lost; failed read must not become empty list",
+          "User merge hold remains"
+        ]
+      },
+      "fresh_local_git": [
+        {
+          "path": "/Volumes/ANNEX/Users/iyor/Library/CloudStorage/Google Drive/myOrganizations/DELMA/FYLO/.claude/worktrees/wizardly-dubinsky-fc1d70",
+          "exists": true,
+          "verified_git_root": "/Volumes/ANNEX/Users/iyor/Library/CloudStorage/Google Drive/myOrganizations/DELMA/FYLO/.claude/worktrees/wizardly-dubinsky-fc1d70",
+          "head": "1353cc307005c676f1e90fb685f759d1b97da5a6",
+          "branch": "claude/wizardly-dubinsky-fc1d70",
+          "dirty_paths": []
+        }
+      ],
+      "remote_post_recovery_verified": false,
+      "latest_status": {
+        "at": "2026-10-11T21:47:10.033Z",
+        "text": "Hard-link fallback fix (handed off to Codex)\n\n\u2713 Widened the lock fallback to EPERM and EACCES, with a regression test\n\u2713 Traced the SMB failures: no proof the fallback loses data\n\u2713 Committed source-only fixes on the unpushed branch (1353cc30)\n\u2713 Comparison run lost when WSL dropped; no WSL recovery attempted\n**\u2713 Posted the handoff checkpoint; WSL work handed to Codex**"
+      },
+      "latest_reply": {
+        "at": "2026-10-11T21:47:08.660Z",
+        "text": "**Handoff checkpoint.** The WSL work in this thread is handed to Codex, and I've stopped. Nothing was deleted, and I took no new or relaunched WSL action.\n\n**Mac (source of truth)**\n- Worktree: `/Volumes/ANNEX/Users/iyor/Library/CloudStorage/Google Drive/myOrganizations/DELMA/FYLO/.claude/worktrees/wizardly-dubinsky-fc1d70`\n- Branch: `claude/wizardly-dubinsky-fc1d70`, HEAD `1353cc307005c676f1e90fb685f759d1b97da5a6`, on base `324d29bd`. It's clean, with no uncommitted files. It hasn't been pushed and isn't merged; develop is at `c388bc05` (docs only since my base).\n  - `2ef50a36`: the lock fallback also handles EPERM and EACCES, with a classification unit test.\n  - `1353cc30`: only an existing entry counts as a held lock (host raw `-17` matched on wasm), and the drill reports a failed `findDocs` separately. This commit hasn't been built or tested.\n- Helper files: `/Volumes/ANNEX/build/fylo-serverless/hardlink-run.sh`, `hardlink-tmpfs.sh` and `hardlink.patch` (diff of `2ef50a36` against `324d29bd`).\n\n**Surface (WSL `Ubuntu-24.04-ANNEX`, user ayode)**\n- Clone `~/build/fylo-hardlink`: reset to `324d29bd`, with these uncommitted changes:\n  - `write.rs` holds the `2ef50a36` version, not `1353cc30`.\n  - `verify-serverless-local.mjs` has `NAME = 'fylo-hardlink'`, plus the tmpfs-share tweak in `startSamba`, which is still applied and not restored.\n- Cache: `~/build/fylo-hardlink-cache`. It's a partial copy; root-owned incremental `.lock` files weren't copied.\n- Logs under `~/build/`:\n  - `fylo-hardlink-lane--platform-cloudrun-mount-cloudrun-gcs-.log`\n  - `fylo-hardlink-lane--platform-azure-mount-azure-smb-nobrl-.log`\n  - `fylo-hardlink-lane-azure-smb.log`\n  - `fylo-hardlink-tests.log`\n  - `fylo-hardlink-lane-azure-smb-tmpfs.log`, which may be missing or partial.\n\n**Jobs:** none of mine are running. The tmpfs comparison run died when the WSL connection dropped (`ERROR_NETNAME_DELETED`). Any Docker containers or networks named `fylo-hardlink-*` that it left are mine; I haven't checked. The `wsl-heavy.lock` slot holders were CADUCEUS jobs, not mine.\n\n**Pending:**\n- Validating `1353cc30`: clippy, the storage and wasm tests, and prettier.\n- The missing observation: instance B's `findDocs` result after the SIGTERM.\n- Updating the qualification doc, then merging into develop. The merge hold is yours to lift.\n\n**Unresolved approvals:** my earlier attempt to cancel my own queued Surface job was refused, and I didn't retry it. Nothing else is waiting on you."
+      },
+      "activation_scope": "read_only_preflight_pending_health_and_ownership_clearance"
+    }
+  ]
+}

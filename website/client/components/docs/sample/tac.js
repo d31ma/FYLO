@@ -339,14 +339,14 @@ const SCAFFOLD = {
 // Child-process configuration is intentionally rendered separately from CRUD
 // recipes: each native shim exposes an idiomatic options shape, while browser
 // and mobile clients embed the portable engine and therefore have no child
-// process environment to configure.
-const ENVIRONMENT_SAMPLES = {
+// process configuration file to select.
+const CONFIGURATION_SAMPLES = {
     python: `from fylo import Fylo
 
 with Fylo(
     "/mnt/fylo",
     binary="/opt/fylo/bin/fylo",
-    env="./config/fylo.env",
+    config="./config/application.json",
 ) as db:
     db.create_collection("users")`,
     ruby: `require_relative "fylo"
@@ -354,7 +354,7 @@ with Fylo(
 Fylo.open(
   "/mnt/fylo",
   binary: "/opt/fylo/bin/fylo",
-  env: "./config/fylo.env"
+  config: "./config/application.json"
 ) do |db|
   db.create_collection("users")
 end`,
@@ -362,42 +362,43 @@ end`,
 
 const db = new Fylo('/mnt/fylo', {
     binary: '/opt/fylo/bin/fylo',
-    env: './config/fylo.env'
+    config: './config/application.json'
 })`,
     php: `require 'fylo.php';
 
 $db = new Fylo(
     '/mnt/fylo',
     '/opt/fylo/bin/fylo',
-    './config/fylo.env'
+    './config/application.json'
 );`,
     go: `import fylo "yourapp/fylo"
 
 db, err := fylo.OpenWithOptions("/mnt/fylo", fylo.Options{
     Binary: "/opt/fylo/bin/fylo",
-    Env: &fylo.Environment{File: "./config/fylo.env"},
+    Config: "./config/application.json",
 })
 if err != nil { return err }
 defer db.Close()`,
-    rust: `use fylo::{Fylo, FyloOptions, ProcessEnvironment};
+    rust: `use fylo::{Fylo, FyloOptions};
 
 let mut db = Fylo::open_with_options(
     "/mnt/fylo",
     FyloOptions {
         binary: "/opt/fylo/bin/fylo".into(),
-        env: Some(ProcessEnvironment::File("./config/fylo.env".into())),
+        config: Some("./config/application.json".into()),
+        ..Default::default()
     },
 )?;`,
     csharp: `using var db = new Fylo.Fylo(
     "/mnt/fylo",
     new Fylo.Fylo.Options {
         Binary = "/opt/fylo/bin/fylo",
-        Env = "./config/fylo.env"
+        Config = "./config/application.json"
     }
 );`,
     java: `Fylo.Options options = new Fylo.Options();
 options.binary = "/opt/fylo/bin/fylo";
-options.env = "./config/fylo.env";
+options.config = "./config/application.json";
 
 try (Fylo db = new Fylo("/mnt/fylo", options)) {
     db.createCollection("users");
@@ -408,7 +409,7 @@ Future<void> main() async {
   final db = await Fylo.open(
     '/mnt/fylo',
     binary: '/opt/fylo/bin/fylo',
-    env: './config/fylo.env',
+    config: './config/application.json',
   );
 }`,
     swift: `import Fylo
@@ -694,7 +695,7 @@ export default class {
 
     code() {
         const lang = LANGS.find((l) => l.key === this.$lang) ? this.$lang : 'python'
-        if (this.topic === 'environment') return ENVIRONMENT_SAMPLES[lang]
+        if (this.topic === 'configuration') return CONFIGURATION_SAMPLES[lang]
         const steps = RECIPES[this.topic] || RECIPES.crud
         return scaffold(
             lang,

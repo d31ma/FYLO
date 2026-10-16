@@ -5,15 +5,17 @@
 //! stable collection generation around every logical read.
 
 mod encryption;
+mod equality_operation;
+mod equality_plan;
 mod schema;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use encryption::{EncryptionReader, is_encrypted_field, reject_undeclared_ciphertext};
 use fylo_format::{
-    CanonicalMetadata, Document, DocumentLimits, FormatError, FormatErrorCode, decode_ttid,
+    CanonicalMetadata, Document, DocumentLimits, FormatError, FormatErrorCode, TtidTimestamps,
 };
 use fylo_query::{
     IndexLookupValue, JoinSpec, QueryError, QueryErrorCode, QueryLimits, ScanQuery, SqlOperation,
@@ -56,6 +58,17 @@ pub struct WriteEngine {
 pub use fylo_storage_native::RootConfig as EngineConfig;
 
 impl WriteEngine {
+    /// Select the schema validator executable without consulting process settings.
+    #[must_use]
+    pub fn with_chex_binary(mut self, binary: impl Into<PathBuf>) -> Self {
+        if let Some(schema) = &self.schema {
+            self.schema = Some(std::rc::Rc::new(
+                SchemaTools::new(schema.schema_dir()).with_chex_binary(binary),
+            ));
+        }
+        self
+    }
+
     /// Apply host-supplied runtime knobs to this engine and its writer.
     ///
     /// Every `open_*` constructor starts from the default, so a host that
@@ -345,7 +358,7 @@ impl WriteEngine {
         self.schema.as_deref().ok_or_else(|| {
             EngineError::new(
                 EngineErrorCode::Schema,
-                "schema operations require FYLO_SCHEMA and both encryption credentials",
+                "schema operations require fylo.schema configuration",
             )
         })
     }
@@ -413,6 +426,21 @@ impl AccessContext {
 }
 
 impl ReadOnlyEngine {
+    /// Attach schema-driven decryption without changing the repository identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid schema metadata or encryption credentials.
+    pub fn with_schema_configuration(
+        mut self,
+        schema_root: impl AsRef<Path>,
+        credentials: Option<(&str, &str)>,
+    ) -> Result<Self, EngineError> {
+        self.encryption = Some(
+            EncryptionReader::open(schema_root, credentials).map_err(EngineError::encryption)?,
+        );
+        Ok(self)
+    }
     /// Open an existing FYLO root without modifying it.
     ///
     /// # Errors
@@ -558,7 +586,7 @@ impl ReadOnlyEngine {
                 Document::parse(&stored.bytes, DocumentLimits::default())
                     .map_err(EngineError::format)?,
             )?;
-            let timestamps = decode_ttid(identifier).map_err(EngineError::format)?;
+            let timestamps = TtidTimestamps::decode(identifier).map_err(EngineError::format)?;
             Ok(ReadDocument {
                 metadata: CanonicalMetadata {
                     id: identifier.to_owned(),
@@ -733,7 +761,7 @@ impl ReadOnlyEngine {
                 Document::parse(&stored.bytes, DocumentLimits::default())
                     .map_err(EngineError::format)?,
             )?;
-            let timestamps = decode_ttid(identifier).map_err(EngineError::format)?;
+            let timestamps = TtidTimestamps::decode(identifier).map_err(EngineError::format)?;
             Ok(ReadDeletedDocument {
                 id: identifier.to_owned(),
                 created_at: timestamps.created_at,
@@ -811,7 +839,7 @@ impl ReadOnlyEngine {
             .map_err(EngineError::storage)?;
         Self::read_stable(&collection, || {
             collection
-                .index_snapshot()
+                .shared_index_snapshot()
                 .map_err(EngineError::storage)?
                 .scan(queries, QueryLimits::default())
                 .map_err(EngineError::query)?
@@ -948,29 +976,11 @@ impl ReadOnlyEngine {
         self.find_with_access(collection, query, None)
     }
 
-    /// Narrow a query to the documents the prefix index says could match.
-    ///
-    /// Returns `None` when the query cannot be planned, which means "read
-    /// everything" — the honest answer for a predicate the index cannot
-    /// select on. Planning is deliberately limited to equality: it is what the
-    /// index answers exactly, and a wrong candidate set here would silently
-    /// lose rows rather than merely run slowly.
-    ///
-    /// A document matches the query when any operation matches, so candidates
-    /// are unioned across operations; an operation matches when every field
-    /// does, so candidates are intersected within one. If any single operation
-    /// cannot be planned, the union would be incomplete and the whole query
-    /// falls back.
     fn plan_equality_candidates(
         &self,
         collection: &NativeCollection,
         query: &StructuredQuery,
     ) -> Result<Option<Vec<String>>, EngineError> {
-        if query.operations().is_empty() {
-            return Ok(None);
-        }
-        // A schema-encrypted field is indexed under a keyed blind token, so it
-        // is left to the scan rather than planned from the plaintext operand.
         let encrypted_fields = self
             .encryption
             .as_ref()
@@ -979,73 +989,13 @@ impl ReadOnlyEngine {
             .map_err(EngineError::encryption)?
             .unwrap_or_default();
 
-        let mut prefixes: Vec<Vec<String>> = Vec::new();
-        for operation in query.operations() {
-            let mut operands = Vec::new();
-            for (field, operand) in operation {
-                let Some(operand) = operand.as_object() else {
-                    return Ok(None);
-                };
-                // Every operator in the operand must be planned, or the
-                // candidates would be a superset the predicate still filters —
-                // correct, but no narrower than a scan for the unplanned part.
-                // Only `$eq` alone is worth planning.
-                let [("$eq", value)] = operand
-                    .iter()
-                    .map(|(name, value)| (name.as_str(), value))
-                    .collect::<Vec<_>>()[..]
-                else {
-                    return Ok(None);
-                };
-                let field_path = field.replace('.', "/");
-                if is_encrypted_field(&field_path, &encrypted_fields) {
-                    return Ok(None);
-                }
-                let Some(prefix) = fylo_query::equality_prefix(&field_path, value) else {
-                    return Ok(None);
-                };
-                operands.push(prefix);
-            }
-            if operands.is_empty() {
-                return Ok(None);
-            }
-            prefixes.push(operands);
-        }
-
-        let snapshot = collection.index_snapshot().map_err(EngineError::storage)?;
-        let mut union = BTreeSet::new();
-        for operands in prefixes {
-            let mut candidates: Option<BTreeSet<String>> = None;
-            for prefix in operands {
-                let matched = snapshot
-                    .scan(
-                        &[ScanQuery {
-                            prefix,
-                            range: None,
-                        }],
-                        QueryLimits::default(),
-                    )
-                    .map_err(EngineError::query)?
-                    .into_iter()
-                    .map(|identifier| {
-                        String::from_utf8(identifier).map_err(|error| {
-                            EngineError::new(
-                                EngineErrorCode::CorruptData,
-                                format!("index document identifier is not UTF-8: {error}"),
-                            )
-                        })
-                    })
-                    .collect::<Result<BTreeSet<_>, _>>()?;
-                candidates = Some(match candidates {
-                    Some(current) => current.intersection(&matched).cloned().collect(),
-                    None => matched,
-                });
-            }
-            union.extend(candidates.unwrap_or_default());
-        }
-        // Sorted, because the caller's contract is TTID-ascending rows and a
-        // set iterates in key order rather than storage order.
-        Ok(Some(union.into_iter().collect()))
+        let Some(plan) = equality_plan::EqualityPlan::new(query, &encrypted_fields) else {
+            return Ok(None);
+        };
+        let snapshot = collection
+            .shared_index_snapshot()
+            .map_err(EngineError::storage)?;
+        plan.scan(&snapshot).map(Some)
     }
 
     /// Join two document collections.
@@ -1185,7 +1135,7 @@ impl ReadOnlyEngine {
                 }
                 let updated_at = stored.modified_millis;
                 let fields = raw_file_index_fields(&identifier, stored)?;
-                let created_at = decode_ttid(&identifier)
+                let created_at = TtidTimestamps::decode(&identifier)
                     .map_err(EngineError::format)?
                     .created_at;
                 if !query.matches(&fields, created_at, updated_at) {
@@ -1239,7 +1189,7 @@ impl ReadOnlyEngine {
                 }
                 let deleted_at = stored.modified_millis;
                 let fields = raw_file_index_fields(&identifier, stored)?;
-                let created_at = decode_ttid(&identifier)
+                let created_at = TtidTimestamps::decode(&identifier)
                     .map_err(EngineError::format)?
                     .created_at;
                 if !query.matches(&fields, created_at, deleted_at) {
@@ -1290,7 +1240,8 @@ impl ReadOnlyEngine {
                     Document::parse(&stored.bytes, DocumentLimits::default())
                         .map_err(EngineError::format)?,
                 )?;
-                let timestamps = decode_ttid(&identifier).map_err(EngineError::format)?;
+                let timestamps =
+                    TtidTimestamps::decode(&identifier).map_err(EngineError::format)?;
                 if !query.matches(
                     document.fields(),
                     timestamps.created_at,
@@ -1353,7 +1304,8 @@ impl ReadOnlyEngine {
                     Document::parse(&stored.bytes, DocumentLimits::default())
                         .map_err(EngineError::format)?,
                 )?;
-                let timestamps = decode_ttid(&identifier).map_err(EngineError::format)?;
+                let timestamps =
+                    TtidTimestamps::decode(&identifier).map_err(EngineError::format)?;
                 if !query.matches(
                     document.fields(),
                     timestamps.created_at,
@@ -1493,10 +1445,10 @@ impl ReadOnlyEngine {
             if before.state == GenerationStatus::Writing {
                 continue;
             }
-            let value = read()?;
+            let value = read();
             let after = collection.generation().map_err(EngineError::storage)?;
-            if after.state == GenerationStatus::Stable && after.generation == before.generation {
-                return Ok(value);
+            if stable_generation_observed(after.state, before.generation, after.generation) {
+                return value;
             }
         }
         Err(EngineError::new(
@@ -1542,19 +1494,39 @@ fn read_access_allowed(
     descriptor: Option<AccessDescriptor>,
     actor: Option<&AccessContext>,
 ) -> bool {
+    read_access_conditions(descriptor, actor)
+        .into_iter()
+        .any(|condition| condition)
+}
+
+fn read_access_conditions(
+    descriptor: Option<AccessDescriptor>,
+    actor: Option<&AccessContext>,
+) -> [bool; 4] {
     let Some(descriptor) = descriptor else {
-        return true;
+        return [true, false, false, false];
     };
-    let bits = match actor {
-        Some(actor) if actor.uid == descriptor.uid => (descriptor.mode >> 6) & 0o7,
-        Some(actor) if actor.groups.contains(&descriptor.gid) => (descriptor.mode >> 3) & 0o7,
-        _ => descriptor.mode & 0o7,
-    };
-    bits & 0o4 != 0
+    let owner = actor.is_some_and(|actor| actor.uid == descriptor.uid);
+    let group = !owner && actor.is_some_and(|actor| actor.groups.contains(&descriptor.gid));
+    let other = !owner && !group;
+    [
+        false,
+        owner && ((descriptor.mode >> 6) & 0o4 != 0),
+        group && ((descriptor.mode >> 3) & 0o4 != 0),
+        other && (descriptor.mode & 0o4 != 0),
+    ]
+}
+
+fn stable_generation_observed(
+    after_state: GenerationStatus,
+    before_generation: u64,
+    after_generation: u64,
+) -> bool {
+    after_state == GenerationStatus::Stable && after_generation == before_generation
 }
 
 fn build_read_file(identifier: &str, stored: StoredRawFile) -> Result<ReadFile, EngineError> {
-    let timestamps = decode_ttid(identifier).map_err(EngineError::format)?;
+    let timestamps = TtidTimestamps::decode(identifier).map_err(EngineError::format)?;
     let metadata = CanonicalMetadata {
         id: identifier.to_owned(),
         created_at: timestamps.created_at,
@@ -1983,5 +1955,96 @@ impl std::error::Error for EngineError {
         self.source
             .as_ref()
             .map(|error| error.as_ref() as &(dyn std::error::Error + 'static))
+    }
+}
+
+#[cfg(test)]
+mod mcdc_tests {
+    use super::*;
+    use fylo_test_support::{McdcCase, assert_unique_cause_mcdc};
+
+    fn access_case(
+        name: &'static str,
+        descriptor: Option<AccessDescriptor>,
+        actor: Option<&AccessContext>,
+    ) -> McdcCase<4> {
+        McdcCase::new(
+            name,
+            read_access_conditions(descriptor, actor),
+            read_access_allowed(descriptor, actor),
+        )
+    }
+
+    #[test]
+    fn mcdc_engine_read_access_policy() {
+        let protected = AccessDescriptor {
+            version: 1,
+            uid: 1_001,
+            gid: 2_001,
+            mode: 0,
+        };
+        let owner = AccessContext::new(1_001, [2_001]);
+        let group_member = AccessContext::new(1_002, [2_001]);
+        let outsider = AccessContext::new(1_003, []);
+        let cases = [
+            access_case("deny_baseline", Some(protected), Some(&outsider)),
+            access_case("unprotected", None, Some(&outsider)),
+            access_case(
+                "owner_read",
+                Some(AccessDescriptor {
+                    mode: 0o400,
+                    ..protected
+                }),
+                Some(&owner),
+            ),
+            access_case(
+                "group_read",
+                Some(AccessDescriptor {
+                    mode: 0o040,
+                    ..protected
+                }),
+                Some(&group_member),
+            ),
+            access_case(
+                "other_read",
+                Some(AccessDescriptor {
+                    mode: 0o004,
+                    ..protected
+                }),
+                Some(&outsider),
+            ),
+        ];
+        assert_unique_cause_mcdc(
+            "engine.read_access_policy",
+            ["unprotected", "owner_read", "group_read", "other_read"],
+            &cases,
+        );
+    }
+
+    fn stable_case(
+        name: &'static str,
+        state: GenerationStatus,
+        before: u64,
+        after: u64,
+    ) -> McdcCase<2> {
+        McdcCase::new(
+            name,
+            [state == GenerationStatus::Stable, after == before],
+            stable_generation_observed(state, before, after),
+        )
+    }
+
+    #[test]
+    fn mcdc_engine_stable_generation_observation() {
+        let cases = [
+            stable_case("stable_same_generation", GenerationStatus::Stable, 7, 7),
+            stable_case("writer_visible", GenerationStatus::Writing, 7, 7),
+            stable_case("generation_changed", GenerationStatus::Stable, 7, 8),
+        ];
+        assert_unique_cause_mcdc(
+            "engine.stable_generation_observation",
+            ["after_is_stable", "generation_unchanged"],
+            &cases,
+        );
     }
 }

@@ -390,64 +390,60 @@ const identity = await db.handshake()
 console.log(identity.runtimeVersion, identity.commit, identity.machine)
 ```
 
-Every binary-backed shim accepts an optional child environment. Point it at a
-`.env` file, or supply the language's native map/dictionary when configuration
-already lives in application memory. The file form is exposed idiomatically in
-each SDK:
+Every binary-backed shim accepts an optional `application.json` configuration
+path. Settings live under `fylo`, with nested keys such as `fylo.shard.width`.
+The former `env` file/map option is replaced by `config`:
 
 | SDK             | Configuration                                                                                                                   |
 | --------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| Node/TypeScript | `new Fylo(root, { env: './fylo.env' })`                                                                                         |
-| Python          | `Fylo(root, env='./fylo.env')`                                                                                                  |
-| Ruby            | `Fylo.open(root, env: './fylo.env')`                                                                                            |
-| PHP             | `new Fylo($root, 'fylo', './fylo.env')`                                                                                         |
-| Go              | `fylo.OpenWithOptions(root, fylo.Options{Env: &fylo.Environment{File: "./fylo.env"}})`                                          |
-| Rust            | `Fylo::open_with_options(root, FyloOptions { env: Some(ProcessEnvironment::File("./fylo.env".into())), ..Default::default() })` |
-| Java            | `new Fylo(root, options)` with `options.env = "./fylo.env"`                                                                     |
-| C#              | `new Fylo(root, new Fylo.Options { Env = "./fylo.env" })`                                                                       |
-| Dart            | `Fylo.open(root, env: './fylo.env')`                                                                                            |
+| Node/TypeScript | `new Fylo(root, { config: './application.json' })` |
+| Python | `Fylo(root, config='./application.json')` |
+| Ruby | `Fylo.open(root, config: './application.json')` |
+| PHP | `new Fylo($root, 'fylo', './application.json')` |
+| Go | `fylo.OpenWithOptions(root, fylo.Options{Config: "./application.json"})` |
+| Rust | `Fylo::open_with_options(root, FyloOptions { config: Some("./application.json".into()), ..Default::default() })` |
+| Java | `new Fylo(root, options)` with `options.config = "./application.json"` |
+| C# | `new Fylo(root, new Fylo.Options { Config = "./application.json" })` |
+| Dart | `Fylo.open(root, config: './application.json')` |
 
-For example, Node/TypeScript can use either form:
+Each component can choose its own configuration file:
 
 ```js
 const mail = new Fylo('/var/lib/caduceus/mail', {
     binary: '/opt/fylo/bin/fylo',
-    env: './config/mail.fylo.env'
+    config: './config/mail/application.json'
 })
 
 const identity = new Fylo('/var/lib/caduceus/identity', {
     binary: '/opt/fylo/bin/fylo',
-    env: {
-        FYLO_SCHEMA: '/srv/identity/schemas',
-        FYLO_STRICT: '1'
-    }
+    config: './config/identity/application.json'
 })
 ```
 
-The `.env` format accepts blank lines, comments, an optional `export` prefix,
-and quoted or unquoted values. File/map values override inherited variables
-for the spawned FYLO process only; they never mutate the host process
-environment. Use a null/nil value in a map to remove an inherited key. Explicit
-constructor roots and engine flags retain their normal CLI precedence. Missing
-or malformed files fail before a child is started. Variable expansion and
-command substitution are deliberately unsupported.
+The native CLI loads the selected file, or discovers `application.json` in its
+working directory when `config` is omitted. Explicit constructor roots and
+engine flags take precedence over JSON. Paths inside JSON resolve from the
+configuration directory. An absent default file uses engine defaults, but an
+explicitly selected missing file, invalid setting, or missing secret reference
+fails initialization.
 
-Treat both forms as trusted bootstrap configuration. Never accept an environment
-file path or map from an HTTP request, tenant setting, upload, job payload, or
-other untrusted input: arbitrary keys can change `PATH`, dynamic-loader
-behavior, and which program the child starts. Use an absolute,
-administrator-controlled binary path and allowlist the `FYLO_*` keys your
-application supports. When values must come from the host environment, copy
-named keys explicitly instead of spreading the complete environment; audit the
-inherited baseline and use null/nil removal for unrelated keys. Keep populated
-files out of source control, prefer a secret manager for credentials, and make
-local secret files owner-readable only (for example, `chmod 600`). Add every
-chosen file name or pattern to the consuming application's ignore rules — the
-example `./config/mail.fylo.env` is not automatically protected by this
-repository's root `.env` rule.
+Keep `.env` beside that configuration file and use it only for secrets. Reference
+them explicitly with `"encryption": { "key": "${FYLO_ENCRYPTION_KEY}" }` and
+`"cipher": { "salt": "${FYLO_CIPHER_SALT}" }`. Configure both references together
+or omit both; literal credentials in JSON are rejected.
+Inherited environment secrets take precedence over the adjacent `.env`; all
+unreferenced variables are ignored. Loading configuration never mutates the
+process environment or injects `.env` keys into the child environment.
 
-Browser and mobile clients do not expose this setting because they do not spawn
-the native FYLO binary. Configure their storage adapters directly instead.
+Treat configuration and binary paths as trusted bootstrap input, not request or
+tenant data. Keep secret files out of source control and owner-readable only
+(for example, `chmod 600 .env`); prefer a secret manager in production. See the
+[configuration guide](../docs/configuration.md) for the full migration and secret
+reference contract.
+
+Browser and mobile clients do not implicitly read these files because they do
+not spawn the native FYLO binary. Configure their storage adapters directly,
+and never publish native secrets in website JSON or bundles.
 
 `exclusiveRoot` makes a competing loop reject its startup handshake with
 `EROOTLOCKED`. The configured frame limits are passed to the child and must

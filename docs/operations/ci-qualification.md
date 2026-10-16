@@ -7,18 +7,19 @@ a commit, and builds from the repository's exact Bun and Rust versions.
 
 ## Required gates
 
-| Gate | What it proves |
-| --- | --- |
-| Quality | Formatting, locked all-target/all-feature compilation, Clippy, tests, contracts, host checks, and warning-free Rustdoc |
-| Dependency policy | Advisories, licenses, sources, and bans pass the repository `deny.toml` policy with pinned `cargo-deny` |
-| Coverage | Workspace line, function, and region coverage cannot fall below the measured ratchet |
-| Provenance inputs | CycloneDX SBOMs and an auditable release binary can be generated from the locked graph |
-| Portable artifacts | Native, WASI, and browser-Wasm interchange and size contracts remain compatible |
-| Native matrix | Linux, macOS, Windows Server 2022, and Windows Server 2025 pass storage, crash-recovery, lease, and soak checks |
-| Browser matrix | Chromium, Firefox, and WebKit pass real OPFS/Wasm restart and fallback tests |
-| Binary interoperability | The compiled binary works through every published language shim and installer surface |
-| Miri | Portable format and query kernels pass the pinned Miri toolchain |
-| Scheduled qualification | Fuzzing plus address, leak, and thread sanitizers exercise parsers and native storage daily |
+| Gate                    | What it proves                                                                                                         |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| Quality                 | Formatting, locked all-target/all-feature compilation, Clippy, tests, contracts, host checks, and warning-free Rustdoc |
+| Dependency policy       | Advisories, licenses, sources, and bans pass the repository `deny.toml` policy with pinned `cargo-deny`                |
+| Coverage                | Workspace line, function, and region coverage cannot fall below the measured ratchet                                   |
+| MC/DC                   | Registered safety-critical decisions prove unique-cause condition independence and emit retained JSON evidence         |
+| Provenance inputs       | CycloneDX SBOMs and an auditable release binary can be generated from the locked graph                                 |
+| Portable artifacts      | Native, WASI, and browser-Wasm interchange and size contracts remain compatible                                        |
+| Native matrix           | Linux, macOS, Windows Server 2022, and Windows Server 2025 pass storage, crash-recovery, lease, and soak checks        |
+| Browser matrix          | Chromium, Firefox, and WebKit pass real OPFS/Wasm restart and fallback tests                                           |
+| Binary interoperability | The compiled binary works through every published language shim and installer surface                                  |
+| Miri                    | Portable format and query kernels pass the pinned Miri toolchain                                                       |
+| Scheduled qualification | Fuzzing plus address, leak, and thread sanitizers exercise parsers and native storage daily                            |
 
 Release provenance remains the responsibility of the Release workflow, which
 attests the exact assets it publishes. The CI provenance job creates retained
@@ -35,6 +36,9 @@ explicitly documented reason in the same change.
 
 The LCOV report is retained for 90 days as `rust-coverage-<commit>`. Native,
 browser, soak, fuzz, and provenance evidence use the same retention period.
+The MC/DC report is retained for 90 days as `rust-mcdc-<commit>`. Its bounded
+scope and SQLite comparison are documented in
+[`mcdc-qualification.md`](mcdc-qualification.md).
 
 ## Run the qualification gates locally
 
@@ -46,6 +50,7 @@ bun install --frozen-lockfile
 bun run contracts:verify
 bun run rust:verify
 bun run rust:fmt
+bun run rust:mcdc
 bun run rust:check
 bun run rust:clippy
 bun run rust:test

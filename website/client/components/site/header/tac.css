@@ -1,97 +1,121 @@
 .site-header {
     z-index: 50;
+    border-bottom: 1px solid var(--w-divider);
+    background: color-mix(in srgb, var(--w-surface) 92%, transparent);
+    backdrop-filter: blur(14px);
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
 }
 
 .header-row {
     display: flex;
+    flex-wrap: nowrap;
     align-items: center;
     gap: 0.5rem;
+    min-width: 0;
 }
 
-.brand {
+.fylo-brand {
     display: inline-flex;
+    flex: 0 0 auto;
     align-items: center;
-    gap: 0.5rem;
+    gap: 0.65rem;
+    min-height: 44px;
     margin-right: auto;
+    color: var(--w-text);
+    font-size: 1rem;
+    font-weight: 750;
+    letter-spacing: 0.045em;
     text-decoration: none;
+}
+
+.fylo-logo {
+    display: block;
+    flex: 0 0 auto;
+    width: 2rem;
+    height: 2rem;
+    border-radius: var(--w-radius-sm);
+}
+
+.site-nav {
+    display: flex;
+    flex: 0 1 auto;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 0.2rem;
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+}
+
+.site-nav::-webkit-scrollbar {
+    display: none;
+}
+
+.site-nav .w-btn {
+    flex-shrink: 0;
+    white-space: nowrap;
+    color: var(--w-text-soft);
+}
+
+.site-nav .w-btn:hover,
+.site-nav .w-btn:focus-visible {
     color: var(--w-text);
 }
 
-.brand-mark {
-    width: 26px;
-    height: 26px;
-}
-
-.brand-name {
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    font-size: 1.05rem;
-}
-
-.header-nav {
+.header-actions {
     display: flex;
     align-items: center;
-    gap: 0.25rem;
+    flex-shrink: 0;
+    gap: 0.15rem;
+    padding-left: 0.5rem;
+    border-left: 1px solid var(--w-divider);
 }
 
-/* Burger: shown only where the inline nav is hidden (≤760px). The `menu-open`
-   class is toggled on `.site-header` itself (delegated JS in imports.js), so
-   these selectors stay inside the scoped header CSS. */
-.header-burger {
-    display: none;
+.header-actions .w-btn {
+    min-width: 44px;
+    min-height: 44px;
 }
 
-.burger-close {
-    display: none;
+.theme-toggle {
+    gap: 0.4rem;
 }
 
-.site-header.menu-open .burger-open {
-    display: none;
+.github-link {
+    padding-inline: 0.65rem;
 }
 
-.site-header.menu-open .burger-close {
-    display: inline;
-}
-
-/* Mobile dropdown menu, revealed by the burger. Hidden on desktop. Positioned
-   absolutely so it drops full-width below the app bar instead of becoming a
-   flex sibling of the header row. */
-.header-mobile-menu {
-    display: none;
-    position: absolute;
-    top: 100%;
-    left: 0;
-    right: 0;
-    flex-direction: column;
-    gap: 0.25rem;
-    padding: 0.5rem 1rem calc(0.5rem + env(safe-area-inset-bottom));
-    border-top: 1px solid var(--w-divider);
-    background: var(--w-surface-container-high, var(--w-surface));
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
-}
-
-.header-mobile-menu .w-btn {
-    justify-content: flex-start;
-}
-
-.site-header.menu-open .header-mobile-menu {
-    display: flex;
+.github-icon {
+    display: block;
+    flex-shrink: 0;
 }
 
 @media (max-width: 760px) {
-    .brand,
-    .header-row .w-btn {
+    .fylo-brand,
+    .site-nav .w-btn {
         min-width: 44px;
         min-height: 44px;
     }
 
-    .header-burger {
-        display: inline-flex;
+    .theme-label {
+        display: none;
     }
 }
 
-@media (min-width: 761px) {
-    .header-mobile-menu {
-        display: none !important;
+@media (max-width: 479.98px) {
+    .fylo-wordmark {
+        display: none;
+    }
+
+    .header-row {
+        gap: 0.25rem;
+    }
+
+    .header-actions {
+        padding-left: 0.25rem;
+    }
+
+    .site-nav .w-btn {
+        padding-inline: 0.55rem;
     }
 }

@@ -28,5 +28,8 @@ xattr.workspace = true
 [target.'cfg(target_vendor = "apple")'.dependencies]
 rustix.workspace = true
 
+[dev-dependencies]
+fylo-test-support = { path = "../fylo-test-support" }
+
 [lints]
 workspace = true

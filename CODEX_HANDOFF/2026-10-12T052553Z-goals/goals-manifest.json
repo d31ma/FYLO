@@ -1,0 +1,71 @@
+{
+  "schema_version": 6,
+  "checkpoint_id": "2026-10-12T052553Z-goals",
+  "observed_at": "2026-10-12T05:25:53.182847+00:00",
+  "goals_count": 9,
+  "policy": {
+    "takeover": "Full unfinished-work takeover authorized21:52UTC Oct11. Historical standby-only and old Claude-owner claims are superseded for these goals; unrelated old workers stay stopped.",
+    "resource": "Do not copy stale ANNEX-below-floor holds. Independent approved cleanup at05:10UTC Oct12 reported CORE15.302GiB/ANNEX21.615GiB. SWARX admission subsequently used15.292/21.615. These are timestamped receipts, not perpetual capacity guarantees. Latest SWARX goal card confirms build cleanup and slot release; all further heavy operations need fresh parent admission.",
+    "windows": "F:/WSL safety holds remain real. Windows PowerShell execution-policy denial for stage-source.ps1 remains real; no retry/alternate policy workaround is approved. WSL recovery remains assistant-owned with no additional force/retry grant.",
+    "access": "Respect access prompts/denials; no automatic click-through or alternate route. New document reads were supported and successful; no application was launched.",
+    "app": "SWARX remains closed. Later UI qualification requires separate approval for exact artifact, at most one instance; close existing before replacement launch.",
+    "closure": "This pass defines goals only. It performs no resolution, Claude relay, archival, source/build/test/deployment action. Parent verifies accepted original scope, exact identity and closure receipt before archiving. Original merge/release/deployment requirements cannot disappear behind a partial passing milestone."
+  },
+  "goals": [
+    {
+      "project": "FYLO",
+      "local_session_id": "d4bd896b-fcf4-4635-9655-e986f5f01d5d",
+      "claude_thread_id": "cmsg_01MmbfpTbTQTkHwET9p2Jmk9CVpTv6czHFTPoX1tfSFumc",
+      "codex_chat_id": "01a12ce6-dd89-70b7-8f96-802fb8a740fb",
+      "title": "Hard-link fallback fix",
+      "codex_cwd": "/Users/iyor/Documents/Codex/2026-10-11/task-10",
+      "goal_card_turns": [
+        {
+          "id": "01a12e89-1431-7216-89f2-661b5a5bce43",
+          "status": "inProgress",
+          "startedAt": 1791782099,
+          "completedAt": null,
+          "messages": []
+        },
+        {
+          "id": "01a12e87-5f04-700d-b0f0-18088ccabc82",
+          "status": "completed",
+          "startedAt": 1791781987,
+          "completedAt": 1791782068,
+          "messages": [
+            {
+              "text": "**FYLO \u2014 Hard-link fallback fix: unfinished**\n\n**Goal:** qualify the fallback patch with a trustworthy SMB comparison, including B\u2019s actual `findDocs` outcome after SIGTERM. Keep validated-patch completion separate from merged completion.\n\n**Completion checklist:**\n\n- Preserve the six-file candidate and its [green validation receipts](/Users/iyor/Documents/Codex/2026-10-11/task-10/validation/formatted-source/summary.json).\n- Recover the missing observation from retained evidence, or obtain it through a separately admitted, corrected synthetic comparison. Record acknowledged IDs and actual read success/result/error; failed reads mean survivors unknown.\n- Document whether the evidence identifies a fallback defect, harness defect, filesystem issue or inconclusive result.\n- Keep merge hold until explicitly lifted. The original thread also planned a merge into `develop`; qualification alone does not complete that whole task.\n\n**Current evidence:** 134 native tests, native/Wasm clippy, fresh Wasm build, both host failure cases, 30 JavaScript tests, formatting and syntax checks passed. Six files remain uncommitted atop `1353cc30`.\n\n**Blockers:** missing SMB observation, remote storage/recovery restrictions, and explicit merge hold.\n\n**Next executable step:** after fresh parent admission, refresh source/dirty state, owners, health and resource limits, then inspect retained acknowledgments and read outcomes separately.\n\nFixing unrelated SMB/provider failures or declaring general SMB support would expand the original scope. No whole-task completion can currently be claimed. No operation is in progress; resolution and archival remain with the parent.",
+              "phase": "final_answer"
+            }
+          ]
+        }
+      ],
+      "goal": "Qualify the hard-link fallback patch with a trustworthy SMB comparison including B's actual post-SIGTERM findDocs outcome; complete the original approved merge stage only after its hold is lifted.",
+      "acceptance_checks": [
+        "Preserve six-file candidate and all green exact-source validation receipts.",
+        "Obtain the missing B read observation through a separately admitted corrected synthetic comparison; retain acknowledged IDs and actual success/result/error separately.",
+        "Determine fallback defect versus harness/filesystem issue or explicitly inconclusive evidence. Failed reads mean survivor state unknown.",
+        "Lift the explicit merge hold before the original develop merge; preserve qualification/doc receipts."
+      ],
+      "current_evidence": [
+        "134 native tests, native/Wasm clippy, fresh Wasm build, both host failure cases,30 JavaScript tests, formatting and syntax checks passed; six files remain uncommitted atop1353cc30.",
+        "Parent-reported completed Mac evidence review conclusively cannot recover B's post-SIGTERM result. No acknowledged-write loss is proven."
+      ],
+      "unresolved_blockers": [
+        "Missing corrected SMB observation; it cannot be recovered by repeating the same Mac evidence review.",
+        "Remote storage/recovery restrictions and explicit merge hold."
+      ],
+      "next_step": "Prepare the smallest corrected synthetic observation and obtain separate bounded admission after health/owner/resource checks; do not relaunch old lanes.",
+      "closure_prerequisite": "Validated-patch milestone is separate from merged completion. Parent verifies reliable comparison evidence and explicit merge-hold release plus original develop merge (or user-approved scope disposition), then resolves exact FYLO Claude thread and archives its Codex chat.",
+      "status": "unfinished",
+      "prior_checkpoint": "/Volumes/ANNEX/Users/iyor/Library/CloudStorage/Google Drive/myOrganizations/DELMA/FYLO/CODEX_HANDOFF/2026-10-11T232213Z/d4bd896b-fcf4-4635-9655-e986f5f01d5d.md",
+      "receipt_paths": [
+        "/Users/iyor/Documents/Codex/2026-10-11/task-10/validation/formatted-source/summary.json"
+      ],
+      "downstream_owner": null,
+      "closure_claude_thread_id": "cmsg_01MmbfpTbTQTkHwET9p2Jmk9CVpTv6czHFTPoX1tfSFumc",
+      "mapping_note": "Exact historical Claude-to-Codex identity retained. Parent must verify actual completion/resolution state; handed-off/idle labels are insufficient.",
+      "goal_path": "/Volumes/ANNEX/Users/iyor/Library/CloudStorage/Google Drive/myOrganizations/DELMA/FYLO/CODEX_HANDOFF/2026-10-12T052553Z-goals/d4bd896b-fcf4-4635-9655-e986f5f01d5d.md"
+    }
+  ]
+}

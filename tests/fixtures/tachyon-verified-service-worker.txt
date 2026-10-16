@@ -1,0 +1,172 @@
+const VERSION = '__VERSION__'
+const CACHE = 'tachyon-static-' + VERSION
+const PREFIX = 'tachyon-static-'
+// Policies the project declared by path in tac.config.js, compiled to anchored
+// expressions at build time so the worker needs no glob parser.
+const RULES = (__CACHE_RULES__).map((rule) => ({ ...rule, match: new RegExp(rule.pattern) }))
+// Only byte-verified build outputs may bootstrap anonymously from a browser's
+// ordinary document/module requests. An extension is not a privacy boundary.
+const ASSETS = __PUBLIC_ASSETS__
+const MAX_ENTRIES = 256
+const MAX_BYTES = 32 * 1024 * 1024
+const MAX_AGE = 24 * 60 * 60 * 1000
+let writes = Promise.resolve()
+let pendingWrites = 0
+
+const bounded = async (work) => {
+  let timer
+  try { return await Promise.race([work, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('cache unavailable')), 2000) })]) }
+  finally { clearTimeout(timer) }
+}
+const publicResponse = (response) => response && response.ok && !response.redirected
+  && response.type !== 'opaque' && response.type !== 'opaqueredirect'
+  && !/(?:^|,)\s*(?:private|no-store)\b/i.test(response.headers.get('cache-control') || '')
+  && !response.headers.has('vary')
+
+async function bodyBytes(response, limit) {
+  const reader = response.body?.getReader()
+  if (!reader) return new Uint8Array()
+  const chunks = []
+  let length = 0
+  const deadline = Date.now() + 2000
+  try {
+    while (true) {
+      if (Date.now() >= deadline) throw new Error('cache body deadline')
+      const { value, done } = await bounded(reader.read())
+      if (done) break
+      length += value.byteLength
+      if (length > limit) throw new Error('cache body limit')
+      chunks.push(value)
+    }
+  } finally { void reader.cancel().catch(() => {}) }
+  const bytes = new Uint8Array(length)
+  let offset = 0
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength }
+  return bytes
+}
+async function matchesAsset(bytes, asset) {
+  if (bytes.byteLength !== asset.bytes) return false
+  const digest = await bounded(crypto.subtle.digest('SHA-256', bytes))
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('') === asset.sha256
+}
+async function evict(request) {
+  try { const cache = await bounded(caches.open(CACHE)); await bounded(cache.delete(request)) } catch {}
+}
+
+self.addEventListener('install', (event) => { event.waitUntil(self.skipWaiting()) })
+
+self.addEventListener('activate', (event) => {
+  event.waitUntil((async () => {
+    // Assets a previous build referenced expire with their cache.
+    for (const name of await caches.keys())
+      if (name.startsWith(PREFIX) && name !== CACHE) await caches.delete(name)
+    await self.clients.claim()
+  })())
+})
+
+self.addEventListener('fetch', (event) => {
+  const request = event.request
+  const url = new URL(request.url)
+  // Cross-origin requests and the live-reload channel are left alone.
+  if (url.origin !== self.location.origin) return
+  if (url.pathname.startsWith('/.tachyon/live-reload') || url.pathname === '/.tachyon/hot') return
+
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    event.respondWith(writeThrough(request, url))
+    return
+  }
+
+  if (request.method === 'HEAD') return
+
+  const rule = RULES.find((candidate) => candidate.match.test(url.pathname))
+  const asset = !url.search && Object.hasOwn(ASSETS, url.pathname) ? ASSETS[url.pathname] : null
+  // This decision precedes lookup as CacheStorage does not key by credentials.
+  if (request.cache === 'no-store' || request.headers.has('authorization')
+      || request.headers.has('range') || rule?.policy === 'no-store'
+      || (!asset && (!rule || request.credentials !== 'omit'))) {
+    event.respondWith((async () => { await evict(request); return fetch(request) })())
+    return
+  }
+  const cacheFirst = rule ? rule.policy === 'cache-first' : request.mode !== 'navigate'
+  event.respondWith(cacheFirst ? fromCache(request, asset) : fromNetwork(request, asset))
+})
+
+async function writeThrough(request, url) {
+  const response = await fetch(request)
+  if (!response.ok) return response
+  try {
+    const cache = await bounded(caches.open(CACHE))
+    for (const entry of await bounded(cache.keys())) {
+      const path = new URL(entry.url).pathname
+      if (path === url.pathname || url.pathname.startsWith(path + '/')) await bounded(cache.delete(entry))
+    }
+  } catch {}
+  return response
+}
+
+async function cacheRead(request, asset) {
+  try {
+    const cache = await bounded(caches.open(CACHE))
+    const response = await bounded(cache.match(request))
+    if (!response) return null
+    const created = Number(response.headers.get('x-tachyon-cached-at'))
+    if (!publicResponse(response) || (!asset && (!created || Date.now() - created > MAX_AGE))) {
+      await bounded(cache.delete(request)); return null
+    }
+    if (asset && !await matchesAsset(await bodyBytes(response.clone(), 4 * 1024 * 1024), asset)) {
+      await bounded(cache.delete(request)); return null
+    }
+    return response
+  } catch { return null }
+}
+
+async function cacheWrite(request, response, asset) {
+  if (!publicResponse(response)) { await evict(request); return }
+  if (pendingWrites >= 16) return
+  pendingWrites += 1
+  try {
+    const bytes = await bodyBytes(response.clone(), asset ? 4 * 1024 * 1024 : 256 * 1024)
+    if (asset && !await matchesAsset(bytes, asset)) { await evict(request); return }
+    const headers = new Headers(response.headers)
+    headers.delete('content-encoding')
+    headers.set('content-length', String(bytes.byteLength))
+    headers.set('x-tachyon-cache-bytes', String(bytes.byteLength))
+    headers.set('x-tachyon-cached-at', String(Date.now()))
+    const stored = new Response(bytes, { status: response.status, statusText: response.statusText, headers })
+    writes = writes.catch(() => {}).then(async () => {
+      const cache = await bounded(caches.open(CACHE))
+      const entries = await bounded(cache.keys())
+      let size = bytes.byteLength
+      for (const entry of entries) {
+        const existing = await bounded(cache.match(entry))
+        const known = ASSETS[new URL(entry.url).pathname]
+        // Runtime-prewarmed build assets have a known size even without metadata.
+        size += Number(existing?.headers.get('x-tachyon-cache-bytes')) || known?.bytes || MAX_BYTES
+      }
+      if (entries.length >= MAX_ENTRIES || size > MAX_BYTES)
+        for (const entry of entries) await bounded(cache.delete(entry))
+      await bounded(cache.put(request, stored))
+    })
+    await writes
+  } catch { await evict(request) }
+  finally { pendingWrites -= 1 }
+}
+
+async function fromCache(request, asset) {
+  return (await cacheRead(request, asset)) || fromNetwork(request, asset)
+}
+
+async function fromNetwork(request, asset) {
+  let response
+  try {
+    response = await fetch(new Request(request, { cache: 'no-store', ...(asset ? { credentials: 'omit' } : {}) }))
+  } catch (error) {
+    if (request.signal.aborted) throw error
+    const cached = await cacheRead(request, asset)
+    if (cached) return cached
+    throw error
+  }
+  // Optional storage must never hold a successful network response indefinitely.
+  await bounded(cacheWrite(request, response, asset)).catch(() => {})
+  return response
+}

@@ -2073,12 +2073,9 @@ class BrowserQueryEngine {
     return intersection;
   }
   async candidateDocIdsForOperand(collection, fieldPath, operand) {
+    if (operand.$eq !== undefined || operand.$contains !== undefined)
+      return null;
     let candidateIds = null;
-    if (operand.$eq !== undefined) {
-      candidateIds = this.intersectDocIds(candidateIds, await this.context.index.candidateDocIds(collection, fieldPath, {
-        $eq: operand.$eq
-      }) ?? new Set);
-    }
     if (operand.$gt !== undefined || operand.$gte !== undefined || operand.$lt !== undefined || operand.$lte !== undefined) {
       for (const key of ["$gt", "$gte", "$lt", "$lte"]) {
         if (operand[key] === undefined)
@@ -2096,10 +2093,6 @@ class BrowserQueryEngine {
       if (likeCandidates === null)
         return null;
       candidateIds = this.intersectDocIds(candidateIds, likeCandidates);
-    }
-    if (operand.$contains !== undefined) {
-      const containsCandidates = await this.context.index.candidateDocIds(collection, fieldPath, { $contains: operand.$contains });
-      candidateIds = this.intersectDocIds(candidateIds, containsCandidates ?? new Set);
     }
     return candidateIds;
   }

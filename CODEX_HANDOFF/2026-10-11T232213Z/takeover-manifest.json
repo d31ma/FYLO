@@ -1,0 +1,71 @@
+{
+  "schema_version": 5,
+  "checkpoint_id": "2026-10-11T232213Z",
+  "checkpoint_at": "2026-10-11T23:22:13.150186+00:00",
+  "supersedes_activation_and_current_status": "2026-10-11T215614Z",
+  "policy": {
+    "user_takeover_authorization": "2026-10-11 21:52 UTC: all remaining unfinished work, including Mac/native Windows/WSL, transferred to the existing seven Codex chats. This supersedes earlier standby-only scope; no lane is fully resolved.",
+    "ownership": "Codex owns the seven retained unfinished scopes. Historical Claude ownership/standby claims are provenance, not current activation restrictions. Do not revive unrelated old workers.",
+    "claude_auto_continue": "Parent verified all four projects OFF at 22:23 UTC. This inspector did not read credential-bearing settings or change them.",
+    "old_jobs": "Parent verified old Mac jobs stopped at 22:02 UTC; source/logs preserved. Do not resurrect or repeat old cancellation loops. Current Codex test jobs are distinct and may be running.",
+    "cleanup": "Parent verified four approved caches cleaned and 34.81 GiB recovered at 22:11 UTC; audit archived. Recovery amount is not current free-space measurement. No additional cleanup was performed by this task.",
+    "windows_hold": "Remote project commands remain held because of Windows F: USB/JMicron I/O timeouts. The one approved orderly WSL shutdown returned exit 0 at 23:17:13 UTC in 1.95 seconds. Verification at 23:17:48 still showed Running, VM 8B6DC689-DCF7-46C9-A82D-DBCD526500AA and vmmem PID 111332. Shutdown is NOT verified. No retry, force termination, disk removal or extra reboot/reset is approved. Windows-only launcher diagnosis is active under the assistant recovery owner.",
+    "recovery_owner": "Assistant SSH task 01a12c31-5976-747d-845c-00610048b0cc; current Windows hold takes precedence over earlier recovery polling plans.",
+    "approval_boundaries": "FYLO merge hold persists. RC release cut/tag/RC PR and hosting deployment/destination must follow their explicit approval boundaries. Takeover grants implementation/qualification scope, not permission to waive gates or erase protected data.",
+    "local_scope": "This refresh reads local metadata and creates only continuity documentation; no source/build/Claude actions.",
+    "swarx_instance": "User requires at most ONE SWARX app instance. Close the existing SWARX instance before launching a replacement; inspect ownership first and do not spawn parallel app instances."
+  },
+  "disk_verified_locally": {
+    "/Volumes/ANNEX": {
+      "available_gib": 22.19,
+      "observed_at": "2026-10-11T23:22:13.150186+00:00"
+    },
+    "/": {
+      "available_gib": 17.37,
+      "observed_at": "2026-10-11T23:22:13.150186+00:00"
+    }
+  },
+  "parent_receipt_at": "Parent updates at 23:14 UTC and subsequent approval/status steering, read during this checkpoint",
+  "receipt_access_limit": "RC candidate provenance, source hashes, result.json and native-tests.log were read directly. Other updated child receipts are supplied by the parent and attributed as such. Earlier denied Codex app access was not retried.",
+  "previous_checkpoint_id": "2026-10-11T231816Z",
+  "retained_takeover_threads": 7,
+  "additional_codex_tasks": 2,
+  "mapped_tasks": 9,
+  "threads": [
+    {
+      "project": "FYLO",
+      "title": "Hard-link fallback fix",
+      "local_session_id": "d4bd896b-fcf4-4635-9655-e986f5f01d5d",
+      "claude_thread_id": "cmsg_01MmbfpTbTQTkHwET9p2Jmk9CVpTv6czHFTPoX1tfSFumc",
+      "codex_chat_id": "01a12ce6-dd89-70b7-8f96-802fb8a740fb",
+      "status": "unfinished_codex_owned",
+      "prior_checkpoint": "/Volumes/ANNEX/Users/iyor/Library/CloudStorage/Google Drive/myOrganizations/DELMA/FYLO/CODEX_HANDOFF/2026-10-11T231816Z/d4bd896b-fcf4-4635-9655-e986f5f01d5d.md",
+      "handoff_path": "/Volumes/ANNEX/Users/iyor/Library/CloudStorage/Google Drive/myOrganizations/DELMA/FYLO/CODEX_HANDOFF/2026-10-11T232213Z/d4bd896b-fcf4-4635-9655-e986f5f01d5d.md",
+      "owner_receipt": {
+        "parent_reported": "Five-file corrections remain on 1353cc30 with thirty Node tests, two Rust tests and Wasm host passes as reported. Full tests and clippy have NOT run; they remain queued. Merge hold persists.",
+        "next": "Wait for actual admission/execution/completion receipts for full tests and clippy; do not describe queued work as tested. Preserve source and merge hold.",
+        "missing": [
+          "Full tests/clippy task IDs and final receipts",
+          "Missing disposable comparison observation remains unless child supplies evidence"
+        ]
+      },
+      "fresh_local_git": [
+        {
+          "path": "/Volumes/ANNEX/Users/iyor/Library/CloudStorage/Google Drive/myOrganizations/DELMA/FYLO/.claude/worktrees/wizardly-dubinsky-fc1d70",
+          "exists": true,
+          "verified_git_root": "/Volumes/ANNEX/Users/iyor/Library/CloudStorage/Google Drive/myOrganizations/DELMA/FYLO/.claude/worktrees/wizardly-dubinsky-fc1d70",
+          "head": "1353cc307005c676f1e90fb685f759d1b97da5a6",
+          "branch": "claude/wizardly-dubinsky-fc1d70",
+          "dirty_paths": [
+            "M crates/fylo-storage-native/src/write.rs",
+            " M scripts/verify-browser-wasm-host.mjs",
+            " M scripts/verify-serverless-local.mjs",
+            "?? scripts/serverless-outcome-assessment.mjs",
+            "?? tests/scripts/"
+          ]
+        }
+      ],
+      "latest_test_results_independently_read": false
+    }
+  ]
+}
