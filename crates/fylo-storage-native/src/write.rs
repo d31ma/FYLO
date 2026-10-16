@@ -2812,21 +2812,32 @@ fn try_create_lock(path: &Path, record: &LockRecord) -> Result<bool, NativeStora
         // atomic primitive here.
         Err(error) if link_refused(&error) => {
             let encoded = serde_json::to_vec(record).map_err(|error| json_error(&error))?;
-            match write_new_synced(path, &encoded) {
-                Ok(()) => {
-                    sync_parent(path)?;
-                    true
-                }
-                // Only an existing lock is contention; any other create
-                // failure is reported, never mistaken for a held lock.
-                Err(error) if error.source.as_ref().is_some_and(create_lost_to_existing) => false,
-                Err(error) => return Err(error),
-            }
+            finish_exclusive_lock_create(path, &scratch, write_new_synced(path, &encoded))?
         }
         Err(error) => return Err(NativeStorageError::io(error)),
     };
     fs::remove_file(scratch).map_err(NativeStorageError::io)?;
     Ok(result)
+}
+
+fn finish_exclusive_lock_create(
+    path: &Path,
+    scratch: &Path,
+    result: Result<(), NativeStorageError>,
+) -> Result<bool, NativeStorageError> {
+    match result {
+        Ok(()) => {
+            sync_parent(path)?;
+            Ok(true)
+        }
+        // Only an existing lock is contention; any other create failure keeps
+        // its original error, even if removing our scratch also fails.
+        Err(error) if error.source.as_ref().is_some_and(create_lost_to_existing) => Ok(false),
+        Err(error) => {
+            let _ = fs::remove_file(scratch);
+            Err(error)
+        }
+    }
 }
 
 /// How a filesystem says it has no links: the host and SMB servers answer
@@ -4197,9 +4208,9 @@ pub(crate) fn unix_millis() -> Result<u64, NativeStorageError> {
     // the host supplies one there. Every other target keeps `std`.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     {
-        return fylo_vfs::host_now_unix_ms().map_err(|message| {
+        fylo_vfs::host_now_unix_ms().map_err(|message| {
             NativeStorageError::new(NativeStorageErrorCode::Io, message.to_owned())
-        });
+        })
     }
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     {
@@ -4713,6 +4724,55 @@ mod tests {
         }
         assert!(!link_refused(&Error::from(ErrorKind::AlreadyExists)));
         assert!(!link_refused(&Error::from(ErrorKind::NotFound)));
+    }
+
+    #[test]
+    fn a_failed_exclusive_lock_create_removes_only_its_scratch() {
+        let root = TestRoot::create();
+        let path = root.0.join("collection.lock");
+        let scratch = sibling_scratch(&path);
+        fs::write(&path, b"another owner's lock").unwrap();
+        fs::write(&scratch, b"this invocation's scratch").unwrap();
+        let original = NativeStorageError::io(std::io::Error::from_raw_os_error(DISK_FULL_ERRNO));
+        let message = original.to_string();
+        let kind = original.source.as_ref().unwrap().kind();
+
+        let error = finish_exclusive_lock_create(&path, &scratch, Err(original)).unwrap_err();
+
+        assert!(!scratch.exists());
+        assert_eq!(fs::read(&path).unwrap(), b"another owner's lock");
+        assert_eq!(error.code(), NativeStorageErrorCode::Io);
+        assert_eq!(error.to_string(), message);
+        assert_eq!(error.source.as_ref().unwrap().kind(), kind);
+        assert_eq!(
+            error.source.as_ref().unwrap().raw_os_error(),
+            Some(DISK_FULL_ERRNO)
+        );
+    }
+
+    #[test]
+    fn a_failed_scratch_cleanup_preserves_the_lock_create_error() {
+        let root = TestRoot::create();
+        let path = root.0.join("collection.lock");
+        let scratch = sibling_scratch(&path);
+        fs::write(&path, b"another owner's lock").unwrap();
+        // remove_file cannot remove a directory on any supported native target.
+        fs::create_dir(&scratch).unwrap();
+        let original = NativeStorageError::io(std::io::Error::from_raw_os_error(DISK_FULL_ERRNO));
+        let message = original.to_string();
+        let kind = original.source.as_ref().unwrap().kind();
+
+        let error = finish_exclusive_lock_create(&path, &scratch, Err(original)).unwrap_err();
+
+        assert!(scratch.is_dir());
+        assert_eq!(fs::read(&path).unwrap(), b"another owner's lock");
+        assert_eq!(error.code(), NativeStorageErrorCode::Io);
+        assert_eq!(error.to_string(), message);
+        assert_eq!(error.source.as_ref().unwrap().kind(), kind);
+        assert_eq!(
+            error.source.as_ref().unwrap().raw_os_error(),
+            Some(DISK_FULL_ERRNO)
+        );
     }
 
     #[test]

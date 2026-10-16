@@ -54,7 +54,8 @@ const output = resolve(option('--output') ?? CargoArtifacts.path('browser/browse
 const root = mkdtempSync(join(tmpdir(), 'fylo-browser-'))
 
 try {
-    const instance = await instantiate(modulePath, nodeBackend())
+    const backend = nodeBackend()
+    const instance = await instantiate(modulePath, backend)
     const frames = run(instance, [
         { op: 'handshake' },
         { op: 'createCollection', collection: 'notes', root },
@@ -127,12 +128,16 @@ try {
     assert(stored.meta?.reviewed === true, 'developer metadata lost without a sidecar')
     assert(stored.contentLength === 12, `content length wrong: ${stored.contentLength}`)
 
+    await verifyExistingCollectionLock(instance)
+    await verifyLockCreateFailure(backend)
+
     const report = {
         format: 'fylo.browser-wasm-host.v1',
         module: modulePath,
         frames: frames.length,
         documents: inspected.docsStored,
         shards: documents.length,
+        lockFailureChecks: 2,
         passed: true
     }
     await mkdir(dirname(output), { recursive: true })
@@ -145,6 +150,75 @@ try {
     process.exitCode = 1
 } finally {
     rmSync(root, { recursive: true, force: true })
+}
+
+async function verifyExistingCollectionLock(instance) {
+    const collection = 'lockheld'
+    const created = run(instance, [{ op: 'createCollection', collection, root }])[0]
+    assert(created.ok, `lock fixture failed: ${created.error?.message}`)
+    const locks = join(root, '.collections', collection, 'locks')
+    const path = join(locks, 'collection.lock')
+    mkdirSync(locks, { recursive: true })
+    const owner = Buffer.from(
+        JSON.stringify({ owner: 'host-fixture-owner', pid: 0, ts: Date.now() })
+    )
+    writeFileSync(path, owner)
+
+    const response = run(instance, [
+        { op: 'putData', collection, id: '4VRNF52JPCO', data: { name: 'blocked' }, root }
+    ])[0]
+    assert(response.ok === false, 'an existing collection lock did not refuse the write')
+    assert(
+        response.error?.code === 'ENATIVE_CONCURRENT_WRITE',
+        `existing lock was misclassified: ${JSON.stringify(response.error)}`
+    )
+    assert((await readFile(path)).equals(owner), 'the existing lock owner was overwritten')
+    assert(
+        readdirSync(locks).join() === 'collection.lock',
+        'a contended lock left an invocation scratch or takeover claim'
+    )
+    unlinkSync(path)
+    const found = run(instance, [{ op: 'findDocs', collection, query: {}, root }])[0]
+    assert(found.ok, `read after contention failed: ${found.error?.message}`)
+    assert(Object.keys(found.result).length === 0, 'the refused write stored a document')
+}
+
+async function verifyLockCreateFailure(backend) {
+    const collection = 'lockio'
+    const locks = join(root, '.collections', collection, 'locks')
+    const path = join(locks, 'collection.lock')
+    let attempts = 0
+    const failing = await instantiate(modulePath, {
+        ...backend,
+        open(target, flags) {
+            if (target === path && flags & OPEN_EXCLUSIVE) {
+                attempts++
+                const error = new Error('injected collection lock create failure')
+                error.code = 'EIO'
+                throw error
+            }
+            return backend.open(target, flags)
+        }
+    })
+    const created = run(failing, [{ op: 'createCollection', collection, root }])[0]
+    assert(created.ok, `I/O fixture failed: ${created.error?.message}`)
+    const response = run(failing, [
+        { op: 'putData', collection, id: '4VRNF52JPCO', data: { name: 'blocked' }, root }
+    ])[0]
+    assert(attempts === 1, `expected one exclusive lock create, got ${attempts}`)
+    assert(response.ok === false, 'a failed exclusive lock create did not refuse the write')
+    assert(
+        response.error?.code === 'ENATIVE_IO',
+        `lock create failure was misclassified: ${JSON.stringify(response.error)}`
+    )
+    assert(
+        response.error.message.includes('os error 5'),
+        `original host I/O errno was lost: ${response.error.message}`
+    )
+    assert(readdirSync(locks).length === 0, 'a failed lock create left an invocation scratch')
+    const found = run(failing, [{ op: 'findDocs', collection, query: {}, root }])[0]
+    assert(found.ok, `read after lock I/O failure failed: ${found.error?.message}`)
+    assert(Object.keys(found.result).length === 0, 'the refused write stored a document')
 }
 
 async function instantiate(path, backend) {

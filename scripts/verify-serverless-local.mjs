@@ -31,6 +31,7 @@ import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parseArgs } from 'node:util'
+import { ServerlessOutcomeAssessment } from './serverless-outcome-assessment.mjs'
 
 const { values: options } = parseArgs({
     options: {
@@ -595,15 +596,16 @@ async function serviceDrill(name, mount) {
         const failed = responses.filter((response) => !ok(response))
         // A failed read proves nothing about the writes: report it, never as an
         // empty listing.
-        const listing = await invoke(b, findAll)
-        const listed = ok(listing) ? JSON.stringify(listing.outcome.result) : null
+        const acknowledged = ids.filter((_, index) => ok(responses[index]))
+        const listing = await ServerlessOutcomeAssessment.read(
+            () => invoke(b, findAll),
+            acknowledged
+        )
         expect(
-            listed !== null,
-            `writes ${label}: findDocs on b failed, survivors unknown: ${brief(listing?.outcome ?? listing)}`
+            listing.known,
+            `writes ${label}: findDocs on b failed or malformed, survivors unknown; acknowledged [${acknowledged.join(', ')}]: ${brief(listing.rejected ? listing.error : listing.response, false)}`
         )
-        const lost = ids.filter(
-            (id, index) => listed !== null && ok(responses[index]) && !listed.includes(id)
-        )
+        const lost = listing.missing
         expect(
             failed.length === 0,
             `writes ${label}: ${failed.length}/${ids.length} failed, first ${brief(failed[0]?.outcome ?? failed[0])}`
@@ -633,12 +635,15 @@ async function serviceDrill(name, mount) {
     await docker(['stop', '-t', '10', `${NAME}-a`], { quiet: true })
     const outcomes = await Promise.all(pending)
     const committed = burst.filter((_, index) => ok(outcomes[index]))
-    const survivors = await invoke(b, findAll)
-    const kept = ok(survivors) ? JSON.stringify(survivors.outcome.result) : null
-    const vanished = committed.filter((id) => kept !== null && !kept.includes(id))
+    const survivors = await ServerlessOutcomeAssessment.read(() => invoke(b, findAll), committed)
+    const vanished = survivors.missing
     expect(
-        kept !== null,
-        `findDocs on b after SIGTERM failed, ${committed.length} acknowledged writes unverified: ${brief(survivors?.outcome ?? survivors)}`
+        survivors.known,
+        `findDocs on b after SIGTERM failed or malformed, ${committed.length} acknowledged writes unverified [${committed.join(', ')}]: ${brief(survivors.rejected ? survivors.error : survivors.response, false)}`
+    )
+    expect(
+        committed.length > 0,
+        'SIGTERM durability check inconclusive: no writes were acknowledged'
     )
     expect(
         vanished.length === 0,
@@ -649,7 +654,7 @@ async function serviceDrill(name, mount) {
         collection: 'records',
         id: '4VRNF52JS00',
         data: { name: 'after' }
-    })
+    }).catch((error) => error)
     expect(
         ok(fresh),
         `instance b could not write after a was stopped: ${brief(fresh?.outcome ?? fresh)}`
@@ -763,7 +768,8 @@ async function required(command, { check = true, quiet = false, input, env } = {
 }
 
 /** A machine response, or its first output line, without the long handshake listing. */
-function brief(response) {
+function brief(response, summarizeSuccess = true) {
+    if (response instanceof Error) return `${response.name}: ${response.message}`
     if (typeof response === 'string') {
         try {
             response = JSON.parse(response.trim().split('\n')[0])
@@ -771,7 +777,7 @@ function brief(response) {
             return JSON.stringify(response.slice(0, 200))
         }
     }
-    return response?.ok ? 'ok' : JSON.stringify(response?.error ?? response)
+    return summarizeSuccess && response?.ok ? 'ok' : JSON.stringify(response?.error ?? response)
 }
 
 function assert(condition, message) {
