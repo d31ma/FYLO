@@ -125,7 +125,7 @@ can replace the JavaScript engine.
 | --- | --- | --- | --- | --- |
 | Kernel-enforced single writer (`exclusiveRoot`) | yes | **no** | **no** | WASI preview 1 has no advisory locking. The lease still records its owner, so a supervisor can see who holds the root, but nothing refuses a second writer. |
 | POSIX uid/gid/mode (`machineAccess`) | macOS, Linux only | **no** | **no** | Needs `chown`/`chmod`. Already absent on Windows, so the capability set already expressed this. |
-| Schema validation (`schemaValidate`, `schemaMaterialize`, `$encrypted` fields) | yes, with the `chex` binary | **no** | **no** | Validation shells out to CHEX, and WebAssembly cannot spawn a process. |
+| Schema validation (`schemaValidate`, `schemaMaterialize`, `$encrypted` fields) | yes, CHEX built in | **no** | **no** | CHEX runs in-process in the native binary, but its regex Unicode tables add about 390 KB, which would push the browser engine past its size budget. Neither Wasm build links the validator or the upgrader runtime. |
 | URL ingestion (`putData` with `file.url`, `importBulkData` with a URL) | yes | **no** | **no** | No TLS stack in the module. A browser already has a network stack carrying the origin's CORS, cookies, and policy; bundling one would add megabytes *and* route around those protections. The host fetches and supplies the bytes. |
 | Extended attributes | native xattrs (unix), alternate data stream (Windows) | `.fylo-attrs` sidecar | host-owned manifest through `read_attrs` / `write_attrs` | No xattrs under WASI or in a browser. Same JSON-and-base64 manifest, different location. |
 | Inode identity check on open | yes | **no** | **no** | Catches a symlink or rename swapped in between the path check and the read. WASI scopes the guest to preopened directories it cannot escape; a browser host has no inodes. |
@@ -135,7 +135,7 @@ can replace the JavaScript engine.
 
 A supervisor should read these from the handshake rather than from this table:
 `exclusiveRoot`, `machineAccess`, `documentBuckets.putInputs`, and
-`dependencies.chex.available` each report the truth for the running artifact.
+`schemaValidation` each report the truth for the running artifact.
 
 ## Does WebAssembly replace the binary?
 
@@ -148,7 +148,8 @@ Choose the native binary when you need any of:
 - **more than one writer process against one root** — the kernel lease is the
   only thing that makes that safe, and WebAssembly has no equivalent;
 - **POSIX ownership and permissions** on documents;
-- **schema validation or field encryption**, which need the CHEX subprocess;
+- **schema validation or field encryption**, which only the native binary
+  includes;
 - **ingestion straight from a URL** rather than from bytes the caller supplies.
 
 Everything else is a swap.

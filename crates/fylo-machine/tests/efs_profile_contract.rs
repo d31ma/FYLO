@@ -336,7 +336,6 @@ fn profiled_machine_retains_frame_limits_root_config_schema_and_credentials() {
         },
         schema: Some(schema.clone()),
         credentials: Some((FIXTURE_KEY.into(), "fixture-salt".into())),
-        chex_binary: None,
     };
     let limits = FrameLimits {
         max_request_bytes: 8192,

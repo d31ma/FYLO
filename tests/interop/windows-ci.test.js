@@ -108,16 +108,13 @@ describe('release supply-chain pinning', () => {
         ])
 
         for (const installer of [shell, powershell]) {
-            expect(installer).toContain('v26.32.03')
-            expect(installer).toContain('v26.32.02')
             expect(installer).toContain('v26.36.01')
             expect(installer).not.toContain('releases/latest')
             expect(installer).not.toContain('SHA256SUMS')
+            // TTID and CHEX are built into FYLO; nothing downloads them.
+            expect(installer).not.toContain('d31ma/TTID')
+            expect(installer).not.toContain('d31ma/CHEX')
         }
-        expect(shell).toContain('2ec6d27844720cdbaf7f9b4e06ab20f06cb69aa272930a22eca0edf57ef4dcf4')
-        expect(powershell).toContain(
-            '41c06d2305e40ceb34baefc214610a869defc772501047e39c23427e0ff8565f'
-        )
         expect(shell).toContain('1bf8d005bc2552dec0b8b1fbfeefde1b01ef6c4342f98b8d958d76d75c8d9f80')
         expect(powershell).toContain(
             '8b8cc73a8407e5397e66d7fab6f3946162847c4b5639d089d0f16af57f3631f8'

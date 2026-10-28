@@ -248,7 +248,7 @@ fn materialize_reports_invalid_upgrader_utf8() {
 }
 
 #[test]
-fn validation_reports_missing_head_before_starting_chex() {
+fn validation_reports_missing_head_before_validating() {
     let fixture = SchemaFixture::new();
     fixture.versions();
     assert_eq!(
@@ -276,16 +276,16 @@ fn manifest_symlink_is_rejected() {
     );
 }
 
-#[cfg(unix)]
 #[test]
-fn validation_uses_chex_result_and_stamps_head_version() {
+fn validation_returns_the_document_and_stamps_head_version() {
     let fixture = SchemaFixture::new();
     fixture.versions();
-    fs::write(fixture.path("people/history/v2.schema.json"), b"{}").unwrap();
-    let tools = fixture.validator(r#"{"ok":true,"result":{"name":"Samuel"}}"#);
+    fixture.head_schema(&json!({"name":"^[A-Za-z]+$"}));
+    let document = json!({"name":"Samuel"});
     assert_eq!(
-        tools
-            .validate_against_head("people", &Map::default())
+        fixture
+            .tools()
+            .validate_against_head("people", document.as_object().unwrap())
             .unwrap(),
         Some(
             json!({"name":"Samuel","_v":"v2"})
@@ -296,45 +296,75 @@ fn validation_uses_chex_result_and_stamps_head_version() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn flat_validation_does_not_stamp_a_version() {
     let fixture = SchemaFixture::new();
-    fs::write(fixture.0.join("people.schema.json"), b"{}").unwrap();
-    let tools = fixture.validator(r#"{"ok":true,"result":{"name":"Samuel"}}"#);
+    fixture.flat_schema(&json!({"name":"^[A-Za-z]+$"}));
+    let document = json!({"name":"Samuel"});
     assert_eq!(
-        tools
-            .validate_against_head("people", &Map::default())
+        fixture
+            .tools()
+            .validate_against_head("people", document.as_object().unwrap())
             .unwrap(),
-        Some(json!({"name":"Samuel"}).as_object().unwrap().clone())
+        Some(document.as_object().unwrap().clone())
     );
 }
 
-#[cfg(unix)]
 #[test]
-fn validation_preserves_validator_error_message() {
+fn flat_validation_reports_the_chex_message_for_the_collection() {
     let fixture = SchemaFixture::new();
-    fs::write(fixture.0.join("people.schema.json"), b"{}").unwrap();
-    let tools = fixture.validator(r#"{"ok":false,"error":{"message":"name is required"}}"#);
+    fixture.flat_schema(&json!({"name":"^[A-Za-z]+$"}));
     assert_eq!(
-        tools
+        fixture
+            .tools()
             .validate_against_head("people", &Map::default())
             .unwrap_err(),
-        "name is required"
+        "Property 'name' cannot be null or undefined in schema 'people'"
     );
 }
 
-#[cfg(unix)]
 #[test]
-fn validation_rejects_non_object_success() {
+fn head_validation_reports_the_chex_message_for_the_head_file() {
     let fixture = SchemaFixture::new();
-    fs::write(fixture.0.join("people.schema.json"), b"{}").unwrap();
-    let tools = fixture.validator(r#"{"ok":true,"result":[]}"#);
+    fixture.versions();
+    fixture.head_schema(&json!({"name":"^[A-Za-z]+$"}));
+    let document = json!({"name":"Sam 2"});
     assert_eq!(
-        tools
+        fixture
+            .tools()
+            .validate_against_head("people", document.as_object().unwrap())
+            .unwrap_err(),
+        format!(
+            "RegEx pattern fails for property 'name' in schema '{}'",
+            fixture.path("people/history/v2.schema.json").display()
+        )
+    );
+}
+
+#[test]
+fn validation_rejects_a_property_the_schema_does_not_declare() {
+    let fixture = SchemaFixture::new();
+    fixture.flat_schema(&json!({"name":"^[A-Za-z]+$"}));
+    let document = json!({"name":"Samuel","age":30});
+    assert_eq!(
+        fixture
+            .tools()
+            .validate_against_head("people", document.as_object().unwrap())
+            .unwrap_err(),
+        "Property 'age' does not exist in schema 'people'"
+    );
+}
+
+#[test]
+fn validation_rejects_a_malformed_schema() {
+    let fixture = SchemaFixture::new();
+    fixture.flat_schema(&json!({"name":""}));
+    assert_eq!(
+        fixture
+            .tools()
             .validate_against_head("people", &Map::default())
             .unwrap_err(),
-        "CHEX returned a non-object validation result"
+        "Schema pattern for 'name' in schema 'people' cannot be empty"
     );
 }
 
@@ -373,109 +403,36 @@ fn materialize_reports_rejected_promise() {
     );
 }
 
-#[cfg(unix)]
 #[test]
-fn validation_request_removes_version_and_preserves_schema_directory() {
+fn validation_removes_the_version_field_before_checking() {
     let fixture = SchemaFixture::new();
-    fs::write(fixture.0.join("people.schema.json"), b"{}").unwrap();
-    let tools = fixture.validator_script("while IFS= read -r request; do\nprintf '{\"ok\":true,\"result\":%s}\\n' \"$request\"\ndone\n");
+    fixture.flat_schema(&json!({"name":"^[A-Za-z]+$"}));
     let document = json!({"_v":"old","name":"Sam"});
+    assert_eq!(
+        fixture
+            .tools()
+            .validate_against_head("people", document.as_object().unwrap())
+            .unwrap(),
+        Some(json!({"name":"Sam"}).as_object().unwrap().clone())
+    );
+}
+
+#[test]
+fn validation_reads_a_schema_edited_between_calls() {
+    let fixture = SchemaFixture::new();
+    let tools = fixture.tools();
+    let document = json!({"name":"Sam","age":30});
+    fixture.flat_schema(&json!({"name":"^[A-Za-z]+$"}));
+    assert!(
+        tools
+            .validate_against_head("people", document.as_object().unwrap())
+            .is_err()
+    );
+    fixture.flat_schema(&json!({"name":"^[A-Za-z]+$","age?":"^[0-9]+$"}));
     assert_eq!(
         tools
             .validate_against_head("people", document.as_object().unwrap())
             .unwrap(),
-        Some(
-            json!({"op":"validate","schema":"people","data":{"name":"Sam"},"schemaDir":fixture.0})
-                .as_object()
-                .unwrap()
-                .clone()
-        )
+        Some(document.as_object().unwrap().clone())
     );
-}
-
-#[cfg(unix)]
-#[test]
-fn validation_keeps_process_after_schema_rejection() {
-    let fixture = SchemaFixture::new();
-    fs::write(fixture.0.join("people.schema.json"), b"{}").unwrap();
-    let tools = fixture.validator_script("IFS= read -r request\nprintf '%s\\n' '{\"ok\":false}'\nwhile IFS= read -r request; do\nprintf '%s\\n' '{\"ok\":true,\"result\":{\"reused\":true}}'\ndone\n");
-    assert_eq!(
-        tools
-            .validate_against_head("people", &Map::default())
-            .unwrap_err(),
-        "document does not match its schema"
-    );
-    assert_eq!(
-        tools
-            .validate_against_head("people", &Map::default())
-            .unwrap(),
-        Some(json!({"reused":true}).as_object().unwrap().clone())
-    );
-}
-
-#[cfg(unix)]
-#[test]
-fn validation_respawns_process_after_invalid_json() {
-    let fixture = SchemaFixture::new();
-    fs::write(fixture.0.join("people.schema.json"), b"{}").unwrap();
-    let tools = fixture.validator("invalid JSON");
-    assert!(
-        tools
-            .validate_against_head("people", &Map::default())
-            .unwrap_err()
-            .starts_with("CHEX response is not valid JSON:")
-    );
-    let replacement = fixture.validator(r#"{"ok":true,"result":{"restarted":true}}"#);
-    assert_eq!(
-        tools
-            .validate_against_head("people", &Map::default())
-            .unwrap(),
-        Some(json!({"restarted":true}).as_object().unwrap().clone())
-    );
-    drop(replacement);
-}
-
-#[cfg(unix)]
-#[test]
-fn validation_ignores_non_string_error_message() {
-    let fixture = SchemaFixture::new();
-    fs::write(fixture.0.join("people.schema.json"), b"{}").unwrap();
-    let tools = fixture.validator(r#"{"ok":"true","error":{"message":42},"result":{}}"#);
-    assert_eq!(
-        tools
-            .validate_against_head("people", &Map::default())
-            .unwrap_err(),
-        "document does not match its schema"
-    );
-}
-
-#[cfg(unix)]
-#[test]
-fn dropping_the_validator_ends_the_processes_it_started() {
-    let fixture = SchemaFixture::new();
-    fs::write(fixture.0.join("people.schema.json"), b"{}").unwrap();
-    let marker = fixture.0.join("descendant.pid");
-    // A long-lived grandchild that inherits the validator's pipes.
-    let tools = fixture.validator_script(&format!(
-        "sleep 300 &\necho $! > '{}'\nwhile IFS= read -r request; do\nprintf '%s\\n' '{{\"ok\":true,\"result\":{{}}}}'\ndone\n",
-        marker.display()
-    ));
-    tools
-        .validate_against_head("people", &Map::default())
-        .unwrap();
-    let descendant = fs::read_to_string(&marker).unwrap().trim().to_owned();
-    let alive = || {
-        std::process::Command::new("kill")
-            .args(["-0", &descendant])
-            .status()
-            .unwrap()
-            .success()
-    };
-    assert!(alive(), "the fixture's descendant did not start");
-    drop(tools);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while alive() && std::time::Instant::now() < deadline {
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    assert!(!alive(), "validator teardown left its descendant running");
 }

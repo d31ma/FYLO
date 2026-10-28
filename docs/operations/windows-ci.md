@@ -5,8 +5,9 @@ job in both CI and Release runs on GitHub-hosted x64 Windows Server 2022 and Win
 runners. Both matrix entries must pass before a release can publish artifacts.
 
 The gate uses the Bun version in `.bun-version` and fails immediately unless Bun reports
-`win32/x64`. The Windows vendor installer downloads fixed TTID and CHEX v26.28.02 assets and
-verifies them against SHA-256 digests anchored in the FYLO repository before execution. It never
+`win32/x64`. The Windows vendor installer downloads a fixed TACHYON asset and verifies it
+against a SHA-256 digest anchored in the FYLO repository before execution. TTID and CHEX are
+built into FYLO, so nothing is downloaded for them. It never
 executes a remote installer or trusts a checksum fetched beside the binary. The gate verifies:
 
 - process-owned file-lock exclusion, crash release, and abandoned-lock reclamation;

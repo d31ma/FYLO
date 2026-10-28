@@ -19,10 +19,6 @@ serde_json.workspace = true
 sha2.workspace = true
 zeroize.workspace = true
 
-# A validator may start its own children; teardown ends its process group.
-[target.'cfg(unix)'.dependencies]
-rustix = { workspace = true, features = ["process"] }
-
 [target.'cfg(unix)'.dev-dependencies]
 xattr.workspace = true
 
@@ -34,6 +30,10 @@ fylo-test-support = { version = "0.1.0", path = "../fylo-test-support" }
 # otherwise be most of the module.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 boa_engine.workspace = true
+# CHEX schema validation runs in-process. Its regex Unicode tables add ~390 KB
+# to the browser engine, past the Wasm size budget, so neither Wasm artifact
+# validates schemas (the same scope they had when CHEX was a subprocess).
+fylo-chex = { version = "0.1.0", path = "../fylo-chex" }
 
 [target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
 getrandom.workspace = true

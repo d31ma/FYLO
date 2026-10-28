@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from 'bun:test'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { createInterface } from 'node:readline'
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -74,18 +74,6 @@ async function deadline(promise, timeout, message) {
         ])
     } finally {
         clearTimeout(timer)
-    }
-}
-
-async function waitForProcessExit(pid) {
-    while (true) {
-        try {
-            process.kill(pid, 0)
-        } catch (error) {
-            if (error?.code === 'ESRCH') return
-            throw error
-        }
-        await Bun.sleep(10)
     }
 }
 
@@ -222,27 +210,18 @@ describe.skipIf(!required)('exact native release root lease', () => {
     })
 
     test.skipIf(process.platform === 'win32')(
-        'reaps the validator and closes machine stdout on process exit (#89)',
+        'validates schemas in-process and closes machine stdout on process exit (#89)',
         async () => {
             const root = await mkdtemp(path.join(os.tmpdir(), 'fylo-native-pipe-owner-'))
             roots.push(root)
             const schema = path.join(root, 'schema')
-            const validator = path.join(root, 'fake-chex.sh')
-            const pidFile = path.join(root, 'fake-chex.pid')
             await mkdir(schema)
             await writeFile(
                 path.join(schema, 'messages.schema.json'),
-                JSON.stringify({ type: 'object' })
+                JSON.stringify({ body: '^input$' })
             )
-            await writeFile(
-                validator,
-                `#!/bin/sh\nprintf '%s\\n' "$$" > "$FYLO_CHEX_PID_FILE"\nIFS= read -r request || exit 1\nprintf '%s\\n' '{"ok":true,"result":{"body":"validated"}}'\nexec sleep 3600\n`
-            )
-            await chmod(validator, 0o755)
 
-            const config = path.join(root, 'application.json')
-            await writeFile(config, JSON.stringify({ fylo: { chex: { binary: validator } } }))
-            const loop = new ReleaseLoop(root, { FYLO_CHEX_PID_FILE: pidFile }, config)
+            const loop = new ReleaseLoop(root, {})
             try {
                 const response = await loop.request({
                     op: 'schemaValidate',
@@ -252,17 +231,16 @@ describe.skipIf(!required)('exact native release root lease', () => {
                 })
                 expect(response).toMatchObject({
                     ok: true,
-                    result: { valid: true, document: { body: 'validated' } }
+                    result: { valid: true, document: { body: 'input' } }
                 })
+                const rejected = await loop.request({
+                    op: 'schemaValidate',
+                    collection: 'messages',
+                    schemaDir: schema,
+                    document: { body: 'other' }
+                })
+                expect(rejected.ok).toBe(false)
 
-                const validatorPid = Number((await readFile(pidFile, 'utf8')).trim())
-                expect(Number.isSafeInteger(validatorPid)).toBe(true)
-                expect(validatorPid).toBeGreaterThan(0)
-                await deadline(
-                    waitForProcessExit(validatorPid),
-                    1_000,
-                    'schema validator outlived the request that owned it'
-                )
                 const stdoutClosed = once(loop.reader, 'close')
                 loop.child.kill('SIGKILL')
                 await deadline(loop.exited, 5_000, 'machine loop did not exit after SIGKILL')
@@ -273,7 +251,7 @@ describe.skipIf(!required)('exact native release root lease', () => {
                 )
                 await deadline(loop.closed, 1_000, 'machine stdio remained open after process exit')
             } finally {
-                await deadline(loop.stop(true), 5_000, 'validator fixture machine did not close')
+                await deadline(loop.stop(true), 5_000, 'schema fixture machine did not close')
             }
         }
     )

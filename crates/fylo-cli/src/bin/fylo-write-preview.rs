@@ -170,15 +170,12 @@ fn write_engine(root: &Path, arguments: &[String]) -> Result<Option<WriteEngine>
     let Some(schema_root) = config.schema.as_ref() else {
         return Ok(None);
     };
-    let mut engine = match config.credentials.as_ref() {
+    let engine = match config.credentials.as_ref() {
         Some((secret, salt)) => WriteEngine::open_with_encryption(root, schema_root, secret, salt),
         None => WriteEngine::open_with_schema(root, schema_root),
     }
     .map_err(|error| error.to_string())?
     .with_config(config.storage);
-    if let Some(binary) = config.chex_binary {
-        engine = engine.with_chex_binary(binary);
-    }
     Ok(Some(engine))
 }
 

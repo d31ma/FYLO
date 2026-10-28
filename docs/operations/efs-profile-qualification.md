@@ -40,13 +40,10 @@ the historical local pass applies only to its pinned older checkpoint.
 Unsupported-lock refusal needs an actual
 controlled filesystem fixture; supported local contention is not that test.
 
-CHEX teardown currently kills and waits for its direct child; it does not own
-or terminate validator grandchildren. The local validator fixture uses a single
-PID and checks direct-child reaping, machine exit, and stdio closure. Passing
-that fixture does not qualify validators that spawn subprocesses. Their cleanup
-needs a separately scoped production lifecycle change and a regression with a
-recorded long-lived descendant, inherited stdio, and immediate owner teardown.
-Keep the native supervisor's zero-survivor check throughout that qualification.
+CHEX schema validation runs in-process, so FYLO starts no validator process
+and there are no validator children or grandchildren to tear down. The local
+fixture now checks in-process validation, machine exit, and stdio closure.
+Keep the native supervisor's zero-survivor check throughout qualification.
 
 The uncompiled invocation successor contains this risk by refusing explicit
 `schemaValidate` requests and strict-schema host configuration before lease

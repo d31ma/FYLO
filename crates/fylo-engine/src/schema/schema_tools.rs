@@ -11,24 +11,17 @@ use super::schema_validation::SchemaValidation;
 
 pub(crate) struct SchemaTools {
     schema_dir: PathBuf,
-    validator: SchemaValidation,
 }
 
 impl SchemaTools {
     pub(crate) fn new(schema_dir: impl Into<PathBuf>) -> Self {
         Self {
             schema_dir: schema_dir.into(),
-            validator: SchemaValidation::new(),
         }
     }
 
     pub(crate) fn schema_dir(&self) -> &Path {
         &self.schema_dir
-    }
-
-    pub(crate) fn with_chex_binary(mut self, binary: impl Into<PathBuf>) -> Self {
-        self.validator.set_binary(binary);
-        self
     }
 
     pub(crate) fn inspect(&self, collection: &str) -> Result<Value, String> {
@@ -65,7 +58,7 @@ impl SchemaTools {
         body.remove(SchemaUpgrade::VERSION_FIELD);
         let paths = SchemaPaths::new(&self.schema_dir, collection);
         let manifest = SchemaManifest::load(&paths)?;
-        self.validate_known(&paths, manifest.as_ref(), &body)
+        Self::validate_known(&paths, manifest.as_ref(), &body)
     }
 
     fn materialize_known(
@@ -80,28 +73,25 @@ impl SchemaTools {
     }
 
     fn validate_known(
-        &self,
         paths: &SchemaPaths<'_>,
         manifest: Option<&SchemaManifest>,
         body: &Map<String, Value>,
     ) -> Result<Option<Map<String, Value>>, String> {
         match manifest {
-            Some(manifest) => self.validate_version(paths, manifest, body).map(Some),
-            None => self.validate_flat(paths, body),
+            Some(manifest) => Self::validate_version(paths, manifest, body).map(Some),
+            None => Self::validate_flat(paths, body),
         }
     }
 
     fn validate_flat(
-        &self,
         paths: &SchemaPaths<'_>,
         body: &Map<String, Value>,
     ) -> Result<Option<Map<String, Value>>, String> {
         let exists = paths.flat().is_file();
-        self.validate_existing_flat(paths, body, exists)
+        Self::validate_existing_flat(paths, body, exists)
     }
 
     fn validate_existing_flat(
-        &self,
         paths: &SchemaPaths<'_>,
         body: &Map<String, Value>,
         exists: bool,
@@ -109,22 +99,17 @@ impl SchemaTools {
         if !exists {
             return Ok(None);
         }
-        self.validator
-            .validate(paths.collection, body, Some(paths.root))
-            .map(Some)
+        SchemaValidation::validate(paths.collection, body, Some(paths.root)).map(Some)
     }
 
     fn validate_version(
-        &self,
         paths: &SchemaPaths<'_>,
         manifest: &SchemaManifest,
         body: &Map<String, Value>,
     ) -> Result<Map<String, Value>, String> {
         let head = paths.version(&manifest.current);
         Self::require_head(&head)?;
-        let mut validated = self
-            .validator
-            .validate(&head.to_string_lossy(), body, None)?;
+        let mut validated = SchemaValidation::validate(&head.to_string_lossy(), body, None)?;
         validated.insert(
             SchemaUpgrade::VERSION_FIELD.into(),
             Value::String(manifest.current.clone()),

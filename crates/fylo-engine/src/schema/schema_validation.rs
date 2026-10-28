@@ -1,89 +1,34 @@
-use std::cell::RefCell;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde_json::{Map, Value};
 
-use super::chex::Chex;
-use super::validation_request::ValidationRequest;
-
-pub(super) struct SchemaValidation {
-    binary: PathBuf,
-    process: RefCell<Option<Chex>>,
-}
+/// Validates a document against a CHEX schema in-process.
+///
+/// Each call resolves and reads its schema afresh, as the external `chex exec`
+/// loop did per request, so a schema edited between writes takes effect on the
+/// next write without restarting anything.
+pub(super) struct SchemaValidation;
 
 impl SchemaValidation {
-    pub(super) fn new() -> Self {
-        Self {
-            binary: PathBuf::from("chex"),
-            process: RefCell::new(None),
-        }
-    }
-
-    pub(super) fn set_binary(&mut self, binary: impl Into<PathBuf>) {
-        self.binary = binary.into();
-    }
-
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn validate(
-        &self,
         schema: &str,
         data: &Map<String, Value>,
         directory: Option<&Path>,
     ) -> Result<Map<String, Value>, String> {
-        let request = ValidationRequest::new(schema, data, directory);
-        let response = self.request(&request)?;
-        Self::require_success(&response)?;
-        Self::result(&response)
+        let directory = directory.map(|directory| directory.to_string_lossy().into_owned());
+        fylo_chex::SchemaValidator::new(None, directory)
+            .validate(schema, data)
+            .map_err(|error| error.message)?;
+        Ok(data.clone())
     }
 
-    fn request(&self, request: &ValidationRequest<'_>) -> Result<Value, String> {
-        let mut process = self.process.borrow_mut();
-        self.start_if_needed(&mut process)?;
-        let outcome = process
-            .as_mut()
-            .ok_or_else(|| "CHEX process is unavailable".to_owned())?
-            .request(request);
-        Self::discard_failed_process(&mut process, outcome.is_err());
-        outcome
-    }
-
-    fn start_if_needed(&self, process: &mut Option<Chex>) -> Result<(), String> {
-        if process.is_none() {
-            *process = Some(Chex::spawn(&self.binary)?);
-        }
-        Ok(())
-    }
-
-    fn discard_failed_process(process: &mut Option<Chex>, failed: bool) {
-        if failed {
-            *process = None;
-        }
-    }
-
-    fn require_success(response: &Value) -> Result<(), String> {
-        if response.get("ok") != Some(&Value::Bool(true)) {
-            return Err(Self::error_message(response));
-        }
-        Ok(())
-    }
-
-    fn error_message(response: &Value) -> String {
-        response
-            .get("error")
-            .and_then(Self::message)
-            .and_then(Value::as_str)
-            .unwrap_or("document does not match its schema")
-            .to_owned()
-    }
-
-    fn message(error: &Value) -> Option<&Value> {
-        error.get("message")
-    }
-
-    fn result(response: &Value) -> Result<Map<String, Value>, String> {
-        response
-            .get("result")
-            .and_then(Value::as_object)
-            .cloned()
-            .ok_or_else(|| "CHEX returned a non-object validation result".to_owned())
+    #[cfg(target_arch = "wasm32")]
+    pub(super) fn validate(
+        _schema: &str,
+        _data: &Map<String, Value>,
+        _directory: Option<&Path>,
+    ) -> Result<Map<String, Value>, String> {
+        Err("schema validation is not available in WebAssembly builds".into())
     }
 }

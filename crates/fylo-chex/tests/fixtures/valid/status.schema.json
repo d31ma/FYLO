@@ -1,0 +1,6 @@
+{
+  "direction": "^(north|south|east|west)$",
+  "priority": "^[123]$",
+  "label": "^(active|inactive)$",
+  "tag?": "^[abc]$"
+}

@@ -168,11 +168,20 @@ fn literal_encryption_key_is_rejected_before_invalid_cipher() {
 }
 
 #[test]
-fn invalid_cipher_is_rejected_before_invalid_binary() {
+fn invalid_cipher_is_rejected_before_the_removed_chex_setting() {
     let fixture = Fixture::new();
     assert_eq!(
         fixture.error(r#"{"fylo":{"cipher":null,"chex":null}}"#),
         "fylo.cipher must be an object"
+    );
+}
+
+#[test]
+fn removed_chex_setting_is_rejected_with_its_replacement() {
+    let fixture = Fixture::new();
+    assert_eq!(
+        fixture.error(r#"{"fylo":{"chex":{"binary":"./chex"}}}"#),
+        "fylo.chex is no longer supported; CHEX schema validation is built into FYLO, so remove the setting"
     );
 }
 
@@ -182,10 +191,9 @@ fn unused_secret_files_are_not_read_and_paths_remain_relative() {
     std::fs::create_dir(fixture.0.join(".env")).unwrap();
     let config = fixture.load(r#"{"other":{"root":1}}"#).unwrap();
     assert!(config.root.is_none());
-    let config = fixture.load(r#"{"fylo":{"root":"../data","schema":"schema.json","chex":{"binary":"./chex"},"strict":true,"shard":{"width":4}}}"#).unwrap();
+    let config = fixture.load(r#"{"fylo":{"root":"../data","schema":"schema.json","strict":true,"shard":{"width":4}}}"#).unwrap();
     assert_eq!(config.root, Some(fixture.0.join("../data")));
     assert_eq!(config.schema, Some(fixture.0.join("schema.json")));
-    assert_eq!(config.chex_binary, Some(fixture.0.join("./chex")));
     assert!(config.storage.strict_schema);
     assert_eq!(
         config.storage.shard_width,

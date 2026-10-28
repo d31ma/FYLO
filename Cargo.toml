@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
+    "crates/fylo-chex",
     "crates/fylo-format",
     "crates/fylo-engine",
     "crates/fylo-query",
@@ -14,6 +15,7 @@ members = [
     "xtask",
 ]
 default-members = [
+    "crates/fylo-chex",
     "crates/fylo-format",
     "crates/fylo-engine",
     "crates/fylo-query",
@@ -39,6 +41,10 @@ boa_engine = { version = "0.21.1", default-features = false }
 getrandom = "0.4.3"
 hmac = "0.13.0"
 pbkdf2 = { version = "0.13.0", features = ["hmac"] }
+# CHEX's regex dialect: the same feature set the upstream binary shipped, so a
+# schema matches exactly as it did. `perf` stays off (literal prefilters that
+# barely help on short field values); `unicode-perl` keeps `\d` and `\w` valid.
+regex = { version = "1.13.1", default-features = false, features = ["std", "unicode-perl", "unicode-case"] }
 reqwest = { version = "0.13.2", default-features = false, features = ["blocking", "rustls-no-provider"] }
 rustix = { version = "1.1.4", default-features = false, features = ["fs"] }
 rustls = { version = "0.23.43", default-features = false, features = ["ring", "std", "tls12"] }

@@ -151,8 +151,14 @@ describe('compiled binary language interop', () => {
         expect(cliIdentity.commit).toBe(expectedCommit)
         if (cliIdentity.buildKind === 'release')
             expect(cliIdentity.commit).toMatch(/^[0-9a-f]{40}$/)
-        expect(cliIdentity.dependencies.chex.requiredVersion).toBe('26.32.02')
-        expect(cliIdentity.dependencies.ttid.requiredVersion).toBe('26.32.03')
+        // TTID and CHEX are built in: nothing external is required at runtime.
+        expect(cliIdentity.dependencies).toBeUndefined()
+        expect(cliIdentity.capabilities.schemaValidation).toEqual({
+            version: 1,
+            validator: 'chex',
+            chexVersion: '26.32.02',
+            inProcess: true
+        })
         expect(cliIdentity.capabilities.documentBuckets).toEqual({
             version: 1,
             collectionKind: 'file',

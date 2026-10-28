@@ -59,14 +59,13 @@ FYLO trades complexity for clarity. Documents are plain JSON files on disk. Inde
 
 FYLO ships as a single self-contained `fylo` binary via
 [GitHub Releases](https://github.com/d31ma/Fylo/releases) — not npm. Install it
-onto your `PATH`, together with the [`chex`](https://github.com/d31ma/CHEX) and
-[`ttid`](https://github.com/d31ma/TTID) binaries it drives:
+onto your `PATH`. [CHEX](https://github.com/d31ma/CHEX) schema validation and
+[TTID](https://github.com/d31ma/TTID) identifiers are built in, so there is
+nothing else to install:
 
 ```bash
 # fylo (macOS / Linux)
 curl -fsSL https://github.com/d31ma/Fylo/releases/latest/download/install.sh | sh
-# chex + ttid
-sh ./scripts/install-vendor-bins.sh
 ```
 
 Set `FYLO_VERIFY_PROVENANCE=1` before running the installer to require signed
@@ -927,7 +926,7 @@ Behavior:
 
 - Documents carry `_v` (version label)
 - Reads materialize old docs to head shape in memory
-- Strict writes validate against head schema via the `chex` binary
+- Strict writes validate against head schema with the built-in CHEX validator
 - Documents missing `_v` are treated as oldest version (legacy upgrade on read)
 - Any collection directory under `fylo.schema` that contains a `manifest.json` is auto-created on `new Fylo(...)`; await `fylo.ready()` if you need the bootstrap to settle before issuing reads from a synchronous probe (mutation/query methods await internally)
 - FYLO schemas do not support arrays of objects — declare each nested object as its own collection. A schema that would accept `items: [{ name: '...' }]` will throw `FYLO schema '...' does not support arrays of objects at '$.items'` on first read. Arrays of scalars and nested objects (as fields) are fine.
@@ -1184,8 +1183,9 @@ printf '%s\n' '{"op":"handshake"}' | fylo exec --loop --root /mnt/fylo
 
 `version --output json` and the `handshake` result share one stable identity:
 FYLO runtime and protocol versions, immutable release commit and target,
-required CHEX/TTID versions plus their current availability, effective frame
-limits, and supported capabilities. Source and locally compiled development
+effective frame limits, and supported capabilities. The `schemaValidation`
+capability names the built-in CHEX validator and the CHEX release it follows;
+WebAssembly builds report `false`. Source and locally compiled development
 executions explicitly report an unknown commit; release builds embed the
 immutable source revision and build target. A handshake is side-effect-free
 and does not create the configured root or initialize a collection.
@@ -1452,7 +1452,7 @@ local fixture, mount or infrastructure plan is not a production support claim.
 | **Process-global cipher**            | One key per process for all `$encrypted` fields. No per-collection key rotation built in.                                                                                                            |
 | **No cross-collection transactions** | SQL mutations and ordinary writes are atomic within one collection; there is no atomic multi-collection commit.                                                                                      |
 | **Timestamp metadata**               | `createdAt` comes from TTID; `updatedAt` comes from file modification metadata. Every timestamp is whole epoch milliseconds.                                                                         |
-| **Canonical identifiers**            | TTID matches case-insensitively but FYLO names a file after the identifier, so a write with a non-canonical spelling is refused. `ttid canonicalize` repairs one.                                    |
+| **Canonical identifiers**            | TTID matches case-insensitively but FYLO names a file after the identifier, so a write with a non-canonical spelling is refused. Uppercasing the identifier repairs it.                              |
 | **Shard width is per collection**    | Recorded in the catalog descriptor and 1–4. A write configured for a different width fails with `ESHARDWIDTH`; `fylo reshard` moves the collection.                                                  |
 | **Bulk import for trusted sources**  | SSRF guard blocks private addresses and caps at 50 MiB. Not for user-provided URLs.                                                                                                                  |
 

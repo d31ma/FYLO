@@ -1,0 +1,11 @@
+{
+  "requestId": "smoke-validate",
+  "op": "validate",
+  "schemaPath": "examples/valid/status.schema.json",
+  "data": {
+    "direction": "north",
+    "priority": 2,
+    "label": "active",
+    "tag": null
+  }
+}

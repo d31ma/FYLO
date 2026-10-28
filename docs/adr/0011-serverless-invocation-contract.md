@@ -41,14 +41,14 @@ keeps its legacy capabilities; it does not advertise support for those operation
 through this invocation API. Malformed input and forbidden host overrides return
 an admission error rather than a machine failure frame.
 
-The candidate refuses `schemaValidate` before lease acquisition and refuses
-host configuration with `strict_schema=true` during options construction.
-CHEX has no invocation deadline or checked descendant teardown; a post-dispatch
-budget check cannot contain a blocked helper or one that leaves grandchildren.
-This refusal applies only to the one-frame invocation API. Native streaming
-schema validation, non-strict schema configuration and encryption are unchanged.
-`schemaMaterialize` uses the embedded upgrader rather than CHEX and remains in
-the existing scope; its separate runtime-budget limits still need qualification.
+The first candidate refused `schemaValidate` and `strict_schema=true` because
+CHEX ran as an external helper with no invocation deadline or checked
+descendant teardown. Amended 2026-10-28: CHEX now runs in-process through the
+vendored `fylo-chex` crate, so there is no helper to contain and both are
+accepted. Validation is bounded by the schema (patterns of at most 500
+characters, compiled by a linear-time regex engine) and by the document frame.
+`schemaMaterialize` uses the embedded upgrader and remains in the existing
+scope; its separate runtime-budget limits still need qualification.
 
 One invocation accepts exactly one nonempty LF-delimited core request. Reject
 empty, truncated, multiple or oversized frames before admission or mutation.

@@ -12,7 +12,6 @@ file beside that JSON file.
         "schema": "./schemas",
         "strict": true,
         "shard": { "width": 1 },
-        "chex": { "binary": "/opt/bin/chex" },
         "encryption": { "key": "${FYLO_ENCRYPTION_KEY}" },
         "cipher": { "salt": "${FYLO_CIPHER_SALT}" }
     }
@@ -38,8 +37,8 @@ load JSON or secret files themselves.
 
 A missing automatically discovered file uses defaults. An explicitly selected
 missing file, malformed JSON, invalid setting, or unresolved secret reference
-fails initialization. Paths inside the configuration, including `root`,
-`schema`, and `chex.binary`, resolve relative to the configuration directory.
+fails initialization. Paths inside the configuration, including `root` and
+`schema`, resolve relative to the configuration directory.
 An explicit relative `--config` path resolves from the process working directory.
 An explicit constructor root or `--root` remains an override, not a path inside
 the JSON file.
@@ -81,9 +80,13 @@ nested key:
 | `FYLO_SCHEMA` | `fylo.schema` | string path |
 | `FYLO_STRICT` | `fylo.strict` | boolean |
 | `FYLO_SHARD_WIDTH` | `fylo.shard.width` | integer, 1-4 |
-| `FYLO_CHEX_BINARY` | `fylo.chex.binary` | string path |
+| `FYLO_CHEX_BINARY` | removed; CHEX is built in | — |
 | `FYLO_ENCRYPTION_KEY` | `fylo.encryption.key` | string secret reference |
 | `FYLO_CIPHER_SALT` | `fylo.cipher.salt` | string secret reference |
+
+CHEX schema validation now runs inside FYLO, so `fylo.chex.binary` no longer
+exists. A configuration that still sets `fylo.chex` fails with a message asking
+you to remove it.
 
 Replace native SDK `env` options (file paths or environment maps) with `config`
 paths. Separate components such as an application and its embedded dependency

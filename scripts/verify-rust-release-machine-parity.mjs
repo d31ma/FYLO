@@ -630,8 +630,10 @@ function normalizeHandshake(value) {
     delete normalized.capabilities?.machineAccess
     delete normalized.capabilities?.serverlessQueue
     delete normalized.capabilities?.wholeRootBackup
-    delete normalized.dependencies?.chex?.requiredVersion
-    delete normalized.dependencies?.ttid?.requiredVersion
+    // Released builds probed PATH for external CHEX and TTID binaries; both
+    // are built in now, which the schemaValidation capability reports instead.
+    delete normalized.dependencies
+    delete normalized.capabilities?.schemaValidation
     return normalized
 }
 

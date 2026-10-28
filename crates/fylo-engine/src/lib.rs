@@ -11,7 +11,7 @@ mod schema;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use encryption::{EncryptionReader, is_encrypted_field, reject_undeclared_ciphertext};
 use fylo_format::{
@@ -74,17 +74,6 @@ impl WriteEngine {
         );
         self.schema = Some(std::rc::Rc::new(SchemaTools::new(schema_root)));
         Ok(self)
-    }
-
-    /// Select the schema validator executable without consulting process settings.
-    #[must_use]
-    pub fn with_chex_binary(mut self, binary: impl Into<PathBuf>) -> Self {
-        if let Some(schema) = &self.schema {
-            self.schema = Some(std::rc::Rc::new(
-                SchemaTools::new(schema.schema_dir()).with_chex_binary(binary),
-            ));
-        }
-        self
     }
 
     /// Apply host-supplied runtime knobs to this engine and its writer.

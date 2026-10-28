@@ -11,7 +11,6 @@ pub struct ApplicationConfig {
     pub storage: RootConfig,
     pub schema: Option<PathBuf>,
     pub credentials: Option<(String, String)>,
-    pub chex_binary: Option<PathBuf>,
 }
 
 impl ApplicationConfig {

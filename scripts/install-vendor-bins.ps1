@@ -34,18 +34,6 @@ if (-not $Destination) {
 
 New-Item -ItemType Directory -Force -Path $Destination | Out-Null
 Install-VerifiedGitHubBinary `
-    -Repository 'd31ma/TTID' `
-    -Version 'v26.32.03' `
-    -Asset 'ttid-windows-x64.exe' `
-    -ExpectedSha256 '41c06d2305e40ceb34baefc214610a869defc772501047e39c23427e0ff8565f' `
-    -Executable 'ttid.exe'
-Install-VerifiedGitHubBinary `
-    -Repository 'd31ma/CHEX' `
-    -Version 'v26.32.02' `
-    -Asset 'chex-windows-x64.exe' `
-    -ExpectedSha256 '3aa465447849d1f0d43318cd7c0e3c69a7db8cc06055a0c6ba0b4d53c24334bc' `
-    -Executable 'chex.exe'
-Install-VerifiedGitHubBinary `
     -Repository 'd31ma/Tachyon' `
     -Version 'v26.36.01' `
     -Asset 'ty-windows-x64.exe' `
@@ -56,8 +44,6 @@ $env:Path = "$Destination;$env:Path"
 if ($env:GITHUB_PATH) {
     Add-Content -Path $env:GITHUB_PATH -Value $Destination
 }
-& (Join-Path $Destination 'ttid.exe') --help | Out-Null
-& (Join-Path $Destination 'chex.exe') --help | Out-Null
 $tachyonVersion = & (Join-Path $Destination 'ty.exe') --version
 if ($tachyonVersion.Trim() -ne '26.36.01') {
     throw "Unexpected TACHYON version: $tachyonVersion"

@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Cursor;
-use std::os::unix::fs::{PermissionsExt, symlink};
+use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -122,19 +122,15 @@ fn success(runtime: &InvocationRuntime, request: &Value) -> Value {
 fn validator_application(fixture: &Fixture) -> ApplicationConfig {
     let schema = fixture.parent.join("validator-schemas");
     fs::create_dir_all(&schema).unwrap();
-    fs::write(schema.join("records.schema.json"), br#"{"type":"object"}"#).unwrap();
-    let binary = fixture.parent.join("owned-validator.sh");
-    fs::write(&binary, b"#!/bin/sh\nprintf started > \"${0}.started\"\nIFS= read -r request || exit 1\nprintf '%s\\n' '{\"ok\":true,\"result\":{\"validated\":true}}'\n").unwrap();
-    fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::write(schema.join("records.schema.json"), br#"{"input":"^true$"}"#).unwrap();
     ApplicationConfig {
         schema: Some(schema),
-        chex_binary: Some(binary),
         ..ApplicationConfig::default()
     }
 }
 
 #[test]
-fn invocation_refuses_external_schema_validation_before_owner_or_helper_publication() {
+fn invocation_validates_schemas_in_process() {
     for profile in [FilesystemProfile::Native, FilesystemProfile::EfsSidecarV1] {
         let fixture = Fixture::new();
         let application = validator_application(&fixture);
@@ -143,12 +139,20 @@ fn invocation_refuses_external_schema_validation_before_owner_or_helper_publicat
             application,
             FrameLimits::default(),
         );
-        let before = snapshot(&fixture.parent);
-        let result = invocation.execute(&frame(&json!({
-            "op":"schemaValidate","collection":"records","document":{"input":true}
-        })));
-        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::Unsupported);
-        assert_eq!(snapshot(&fixture.parent), before);
+        let validated = success(
+            &invocation,
+            &json!({
+                "op":"schemaValidate","collection":"records","document":{"input":true}
+            }),
+        );
+        assert_eq!(validated["result"]["document"], json!({"input":true}));
+        let rejected = execute(
+            &invocation,
+            &json!({
+                "op":"schemaValidate","collection":"records","document":{"input":false}
+            }),
+        );
+        assert_eq!(rejected["ok"], false, "{rejected}");
         let materialized = success(
             &invocation,
             &json!({
@@ -156,17 +160,15 @@ fn invocation_refuses_external_schema_validation_before_owner_or_helper_publicat
             }),
         );
         assert_eq!(materialized["result"]["document"], json!({"input":true}));
-        assert!(!fixture.parent.join("owned-validator.sh.started").exists());
     }
 }
 
 #[test]
-fn strict_schema_invocation_configuration_is_refused_before_acquiring_a_lease() {
+fn strict_schema_invocation_configuration_is_accepted() {
     for profile in [FilesystemProfile::Native, FilesystemProfile::EfsSidecarV1] {
         let fixture = Fixture::new();
         let mut application = validator_application(&fixture);
         application.storage.strict_schema = true;
-        let before = snapshot(&fixture.parent);
         let options = InvocationOptions::new(
             fixture.options(profile),
             application,
@@ -176,8 +178,7 @@ fn strict_schema_invocation_configuration_is_refused_before_acquiring_a_lease() 
                 Duration::from_millis(100),
             ),
         );
-        assert!(matches!(options, Err(error) if error.kind() == std::io::ErrorKind::Unsupported));
-        assert_eq!(snapshot(&fixture.parent), before);
+        assert!(options.is_ok());
     }
 }
 
@@ -201,11 +202,7 @@ fn native_streaming_retains_explicit_schema_validation() {
     .unwrap();
     let response: Value = serde_json::from_slice(&output).unwrap();
     assert_eq!(response["ok"], true);
-    assert_eq!(response["result"]["document"], json!({"validated":true}));
-    assert_eq!(
-        fs::read(fixture.parent.join("owned-validator.sh.started")).unwrap(),
-        b"started"
-    );
+    assert_eq!(response["result"]["document"], json!({"input":true}));
 }
 
 fn snapshot(path: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
@@ -652,7 +649,6 @@ fn invocation_retains_host_storage_schema_credentials_and_published_frame_limits
         },
         schema: Some(schema.clone()),
         credentials: Some((FIXTURE_KEY.into(), "fixture-salt".into())),
-        chex_binary: None,
     };
     let limits = FrameLimits {
         max_request_bytes: 8192,

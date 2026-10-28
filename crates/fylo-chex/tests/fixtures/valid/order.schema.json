@@ -1,0 +1,10 @@
+{
+  "orderId": "^ORD-[0-9]+$",
+  "items": [
+    {
+      "sku": "^[A-Z0-9-]+$",
+      "quantity": "^[1-9][0-9]*$",
+      "giftWrap?": "^(true|false)$"
+    }
+  ]
+}

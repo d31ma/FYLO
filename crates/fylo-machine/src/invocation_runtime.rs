@@ -106,7 +106,6 @@ impl InvocationRuntime {
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?
             .into_inner();
         self.require_host_configuration(&request)?;
-        Self::require_bounded_validation(&request)?;
         Self::require_supported_scope(&request)?;
         Self::require_retry_safe_create(&request)?;
         // A verified alias uses the canonical private session default. This
@@ -191,16 +190,6 @@ impl InvocationRuntime {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "invocation creates need a caller-chosen id so a retry cannot create a duplicate",
-            ));
-        }
-        Ok(())
-    }
-
-    fn require_bounded_validation(request: &Value) -> io::Result<()> {
-        if request.get("op").and_then(Value::as_str) == Some("schemaValidate") {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "this invocation slice excludes external schema validation until helper deadlines and checked descendant cleanup are qualified",
             ));
         }
         Ok(())

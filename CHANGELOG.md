@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **CHEX and TTID are built in; FYLO no longer needs their binaries.** Schema
+  validation now runs in-process through `fylo-chex`, a vendored copy of the
+  CHEX v26.32.02 validator core (same regex dialect, error names, and messages).
+  TTID generation, decoding, and canonical checks were already native to FYLO,
+  so the `ttid` binary was only probed for. `scripts/install-vendor-bins.sh` and
+  its PowerShell peer now install only TACHYON.
+- The handshake no longer has a `dependencies` object. A new
+  `capabilities.schemaValidation` entry names the built-in CHEX validator and
+  its CHEX release, and is `false` in the WebAssembly builds, which still leave
+  the validator out to stay within their size budgets.
+- One-frame serverless invocations now accept `schemaValidate` and
+  `strict_schema=true`. They were refused only because the external CHEX helper
+  had no invocation deadline or descendant teardown (ADR 0011, amended).
+
+### Removed
+
+- The `fylo.chex.binary` setting. A configuration that still sets `fylo.chex`
+  fails with a message asking you to remove it.
+
 ## 26.33.02 - 2026-08-11
 
 ### Added

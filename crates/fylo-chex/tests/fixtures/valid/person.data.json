@@ -1,0 +1,16 @@
+{
+  "name": "Jane Doe",
+  "age": 30,
+  "active": true,
+  "nickname": null,
+  "address": {
+    "city": "Toronto",
+    "country": "Canada"
+  },
+  "tags": ["typescript", "bun"],
+  "scores": [95, 87],
+  "meta": {
+    "employer": "ACME",
+    "dept": "engineering"
+  }
+}

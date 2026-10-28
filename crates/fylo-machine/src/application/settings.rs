@@ -68,12 +68,7 @@ impl Settings {
             &mut secrets,
         )?;
         let credentials = Self::credentials(secret, salt)?;
-        let chex_binary = Self::path_setting(
-            Self::member(settings, Self::CHEX_KEY, "binary")?,
-            "fylo.chex.binary",
-            directory,
-            &mut secrets,
-        )?;
+        Self::reject_removed_chex(settings)?;
         Ok(ApplicationConfig {
             root,
             storage: RootConfig {
@@ -82,8 +77,19 @@ impl Settings {
             },
             schema,
             credentials,
-            chex_binary,
         })
+    }
+
+    /// `fylo.chex.binary` selected the external validator FYLO used to spawn.
+    /// CHEX now runs in-process, so the setting has nothing left to choose;
+    /// say so rather than reporting a generic unknown key.
+    fn reject_removed_chex(settings: &Map<String, Value>) -> Result<(), String> {
+        if settings.contains_key(Self::CHEX_KEY) {
+            return Err(
+                "fylo.chex is no longer supported; CHEX schema validation is built into FYLO, so remove the setting".into(),
+            );
+        }
+        Ok(())
     }
 
     pub(super) fn object<'a>(

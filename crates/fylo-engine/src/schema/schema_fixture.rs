@@ -49,21 +49,20 @@ impl SchemaFixture {
         fs::write(self.0.join("people/upgraders/v1-to-v2.js"), source).unwrap();
     }
 
-    #[cfg(unix)]
-    pub(super) fn validator(&self, response: &str) -> SchemaTools {
-        self.validator_script(&format!(
-            "while IFS= read -r request; do\nprintf '%s\\n' '{response}'\ndone\n"
-        ))
+    pub(super) fn flat_schema(&self, schema: &Value) {
+        fs::write(
+            self.0.join("people.schema.json"),
+            serde_json::to_vec(schema).unwrap(),
+        )
+        .unwrap();
     }
 
-    #[cfg(unix)]
-    pub(super) fn validator_script(&self, source: &str) -> SchemaTools {
-        use std::os::unix::fs::PermissionsExt;
-
-        let path = self.0.join("validator.sh");
-        fs::write(&path, format!("#!/bin/sh\n{source}")).unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
-        self.tools().with_chex_binary(path)
+    pub(super) fn head_schema(&self, schema: &Value) {
+        fs::write(
+            self.path("people/history/v2.schema.json"),
+            serde_json::to_vec(schema).unwrap(),
+        )
+        .unwrap();
     }
 }
 

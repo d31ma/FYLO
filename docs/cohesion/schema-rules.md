@@ -1,5 +1,10 @@
 # Schema cohesion rules
 
+> **Superseded for CHEX (2026-10-28).** CHEX validation now runs in-process
+> through the vendored `fylo-chex` crate. The external process lifecycle,
+> transport, respawn, and fake-executable tests described below no longer
+> exist. The rest of this record still describes the schema split.
+
 ## Scope and acceptance
 
 Refactor native schema administration, validation and upgrade execution without

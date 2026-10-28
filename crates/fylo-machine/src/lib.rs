@@ -65,8 +65,8 @@ const BUILD_KIND: &str = match option_env!("FYLO_BUILD_KIND") {
     None => "development-compiled",
 };
 const BUILD_TARGET: Option<&str> = option_env!("FYLO_BUILD_TARGET");
-const REQUIRED_CHEX_VERSION: &str = "26.32.02";
-const REQUIRED_TTID_VERSION: &str = "26.32.03";
+/// The CHEX release whose validator `fylo-chex` vendors.
+const CHEX_VERSION: &str = "26.32.02";
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 const MACHINE_ACCESS_OPERATIONS: &[&str] = &[
     "executeSQL",
@@ -921,6 +921,19 @@ impl Session {
                 }),
             ),
             (
+                "schemaValidation".into(),
+                if cfg!(target_family = "wasm") {
+                    Value::Bool(false)
+                } else {
+                    json!({
+                        "version": 1,
+                        "validator": "chex",
+                        "chexVersion": CHEX_VERSION,
+                        "inProcess": true
+                    })
+                },
+            ),
+            (
                 "serverlessQueue".into(),
                 if self.filesystem_profile == FilesystemProfile::Native {
                     serverless_queue_capability()
@@ -966,16 +979,6 @@ impl Session {
             "commit": BUILD_COMMIT,
             "buildKind": BUILD_KIND,
             "buildTarget": runtime_target(),
-            "dependencies": {
-                "chex": {
-                    "requiredVersion": REQUIRED_CHEX_VERSION,
-                    "available": executable_on_path("chex"),
-                },
-                "ttid": {
-                    "requiredVersion": REQUIRED_TTID_VERSION,
-                    "available": executable_on_path("ttid"),
-                },
-            },
             "machine": {
                 "framing": "ndjson",
                 "encoding": "utf-8",
@@ -1361,12 +1364,8 @@ impl Session {
                 )
                 .map_err(|error| engine_error(&error))?,
             None => engine,
-        }
-        .with_config(self.config.storage);
-        Ok(match &self.config.chex_binary {
-            Some(binary) => engine.with_chex_binary(binary),
-            None => engine,
-        })
+        };
+        Ok(engine.with_config(self.config.storage))
     }
 
     fn schema_path(&self, request: &Value) -> Option<PathBuf> {
@@ -3460,27 +3459,6 @@ fn runtime_target() -> String {
         other => other,
     };
     format!("{os}-{architecture}")
-}
-
-fn executable_on_path(name: &str) -> bool {
-    let Some(path) = std::env::var_os("PATH") else {
-        return false;
-    };
-    std::env::split_paths(&path).any(|directory| {
-        let candidate = directory.join(name);
-        if candidate.is_file() {
-            return true;
-        }
-        #[cfg(windows)]
-        {
-            for extension in ["exe", "cmd", "bat", "com"] {
-                if directory.join(format!("{name}.{extension}")).is_file() {
-                    return true;
-                }
-            }
-        }
-        false
-    })
 }
 
 #[cfg(test)]

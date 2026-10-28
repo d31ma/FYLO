@@ -1,0 +1,16 @@
+[package]
+name = "fylo-chex"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "CHEX regex schema validation, vendored from d31ma/CHEX v26.32.02"
+
+[dependencies]
+regex.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true
