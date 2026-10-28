@@ -401,6 +401,97 @@ This harness copy differs from `benchmarks/tin-poc` in three ways:
 An earlier attempt on 2026-10-10 was discarded. Its quiet-machine check matched
 only build tools, so it missed the probe that skewed it.
 
+## Read scaling after one-call path checks, 2026-10-28
+
+**Cause of the superlinear reads.** Before every document read,
+`NativeRoot::verify_path` walked each component below the root. For each one it
+listed the whole parent directory to confirm the exact spelling, ran `lstat`,
+and finally ran `realpath`. A document read ran that check three times: before
+the open, after the open, and after reading the bytes. Because each check listed
+the shard directory, the cost per row grew with the number of documents in a
+shard. A file-call interposer counted 63.7 calls per row for a 100-row query on
+a 200-document root, including 15 directory listings.
+
+**Change.** On Apple platforms a path is now opened with `O_NOFOLLOW_ANY`. That
+single call refuses a symbolic link in any component, so the kernel checks the
+whole path at the moment of the open. Only a complete success takes this path.
+Any failure falls back to the old component walk, which reports the same errors
+as before. Canonical spelling is checked against a process-wide cache of
+directory listings. A cache miss rereads the listing, and a change in the
+collection's generation drops every cached listing under that collection.
+Document reads try each shard candidate with that one open, and they read a
+file of known size in one `read`. The post-read identity check guarded only the
+gap between check and open that the atomic open removes, so it is skipped for
+native records. The EFS profile keeps it, because its sidecar is a second file.
+Linux, Windows and WebAssembly keep the component walk, but they now get the
+cached spelling check instead of listing directories.
+
+**File calls per row.** Each read now makes 6 calls: open, fstat, flistxattr,
+one `lstat` for the attribute-sidecar fallback (a record with no FYLO xattrs
+may carry them in a `.fylo-attrs` file), read, and close. The sidecar `lstat`
+stays because a sidecar can hold the access descriptor.
+
+| Query (interposer) | Before calls | After calls | Before per row | After per row |
+| --- | ---: | ---: | ---: | ---: |
+| Broad, 100 rows, 200-doc root, local APFS | 6,368 | 663 | 63.7 | 6.6 |
+| Broad, 2,500 rows, 5k root, APFS image on ATLAS | 185,197 | 15,054 | 74.1 | 6.0 |
+| Broad, 250 rows, 500-doc root, raw ATLAS SMB share | 17,176 | 1,551 | 68.7 | 6.2 |
+
+**Mac, local APFS.** Measured on an Apple M4 with 16 GiB, macOS 27.2, Rust
+1.97.1, release opt-level 3, with fixtures on the internal disk. This used the
+same 2026-10-11 harness, with `end-to-end.rs` SHA256 `e65d46c0…`. Before and
+after binaries were built from `fe2f1b7` and this change, and their 5k runs were
+interleaved. The one-minute load was 3.8 to 17 at the start and end of the runs,
+because other builds came and went, so treat writes as upper bounds. Full
+identifier and body oracles and the post-write checks passed in every run.
+
+| Operation (ms, p50) | 5k before | 5k after | 25k 2026-10-11 | 25k after |
+| --- | ---: | ---: | ---: | ---: |
+| Selective equality (50 / 250 rows) | 33.255 | 1.419 | 390.619 | 10.729 |
+| Same, parsed cache evicted | 56.652 | 24.859 | 507.743 | 123.843 |
+| Broad equality (2,500 / 12,500 rows) | 1,643.998 | 59.413 | 25,602.660 | 307.580 |
+| Range fallback scan (5,000 / 25,000 rows) | 3,278.193 | 124.254 | 44,017.625 | 801.453 |
+| Engine open plus selective query | 33.743 | 1.451 | 390.103 | 11.457 |
+| Alternating collections, two queries | 114.036 | 50.186 | 1,031.379 | 264.434 |
+| Durable put | 6.880 | 7.498 | 11.163 | 16.255 |
+| Durable patch | 8.934 | 7.710 | 18.728 | 15.457 |
+| Durable delete | 8.089 | 8.058 | 15.282 | 15.889 |
+
+The 5k columns are the median of three runs. Across the three runs, broad p50
+was 1,637.0–1,706.7 before and 58.0–60.4 after. Range p50 was 3,248.9–3,316.6
+before and 121.8–128.1 after. The 25k after column is a single run. The 25k
+before column is the 2026-10-11 baseline on a different host load and disk,
+because no same-day 25k run was taken before the change. The 25k fixture took
+919 s to build (4,010 s on 2026-10-11), and the process peaked at 1.44 GiB RSS.
+
+**Scaling.** Five times the data now makes broad queries 5.2x slower, range
+scans 6.5x slower, and evicted selective queries 5.0x slower, all close to
+linear. The 2026-10-11 ratios were 18.1x, 14.8x and 9.6x. Warm selective queries
+grow 7.6x. They return five times the rows and also scan a five-times-larger
+index snapshot. Writes were not the target of this change. A durable write still
+lists a shard once after each generation change, and there is no same-day 25k
+write baseline.
+
+**ATLAS.** Read-only checks ran on copies of one fixture with the same before
+and after binaries, under a one-minute load of 25 to 42 from other builds. These
+are p50 values with 30 samples on the image and 10 on the raw share.
+
+| Read check (ms, p50) | Before | After |
+| --- | ---: | ---: |
+| APFS image on ATLAS, 5k: selective, 50 rows | 102.759 | 1.516 |
+| APFS image on ATLAS, 5k: broad, 2,500 rows | 5,256.582 | 124.257 |
+| Raw SMB share, 500: selective, 5 rows | 24.767 | 17.941 |
+| Raw SMB share, 500: broad, 250 rows | 1,855.649 | 1,803.560 |
+
+On the raw share the path checks were already answered from the SMB client's
+attribute cache, so removing them barely moved the wall time. What remains is
+one open (about 2.2 ms) and one `flistxattr` (about 3 ms) per row, and both go
+to the server. Removing those needs the engine next to its disk, or packed
+segment files, not fewer path checks.
+
+Raw results, traces, logs with load samples, and the run scripts are in
+`/Volumes/FORGE/Logs/FYLO/fylo-path-verify/`.
+
 ## Cloud Run and Azure Functions, local only, 2026-10-11
 
 `bun run cloudrun:local` and `bun run azure:local`
@@ -490,7 +581,8 @@ platform's shared storage. Run on an arm64 WSL2 host with Docker 29.8:
    (see "Develop baselines" above), measured under background load. Setting
    performance release thresholds still needs a quiet-host rerun, and so does
    promoting the LIKE/range/BM25/SIMD experiments. The superlinear read
-   scaling should be explained first.
+   scaling was explained and removed on 2026-10-28 (see "Read scaling after
+   one-call path checks").
 6. Decided 2026-10-10: the browser JavaScript engine follows the native Rust
    semantics. Rust predicates and joins now coerce strings with the index
    writer's JavaScript `Number` rules (hex/binary/octal accepted, signed radix
