@@ -2,6 +2,7 @@
 //! TCP, so a remote client pays one network round trip per operation instead
 //! of one per file call on a network filesystem.
 
+mod frame_access;
 mod machine_server;
 mod serve_options;
 mod serve_token;

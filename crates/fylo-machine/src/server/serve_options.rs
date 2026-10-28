@@ -1,6 +1,8 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
+use fylo_engine::HotSet;
+
 use crate::{FrameLimits, ServeToken};
 
 /// Where and how a [`crate::MachineServer`] listens.
@@ -15,6 +17,7 @@ pub struct ServeOptions {
     max_connections: usize,
     idle_timeout: Duration,
     hello_timeout: Duration,
+    hot_set_bytes: usize,
 }
 
 impl ServeOptions {
@@ -37,6 +40,7 @@ impl ServeOptions {
             max_connections: Self::DEFAULT_MAX_CONNECTIONS,
             idle_timeout: Self::DEFAULT_IDLE_TIMEOUT,
             hello_timeout: Self::DEFAULT_HELLO_TIMEOUT,
+            hot_set_bytes: HotSet::DEFAULT_BUDGET_BYTES,
         }
     }
 
@@ -68,6 +72,15 @@ impl ServeOptions {
         self
     }
 
+    /// Keep at most `hot_set_bytes` of parsed documents and index snapshots
+    /// in memory for warm reads; 0 turns the hot set off. The default is
+    /// [`HotSet::DEFAULT_BUDGET_BYTES`].
+    #[must_use]
+    pub const fn with_hot_set_budget(mut self, hot_set_bytes: usize) -> Self {
+        self.hot_set_bytes = hot_set_bytes;
+        self
+    }
+
     pub(crate) const fn listen(&self) -> SocketAddr {
         self.listen
     }
@@ -90,5 +103,9 @@ impl ServeOptions {
 
     pub(crate) const fn hello_timeout(&self) -> Duration {
         self.hello_timeout
+    }
+
+    pub(crate) const fn hot_set_bytes(&self) -> usize {
+        self.hot_set_bytes
     }
 }

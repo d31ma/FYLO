@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 use fylo_storage_native::RootLease;
 
+use super::frame_access::FrameAccess;
 use super::server_hello::ServerHello;
 use super::server_state::ServerState;
 use crate::{FrameSession, MachineError, RequestFrame};
@@ -143,17 +144,46 @@ impl ServerConnection {
         self.state.is_stopping() || idle_since.elapsed() >= self.state.options().idle_timeout()
     }
 
+    /// Opening a session recovers the root, which may write, so it runs
+    /// alone and clears the hot set.
     fn open_session(&self) -> std::io::Result<FrameSession> {
-        let _executor = self.state.execute()?;
-        Ok(FrameSession::open(
+        let _executor = self.state.write()?;
+        let session = FrameSession::open(
             self.lease.clone(),
             self.state.application().clone(),
             self.state.options().limits(),
-        ))
+        );
+        self.state.clear_hot_set();
+        Ok(self.state.share_hot_set(session))
     }
 
     fn answer(&self, session: &mut FrameSession, frame: RequestFrame) -> std::io::Result<Vec<u8>> {
-        let _executor = self.state.execute()?;
+        match FrameAccess::of(&frame) {
+            FrameAccess::Read => self.answer_read(session, frame),
+            FrameAccess::Write => self.answer_write(session, frame),
+        }
+    }
+
+    fn answer_read(
+        &self,
+        session: &mut FrameSession,
+        frame: RequestFrame,
+    ) -> std::io::Result<Vec<u8>> {
+        let _executor = self.state.read()?;
         session.answer(frame)
+    }
+
+    /// A frame that may write starts and ends with an empty hot set, so
+    /// nothing read before it, or during it, outlives it.
+    fn answer_write(
+        &self,
+        session: &mut FrameSession,
+        frame: RequestFrame,
+    ) -> std::io::Result<Vec<u8>> {
+        let _executor = self.state.write()?;
+        self.state.clear_hot_set();
+        let response = session.answer(frame);
+        self.state.clear_hot_set();
+        response
     }
 }

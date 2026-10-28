@@ -8,6 +8,7 @@ mod application;
 mod frame_session;
 mod invocation_options;
 mod invocation_runtime;
+mod operation_field;
 mod remote_policy;
 mod request_frame;
 #[cfg(not(target_arch = "wasm32"))]
@@ -26,13 +27,14 @@ use std::io::{BufRead, Read, Write};
 #[cfg(not(target_arch = "wasm32"))]
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::path::PathBuf;
+use std::sync::Arc;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use std::time::Instant;
 
 use base64::Engine as _;
-use fylo_engine::{AccessContext, EngineError, ReadOnlyEngine, WriteEngine};
+use fylo_engine::{AccessContext, EngineError, HotSet, ReadOnlyEngine, WriteEngine};
 use fylo_query::{JoinSpec, QueryLimits, SqlOperation, StructuredQuery, prepare_sql};
 use fylo_storage_native::{
     CollectionKind, FilesystemProfile, NativeQueue, NativeRoot, NativeStorageError,
@@ -360,6 +362,8 @@ fn execute_invocation_frame(
         startup_error: None,
         persistent: false,
         remote: false,
+        hot_set: None,
+        hot_engine: std::cell::RefCell::new(None),
     };
     drop(root);
     // Returning data drops this private session and every transient engine.
@@ -476,6 +480,8 @@ impl Session {
             startup_error,
             persistent,
             remote: false,
+            hot_set: None,
+            hot_engine: std::cell::RefCell::new(None),
         }
     }
 }
@@ -492,6 +498,11 @@ struct Session {
     persistent: bool,
     /// A network client: it may not name host paths, URLs or other roots.
     remote: bool,
+    /// Resident reads shared by every session of one server.
+    hot_set: Option<Arc<HotSet>>,
+    /// The engine opened for the hot set, with the hot-set epoch it was
+    /// opened in. A clear may follow a checkout, so it reopens after one.
+    hot_engine: std::cell::RefCell<Option<(u64, ReadOnlyEngine)>>,
 }
 
 /// One paginated query snapshot, held for the life of the session.
@@ -815,6 +826,7 @@ impl Session {
             Err(error)
                 if error.code == "EENGINE_CONCURRENT_WRITE" && self.recover_stranded(request) =>
             {
+                self.clear_hot_set();
                 self.dispatch_once(request)
             }
             result => result,
@@ -843,6 +855,13 @@ impl Session {
         );
         self.recover_invocation_root(&active, &repository, budget)
             .is_ok()
+    }
+
+    /// Recovery rewrote the root, so nothing resident can be trusted.
+    fn clear_hot_set(&self) {
+        if let Some(hot_set) = &self.hot_set {
+            hot_set.clear();
+        }
     }
 
     fn dispatch_once(&self, request: &Value) -> Result<Value, MachineError> {
@@ -1006,13 +1025,21 @@ impl Session {
                 "networkServer".into(),
                 json!({
                     "version": 1,
-                    "execution": "serialized",
+                    "execution": "shared-reads",
                     "hostPaths": false,
-                    "rootOverride": false
+                    "rootOverride": false,
+                    "hotSet": self.hot_set_capability()
                 }),
             );
         }
         capabilities
+    }
+
+    /// The hot set's budget and counters, or `false` when it is off.
+    fn hot_set_capability(&self) -> Value {
+        self.hot_set
+            .as_ref()
+            .map_or(Value::Bool(false), |hot_set| json!(hot_set.statistics()))
     }
 
     /// A network client cannot name a file on the server's disk or make the
@@ -1159,6 +1186,33 @@ impl Session {
     }
 
     fn engine(&self, request: &Value) -> Result<ReadOnlyEngine, MachineError> {
+        match &self.hot_set {
+            Some(hot_set) => self.resident_engine(request, hot_set),
+            None => self.open_engine(request),
+        }
+    }
+
+    /// The engine this session opened since the hot set's last clear, so a
+    /// warm read opens nothing. A served session has one root and one
+    /// schema directory, so one engine answers every request.
+    fn resident_engine(
+        &self,
+        request: &Value,
+        hot_set: &Arc<HotSet>,
+    ) -> Result<ReadOnlyEngine, MachineError> {
+        let epoch = hot_set.epoch();
+        let mut cached = self.hot_engine.borrow_mut();
+        if let Some((opened_in, engine)) = cached.as_ref()
+            && *opened_in == epoch
+        {
+            return Ok(engine.clone());
+        }
+        let engine = self.open_engine(request)?.with_hot_set(Arc::clone(hot_set));
+        *cached = Some((epoch, engine.clone()));
+        Ok(engine)
+    }
+
+    fn open_engine(&self, request: &Value) -> Result<ReadOnlyEngine, MachineError> {
         let repository_root = self.root(request)?;
         let active_root = active_worktree(&repository_root)?;
         let engine =
@@ -1184,9 +1238,8 @@ impl Session {
         let identifier = require_string(request, "id")?;
         let actor = actor(request)?;
         let kind = engine
-            .inspect(collection)
-            .map_err(|error| engine_error(&error))?
-            .kind;
+            .collection_kind(collection)
+            .map_err(|error| engine_error(&error))?;
         if kind == CollectionKind::File {
             let file = match actor.as_ref() {
                 Some(actor) => engine.get_file_as(collection, identifier, actor),
@@ -1243,9 +1296,8 @@ impl Session {
         let identifier = require_string(request, "id")?;
         let actor = actor(request)?;
         if engine
-            .inspect(collection)
+            .collection_kind(collection)
             .map_err(|error| engine_error(&error))?
-            .kind
             != CollectionKind::File
         {
             return Err(MachineError::new(
@@ -1309,9 +1361,8 @@ impl Session {
         let query = structured_query(request)?;
         let actor = actor(request)?;
         if engine
-            .inspect(collection)
+            .collection_kind(collection)
             .map_err(|error| engine_error(&error))?
-            .kind
             == CollectionKind::File
         {
             let pairs = engine
@@ -1800,9 +1851,8 @@ impl Session {
         let query = structured_query(request)?;
         let actor = actor(request)?;
         if engine
-            .inspect(collection)
+            .collection_kind(collection)
             .map_err(|error| engine_error(&error))?
-            .kind
             == CollectionKind::File
         {
             let pairs = engine
@@ -2229,9 +2279,8 @@ impl Session {
         let engine = self.engine(request)?;
         let actor = actor(request)?;
         if engine
-            .inspect(collection)
+            .collection_kind(collection)
             .map_err(|error| engine_error(&error))?
-            .kind
             == CollectionKind::File
         {
             return engine
@@ -4082,6 +4131,8 @@ mod tests {
             startup_error: None,
             persistent: false,
             remote: false,
+            hot_set: None,
+            hot_engine: std::cell::RefCell::new(None),
         };
         let error = session
             .paginate(&json!({ "page": { "limit": 1 } }), Vec::new())

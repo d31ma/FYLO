@@ -1,3 +1,6 @@
+use std::sync::Arc;
+
+use fylo_engine::HotSet;
 use fylo_storage_native::{RootLease, RootOpenOptions};
 
 use crate::{ApplicationConfig, FrameLimits, FrameOutcome, RequestFrame, Session};
@@ -28,6 +31,15 @@ impl FrameSession {
             session,
             open: true,
         }
+    }
+
+    /// Answer reads from `hot_set`, which every session of one server shares.
+    ///
+    /// The server must clear it around every frame that may write.
+    #[must_use]
+    pub fn with_hot_set(mut self, hot_set: Arc<HotSet>) -> Self {
+        self.session.hot_set = Some(hot_set);
+        self
     }
 
     /// The largest request frame this session accepts.

@@ -91,6 +91,9 @@ impl ServeCommand {
         if let Some(milliseconds) = Self::number(arguments, "--idle-timeout-ms")? {
             options = options.with_idle_timeout(Duration::from_millis(milliseconds));
         }
+        if let Some(bytes) = Self::size(arguments, "--hot-set-bytes")? {
+            options = options.with_hot_set_budget(bytes);
+        }
         Ok(options)
     }
 

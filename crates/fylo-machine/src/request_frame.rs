@@ -1,6 +1,7 @@
 use std::io::BufRead;
 
 use crate::Clock;
+use crate::operation_field::OperationField;
 
 /// One request frame read from a transport, before it is answered.
 ///
@@ -38,6 +39,14 @@ impl RequestFrame {
     #[must_use]
     pub fn is_end_of_stream(&self) -> bool {
         self.consumed == 0 && self.bytes.is_empty()
+    }
+
+    /// The frame's `op`, when the frame is a JSON object naming exactly one.
+    #[must_use]
+    pub fn operation(&self) -> Option<String> {
+        serde_json::from_slice::<OperationField>(&self.bytes)
+            .ok()
+            .and_then(|field| field.op)
     }
 
     pub(crate) fn into_parts(self) -> ((Vec<u8>, usize, bool, bool), Clock) {

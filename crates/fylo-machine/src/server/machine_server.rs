@@ -13,8 +13,9 @@ use crate::{ApplicationConfig, ServeOptions, ServerHandle};
 ///
 /// It holds the root lease from [`Self::bind`] until [`Self::run`] returns,
 /// so no other process can open the root meanwhile. Each connection gets its
-/// own persistent machine session, and frames from all connections run one
-/// at a time. If the process dies, the kernel drops the lock and the next
+/// own persistent machine session. Read frames from all connections run
+/// together, from a shared hot set when one is configured; any other frame
+/// runs alone. If the process dies, the kernel drops the lock and the next
 /// owner recovers the root, exactly as after a local process crash.
 pub struct MachineServer {
     listener: TcpListener,

@@ -7,11 +7,13 @@
 mod encryption;
 mod equality_operation;
 mod equality_plan;
+mod hot_set;
 mod schema;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::Path;
+use std::sync::Arc;
 
 use encryption::{EncryptionReader, is_encrypted_field, reject_undeclared_ciphertext};
 use fylo_format::{
@@ -25,8 +27,10 @@ use fylo_storage_native::{
     AccessDescriptor, CollectionKind, GenerationState, GenerationStatus, IndexVerification,
     NativeAccess, NativeCollection, NativeRoot, NativeStorageError, NativeStorageErrorCode,
     NativeWriteRoot, PutDocumentOptions, RepositoryHistory, RootConfig, RootOpenOptions,
-    StoredRawFile, VersionVerification, WriteAccess, WriteActor,
+    StoredBytes, StoredRawFile, VersionVerification, WriteAccess, WriteActor,
 };
+use hot_set::HotReader;
+pub use hot_set::{HotSet, HotSetStatistics};
 use schema::SchemaTools;
 use serde::Serialize;
 use serde_json::{Map, Value, json};
@@ -40,6 +44,7 @@ const MAX_DRIFT_SAMPLE: usize = 12;
 pub struct ReadOnlyEngine {
     root: NativeRoot,
     encryption: Option<EncryptionReader>,
+    hot_set: Option<Arc<HotSet>>,
 }
 
 /// Native FYLO write engine.
@@ -423,6 +428,18 @@ impl ReadOnlyEngine {
         );
         Ok(self)
     }
+
+    /// Answer document reads from `hot_set`, reading storage only for what
+    /// is not resident there.
+    ///
+    /// See [`HotSet`] for the contract: the caller must be the root's only
+    /// writer and clear the hot set after every change.
+    #[must_use]
+    pub fn with_hot_set(mut self, hot_set: Arc<HotSet>) -> Self {
+        self.hot_set = Some(hot_set);
+        self
+    }
+
     /// Open an existing FYLO root without modifying it.
     ///
     /// # Errors
@@ -443,6 +460,7 @@ impl ReadOnlyEngine {
         Ok(Self {
             root: NativeRoot::open_profiled(options).map_err(EngineError::storage)?,
             encryption: None,
+            hot_set: None,
         })
     }
 
@@ -550,27 +568,53 @@ impl ReadOnlyEngine {
         identifier: &str,
         actor: Option<&AccessContext>,
     ) -> Result<ReadDocument, EngineError> {
-        let collection = self
-            .root
-            .collection(collection)
-            .map_err(EngineError::storage)?;
+        match &self.hot_set {
+            Some(hot_set) => HotReader::new(self, hot_set, collection).get(identifier, actor),
+            None => self.get_from_storage(collection, identifier, actor),
+        }
+    }
+
+    fn get_from_storage(
+        &self,
+        collection: &str,
+        identifier: &str,
+        actor: Option<&AccessContext>,
+    ) -> Result<ReadDocument, EngineError> {
+        let collection = self.open_collection(collection)?;
         Self::read_stable(&collection, || {
             self.read_document_with_access(&collection, identifier, actor)
         })
     }
 
-    fn read_document_with_access(
+    /// Whether a collection holds JSON documents or raw files.
+    ///
+    /// Unlike [`Self::inspect`], this lists nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stable error for a missing, unsafe or corrupt collection.
+    pub fn collection_kind(&self, collection: &str) -> Result<CollectionKind, EngineError> {
+        match &self.hot_set {
+            Some(hot_set) => HotReader::new(self, hot_set, collection).kind(),
+            None => Ok(self.open_collection(collection)?.kind()),
+        }
+    }
+
+    fn open_collection(&self, collection: &str) -> Result<NativeCollection, EngineError> {
+        self.root
+            .collection(collection)
+            .map_err(EngineError::storage)
+    }
+
+    /// Parse, decode and stamp one stored document.
+    fn build_record(
         &self,
-        collection: &NativeCollection,
+        collection: &str,
         identifier: &str,
-        actor: Option<&AccessContext>,
+        stored: &StoredBytes,
     ) -> Result<ReadDocument, EngineError> {
-        let stored = collection
-            .read_document(identifier)
-            .map_err(EngineError::storage)?;
-        require_read_access(stored.access, actor)?;
         let document = self.decode_document(
-            collection.name(),
+            collection,
             Document::parse(&stored.bytes, DocumentLimits::default())
                 .map_err(EngineError::format)?,
         )?;
@@ -584,6 +628,19 @@ impl ReadOnlyEngine {
             },
             document,
         })
+    }
+
+    fn read_document_with_access(
+        &self,
+        collection: &NativeCollection,
+        identifier: &str,
+        actor: Option<&AccessContext>,
+    ) -> Result<ReadDocument, EngineError> {
+        let stored = collection
+            .read_document(identifier)
+            .map_err(EngineError::storage)?;
+        require_read_access(stored.access, actor)?;
+        self.build_record(collection.name(), identifier, &stored)
     }
 
     /// Canonical plus developer metadata for one live record.
@@ -963,14 +1020,7 @@ impl ReadOnlyEngine {
         collection: &NativeCollection,
         query: &StructuredQuery,
     ) -> Result<Option<Vec<String>>, EngineError> {
-        let encrypted_fields = self
-            .encryption
-            .as_ref()
-            .map(|encryption| encryption.encrypted_fields(collection.name()))
-            .transpose()
-            .map_err(EngineError::encryption)?
-            .unwrap_or_default();
-
+        let encrypted_fields = self.encrypted_fields(collection.name())?;
         let Some(plan) = equality_plan::EqualityPlan::new(query, &encrypted_fields) else {
             return Ok(None);
         };
@@ -978,6 +1028,16 @@ impl ReadOnlyEngine {
             .shared_index_snapshot()
             .map_err(EngineError::storage)?;
         plan.scan(&snapshot).map(Some)
+    }
+
+    fn encrypted_fields(&self, collection: &str) -> Result<Vec<String>, EngineError> {
+        Ok(self
+            .encryption
+            .as_ref()
+            .map(|encryption| encryption.encrypted_fields(collection))
+            .transpose()
+            .map_err(EngineError::encryption)?
+            .unwrap_or_default())
     }
 
     /// Join two document collections.
@@ -1195,10 +1255,19 @@ impl ReadOnlyEngine {
         query: &StructuredQuery,
         actor: Option<&AccessContext>,
     ) -> Result<Vec<ReadDocument>, EngineError> {
-        let collection = self
-            .root
-            .collection(collection)
-            .map_err(EngineError::storage)?;
+        match &self.hot_set {
+            Some(hot_set) => HotReader::new(self, hot_set, collection).find(query, actor),
+            None => self.find_from_storage(collection, query, actor),
+        }
+    }
+
+    fn find_from_storage(
+        &self,
+        collection: &str,
+        query: &StructuredQuery,
+        actor: Option<&AccessContext>,
+    ) -> Result<Vec<ReadDocument>, EngineError> {
+        let collection = self.open_collection(collection)?;
         Self::read_stable(&collection, || {
             // Documents are the truth and the index is an accelerator, so a
             // planned query narrows which documents are read and the predicate
@@ -1217,29 +1286,15 @@ impl ReadOnlyEngine {
                 if !read_access_allowed(stored.access, actor) {
                     continue;
                 }
-                let document = self.decode_document(
-                    collection.name(),
-                    Document::parse(&stored.bytes, DocumentLimits::default())
-                        .map_err(EngineError::format)?,
-                )?;
-                let timestamps =
-                    TtidTimestamps::decode(&identifier).map_err(EngineError::format)?;
+                let record = self.build_record(collection.name(), &identifier, &stored)?;
                 if !query.matches(
-                    document.fields(),
-                    timestamps.created_at,
-                    stored.modified_millis,
+                    record.document.fields(),
+                    record.metadata.created_at,
+                    record.metadata.updated_at,
                 ) {
                     continue;
                 }
-                records.push(ReadDocument {
-                    metadata: CanonicalMetadata {
-                        id: identifier,
-                        created_at: timestamps.created_at,
-                        updated_at: stored.modified_millis,
-                        mtime: stored.modified_millis,
-                    },
-                    document,
-                });
+                records.push(record);
                 if query
                     .limit()
                     .is_some_and(|limit| limit > 0 && records.len() >= limit)
@@ -1434,10 +1489,34 @@ impl ReadOnlyEngine {
                 return value;
             }
         }
-        Err(EngineError::new(
+        Err(Self::concurrent_write())
+    }
+
+    /// The collection's generation, refusing one that is being written.
+    fn stable_generation(collection: &NativeCollection) -> Result<u64, EngineError> {
+        Self::read_attempt_generation(collection)?
+            .map(|state| state.generation)
+            .ok_or_else(Self::concurrent_write)
+    }
+
+    /// Whether the collection is stable at exactly `generation`.
+    fn generation_is(collection: &NativeCollection, generation: u64) -> Result<bool, EngineError> {
+        Ok(Self::read_attempt_generation(collection)?
+            .is_some_and(|state| state.generation == generation))
+    }
+
+    fn concurrent_write() -> EngineError {
+        EngineError::new(
             EngineErrorCode::ConcurrentWrite,
             "collection changed during a read-only operation",
-        ))
+        )
+    }
+
+    fn access_denied() -> EngineError {
+        EngineError::new(
+            EngineErrorCode::Access,
+            "portable FYLO access descriptor denied the read",
+        )
     }
 
     fn read_attempt_generation(
@@ -1477,10 +1556,7 @@ fn require_read_access(
     if read_access_allowed(descriptor, actor) {
         Ok(())
     } else {
-        Err(EngineError::new(
-            EngineErrorCode::Access,
-            "portable FYLO access descriptor denied the read",
-        ))
+        Err(ReadOnlyEngine::access_denied())
     }
 }
 

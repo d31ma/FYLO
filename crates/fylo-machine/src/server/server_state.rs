@@ -1,21 +1,26 @@
 use std::net::{SocketAddr, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::Duration;
 
-use crate::{ApplicationConfig, ServeOptions};
+use fylo_engine::HotSet;
+
+use crate::{ApplicationConfig, FrameSession, ServeOptions};
 
 /// What every connection of one server shares.
 ///
-/// The executor runs one frame at a time across all connections. Within one
-/// process the engine has a single writer per root, as `exec --loop` does,
-/// and two frames writing the same collection would otherwise refuse each
-/// other with `EENGINE_CONCURRENT_WRITE`.
+/// The executor lets read frames run together and a frame that may write
+/// run alone. Within one process the engine has a single writer per root, as
+/// `exec --loop` does, and two frames writing the same collection would
+/// otherwise refuse each other with `EENGINE_CONCURRENT_WRITE`. Because no
+/// read runs beside a write, the hot set cleared around every write never
+/// holds anything a later read should not see.
 pub(crate) struct ServerState {
     options: ServeOptions,
     application: ApplicationConfig,
     wake_address: SocketAddr,
-    executor: Mutex<()>,
+    executor: RwLock<()>,
+    hot_set: Option<Arc<HotSet>>,
     stopping: AtomicBool,
     connections: Mutex<usize>,
 }
@@ -28,11 +33,13 @@ impl ServerState {
         application: ApplicationConfig,
         wake_address: SocketAddr,
     ) -> Self {
+        let hot_set = Self::hot_set_for(&options);
         Self {
             options,
             application,
             wake_address,
-            executor: Mutex::new(()),
+            executor: RwLock::new(()),
+            hot_set,
             stopping: AtomicBool::new(false),
             connections: Mutex::new(0),
         }
@@ -46,13 +53,41 @@ impl ServerState {
         &self.application
     }
 
-    /// Take the executor. A panic inside a frame poisons it, and then the
-    /// server stops rather than run more frames beside unknown state.
-    pub(crate) fn execute(&self) -> std::io::Result<MutexGuard<'_, ()>> {
-        self.executor.lock().map_err(|_| {
-            self.request_shutdown();
-            std::io::Error::other("a frame panicked, so the server is stopping")
-        })
+    /// Share the executor with other reads. A panic inside a frame poisons
+    /// it, and then the server stops rather than run more frames beside
+    /// unknown state.
+    pub(crate) fn read(&self) -> std::io::Result<RwLockReadGuard<'_, ()>> {
+        self.executor.read().map_err(|_| self.poisoned())
+    }
+
+    /// Take the executor alone, for a frame that may write.
+    pub(crate) fn write(&self) -> std::io::Result<RwLockWriteGuard<'_, ()>> {
+        self.executor.write().map_err(|_| self.poisoned())
+    }
+
+    /// Forget every resident read; called around each frame that may write.
+    pub(crate) fn clear_hot_set(&self) {
+        if let Some(hot_set) = &self.hot_set {
+            hot_set.clear();
+        }
+    }
+
+    /// Give a new session the server's hot set, when there is one.
+    pub(crate) fn share_hot_set(&self, session: FrameSession) -> FrameSession {
+        match &self.hot_set {
+            Some(hot_set) => session.with_hot_set(Arc::clone(hot_set)),
+            None => session,
+        }
+    }
+
+    fn poisoned(&self) -> std::io::Error {
+        self.request_shutdown();
+        std::io::Error::other("a frame panicked, so the server is stopping")
+    }
+
+    fn hot_set_for(options: &ServeOptions) -> Option<Arc<HotSet>> {
+        let budget = options.hot_set_bytes();
+        (budget > 0).then(|| Arc::new(HotSet::new(budget)))
     }
 
     pub(crate) fn is_stopping(&self) -> bool {
