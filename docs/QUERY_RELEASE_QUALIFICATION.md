@@ -492,6 +492,49 @@ segment files, not fewer path checks.
 Raw results, traces, logs with load samples, and the run scripts are in
 `/Volumes/FORGE/Logs/FYLO/fylo-path-verify/`.
 
+## Write latency after the write-ahead log, 2026-10-28
+
+Document writes now commit through the collection write-ahead log
+([ADR 0013](adr/0013-collection-write-ahead-log.md)): one append and one
+`fsync` per commit instead of 23 to 28. Same harness as the 2026-10-11
+baselines (`end-to-end.rs` SHA-256 `e65d46c0…`), release build, 30 samples per
+operation. Logs, load samples and raw JSON are in
+`/Volumes/FORGE/Logs/FYLO/fylo-wal/`.
+
+**Mac internal APFS, 5,000 documents per collection, median of three runs
+(load 3.5 to 4.7):**
+
+| Operation (ms) | develop fe2f1b7 p50 | log p50 | develop p95 | log p95 |
+| -------------- | ------------------: | ------: | ----------: | ------: |
+| Durable put    |                6.42 |    0.70 |        6.83 |    0.88 |
+| Durable patch  |                8.44 |    0.61 |       11.59 |    0.75 |
+| Durable delete |                7.75 |    0.60 |        8.86 |    1.06 |
+
+The fixture build (10,000 puts) dropped from 82 s to 8.4 s. A traced put makes
+72 file calls instead of 413, and one `fsync`. The log branch also includes
+the one-call path checks, which account for part of the patch and delete
+gain; on the log alone, before rebasing, put measured 0.93 ms, patch 1.54 ms
+and delete 1.42 ms.
+
+**APFS sparse bundle on ATLAS, 5,000 documents, one run:**
+
+| Operation (ms) | develop p50 | log p50 | develop p95 | log p95 |
+| -------------- | ----------: | ------: | ----------: | ------: |
+| Durable put    |        7.62 |    0.75 |       37.65 |    0.90 |
+| Durable patch  |       12.85 |    0.66 |       25.84 |    0.71 |
+| Durable delete |       12.04 |    0.63 |       80.55 |    0.89 |
+
+The fixture build took 30 s instead of 638 s. The image was attached with
+`diskutil image attach`; images attached with `hdiutil attach` wedged with
+error 45 within a minute, twice.
+
+**Correctness under load.** The crash matrix interrupted 408 mutations across
+24 failpoints (macOS) and 378 (Windows), all recovered. The repeated
+concurrency suite passed 10 of 10 runs on macOS and 8 of 8 on Windows. The
+bounded multi-process load (30 s) committed 1,297 writes, served 18,458
+coherent reads, and passed all 100 settled checks with no lost writes or
+duplicate owners.
+
 ## Cloud Run and Azure Functions, local only, 2026-10-11
 
 `bun run cloudrun:local` and `bun run azure:local`

@@ -34,13 +34,13 @@ measured a durable put at 6.0 to 6.6 ms p50 on a 5,000-document root, patch
 at 8.4 to 8.8 ms and delete at 7.7 to 8.0 ms. One traced put (7.1 ms) breaks
 down as:
 
-| Cost                                              |  Time per put |
-| ------------------------------------------------- | ------------: |
-| 413 file calls, all kinds                         |       3.65 ms |
-| of which 23 fsyncs                                |       0.36 ms |
-| of which 76 directory opens (path verification)   |       0.83 ms |
-| spawning `ps` to stamp the collection lock record | about 2.2 ms  |
-| everything else (parsing, hashing, allocation)    | about 1.2 ms  |
+| Cost                                              | Time per put |
+| ------------------------------------------------- | -----------: |
+| 413 file calls, all kinds                         |      3.65 ms |
+| of which 23 fsyncs                                |      0.36 ms |
+| of which 76 directory opens (path verification)   |      0.83 ms |
+| spawning `ps` to stamp the collection lock record | about 2.2 ms |
+| everything else (parsing, hashing, allocation)    | about 1.2 ms |
 
 The `ps` spawn is `process_identity` in `CollectionWriteLock::acquire_at`,
 which runs on every lock acquisition. On Windows the same probe starts
@@ -113,33 +113,33 @@ known-answer test, so no dependency is added.
 
 Segment header, 32 bytes:
 
-| Offset | Size | Field                                              |
-| -----: | ---: | -------------------------------------------------- |
-|      0 |    8 | magic `FYLOLOG\0`                                  |
-|      8 |    2 | format version, `1`                                |
-|     10 |    2 | flags, `0` (non-zero is refused)                   |
-|     12 |    8 | segment sequence number                            |
-|     20 |    8 | log sequence number (LSN) of the first record      |
-|     28 |    4 | CRC-32C of bytes 0 to 27                           |
+| Offset | Size | Field                                         |
+| -----: | ---: | --------------------------------------------- |
+|      0 |    8 | magic `FYLOLOG\0`                             |
+|      8 |    2 | format version, `1`                           |
+|     10 |    2 | flags, `0` (non-zero is refused)              |
+|     12 |    8 | segment sequence number                       |
+|     20 |    8 | log sequence number (LSN) of the first record |
+|     28 |    4 | CRC-32C of bytes 0 to 27                      |
 
 Record frame:
 
-| Size | Field                                                       |
-| ---: | ----------------------------------------------------------- |
-|    4 | body length `n` (at most 64 MiB; larger is refused)         |
-|    4 | CRC-32C of the body                                         |
-|    n | body                                                        |
+| Size | Field                                               |
+| ---: | --------------------------------------------------- |
+|    4 | body length `n` (at most 64 MiB; larger is refused) |
+|    4 | CRC-32C of the body                                 |
+|    n | body                                                |
 
 Body:
 
-| Size | Field                                                       |
-| ---: | ----------------------------------------------------------- |
-|    8 | LSN, one more than the previous record                      |
-|    1 | kind: `1` commit, `2` abort, `3` checkpoint                 |
-|    8 | generation this record publishes                            |
-|    4 | manifest length `m`                                         |
-|    m | manifest, canonical JSON, `deny_unknown_fields`             |
-|  ... | blobs, concatenated in manifest order                       |
+| Size | Field                                           |
+| ---: | ----------------------------------------------- |
+|    8 | LSN, one more than the previous record          |
+|    1 | kind: `1` commit, `2` abort, `3` checkpoint     |
+|    8 | generation this record publishes                |
+|    4 | manifest length `m`                             |
+|    m | manifest, canonical JSON, `deny_unknown_fields` |
+|  ... | blobs, concatenated in manifest order           |
 
 A commit manifest (`"format": "fylo.log-commit.v1"`) names the operation and
 lists steps in apply order. Each step is a full post-image, never a delta, so
