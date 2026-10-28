@@ -1,4 +1,4 @@
-use std::io::Write;
+use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -34,7 +34,7 @@ impl LogSegment {
         path: &Path,
         position: &LogPosition,
     ) -> Result<Option<Self>, NativeStorageError> {
-        let file = match OpenOptions::new().read(true).append(true).open(path) {
+        let file = match OpenOptions::new().read(true).write(true).open(path) {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(NativeStorageError::io(error)),
@@ -89,7 +89,7 @@ impl LogSegment {
         bytes.extend(Self::encode(&record)?);
         let mut file = OpenOptions::new()
             .read(true)
-            .append(true)
+            .write(true)
             .create_new(true)
             .open(path)
             .map_err(NativeStorageError::io)?;
@@ -109,9 +109,8 @@ impl LogSegment {
     /// unacknowledged stays in the log.
     pub(crate) fn append(&mut self, bytes: &[u8], records: u64) -> Result<(), NativeStorageError> {
         crate::write::failpoint("before-log-append")?;
-        let outcome = (&*self.file)
-            .write_all(bytes)
-            .map_err(NativeStorageError::io)
+        let outcome = self
+            .write_at_end(bytes)
             .and_then(|()| crate::write::failpoint("after-log-append"));
         if let Err(error) = outcome {
             self.truncate(self.length)?;
@@ -127,6 +126,16 @@ impl LogSegment {
             ));
         }
         Ok(())
+    }
+
+    /// Write at the segment's known end. The handle is not opened for
+    /// appending, because Windows cannot truncate an append-only handle, and a
+    /// failed append must be cut back off.
+    fn write_at_end(&self, bytes: &[u8]) -> Result<(), NativeStorageError> {
+        let mut file = &*self.file;
+        file.seek(SeekFrom::Start(self.length))
+            .and_then(|_| file.write_all(bytes))
+            .map_err(NativeStorageError::io)
     }
 
     /// Cut the segment back to `length` bytes.
