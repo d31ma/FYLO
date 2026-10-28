@@ -144,8 +144,17 @@ and responses are exactly the ones a local `exec --loop --exclusive-root`
 session exchanges, under the server's frame limits.
 
 A served session reports `capabilities.networkServer`
-(`{"version":1,"execution":"serialized","hostPaths":false,"rootOverride":false}`)
+(`{"version":1,"execution":"shared-reads","hostPaths":false,"rootOverride":false,"hotSet":...}`)
 and an empty `documentBuckets.putInputs` with `getOutputs:["base64"]`. Its
 requests cannot carry another `root`, a `schemaDir`, or a `file` input, and
 cannot use `getFileData` with `path` or `importBulkData`; those are refused
 with `EBADREQUEST` or `EUNSUPPORTEDOP` before dispatch.
+
+`execution:"shared-reads"` means read frames (`handshake`, `getDoc`,
+`getLatest`, `getFileData`, `getMeta`, `findDocs`, `findDeletedDocs`,
+`joinDocs`, `inspectCollection`, `log`) from different connections may run at
+the same time, while any other frame runs alone (ADR 0014). `hotSet` is `false`
+when `fylo serve --hot-set-bytes 0` turned the in-memory hot set off, and
+otherwise an object of counters: `budgetBytes`, `residentBytes`,
+`collections`, `documents`, `hits`, `misses`, `evictions`, `refusals` and
+`clears`. The counters are for operators; results never depend on them.

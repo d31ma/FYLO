@@ -29,7 +29,8 @@ answers the machine protocol v1 over TCP.
 - **One frame at a time.** Each connection has its own persistent session (its
   own query cursors), and frames from all connections run through one executor.
   The engine has one writer per root inside a process; this keeps that
-  invariant instead of relaxing it. Reads are serialized too, for now.
+  invariant instead of relaxing it. Reads are serialized too, for now
+  (ADR 0014 later let reads run together and serve them from memory).
 - **No open listener.** The operator must name the address (`--listen`); there
   is no default. Every connection must first send a transport hello,
   `{"fyloServe":1,"token":"..."}`, carrying a shared secret of at least 32 bytes

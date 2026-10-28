@@ -1273,8 +1273,7 @@ impl Session {
             }
             Err(error) => return Err(engine_error(&error)),
         };
-        let document =
-            serde_json::to_value(record.document).map_err(|error| serialization_error(&error))?;
+        let document = Value::Object(record.document.into_fields());
         Ok(json!({ identifier: document }))
     }
 
@@ -1381,9 +1380,7 @@ impl Session {
         let mut pairs = Vec::with_capacity(rows.len());
         for record in rows {
             let identifier = record.metadata.id.clone();
-            let document = serde_json::to_value(record.document)
-                .map_err(|error| serialization_error(&error))?;
-            pairs.push((identifier, document));
+            pairs.push((identifier, Value::Object(record.document.into_fields())));
         }
         self.shape_query_result(request, pairs)
     }
@@ -1869,9 +1866,7 @@ impl Session {
         let mut pairs = Vec::with_capacity(rows.len());
         for record in rows {
             let identifier = record.id.clone();
-            let encoded = serde_json::to_value(record.document)
-                .map_err(|error| serialization_error(&error))?;
-            pairs.push((identifier, encoded));
+            pairs.push((identifier, Value::Object(record.document.into_fields())));
         }
         self.shape_query_result(request, pairs)
     }

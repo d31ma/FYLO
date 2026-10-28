@@ -31,6 +31,7 @@ ADR.
 | [0009](0009-embedded-serverless-queue.md)                   | Accepted | Embedded durable serverless queue           |
 | [0012](0012-opt-in-network-server.md)                       | Accepted | Opt-in network server for one root          |
 | [0013](0013-collection-write-ahead-log.md)                  | Accepted | Collection write-ahead log with group commit |
+| [0014](0014-in-memory-hot-set.md)                           | Accepted | In-memory hot set for `fylo serve`          |
 
 ## When another ADR is required
 
