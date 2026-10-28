@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Map, Value};
 
 use crate::RootConfig;
+use fylo_storage_native::Durability;
 
 use super::application_config::ApplicationConfig;
 use super::secret_reference::SecretReference;
@@ -19,11 +20,12 @@ impl Settings {
     const ENCRYPTION_KEY: &'static str = "encryption";
     const CIPHER_KEY: &'static str = "cipher";
     const CHEX_KEY: &'static str = "chex";
+    const DURABILITY_KEY: &'static str = "durability";
     const MINIMUM_SHARD_WIDTH: u64 = 1;
     const MAXIMUM_SHARD_WIDTH: u64 = 4;
     const MINIMUM_KEY_BYTES: usize = 32;
     const PATH_ERROR: &'static str = "must be a nonempty path without NUL";
-    const KEYS: [&'static str; 7] = [
+    const KEYS: [&'static str; 8] = [
         Self::ROOT_KEY,
         Self::STRICT_KEY,
         Self::SCHEMA_KEY,
@@ -31,6 +33,7 @@ impl Settings {
         Self::ENCRYPTION_KEY,
         Self::CIPHER_KEY,
         Self::CHEX_KEY,
+        Self::DURABILITY_KEY,
     ];
     const CREDENTIAL_ERROR: &'static str = "fylo.encryption.key and fylo.cipher.salt require paired secret references; key must contain at least 32 UTF-8 bytes and salt must not be empty";
 
@@ -54,6 +57,7 @@ impl Settings {
             &mut secrets,
         )?;
         let strict_schema = Self::strict(settings.get(Self::STRICT_KEY))?;
+        let durability = Self::durability(settings.get(Self::DURABILITY_KEY))?;
         let shard_width = Self::member(settings, Self::SHARD_KEY, "width")?
             .map(Self::shard_width)
             .transpose()?;
@@ -74,10 +78,22 @@ impl Settings {
             storage: RootConfig {
                 strict_schema,
                 shard_width,
+                durability,
             },
             schema,
             credentials,
         })
+    }
+
+    /// `fylo.durability`: `"process"` (the default) or `"power-loss"`.
+    fn durability(value: Option<&Value>) -> Result<Durability, String> {
+        let Some(value) = value else {
+            return Ok(Durability::default());
+        };
+        value
+            .as_str()
+            .and_then(Durability::parse)
+            .ok_or_else(|| "fylo.durability must be \"process\" or \"power-loss\"".into())
     }
 
     /// `fylo.chex.binary` selected the external validator FYLO used to spawn.

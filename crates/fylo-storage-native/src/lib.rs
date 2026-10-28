@@ -19,9 +19,11 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 mod beneath_open;
+mod durability;
 mod filesystem_profile;
 mod index_cache;
 mod lease;
+mod log_position;
 mod profile_manifest;
 mod queue;
 mod record_attributes;
@@ -33,10 +35,12 @@ mod write;
 use beneath_open::BeneathOpen;
 use spelling_cache::SpellingCache;
 
+pub use durability::Durability;
 pub use filesystem_profile::FilesystemProfile;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub use fylo_vfs::host_now_unix_ms;
 pub use lease::RootLease;
+pub use log_position::LogPosition;
 pub use queue::{
     NativeQueue, QueueAckResult, QueueClaimOptions, QueueDeadLetter, QueueDelivery,
     QueueNackResult, QueuePublishOptions, QueuePublishResult, QueueStats,
@@ -1356,12 +1360,14 @@ impl NativeCollection {
     ///
     /// Returns an error for corrupt, oversized, linked, or inaccessible state.
     pub fn generation(&self) -> Result<GenerationState, NativeStorageError> {
-        let state = self.read_generation()?;
+        let state = self.stored_generation()?;
         SpellingCache::shared().observe_generation(&self.path, state.generation);
-        Ok(state)
+        self.unapplied_log_check(state)
     }
 
-    fn read_generation(&self) -> Result<GenerationState, NativeStorageError> {
+    /// The generation exactly as `state.json` records it, without checking
+    /// the write-ahead log against it.
+    pub(crate) fn stored_generation(&self) -> Result<GenerationState, NativeStorageError> {
         self.root.assert_profile_owned()?;
         let path = self
             .root
@@ -1372,10 +1378,11 @@ impl NativeCollection {
             .join("state.json");
         if !path_exists_no_follow(&path)? {
             return Ok(GenerationState {
-                format: "fylo.collection-generation.v1".into(),
+                format: GenerationState::FORMAT_V1.into(),
                 generation: 0,
                 state: GenerationStatus::Stable,
                 transaction_id: None,
+                log: None,
             });
         }
         let bytes = self.root.read_generation_file(&path)?;
@@ -1387,6 +1394,54 @@ impl NativeCollection {
         })?;
         state.validate()?;
         Ok(state)
+    }
+
+    /// A stable generation whose log has grown past, or lost, the position it
+    /// recorded has a committed record that is not applied yet: a writer died
+    /// between its commit and its publication. Readers must treat that as an
+    /// in-progress write, which also routes them to recovery.
+    fn unapplied_log_check(
+        &self,
+        state: GenerationState,
+    ) -> Result<GenerationState, NativeStorageError> {
+        let Some(position) = state.log.as_ref() else {
+            return Ok(state);
+        };
+        if state.state == GenerationStatus::Writing {
+            return Ok(state);
+        }
+        let segment = self.log_segment_path();
+        let length = match fs::symlink_metadata(&segment) {
+            Ok(metadata) => Some(metadata.len()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(NativeStorageError::io(error)),
+        };
+        if length == Some(position.length) {
+            return Ok(state);
+        }
+        Ok(GenerationState {
+            state: GenerationStatus::Writing,
+            transaction_id: Some(Self::UNAPPLIED_LOG_TRANSACTION.into()),
+            ..state
+        })
+    }
+
+    /// Transaction identifier a reader sees for an unapplied log record.
+    pub(crate) const UNAPPLIED_LOG_TRANSACTION: &'static str = "log-unapplied";
+
+    /// Directory of the collection's write-ahead log.
+    pub(crate) fn log_directory(&self) -> PathBuf {
+        self.root
+            .canonical
+            .join(".fylo-transactions")
+            .join(&self.namespace)
+            .join(&self.name)
+            .join("log")
+    }
+
+    /// The collection's single write-ahead log segment.
+    pub(crate) fn log_segment_path(&self) -> PathBuf {
+        self.log_directory().join("segment.log")
     }
 
     /// List validated live document identifiers in ascending TTID order.
@@ -2201,9 +2256,18 @@ pub struct GenerationState {
     /// Transaction ID present only while writing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transaction_id: Option<String>,
+    /// End of the write-ahead log, present only in the v2 format while the
+    /// collection has commits since its last checkpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log: Option<LogPosition>,
 }
 
 impl GenerationState {
+    /// Format of a collection whose write-ahead log is checkpointed away.
+    pub const FORMAT_V1: &'static str = "fylo.collection-generation.v1";
+    /// Format of a collection with commits in its write-ahead log.
+    pub const FORMAT_V2: &'static str = "fylo.collection-generation.v2";
+
     fn validate(&self) -> Result<(), NativeStorageError> {
         let valid_transaction = match self.state {
             GenerationStatus::Stable => self.transaction_id.is_none(),
@@ -2212,7 +2276,11 @@ impl GenerationState {
                 .as_ref()
                 .is_some_and(|identifier| !identifier.is_empty()),
         };
-        if self.format != "fylo.collection-generation.v1" || !valid_transaction {
+        let valid_format = match self.log {
+            None => self.format == Self::FORMAT_V1,
+            Some(_) => self.format == Self::FORMAT_V2,
+        };
+        if !valid_format || !valid_transaction {
             return Err(NativeStorageError::new(
                 NativeStorageErrorCode::CorruptMetadata,
                 "collection generation state has an invalid schema",
@@ -2990,6 +3058,8 @@ pub struct RootConfig {
     /// property of the root, so letting a per-host value decide would let two
     /// hosts disagree and relocate every record back and forth.
     pub shard_width: Option<u32>,
+    /// How hard each commit's write-ahead log append is flushed.
+    pub durability: Durability,
 }
 
 /// This process's identifier, or zero where the platform has none.

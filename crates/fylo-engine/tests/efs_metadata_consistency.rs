@@ -624,6 +624,7 @@ fn native_profile_preserves_existing_config_schema_encryption_and_ciphertext_den
     let config = fylo_storage_native::RootConfig {
         strict_schema: false,
         shard_width: Some(2),
+        ..Default::default()
     };
     assert_eq!(
         WriteEngine::open_profiled(RootOpenOptions::new(&native))

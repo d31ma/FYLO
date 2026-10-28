@@ -37,6 +37,7 @@ const INDEX_WAL_COMPACT_BYTES: u64 = 64 * 1024;
 #[cfg(unix)]
 const DEFAULT_ACCESS_MODE: u32 = 0o600;
 
+mod commit_log;
 pub(crate) mod version;
 
 static UNIQUE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -204,9 +205,18 @@ impl NativeWriteRoot {
         self.root.owning_lease()
     }
 
-    fn lock_collection(&self, path: &Path) -> Result<CollectionWriteLock, NativeStorageError> {
+    fn lock_collection(
+        &self,
+        path: &Path,
+    ) -> Result<commit_log::CollectionGuard, NativeStorageError> {
         self.root.assert_profile_owned()?;
-        CollectionWriteLock::acquire_profiled(&self.root, &path.join("locks"), "collection.lock")
+        let exclusive = commit_log::CommitQueue::shared(path).exclusive()?;
+        let file = CollectionWriteLock::acquire_profiled(
+            &self.root,
+            &path.join("locks"),
+            "collection.lock",
+        )?;
+        Ok(commit_log::CollectionGuard::new(file, exclusive))
     }
 
     fn move_record_pair(&self, source: &Path, target: &Path) -> Result<(), NativeStorageError> {
@@ -403,6 +413,14 @@ impl NativeWriteRoot {
                 NativeStorageErrorCode::WrongType,
                 "put_document requires a document collection",
             ));
+        }
+        if self.uses_log(&collection) {
+            return self.put_document_logged(
+                &collection,
+                identifier,
+                &canonical,
+                (&metadata, access),
+            );
         }
         let _lock = self.lock_collection(&collection.path)?;
         self.recover_locked(&collection)?;
@@ -644,6 +662,10 @@ impl NativeWriteRoot {
                 "patch_document requires a document collection",
             ));
         }
+        if self.uses_log(&collection) {
+            return self
+                .patch_document_logged(&collection, identifier, actor, |_| Ok(canonical.clone()));
+        }
         let _lock = self.lock_collection(&collection.path)?;
         self.recover_locked(&collection)?;
         let stored = collection.read_document(identifier)?;
@@ -695,6 +717,13 @@ impl NativeWriteRoot {
         self.root.assert_profile_owned()?;
         validate_ttid_shape(identifier)?;
         let collection = self.document_collection(collection_name, "patch_document_fields")?;
+        if self.uses_log(&collection) {
+            return self.patch_document_logged(&collection, identifier, actor, |bytes| {
+                let mut document = parse_document_fields(bytes)?;
+                merge_top_level(&mut document, changes);
+                encode_document_fields(document)
+            });
+        }
         let _lock = self.lock_collection(&collection.path)?;
         self.recover_locked(&collection)?;
         let stored = collection.read_document(identifier)?;
@@ -796,6 +825,14 @@ impl NativeWriteRoot {
         validate_ttid_shape(identifier)?;
         validate_custom_metadata(&record.clone().into_iter().collect())?;
         let collection = self.writable_collection(collection_name)?;
+        if self.uses_log(&collection) {
+            return self.write_record_metadata_logged(
+                &collection,
+                identifier,
+                (record, replace),
+                actor,
+            );
+        }
         let _lock = self.lock_collection(&collection.path)?;
         self.recover_locked(&collection)?;
         let (target, access) = record_target(&collection, identifier)?;
@@ -869,6 +906,9 @@ impl NativeWriteRoot {
         }
         let access = self.validate_access(access)?;
         let collection = self.writable_collection(collection_name)?;
+        if self.uses_log(&collection) && cfg!(unix) {
+            return self.set_record_access_logged(&collection, identifier, access, actor);
+        }
         let _lock = self.lock_collection(&collection.path)?;
         self.recover_locked(&collection)?;
         let (target, descriptor) = record_target(&collection, identifier)?;
@@ -898,6 +938,9 @@ impl NativeWriteRoot {
         self.root.assert_profile_owned()?;
         validate_ttid_shape(identifier)?;
         let collection = self.writable_collection(collection_name)?;
+        if self.uses_log(&collection) {
+            return self.delete_document_logged(&collection, identifier, actor);
+        }
         let _lock = self.lock_collection(&collection.path)?;
         self.recover_locked(&collection)?;
         let (source, access) = record_target(&collection, identifier)?;
@@ -969,6 +1012,9 @@ impl NativeWriteRoot {
         self.root.assert_profile_owned()?;
         validate_ttid_shape(identifier)?;
         let collection = self.writable_collection(collection_name)?;
+        if self.uses_log(&collection) {
+            return self.restore_document_logged(&collection, identifier, actor);
+        }
         let _lock = self.lock_collection(&collection.path)?;
         self.recover_locked(&collection)?;
         match record_target(&collection, identifier) {
@@ -1533,6 +1579,12 @@ impl NativeWriteRoot {
         let query = StructuredQuery::from_value(&query_value, QueryLimits::default())
             .map_err(|error| query_error(&error))?;
         let collection = self.document_collection(&plan.collection, "SQL UPDATE")?;
+        if self.uses_log(&collection) {
+            match self.sql_update_logged(&collection, (&query, changes), actor) {
+                Err(error) if Self::exceeds_log_budget(&error) => {}
+                outcome => return outcome,
+            }
+        }
         let _lock = self.lock_collection(&collection.path)?;
         self.recover_locked(&collection)?;
         let mut documents = matching_documents(&collection, &query, actor)?;
@@ -1559,6 +1611,9 @@ impl NativeWriteRoot {
         let query = StructuredQuery::from_value(&plan.ast, QueryLimits::default())
             .map_err(|error| query_error(&error))?;
         let collection = self.document_collection(&plan.collection, "SQL DELETE")?;
+        if self.uses_log(&collection) {
+            return self.sql_delete_logged(&collection, &query, actor);
+        }
         let _lock = self.lock_collection(&collection.path)?;
         self.recover_locked(&collection)?;
         let documents = matching_documents(&collection, &query, actor)?;
@@ -1639,8 +1694,21 @@ impl NativeWriteRoot {
         &self,
         collection: &super::NativeCollection,
     ) -> Result<bool, NativeStorageError> {
+        let log_recovered = if self.filesystem_profile() == super::FilesystemProfile::Native {
+            self.settle_log(collection)?
+        } else {
+            false
+        };
+        let journal_recovered = self.recover_journal_locked(collection)?;
+        Ok(log_recovered || journal_recovered)
+    }
+
+    fn recover_journal_locked(
+        &self,
+        collection: &super::NativeCollection,
+    ) -> Result<bool, NativeStorageError> {
         self.root.assert_profile_owned()?;
-        let generation = collection.generation()?;
+        let generation = collection.stored_generation()?;
         if generation.state == super::GenerationStatus::Stable {
             cleanup_orphan_transactions(self, collection)?;
             return Ok(false);
@@ -2256,12 +2324,14 @@ impl TransactionManifest {
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct GenerationRecord {
+pub(crate) struct GenerationRecord {
     format: String,
     generation: u64,
     state: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     transaction_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    log: Option<super::LogPosition>,
 }
 
 impl GenerationRecord {
@@ -2271,6 +2341,7 @@ impl GenerationRecord {
             generation,
             state: "writing".into(),
             transaction_id: Some(transaction_id),
+            log: None,
         }
     }
 
@@ -2280,6 +2351,7 @@ impl GenerationRecord {
             generation,
             state: "stable".into(),
             transaction_id: None,
+            log: None,
         }
     }
 }
@@ -2380,9 +2452,9 @@ impl Capture {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct CapturedAttribute {
-    name: String,
-    value: String,
+pub(crate) struct CapturedAttribute {
+    pub(crate) name: String,
+    pub(crate) value: String,
 }
 
 struct Transaction<'a> {
@@ -2673,6 +2745,7 @@ struct LockRecord {
     ts: u64,
 }
 
+#[derive(Debug)]
 struct CollectionWriteLock {
     path: PathBuf,
     owner: String,
@@ -2688,12 +2761,12 @@ impl CollectionWriteLock {
             owner: owner.clone(),
             root_owner: None,
             pid: super::process_id(),
-            process_identity: process_identity(super::process_id()),
+            process_identity: own_process_identity(),
             ts: unix_millis()?,
         };
-        if !try_create_lock(&path, &record)? {
+        if !try_create_lock(&path, &record, false)? {
             reclaim_stale_lock(&path, &record)?;
-            if !try_create_lock(&path, &record)? {
+            if !try_create_lock(&path, &record, false)? {
                 return Err(NativeStorageError::new(
                     NativeStorageErrorCode::ConcurrentWrite,
                     "collection write lock is held by another process",
@@ -2736,7 +2809,7 @@ impl CollectionWriteLock {
             process_identity: None,
             ts: unix_millis()?,
         };
-        if !try_create_lock(&path, &record)? {
+        if !try_create_lock(&path, &record, true)? {
             root.verify_path(&path, ExpectedType::File)?;
             let existing: LockRecord = read_bounded_json(&path, 16 * 1024)?;
             if existing.root_owner.as_deref() == Some(lease.owner_generation()) {
@@ -2752,7 +2825,7 @@ impl CollectionWriteLock {
             fs::rename(&path, &stale).map_err(NativeStorageError::io)?;
             fs::remove_file(stale).map_err(NativeStorageError::io)?;
             sync_parent(&path)?;
-            if !try_create_lock(&path, &record)? {
+            if !try_create_lock(&path, &record, true)? {
                 return Err(NativeStorageError::new(
                     NativeStorageErrorCode::ConcurrentWrite,
                     "EFS collection lock was contested",
@@ -2792,14 +2865,24 @@ impl Drop for CollectionWriteLock {
     }
 }
 
-fn try_create_lock(path: &Path, record: &LockRecord) -> Result<bool, NativeStorageError> {
+/// Claim `path` atomically with `record`.
+///
+/// A native lock is one exclusive create, which a local filesystem makes
+/// atomic, and it is not flushed: it lives no longer than its process.
+/// `durable` keeps the link-then-check claim and its flushes, which the EFS
+/// profile needs because exclusive create is unreliable over NFS and a remote
+/// owner reads the record.
+fn try_create_lock(
+    path: &Path,
+    record: &LockRecord,
+    durable: bool,
+) -> Result<bool, NativeStorageError> {
+    let encoded = serde_json::to_vec(record).map_err(|error| json_error(&error))?;
+    if !durable {
+        return try_create_exclusive(path, &encoded);
+    }
     let scratch = sibling_scratch(path);
-    write_new_synced(
-        &scratch,
-        serde_json::to_vec(record)
-            .map_err(|error| json_error(&error))?
-            .as_slice(),
-    )?;
+    write_new_synced(&scratch, &encoded)?;
     let result = match fs::hard_link(&scratch, path) {
         Ok(()) => {
             sync_parent(path)?;
@@ -2811,7 +2894,6 @@ fn try_create_lock(path: &Path, record: &LockRecord) -> Result<bool, NativeStora
         // links is not NFS — so the exclusive create the host does offer is
         // the atomic primitive here.
         Err(error) if error.kind() == std::io::ErrorKind::Unsupported => {
-            let encoded = serde_json::to_vec(record).map_err(|error| json_error(&error))?;
             match write_new_synced(path, &encoded) {
                 Ok(()) => {
                     sync_parent(path)?;
@@ -2827,14 +2909,22 @@ fn try_create_lock(path: &Path, record: &LockRecord) -> Result<bool, NativeStora
     Ok(result)
 }
 
+fn try_create_exclusive(path: &Path, encoded: &[u8]) -> Result<bool, NativeStorageError> {
+    let mut file = match OpenOptions::new().create_new(true).write(true).open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return Ok(false),
+        Err(error) => return Err(NativeStorageError::io(error)),
+    };
+    file.write_all(encoded).map_err(NativeStorageError::io)?;
+    Ok(true)
+}
+
 fn reclaim_stale_lock(path: &Path, contender: &LockRecord) -> Result<(), NativeStorageError> {
     let payload = fs::read(path).map_err(NativeStorageError::io)?;
-    let existing: LockRecord = serde_json::from_slice(&payload).map_err(|_| {
-        NativeStorageError::new(
-            NativeStorageErrorCode::ConcurrentWrite,
-            "collection lock is unreadable and cannot be reclaimed automatically",
-        )
-    })?;
+    let existing: LockRecord = match serde_json::from_slice(&payload) {
+        Ok(existing) => existing,
+        Err(_) => unreadable_lock_record(path)?,
+    };
     if lock_owner_alive(&existing)
         || unix_millis()?.saturating_sub(existing.ts) < LOCK_TTL_MILLIS
             && existing.process_identity.is_none()
@@ -2849,7 +2939,7 @@ fn reclaim_stale_lock(path: &Path, contender: &LockRecord) -> Result<(), NativeS
         process_identity: contender.process_identity.clone(),
         ts: contender.ts,
     };
-    if !try_create_lock(&claim, &claim_record)? {
+    if !try_create_lock(&claim, &claim_record, false)? {
         return Ok(());
     }
     let current = fs::read(path).map_err(NativeStorageError::io)?;
@@ -2861,6 +2951,40 @@ fn reclaim_stale_lock(path: &Path, contender: &LockRecord) -> Result<(), NativeS
     }
     let _ = fs::remove_file(claim);
     Ok(())
+}
+
+/// A native lock record is written in full before it is linked into place,
+/// so only power loss can leave one unreadable. Once such a record is older
+/// than the lock TTL its owner cannot still be running, so it reads as a dead
+/// owner; a fresh unreadable record is still refused.
+fn unreadable_lock_record(path: &Path) -> Result<LockRecord, NativeStorageError> {
+    let unreadable = || {
+        NativeStorageError::new(
+            NativeStorageErrorCode::ConcurrentWrite,
+            "collection lock is unreadable and cannot be reclaimed automatically",
+        )
+    };
+    let metadata = fs::symlink_metadata(path).map_err(NativeStorageError::io)?;
+    let written = commit_log::modified_ms(&metadata)?;
+    if unix_millis()?.saturating_sub(written) < LOCK_TTL_MILLIS {
+        return Err(unreadable());
+    }
+    Ok(LockRecord {
+        owner: String::new(),
+        root_owner: None,
+        pid: 0,
+        process_identity: Some(String::new()),
+        ts: written,
+    })
+}
+
+/// This process's identity never changes while it runs, and finding it
+/// spawns a process on macOS and Windows, so it is found once.
+fn own_process_identity() -> Option<String> {
+    static IDENTITY: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    IDENTITY
+        .get_or_init(|| process_identity(super::process_id()))
+        .clone()
 }
 
 fn lock_owner_alive(record: &LockRecord) -> bool {
@@ -3273,7 +3397,7 @@ fn cleanup_orphan_transactions(
     }
     for entry in fs::read_dir(root).map_err(NativeStorageError::io)? {
         let entry = entry.map_err(NativeStorageError::io)?;
-        if entry.file_name() == "state.json" {
+        if entry.file_name() == "state.json" || entry.file_name() == "log" {
             continue;
         }
         if entry.file_type().map_err(NativeStorageError::io)?.is_dir() {
@@ -4589,7 +4713,7 @@ fn set_mode(_path: &Path, _mode: u32) -> Result<(), NativeStorageError> {
 /// The list is the contract the crash matrix enumerates, so a new failpoint
 /// must be declared here to be injectable — which is also what stops it from
 /// being added without coverage.
-pub const FAILPOINTS: [&str; 17] = [
+pub const FAILPOINTS: [&str; 24] = [
     "before-file-write",
     "after-file-rename",
     "after-file-sync",
@@ -4607,6 +4731,13 @@ pub const FAILPOINTS: [&str; 17] = [
     "after-commit-object",
     "after-record-payload-rename",
     "after-record-sidecar-rename",
+    "before-log-append",
+    "after-log-append",
+    "before-log-sync",
+    "after-log-sync",
+    "after-log-apply-step",
+    "after-checkpoint-flush",
+    "after-checkpoint-remove",
 ];
 
 pub(crate) fn failpoint(name: &str) -> Result<(), NativeStorageError> {

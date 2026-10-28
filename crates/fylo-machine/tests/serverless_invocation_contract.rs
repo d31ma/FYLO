@@ -646,6 +646,7 @@ fn invocation_retains_host_storage_schema_credentials_and_published_frame_limits
         storage: RootConfig {
             strict_schema: false,
             shard_width: Some(2),
+            ..Default::default()
         },
         schema: Some(schema.clone()),
         credentials: Some((FIXTURE_KEY.into(), "fixture-salt".into())),

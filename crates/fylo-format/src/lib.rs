@@ -1,14 +1,26 @@
 mod canonical_metadata;
+mod crc32c;
 mod document;
 mod document_limits;
 mod document_validator;
 mod format_error;
 mod format_error_code;
+mod log_format_error;
+mod log_record;
+mod log_record_kind;
+mod log_scan;
+mod log_segment_header;
 mod ttid_timestamps;
 
 pub use canonical_metadata::CanonicalMetadata;
+pub use crc32c::Crc32c;
 pub use document::Document;
 pub use document_limits::DocumentLimits;
 pub use format_error::FormatError;
 pub use format_error_code::FormatErrorCode;
+pub use log_format_error::LogFormatError;
+pub use log_record::LogRecord;
+pub use log_record_kind::LogRecordKind;
+pub use log_scan::LogScan;
+pub use log_segment_header::LogSegmentHeader;
 pub use ttid_timestamps::TtidTimestamps;

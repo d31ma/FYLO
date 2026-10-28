@@ -12,7 +12,12 @@ use serde_json::{Value, json};
 
 fn main() -> ExitCode {
     let arguments: Vec<String> = env::args().skip(1).collect();
-    match run(&arguments) {
+    let outcome = run(&arguments).and_then(|output| {
+        NativeWriteRoot::close_logs()
+            .map(|()| output)
+            .map_err(|error| error.to_string())
+    });
+    match outcome {
         Ok(output) => {
             println!("{output}");
             ExitCode::SUCCESS

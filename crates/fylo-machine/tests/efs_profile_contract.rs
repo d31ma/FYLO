@@ -333,6 +333,7 @@ fn profiled_machine_retains_frame_limits_root_config_schema_and_credentials() {
         storage: RootConfig {
             strict_schema: false,
             shard_width: Some(2),
+            ..Default::default()
         },
         schema: Some(schema.clone()),
         credentials: Some((FIXTURE_KEY.into(), "fixture-salt".into())),

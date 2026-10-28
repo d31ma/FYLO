@@ -356,6 +356,57 @@ async function verifyNativeCrashScenarios() {
                 '640'
             ]
         },
+        // Raw-file collections stay on the transaction journal (ADR 0010), so
+        // their access, delete and restore transitions are exercised here.
+        {
+            name: 'set-access-file',
+            args: (root) => [
+                'set-access',
+                '--root',
+                root,
+                '--collection',
+                fileCollection,
+                '--id',
+                fileIdentifier,
+                '--mode',
+                '640'
+            ]
+        },
+        {
+            name: 'delete-file',
+            args: (root) => [
+                'delete-document',
+                '--root',
+                root,
+                '--collection',
+                fileCollection,
+                '--id',
+                fileIdentifier
+            ]
+        },
+        {
+            name: 'restore-file',
+            prepare: async (binary, root) => {
+                await run(binary, [
+                    'delete-document',
+                    '--root',
+                    root,
+                    '--collection',
+                    fileCollection,
+                    '--id',
+                    fileIdentifier
+                ])
+            },
+            args: (root) => [
+                'restore-document',
+                '--root',
+                root,
+                '--collection',
+                fileCollection,
+                '--id',
+                fileIdentifier
+            ]
+        },
         {
             name: 'sql-update',
             args: (root) => [
@@ -777,7 +828,7 @@ async function verifyQueueCrashScenarios(binary, source, workspace) {
  */
 async function assertRecoverable(binary, root, failpoint, scenario, action) {
     const label = `${failpoint}/${scenario.name}/${action}`
-    const recoveryCollection = scenario.name === 'put-file' ? fileCollection : collection
+    const recoveryCollection = scenario.name.endsWith('-file') ? fileCollection : collection
 
     if (action === 'abort') {
         // Nobody runs `recover` after a real crash: the next client to read

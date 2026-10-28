@@ -13,7 +13,7 @@ use fylo_engine::{AccessContext, ReadOnlyEngine};
 use fylo_format::TtidTimestamps;
 use fylo_machine::{ApplicationConfig, FrameLimits, serve_application, serve_profiled};
 use fylo_query::{QueryLimits, ScanQuery, StructuredQuery, prepare_sql};
-use fylo_storage_native::{FilesystemProfile, RootLease, RootOpenOptions};
+use fylo_storage_native::{FilesystemProfile, NativeWriteRoot, RootLease, RootOpenOptions};
 use serde_json::{Map, Value, json};
 
 use serve_command::ServeCommand;
@@ -261,7 +261,12 @@ fn run_machine(arguments: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    match machine_frame(&request, options, limits, &application) {
+    let frame = machine_frame(&request, options, limits, &application).and_then(|frame| {
+        NativeWriteRoot::close_logs()
+            .map(|()| frame)
+            .map_err(|error| error.to_string())
+    });
+    match frame {
         Ok(frame) => {
             println!("{}", serde_json::to_string(&frame).unwrap_or_default());
             if frame.get("ok") == Some(&Value::Bool(true)) {
@@ -329,7 +334,8 @@ fn run_machine_loop(
             true,
         ),
     };
-    match result {
+    let closed = NativeWriteRoot::close_logs().map_err(|error| error.to_string());
+    match result.map_err(|error| error.to_string()).and(closed) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{error}");
