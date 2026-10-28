@@ -24,6 +24,29 @@ needed. The resolved key must contain at least 32 UTF-8 bytes and the salt must
 be nonempty. Start with [application.example.json](../application.example.json)
 for a configuration that does not require any secrets or schemas.
 
+## Durability
+
+Every write is in its collection's write-ahead log before it returns
+([ADR 0013](adr/0013-collection-write-ahead-log.md)). `fylo.durability` chooses
+how hard that log is flushed:
+
+- `"process"` (the default) flushes with `fsync`. Every acknowledged write
+  survives process death on every platform, and power loss on Linux and
+  Windows. On macOS, power loss can lose writes made after the last
+  checkpoint; everything up to the checkpoint survives.
+- `"power-loss"` also flushes the drive's cache (`F_FULLFSYNC` on macOS) on
+  every group commit, so every acknowledged write survives power loss there
+  too. Each commit then costs a full drive flush, several milliseconds on a
+  Mac.
+
+```json
+{ "fylo": { "durability": "power-loss" } }
+```
+
+Before downgrading FYLO, stop every writer or run `fylo recover` on each
+collection: a release older than the write-ahead log refuses a collection
+whose log has not been checkpointed, rather than ignore its writes.
+
 ## Discovery and precedence
 
 The CLI looks for `application.json` in its current working directory. Use

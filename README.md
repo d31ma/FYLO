@@ -162,10 +162,20 @@ not mistaken for a document, indexed, versioned, or copied as record payload:
 ```text
 <root>/.fylo-transactions/<namespace>/<collection>/
   state.json               ← stable/writing generation marker
+  log/segment.log          ← write-ahead log since the last checkpoint
   <transaction-id>/
     transaction.json       ← operation, commit phase, before-image manifest
     before/                 ← linked/copied files needed for rollback
 ```
+
+Document mutations commit through the collection's write-ahead log
+([ADR 0013](docs/adr/0013-collection-write-ahead-log.md)): one checksummed
+append and one flush per commit, after which the document, its metadata and
+the index are brought up to date without further flushes. Recovery replays the
+log; a checkpoint flushes the applied files and removes the log, leaving the
+layout below exactly as an older release wrote it. Raw-file collections and
+structural operations (create, drop, reshard, rebuild, version control) use
+the transaction journal.
 
 Every transactional collection mutation publishes an odd `writing` generation
 before changing records and the next even `stable` generation after commit.

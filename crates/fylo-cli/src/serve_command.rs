@@ -5,6 +5,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use fylo_machine::{ApplicationConfig, FrameLimits, MachineServer, ServeOptions, ServeToken};
+use fylo_storage_native::NativeWriteRoot;
 use serde_json::{Value, json};
 
 /// `fylo serve`: own one root and answer the machine protocol over TCP.
@@ -33,7 +34,9 @@ impl ServeCommand {
         Self::announce(&server)?;
         server
             .run()
-            .map_err(|error| format!("fylo serve stopped uncleanly: {error}"))
+            .map_err(|error| format!("fylo serve stopped uncleanly: {error}"))?;
+        NativeWriteRoot::close_logs()
+            .map_err(|error| format!("fylo serve could not checkpoint its logs: {error}"))
     }
 
     fn stop(arguments: &[String]) -> Result<(), String> {

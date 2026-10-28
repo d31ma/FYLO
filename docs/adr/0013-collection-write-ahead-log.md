@@ -332,6 +332,74 @@ runbook says to close or run `fylo recover` before a downgrade.
 The browser and Wasm builds use the same code through `fylo-vfs`. Where the
 host has no flush, the log is exactly as durable as today's files are there.
 
+## Implementation notes (2026-10-28)
+
+The first implementation corrects these details. None changes the decision:
+one append and one flush per commit, redo-only recovery, documents as the
+source of truth, and the durability promise above.
+
+- **Scope.** Document collections on the `Native` profile, on Unix and
+  Windows, go through the log. Raw-file collections (`put_raw_file` and their
+  metadata, access, delete and restore) stay on the journal for now, so the
+  out-of-line raw blob path is not built yet. WASI and browser builds also stay
+  on the journal. `set_record_access` uses the log on Unix only.
+- **One segment, no rotation.** The segment is `log/segment.log`. A checkpoint
+  makes every applied file durable, publishes the v1 `state.json` durably and
+  removes the log directory. The next commit creates a fresh segment whose
+  first record is the checkpoint: the `keys.wal` length, the snapshot digest,
+  and the generation the segment was opened at. The header's sequence field
+  holds a random segment identity.
+- **Steps.** There are two kinds. `update` either creates a file or rewrites
+  one in place, with optional bytes, attribute set, mode and owner, and always
+  an explicit modification time, so replay sets the same time. Rewriting in
+  place keeps the owner and inode, as the journal path does. `move` covers
+  soft delete and restore: a destination that exists means the move already
+  happened. The index delta lives in the manifest (`indexRemoved`,
+  `indexAdded`), not as a step.
+- **Order of publication.** `writing` is published before the append, not
+  after it, so a crash between the append and the publication cannot leave a
+  durable record behind a `stable` state. The v2 `state.json` carries
+  `log: {nonce, length, nextLsn, records}`. A reader compares the segment's
+  length with it and treats a mismatch as writing. That routes a commit whose
+  publication power loss dropped to recovery.
+- **Group commit** is a shared busy period, not batches a leader validates.
+  Writers plan and append in turn under the queue's mutex. One of them
+  flushes for everything appended so far, and each applies its own commit. A
+  plan that touches a file another member has not applied yet waits for it.
+  Readers see `writing` for the whole busy period. `batchPutData` is
+  unchanged, because the machine session runs one request at a time.
+- **Failures.** A failed append is cut off. A failed flush rewinds the segment
+  to its last durable point, or removes a segment with nothing durable in it,
+  and fails every writer whose record it covered. New writers wait for the
+  busy period to end, and the next one reopens the segment. A failed apply is
+  undone from the in-memory pre-images and the inverse index delta is
+  appended, instead of cutting `keys.wal` back, because other members may have
+  appended to it. Then the abort record is appended and flushed.
+- **Leftover log beside v1.** If the segment was opened at a generation at or
+  above the one `state.json` records, a publication was lost and recovery
+  replays. Otherwise a checkpoint finished and died before removing the
+  directory, and only the directory is removed.
+- **Checkpoints** run at 4,096 records, at 16 MiB, or when `keys.wal` outgrows
+  the larger of 64 KiB and the snapshot. That is the compaction rule, moved
+  from the write path to here. A clean close is
+  `NativeWriteRoot::close_logs()`, which the write CLI, `fylo exec` (single
+  request and `--loop`) and `fylo serve` call on exit.
+- **Locks.** There is no `--exclusive-root` shortcut: a process started
+  without that flag never checks the lease, so the file lock stays. A native
+  lock is one exclusive create instead of link-then-check, because the hard
+  link alone was a third of a put on APFS. EFS keeps link-then-check with its
+  flushes. An unreadable native lock record is stale once it is older than the
+  five-minute lock TTL. Boot time is not used.
+- **Failpoints.** The new ones are `before-log-append`, `after-log-append`,
+  `before-log-sync`, `after-log-sync`, `after-log-apply-step`,
+  `after-checkpoint-flush` and `after-checkpoint-remove`. A failpoint inside
+  the abort path is not declared, because a run injects one failpoint and
+  cannot also fail the apply that leads there. The crash matrix gains raw-file
+  `set-access`, `delete` and `restore` scenarios, which keep the journal's
+  access and move failpoints covered.
+- **Setting.** The setting is `fylo.durability` in `application.json`:
+  `"process"` (the default) or `"power-loss"`.
+
 ## Consequences
 
 Benefits:
