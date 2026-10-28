@@ -90,7 +90,7 @@ impl Client {
     fn authenticated(address: SocketAddr) -> Self {
         let writer = TcpStream::connect(address).unwrap();
         writer
-            .set_read_timeout(Some(Duration::from_secs(60)))
+            .set_read_timeout(Some(Duration::from_mins(1)))
             .unwrap();
         let reader = BufReader::new(writer.try_clone().unwrap());
         let mut client = Self { writer, reader };
@@ -189,7 +189,10 @@ fn reader(address: SocketAddr, count: usize, stop: &AtomicBool) -> (u64, Vec<Str
             let number = usize::try_from(row["number"].as_u64().unwrap()).unwrap();
             let sequence = row["sequence"].as_u64().unwrap();
             if sequence < seen[number] {
-                failures.push(format!("{identifier} went back from {} to {sequence}", seen[number]));
+                failures.push(format!(
+                    "{identifier} went back from {} to {sequence}",
+                    seen[number]
+                ));
             }
             seen[number] = sequence;
         }
@@ -203,13 +206,13 @@ fn reader(address: SocketAddr, count: usize, stop: &AtomicBool) -> (u64, Vec<Str
 
 /// A writer owns some documents. After each acknowledged write, a read on
 /// its second connection must already see it: the settled check.
-fn writer(address: SocketAddr, owned: Vec<usize>, steps: u64) -> (u64, Vec<String>) {
+fn writer(address: SocketAddr, owned: &[usize], steps: u64) -> (u64, Vec<String>) {
     let mut writes = Client::authenticated(address);
     let mut reads = Client::authenticated(address);
     let mut failures = Vec::new();
     let mut settled = 0;
     for sequence in 1..=steps {
-        for &number in &owned {
+        for &number in owned {
             writes.patch(&id(number), sequence);
             let row = reads.get(&id(number));
             if row["sequence"] != json!(sequence) {
@@ -243,7 +246,7 @@ fn run_round(hot_set_bytes: usize) -> (u64, u64) {
                 let stop = &stop;
                 scope.spawn(move || {
                     let _stop = StopOnDrop(stop);
-                    writer(address, owned, STEPS)
+                    writer(address, &owned, STEPS)
                 })
             })
             .collect();
@@ -308,7 +311,10 @@ fn warm_reads_come_from_memory() {
     }
     let after = client.hot_set();
     assert_eq!(after["misses"], warm["misses"], "warm reads read storage");
-    assert_eq!(after["hits"].as_u64().unwrap(), warm["hits"].as_u64().unwrap() + 10);
+    assert_eq!(
+        after["hits"].as_u64().unwrap(),
+        warm["hits"].as_u64().unwrap() + 10
+    );
     drop(client);
     running.stop();
 }
@@ -329,7 +335,7 @@ fn the_budget_holds_under_load() {
         let stop_ref = &stop;
         let writer = scope.spawn(move || {
             let _stop = StopOnDrop(stop_ref);
-            writer(address, vec![0, 50, 100], 5)
+            writer(address, &[0, 50, 100], 5)
         });
         let monitor = scope.spawn(|| {
             let mut client = Client::authenticated(address);
@@ -352,8 +358,14 @@ fn the_budget_holds_under_load() {
     });
     let statistics = running.client().hot_set();
     assert_eq!(statistics["budgetBytes"], json!(budget));
-    assert!(peak > 0 && peak <= budget as u64, "peak {peak} over {budget}");
-    assert!(statistics["evictions"].as_u64().unwrap() > 0, "{statistics}");
+    assert!(
+        peak > 0 && peak <= budget as u64,
+        "peak {peak} over {budget}"
+    );
+    assert!(
+        statistics["evictions"].as_u64().unwrap() > 0,
+        "{statistics}"
+    );
     running.stop();
 }
 

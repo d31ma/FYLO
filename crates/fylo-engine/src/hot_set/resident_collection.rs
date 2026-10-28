@@ -1,25 +1,36 @@
-use fylo_storage_native::CollectionKind;
+use fylo_storage_native::{CollectionKind, GenerationState, LogPosition};
 
 /// What a collection was when its resident entries were read: its kind, the
-/// stable generation they belong to, and the fields its schema encrypts.
+/// stable generation and write-ahead log end they belong to, and the fields
+/// its schema encrypts.
 #[derive(Debug)]
 pub(crate) struct ResidentCollection {
     kind: CollectionKind,
     generation: u64,
+    log: Option<LogPosition>,
     encrypted_fields: Vec<String>,
 }
 
 impl ResidentCollection {
-    pub(crate) const fn new(
+    pub(crate) fn new(
         kind: CollectionKind,
-        generation: u64,
+        state: GenerationState,
         encrypted_fields: Vec<String>,
     ) -> Self {
         Self {
             kind,
-            generation,
+            generation: state.generation,
+            log: state.log,
             encrypted_fields,
         }
+    }
+
+    /// Whether storage is still exactly as it was when this was read: the
+    /// same generation and the same log end. A generation number alone can
+    /// come back after a collection is replaced; a log segment's random
+    /// identity and record count cannot.
+    pub(crate) fn read_at(&self, state: &GenerationState) -> bool {
+        state.generation == self.generation && state.log == self.log
     }
 
     pub(crate) const fn kind(&self) -> CollectionKind {

@@ -88,13 +88,9 @@ impl<'a> HotReader<'a> {
         let name = self.key.collection();
         let collection = self.engine.open_collection(name)?;
         let header = ReadOnlyEngine::read_stable(&collection, || {
-            let generation = ReadOnlyEngine::stable_generation(&collection)?;
+            let state = ReadOnlyEngine::stable_generation(&collection)?;
             let encrypted = self.engine.encrypted_fields(name)?;
-            Ok(ResidentCollection::new(
-                collection.kind(),
-                generation,
-                encrypted,
-            ))
+            Ok(ResidentCollection::new(collection.kind(), state, encrypted))
         })?;
         let header = Arc::new(header);
         self.hot_set

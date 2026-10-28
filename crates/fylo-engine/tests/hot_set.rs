@@ -154,7 +154,10 @@ fn a_cleared_hot_set_sees_the_next_write() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].metadata.id, Fixture::id(1));
     assert_eq!(
-        hot.get("records", &Fixture::id(1)).unwrap().document.fields()["group"],
+        hot.get("records", &Fixture::id(1))
+            .unwrap()
+            .document
+            .fields()["group"],
         json!(9)
     );
 }
@@ -187,7 +190,10 @@ fn the_budget_bounds_what_stays_resident() {
         for query in queries() {
             let expected = summary(&cold.find("records", &query).unwrap());
             assert_eq!(summary(&hot.find("records", &query).unwrap()), expected);
-            assert!(hot_set.statistics().resident_bytes <= budget, "round {round}");
+            assert!(
+                hot_set.statistics().resident_bytes <= budget,
+                "round {round}"
+            );
         }
         for number in (0..120).step_by(7) {
             hot.get("records", &Fixture::id(number)).unwrap();
@@ -207,7 +213,10 @@ fn a_document_larger_than_the_budget_is_served_but_not_kept() {
     let hot = fixture.hot(&hot_set);
     for _ in 0..2 {
         let read = hot.get("records", &Fixture::id(0)).unwrap();
-        assert_eq!(read.document.fields()["body"].as_str().unwrap().len(), 8 * 1024);
+        assert_eq!(
+            read.document.fields()["body"].as_str().unwrap().len(),
+            8 * 1024
+        );
     }
     let statistics = hot_set.statistics();
     assert_eq!(statistics.documents, 0);
@@ -258,7 +267,11 @@ fn every_read_checks_its_own_actor() {
     let id = Fixture::id(0);
     let denied = hot.get_as("records", &id, &stranger).unwrap_err();
     assert_eq!(denied.code(), EngineErrorCode::Access);
-    assert_eq!(hot_set.statistics().documents, 0, "a denied read is not parsed");
+    assert_eq!(
+        hot_set.statistics().documents,
+        0,
+        "a denied read is not parsed"
+    );
     hot.get_as("records", &id, &owner).unwrap();
     let denied = hot.get_as("records", &id, &stranger).unwrap_err();
     assert_eq!(denied.code(), EngineErrorCode::Access);

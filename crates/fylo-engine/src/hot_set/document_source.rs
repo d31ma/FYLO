@@ -11,9 +11,9 @@ use crate::{AccessContext, EngineError, ReadOnlyEngine};
 /// The parts one read needs, from the hot set when resident and from storage
 /// otherwise.
 ///
-/// The collection is opened on the first miss, and its generation is checked
-/// then and again in [`Self::finish`]. What storage gave is admitted only if
-/// both checks saw the resident generation, still stable.
+/// The collection is opened on the first miss, and its generation and log end
+/// are checked then and again in [`Self::finish`]. What storage gave is
+/// admitted only if both checks saw the resident ones, still stable.
 pub(crate) struct DocumentSource<'a> {
     reader: &'a HotReader<'a>,
     header: Arc<ResidentCollection>,
@@ -159,8 +159,8 @@ impl<'a> DocumentSource<'a> {
     }
 
     fn observe_generation(&mut self, collection: &NativeCollection) -> Result<(), EngineError> {
-        let current = ReadOnlyEngine::generation_is(collection, self.generation())?;
-        self.consistent &= current;
+        let state = ReadOnlyEngine::read_attempt_generation(collection)?;
+        self.consistent &= state.is_some_and(|state| self.header.read_at(&state));
         Ok(())
     }
 

@@ -1492,17 +1492,10 @@ impl ReadOnlyEngine {
         Err(Self::concurrent_write())
     }
 
-    /// The collection's generation, refusing one that is being written.
-    fn stable_generation(collection: &NativeCollection) -> Result<u64, EngineError> {
-        Self::read_attempt_generation(collection)?
-            .map(|state| state.generation)
-            .ok_or_else(Self::concurrent_write)
-    }
-
-    /// Whether the collection is stable at exactly `generation`.
-    fn generation_is(collection: &NativeCollection, generation: u64) -> Result<bool, EngineError> {
-        Ok(Self::read_attempt_generation(collection)?
-            .is_some_and(|state| state.generation == generation))
+    /// The collection's generation and log end, refusing a collection that
+    /// is being written or has a committed record not yet applied.
+    fn stable_generation(collection: &NativeCollection) -> Result<GenerationState, EngineError> {
+        Self::read_attempt_generation(collection)?.ok_or_else(Self::concurrent_write)
     }
 
     fn concurrent_write() -> EngineError {
