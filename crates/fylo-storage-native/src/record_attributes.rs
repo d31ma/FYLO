@@ -41,7 +41,7 @@ impl RecordAttributes {
         path: &Path,
     ) -> Result<(), NativeStorageError> {
         root.assert_profile_owned()?;
-        root.verify_open_file_identity(path, payload)?;
+        root.verify_record_identity(path, payload)?;
         if let Some(sidecar) = self.sidecar.as_ref() {
             root.verify_path(&self.sidecar_path, crate::ExpectedType::File)?;
             root.verify_open_file_identity(&self.sidecar_path, sidecar)?;

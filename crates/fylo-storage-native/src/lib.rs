@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+mod beneath_open;
 mod filesystem_profile;
 mod index_cache;
 mod lease;
@@ -26,7 +27,11 @@ mod queue;
 mod record_attributes;
 mod root_open_options;
 mod sidecar_attributes;
+mod spelling_cache;
 mod write;
+
+use beneath_open::BeneathOpen;
+use spelling_cache::SpellingCache;
 
 pub use filesystem_profile::FilesystemProfile;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -728,6 +733,66 @@ impl NativeRoot {
         target: &Path,
         expected: ExpectedType,
     ) -> Result<Metadata, NativeStorageError> {
+        match self.open_beneath(target, expected) {
+            BeneathOpen::Opened(_, metadata) => Ok(metadata),
+            BeneathOpen::Missing | BeneathOpen::Unavailable => {
+                self.verify_path_by_walk(target, expected)
+            }
+        }
+    }
+
+    /// Open `target` in one call that refuses a link in any component, then
+    /// check its spelling and type. Only a complete success is returned as
+    /// `Opened`; every failure is left to `verify_path_by_walk`, which reports
+    /// it exactly as before.
+    fn open_beneath(&self, target: &Path, expected: ExpectedType) -> BeneathOpen {
+        if !BeneathOpen::SUPPORTED {
+            return BeneathOpen::Unavailable;
+        }
+        let Ok(relative) = target.strip_prefix(&self.canonical) else {
+            return BeneathOpen::Unavailable;
+        };
+        match BeneathOpen::attempt(target, expected == ExpectedType::Directory) {
+            BeneathOpen::Opened(file, metadata)
+                if expected.matches(&metadata) && self.has_canonical_spelling(relative) =>
+            {
+                BeneathOpen::Opened(file, metadata)
+            }
+            BeneathOpen::Missing => BeneathOpen::Missing,
+            BeneathOpen::Opened(..) | BeneathOpen::Unavailable => BeneathOpen::Unavailable,
+        }
+    }
+
+    fn open_beneath_for_read(&self, target: &Path) -> BeneathOpen {
+        if self.profile != FilesystemProfile::Native {
+            return BeneathOpen::Unavailable;
+        }
+        self.open_beneath(target, ExpectedType::File)
+    }
+
+    fn has_canonical_spelling(&self, relative: &Path) -> bool {
+        let components = relative.components().collect::<Vec<_>>();
+        let mut current = self.canonical.clone();
+        for (index, component) in components.iter().enumerate() {
+            let Component::Normal(segment) = component else {
+                return false;
+            };
+            let listed = SpellingCache::shared()
+                .contains(&current, segment)
+                .unwrap_or(false);
+            if !listed && !Self::case_insensitive_shard_alias(&components, index) {
+                return false;
+            }
+            current.push(segment);
+        }
+        true
+    }
+
+    fn verify_path_by_walk(
+        &self,
+        target: &Path,
+        expected: ExpectedType,
+    ) -> Result<Metadata, NativeStorageError> {
         let relative = target.strip_prefix(&self.canonical).map_err(|_| {
             NativeStorageError::new(
                 NativeStorageErrorCode::UnsafePath,
@@ -743,19 +808,13 @@ impl NativeRoot {
                     "storage path contains a non-normal component",
                 ));
             };
-            if !directory_contains_exact_name(&current, segment)?
-                && !Self::case_insensitive_shard_alias(&components, index)
-            {
-                return Err(NativeStorageError::new(
-                    NativeStorageErrorCode::UnsafePath,
-                    format!(
-                        "storage path component has non-canonical spelling: {}",
-                        current.join(segment).display()
-                    ),
-                ));
+            let alias = Self::case_insensitive_shard_alias(&components, index);
+            if !SpellingCache::shared().contains(&current, segment)? && !alias {
+                return Err(Self::non_canonical_spelling(&current.join(segment)));
             }
+            let parent = current.clone();
             current.push(segment);
-            let metadata = fs::symlink_metadata(&current).map_err(NativeStorageError::io)?;
+            let metadata = Self::walked_metadata(&parent, segment, &current, alias)?;
             if is_link_or_reparse(&metadata) {
                 return Err(NativeStorageError::new(
                     NativeStorageErrorCode::UnsafePath,
@@ -767,11 +826,7 @@ impl NativeRoot {
             }
         }
         let metadata = fs::symlink_metadata(target).map_err(NativeStorageError::io)?;
-        let valid = match expected {
-            ExpectedType::File => metadata.is_file(),
-            ExpectedType::Directory => metadata.is_dir(),
-        };
-        if !valid {
+        if !expected.matches(&metadata) {
             return Err(NativeStorageError::new(
                 NativeStorageErrorCode::WrongType,
                 format!("storage path has the wrong type: {}", target.display()),
@@ -785,6 +840,47 @@ impl NativeRoot {
             ));
         }
         Ok(metadata)
+    }
+
+    fn non_canonical_spelling(path: &Path) -> NativeStorageError {
+        NativeStorageError::new(
+            NativeStorageErrorCode::UnsafePath,
+            format!(
+                "storage path component has non-canonical spelling: {}",
+                path.display()
+            ),
+        )
+    }
+
+    /// A cached listing can still name an entry that was removed since; the
+    /// missing entry then gets the spelling verdict of a fresh listing.
+    fn walked_metadata(
+        parent: &Path,
+        segment: &std::ffi::OsStr,
+        current: &Path,
+        alias: bool,
+    ) -> Result<Metadata, NativeStorageError> {
+        match fs::symlink_metadata(current) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Err(
+                Self::missing_component(parent, segment, current, alias, error),
+            ),
+            result => result.map_err(NativeStorageError::io),
+        }
+    }
+
+    fn missing_component(
+        parent: &Path,
+        segment: &std::ffi::OsStr,
+        current: &Path,
+        alias: bool,
+        error: std::io::Error,
+    ) -> NativeStorageError {
+        SpellingCache::shared().forget(parent);
+        match SpellingCache::shared().contains(parent, segment) {
+            Ok(false) if !alias => Self::non_canonical_spelling(current),
+            Ok(_) => NativeStorageError::io(error),
+            Err(listing_error) => listing_error,
+        }
     }
 
     fn case_insensitive_shard_alias(components: &[Component<'_>], index: usize) -> bool {
@@ -830,7 +926,7 @@ impl NativeRoot {
                     "version path contains an unsafe component",
                 ));
             };
-            if !directory_contains_exact_name(&current, segment)? {
+            if !SpellingCache::shared().contains(&current, segment)? {
                 return Err(NativeStorageError::new(
                     NativeStorageErrorCode::UnsafePath,
                     "version path component has non-canonical spelling",
@@ -893,9 +989,50 @@ impl NativeRoot {
     fn open_file_with_identity_error(
         &self,
         path: &Path,
-        (max_bytes, mismatch): (u64, NativeStorageErrorCode),
+        limits: (u64, NativeStorageErrorCode),
     ) -> Result<(File, Metadata), NativeStorageError> {
         self.assert_profile_owned()?;
+        match self.open_beneath_for_read(path) {
+            BeneathOpen::Opened(file, metadata) => {
+                Self::within_size_limit(path, (file, metadata), limits.0)
+            }
+            BeneathOpen::Missing | BeneathOpen::Unavailable => self.open_file_by_walk(path, limits),
+        }
+    }
+
+    fn within_size_limit(
+        path: &Path,
+        (file, metadata): (File, Metadata),
+        max_bytes: u64,
+    ) -> Result<(File, Metadata), NativeStorageError> {
+        if metadata.len() > max_bytes {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::FileTooLarge,
+                format!(
+                    "{} contains {} bytes; limit is {max_bytes}",
+                    path.display(),
+                    metadata.len()
+                ),
+            ));
+        }
+        Ok((file, metadata))
+    }
+
+    /// An open made by `open_beneath` is the path check itself, so a record read
+    /// through it has no window between check and open to re-verify. The EFS
+    /// profile keeps the re-check, because its sidecar is a second file.
+    fn verify_record_identity(&self, path: &Path, file: &File) -> Result<(), NativeStorageError> {
+        if BeneathOpen::SUPPORTED && self.profile == FilesystemProfile::Native {
+            return Ok(());
+        }
+        self.verify_open_file_identity(path, file)
+    }
+
+    fn open_file_by_walk(
+        &self,
+        path: &Path,
+        (max_bytes, mismatch): (u64, NativeStorageErrorCode),
+    ) -> Result<(File, Metadata), NativeStorageError> {
         let before = self.verify_path(path, ExpectedType::File)?;
         if before.len() > max_bytes {
             return Err(NativeStorageError::new(
@@ -1219,6 +1356,12 @@ impl NativeCollection {
     ///
     /// Returns an error for corrupt, oversized, linked, or inaccessible state.
     pub fn generation(&self) -> Result<GenerationState, NativeStorageError> {
+        let state = self.read_generation()?;
+        SpellingCache::shared().observe_generation(&self.path, state.generation);
+        Ok(state)
+    }
+
+    fn read_generation(&self) -> Result<GenerationState, NativeStorageError> {
         self.root.assert_profile_owned()?;
         let path = self
             .root
@@ -1505,10 +1648,53 @@ impl NativeCollection {
         namespace: &Path,
         identifier: &str,
     ) -> Result<StoredBytes, NativeStorageError> {
+        let (path, (mut file, metadata)) = self.open_document(namespace, identifier)?;
+        let attributes = record_attributes::RecordAttributes::read(&self.root, &file, &path)?;
+        let bytes = read_sized(&mut file, metadata.len(), MAX_DOCUMENT_BYTES)?;
+        attributes.verify(&self.root, &file, &path)?;
+        attributes.verify_contents(&self.root, &path, &bytes)?;
+        Ok(StoredBytes {
+            bytes,
+            modified_millis: modified_millis(&metadata)?,
+            access: decode_access_descriptor(&attributes)?,
+            path,
+        })
+    }
+
+    /// Try each shard a document may live in with one open per candidate. A
+    /// candidate that is absent moves on to the next; anything else, or no
+    /// candidate at all, takes the checked lookup that reports it exactly.
+    fn open_document(
+        &self,
+        namespace: &Path,
+        identifier: &str,
+    ) -> Result<(PathBuf, (File, Metadata)), NativeStorageError> {
+        let filename = format!("{identifier}.json");
+        for shard in shard_candidates(identifier, self.shard_width, &self.previous_shard_widths) {
+            let path = namespace.join(shard).join(&filename);
+            match self.root.open_beneath_for_read(&path) {
+                BeneathOpen::Opened(file, metadata) => {
+                    let opened =
+                        NativeRoot::within_size_limit(&path, (file, metadata), MAX_DOCUMENT_BYTES)?;
+                    return Ok((path, opened));
+                }
+                BeneathOpen::Missing => {}
+                BeneathOpen::Unavailable => break,
+            }
+        }
+        self.open_document_by_walk(namespace, identifier, &filename)
+    }
+
+    fn open_document_by_walk(
+        &self,
+        namespace: &Path,
+        identifier: &str,
+        filename: &str,
+    ) -> Result<(PathBuf, (File, Metadata)), NativeStorageError> {
         let path = existing_shard_path(
             namespace,
             identifier,
-            &format!("{identifier}.json"),
+            filename,
             self.shard_width,
             &self.previous_shard_widths,
         )?;
@@ -1518,20 +1704,8 @@ impl NativeCollection {
                 format!("document not found: {identifier}"),
             ));
         }
-        let (mut file, metadata) = self.root.open_file(&path, MAX_DOCUMENT_BYTES)?;
-        let attributes = record_attributes::RecordAttributes::read(&self.root, &file, &path)?;
-        let bytes = read_bounded(
-            (&mut file).take(MAX_DOCUMENT_BYTES.saturating_add(1)),
-            MAX_DOCUMENT_BYTES,
-        )?;
-        attributes.verify(&self.root, &file, &path)?;
-        attributes.verify_contents(&self.root, &path, &bytes)?;
-        Ok(StoredBytes {
-            bytes,
-            modified_millis: modified_millis(&metadata)?,
-            access: decode_access_descriptor(&attributes)?,
-            path,
-        })
+        let opened = self.root.open_file(&path, MAX_DOCUMENT_BYTES)?;
+        Ok((path, opened))
     }
 
     /// Read one raw file with its durable object key, custom metadata,
@@ -2058,10 +2232,19 @@ pub enum GenerationStatus {
     Writing,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Eq, PartialEq)]
 enum ExpectedType {
     File,
     Directory,
+}
+
+impl ExpectedType {
+    fn matches(self, metadata: &Metadata) -> bool {
+        match self {
+            Self::File => metadata.is_file(),
+            Self::Directory => metadata.is_dir(),
+        }
+    }
 }
 
 /// Stable native storage failure codes.
@@ -3085,6 +3268,40 @@ fn read_bounded<R: Read>(
     Ok(bytes)
 }
 
+/// Read a file whose size is known from the open handle. Asking for one byte
+/// more than that size and getting exactly the size back is the end of the
+/// file, so the common case is a single read; any other count continues as
+/// `read_bounded` would.
+fn read_sized(
+    file: &mut File,
+    expected_bytes: u64,
+    max_bytes: u64,
+) -> Result<Vec<u8>, NativeStorageError> {
+    let first_request = usize::try_from(expected_bytes.min(max_bytes))
+        .unwrap_or(usize::MAX - 1)
+        .saturating_add(1);
+    let mut bytes = vec![0; first_request];
+    let first_read = match file.read(&mut bytes) {
+        Ok(read) => read,
+        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => 0,
+        Err(error) => return Err(NativeStorageError::io(error)),
+    };
+    bytes.truncate(first_read);
+    if first_read as u64 != expected_bytes {
+        let remaining = max_bytes
+            .saturating_add(1)
+            .saturating_sub(first_read as u64);
+        bytes.extend_from_slice(&read_bounded(file.take(remaining), max_bytes)?);
+    }
+    if bytes.len() as u64 > max_bytes {
+        return Err(NativeStorageError::new(
+            NativeStorageErrorCode::FileTooLarge,
+            format!("file exceeds {max_bytes} bytes"),
+        ));
+    }
+    Ok(bytes)
+}
+
 pub(crate) fn is_scratch_file(name: &str) -> bool {
     Path::new(name)
         .extension()
@@ -3139,18 +3356,6 @@ fn is_link_or_reparse(metadata: &Metadata) -> bool {
 #[cfg(not(windows))]
 fn is_link_or_reparse(metadata: &Metadata) -> bool {
     metadata.file_type().is_symlink()
-}
-
-fn directory_contains_exact_name(
-    directory: &Path,
-    expected: &std::ffi::OsStr,
-) -> Result<bool, NativeStorageError> {
-    for entry in fs::read_dir(directory).map_err(NativeStorageError::io)? {
-        if entry.map_err(NativeStorageError::io)?.file_name() == expected {
-            return Ok(true);
-        }
-    }
-    Ok(false)
 }
 
 #[cfg(test)]
@@ -3639,6 +3844,163 @@ mod tests {
             collection.document_ids().unwrap_err().code(),
             NativeStorageErrorCode::UnsafePath
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_a_document_read_through_a_linked_shard_after_a_clean_read() {
+        use std::os::unix::fs::symlink;
+
+        let fixture = TestRoot::create();
+        let collection = NativeRoot::open(&fixture.0)
+            .unwrap()
+            .collection("users")
+            .unwrap();
+        assert_eq!(
+            collection.read_document("4VRNF52JPCO").unwrap().bytes,
+            br#"{"name":"Ada"}"#
+        );
+        let shard = fixture.0.join(".collections/users/docs/4V");
+        let external = fixture.0.join("external");
+        fs::rename(&shard, &external).unwrap();
+        symlink(&external, &shard).unwrap();
+        assert_eq!(
+            collection.read_document("4VRNF52JPCO").unwrap_err().code(),
+            NativeStorageErrorCode::UnsafePath
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_a_linked_document_file_after_a_clean_read() {
+        use std::os::unix::fs::symlink;
+
+        let fixture = TestRoot::create();
+        let collection = NativeRoot::open(&fixture.0)
+            .unwrap()
+            .collection("users")
+            .unwrap();
+        collection.read_document("4VRNF52JPCO").unwrap();
+        let document = fixture
+            .0
+            .join(".collections/users/docs/4V/4VRNF52JPCO.json");
+        let external = fixture.0.join("external.json");
+        fs::rename(&document, &external).unwrap();
+        symlink(&external, &document).unwrap();
+        assert_eq!(
+            collection.read_document("4VRNF52JPCO").unwrap_err().code(),
+            NativeStorageErrorCode::UnsafePath
+        );
+    }
+
+    #[test]
+    fn reads_a_document_written_after_its_shard_was_cached() {
+        let fixture = TestRoot::create();
+        let collection = NativeRoot::open(&fixture.0)
+            .unwrap()
+            .collection("users")
+            .unwrap();
+        collection.read_document("4VRNF52JPCO").unwrap();
+        fs::write(
+            fixture
+                .0
+                .join(".collections/users/docs/4V/4VRNF52JPCP.json"),
+            br#"{"name":"Grace"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            collection.read_document("4VRNF52JPCP").unwrap().bytes,
+            br#"{"name":"Grace"}"#
+        );
+    }
+
+    #[test]
+    fn reports_a_removed_document_as_not_found_after_its_shard_was_cached() {
+        let fixture = TestRoot::create();
+        let collection = NativeRoot::open(&fixture.0)
+            .unwrap()
+            .collection("users")
+            .unwrap();
+        collection.read_document("4VRNF52JPCO").unwrap();
+        fs::remove_file(
+            fixture
+                .0
+                .join(".collections/users/docs/4V/4VRNF52JPCO.json"),
+        )
+        .unwrap();
+        assert_eq!(
+            collection.read_document("4VRNF52JPCO").unwrap_err().code(),
+            NativeStorageErrorCode::NotFound
+        );
+    }
+
+    #[cfg(any(target_os = "macos", windows))]
+    #[test]
+    fn rejects_a_document_read_through_a_non_canonical_file_spelling() {
+        let fixture = TestRoot::create();
+        let collection = NativeRoot::open(&fixture.0)
+            .unwrap()
+            .collection("users")
+            .unwrap();
+        collection.read_document("4VRNF52JPCO").unwrap();
+        assert_eq!(
+            collection.read_document("4vrnf52jpco").unwrap_err().code(),
+            NativeStorageErrorCode::UnsafePath
+        );
+    }
+
+    #[cfg(any(target_os = "macos", windows))]
+    #[test]
+    fn rejects_a_non_canonical_collection_spelling_in_a_verified_path() {
+        let fixture = TestRoot::create();
+        let root = NativeRoot::open(&fixture.0).unwrap();
+        let canonical = root
+            .path()
+            .join(".collections/users/docs/4V/4VRNF52JPCO.json");
+        root.verify_path(&canonical, ExpectedType::File).unwrap();
+        let aliased = root
+            .path()
+            .join(".collections/USERS/docs/4V/4VRNF52JPCO.json");
+        assert_eq!(
+            root.verify_path(&aliased, ExpectedType::File)
+                .unwrap_err()
+                .code(),
+            NativeStorageErrorCode::UnsafePath
+        );
+    }
+
+    #[test]
+    fn verify_path_reports_the_wrong_type_for_a_directory() {
+        let fixture = TestRoot::create();
+        let root = NativeRoot::open(&fixture.0).unwrap();
+        let shard = root.path().join(".collections/users/docs/4V");
+        assert_eq!(
+            root.verify_path(&shard, ExpectedType::File)
+                .unwrap_err()
+                .code(),
+            NativeStorageErrorCode::WrongType
+        );
+        assert!(
+            root.verify_path(&shard, ExpectedType::Directory)
+                .unwrap()
+                .is_dir()
+        );
+    }
+
+    #[test]
+    fn sized_read_returns_every_byte_when_the_file_outgrew_its_size() {
+        let fixture = TestRoot::create();
+        let path = fixture.0.join("grown");
+        fs::write(&path, b"012345678").unwrap();
+        let mut file = File::open(&path).unwrap();
+        assert_eq!(read_sized(&mut file, 3, 16).unwrap(), b"012345678");
+        let mut file = File::open(&path).unwrap();
+        assert_eq!(
+            read_sized(&mut file, 3, 8).unwrap_err().code(),
+            NativeStorageErrorCode::FileTooLarge
+        );
+        let mut file = File::open(&path).unwrap();
+        assert_eq!(read_sized(&mut file, 9, 9).unwrap(), b"012345678");
     }
 
     #[cfg(windows)]
