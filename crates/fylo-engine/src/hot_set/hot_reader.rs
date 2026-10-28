@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use fylo_query::StructuredQuery;
-use fylo_storage_native::CollectionKind;
+use fylo_storage_native::{CollectionKind, NativeCollection};
 
 use super::cache::HotSet;
 use super::collection_key::CollectionKey;
@@ -29,6 +29,10 @@ pub(crate) struct HotReader<'a> {
 /// behind storage, and an inner `None` meaning the actor may not read it.
 type ResidentRead = Option<Option<Arc<ResidentDocument>>>;
 
+/// A header, and the collection it was just read from when it was not
+/// resident, so the rest of the read does not open it again.
+type HeaderRead = (Arc<ResidentCollection>, Option<NativeCollection>);
+
 impl<'a> HotReader<'a> {
     pub(crate) fn new(engine: &'a ReadOnlyEngine, hot_set: &'a HotSet, collection: &str) -> Self {
         Self {
@@ -40,7 +44,7 @@ impl<'a> HotReader<'a> {
     }
 
     pub(crate) fn kind(&self) -> Result<CollectionKind, EngineError> {
-        Ok(self.header()?.kind())
+        Ok(self.header()?.0.kind())
     }
 
     pub(crate) fn get(
@@ -77,25 +81,25 @@ impl<'a> HotReader<'a> {
         self.epoch
     }
 
-    fn header(&self) -> Result<Arc<ResidentCollection>, EngineError> {
+    fn header(&self) -> Result<HeaderRead, EngineError> {
         match self.hot_set.header(&self.key) {
-            Some(header) => Ok(header),
+            Some(header) => Ok((header, None)),
             None => self.load_header(),
         }
     }
 
-    fn load_header(&self) -> Result<Arc<ResidentCollection>, EngineError> {
+    /// One read of `state.json` stamps the header. Whatever is read after it
+    /// is checked against that stamp once more before it is admitted, so the
+    /// stamp and the reads cannot disagree.
+    fn load_header(&self) -> Result<HeaderRead, EngineError> {
         let name = self.key.collection();
         let collection = self.engine.open_collection(name)?;
-        let header = ReadOnlyEngine::read_stable(&collection, || {
-            let state = ReadOnlyEngine::stable_generation(&collection)?;
-            let encrypted = self.engine.encrypted_fields(name)?;
-            Ok(ResidentCollection::new(collection.kind(), state, encrypted))
-        })?;
-        let header = Arc::new(header);
+        let state = ReadOnlyEngine::stable_generation(&collection)?;
+        let encrypted = self.engine.encrypted_fields(name)?;
+        let header = Arc::new(ResidentCollection::new(collection.kind(), state, encrypted));
         self.hot_set
             .admit_header(self.epoch, &self.key, Arc::clone(&header));
-        Ok(header)
+        Ok((header, Some(collection)))
     }
 
     fn resident_get(
@@ -103,11 +107,11 @@ impl<'a> HotReader<'a> {
         identifier: &str,
         actor: Option<&AccessContext>,
     ) -> Result<ResidentRead, EngineError> {
-        let header = self.header()?;
+        let (header, collection) = self.header()?;
         if !header.is_document_collection() {
             return Ok(None);
         }
-        let mut source = DocumentSource::new(self, header);
+        let mut source = DocumentSource::new(self, header, collection);
         let document = source.document(identifier, actor)?;
         Ok(source.finish()?.then_some(document))
     }
@@ -133,11 +137,11 @@ impl<'a> HotReader<'a> {
         query: &StructuredQuery,
         actor: Option<&AccessContext>,
     ) -> Result<Option<Vec<ReadDocument>>, EngineError> {
-        let header = self.header()?;
+        let (header, collection) = self.header()?;
         if !header.is_document_collection() {
             return Ok(None);
         }
-        let mut source = DocumentSource::new(self, Arc::clone(&header));
+        let mut source = DocumentSource::new(self, Arc::clone(&header), collection);
         let candidates = Self::candidates(&mut source, &header, query)?;
         let rows = Self::matching_rows(&mut source, &candidates, query, actor)?;
         Ok(source.finish()?.then_some(rows))

@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use fylo_engine::{EngineErrorCode, HotSet, ReadDocument, ReadOnlyEngine, WriteEngine};
+use fylo_engine::{HotSet, ReadDocument, ReadOnlyEngine, WriteEngine};
 use fylo_query::{QueryLimits, StructuredQuery};
 use fylo_storage_native::{CollectionKind, NativeWriteRoot, WriteAccess};
 use serde_json::{Map, Value, json};
@@ -249,7 +249,7 @@ fn file_collections_report_their_kind_and_read_from_storage() {
 fn every_read_checks_its_own_actor() {
     use std::os::unix::fs::MetadataExt;
 
-    use fylo_engine::AccessContext;
+    use fylo_engine::{AccessContext, EngineErrorCode};
 
     let fixture = Fixture::new();
     let metadata = fs::metadata(&fixture.0).unwrap();

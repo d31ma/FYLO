@@ -13,7 +13,9 @@ use crate::{AccessContext, EngineError, ReadOnlyEngine};
 ///
 /// The collection is opened on the first miss, and its generation and log end
 /// are checked then and again in [`Self::finish`]. What storage gave is
-/// admitted only if both checks saw the resident ones, still stable.
+/// admitted only if both checks saw the resident ones, still stable. A
+/// collection handed in was opened to read the header just now, under the
+/// same stamp, so only the check in [`Self::finish`] remains.
 pub(crate) struct DocumentSource<'a> {
     reader: &'a HotReader<'a>,
     header: Arc<ResidentCollection>,
@@ -25,11 +27,15 @@ pub(crate) struct DocumentSource<'a> {
 }
 
 impl<'a> DocumentSource<'a> {
-    pub(crate) const fn new(reader: &'a HotReader<'a>, header: Arc<ResidentCollection>) -> Self {
+    pub(crate) const fn new(
+        reader: &'a HotReader<'a>,
+        header: Arc<ResidentCollection>,
+        collection: Option<NativeCollection>,
+    ) -> Self {
         Self {
             reader,
             header,
-            collection: None,
+            collection,
             consistent: true,
             documents: Vec::new(),
             snapshot: None,
