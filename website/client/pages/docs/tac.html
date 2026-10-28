@@ -4,7 +4,7 @@
     <p class="doc-lede">
         FYLO is a document store that ships as one self-contained binary. Documents are plain JSON
         files on disk; indexes are zero-payload keys that accelerate queries without duplicating
-        data. There is no server and no network protocol — your process owns the directory. This
+        data. No server is needed — your process owns the directory. This
         page takes you from an empty machine to a first query; everything else is linked below.
     </p>
 
@@ -98,9 +98,9 @@
     <div class="doc-section">
         <h2>What FYLO is not</h2>
         <p>
-            Reading this early saves time later. FYLO has no server, so there is nothing to connect
-            to over a network — if a root must be reached from another machine, that is a filesystem
-            concern (a mounted volume, a synced directory), not FYLO's. No remote object store is in
+            Reading this early saves time later. FYLO needs no server. If a root must be reached
+            from another machine, run <code>fylo serve</code> next to its disk rather than mounting
+            the root over the network. No remote object store is in
             the query path. There are no cross-collection transactions: a write or a SQL mutation is
             atomic within one collection. And a document may not contain an array of objects at any
             depth — that shape wants to be its own collection.

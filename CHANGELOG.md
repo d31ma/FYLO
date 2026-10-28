@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Added
+
+- **`fylo serve`: one process owns a root and serves it over TCP.** A remote
+  client pays one network round trip per operation instead of running the root
+  live over SMB or NFS. The server holds the root lease until it stops, runs
+  frames one at a time, requires a shared token from a private file, has no
+  default address, and bounds frame size, connections and idle time. Remote
+  clients cannot name another root, server paths or URLs. `fylo serve --stop`
+  stops it gracefully; a killed server is recovered like any crashed process.
+  The Node and Rust shims connect with `Fylo.connect` (ADR 0012).
+
 ### Changed
 
 - **CHEX and TTID are built in; FYLO no longer needs their binaries.** Schema

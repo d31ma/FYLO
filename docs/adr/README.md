@@ -29,6 +29,7 @@ ADR.
 | [0007](0007-filesystem-only-native-storage.md)              | Accepted | Filesystem-only native storage              |
 | [0008](0008-fylo-wasm-browser-and-mobile-engine.md)         | Accepted | Portable full-engine Wasm artifact          |
 | [0009](0009-embedded-serverless-queue.md)                   | Accepted | Embedded durable serverless queue           |
+| [0012](0012-opt-in-network-server.md)                       | Accepted | Opt-in network server for one root          |
 
 ## When another ADR is required
 

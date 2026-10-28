@@ -4,6 +4,9 @@
 //! crate. Requires the `fylo` binary on PATH (brew/scoop) or an explicit path.
 //! One long-lived child process keeps the engine warm across calls.
 //!
+//! `Fylo::connect("host:port", token)` talks to a running `fylo serve` over TCP
+//! instead: the server owns the root, and each call costs one round trip.
+//!
 //! ```no_run
 //! use fylo::{Fylo, Json};
 //! let mut db = Fylo::open("/path/to/db", "fylo").unwrap();
@@ -22,16 +25,18 @@
 //! snake_case; `request` is the raw escape hatch for ops without a method.
 
 use std::io::{BufRead, BufReader, Read, Write};
+use std::net::{Shutdown, TcpStream};
 use std::path::PathBuf;
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, Command, Stdio};
 
 const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 
 pub struct Fylo {
-    child: Child,
-    stdin: Option<ChildStdin>,
-    stdout: BufReader<std::process::ChildStdout>,
+    child: Option<Child>,
+    socket: Option<TcpStream>,
+    writer: Option<Box<dyn Write + Send>>,
+    reader: BufReader<Box<dyn Read + Send>>,
 }
 
 #[derive(Clone, Debug)]
@@ -106,12 +111,46 @@ impl Fylo {
         }
         let mut child = cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).spawn()?;
         let stdin = child.stdin.take().expect("stdin piped");
-        let stdout = BufReader::new(child.stdout.take().expect("stdout piped"));
+        let stdout = child.stdout.take().expect("stdout piped");
         Ok(Fylo {
-            child,
-            stdin: Some(stdin),
-            stdout,
+            child: Some(child),
+            socket: None,
+            writer: Some(Box::new(stdin)),
+            reader: BufReader::new(Box::new(stdout)),
         })
+    }
+
+    /// Connect to a running `fylo serve` at `address` ("host:port") and
+    /// authenticate with its shared `token`. The server owns the root.
+    pub fn connect(address: &str, token: &str) -> std::io::Result<Fylo> {
+        let socket = TcpStream::connect(address)?;
+        socket.set_nodelay(true)?;
+        let mut fylo = Fylo {
+            child: None,
+            writer: Some(Box::new(socket.try_clone()?)),
+            reader: BufReader::new(Box::new(socket.try_clone()?)),
+            socket: Some(socket),
+        };
+        let reply = fylo.request(&format!(r#"{{"fyloServe":1,"token":"{}"}}"#, esc(token)))?;
+        if !reply.contains("\"ok\":true") {
+            fylo.abort();
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                reply.trim().to_string(),
+            ));
+        }
+        Ok(fylo)
+    }
+
+    /// Stop talking: kill the child process or close the server connection.
+    fn abort(&mut self) {
+        self.writer.take();
+        if let Some(child) = self.child.as_mut() {
+            let _ = child.kill();
+        }
+        if let Some(socket) = self.socket.as_ref() {
+            let _ = socket.shutdown(Shutdown::Both);
+        }
     }
 
     /// Send one machine-protocol operation (a JSON object string) and return the
@@ -124,21 +163,23 @@ impl Fylo {
                 format!("FYLO request exceeds {MAX_REQUEST_BYTES} bytes"),
             ));
         }
-        let stdin = self
-            .stdin
+        let writer = self
+            .writer
             .as_mut()
             .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::BrokenPipe, "fylo closed"))?;
-        stdin.write_all(payload.as_bytes())?;
-        stdin.write_all(b"\n")?;
-        stdin.flush()?;
+        let mut frame = Vec::with_capacity(payload.len() + 1);
+        frame.extend_from_slice(payload.as_bytes());
+        frame.push(b'\n');
+        writer.write_all(&frame)?;
+        writer.flush()?;
         let mut line = String::new();
-        let read = (&mut self.stdout)
+        let read = (&mut self.reader)
             .take((MAX_RESPONSE_BYTES + 2) as u64)
             .read_line(&mut line);
         let n = match read {
             Ok(n) => n,
             Err(error) => {
-                let _ = self.child.kill();
+                self.abort();
                 return Err(error);
             }
         };
@@ -149,7 +190,7 @@ impl Fylo {
             ));
         }
         if !line.ends_with('\n') || line.as_bytes().len() - 1 > MAX_RESPONSE_BYTES {
-            let _ = self.child.kill();
+            self.abort();
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("FYLO response exceeds {MAX_RESPONSE_BYTES} bytes"),
@@ -870,7 +911,13 @@ impl From<bool> for Json {
 impl Drop for Fylo {
     fn drop(&mut self) {
         // Close stdin FIRST so the loop hits EOF and exits, then reap the child.
-        self.stdin.take();
-        let _ = self.child.wait();
+        // A server connection is simply closed; the server keeps running.
+        self.writer.take();
+        if let Some(child) = self.child.as_mut() {
+            let _ = child.wait();
+        }
+        if let Some(socket) = self.socket.as_ref() {
+            let _ = socket.shutdown(Shutdown::Both);
+        }
     }
 }

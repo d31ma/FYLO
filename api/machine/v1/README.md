@@ -125,3 +125,27 @@ Returned output is bounded; intermediate serializer allocations have no hard cap
 Existing streaming APIs retain their behavior. Native behavior tests and remote
 qualification remain pending. See
 [ADR 0011](../../../docs/adr/0011-serverless-invocation-contract.md).
+
+## Network transport (`fylo serve`)
+
+`fylo serve` carries these same v1 frames over TCP (ADR 0012). Before its first
+machine frame, a connection sends one transport hello and reads one reply:
+
+```text
+-> {"fyloServe":1,"token":"<shared secret>"}
+<- {"fyloServe":1,"ok":true}
+```
+
+A wrong or missing token is answered with `ok:false` and error code `EAUTH`, a
+malformed hello with `EBADHELLO`, and a connection over the server's limit with
+`ESERVERBUSY`; the server then closes the connection. A hello with
+`"shutdown":true` asks the server to stop gracefully. After the hello, frames
+and responses are exactly the ones a local `exec --loop --exclusive-root`
+session exchanges, under the server's frame limits.
+
+A served session reports `capabilities.networkServer`
+(`{"version":1,"execution":"serialized","hostPaths":false,"rootOverride":false}`)
+and an empty `documentBuckets.putInputs` with `getOutputs:["base64"]`. Its
+requests cannot carry another `root`, a `schemaDir`, or a `file` input, and
+cannot use `getFileData` with `path` or `importBulkData`; those are refused
+with `EBADREQUEST` or `EUNSUPPORTEDOP` before dispatch.

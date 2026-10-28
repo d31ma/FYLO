@@ -5,13 +5,22 @@
 //! permission, or transaction semantics.
 
 mod application;
+mod frame_session;
 mod invocation_options;
 mod invocation_runtime;
+mod remote_policy;
+mod request_frame;
+#[cfg(not(target_arch = "wasm32"))]
+mod server;
 mod strict;
 
 pub use application::ApplicationConfig;
+pub use frame_session::FrameSession;
 pub use invocation_options::InvocationOptions;
 pub use invocation_runtime::InvocationRuntime;
+pub use request_frame::RequestFrame;
+#[cfg(not(target_arch = "wasm32"))]
+pub use server::{MachineServer, ServeOptions, ServeToken, ServerHandle};
 
 use std::io::{BufRead, Read, Write};
 #[cfg(not(target_arch = "wasm32"))]
@@ -350,6 +359,7 @@ fn execute_invocation_frame(
         cursor_sequence: std::cell::Cell::new(0),
         startup_error: None,
         persistent: false,
+        remote: false,
     };
     drop(root);
     // Returning data drops this private session and every transient engine.
@@ -379,23 +389,41 @@ fn serve_profiled_session<R: BufRead, W: Write>(
     (input, output): (&mut R, &mut W),
     options: Option<RootOpenOptions>,
     config: ApplicationConfig,
-    (limits, exclusive_root, persistent): (FrameLimits, bool, bool),
+    session: (FrameLimits, bool, bool),
 ) -> std::io::Result<()> {
-    let profile = options.as_ref().map_or(
-        FilesystemProfile::Native,
-        RootOpenOptions::filesystem_profile,
-    );
-    let mut default_root = options.as_ref().map(|options| {
-        options
-            .repository_root()
-            .unwrap_or_else(|| options.root())
-            .to_path_buf()
-    });
-    let supplied_lease = options.as_ref().and_then(RootOpenOptions::owning_lease);
-    let limits = limits.clamped();
-    let mut leases = std::collections::BTreeMap::new();
-    let startup_error =
-        if exclusive_root || profile == FilesystemProfile::EfsSidecarV1 || supplied_lease.is_some()
+    let mut session = Session::open(options, config, session);
+    loop {
+        match session.handle_frame(input, output)? {
+            FrameOutcome::Handled => {}
+            FrameOutcome::Terminate | FrameOutcome::Eof => return Ok(()),
+        }
+    }
+}
+
+impl Session {
+    /// Admit the default root (and its recovery) before the first frame, as
+    /// every session transport does.
+    fn open(
+        options: Option<RootOpenOptions>,
+        config: ApplicationConfig,
+        (limits, exclusive_root, persistent): (FrameLimits, bool, bool),
+    ) -> Self {
+        let profile = options.as_ref().map_or(
+            FilesystemProfile::Native,
+            RootOpenOptions::filesystem_profile,
+        );
+        let mut default_root = options.as_ref().map(|options| {
+            options
+                .repository_root()
+                .unwrap_or_else(|| options.root())
+                .to_path_buf()
+        });
+        let supplied_lease = options.as_ref().and_then(RootOpenOptions::owning_lease);
+        let limits = limits.clamped();
+        let mut leases = std::collections::BTreeMap::new();
+        let startup_error = if exclusive_root
+            || profile == FilesystemProfile::EfsSidecarV1
+            || supplied_lease.is_some()
         {
             match default_root.as_ref() {
                 None => Some(MachineError::new(
@@ -437,21 +465,17 @@ fn serve_profiled_session<R: BufRead, W: Write>(
         } else {
             None
         };
-    let mut session = Session {
-        default_root,
-        filesystem_profile: profile,
-        limits,
-        config,
-        leases: std::cell::RefCell::new(leases),
-        cursors: std::cell::RefCell::new(std::collections::BTreeMap::new()),
-        cursor_sequence: std::cell::Cell::new(0),
-        startup_error,
-        persistent,
-    };
-    loop {
-        match session.handle_frame(input, output)? {
-            FrameOutcome::Handled => {}
-            FrameOutcome::Terminate | FrameOutcome::Eof => return Ok(()),
+        Self {
+            default_root,
+            filesystem_profile: profile,
+            limits,
+            config,
+            leases: std::cell::RefCell::new(leases),
+            cursors: std::cell::RefCell::new(std::collections::BTreeMap::new()),
+            cursor_sequence: std::cell::Cell::new(0),
+            startup_error,
+            persistent,
+            remote: false,
         }
     }
 }
@@ -466,6 +490,8 @@ struct Session {
     cursor_sequence: std::cell::Cell<u64>,
     startup_error: Option<MachineError>,
     persistent: bool,
+    /// A network client: it may not name host paths, URLs or other roots.
+    remote: bool,
 }
 
 /// One paginated query snapshot, held for the life of the session.
@@ -663,6 +689,15 @@ impl Session {
     ) -> std::io::Result<FrameOutcome> {
         let started = Clock::start();
         let (frame, read, oversized, delimited) = self.read_request_frame(input)?;
+        self.answer_frame((frame, read, oversized, delimited), started, output)
+    }
+
+    fn answer_frame<W: Write>(
+        &mut self,
+        (frame, read, oversized, delimited): (Vec<u8>, usize, bool, bool),
+        started: Clock,
+        output: &mut W,
+    ) -> std::io::Result<FrameOutcome> {
         if read == 0 && frame.is_empty() {
             return Ok(FrameOutcome::Eof);
         }
@@ -741,7 +776,12 @@ impl Session {
             )?;
             return Ok(FrameOutcome::Terminate);
         }
-        match self.dispatch(&request) {
+        let admitted = if self.remote {
+            remote_policy::RemotePolicy::check(&request, self.default_root.as_deref())
+        } else {
+            Ok(())
+        };
+        match admitted.and_then(|()| self.dispatch(&request)) {
             Ok(result) => self.write_success(
                 output,
                 operation.as_deref(),
@@ -911,12 +951,8 @@ impl Session {
                     "version": 1,
                     "collectionKind": "file",
                     "operations": DOCUMENT_BUCKET_OPERATIONS,
-                    "putInputs": if cfg!(target_family = "wasm") {
-                        &["path"][..]
-                    } else {
-                        &["path", "url"][..]
-                    },
-                    "getOutputs": ["base64", "path"],
+                    "putInputs": self.document_put_inputs(),
+                    "getOutputs": self.document_get_outputs(),
                     "integrity": "sha256-full-content"
                 }),
             ),
@@ -958,7 +994,46 @@ impl Session {
             );
             capabilities
         };
+        self.with_network_server(capabilities)
+    }
+
+    fn with_network_server(
+        &self,
+        mut capabilities: serde_json::Map<String, Value>,
+    ) -> serde_json::Map<String, Value> {
+        if self.remote {
+            capabilities.insert(
+                "networkServer".into(),
+                json!({
+                    "version": 1,
+                    "execution": "serialized",
+                    "hostPaths": false,
+                    "rootOverride": false
+                }),
+            );
+        }
         capabilities
+    }
+
+    /// A network client cannot name a file on the server's disk or make the
+    /// server fetch a URL, so it has no file inputs and only inline output.
+    fn document_put_inputs(&self) -> &'static [&'static str] {
+        if self.remote {
+            return &[];
+        }
+        if cfg!(target_family = "wasm") {
+            &["path"]
+        } else {
+            &["path", "url"]
+        }
+    }
+
+    fn document_get_outputs(&self) -> &'static [&'static str] {
+        if self.remote {
+            &["base64"]
+        } else {
+            &["base64", "path"]
+        }
     }
 
     fn handshake(&self) -> Value {
@@ -4006,6 +4081,7 @@ mod tests {
             cursor_sequence: std::cell::Cell::new(0),
             startup_error: None,
             persistent: false,
+            remote: false,
         };
         let error = session
             .paginate(&json!({ "page": { "limit": 1 } }), Vec::new())

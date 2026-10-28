@@ -2,9 +2,12 @@
 // Fylo client — drives the `fylo` binary's persistent NDJSON loop.
 //
 // For JS/TS apps that consume the compiled binary instead of importing the npm
-// package. No dependencies (node:child_process only). Requires the `fylo`
-// binary on PATH (brew/scoop) or an explicit path. One long-lived subprocess
-// keeps the engine warm across calls.
+// package. No dependencies (node:child_process and node:net only). Requires the
+// `fylo` binary on PATH (brew/scoop) or an explicit path. One long-lived
+// subprocess keeps the engine warm across calls.
+//
+// `Fylo.connect({ host, port, token })` talks to a `fylo serve` process over TCP
+// instead: the server owns the root, and each call costs one network round trip.
 //
 //   import { Fylo } from './fylo.mjs'
 //   const db = new Fylo('/path/to/db')
@@ -21,6 +24,7 @@
 // Requests are queued: each resolves with its own response line, in order.
 
 import { spawn } from 'node:child_process'
+import { connect } from 'node:net'
 
 const MAX_SHARD_WIDTH = 4
 const DEFAULT_MAX_REQUEST_BYTES = 1024 * 1024
@@ -71,12 +75,20 @@ const FACADE = {
 
 export class Fylo {
     /**
-     * @param {string} root
-     * @param {{ binary?: string, config?: string, exclusiveRoot?: boolean, strictSchema?: boolean, shardWidth?: number, maxRequestBytes?: number, maxResponseBytes?: number }} [opts]
+     * Connect to a running `fylo serve` over TCP instead of starting a process.
+     * The server owns the root, so there is no root argument.
+     * @param {{ host: string, port: number, token: string }} server
+     * @param {{ maxRequestBytes?: number, maxResponseBytes?: number }} [opts]
+     */
+    static connect(server, opts = {}) {
+        return new Fylo(undefined, { ...opts, server })
+    }
+
+    /**
+     * @param {string | undefined} root
+     * @param {{ binary?: string, config?: string, exclusiveRoot?: boolean, strictSchema?: boolean, shardWidth?: number, maxRequestBytes?: number, maxResponseBytes?: number, server?: { host: string, port: number, token: string } }} [opts]
      */
     constructor(root, opts = {}) {
-        const args = ['exec', '--loop', '--root', root, ...configurationArgs(opts)]
-        if (opts.exclusiveRoot) args.push('--exclusive-root')
         this.maxRequestBytes = frameLimit(
             opts.maxRequestBytes,
             DEFAULT_MAX_REQUEST_BYTES,
@@ -89,56 +101,32 @@ export class Fylo {
             'maxResponseBytes',
             1024
         )
-        args.push('--max-request-bytes', String(this.maxRequestBytes))
-        args.push('--max-response-bytes', String(this.maxResponseBytes))
-        // Direct constructor knobs become CLI flags, letting one host drive
-        // different roots without changing its own process environment.
-        if (opts.strictSchema) args.push('--strict-schema')
-        if (opts.shardWidth !== undefined) {
-            if (
-                !Number.isInteger(opts.shardWidth) ||
-                opts.shardWidth < 1 ||
-                opts.shardWidth > MAX_SHARD_WIDTH
-            ) {
-                throw new TypeError(`shardWidth must be an integer from 1 to ${MAX_SHARD_WIDTH}`)
-            }
-            args.push('--shard-width', String(opts.shardWidth))
-        }
-        this._proc = spawn(opts.binary ?? 'fylo', args, {
-            stdio: ['pipe', 'pipe', 'inherit']
-        })
         this._queue = [] // pending { resolve, reject } in request order
         this._responseBuffer = Buffer.allocUnsafe(this.maxResponseBytes)
         this._responseLength = 0
         this._responseOversized = false
-        this._proc.stdout.on('data', (chunk) => this._onData(chunk))
-        this._proc.on('close', () => {
-            const err = new Error('fylo process exited')
-            for (const p of this._queue.splice(0)) p.reject(err)
-        })
-        // Surface spawn failures (e.g. binary missing) instead of crashing on an
-        // unhandled 'error' event.
-        this._proc.on('error', (err) => {
-            for (const p of this._queue.splice(0)) p.reject(err)
-        })
-        // The child may reject startup and close stdin after already writing a
-        // structured response (for example EROOTLOCKED). Suppress the stream's
-        // EPIPE event so stdout/exit remains the authoritative outcome.
-        this._proc.stdin.on('error', () => {})
-        this.ready = this._sendOp('handshake', {}).then((identity) => {
-            if (
-                identity?.machine?.maxRequestBytes !== this.maxRequestBytes ||
-                identity?.machine?.maxResponseBytes !== this.maxResponseBytes
-            ) {
-                this._proc.kill()
-                throw protocolError(
-                    'EPROTOCOL_LIMIT',
-                    'FYLO handshake frame limits do not match the client configuration'
-                )
-            }
-            this.identity = identity
-            return identity
-        })
+        this._transport =
+            opts.server === undefined
+                ? this._spawnProcess(root, opts)
+                : this._connectServer(opts.server)
+        const admitted =
+            opts.server === undefined ? Promise.resolve() : this._hello(opts.server.token)
+        this.ready = admitted
+            .then(() => this._sendOp('handshake', {}))
+            .then((identity) => {
+                if (
+                    identity?.machine?.maxRequestBytes !== this.maxRequestBytes ||
+                    identity?.machine?.maxResponseBytes !== this.maxResponseBytes
+                ) {
+                    this._transport.destroy()
+                    throw protocolError(
+                        'EPROTOCOL_LIMIT',
+                        'FYLO handshake frame limits do not match the client configuration'
+                    )
+                }
+                this.identity = identity
+                return identity
+            })
         void this.ready.catch(() => {})
         this.queue = Object.freeze({
             publish: (topic, payload, options = {}) => this.queuePublish(topic, payload, options),
@@ -201,6 +189,92 @@ export class Fylo {
         }
     }
 
+    _spawnProcess(root, opts) {
+        const args = ['exec', '--loop', '--root', root, ...configurationArgs(opts)]
+        if (opts.exclusiveRoot) args.push('--exclusive-root')
+        args.push('--max-request-bytes', String(this.maxRequestBytes))
+        args.push('--max-response-bytes', String(this.maxResponseBytes))
+        // Direct constructor knobs become CLI flags, letting one host drive
+        // different roots without changing its own process environment.
+        if (opts.strictSchema) args.push('--strict-schema')
+        if (opts.shardWidth !== undefined) {
+            if (
+                !Number.isInteger(opts.shardWidth) ||
+                opts.shardWidth < 1 ||
+                opts.shardWidth > MAX_SHARD_WIDTH
+            ) {
+                throw new TypeError(`shardWidth must be an integer from 1 to ${MAX_SHARD_WIDTH}`)
+            }
+            args.push('--shard-width', String(opts.shardWidth))
+        }
+        const proc = spawn(opts.binary ?? 'fylo', args, {
+            stdio: ['pipe', 'pipe', 'inherit']
+        })
+        // Hosts such as the soak runner sample and stop the child through it.
+        this._proc = proc
+        proc.stdout.on('data', (chunk) => this._onData(chunk))
+        proc.on('close', () => this._rejectAll(new Error('fylo process exited')))
+        // Surface spawn failures (e.g. binary missing) instead of crashing on an
+        // unhandled 'error' event.
+        proc.on('error', (err) => this._rejectAll(err))
+        // The child may reject startup and close stdin after already writing a
+        // structured response (for example EROOTLOCKED). Suppress the stream's
+        // EPIPE event so stdout/exit remains the authoritative outcome.
+        proc.stdin.on('error', () => {})
+        return {
+            write: (bytes) => proc.stdin.write(bytes),
+            closed: () => proc.exitCode !== null,
+            destroy: () => proc.kill(),
+            end: () =>
+                new Promise((resolve) => {
+                    if (proc.exitCode !== null) return resolve()
+                    proc.on('exit', () => resolve())
+                    proc.stdin.end()
+                })
+        }
+    }
+
+    _connectServer(server) {
+        if (typeof server?.token !== 'string' || server.token.length < 32) {
+            throw new TypeError('server.token must be the shared secret of at least 32 bytes')
+        }
+        const socket = connect({ host: server.host, port: server.port })
+        socket.setNoDelay(true)
+        let closed = false
+        socket.on('data', (chunk) => this._onData(chunk))
+        socket.on('close', () => {
+            closed = true
+            this._rejectAll(new Error('fylo server connection closed'))
+        })
+        socket.on('error', (err) => this._rejectAll(err))
+        return {
+            write: (bytes) => socket.write(bytes),
+            closed: () => closed,
+            destroy: () => socket.destroy(),
+            end: () =>
+                new Promise((resolve) => {
+                    if (closed) return resolve()
+                    socket.once('close', () => resolve())
+                    socket.end()
+                })
+        }
+    }
+
+    /** The transport's first frame authenticates; the server closes on refusal. */
+    async _hello(token) {
+        const reply = await this.request({ fyloServe: 1, token })
+        if (reply?.ok !== true) {
+            throw protocolError(
+                reply?.error?.code ?? 'EAUTH',
+                reply?.error?.message ?? 'fylo serve refused the connection'
+            )
+        }
+    }
+
+    _rejectAll(error) {
+        for (const pending of this._queue.splice(0)) pending.reject(error)
+    }
+
     _onData(chunk) {
         const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
         let start = 0
@@ -254,14 +328,14 @@ export class Fylo {
     }
 
     _abortProtocol(error) {
-        for (const pending of this._queue.splice(0)) pending.reject(error)
-        this._proc.kill()
+        this._rejectAll(error)
+        this._transport.destroy()
     }
 
     /** Send one raw machine-protocol op; resolves with the full response object. */
     request(op) {
         return new Promise((resolve, reject) => {
-            if (this._proc.exitCode !== null) return reject(new Error('fylo process exited'))
+            if (this._transport.closed()) return reject(new Error('fylo connection closed'))
             let payload
             try {
                 payload = Buffer.from(JSON.stringify(op), 'utf8')
@@ -279,7 +353,7 @@ export class Fylo {
                 return
             }
             this._queue.push({ resolve, reject })
-            this._proc.stdin.write(Buffer.concat([payload, Buffer.from('\n')]))
+            this._transport.write(Buffer.concat([payload, Buffer.from('\n')]))
         })
     }
 
@@ -549,12 +623,8 @@ export class Fylo {
         return this._op('importBulkData', { collection, url, limitOrOptions })
     }
 
-    /** Close stdin so the loop ends, and wait for the process to exit. */
+    /** End the session: close the process's stdin or the server connection. */
     close() {
-        return new Promise((resolve) => {
-            if (this._proc.exitCode !== null) return resolve()
-            this._proc.on('exit', () => resolve())
-            this._proc.stdin.end()
-        })
+        return this._transport.end()
     }
 }

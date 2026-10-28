@@ -976,12 +976,32 @@ hold a plaintext value for it.
 
 ## Remote Access
 
-There is none — by design. FYLO has no server and speaks no network protocol.
-Every client owns its database directly: the CLI and language shims drive the
-`fylo` binary against a local root, and the browser/mobile clients embed the
-engine over an on-device OPFS store (see [Browser access](#browser-access)).
-If a root must be reached from another machine, that is a filesystem-layer
-concern (a mounted drive, a synced directory) — not FYLO's.
+By default there is none. Every client owns its database directly: the CLI and
+language shims drive the `fylo` binary against a local root, and the
+browser/mobile clients embed the engine over an on-device OPFS store (see
+[Browser access](#browser-access)).
+
+When a root must be reached from another machine, run `fylo serve` next to
+the disk instead of mounting the root over the network. It owns the root and
+answers the machine protocol over TCP, so each operation costs one round trip
+rather than hundreds of remote file calls:
+
+```bash
+openssl rand -hex 32 > serve.token && chmod 600 serve.token
+fylo serve --root ./db --listen 192.168.1.10:7878 --token-file serve.token
+fylo serve --stop --connect 192.168.1.10:7878 --token-file serve.token
+```
+
+```js
+import { Fylo } from './clients/node/fylo.mjs'
+const db = Fylo.connect({ host: '192.168.1.10', port: 7878, token })
+```
+
+The Rust shim has `Fylo::connect("192.168.1.10:7878", token)`. There is no
+default address and no unauthenticated access, but there is no encryption yet
+either: keep the listener on loopback, a trusted LAN, or a tunnel. A remote
+client cannot name another root, server paths, or URLs. See
+[ADR 0012](docs/adr/0012-opt-in-network-server.md).
 
 The PostgREST-style filter grammar (`role=eq.admin&age=gte.30`) lives on as a
 query front-end: `queryFromSearch` in `src/query/postgrest.js` translates it
