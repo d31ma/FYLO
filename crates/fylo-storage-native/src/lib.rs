@@ -838,12 +838,24 @@ impl NativeRoot {
         }
         let canonical = fs::canonicalize(target).map_err(NativeStorageError::io)?;
         if !canonical.starts_with(&self.canonical) {
-            return Err(NativeStorageError::new(
-                NativeStorageErrorCode::UnsafePath,
-                "canonical storage path escapes the FYLO root",
-            ));
+            return Err(self.escaped_or_replaced(target));
         }
         Ok(metadata)
+    }
+
+    /// On Windows a file replaced by rename while it is being resolved can
+    /// resolve to its orphaned name under `\$Extend\$Deleted`, outside the
+    /// root. A second resolution tells that race, which is a changed path,
+    /// from a real escape, which resolves outside the root again.
+    fn escaped_or_replaced(&self, target: &Path) -> NativeStorageError {
+        let replaced =
+            fs::canonicalize(target).is_ok_and(|canonical| canonical.starts_with(&self.canonical));
+        let message = if replaced {
+            "storage path changed while an open file was being read"
+        } else {
+            "canonical storage path escapes the FYLO root"
+        };
+        NativeStorageError::new(NativeStorageErrorCode::UnsafePath, message)
     }
 
     fn non_canonical_spelling(path: &Path) -> NativeStorageError {
