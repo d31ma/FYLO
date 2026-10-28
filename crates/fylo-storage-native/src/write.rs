@@ -2810,7 +2810,7 @@ fn try_create_lock(path: &Path, record: &LockRecord) -> Result<bool, NativeStora
         // exclusive create is unreliable over NFS, and a filesystem with no
         // links is not NFS — so the exclusive create the host does offer is
         // the atomic primitive here.
-        Err(error) if error.kind() == std::io::ErrorKind::Unsupported => {
+        Err(error) if links_unsupported(&error) => {
             let encoded = serde_json::to_vec(record).map_err(|error| json_error(&error))?;
             match write_new_synced(path, &encoded) {
                 Ok(()) => {
@@ -2825,6 +2825,18 @@ fn try_create_lock(path: &Path, record: &LockRecord) -> Result<bool, NativeStora
     };
     fs::remove_file(scratch).map_err(NativeStorageError::io)?;
     Ok(result)
+}
+
+/// How a filesystem says it has no links. macOS's SMB client answers
+/// `link(2)` with `ENOTSUP` (45), which std leaves `Uncategorized` rather
+/// than `Unsupported`.
+fn links_unsupported(error: &std::io::Error) -> bool {
+    #[cfg(target_vendor = "apple")]
+    const ENOTSUP: Option<i32> = Some(45);
+    #[cfg(not(target_vendor = "apple"))]
+    const ENOTSUP: Option<i32> = None;
+    error.kind() == std::io::ErrorKind::Unsupported
+        || (ENOTSUP.is_some() && error.raw_os_error() == ENOTSUP)
 }
 
 fn reclaim_stale_lock(path: &Path, contender: &LockRecord) -> Result<(), NativeStorageError> {
@@ -4676,6 +4688,18 @@ fn json_error(error: &serde_json::Error) -> NativeStorageError {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_filesystem_without_links_takes_the_exclusive_create_fallback() {
+        use std::io::{Error, ErrorKind};
+        assert!(links_unsupported(&Error::from(ErrorKind::Unsupported)));
+        #[cfg(target_vendor = "apple")]
+        assert!(links_unsupported(&Error::from_raw_os_error(45)));
+        assert!(!links_unsupported(&Error::from(ErrorKind::AlreadyExists)));
+        assert!(!links_unsupported(&Error::from(
+            ErrorKind::PermissionDenied
+        )));
+    }
+
     #[test]
     fn an_unpublished_capture_scratch_is_not_part_of_the_sequence() {
         let root = std::env::temp_dir().join(format!("fylo-capture-scratch-{}", unique_name("t")));
