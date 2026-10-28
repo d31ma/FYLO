@@ -1397,7 +1397,10 @@ impl NativeCollection {
                 log: None,
             });
         }
-        let bytes = self.root.read_generation_file(&path)?;
+        let bytes = self
+            .root
+            .read_generation_file(&path)
+            .map_err(Self::replaced_while_read)?;
         let state: GenerationState = serde_json::from_slice(&bytes).map_err(|error| {
             NativeStorageError::new(
                 NativeStorageErrorCode::CorruptMetadata,
@@ -1436,6 +1439,22 @@ impl NativeCollection {
             transaction_id: Some(Self::UNAPPLIED_LOG_TRANSACTION.into()),
             ..state
         })
+    }
+
+    /// `state.json` is replaced by rename on every commit. A reader that loses
+    /// that race sees the file vanish, or on Windows sees its pending delete
+    /// as access denied. Both mean the generation moved, which readers retry.
+    fn replaced_while_read(error: NativeStorageError) -> NativeStorageError {
+        let kind = error.source.as_ref().map(std::io::Error::kind);
+        let replaced = kind == Some(std::io::ErrorKind::NotFound)
+            || (cfg!(windows) && kind == Some(std::io::ErrorKind::PermissionDenied));
+        if !replaced {
+            return error;
+        }
+        NativeStorageError::new(
+            NativeStorageErrorCode::ConcurrentWrite,
+            "collection state was replaced while it was read",
+        )
     }
 
     /// Transaction identifier a reader sees for an unapplied log record.
