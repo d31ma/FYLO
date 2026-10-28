@@ -7,6 +7,13 @@ use std::path::Path;
 /// `Unavailable` covers every case the caller must hand to the
 /// component-by-component walk instead: a platform without such an open, a
 /// link, a permission error, or anything else that walk reports precisely.
+#[cfg_attr(
+    not(target_vendor = "apple"),
+    expect(
+        dead_code,
+        reason = "only Apple platforms open a whole path in one call"
+    )
+)]
 pub(crate) enum BeneathOpen {
     Opened(File, Metadata),
     Missing,
