@@ -194,17 +194,14 @@ impl LogSegment {
         })
     }
 
-    /// Read and scan a whole segment, or `None` when it does not exist.
-    pub(crate) fn scan(
-        path: &Path,
-    ) -> Result<Option<(Vec<u8>, Option<LogScan>)>, NativeStorageError> {
-        let bytes = match fs::read(path) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(NativeStorageError::io(error)),
-        };
-        let scan = LogScan::segment(&bytes).ok();
-        Ok(Some((bytes, scan)))
+    /// Read and scan a whole segment, or `None` when it does not exist or
+    /// its header never became valid.
+    pub(crate) fn scan(path: &Path) -> Result<Option<LogScan>, NativeStorageError> {
+        match fs::read(path) {
+            Ok(bytes) => Ok(LogScan::segment(&bytes).ok()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(NativeStorageError::io(error)),
+        }
     }
 
     fn read_header(file: &File) -> Result<Option<LogSegmentHeader>, NativeStorageError> {

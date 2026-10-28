@@ -95,7 +95,7 @@ impl NativeWriteRoot {
             Ok(()) => self.apply_or_abort(collection, &queue, lsn, &plan),
             Err(error) => Err(error),
         };
-        let finished = self.finish_member(collection, &queue, &plan);
+        let finished = Self::finish_member(collection, &queue, &plan);
         outcome.and(finished).map(|()| value)
     }
 
@@ -414,7 +414,6 @@ impl NativeWriteRoot {
     }
 
     fn finish_member(
-        &self,
         collection: &NativeCollection,
         queue: &Arc<CommitQueue>,
         plan: &CommitPlan,
@@ -452,12 +451,18 @@ impl NativeWriteRoot {
         }
     }
 
+    /// The busy period is consumed first, so its segment handle is closed
+    /// before a checkpoint removes the log: Windows cannot remove a directory
+    /// that holds an open file.
     fn end_busy(collection: &NativeCollection, busy: BusyPeriod) -> Result<(), NativeStorageError> {
-        let Some(position) = Self::publish_end(collection, &busy)? else {
+        let published = Self::publish_end(collection, &busy)?;
+        let generation = busy.generation + 2;
+        drop(busy);
+        let Some(position) = published else {
             return Ok(());
         };
         if Self::wants_checkpoint(collection, &position)? {
-            LogCheckpoint::run(collection, busy.generation + 2)?;
+            LogCheckpoint::run(collection, generation)?;
         }
         Ok(())
     }
@@ -598,7 +603,6 @@ impl NativeWriteRoot {
             return Ok(false);
         }
         let opened = LogSegment::scan(&collection.log_segment_path())?
-            .and_then(|(_, scan)| scan)
             .and_then(|scan| scan.records.first().map(|(_, record)| record.generation));
         if opened.is_some_and(|opened| opened >= generation) {
             return Ok(true);

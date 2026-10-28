@@ -47,10 +47,9 @@ impl LogCheckpoint {
         let index = collection.path.join("index");
         paths.insert(index.join("keys.wal"));
         paths.insert(index.join("keys.snapshot"));
-        let Some((bytes, Some(scan))) = LogSegment::scan(&collection.log_segment_path())? else {
+        let Some(scan) = LogSegment::scan(&collection.log_segment_path())? else {
             return Ok(paths);
         };
-        drop(bytes);
         for manifest in Self::commit_manifests(&scan)? {
             for step in &manifest.steps {
                 Self::step_paths(collection, step, &mut paths)?;
@@ -105,7 +104,7 @@ impl LogCheckpoint {
         let mut directories = BTreeSet::new();
         for path in paths {
             if path_exists_no_follow(path)? {
-                let file = File::open(path).map_err(NativeStorageError::io)?;
+                let file = Self::open_for_flush(path)?;
                 crate::sync_handle(&file).map_err(NativeStorageError::io)?;
             }
             if let Some(parent) = path.parent() {
@@ -157,8 +156,23 @@ impl LogCheckpoint {
         if !path_exists_no_follow(segment)? {
             return Ok(());
         }
-        File::open(segment)
-            .and_then(|file| file.sync_all())
+        Self::open_for_flush(segment)?
+            .sync_all()
             .map_err(NativeStorageError::io)
+    }
+
+    /// Windows flushes only a handle opened for writing; POSIX flushes any
+    /// handle, and a read-only record must not need write permission.
+    #[cfg(windows)]
+    fn open_for_flush(path: &Path) -> Result<File, NativeStorageError> {
+        fylo_vfs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .map_err(NativeStorageError::io)
+    }
+
+    #[cfg(not(windows))]
+    fn open_for_flush(path: &Path) -> Result<File, NativeStorageError> {
+        File::open(path).map_err(NativeStorageError::io)
     }
 }

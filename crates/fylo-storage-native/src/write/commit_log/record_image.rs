@@ -60,6 +60,8 @@ impl RecordImage {
         })
     }
 
+    // The signature mirrors the platforms without POSIX modes.
+    #[allow(clippy::unnecessary_wraps)]
     #[cfg(unix)]
     fn mode_of(metadata: &fs::Metadata) -> Option<u32> {
         use std::os::unix::fs::PermissionsExt;

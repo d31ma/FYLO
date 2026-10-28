@@ -29,8 +29,7 @@ impl LogRecovery {
         collection: &NativeCollection,
         stored: &GenerationState,
     ) -> Result<(), NativeStorageError> {
-        let scanned = LogSegment::scan(&collection.log_segment_path())?;
-        let scan = scanned.and_then(|(_, scan)| scan);
+        let scan = LogSegment::scan(&collection.log_segment_path())?;
         let checkpoint = scan.as_ref().and_then(Self::opening_checkpoint);
         let mut generation = stored.generation;
         match (&scan, checkpoint) {

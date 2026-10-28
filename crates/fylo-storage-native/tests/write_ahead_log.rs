@@ -177,7 +177,10 @@ fn a_reader_treats_an_unapplied_record_as_a_write_in_progress() {
     fs::write(fixture.segment(), segment).unwrap();
     let root = NativeRoot::open(&fixture.0).unwrap();
     let generation = root.collection("items").unwrap().generation().unwrap();
-    assert_eq!(generation.state, fylo_storage_native::GenerationStatus::Writing);
+    assert_eq!(
+        generation.state,
+        fylo_storage_native::GenerationStatus::Writing
+    );
 }
 
 #[test]
@@ -214,7 +217,12 @@ fn patch_delete_and_restore_round_trip_through_the_log() {
     put(&writer, 6);
     let id = identifier(6);
     writer
-        .patch_document_fields("items", &id, json!({"group": 99}).as_object().unwrap(), None)
+        .patch_document_fields(
+            "items",
+            &id,
+            json!({"group": 99}).as_object().unwrap(),
+            None,
+        )
         .unwrap();
     writer.delete_document("items", &id, None).unwrap();
     assert!(!fixture.live(&id));
