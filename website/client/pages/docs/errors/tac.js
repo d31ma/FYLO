@@ -109,6 +109,21 @@ export default class {
             retry: 'Narrow the query.'
         },
         {
+            code: 'EFXDB_NOT_FXDB',
+            meaning: 'The file is not a .fxdb database.',
+            retry: 'Do not retry; check the path.'
+        },
+        {
+            code: 'EFXDB_VERSION',
+            meaning: 'The .fxdb file uses a format version or feature this build does not support.',
+            retry: 'Do not retry; open it with a newer FYLO.'
+        },
+        {
+            code: 'EFXDB_CORRUPT',
+            meaning: 'A .fxdb structure failed its checksum or consistency checks.',
+            retry: 'Do not retry; run fylo verify on the file.'
+        },
+        {
             code: 'ENATIVE_IO',
             meaning: 'Native filesystem I/O failed, including disk pressure or xattr operations.',
             retry: 'Treat a mutation as ambiguous; inspect the cause before retrying.'

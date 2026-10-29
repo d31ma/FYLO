@@ -27,6 +27,7 @@ const querySource = await readFile('crates/fylo-query/src/lib.rs', 'utf8')
 const formatErrorSource = await readFile('crates/fylo-format/src/format_error_code.rs', 'utf8')
 const storageSource = await readFile('crates/fylo-storage-native/src/lib.rs', 'utf8')
 const storageWriteSource = await readFile('crates/fylo-storage-native/src/write.rs', 'utf8')
+const containerSource = await readFile('crates/fylo-storage-native/src/container_file.rs', 'utf8')
 const queueSource = await readFile('crates/fylo-storage-native/src/queue.rs', 'utf8')
 const engineSource = await readFile('crates/fylo-engine/src/lib.rs', 'utf8')
 const wasmHostSource = await readFile('src/browser/wasm/index-scanner.js', 'utf8')
@@ -39,6 +40,7 @@ const implementationSources = [
     formatErrorSource,
     storageSource,
     storageWriteSource,
+    containerSource,
     queueSource,
     engineSource,
     wasmHostSource
@@ -50,8 +52,8 @@ assert(
     'response schema protocol version drift'
 )
 assert(
-    schema.$defs.request.properties.op.enum.length === 48,
-    'filesystem-only machine registry must have 48 operations'
+    schema.$defs.request.properties.op.enum.length === 50,
+    'filesystem-only machine registry must have 50 operations'
 )
 
 const registeredOperations = operations.operations.map(({ name }) => name).sort()

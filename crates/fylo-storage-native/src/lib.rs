@@ -69,7 +69,8 @@ pub use container_codec::{
     DICTIONARY_TRAINING_BYTES, MAX_DICTIONARY_BYTES, ZSTD_SEALED_LEVEL, ZSTD_WRITE_LEVEL,
 };
 pub use container_file::{
-    ContainerCollection, ContainerCollectionReport, ContainerError, ContainerFile, ContainerReport,
+    ContainerCollection, ContainerCollectionReport, ContainerError, ContainerFile,
+    ContainerProblem, ContainerProblemSeverity, ContainerReport, ContainerVerifyReport,
 };
 #[cfg(not(target_family = "wasm"))]
 pub use container_lease::{ContainerLease, ContainerLeaseError, ContainerLeaseTiming};

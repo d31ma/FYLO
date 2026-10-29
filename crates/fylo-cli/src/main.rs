@@ -41,6 +41,9 @@ fn main() -> ExitCode {
     if arguments.first().is_some_and(|command| command == "exec") {
         return run_machine(&arguments);
     }
+    if let Some((operation, path)) = database_command(&arguments) {
+        return run_database(&arguments, operation, &path);
+    }
     match run(&arguments) {
         Ok(output) => {
             println!("{output}");
@@ -266,6 +269,57 @@ fn run_machine(arguments: &[String]) -> ExitCode {
                 ExitCode::SUCCESS
             } else {
                 ExitCode::FAILURE
+            }
+        }
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// The `.fxdb` operation and file that `fylo inspect <db.fxdb>` or
+/// `fylo verify <db.fxdb>` names, by argument or by `--root` (ADR 0016
+/// section 11). Any other command, or another path, is not one.
+fn database_command(arguments: &[String]) -> Option<(&'static str, PathBuf)> {
+    let operation = match arguments.first().map(String::as_str) {
+        Some("inspect") => "inspectDatabase",
+        Some("verify") => "verifyDatabase",
+        _ => return None,
+    };
+    let values = positionals(arguments);
+    let named = match values.as_slice() {
+        [_, path] => Some(path.as_str()),
+        [_] => option(arguments, "--root"),
+        _ => None,
+    };
+    named
+        .filter(|path| {
+            Path::new(path)
+                .extension()
+                .is_some_and(|extension| extension == "fxdb")
+        })
+        .map(|path| (operation, PathBuf::from(path)))
+}
+
+/// Print a `.fxdb` file's inspect or verify report as JSON. A verify report
+/// with errors is printed and fails the command.
+fn run_database(arguments: &[String], operation: &str, path: &Path) -> ExitCode {
+    // The request names the file; it is never admitted as a directory root.
+    let result = machine_config(arguments).and_then(|application| {
+        machine_result(
+            &json!({ "op": operation, "root": path }),
+            None,
+            &application,
+        )
+    });
+    match result.and_then(|report| pretty(&report).map(|output| (report, output))) {
+        Ok((report, output)) => {
+            println!("{output}");
+            if operation == "verifyDatabase" && report.get("ok") != Some(&Value::Bool(true)) {
+                ExitCode::FAILURE
+            } else {
+                ExitCode::SUCCESS
             }
         }
         Err(error) => {
@@ -1580,7 +1634,7 @@ fn retired_command(command: &str) -> String {
 }
 
 fn usage() -> String {
-    "Usage:\n  fylo checkout [-b] <branch> [--root <path>] [--json]\n  fylo branch [--root <path>] [--json]\n  fylo commit -m <message> [--root <path>] [--json]\n  fylo log [--root <path>] [--json]\n  fylo status [--root <path>] [--json]\n  fylo diff [<from>] [<to>] [--root <path>] [--json]\n  fylo restore-commit <commit-id> [--root <path>] [--force] [--json]\n  fylo merge <ref> [-m <message>] [--root <path>] [--json]\n  fylo version [--output json]\n  fylo \"<SQL>\"\n  fylo sql \"<SQL>\"\n  fylo exec --request <json|@path|-> [--root <path>]\n  fylo exec --loop [--root <path>] [--exclusive-root [--hot-set-bytes <n>]]\n  fylo inspect <collection> [--root <path>] [--json]\n  fylo get <collection> <doc-id> [--root <path>] [--json]\n  fylo latest <collection> <doc-id> [--root <path>] [--json] [--id-only]\n  fylo rebuild <collection> [--root <path>] [--json]\n  fylo reshard <collection> --width <n> [--root <path>] [--json]\n  fylo verify <collection> [--root <path>] [--json]\n  fylo deleted <collection> [--root <path>] [--json]\n  fylo restore <collection> <doc-id> [--root <path>] [--json]\n  fylo schema inspect <collection> [--schema-dir <path>] [--json]\n  fylo schema current <collection> [--schema-dir <path>] [--json]\n  fylo schema history <collection> [--schema-dir <path>] [--json]\n  fylo schema doctor <collection> [--schema-dir <path>] [--json]\n  fylo schema validate <collection> <json|@path|-> [--schema-dir <path>] [--json]\n  fylo schema materialize <collection> <json|@path|-> [--schema-dir <path>] [--json]\n  fylo schema migrate <collection> [--include-unversioned] [--schema-dir <path>] [--json]\n  fylo schema mode <collection> [off|warn|strict] [--json]\n  fylo schema check <collection> [--limit <n>] [--schema-dir <path>] [--json]\n\nOptions:\n  --config <path> Load application.json (default: ./application.json)\n  --root <path>   Override fylo.root for this command\n  --schema-dir <path> Override fylo.schema for schema admin commands\n  --json          Emit machine-readable JSON output\n  --id-only       Return only the resolved document id for latest\n  -b              Create a new branch during checkout\n  -m, --message <v> Commit message\n  --force         Allow restore-commit to overwrite uncommitted changes\n  --include-unversioned Also migrate documents with no _v, as the oldest version\n  --request <v>   Machine request payload, @file path, or - for stdin\n  --exclusive-root Acquire an exclusive crash-safe root lease for exec --loop\n  --hot-set-bytes <n> Memory an --exclusive-root session keeps for warm reads; 0 turns it off (default 67108864)\n  --strict-schema Validate writes against the collection head schema (fylo.strict)\n  --shard-width <n> Shard width for collections created by this session (fylo.shard.width)\n  --width <n>     Destination shard width for reshard\n  --limit <n>     Failing documents schema check lists (default 100)\n  --max-request-bytes <n> Maximum NDJSON request bytes, excluding LF\n  --max-response-bytes <n> Maximum NDJSON response bytes, excluding LF\n  --output <mode> Output mode for version: text or json\n  --version       Print the FYLO runtime version\n  --help          Show this message"
+    "Usage:\n  fylo checkout [-b] <branch> [--root <path>] [--json]\n  fylo branch [--root <path>] [--json]\n  fylo commit -m <message> [--root <path>] [--json]\n  fylo log [--root <path>] [--json]\n  fylo status [--root <path>] [--json]\n  fylo diff [<from>] [<to>] [--root <path>] [--json]\n  fylo restore-commit <commit-id> [--root <path>] [--force] [--json]\n  fylo merge <ref> [-m <message>] [--root <path>] [--json]\n  fylo version [--output json]\n  fylo \"<SQL>\"\n  fylo sql \"<SQL>\"\n  fylo exec --request <json|@path|-> [--root <path>]\n  fylo exec --loop [--root <path>] [--exclusive-root [--hot-set-bytes <n>]]\n  fylo inspect <collection> [--root <path>] [--json]\n  fylo inspect <db.fxdb>\n  fylo get <collection> <doc-id> [--root <path>] [--json]\n  fylo latest <collection> <doc-id> [--root <path>] [--json] [--id-only]\n  fylo rebuild <collection> [--root <path>] [--json]\n  fylo reshard <collection> --width <n> [--root <path>] [--json]\n  fylo verify <collection> [--root <path>] [--json]\n  fylo verify <db.fxdb>\n  fylo deleted <collection> [--root <path>] [--json]\n  fylo restore <collection> <doc-id> [--root <path>] [--json]\n  fylo schema inspect <collection> [--schema-dir <path>] [--json]\n  fylo schema current <collection> [--schema-dir <path>] [--json]\n  fylo schema history <collection> [--schema-dir <path>] [--json]\n  fylo schema doctor <collection> [--schema-dir <path>] [--json]\n  fylo schema validate <collection> <json|@path|-> [--schema-dir <path>] [--json]\n  fylo schema materialize <collection> <json|@path|-> [--schema-dir <path>] [--json]\n  fylo schema migrate <collection> [--include-unversioned] [--schema-dir <path>] [--json]\n  fylo schema mode <collection> [off|warn|strict] [--json]\n  fylo schema check <collection> [--limit <n>] [--schema-dir <path>] [--json]\n\nOptions:\n  --config <path> Load application.json (default: ./application.json)\n  --root <path>   Override fylo.root for this command\n  --schema-dir <path> Override fylo.schema for schema admin commands\n  --json          Emit machine-readable JSON output\n  --id-only       Return only the resolved document id for latest\n  -b              Create a new branch during checkout\n  -m, --message <v> Commit message\n  --force         Allow restore-commit to overwrite uncommitted changes\n  --include-unversioned Also migrate documents with no _v, as the oldest version\n  --request <v>   Machine request payload, @file path, or - for stdin\n  --exclusive-root Acquire an exclusive crash-safe root lease for exec --loop\n  --hot-set-bytes <n> Memory an --exclusive-root session keeps for warm reads; 0 turns it off (default 67108864)\n  --strict-schema Validate writes against the collection head schema (fylo.strict)\n  --shard-width <n> Shard width for collections created by this session (fylo.shard.width)\n  --width <n>     Destination shard width for reshard\n  --limit <n>     Failing documents schema check lists (default 100)\n  --max-request-bytes <n> Maximum NDJSON request bytes, excluding LF\n  --max-response-bytes <n> Maximum NDJSON response bytes, excluding LF\n  --output <mode> Output mode for version: text or json\n  --version       Print the FYLO runtime version\n  --help          Show this message"
         .replace(
             "  --root <path>   Override fylo.root for this command",
             "  --root <path>   Override fylo.root for this command\n  --filesystem-profile <native|efs-sidecar-v1> Select metadata profile explicitly",
@@ -1630,6 +1684,27 @@ mod tests {
         assert!(output.starts_with("Usage:\n  fylo checkout"));
         assert!(output.contains("fylo exec --loop"));
         assert!(!output.contains("fylo-rust"));
+    }
+
+    #[test]
+    fn inspect_and_verify_route_a_fxdb_path_to_the_database_operations() {
+        let arguments = |values: &[&str]| -> Vec<String> {
+            values.iter().map(|value| (*value).to_owned()).collect()
+        };
+        assert_eq!(
+            database_command(&arguments(&["inspect", "db.fxdb"])),
+            Some(("inspectDatabase", PathBuf::from("db.fxdb")))
+        );
+        assert_eq!(
+            database_command(&arguments(&["verify", "--root", "data/db.fxdb"])),
+            Some(("verifyDatabase", PathBuf::from("data/db.fxdb")))
+        );
+        assert_eq!(database_command(&arguments(&["verify", "users"])), None);
+        assert_eq!(
+            database_command(&arguments(&["inspect", "users", "--root", "db.fxdb"])),
+            None
+        );
+        assert_eq!(database_command(&arguments(&["get", "db.fxdb"])), None);
     }
 
     #[test]

@@ -23,6 +23,8 @@ use crate::{ContainerCipher, ContainerCipherError, ContainerSealContext};
 mod punch;
 use punch::punch_hole;
 mod snapshot;
+mod verify;
+pub use verify::{ContainerProblem, ContainerProblemSeverity, ContainerVerifyReport};
 
 /// Why a container operation failed.
 #[derive(Debug)]

@@ -32,6 +32,8 @@
                         "rebuildCollection",
                         "reshardCollection",
                         "verifyCollection",
+                        "inspectDatabase",
+                        "verifyDatabase",
                         "getDoc",
                         "getFileData",
                         "getLatest",

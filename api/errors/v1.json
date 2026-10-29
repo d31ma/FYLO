@@ -242,6 +242,18 @@
             "retryable": true
         },
         {
+            "code": "EFXDB_NOT_FXDB",
+            "retryable": false
+        },
+        {
+            "code": "EFXDB_VERSION",
+            "retryable": false
+        },
+        {
+            "code": "EFXDB_CORRUPT",
+            "retryable": false
+        },
+        {
             "code": "ESCHEMA",
             "retryable": false
         }
