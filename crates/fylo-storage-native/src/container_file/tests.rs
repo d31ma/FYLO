@@ -54,6 +54,7 @@ fn checkpoint(checkpoint: u64) -> ContainerCheckpointSlot {
         offset: 512,
         locations: None,
         index: None,
+        schemas: None,
         dictionary: None,
     }
 }
@@ -519,7 +520,8 @@ fn a_reader_opens_a_file_a_writer_may_not() {
     let mut bytes = std::fs::read(&path).expect("read container");
     let size = ContainerSuperblock::ENCODED_BYTES;
     let mut superblock = ContainerSuperblock::decode(&bytes[..size]).expect("decode");
-    superblock.read_only_compat = ContainerSuperblock::READ_ONLY_COMPAT_SCHEMAS;
+    // A read-only-compatible feature this build does not know.
+    superblock.read_only_compat = 1 << 1;
     bytes[..size].copy_from_slice(&superblock.encode());
     std::fs::write(&path, &bytes).expect("write flag");
     assert!(matches!(
@@ -527,6 +529,36 @@ fn a_reader_opens_a_file_a_writer_may_not() {
         Err(ContainerError::ReadOnly)
     ));
     ContainerFile::open_reader(&path).expect("a reader still opens it");
+}
+
+#[test]
+fn the_schemas_feature_is_set_durably_and_kept() {
+    let (_guard, path) = created("fxdb-schemas-feature");
+    let schemas = ContainerSuperblock::READ_ONLY_COMPAT_SCHEMAS;
+    {
+        let mut writer = ContainerFile::open_unchecked(&path).expect("open");
+        let generation = writer.superblock().generation;
+        assert!(writer.add_read_only_compat(schemas).expect("set"));
+        assert_eq!(writer.superblock().generation, generation + 1);
+        assert!(!writer.add_read_only_compat(schemas).expect("already set"));
+        assert_eq!(writer.superblock().generation, generation + 1);
+        // A later checkpoint writes the other copy and keeps the bit.
+        writer.checkpoint().expect("checkpoint");
+    }
+    let copies = std::fs::read(&path).expect("read container");
+    let size = ContainerSuperblock::ENCODED_BYTES;
+    for copy in [&copies[..size], &copies[size..2 * size]] {
+        let superblock = ContainerSuperblock::decode(copy).expect("decode");
+        assert_eq!(superblock.read_only_compat, schemas);
+    }
+    // This build knows the feature, so it still writes the file.
+    let writer = ContainerFile::open_unchecked(&path).expect("a writer opens it");
+    assert_eq!(writer.superblock().read_only_compat, schemas);
+    let mut reader = ContainerFile::open_reader(&path).expect("open reader");
+    assert!(matches!(
+        reader.add_read_only_compat(schemas),
+        Err(ContainerError::ReadOnly)
+    ));
 }
 
 const SECRET: &[u8] = b"correct horse battery staple";

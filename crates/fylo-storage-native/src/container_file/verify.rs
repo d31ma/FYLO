@@ -348,6 +348,7 @@ impl ContainerFile {
                 for (kind, snapshot) in [
                     (ContainerExtentKind::Locations, slot.locations),
                     (ContainerExtentKind::Index, slot.index),
+                    (ContainerExtentKind::Schemas, slot.schemas),
                 ] {
                     if let Some(snapshot) = snapshot {
                         self.verify_snapshot(

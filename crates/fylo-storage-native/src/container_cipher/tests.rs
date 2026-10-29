@@ -83,6 +83,11 @@ fn a_unit_opens_only_where_it_was_sealed() {
             checkpoint: 41,
             kind: fylo_format::ContainerExtentKind::Index,
         },
+        ContainerSealContext::Snapshot {
+            collection: 3,
+            checkpoint: 41,
+            kind: fylo_format::ContainerExtentKind::Schemas,
+        },
     ] {
         assert_eq!(
             cipher.open(elsewhere, &sealed),

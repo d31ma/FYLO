@@ -303,6 +303,22 @@ impl Open {
         Ok(())
     }
 
+    /// Set read-only-compatible feature bits in the superblock durably,
+    /// through a checkpoint that makes this process's seals durable too.
+    pub(crate) fn add_read_only_feature(
+        &mut self,
+        features: u32,
+    ) -> Result<(), NativeStorageError> {
+        if self
+            .file
+            .add_read_only_compat(features)
+            .map_err(ContainerMedium::error)?
+        {
+            self.seals.clear();
+        }
+        Ok(())
+    }
+
     /// Read the map and the directory again if a checkpoint moved them,
     /// rebuilding the segment tables and sealing again what this process
     /// sealed since its last checkpoint. Returns whether it read them.

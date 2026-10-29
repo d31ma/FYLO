@@ -178,6 +178,10 @@ Each version holds:
   of section 6 have a reserved `counts` field. The descriptor's
   `"schemas": "registry"` and `schemaHead` are still written, after the
   record commits, and follow the records, which are authoritative.
+  In a `.fxdb` file the snapshot is the kind `7` run the checkpoint slot
+  names, with the same contents, and a collection's descriptor names no
+  head, since its directory block is not rewritten
+  (`docs/fxdb-segment-backend.md`, "Schema versions").
 - **Directory roots on the file layout**: the registry is
   `<root>/.fylo-schemas/<collection>/<ordinal>.json`, one immutable file per
   version, and the head ordinal is in the catalog descriptor. Adding a version

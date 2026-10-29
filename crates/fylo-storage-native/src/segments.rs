@@ -37,7 +37,7 @@ pub(crate) use segment_commit_manifest::SegmentCommitManifest;
 pub(crate) use segment_document::SegmentDocument;
 pub(crate) use segment_entry::SegmentEntry;
 pub(crate) use segment_location::SegmentLocation;
-pub(crate) use segment_medium::{MediumIdentity, SegmentHandle, SegmentMedium};
+pub(crate) use segment_medium::{MediumIdentity, SegmentHandle, SegmentMedium, SnapshotStamp};
 use segment_paths::SegmentPaths;
 pub(crate) use segment_reader::SegmentReader;
 pub(crate) use segment_store::SegmentStore;

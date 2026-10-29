@@ -2,10 +2,10 @@
 //! (`docs/fxdb-segment-backend.md`, step 3 and "Root integration").
 //!
 //! A collection's segments as `segment` extents, its generation slots, and
-//! its location and prefix-index snapshots as `locations` and `index` runs
-//! named by its checkpoint slot. There is no location or index log; a
-//! location table and the index replay the records after the snapshots'
-//! position.
+//! its location, prefix-index and schemas snapshots as `locations`, `index`
+//! and `schemas` runs named by its checkpoint slot. There is no location or
+//! index log; a location table and the index replay the records after the
+//! snapshots' position.
 //!
 //! The file is either `segments.fxdb` in a collection directory, a hybrid
 //! stepping stone toward ADR 0016 that holds that one collection while the
@@ -33,17 +33,20 @@ use fylo_format::{
     LogScan, LogSegmentHeader,
 };
 
-use super::{MediumIdentity, RecordPosition, SegmentHandle, SegmentMedium, SlotRecord};
-use crate::write::SegmentSchemas;
+use super::{
+    MediumIdentity, RecordPosition, SegmentHandle, SegmentMedium, SlotRecord, SnapshotStamp,
+};
 use crate::{
     ContainerError, ContainerFile, Durability, NativeRoot, NativeStorageError,
     NativeStorageErrorCode,
 };
 pub(crate) use open::ContainerOpen;
 use open::Open;
+use schemas::SCHEMAS;
 
 const SEGMENT: ContainerExtentKind = ContainerExtentKind::Segment;
 const LOCATIONS: ContainerExtentKind = ContainerExtentKind::Locations;
+const INDEX: ContainerExtentKind = ContainerExtentKind::Index;
 
 /// A segment collection whose segments, slots and snapshots live in a
 /// `.fxdb` file.
@@ -337,9 +340,9 @@ impl Shared {
 
     /// Settle what a writer that stopped left in the collection, with the
     /// map read afresh: the active segment extent its slot names but the
-    /// map does not show is taken back, and snapshot runs no checkpoint slot
-    /// names are released. A collection dropped since this medium opened
-    /// is not found.
+    /// map does not show is taken back, and snapshot runs the newest
+    /// checkpoint slot does not name are released. A collection dropped
+    /// since this medium opened is not found.
     fn settle(&self, open: &mut Open) -> Result<(), NativeStorageError> {
         let (id, block) = (self.collection, self.block);
         if !open.collections().iter().any(|collection| {
@@ -373,9 +376,17 @@ impl Shared {
                 open.release(extent).map_err(ContainerMedium::error)?;
             }
         }
-        let index = checkpoint.and_then(|checkpoint| checkpoint.index);
-        ContainerMedium::release_index_runs(open, id, index.as_ref())
-            .map_err(ContainerMedium::error)
+        for (kind, kept) in [
+            (INDEX, checkpoint.and_then(|checkpoint| checkpoint.index)),
+            (
+                SCHEMAS,
+                checkpoint.and_then(|checkpoint| checkpoint.schemas),
+            ),
+        ] {
+            ContainerMedium::release_runs(open, (id, kind), kept.as_ref())
+                .map_err(ContainerMedium::error)?;
+        }
+        Ok(())
     }
 
     /// The extent holding segment `number`, while it is one of this
@@ -791,7 +802,8 @@ impl SegmentMedium for ContainerMedium {
     /// claim of the collection releases.
     ///
     /// The prefix index folds with it into an `index` run the same slot
-    /// names, and every other index run of the collection is released.
+    /// names, and every other index run of the collection is released. The
+    /// slot keeps the schemas run the previous one named.
     fn replace_location_snapshot(&self, bytes: &[u8]) -> Result<(), NativeStorageError> {
         let (id, block) = (self.shared.collection, self.shared.block);
         let open = self.shared.writable()?;
@@ -818,11 +830,13 @@ impl SegmentMedium for ContainerMedium {
                 .map_err(Self::error)?;
             let index = match index {
                 Some(index) => Some(
-                    open.write_snapshot(id, ContainerExtentKind::Index, checkpoint, &index)
+                    open.write_snapshot(id, INDEX, checkpoint, &index)
                         .map_err(Self::error)?,
                 ),
                 None => None,
             };
+            let schemas = Self::carried_schemas(open, id, previous.as_ref(), checkpoint)
+                .map_err(Self::error)?;
             open.checkpoint()?;
             open.record_checkpoint(
                 block,
@@ -834,6 +848,7 @@ impl SegmentMedium for ContainerMedium {
                     offset: slot.committed_length,
                     locations: Some(locations),
                     index,
+                    schemas,
                     dictionary: None,
                 },
             )
@@ -841,38 +856,47 @@ impl SegmentMedium for ContainerMedium {
             if let Some(old) = previous.and_then(|previous| previous.locations) {
                 open.release_snapshot(&old).map_err(Self::error)?;
             }
-            Self::release_index_runs(open, id, index.as_ref()).map_err(Self::error)
+            Self::release_runs(open, (id, INDEX), index.as_ref()).map_err(Self::error)?;
+            Self::release_runs(open, (id, SCHEMAS), schemas.as_ref()).map_err(Self::error)
         })
     }
 
-    /// A `.fxdb` collection holds no schema versions yet, since a database
-    /// refuses schema commits, so its schemas snapshot is always the empty
-    /// one. A schemas run (extent kind 7) holds it once a database can.
+    /// The `schemas` run the newest checkpoint slot names, or `None` when
+    /// it names none: the collection has no schema version, or was written
+    /// before schemas runs existed, and the registry is then rebuilt from
+    /// the records ([`SegmentSchemas::load`]).
     fn read_schemas_snapshot(&self) -> Result<Option<Vec<u8>>, NativeStorageError> {
-        SegmentSchemas::empty().encode().map(Some)
+        self.schemas_snapshot()
     }
 
-    fn schemas_snapshot_stamp(
-        &self,
-    ) -> Result<Option<(u64, Option<std::time::SystemTime>)>, NativeStorageError> {
-        Ok(self
-            .read_schemas_snapshot()?
-            .map(|bytes| (bytes.len() as u64, None)))
+    /// The run's length and SHA-256 as the slot records them.
+    fn schemas_snapshot_stamp(&self) -> Result<Option<SnapshotStamp>, NativeStorageError> {
+        self.schemas_stamp()
     }
 
+    /// Write a new `schemas` run and a checkpoint slot naming it. The empty
+    /// registry is kept as no run.
     fn replace_schemas_snapshot(&self, bytes: &[u8]) -> Result<(), NativeStorageError> {
-        if self.read_schemas_snapshot()?.as_deref() == Some(bytes) {
+        self.replace_schemas(Some(bytes))
+    }
+
+    /// The same steps as a replace, which pass no failpoint.
+    fn restore_schemas_snapshot(&self, previous: Option<&[u8]>) -> Result<(), NativeStorageError> {
+        if self.read_schemas_snapshot()?.as_deref() == previous {
             return Ok(());
         }
-        Err(NativeStorageError::new(
-            NativeStorageErrorCode::Unsupported,
-            "schema versions are not supported in a .fxdb database yet",
-        ))
+        self.replace_schemas(previous)
     }
 
-    /// Nothing to put back: the snapshot never changes.
-    fn restore_schemas_snapshot(&self, _previous: Option<&[u8]>) -> Result<(), NativeStorageError> {
-        Ok(())
+    /// Set `READ_ONLY_COMPAT_SCHEMAS` in the superblock, durably, unless
+    /// the file has it.
+    fn mark_schemas(&self) -> Result<(), NativeStorageError> {
+        let feature = ContainerSuperblock::READ_ONLY_COMPAT_SCHEMAS;
+        let mut open = self.shared.writable()?;
+        if open.superblock().read_only_compat & feature != 0 {
+            return Ok(());
+        }
+        open.change_map(|open| open.add_read_only_feature(feature))
     }
 
     fn has_location_log(&self) -> bool {
@@ -1056,5 +1080,6 @@ impl SegmentHandle for ContainerSegment {
 mod database;
 mod open;
 mod prefix_index;
+mod schemas;
 #[cfg(test)]
 mod tests;

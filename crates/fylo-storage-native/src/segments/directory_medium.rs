@@ -6,7 +6,7 @@ use fylo_vfs::{self as fs, File, OpenOptions};
 
 use super::{
     GenerationSlots, MediumIdentity, PositionedRead, RecordPosition, SegmentHandle, SegmentMedium,
-    SegmentPaths, SlotRecord,
+    SegmentPaths, SlotRecord, SnapshotStamp,
 };
 use crate::write::{
     durable_replace_owner_only, ensure_directory, sibling_scratch, sync_directory, sync_parent,
@@ -221,11 +221,12 @@ impl SegmentMedium for DirectoryMedium {
         Self::read_if_present(&self.paths.schemas_snapshot())
     }
 
-    fn schemas_snapshot_stamp(
-        &self,
-    ) -> Result<Option<(u64, Option<std::time::SystemTime>)>, NativeStorageError> {
+    fn schemas_snapshot_stamp(&self) -> Result<Option<SnapshotStamp>, NativeStorageError> {
         match fs::metadata(self.paths.schemas_snapshot()) {
-            Ok(metadata) => Ok(Some((metadata.len(), metadata.modified().ok()))),
+            Ok(metadata) => Ok(Some(SnapshotStamp::File(
+                metadata.len(),
+                metadata.modified().ok(),
+            ))),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(NativeStorageError::io(error)),
         }

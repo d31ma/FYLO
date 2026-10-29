@@ -51,6 +51,7 @@ fn checkpoint_with(
         offset: 0,
         locations: Some(locations),
         index: Some(index),
+        schemas: None,
         dictionary: None,
     }
 }
@@ -186,7 +187,11 @@ fn a_snapshot_read_as_another_kind_or_collection_is_refused() {
     let snapshot = container
         .write_snapshot(USERS, LOCATIONS, CHECKPOINT, b"locations")
         .expect("write snapshot");
-    for (owner, kind) in [(USERS, INDEX), (USERS + 1, LOCATIONS)] {
+    for (owner, kind) in [
+        (USERS, INDEX),
+        (USERS, ContainerExtentKind::Schemas),
+        (USERS + 1, LOCATIONS),
+    ] {
         let error = container
             .read_snapshot(owner, kind, CHECKPOINT, &snapshot, u64::MAX)
             .expect_err("someone else's snapshot");

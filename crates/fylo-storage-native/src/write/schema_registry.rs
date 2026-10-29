@@ -18,6 +18,13 @@
 //! `"schemas": "registry"` and `schemaHead`, written after each record
 //! commits, so it can lag the records after a crash but never lead them.
 //! Everything above storage reads both kinds through the same calls here.
+//!
+//! A `.fxdb` database keeps every collection's registry as schema records
+//! in the file, with the schemas snapshot as a `schemas` run, and its
+//! superblock's `READ_ONLY_COMPAT_SCHEMAS` bit as the fence. A collection's
+//! descriptor there is the static part of its directory block, which is not
+//! rewritten, so it names no head: the records alone are the head. The
+//! one-time import record has no place in the file and is refused.
 
 use fylo_vfs as fs;
 use std::path::{Path, PathBuf};
@@ -29,7 +36,7 @@ use super::{
     GenerationRecord, NativeWriteRoot, durable_replace, failpoint, json_error, read_bounded_json,
     remove_dir_durable, sync_parent, write_generation,
 };
-use crate::segments::DirectoryMedium;
+use crate::segments::{ContainerMedium, DirectoryMedium};
 use crate::{
     CollectionKind, MAX_DESCRIPTOR_BYTES, NativeCollection, NativeRoot, NativeStorageError,
     NativeStorageErrorCode, path_exists_no_follow, validate_collection_name,
@@ -99,6 +106,7 @@ impl NativeRoot {
     /// Returns an error for a linked or oversized record, or I/O.
     pub fn schema_import_record(&self) -> Result<Option<Vec<u8>>, NativeStorageError> {
         self.assert_profile_owned()?;
+        self.not_yet_in_database("recording a schema import in a .fxdb database")?;
         let directory = self.schema_registry_directory();
         let record = directory.join(IMPORT_RECORD);
         if !path_exists_no_follow(&directory)? || !path_exists_no_follow(&record)? {
@@ -142,12 +150,20 @@ impl NativeRoot {
             return SegmentSchemas::for_reader(&*medium, descriptor.schema_head()?).map(Some);
         }
         let collection = self.canonical.join(".collections").join(name);
-        if !crate::NativeCollection::SEGMENTS_SUPPORTED
-            || !path_exists_no_follow(&collection.join("segments"))?
-        {
+        if !crate::NativeCollection::SEGMENTS_SUPPORTED {
+            return Ok(None);
+        }
+        // A collection directory keeps its segments in `segments/`, or in a
+        // `.fxdb` container beside them.
+        let in_container = path_exists_no_follow(&collection.join(ContainerMedium::FILE_NAME))?;
+        if !in_container && !path_exists_no_follow(&collection.join("segments"))? {
             return Ok(None);
         }
         self.verify_path(&collection, crate::ExpectedType::Directory)?;
+        if in_container {
+            let medium = crate::segments::medium_of(&collection)?;
+            return SegmentSchemas::for_reader(&*medium, descriptor.schema_head()?).map(Some);
+        }
         let medium = DirectoryMedium::of(&collection);
         SegmentSchemas::for_reader(&medium, descriptor.schema_head()?).map(Some)
     }
@@ -199,7 +215,9 @@ impl NativeWriteRoot {
     /// version file is written durably, the generation state takes the
     /// registry fence, and last the descriptor's head moves to `ordinal`. A
     /// crash at any point before the descriptor change leaves the previous
-    /// head in force.
+    /// head in force. A segment collection, in a directory root or a `.fxdb`
+    /// database, commits the version as a schema record instead
+    /// (`commit_segment_schema`).
     ///
     /// # Errors
     ///
@@ -214,13 +232,17 @@ impl NativeWriteRoot {
         verify: impl FnOnce(&NativeCollection) -> Result<(), NativeStorageError>,
     ) -> Result<(), NativeStorageError> {
         self.root.assert_profile_owned()?;
-        self.root
-            .not_yet_in_database("pushing a schema version into a .fxdb database")?;
         let collection = self.root.collection(collection_name)?;
         let _lock = self.lock_collection(&collection)?;
         self.recover_locked(&collection)?;
         // Read again under the lock: another push may have moved the head.
         let collection = self.root.collection(collection_name)?;
+        // A segment collection's head is its records', which the commit
+        // reads under the lock; its descriptor may lag them, and in a
+        // `.fxdb` database names none.
+        if collection.uses_segments() {
+            return self.commit_segment_schema(&collection, ordinal, version, verify);
+        }
         let expected = collection.schema_head().unwrap_or(0).saturating_add(1);
         if ordinal != expected {
             return Err(NativeStorageError::new(
@@ -229,9 +251,6 @@ impl NativeWriteRoot {
                     "schema registry of {collection_name} moved: version {ordinal} no longer follows its head"
                 ),
             ));
-        }
-        if collection.uses_segments() {
-            return self.commit_segment_schema(&collection, ordinal, version, verify);
         }
         verify(&collection)?;
         let path = self.schema_version_path(collection_name, ordinal)?;
@@ -312,12 +331,18 @@ impl NativeWriteRoot {
         )
     }
 
-    /// Record `ordinal` as the descriptor's registry head.
+    /// Record `ordinal` as the descriptor's registry head. A collection of
+    /// a `.fxdb` database keeps its descriptor in its directory block's
+    /// static part, which is not rewritten, so it records nothing: its
+    /// records are the head.
     pub(super) fn write_schema_head(
         &self,
         collection: &NativeCollection,
         ordinal: u32,
     ) -> Result<(), NativeStorageError> {
+        if self.root.is_database() {
+            return Ok(());
+        }
         let path = self
             .root
             .catalog_root()

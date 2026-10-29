@@ -1,13 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
-use std::time::SystemTime;
 
 use fylo_format::{LogRecord, LogRecordKind, LogScan};
 use serde::{Deserialize, Serialize};
 
 use super::super::json_error;
 use super::segment_rebuild::SegmentRebuild;
-use crate::segments::{MediumIdentity, SegmentMedium, SegmentReader};
+use crate::segments::{MediumIdentity, SegmentMedium, SegmentReader, SnapshotStamp};
 use crate::{NativeStorageError, NativeStorageErrorCode};
 
 /// The manifest of a schema record, kind 5 (ADR 0017 section 3).
@@ -101,9 +100,8 @@ pub(crate) struct SegmentSchemas {
 }
 
 /// Snapshots readers have decoded, keyed by collection and checked against
-/// the snapshot's stamp. A snapshot file is only ever replaced by a rename,
-/// so a changed file shows a changed stamp.
-type ReaderCache = BTreeMap<MediumIdentity, (u64, Option<SystemTime>, Arc<SegmentSchemas>)>;
+/// the snapshot's stamp, which changes whenever the snapshot does.
+type ReaderCache = BTreeMap<MediumIdentity, (SnapshotStamp, Arc<SegmentSchemas>)>;
 
 impl SegmentSchemas {
     pub(crate) const FORMAT: &'static str = "fylo.schemas-snapshot.v1";
@@ -322,7 +320,7 @@ impl SegmentSchemas {
         descriptor_head: Option<u32>,
     ) -> Result<Arc<Self>, NativeStorageError> {
         let key = medium.identity();
-        let Some((length, modified)) = medium.schemas_snapshot_stamp()? else {
+        let Some(stamp) = medium.schemas_snapshot_stamp()? else {
             if descriptor_head.is_none() {
                 return Ok(Arc::new(Self::empty()));
             }
@@ -332,16 +330,14 @@ impl SegmentSchemas {
         };
         let cached = Self::reader_cache()
             .get(&key)
-            .filter(|(cached_length, cached_modified, _)| {
-                *cached_length == length && *cached_modified == modified
-            })
-            .map(|(_, _, snapshot)| Arc::clone(snapshot));
+            .filter(|(cached, _)| *cached == stamp)
+            .map(|(_, snapshot)| Arc::clone(snapshot));
         let snapshot = match cached {
             Some(snapshot) => snapshot,
             None => match Self::read(medium)? {
                 Some(Some(snapshot)) => {
                     let snapshot = Arc::new(snapshot);
-                    Self::reader_cache().insert(key, (length, modified, Arc::clone(&snapshot)));
+                    Self::reader_cache().insert(key, (stamp, Arc::clone(&snapshot)));
                     snapshot
                 }
                 _ => {

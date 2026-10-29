@@ -16,6 +16,7 @@ use crate::{
 };
 
 mod processes;
+mod schemas;
 
 struct Fixture(PathBuf);
 

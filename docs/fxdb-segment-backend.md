@@ -33,6 +33,7 @@ it; the container implementation maps each call onto `ContainerFile`.
 | adopt a compacted segment | rename a temporary file | the new extents were allocated under their final sequence numbers; adoption is the compaction record |
 | read / publish / create slots | `state.slots` | the directory block's generation slot pair |
 | read / replace the location snapshot | `durable_replace` of `locations.snapshot` | `write_snapshot` → `record_checkpoint` → `release_snapshot(old)` |
+| read / replace the schemas snapshot | `segments/schemas.snapshot` | a `schemas` run the checkpoint slot names; see "Schema versions" |
 | location log | `locations.wal` | none; see below |
 | maximum segment bytes | 1 GiB | the extent's payload capacity (8 MiB − 4 KiB by default) |
 
@@ -308,3 +309,41 @@ collection's validation mode (a rewrite of its block's static part), an
 encrypted database (a root takes no key yet), the root's
 own write options (exclusive mode and timeouts are the process defaults),
 and `fylo pack` and `fylo unpack`.
+
+## Schema versions
+
+ADR 0017 section 3 in a `.fxdb` file. A schema version is a schema record
+(kind 5) appended through the collection's commit path, the same code as in
+a collection directory (`commit_segment_schema`), and recovery replays it
+the same way.
+
+- The **schemas snapshot** is a `schemas` run (extent kind 7) named by a
+  third reference in the checkpoint slot, beside the location and index
+  runs. The reference takes slot bytes 172 to 227, which a slot written
+  before it left zero, so an older slot names none. A slot that names none
+  reads as no snapshot: a writer rebuilds the registry from the records
+  (`SegmentSchemas::load`) and its next checkpoint writes the run, and a
+  reader takes the collection as having no registry. The empty registry is
+  kept as no run, so a collection without schema versions takes no extent
+  for it. A run that cannot be read is rebuilt from the records.
+- Replacing the snapshot writes a new run and records a checkpoint slot
+  that keeps the newest slot's position and its location and index runs,
+  then releases the run it replaces; a location fold or an index rebuild
+  keeps the schemas run. A plain file's run does not depend on the
+  checkpoint that names it, so later slots name the same run; an encrypted
+  file seals every run for its checkpoint, so a new checkpoint writes a copy
+  of each run it keeps. A run no slot names is released at the next claim
+  of the collection. Readers keep the decoded snapshot while the slot's
+  length and SHA-256 for the run stay the same.
+- Before the first schema record is written, the writer sets
+  `READ_ONLY_COMPAT_SCHEMAS` (bit 0) in the superblock through a map
+  checkpoint, so a build that predates schema records opens the file
+  read-only. This build knows the bit and writes such a file.
+- A collection's descriptor is its directory block's static part, which is
+  not rewritten, so it names no head (`schemaHead`): the records alone are
+  the head, and recovery has no descriptor to bring up to them.
+- **Not yet:** the record of the one-time import of a `fylo.schema` folder
+  has no place in the file, so reading or writing it is refused with
+  `ENATIVE_UNSUPPORTED`. Compaction, which copies the schema records into
+  the segment it writes, is not run in a database yet; it already does so
+  for the container of a collection directory.

@@ -116,11 +116,8 @@ pub(crate) trait SegmentMedium: Debug + Send + Sync {
     fn read_schemas_snapshot(&self) -> Result<Option<Vec<u8>>, NativeStorageError>;
 
     /// What changes whenever the schemas snapshot does, so a reader can
-    /// keep it decoded: its length and modification time, or `None` when
-    /// there is none.
-    fn schemas_snapshot_stamp(
-        &self,
-    ) -> Result<Option<(u64, Option<std::time::SystemTime>)>, NativeStorageError>;
+    /// keep it decoded, or `None` when there is none.
+    fn schemas_snapshot_stamp(&self) -> Result<Option<SnapshotStamp>, NativeStorageError>;
 
     /// Durably replace the schemas snapshot.
     fn replace_schemas_snapshot(&self, bytes: &[u8]) -> Result<(), NativeStorageError>;
@@ -129,6 +126,16 @@ pub(crate) trait SegmentMedium: Debug + Send + Sync {
     /// there was none, for a schema commit or compaction being rolled back.
     /// This is a compensating step, so it passes no failpoint.
     fn restore_schemas_snapshot(&self, previous: Option<&[u8]>) -> Result<(), NativeStorageError>;
+
+    /// Record, before the first schema record is written, that the
+    /// collection holds schema versions, where its storage has a format
+    /// flag for it: a `.fxdb` file sets `READ_ONLY_COMPAT_SCHEMAS` in its
+    /// superblock (ADR 0017 section 3), so a build that predates schema
+    /// records opens it read-only. A collection directory is fenced by its
+    /// segment marker and descriptor instead, and does nothing here.
+    fn mark_schemas(&self) -> Result<(), NativeStorageError> {
+        Ok(())
+    }
 
     /// Whether location rows go to a location log. A medium without one
     /// (a `.fxdb` container) keeps them only in memory: a location table is
@@ -246,6 +253,18 @@ pub(crate) trait SegmentHandle: Debug + Send + Sync {
 
     /// Make a newly created segment's name durable, once its bytes are.
     fn sync_created(&self) -> Result<(), NativeStorageError>;
+}
+
+/// What changes whenever a schemas snapshot does
+/// ([`SegmentMedium::schemas_snapshot_stamp`]).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SnapshotStamp {
+    /// A snapshot file's length and modification time. The file is only
+    /// ever replaced by a rename, so a changed file shows a changed stamp.
+    File(u64, Option<std::time::SystemTime>),
+    /// A snapshot run's length and the SHA-256 of its stored bytes, as the
+    /// checkpoint slot that names it records them.
+    Run(u64, [u8; 32]),
 }
 
 /// The key process-wide caches hold one segment collection under.

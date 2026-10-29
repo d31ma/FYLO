@@ -860,6 +860,7 @@ impl ContainerFile {
             ContainerExtentKind::Dictionary,
             ContainerExtentKind::Locations,
             ContainerExtentKind::Index,
+            ContainerExtentKind::Schemas,
         ] {
             for (extent, _) in self.allocator.owned(kind, owner) {
                 self.allocator.release(extent)?;
@@ -1056,6 +1057,31 @@ impl ContainerFile {
         self.superblock_in_a = !self.superblock_in_a;
         self.allocator.checkpoint_completed();
         Ok(())
+    }
+
+    /// Set read-only-compatible feature bits in the superblock, durably,
+    /// before the file holds what they name: a [`Self::checkpoint`] writes
+    /// the other superblock copy with them and flushes. Every later
+    /// checkpoint keeps them, and so does a writer in another process, which
+    /// reads the newer superblock before it checkpoints. Returns whether
+    /// anything changed; bits already set need no write.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ReadOnly` for a reader, or the checkpoint failure, after
+    /// which the superblock in memory is as it was.
+    pub fn add_read_only_compat(&mut self, features: u32) -> Result<bool, ContainerError> {
+        self.require_writable()?;
+        let previous = self.superblock.read_only_compat;
+        if previous & features == features {
+            return Ok(false);
+        }
+        self.superblock.read_only_compat = previous | features;
+        if let Err(error) = self.checkpoint() {
+            self.superblock.read_only_compat = previous;
+            return Err(error);
+        }
+        Ok(true)
     }
 
     /// Return the free extents at the end of the file to the filesystem:

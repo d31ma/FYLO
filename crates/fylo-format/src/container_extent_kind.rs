@@ -15,6 +15,9 @@ pub enum ContainerExtentKind {
     Index,
     /// Part of an extent-map copy (derived).
     Map,
+    /// Part of a collection's schemas snapshot (derived, ADR 0017
+    /// section 3).
+    Schemas,
 }
 
 impl ContainerExtentKind {
@@ -28,6 +31,7 @@ impl ContainerExtentKind {
             Self::Locations => 4,
             Self::Index => 5,
             Self::Map => 6,
+            Self::Schemas => 7,
         }
     }
 
@@ -41,6 +45,7 @@ impl ContainerExtentKind {
             Self::Locations => "locations",
             Self::Index => "index",
             Self::Map => "map",
+            Self::Schemas => "schemas",
         }
     }
 
@@ -57,6 +62,7 @@ impl ContainerExtentKind {
             4 => Ok(Self::Locations),
             5 => Ok(Self::Index),
             6 => Ok(Self::Map),
+            7 => Ok(Self::Schemas),
             _ => Err(ContainerFormatError::InvalidField),
         }
     }
@@ -83,10 +89,11 @@ mod tests {
             ContainerExtentKind::Locations,
             ContainerExtentKind::Index,
             ContainerExtentKind::Map,
+            ContainerExtentKind::Schemas,
         ] {
             assert_eq!(ContainerExtentKind::from_code(kind.code()), Ok(kind));
         }
         assert!(ContainerExtentKind::from_code(0).is_err());
-        assert!(ContainerExtentKind::from_code(7).is_err());
+        assert!(ContainerExtentKind::from_code(8).is_err());
     }
 }

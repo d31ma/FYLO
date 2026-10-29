@@ -1,8 +1,8 @@
 use crate::container_bytes::{all_zero, read_u32, read_u64, write_u32, write_u64};
 use crate::{ContainerFormatError, Crc32c};
 
-/// Where a derived snapshot (a location table or prefix index) lives in a
-/// `.fxdb` container: a run of consecutive extents.
+/// Where a derived snapshot (a location table, prefix index or schema
+/// registry) lives in a `.fxdb` container: a run of consecutive extents.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ContainerSnapshotRef {
     /// First extent of the run.
@@ -38,6 +38,10 @@ pub struct ContainerCheckpointSlot {
     pub locations: Option<ContainerSnapshotRef>,
     /// The prefix-index snapshot the checkpoint wrote, if any.
     pub index: Option<ContainerSnapshotRef>,
+    /// The schemas snapshot (ADR 0017 section 3), if the collection has
+    /// one. It sits in bytes a slot written before it left zero, so such a
+    /// slot decodes with none.
+    pub schemas: Option<ContainerSnapshotRef>,
     /// The current compression dictionary as (extent, dictionary id, length),
     /// if the collection has one.
     pub dictionary: Option<(u64, u32, u32)>,
@@ -51,6 +55,8 @@ impl ContainerCheckpointSlot {
     const LOCATIONS_OFFSET: usize = 44;
     const INDEX_OFFSET: usize = 100;
     const DICTIONARY_OFFSET: usize = 156;
+    const SCHEMAS_OFFSET: usize = 172;
+    const RESERVED_OFFSET: usize = Self::SCHEMAS_OFFSET + Self::SNAPSHOT_BYTES;
     const CHECKED_BYTES: usize = Self::ENCODED_BYTES - 4;
 
     /// Encode the slot with its checksum.
@@ -70,6 +76,7 @@ impl ContainerCheckpointSlot {
             write_u32(&mut bytes, Self::DICTIONARY_OFFSET + 8, id);
             write_u32(&mut bytes, Self::DICTIONARY_OFFSET + 12, length);
         }
+        Self::encode_snapshot(&mut bytes, Self::SCHEMAS_OFFSET, self.schemas);
         let checksum = Crc32c::checksum(&bytes[..Self::CHECKED_BYTES]);
         write_u32(&mut bytes, Self::CHECKED_BYTES, checksum);
         bytes
@@ -101,7 +108,7 @@ impl ContainerCheckpointSlot {
         if Crc32c::checksum(&bytes[..Self::CHECKED_BYTES]) != read_u32(bytes, Self::CHECKED_BYTES) {
             return Err(ContainerFormatError::ChecksumMismatch);
         }
-        if !all_zero(&bytes[Self::DICTIONARY_OFFSET + 16..Self::CHECKED_BYTES]) {
+        if !all_zero(&bytes[Self::RESERVED_OFFSET..Self::CHECKED_BYTES]) {
             return Err(ContainerFormatError::InvalidField);
         }
         let dictionary_bytes = &bytes[Self::DICTIONARY_OFFSET..Self::DICTIONARY_OFFSET + 16];
@@ -122,6 +129,7 @@ impl ContainerCheckpointSlot {
             offset: read_u64(bytes, 36),
             locations: Self::decode_snapshot(bytes, Self::LOCATIONS_OFFSET)?,
             index: Self::decode_snapshot(bytes, Self::INDEX_OFFSET)?,
+            schemas: Self::decode_snapshot(bytes, Self::SCHEMAS_OFFSET)?,
             dictionary,
         })
     }
@@ -198,6 +206,12 @@ mod tests {
                 sha256: [3; 32],
             }),
             index: None,
+            schemas: Some(ContainerSnapshotRef {
+                first_extent: 12,
+                extent_count: 1,
+                length: 900,
+                sha256: [5; 32],
+            }),
             dictionary: Some((4, 1, 32 * 1024)),
         }
     }
@@ -210,10 +224,31 @@ mod tests {
         );
         let empty = ContainerCheckpointSlot {
             locations: None,
+            schemas: None,
             dictionary: None,
             ..slot(2)
         };
         assert_eq!(ContainerCheckpointSlot::decode(&empty.encode()), Ok(empty));
+    }
+
+    #[test]
+    fn a_slot_written_before_schemas_decodes_with_none() {
+        let older = ContainerCheckpointSlot {
+            schemas: None,
+            ..slot(4)
+        };
+        let bytes = older.encode();
+        assert!(bytes[172..252].iter().all(|byte| *byte == 0));
+        assert_eq!(ContainerCheckpointSlot::decode(&bytes), Ok(older));
+        // The schemas reference is checked like the others.
+        let mut bytes = slot(4).encode();
+        bytes[230] = 1;
+        let checksum = crate::Crc32c::checksum(&bytes[..252]);
+        bytes[252..].copy_from_slice(&checksum.to_le_bytes());
+        assert_eq!(
+            ContainerCheckpointSlot::decode(&bytes),
+            Err(ContainerFormatError::InvalidField)
+        );
     }
 
     #[test]

@@ -35,10 +35,10 @@ fn context(bytes: &[u8]) -> ContainerSealContext {
         _ => ContainerSealContext::Snapshot {
             collection: a,
             checkpoint: b,
-            kind: if c & 1 == 0 {
-                ContainerExtentKind::Locations
-            } else {
-                ContainerExtentKind::Index
+            kind: match c % 3 {
+                0 => ContainerExtentKind::Locations,
+                1 => ContainerExtentKind::Index,
+                _ => ContainerExtentKind::Schemas,
             },
         },
     }

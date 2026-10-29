@@ -82,7 +82,7 @@ pub enum ContainerSealContext {
         collection: u32,
         /// The checkpoint that wrote it.
         checkpoint: u64,
-        /// Which snapshot: `Locations` or `Index`.
+        /// Which snapshot: `Locations`, `Index` or `Schemas`.
         kind: ContainerExtentKind,
     },
 }

@@ -17,13 +17,14 @@ use libfuzzer_sys::fuzz_target;
 const BLOCK: u64 = 4096;
 const SHIFT: u8 = ContainerSuperblock::MIN_EXTENT_SHIFT;
 const PROBE_BYTES: usize = 18;
-const KINDS: [ContainerExtentKind; 6] = [
+const KINDS: [ContainerExtentKind; 7] = [
     ContainerExtentKind::Directory,
     ContainerExtentKind::Segment,
     ContainerExtentKind::Dictionary,
     ContainerExtentKind::Locations,
     ContainerExtentKind::Index,
     ContainerExtentKind::Map,
+    ContainerExtentKind::Schemas,
 ];
 
 /// A file image as its non-zero 4 KiB blocks: every `.fxdb` structure lies
@@ -99,6 +100,7 @@ fn template() -> &'static Template {
                     committed_length: 24,
                     next_lsn: 2,
                     record_count: 1,
+                    table_epoch: 0,
                 },
             )
             .expect("publish generation");
@@ -118,6 +120,7 @@ fn template() -> &'static Template {
                         sha256: [7; 32],
                     }),
                     index: None,
+                    schemas: None,
                     dictionary: None,
                 },
             )
@@ -349,6 +352,7 @@ fn exercise(container: &ContainerFile, probe: &[u8]) {
             for (kind, snapshot) in [
                 (ContainerExtentKind::Locations, slot.locations),
                 (ContainerExtentKind::Index, slot.index),
+                (ContainerExtentKind::Schemas, slot.schemas),
             ] {
                 if let Some(snapshot) = snapshot {
                     let _ = container.expect_extent(snapshot.first_extent, kind, owner, 0);

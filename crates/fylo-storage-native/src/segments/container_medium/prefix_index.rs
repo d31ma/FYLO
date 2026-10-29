@@ -12,12 +12,11 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
 use fylo_format::{ContainerCheckpointSlot, ContainerExtentKind, ContainerSnapshotRef};
 
-use super::{ContainerMedium, LOCATIONS};
+use super::schemas::SCHEMAS;
+use super::{ContainerMedium, INDEX, LOCATIONS};
 use crate::index_cache::IndexInputs;
 use crate::segments::{IndexDelta, MediumIdentity, RecordPosition, SegmentMedium};
 use crate::{ContainerError, ContainerFile, NativeStorageError, NativeStorageErrorCode};
-
-const INDEX: ContainerExtentKind = ContainerExtentKind::Index;
 
 /// A reader's index of one collection: the snapshot of one checkpoint, and
 /// the lines replayed past it up to a published position.
@@ -112,7 +111,8 @@ impl ContainerMedium {
 
     /// Record `bytes` as the index snapshot in a new checkpoint at the
     /// newest checkpoint's position, rewriting its location snapshot under
-    /// the new checkpoint number, which an encrypted file seals it for.
+    /// the new checkpoint number, which an encrypted file seals it for, and
+    /// keeping its schemas snapshot.
     pub(super) fn replace_index(&self, bytes: &[u8]) -> Result<(), NativeStorageError> {
         let (id, block) = (self.shared.collection, self.shared.block);
         self.shared.writable()?.change_map(|file| {
@@ -141,6 +141,8 @@ impl ContainerMedium {
             let index = file
                 .write_snapshot(id, INDEX, checkpoint, bytes)
                 .map_err(Self::error)?;
+            let schemas = Self::carried_schemas(file, id, Some(&previous), checkpoint)
+                .map_err(Self::error)?;
             file.checkpoint()?;
             file.record_checkpoint(
                 block,
@@ -148,6 +150,7 @@ impl ContainerMedium {
                     checkpoint,
                     locations,
                     index: Some(index),
+                    schemas,
                     ..previous
                 },
             )
@@ -155,24 +158,25 @@ impl ContainerMedium {
             if let Some(old) = previous.locations {
                 file.release_snapshot(&old).map_err(Self::error)?;
             }
-            Self::release_index_runs(file, id, Some(&index)).map_err(Self::error)
+            Self::release_runs(file, (id, INDEX), Some(&index)).map_err(Self::error)?;
+            Self::release_runs(file, (id, SCHEMAS), schemas.as_ref()).map_err(Self::error)
         })?;
         Self::cache().remove(&self.identity());
         Ok(())
     }
 
-    /// Release every index run of collection `id` but `kept`: the one an
-    /// earlier checkpoint named, and any a stopped writer left unnamed. It
-    /// runs while this process holds its claim on the collection.
-    pub(super) fn release_index_runs(
+    /// Release every run of `kind` of collection `id` but `kept`: the one
+    /// an earlier checkpoint named, and any a stopped writer left unnamed.
+    /// It runs while this process holds its claim on the collection.
+    pub(super) fn release_runs(
         file: &mut ContainerFile,
-        id: u32,
+        (id, kind): (u32, ContainerExtentKind),
         kept: Option<&ContainerSnapshotRef>,
     ) -> Result<(), ContainerError> {
         let kept = kept.map_or(0..0, |run| {
             run.first_extent..run.first_extent + u64::from(run.extent_count)
         });
-        for (extent, _) in file.allocator().owned(INDEX, id) {
+        for (extent, _) in file.allocator().owned(kind, id) {
             if !kept.contains(&extent) {
                 file.release(extent)?;
             }
@@ -186,19 +190,25 @@ impl ContainerMedium {
         Self::cache().remove(identity);
     }
 
-    fn newest_checkpoint(&self) -> Result<Option<ContainerCheckpointSlot>, NativeStorageError> {
+    pub(super) fn newest_checkpoint(
+        &self,
+    ) -> Result<Option<ContainerCheckpointSlot>, NativeStorageError> {
         self.shared
             .file()
             .read_checkpoint(self.shared.block)
             .map_err(Self::error)
     }
 
-    /// The index snapshot `checkpoint` names, empty for none.
+    /// The index snapshot `checkpoint` names, empty for no checkpoint and
+    /// for one that names no location run either: a slot that has folded
+    /// nothing yet, as the first schemas snapshot records it.
     fn snapshot_of(&self, checkpoint: Option<&ContainerCheckpointSlot>) -> Option<Vec<u8>> {
         let Some(checkpoint) = checkpoint else {
             return Some(Vec::new());
         };
-        let run = checkpoint.index?;
+        let Some(run) = checkpoint.index else {
+            return checkpoint.locations.is_none().then(Vec::new);
+        };
         self.shared
             .file()
             .read_snapshot(

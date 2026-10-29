@@ -111,8 +111,8 @@ generation. This is ADR 0015's slot rule at file scale.
 **Collection directory.** One 4 KiB block per collection: a static part
 written when the collection is created (its name, id and catalog descriptor,
 with its own CRC), two **checkpoint slots** (the checkpoint LSN and position,
-and the extents, lengths and SHA-256 of its current location and index
-snapshots and dictionary) and two **generation slots** (ADR 0015 section 6,
+and the extents, lengths and SHA-256 of its current location, index and
+schemas snapshots and dictionary) and two **generation slots** (ADR 0015 section 6,
 moved in from `state.slots`, naming the active segment extent and its
 committed length). Each slot pair is written A/B with its own CRC, so an
 in-place slot write never touches the static part. One block per collection keeps two collections from
@@ -134,6 +134,7 @@ from the records that change it (section 6).
 | `dictionary` | a compression dictionary for one collection                       | yes              |
 | `locations`  | ADR 0015 `locations.snapshot`, possibly a run of extents          | no, derived      |
 | `index`      | the prefix index snapshot (`index/keys.snapshot`), possibly a run | no, derived      |
+| `schemas`    | the schemas snapshot (ADR 0017 section 3), possibly a run         | no, derived      |
 | `map`        | an extent map copy                                                | no, derived      |
 | `free`       | nothing                                                           | n/a              |
 

@@ -58,6 +58,7 @@ fn populated(name: &str, secret: Option<&[u8]>) -> (Database, PathBuf) {
                 offset: 0,
                 locations: Some(locations),
                 index: Some(index),
+                schemas: None,
                 dictionary: None,
             },
         )

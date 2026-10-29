@@ -1,7 +1,8 @@
 //! Derived snapshots in a `.fxdb` container (ADR 0016 sections 3 and 5).
 //!
-//! A collection's location snapshot and prefix-index snapshot each live in a
-//! run of consecutive extents of kind `locations` or `index`, which the
+//! A collection's location snapshot, prefix-index snapshot and schemas
+//! snapshot each live in a run of consecutive extents of kind `locations`,
+//! `index` or `schemas`, which the
 //! collection's checkpoint slot names with a [`ContainerSnapshotRef`]: the
 //! first extent, the run's length, the snapshot's length and its SHA-256.
 //! The bytes fill the payloads in order, each extent full but the last.
@@ -40,7 +41,7 @@ impl ContainerFile {
     /// # Errors
     ///
     /// Returns `ReadOnly` for a reader, `InvalidField` for a kind other than
-    /// `Locations` or `Index`, `Oversized` for a snapshot longer than the
+    /// `Locations`, `Index` or `Schemas`, `Oversized` for a snapshot longer than the
     /// format can name, `Cipher(Random)` when no nonce can be drawn, or the
     /// write, resize or flush failure. On a failure
     /// the run is released, so it is reused after the next checkpoint.
@@ -143,7 +144,8 @@ impl ContainerFile {
     /// # Errors
     ///
     /// Returns `Oversized` when the snapshot is longer than `max_bytes`,
-    /// `InvalidField` for a kind other than `Locations` or `Index`, a length
+    /// `InvalidField` for a kind other than `Locations`, `Index` or
+    /// `Schemas`, a length
     /// the run cannot hold or an extent that holds something else,
     /// `Allocator(OutOfRange)` for a run outside the file,
     /// `ChecksumMismatch` when the bytes do not hash to the recorded
@@ -207,7 +209,7 @@ impl ContainerFile {
     /// [`Self::checkpoint`].
     ///
     /// Every header is checked before anything is released: each must be a
-    /// `locations` or `index` extent at its own index, all of one kind and
+    /// `locations`, `index` or `schemas` extent at its own index, all of one kind and
     /// collection, so a damaged reference can never free a segment.
     ///
     /// # Errors
@@ -276,7 +278,7 @@ impl ContainerFile {
 fn require_snapshot_kind(kind: ContainerExtentKind) -> Result<(), ContainerFormatError> {
     if matches!(
         kind,
-        ContainerExtentKind::Locations | ContainerExtentKind::Index
+        ContainerExtentKind::Locations | ContainerExtentKind::Index | ContainerExtentKind::Schemas
     ) {
         Ok(())
     } else {
