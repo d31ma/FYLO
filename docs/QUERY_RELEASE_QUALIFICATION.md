@@ -51,24 +51,24 @@ checks use pinned Bun 1.3.11. Missing Dart 3.13.4 and .NET SDK 8.0.425/runtime
 8.0.31 were checksum-verified and installed into a temporary test-only directory;
 machine-wide defaults were not replaced.
 
-| Gate | Result |
-| --- | --- |
-| Rust workspace, all targets/features, locked dependencies | 179 tests passed |
-| Strict whole-workspace Clippy, all targets/features | Passed |
-| Rust formatting, JavaScript lint, TypeScript checking | Passed |
-| Interop suite, including website and Explorer bundles | 156 passed; 5 platform/opt-in skips |
-| Published language-client configuration/CRUD probes | All 9 passed: Node, Python, Ruby, PHP, Go, Java, Rust, C#, Dart |
-| Native root lease, disk-pressure, validator cleanup | 3 passed separately against fresh development binary |
-| Crash matrix against final native binaries | 270 interrupted mutations, 15 failpoints, 36 queue interruptions passed |
-| Repeated concurrency/recovery integration suite | 10 repetitions of 5 tests passed |
-| Browser JavaScript, adapters, and required WASM scanner | 69 tests, 288 assertions passed |
-| Fresh browser WASM host protocol | 130 frames, 122 documents passed |
-| Playwright 1.62.0, final local follow-up | 9 passed; zero skips |
-| Bounded native restart soak | 19,518 operations, 24,794 assertions, 105 restarts passed |
-| Bounded four-process contention | 965 patches, 47 rebuilds, 14,745 coherent reads; no lost writes or duplicate owners |
-| Above-budget snapshot admission | Five oversized loads not retained; small cache and WAL freshness checks passed |
-| Larger materialized database | 10,000 real documents; full-body/identifier oracles and post-mutation checks passed |
-| Hardened soak runner | 15 lifecycle/process tests plus 6 CI-contract tests passed; 1,000 real-engine iterations and 40 verified restarts passed |
+| Gate                                                      | Result                                                                                                                   |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| Rust workspace, all targets/features, locked dependencies | 179 tests passed                                                                                                         |
+| Strict whole-workspace Clippy, all targets/features       | Passed                                                                                                                   |
+| Rust formatting, JavaScript lint, TypeScript checking     | Passed                                                                                                                   |
+| Interop suite, including website and Explorer bundles     | 156 passed; 5 platform/opt-in skips                                                                                      |
+| Published language-client configuration/CRUD probes       | All 9 passed: Node, Python, Ruby, PHP, Go, Java, Rust, C#, Dart                                                          |
+| Native root lease, disk-pressure, validator cleanup       | 3 passed separately against fresh development binary                                                                     |
+| Crash matrix against final native binaries                | 270 interrupted mutations, 15 failpoints, 36 queue interruptions passed                                                  |
+| Repeated concurrency/recovery integration suite           | 10 repetitions of 5 tests passed                                                                                         |
+| Browser JavaScript, adapters, and required WASM scanner   | 69 tests, 288 assertions passed                                                                                          |
+| Fresh browser WASM host protocol                          | 130 frames, 122 documents passed                                                                                         |
+| Playwright 1.62.0, final local follow-up                  | 9 passed; zero skips                                                                                                     |
+| Bounded native restart soak                               | 19,518 operations, 24,794 assertions, 105 restarts passed                                                                |
+| Bounded four-process contention                           | 965 patches, 47 rebuilds, 14,745 coherent reads; no lost writes or duplicate owners                                      |
+| Above-budget snapshot admission                           | Five oversized loads not retained; small cache and WAL freshness checks passed                                           |
+| Larger materialized database                              | 10,000 real documents; full-body/identifier oracles and post-mutation checks passed                                      |
+| Hardened soak runner                                      | 15 lifecycle/process tests plus 6 CI-contract tests passed; 1,000 real-engine iterations and 40 verified restarts passed |
 
 Chromium 151.0.7922.34, Firefox 153.0, and WebKit 26.5 each passed all three browser
 scenarios. WebKit's earlier failures were isolated to ephemeral Playwright
@@ -165,17 +165,17 @@ independent oracle compares expected identifiers and complete document bodies;
 post-put/patch/delete checks also pass. Each measurement has 3 warmups and 30
 timed samples. Results below use the final float-roundtrip and stable-read fixes.
 
-| Operation | p50 ms | p95 ms |
-| --- | ---: | ---: |
-| Selective equality, 5 documents | 2.135 | 2.934 |
-| Same query with parsed cache evicted before timing | 3.310 | 3.986 |
-| Broad equality, 250 documents | 76.293 | 100.210 |
-| Range fallback scan, 500 documents | 153.400 | 182.836 |
-| Engine open plus selective query | 2.048 | 2.176 |
-| Alternating collections, **two queries** | 7.555 | 16.971 |
-| Durable put | 6.490 | 8.270 |
-| Durable patch | 6.897 | 7.749 |
-| Durable delete | 6.373 | 6.797 |
+| Operation                                          |  p50 ms |  p95 ms |
+| -------------------------------------------------- | ------: | ------: |
+| Selective equality, 5 documents                    |   2.135 |   2.934 |
+| Same query with parsed cache evicted before timing |   3.310 |   3.986 |
+| Broad equality, 250 documents                      |  76.293 | 100.210 |
+| Range fallback scan, 500 documents                 | 153.400 | 182.836 |
+| Engine open plus selective query                   |   2.048 |   2.176 |
+| Alternating collections, **two queries**           |   7.555 |  16.971 |
+| Durable put                                        |   6.490 |   8.270 |
+| Durable patch                                      |   6.897 |   7.749 |
+| Durable delete                                     |   6.373 |   6.797 |
 
 Selective real-document queries measured about 1.55x faster with parsed reuse in
 this fixture, not the 16.6x warm component result in the earlier benchmark.
@@ -207,15 +207,15 @@ operation. Full identifier/body oracles verified 50 selective, 2,500 broad, and
 5,000 fallback results. It performed 39 mutation operations (13 puts, patches,
 and deletes each), followed by the existing post-mutation checks.
 
-| Operation | p50 ms | p95 ms |
-| --- | ---: | ---: |
-| Selective equality, 50 documents | 32.220 | 34.628 |
-| Same query with parsed cache evicted before timing | 43.776 | 47.639 |
-| Broad equality, 2,500 documents | 1,411.830 | 1,507.523 |
-| Range fallback scan, 5,000 documents | 3,728.337 | 3,957.706 |
-| Durable put | 10.608 | 16.388 |
-| Durable patch | 13.188 | 15.953 |
-| Durable delete | 13.698 | 17.269 |
+| Operation                                          |    p50 ms |    p95 ms |
+| -------------------------------------------------- | --------: | --------: |
+| Selective equality, 50 documents                   |    32.220 |    34.628 |
+| Same query with parsed cache evicted before timing |    43.776 |    47.639 |
+| Broad equality, 2,500 documents                    | 1,411.830 | 1,507.523 |
+| Range fallback scan, 5,000 documents               | 3,728.337 | 3,957.706 |
+| Durable put                                        |    10.608 |    16.388 |
+| Durable patch                                      |    13.188 |    15.953 |
+| Durable delete                                     |    13.698 |    17.269 |
 
 The selective comparison measured about 1.36x faster with parsed reuse. With only
 ten samples, nearest-rank p95 is the maximum observed sample, not a robust tail
@@ -333,17 +333,17 @@ Each run used two collections, a 912-byte body per document, 3 warmups, and 30
 timed samples. Full identifier and body oracles passed every run, as did the
 post-mutation checks.
 
-| Operation (ms) | 5k p50 | 5k p95 | 25k p50 | 25k p95 |
-| --- | ---: | ---: | ---: | ---: |
-| Selective equality (50 / 250 rows) | 29.336 | 32.711 | 390.619 | 418.980 |
-| Same, parsed cache evicted | 52.884 | 57.852 | 507.743 | 517.451 |
-| Broad equality (2,500 / 12,500 rows) | 1,413.771 | 1,870.106 | 25,602.660 | 33,544.294 |
+| Operation (ms)                            |    5k p50 |    5k p95 |    25k p50 |    25k p95 |
+| ----------------------------------------- | --------: | --------: | ---------: | ---------: |
+| Selective equality (50 / 250 rows)        |    29.336 |    32.711 |    390.619 |    418.980 |
+| Same, parsed cache evicted                |    52.884 |    57.852 |    507.743 |    517.451 |
+| Broad equality (2,500 / 12,500 rows)      | 1,413.771 | 1,870.106 | 25,602.660 | 33,544.294 |
 | Range fallback scan (5,000 / 25,000 rows) | 2,966.787 | 3,531.461 | 44,017.625 | 46,134.963 |
-| Engine open plus selective query | 38.099 | 57.137 | 390.103 | 405.730 |
-| Alternating collections, two queries | 103.621 | 157.000 | 1,031.379 | 1,039.192 |
-| Durable put | 10.407 | 13.861 | 11.163 | 14.283 |
-| Durable patch | 20.487 | 48.708 | 18.728 | 21.435 |
-| Durable delete | 13.230 | 27.211 | 15.282 | 19.334 |
+| Engine open plus selective query          |    38.099 |    57.137 |    390.103 |    405.730 |
+| Alternating collections, two queries      |   103.621 |   157.000 |  1,031.379 |  1,039.192 |
+| Durable put                               |    10.407 |    13.861 |     11.163 |     14.283 |
+| Durable patch                             |    20.487 |    48.708 |     18.728 |     21.435 |
+| Durable delete                            |    13.230 |    27.211 |     15.282 |     19.334 |
 
 The 5k columns are the median of three runs' p50 and p95. The ranges across
 runs were: selective p50 28.979–31.722, broad p50 1,400.441–1,426.519, range
@@ -364,17 +364,18 @@ before every sample, and each sample ran in a fresh process. OS-wide caches
 were not purged, because that needs sudo. Each sample read 22.9 MB from the
 image device, so the reads did reach storage.
 
-| Cold sample (ms) | p50 | p95 |
-| --- | ---: | ---: |
-| Engine open | 1.202 | 8.579 |
-| First selective query (250 rows) | 721.214 | 767.421 |
-| Second selective query | 382.604 | 494.737 |
-| Process wall time | 1,116.507 | 1,284.496 |
+| Cold sample (ms)                 |       p50 |       p95 |
+| -------------------------------- | --------: | --------: |
+| Engine open                      |     1.202 |     8.579 |
+| First selective query (250 rows) |   721.214 |   767.421 |
+| Second selective query           |   382.604 |   494.737 |
+| Process wall time                | 1,116.507 | 1,284.496 |
 
 The first cold query cost about 1.85x a warm one. Peak RSS was 169.8 MB.
 
 **Bounded multi-process load (30 s).** Two leased writers and two read-only
 processes ran against one root.
+
 - Writes: 1,178 committed writes and 58 rebuilds.
 - Reads: 19,278 coherent successful reads.
 - Expected rejections: 11,180 lease rejections, 7,784 exhausted concurrent-write
@@ -390,10 +391,12 @@ qualification.
 
 Raw results, logs with load samples, runner scripts, and harness hashes are kept
 in the ignored `benchmarks/baselines-20261011/`. Binary SHA256 values:
+
 - `end-to-end`: `f9c437facebe8c5c1ec59b5f1b13c5cfb67496c32a46292acbbaa82562a84f8d`
 - `bounded-load`: `0b90455ac66219bce4b72245a4c7848082fa575b3b290e4d747524620291805d`
 
 This harness copy differs from `benchmarks/tin-poc` in three ways:
+
 - document ids start at `4VRNF520000`
 - it is capped at 79,000 documents
 - it adds `FYLO_BENCH_KEEP_ROOT` and a `cold` mode
@@ -431,11 +434,11 @@ one `lstat` for the attribute-sidecar fallback (a record with no FYLO xattrs
 may carry them in a `.fylo-attrs` file), read, and close. The sidecar `lstat`
 stays because a sidecar can hold the access descriptor.
 
-| Query (interposer) | Before calls | After calls | Before per row | After per row |
-| --- | ---: | ---: | ---: | ---: |
-| Broad, 100 rows, 200-doc root, local APFS | 6,368 | 663 | 63.7 | 6.6 |
-| Broad, 2,500 rows, 5k root, APFS image on ATLAS | 185,197 | 15,054 | 74.1 | 6.0 |
-| Broad, 250 rows, 500-doc root, raw ATLAS SMB share | 17,176 | 1,551 | 68.7 | 6.2 |
+| Query (interposer)                                 | Before calls | After calls | Before per row | After per row |
+| -------------------------------------------------- | -----------: | ----------: | -------------: | ------------: |
+| Broad, 100 rows, 200-doc root, local APFS          |        6,368 |         663 |           63.7 |           6.6 |
+| Broad, 2,500 rows, 5k root, APFS image on ATLAS    |      185,197 |      15,054 |           74.1 |           6.0 |
+| Broad, 250 rows, 500-doc root, raw ATLAS SMB share |       17,176 |       1,551 |           68.7 |           6.2 |
 
 **Mac, local APFS.** Measured on an Apple M4 with 16 GiB, macOS 27.2, Rust
 1.97.1, release opt-level 3, with fixtures on the internal disk. This used the
@@ -445,17 +448,17 @@ interleaved. The one-minute load was 3.8 to 17 at the start and end of the runs,
 because other builds came and went, so treat writes as upper bounds. Full
 identifier and body oracles and the post-write checks passed in every run.
 
-| Operation (ms, p50) | 5k before | 5k after | 25k 2026-10-11 | 25k after |
-| --- | ---: | ---: | ---: | ---: |
-| Selective equality (50 / 250 rows) | 33.255 | 1.419 | 390.619 | 10.729 |
-| Same, parsed cache evicted | 56.652 | 24.859 | 507.743 | 123.843 |
-| Broad equality (2,500 / 12,500 rows) | 1,643.998 | 59.413 | 25,602.660 | 307.580 |
-| Range fallback scan (5,000 / 25,000 rows) | 3,278.193 | 124.254 | 44,017.625 | 801.453 |
-| Engine open plus selective query | 33.743 | 1.451 | 390.103 | 11.457 |
-| Alternating collections, two queries | 114.036 | 50.186 | 1,031.379 | 264.434 |
-| Durable put | 6.880 | 7.498 | 11.163 | 16.255 |
-| Durable patch | 8.934 | 7.710 | 18.728 | 15.457 |
-| Durable delete | 8.089 | 8.058 | 15.282 | 15.889 |
+| Operation (ms, p50)                       | 5k before | 5k after | 25k 2026-10-11 | 25k after |
+| ----------------------------------------- | --------: | -------: | -------------: | --------: |
+| Selective equality (50 / 250 rows)        |    33.255 |    1.419 |        390.619 |    10.729 |
+| Same, parsed cache evicted                |    56.652 |   24.859 |        507.743 |   123.843 |
+| Broad equality (2,500 / 12,500 rows)      | 1,643.998 |   59.413 |     25,602.660 |   307.580 |
+| Range fallback scan (5,000 / 25,000 rows) | 3,278.193 |  124.254 |     44,017.625 |   801.453 |
+| Engine open plus selective query          |    33.743 |    1.451 |        390.103 |    11.457 |
+| Alternating collections, two queries      |   114.036 |   50.186 |      1,031.379 |   264.434 |
+| Durable put                               |     6.880 |    7.498 |         11.163 |    16.255 |
+| Durable patch                             |     8.934 |    7.710 |         18.728 |    15.457 |
+| Durable delete                            |     8.089 |    8.058 |         15.282 |    15.889 |
 
 The 5k columns are the median of three runs. Across the three runs, broad p50
 was 1,637.0–1,706.7 before and 58.0–60.4 after. Range p50 was 3,248.9–3,316.6
@@ -476,12 +479,12 @@ write baseline.
 and after binaries, under a one-minute load of 25 to 42 from other builds. These
 are p50 values with 30 samples on the image and 10 on the raw share.
 
-| Read check (ms, p50) | Before | After |
-| --- | ---: | ---: |
-| APFS image on ATLAS, 5k: selective, 50 rows | 102.759 | 1.516 |
-| APFS image on ATLAS, 5k: broad, 2,500 rows | 5,256.582 | 124.257 |
-| Raw SMB share, 500: selective, 5 rows | 24.767 | 17.941 |
-| Raw SMB share, 500: broad, 250 rows | 1,855.649 | 1,803.560 |
+| Read check (ms, p50)                        |    Before |     After |
+| ------------------------------------------- | --------: | --------: |
+| APFS image on ATLAS, 5k: selective, 50 rows |   102.759 |     1.516 |
+| APFS image on ATLAS, 5k: broad, 2,500 rows  | 5,256.582 |   124.257 |
+| Raw SMB share, 500: selective, 5 rows       |    24.767 |    17.941 |
+| Raw SMB share, 500: broad, 250 rows         | 1,855.649 | 1,803.560 |
 
 On the raw share the path checks were already answered from the SMB client's
 attribute cache, so removing them barely moved the wall time. What remains is
@@ -562,15 +565,15 @@ checked its row count. Raw results, load samples and the bench sources are in
 the read and the encoded response. 200 samples per run (30 on the raw share),
 three warmups; p50, with the range across runs.
 
-| Read (p50) | Before | After, hot set off | After, hot set on |
-| --- | ---: | ---: | ---: |
-| Image 5k: `getDoc` | 5.20 ms | 245 µs | 2.9 µs |
-| Image 5k: selective, 50 rows | 7.63 ms | 2.71 ms | 77.8 µs (76.1–79.6) |
-| Image 5k: broad, 2,500 rows | 114 ms | 116 ms | 4.08 ms |
-| Image 5k: engine `find` only, 50 rows | 2.37 ms | 2.51 ms | 28.9 µs |
-| Raw share 500: `getDoc` | 14.2–24.2 ms | 16.3–18.8 ms | 3.0 µs |
-| Raw share 500: selective, 5 rows | 39.2–43.3 ms | 79.3–86.6 ms | 11.2–11.4 µs |
-| Raw share 500: broad, 250 rows | 1.82–2.28 s | 1.40–1.86 s | 366–387 µs |
+| Read (p50)                            |       Before | After, hot set off |   After, hot set on |
+| ------------------------------------- | -----------: | -----------------: | ------------------: |
+| Image 5k: `getDoc`                    |      5.20 ms |             245 µs |              2.9 µs |
+| Image 5k: selective, 50 rows          |      7.63 ms |            2.71 ms | 77.8 µs (76.1–79.6) |
+| Image 5k: broad, 2,500 rows           |       114 ms |             116 ms |             4.08 ms |
+| Image 5k: engine `find` only, 50 rows |      2.37 ms |            2.51 ms |             28.9 µs |
+| Raw share 500: `getDoc`               | 14.2–24.2 ms |       16.3–18.8 ms |              3.0 µs |
+| Raw share 500: selective, 5 rows      | 39.2–43.3 ms |       79.3–86.6 ms |        11.2–11.4 µs |
+| Raw share 500: broad, 250 rows        |  1.82–2.28 s |        1.40–1.86 s |          366–387 µs |
 
 The warm 50-row read is under 0.1 ms in process (p95 81–85 µs); the engine
 itself takes 29 µs and the rest is encoding 51 KB of JSON. Before the change a
@@ -585,14 +588,14 @@ empty round trip (`handshake`) taken just before it, reported as RTT. 100
 samples (30 for broad), two runs each, p50. These times include a network hop
 to `fylo serve` that no longer exists; an embedded app does not pay it.
 
-| Read (p50, ms) | Before | RTT | Hot set off | RTT | Hot set on | RTT |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Image 5k: `getDoc` | 12.45 / 12.25 | 5.2 / 5.1 | 5.24 / 5.21 | 4.9 / 4.9 | 4.20 / 4.38 | 4.1 / 4.4 |
-| Image 5k: selective, 50 rows | 14.99 / 14.80 | 5.3 / 4.9 | 9.47 / 11.86 | 5.3 / 5.3 | 5.71 / 5.33 | 5.2 / 4.4 |
-| Image 5k: broad, 2,500 rows | 185.5 / 185.1 | 4.5 / 4.5 | 149.5 / 147.1 | 4.5 / 4.1 | 67.8 / 72.0 | 3.8 / 4.5 |
-| Raw 500: `getDoc` | 22.82 / 19.77 | 5.9 / 5.2 | 7.93 / 13.78 | 5.2 / 5.5 | 4.22 / 4.31 | 4.4 / 4.7 |
-| Raw 500: selective, 5 rows | 36.27 / 45.24 | 5.7 / 5.1 | 20.76 / 43.29 | 5.6 / 5.7 | 4.08 / 4.46 | 4.1 / 4.5 |
-| Raw 500: broad, 250 rows | 1,476.7 / 1,353.3 | 6.6 / 6.7 | 1,408.2 / 1,382.3 | 6.8 / 7.1 | 19.6 / 19.3 | 5.7 / 5.1 |
+| Read (p50, ms)               |            Before |       RTT |       Hot set off |       RTT |  Hot set on |       RTT |
+| ---------------------------- | ----------------: | --------: | ----------------: | --------: | ----------: | --------: |
+| Image 5k: `getDoc`           |     12.45 / 12.25 | 5.2 / 5.1 |       5.24 / 5.21 | 4.9 / 4.9 | 4.20 / 4.38 | 4.1 / 4.4 |
+| Image 5k: selective, 50 rows |     14.99 / 14.80 | 5.3 / 4.9 |      9.47 / 11.86 | 5.3 / 5.3 | 5.71 / 5.33 | 5.2 / 4.4 |
+| Image 5k: broad, 2,500 rows  |     185.5 / 185.1 | 4.5 / 4.5 |     149.5 / 147.1 | 4.5 / 4.1 | 67.8 / 72.0 | 3.8 / 4.5 |
+| Raw 500: `getDoc`            |     22.82 / 19.77 | 5.9 / 5.2 |      7.93 / 13.78 | 5.2 / 5.5 | 4.22 / 4.31 | 4.4 / 4.7 |
+| Raw 500: selective, 5 rows   |     36.27 / 45.24 | 5.7 / 5.1 |     20.76 / 43.29 | 5.6 / 5.7 | 4.08 / 4.46 | 4.1 / 4.5 |
+| Raw 500: broad, 250 rows     | 1,476.7 / 1,353.3 | 6.6 / 6.7 | 1,408.2 / 1,382.3 | 6.8 / 7.1 | 19.6 / 19.3 | 5.7 / 5.1 |
 
 With the hot set a warm `getDoc` or small query costs one round trip; the
 50-row read adds about 0.5 ms to move 51 KB over Wi-Fi, and the broad read is
@@ -609,11 +612,11 @@ stale or incoherent row, also under a 4 KiB budget. On the real binary, six
 readers and one writer ran for 30 s against the image root, sampling the hot
 set every 50 ms from another connection:
 
-| Load (30 s) | Reads, hot set off | Reads, hot set on | Peak resident | Peak RSS |
-| --- | ---: | ---: | ---: | ---: |
-| 1 write/s, 64 MiB | 50,518 | 584,631 and 679,433 | 14.7 MB | 88–91 MB either way |
-| 50 writes/s, 64 MiB, interleaved | 43,363 / 30,619 / 37,295 | 27,158 / 52,194 / 30,945 | 5.9 MB | 76–216 MB |
-| 50 writes/s, 4 MiB | | 46,701 | 1.46 MB | 215 MB |
+| Load (30 s)                      |       Reads, hot set off |        Reads, hot set on | Peak resident |            Peak RSS |
+| -------------------------------- | -----------------------: | -----------------------: | ------------: | ------------------: |
+| 1 write/s, 64 MiB                |                   50,518 |      584,631 and 679,433 |       14.7 MB | 88–91 MB either way |
+| 50 writes/s, 64 MiB, interleaved | 43,363 / 30,619 / 37,295 | 27,158 / 52,194 / 30,945 |        5.9 MB |           76–216 MB |
+| 50 writes/s, 4 MiB               |                          |                   46,701 |       1.46 MB |              215 MB |
 
 No run had an error or an incoherent row, and resident bytes never exceeded
 the budget. Under 50 writes a second every write empties the hot set, so it
@@ -628,6 +631,70 @@ including the hot-set suites. The one failure there,
 `write_ahead_log.rs::a_commit_leaves_a_v2_state_and_a_checkpoint_returns_to_v1`,
 is a develop race in that file's tests under parallel threads and passes alone.
 
+## Segment storage, 2026-10-29
+
+Document collections can keep their documents in append-only segments
+([ADR 0015](adr/0015-append-only-document-segments.md)). Every run compares
+develop's file layout with the segment layout on the same fixtures, with
+full identifier and body oracles passing in every run.
+
+**Mac, local APFS.** Apple M4, macOS 27.2, release opt-level 3, with the
+2026-10-11 harness (`end-to-end.rs` gains only a `FYLO_BENCH_LAYOUT`
+switch). The 5k columns are the median of three interleaved runs, and the
+25k columns are one run each. Load was 3 to 5. The file layout on the new
+build matched develop to within noise.
+
+| Operation (ms, p50)                       | 5k files | 5k segments | 25k files | 25k segments |
+| ----------------------------------------- | -------: | ----------: | --------: | -----------: |
+| Selective equality (50 / 250 rows)        |    1.134 |       0.740 |    10.409 |        5.474 |
+| Same, parsed cache evicted                |   22.635 |      21.927 |   122.103 |      119.265 |
+| Broad equality (2,500 / 12,500 rows)      |   45.572 |      20.845 |   253.406 |      108.086 |
+| Range fallback scan (5,000 / 25,000 rows) |   97.707 |      38.735 |   569.185 |      200.296 |
+| Durable put                               |    0.662 |       0.386 |     0.664 |        0.380 |
+| Durable patch                             |    0.579 |       0.425 |     0.578 |        0.410 |
+| Durable delete                            |    0.563 |       0.394 |     0.584 |        0.387 |
+
+**ATLAS.** These are read checks with `readcheck`, on fixtures built
+locally and copied across: the APFS image on ATLAS uses 30 samples (10 at
+25k), and the raw SMB share uses 10. Other threads loaded CITADEL during the
+raw-share runs (load 3 to 25), so the file-layout numbers there are upper
+bounds.
+
+| Read check (ms, p50)                   |          Files | Segments |
+| -------------------------------------- | -------------: | -------: |
+| APFS image, 5k: broad, 2,500 rows      |          44.65 |    22.24 |
+| APFS image, 5k: range, 5,000 rows      |          97.29 |    40.41 |
+| APFS image, 25k: broad, 12,500 rows    |         237.96 |   111.55 |
+| APFS image, 25k: range, 25,000 rows    |         555.85 |   196.66 |
+| Raw SMB share, 5k: selective, 50 rows  |         457.69 |     0.78 |
+| Raw SMB share, 5k: broad, 2,500 rows   |      76,884.69 |    21.77 |
+| Raw SMB share, 5k: range, 5,000 rows   |     263,403.44 |    40.24 |
+| Raw SMB share, 25k: broad, 12,500 rows | did not finish |   143.52 |
+| Raw SMB share, 25k: range, 25,000 rows | did not finish |   337.38 |
+
+On the raw share a file-layout read still costs an open and an
+`flistxattr` per row, and each goes to the server. A segment read is a
+coalesced read of a file the SMB client already caches, so warm queries
+there run about as fast as on the local image. The first query after
+opening pays for loading the location table and the segments: 1.9 s at 5k
+and 5.4 s at 25k. The 25k file-layout check was stopped after 4 h 13 min,
+still inside its untimed correctness pass. Copying that fixture's 50,000
+files to the share alone took over an hour, where the segment fixture
+copied in seconds.
+
+**Migration.** `migrate-check` built the 5k fixture with the file layout:
+4,948 live documents, 52 deleted, and custom metadata on 100. It moved the
+fixture to segments in 0.67 s and back to files in 1.07 s. The identifier
+and body oracles held at each step, and all 5,000 files came back with
+identical bytes, modification times, modes and FYLO attributes.
+
+**Crash matrix.** 607 interrupted native mutations across 32 failpoints
+on macOS and 562 on Windows recovered to one valid state each. That
+includes every ordinary mutation on a segment collection, compaction, and
+migration in both directions.
+
+Logs, scripts and raw JSON are in `/Volumes/FORGE/Logs/FYLO/fylo-segments/`.
+
 ## Cloud Run and Azure Functions, local only, 2026-10-11
 
 `bun run cloudrun:local` and `bun run azure:local`
@@ -636,12 +703,12 @@ two-instance root lease drill, and the HTTP invocation adapter
 (`crates/fylo-machine/examples/http_invocation.rs`) as two instances on each
 platform's shared storage. Run on an arm64 WSL2 host with Docker 29.8:
 
-| Mount | Crash suite | Lease across instances | Two service instances |
-|---|---|---|---|
-| Cloud Run, Filestore (NFSv3, no-lock) | pass (288 + 43) | fail: both admitted | fail: concurrent writers get `EROOTLEASELOST` |
-| Cloud Run, Cloud Storage (gcsfuse) | fail: no hard links | fail: both admitted | fail: no hard links |
-| Azure Files, SMB, Samba stand-in (`nobrl` or not) | fail: link refused | `nobrl`: fail, both admitted; byte-range locks: second refused with `EROOTLOCKED`, writes then fail on links | fail: link refused |
-| Azure Files, NFS 4.1 | pass (288 + 43) | pass | pass |
+| Mount                                             | Crash suite         | Lease across instances                                                                                       | Two service instances                         |
+| ------------------------------------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------ | --------------------------------------------- |
+| Cloud Run, Filestore (NFSv3, no-lock)             | pass (288 + 43)     | fail: both admitted                                                                                          | fail: concurrent writers get `EROOTLEASELOST` |
+| Cloud Run, Cloud Storage (gcsfuse)                | fail: no hard links | fail: both admitted                                                                                          | fail: no hard links                           |
+| Azure Files, SMB, Samba stand-in (`nobrl` or not) | fail: link refused  | `nobrl`: fail, both admitted; byte-range locks: second refused with `EROOTLOCKED`, writes then fail on links | fail: link refused                            |
+| Azure Files, NFS 4.1                              | pass (288 + 43)     | pass                                                                                                         | pass                                          |
 
 - **No hard links.** Collection locks are taken by hard-linking a temporary
   file into place (`try_create_lock` in `write.rs`). The fallback for missing
@@ -678,20 +745,20 @@ platform's shared storage. Run on an arm64 WSL2 host with Docker 29.8:
   provisions one. The lane asserts that the lock file is on the access
   point's volume.
 - **Emulator limits.** No official emulator exists for either platform.
-  - Cloud Run is the container run with its contract: `PORT`, `K_*`, 512 MiB,
-    and SIGTERM with a 10 s grace period.
-  - Azure is the Functions host from Core Tools 4.15.2. It runs on arm64,
-    unlike the MCR images, and uses Azurite for `AzureWebJobsStorage`.
-  - The storage stand-ins:
-    - Filestore: a kernel NFS server.
-    - Cloud Storage: fake-gcs-server. It has no `objects.move`, so atomic
-      rename is off.
-    - Azure Files: Samba on FAT, so links are refused. The errno and the mount
-      options Azure applies are unconfirmed.
-  - Instances mount for themselves in privileged containers.
-  - Cloud Run gen1 (gVisor) is not covered, because volume mounts need gen2.
-  - Once, a second NFS 4.1 client failed to mount with `Cannot allocate
-    memory`; the rerun passed.
+    - Cloud Run is the container run with its contract: `PORT`, `K_*`, 512 MiB,
+      and SIGTERM with a 10 s grace period.
+    - Azure is the Functions host from Core Tools 4.15.2. It runs on arm64,
+      unlike the MCR images, and uses Azurite for `AzureWebJobsStorage`.
+    - The storage stand-ins:
+        - Filestore: a kernel NFS server.
+        - Cloud Storage: fake-gcs-server. It has no `objects.move`, so atomic
+          rename is off.
+        - Azure Files: Samba on FAT, so links are refused. The errno and the mount
+          options Azure applies are unconfirmed.
+    - Instances mount for themselves in privileged containers.
+    - Cloud Run gen1 (gVisor) is not covered, because volume mounts need gen2.
+    - Once, a second NFS 4.1 client failed to mount with `Cannot allocate
+memory`; the rerun passed.
 
 ## Remaining release gates
 
