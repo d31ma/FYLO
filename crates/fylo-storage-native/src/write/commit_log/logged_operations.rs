@@ -231,7 +231,7 @@ impl NativeWriteRoot {
         policy: &DocumentPolicy<'_>,
     ) -> Result<SqlMutationResult, NativeStorageError> {
         if collection.uses_segments() {
-            return self.sql_update_segmented(collection, (query, changes), actor);
+            return self.sql_update_segmented(collection, (query, changes), actor, policy);
         }
         self.commit_logged(collection, || {
             policy.restart();
@@ -269,7 +269,7 @@ impl NativeWriteRoot {
         codec: &dyn DocumentCodec,
     ) -> Result<SqlMutationResult, NativeStorageError> {
         if collection.uses_segments() {
-            return self.sql_delete_segmented(collection, query, actor);
+            return self.sql_delete_segmented(collection, query, actor, codec);
         }
         self.commit_logged(collection, || {
             let documents = matching_documents(collection, query, actor, codec)?;

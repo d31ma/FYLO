@@ -416,3 +416,86 @@ fn encrypted_strings_that_read_as_json_stay_strings() {
         json!({"a":"999","b":"true","c":"null","d":"[1]","e":42,"_v":"v1"})
     );
 }
+
+/// A segment collection, where SQL `UPDATE` once merged into the stored
+/// form directly: neither decrypting, validating nor encrypting.
+fn create_segments(runtime: &InvocationRuntime, collection: &str) {
+    success(
+        runtime,
+        &json!({"op":"createCollection","collection":collection,"layout":"segments"}),
+    );
+}
+
+#[test]
+fn sql_update_encrypts_a_declared_field_in_a_segment_collection() {
+    let fixture = pii();
+    let runtime = fixture.runtime(false, true);
+    create_segments(&runtime, PII);
+    success(
+        &runtime,
+        &json!({"op":"putData","collection":PII,"id":ID,"data":{"name":"Cy","ssn":"4444"}}),
+    );
+    success(
+        &runtime,
+        &sql("UPDATE pii SET ssn = '7777' WHERE ssn = '4444'"),
+    );
+    assert!(is_ciphertext(&fixture.stored(PII, ID)["ssn"]));
+    let read = success(&runtime, &json!({"op":"getDoc","collection":PII,"id":ID}));
+    assert_eq!(read[ID]["ssn"], "7777");
+}
+
+#[test]
+fn sql_update_without_keys_is_refused_in_an_encrypted_segment_collection() {
+    let fixture = pii();
+    let keyed = fixture.runtime(false, true);
+    create_segments(&keyed, PII);
+    success(
+        &keyed,
+        &json!({"op":"putData","collection":PII,"id":ID,"data":{"name":"Cy","ssn":"4444"}}),
+    );
+    // Pushed, so a process without the folder knows the field is encrypted.
+    success(&keyed, &json!({"op":"schemaPush","collection":PII}));
+    drop(keyed);
+    let before = fixture.stored(PII, ID);
+    let keyless = InvocationRuntime::new(
+        InvocationOptions::new(
+            RootOpenOptions::new(&fixture.root),
+            ApplicationConfig {
+                root: Some(fixture.root.clone()),
+                hot_set_bytes: None,
+                ..ApplicationConfig::default()
+            },
+            FrameLimits::default(),
+            (
+                Instant::now() + Duration::from_secs(30),
+                Duration::from_millis(100),
+            ),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let code = refused(
+        &keyless,
+        &sql("UPDATE pii SET ssn = '9111' WHERE name = 'Cy'"),
+    );
+    assert_eq!(code, "EENGINE_ENCRYPTION");
+    assert_eq!(fixture.stored(PII, ID), before);
+}
+
+#[test]
+fn strict_sql_update_refuses_an_invalid_assignment_in_a_segment_collection() {
+    let fixture = people();
+    let runtime = fixture.runtime(true, false);
+    create_segments(&runtime, PEOPLE);
+    success(
+        &runtime,
+        &json!({"op":"putData","collection":PEOPLE,"id":ID,"data":{"name":"Ada","age":"36"}}),
+    );
+    let before = fixture.stored(PEOPLE, ID);
+    let code = refused(
+        &runtime,
+        &sql("UPDATE people SET age = 'zzz' WHERE name = 'Ada'"),
+    );
+    assert_eq!(code, "ESCHEMA");
+    assert_eq!(fixture.stored(PEOPLE, ID), before);
+}

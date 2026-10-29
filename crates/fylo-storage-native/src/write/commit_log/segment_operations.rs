@@ -6,10 +6,10 @@ use fylo_format::TtidTimestamps;
 use fylo_query::StructuredQuery;
 use serde_json::{Map, Value};
 
+use super::super::document_codec::{DocumentCodec, DocumentPolicy};
 use super::super::{
     NativeWriteRoot, SqlMutationResult, SqlMutationResultKind, WriteAccess, WriteActor,
-    encode_document_fields, merge_top_level, now_millis, parse_document_fields,
-    require_write_access,
+    merge_top_level, now_millis, parse_document_fields, require_write_access,
 };
 use super::commit_plan::Ownership;
 use super::logged_writer::Planned;
@@ -18,7 +18,8 @@ use crate::segments::{LocationState, SegmentDocument, SegmentEntry, SegmentStore
 use crate::{NativeCollection, NativeStorageError, NativeStorageErrorCode};
 
 /// Live documents a SQL mutation matched, each with its parsed fields.
-type SegmentMatches = Vec<(SegmentDocument, Map<String, Value>)>;
+/// Each match with its fields, and whether those fields are already decoded.
+type SegmentMatches = Vec<(SegmentDocument, Map<String, Value>, bool)>;
 
 /// Document mutations of a segment collection (ADR 0015).
 ///
@@ -212,13 +213,26 @@ impl NativeWriteRoot {
         collection: &NativeCollection,
         (query, changes): (&StructuredQuery, &Map<String, Value>),
         actor: Option<&WriteActor>,
+        policy: &DocumentPolicy<'_>,
     ) -> Result<SqlMutationResult, NativeStorageError> {
         self.commit_logged(collection, || {
+            policy.restart();
             let mut plan = SegmentPlan::new("update-many");
             let mut identifiers = Vec::new();
-            for (stored, mut fields) in Self::segment_matches(collection, query, actor)? {
+            for (stored, fields, decoded) in
+                Self::segment_matches(collection, query, actor, policy)?
+            {
+                // Decrypted and validated, then encrypted again, as the file
+                // layout's update does: merging into the stored form would
+                // write a declared field in the clear, or keep ciphertext a
+                // writer without keys could not have produced.
+                let mut fields = if decoded {
+                    fields
+                } else {
+                    policy.decode(&collection.name, fields)?
+                };
                 merge_top_level(&mut fields, changes);
-                let canonical = encode_document_fields(fields)?;
+                let canonical = policy.encode(&collection.name, fields)?;
                 plan.index_delta(
                     &Self::document_keys(&stored.entry.id, &stored.body)?,
                     &Self::document_keys(&stored.entry.id, &canonical)?,
@@ -245,11 +259,12 @@ impl NativeWriteRoot {
         collection: &NativeCollection,
         query: &StructuredQuery,
         actor: Option<&WriteActor>,
+        codec: &dyn DocumentCodec,
     ) -> Result<SqlMutationResult, NativeStorageError> {
         self.commit_logged(collection, || {
             let mut plan = SegmentPlan::new("delete-many");
             let mut identifiers = Vec::new();
-            for (stored, _) in Self::segment_matches(collection, query, actor)? {
+            for (stored, _, _) in Self::segment_matches(collection, query, actor, codec)? {
                 plan.index_delta(
                     &Self::document_keys(&stored.entry.id, &stored.body)?,
                     &BTreeSet::new(),
@@ -292,12 +307,15 @@ impl NativeWriteRoot {
 
     /// Live documents matching `query`, in identifier order, each with its
     /// parsed fields. Any match the actor may not change fails the whole
-    /// mutation, as the file layout does.
+    /// mutation, as the file layout does. Where `codec` says decoding changes
+    /// what a query sees, the query runs against decoded fields.
     fn segment_matches(
         collection: &NativeCollection,
         query: &StructuredQuery,
         actor: Option<&WriteActor>,
+        codec: &dyn DocumentCodec,
     ) -> Result<SegmentMatches, NativeStorageError> {
+        let decoded = codec.decodes_for_query(collection.name())?;
         let store = SegmentStore::open_for_writer(collection.segment_medium()?)?;
         let limit = query.limit().filter(|limit| *limit > 0);
         let mut matches = Vec::new();
@@ -306,8 +324,15 @@ impl NativeWriteRoot {
             .chunks(Self::SEGMENT_SCAN_BATCH)
         {
             for stored in store.documents(batch, LocationState::Live)? {
-                if let Some(fields) = Self::segment_match(&stored, query, actor)? {
-                    matches.push((stored, fields));
+                let decode = |fields| {
+                    if decoded {
+                        codec.decode(collection.name(), fields)
+                    } else {
+                        Ok(fields)
+                    }
+                };
+                if let Some(fields) = Self::segment_match(&stored, query, actor, decode)? {
+                    matches.push((stored, fields, decoded));
                 }
                 if limit.is_some_and(|limit| matches.len() >= limit) {
                     return Ok(matches);
@@ -321,8 +346,9 @@ impl NativeWriteRoot {
         stored: &SegmentDocument,
         query: &StructuredQuery,
         actor: Option<&WriteActor>,
+        decode: impl FnOnce(Map<String, Value>) -> Result<Map<String, Value>, NativeStorageError>,
     ) -> Result<Option<Map<String, Value>>, NativeStorageError> {
-        let fields = parse_document_fields(&stored.body)?;
+        let fields = decode(parse_document_fields(&stored.body)?)?;
         let timestamps = TtidTimestamps::decode(&stored.entry.id).map_err(|error| {
             NativeStorageError::new(
                 NativeStorageErrorCode::InvalidDocumentId,
