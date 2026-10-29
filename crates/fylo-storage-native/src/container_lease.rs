@@ -280,8 +280,9 @@ impl ContainerLease {
         io::Seek::seek(&mut file, io::SeekFrom::Start(0))?;
         file.write_all(body.as_bytes())?;
         // Other clients of a network filesystem see the beat only once the
-        // server has it.
-        self.file.sync_data()?;
+        // server has it. A plain flush, not macOS's full-fsync, which SMB
+        // shares refuse with ENOTSUP.
+        crate::sync_handle(&self.file)?;
         Ok(())
     }
 
