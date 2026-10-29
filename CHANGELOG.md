@@ -145,6 +145,15 @@
 
 ### Changed
 
+- **New `.vdbx` databases use 2 MiB extents instead of 8 MiB (ADR 0016
+  section 3).** Every kind of data starts its own extent, so the extent size
+  set the floor of a small database: an empty one took 24 MiB and the 5k
+  fixture 96 MiB, all of it allocated on FAT, exFAT or a non-sparse NTFS
+  file. They now take 6 MiB and 28 MiB. The file format is unchanged and
+  existing databases keep their extent size. A stored record must fit in one
+  extent, so a new database refuses a document over about 2 MiB once
+  compressed with `ENATIVE_FILE_SIZE`, and creates at most 511 collections,
+  dropped ones included, before `EVDBX_FULL` (2,047 at 8 MiB).
 - **Schema migrations are JSON, not JavaScript (ADR 0018).** A version step is
   now `fylo.schema/<collection>/migrations/<from>-to-<to>.json`, a list of
   declarative steps (`rename`, `default`, `set`, `remove`, `copy`, `convert`,

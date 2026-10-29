@@ -73,7 +73,7 @@ pub(crate) struct ContainerCompactorLock {
 }
 
 impl ContainerDatabase {
-    /// The extent size a database gets: ADR 0016's 8 MiB.
+    /// The extent size a database gets: ADR 0016's default, 2 MiB.
     const EXTENT_SHIFT: u8 = ContainerSuperblock::DEFAULT_EXTENT_SHIFT;
 
     /// The database at `path`, which names a regular file, opened to read

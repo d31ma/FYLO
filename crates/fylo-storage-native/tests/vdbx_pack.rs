@@ -313,7 +313,7 @@ fn a_segment_root_unpacks_to_what_export_writes() {
             .unwrap();
     }
     // Ten mebibytes of documents, which compress to six bits a character,
-    // fill more than one 8 MiB extent.
+    // fill more than one extent.
     for number in 0..350 {
         put(&segments, "items", number, 40 * 1024);
     }

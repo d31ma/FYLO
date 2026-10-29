@@ -35,7 +35,7 @@ it; the container implementation maps each call onto `ContainerFile`.
 | read / replace the location snapshot | `durable_replace` of `locations.snapshot` | `write_snapshot` → `record_checkpoint` → `release_snapshot(old)` |
 | read / replace the schemas snapshot | `segments/schemas.snapshot` | a `schemas` run the checkpoint slot names; see "Schema versions" |
 | location log | `locations.wal` | none; see below |
-| maximum segment bytes | 1 GiB | the extent's payload capacity (8 MiB − 4 KiB by default) |
+| maximum segment bytes | 1 GiB | the extent's payload capacity (2 MiB − 4 KiB by default) |
 
 **Segment numbers are extent sequence numbers.** A `SegmentLocation`
 keeps `(segment, offset, length)` unchanged. Because a sequence number is
@@ -137,9 +137,10 @@ sealing and are not updated as later writes supersede documents.
 The cost is a map write per rotation, and one per other change: a
 compaction's copy taken and adopted, a released segment, and the two of a
 location fold (its new runs, then the release of the old). The map is 32
-bytes per extent, so with 8 MiB extents the extra bytes per rotation are
-`file size / 2 TiB` of the rotated data: 0.5% at 10 GiB, 5% at 100 GiB.
-Seal records replace this when files that large are in use.
+bytes per extent, so with the default 2 MiB extents the extra bytes per
+rotation are `file size / 128 GiB` of the rotated data: 0.8% at 1 GiB, 8% at
+10 GiB, 78% at 100 GiB (with 8 MiB extents, `file size / 2 TiB`: 0.5% at
+10 GiB). Seal records replace this when files that large are in use.
 
 ## Locks and write access
 
@@ -457,7 +458,7 @@ process's open, its media and its cached tables and index, checkpointing a
 writer's map first, so the next open reads the file as a new process would;
 handles opened before keep the old open, and its right to write, until they
 drop. A database is created with `NativeRoot::create_database`
-(`ContainerFile::create`, 8 MiB extents). The CLI creates a missing
+(`ContainerFile::create`, 2 MiB extents). The CLI creates a missing
 directory root before it runs a command; a path ending in `.vdbx`, or naming
 a regular file, is never created as a directory (`NativeRoot::names_database`).
 

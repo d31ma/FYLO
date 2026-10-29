@@ -50,8 +50,10 @@ impl ContainerSuperblock {
     pub const MIN_EXTENT_SHIFT: u8 = 20;
     /// Largest extent: 64 MiB.
     pub const MAX_EXTENT_SHIFT: u8 = 26;
-    /// Default extent: 8 MiB.
-    pub const DEFAULT_EXTENT_SHIFT: u8 = 23;
+    /// Default extent: 2 MiB (ADR 0016 section 3). Every kind of data starts
+    /// its own extent, so the extent size sets the floor of a small file; it
+    /// also bounds the largest record and sets the map's size.
+    pub const DEFAULT_EXTENT_SHIFT: u8 = 21;
 
     /// Records are sealed with AES-256-GCM (ADR 0016 section 9).
     pub const INCOMPAT_ENCRYPTED: u32 = 1 << 0;
@@ -287,8 +289,8 @@ mod tests {
     #[test]
     fn computes_extent_offsets() {
         let superblock = sample(1);
-        assert_eq!(superblock.extent_bytes(), 8 * 1024 * 1024);
-        assert_eq!(superblock.extent_offset(2), Some(16 * 1024 * 1024));
+        assert_eq!(superblock.extent_bytes(), 2 * 1024 * 1024);
+        assert_eq!(superblock.extent_offset(2), Some(4 * 1024 * 1024));
         assert_eq!(superblock.extent_offset(16), None);
     }
 

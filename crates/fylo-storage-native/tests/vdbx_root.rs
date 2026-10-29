@@ -473,8 +473,8 @@ const CHILD_COLLECTION: &str = "FYLO_VDBX_ROOT_CHILD_COLLECTION";
 const CHILD_FIRST: &str = "FYLO_VDBX_ROOT_CHILD_FIRST";
 const CHILD_TEST: &str = "a_child_process";
 /// Documents each writer process puts, of about 48 KiB each once
-/// compressed, so the 8 MiB extents of a database fill and every writer
-/// takes several.
+/// compressed, so the extents of a database fill and every writer takes
+/// several.
 const CHILD_DOCUMENTS: usize = 200;
 /// Characters of a child document's padding: 48 KiB once compressed.
 const PADDING_CHARS: usize = 64 * 1024;
@@ -632,7 +632,7 @@ fn writer_processes_share_a_database_under_byte_range_locks() {
     passed(reader.1, "reader");
 
     // Each writer took extents of its own: users holds about 19 MiB and
-    // orders about 10 MiB of 8 MiB extents, every finished one sealed.
+    // orders about 10 MiB of 2 MiB extents, every finished one sealed.
     let report = ContainerFile::open_reader(&database)
         .unwrap()
         .report()

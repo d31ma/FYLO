@@ -100,10 +100,64 @@ A directory root stays fully supported. `.vdbx` is opt-in per database.
 | 1 extent  | extent 1, the collection directory                                      |
 | n extents | extents 2 and up: segments, snapshots, dictionaries, maps or free space |
 
-**Extent size** is fixed per file at creation: 8 MiB by default, a power of
-two from 1 MiB to 64 MiB. Every extent begins with a 64-byte extent header:
-magic, kind, owning collection id, **sequence number**, and a CRC-32C. The
-sequence number comes from a counter in the superblock and is never reused.
+**Extent size** is fixed per file at creation: 2 MiB by default (8 MiB
+until 2026-10-29, below), a power of two from 1 MiB to 64 MiB. Every extent
+begins with a 64-byte extent header: magic, kind, owning collection id,
+**sequence number**, and a CRC-32C. The sequence number comes from a counter
+in the superblock and is never reused.
+
+**Default extent size, 2026-10-29: 2 MiB** (no on-disk format change; the
+costs below await the owner's review, and going back is one constant).
+Every kind of data starts its own
+extent (each collection's segments, location, index and schemas snapshots and
+dictionary, plus the superblock region, the directory and two map copies), so
+the extent size sets the floor of a small database. At 8 MiB the 5k fixture
+(two collections of 5,000 documents) packed into 96 MiB against a 47 MiB
+folder on ATLAS, holding about 7 MiB of data, and an empty database took
+24 MiB; on a filesystem without sparse files (FAT, exFAT, NTFS unless the file
+is marked sparse) every byte of that is allocated. New databases, from
+`fylo create`, `NativeRoot::create_database` and `fylo pack`, now take 2 MiB
+extents. The on-disk format is unchanged: 2 MiB has been a valid extent size
+since version 1, every reader opens such a file, and existing files keep the
+size they were created with. Measured on ext4 (apparent size, which is what
+FAT or exFAT would allocate, and allocated size; the folder roots are 241 KiB
+apparent and 1.2 MiB allocated at 100, 11.7 MiB and 42.1 MiB at 5k):
+
+| Apparent / allocated                 | 8 MiB extents    | 2 MiB extents    | 1 MiB extents    |
+| ------------------------------------ | ---------------- | ---------------- | ---------------- |
+| empty (`fylo create`)                | 24 MiB / 16 KiB  | 6 MiB / 16 KiB   | 3 MiB / 16 KiB   |
+| 2 × 100 documents, put into the file | 48 MiB / 184 KiB | 12 MiB / 184 KiB | 6 MiB / 184 KiB  |
+| 2 × 100 documents, packed            | 80 MiB / 272 KiB | 20 MiB / 272 KiB | 10 MiB / 272 KiB |
+| 5k fixture, packed                   | 96 MiB / 7.2 MiB | 28 MiB / 7.3 MiB | 18 MiB / 7.3 MiB |
+
+What a smaller extent costs, for the owner to weigh: a record must fit in one
+extent's payload, so the largest stored (compressed, possibly encrypted)
+document a new database accepts falls from about 8 MiB to about 2 MiB, and a
+larger one fails with `ENATIVE_FILE_SIZE` (the machine protocol's default
+request limit, 1 MiB, is lower still); a directory extent holds 511
+collection blocks instead of 2,047, and since chaining to a further directory
+extent is not built yet and a dropped collection keeps its block, a new
+database refuses its 512th collection ever created with `EVDBX_FULL`; and
+each rotation rewrites the whole map, which is four times larger and comes
+four times as often per byte written, so the map bytes per rotated byte grow
+sixteenfold, to `file size / 128 GiB`: 0.8% at 1 GiB, 8% at 10 GiB, 78% at
+100 GiB (`docs/vdbx-segment-backend.md`; seal records are to replace that
+rewrite for files that large). 1 MiB would
+halve the small sizes again at half the record size and four times that map
+cost, so 2 MiB is the default proposed.
+
+Other fixes were measured against the same files and not taken. Ending the
+file at the last written byte of its last extent saves at most one extent,
+since every extent but the last is interior: 96 to 88 MiB at 5k, and readers
+of a file shorter than its map describes would have to treat the missing tail
+as zeros, which older readers do not. Smaller extents for the first extents
+of each kind, or one extent shared by several small snapshot runs, would
+remove more per collection, but both change the format: the first breaks the
+uniform payload capacity that segments, snapshot runs, the map, sealing and
+`fylo verify` all assume, and the second needs an offset in each snapshot
+reference and a map that tracks space inside an extent. Sharing snapshot runs
+would bring the 5k fixture to about 56 MiB at 8 MiB extents, less than the
+default change gives without a format change.
 
 **Superblock.** Magic, format version and feature flags (including which
 codecs appear), extent size, extent count, superblock generation, the next
@@ -120,14 +174,16 @@ schemas snapshots and dictionary) and two **generation slots** (ADR 0015 section
 moved in from `state.slots`, naming the active segment extent and its
 committed length). Each slot pair is written A/B with its own CRC, so an
 in-place slot write never touches the static part. One block per collection keeps two collections from
-ever writing the same sector. An 8 MiB directory holds 2,047 collections (its first 4 KiB is the extent header) and
-chains to a further directory extent past that.
+ever writing the same sector. A 2 MiB directory holds 511 collections, and an
+8 MiB one 2,047 (its first 4 KiB is the extent header); past that it is to
+chain to a further directory extent.
 
 **Extent map.** 32 bytes per extent: state (free, owned, sealed), kind, owner,
 sequence number and live bytes. A 1 TiB file at 8 MiB extents has a 4 MiB
-map. The map is written copy-on-write into free extents at each checkpoint,
-and the superblock names the current one. Between checkpoints it is rebuilt
-from the records that change it (section 6).
+map, and at 2 MiB extents a 16 MiB one. The map is written copy-on-write
+into free extents at each checkpoint, and the superblock names the current
+one. Between checkpoints it is rebuilt from the records that change it
+(section 6).
 
 **Extent kinds:**
 
