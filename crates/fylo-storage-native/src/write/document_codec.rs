@@ -55,6 +55,18 @@ pub trait DocumentCodec {
         collection: &str,
         fields: Map<String, Value>,
     ) -> Result<Vec<u8>, NativeStorageError>;
+
+    /// Whether `decode` can change what a query over `collection` sees in a
+    /// stored body, so that a SQL `UPDATE` or `DELETE` must match its `WHERE`
+    /// against decoded bodies, as a read would (ADR 0017 section 5): a
+    /// declared encrypted field, or documents below the head schema version.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the collection's schema cannot be read.
+    fn decodes_for_query(&self, _collection: &str) -> Result<bool, NativeStorageError> {
+        Ok(false)
+    }
 }
 
 /// The codec for a writer with no schema or encryption: bodies pass through
@@ -190,6 +202,10 @@ impl DocumentCodec for DocumentPolicy<'_> {
         fields: &Map<String, Value>,
     ) -> Result<Option<String>, NativeStorageError> {
         self.codec.validate(collection, fields)
+    }
+
+    fn decodes_for_query(&self, collection: &str) -> Result<bool, NativeStorageError> {
+        self.codec.decodes_for_query(collection)
     }
 
     fn encode(

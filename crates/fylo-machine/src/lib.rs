@@ -2602,7 +2602,9 @@ impl Session {
         let query = StructuredQuery::from_value(&json!({}), QueryLimits::default())
             .map_err(|error| MachineError::new("EQUERY_INVALID", error.to_string()))?;
         let actor = actor(request)?;
-        let reader = self.engine(request)?;
+        // Reads return the head shape (ADR 0017 section 5), so the documents
+        // still to rewrite are found as they are stored.
+        let reader = self.engine(request)?.as_stored();
         let rows = match actor.as_ref() {
             Some(actor) => reader.find_as(collection, &query, actor),
             None => reader.find(collection, &query),

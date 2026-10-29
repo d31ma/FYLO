@@ -9,12 +9,28 @@ use crate::{EngineError, EngineErrorCode};
 
 pub(super) struct EqualityOperation {
     fields: Vec<Vec<String>>,
+    /// The top-level field of every path the index is asked about.
+    names: Vec<String>,
 }
 
 impl EqualityOperation {
     pub(super) fn new(operation: &Map<String, Value>, encrypted: &[String]) -> Option<Self> {
         let fields = Self::fields(operation, encrypted);
-        Self::nonempty(fields)
+        let names = operation
+            .keys()
+            .filter_map(|field| {
+                Self::normalize_path(field)
+                    .split('/')
+                    .next()
+                    .map(str::to_owned)
+            })
+            .collect();
+        Self::nonempty(fields).map(|operation| Self { names, ..operation })
+    }
+
+    /// The top-level fields this operation reads from the index.
+    pub(super) fn names(&self) -> impl Iterator<Item = &str> {
+        self.names.iter().map(String::as_str)
     }
 
     pub(super) fn scan(&self, snapshot: &IndexSnapshot) -> Result<BTreeSet<String>, EngineError> {
@@ -56,7 +72,10 @@ impl EqualityOperation {
         if fields.is_empty() {
             return None;
         }
-        Some(Self { fields })
+        Some(Self {
+            fields,
+            names: Vec::new(),
+        })
     }
 
     fn intersect_fields(

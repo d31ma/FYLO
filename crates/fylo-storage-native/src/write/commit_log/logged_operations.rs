@@ -204,12 +204,12 @@ impl NativeWriteRoot {
     ) -> Result<SqlMutationResult, NativeStorageError> {
         self.commit_logged(collection, || {
             policy.restart();
-            let documents = matching_documents(collection, query, actor)?;
+            let documents = matching_documents(collection, query, actor, policy)?;
             let mut plan = CommitPlan::new("update-many");
             let mut identifiers = Vec::with_capacity(documents.len());
-            for document in documents {
+            for mut document in documents {
                 let stored = collection.read_document(&document.identifier)?;
-                let mut fields = policy.decode(&collection.name, document.fields)?;
+                let mut fields = document.decoded_fields(&collection.name, policy)?;
                 merge_top_level(&mut fields, changes);
                 let canonical = policy.encode(&collection.name, fields)?;
                 plan.index_delta(
@@ -235,9 +235,10 @@ impl NativeWriteRoot {
         collection: &NativeCollection,
         query: &StructuredQuery,
         actor: Option<&WriteActor>,
+        codec: &dyn DocumentCodec,
     ) -> Result<SqlMutationResult, NativeStorageError> {
         self.commit_logged(collection, || {
-            let documents = matching_documents(collection, query, actor)?;
+            let documents = matching_documents(collection, query, actor, codec)?;
             let mut plan = CommitPlan::new("delete-many");
             let mut identifiers = Vec::with_capacity(documents.len());
             for document in documents {

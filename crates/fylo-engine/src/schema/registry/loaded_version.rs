@@ -143,6 +143,14 @@ impl LoadedVersion {
         }
     }
 
+    /// The top-level fields this version's migration may write or remove.
+    pub(crate) fn migrated_fields(&self) -> Vec<String> {
+        self.migration
+            .as_ref()
+            .map(|migration| migration.written_fields().collect())
+            .unwrap_or_default()
+    }
+
     /// Validation errors name the version as `<collection>@<label>`.
     #[cfg(not(target_arch = "wasm32"))]
     fn error_label(collection: &str, label: &str) -> String {

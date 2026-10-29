@@ -13,6 +13,7 @@ use super::super::{
 use super::abort_manifest::AbortManifest;
 use super::checkpoint_manifest::CheckpointManifest;
 use super::commit_plan::CommitPlan;
+use super::super::schema_counts::SchemaCountDelta;
 use super::commit_queue::{BusyPeriod, CommitQueue, QueueState, SchemaFence};
 use super::log_checkpoint::LogCheckpoint;
 use super::log_segment::LogSegment;
@@ -95,7 +96,11 @@ impl NativeWriteRoot {
             Ok(()) => self.apply_or_abort(collection, &queue, lsn, &plan),
             Err(error) => Err(error),
         };
-        let finished = Self::finish_member(collection, &queue, &plan);
+        // The plan's files are this member's until it finishes, so what it
+        // applied is still there to read.
+        let delta = (outcome.is_ok() && collection.tracks_schema_versions())
+            .then(|| plan.schema_count_delta(collection));
+        let finished = Self::finish_member(collection, &queue, &plan, delta);
         outcome.and(finished).map(|()| value)
     }
 
@@ -174,6 +179,8 @@ impl NativeWriteRoot {
             failure: None,
             stranded: false,
             fence: SchemaFence::new(collection.generation_fenced(&stored)),
+            schema_counts: Self::schema_counts_before_commit(collection, stored.generation),
+            schema_delta: super::super::schema_counts::SchemaCountDelta::default(),
         })
     }
 
@@ -419,12 +426,18 @@ impl NativeWriteRoot {
         collection: &NativeCollection,
         queue: &Arc<CommitQueue>,
         plan: &CommitPlan,
+        delta: Option<Result<SchemaCountDelta, NativeStorageError>>,
     ) -> Result<(), NativeStorageError> {
         let mut state = queue.lock();
         let busy = state
             .busy
             .as_mut()
             .expect("member keeps the busy period open");
+        match delta {
+            Some(Ok(delta)) => busy.schema_delta.merge(&delta),
+            Some(Err(_)) => busy.schema_counts = None,
+            None => {}
+        }
         for path in plan.touched() {
             busy.pending.remove(path);
         }
@@ -456,9 +469,19 @@ impl NativeWriteRoot {
     /// The busy period is consumed first, so its segment handle is closed
     /// before a checkpoint removes the log: Windows cannot remove a directory
     /// that holds an open file.
-    fn end_busy(collection: &NativeCollection, busy: BusyPeriod) -> Result<(), NativeStorageError> {
+    fn end_busy(
+        collection: &NativeCollection,
+        mut busy: BusyPeriod,
+    ) -> Result<(), NativeStorageError> {
         let published = Self::publish_end(collection, &busy)?;
         let generation = busy.generation + 2;
+        // Still under the collection lock, which `busy` holds.
+        if busy.published_writing
+            && !busy.stranded
+            && let Some(counts) = busy.schema_counts.take()
+        {
+            Self::schema_counts_after_commit(collection, counts, &busy.schema_delta, generation);
+        }
         drop(busy);
         let Some(position) = published else {
             return Ok(());

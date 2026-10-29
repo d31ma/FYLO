@@ -40,6 +40,15 @@ impl SchemaMigration {
         Ok(Self { steps })
     }
 
+    /// The top-level fields these steps may write or remove.
+    pub(super) fn written_fields(&self) -> impl Iterator<Item = String> + '_ {
+        self.steps.iter().flat_map(|step| {
+            std::iter::once(step.written_field())
+                .chain(step.vacated_field())
+                .map(str::to_owned)
+        })
+    }
+
     pub(super) fn apply(&self, document: &mut Map<String, Value>) -> Result<(), String> {
         self.steps.iter().enumerate().try_for_each(|(index, step)| {
             step.apply(document)

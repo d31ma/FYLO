@@ -8,12 +8,13 @@ mod encryption;
 mod equality_operation;
 mod equality_plan;
 mod hot_set;
+mod lazy_migration;
 mod schema;
 mod schema_admin;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use encryption::{EncryptionReader, is_encrypted_field, reject_undeclared_ciphertext};
@@ -33,7 +34,8 @@ use fylo_storage_native::{
 };
 use hot_set::HotReader;
 pub use hot_set::{HotSet, HotSetStatistics};
-use schema::{SchemaRegistry, SchemaTools};
+use lazy_migration::{ChainCache, CountCache};
+use schema::{SchemaRegistry, SchemaTools, VersionChain};
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 
@@ -48,6 +50,12 @@ pub struct ReadOnlyEngine {
     encryption: Option<EncryptionReader>,
     hot_set: Option<Arc<HotSet>>,
     registry: SchemaRegistry,
+    /// The `fylo.schema` folder, for collections without a registry.
+    schema_dir: Option<PathBuf>,
+    /// Return documents as stored rather than migrated to the head.
+    stored_shape: bool,
+    chains: ChainCache,
+    counts: CountCache,
 }
 
 /// Native FYLO write engine.
@@ -379,16 +387,51 @@ impl WriteEngine {
         if self.registry_head(collection)?.is_none() {
             self.schema_tools()?;
         }
-        let codec = MigratingDocumentCodec(EngineDocumentCodec::new(self));
-        let actor = actor.map(write_actor);
-        let outcome = self.writer.patch_document_fields_with(
-            collection,
-            identifier,
-            &Map::new(),
-            actor.as_ref(),
-            &codec,
-        );
-        codec.0.finish(outcome)
+        // Every pre-image is migrated to the head as it is decoded, so an
+        // empty patch is the migration.
+        self.patch_document_fields(collection, identifier, &Map::new(), actor)
+    }
+
+    /// `collection`'s version chain as this engine sees it now: a write
+    /// engine reads the head on every write.
+    fn version_chain(&self, collection: &str) -> Result<Option<VersionChain>, EngineError> {
+        VersionChain::load(&self.registry, self.schema_folder(), collection)
+            .map_err(EngineError::schema)
+    }
+
+    /// A stored document as a mutation sees it: decrypted, and migrated to
+    /// the head when it is below it (ADR 0017 section 1, step 1), exactly
+    /// as a read returns it.
+    fn decode_fields_at_head(
+        &self,
+        chain: Option<&VersionChain>,
+        collection: &str,
+        fields: Map<String, Value>,
+    ) -> Result<Map<String, Value>, EngineError> {
+        match chain {
+            Some(chain) if !chain.is_at_head(&fields) => {
+                let version = chain.written_at(&fields).to_owned();
+                let decoded = self.decode_fields_at(collection, fields, &version)?;
+                chain
+                    .migrate(collection, &decoded)
+                    .map_err(EngineError::schema)
+            }
+            _ => self.decode_fields(collection, fields),
+        }
+    }
+
+    fn decode_fields_at(
+        &self,
+        collection: &str,
+        fields: Map<String, Value>,
+        version: &str,
+    ) -> Result<Map<String, Value>, EngineError> {
+        match self.encryption.as_ref() {
+            Some(encryption) => encryption
+                .decode_document_at(collection, fields, Some(version))
+                .map_err(EngineError::encryption),
+            None => self.decode_fields(collection, fields),
+        }
     }
 
     /// [`Self::decode_fields`] for a document about to be migrated, which
@@ -473,6 +516,7 @@ impl WriteEngine {
             .collection(collection)
             .map_err(EngineError::storage)?;
         let identifiers = handle.document_ids().map_err(EngineError::storage)?;
+        let chain = self.version_chain(collection)?;
         let mut failures = Vec::new();
         let mut failed = 0_usize;
         for identifier in &identifiers {
@@ -488,7 +532,9 @@ impl WriteEngine {
                     format!("stored document {identifier} is not a JSON object"),
                 ));
             };
-            let fields = self.decode_fields(collection, fields)?;
+            // Checked as a read returns it: an old document that migrates to
+            // a valid head document passes.
+            let fields = self.decode_fields_at_head(chain.as_ref(), collection, fields)?;
             if let Some(reason) = self.violation(collection, &fields) {
                 failed += 1;
                 if failures.len() < limit {
@@ -515,12 +561,14 @@ impl WriteEngine {
     /// Returns an error when no schema root is configured or the manifest is
     /// corrupt.
     pub fn schema_inspect(&self, collection: &str) -> Result<Value, EngineError> {
-        if self.registry_head(collection)?.is_some() {
-            return self.registry_inspection(collection);
-        }
-        self.schema_tools()?
-            .inspect(collection)
-            .map_err(EngineError::schema)
+        let report = if self.registry_head(collection)?.is_some() {
+            self.registry_inspection(collection)?
+        } else {
+            self.schema_tools()?
+                .inspect(collection)
+                .map_err(EngineError::schema)?
+        };
+        self.with_convergence(collection, report)
     }
 
     /// `schemaDoctor` for one collection.
@@ -676,6 +724,9 @@ impl WriteEngine {
 struct EngineDocumentCodec<'a> {
     engine: &'a WriteEngine,
     failure: std::cell::RefCell<Option<EngineError>>,
+    /// Version chains read for this mutation, which holds its collection
+    /// against other writers while it decodes.
+    chains: std::cell::RefCell<BTreeMap<String, Option<Arc<VersionChain>>>>,
 }
 
 impl<'a> EngineDocumentCodec<'a> {
@@ -683,7 +734,19 @@ impl<'a> EngineDocumentCodec<'a> {
         Self {
             engine,
             failure: std::cell::RefCell::new(None),
+            chains: std::cell::RefCell::new(BTreeMap::new()),
         }
+    }
+
+    fn chain(&self, collection: &str) -> Result<Option<Arc<VersionChain>>, EngineError> {
+        if let Some(chain) = self.chains.borrow().get(collection) {
+            return Ok(chain.clone());
+        }
+        let chain = self.engine.version_chain(collection)?.map(Arc::new);
+        self.chains
+            .borrow_mut()
+            .insert(collection.to_owned(), chain.clone());
+        Ok(chain)
     }
 
     fn fail(&self, error: EngineError) -> NativeStorageError {
@@ -701,49 +764,34 @@ impl<'a> EngineDocumentCodec<'a> {
     }
 }
 
-/// [`EngineDocumentCodec`] with the stored document migrated to the head
-/// schema version after it is decoded.
-struct MigratingDocumentCodec<'a>(EngineDocumentCodec<'a>);
-
-impl DocumentCodec for MigratingDocumentCodec<'_> {
-    fn decode(
-        &self,
-        collection: &str,
-        fields: Map<String, Value>,
-    ) -> Result<Map<String, Value>, NativeStorageError> {
-        let engine = self.0.engine;
-        engine
-            .decode_fields_as_written(collection, fields)
-            .and_then(|fields| engine.schema_materialize(collection, &fields))
-            .map_err(|error| self.0.fail(error))
-    }
-
-    fn validate(
-        &self,
-        collection: &str,
-        fields: &Map<String, Value>,
-    ) -> Result<Option<String>, NativeStorageError> {
-        self.0.validate(collection, fields)
-    }
-
-    fn encode(
-        &self,
-        collection: &str,
-        fields: Map<String, Value>,
-    ) -> Result<Vec<u8>, NativeStorageError> {
-        self.0.encode(collection, fields)
-    }
-}
-
 impl DocumentCodec for EngineDocumentCodec<'_> {
     fn decode(
         &self,
         collection: &str,
         fields: Map<String, Value>,
     ) -> Result<Map<String, Value>, NativeStorageError> {
-        self.engine
-            .decode_fields(collection, fields)
+        self.chain(collection)
+            .and_then(|chain| {
+                self.engine
+                    .decode_fields_at_head(chain.as_deref(), collection, fields)
+            })
             .map_err(|error| self.fail(error))
+    }
+
+    fn decodes_for_query(&self, collection: &str) -> Result<bool, NativeStorageError> {
+        let outcome = self.chain(collection).and_then(|chain| {
+            if chain.is_some() {
+                return Ok(true);
+            }
+            Ok(match self.engine.encryption.as_ref() {
+                Some(encryption) => !encryption
+                    .encrypted_fields(collection)
+                    .map_err(EngineError::encryption)?
+                    .is_empty(),
+                None => false,
+            })
+        });
+        outcome.map_err(|error| self.fail(error))
     }
 
     fn validate(
@@ -811,10 +859,23 @@ impl ReadOnlyEngine {
         credentials: Option<(&str, &str)>,
     ) -> Result<Self, EngineError> {
         self.encryption = Some(
-            EncryptionReader::open(schema_root, credentials, self.registry.clone())
+            EncryptionReader::open(&schema_root, credentials, self.registry.clone())
                 .map_err(EngineError::encryption)?,
         );
+        self.schema_dir = Some(schema_root.as_ref().to_path_buf());
+        self.chains = ChainCache::default();
         Ok(self)
+    }
+
+    /// Return documents exactly as they are stored, below the head version
+    /// included, instead of migrated to the head (ADR 0017 section 5). Eager
+    /// migration reads this way to find the documents it has to rewrite. The
+    /// hot set holds migrated documents, so this engine does without it.
+    #[must_use]
+    pub fn as_stored(mut self) -> Self {
+        self.stored_shape = true;
+        self.hot_set = None;
+        self
     }
 
     /// Attach decryption keys without a `fylo.schema` folder, for collections
@@ -873,6 +934,10 @@ impl ReadOnlyEngine {
             encryption: Some(EncryptionReader::unconfigured(registry.clone())),
             hot_set: None,
             registry,
+            schema_dir: None,
+            stored_shape: false,
+            chains: ChainCache::default(),
+            counts: CountCache::default(),
         })
     }
 
@@ -1342,12 +1407,15 @@ impl ReadOnlyEngine {
                         let stored = collection
                             .read_document(&identifier)
                             .map_err(EngineError::storage)?;
-                        self.decode_document(
+                        // The index is built from documents as stored, so it
+                        // is checked against them, not their head shape.
+                        self.decrypt_fields(
                             collection.name(),
                             Document::parse(&stored.bytes, DocumentLimits::default())
-                                .map_err(EngineError::format)?,
+                                .map_err(EngineError::format)?
+                                .into_fields(),
+                            None,
                         )?
-                        .into_fields()
                     }
                     CollectionKind::File => {
                         let stored = collection
@@ -1436,6 +1504,13 @@ impl ReadOnlyEngine {
         let Some(plan) = equality_plan::EqualityPlan::new(query, &encrypted_fields) else {
             return Ok(None);
         };
+        // An index built from documents below the head can be wrong for the
+        // fields their migrations write; such a query reads every document.
+        if let Some(guard) = self.migration_guard(collection)?
+            && !guard.allows(&plan)
+        {
+            return Ok(None);
+        }
         let snapshot = collection
             .shared_index_snapshot()
             .map_err(EngineError::storage)?;
@@ -1940,20 +2015,15 @@ impl ReadOnlyEngine {
         }
     }
 
+    /// The one point every document read passes: decrypt the stored body
+    /// and, for a document below its collection's head version, migrate it
+    /// to the head in memory (ADR 0017 section 5).
     fn decode_document(
         &self,
         collection: &str,
         document: Document,
     ) -> Result<Document, EngineError> {
-        let fields = document.into_fields();
-        let fields = if let Some(encryption) = &self.encryption {
-            encryption
-                .decode_document(collection, fields)
-                .map_err(EngineError::encryption)?
-        } else {
-            reject_undeclared_ciphertext(collection, &fields).map_err(EngineError::encryption)?;
-            fields
-        };
+        let fields = self.present_fields(collection, document.into_fields())?;
         Document::try_from_value(Value::Object(fields), DocumentLimits::default())
             .map_err(EngineError::format)
     }
