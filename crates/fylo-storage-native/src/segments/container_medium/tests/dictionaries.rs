@@ -80,7 +80,7 @@ fn pick(number: usize, salt: usize, below: usize) -> usize {
 
 /// An order: distinct values in the shape every order shares, the kind of
 /// document a dictionary is for.
-fn order(number: usize) -> Value {
+pub(super) fn order(number: usize) -> Value {
     let lines: serde_json::Map<String, Value> = (0..=pick(number, 1, 4))
         .map(|line| {
             let (sku, title) = PRODUCTS[pick(number, 10 + line, PRODUCTS.len())];

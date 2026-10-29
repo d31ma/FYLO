@@ -17,6 +17,7 @@ use crate::{
     NativeStorageErrorCode, NativeWriteRoot, PutDocumentOptions, RootConfig,
 };
 
+mod database_compaction;
 mod dictionaries;
 mod encryption;
 mod processes;

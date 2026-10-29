@@ -53,8 +53,8 @@ use spelling_cache::SpellingCache;
 
 #[cfg(not(target_family = "wasm"))]
 pub use byte_range_lock::{
-    ByteLockGuard, ByteRangeLockFile, COLLECTION_WRITER_START, FilesystemInfo, LOCK_RANGE_START,
-    LockByte, LockMode, MAX_POLL_INTERVAL,
+    ByteLockGuard, ByteRangeLockFile, COLLECTION_COMPACTOR_START, COLLECTION_WRITER_START,
+    FilesystemInfo, LOCK_RANGE_START, LockByte, LockMode, MAX_POLL_INTERVAL,
 };
 pub use collection_layout::CollectionLayout;
 #[cfg(not(target_family = "wasm"))]
@@ -98,8 +98,8 @@ pub use write::schema_counts::SchemaVersionCounts;
 pub use write::schema_registry::{MAX_SCHEMA_VERSION_BYTES, utc_timestamp};
 pub use write::version::RepositoryStatus;
 pub use write::{
-    CompactionReport, DatabasePackReport, LayoutMigrationReport, PackedCollection, SalvageReport,
-    SegmentVerification,
+    CompactionReport, DatabaseCompactionReport, DatabasePackReport, DatabaseSalvageReport,
+    LayoutMigrationReport, PackedCollection, SalvageReport, SegmentVerification,
 };
 pub use write::{
     DocumentCodec, NativeWriteRoot, PlainDocumentCodec, PutDocumentOptions, PutRawFileOptions,

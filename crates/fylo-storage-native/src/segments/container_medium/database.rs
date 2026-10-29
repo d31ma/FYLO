@@ -5,6 +5,7 @@
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 
 use super::dictionaries::FileDictionaries;
@@ -52,6 +53,7 @@ impl ContainerMedium {
             ),
             state: Mutex::new(MediumState::default()),
             claim: Mutex::new(None),
+            writes: AtomicUsize::new(0),
         });
         media.insert(key, Arc::downgrade(&shared));
         Self { shared }

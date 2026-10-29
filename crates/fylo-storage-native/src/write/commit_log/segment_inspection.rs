@@ -20,6 +20,10 @@ use crate::{NativeCollection, NativeRoot, NativeStorageError, NativeStorageError
 /// location table: `fylo verify` and `fylo salvage` (ADR 0015 section 8).
 pub(crate) struct SegmentInspection;
 
+/// Salvaged schema versions by ordinal: the sequence number of the record
+/// that held each, and its bytes.
+pub(crate) type SalvagedSchemas = BTreeMap<u32, (u64, Vec<u8>)>;
+
 impl SegmentInspection {
     pub(crate) fn verify(
         collection: &NativeCollection,
@@ -84,11 +88,35 @@ impl SegmentInspection {
         collection: &NativeCollection,
         out: &Path,
     ) -> Result<SalvageReport, NativeStorageError> {
+        let (mut report, images, versions) = Self::salvage_documents(collection)?;
+        fylo_vfs::create_dir_all(out).map_err(NativeStorageError::io)?;
+        let root = NativeRoot::open(out)?;
+        FileExport::build(&root, &root.canonical, &images, collection.shard_width())?;
+        report.schema_versions = Self::write_schemas(out, &versions)?;
+        Ok(report)
+    }
+
+    /// Every readable document of a damaged segment collection, as the
+    /// newest version a salvaged record holds, and every readable schema
+    /// version by ordinal, with what was damaged and lost; nothing is
+    /// written. A segment that cannot be read at all, as one whose extent
+    /// header in a `.fxdb` file no longer names it, is reported damaged
+    /// whole and stepped over.
+    pub(crate) fn salvage_documents(
+        collection: &NativeCollection,
+    ) -> Result<(SalvageReport, Vec<DocumentImage>, SalvagedSchemas), NativeStorageError> {
         let medium = collection.segment_medium()?;
         let mut report = SalvageReport::default();
         let mut salvaged = Vec::new();
         for number in medium.segment_numbers()? {
-            let bytes = medium.require_segment(number)?;
+            let bytes = match medium.require_segment(number) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    let end = medium.max_segment_bytes();
+                    report.damaged.push(format!("{number}:0-{end} ({error})"));
+                    continue;
+                }
+            };
             match LogSalvage::segment_with(&bytes, &*medium.frame_bodies()) {
                 Ok(salvage) => {
                     for (start, end) in &salvage.damaged {
@@ -110,11 +138,7 @@ impl SegmentInspection {
             .map(|(_, document)| DocumentImage::from_segment(document))
             .collect::<Result<Vec<_>, _>>()?;
         report.recovered = images.len();
-        fylo_vfs::create_dir_all(out).map_err(NativeStorageError::io)?;
-        let root = NativeRoot::open(out)?;
-        FileExport::build(&root, &root.canonical, &images, collection.shard_width())?;
-        report.schema_versions = Self::write_schemas(out, &versions)?;
-        Ok(report)
+        Ok((report, images, versions))
     }
 
     fn verify_segment(
@@ -358,7 +382,7 @@ impl SegmentInspection {
 
     /// Every readable schema version no readable abort record cancelled, by
     /// ordinal. A version committed twice keeps its newest record.
-    fn salvaged_schemas(salvaged: &[(u64, LogSalvage)]) -> BTreeMap<u32, (u64, Vec<u8>)> {
+    fn salvaged_schemas(salvaged: &[(u64, LogSalvage)]) -> SalvagedSchemas {
         let mut aborted = BTreeSet::new();
         for (_, salvage) in salvaged {
             for (_, record) in &salvage.records {
@@ -394,7 +418,7 @@ impl SegmentInspection {
     /// Write salvaged schema versions as the directory registry's files.
     fn write_schemas(
         out: &Path,
-        versions: &BTreeMap<u32, (u64, Vec<u8>)>,
+        versions: &SalvagedSchemas,
     ) -> Result<Vec<u32>, NativeStorageError> {
         if versions.is_empty() {
             return Ok(Vec::new());

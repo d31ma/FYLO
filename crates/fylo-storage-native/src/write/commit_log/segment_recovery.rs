@@ -73,7 +73,11 @@ impl SegmentRecovery {
         }
         Self::settle_schema_head(writer, collection, &*medium)?;
         TableCache::shared().forget(&*medium);
-        Self::remove_unreferenced(&*medium, number)?;
+        // A copy another compaction is writing is unreferenced until it is
+        // adopted; that compaction removes what is left over instead.
+        if !medium.compaction_running()? {
+            Self::remove_unreferenced(&*medium, number)?;
+        }
         SegmentCheckpoint::run(collection, segment, generation)?;
         Ok(())
     }

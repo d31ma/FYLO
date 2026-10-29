@@ -508,6 +508,28 @@ impl NativeWriteRoot {
     ) -> Result<PackedCollection, NativeStorageError> {
         let images = DocumentImage::read_collection(source)?;
         let versions = self.registry_versions(source)?;
+        let directory = Self::write_unpacked(unpacked, source, &images, &versions)?;
+        let copies = images
+            .iter()
+            .map(|image| {
+                let path = directory.join(FileExport::relative_path(image, source.shard_width()));
+                DocumentImage::read_file(&path, (&image.id, image.state))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        DocumentImage::require_same(&images, &copies)?;
+        Ok(PackedCollection::of(source.name(), &images, versions.len()))
+    }
+
+    /// Write `images` and the schema `versions` of collection `source` of a
+    /// database as a file layout collection of `unpacked`: its catalog
+    /// descriptor, the tree `fylo export` writes, and the registry, in a
+    /// registry commit's order. Returns the collection's directory.
+    pub(super) fn write_unpacked(
+        unpacked: &Self,
+        source: &NativeCollection,
+        images: &[DocumentImage],
+        versions: &[Vec<u8>],
+    ) -> Result<PathBuf, NativeStorageError> {
         let name = source.name();
         let mut descriptor: Map<String, Value> = Self::default_descriptor(source);
         if let Some(mode) = source.validation() {
@@ -521,24 +543,16 @@ impl NativeWriteRoot {
         }
         durable_replace(&descriptor_path, &encoded)?;
         let directory = unpacked.root.path().join(".collections").join(name);
-        FileExport::build(&unpacked.root, &directory, &images, source.shard_width())?;
+        FileExport::build(&unpacked.root, &directory, images, source.shard_width())?;
         let collection = unpacked.root.collection(name)?;
-        if let Some(head) = Self::registry_head(&versions)? {
+        if let Some(head) = Self::registry_head(versions)? {
             // A registry commit's order (ADR 0017 section 3): the version
             // files, the generation fence, then the descriptor's head.
-            unpacked.write_registry_files(&collection, &versions)?;
+            unpacked.write_registry_files(&collection, versions)?;
             unpacked.fence_generation(&collection)?;
             unpacked.write_schema_head(&collection, head)?;
         }
-        let copies = images
-            .iter()
-            .map(|image| {
-                let path = directory.join(FileExport::relative_path(image, source.shard_width()));
-                DocumentImage::read_file(&path, (&image.id, image.state))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        DocumentImage::require_same(&images, &copies)?;
-        Ok(PackedCollection::of(name, &images, versions.len()))
+        Ok(directory)
     }
 
     /// The ordinal of the newest of `versions`, or `None` for none.
@@ -555,7 +569,7 @@ impl NativeWriteRoot {
     }
 
     /// Remove everything in `out`.
-    fn clear_output(out: &Path) -> Result<(), NativeStorageError> {
+    pub(super) fn clear_output(out: &Path) -> Result<(), NativeStorageError> {
         for entry in fylo_vfs::read_dir(out).map_err(NativeStorageError::io)? {
             let entry = entry.map_err(NativeStorageError::io)?;
             if entry.file_type().map_err(NativeStorageError::io)?.is_dir() {

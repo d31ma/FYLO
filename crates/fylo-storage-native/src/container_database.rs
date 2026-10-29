@@ -11,7 +11,9 @@
 //!
 //! A reader takes no lock. A writer opens the file to write on its first
 //! write, as every container medium does, and claims each collection it
-//! writes; the collection's write lock is that claim.
+//! writes; the collection's write lock is that claim. A compaction of a
+//! collection holds its compactor byte, so it can copy without the claim,
+//! and a shrink holds the file as its only writer process.
 //!
 //! An encrypted database (ADR 0016 section 9) is opened with the key a
 //! root was given, which unlocks the process's open of the file. A handle
@@ -24,6 +26,7 @@ use std::sync::Arc;
 
 use fylo_format::ContainerSuperblock;
 
+use crate::container_allocator::ContainerTailExtent;
 use crate::segments::{ContainerMedium, ContainerOpen, TableCache};
 use crate::{
     ContainerCipher, ContainerCollection, ContainerError, ContainerFile, DatabaseKey,
@@ -40,10 +43,28 @@ pub(crate) struct ContainerDatabase {
 }
 
 /// This process's claim on one collection, held while it is written: the
-/// collection's medium, which keeps the claim while it is open.
+/// collection's medium, with a write begun on it. Where writers share the
+/// file, the claim lets the collection's writer byte go when the last
+/// write in the process ends ([`ContainerMedium::end_write`]).
 #[derive(Debug)]
 pub(crate) struct ContainerWriterLock {
-    _medium: ContainerMedium,
+    medium: ContainerMedium,
+}
+
+impl Drop for ContainerWriterLock {
+    fn drop(&mut self) {
+        self.medium.end_write();
+    }
+}
+
+/// One compaction's hold on a collection, from its preparation to its
+/// adoption: the collection's compactor byte, in place of a directory
+/// collection's `locks/compaction.lock`. The copy runs under it alone, so
+/// writers of the collection carry on meanwhile.
+#[derive(Debug)]
+pub(crate) struct ContainerCompactorLock {
+    #[cfg(not(target_family = "wasm"))]
+    _byte: crate::ByteLockGuard,
 }
 
 impl ContainerDatabase {
@@ -173,8 +194,77 @@ impl ContainerDatabase {
     ) -> Result<ContainerWriterLock, NativeStorageError> {
         self.require_key()?;
         let medium = self.medium(block)?;
-        medium.claim()?;
-        Ok(ContainerWriterLock { _medium: medium })
+        medium.begin_write()?;
+        Ok(ContainerWriterLock { medium })
+    }
+
+    /// Take the compactor byte of the collection in `block`, waiting up to
+    /// the busy timeout for a compaction in another process or thread.
+    pub(crate) fn lock_compactor(
+        &self,
+        block: u32,
+    ) -> Result<ContainerCompactorLock, NativeStorageError> {
+        self.require_key()?;
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let byte = self
+                .file
+                .lock_byte(crate::LockByte::collection_compactor(block))?;
+            Ok(ContainerCompactorLock { _byte: byte })
+        }
+        #[cfg(target_family = "wasm")]
+        {
+            let _ = block;
+            Ok(ContainerCompactorLock {})
+        }
+    }
+
+    /// Run `run` as the only process writing the file
+    /// ([`ContainerOpen::exclusively`]).
+    pub(crate) fn exclusively<T>(
+        &self,
+        run: impl FnOnce() -> Result<T, NativeStorageError>,
+    ) -> Result<T, NativeStorageError> {
+        self.require_key()?;
+        self.file.exclusively(run)
+    }
+
+    /// The last extent in use with a free one before it, as the map on
+    /// disk shows it: what a shrink moves next.
+    pub(crate) fn movable_tail(&self) -> Result<Option<ContainerTailExtent>, NativeStorageError> {
+        let mut open = self.file.writable()?;
+        open.refresh()?;
+        Ok(open.allocator().movable_tail())
+    }
+
+    /// The live collection with id `id`, by name and directory block.
+    pub(crate) fn collection_with_id(&self, id: u32) -> Option<ContainerCollection> {
+        self.find(|collection| collection.header.id == id)
+    }
+
+    /// Checkpoint the map, which writes it into the first free extents.
+    pub(crate) fn checkpoint_map(&self) -> Result<(), NativeStorageError> {
+        self.file.checkpoint_map()
+    }
+
+    /// Cut the free extents at the end of the file off, and return the
+    /// bytes cut.
+    pub(crate) fn cut_free_tail(&self) -> Result<u64, NativeStorageError> {
+        self.file.cut_free_tail()
+    }
+
+    /// Punch holes over the free extents where the filesystem can, and
+    /// return how many it punched.
+    pub(crate) fn punch_free_extents(&self) -> Result<u64, NativeStorageError> {
+        self.file
+            .change_map(|open| open.punch_free_extents().map_err(ContainerMedium::error))
+    }
+
+    /// The file's length.
+    pub(crate) fn file_bytes(&self) -> Result<u64, NativeStorageError> {
+        fylo_vfs::metadata(self.file.path())
+            .map(|metadata| metadata.len())
+            .map_err(NativeStorageError::io)
     }
 
     /// The live collection named `name`, reading the directory again when
@@ -218,8 +308,9 @@ impl ContainerDatabase {
     }
 
     /// Drop the collection named `name`, which this process has claimed,
-    /// give its extents back and checkpoint the map, then forget what this
-    /// process read of it.
+    /// and holds the compactor byte of, so no compaction's copy is given
+    /// back while it is written: give its extents back and checkpoint the
+    /// map, then forget what this process read of it.
     pub(crate) fn drop_collection(&self, name: &str) -> Result<(), NativeStorageError> {
         self.require_key()?;
         let collection = self.collection(name).ok_or_else(|| {

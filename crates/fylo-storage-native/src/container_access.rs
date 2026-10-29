@@ -74,6 +74,47 @@ impl ContainerWriteAccess {
         }
     }
 
+    /// Hold the file as the only writer process, for an operation that
+    /// needs it to itself (`fylo compact --shrink`): a writer sharing the
+    /// file takes its lease byte exclusive, waiting up to `wait` for the
+    /// other writers to let it go; under the lease this process already is
+    /// the only writer. [`Self::share`] undoes it.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Busy` when other writers keep the file past `wait`, with the
+    /// byte held shared again, or the lock failure, after which this process
+    /// holds no lease byte and must stop writing.
+    pub fn hold_exclusively(&mut self, wait: Duration) -> Result<(), ContainerError> {
+        self.lease_mode(LockMode::Exclusive, wait)
+    }
+
+    /// Share the file with other writers again after
+    /// [`Self::hold_exclusively`].
+    ///
+    /// # Errors
+    ///
+    /// Returns `Busy` or the lock failure, after which this process holds no
+    /// lease byte and must stop writing.
+    pub fn share(&mut self, wait: Duration) -> Result<(), ContainerError> {
+        self.lease_mode(LockMode::Shared, wait)
+    }
+
+    fn lease_mode(&mut self, mode: LockMode, wait: Duration) -> Result<(), ContainerError> {
+        match self {
+            Self::SharedLocks { lease_byte } => {
+                lease_byte.change_mode(mode, wait).map_err(|error| {
+                    if error.kind() == std::io::ErrorKind::TimedOut {
+                        ContainerError::Busy
+                    } else {
+                        ContainerError::Io(error)
+                    }
+                })
+            }
+            Self::Lease { .. } => Ok(()),
+        }
+    }
+
     /// Renew the lease, if this process writes under one. Call it at most a
     /// third of the lease's takeover time apart.
     ///

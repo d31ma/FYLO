@@ -17,9 +17,11 @@
 //! A medium reads without a lock. Its first write opens the file to write
 //! and claims the collection: where writers share the file under
 //! byte-range locks, the collection's writer byte is taken and held while
-//! the medium is open, so one process at a time writes a collection, and
-//! under the lease this process is the only writer. Either way the claim
-//! then settles what a writer that stopped left in the collection.
+//! the medium is open, or in a database root for the length of each write
+//! ([`ContainerMedium::begin_write`]), so one process at a time writes a
+//! collection, and under the lease this process is the only writer. Either
+//! way the claim then settles what a writer that stopped left in the
+//! collection.
 //!
 //! Records are a directory collection's frames with their bodies compressed
 //! ([`super::ContainerFrames`]), with the collection's dictionary once it has
@@ -29,6 +31,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use fylo_format::{
@@ -76,6 +79,8 @@ struct Shared {
     state: Mutex<MediumState>,
     /// Set once this medium may write the collection.
     claim: Mutex<Option<Claim>>,
+    /// Writes begun and not yet ended ([`ContainerMedium::begin_write`]).
+    writes: AtomicUsize,
 }
 
 /// This process's right to write one collection.
@@ -86,7 +91,22 @@ struct Claim {
     /// The collection's writer byte, where writers share the file under
     /// byte-range locks.
     #[cfg(not(target_family = "wasm"))]
-    _writer: Option<crate::ByteLockGuard>,
+    writer: Option<crate::ByteLockGuard>,
+}
+
+impl Claim {
+    /// Whether the claim holds the collection's writer byte, which other
+    /// processes wait for.
+    fn holds_writer_byte(&self) -> bool {
+        #[cfg(not(target_family = "wasm"))]
+        {
+            self.writer.is_some()
+        }
+        #[cfg(target_family = "wasm")]
+        {
+            false
+        }
+    }
 }
 
 /// What this process knows about the collection's segments beyond the file.
@@ -103,6 +123,16 @@ struct MediumState {
     /// zstd could not train a dictionary on the collection's records, so
     /// this process stops trying.
     untrainable: bool,
+}
+
+impl MediumState {
+    /// Forget the bytes this process wrote and its slot may not publish,
+    /// once another process may write the collection, but those of its
+    /// compacted copy, which only this process writes.
+    fn forget_written(&mut self) {
+        let pending = self.compaction.map(|(_, number)| number);
+        self.written.retain(|number, _| Some(*number) == pending);
+    }
 }
 
 impl ContainerMedium {
@@ -270,10 +300,39 @@ impl ContainerMedium {
         }
     }
 
-    /// Claim the collection for this process's writes, if this medium has
-    /// not yet ([`Shared::writable`]).
-    pub(crate) fn claim(&self) -> Result<(), NativeStorageError> {
-        self.shared.writable().map(drop)
+    /// Claim the collection for a write, if this medium has not yet
+    /// ([`Shared::writable`]), and keep the claim until the write ends
+    /// ([`Self::end_write`]).
+    pub(crate) fn begin_write(&self) -> Result<(), NativeStorageError> {
+        self.shared.writes.fetch_add(1, Ordering::SeqCst);
+        let claimed = self.shared.writable().map(drop);
+        if claimed.is_err() {
+            self.end_write();
+        }
+        claimed
+    }
+
+    /// End a write begun with [`Self::begin_write`]. When it was the last,
+    /// a claim that holds the collection's writer byte lets it go, so a
+    /// writer in another process is kept waiting only while this one
+    /// writes, not while the medium stays open: a compaction keeps it open
+    /// through its copy, which takes no claim. Under the lease no other
+    /// process writes, and the claim is kept.
+    pub(crate) fn end_write(&self) {
+        if self.shared.writes.fetch_sub(1, Ordering::SeqCst) != 1 {
+            return;
+        }
+        let mut claim = self
+            .shared
+            .claim
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if self.shared.writes.load(Ordering::SeqCst) == 0
+            && claim.as_ref().is_some_and(Claim::holds_writer_byte)
+        {
+            *claim = None;
+            self.shared.state().forget_written();
+        }
     }
 
     /// How the collection's frames store record bodies.
@@ -312,7 +371,7 @@ impl Shared {
             }
             drop(open);
             *claim = None;
-            self.state().written.clear();
+            self.state().forget_written();
             *claim = Some(self.claim()?);
         }
     }
@@ -351,7 +410,7 @@ impl Shared {
         Ok(Claim {
             epoch,
             #[cfg(not(target_family = "wasm"))]
-            _writer: writer,
+            writer,
         })
     }
 
@@ -970,6 +1029,22 @@ impl SegmentMedium for ContainerMedium {
         false
     }
 
+    /// Whether another compaction holds the collection's compactor byte,
+    /// in another process or another thread of this one. Its copy is a
+    /// segment extent of the collection that no location names until it is
+    /// adopted, which a recovery must not take for a leftover.
+    fn compaction_running(&self) -> Result<bool, NativeStorageError> {
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let byte = crate::LockByte::collection_compactor(self.shared.block);
+            Ok(self.shared.file.try_lock_byte(byte)?.is_none())
+        }
+        #[cfg(target_family = "wasm")]
+        {
+            Ok(false)
+        }
+    }
+
     /// The run the newest checkpoint slot names and the position it
     /// records, read under one lock so they belong together. A collection
     /// that never checkpointed has an empty snapshot reaching back to the
@@ -1151,6 +1226,7 @@ mod database;
 mod dictionaries;
 mod open;
 mod prefix_index;
+mod relocation;
 mod schemas;
 #[cfg(test)]
 mod tests;

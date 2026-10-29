@@ -621,6 +621,8 @@ fn dictionaries_and_schema_snapshots_are_sealed_in_an_encrypted_database() {
 ///   stops the process, as a crash would.
 /// - `rebuild`: checkpoint the ledger with a failpoint that stops the
 ///   process part way.
+/// - `compact`: compact and shrink the database with a failpoint that
+///   stops the process part way.
 #[test]
 fn an_encryption_child_process() {
     let Ok(role) = std::env::var(ROLE) else {
@@ -637,6 +639,7 @@ fn an_encryption_child_process() {
             PutDocumentOptions::default(),
         ),
         "rebuild" => writer.rebuild_collection(LEDGER),
+        "compact" => writer.compact_database(true).map(drop),
         other => panic!("unknown child role {other}"),
     };
     panic!("the failpoint did not stop the process: {outcome:?}");
@@ -707,5 +710,120 @@ fn an_encrypted_database_recovers_after_a_crash() {
                 order(100)
             );
         }
+    }
+}
+
+/// Orders written and deleted again, so a compaction has records to drop
+/// and a shrink extents to give back.
+fn churned(label: &str) -> Encrypted {
+    let database = Encrypted::create(label);
+    write_orders(&database);
+    let writer = database.writer();
+    for number in 41..200 {
+        put(&writer, LEDGER, number, &large_order(number));
+    }
+    for number in 41..200 {
+        writer
+            .delete_document(LEDGER, &identifier(number), None)
+            .unwrap();
+    }
+    database
+}
+
+/// Require that the ledger and the notes read as [`write_orders`] wrote
+/// them, and that the file shows none of it.
+fn compacted_reads(database: &Encrypted) {
+    let root = database.root();
+    let ledger = root.collection(LEDGER).unwrap();
+    assert_eq!(ledger.document_ids().unwrap().len(), 40);
+    for number in (0..=40).filter(|number| ![3, 4].contains(number)) {
+        assert_eq!(read(&root, LEDGER, number), order(number), "{number}");
+    }
+    assert_eq!(read(&root, LEDGER, 3)["city"], "Moose Jaw");
+    assert_eq!(read(&root, "notes", 1)["text"], CANARY);
+    let verified = ContainerFile::open_reader(&database.path())
+        .unwrap()
+        .verify()
+        .unwrap();
+    assert!(verified.ok, "{verified:?}");
+    for text in [CANARY, LEDGER, "Halifax", "depot"] {
+        assert!(!database.contains(text), "{text} is in the encrypted file");
+    }
+}
+
+#[test]
+fn an_encrypted_database_compacts_shrinks_and_salvages_only_with_its_key() {
+    let database = churned("fxdb-encrypted-compact");
+    database.reopen();
+
+    // Without the key, compaction, a shrink and a salvage are refused and
+    // change nothing.
+    let before = database.bytes();
+    let locked = NativeWriteRoot::open(database.path()).unwrap();
+    let out = database.directory.join("salvaged");
+    let refusals = [
+        locked.compact_database(false).map(drop),
+        locked.compact_database(true).map(drop),
+        locked.salvage_database(&out).map(drop),
+    ];
+    for outcome in refusals {
+        assert_eq!(
+            outcome.unwrap_err().code(),
+            NativeStorageErrorCode::KeyRequired
+        );
+    }
+    drop(locked);
+    database.reopen();
+    assert!(
+        database.bytes() == before,
+        "a locked writer changed the file"
+    );
+    assert!(!out.exists());
+
+    // With it, the copied records are sealed again, each bound to its LSN.
+    let report = database.writer().compact_database(false).unwrap();
+    let (name, ledger) = &report.collections[0];
+    assert_eq!(name, LEDGER);
+    assert!(ledger.segments_compacted >= 1, "{report:?}");
+    assert!(ledger.bytes_after < ledger.bytes_before, "{report:?}");
+    compacted_reads(&database);
+    let report = database.writer().compact_database(true).unwrap();
+    assert!(
+        report.file_bytes_after < report.file_bytes_before,
+        "{report:?}"
+    );
+    compacted_reads(&database);
+    database.reopen();
+    compacted_reads(&database);
+    put(&database.writer(), LEDGER, 300, &order(300));
+    database.reopen();
+    assert_eq!(read(&database.root(), LEDGER, 300), order(300));
+
+    // A salvage with the key writes the documents out as a plain root.
+    let report = database.writer().salvage_database(&out).unwrap();
+    assert!(
+        report
+            .collections
+            .iter()
+            .all(|(_, salvaged)| salvaged.damaged.is_empty()),
+        "{report:?}"
+    );
+    let salvaged = NativeRoot::open(&out).unwrap();
+    assert_eq!(read(&salvaged, LEDGER, 7), order(7));
+    assert_eq!(read(&salvaged, LEDGER, 300), order(300));
+    assert_eq!(read(&salvaged, "notes", 1)["text"], CANARY);
+}
+
+#[test]
+fn an_encrypted_database_recovers_after_a_crash_in_compaction() {
+    for failpoint in ["after-compaction-record", "after-shrink-relocate"] {
+        let database = churned("fxdb-encrypted-compact-crash");
+        database.reopen();
+        stopped("compact", &database, failpoint);
+        database.reopen();
+        compacted_reads(&database);
+        database.writer().compact_database(true).unwrap();
+        database.reopen();
+        compacted_reads(&database);
     }
 }

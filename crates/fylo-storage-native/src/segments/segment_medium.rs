@@ -92,6 +92,15 @@ pub(crate) trait SegmentMedium: Debug + Send + Sync {
     /// caller holds the compaction lock.
     fn remove_compactions(&self) -> Result<(), NativeStorageError>;
 
+    /// Whether a compaction under way elsewhere, in another process or
+    /// another thread, may hold a copy that is a segment no location names
+    /// yet, so a recovery leaves unreferenced segments to that compaction.
+    /// A medium whose copies are not segments until they are adopted has
+    /// none to protect.
+    fn compaction_running(&self) -> Result<bool, NativeStorageError> {
+        Ok(false)
+    }
+
     /// Whether the slot pair exists, which completes a new layout.
     fn has_slots(&self) -> Result<bool, NativeStorageError>;
 

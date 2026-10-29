@@ -2,9 +2,10 @@
 //!
 //! Local processes sharing one `.fxdb` coordinate through OS locks on single
 //! bytes in a range reserved far beyond any data offset, starting at 2⁶²: one
-//! byte for the database lease, one for extent allocation, and one writer byte
-//! per collection, indexed by its directory block. A lock beyond the end of the
-//! file does not extend it. Readers take no lock.
+//! byte for the database lease, one for extent allocation, and two bytes per
+//! collection, indexed by its directory block: its writer byte and its
+//! compactor byte. A lock beyond the end of the file does not extend it.
+//! Readers take no lock.
 //!
 //! The OS decides between processes. Inside one process a registry decides,
 //! because the OS owners differ per platform: Linux open-file-description locks
@@ -45,6 +46,9 @@ pub const LOCK_RANGE_START: u64 = 1 << 62;
 /// Offset of collection writer bytes from [`LOCK_RANGE_START`]. The bytes
 /// below it are kept for further database-wide locks.
 pub const COLLECTION_WRITER_START: u64 = 4096;
+/// Offset of collection compactor bytes from [`LOCK_RANGE_START`], past
+/// every writer byte a directory block number can name.
+pub const COLLECTION_COMPACTOR_START: u64 = COLLECTION_WRITER_START + (1 << 32);
 /// A reserved byte that [`ByteRangeLockFile::probe`] takes and releases.
 const PROBE: u64 = LOCK_RANGE_START + 2;
 /// The longest a waiting [`ByteRangeLockFile::lock`] sleeps between tries.
@@ -69,6 +73,14 @@ impl LockByte {
         Self(LOCK_RANGE_START + COLLECTION_WRITER_START + u64::from(directory_block))
     }
 
+    /// The compactor byte of the collection in directory block
+    /// `directory_block`: one compaction of the collection at a time holds
+    /// it, while its copy runs without the writer byte (ADR 0015 section 7).
+    #[must_use]
+    pub fn collection_compactor(directory_block: u32) -> Self {
+        Self(LOCK_RANGE_START + COLLECTION_COMPACTOR_START + u64::from(directory_block))
+    }
+
     /// The byte's file offset.
     #[must_use]
     pub const fn offset(self) -> u64 {
@@ -81,6 +93,9 @@ impl fmt::Display for LockByte {
         match self.0 - LOCK_RANGE_START {
             0 => f.write_str("lease"),
             1 => f.write_str("allocation"),
+            n if n >= COLLECTION_COMPACTOR_START => {
+                write!(f, "compactor {}", n - COLLECTION_COMPACTOR_START)
+            }
             n if n >= COLLECTION_WRITER_START => {
                 write!(f, "writer {}", n - COLLECTION_WRITER_START)
             }
@@ -517,6 +532,34 @@ impl ByteLockGuard {
     /// How it is held.
     pub fn mode(&self) -> LockMode {
         self.mode
+    }
+
+    /// Hold the byte in `mode` instead, waiting up to `timeout`: how a
+    /// writer sharing a database takes its lease byte exclusive for an
+    /// operation that needs the file to itself, and shares it again after.
+    /// A shared byte cannot be upgraded in place, so it is let go first.
+    /// When `mode` is not granted in time, the old mode is taken back,
+    /// waiting as long again, and the failure is returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns the failure to take `mode`. When the old mode cannot be
+    /// taken back either, that failure is returned instead and the guard
+    /// holds nothing.
+    pub fn change_mode(&mut self, mode: LockMode, timeout: Duration) -> io::Result<()> {
+        if mode == self.mode {
+            return Ok(());
+        }
+        self.held = false;
+        // Released in this process even when the OS refuses.
+        let _ = self.file.release(self.byte, self.mode);
+        let (guard, outcome) = match self.file.lock(self.byte, mode, timeout) {
+            Ok(guard) => (guard, Ok(())),
+            Err(error) => (self.file.lock(self.byte, self.mode, timeout)?, Err(error)),
+        };
+        // The guard replaced holds nothing, so dropping it releases nothing.
+        *self = guard;
+        outcome
     }
 
     /// Release the byte now, reporting an OS failure to unlock.

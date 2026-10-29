@@ -50,6 +50,21 @@ pub struct ContainerShrinkPlan {
     pub extent_count: u64,
 }
 
+/// The last extent in use, which a shrink moves nearer the front next.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ContainerTailExtent {
+    /// Its index.
+    pub(crate) index: u64,
+    /// What it holds.
+    pub(crate) kind: ContainerExtentKind,
+    /// Its owning collection, or 0.
+    pub(crate) owner: u32,
+    /// Its sequence number, a segment's number.
+    pub(crate) sequence: u64,
+    /// Whether it is sealed.
+    pub(crate) sealed: bool,
+}
+
 /// Extent counts by state and kind.
 #[derive(Clone, Debug, Default, Eq, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -600,6 +615,36 @@ impl ContainerExtentAllocator {
         ContainerShrinkPlan {
             moves,
             extent_count,
+        }
+    }
+
+    /// The last extent in use, when a free extent lies before it, so that
+    /// moving it lets the file end sooner. `None` when no extent before the
+    /// last in use is free; a released one is free after the next
+    /// checkpoint.
+    pub(crate) fn movable_tail(&self) -> Option<ContainerTailExtent> {
+        let last = self
+            .slots
+            .iter()
+            .rposition(|slot| matches!(slot, Slot::InUse { .. }))?;
+        if !self.slots[1..last].contains(&Slot::Free) {
+            return None;
+        }
+        match self.slots[last] {
+            Slot::InUse {
+                kind,
+                owner,
+                sequence,
+                sealed,
+                ..
+            } => Some(ContainerTailExtent {
+                index: last as u64,
+                kind,
+                owner,
+                sequence,
+                sealed,
+            }),
+            _ => None,
         }
     }
 

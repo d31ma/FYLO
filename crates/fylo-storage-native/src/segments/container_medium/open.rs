@@ -163,19 +163,112 @@ impl ContainerOpen {
             // A writer whose lease another process took over reads on;
             // its next write opens the file to write afresh and claims its
             // collections again.
-            if let Ok(mut file) = ContainerFile::open_reader(&self.path)
-                && open
-                    .cipher
-                    .clone()
-                    .is_none_or(|cipher| file.unlock_with(cipher).is_ok())
-            {
-                open.file = file;
-                open.access = None;
-                open.forget_tables();
-            }
+            open.demote(&self.path);
             return Err(ContainerMedium::error(error));
         }
         Ok(open)
+    }
+
+    /// Take `byte` exclusive through the writable open's lock handle,
+    /// waiting up to the busy timeout. The open is not held while waiting.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EBUSY` when another holder keeps it past the busy timeout,
+    /// or what [`Self::writable`] returns.
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn lock_byte(
+        &self,
+        byte: crate::LockByte,
+    ) -> Result<crate::ByteLockGuard, NativeStorageError> {
+        let (handle, wait) = {
+            let open = self.writable()?;
+            let wait = open.access.as_ref().map_or_else(
+                || ContainerOpen::write_options().busy_timeout,
+                |right| right.busy_timeout,
+            );
+            (open.lock_handle().map_err(ContainerMedium::error)?, wait)
+        };
+        crate::container_file::lock_byte(&handle, byte, wait).map_err(ContainerMedium::error)
+    }
+
+    /// Take `byte` exclusive without waiting, or `None` when another holder,
+    /// in this process or another, has it.
+    ///
+    /// # Errors
+    ///
+    /// Returns the lock failure, or what [`Self::writable`] returns.
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn try_lock_byte(
+        &self,
+        byte: crate::LockByte,
+    ) -> Result<Option<crate::ByteLockGuard>, NativeStorageError> {
+        let handle = self
+            .writable()?
+            .lock_handle()
+            .map_err(ContainerMedium::error)?;
+        handle
+            .try_lock(byte, crate::LockMode::Exclusive)
+            .map_err(NativeStorageError::io)
+    }
+
+    /// Run `run` as the only process writing the file (ADR 0016 section
+    /// 7): a writer sharing the file takes the lease byte exclusive for it,
+    /// waiting up to the busy timeout for the other writer processes to
+    /// close the file, and shares it again after; under the lease this
+    /// process is the only writer already. Readers are never kept out.
+    /// `run` takes the open itself as it needs it.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EBUSY` when other writers keep the file, what `run`
+    /// returns, or the failure to share the file again, after which this
+    /// open reads on and its next write opens the file afresh.
+    pub(crate) fn exclusively<T>(
+        &self,
+        run: impl FnOnce() -> Result<T, NativeStorageError>,
+    ) -> Result<T, NativeStorageError> {
+        #[cfg(not(target_family = "wasm"))]
+        self.lease_mode(true)?;
+        let outcome = run();
+        #[cfg(not(target_family = "wasm"))]
+        let shared = self.lease_mode(false);
+        #[cfg(target_family = "wasm")]
+        let shared: Result<(), NativeStorageError> = Ok(());
+        let value = outcome?;
+        shared?;
+        Ok(value)
+    }
+
+    /// Hold the file exclusively, or share it again. An open whose lease
+    /// byte is lost on the way reads on.
+    #[cfg(not(target_family = "wasm"))]
+    fn lease_mode(&self, exclusive: bool) -> Result<(), NativeStorageError> {
+        let mut open = if exclusive {
+            self.writable()?
+        } else {
+            self.lock()
+        };
+        let Some(right) = open.access.as_mut() else {
+            return Ok(());
+        };
+        let wait = right.busy_timeout;
+        let changed = if exclusive {
+            right.access.hold_exclusively(wait)
+        } else {
+            right.access.share(wait)
+        };
+        match changed {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                if exclusive && matches!(error, ContainerError::Busy) {
+                    // Refused in time, and shared again.
+                    return Err(ContainerMedium::error(error));
+                }
+                open.demote(&self.path);
+                Err(ContainerMedium::error(error))
+            }
+        }
     }
 
     /// Run `change` as a change to the map ([`Open::change_map`]), opening
@@ -190,6 +283,25 @@ impl ContainerOpen {
         change: impl FnOnce(&mut Open) -> Result<T, NativeStorageError>,
     ) -> Result<T, NativeStorageError> {
         self.writable()?.change_map(change)
+    }
+
+    /// Checkpoint the map, which writes it into the first free extents.
+    ///
+    /// # Errors
+    ///
+    /// Returns what [`Self::change_map`] returns.
+    pub(crate) fn checkpoint_map(&self) -> Result<(), NativeStorageError> {
+        self.change_map(Open::checkpoint)
+    }
+
+    /// Cut the free extents at the end of the file off
+    /// ([`Open::cut_free_tail`]), and return the bytes cut.
+    ///
+    /// # Errors
+    ///
+    /// Returns what [`Self::change_map`] returns.
+    pub(crate) fn cut_free_tail(&self) -> Result<u64, NativeStorageError> {
+        self.change_map(Open::cut_free_tail)
     }
 
     fn registry() -> MutexGuard<'static, BTreeMap<PathBuf, Weak<ContainerOpen>>> {
@@ -264,6 +376,23 @@ impl Open {
         self.file.unlock_with(Arc::clone(cipher))?;
         self.cipher = Some(Arc::clone(cipher));
         Ok(())
+    }
+
+    /// Give up writing: read on through a reader's open, unlocked with the
+    /// key this open keeps, so the next write opens the file to write
+    /// afresh and claims its collections again.
+    #[cfg(not(target_family = "wasm"))]
+    fn demote(&mut self, path: &Path) {
+        if let Ok(mut file) = ContainerFile::open_reader(path)
+            && self
+                .cipher
+                .clone()
+                .is_none_or(|cipher| file.unlock_with(cipher).is_ok())
+        {
+            self.file = file;
+            self.access = None;
+            self.forget_tables();
+        }
     }
 
     /// Reopen the file to write: natively as ADR 0016 section 7
@@ -342,6 +471,24 @@ impl Open {
         self.file.checkpoint().map_err(ContainerMedium::error)?;
         self.seals.clear();
         Ok(())
+    }
+
+    /// Cut the free extents at the end of the file off, as often as a
+    /// checkpoint that moves the map frees more there, and return the bytes
+    /// cut ([`ContainerFile::shrink_free_tail`]).
+    pub(crate) fn cut_free_tail(&mut self) -> Result<u64, NativeStorageError> {
+        let mut cut = 0;
+        loop {
+            let bytes = self
+                .file
+                .shrink_free_tail()
+                .map_err(ContainerMedium::error)?;
+            self.seals.clear();
+            if bytes == 0 {
+                return Ok(cut);
+            }
+            cut += bytes;
+        }
     }
 
     /// Set read-only-compatible feature bits in the superblock durably,

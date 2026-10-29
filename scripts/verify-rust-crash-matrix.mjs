@@ -278,6 +278,34 @@ async function verifyNativeCrashScenarios() {
     await segmentSeed.close()
     const onSegments = (scenario) => ({ ...scenario, template: () => segmentTemplate })
 
+    // A `.fxdb` database (ADR 0016) is a fourth: the segment template packed
+    // into `db.fxdb`, then patched twice so its compaction has dead versions
+    // to drop and its shrink extents to move. Its scenarios name the file.
+    const databaseTemplate = join(workspace, 'database-template')
+    await mkdir(databaseTemplate, { recursive: true })
+    const templateDatabase = join(databaseTemplate, 'db.fxdb')
+    const packed = await run(binary, ['pack', '--root', segmentTemplate, '--out', templateDatabase])
+    assert(packed.exitCode === 0, `packing the database template failed: ${packed.stderr}`)
+    for (const score of [43, 44]) {
+        const patched = await run(binary, [
+            'patch-fields',
+            '--root',
+            templateDatabase,
+            '--collection',
+            collection,
+            '--id',
+            identifier,
+            '--changes',
+            JSON.stringify({ score })
+        ])
+        assert(patched.exitCode === 0, `seeding the database template failed: ${patched.stderr}`)
+    }
+    const onDatabase = (scenario) => ({
+        ...scenario,
+        database: true,
+        template: () => databaseTemplate
+    })
+
     const { failpoints } = JSON.parse((await run(binary, ['failpoints'])).stdout)
     assert(Array.isArray(failpoints) && failpoints.length > 0, 'Rust declared no failpoints')
 
@@ -602,6 +630,19 @@ async function verifyNativeCrashScenarios() {
         onSegments({
             name: 'compact-segments',
             args: (root) => ['compact', '--root', root, '--collection', collection]
+        }),
+        onDatabase({
+            // ADR 0016 section 6: each collection of the database compacts
+            // as a directory root's does, under its compactor byte.
+            name: 'compact-database',
+            args: (root) => ['compact', '--root', join(root, 'db.fxdb')]
+        }),
+        onDatabase({
+            // A shrink moves the last extents in use into free ones nearer
+            // the front, cuts the free tail off and punches holes; a stop
+            // anywhere leaves a file the next opener reads as before.
+            name: 'compact-database-shrink',
+            args: (root) => ['compact', '--root', join(root, 'db.fxdb'), '--shrink']
         }),
         onSegments({
             // ADR 0016 section 11: a pack builds a staging file beside its
@@ -1079,8 +1120,15 @@ async function assertSchemaRegistry(binary, root, failpoint, scenario, action, l
 async function assertRecoverable(binary, root, failpoint, scenario, action) {
     const label = `${failpoint}/${scenario.name}/${action}`
     const recoveryCollection = scenario.name.endsWith('-file') ? fileCollection : collection
+    // A database scenario's root is the `.fxdb` file in the cloned
+    // directory, which a client opens without a root lease.
+    const rootOf = (directory) => (scenario.database ? join(directory, 'db.fxdb') : directory)
+    const clientOptions = { binary: machineBinary, exclusiveRoot: !scenario.database }
 
-    if (action === 'abort') {
+    // A database reader takes no lock and leaves a stopped write for the
+    // next writer to settle (ADR 0016 section 7), so only a directory root
+    // is read first.
+    if (action === 'abort' && !scenario.database) {
         // Nobody runs `recover` after a real crash: the next client to read
         // must get the recovered collection, not a phantom concurrent write.
         // A clone keeps the explicit `recover` path below covered too.
@@ -1102,11 +1150,20 @@ async function assertRecoverable(binary, root, failpoint, scenario, action) {
         }
     }
 
-    const first = await run(binary, ['recover', '--root', root, '--collection', recoveryCollection])
+    const first = await run(binary, [
+        'recover',
+        '--root',
+        rootOf(root),
+        '--collection',
+        recoveryCollection
+    ])
     assert(first.exitCode === 0, `${label}: Rust recovery failed: ${first.stderr}`)
-    if (action !== 'abort') {
+    if (action !== 'abort' && !scenario.database) {
         // The writer stayed alive, so it owed itself a rollback before
         // returning the error. Anything left for recovery means it did not.
+        // A database's checkpoint publishes its fold as `writing` first, and
+        // one that fails after that leaves it for the next writer to settle,
+        // as a stop would.
         assert(
             JSON.parse(first.stdout).recovered === false,
             `${label}: a failed write left its journal behind instead of rolling back`
@@ -1115,7 +1172,7 @@ async function assertRecoverable(binary, root, failpoint, scenario, action) {
     const second = await run(binary, [
         'recover',
         '--root',
-        root,
+        rootOf(root),
         '--collection',
         recoveryCollection
     ])
@@ -1128,7 +1185,7 @@ async function assertRecoverable(binary, root, failpoint, scenario, action) {
         await assertSchemaRegistry(binary, root, failpoint, scenario, action, label)
     }
 
-    const database = new Fylo(root, { binary: machineBinary, exclusiveRoot: true })
+    const database = new Fylo(rootOf(root), clientOptions)
     await database.ready
     try {
         const expectedCollections = scenario.template ? [collection] : [collection, fileCollection]

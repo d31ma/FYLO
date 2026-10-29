@@ -5,7 +5,8 @@ use fylo_storage_native::{CollectionLayout, NativeWriteRoot, RootOpenOptions};
 use serde_json::{Value, json};
 
 /// The segment layout's administrative commands (ADR 0015): `layout`,
-/// `compact`, `export`, `verify-segments` and `salvage`.
+/// `compact`, `export`, `verify-segments` and `salvage`, and `compact` and
+/// `salvage` of a whole `.fxdb` database (ADR 0016 section 11).
 ///
 /// They write outside the machine protocol on purpose: `export` and
 /// `salvage` take an output directory, which a remote `fylo serve` client
@@ -123,6 +124,86 @@ impl SegmentCommand {
         }))
     }
 
+    /// Run `compact` or `salvage` on a whole `.fxdb` database (ADR 0016
+    /// section 11).
+    pub fn run_database(
+        command: &str,
+        (database, application): (&Path, &ApplicationConfig),
+        options: &SegmentOptions,
+    ) -> Result<String, String> {
+        let writer = NativeWriteRoot::open_profiled(
+            application.with_database_key(RootOpenOptions::new(database)),
+        )
+        .map_err(|error| error.to_string())?
+        .with_config(application.storage);
+        let output = match command {
+            "compact" => Self::compact_database(&writer, database, options.shrink),
+            _ => Self::salvage_database(&writer, database, options),
+        }?;
+        serde_json::to_string_pretty(&output).map_err(|error| error.to_string())
+    }
+
+    fn compact_database(
+        writer: &NativeWriteRoot,
+        database: &Path,
+        shrink: bool,
+    ) -> Result<Value, String> {
+        let report = writer
+            .compact_database(shrink)
+            .map_err(|error| error.to_string())?;
+        let collections: Vec<Value> = report
+            .collections
+            .iter()
+            .map(|(collection, compacted)| {
+                json!({
+                    "collection": collection,
+                    "segmentsCompacted": compacted.segments_compacted,
+                    "documentsCopied": compacted.documents_copied,
+                    "bytesBefore": compacted.bytes_before,
+                    "bytesAfter": compacted.bytes_after,
+                })
+            })
+            .collect();
+        Ok(json!({
+            "database": database.display().to_string(),
+            "collections": collections,
+            "shrink": shrink,
+            "extentsMoved": report.extents_moved,
+            "extentsPunched": report.extents_punched,
+            "fileBytesBefore": report.file_bytes_before,
+            "fileBytesAfter": report.file_bytes_after,
+        }))
+    }
+
+    fn salvage_database(
+        writer: &NativeWriteRoot,
+        database: &Path,
+        options: &SegmentOptions,
+    ) -> Result<Value, String> {
+        let out = Self::output(options, "salvage")?;
+        let report = writer
+            .salvage_database(out)
+            .map_err(|error| error.to_string())?;
+        let collections: Vec<Value> = report
+            .collections
+            .iter()
+            .map(|(collection, salvaged)| {
+                json!({
+                    "collection": collection,
+                    "recovered": salvaged.recovered,
+                    "damaged": salvaged.damaged,
+                    "lost": salvaged.lost,
+                    "schemaVersions": salvaged.schema_versions,
+                })
+            })
+            .collect();
+        Ok(json!({
+            "database": database.display().to_string(),
+            "out": out.display().to_string(),
+            "collections": collections,
+        }))
+    }
+
     fn output<'a>(options: &'a SegmentOptions, command: &str) -> Result<&'a Path, String> {
         options
             .out
@@ -137,4 +218,6 @@ pub struct SegmentOptions {
     pub to: Option<String>,
     pub out: Option<PathBuf>,
     pub allow_engine_only_access: bool,
+    /// `compact <db.fxdb> --shrink`: give the space freed back to the disk.
+    pub shrink: bool,
 }

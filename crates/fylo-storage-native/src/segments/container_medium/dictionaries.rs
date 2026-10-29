@@ -297,9 +297,11 @@ impl ContainerMedium {
     }
 
     /// After a compaction: release every dictionary of the collection that
-    /// neither the newest checkpoint nor any record names. Nothing is
-    /// released when a segment cannot be read to its end, since a record
-    /// past the damage might name one.
+    /// neither the newest checkpoint nor any record names, and a second
+    /// extent holding a dictionary another holds too, as a shrink that
+    /// stopped while moving one leaves. Nothing is released when a segment
+    /// cannot be read to its end, since a record past the damage might name
+    /// one.
     pub(super) fn release_unused(&self) -> Result<(), NativeStorageError> {
         let Some(named) = self.named_by_records()? else {
             return Ok(());
@@ -309,12 +311,21 @@ impl ContainerMedium {
             let current = file
                 .read_checkpoint(block)
                 .map_err(Self::error)?
-                .and_then(|slot| slot.dictionary)
-                .map(|(_, id, _)| id);
+                .and_then(|slot| slot.dictionary);
+            let mut extents = file.dictionary_extents(id).map_err(Self::error)?;
+            // The extent the slot names first, so that of two holding one
+            // dictionary, the other is released.
+            extents.sort_by_key(|(extent, _)| current.is_none_or(|(at, _, _)| at != *extent));
+            let mut kept = BTreeSet::new();
             let mut released = Vec::new();
-            for (extent, dictionary) in file.dictionary_extents(id).map_err(Self::error)? {
-                if Some(dictionary) != current && !named.contains(&dictionary) {
-                    file.release_dictionary(id, extent).map_err(Self::error)?;
+            for (extent, dictionary) in extents {
+                let wanted = current.is_some_and(|(_, held, _)| held == dictionary)
+                    || named.contains(&dictionary);
+                if wanted && kept.insert(dictionary) {
+                    continue;
+                }
+                file.release_dictionary(id, extent).map_err(Self::error)?;
+                if !wanted {
                     released.push(dictionary);
                 }
             }

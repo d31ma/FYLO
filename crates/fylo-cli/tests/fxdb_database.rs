@@ -358,3 +358,105 @@ fn create_makes_a_plain_database_by_default() {
     let directory = fixture.run(&["create", "data"]);
     assert!(!directory.status.success(), "{directory:?}");
 }
+
+#[test]
+fn compact_shrinks_and_salvage_writes_out_a_database() {
+    let fixture = Fixture::new("compact");
+    let secret = generated_secret("compact");
+    let create = fixture.run_keyed(&secret, &["create", "app.fxdb", "--encrypt"]);
+    assert!(create.status.success(), "{create:?}");
+    let collection = fixture.run_keyed(
+        &secret,
+        &[
+            "exec",
+            "--request",
+            r#"{"op":"createCollection","collection":"users"}"#,
+            "--root",
+            "app.fxdb",
+        ],
+    );
+    assert!(collection.status.success(), "{collection:?}");
+    let mut identifiers = Vec::new();
+    for team in ["red", "blue", "gone"] {
+        let insert = fixture.run_keyed(
+            &secret,
+            &[
+                "sql",
+                &format!("INSERT INTO users (name, team) VALUES ('ada', '{team}')"),
+                "--root",
+                "app.fxdb",
+            ],
+        );
+        assert!(insert.status.success(), "{insert:?}");
+        identifiers.push(String::from_utf8(insert.stdout).unwrap().trim().to_owned());
+    }
+    let delete = fixture.run_keyed(
+        &secret,
+        &[
+            "sql",
+            "DELETE FROM users WHERE team = 'gone'",
+            "--root",
+            "app.fxdb",
+        ],
+    );
+    assert!(delete.status.success(), "{delete:?}");
+
+    // Without the key the database is locked, and nothing changes.
+    let bytes = fs::read(fixture.0.join("app.fxdb")).unwrap();
+    for arguments in [
+        &["compact", "app.fxdb", "--shrink"][..],
+        &["salvage", "app.fxdb", "--out", "salvaged"][..],
+    ] {
+        let locked = fixture.run(arguments);
+        assert!(!locked.status.success(), "{locked:?}");
+        assert!(String::from_utf8_lossy(&locked.stderr).contains("EKEY"));
+    }
+    assert_eq!(fs::read(fixture.0.join("app.fxdb")).unwrap(), bytes);
+    assert!(!fixture.0.join("salvaged").exists());
+
+    let compact = fixture.run_keyed(&secret, &["compact", "app.fxdb", "--shrink"]);
+    assert!(compact.status.success(), "{compact:?}");
+    let report = json(&compact);
+    assert_eq!(report["shrink"], true);
+    assert_eq!(report["collections"][0]["collection"], "users");
+    assert!(report["collections"][0]["segmentsCompacted"].as_u64() >= Some(1));
+    // A database this small gains the compacted copies' extents; a shrink
+    // gives back only what lies free.
+    assert!(
+        report["fileBytesAfter"]
+            .as_u64()
+            .is_some_and(|bytes| bytes > 0)
+    );
+    let verify = fixture.run(&["verify", "app.fxdb"]);
+    assert!(verify.status.success(), "{verify:?}");
+    let got = fixture.run_keyed(
+        &secret,
+        &[
+            "get",
+            "users",
+            &identifiers[1],
+            "--root",
+            "app.fxdb",
+            "--json",
+        ],
+    );
+    assert!(got.status.success(), "{got:?}");
+    assert_eq!(json(&got)[&identifiers[1]]["team"], "blue");
+
+    let salvage = fixture.run_keyed(&secret, &["salvage", "app.fxdb", "--out", "salvaged"]);
+    assert!(salvage.status.success(), "{salvage:?}");
+    let report = json(&salvage);
+    assert_eq!(report["collections"][0]["collection"], "users");
+    assert_eq!(report["collections"][0]["damaged"], serde_json::json!([]));
+    let got = fixture.run(&[
+        "get",
+        "users",
+        &identifiers[0],
+        "--root",
+        "salvaged",
+        "--json",
+    ]);
+    assert!(got.status.success(), "{got:?}");
+    assert_eq!(json(&got)[&identifiers[0]]["team"], "red");
+    assert!(fixture.0.join("salvaged/.collections/users/docs").is_dir());
+}

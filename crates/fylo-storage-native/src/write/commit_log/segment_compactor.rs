@@ -14,8 +14,8 @@ use super::segment_plan::SegmentPlan;
 use super::segment_recovery::{SchemaCopies, SegmentRecovery};
 use super::segment_schemas::{SchemaVersionEntry, SegmentSchemas};
 use crate::segments::{
-    SegmentCommitManifest, SegmentDocument, SegmentLocation, SegmentMedium, SegmentReader,
-    SegmentStore,
+    SegmentCommitManifest, SegmentDocument, SegmentHandle, SegmentLocation, SegmentMedium,
+    SegmentReader, SegmentStore,
 };
 use crate::{
     Durability, GenerationState, NativeCollection, NativeStorageError, NativeStorageErrorCode,
@@ -25,15 +25,33 @@ use crate::{
 /// section 7).
 ///
 /// The copy runs without the collection lock, because sealed segments never
-/// change. Each live entry keeps its sequence number, so the copy and the
-/// original are interchangeable, and the compaction commits by appending one
-/// compaction record to the active segment under the lock.
+/// change. It is started under the lock, while the segments are chosen, so
+/// writing it takes no claim on the collection: in a `.fxdb` database the
+/// collection's writers carry on while it runs. Each live entry keeps its
+/// sequence number, so the copy and the original are interchangeable, and
+/// the compaction commits by appending one compaction record to the active
+/// segment under the lock.
 ///
 /// Schema records (ADR 0017 section 3) are not documents, but they are live
 /// for as long as the registry lists them: each one in a chosen segment is
 /// copied too, with its sequence number, and the schemas snapshot is pointed
 /// at the copy when the compaction is adopted.
 pub(crate) struct SegmentCompactor {
+    candidates: Vec<u64>,
+    rows: Vec<SegmentLocation>,
+    schemas: Vec<SchemaVersionEntry>,
+    bytes_before: u64,
+    /// This process's compacted copy, started when the segments were
+    /// chosen.
+    copy: Arc<dyn SegmentHandle>,
+}
+
+/// What a test runs while a compaction's copy is in progress.
+#[cfg(test)]
+pub(crate) type CopiedHook = Arc<dyn Fn(&std::path::Path) + Send + Sync>;
+
+/// The segments one compaction replaces, with the live entries to copy.
+struct Choice {
     candidates: Vec<u64>,
     rows: Vec<SegmentLocation>,
     schemas: Vec<SchemaVersionEntry>,
@@ -46,13 +64,20 @@ impl SegmentCompactor {
     /// header, which an entry shares with others in the original.
     const COPY_OVERHEAD_BYTES: u64 = 256;
 
-    /// Choose what to compact. Runs under the collection lock. The active
-    /// segment is sealed first when it holds documents, so everything
-    /// written so far can be compacted.
+    /// Choose what to compact and start the copy. Runs under the collection
+    /// lock. The active segment is sealed first when it holds documents, so
+    /// everything written so far can be compacted.
+    ///
+    /// With `only`, the compaction moves that one segment, live or not, as
+    /// `fylo compact --shrink` does to bring the last extents of a `.fxdb`
+    /// file nearer its front: the active segment is sealed only when it is
+    /// that one, and no dictionary is trained. A segment no location names
+    /// is removed without a copy.
     pub(crate) fn prepare(
         collection: &NativeCollection,
         stored: &GenerationState,
         active: LogSegment,
+        only: Option<u64>,
     ) -> Result<Option<Self>, NativeStorageError> {
         let medium = collection.segment_medium()?;
         // A newer dictionary is made current first, so the copy, the
@@ -60,7 +85,7 @@ impl SegmentCompactor {
         // all use it, and the one it replaces can be released at adoption:
         // the active segment is sealed for it even when it holds no
         // documents, so no record left in it names the old one.
-        let retrained = medium.retrain_dictionary()?;
+        let retrained = only.is_none() && medium.retrain_dictionary()?;
         let store = SegmentStore::open_for_writer(Arc::clone(&medium))?;
         let active_number = active.sequence();
         let holds_documents = store
@@ -68,7 +93,11 @@ impl SegmentCompactor {
             .rows()
             .iter()
             .any(|row| row.segment == active_number);
-        let active = if holds_documents || retrained {
+        let seal = match only {
+            Some(number) => number == active_number,
+            None => holds_documents || retrained,
+        };
+        let active = if seal {
             SegmentCheckpoint::seal(collection, active, stored.generation)?
         } else {
             active
@@ -77,7 +106,22 @@ impl SegmentCompactor {
         SegmentRecovery::remove_unreferenced(&*medium, active.sequence())?;
         let store = SegmentStore::open_for_writer(Arc::clone(&medium))?;
         let schemas = SegmentSchemas::load(&*medium, collection.schema_head())?;
-        Self::choose(&*medium, (&store, &schemas), active.sequence())
+        let chosen = match only {
+            Some(number) => {
+                Self::choose_only(&*medium, (&store, &schemas), active.sequence(), number)?
+            }
+            None => Self::choose(&*medium, (&store, &schemas), active.sequence())?,
+        };
+        let Some(choice) = chosen else {
+            return Ok(None);
+        };
+        Ok(Some(Self {
+            candidates: choice.candidates,
+            rows: choice.rows,
+            schemas: choice.schemas,
+            bytes_before: choice.bytes_before,
+            copy: medium.create_compaction()?,
+        }))
     }
 
     /// Copy every live entry of the chosen segments, in identifier order,
@@ -96,7 +140,7 @@ impl SegmentCompactor {
                 .min()
                 .unwrap_or(1),
         };
-        let copy = medium.create_compaction()?;
+        let copy = &self.copy;
         let encoded = header.encode();
         copy.write_at(&encoded, 0)?;
         let mut length = encoded.len() as u64;
@@ -116,8 +160,34 @@ impl SegmentCompactor {
             length += frame.len() as u64;
         }
         copy.sync(Durability::PowerLoss)?;
+        #[cfg(test)]
+        Self::copied_hook(&collection.path);
         failpoint("after-compaction-copy")?;
         Ok(())
+    }
+
+    /// Run the hook a test set with [`Self::set_copied_hook`], if any.
+    #[cfg(test)]
+    fn copied_hook(collection: &std::path::Path) {
+        let hook = Self::hook().clone();
+        if let Some(hook) = hook {
+            hook(collection);
+        }
+    }
+
+    /// Run `hook` with the collection's path once each compaction's copy
+    /// is written and flushed, before the collection is locked to adopt
+    /// it, so a test can act while a copy is in progress.
+    #[cfg(test)]
+    pub(crate) fn set_copied_hook(hook: Option<CopiedHook>) {
+        *Self::hook() = hook;
+    }
+
+    #[cfg(test)]
+    fn hook() -> std::sync::MutexGuard<'static, Option<CopiedHook>> {
+        static HOOK: std::sync::Mutex<Option<CopiedHook>> = std::sync::Mutex::new(None);
+        HOOK.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Adopt the copy. Runs under the collection lock: the compaction record
@@ -229,11 +299,55 @@ impl SegmentCompactor {
         let _ = medium.remove_segment(adopted);
     }
 
+    /// The choice that moves segment `number` alone, when it is a sealed
+    /// segment whose live entries fit in one copy.
+    fn choose_only(
+        medium: &dyn SegmentMedium,
+        (store, schemas): (&SegmentStore, &SegmentSchemas),
+        active: u64,
+        number: u64,
+    ) -> Result<Option<Choice>, NativeStorageError> {
+        if number == active || !medium.segment_numbers()?.contains(&number) {
+            return Ok(None);
+        }
+        let rows: Vec<SegmentLocation> = store
+            .table()
+            .rows()
+            .into_iter()
+            .filter(|row| row.segment == number)
+            .cloned()
+            .collect();
+        let schemas: Vec<SchemaVersionEntry> = schemas
+            .entries()
+            .iter()
+            .filter(|entry| entry.segment == number)
+            .cloned()
+            .collect();
+        let copy_bytes: u64 = rows
+            .iter()
+            .map(|row| row.length)
+            .chain(schemas.iter().map(|entry| entry.length))
+            .map(|length| u64::from(length) + Self::COPY_OVERHEAD_BYTES)
+            .sum();
+        let room = medium
+            .max_segment_bytes()
+            .saturating_sub(LogSegmentHeader::ENCODED_BYTES as u64);
+        if copy_bytes > room {
+            return Ok(None);
+        }
+        Ok(Some(Choice {
+            candidates: vec![number],
+            rows,
+            schemas,
+            bytes_before: medium.segment_length(number)?,
+        }))
+    }
+
     fn choose(
         medium: &dyn SegmentMedium,
         (store, schemas): (&SegmentStore, &SegmentSchemas),
         active: u64,
-    ) -> Result<Option<Self>, NativeStorageError> {
+    ) -> Result<Option<Choice>, NativeStorageError> {
         let rows = store.table().rows();
         let mut live: BTreeMap<u64, BTreeMap<u64, u32>> = BTreeMap::new();
         let mut copied: BTreeMap<u64, u64> = BTreeMap::new();
@@ -290,7 +404,7 @@ impl SegmentCompactor {
             .filter(|entry| chosen.contains(&entry.segment))
             .cloned()
             .collect();
-        Ok(Some(Self {
+        Ok(Some(Choice {
             candidates: chosen.into_iter().collect(),
             rows,
             schemas,

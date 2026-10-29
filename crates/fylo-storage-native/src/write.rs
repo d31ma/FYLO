@@ -43,9 +43,11 @@ pub(crate) mod schema_counts;
 pub(crate) mod schema_registry;
 pub(crate) use commit_log::SegmentSchemas;
 pub use commit_log::{
-    CompactionReport, DatabasePackReport, LayoutMigrationReport, PackedCollection, SalvageReport,
-    SegmentVerification,
+    CompactionReport, DatabaseCompactionReport, DatabasePackReport, DatabaseSalvageReport,
+    LayoutMigrationReport, PackedCollection, SalvageReport, SegmentVerification,
 };
+#[cfg(test)]
+pub(crate) use commit_log::{CopiedHook, SegmentCompactor};
 pub(crate) mod version;
 
 use document_codec::DocumentPolicy;
@@ -1825,8 +1827,18 @@ impl NativeWriteRoot {
             ));
         };
         // Recover first: dropping a collection mid-transaction would discard
-        // the journal that says what the interrupted write still owes.
+        // the journal that says what the interrupted write still owes. In a
+        // database a compaction's copy is an extent the collection owns, so
+        // none may be running.
         {
+            let _compaction = if self.root.is_database() {
+                Some(CollectionWriteLock::acquire_compaction(
+                    &self.root,
+                    &collection,
+                )?)
+            } else {
+                None
+            };
             let _lock = self.lock_collection(&collection)?;
             self.recover_locked(&collection)?;
             if let Some(database) = self.root.database() {
@@ -3298,6 +3310,10 @@ enum CollectionWriteLock {
     Database {
         _held: crate::container_database::ContainerWriterLock,
     },
+    /// The collection's compactor byte in its `.fxdb` database.
+    Compactor {
+        _held: crate::container_database::ContainerCompactorLock,
+    },
 }
 
 /// A held lock file, removed when dropped if this owner still holds it.
@@ -3324,6 +3340,22 @@ impl CollectionWriteLock {
                 .map(|held| Self::Database { _held: held });
         }
         Self::acquire_profiled(root, &collection.path.join("locks"), name)
+    }
+
+    /// The lock one compaction of `collection` holds from its preparation
+    /// to its adoption: `locks/compaction.lock`, or in a `.fxdb` database
+    /// the collection's compactor byte.
+    fn acquire_compaction(
+        root: &NativeRoot,
+        collection: &super::NativeCollection,
+    ) -> Result<Self, NativeStorageError> {
+        if let (Some(database), Some(block)) = (root.database(), collection.database_block()) {
+            root.assert_profile_owned()?;
+            return database
+                .lock_compactor(block)
+                .map(|held| Self::Compactor { _held: held });
+        }
+        Self::acquire_profiled(root, &collection.path.join("locks"), "compaction.lock")
     }
 
     fn acquire_at(locks: &Path, name: &str) -> Result<LockFile, NativeStorageError> {
@@ -5302,7 +5334,7 @@ fn set_mode(_path: &Path, _mode: u32) -> Result<(), NativeStorageError> {
 /// The list is the contract the crash matrix enumerates, so a new failpoint
 /// must be declared here to be injectable — which is also what stops it from
 /// being added without coverage.
-pub const FAILPOINTS: [&str; 35] = [
+pub const FAILPOINTS: [&str; 37] = [
     "before-file-write",
     "after-file-rename",
     "after-file-sync",
@@ -5338,6 +5370,8 @@ pub const FAILPOINTS: [&str; 35] = [
     "after-layout-marker",
     "after-layout-swap",
     "after-pack-staging",
+    "after-shrink-relocate",
+    "after-shrink-truncate",
 ];
 
 pub(crate) fn failpoint(name: &str) -> Result<(), NativeStorageError> {

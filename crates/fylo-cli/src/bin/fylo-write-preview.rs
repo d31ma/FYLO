@@ -139,7 +139,8 @@ fn run(arguments: &[String]) -> Result<String, String> {
 }
 
 /// Collection maintenance: `push-schema` and `schema-head` (ADR 0017), the
-/// segment layout's `compact` and `migrate-layout` (ADR 0015), and `pack`
+/// segment layout's `compact` and `migrate-layout` (ADR 0015), `compact`
+/// of a whole `.fxdb` database when no collection is named, and `pack`
 /// (ADR 0016), which only reads the root it packs.
 fn run_layout(
     command: &str,
@@ -154,6 +155,18 @@ fn run_layout(
             .pack_database(Path::new(required_option(arguments, "--out")?), false)
             .map_err(|error| error.to_string())?;
         return Ok(Value::from(report.collections.len()));
+    }
+    if command == "compact" && option(arguments, "--collection").is_none() {
+        // A whole `.fxdb` database, and with `--shrink` its file.
+        let shrink = arguments.iter().any(|argument| argument == "--shrink");
+        let report = writer
+            .compact_database(shrink)
+            .map_err(|error| error.to_string())?;
+        return Ok(json!({
+            "collections": report.collections.len(),
+            "extentsMoved": report.extents_moved,
+            "fileBytes": report.file_bytes_after,
+        }));
     }
     let collection = required_option(arguments, "--collection")?;
     if command == "schema-head" {
@@ -431,7 +444,8 @@ fn usage() -> String {
      [--actor-groups <gid,...>]]\n  fylo-write-preview reshard --root <path> \
      --collection <name> --width <0-4>\n  fylo-write-preview push-schema --root <path> \
      --collection <name> --schema-dir <path>\n  fylo-write-preview schema-head --root <path> \
-     --collection <name>\n  fylo-write-preview pack --root <path> --out <db.fxdb>\n  \
+     --collection <name>\n  fylo-write-preview compact --root <path> [--collection <name> | \
+     --shrink]\n  fylo-write-preview pack --root <path> --out <db.fxdb>\n  \
      fylo-write-preview failpoints"
         .into()
 }

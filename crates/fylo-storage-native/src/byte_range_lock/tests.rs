@@ -34,6 +34,50 @@ fn reserved_bytes_sit_at_and_above_two_to_the_sixty_two() {
         LOCK_RANGE_START + 4096 + u64::from(u32::MAX)
     );
     assert_eq!(LockByte::collection_writer(7).to_string(), "writer 7");
+    assert_eq!(
+        LockByte::collection_compactor(0).offset(),
+        LOCK_RANGE_START + 4096 + (1 << 32)
+    );
+    assert!(
+        LockByte::collection_compactor(0).offset() > LockByte::collection_writer(u32::MAX).offset()
+    );
+    assert_eq!(LockByte::collection_compactor(7).to_string(), "compactor 7");
+}
+
+#[test]
+fn a_held_byte_changes_mode_and_keeps_the_old_one_when_refused() {
+    let (_dir, path) = database("brl-change-mode");
+    let file = ByteRangeLockFile::open(&path).expect("open");
+    let mut held = file
+        .try_lock(LockByte::LEASE, LockMode::Shared)
+        .expect("lock")
+        .expect("free byte");
+    held.change_mode(LockMode::Exclusive, Duration::from_millis(50))
+        .expect("nothing else holds it");
+    assert_eq!(held.mode(), LockMode::Exclusive);
+    assert!(
+        file.try_lock(LockByte::LEASE, LockMode::Shared)
+            .expect("try")
+            .is_none()
+    );
+    held.change_mode(LockMode::Shared, Duration::from_millis(50))
+        .expect("share again");
+    let other = file
+        .try_lock(LockByte::LEASE, LockMode::Shared)
+        .expect("try")
+        .expect("shared beside it");
+    let refused = held
+        .change_mode(LockMode::Exclusive, Duration::from_millis(20))
+        .unwrap_err();
+    assert_eq!(refused.kind(), ErrorKind::TimedOut);
+    assert_eq!(held.mode(), LockMode::Shared, "the old mode is taken back");
+    drop(other);
+    drop(held);
+    assert!(
+        file.try_lock(LockByte::LEASE, LockMode::Exclusive)
+            .expect("try")
+            .is_some()
+    );
 }
 
 #[test]

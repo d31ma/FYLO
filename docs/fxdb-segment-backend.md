@@ -166,14 +166,15 @@ so the next write opens the file and claims its collections afresh.
 **Claiming a collection.** A medium's first write claims its collection.
 Where writers share the file, the claim takes the collection's writer byte
 (`LockByte::collection_writer` of its directory block) exclusive, waiting up
-to the busy timeout, and holds it while the medium is open, so the bytes
-this process wrote but has not published stay its own; under the lease the
-process is the only writer and takes none. The claim then settles what a
+to the busy timeout, and holds it until the last write through the medium in
+this process ends, so the bytes this process writes stay its own until it
+publishes them; under the lease the process is the only writer and takes
+none, and keeps its claims while the medium is open. The claim then settles what a
 writer that stopped left in the collection, with the map read afresh: an
 active segment extent its slot names but the map does not show is taken
 back, and `locations` and `index` runs no checkpoint slot names are
 released. Writers of different collections run side by side; those of one
-collection take turns, each from its first write until its medium closes.
+collection take turns, write by write.
 
 **Changing the map.** The allocation byte (`LockByte::ALLOCATION`) guards
 the extent map: taking, taking back and releasing extents, writing snapshot
@@ -191,6 +192,82 @@ time, as it does for a directory root. A database root opens a medium per
 operation, so each write claims its collection again: a lock byte, the
 allocation byte, a superblock read and a scan of the collection's runs in
 the map, and a checkpoint only when a stopped writer left something.
+
+## Compaction and shrinking
+
+`fylo compact db.fxdb [--shrink]` (`NativeWriteRoot::compact_database`)
+compacts every collection of the database, one after another, as ADR 0015
+section 7 compacts a collection directory's segments; `fylo compact
+<collection> --root db.fxdb` and the machine's `compactCollection` compact
+one.
+
+**The compactor byte.** A second lock byte per collection,
+`LockByte::collection_compactor` of its directory block (2³² past the
+writer bytes), keeps one compaction of a collection at a time across
+processes and threads; it replaces the directory root's `compaction.lock`.
+A compaction takes it, waiting up to the busy timeout (`EBUSY` as
+`EROOTLOCKED` after it), and holds it from preparation to adoption. It
+takes the collection's writer byte only to prepare (seal the active segment,
+choose the segments, retrain the dictionary, take the copy's extent) and to
+adopt (append the compaction record, release what it replaces); the copy
+runs between, holding neither, so writers of the collection, in this
+process or another, commit while it copies, and readers never wait.
+Recovery leaves the segment extents nothing names alone while another
+holder has the compactor byte, since one may be that compaction's copy,
+and dropping a collection takes the byte first. Under the lease the
+process is the only writer, and the byte is decided inside it.
+
+**Shrinking** runs after the compactions, with the file held as its only
+writer: where writers share the file, the lease byte goes from shared to
+exclusive, waiting up to the busy timeout for the other writer processes to
+close the file (`EBUSY` if they do not), and back to shared after; under
+the lease this process is the only writer already. Readers take no lock, so
+they read on throughout: a location into a moved extent fails the header
+check and the reader retries with the newer map, as after a compaction. The
+shrink then repeats, after a map checkpoint that makes the extents released
+so far free:
+
+- the last extent in use, when a free extent lies before it, moves into the
+  lowest free one, each move committed as it would be on its own: a
+  segment by a compaction of that segment alone (the active one is sealed
+  first, so a new active extent is taken), a `locations`, `index` or
+  `schemas` run by a copy that a new checkpoint slot names while carrying
+  the other runs (resealed for the new checkpoint in an encrypted file), a
+  dictionary by a copy under the same id, which the slot names when it
+  named the original, and the map by the next checkpoint;
+- it stops when no free extent lies before the last in use, a move would not
+  free anything (the directory, a dropped collection), or three moves in a
+  row leave the end where it was.
+
+Then the free extents at the end are cut off (`ContainerFile::shrink_free_tail`,
+which checkpoints a map that no longer shows them before the file is cut),
+and holes are punched over the free extents left. The map is written copy
+on write, so a shrunk file keeps one free extent where the previous map
+was; it is punched where the filesystem punches holes. Support is probed
+by the punch itself on each shrink, not at open as ADR 0016 section 6 has
+it. A stop after any move leaves a whole database: a copy no slot names is
+released by the next claim of its collection (a run) or the next
+compaction (a segment or a dictionary), and a stop before the cut leaves a
+longer file, which opens as before. The failpoints `after-shrink-relocate`
+and `after-shrink-truncate` stop between the steps.
+
+In an encrypted database the compaction re-encodes each copied record with
+its own LSN, so the copy is sealed and bound exactly as a fresh write of
+that record, and the shrink's copies are sealed for their new checkpoint.
+A handle opened without the key is refused with `EKEY` before anything is
+locked or written.
+
+**Salvage.** `fylo salvage db.fxdb --out <root>`
+(`NativeWriteRoot::salvage_database`) writes every readable document and
+schema version of every collection as a new directory root in the file
+layout, as `fylo unpack` does, and changes nothing in the database. It
+steps over a damaged record by its sync marker and a segment extent whose
+header no longer reads by that header, reporting each as a damaged range
+and the documents they held as lost; a collection's registry keeps the
+schema versions up to the first one missing. The superblock, the map and
+the directory must still read: a file whose structures are damaged is not
+opened, and scanning its extents without them is left for later. An
+encrypted database needs its key and is salvaged as a plain root.
 
 ## Encryption and codecs
 
@@ -410,10 +487,10 @@ then runs as it does on a directory root, and `fylo <command> --root
 app.fxdb` works the same way.
 
 **Not yet** (they fail with `ENATIVE_UNSUPPORTED` or are left for later):
-compaction (it needs a second per-collection lock byte), salvage, setting a
-collection's validation mode (a rewrite of its block's static part), the root's
-own write options (exclusive mode and timeouts are the process defaults),
-and `fylo pack --sealed`.
+setting a collection's validation mode (a rewrite of its block's static
+part), the root's own write options (exclusive mode and timeouts are the
+process defaults), and `fylo pack --sealed`. Compaction, shrinking and
+salvage are in "Compaction and shrinking".
 
 ## Packing and unpacking
 
@@ -512,6 +589,7 @@ the same way.
   the head, and recovery has no descriptor to bring up to them.
 - **Not yet:** the record of the one-time import of a `fylo.schema` folder
   has no place in the file, so reading or writing it is refused with
-  `ENATIVE_UNSUPPORTED`. Compaction, which copies the schema records into
-  the segment it writes, is not run in a database yet; it already does so
-  for the container of a collection directory.
+  `ENATIVE_UNSUPPORTED`.
+- Compaction copies the schema records into the segment it writes, as it
+  does for the container of a collection directory ("Compaction and
+  shrinking").

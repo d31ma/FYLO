@@ -49,34 +49,47 @@ impl NativeWriteRoot {
             return Err(SegmentCompactor::maintenance_unsupported());
         }
         self.root.assert_profile_owned()?;
-        self.root.not_yet_in_database("compaction")?;
         let collection = self.root.collection(name)?;
         SegmentCompactor::require_segments(&collection)?;
-        let _compaction = CollectionWriteLock::acquire_profiled(
-            &self.root,
-            &collection.path.join("locks"),
-            "compaction.lock",
-        )?;
+        self.compact(&collection, None)
+    }
+
+    /// Compact `collection`, or with `only` move that one segment
+    /// ([`SegmentCompactor::prepare`]).
+    ///
+    /// The compaction lock is held throughout, so one compaction of the
+    /// collection runs at a time; the collection lock only while the
+    /// segments are chosen and while the copy is adopted. In a `.fxdb`
+    /// database the first is the collection's compactor byte and the
+    /// second its writer byte, so a writer in another process waits for
+    /// neither the copy nor the time between.
+    pub(super) fn compact(
+        &self,
+        collection: &NativeCollection,
+        only: Option<u64>,
+    ) -> Result<CompactionReport, NativeStorageError> {
+        let _compaction = CollectionWriteLock::acquire_compaction(&self.root, collection)?;
         // A container medium closes when nothing holds it, and the copy in
         // progress is part of its open: keep it from preparation to
         // adoption.
         let _medium = collection.segment_medium()?;
-        let Some(compactor) = self.prepare_compaction(&collection)? else {
+        let Some(compactor) = self.prepare_compaction(collection, only)? else {
             return Ok(CompactionReport::default());
         };
-        compactor.copy(&collection)?;
-        let _lock = self.lock_collection(&collection)?;
-        let (stored, active) = self.settled_active(&collection)?;
-        compactor.adopt(&collection, (&stored, active))
+        compactor.copy(collection)?;
+        let _lock = self.lock_collection(collection)?;
+        let (stored, active) = self.settled_active(collection)?;
+        compactor.adopt(collection, (&stored, active))
     }
 
     fn prepare_compaction(
         &self,
         collection: &NativeCollection,
+        only: Option<u64>,
     ) -> Result<Option<SegmentCompactor>, NativeStorageError> {
         let _lock = self.lock_collection(collection)?;
         let (stored, active) = self.settled_active(collection)?;
-        SegmentCompactor::prepare(collection, &stored, active)
+        SegmentCompactor::prepare(collection, &stored, active, only)
     }
 
     /// Recover the collection if needed and open its active segment.
@@ -170,7 +183,6 @@ impl NativeWriteRoot {
             return Err(SegmentCompactor::maintenance_unsupported());
         }
         self.root.assert_profile_owned()?;
-        self.root.not_yet_in_database("salvage")?;
         let collection = self.root.collection(name)?;
         SegmentCompactor::require_segments(&collection)?;
         Self::empty_output(out)?;
