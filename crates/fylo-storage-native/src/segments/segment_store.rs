@@ -6,7 +6,7 @@ use fylo_format::LogRecord;
 
 use super::{
     LocationState, LocationTable, SegmentDocument, SegmentLocation, SegmentMedium, SegmentReader,
-    TableCache,
+    TableCache, TableReach,
 };
 use crate::{NativeStorageError, NativeStorageErrorCode};
 
@@ -27,23 +27,30 @@ impl SegmentStore {
     const MAX_GAP_BYTES: u64 = 64 * 1024;
 
     /// The view a reader gets: the location log as far as the published
-    /// slot says it reaches.
+    /// slot says it reaches, or the records up to the slot's end.
     pub(crate) fn open(medium: Arc<dyn SegmentMedium>) -> Result<Self, NativeStorageError> {
         let slot = medium.require_slot()?;
-        let table =
-            TableCache::shared().table(&*medium, slot.table_epoch, slot.locations_length)?;
+        let reach = TableReach::published(&*medium, &slot);
+        let table = TableCache::shared().table(&*medium, slot.table_epoch, reach)?;
         Ok(Self::with(medium, table))
     }
 
     /// The view a writer plans against under the collection lock: every
     /// location row already appended, including those of busy-period
-    /// members that have applied but not yet published.
+    /// members that have applied but not yet published, or every record
+    /// written to the active segment.
     pub(crate) fn open_for_writer(
         medium: Arc<dyn SegmentMedium>,
     ) -> Result<Self, NativeStorageError> {
         let slot = medium.require_slot()?;
-        let wal_length = medium.location_log_length()?;
-        let table = TableCache::shared().table(&*medium, slot.table_epoch, wal_length)?;
+        let written = TableReach::written(&*medium)?;
+        let cached = if medium.has_location_log() {
+            written
+        } else {
+            TableReach::published(&*medium, &slot)
+        };
+        let table =
+            TableCache::shared().table_beyond(&*medium, slot.table_epoch, (cached, written))?;
         Ok(Self::with(medium, table))
     }
 

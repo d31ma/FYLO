@@ -147,27 +147,32 @@ impl LogSegment {
         ))
     }
 
-    /// Create document segment `number`, opening with a checkpoint record
-    /// whose manifest is `manifest`, at sequence number `first_lsn`.
+    /// Create the collection's next document segment, opening with a
+    /// checkpoint record whose manifest is `manifest`, at sequence number
+    /// `first_lsn`. The medium numbers it.
     pub(crate) fn create_documents(
         medium: &dyn SegmentMedium,
-        (number, first_lsn): (u64, u64),
-        manifest: Vec<u8>,
+        first_lsn: u64,
+        manifest: &[u8],
         generation: u64,
     ) -> Result<Self, NativeStorageError> {
-        let opening = SegmentOpening {
+        let opening = |sequence| SegmentOpening {
             kind: LogSegmentKind::Documents,
-            sequence: number,
+            sequence,
             first_lsn,
             generation,
         };
-        let bytes = Self::opening_bytes(&opening, manifest)?;
-        let handle = medium.create_segment(number, &bytes)?;
+        let length = std::cell::Cell::new(0);
+        let (number, handle) = medium.create_segment(&|number| {
+            let bytes = Self::opening_bytes(&opening(number), manifest.to_vec())?;
+            length.set(bytes.len());
+            Ok(bytes)
+        })?;
         Ok(Self::created(
-            &opening,
+            &opening(number),
             handle,
             (None, medium.max_segment_bytes()),
-            bytes.len(),
+            length.get(),
         ))
     }
 

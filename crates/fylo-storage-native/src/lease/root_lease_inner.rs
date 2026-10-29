@@ -22,6 +22,15 @@ impl RootLeaseInner {
         root: impl AsRef<Path>,
         profile: FilesystemProfile,
     ) -> Result<Self, NativeStorageError> {
+        // A `.fxdb` database is owned through the lease of its own file
+        // (ADR 0016 section 7); a root lease, and the queues and machine
+        // sessions held under one, need a directory root. A missing root
+        // named `*.fxdb` names a database, never a directory to create.
+        if crate::NativeRoot::names_database(root.as_ref()) {
+            return Err(crate::NativeRoot::database_unsupported(
+                "a .fxdb database takes no root lease; queues and machine sessions need a directory root",
+            ));
+        }
         if profile == FilesystemProfile::Native {
             fylo_vfs::create_dir_all(root.as_ref()).map_err(NativeStorageError::io)?;
         } else if !fylo_vfs::metadata(root.as_ref())

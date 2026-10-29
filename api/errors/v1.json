@@ -222,6 +222,10 @@
             "retryable": false
         },
         {
+            "code": "ELAYOUTUNSUPPORTED",
+            "retryable": false
+        },
+        {
             "code": "EENGINE_STORAGE",
             "retryable": false
         },

@@ -93,6 +93,8 @@ pub struct ContainerExtentAllocator {
     next_sequence: u64,
     /// Extents taken since the last durable map, which that map shows free.
     unmapped: std::collections::BTreeSet<u64>,
+    /// Whether anything changed since the last durable map.
+    changed: bool,
 }
 
 impl ContainerExtentAllocator {
@@ -103,6 +105,7 @@ impl ContainerExtentAllocator {
             slots: vec![Slot::Reserved],
             next_sequence,
             unmapped: std::collections::BTreeSet::new(),
+            changed: false,
         }
     }
 
@@ -174,6 +177,7 @@ impl ContainerExtentAllocator {
             slots,
             next_sequence,
             unmapped: std::collections::BTreeSet::new(),
+            changed: false,
         })
     }
 
@@ -194,6 +198,7 @@ impl ContainerExtentAllocator {
     /// Lowest first keeps data drifting toward the front of the file, so a
     /// later tail truncation has less to move.
     pub fn allocate(&mut self, kind: ContainerExtentKind, owner: u32) -> ContainerExtentAllocation {
+        self.changed = true;
         let sequence = self.next_sequence;
         self.next_sequence += 1;
         let taken = Slot::InUse {
@@ -231,6 +236,7 @@ impl ContainerExtentAllocator {
         owner: u32,
         count: usize,
     ) -> Vec<ContainerExtentAllocation> {
+        self.changed = true;
         let mut start = self.slots.len();
         let mut run = 0;
         for (index, slot) in self.slots.iter().enumerate() {
@@ -287,6 +293,7 @@ impl ContainerExtentAllocator {
             } => {
                 *sealed = true;
                 *live_bytes = live;
+                self.changed = true;
                 Ok(())
             }
             _ => Err(ContainerAllocatorError::NotInUse),
@@ -305,6 +312,46 @@ impl ContainerExtentAllocator {
             return Err(ContainerAllocatorError::NotInUse);
         }
         *slot = Slot::Released;
+        self.changed = true;
+        Ok(())
+    }
+
+    /// Mark a free extent as holding allocation `sequence`, which a slot
+    /// names although the durable map predates it, growing the map to
+    /// reach it. The extent counts as unmapped until the next checkpoint,
+    /// and the sequence counter moves past `sequence`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `OutOfRange` for extent 0 and `InconsistentMap` when the
+    /// extent is not free.
+    pub fn reclaim(
+        &mut self,
+        index: u64,
+        kind: ContainerExtentKind,
+        owner: u32,
+        sequence: u64,
+    ) -> Result<(), ContainerAllocatorError> {
+        let at = usize::try_from(index)
+            .ok()
+            .filter(|at| *at >= 1)
+            .ok_or(ContainerAllocatorError::OutOfRange)?;
+        if self.slots.len() <= at {
+            self.slots.resize(at + 1, Slot::Free);
+        }
+        if self.slots[at] != Slot::Free {
+            return Err(ContainerAllocatorError::InconsistentMap);
+        }
+        self.slots[at] = Slot::InUse {
+            kind,
+            owner,
+            sequence,
+            sealed: false,
+            live_bytes: 0,
+        };
+        self.unmapped.insert(index);
+        self.next_sequence = self.next_sequence.max(sequence + 1);
+        self.changed = true;
         Ok(())
     }
 
@@ -361,6 +408,15 @@ impl ContainerExtentAllocator {
             }
         }
         self.unmapped.clear();
+        self.changed = false;
+    }
+
+    /// Whether the in-memory map differs from the last durable one: an
+    /// extent taken, sealed or released since, which a checkpoint would
+    /// record.
+    #[must_use]
+    pub fn has_unsaved_changes(&self) -> bool {
+        self.changed
     }
 
     /// Whether the durable map already shows `index` in use. An extent taken
@@ -423,6 +479,7 @@ impl ContainerExtentAllocator {
     pub fn truncate_free_tail(&mut self) -> u64 {
         while self.slots.len() > 1 && self.slots.last() == Some(&Slot::Free) {
             self.slots.pop();
+            self.changed = true;
         }
         self.extent_count()
     }
@@ -468,6 +525,23 @@ impl ContainerExtentAllocator {
                 sequence,
                 ..
             }) => Some((*kind, *owner, *sequence)),
+            _ => None,
+        }
+    }
+
+    /// The live bytes an extent was sealed with, or `None` while it is not
+    /// sealed (active, free, released or past the end of the map).
+    #[must_use]
+    pub fn sealed_live_bytes(&self, index: u64) -> Option<u64> {
+        match usize::try_from(index)
+            .ok()
+            .and_then(|at| self.slots.get(at))
+        {
+            Some(Slot::InUse {
+                sealed: true,
+                live_bytes,
+                ..
+            }) => Some(*live_bytes),
             _ => None,
         }
     }
@@ -629,6 +703,26 @@ mod tests {
         assert_eq!(allocator.free_extents(), vec![2]);
         assert_eq!(allocator.allocate(SEGMENT, 1).index, 2);
         assert_eq!(allocator.allocate(SEGMENT, 1).index, 4);
+    }
+
+    #[test]
+    fn tracks_changes_since_the_durable_map() {
+        let mut allocator = ContainerExtentAllocator::new(1);
+        assert!(!allocator.has_unsaved_changes());
+        allocator.allocate(SEGMENT, 1);
+        assert!(allocator.has_unsaved_changes());
+        allocator.checkpoint_completed();
+        assert!(!allocator.has_unsaved_changes());
+        allocator.seal(1, 77).unwrap();
+        assert!(allocator.has_unsaved_changes());
+        assert_eq!(allocator.sealed_live_bytes(1), Some(77));
+        let rebuilt = ContainerExtentAllocator::from_map(2, 2, &allocator.map_pages()).unwrap();
+        assert!(!rebuilt.has_unsaved_changes());
+        assert_eq!(rebuilt.sealed_live_bytes(1), Some(77));
+        allocator.checkpoint_completed();
+        allocator.release(1).unwrap();
+        assert!(allocator.has_unsaved_changes());
+        assert_eq!(allocator.sealed_live_bytes(1), None);
     }
 
     #[test]

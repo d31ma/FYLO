@@ -389,6 +389,7 @@ dependencies = [
  "base64",
  "fylo-format",
  "fylo-query",
+ "fylo-storage-native",
  "fylo-test-support",
  "fylo-vfs",
  "getrandom 0.4.3",

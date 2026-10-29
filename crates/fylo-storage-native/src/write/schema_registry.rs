@@ -151,8 +151,10 @@ impl NativeWriteRoot {
         verify: impl FnOnce(&NativeCollection) -> Result<(), NativeStorageError>,
     ) -> Result<(), NativeStorageError> {
         self.root.assert_profile_owned()?;
+        self.root
+            .not_yet_in_database("pushing a schema version into a .fxdb database")?;
         let collection = self.root.collection(collection_name)?;
-        let _lock = self.lock_collection(&collection.path)?;
+        let _lock = self.lock_collection(&collection)?;
         self.recover_locked(&collection)?;
         // Read again under the lock: another push may have moved the head.
         let collection = self.root.collection(collection_name)?;
@@ -179,6 +181,8 @@ impl NativeWriteRoot {
     ///
     /// Returns an error for an unsafe path or an interrupted durable write.
     pub fn write_schema_import_record(&self, record: &[u8]) -> Result<(), NativeStorageError> {
+        self.root
+            .not_yet_in_database("recording a schema import in a .fxdb database")?;
         self.root.assert_profile_owned()?;
         let directory = self.registry_directory_created()?;
         durable_replace(&directory.join(IMPORT_RECORD), record)

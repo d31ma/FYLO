@@ -1,8 +1,10 @@
 //! Append-only document segments (ADR 0015): the read side, and the formats
 //! the write side shares with it.
 
+mod container_medium;
 mod directory_medium;
 mod generation_slots;
+mod index_delta;
 mod location_state;
 mod location_table;
 mod positioned_read;
@@ -19,9 +21,12 @@ mod segment_reader;
 mod segment_store;
 mod slot_record;
 mod table_cache;
+mod table_reach;
 
+pub(crate) use container_medium::{ContainerMedium, ContainerOpen};
 pub(crate) use directory_medium::{DirectoryMedium, FileSegment};
 use generation_slots::GenerationSlots;
+pub(crate) use index_delta::IndexDelta;
 pub(crate) use location_state::LocationState;
 pub(crate) use location_table::LocationTable;
 use positioned_read::PositionedRead;
@@ -38,6 +43,18 @@ pub(crate) use segment_reader::SegmentReader;
 pub(crate) use segment_store::SegmentStore;
 pub(crate) use slot_record::SlotRecord;
 pub(crate) use table_cache::TableCache;
+pub(crate) use table_reach::TableReach;
+
+/// The medium of the segment collection in directory `collection`: its
+/// `.fxdb` container when the directory holds one, else `segments/`.
+pub(crate) fn medium_of(
+    collection: &std::path::Path,
+) -> Result<std::sync::Arc<dyn SegmentMedium>, crate::NativeStorageError> {
+    Ok(match ContainerMedium::of(collection)? {
+        Some(medium) => std::sync::Arc::new(medium),
+        None => DirectoryMedium::shared(collection),
+    })
+}
 
 impl SlotRecord {
     /// A placeholder generation state for a collection whose slots are both

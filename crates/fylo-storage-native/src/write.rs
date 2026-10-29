@@ -145,6 +145,10 @@ pub enum SqlMutationResultKind {
 pub struct NativeWriteRoot {
     root: NativeRoot,
     config: super::RootConfig,
+    /// Whether a segment collection this writer creates keeps its segments
+    /// in a `.fxdb` container instead of `segments/`. Only tests set it,
+    /// through `with_segment_container`, until `.fxdb` roots exist.
+    segment_container: bool,
 }
 
 impl NativeWriteRoot {
@@ -154,10 +158,17 @@ impl NativeWriteRoot {
     ///
     /// Returns an error when the root cannot be opened safely.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, NativeStorageError> {
-        Ok(Self {
-            root: NativeRoot::open(path)?,
+        Ok(Self::writing(NativeRoot::open(path)?))
+    }
+
+    /// A writer over `root`. A `.fxdb` database root opens its file to
+    /// write on the first write, as every container does.
+    fn writing(root: NativeRoot) -> Self {
+        Self {
+            root,
             config: super::RootConfig::default(),
-        })
+            segment_container: false,
+        }
     }
 
     /// Open a selected profile, initializing only a new empty owned EFS root.
@@ -193,10 +204,7 @@ impl NativeWriteRoot {
                 super::profile_manifest::ProfileManifest::initialize(&repository, lease)?;
             }
         }
-        Ok(Self {
-            root: NativeRoot::open_profiled(options)?,
-            config: super::RootConfig::default(),
-        })
+        Ok(Self::writing(NativeRoot::open_profiled(options)?))
     }
 
     /// Selected immutable metadata representation.
@@ -213,15 +221,11 @@ impl NativeWriteRoot {
 
     fn lock_collection(
         &self,
-        path: &Path,
+        collection: &super::NativeCollection,
     ) -> Result<commit_log::CollectionGuard, NativeStorageError> {
         self.root.assert_profile_owned()?;
-        let exclusive = commit_log::CommitQueue::shared(path).exclusive()?;
-        let file = CollectionWriteLock::acquire_profiled(
-            &self.root,
-            &path.join("locks"),
-            "collection.lock",
-        )?;
+        let exclusive = commit_log::CommitQueue::shared(&collection.path).exclusive()?;
+        let file = CollectionWriteLock::acquire_for(&self.root, collection, "collection.lock")?;
         Ok(commit_log::CollectionGuard::new(file, exclusive))
     }
 
@@ -322,6 +326,17 @@ impl NativeWriteRoot {
         self
     }
 
+    /// Keep the segments of every segment collection this writer creates in
+    /// a `.fxdb` container in the collection directory, with 1 MiB extents
+    /// (`docs/fxdb-segment-backend.md`, step 3). Test support only.
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_segment_container(mut self) -> Self {
+        self.segment_container = true;
+        self
+    }
+
     /// Runtime knobs this writer was opened with.
     #[must_use]
     pub fn config(&self) -> super::RootConfig {
@@ -385,12 +400,13 @@ impl NativeWriteRoot {
         mode: super::ValidationMode,
     ) -> Result<Option<super::ValidationMode>, NativeStorageError> {
         self.root.assert_profile_owned()?;
+        self.root.not_yet_in_database("setting a validation mode")?;
         let collection = self.root.collection(collection_name)?;
         let previous = collection.validation();
         if previous == Some(mode) {
             return Ok(previous);
         }
-        let _lock = self.lock_collection(&collection.path)?;
+        let _lock = self.lock_collection(&collection)?;
         let catalog = self
             .root
             .catalog_root()
@@ -426,10 +442,10 @@ impl NativeWriteRoot {
         path: impl AsRef<Path>,
         repository_root: impl AsRef<Path>,
     ) -> Result<Self, NativeStorageError> {
-        Ok(Self {
-            root: NativeRoot::open_with_repository(path, repository_root)?,
-            config: super::RootConfig::default(),
-        })
+        Ok(Self::writing(NativeRoot::open_with_repository(
+            path,
+            repository_root,
+        )?))
     }
 
     /// Canonical root identity.
@@ -458,12 +474,12 @@ impl NativeWriteRoot {
         self.root.assert_profile_owned()?;
         let opened = self.root.collection(collection)?;
         let migrated = {
-            let _lock = self.lock_collection(&opened.path)?;
+            let _lock = self.lock_collection(&opened)?;
             self.finish_layout_migration_if_pending(&opened)?
         };
         // A finished migration changed the layout the first handle names.
         let collection = self.root.collection(collection)?;
-        let _lock = self.lock_collection(&collection.path)?;
+        let _lock = self.lock_collection(&collection)?;
         Ok(self.recover_locked(&collection)? || migrated)
     }
 
@@ -522,7 +538,7 @@ impl NativeWriteRoot {
                 (&metadata, access),
             );
         }
-        let _lock = self.lock_collection(&collection.path)?;
+        let _lock = self.lock_collection(&collection)?;
         self.recover_locked(&collection)?;
         let target = collection
             .path
@@ -636,7 +652,7 @@ impl NativeWriteRoot {
                 "put_raw_file requires a file collection",
             ));
         }
-        let _lock = self.lock_collection(&collection.path)?;
+        let _lock = self.lock_collection(&collection)?;
         self.recover_locked(&collection)?;
         if collection.raw_file_ids()?.iter().any(|id| id == identifier) {
             return Err(NativeStorageError::new(
@@ -791,7 +807,7 @@ impl NativeWriteRoot {
             return self
                 .patch_document_logged(&collection, identifier, actor, |_| Ok(canonical.clone()));
         }
-        let _lock = self.lock_collection(&collection.path)?;
+        let _lock = self.lock_collection(&collection)?;
         self.recover_locked(&collection)?;
         let stored = collection.read_document(identifier)?;
         require_write_access(stored.access, actor)?;
@@ -901,7 +917,7 @@ impl NativeWriteRoot {
             self.patch_document_logged(&collection, identifier, actor, patch)
         } else {
             (|| {
-                let _lock = self.lock_collection(&collection.path)?;
+                let _lock = self.lock_collection(&collection)?;
                 self.recover_locked(&collection)?;
                 let stored = collection.read_document(identifier)?;
                 require_write_access(stored.access, actor)?;
@@ -1028,7 +1044,7 @@ impl NativeWriteRoot {
                 actor,
             );
         }
-        let _lock = self.lock_collection(&collection.path)?;
+        let _lock = self.lock_collection(&collection)?;
         self.recover_locked(&collection)?;
         let (target, access) = record_target(&collection, identifier)?;
         require_write_access(access, actor)?;
@@ -1104,7 +1120,7 @@ impl NativeWriteRoot {
         if self.uses_log(&collection) && (cfg!(unix) || collection.uses_segments()) {
             return self.set_record_access_logged(&collection, identifier, access, actor);
         }
-        let _lock = self.lock_collection(&collection.path)?;
+        let _lock = self.lock_collection(&collection)?;
         self.recover_locked(&collection)?;
         let (target, descriptor) = record_target(&collection, identifier)?;
         require_write_access(descriptor, actor)?;
@@ -1136,7 +1152,7 @@ impl NativeWriteRoot {
         if self.uses_log(&collection) {
             return self.delete_document_logged(&collection, identifier, actor);
         }
-        let _lock = self.lock_collection(&collection.path)?;
+        let _lock = self.lock_collection(&collection)?;
         self.recover_locked(&collection)?;
         let (source, access) = record_target(&collection, identifier)?;
         require_write_access(access, actor)?;
@@ -1210,7 +1226,7 @@ impl NativeWriteRoot {
         if self.uses_log(&collection) {
             return self.restore_document_logged(&collection, identifier, actor);
         }
-        let _lock = self.lock_collection(&collection.path)?;
+        let _lock = self.lock_collection(&collection)?;
         self.recover_locked(&collection)?;
         match record_target(&collection, identifier) {
             Ok(_) => {
@@ -1302,13 +1318,16 @@ impl NativeWriteRoot {
                 ),
             ));
         }
+        self.root.refuse_in_database(
+            "a .fxdb database collection keeps the shard width it was created with",
+        )?;
         let collection = self.root.collection(collection_name)?;
         let recorded = collection.shard_width();
         let previous = collection.previous_shard_widths().to_vec();
         if recorded == width && previous.is_empty() {
             return Ok(0);
         }
-        let _lock = self.lock_collection(&collection.path)?;
+        let _lock = self.lock_collection(&collection)?;
         self.recover_locked(&collection)?;
         if collection.uses_segments() {
             // Segments are not sharded: the width only shapes an export or a
@@ -1402,7 +1421,7 @@ impl NativeWriteRoot {
         if collection.uses_segments() {
             return self.rebuild_segment_collection(&collection);
         }
-        let _lock = self.lock_collection(&collection.path)?;
+        let _lock = self.lock_collection(&collection)?;
         self.recover_locked(&collection)?;
         let mut transaction = Transaction::begin(self, &collection, "rebuild-index")?;
         let outcome = (|| {
@@ -1496,6 +1515,12 @@ impl NativeWriteRoot {
         &self,
         collection_name: &str,
     ) -> Result<Option<super::NativeCollection>, NativeStorageError> {
+        if let Some(database) = self.root.database() {
+            if database.collection(collection_name).is_none() {
+                return Ok(None);
+            }
+            return self.root.collection(collection_name).map(Some);
+        }
         let present = [".collections", ".buckets"].into_iter().try_fold(
             false,
             |found, namespace| -> Result<bool, NativeStorageError> {
@@ -1549,6 +1574,11 @@ impl NativeWriteRoot {
         versioned: Option<bool>,
         layout: Option<CollectionLayout>,
     ) -> Result<bool, NativeStorageError> {
+        if self.root.is_database() && layout == Some(CollectionLayout::Files) {
+            return Err(NativeRoot::database_unsupported(
+                "a .fxdb database keeps every collection in segments, not the file layout",
+            ));
+        }
         if layout == Some(CollectionLayout::Segments) && kind != CollectionKind::Document {
             return Err(NativeStorageError::new(
                 NativeStorageErrorCode::Unsupported,
@@ -1573,6 +1603,9 @@ impl NativeWriteRoot {
     ) -> Result<bool, NativeStorageError> {
         self.root.assert_profile_owned()?;
         super::validate_collection_name(collection_name)?;
+        if self.root.is_database() {
+            return self.create_database_collection(collection_name, kind, versioned);
+        }
         let existing = self.collection_if_present(collection_name)?;
         if let Some(collection) = &existing
             && collection.kind != kind
@@ -1644,6 +1677,13 @@ impl NativeWriteRoot {
             None => CollectionLayout::Files,
         };
         if layout == CollectionLayout::Segments {
+            if existing.is_none() && self.segment_container {
+                commit_log::SegmentLayout::create_container(
+                    &self.root,
+                    &collection_root,
+                    collection_name,
+                )?;
+            }
             commit_log::SegmentLayout::create_empty(&self.root, &collection_root, 0)?;
             let collection = self.root.collection(collection_name)?;
             commit_log::SegmentLayout::write_marker(&generation_path(self, &collection))?;
@@ -1671,6 +1711,57 @@ impl NativeWriteRoot {
         write_if_missing(&index.join("keys.snapshot"), b"")?;
         write_if_missing(&index.join("keys.wal"), b"")?;
         Ok(existing.is_none())
+    }
+
+    /// Create a collection of a `.fxdb` database: a directory block whose
+    /// descriptor names a document collection in segments, and the first
+    /// segment and slot of its layout, all in the file. A collection whose
+    /// block exists but whose slots do not is completed.
+    fn create_database_collection(
+        &self,
+        collection_name: &str,
+        kind: CollectionKind,
+        versioned: Option<bool>,
+    ) -> Result<bool, NativeStorageError> {
+        let database = self.root.database().ok_or_else(|| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                "a directory root has no .fxdb database",
+            )
+        })?;
+        if kind == CollectionKind::File {
+            return Err(NativeRoot::database_unsupported(
+                "a .fxdb database holds no file collections or buckets",
+            ));
+        }
+        if versioned == Some(true) {
+            return Err(NativeRoot::database_unsupported(
+                "a .fxdb database has no version control",
+            ));
+        }
+        let created = database.collection(collection_name).is_none() && {
+            let width = super::validated_shard_width(self.config.shard_width)?;
+            let mut descriptor = Map::new();
+            descriptor.insert("version".into(), Value::from(1));
+            descriptor.insert("kind".into(), Value::from("document"));
+            descriptor.insert("shardWidth".into(), Value::from(width));
+            descriptor.insert(
+                "layout".into(),
+                Value::from(CollectionLayout::Segments.as_str()),
+            );
+            database.add_collection(
+                collection_name,
+                &crate::segments::ContainerMedium::descriptor(descriptor),
+            )?
+        };
+        let collection = self.root.collection(collection_name)?;
+        let _lock = self.lock_collection(&collection)?;
+        commit_log::SegmentLayout::create_in_database(
+            &*collection.segment_medium()?,
+            &collection.path,
+            0,
+        )?;
+        Ok(created)
     }
 
     /// Whether a collection created now gets the segment layout: a document
@@ -1706,8 +1797,11 @@ impl NativeWriteRoot {
         // Recover first: dropping a collection mid-transaction would discard
         // the journal that says what the interrupted write still owes.
         {
-            let _lock = self.lock_collection(&collection.path)?;
+            let _lock = self.lock_collection(&collection)?;
             self.recover_locked(&collection)?;
+            if let Some(database) = self.root.database() {
+                return database.drop_collection(collection_name);
+            }
         }
         remove_dir_durable(&collection.path)?;
         if collection.uses_segments() {
@@ -1900,7 +1994,7 @@ impl NativeWriteRoot {
             }
         }
         policy.restart();
-        let _lock = self.lock_collection(&collection.path)?;
+        let _lock = self.lock_collection(collection)?;
         self.recover_locked(collection)?;
         let mut documents = matching_documents(collection, query, actor)?;
         for document in &mut documents {
@@ -1932,7 +2026,7 @@ impl NativeWriteRoot {
         if self.uses_log(&collection) {
             return self.sql_delete_logged(&collection, &query, actor);
         }
-        let _lock = self.lock_collection(&collection.path)?;
+        let _lock = self.lock_collection(&collection)?;
         self.recover_locked(&collection)?;
         let documents = matching_documents(&collection, &query, actor)?;
         self.write_sql_deletes(&collection, &documents)?;
@@ -2042,6 +2136,11 @@ impl NativeWriteRoot {
         collection: &super::NativeCollection,
     ) -> Result<bool, NativeStorageError> {
         self.root.assert_profile_owned()?;
+        // A collection of a `.fxdb` database writes only through its log,
+        // which recovery has settled; it has no transaction journal.
+        if collection.database_block().is_some() {
+            return Ok(false);
+        }
         let generation = collection.stored_generation()?;
         if generation.state == super::GenerationStatus::Stable {
             cleanup_orphan_transactions(self, collection)?;
@@ -3088,15 +3187,44 @@ struct LockRecord {
     ts: u64,
 }
 
+/// What keeps other writers off one collection while it is written.
 #[derive(Debug)]
-struct CollectionWriteLock {
+enum CollectionWriteLock {
+    /// A lock file in the collection's `locks/` directory.
+    File { _held: LockFile },
+    /// The collection's writer byte in its `.fxdb` database.
+    Database {
+        _held: crate::container_database::ContainerWriterLock,
+    },
+}
+
+/// A held lock file, removed when dropped if this owner still holds it.
+#[derive(Debug)]
+struct LockFile {
     path: PathBuf,
     owner: String,
     owning_root: Option<NativeRoot>,
 }
 
 impl CollectionWriteLock {
-    fn acquire_at(locks: &Path, name: &str) -> Result<Self, NativeStorageError> {
+    /// The lock named `name` of `collection`: a file in its `locks/`
+    /// directory, or in a `.fxdb` database, the collection's writer byte,
+    /// which stands for every lock the collection's writer takes.
+    fn acquire_for(
+        root: &NativeRoot,
+        collection: &super::NativeCollection,
+        name: &str,
+    ) -> Result<Self, NativeStorageError> {
+        if let (Some(database), Some(block)) = (root.database(), collection.database_block()) {
+            root.assert_profile_owned()?;
+            return database
+                .lock_writer(block)
+                .map(|held| Self::Database { _held: held });
+        }
+        Self::acquire_profiled(root, &collection.path.join("locks"), name)
+    }
+
+    fn acquire_at(locks: &Path, name: &str) -> Result<LockFile, NativeStorageError> {
         fs::create_dir_all(locks).map_err(NativeStorageError::io)?;
         let path = locks.join(name);
         let owner = unique_name("rust-owner");
@@ -3116,7 +3244,7 @@ impl CollectionWriteLock {
                 ));
             }
         }
-        Ok(Self {
+        Ok(LockFile {
             path,
             owner,
             owning_root: None,
@@ -3134,7 +3262,7 @@ impl CollectionWriteLock {
             if root.owning_lease().is_some() {
                 lock.owning_root = Some(root.clone());
             }
-            return Ok(lock);
+            return Ok(Self::File { _held: lock });
         }
         let lease = root.owning_lease().ok_or_else(|| {
             NativeStorageError::new(
@@ -3176,15 +3304,17 @@ impl CollectionWriteLock {
             }
         }
         root.assert_profile_owned()?;
-        Ok(Self {
-            path,
-            owner,
-            owning_root: Some(root.clone()),
+        Ok(Self::File {
+            _held: LockFile {
+                path,
+                owner,
+                owning_root: Some(root.clone()),
+            },
         })
     }
 }
 
-impl Drop for CollectionWriteLock {
+impl Drop for LockFile {
     fn drop(&mut self) {
         if self
             .owning_root

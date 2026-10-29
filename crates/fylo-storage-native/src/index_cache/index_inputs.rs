@@ -22,7 +22,7 @@ impl IndexInputs {
             .checked_add(snapshot.as_bytes().len())
     }
 
-    pub(super) fn merge(&self) -> Result<IndexSnapshot, NativeStorageError> {
+    pub(crate) fn merge(&self) -> Result<IndexSnapshot, NativeStorageError> {
         let snapshot = Self::read_snapshot(&self.snapshot)?;
         let mut keys = Self::snapshot_keys(&snapshot);
         Self::apply_log(&mut keys, self.log.as_deref().unwrap_or_default());

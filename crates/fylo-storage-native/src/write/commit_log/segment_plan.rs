@@ -174,7 +174,9 @@ impl LoggedPlan for SegmentPlan {
         collection: &NativeCollection,
         placed: &PlacedRecord,
     ) -> Result<(), (NativeStorageError, bool)> {
-        Self::append_locations(&*collection.segment_medium(), &self.rows(placed))
+        collection
+            .segment_medium()
+            .and_then(|medium| Self::append_locations(&*medium, &self.rows(placed)))
             .map_err(|error| (error, false))?;
         let delta = NativeWriteRoot::index_lines(&self.index_removed, &self.index_added);
         NativeWriteRoot::append_index(collection, &delta).map_err(|error| (error, true))?;
@@ -187,7 +189,7 @@ impl LoggedPlan for SegmentPlan {
         collection: &NativeCollection,
         index_applied: bool,
     ) -> Result<(), NativeStorageError> {
-        Self::append_locations(&*collection.segment_medium(), &self.undo_rows())?;
+        Self::append_locations(&*collection.segment_medium()?, &self.undo_rows())?;
         if index_applied {
             let inverse = NativeWriteRoot::index_lines(&self.index_added, &self.index_removed);
             NativeWriteRoot::append_index(collection, &inverse)?;

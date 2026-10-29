@@ -11,7 +11,7 @@ use super::segment_plan::SegmentPlan;
 use super::segment_rebuild::SegmentRebuild;
 use crate::segments::{
     LocationTable, SegmentCheckpointManifest, SegmentCommitManifest, SegmentLocation,
-    SegmentMedium, TableCache,
+    SegmentMedium, TableCache, TableReach,
 };
 use crate::{GenerationState, NativeCollection, NativeStorageError, NativeStorageErrorCode};
 
@@ -33,7 +33,7 @@ impl SegmentRecovery {
         collection: &NativeCollection,
         stored: &GenerationState,
     ) -> Result<(), NativeStorageError> {
-        let medium = collection.segment_medium();
+        let medium = collection.segment_medium()?;
         let (number, scan) = Self::active_scan(&*medium, stored)?;
         Self::require_torn_tail_only(&*medium, number, &scan)?;
         let seen = scan
@@ -136,7 +136,8 @@ impl SegmentRecovery {
             return Ok(false);
         }
         let aborted = SegmentRebuild::aborted([scan])?;
-        let mut table = LocationTable::load(medium, checkpoint.locations_wal_length)?;
+        let reach = TableReach::checkpoint(medium, checkpoint.locations_wal_length);
+        let mut table = LocationTable::load(medium, reach)?;
         let lengths = SegmentRebuild::frame_lengths(scan);
         for (index, (offset, record)) in scan.records.iter().enumerate().skip(start + 1) {
             let rows = match record.kind {
@@ -182,6 +183,12 @@ impl SegmentRecovery {
             && medium.location_log_length()? >= checkpoint.locations_wal_length;
         if !locations_match {
             return Ok(false);
+        }
+        if medium.keeps_index() {
+            // Nothing to cut: the index past its snapshot is the records'.
+            return Ok(medium.read_index_snapshot()?.is_some_and(|snapshot| {
+                crate::sha256_hex(&snapshot) == checkpoint.snapshot_sha256
+            }));
         }
         let keys = collection.path.join("index");
         let keys_wal = keys.join("keys.wal");
@@ -235,8 +242,7 @@ impl SegmentRecovery {
         medium: &dyn SegmentMedium,
         active: u64,
     ) -> Result<(), NativeStorageError> {
-        let wal_length = medium.location_log_length()?;
-        let table = LocationTable::load(medium, wal_length)?;
+        let table = LocationTable::load(medium, TableReach::written(medium)?)?;
         let referenced: BTreeSet<u64> = table.rows().iter().map(|row| row.segment).collect();
         for number in medium.segment_numbers()? {
             if number != active && !referenced.contains(&number) {

@@ -2,54 +2,109 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use super::{LocationState, SegmentLocation, SegmentMedium};
+use super::{LocationState, RecordPosition, SegmentLocation, SegmentMedium, TableReach};
 use crate::NativeStorageError;
 
-/// Every document's newest location: the sorted snapshot with the location
-/// log's later rows laid over it.
+/// Every document's newest location: the sorted snapshot with later rows
+/// laid over it.
 ///
-/// The log is applied in file order and the last row for an identifier
-/// wins. Both files are derived and rebuild from segments. A row in the
-/// `absent` state with sequence number zero only undoes a rolled-back
-/// commit's row, and folding drops it.
+/// The later rows come from the location log, applied in file order, or,
+/// for a medium without one, from replaying the records after the
+/// snapshot's position. The last row for an identifier wins. Both files
+/// are derived and rebuild from segments. A row in the `absent` state with
+/// sequence number zero only undoes a rolled-back commit's row, and folding
+/// drops it.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct LocationTable {
     snapshot: Arc<Vec<SegmentLocation>>,
     overlay: BTreeMap<String, SegmentLocation>,
-    wal_length: u64,
+    reach: TableReach,
+    /// Where a salvaging replay met a record it could not read and
+    /// stopped; the table holds nothing the records from there derive.
+    damage: Option<RecordPosition>,
 }
 
 impl LocationTable {
-    /// Load the snapshot and the first `wal_length` bytes of the log.
+    /// Load the snapshot and lay over it the rows up to `reach`: the log's
+    /// first bytes, or the records from the snapshot's position.
     pub(crate) fn load(
         medium: &dyn SegmentMedium,
-        wal_length: u64,
+        reach: TableReach,
     ) -> Result<Self, NativeStorageError> {
-        let snapshot = SegmentLocation::decode_all(&medium.read_location_snapshot()?)?;
-        let mut table = Self {
-            snapshot: Arc::new(snapshot),
-            overlay: BTreeMap::new(),
-            wal_length: 0,
+        let (bytes, start) = match reach {
+            TableReach::Log(_) => (medium.read_location_snapshot()?, TableReach::Log(0)),
+            TableReach::Records(_) => {
+                let (bytes, position) = medium.read_location_checkpoint()?;
+                (bytes, TableReach::Records(position))
+            }
         };
-        table.extend(medium, wal_length)?;
+        let mut table = Self {
+            snapshot: Arc::new(SegmentLocation::decode_all(&bytes)?),
+            overlay: BTreeMap::new(),
+            reach: start,
+            damage: None,
+        };
+        table.extend(medium, reach)?;
         Ok(table)
     }
 
-    /// Apply the log's rows between the length already applied and
-    /// `wal_length`.
+    /// The table as far as the records can be read, for `fylo verify` and
+    /// `fylo salvage`. It is [`Self::load`], except that for a medium
+    /// without a location log a record after the snapshot that cannot be
+    /// read ends the replay there instead of failing it, as a salvage
+    /// steps past what it cannot read; [`Self::damage`] then says where.
+    /// Such a table is degraded and is never cached or read from: the rows
+    /// past the damage are missing from it.
+    pub(crate) fn load_salvaging(
+        medium: &dyn SegmentMedium,
+        reach: TableReach,
+    ) -> Result<Self, NativeStorageError> {
+        let TableReach::Records(to) = reach else {
+            return Self::load(medium, reach);
+        };
+        let (bytes, from) = medium.read_location_checkpoint()?;
+        let mut table = Self {
+            snapshot: Arc::new(SegmentLocation::decode_all(&bytes)?),
+            overlay: BTreeMap::new(),
+            reach,
+            damage: None,
+        };
+        table.replay_salvaging(medium, (from, to))?;
+        Ok(table)
+    }
+
+    /// Where a salvaging load stopped at a record it could not read.
+    pub(crate) fn damage(&self) -> Option<RecordPosition> {
+        self.damage
+    }
+
+    /// Record that the replay stopped at `at`, the first record it could
+    /// not read.
+    pub(crate) fn mark_damaged(&mut self, at: RecordPosition) {
+        self.damage.get_or_insert(at);
+    }
+
+    /// Apply the rows between the reach already applied and `reach`: the
+    /// log's rows up to that length, or the rows the records up to that
+    /// position derive. A reach not past the applied one changes nothing.
     pub(crate) fn extend(
         &mut self,
         medium: &dyn SegmentMedium,
-        wal_length: u64,
+        reach: TableReach,
     ) -> Result<(), NativeStorageError> {
-        if wal_length <= self.wal_length {
-            return Ok(());
+        match (self.reach, reach) {
+            (TableReach::Log(applied), TableReach::Log(length)) if applied < length => {
+                let tail = medium.read_location_log(applied, length)?;
+                for row in SegmentLocation::decode_all(&tail)? {
+                    self.apply(row);
+                }
+            }
+            (TableReach::Records(applied), TableReach::Records(position)) if applied < position => {
+                self.replay(medium, (applied, position))?;
+            }
+            _ => return Ok(()),
         }
-        let tail = medium.read_location_log(self.wal_length, wal_length)?;
-        for row in SegmentLocation::decode_all(&tail)? {
-            self.apply(row);
-        }
-        self.wal_length = wal_length;
+        self.reach = reach;
         Ok(())
     }
 
@@ -62,9 +117,9 @@ impl LocationTable {
         table
     }
 
-    /// Bytes of the location log this table has applied.
-    pub(crate) fn wal_length(&self) -> u64 {
-        self.wal_length
+    /// How far past its snapshot this table reaches.
+    pub(crate) fn reach(&self) -> TableReach {
+        self.reach
     }
 
     pub(crate) fn apply(&mut self, row: SegmentLocation) {
@@ -107,6 +162,18 @@ impl LocationTable {
         merged.extend(snapshot);
         merged.retain(|row| !Self::is_undo(row));
         merged
+    }
+
+    /// Bytes of segment `number`'s records that some row still refers to:
+    /// each referenced record once, however many entries of it are live.
+    pub(crate) fn live_bytes(&self, number: u64) -> u64 {
+        let records: BTreeMap<u64, u32> = self
+            .rows()
+            .into_iter()
+            .filter(|row| row.segment == number)
+            .map(|row| (row.offset, row.length))
+            .collect();
+        records.values().map(|length| u64::from(*length)).sum()
     }
 
     /// The table as snapshot bytes: every row, sorted.

@@ -29,7 +29,7 @@ impl DocumentImage {
         collection: &NativeCollection,
     ) -> Result<Vec<Self>, NativeStorageError> {
         if collection.uses_segments() {
-            return Self::read_segments(collection.segment_medium());
+            return Self::read_segments(collection.segment_medium()?);
         }
         let mut images = Vec::new();
         for id in collection.document_ids()? {

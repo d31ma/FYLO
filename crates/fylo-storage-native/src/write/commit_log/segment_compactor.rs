@@ -35,6 +35,9 @@ pub(crate) struct SegmentCompactor {
 
 impl SegmentCompactor {
     const SMALL_SEGMENT_BYTES: u64 = 16 * 1024 * 1024;
+    /// What a copied entry may add to its record's bytes: its own manifest
+    /// header, which an entry shares with others in the original.
+    const COPY_OVERHEAD_BYTES: u64 = 256;
 
     /// Choose what to compact. Runs under the collection lock. The active
     /// segment is sealed first when it holds documents, so everything
@@ -44,7 +47,7 @@ impl SegmentCompactor {
         stored: &GenerationState,
         active: LogSegment,
     ) -> Result<Option<Self>, NativeStorageError> {
-        let medium = collection.segment_medium();
+        let medium = collection.segment_medium()?;
         let store = SegmentStore::open_for_writer(Arc::clone(&medium))?;
         let active_number = active.sequence();
         let holds_documents = store
@@ -66,7 +69,7 @@ impl SegmentCompactor {
     /// Copy every live entry of the chosen segments, in identifier order,
     /// into this process's compacted copy. Runs without the lock.
     pub(crate) fn copy(&self, collection: &NativeCollection) -> Result<(), NativeStorageError> {
-        let medium = collection.segment_medium();
+        let medium = collection.segment_medium()?;
         let reader = SegmentReader::new(Arc::clone(&medium));
         let header = LogSegmentHeader {
             kind: LogSegmentKind::CompactedDocuments,
@@ -99,7 +102,7 @@ impl SegmentCompactor {
         collection: &NativeCollection,
         (stored, mut active): (&GenerationState, LogSegment),
     ) -> Result<CompactionReport, NativeStorageError> {
-        let medium = collection.segment_medium();
+        let medium = collection.segment_medium()?;
         let sha256 = crate::sha256_hex(&medium.read_compaction()?);
         let number = medium.adopt_compaction()?;
         if let Err(error) = failpoint("after-compaction-sync") {
@@ -156,7 +159,7 @@ impl SegmentCompactor {
         (lsn, generation): (u64, u64),
         (previous, adopted): (&[SegmentLocation], u64),
     ) -> Result<(), NativeStorageError> {
-        let medium = collection.segment_medium();
+        let medium = collection.segment_medium()?;
         SegmentPlan::append_locations(&*medium, previous)?;
         let manifest =
             serde_json::to_vec(&AbortManifest::new(lsn)).map_err(|error| json_error(&error))?;
@@ -187,7 +190,7 @@ impl SegmentCompactor {
         active.rewind(before)?;
         let stable = GenerationRecord::log_stable(generation, active.position());
         SegmentCheckpoint::publish_current(collection, &stable)?;
-        Self::remove_quietly(&*collection.segment_medium(), adopted);
+        Self::remove_quietly(&*collection.segment_medium()?, adopted);
         Ok(())
     }
 
@@ -204,11 +207,20 @@ impl SegmentCompactor {
     ) -> Result<Option<Self>, NativeStorageError> {
         let rows = store.table().rows();
         let mut live: BTreeMap<u64, BTreeMap<u64, u32>> = BTreeMap::new();
+        let mut copied: BTreeMap<u64, u64> = BTreeMap::new();
         for row in &rows {
             live.entry(row.segment)
                 .or_default()
                 .insert(row.offset, row.length);
+            *copied.entry(row.segment).or_default() +=
+                u64::from(row.length) + Self::COPY_OVERHEAD_BYTES;
         }
+        // The copy is one segment, so the chosen segments' live entries must
+        // fit in one: a medium of small segments compacts a few at a time.
+        let room = medium
+            .max_segment_bytes()
+            .saturating_sub(LogSegmentHeader::ENCODED_BYTES as u64);
+        let mut copy_bytes = 0;
         let mut candidates = Vec::new();
         let mut bytes_before = 0;
         for number in medium.segment_numbers()? {
@@ -220,9 +232,11 @@ impl SegmentCompactor {
                 records.values().map(|length| u64::from(*length)).sum()
             });
             let dead = size.saturating_sub(live_bytes + LogSegmentHeader::ENCODED_BYTES as u64);
-            if dead > 0 || size < Self::SMALL_SEGMENT_BYTES {
+            let copy = copied.get(&number).copied().unwrap_or(0);
+            if (dead > 0 || size < Self::SMALL_SEGMENT_BYTES) && copy_bytes + copy <= room {
                 candidates.push((number, dead));
                 bytes_before += size;
+                copy_bytes += copy;
             }
         }
         let worthwhile = candidates.len() > 1 || candidates.iter().any(|(_, dead)| *dead > 0);

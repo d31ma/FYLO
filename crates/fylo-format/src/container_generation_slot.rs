@@ -24,6 +24,10 @@ pub struct ContainerGenerationSlot {
     pub next_lsn: u64,
     /// Records committed in the collection.
     pub record_count: u64,
+    /// Bumped whenever the collection's location snapshot is rewritten other
+    /// than by appending, so a reader's cached location table knows when it
+    /// can only be extended and when it must be loaded again.
+    pub table_epoch: u32,
 }
 
 impl ContainerGenerationSlot {
@@ -44,6 +48,7 @@ impl ContainerGenerationSlot {
         write_u64(&mut bytes, 32, self.committed_length);
         write_u64(&mut bytes, 40, self.next_lsn);
         write_u64(&mut bytes, 48, self.record_count);
+        write_u32(&mut bytes, 56, self.table_epoch);
         let checksum = Crc32c::checksum(&bytes[..Self::CHECKED_BYTES]);
         write_u32(&mut bytes, Self::CHECKED_BYTES, checksum);
         bytes
@@ -70,7 +75,7 @@ impl ContainerGenerationSlot {
             1 => true,
             _ => return Err(ContainerFormatError::InvalidField),
         };
-        if !all_zero(&bytes[13..16]) || !all_zero(&bytes[56..Self::CHECKED_BYTES]) {
+        if !all_zero(&bytes[13..16]) {
             return Err(ContainerFormatError::InvalidField);
         }
         Ok(Self {
@@ -81,6 +86,7 @@ impl ContainerGenerationSlot {
             committed_length: read_u64(bytes, 32),
             next_lsn: read_u64(bytes, 40),
             record_count: read_u64(bytes, 48),
+            table_epoch: read_u32(bytes, 56),
         })
     }
 
@@ -120,6 +126,7 @@ mod tests {
             committed_length: 70_000,
             next_lsn: 900,
             record_count: 899,
+            table_epoch: 4,
         }
     }
 

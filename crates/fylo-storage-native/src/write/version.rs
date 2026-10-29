@@ -142,6 +142,10 @@ impl NativeWriteRoot {
     /// rollback/roll-forward repair.
     pub fn recover_repository_materialization(&self) -> Result<(), NativeStorageError> {
         self.root.assert_profile_owned()?;
+        // A `.fxdb` database has no version repository to recover.
+        if self.root.is_database() {
+            return Ok(());
+        }
         let repository = self.repository_root().join(".fylo-vcs");
         match fs::symlink_metadata(&repository) {
             Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
@@ -195,6 +199,8 @@ impl NativeWriteRoot {
     /// so it refuses a root with a segment collection until it moves to the
     /// logical record view (ADR 0015 section 1).
     fn require_no_segment_collections(&self) -> Result<(), NativeStorageError> {
+        self.root
+            .refuse_in_database("a .fxdb database has no version control")?;
         let collections = self.root.path().join(".collections");
         if !crate::path_exists_no_follow(&collections)? {
             return Ok(());
@@ -653,6 +659,8 @@ impl NativeWriteRoot {
     }
 
     fn ensure_repository(&self) -> Result<PathBuf, NativeStorageError> {
+        self.root
+            .refuse_in_database("a .fxdb database has no version control")?;
         let repository_root = self.repository_context()?;
         let repository = self.repository_root().join(".fylo-vcs");
         for relative in [

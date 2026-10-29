@@ -13,7 +13,9 @@ use fylo_engine::{AccessContext, ReadOnlyEngine};
 use fylo_format::TtidTimestamps;
 use fylo_machine::{ApplicationConfig, FrameLimits, serve_application, serve_profiled};
 use fylo_query::{QueryLimits, ScanQuery, StructuredQuery, prepare_sql};
-use fylo_storage_native::{FilesystemProfile, NativeWriteRoot, RootLease, RootOpenOptions};
+use fylo_storage_native::{
+    FilesystemProfile, NativeRoot, NativeWriteRoot, RootLease, RootOpenOptions,
+};
 use serde_json::{Map, Value, json};
 
 use segment_command::{SegmentCommand, SegmentOptions};
@@ -575,7 +577,9 @@ fn run_compat_cli(arguments: &[String], application: &ApplicationConfig) -> Resu
     let command = values.first().map(String::as_str).unwrap_or_default();
     let root = compat_root(arguments, application)?;
     let profile = filesystem_profile(arguments)?;
-    if profile == FilesystemProfile::Native {
+    // A root named `*.fxdb` is a database, not a directory to create; the
+    // machine protocol refuses it with ELAYOUTUNSUPPORTED for now.
+    if profile == FilesystemProfile::Native && !NativeRoot::names_database(&root) {
         fs::create_dir_all(&root).map_err(|error| format!("cannot create FYLO root: {error}"))?;
     }
     let mut request = Map::new();

@@ -67,9 +67,11 @@ impl NativeWriteRoot {
         allow_engine_only_access: bool,
     ) -> Result<LayoutMigrationReport, NativeStorageError> {
         self.root.assert_profile_owned()?;
+        self.root
+            .refuse_in_database("a .fxdb database keeps every collection in segments")?;
         let collection = self.root.collection(name)?;
         self.require_migratable(&collection)?;
-        let _lock = self.lock_collection(&collection.path)?;
+        let _lock = self.lock_collection(&collection)?;
         self.recover_locked(&collection)?;
         let images = DocumentImage::read_collection(&collection)?;
         let report = LayoutMigrationReport::of(name, layout, &images);
@@ -119,6 +121,10 @@ impl NativeWriteRoot {
         &self,
         collection: &NativeCollection,
     ) -> Result<bool, NativeStorageError> {
+        // A collection of a `.fxdb` database never migrates.
+        if collection.database_block().is_some() {
+            return Ok(false);
+        }
         if crate::path_exists_no_follow(&Self::marker_path(collection)?)? {
             self.finish_layout_migration(collection)?;
             return Ok(true);
@@ -272,7 +278,7 @@ impl NativeWriteRoot {
         let staging = collection.path.join(Self::STAGING);
         let retired = collection.path.join(Self::RETIRED);
         self.finish_state(collection, &marker)?;
-        TableCache::shared().forget(&*collection.segment_medium());
+        TableCache::shared().forget(&*collection.segment_medium()?);
         remove_dir_durable(&retired)?;
         if crate::path_exists_no_follow(&staging)? {
             remove_dir_durable(&staging)?;

@@ -3,8 +3,8 @@ use std::fmt::Debug;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use super::SlotRecord;
-use crate::{Durability, NativeStorageError, NativeStorageErrorCode};
+use super::{RecordPosition, SlotRecord};
+use crate::{Durability, NativeRoot, NativeStorageError, NativeStorageErrorCode};
 
 /// Where one segment collection keeps its segments, generation slots and
 /// location files.
@@ -42,13 +42,21 @@ pub(crate) trait SegmentMedium: Debug + Send + Sync {
         number: u64,
     ) -> Result<Option<Arc<dyn SegmentHandle>>, NativeStorageError>;
 
-    /// Create segment `number` holding `opening`, its header and first
-    /// record. Nothing is flushed.
+    /// Create the next segment, numbered above every existing one, and
+    /// return its number with a handle to it. The medium picks the number:
+    /// `opening` builds, for that number, the bytes the segment starts with
+    /// (its header and first record). Nothing is flushed.
     fn create_segment(
         &self,
-        number: u64,
-        opening: &[u8],
-    ) -> Result<Arc<dyn SegmentHandle>, NativeStorageError>;
+        opening: &dyn Fn(u64) -> Result<Vec<u8>, NativeStorageError>,
+    ) -> Result<(u64, Arc<dyn SegmentHandle>), NativeStorageError>;
+
+    /// Mark segment `number` finished: no record is appended to it again,
+    /// and `live_bytes` of its records are what the location table still
+    /// refers to. A medium with an extent map records both there, where
+    /// shrinking, `fylo inspect` and `fylo verify` read them; a directory of
+    /// segment files has nowhere to keep them.
+    fn seal_segment(&self, number: u64, live_bytes: u64) -> Result<(), NativeStorageError>;
 
     /// Remove segment `number`. A segment that is already gone, or that
     /// another process still holds where that prevents removal, is left for
@@ -73,6 +81,13 @@ pub(crate) trait SegmentMedium: Debug + Send + Sync {
     /// caller holds the compaction lock.
     fn remove_compactions(&self) -> Result<(), NativeStorageError>;
 
+    /// Whether the slot pair exists, which completes a new layout.
+    fn has_slots(&self) -> Result<bool, NativeStorageError>;
+
+    /// Create what holds the segments of a new layout, verified beneath
+    /// `root`.
+    fn create_storage(&self, root: &NativeRoot) -> Result<(), NativeStorageError>;
+
     /// The newest valid generation slot, or `None` when neither slot is
     /// valid or the slots are missing.
     fn read_slot(&self) -> Result<Option<SlotRecord>, NativeStorageError>;
@@ -90,7 +105,22 @@ pub(crate) trait SegmentMedium: Debug + Send + Sync {
     fn read_location_snapshot(&self) -> Result<Vec<u8>, NativeStorageError>;
 
     /// Durably replace the location snapshot.
+    ///
+    /// A medium without a location log records with it the end of the
+    /// records the newest slot names, which the new snapshot must reach:
+    /// readers replay the records from there.
     fn replace_location_snapshot(&self, bytes: &[u8]) -> Result<(), NativeStorageError>;
+
+    /// Whether location rows go to a location log. A medium without one
+    /// (a `.fxdb` container) keeps them only in memory: a location table is
+    /// its snapshot and the rows the records after the snapshot's position
+    /// derive (`docs/fxdb-segment-backend.md`), and every location log
+    /// method does nothing or reports an empty log.
+    fn has_location_log(&self) -> bool;
+
+    /// The location snapshot and the record position it reaches, read
+    /// together, for a medium without a location log.
+    fn read_location_checkpoint(&self) -> Result<(Vec<u8>, RecordPosition), NativeStorageError>;
 
     /// Bytes in the location log, or zero when there is none.
     fn location_log_length(&self) -> Result<u64, NativeStorageError>;
@@ -114,6 +144,37 @@ pub(crate) trait SegmentMedium: Debug + Send + Sync {
     #[cfg(unix)]
     fn owner(&self) -> Result<(u32, u32), NativeStorageError>;
 
+    /// Whether the medium keeps the collection's prefix index itself, as a
+    /// `.fxdb` container does: a snapshot beside the location snapshot, and
+    /// the keys past it replayed from the records' index deltas
+    /// (`docs/fxdb-segment-backend.md`, "Root integration"). A medium that
+    /// does not leaves the index to `index/` files in the collection
+    /// directory, and never has the index methods below called.
+    fn keeps_index(&self) -> bool {
+        false
+    }
+
+    /// The prefix index as the records up to `to`, a published record
+    /// boundary, leave it: the snapshot, and the index log lines the
+    /// records after the snapshot's position derive.
+    fn read_index(&self, _to: RecordPosition) -> Result<(Vec<u8>, Vec<u8>), NativeStorageError> {
+        Err(no_index())
+    }
+
+    /// The index snapshot the newest checkpoint names, or `None` when it
+    /// names none although it names a location snapshot, or when the
+    /// snapshot cannot be read: the index must then be rebuilt.
+    fn read_index_snapshot(&self) -> Result<Option<Vec<u8>>, NativeStorageError> {
+        Err(no_index())
+    }
+
+    /// Durably replace the index snapshot with one a rebuild wrote from the
+    /// documents, keeping the newest checkpoint's location snapshot and
+    /// position.
+    fn replace_index_snapshot(&self, _bytes: &[u8]) -> Result<(), NativeStorageError> {
+        Err(no_index())
+    }
+
     /// Every byte of segment `number`, failing when it does not exist.
     fn require_segment(&self, number: u64) -> Result<Vec<u8>, NativeStorageError> {
         self.read_segment(number)?.ok_or_else(|| {
@@ -133,6 +194,14 @@ pub(crate) trait SegmentMedium: Debug + Send + Sync {
             )
         })
     }
+}
+
+/// What an index method reports on a medium that keeps no index.
+fn no_index() -> NativeStorageError {
+    NativeStorageError::new(
+        NativeStorageErrorCode::Unsupported,
+        "this segment medium keeps its prefix index in index/ files",
+    )
 }
 
 /// One open segment.

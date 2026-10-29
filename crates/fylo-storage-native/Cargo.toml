@@ -52,10 +52,17 @@ xattr.workspace = true
 # `FSCTL_SET_SPARSE` and `FSCTL_SET_ZERO_DATA` hole punching of free extents.
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Ioctl"] }
 
+[features]
+# Hooks tests use, such as a writer that keeps segment collections in a
+# `.fxdb` container before `.fxdb` roots exist.
+test-support = []
+
 [dev-dependencies]
 # Checks the browser's zstd decoder reads what the native writer produces.
 ruzstd.workspace = true
 fylo-test-support = { version = "0.1.0", path = "../fylo-test-support" }
+# The integration tests run the segment suite over both media.
+fylo-storage-native = { path = ".", features = ["test-support"] }
 
 # `.fxdb` byte-range locks call `fcntl` and `LockFileEx`, and hole punching
 # calls `fcntl(F_PUNCHHOLE)` and `DeviceIoControl`, which no safe signature in

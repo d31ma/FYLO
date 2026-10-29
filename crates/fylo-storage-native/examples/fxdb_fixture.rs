@@ -33,6 +33,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 committed_length: 0,
                 next_lsn: records + 1,
                 record_count: records,
+                table_epoch: 0,
             },
         )?;
     }

@@ -6,7 +6,7 @@ use super::super::{GenerationRecord, failpoint, json_error};
 use super::log_checkpoint::LogCheckpoint;
 use super::log_segment::LogSegment;
 use crate::segments::{
-    LocationTable, SegmentCheckpointManifest, SegmentMedium, SlotRecord, TableCache,
+    LocationTable, SegmentCheckpointManifest, SegmentMedium, SlotRecord, TableCache, TableReach,
 };
 use crate::{GenerationState, NativeCollection, NativeStorageError, NativeStorageErrorCode};
 
@@ -30,10 +30,28 @@ impl SegmentCheckpoint {
         collection: &NativeCollection,
         segment: &LogSegment,
     ) -> Result<bool, NativeStorageError> {
+        let medium = collection.segment_medium()?;
         Ok(segment.records() >= Self::CHECKPOINT_RECORDS
-            || segment.length() >= Self::ROTATE_BYTES
-            || collection.segment_medium().location_log_length()? > Self::LOCATIONS_FOLD_BYTES
+            || segment.length() >= Self::rotate_bytes(&*medium)
+            || medium.location_log_length()? > Self::LOCATIONS_FOLD_BYTES
             || LogCheckpoint::index_wants_compaction(collection)?)
+    }
+
+    /// How long the active segment grows before a checkpoint seals it:
+    /// half of what a segment may hold where that is less, so a busy
+    /// period's appends still fit after the check.
+    fn rotate_bytes(medium: &dyn SegmentMedium) -> u64 {
+        Self::ROTATE_BYTES.min(medium.max_segment_bytes() / 2)
+    }
+
+    /// Whether this checkpoint rewrites the location snapshot: when the
+    /// location log has grown, and always for a medium without one, so
+    /// the records a table replays stay bounded by the checkpoint interval.
+    fn folds(medium: &dyn SegmentMedium) -> Result<bool, NativeStorageError> {
+        if !medium.has_location_log() {
+            return Ok(true);
+        }
+        Ok(medium.location_log_length()? > Self::LOCATIONS_FOLD_BYTES)
     }
 
     /// Checkpoint at the stable `generation` just published. Returns the
@@ -43,7 +61,7 @@ impl SegmentCheckpoint {
         segment: LogSegment,
         generation: u64,
     ) -> Result<LogSegment, NativeStorageError> {
-        let seal = segment.length() >= Self::ROTATE_BYTES;
+        let seal = segment.length() >= Self::rotate_bytes(&*collection.segment_medium()?);
         Self::run_with(collection, segment, (generation, seal))
     }
 
@@ -62,22 +80,28 @@ impl SegmentCheckpoint {
         segment: LogSegment,
         (generation, seal): (u64, bool),
     ) -> Result<LogSegment, NativeStorageError> {
-        let medium = collection.segment_medium();
+        let medium = collection.segment_medium()?;
         let mut epoch = medium.require_slot()?.table_epoch;
-        let fold = medium.location_log_length()? > Self::LOCATIONS_FOLD_BYTES;
+        let fold = Self::folds(&*medium)?;
         let mut generation = generation;
+        let mut table = None;
         if fold {
             let writing = GenerationRecord::log_writing(generation + 1, segment.position());
             Self::publish(collection, &writing, epoch)?;
             generation += 2;
             epoch = epoch.wrapping_add(1);
-            Self::fold_locations(&*medium)?;
+            table = Some(Self::fold_locations(&*medium)?);
         }
         Self::flush_logs(collection, &*medium)?;
         LogCheckpoint::compact_index(collection)?;
         failpoint("after-checkpoint-flush")?;
         let manifest = Self::manifest(&collection.path, &*medium)?;
-        let mut segment = Self::record(&*medium, segment, &manifest, (generation, seal))?;
+        let mut segment = Self::record(
+            &*medium,
+            (segment, table.as_ref()),
+            &manifest,
+            (generation, seal),
+        )?;
         segment.reset_records();
         let stable = GenerationRecord::log_stable(generation, segment.position());
         Self::publish(collection, &stable, epoch)?;
@@ -92,7 +116,7 @@ impl SegmentCheckpoint {
         record: &GenerationRecord,
         epoch: u32,
     ) -> Result<(), NativeStorageError> {
-        let medium = collection.segment_medium();
+        let medium = collection.segment_medium()?;
         let position = record.log.as_ref().ok_or_else(|| {
             NativeStorageError::new(
                 NativeStorageErrorCode::CorruptMetadata,
@@ -123,7 +147,7 @@ impl SegmentCheckpoint {
         record: &GenerationRecord,
     ) -> Result<(), NativeStorageError> {
         let epoch = collection
-            .segment_medium()
+            .segment_medium()?
             .read_slot()?
             .map_or(0, |slot| slot.table_epoch);
         Self::publish(collection, record, epoch)
@@ -139,7 +163,7 @@ impl SegmentCheckpoint {
         segment: &LogSegment,
         generation: u64,
     ) -> Result<u64, NativeStorageError> {
-        let medium = collection.segment_medium();
+        let medium = collection.segment_medium()?;
         let epoch = medium.read_slot()?.map_or(0, |slot| slot.table_epoch);
         let writing = GenerationRecord::log_writing(generation + 1, segment.position());
         Self::publish(collection, &writing, epoch.wrapping_add(1))?;
@@ -153,11 +177,12 @@ impl SegmentCheckpoint {
         generation + 2 - generation % 2
     }
 
-    fn fold_locations(medium: &dyn SegmentMedium) -> Result<(), NativeStorageError> {
-        let wal_length = medium.location_log_length()?;
-        let table = LocationTable::load(medium, wal_length)?;
+    /// Write the table as the new snapshot, and return it.
+    fn fold_locations(medium: &dyn SegmentMedium) -> Result<LocationTable, NativeStorageError> {
+        let table = LocationTable::load(medium, TableReach::written(medium)?)?;
         medium.replace_location_snapshot(&table.encode_snapshot()?)?;
-        medium.reset_location_log()
+        medium.reset_location_log()?;
+        Ok(table)
     }
 
     fn flush_logs(
@@ -165,6 +190,9 @@ impl SegmentCheckpoint {
         medium: &dyn SegmentMedium,
     ) -> Result<(), NativeStorageError> {
         medium.sync_location_log()?;
+        if medium.keeps_index() {
+            return Ok(());
+        }
         Self::flush_file(&collection.path.join("index").join("keys.wal"))
     }
 
@@ -183,17 +211,30 @@ impl SegmentCheckpoint {
     /// The checkpoint manifest describing the derived files of the
     /// collection in `directory`, whose segments `medium` holds, as they
     /// are now.
+    ///
+    /// A medium that keeps the index has no index log, and an index it
+    /// cannot read is recorded as the empty one, so the next recovery finds
+    /// it does not match and rebuilds it instead of the checkpoint failing.
     pub(crate) fn manifest(
         directory: &Path,
         medium: &dyn SegmentMedium,
     ) -> Result<SegmentCheckpointManifest, NativeStorageError> {
-        let index = directory.join("index");
+        let (keys_wal_length, snapshot_sha256) = if medium.keeps_index() {
+            let snapshot = medium.read_index_snapshot()?.unwrap_or_default();
+            (0, crate::sha256_hex(&snapshot))
+        } else {
+            let index = directory.join("index");
+            (
+                Self::file_length(&index.join("keys.wal"))?,
+                Self::digest(&index.join("keys.snapshot"))?,
+            )
+        };
         Ok(SegmentCheckpointManifest {
             format: SegmentCheckpointManifest::FORMAT.into(),
             locations_wal_length: medium.location_log_length()?,
             locations_snapshot_sha256: crate::sha256_hex(&medium.read_location_snapshot()?),
-            keys_wal_length: Self::file_length(&index.join("keys.wal"))?,
-            snapshot_sha256: Self::digest(&index.join("keys.snapshot"))?,
+            keys_wal_length,
+            snapshot_sha256,
         })
     }
 
@@ -217,16 +258,17 @@ impl SegmentCheckpoint {
     }
 
     /// Append the checkpoint record, or seal the segment and open the next
-    /// one with it.
+    /// one with it. `table` is the table this checkpoint folded, if it
+    /// folded one.
     fn record(
         medium: &dyn SegmentMedium,
-        mut segment: LogSegment,
+        (mut segment, table): (LogSegment, Option<&LocationTable>),
         manifest: &SegmentCheckpointManifest,
         (generation, seal): (u64, bool),
     ) -> Result<LogSegment, NativeStorageError> {
         let bytes = serde_json::to_vec(manifest).map_err(|error| json_error(&error))?;
         if seal {
-            return Self::rotate(medium, &segment, bytes, generation);
+            return Self::rotate(medium, (&segment, table), &bytes, generation);
         }
         let record = LogRecord {
             lsn: segment.next_lsn(),
@@ -241,19 +283,21 @@ impl SegmentCheckpoint {
         Ok(segment)
     }
 
+    /// Seal the full segment with the bytes the folded table still refers
+    /// to in it, and open the next. A medium without a location log always
+    /// folds, so the medium that keeps seals always gets them; a directory
+    /// of segment files keeps none.
     fn rotate(
         medium: &dyn SegmentMedium,
-        sealed: &LogSegment,
-        manifest: Vec<u8>,
+        (sealed, table): (&LogSegment, Option<&LocationTable>),
+        manifest: &[u8],
         generation: u64,
     ) -> Result<LogSegment, NativeStorageError> {
-        let number = medium.segment_numbers()?.last().copied().unwrap_or(0) + 1;
-        let mut next = LogSegment::create_documents(
-            medium,
-            (number, sealed.next_lsn()),
-            manifest,
-            generation,
-        )?;
+        if let Some(table) = table {
+            medium.seal_segment(sealed.sequence(), table.live_bytes(sealed.sequence()))?;
+        }
+        let mut next =
+            LogSegment::create_documents(medium, sealed.next_lsn(), manifest, generation)?;
         next.full_flush()?;
         Ok(next)
     }

@@ -161,6 +161,10 @@ impl NativeWriteRoot {
     }
 
     fn close_log(root: &Path, name: &str) -> Result<(), NativeStorageError> {
+        // A `.fxdb` database keeps no write-ahead log beside its segments.
+        if fs::metadata(root).is_ok_and(|metadata| metadata.is_file()) {
+            return Ok(());
+        }
         let writer = Self::open(root)?;
         let Some(collection) = writer.collection_if_present(name)? else {
             return Ok(());
@@ -168,17 +172,13 @@ impl NativeWriteRoot {
         if !path_exists_no_follow(&collection.log_directory())? {
             return Ok(());
         }
-        let _guard = writer.lock_collection(&collection.path)?;
+        let _guard = writer.lock_collection(&collection)?;
         writer.settle_log(&collection)?;
         Ok(())
     }
 
     fn begin_busy(&self, collection: &NativeCollection) -> Result<BusyPeriod, NativeStorageError> {
-        let lock = CollectionWriteLock::acquire_profiled(
-            &self.root,
-            &collection.path.join("locks"),
-            "collection.lock",
-        )?;
+        let lock = CollectionWriteLock::acquire_for(&self.root, collection, "collection.lock")?;
         self.require_no_pending_migration(collection)?;
         let mut stored = collection.stored_generation()?;
         if Self::log_needs_recovery(collection, &stored)? {
@@ -267,7 +267,7 @@ impl NativeWriteRoot {
         position: &LogPosition,
     ) -> Result<Option<LogSegment>, NativeStorageError> {
         if collection.uses_segments() {
-            return LogSegment::open_segment_matching(&*collection.segment_medium(), position);
+            return LogSegment::open_segment_matching(&*collection.segment_medium()?, position);
         }
         LogSegment::open_matching(&collection.log_segment_path(), position)
     }
@@ -649,7 +649,8 @@ impl NativeWriteRoot {
         collection: &NativeCollection,
         lines: &[u8],
     ) -> Result<(), NativeStorageError> {
-        if lines.is_empty() {
+        // A medium that keeps the index replays these lines from the record.
+        if lines.is_empty() || collection.index_in_medium()? {
             return Ok(());
         }
         let index = collection.path.join("index");

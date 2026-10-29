@@ -20,7 +20,7 @@ impl NativeWriteRoot {
         &self,
         collection: &NativeCollection,
     ) -> Result<(), NativeStorageError> {
-        let _lock = self.lock_collection(&collection.path)?;
+        let _lock = self.lock_collection(collection)?;
         self.settle_log(collection)?;
         let stored = collection.stored_generation()?;
         if stored.state != GenerationStatus::Stable {
@@ -46,6 +46,7 @@ impl NativeWriteRoot {
     /// next opener recovers.
     pub fn compact_collection(&self, name: &str) -> Result<CompactionReport, NativeStorageError> {
         self.root.assert_profile_owned()?;
+        self.root.not_yet_in_database("compaction")?;
         let collection = self.root.collection(name)?;
         SegmentCompactor::require_segments(&collection)?;
         let _compaction = CollectionWriteLock::acquire_profiled(
@@ -53,11 +54,15 @@ impl NativeWriteRoot {
             &collection.path.join("locks"),
             "compaction.lock",
         )?;
+        // A container medium closes when nothing holds it, and the copy in
+        // progress is part of its open: keep it from preparation to
+        // adoption.
+        let _medium = collection.segment_medium()?;
         let Some(compactor) = self.prepare_compaction(&collection)? else {
             return Ok(CompactionReport::default());
         };
         compactor.copy(&collection)?;
-        let _lock = self.lock_collection(&collection.path)?;
+        let _lock = self.lock_collection(&collection)?;
         let (stored, active) = self.settled_active(&collection)?;
         compactor.adopt(&collection, (&stored, active))
     }
@@ -66,7 +71,7 @@ impl NativeWriteRoot {
         &self,
         collection: &NativeCollection,
     ) -> Result<Option<SegmentCompactor>, NativeStorageError> {
-        let _lock = self.lock_collection(&collection.path)?;
+        let _lock = self.lock_collection(collection)?;
         let (stored, active) = self.settled_active(collection)?;
         SegmentCompactor::prepare(collection, &stored, active)
     }
@@ -106,7 +111,7 @@ impl NativeWriteRoot {
         SegmentCompactor::require_segments(&collection)?;
         let root = Self::empty_output(out)?;
         let images = {
-            let _lock = self.lock_collection(&collection.path)?;
+            let _lock = self.lock_collection(&collection)?;
             self.recover_locked(&collection)?;
             DocumentImage::read_collection(&collection)?
         };
@@ -134,7 +139,7 @@ impl NativeWriteRoot {
         self.root.assert_profile_owned()?;
         let collection = self.root.collection(name)?;
         SegmentCompactor::require_segments(&collection)?;
-        let _lock = self.lock_collection(&collection.path)?;
+        let _lock = self.lock_collection(&collection)?;
         self.recover_log_if_needed(&collection)?;
         SegmentInspection::verify(&collection)
     }
@@ -153,6 +158,7 @@ impl NativeWriteRoot {
         out: &std::path::Path,
     ) -> Result<SalvageReport, NativeStorageError> {
         self.root.assert_profile_owned()?;
+        self.root.not_yet_in_database("salvage")?;
         let collection = self.root.collection(name)?;
         SegmentCompactor::require_segments(&collection)?;
         Self::empty_output(out)?;

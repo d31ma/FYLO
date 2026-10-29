@@ -27,6 +27,7 @@ mod container_access;
 mod container_allocator;
 mod container_cipher;
 mod container_codec;
+mod container_database;
 mod container_file;
 #[cfg(not(target_family = "wasm"))]
 mod container_lease;
@@ -156,15 +157,19 @@ pub struct NativeRoot {
     profile: FilesystemProfile,
     lease: Option<RootLease>,
     descriptor: Option<profile_manifest::ProfileManifest>,
+    /// The `.fxdb` file this root is, when it is one.
+    database: Option<std::sync::Arc<container_database::ContainerDatabase>>,
 }
 
 impl NativeRoot {
-    /// Open and canonicalize an existing directory.
+    /// Open and canonicalize an existing directory, or an existing `.fxdb`
+    /// database: a root path that names a regular file is opened as one
+    /// (ADR 0016 section 11).
     ///
     /// # Errors
     ///
-    /// Returns an error when the root is absent, inaccessible, or not a
-    /// directory.
+    /// Returns an error when the root is absent, inaccessible, or neither a
+    /// directory nor a `.fxdb` database.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, NativeStorageError> {
         Self::open_with_roots(path.as_ref(), path.as_ref())
     }
@@ -196,6 +201,9 @@ impl NativeRoot {
         let repository_root = options.repository.as_deref().unwrap_or(path);
         let canonical = fs::canonicalize(path).map_err(NativeStorageError::io)?;
         let metadata = fs::metadata(&canonical).map_err(NativeStorageError::io)?;
+        if metadata.is_file() {
+            return Self::open_database(canonical, options);
+        }
         if !metadata.is_dir() {
             return Err(NativeStorageError::new(
                 NativeStorageErrorCode::WrongType,
@@ -254,7 +262,127 @@ impl NativeRoot {
             profile: options.profile,
             lease: options.lease,
             descriptor,
+            database: None,
         })
+    }
+
+    /// Open the `.fxdb` database at `canonical`. It is its own catalog and
+    /// repository root, and only the native profile has a `.fxdb` form.
+    fn open_database(
+        canonical: PathBuf,
+        options: RootOpenOptions,
+    ) -> Result<Self, NativeStorageError> {
+        if options.profile != FilesystemProfile::Native {
+            return Err(Self::database_unsupported(
+                "the EFS sidecar profile has no .fxdb form",
+            ));
+        }
+        if let Some(repository) = options.repository.as_deref()
+            && fs::canonicalize(repository).map_err(NativeStorageError::io)? != canonical
+        {
+            return Err(Self::database_unsupported(
+                "a .fxdb database has no separate worktree or repository root",
+            ));
+        }
+        if let Some(lease) = options.lease.as_ref() {
+            lease.assert_owned()?;
+        }
+        let database = container_database::ContainerDatabase::open(&canonical)?;
+        Ok(Self {
+            catalog_root: canonical.clone(),
+            repository_root: canonical.clone(),
+            canonical,
+            profile: FilesystemProfile::Native,
+            lease: options.lease,
+            descriptor: None,
+            database: Some(database),
+        })
+    }
+
+    /// Create an empty `.fxdb` database at `path`, which must not exist.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `path` exists or the file cannot be created.
+    pub fn create_database(path: impl AsRef<Path>) -> Result<(), NativeStorageError> {
+        container_database::ContainerDatabase::create(path.as_ref())
+    }
+
+    /// Close this process's handle on the `.fxdb` database at `path`: give
+    /// up its write access and forget what it read, so the next open reads
+    /// the file afresh, as a new process would. Handles opened before keep
+    /// working on what they read.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `path` cannot be resolved.
+    pub fn close_database(path: impl AsRef<Path>) -> Result<(), NativeStorageError> {
+        let canonical = fs::canonicalize(path.as_ref()).map_err(NativeStorageError::io)?;
+        container_database::ContainerDatabase::close(&canonical);
+        Ok(())
+    }
+
+    /// Whether `path` names a `.fxdb` database: a regular file, or a path
+    /// ending in `.fxdb` that names no directory. A host that creates a
+    /// missing root on first use creates a database for such a path
+    /// ([`Self::create_database`]), never a directory.
+    #[must_use]
+    pub fn names_database(path: impl AsRef<Path>) -> bool {
+        let path = path.as_ref();
+        match fs::metadata(path) {
+            Ok(metadata) => metadata.is_file(),
+            Err(_) => path
+                .extension()
+                .is_some_and(|extension| extension == "fxdb"),
+        }
+    }
+
+    /// Whether this root is a `.fxdb` database rather than a directory.
+    #[must_use]
+    pub fn is_database(&self) -> bool {
+        self.database.is_some()
+    }
+
+    /// The live collections of a `.fxdb` database root, in the order they
+    /// were created; `None` for a directory root.
+    #[must_use]
+    pub fn database_collection_names(&self) -> Option<Vec<String>> {
+        self.database
+            .as_ref()
+            .map(|database| database.collection_names())
+    }
+
+    pub(crate) fn database(
+        &self,
+    ) -> Option<&std::sync::Arc<container_database::ContainerDatabase>> {
+        self.database.as_ref()
+    }
+
+    /// What a `.fxdb` database answers for a feature it does not hold.
+    pub(crate) fn database_unsupported(feature: &str) -> NativeStorageError {
+        NativeStorageError::new(
+            NativeStorageErrorCode::LayoutUnsupported,
+            format!("{feature} (ADR 0016 section 1)"),
+        )
+    }
+
+    /// Refuse a feature a `.fxdb` database does not hold.
+    pub(crate) fn refuse_in_database(&self, feature: &str) -> Result<(), NativeStorageError> {
+        if self.is_database() {
+            return Err(Self::database_unsupported(feature));
+        }
+        Ok(())
+    }
+
+    /// Refuse an operation a `.fxdb` database will hold but does not yet.
+    pub(crate) fn not_yet_in_database(&self, operation: &str) -> Result<(), NativeStorageError> {
+        if self.is_database() {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::Unsupported,
+                format!("{operation} is not supported in a .fxdb database yet"),
+            ));
+        }
+        Ok(())
     }
 
     /// Selected immutable metadata representation.
@@ -352,6 +480,9 @@ impl NativeRoot {
     pub fn collection(&self, name: &str) -> Result<NativeCollection, NativeStorageError> {
         self.assert_profile_owned()?;
         validate_collection_name(name)?;
+        if let Some(database) = self.database.as_ref() {
+            return self.database_collection(database, name);
+        }
         let descriptor = self
             .collection_descriptor(name)?
             .unwrap_or(CollectionDescriptor {
@@ -386,6 +517,45 @@ impl NativeRoot {
                 .collect::<Result<Vec<_>, _>>()?,
             validation: descriptor.validation,
             schema_head,
+            block: None,
+        })
+    }
+
+    /// Open the collection of a `.fxdb` database named `name`: its directory
+    /// block, whose descriptor is the catalog's. It has no directory; its
+    /// path only names it to in-process caches.
+    fn database_collection(
+        &self,
+        database: &container_database::ContainerDatabase,
+        name: &str,
+    ) -> Result<NativeCollection, NativeStorageError> {
+        let collection = database.collection(name).ok_or_else(|| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::NotFound,
+                format!("collection \"{name}\" does not exist"),
+            )
+        })?;
+        let descriptor = Self::database_descriptor(&collection.header.descriptor)?;
+        if descriptor.kind != CollectionKind::Document
+            || descriptor.layout != CollectionLayout::Segments
+        {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                format!("collection \"{name}\" is not a document collection in segments"),
+            ));
+        }
+        Ok(NativeCollection {
+            root: self.clone(),
+            name: name.to_owned(),
+            path: self.canonical.join(".collections").join(name),
+            kind: CollectionKind::Document,
+            layout: CollectionLayout::Segments,
+            namespace: ".collections".to_owned(),
+            shard_width: validate_shard_width(descriptor.shard_width)?,
+            previous_shard_widths: Vec::new(),
+            validation: descriptor.validation,
+            schema_head: descriptor.schema_head()?,
+            block: Some(collection.block),
         })
     }
 
@@ -405,10 +575,25 @@ impl NativeRoot {
             .map_or(Ok(None), |descriptor| descriptor.schema_head())
     }
 
+    fn database_descriptor(bytes: &[u8]) -> Result<CollectionDescriptor, NativeStorageError> {
+        serde_json::from_slice::<CollectionDescriptor>(bytes).map_err(|error| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                format!("collection descriptor is corrupt: {error}"),
+            )
+        })
+    }
+
     fn collection_descriptor(
         &self,
         name: &str,
     ) -> Result<Option<CollectionDescriptor>, NativeStorageError> {
+        if let Some(database) = self.database.as_ref() {
+            return database
+                .collection(name)
+                .map(|collection| Self::database_descriptor(&collection.header.descriptor))
+                .transpose();
+        }
         let descriptor_path = self
             .catalog_root
             .join(".fylo-catalog")
@@ -453,6 +638,7 @@ impl NativeRoot {
     /// invalid identifiers, or an excessive limit.
     pub fn version_history(&self, limit: usize) -> Result<RepositoryHistory, NativeStorageError> {
         self.assert_profile_owned()?;
+        self.refuse_in_database("a .fxdb database has no version control")?;
         if limit == 0 || limit > 1000 {
             return Err(NativeStorageError::new(
                 NativeStorageErrorCode::CorruptMetadata,
@@ -582,6 +768,7 @@ impl NativeRoot {
         limit: usize,
     ) -> Result<VersionVerification, NativeStorageError> {
         self.assert_profile_owned()?;
+        self.refuse_in_database("a .fxdb database has no version control")?;
         if limit == 0 || limit > 1000 {
             return Err(NativeStorageError::new(
                 NativeStorageErrorCode::CorruptMetadata,
@@ -1452,6 +1639,8 @@ pub struct NativeCollection {
     previous_shard_widths: Vec<u32>,
     validation: Option<ValidationMode>,
     schema_head: Option<u32>,
+    /// The directory block of a collection in a `.fxdb` database.
+    block: Option<u32>,
 }
 
 impl NativeCollection {
@@ -1491,16 +1680,32 @@ impl NativeCollection {
 
     /// Where this segment collection keeps its segments, slots and
     /// location files.
-    pub(crate) fn segment_medium(&self) -> std::sync::Arc<dyn segments::SegmentMedium> {
-        segments::DirectoryMedium::shared(&self.path)
+    pub(crate) fn segment_medium(
+        &self,
+    ) -> Result<std::sync::Arc<dyn segments::SegmentMedium>, NativeStorageError> {
+        if let (Some(database), Some(block)) = (self.root.database(), self.block) {
+            return Ok(std::sync::Arc::new(database.medium(block)?));
+        }
+        segments::medium_of(&self.path)
+    }
+
+    /// The directory block of a collection in a `.fxdb` database.
+    pub(crate) const fn database_block(&self) -> Option<u32> {
+        self.block
+    }
+
+    /// Whether this collection's segment medium keeps its prefix index, so
+    /// it has no `index/` files.
+    pub(crate) fn index_in_medium(&self) -> Result<bool, NativeStorageError> {
+        Ok(self.uses_segments() && self.segment_medium()?.keeps_index())
     }
 
     fn segment_store(&self) -> Result<segments::SegmentStore, NativeStorageError> {
-        segments::SegmentStore::open(self.segment_medium())
+        segments::SegmentStore::open(self.segment_medium()?)
     }
 
     fn segment_generation(&self) -> Result<GenerationState, NativeStorageError> {
-        let Some(slot) = self.segment_medium().read_slot()? else {
+        let Some(slot) = self.segment_medium()?.read_slot()? else {
             return Ok(GenerationState {
                 format: GenerationState::FORMAT_V2.into(),
                 generation: 0,
@@ -1630,7 +1835,7 @@ impl NativeCollection {
         }
         let length = if self.uses_segments() {
             let number = u64::from_str_radix(&position.nonce, 16).unwrap_or(u64::MAX);
-            Some(self.segment_medium().segment_length(number)?)
+            Some(self.segment_medium()?.segment_length(number)?)
         } else {
             match fs::symlink_metadata(self.log_segment_path()) {
                 Ok(metadata) => Some(metadata.len()),
@@ -2254,6 +2459,19 @@ impl NativeCollection {
         &self,
         cache: &index_cache::IndexCache,
     ) -> Result<std::sync::Arc<IndexSnapshot>, NativeStorageError> {
+        if self.index_in_medium()? {
+            let medium = self.segment_medium()?;
+            let to = medium
+                .read_slot()?
+                .map_or(segments::RecordPosition::START, |slot| {
+                    segments::RecordPosition::published(&slot)
+                });
+            let (snapshot, log) = medium.read_index(to)?;
+            return cache.load(index_cache::IndexInputs {
+                snapshot,
+                log: Some(log),
+            });
+        }
         let index = self.path.join("index");
         let snapshot_path = index.join("keys.snapshot");
         let snapshot_bytes = self.root.read_file(
@@ -2665,6 +2883,9 @@ pub enum NativeStorageErrorCode {
     ShardWidth,
     /// The preview does not support the requested collection/operation.
     Unsupported,
+    /// A `.fxdb` database does not hold this kind of collection or support
+    /// this feature (ADR 0016 section 1).
+    LayoutUnsupported,
     /// A queue topic, consumer group, message, or option was invalid.
     InvalidQueue,
     /// A queue acknowledgement receipt was absent, stale, or incorrect.
@@ -2698,6 +2919,7 @@ impl NativeStorageErrorCode {
             Self::InvalidQuery => "EQUERY_INVALID",
             Self::ShardWidth => "ESHARDWIDTH",
             Self::Unsupported => "ENATIVE_UNSUPPORTED",
+            Self::LayoutUnsupported => "ELAYOUTUNSUPPORTED",
             Self::InvalidQueue => "EQUEUE_INVALID",
             Self::QueueReceipt => "EQUEUE_RECEIPT",
             Self::QueueLimit => "EQUEUE_LIMIT",

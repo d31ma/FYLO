@@ -41,6 +41,7 @@ fn generation(generation: u64, committed_length: u64) -> ContainerGenerationSlot
         committed_length,
         next_lsn: generation + 1,
         record_count: generation,
+        table_epoch: 0,
     }
 }
 
@@ -655,4 +656,146 @@ fn a_reused_segment_extent_holds_none_of_its_former_bytes() {
         .read_payload(second.index, 0, &mut payload)
         .unwrap();
     assert!(payload.iter().all(|byte| *byte == 0));
+}
+
+#[test]
+fn an_extent_only_a_slot_names_is_reclaimed_after_a_reopen() {
+    let (_guard, path) = created("fxdb-reclaim");
+    let mut container = ContainerFile::open_unchecked(&path).unwrap();
+    let block = container.add_collection("users", b"{}").unwrap().block;
+    let active = container.allocate(SEGMENT, 1).unwrap();
+    let slot = ContainerGenerationSlot {
+        active_extent: active.index,
+        active_sequence: active.sequence,
+        ..generation(2, 0)
+    };
+    container.publish_generation(block, slot).unwrap();
+    container.sync().unwrap();
+    drop(container);
+
+    let mut reopened = ContainerFile::open_unchecked(&path).unwrap();
+    assert_eq!(reopened.read_generation(block).unwrap(), Some(slot));
+    assert_eq!(reopened.read_checkpoint(block).unwrap(), None);
+    assert_eq!(reopened.allocator().find_sequence(active.sequence), None);
+    assert!(matches!(
+        reopened.reclaim(active.index, SEGMENT, 1, active.sequence + 1),
+        Err(ContainerError::Format(ContainerFormatError::InvalidField))
+    ));
+    reopened
+        .reclaim(active.index, SEGMENT, 1, active.sequence)
+        .unwrap();
+    assert_eq!(
+        reopened.allocator().find_sequence(active.sequence),
+        Some((active.index, SEGMENT, 1))
+    );
+    assert!(!reopened.allocator().is_mapped(active.index));
+    let next = reopened.allocate(SEGMENT, 1).unwrap();
+    assert_ne!(next.index, active.index);
+    assert!(next.sequence > active.sequence);
+}
+
+#[test]
+fn a_reader_refreshes_its_map_after_a_writer_checkpoints() {
+    let (_guard, path) = created("fxdb-refresh");
+    let mut writer = ContainerFile::open_unchecked(&path).unwrap();
+    let block = writer.add_collection("users", b"{}").unwrap().block;
+    let mut reader = ContainerFile::open_reader(&path).unwrap();
+    assert!(!reader.refresh().unwrap(), "nothing changed yet");
+
+    let first = writer.allocate(SEGMENT, 1).unwrap();
+    writer.checkpoint().unwrap();
+    let active = writer.allocate(SEGMENT, 1).unwrap();
+    let slot = ContainerGenerationSlot {
+        active_extent: active.index,
+        active_sequence: active.sequence,
+        ..generation(2, 0)
+    };
+    writer.publish_generation(block, slot).unwrap();
+    writer.sync().unwrap();
+    assert!(!writer.refresh().unwrap(), "a writer's map is the newest");
+
+    assert_eq!(reader.allocator().find_sequence(first.sequence), None);
+    assert!(reader.refresh().unwrap());
+    assert_eq!(
+        reader.allocator().find_sequence(first.sequence),
+        Some((first.index, SEGMENT, 1))
+    );
+    assert_eq!(reader.collections().len(), 1);
+    assert!(!reader.refresh().unwrap());
+
+    // The active extent is in no map on disk yet; the reader takes it back
+    // in memory from the slot that names it, and can read it.
+    assert_eq!(reader.allocator().find_sequence(active.sequence), None);
+    assert_eq!(reader.read_generation(block).unwrap(), Some(slot));
+    reader
+        .reclaim(active.index, SEGMENT, 1, active.sequence)
+        .unwrap();
+    let mut payload = [0_u8; 16];
+    reader.read_payload(active.index, 0, &mut payload).unwrap();
+    assert!(matches!(
+        reader.allocate(SEGMENT, 1),
+        Err(ContainerError::ReadOnly)
+    ));
+}
+
+#[test]
+fn a_dropped_collection_keeps_its_block_and_gives_its_extents_back() {
+    let (_guard, path) = created("fxdb-drop");
+    let (users, segment) = {
+        let mut container = ContainerFile::open_unchecked(&path).unwrap();
+        let users = container.add_collection("users", b"{}").unwrap().header.id;
+        container.add_collection("orders", b"{}").unwrap();
+        let segment = container.allocate(SEGMENT, users).unwrap().index;
+        container.checkpoint().unwrap();
+        container.publish_generation(0, generation(1, 64)).unwrap();
+        assert_eq!(container.drop_collection("users").unwrap(), 0);
+        assert!(container.drop_collection("users").is_err());
+        assert!(container.allocator().owned(SEGMENT, users).is_empty());
+        container.checkpoint().unwrap();
+        (users, segment)
+    };
+    let mut container = ContainerFile::open_unchecked(&path).unwrap();
+    let blocks: Vec<_> = container
+        .collections()
+        .iter()
+        .map(|collection| (collection.header.name.as_str(), collection.header.dropped))
+        .collect();
+    assert_eq!(blocks, [("users", true), ("orders", false)]);
+    assert_eq!(
+        container.collections()[0].generation,
+        Some(generation(1, 64))
+    );
+    let again = container.add_collection("users", b"{}").unwrap();
+    assert_eq!((again.block, again.header.id), (2, 3));
+    assert_ne!(again.header.id, users);
+    assert_eq!(container.allocate(SEGMENT, 3).unwrap().index, segment);
+}
+
+#[test]
+fn a_writer_refreshes_to_the_map_another_writer_checkpointed() {
+    let (_guard, path) = created("fxdb-writers-refresh");
+    let mut first = ContainerFile::open_unchecked(&path).unwrap();
+    first.add_collection("users", b"{}").unwrap();
+    let mut second = ContainerFile::open_unchecked(&path).unwrap();
+    let taken = first.allocate(SEGMENT, 1).unwrap();
+    first.checkpoint().unwrap();
+
+    // The second writer reads the first one's map before it allocates, as
+    // it does under the allocation byte, and so never takes the same
+    // extent or sequence number.
+    assert_eq!(second.allocator().find_sequence(taken.sequence), None);
+    assert!(second.refresh().unwrap());
+    assert_eq!(
+        second.allocator().find_sequence(taken.sequence),
+        Some((taken.index, SEGMENT, 1))
+    );
+    let next = second.allocate(SEGMENT, 1).unwrap();
+    assert_ne!(next.index, taken.index);
+    assert!(next.sequence > taken.sequence);
+    second.checkpoint().unwrap();
+    assert!(first.refresh().unwrap());
+    assert_eq!(
+        first.allocator().find_sequence(next.sequence),
+        Some((next.index, SEGMENT, 1))
+    );
 }

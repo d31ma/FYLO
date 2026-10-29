@@ -83,6 +83,20 @@ impl LogRecord {
         Ok((Self::decode_body(body)?, end))
     }
 
+    /// The manifest bytes of a frame that does not decode, read as far as
+    /// its length fields allow and without the checksum, or `None` when
+    /// they reach past `bytes`.
+    ///
+    /// Nothing here is verified: it is for naming, best effort, what a
+    /// damaged record held, and the caller checks whatever it reads.
+    #[must_use]
+    pub fn unchecked_manifest(bytes: &[u8]) -> Option<&[u8]> {
+        let body = bytes.get(Self::FRAME_BYTES..)?;
+        let length = body.get(17..Self::FIXED_BODY_BYTES)?;
+        let length = u32::from_le_bytes([length[0], length[1], length[2], length[3]]) as usize;
+        body.get(Self::FIXED_BODY_BYTES..Self::FIXED_BODY_BYTES.checked_add(length)?)
+    }
+
     fn decode_body(body: &[u8]) -> Result<Self, LogFormatError> {
         let manifest_length = u32::from_le_bytes([body[17], body[18], body[19], body[20]]) as usize;
         let manifest_end = Self::FIXED_BODY_BYTES
@@ -147,6 +161,23 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_damaged_frame_still_shows_its_manifest() {
+        let mut encoded = record().encode().unwrap();
+        let last = encoded.len() - 1;
+        encoded[last] ^= 0xFF;
+        assert_eq!(
+            LogRecord::decode(&encoded).map(|(decoded, _)| decoded),
+            Err(LogFormatError::ChecksumMismatch)
+        );
+        assert_eq!(
+            LogRecord::unchecked_manifest(&encoded),
+            Some(&br#"{"format":"x"}"#[..])
+        );
+        assert_eq!(LogRecord::unchecked_manifest(&encoded[..30]), None);
+        assert_eq!(LogRecord::unchecked_manifest(&[]), None);
     }
 
     #[test]

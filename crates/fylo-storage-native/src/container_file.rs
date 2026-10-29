@@ -368,6 +368,59 @@ impl ContainerFile {
         Ok(container)
     }
 
+    /// Read the superblocks again and, when another process has
+    /// checkpointed the map since this open last read it, the map and the
+    /// directory too. Returns whether it read them.
+    ///
+    /// A reader writes nothing, so the map on disk is never older than its
+    /// own. A writer under the lease is the only one to checkpoint, so for
+    /// it this finds nothing new. A writer sharing the file with writers in
+    /// other processes reads their checkpoints too, and loses what its own
+    /// map changed since its last checkpoint: it refreshes under the
+    /// allocation byte ([`Self::lock_allocation`]) before it changes the
+    /// map, and checkpoints before it lets the byte go, so nothing it took
+    /// or released is lost; a take-back in memory only ([`Self::reclaim`])
+    /// or a seal not yet checkpointed must be made again.
+    ///
+    /// # Errors
+    ///
+    /// Returns the read failure or a decoding error; the open keeps what it
+    /// had.
+    pub fn refresh(&mut self) -> Result<bool, ContainerError> {
+        let mut copies = vec![0_u8; 2 * ContainerSuperblock::ENCODED_BYTES];
+        read_exact_at(self.file(), &mut copies, 0)?;
+        let (superblock, in_a) = ContainerSuperblock::newest(
+            &copies[..ContainerSuperblock::ENCODED_BYTES],
+            &copies[ContainerSuperblock::ENCODED_BYTES..],
+        )?;
+        if superblock.generation == self.superblock.generation {
+            return Ok(false);
+        }
+        let previous = std::mem::replace(&mut self.superblock, superblock);
+        let allocator = match self.read_map() {
+            Ok(allocator) => allocator,
+            Err(error) => {
+                self.superblock = previous;
+                return Err(error);
+            }
+        };
+        let collections = if self.is_locked() {
+            Vec::new()
+        } else {
+            match self.read_directory() {
+                Ok(collections) => collections,
+                Err(error) => {
+                    self.superblock = previous;
+                    return Err(error);
+                }
+            }
+        };
+        self.superblock_in_a = in_a;
+        self.allocator = allocator;
+        self.collections = collections;
+        Ok(true)
+    }
+
     fn file(&self) -> &File {
         #[cfg(not(target_family = "wasm"))]
         {
@@ -383,6 +436,59 @@ impl ContainerFile {
     #[must_use]
     pub fn is_writable(&self) -> bool {
         self.writable
+    }
+
+    /// Take the writer byte of the collection in directory block `block`
+    /// exclusive, waiting up to `wait`, so one process at a time writes
+    /// that collection; dropping the guard lets the next in. Under the
+    /// lease the byte is decided inside this process alone.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Busy` when another writer keeps it past `wait`, `ReadOnly`
+    /// for a reader, or the lock failure.
+    #[cfg(not(target_family = "wasm"))]
+    pub fn lock_collection_writer(
+        &self,
+        block: u32,
+        wait: std::time::Duration,
+    ) -> Result<crate::ByteLockGuard, ContainerError> {
+        lock_byte(
+            &self.lock_handle()?,
+            crate::LockByte::collection_writer(block),
+            wait,
+        )
+    }
+
+    /// Take the allocation byte exclusive, waiting up to `wait`, so one
+    /// process at a time takes, seals, releases and checkpoints extents
+    /// (ADR 0016 section 7). A writer sharing the file with others holds it
+    /// across [`Self::refresh`], its change to the map and the
+    /// [`Self::checkpoint`] that records it. Under the lease the byte is
+    /// decided inside this process alone.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Busy` when another writer keeps it past `wait`, `ReadOnly`
+    /// for a reader, or the lock failure.
+    #[cfg(not(target_family = "wasm"))]
+    pub fn lock_allocation(
+        &self,
+        wait: std::time::Duration,
+    ) -> Result<crate::ByteLockGuard, ContainerError> {
+        lock_byte(&self.lock_handle()?, crate::LockByte::ALLOCATION, wait)
+    }
+
+    /// The lock handle of a writable open, to take a byte through without
+    /// borrowing the open while waiting ([`lock_byte`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns `ReadOnly` or `Locked`.
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn lock_handle(&self) -> Result<crate::ByteRangeLockFile, ContainerError> {
+        self.require_writable()?;
+        Ok(self.handle.clone())
     }
 
     /// Whether the file was created encrypted.
@@ -682,6 +788,86 @@ impl ContainerFile {
         Ok(&self.collections[block])
     }
 
+    /// Drop the collection named `name`: rewrite its block's static part
+    /// with the dropped flag, flush, and release every extent it owns. The
+    /// extents are reused after the next checkpoint; the block never is, so
+    /// a block number names one collection for the life of the file.
+    /// Returns the dropped collection's block.
+    ///
+    /// The slots are left as they were. A crash before the flush leaves the
+    /// collection in place; one after it leaves its extents owned until the
+    /// next writer that opens the file releases them.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ReadOnly` or `Locked`, `InvalidInput` when no live
+    /// collection has that name, or the write or flush failure.
+    pub fn drop_collection(&mut self, name: &str) -> Result<u32, ContainerError> {
+        self.require_writable()?;
+        let collection = self
+            .collections
+            .iter()
+            .find(|collection| !collection.header.dropped && collection.header.name == name)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "no such container collection")
+            })?;
+        let (block, header_id) = (collection.block, collection.header.id);
+        let header = ContainerCollectionHeader {
+            dropped: true,
+            ..collection.header.clone()
+        };
+        let bytes = match &self.cipher {
+            Some(cipher) => ContainerCollectionHeader::encode_sealed(&cipher.seal(
+                ContainerSealContext::Directory { block },
+                &header.encode_body()?,
+            )?)?,
+            None => header.encode()?,
+        };
+        self.write_payload(
+            self.superblock.directory_extent,
+            u64::from(block) * BLOCK_BYTES,
+            &bytes,
+        )?;
+        self.sync()?;
+        self.collection_mut(block)?.header = header;
+        self.release_owned_by(header_id)?;
+        Ok(block)
+    }
+
+    /// Release every extent a dropped collection still owns: one a crash
+    /// left after [`Self::drop_collection`] flushed the dropped flag.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ReadOnly` or `Locked`.
+    pub fn release_dropped(&mut self) -> Result<(), ContainerError> {
+        self.require_writable()?;
+        let dropped: Vec<u32> = self
+            .collections
+            .iter()
+            .filter(|collection| collection.header.dropped)
+            .map(|collection| collection.header.id)
+            .collect();
+        for id in dropped {
+            self.release_owned_by(id)?;
+        }
+        Ok(())
+    }
+
+    fn release_owned_by(&mut self, owner: u32) -> Result<(), ContainerError> {
+        for kind in [
+            ContainerExtentKind::Segment,
+            ContainerExtentKind::Dictionary,
+            ContainerExtentKind::Locations,
+            ContainerExtentKind::Index,
+        ] {
+            for (extent, _) in self.allocator.owned(kind, owner) {
+                self.allocator.release(extent)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Publish a collection's generation in place, into the slot that does
     /// not hold its newest one, without flushing (ADR 0015 section 6).
     ///
@@ -708,6 +894,65 @@ impl ContainerFile {
         self.write_payload(directory, offset, &slot.encode())?;
         self.collection_mut(block)?.generation = Some(slot);
         Ok(())
+    }
+
+    /// Read a collection's newest valid generation slot from the file, as
+    /// another handle on it may have published it since this one opened.
+    ///
+    /// # Errors
+    ///
+    /// Returns the read failure, or `InvalidInput` for an unknown block.
+    pub fn read_generation(
+        &self,
+        block: u32,
+    ) -> Result<Option<ContainerGenerationSlot>, ContainerError> {
+        let at =
+            self.slot_pair_offset(block, ContainerCollectionHeader::GENERATION_SLOTS_OFFSET)?;
+        let mut pair = [0_u8; 2 * ContainerGenerationSlot::ENCODED_BYTES];
+        self.read_payload(self.superblock.directory_extent, at, &mut pair)?;
+        Ok(ContainerGenerationSlot::newest(&pair).map(|(slot, _)| slot))
+    }
+
+    /// Read a collection's newest valid checkpoint slot from the file.
+    ///
+    /// # Errors
+    ///
+    /// Returns the read failure, or `InvalidInput` for an unknown block.
+    pub fn read_checkpoint(
+        &self,
+        block: u32,
+    ) -> Result<Option<ContainerCheckpointSlot>, ContainerError> {
+        let at =
+            self.slot_pair_offset(block, ContainerCollectionHeader::CHECKPOINT_SLOTS_OFFSET)?;
+        let mut pair = [0_u8; 2 * ContainerCheckpointSlot::ENCODED_BYTES];
+        self.read_payload(self.superblock.directory_extent, at, &mut pair)?;
+        Ok(ContainerCheckpointSlot::newest(&pair).map(|(slot, _)| slot))
+    }
+
+    /// Take back an extent the durable map shows free although a slot
+    /// names it: one taken after the last checkpoint by a process that
+    /// stopped before the next. Its header must show it holds allocation
+    /// `sequence` of `kind` for `owner`. The sequence counter moves past it,
+    /// so no later allocation repeats the number.
+    ///
+    /// A reader may take an extent back too: only its map in memory
+    /// changes, so it can read the extent a writer's slot names before the
+    /// writer's next checkpoint shows it.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidField` when the header holds something else,
+    /// `Allocator(InconsistentMap)` when the map shows the extent in use,
+    /// or the read failure.
+    pub fn reclaim(
+        &mut self,
+        extent: u64,
+        kind: ContainerExtentKind,
+        owner: u32,
+        sequence: u64,
+    ) -> Result<(), ContainerError> {
+        self.expect_extent(extent, kind, owner, sequence)?;
+        Ok(self.allocator.reclaim(extent, kind, owner, sequence)?)
     }
 
     /// Record a collection's checkpoint in the slot that does not hold its
@@ -987,6 +1232,29 @@ impl ContainerFile {
         }
         Ok(collections)
     }
+}
+
+/// Take `byte` exclusive through `handle`, waiting up to `wait`; a wait
+/// that runs out is `Busy`.
+///
+/// # Errors
+///
+/// Returns `Busy`, or the lock failure.
+#[cfg(not(target_family = "wasm"))]
+pub(crate) fn lock_byte(
+    handle: &crate::ByteRangeLockFile,
+    byte: crate::LockByte,
+    wait: std::time::Duration,
+) -> Result<crate::ByteLockGuard, ContainerError> {
+    handle
+        .lock(byte, crate::LockMode::Exclusive, wait)
+        .map_err(|error| {
+            if error.kind() == io::ErrorKind::TimedOut {
+                ContainerError::Busy
+            } else {
+                ContainerError::Io(error)
+            }
+        })
 }
 
 /// Map pages describing a file of `extent_count` extents; extent 0 has none.

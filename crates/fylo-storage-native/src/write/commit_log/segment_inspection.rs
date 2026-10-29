@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
 
-use fylo_format::{LogRecordKind, LogSalvage};
+use fylo_format::{LogRecord, LogRecordKind, LogSalvage, LogSegmentKind};
 
 use super::document_image::DocumentImage;
 use super::file_export::FileExport;
@@ -10,10 +10,10 @@ use super::salvage_report::SalvageReport;
 use super::segment_rebuild::SegmentRebuild;
 use super::segment_verification::SegmentVerification;
 use crate::segments::{
-    LocationTable, SegmentCommitManifest, SegmentDocument, SegmentLocation, SegmentMedium,
-    SegmentStore,
+    LocationTable, RecordPosition, SegmentCommitManifest, SegmentDocument, SegmentLocation,
+    SegmentMedium, SegmentStore, TableReach,
 };
-use crate::{NativeCollection, NativeRoot, NativeStorageError};
+use crate::{NativeCollection, NativeRoot, NativeStorageError, NativeStorageErrorCode};
 
 /// Reads a segment collection record by record, without trusting its
 /// location table: `fylo verify` and `fylo salvage` (ADR 0015 section 8).
@@ -23,13 +23,39 @@ impl SegmentInspection {
     pub(crate) fn verify(
         collection: &NativeCollection,
     ) -> Result<SegmentVerification, NativeStorageError> {
-        let medium = collection.segment_medium();
+        let medium = collection.segment_medium()?;
         let mut verification = SegmentVerification::default();
+        let mut versions = Versions::default();
         for number in medium.segment_numbers()? {
-            Self::verify_segment(&*medium, number, &mut verification)?;
+            Self::verify_segment(&*medium, number, &mut verification, &mut versions)?;
         }
-        let store = SegmentStore::open_for_writer(Arc::clone(&medium))?;
-        let rows: Vec<SegmentLocation> = store.table().rows().into_iter().cloned().collect();
+        // A medium without a location log replays the records after its
+        // snapshot to build the table, so damage there is a defect too. The
+        // table then stops at the damage, and the documents whose newest
+        // version lay there are named as far as the damaged records show
+        // them.
+        let (rows, damage) = match Self::table(&medium) {
+            Ok(loaded) => loaded,
+            Err(error) if error.code() == NativeStorageErrorCode::CorruptDocument => {
+                verification
+                    .defects
+                    .push(format!("cannot load locations: {error}"));
+                return Ok(verification);
+            }
+            Err(error) => return Err(error),
+        };
+        if let Some(damage) = damage {
+            verification.defects.push(format!(
+                "locations stop at segment {} byte {}, where a record cannot be read",
+                damage.segment, damage.offset
+            ));
+            let newest = versions.newest();
+            for id in Self::lost_at(&*medium, damage, &newest)? {
+                verification.defects.push(format!(
+                    "the newest version of {id} is in a record that cannot be read"
+                ));
+            }
+        }
         verification.documents = rows.len();
         let scans = match SegmentRebuild::scan_all(&*medium) {
             Ok(scans) => scans,
@@ -56,7 +82,7 @@ impl SegmentInspection {
         collection: &NativeCollection,
         out: &Path,
     ) -> Result<SalvageReport, NativeStorageError> {
-        let medium = collection.segment_medium();
+        let medium = collection.segment_medium()?;
         let mut report = SalvageReport::default();
         let mut salvaged = Vec::new();
         for number in medium.segment_numbers()? {
@@ -74,7 +100,7 @@ impl SegmentInspection {
             }
         }
         let newest = Self::salvaged(&salvaged)?;
-        report.lost = Self::lost(collection, &newest);
+        report.lost = Self::lost(&medium, &newest)?;
         let images = newest
             .into_values()
             .filter(|(_, document)| document.entry.state != crate::segments::LocationState::Absent)
@@ -91,6 +117,7 @@ impl SegmentInspection {
         medium: &dyn SegmentMedium,
         number: u64,
         verification: &mut SegmentVerification,
+        versions: &mut Versions,
     ) -> Result<(), NativeStorageError> {
         let bytes = medium.require_segment(number)?;
         verification.segments += 1;
@@ -110,6 +137,7 @@ impl SegmentInspection {
         }
         for (offset, record) in &salvage.records {
             verification.records += 1;
+            versions.note(record);
             if record.kind == LogRecordKind::Commit {
                 Self::verify_bodies(number, (*offset, record), verification)?;
             }
@@ -250,21 +278,174 @@ impl SegmentInspection {
         Ok(())
     }
 
-    /// Identifiers the location table names at a sequence number no
-    /// salvaged entry reached. Empty when the table itself is unreadable.
+    /// The table's rows, and where it stops at a record that cannot be
+    /// read: a medium without a location log builds its table from the
+    /// records after the snapshot, and one that cannot be read there ends
+    /// it (`LocationTable::load_salvaging`). With a location log the table
+    /// does not depend on the records.
+    fn table(
+        medium: &Arc<dyn SegmentMedium>,
+    ) -> Result<(Vec<SegmentLocation>, Option<RecordPosition>), NativeStorageError> {
+        match SegmentStore::open_for_writer(Arc::clone(medium)) {
+            Ok(store) => Ok((store.table().rows().into_iter().cloned().collect(), None)),
+            Err(error)
+                if error.code() == NativeStorageErrorCode::CorruptDocument
+                    && !medium.has_location_log() =>
+            {
+                let slot = medium.require_slot()?;
+                let reach = TableReach::published(&**medium, &slot);
+                let table = LocationTable::load_salvaging(&**medium, reach)?;
+                let rows = table.rows().into_iter().cloned().collect();
+                Ok((rows, table.damage()))
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Identifiers whose newest version no salvaged entry reached: those
+    /// the location table names at a later sequence number, and, where the
+    /// table stops at damage, those the damaged records name. Empty when
+    /// the table itself is unreadable.
     fn lost(
-        collection: &NativeCollection,
+        medium: &Arc<dyn SegmentMedium>,
         newest: &BTreeMap<String, (u64, SegmentDocument)>,
-    ) -> Vec<String> {
-        let Ok(store) = SegmentStore::open_for_writer(collection.segment_medium()) else {
-            return Vec::new();
+    ) -> Result<Vec<String>, NativeStorageError> {
+        let Ok((rows, damage)) = Self::table(medium) else {
+            return Ok(Vec::new());
         };
-        store
-            .table()
-            .rows()
-            .into_iter()
+        let mut lost: BTreeSet<String> = rows
+            .iter()
             .filter(|row| newest.get(&row.id).is_none_or(|(lsn, _)| *lsn < row.lsn))
             .map(|row| row.id.clone())
-            .collect()
+            .collect();
+        if let Some(damage) = damage {
+            let newest = newest
+                .iter()
+                .map(|(id, (lsn, _))| (id.clone(), *lsn))
+                .collect();
+            lost.extend(Self::lost_at(&**medium, damage, &newest)?);
+        }
+        Ok(lost.into_iter().collect())
+    }
+
+    /// Documents named by a damaged record of a document segment at or
+    /// after `damage` that no readable record after it writes again.
+    ///
+    /// The location log a directory collection keeps names such documents
+    /// whatever the damage. Without one, only a damaged record whose
+    /// manifest still reads names them: its checksum fails, so the
+    /// manifest is read unchecked, and only identifiers that are canonical
+    /// TTIDs are taken from it. A record whose manifest is damaged too
+    /// names nothing, and its byte range is all the report shows.
+    fn lost_at(
+        medium: &dyn SegmentMedium,
+        damage: RecordPosition,
+        newest: &BTreeMap<String, u64>,
+    ) -> Result<Vec<String>, NativeStorageError> {
+        let mut lost = BTreeSet::new();
+        for number in medium.segment_numbers()? {
+            if number < damage.segment {
+                continue;
+            }
+            let bytes = medium.require_segment(number)?;
+            let Ok(salvage) = LogSalvage::segment(&bytes) else {
+                continue;
+            };
+            if salvage.header.kind != LogSegmentKind::Documents {
+                continue;
+            }
+            for (start, end) in &salvage.damaged {
+                let at = RecordPosition {
+                    segment: number,
+                    offset: *start,
+                };
+                if at < damage {
+                    continue;
+                }
+                // Records of a document segment are in sequence order, so
+                // a version written again after the damage has a sequence
+                // number above every record before it.
+                let before = salvage
+                    .records
+                    .iter()
+                    .filter(|(offset, _)| offset < start)
+                    .map(|(_, record)| record.lsn)
+                    .max()
+                    .unwrap_or_else(|| salvage.header.first_lsn.saturating_sub(1));
+                let range = usize::try_from(*start).unwrap_or(usize::MAX)
+                    ..usize::try_from(*end).unwrap_or(usize::MAX);
+                for id in Self::damaged_ids(bytes.get(range).unwrap_or_default()) {
+                    if newest.get(&id).is_none_or(|lsn| *lsn <= before) {
+                        lost.insert(id);
+                    }
+                }
+            }
+        }
+        Ok(lost.into_iter().collect())
+    }
+
+    /// The document identifiers a damaged frame's manifest still names.
+    fn damaged_ids(frame: &[u8]) -> Vec<String> {
+        let Some(manifest) = frame
+            .get(LogSegmentKind::MARKER_BYTES..)
+            .and_then(LogRecord::unchecked_manifest)
+        else {
+            return Vec::new();
+        };
+        SegmentCommitManifest::decode(manifest)
+            .map(|manifest| {
+                manifest
+                    .entries
+                    .into_iter()
+                    .map(|entry| entry.id)
+                    .filter(|id| crate::validate_canonical_ttid(id).is_ok())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+}
+
+/// The newest committed sequence number of every document a verify read,
+/// without those an abort record cancelled.
+#[derive(Default)]
+struct Versions {
+    written: Vec<(String, u64)>,
+    aborted: BTreeSet<u64>,
+}
+
+impl Versions {
+    fn note(&mut self, record: &LogRecord) {
+        match record.kind {
+            LogRecordKind::Commit => {
+                if let Ok(manifest) = SegmentCommitManifest::decode(&record.manifest) {
+                    self.written.extend(
+                        manifest
+                            .entries
+                            .into_iter()
+                            .map(|entry| (entry.id, record.lsn)),
+                    );
+                }
+            }
+            LogRecordKind::Abort => {
+                if let Ok(manifest) =
+                    serde_json::from_slice::<super::abort_manifest::AbortManifest>(&record.manifest)
+                {
+                    self.aborted.insert(manifest.aborts);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn newest(&self) -> BTreeMap<String, u64> {
+        let mut newest: BTreeMap<String, u64> = BTreeMap::new();
+        for (id, lsn) in &self.written {
+            if self.aborted.contains(lsn) {
+                continue;
+            }
+            let entry = newest.entry(id.clone()).or_insert(*lsn);
+            *entry = (*entry).max(*lsn);
+        }
+        newest
     }
 }

@@ -122,6 +122,9 @@ impl LogCheckpoint {
     }
 
     pub(crate) fn compact_index(collection: &NativeCollection) -> Result<(), NativeStorageError> {
+        if collection.index_in_medium()? {
+            return Ok(());
+        }
         let index = collection.path.join("index");
         let wal = index.join("keys.wal");
         let snapshot = index.join("keys.snapshot");
@@ -137,6 +140,9 @@ impl LogCheckpoint {
     pub(crate) fn index_wants_compaction(
         collection: &NativeCollection,
     ) -> Result<bool, NativeStorageError> {
+        if collection.index_in_medium()? {
+            return Ok(false);
+        }
         let index = collection.path.join("index");
         let wal = Self::length(&index.join("keys.wal"))?;
         let snapshot = Self::length(&index.join("keys.snapshot"))?;

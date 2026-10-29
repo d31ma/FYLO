@@ -1,20 +1,48 @@
+use std::collections::BTreeSet;
+
 use fylo_format::{LogRecordKind, LogScan, LogSegmentHeader, LogSegmentKind};
 
 use super::compaction_manifest::CompactionManifest;
 use super::segment_rebuild::SegmentRebuild;
-use crate::segments::{LocationTable, RecordPosition, SegmentMedium};
+use crate::segments::{
+    IndexDelta, LocationTable, RecordPosition, SegmentCommitManifest, SegmentMedium,
+};
+use crate::write::NativeWriteRoot;
 use crate::{NativeStorageError, NativeStorageErrorCode};
+
+/// The prefix index's second source of changes, for a medium that keeps no
+/// index log: the records, replayed as the location table replays them.
+impl IndexDelta {
+    /// The index log lines the commits from `from` up to `to` make, in
+    /// record order, without those an abort record in the range cancelled.
+    /// A compaction moves documents without changing their keys, so it
+    /// makes none.
+    pub(crate) fn replay(
+        medium: &dyn SegmentMedium,
+        (from, to): (RecordPosition, RecordPosition),
+    ) -> Result<Vec<u8>, NativeStorageError> {
+        let present = medium.segment_numbers()?;
+        let (scans, _) = LocationTable::replayed_scans(medium, &present, (from, to), false)?;
+        let aborted = SegmentRebuild::aborted(scans.iter().map(|(_, scan)| scan))?;
+        let mut lines = Vec::new();
+        for (_, scan) in &scans {
+            for (_, record) in &scan.records {
+                if record.kind != LogRecordKind::Commit || aborted.contains(&record.lsn) {
+                    continue;
+                }
+                let manifest = SegmentCommitManifest::decode(&record.manifest)?;
+                let removed: BTreeSet<String> = manifest.index_removed.into_iter().collect();
+                let added: BTreeSet<String> = manifest.index_added.into_iter().collect();
+                lines.extend(NativeWriteRoot::index_lines(&removed, &added));
+            }
+        }
+        Ok(lines)
+    }
+}
 
 /// The location table's second source of rows: the records themselves, for
 /// a medium that keeps no location log (`docs/fxdb-segment-backend.md`,
 /// "Location deltas without `locations.wal`").
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "a medium without a location log is the first caller"
-    )
-)]
 impl LocationTable {
     /// Lay over the table the rows that the records from `from` up to `to`
     /// derive, as a rebuild derives them: each commit's entries, and for a
@@ -27,12 +55,42 @@ impl LocationTable {
     /// as the commit it cancels. The segments between them are read in
     /// number order. A compacted segment among them is skipped: it holds
     /// copies, which its compaction record brings in.
+    ///
+    /// A compaction whose copy no longer exists brings in nothing: a copy
+    /// is removed only once no location refers to it, so every document it
+    /// held is written again by a later record in the range.
     pub(crate) fn replay(
         &mut self,
         medium: &dyn SegmentMedium,
-        (from, to): (RecordPosition, RecordPosition),
+        range: (RecordPosition, RecordPosition),
     ) -> Result<(), NativeStorageError> {
-        let scans = Self::replayed_scans(medium, (from, to))?;
+        self.replay_reading(medium, range, false)
+    }
+
+    /// [`Self::replay`], stopping at the first record that cannot be read
+    /// instead of failing, and marking the table damaged there: what a
+    /// salvage or a verify of a medium without a location log can know
+    /// without the rows past the damage. A segment whose header cannot be
+    /// read is damaged at its start.
+    pub(crate) fn replay_salvaging(
+        &mut self,
+        medium: &dyn SegmentMedium,
+        range: (RecordPosition, RecordPosition),
+    ) -> Result<(), NativeStorageError> {
+        self.replay_reading(medium, range, true)
+    }
+
+    fn replay_reading(
+        &mut self,
+        medium: &dyn SegmentMedium,
+        (from, to): (RecordPosition, RecordPosition),
+        salvaging: bool,
+    ) -> Result<(), NativeStorageError> {
+        let present: Vec<u64> = medium.segment_numbers()?;
+        let (scans, damage) = Self::replayed_scans(medium, &present, (from, to), salvaging)?;
+        if let Some(damage) = damage {
+            self.mark_damaged(damage);
+        }
         let aborted = SegmentRebuild::aborted(scans.iter().map(|(_, scan)| scan))?;
         for (number, scan) in &scans {
             let lengths = SegmentRebuild::frame_lengths(scan);
@@ -46,7 +104,11 @@ impl LocationTable {
                     }
                     LogRecordKind::Compaction => {
                         let manifest = CompactionManifest::decode(&record.manifest)?;
-                        CompactionManifest::adopted_rows(medium, self, manifest.segment)?
+                        if present.contains(&manifest.segment) {
+                            CompactionManifest::adopted_rows(medium, self, manifest.segment)?
+                        } else {
+                            Vec::new()
+                        }
                     }
                     _ => Vec::new(),
                 };
@@ -58,48 +120,75 @@ impl LocationTable {
         Ok(())
     }
 
-    /// The records between two positions, as one scan per segment.
+    /// The records between two positions, as one scan per segment, of the
+    /// segments `present`.
+    ///
+    /// The segment `from` names may be gone. A medium without a location
+    /// log writes a location snapshot at every checkpoint, sealing
+    /// included, so a snapshot position in a segment sealed since is that
+    /// segment's end: nothing past it remains to replay, and a sealed
+    /// segment may be compacted away. The segment `to` names must
+    /// exist; when it does not, the generation moved under the reader.
+    #[allow(clippy::type_complexity)]
     fn replayed_scans(
         medium: &dyn SegmentMedium,
+        present: &[u64],
         (from, to): (RecordPosition, RecordPosition),
-    ) -> Result<Vec<(u64, LogScan)>, NativeStorageError> {
+        salvaging: bool,
+    ) -> Result<(Vec<(u64, LogScan)>, Option<RecordPosition>), NativeStorageError> {
         if to <= from {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), None));
         }
-        let mut numbers: Vec<u64> = medium
-            .segment_numbers()?
-            .into_iter()
+        let mut numbers: Vec<u64> = present
+            .iter()
+            .copied()
             .filter(|number| (from.segment..=to.segment).contains(number))
             .collect();
-        numbers.extend([from.segment, to.segment]);
+        numbers.push(to.segment);
         numbers.sort_unstable();
         numbers.dedup();
         let mut scans = Vec::with_capacity(numbers.len());
         for number in numbers {
             let start = (number == from.segment).then_some(from.offset);
             let end = (number == to.segment).then_some(to.offset);
-            if let Some(scan) = Self::replayed_span(medium, number, (start, end))? {
+            let (scan, damage) = Self::replayed_span(medium, number, (start, end), salvaging)?;
+            if let Some(scan) = scan {
                 scans.push((number, scan));
             }
+            if let Some(offset) = damage {
+                return Ok((
+                    scans,
+                    Some(RecordPosition {
+                        segment: number,
+                        offset,
+                    }),
+                ));
+            }
         }
-        Ok(scans)
+        Ok((scans, None))
     }
 
     /// The records of segment `number` from `start` to `end`, by default
     /// from its first record to its end, or `None` for a compacted segment.
-    /// Every record in the span must decode: it was committed.
+    /// Every record in the span must decode: it was committed. When
+    /// `salvaging`, the first that does not ends the span instead, and its
+    /// offset comes back with the records before it.
     fn replayed_span(
         medium: &dyn SegmentMedium,
         number: u64,
         (start, end): (Option<u64>, Option<u64>),
-    ) -> Result<Option<LogScan>, NativeStorageError> {
+        salvaging: bool,
+    ) -> Result<(Option<LogScan>, Option<u64>), NativeStorageError> {
         let handle = medium.read_handle(number)?;
         let mut header = [0_u8; LogSegmentHeader::ENCODED_BYTES];
         handle.read_at(&mut header, 0)?;
-        let header = LogSegmentHeader::decode(&header)
-            .map_err(|error| Self::damaged(number, 0, &error.to_string()))?;
+        let header = match LogSegmentHeader::decode(&header) {
+            Ok(header) => header,
+            Err(_) if salvaging => return Ok((None, Some(0))),
+            Err(error) => return Err(Self::damaged(number, 0, &error.to_string())),
+        };
         if header.kind != LogSegmentKind::Documents {
-            return Ok(None);
+            return Ok((None, None));
         }
         let start = start.unwrap_or(LogSegmentHeader::ENCODED_BYTES as u64);
         let end = match end {
@@ -116,19 +205,29 @@ impl LocationTable {
         let mut cursor = 0;
         while cursor < bytes.len() {
             let offset = start + cursor as u64;
-            let (record, length) = header
-                .kind
-                .unframe(&bytes[cursor..])
-                .map_err(|error| Self::damaged(number, offset, &error.to_string()))?;
+            let (record, length) = match header.kind.unframe(&bytes[cursor..]) {
+                Ok(framed) => framed,
+                Err(error) if salvaging => {
+                    let scan = LogScan {
+                        header,
+                        records,
+                        valid_length: offset,
+                        stopped: Some(error),
+                    };
+                    return Ok((Some(scan), Some(offset)));
+                }
+                Err(error) => return Err(Self::damaged(number, offset, &error.to_string())),
+            };
             records.push((offset, record));
             cursor += length;
         }
-        Ok(Some(LogScan {
+        let scan = LogScan {
             header,
             records,
             valid_length: end,
             stopped: None,
-        }))
+        };
+        Ok((Some(scan), None))
     }
 
     fn damaged(number: u64, offset: u64, detail: &str) -> NativeStorageError {
@@ -154,7 +253,7 @@ mod tests {
     use super::super::segment_plan::SegmentPlan;
     use crate::segments::{
         LocationState, LocationTable, RecordPosition, SegmentCheckpointManifest, SegmentLocation,
-        SegmentMedium, SegmentStore,
+        SegmentMedium, SegmentStore, TableReach,
     };
     use crate::{
         CollectionKind, CollectionLayout, NativeCollection, NativeRoot, NativeStorageError,
@@ -196,7 +295,7 @@ mod tests {
         fn seal(&self) {
             let writer = self.writer();
             let collection = self.collection();
-            let _lock = writer.lock_collection(&collection.path).unwrap();
+            let _lock = writer.lock_collection(&collection).unwrap();
             let stored = collection.stored_generation().unwrap();
             let active = NativeWriteRoot::open_active_segment(&collection, &stored).unwrap();
             SegmentCheckpoint::seal(&collection, active, stored.generation).unwrap();
@@ -250,7 +349,7 @@ mod tests {
     /// published slot.
     fn published(medium: &dyn SegmentMedium) -> (LocationTable, RecordPosition) {
         let slot = medium.require_slot().unwrap();
-        let table = LocationTable::load(medium, slot.locations_length).unwrap();
+        let table = LocationTable::load(medium, TableReach::Log(slot.locations_length)).unwrap();
         let end = RecordPosition {
             segment: slot.segment,
             offset: slot.length,
@@ -264,7 +363,8 @@ mod tests {
         let scan = LogScan::segment(&medium.require_segment(number).unwrap()).unwrap();
         let (offset, record) = &scan.records[0];
         let manifest: SegmentCheckpointManifest = serde_json::from_slice(&record.manifest).unwrap();
-        let table = LocationTable::load(medium, manifest.locations_wal_length).unwrap();
+        let table =
+            LocationTable::load(medium, TableReach::Log(manifest.locations_wal_length)).unwrap();
         let start = RecordPosition {
             segment: number,
             offset: *offset,
@@ -285,7 +385,7 @@ mod tests {
         mutate(&writer, 30..50);
         fixture.seal();
         mutate(&writer, 50..60);
-        let medium = fixture.collection().segment_medium();
+        let medium = fixture.collection().segment_medium().unwrap();
         assert_eq!(medium.segment_numbers().unwrap(), vec![1, 2, 3]);
         let (logged, end) = published(&*medium);
         let (mut replayed, start) = opening(&*medium, 1);
@@ -316,7 +416,7 @@ mod tests {
         }
         fixture.seal();
         mutate(&writer, 50..55);
-        let medium = fixture.collection().segment_medium();
+        let medium = fixture.collection().segment_medium().unwrap();
         assert_eq!(
             medium.segment_numbers().unwrap(),
             vec![2, 3, 4],
@@ -383,7 +483,7 @@ mod tests {
         let writer = fixture.writer();
         let collection = fixture.collection();
         let failed = writer.commit_logged(&collection, || {
-            let store = SegmentStore::open_for_writer(collection.segment_medium())?;
+            let store = SegmentStore::open_for_writer(collection.segment_medium()?)?;
             let document = store.document(&identifier(number), LocationState::Live)?;
             let mut plan = SegmentPlan::new("rewrite");
             let mut copy = document.entry.clone();
@@ -406,7 +506,7 @@ mod tests {
         mutate(&writer, 0..10);
         commit_and_abort(&fixture, (1, 900));
         mutate(&writer, 10..15);
-        let medium = fixture.collection().segment_medium();
+        let medium = fixture.collection().segment_medium().unwrap();
         let scan = LogScan::segment(&medium.require_segment(1).unwrap()).unwrap();
         assert!(
             scan.records
@@ -429,7 +529,7 @@ mod tests {
     fn an_empty_range_replays_nothing() {
         let fixture = Fixture::create();
         mutate(&fixture.writer(), 0..5);
-        let medium = fixture.collection().segment_medium();
+        let medium = fixture.collection().segment_medium().unwrap();
         let (logged, end) = published(&*medium);
         let mut replayed = logged.clone();
         replayed.replay(&*medium, (end, end)).unwrap();

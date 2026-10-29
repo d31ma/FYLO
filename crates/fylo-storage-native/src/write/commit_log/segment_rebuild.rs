@@ -26,7 +26,7 @@ impl SegmentRebuild {
     /// Rebuild the location table and the index. Runs under the collection
     /// lock.
     pub(crate) fn run(collection: &NativeCollection) -> Result<(), NativeStorageError> {
-        let medium = collection.segment_medium();
+        let medium = collection.segment_medium()?;
         let scans = Self::scan_all(&*medium)?;
         let table = LocationTable::from_rows(Self::winners(&scans)?);
         medium.replace_location_snapshot(&table.encode_snapshot()?)?;
@@ -38,7 +38,7 @@ impl SegmentRebuild {
     /// Rebuild only the prefix index from the documents the location log
     /// already names.
     pub(crate) fn rebuild_index(collection: &NativeCollection) -> Result<(), NativeStorageError> {
-        let store = SegmentStore::open_for_writer(collection.segment_medium())?;
+        let store = SegmentStore::open_for_writer(collection.segment_medium()?)?;
         let mut keys = BTreeSet::new();
         for batch in store.ids(LocationState::Live).chunks(Self::INDEX_BATCH) {
             for document in store.documents(batch, LocationState::Live)? {
@@ -48,12 +48,16 @@ impl SegmentRebuild {
                 )?);
             }
         }
-        let index = collection.path.join("index");
         let mut snapshot = Vec::new();
         for key in keys {
             snapshot.extend_from_slice(key.as_bytes());
             snapshot.push(b'\n');
         }
+        let medium = collection.segment_medium()?;
+        if medium.keeps_index() {
+            return medium.replace_index_snapshot(&snapshot);
+        }
+        let index = collection.path.join("index");
         durable_replace(&index.join("keys.snapshot"), &snapshot)?;
         durable_replace(&index.join("keys.wal"), b"")
     }

@@ -5,8 +5,8 @@ use std::sync::Arc;
 use fylo_vfs::{self as fs, File, OpenOptions};
 
 use super::{
-    GenerationSlots, MediumIdentity, PositionedRead, SegmentHandle, SegmentMedium, SegmentPaths,
-    SlotRecord,
+    GenerationSlots, MediumIdentity, PositionedRead, RecordPosition, SegmentHandle, SegmentMedium,
+    SegmentPaths, SlotRecord,
 };
 use crate::write::{durable_replace_owner_only, ensure_directory, sync_directory};
 use crate::{Durability, NativeRoot, NativeStorageError, NativeStorageErrorCode};
@@ -37,16 +37,6 @@ impl DirectoryMedium {
     /// The medium of `collection`, as the segment code shares it.
     pub(crate) fn shared(collection: &Path) -> Arc<dyn SegmentMedium> {
         Arc::new(Self::of(collection))
-    }
-
-    /// Whether the slot file exists, which completes a new layout.
-    pub(crate) fn has_slots(&self) -> Result<bool, NativeStorageError> {
-        crate::path_exists_no_follow(&self.paths.slots())
-    }
-
-    /// Create the segment directory, verified beneath `root`.
-    pub(crate) fn create_directory(&self, root: &NativeRoot) -> Result<(), NativeStorageError> {
-        ensure_directory(root, self.paths.directory())
     }
 
     fn compaction_path(&self) -> PathBuf {
@@ -116,13 +106,19 @@ impl SegmentMedium for DirectoryMedium {
         Ok(segment.map(|segment| Arc::new(segment) as Arc<dyn SegmentHandle>))
     }
 
+    /// The next number is one above the highest segment file.
     fn create_segment(
         &self,
-        number: u64,
-        opening: &[u8],
-    ) -> Result<Arc<dyn SegmentHandle>, NativeStorageError> {
-        let segment = FileSegment::create(&self.paths.segment(number), opening, true)?;
-        Ok(Arc::new(segment))
+        opening: &dyn Fn(u64) -> Result<Vec<u8>, NativeStorageError>,
+    ) -> Result<(u64, Arc<dyn SegmentHandle>), NativeStorageError> {
+        let number = self.segment_numbers()?.last().copied().unwrap_or(0) + 1;
+        let segment = FileSegment::create(&self.paths.segment(number), &opening(number)?, true)?;
+        Ok((number, Arc::new(segment)))
+    }
+
+    /// A segment file has no state beyond its bytes.
+    fn seal_segment(&self, _number: u64, _live_bytes: u64) -> Result<(), NativeStorageError> {
+        Ok(())
     }
 
     fn remove_segment(&self, number: u64) -> Result<(), NativeStorageError> {
@@ -143,9 +139,15 @@ impl SegmentMedium for DirectoryMedium {
     fn create_compaction(&self) -> Result<Arc<dyn SegmentHandle>, NativeStorageError> {
         let path = self.compaction_path();
         let mut options = OpenOptions::new();
-        options.write(true).create(true).truncate(true);
         FileSegment::owner_only(&mut options);
-        let file = options.open(&path).map_err(NativeStorageError::io)?;
+        // Chained into `open`: a WebAssembly host's builder returns a
+        // copy, so flags set in a separate statement would be lost.
+        let file = options
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&path)
+            .map_err(NativeStorageError::io)?;
         Ok(Arc::new(FileSegment { file, path }))
     }
 
@@ -171,6 +173,16 @@ impl SegmentMedium for DirectoryMedium {
             }
         }
         Ok(())
+    }
+
+    /// The slot file exists.
+    fn has_slots(&self) -> Result<bool, NativeStorageError> {
+        crate::path_exists_no_follow(&self.paths.slots())
+    }
+
+    /// The `segments/` directory.
+    fn create_storage(&self, root: &NativeRoot) -> Result<(), NativeStorageError> {
+        ensure_directory(root, self.paths.directory())
     }
 
     fn read_slot(&self) -> Result<Option<SlotRecord>, NativeStorageError> {
@@ -201,6 +213,19 @@ impl SegmentMedium for DirectoryMedium {
 
     fn replace_location_snapshot(&self, bytes: &[u8]) -> Result<(), NativeStorageError> {
         durable_replace_owner_only(&self.paths.locations_snapshot(), bytes)
+    }
+
+    fn has_location_log(&self) -> bool {
+        true
+    }
+
+    /// The location log carries every row after the snapshot, which
+    /// therefore reaches no record position.
+    fn read_location_checkpoint(&self) -> Result<(Vec<u8>, RecordPosition), NativeStorageError> {
+        Err(NativeStorageError::new(
+            NativeStorageErrorCode::Unsupported,
+            "a segment directory extends its location snapshot with its location log",
+        ))
     }
 
     fn location_log_length(&self) -> Result<u64, NativeStorageError> {
@@ -294,11 +319,15 @@ impl FileSegment {
         owner_only: bool,
     ) -> Result<Self, NativeStorageError> {
         let mut options = OpenOptions::new();
-        options.read(true).write(true).create_new(true);
         if owner_only {
             Self::owner_only(&mut options);
         }
-        let mut file = options.open(path).map_err(NativeStorageError::io)?;
+        let mut file = options
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .map_err(NativeStorageError::io)?;
         file.write_all(opening).map_err(NativeStorageError::io)?;
         Ok(Self {
             file,
