@@ -1,6 +1,6 @@
 # ADR 0017: Schemas in the database, validated at the commit
 
-- Status: **Proposed** (draft for Samuel's review, 2026-10-29)
+- Status: **Accepted** (Samuel, 2026-10-29)
 - Date: **2026-10-29**
 - Owners: **FYLO maintainers**
 - Builds on: ADR 0013 (record format and commit protocol), ADR 0015
