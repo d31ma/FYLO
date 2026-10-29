@@ -25,7 +25,7 @@ mod table_cache;
 mod table_reach;
 
 pub(crate) use container_frames::{ContainerFrames, DictionarySource};
-pub(crate) use container_medium::{ContainerMedium, ContainerOpen};
+pub(crate) use container_medium::{ContainerMedium, ContainerOpen, SlotWriter};
 pub(crate) use directory_medium::{DirectoryMedium, FileSegment};
 use generation_slots::GenerationSlots;
 pub(crate) use index_delta::IndexDelta;

@@ -9,9 +9,13 @@
 //! process keeps of the file, which every collection in it shares, as a
 //! hybrid collection directory's medium shares the open of its own file.
 //!
-//! A reader takes no lock. A writer opens the file to write on its first
-//! write, as every container medium does, and claims each collection it
-//! writes; the collection's write lock is that claim. A compaction of a
+//! A reader takes no lock. One that finds a collection published as
+//! `writing` by a writer that stopped finishes the write, where it can do
+//! so without waiting, or reads past it
+//! ([`NativeCollection::database_reader_generation`]). A writer opens the
+//! file to write on its first write, as every container medium does, and
+//! claims each collection it writes; the collection's write lock is that
+//! claim. A compaction of a
 //! collection holds its compactor byte, so it can copy without the claim,
 //! and a shrink holds the file as its only writer process.
 //!
@@ -27,10 +31,11 @@ use std::sync::Arc;
 use fylo_format::ContainerSuperblock;
 
 use crate::container_allocator::ContainerTailExtent;
-use crate::segments::{ContainerMedium, ContainerOpen, TableCache};
+use crate::segments::{ContainerMedium, ContainerOpen, SlotWriter, TableCache};
 use crate::{
     ContainerCipher, ContainerCollection, ContainerError, ContainerFile, DatabaseKey,
-    NativeStorageError, NativeStorageErrorCode,
+    GenerationState, GenerationStatus, NativeCollection, NativeStorageError,
+    NativeStorageErrorCode,
 };
 
 /// A handle on one `.fxdb` database this process has open.
@@ -196,6 +201,28 @@ impl ContainerDatabase {
         let medium = self.medium(block)?;
         medium.begin_write()?;
         Ok(ContainerWriterLock { medium })
+    }
+
+    /// Who is behind the `writing` slot of the collection in `block`: a
+    /// write this process has begun on it, or else what the lock bytes
+    /// tell of other processes ([`ContainerOpen::slot_writer`]). In
+    /// WebAssembly the host coordinates writers, and a reader takes every
+    /// writer for a running one.
+    pub(crate) fn slot_writer(&self, block: u32) -> SlotWriter {
+        let Ok(medium) = self.medium(block) else {
+            return SlotWriter::Running;
+        };
+        if medium.is_written() {
+            return SlotWriter::Running;
+        }
+        #[cfg(not(target_family = "wasm"))]
+        {
+            self.file.slot_writer(block)
+        }
+        #[cfg(target_family = "wasm")]
+        {
+            SlotWriter::Running
+        }
     }
 
     /// Take the compactor byte of the collection in `block`, waiting up to
@@ -364,5 +391,50 @@ impl ContainerDatabase {
             return live(open.collections());
         }
         None
+    }
+}
+
+impl NativeCollection {
+    /// The generation a reader of a database collection gets while its
+    /// slot says `writing`, as `stored` does. Readers are never blocked
+    /// (ADR 0016 section 7).
+    ///
+    /// A writer that is still running publishes in a moment, so the reader
+    /// is told it is writing and retries, as in a directory root. One that
+    /// stopped left its write to the next writer of the collection, and a
+    /// reader finishes it first, as a directory root's reader recovers a
+    /// stranded write, where it may write the file without waiting or
+    /// keeping another writer out ([`SlotWriter::Stopped`]). Otherwise, or
+    /// when finishing fails, as on a full disk, it reads the collection as
+    /// the slot last published it. That is whole: the records up to the
+    /// position a `writing` slot names stay as they are, a checkpoint
+    /// names new snapshot runs only once they reach that position, and a
+    /// compaction releases the segments it replaced only after a slot
+    /// names its record.
+    pub(crate) fn database_reader_generation(
+        &self,
+        stored: GenerationState,
+    ) -> Result<GenerationState, NativeStorageError> {
+        let (Some(database), Some(block)) = (self.root.database(), self.block) else {
+            return Ok(stored);
+        };
+        match database.slot_writer(block) {
+            SlotWriter::Running => return Ok(stored),
+            SlotWriter::Stopped => {
+                // A failure leaves the write to the next writer.
+                #[cfg(not(target_family = "wasm"))]
+                let _ = crate::NativeWriteRoot::finish_stranded(&self.root, &self.name);
+            }
+            SlotWriter::Unsettled => {}
+        }
+        let state = self.stored_generation()?;
+        if state.state == GenerationStatus::Stable {
+            return Ok(state);
+        }
+        Ok(GenerationState {
+            state: GenerationStatus::Stable,
+            transaction_id: None,
+            ..state
+        })
     }
 }

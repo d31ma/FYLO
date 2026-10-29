@@ -9,7 +9,9 @@ use super::segment_schemas::SegmentSchemas;
 use crate::segments::{
     LocationTable, SegmentCheckpointManifest, SegmentMedium, SlotRecord, TableCache, TableReach,
 };
-use crate::{GenerationState, NativeCollection, NativeStorageError, NativeStorageErrorCode};
+use crate::{
+    GenerationState, LogPosition, NativeCollection, NativeStorageError, NativeStorageErrorCode,
+};
 
 /// Makes a segment collection's derived files durable and records how far
 /// they reach (ADR 0015 section 8).
@@ -83,35 +85,98 @@ impl SegmentCheckpoint {
         (generation, seal): (u64, bool),
     ) -> Result<LogSegment, NativeStorageError> {
         let medium = collection.segment_medium()?;
-        let mut epoch = medium.require_slot()?.table_epoch;
-        let fold = Self::folds(&*medium)?;
-        let mut generation = generation;
-        let mut table = None;
-        if fold {
-            let writing = GenerationRecord::log_writing(generation + 1, segment.position());
-            Self::publish(collection, &writing, epoch)?;
-            generation += 2;
-            epoch = epoch.wrapping_add(1);
-            table = Some(Self::fold_locations(&*medium)?);
+        let epoch = medium.require_slot()?.table_epoch;
+        if !Self::folds(&*medium)? {
+            let segment =
+                Self::flush_and_record(collection, &*medium, (segment, None), (generation, seal))?;
+            return Self::finish(collection, &*medium, segment, (generation, epoch));
         }
-        Self::flush_logs(collection, &*medium)?;
+        let start = segment.position();
+        let writing = GenerationRecord::log_writing(generation + 1, start.clone());
+        Self::publish(collection, &writing, epoch)?;
+        let (generation, epoch) = (generation + 2, epoch.wrapping_add(1));
+        let recorded = Self::fold_locations(&*medium).and_then(|table| {
+            Self::flush_and_record(
+                collection,
+                &*medium,
+                (segment, Some(&table)),
+                (generation, seal),
+            )
+        });
+        match recorded {
+            Ok(segment) => Self::finish(collection, &*medium, segment, (generation, epoch)),
+            Err(error) => Err(Self::roll_back(
+                collection,
+                &*medium,
+                (generation, start, epoch),
+                error,
+            )),
+        }
+    }
+
+    /// Flush the derived files and append the checkpoint record, or seal
+    /// the segment and open the next with it. `table` is the table this
+    /// checkpoint folded, if it folded one. A failure leaves the active
+    /// segment as it was.
+    fn flush_and_record(
+        collection: &NativeCollection,
+        medium: &dyn SegmentMedium,
+        (segment, table): (LogSegment, Option<&LocationTable>),
+        (generation, seal): (u64, bool),
+    ) -> Result<LogSegment, NativeStorageError> {
+        Self::flush_logs(collection, medium)?;
         LogCheckpoint::compact_index(collection)?;
         // A schema commit leaves the snapshot current, so this writes only
         // when it is missing or no longer matches the records.
-        SegmentSchemas::load(&*medium, collection.schema_head())?.write_if_changed(&*medium)?;
+        SegmentSchemas::load(medium, collection.schema_head())?.write_if_changed(medium)?;
         failpoint("after-checkpoint-flush")?;
-        let manifest = Self::manifest(&collection.path, &*medium)?;
-        let mut segment = Self::record(
-            &*medium,
-            (segment, table.as_ref()),
-            &manifest,
-            (generation, seal),
-        )?;
+        let manifest = Self::manifest(&collection.path, medium)?;
+        Self::record(medium, (segment, table), &manifest, (generation, seal))
+    }
+
+    /// Publish the stable generation the checkpoint closes with.
+    fn finish(
+        collection: &NativeCollection,
+        medium: &dyn SegmentMedium,
+        mut segment: LogSegment,
+        (generation, epoch): (u64, u32),
+    ) -> Result<LogSegment, NativeStorageError> {
         segment.reset_records();
         let stable = GenerationRecord::log_stable(generation, segment.position());
         Self::publish(collection, &stable, epoch)?;
-        TableCache::shared().forget(&*medium);
+        TableCache::shared().forget(medium);
         Ok(segment)
+    }
+
+    /// Undo a checkpoint that published `writing` for its fold and then
+    /// failed in this process, as on a full disk: publish the generation
+    /// stable again where the checkpoint started, so nothing is left for
+    /// recovery. Whatever the fold already wrote is derived from the
+    /// records up to that position, and the slot names it only when it is
+    /// whole: a new checkpoint slot reaches exactly there, and a run no
+    /// slot names is released by the next claim of the collection. The
+    /// epoch stays bumped, so no reader extends a table cached before.
+    /// Returns the error to report: `error`, or, when the publication
+    /// fails too, one that says recovery will finish the checkpoint.
+    fn roll_back(
+        collection: &NativeCollection,
+        medium: &dyn SegmentMedium,
+        (generation, start, epoch): (u64, LogPosition, u32),
+        error: NativeStorageError,
+    ) -> NativeStorageError {
+        let stable = GenerationRecord::log_stable(generation, start);
+        match Self::publish(collection, &stable, epoch) {
+            Ok(()) => {
+                TableCache::shared().forget(medium);
+                error
+            }
+            Err(rollback) => NativeStorageError::new(
+                error.code(),
+                format!(
+                    "checkpoint failed ({error}) and its rollback failed ({rollback}); recovery will complete it"
+                ),
+            ),
+        }
     }
 
     /// Publish a generation record as a slot, keeping or bumping the table
@@ -284,8 +349,14 @@ impl SegmentCheckpoint {
             blobs: Vec::new(),
         };
         let encoded = segment.encode(&record)?;
+        let before = (segment.length(), segment.next_lsn(), segment.records());
         segment.append(&encoded, 1)?;
-        segment.full_flush()?;
+        if let Err(error) = segment.full_flush() {
+            // Past the end the slot publishes, the record is cut off now,
+            // or else overwritten by the next append there.
+            let _ = segment.rewind(before);
+            return Err(error);
+        }
         Ok(segment)
     }
 
@@ -302,9 +373,20 @@ impl SegmentCheckpoint {
         if let Some(table) = table {
             medium.seal_segment(sealed.sequence(), table.live_bytes(sealed.sequence()))?;
         }
-        let mut next =
-            LogSegment::create_documents(medium, sealed.next_lsn(), manifest, generation)?;
-        next.full_flush()?;
-        Ok(next)
+        let created = LogSegment::create_documents(medium, sealed.next_lsn(), manifest, generation)
+            .and_then(|mut next| match next.full_flush() {
+                Ok(()) => Ok(next),
+                Err(error) => {
+                    // No slot names it yet, so it is only given back.
+                    let _ = medium.remove_segment(next.sequence());
+                    Err(error)
+                }
+            });
+        if created.is_err() && table.is_some() {
+            // The segment stays active. A seal that cannot be undone only
+            // marks it until the next rotation seals it again.
+            let _ = medium.unseal_segment(sealed.sequence());
+        }
+        created
     }
 }

@@ -47,8 +47,8 @@ use crate::{
     ContainerError, ContainerFile, Durability, NativeRoot, NativeStorageError,
     NativeStorageErrorCode,
 };
-pub(crate) use open::ContainerOpen;
 use open::Open;
+pub(crate) use open::{ContainerOpen, SlotWriter};
 use schemas::SCHEMAS;
 
 const SEGMENT: ContainerExtentKind = ContainerExtentKind::Segment;
@@ -333,6 +333,12 @@ impl ContainerMedium {
             *claim = None;
             self.shared.state().forget_written();
         }
+    }
+
+    /// Whether a write this process began on the collection has not
+    /// ended ([`Self::begin_write`]).
+    pub(crate) fn is_written(&self) -> bool {
+        self.shared.writes.load(Ordering::SeqCst) > 0
     }
 
     /// How the collection's frames store record bodies.
@@ -755,6 +761,16 @@ impl SegmentMedium for ContainerMedium {
             return Ok(());
         };
         open.seal((extent, self.shared.collection, number), live_bytes)
+    }
+
+    /// Unseal the extent in the map, and checkpoint it, so a seal the
+    /// failed rotation already made durable is undone too.
+    fn unseal_segment(&self, number: u64) -> Result<(), NativeStorageError> {
+        let mut open = self.shared.writable()?;
+        let Some(extent) = self.shared.extent(&mut open, number)? else {
+            return Ok(());
+        };
+        open.change_map(|open| open.unseal(extent))
     }
 
     /// Release the extent and checkpoint the map, so the release outlives

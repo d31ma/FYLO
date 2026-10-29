@@ -1125,16 +1125,15 @@ async function assertRecoverable(binary, root, failpoint, scenario, action) {
     const rootOf = (directory) => (scenario.database ? join(directory, 'db.fxdb') : directory)
     const clientOptions = { binary: machineBinary, exclusiveRoot: !scenario.database }
 
-    // A database reader takes no lock and leaves a stopped write for the
-    // next writer to settle (ADR 0016 section 7), so only a directory root
-    // is read first.
-    if (action === 'abort' && !scenario.database) {
+    if (action === 'abort') {
         // Nobody runs `recover` after a real crash: the next client to read
         // must get the recovered collection, not a phantom concurrent write.
-        // A clone keeps the explicit `recover` path below covered too.
+        // A database's reader finishes a stopped writer's write itself (ADR
+        // 0016 section 7). A clone keeps the explicit `recover` path below
+        // covered too.
         const probe = `${root}-read-first`
         await cloneRoot(root, probe)
-        const reader = new Fylo(probe, { binary: machineBinary, exclusiveRoot: true })
+        const reader = new Fylo(rootOf(probe), clientOptions)
         await reader.ready
         try {
             const inspection = await reader.inspectCollection(recoveryCollection)
@@ -1158,12 +1157,9 @@ async function assertRecoverable(binary, root, failpoint, scenario, action) {
         recoveryCollection
     ])
     assert(first.exitCode === 0, `${label}: Rust recovery failed: ${first.stderr}`)
-    if (action !== 'abort' && !scenario.database) {
+    if (action !== 'abort') {
         // The writer stayed alive, so it owed itself a rollback before
         // returning the error. Anything left for recovery means it did not.
-        // A database's checkpoint publishes its fold as `writing` first, and
-        // one that fails after that leaves it for the next writer to settle,
-        // as a stop would.
         assert(
             JSON.parse(first.stdout).recovered === false,
             `${label}: a failed write left its journal behind instead of rolling back`

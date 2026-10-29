@@ -1835,6 +1835,13 @@ impl NativeCollection {
     /// Returns an error for corrupt, oversized, linked, or inaccessible state.
     pub fn generation(&self) -> Result<GenerationState, NativeStorageError> {
         let state = self.stored_generation()?;
+        if state.state == GenerationStatus::Writing && self.block.is_some() {
+            // A database collection's slot is published `writing` before
+            // anything is appended, so it has no unapplied record to find.
+            let state = self.database_reader_generation(state)?;
+            SpellingCache::shared().observe_generation(&self.path, state.generation);
+            return Ok(state);
+        }
         SpellingCache::shared().observe_generation(&self.path, state.generation);
         self.unapplied_log_check(state)
     }

@@ -490,6 +490,18 @@ impl NativeWriteRoot {
         Ok(self.recover_locked(&collection)? || migrated)
     }
 
+    /// Finish the write a stopped writer left in collection `name` of the
+    /// `.fxdb` database `root`, for a reader that found it
+    /// ([`super::NativeCollection::database_reader_generation`]): recover
+    /// it as the next writer would. Returns whether there was work.
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn finish_stranded(
+        root: &NativeRoot,
+        name: &str,
+    ) -> Result<bool, NativeStorageError> {
+        Self::writing(root.clone()).recover_collection(name)
+    }
+
     /// Create one document at an explicitly supplied TTID.
     ///
     /// This slice is create-only. The caller supplies the identifier so the

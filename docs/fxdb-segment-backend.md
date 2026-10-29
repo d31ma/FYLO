@@ -117,6 +117,15 @@ a segment or a snapshot run, so the release outlives the open that made
 it. A released extent is therefore reusable at once, and a reader still
 holding a location into it fails the header check and retries.
 
+A checkpoint folds its location and index runs under a slot published
+`writing`. One that fails in this process, as on a full disk, rolls back
+before it returns: a checkpoint record it appended is cut off, a next
+extent it took is given back and the segment it sealed for it unsealed,
+and the slot is published stable again where the checkpoint started, so
+nothing is left for recovery. Runs it already wrote are derived from the
+records up to there; a checkpoint slot names them only once they are whole,
+and the next claim releases those none names.
+
 A finished segment is **sealed** in the map with the bytes the location
 table still refers to in it: the full one when the segment code rolls to
 the next (the seal is in the map checkpoint that taking the next extent
@@ -150,6 +159,28 @@ writer whose map is newer: the reader rereads the map and the directory
 when the superblock generation moved (`ContainerFile::refresh`), and else
 takes back, in memory only, the active extent the generation slot names. A
 collection another process added is found the same way.
+
+**A write a writer left.** A reader that finds a collection's slot
+`writing` in a database root (`NativeCollection::generation`) asks who is
+behind it, without waiting (`ContainerOpen::slot_writer`): a writer holds
+the collection's writer byte for each write, and a lease writer or a
+shrink the lease byte exclusive, and the OS lets both go when their process
+stops. When one is held the writer is running and publishes in a moment, so
+the reader is told the collection is being written and retries, as in a
+directory root. When neither is, the writer stopped, and the reader
+finishes its write as the next writer would, by recovering the collection,
+as a directory root's reader recovers a stranded write; it does so only
+where that keeps no writer out and waits for none: it writes the file
+already, or would share it under byte-range locks and no lease a stopped
+writer left needs taking over. Otherwise (under the lease, without locks,
+on a file it may not write, or when the recovery fails, as on a full disk)
+it reads the collection as the slot last published it. That is whole: the
+records up to the position a `writing` slot names stay as they are, a
+checkpoint slot names new snapshot runs only once they reach that
+position, and a compaction releases the segments it replaced only after a
+slot names its record. The next writer of the collection settles the
+write. A reader that finished a write keeps the file open to write, as a
+writer does, until its open closes.
 
 **Writers.** The first write through an open reopens the file with
 `ContainerFile::open_writer` (ADR 0016 section 7). Where byte-range locks

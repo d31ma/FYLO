@@ -315,6 +315,28 @@ impl ContainerExtentAllocator {
         }
     }
 
+    /// Undo [`Self::seal`]: the extent is written to again, as when the
+    /// rotation that sealed it failed.
+    ///
+    /// # Errors
+    ///
+    /// Returns `OutOfRange` or `NotInUse`.
+    pub fn unseal(&mut self, index: u64) -> Result<(), ContainerAllocatorError> {
+        match self.slot_mut(index)? {
+            Slot::InUse {
+                sealed, live_bytes, ..
+            } => {
+                if *sealed {
+                    *sealed = false;
+                    *live_bytes = 0;
+                    self.changed = true;
+                }
+                Ok(())
+            }
+            _ => Err(ContainerAllocatorError::NotInUse),
+        }
+    }
+
     /// Release an extent that a committed compaction replaced. It becomes
     /// reusable only after [`Self::checkpoint_completed`].
     ///
@@ -765,9 +787,19 @@ mod tests {
         assert!(!rebuilt.has_unsaved_changes());
         assert_eq!(rebuilt.sealed_live_bytes(1), Some(77));
         allocator.checkpoint_completed();
+        allocator.unseal(1).unwrap();
+        assert!(allocator.has_unsaved_changes());
+        assert_eq!(allocator.sealed_live_bytes(1), None);
+        allocator.checkpoint_completed();
+        allocator.unseal(1).unwrap();
+        assert!(
+            !allocator.has_unsaved_changes(),
+            "unsealing twice changes nothing"
+        );
         allocator.release(1).unwrap();
         assert!(allocator.has_unsaved_changes());
         assert_eq!(allocator.sealed_live_bytes(1), None);
+        assert_eq!(allocator.unseal(1), Err(ContainerAllocatorError::NotInUse));
     }
 
     #[test]

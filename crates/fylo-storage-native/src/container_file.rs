@@ -756,6 +756,16 @@ impl ContainerFile {
         Ok(self.allocator.seal(extent, live_bytes)?)
     }
 
+    /// Mark a sealed extent as written to again.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Allocator` when the extent is not in use.
+    pub fn unseal(&mut self, extent: u64) -> Result<(), ContainerError> {
+        self.require_writable()?;
+        Ok(self.allocator.unseal(extent)?)
+    }
+
     /// Release an extent a committed compaction replaced. It is reused only
     /// after the next checkpoint.
     ///

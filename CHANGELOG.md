@@ -146,6 +146,18 @@
 
 ### Fixed
 
+- **A read of a `.fxdb` database right after a crashed write no longer fails
+  with `EENGINE_CONCURRENT_WRITE`.** A reader that finds a collection's slot
+  `writing` tells a running writer from one that stopped by the lock bytes
+  (ADR 0016 section 7): it finishes a stopped writer's write itself, as a
+  directory root's reader recovers a stranded one, where it may write the
+  file without waiting for or keeping out another writer, and otherwise
+  reads the collection as it was last published. A running writer's write
+  is left to it.
+- **A `.fxdb` checkpoint that fails in place rolls back before it returns.**
+  On a full disk it left its fold published as `writing`, so `fylo recover`
+  found work and readers reported a concurrent write until the next writer.
+
 - **A document is decrypted with the `$encrypted` list of the version it was
   written at.** Reads used the head version's list, so once a new version
   renamed or dropped an encrypted field, older documents came back with

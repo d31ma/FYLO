@@ -22,6 +22,7 @@ mod dictionaries;
 mod encryption;
 mod processes;
 mod schemas;
+mod stranded_writes;
 
 struct Fixture(PathBuf);
 

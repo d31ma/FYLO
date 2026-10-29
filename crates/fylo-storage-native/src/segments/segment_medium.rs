@@ -69,6 +69,12 @@ pub(crate) trait SegmentMedium: Debug + Send + Sync {
     /// segment files has nowhere to keep them.
     fn seal_segment(&self, number: u64, live_bytes: u64) -> Result<(), NativeStorageError>;
 
+    /// Undo [`Self::seal_segment`] for segment `number`, which stays the
+    /// active one because the rotation that sealed it failed.
+    fn unseal_segment(&self, _number: u64) -> Result<(), NativeStorageError> {
+        Ok(())
+    }
+
     /// Remove segment `number`. A segment that is already gone, or that
     /// another process still holds where that prevents removal, is left for
     /// the next recovery or compaction.

@@ -61,6 +61,24 @@ pub(crate) struct Open {
     pub(super) access: Option<WriteRight>,
 }
 
+/// Who is behind a collection's `writing` slot, as a reader finds out
+/// without waiting for anyone (ADR 0016 section 7).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
+pub(crate) enum SlotWriter {
+    /// A writer that is still running holds the collection, in this process
+    /// or another, and publishes once its write ends.
+    Running,
+    /// The writer stopped, and this process may finish its write without
+    /// waiting or keeping another writer out: it writes the file already, or
+    /// would share it with the other writers under byte-range locks.
+    Stopped,
+    /// The writer may have stopped, but this process cannot tell, or could
+    /// finish the write only as the file's single writer under the lease, or
+    /// after waiting for one.
+    Unsettled,
+}
+
 /// A seal the map on disk does not show yet.
 #[derive(Clone, Copy, Debug)]
 struct Seal {
@@ -210,6 +228,69 @@ impl ContainerOpen {
         handle
             .try_lock(byte, crate::LockMode::Exclusive)
             .map_err(NativeStorageError::io)
+    }
+
+    /// Who is behind the `writing` slot of the collection in directory
+    /// block `block`, when no write of this process holds it, found without
+    /// waiting: its writer byte, which a writer holds for each write, and
+    /// the lease byte, which a lease writer and a shrink hold exclusive. The
+    /// OS lets both go when their process stops. Without locks a lease
+    /// writer cannot be told from one that crashed before its takeover
+    /// time, and neither can a writer by a reader that may not write the
+    /// file.
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn slot_writer(&self, block: u32) -> SlotWriter {
+        use crate::{LockByte, LockMode};
+        let (handle, sharing, leased) = {
+            let open = self.lock();
+            let sharing = open.access.as_ref().map(WriteRight::shares_the_file);
+            (
+                open.lock_handle().ok(),
+                sharing == Some(true),
+                sharing == Some(false),
+            )
+        };
+        let Some(handle) = handle.or_else(|| crate::ByteRangeLockFile::open(&self.path).ok())
+        else {
+            return SlotWriter::Unsettled;
+        };
+        if leased {
+            // This process is the only writer, and none of its writes holds
+            // the collection.
+            return SlotWriter::Stopped;
+        }
+        if !handle.probe() {
+            return SlotWriter::Unsettled;
+        }
+        let writer = LockByte::collection_writer(block);
+        let held =
+            handle
+                .try_lock(LockByte::LEASE, LockMode::Shared)
+                .and_then(|lease| match lease {
+                    Some(lease) => Ok(handle
+                        .try_lock(writer, LockMode::Exclusive)?
+                        .map(|writer| (lease, writer))),
+                    None => Ok(None),
+                });
+        match held {
+            Ok(Some(guards)) => drop(guards),
+            Ok(None) => return SlotWriter::Running,
+            Err(_) => return SlotWriter::Unsettled,
+        }
+        // Opening to write would wait for a lease a stopped writer left, or
+        // take the lease and keep the other writers out until this process
+        // closes the file.
+        let shares = sharing
+            || (!Self::write_options().exclusive
+                && crate::FilesystemInfo::of(handle.file())
+                    .is_ok_and(|info| info.byte_range_locks_qualified())
+                && crate::ContainerLease::held_generation(&self.path)
+                    .is_ok_and(|held| held.is_none()));
+        if shares {
+            SlotWriter::Stopped
+        } else {
+            SlotWriter::Unsettled
+        }
     }
 
     /// Run `run` as the only process writing the file (ADR 0016 section
@@ -552,6 +633,14 @@ impl Open {
             sequence,
             live_bytes,
         });
+        Ok(())
+    }
+
+    /// Undo [`Self::seal`] of `extent`, in the map in memory; the next
+    /// checkpoint makes it durable.
+    pub(crate) fn unseal(&mut self, extent: u64) -> Result<(), NativeStorageError> {
+        self.file.unseal(extent).map_err(ContainerMedium::error)?;
+        self.seals.retain(|seal| seal.extent != extent);
         Ok(())
     }
 
