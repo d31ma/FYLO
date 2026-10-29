@@ -894,7 +894,8 @@ impl Session {
             "getFileData" => self.get_file_data(request),
             "findDocs" => self.find_documents(request),
             "inspectCollection" => self.inspect_collection(request),
-            "inspectDatabase" => Self::inspect_database(&self.database_path(request)?),
+            "inspectDatabase" => Self::inspect_database(&self.database_path(request, operation)?),
+            "verifyDatabase" => Self::verify_database(&self.database_path(request, operation)?),
             "verifyCollection" => self.verify_collection(request),
             "log" => self.history(request),
             "getMeta" => self.get_metadata(request),
@@ -973,7 +974,7 @@ impl Session {
                 json!({
                     "version": 1,
                     "extension": "fxdb",
-                    "operations": ["inspectDatabase"]
+                    "operations": ["inspectDatabase", "verifyDatabase"]
                 }),
             ),
             (
@@ -1432,7 +1433,7 @@ impl Session {
     }
 
     /// The `.fxdb` file a request names: its `root`, or the session's.
-    fn database_path(&self, request: &Value) -> Result<PathBuf, MachineError> {
+    fn database_path(&self, request: &Value, operation: &str) -> Result<PathBuf, MachineError> {
         request
             .get("root")
             .and_then(Value::as_str)
@@ -1441,7 +1442,7 @@ impl Session {
             .ok_or_else(|| {
                 MachineError::new(
                     "EBADREQUEST",
-                    "inspectDatabase requires a .fxdb path as root",
+                    format!("{operation} requires a .fxdb path as root"),
                 )
             })
     }
@@ -1451,6 +1452,17 @@ impl Session {
     fn inspect_database(path: &Path) -> Result<Value, MachineError> {
         let report = fylo_storage_native::ContainerFile::open_reader(path)
             .and_then(|container| container.report())
+            .map_err(|error| MachineError::new(error.code(), error.to_string()))?;
+        serde_json::to_value(report).map_err(|error| serialization_error(&error))
+    }
+
+    /// Check a `.fxdb` file's structures without its key, a lock or any
+    /// change (ADR 0016 section 11). Damage is reported in the result, whose
+    /// `ok` is false when any problem is an error; the frame fails only when
+    /// the file cannot be opened or read.
+    fn verify_database(path: &Path) -> Result<Value, MachineError> {
+        let report = fylo_storage_native::ContainerFile::open_reader(path)
+            .and_then(|container| container.verify())
             .map_err(|error| MachineError::new(error.code(), error.to_string()))?;
         serde_json::to_value(report).map_err(|error| serialization_error(&error))
     }
@@ -3746,8 +3758,47 @@ mod tests {
         let capabilities = &run("{\"op\":\"handshake\"}\n")[0]["result"]["capabilities"];
         assert_eq!(
             capabilities["singleFileDatabase"]["operations"],
-            json!(["inspectDatabase"])
+            json!(["inspectDatabase", "verifyDatabase"])
         );
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn verify_database_checks_a_fxdb_file_without_a_root() {
+        let dir = std::env::temp_dir().join(format!(
+            "fylo-machine-fxdb-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("app.fxdb");
+        fylo_storage_native::ContainerFile::create(&path, 20).unwrap();
+        {
+            let mut container = fylo_storage_native::ContainerFile::open_unchecked(&path).unwrap();
+            container.add_collection("users", b"").unwrap();
+        }
+        let request = json!({"op": "verifyDatabase", "root": path});
+        let clean = run(&format!("{request}\n"));
+        // A damaged directory extent header is reported, not refused.
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes[(1 << 20) + 20] ^= 0x40;
+        std::fs::write(&path, bytes).unwrap();
+        let frames = run(&format!(
+            "{request}\n{}\n",
+            json!({"op": "verifyDatabase", "root": dir.join("missing.fxdb")})
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(clean[0]["ok"], json!(true), "{}", clean[0]);
+        assert_eq!(clean[0]["result"]["ok"], json!(true));
+        assert_eq!(clean[0]["result"]["problems"], json!([]));
+        assert_eq!(frames[0]["ok"], json!(true), "{}", frames[0]);
+        let result = &frames[0]["result"];
+        assert_eq!(result["ok"], json!(false));
+        assert_eq!(result["problems"][0]["code"], json!("extentHeaderMismatch"));
+        assert_eq!(result["problems"][0]["severity"], json!("error"));
+        assert_eq!(result["problems"][0]["extent"], json!(1));
+        assert_eq!(frames[1]["ok"], json!(false));
+        assert_eq!(frames[1]["error"]["code"], json!("ENATIVE_NOT_FOUND"));
     }
 
     #[test]

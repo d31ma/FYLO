@@ -454,6 +454,32 @@ impl ContainerExtentAllocator {
         census
     }
 
+    /// What one extent holds, for `fylo verify`: its kind, owner and
+    /// sequence number when it is in use (owned or sealed), `None` when it
+    /// is free, released, reserved or past the end of the map.
+    pub(crate) fn in_use(&self, index: u64) -> Option<(ContainerExtentKind, u32, u64)> {
+        match usize::try_from(index)
+            .ok()
+            .and_then(|at| self.slots.get(at))
+        {
+            Some(Slot::InUse {
+                kind,
+                owner,
+                sequence,
+                ..
+            }) => Some((*kind, *owner, *sequence)),
+            _ => None,
+        }
+    }
+
+    /// Whether the map shows an extent free and reusable.
+    pub(crate) fn is_free(&self, index: u64) -> bool {
+        usize::try_from(index)
+            .ok()
+            .and_then(|at| self.slots.get(at))
+            .is_some_and(|slot| *slot == Slot::Free)
+    }
+
     /// Free extents, whose disk space may be returned by punching a hole.
     #[must_use]
     pub fn free_extents(&self) -> Vec<u64> {
