@@ -24,6 +24,8 @@ mod byte_range_lock;
 mod container_allocator;
 mod container_codec;
 mod container_file;
+#[cfg(not(target_family = "wasm"))]
+mod container_lease;
 mod durability;
 mod filesystem_profile;
 mod index_cache;
@@ -56,6 +58,8 @@ pub use container_codec::{
     DICTIONARY_TRAINING_BYTES, MAX_DICTIONARY_BYTES, ZSTD_SEALED_LEVEL, ZSTD_WRITE_LEVEL,
 };
 pub use container_file::{ContainerCollection, ContainerError, ContainerFile};
+#[cfg(not(target_family = "wasm"))]
+pub use container_lease::{ContainerLease, ContainerLeaseError, ContainerLeaseTiming};
 pub use durability::Durability;
 pub use filesystem_profile::FilesystemProfile;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]

@@ -234,12 +234,18 @@ drifts toward the front of the file. Space is returned to the disk two ways:
 - **Any other filesystem still works** (Samuel, 2026-10-29: FYLO must not
   depend on EFS or any one filesystem). Where locks are unqualified, or the
   filesystem refuses them (`ENOLCK`, `EOPNOTSUPP`), one process at a time
-  writes the database. It holds a lease file beside it, `<name>.fxdb.lease`,
-  made with exclusive create (`O_CREAT | O_EXCL`, `CREATE_NEW`), which every
-  filesystem FYLO targets honours. The lease names its owner and host and is
-  renewed on a heartbeat, so a crashed owner's lease can be taken over after
-  it expires. Other processes reach the database through `fylo serve`. The
-  file is deleted on a clean close.
+  writes the database. It holds a numbered lease file beside it,
+  `<name>.fxdb.lease.<generation>`, made with exclusive create
+  (`O_CREAT | O_EXCL`, `CREATE_NEW`), which every filesystem FYLO targets
+  honours; the highest generation owns the database. The owner rewrites its
+  lease on a heartbeat. A contender that sees the lease unchanged for the
+  takeover time (30 s by default, timed on its own clock, so hosts need not
+  agree on the time) creates the next generation; exclusive create lets only
+  one contender win, and the winner deletes the older files. An owner checks
+  before each commit that its generation is still the highest. A clean close
+  marks the lease free instead of deleting it, so generations only grow and
+  the next writer takes it at once. Other processes reach the database
+  through `fylo serve`.
 
 **Filesystem requirements.** A `.fxdb` database needs only positional reads
 and writes, resizing the file, flushing the file, and exclusive create for the
