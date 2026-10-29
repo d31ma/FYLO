@@ -676,7 +676,7 @@ impl WriteEngine {
             .schema_tools()?
             .validate_against_head(collection, document)
             .map_err(EngineError::schema)?
-            .unwrap_or_else(|| document.clone()))
+            .unwrap_or_else(|| Document::copy_fields(document)))
     }
 
     /// Materialize one document at the head schema version by applying the

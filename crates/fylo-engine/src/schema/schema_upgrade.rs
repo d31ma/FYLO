@@ -1,5 +1,6 @@
 use std::ops::Range;
 
+use fylo_format::Document;
 use serde_json::{Map, Value};
 
 use super::schema_manifest::SchemaManifest;
@@ -85,7 +86,7 @@ impl<'a> SchemaUpgrade<'a> {
         range: Range<usize>,
     ) -> Result<Map<String, Value>, String> {
         if range.is_empty() {
-            return Ok(document.clone());
+            return Ok(Document::copy_fields(document));
         }
         self.upgraded(document, range)
     }
@@ -95,7 +96,7 @@ impl<'a> SchemaUpgrade<'a> {
         document: &Map<String, Value>,
         range: Range<usize>,
     ) -> Result<Map<String, Value>, String> {
-        let mut next = document.clone();
+        let mut next = Document::copy_fields(document);
         next.remove(Self::VERSION_FIELD);
         next = self.run_chain(next, range)?;
         next.insert(

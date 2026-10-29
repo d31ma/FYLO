@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use fylo_format::Document;
 use serde_json::{Map, Value};
 
 use super::schema_diagnosis::SchemaDiagnosis;
@@ -68,7 +69,7 @@ impl SchemaTools {
         collection: &str,
         document: &Map<String, Value>,
     ) -> Result<Option<Map<String, Value>>, String> {
-        let mut body = document.clone();
+        let mut body = Document::copy_fields(document);
         body.remove(SchemaUpgrade::VERSION_FIELD);
         let paths = SchemaPaths::new(&self.schema_dir, collection);
         let manifest = SchemaManifest::load(&paths)?;
@@ -108,7 +109,7 @@ impl SchemaTools {
     ) -> Result<Map<String, Value>, String> {
         match manifest {
             Some(manifest) => SchemaUpgrade::new(paths, manifest).materialize(document),
-            None => Ok(document.clone()),
+            None => Ok(Document::copy_fields(document)),
         }
     }
 

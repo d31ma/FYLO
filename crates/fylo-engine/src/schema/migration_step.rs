@@ -1,3 +1,4 @@
+use fylo_format::Document;
 use serde_json::{Map, Number, Value};
 
 use super::document_path::DocumentPath;
@@ -78,7 +79,7 @@ impl MigrationStep {
             (Some((operation, parameters)), None) => Ok((operation, parameters)),
             (None, _) => Err(format!(
                 "migration step {} names no known operation",
-                Value::Object(fields.clone())
+                Value::Object(Document::copy_fields(fields))
             )),
             (Some((first, _)), Some((second, _))) => Err(format!(
                 "migration step names both {first:?} and {second:?}; use one operation per step"

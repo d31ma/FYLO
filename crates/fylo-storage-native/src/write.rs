@@ -2136,7 +2136,7 @@ impl NativeWriteRoot {
         for document in &mut documents {
             let mut fields = document.decoded_fields(&collection.name, policy)?;
             merge_top_level(&mut fields, changes);
-            document.encoded = policy.encode(&collection.name, fields.clone())?;
+            document.encoded = policy.encode(&collection.name, Document::copy_fields(&fields))?;
             document.fields = fields;
         }
         self.write_sql_updates(collection, &documents)?;

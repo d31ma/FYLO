@@ -30,6 +30,7 @@ use std::time::Instant;
 
 use base64::Engine as _;
 use fylo_engine::{AccessContext, EngineError, HotSet, ReadOnlyEngine, WriteEngine};
+use fylo_format::Document;
 use fylo_query::{JoinSpec, QueryLimits, SqlOperation, StructuredQuery, prepare_sql};
 use fylo_storage_native::{
     CollectionKind, CollectionLayout, FilesystemProfile, NativeQueue, NativeRoot,
@@ -1854,7 +1855,7 @@ impl Session {
             .put_document_with_metadata(
                 collection,
                 &identifier,
-                data.clone(),
+                Document::copy_fields(data),
                 metadata,
                 access(request)?,
             )
@@ -2206,7 +2207,12 @@ impl Session {
                 .allocate_identifier()
                 .map_err(|error| storage_error(&error))?;
             engine
-                .put_document(collection, &identifier, fields.clone(), access)
+                .put_document(
+                    collection,
+                    &identifier,
+                    Document::copy_fields(fields),
+                    access,
+                )
                 .map_err(|error| engine_error(&error))?;
             identifiers.push(Value::String(identifier));
         }
@@ -3716,7 +3722,8 @@ fn fill_page(
         if only_ids {
             page.identifiers.push(Value::String(identifier.clone()));
         } else {
-            page.items.insert(identifier.clone(), document.clone());
+            page.items
+                .insert(identifier.clone(), Document::copy_value(document));
         }
         let rendered = if only_ids {
             Value::Array(page.identifiers.clone())

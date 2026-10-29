@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use fylo_format::Document;
 use serde_json::{Map, Value};
 
 /// Validates a document against a CHEX schema in-process.
@@ -20,7 +21,7 @@ impl SchemaValidation {
         fylo_chex::SchemaValidator::new(None, directory)
             .validate(schema, data)
             .map_err(|error| error.message)?;
-        Ok(data.clone())
+        Ok(Document::copy_fields(data))
     }
 
     #[cfg(target_arch = "wasm32")]

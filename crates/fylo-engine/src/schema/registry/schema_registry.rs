@@ -3,6 +3,7 @@ use std::fmt::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
+use fylo_format::Document;
 use fylo_storage_native::{NativeRoot, NativeStorageError, NativeWriteRoot};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -157,7 +158,7 @@ impl SchemaRegistry {
         let Some(head) = self.head(collection)? else {
             return Ok(None);
         };
-        let mut body = document.clone();
+        let mut body = Document::copy_fields(document);
         body.remove(Self::VERSION_FIELD);
         head.validate(collection, &body)?;
         body.insert(
@@ -221,7 +222,7 @@ impl SchemaRegistry {
         document: &Map<String, Value>,
     ) -> Result<Map<String, Value>, String> {
         let Some((target, _)) = versions.split_last() else {
-            return Ok(document.clone());
+            return Ok(Document::copy_fields(document));
         };
         let from = document
             .get(Self::VERSION_FIELD)
@@ -236,9 +237,9 @@ impl SchemaRegistry {
                 )
             })?;
         if start + 1 == versions.len() {
-            return Ok(document.clone());
+            return Ok(Document::copy_fields(document));
         }
-        let mut next = document.clone();
+        let mut next = Document::copy_fields(document);
         next.remove(Self::VERSION_FIELD);
         for pair in versions[start..].windows(2) {
             pair[1].migrate(&mut next).map_err(|error| {

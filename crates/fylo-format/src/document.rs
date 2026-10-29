@@ -43,6 +43,30 @@ impl Document {
         self.0
     }
 
+    /// A deep copy of `fields` that costs one stack frame per nesting level.
+    ///
+    /// `Map::clone` recurses through about nine frames per level, and a
+    /// browser Worker's stack is small (Safari's smallest): copying a 56-level
+    /// document that way ran out of it there. Copy documents with this.
+    #[must_use]
+    pub fn copy_fields(fields: &Map<String, Value>) -> Map<String, Value> {
+        let mut copy = Map::with_capacity(fields.len());
+        for (key, value) in fields {
+            copy.insert(key.clone(), Self::copy_value(value));
+        }
+        copy
+    }
+
+    /// [`Document::copy_fields`] for any JSON value.
+    #[must_use]
+    pub fn copy_value(value: &Value) -> Value {
+        match value {
+            Value::Object(fields) => Value::Object(Self::copy_fields(fields)),
+            Value::Array(items) => Value::Array(items.iter().map(Self::copy_value).collect()),
+            scalar => scalar.clone(),
+        }
+    }
+
     fn check_size(bytes: &[u8], limits: DocumentLimits) -> Result<(), FormatError> {
         if bytes.len() > limits.max_bytes {
             return Err(FormatError::new(

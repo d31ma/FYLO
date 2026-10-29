@@ -39,7 +39,7 @@ pub(crate) fn reject_undeclared_ciphertext(
     collection: &str,
     fields: &Map<String, Value>,
 ) -> Result<(), String> {
-    if contains_ciphertext(&Value::Object(fields.clone())) {
+    if fields.values().any(contains_ciphertext) {
         Err(format!(
             "cannot decrypt collection {collection}: ciphertext exists but no schema root was configured"
         ))
