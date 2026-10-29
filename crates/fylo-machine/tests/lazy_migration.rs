@@ -376,10 +376,12 @@ fn a_segment_collection_reads_at_the_head_and_is_counted_by_scan() {
         json!({GRACE: {"name":"Grace Hopper","_v":"v2"}})
     );
 
-    // Segment collections are counted by scan; the writer keeps no file.
+    // Segment collections are counted by scan; the writer keeps no file. Their
+    // registry is in schema records, so `.fylo-schemas` may not exist at all.
     let registry = fixture.root.join(".fylo-schemas").join(PEOPLE);
     let files: Vec<String> = fs::read_dir(registry)
-        .unwrap()
+        .into_iter()
+        .flatten()
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
         .filter(|name| name.starts_with("counts"))
         .collect();

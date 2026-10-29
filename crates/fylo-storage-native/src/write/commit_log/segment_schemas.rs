@@ -450,7 +450,7 @@ impl SegmentSchemas {
         let scratch = sibling_scratch(&path);
         let written = (|| {
             let mut options = OpenOptions::new();
-            options.create_new(true).write(true);
+            let _ = options.create_new(true).write(true);
             #[cfg(unix)]
             std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
             let mut file = options.open(&scratch).map_err(NativeStorageError::io)?;
