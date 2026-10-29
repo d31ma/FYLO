@@ -20,6 +20,7 @@ use crate::{
 mod database_compaction;
 mod dictionaries;
 mod encryption;
+mod extent_faults;
 mod processes;
 mod schemas;
 mod stranded_writes;

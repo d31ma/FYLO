@@ -22,6 +22,10 @@ use crate::container_allocator::{
 use crate::{ContainerCipher, ContainerCipherError, ContainerSealContext};
 
 mod dictionary;
+#[cfg(test)]
+pub(crate) mod fault;
+#[cfg(test)]
+use fault::ContainerFault;
 mod punch;
 use punch::punch_hole;
 mod sealed_image;
@@ -825,25 +829,61 @@ impl ContainerFile {
     ///
     /// # Errors
     ///
-    /// Returns the write or resize failure.
+    /// Returns the write or resize failure, after which nothing is taken:
+    /// the map in memory is as it was, so no checkpoint maps an extent
+    /// whose header was never written.
     pub fn allocate(
         &mut self,
         kind: ContainerExtentKind,
         owner: u32,
     ) -> Result<ContainerExtentAllocation, ContainerError> {
         self.require_writable()?;
+        let (saved, length) = (self.allocator.clone(), self.file().metadata()?.len());
         let allocation = self.allocator.allocate(kind, owner);
+        if let Err(error) = self.prepare_extent(allocation, kind, owner) {
+            self.roll_back(saved, length);
+            return Err(error.into());
+        }
+        Ok(allocation)
+    }
+
+    /// Grow the file to hold a new extent, or clear a reused segment
+    /// extent, and write the extent's header.
+    fn prepare_extent(
+        &self,
+        allocation: ContainerExtentAllocation,
+        kind: ContainerExtentKind,
+        owner: u32,
+    ) -> io::Result<()> {
         if allocation.grows_file {
+            #[cfg(test)]
+            fault::check(ContainerFault::Grow)?;
             self.file()
                 .set_len(self.allocator.extent_count() * self.extent_bytes())?;
         } else if kind == ContainerExtentKind::Segment {
             self.clear_extent(allocation.index)?;
         }
-        write_extent_header(self.file(), self.extent_bytes(), allocation, kind, owner)?;
-        Ok(allocation)
+        write_extent_header(self.file(), self.extent_bytes(), allocation, kind, owner)
+    }
+
+    /// Undo a change to the map that failed before anything named what it
+    /// took: put back the map `saved`, and cut off what the change grew
+    /// the file by past `length`. The cut is only tidying: a file longer
+    /// than its map opens as before.
+    fn roll_back(&mut self, saved: ContainerExtentAllocator, length: u64) {
+        self.allocator = saved;
+        if self
+            .file()
+            .metadata()
+            .is_ok_and(|metadata| metadata.len() > length)
+        {
+            let _ = self.file().set_len(length);
+        }
     }
 
     fn clear_extent(&self, extent: u64) -> io::Result<()> {
+        #[cfg(test)]
+        fault::check(ContainerFault::ClearExtent)?;
         let start = extent * self.extent_bytes();
         if punch_hole(self.file(), start, self.extent_bytes())? {
             return Ok(());
@@ -1161,9 +1201,36 @@ impl ContainerFile {
     ///
     /// # Errors
     ///
-    /// Returns the write, resize or flush failure.
+    /// Returns the write, resize or flush failure. One before the new
+    /// superblock copy is written leaves the map in memory as it was, with
+    /// the old map in force. Once the copy is written it may be the one in
+    /// force, flushed or not: a failed flush keeps both maps, taking the new
+    /// superblock and leaving the old map's extents released, not free,
+    /// until a later checkpoint completes.
     pub fn checkpoint(&mut self) -> Result<(), ContainerError> {
         self.require_writable()?;
+        let (saved, length) = (self.allocator.clone(), self.file().metadata()?.len());
+        let next = match self.write_map_copy() {
+            Ok(next) => next,
+            Err(error) => {
+                self.roll_back(saved, length);
+                return Err(error);
+            }
+        };
+        let synced = self.sync();
+        #[cfg(test)]
+        let synced = synced.and_then(|()| fault::check(ContainerFault::Flush));
+        self.superblock = next;
+        self.superblock_in_a = !self.superblock_in_a;
+        synced?;
+        self.allocator.checkpoint_completed();
+        Ok(())
+    }
+
+    /// Write a copy of the map into fresh extents, flush it, and write the
+    /// superblock copy not in force to name it, without flushing. Returns
+    /// that superblock.
+    fn write_map_copy(&mut self) -> Result<ContainerSuperblock, ContainerError> {
         let old_first = self.superblock.map_first_extent;
         for extent in old_first..old_first + u64::from(self.superblock.map_extent_count) {
             self.allocator.release(extent)?;
@@ -1181,6 +1248,8 @@ impl ContainerFile {
             .allocate_run(ContainerExtentKind::Map, 0, run);
         let required = self.allocator.extent_count() * self.extent_bytes();
         if self.file().metadata()?.len() < required {
+            #[cfg(test)]
+            fault::check(ContainerFault::Grow)?;
             self.file().set_len(required)?;
         }
         let indices: Vec<u64> = map_extents
@@ -1216,12 +1285,10 @@ impl ContainerFile {
         } else {
             0
         };
+        #[cfg(test)]
+        fault::check(ContainerFault::Superblock)?;
         write_all_at(self.file(), &next.encode(), at)?;
-        self.sync()?;
-        self.superblock = next;
-        self.superblock_in_a = !self.superblock_in_a;
-        self.allocator.checkpoint_completed();
-        Ok(())
+        Ok(next)
     }
 
     /// Set read-only-compatible feature bits in the superblock, durably,
@@ -1234,7 +1301,7 @@ impl ContainerFile {
     /// # Errors
     ///
     /// Returns `ReadOnly` for a reader, or the checkpoint failure, after
-    /// which the superblock in memory is as it was.
+    /// which the superblock in memory has the feature bits it had.
     pub fn add_read_only_compat(&mut self, features: u32) -> Result<bool, ContainerError> {
         self.require_writable()?;
         let previous = self.superblock.read_only_compat;
@@ -1257,7 +1324,7 @@ impl ContainerFile {
     /// # Errors
     ///
     /// Returns `ReadOnly` for a reader, or the checkpoint failure, after
-    /// which the superblock in memory is as it was.
+    /// which the superblock in memory has the feature bits it had.
     pub fn add_incompat(&mut self, features: u32) -> Result<bool, ContainerError> {
         self.require_writable()?;
         let previous = self.superblock.incompat;
@@ -1283,10 +1350,18 @@ impl ContainerFile {
     pub fn shrink_free_tail(&mut self) -> Result<u64, ContainerError> {
         self.require_writable()?;
         let before = self.file().metadata()?.len();
+        let (saved, generation) = (self.allocator.clone(), self.superblock.generation);
         if self.allocator.truncate_free_tail() == self.superblock.extent_count {
             return Ok(0);
         }
-        self.checkpoint()?;
+        if let Err(error) = self.checkpoint() {
+            // No superblock names the shorter map, so the map keeps the
+            // tail the file still holds.
+            if self.superblock.generation == generation {
+                self.allocator = saved;
+            }
+            return Err(error);
+        }
         let length = self.allocator.extent_count() * self.extent_bytes();
         if length < before {
             self.file().set_len(length)?;
@@ -1523,6 +1598,8 @@ fn write_extent_header(
     kind: ContainerExtentKind,
     owner: u32,
 ) -> io::Result<()> {
+    #[cfg(test)]
+    fault::check(ContainerFault::ExtentHeader(kind))?;
     let header = ContainerExtentHeader {
         kind,
         owner,
@@ -1551,6 +1628,8 @@ fn write_map(
         let at = extent * extent_bytes
             + ContainerExtentHeader::PAYLOAD_OFFSET
             + (page_number % pages_per_extent) * PAGE_BYTES;
+        #[cfg(test)]
+        fault::check(ContainerFault::Map)?;
         write_all_at(file, &page.encode()?, at)?;
     }
     Ok(())

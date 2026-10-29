@@ -44,7 +44,7 @@ impl ContainerFile {
     /// `Locations`, `Index` or `Schemas`, `Oversized` for a snapshot longer than the
     /// format can name, `Cipher(Random)` when no nonce can be drawn, or the
     /// write, resize or flush failure. On a failure
-    /// the run is released, so it is reused after the next checkpoint.
+    /// nothing is taken: the map in memory is as it was.
     pub fn write_snapshot(
         &mut self,
         collection: u32,
@@ -72,11 +72,10 @@ impl ContainerFile {
         let extent_count = u32::try_from(extents).map_err(|_| ContainerFormatError::Oversized)?;
         let run = usize::try_from(extents).map_err(|_| ContainerFormatError::Oversized)?;
         let chunk = usize::try_from(capacity).map_err(|_| ContainerFormatError::Oversized)?;
+        let (saved, file_bytes) = (self.allocator.clone(), self.file().metadata()?.len());
         let allocations = self.allocator.allocate_run(kind, collection, run);
         if let Err(error) = self.fill_run(&allocations, kind, collection, bytes, chunk) {
-            for allocation in &allocations {
-                self.allocator.release(allocation.index)?;
-            }
+            self.roll_back(saved, file_bytes);
             return Err(error);
         }
         // A written snapshot never changes: the next one goes into a new
@@ -109,6 +108,8 @@ impl ContainerFile {
         chunk: usize,
     ) -> Result<(), ContainerError> {
         if allocations.iter().any(|allocation| allocation.grows_file) {
+            #[cfg(test)]
+            super::fault::check(super::ContainerFault::Grow)?;
             self.file()
                 .set_len(self.allocator.extent_count() * self.extent_bytes())?;
         }

@@ -36,7 +36,7 @@ impl ContainerFile {
     /// Returns `ReadOnly` or `Locked`, `InvalidField` for a zero id,
     /// `Oversized` for a dictionary the format cannot hold, `Cipher(Random)`
     /// when no nonce can be drawn, or the write, resize or flush failure.
-    /// On a failure the extent is released.
+    /// On a failure nothing is taken: the map in memory is as it was.
     pub fn write_dictionary(
         &mut self,
         collection: u32,
@@ -56,13 +56,14 @@ impl ContainerFile {
         if (HEADER_BYTES + stored.len()) as u64 > self.payload_capacity() {
             return Err(ContainerFormatError::Oversized.into());
         }
+        let (saved, length) = (self.allocator.clone(), self.file().metadata()?.len());
         let allocation = self.allocate(DICTIONARY, collection)?;
         let written = self
             .write_payload(allocation.index, 0, &header.encode())
             .and_then(|()| self.write_payload(allocation.index, HEADER_BYTES as u64, &stored))
             .and_then(|()| self.sync());
         if let Err(error) = written {
-            self.allocator.release(allocation.index)?;
+            self.roll_back(saved, length);
             return Err(error.into());
         }
         // A dictionary never changes; its live bytes are what it stores.

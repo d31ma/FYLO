@@ -732,7 +732,8 @@ impl SegmentMedium for ContainerMedium {
     /// durable map, and so is the seal of the segment just finished
     /// (`docs/vdbx-segment-backend.md`, "Taking a new extent"). A process
     /// that stops before the checkpoint leaves an extent no slot names,
-    /// which the durable map shows free.
+    /// which the durable map shows free; a checkpoint that fails gives the
+    /// extent back, so the next segment is taken afresh.
     fn create_segment(
         &self,
         opening: &dyn Fn(u64) -> Result<Vec<u8>, NativeStorageError>,
@@ -740,14 +741,16 @@ impl SegmentMedium for ContainerMedium {
         let id = self.shared.collection;
         let (allocation, length) = self.shared.writable()?.change_map(|open| {
             let allocation = open.allocate(SEGMENT, id).map_err(Self::error)?;
-            let written = opening(allocation.sequence).and_then(|bytes| {
-                if bytes.len() as u64 > self.shared.capacity {
-                    return Err(ContainerSegment::too_large());
-                }
-                open.write_payload(allocation.index, 0, &bytes)
-                    .map_err(NativeStorageError::io)?;
-                Ok(bytes.len() as u64)
-            });
+            let written = opening(allocation.sequence)
+                .and_then(|bytes| {
+                    if bytes.len() as u64 > self.shared.capacity {
+                        return Err(ContainerSegment::too_large());
+                    }
+                    open.write_payload(allocation.index, 0, &bytes)
+                        .map_err(NativeStorageError::io)?;
+                    Ok(bytes.len() as u64)
+                })
+                .and_then(|length| open.checkpoint().map(|()| length));
             match written {
                 Ok(length) => {
                     open.table(id).insert(allocation.sequence, allocation.index);
@@ -822,12 +825,17 @@ impl SegmentMedium for ContainerMedium {
     }
 
     /// Take a segment extent for the copy, checkpointing the map. Its
-    /// sequence number is the number the copy is adopted under.
+    /// sequence number is the number the copy is adopted under. A
+    /// checkpoint that fails gives the extent back.
     fn create_compaction(&self) -> Result<Arc<dyn SegmentHandle>, NativeStorageError> {
         self.remove_compactions()?;
         let id = self.shared.collection;
         let allocation = self.shared.writable()?.change_map(|open| {
             let allocation = open.allocate(SEGMENT, id).map_err(Self::error)?;
+            if let Err(error) = open.checkpoint() {
+                let _ = open.release(allocation.index);
+                return Err(error);
+            }
             open.table(id).insert(allocation.sequence, allocation.index);
             Ok(allocation)
         })?;
