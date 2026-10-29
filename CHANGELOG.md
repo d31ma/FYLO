@@ -37,6 +37,26 @@
   (off by default), and the first write open of a root with a folder imports
   its existing collections once. A registry collection writes its generation
   state as `fylo.collection-generation.v3`, which older releases refuse.
+- **Segment collections keep their schema registry in their segments (ADR
+  0017 section 3).** On a collection with the segment layout, `fylo schema
+  push` (`schemaPush`) commits each version as a schema record, record kind
+  `5` with manifest `fylo.schema-version.v1`, appended and flushed through the
+  collection's commit path, so a schema change is atomic, ordered against the
+  document commits around it and replayed by recovery; the next write
+  validates against it. A derived schemas snapshot,
+  `segments/schemas.snapshot`, lists every version for a fast open, is
+  rewritten by each schema commit and named by each checkpoint record, and is
+  rebuilt from the records when it is missing, damaged or older than the
+  descriptor. The records are authoritative: the descriptor's
+  `"schemas": "registry"` and `schemaHead` are still written, after the
+  record, and recovery brings a lagging head up to date; a descriptor that
+  names a head the records lack fails closed. Compaction copies schema
+  records with their sequence numbers, `fylo verify-segments` checks them and
+  the snapshot (`schemaVersions`), `fylo salvage` writes the versions it
+  recovers to `.fylo-schemas/<ordinal>.json` under its output, and
+  `fylo layout` carries the registry in both directions. New failpoints
+  `after-schema-record` and `after-schemas-snapshot`; `fylo-write-preview
+  schema-head` reports the head for the crash matrix.
 - **The WebAssembly builds validate schema writes (ADR 0017 section 4).**
   `fylo.wasm` and `fylo-browser.wasm` link CHEX without a regex compiler and
   validate a registry collection with the DFAs `fylo schema push` stored in

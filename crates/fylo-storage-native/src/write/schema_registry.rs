@@ -122,9 +122,18 @@ impl NativeRoot {
     ) -> Result<Option<std::sync::Arc<SegmentSchemas>>, NativeStorageError> {
         self.assert_profile_owned()?;
         validate_collection_name(name)?;
-        let Some(descriptor) = self.collection_descriptor(name)? else {
-            return Ok(None);
-        };
+        match self.collection_descriptor(name)? {
+            Some(descriptor) => self.segment_schemas_of(name, &descriptor),
+            None => Ok(None),
+        }
+    }
+
+    /// [`Self::segment_schemas`] for a descriptor already read.
+    pub(crate) fn segment_schemas_of(
+        &self,
+        name: &str,
+        descriptor: &crate::CollectionDescriptor,
+    ) -> Result<Option<std::sync::Arc<SegmentSchemas>>, NativeStorageError> {
         if descriptor.layout != crate::CollectionLayout::Segments {
             return Ok(None);
         }

@@ -402,11 +402,15 @@ impl NativeRoot {
     /// Returns an error for an invalid name, a corrupt descriptor, or a
     /// segment collection whose schema records cannot be read.
     pub fn schema_registry_head(&self, name: &str) -> Result<Option<u32>, NativeStorageError> {
-        if let Some(schemas) = self.segment_schemas(name)? {
+        self.assert_profile_owned()?;
+        validate_collection_name(name)?;
+        let Some(descriptor) = self.collection_descriptor(name)? else {
+            return Ok(None);
+        };
+        if let Some(schemas) = self.segment_schemas_of(name, &descriptor)? {
             return Ok(schemas.head());
         }
-        self.collection_descriptor(name)?
-            .map_or(Ok(None), |descriptor| descriptor.schema_head())
+        descriptor.schema_head()
     }
 
     fn collection_descriptor(
