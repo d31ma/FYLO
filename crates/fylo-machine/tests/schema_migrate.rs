@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use fylo_machine::{ApplicationConfig, FrameLimits, InvocationOptions, InvocationRuntime};
-use fylo_storage_native::{NativeRoot, RootConfig, RootOpenOptions};
+use fylo_storage_native::{NativeRoot, NativeWriteRoot, RootConfig, RootOpenOptions};
 use serde_json::{Value, json};
 
 const PEOPLE: &str = "people";
@@ -170,8 +170,8 @@ fn counts(scanned: usize, migrated: usize, at_head: usize, unversioned: usize) -
     })
 }
 
-/// Two v1 documents written in strict mode, which stamps `_v`, and one
-/// written before strict mode, which has none.
+/// Two v1 documents written in strict mode, and one written before the
+/// collection had a versioned schema, which has no `_v`.
 fn seeded(encrypted: bool) -> Fixture {
     let fixture = Fixture::new(encrypted);
     let loose = fixture.runtime(false, encrypted);
@@ -180,6 +180,15 @@ fn seeded(encrypted: bool) -> Fixture {
         &json!({"op":"createCollection","collection":PEOPLE}),
     );
     put(&loose, LEGACY, &json!({"fullName":"Alan Turing"}));
+    drop(loose);
+    // Every write through the engine stamps `_v` whatever the validation
+    // mode, so take the stamp off in storage, keeping the stored ciphertext.
+    let mut legacy = fixture.stored(LEGACY);
+    legacy.as_object_mut().unwrap().remove("_v");
+    NativeWriteRoot::open(&fixture.root)
+        .unwrap()
+        .patch_document(PEOPLE, LEGACY, &serde_json::to_vec(&legacy).unwrap(), None)
+        .unwrap();
     let strict = fixture.runtime(true, encrypted);
     put(
         &strict,
@@ -274,17 +283,18 @@ fn an_old_document_decrypts_with_the_list_of_the_version_it_was_written_at() {
 #[test]
 fn migrate_stops_at_a_document_the_head_rejects_and_leaves_it() {
     let fixture = seeded(false);
+    let runtime = fixture.runtime(false, false);
+    put(
+        &runtime,
+        "4VRNF52JPCR",
+        &json!({"fullName":"lowercase name"}),
+    );
+    drop(runtime);
     fixture.add_v2(false);
     // v2 now refuses a name that is not two capitalised words.
     fixture.version(
         "v2",
         &json!({"name":"^[A-Z][a-z]+ [A-Z][a-z]+$","slug":"^[a-z0-9-]+$","active?":"^(true|false)$"}),
-    );
-    let runtime = fixture.runtime(false, false);
-    put(
-        &runtime,
-        "4VRNF52JPCR",
-        &json!({"fullName":"lowercase name","_v":"v1"}),
     );
     let strict = fixture.runtime(true, false);
     let response = execute(&strict, &json!({"op":"schemaMigrate","collection":PEOPLE}));

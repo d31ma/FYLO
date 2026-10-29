@@ -329,7 +329,8 @@ mod tests {
         largest.descriptor = vec![b' '; ContainerCollectionHeader::MAX_DESCRIPTOR_BYTES];
         // A nonce and a tag around the largest body still fit.
         assert!(
-            largest.encode_body().unwrap().len() + 28 <= ContainerCollectionHeader::MAX_SEALED_BYTES
+            largest.encode_body().unwrap().len() + 28
+                <= ContainerCollectionHeader::MAX_SEALED_BYTES
         );
     }
 

@@ -34,8 +34,8 @@ use fylo_query::{JoinSpec, QueryLimits, SqlOperation, StructuredQuery, prepare_s
 use fylo_storage_native::{
     CollectionKind, FilesystemProfile, NativeQueue, NativeRoot, NativeStorageError,
     NativeStorageErrorCode, NativeWriteRoot, PutRawFileOptions, QueueClaimOptions,
-    QueuePublishOptions, RootLease, RootOpenOptions, SqlMutationResultKind, WriteAccess,
-    WriteActor,
+    QueuePublishOptions, RootLease, RootOpenOptions, SqlMutationResultKind, ValidationMode,
+    WriteAccess, WriteActor,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -928,6 +928,8 @@ impl Session {
             "schemaDoctor" => self.schema_doctor(request),
             "schemaValidate" => self.schema_validate(request),
             "schemaMaterialize" => self.schema_materialize(request),
+            "schemaMode" => self.schema_mode(request),
+            "schemaCheck" => self.schema_check(request),
             "schemaMigrate" => self.schema_migrate(request),
             "importBulkData" => self.import_bulk_data(request),
             "queuePublish" => self.queue_publish(request),
@@ -1421,6 +1423,8 @@ impl Session {
             .verify_index(collection)
             .map_err(|error| engine_error(&error))?
             .indexed_documents;
+        let validation =
+            ValidationMode::resolve(inspection.validation, self.config.storage.strict_schema);
         Ok(json!({
             "collection": inspection.collection,
             "kind": kind,
@@ -1429,6 +1433,8 @@ impl Session {
             "docsStored": inspection.document_count + inspection.file_count,
             "deletedDocs": inspection.deleted_count,
             "indexedDocs": indexed,
+            "validation": validation.as_str(),
+            "schemaViolations": inspection.schema_violations,
         }))
     }
 
@@ -2457,6 +2463,60 @@ impl Session {
             "valid": true,
             "document": validated,
         }))
+    }
+
+    /// `fylo schema mode`: report a collection's validation mode, and with
+    /// `mode`, record that one in its descriptor first (ADR 0017 section 2).
+    fn schema_mode(&self, request: &Value) -> Result<Value, MachineError> {
+        let collection = require_string(request, "collection")?;
+        let writer = self.writer(request)?;
+        if let Some(mode) = request.get("mode") {
+            let mode = mode
+                .as_str()
+                .and_then(ValidationMode::parse)
+                .ok_or_else(|| {
+                    MachineError::new(
+                        "EBADREQUEST",
+                        "machine request field \"mode\" must be \"off\", \"warn\" or \"strict\"",
+                    )
+                })?;
+            writer
+                .set_validation_mode(collection, mode)
+                .map_err(|error| storage_error(&error))?;
+        }
+        let recorded = writer
+            .collection(collection)
+            .map_err(|error| storage_error(&error))?
+            .validation();
+        Ok(json!({
+            "collection": collection,
+            "validation": ValidationMode::resolve(recorded, self.config.storage.strict_schema)
+                .as_str(),
+            "recorded": recorded.map(ValidationMode::as_str),
+            "schemaViolations": fylo_storage_native::schema_violations(writer.path(), collection),
+        }))
+    }
+
+    /// `fylo schema check`: the documents of a collection its head schema
+    /// rejects, at most `limit` of them (default 100).
+    fn schema_check(&self, request: &Value) -> Result<Value, MachineError> {
+        let collection = require_string(request, "collection")?;
+        let limit = match request.get("limit") {
+            None => 100,
+            Some(limit) => limit
+                .as_u64()
+                .and_then(|limit| usize::try_from(limit).ok())
+                .filter(|limit| *limit > 0)
+                .ok_or_else(|| {
+                    MachineError::new(
+                        "EBADREQUEST",
+                        "machine request field \"limit\" must be a positive integer",
+                    )
+                })?,
+        };
+        self.write_engine(request)?
+            .schema_check(collection, limit)
+            .map_err(|error| engine_error(&error))
     }
 
     fn schema_materialize(&self, request: &Value) -> Result<Value, MachineError> {

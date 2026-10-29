@@ -61,6 +61,32 @@ impl SchemaTools {
         Self::validate_known(&paths, manifest.as_ref(), &body)
     }
 
+    /// `document` with the `_v` a write stores: the head label of a versioned
+    /// collection, none for a flat schema, and whatever the document carries
+    /// when the collection has no schema. This is the stamp
+    /// [`Self::validate_against_head`] returns, applied without validating, so
+    /// a write stores the same bytes whatever its validation mode.
+    pub(crate) fn stamp_head(
+        &self,
+        collection: &str,
+        mut document: Map<String, Value>,
+    ) -> Result<Map<String, Value>, String> {
+        let paths = SchemaPaths::new(&self.schema_dir, collection);
+        match SchemaManifest::load(&paths)? {
+            Some(manifest) => {
+                document.insert(
+                    SchemaUpgrade::VERSION_FIELD.into(),
+                    Value::String(manifest.current),
+                );
+            }
+            None if paths.flat().is_file() => {
+                document.remove(SchemaUpgrade::VERSION_FIELD);
+            }
+            None => {}
+        }
+        Ok(document)
+    }
+
     fn materialize_known(
         paths: &SchemaPaths<'_>,
         manifest: Option<&SchemaManifest>,

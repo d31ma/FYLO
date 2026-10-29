@@ -252,6 +252,10 @@
         {
             "code": "EFXDB_CORRUPT",
             "retryable": false
+        },
+        {
+            "code": "ESCHEMA",
+            "retryable": false
         }
     ]
 }

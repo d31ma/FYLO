@@ -41,7 +41,8 @@ mod commit_log;
 mod document_codec;
 pub(crate) mod version;
 
-pub use document_codec::{DocumentCodec, PlainDocumentCodec};
+use document_codec::DocumentPolicy;
+pub use document_codec::{DocumentCodec, PlainDocumentCodec, schema_violations};
 
 static UNIQUE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static TTID_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -325,6 +326,94 @@ impl NativeWriteRoot {
         self.config
     }
 
+    /// Open one existing collection of this root.
+    ///
+    /// # Errors
+    ///
+    /// As [`NativeRoot::collection`].
+    pub fn collection(
+        &self,
+        collection_name: &str,
+    ) -> Result<super::NativeCollection, NativeStorageError> {
+        self.root.collection(collection_name)
+    }
+
+    /// The validation mode writes to `collection_name` run under: the one its
+    /// descriptor records, or this writer's `strict_schema` setting.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a missing collection or a corrupt descriptor.
+    pub fn validation_mode(
+        &self,
+        collection_name: &str,
+    ) -> Result<super::ValidationMode, NativeStorageError> {
+        Ok(self.mode_of(&self.root.collection(collection_name)?))
+    }
+
+    fn mode_of(&self, collection: &super::NativeCollection) -> super::ValidationMode {
+        super::ValidationMode::resolve(collection.validation(), self.config.strict_schema)
+    }
+
+    /// The schema policy for one mutation of `collection`, around `codec`.
+    fn policy<'a>(
+        &self,
+        collection: &super::NativeCollection,
+        codec: &'a dyn DocumentCodec,
+    ) -> DocumentPolicy<'a> {
+        DocumentPolicy::new(
+            codec,
+            self.mode_of(collection),
+            self.root.path(),
+            &collection.name,
+        )
+    }
+
+    /// Record `mode` in `collection_name`'s catalog descriptor, so every
+    /// later writer of this root runs under it whatever its `strict_schema`
+    /// setting. Returns the mode the descriptor recorded before, if any.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a missing collection, an unsafe path, lock
+    /// contention, or an interrupted durable write.
+    pub fn set_validation_mode(
+        &self,
+        collection_name: &str,
+        mode: super::ValidationMode,
+    ) -> Result<Option<super::ValidationMode>, NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        let collection = self.root.collection(collection_name)?;
+        let previous = collection.validation();
+        if previous == Some(mode) {
+            return Ok(previous);
+        }
+        let _lock = self.lock_collection(&collection.path)?;
+        let catalog = self
+            .root
+            .catalog_root()
+            .join(".fylo-catalog")
+            .join("collections");
+        let path = catalog.join(format!("{collection_name}.json"));
+        // A collection created before descriptors existed has none; it is a
+        // document collection at the default width, which is what a
+        // descriptor naming only its kind says too.
+        let mut descriptor: Map<String, Value> = if path_exists_no_follow(&path)? {
+            read_bounded_json(&path, super::MAX_DESCRIPTOR_BYTES)?
+        } else {
+            fs::create_dir_all(&catalog).map_err(NativeStorageError::io)?;
+            Map::from_iter([
+                ("version".into(), Value::from(1)),
+                ("kind".into(), Value::from("document")),
+            ])
+        };
+        descriptor.insert("validation".into(), Value::from(mode.as_str()));
+        let mut encoded = serde_json::to_vec(&descriptor).map_err(|error| json_error(&error))?;
+        encoded.push(b'\n');
+        durable_replace(&path, &encoded)?;
+        Ok(previous)
+    }
+
     /// Open a materialized worktree whose catalog and repository metadata live
     /// at another canonical root.
     ///
@@ -479,6 +568,31 @@ impl NativeWriteRoot {
             return Err(error);
         }
         Ok(())
+    }
+
+    /// Create one document from its fields, building the stored body through
+    /// `codec` under the collection's validation mode, so it is validated,
+    /// stamped and encrypted exactly as every other body write.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::put_document`], plus a document the schema rejects in
+    /// `strict` mode and any error `codec` returns.
+    pub fn put_document_fields_with(
+        &self,
+        collection_name: &str,
+        identifier: &str,
+        fields: Map<String, Value>,
+        options: PutDocumentOptions,
+        codec: &dyn DocumentCodec,
+    ) -> Result<(), NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        let collection = self.document_collection(collection_name, "put_document")?;
+        let policy = self.policy(&collection, codec);
+        let outcome = policy
+            .encode(collection_name, fields)
+            .and_then(|encoded| self.put_document(collection_name, identifier, &encoded, options));
+        policy.finish(outcome)
     }
 
     /// Create one raw file at an explicitly supplied TTID.
@@ -700,6 +814,30 @@ impl NativeWriteRoot {
         Ok(())
     }
 
+    /// Replace one existing document body with `fields`, building the stored
+    /// body through `codec` under the collection's validation mode.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::patch_document`], plus a document the schema rejects in
+    /// `strict` mode and any error `codec` returns.
+    pub fn patch_document_with(
+        &self,
+        collection_name: &str,
+        identifier: &str,
+        fields: Map<String, Value>,
+        actor: Option<&WriteActor>,
+        codec: &dyn DocumentCodec,
+    ) -> Result<(), NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        let collection = self.document_collection(collection_name, "patch_document")?;
+        let policy = self.policy(&collection, codec);
+        let outcome = policy
+            .encode(collection_name, fields)
+            .and_then(|encoded| self.patch_document(collection_name, identifier, &encoded, actor));
+        policy.finish(outcome)
+    }
+
     /// Shallow-merge fields into one existing document.
     ///
     /// This matches the JavaScript `patch(id, changes)` contract: top-level
@@ -744,20 +882,26 @@ impl NativeWriteRoot {
         self.root.assert_profile_owned()?;
         validate_ttid_shape(identifier)?;
         let collection = self.document_collection(collection_name, "patch_document_fields")?;
+        let policy = self.policy(&collection, codec);
         let patch = |bytes: &[u8]| {
-            let mut document = codec.decode(collection_name, parse_document_fields(bytes)?)?;
+            policy.restart();
+            let mut document = policy.decode(collection_name, parse_document_fields(bytes)?)?;
             merge_top_level(&mut document, changes);
-            codec.encode(collection_name, document)
+            policy.encode(collection_name, document)
         };
-        if self.uses_log(&collection) {
-            return self.patch_document_logged(&collection, identifier, actor, patch);
-        }
-        let _lock = self.lock_collection(&collection.path)?;
-        self.recover_locked(&collection)?;
-        let stored = collection.read_document(identifier)?;
-        require_write_access(stored.access, actor)?;
-        let canonical = patch(&stored.bytes)?;
-        self.patch_document_locked(&collection, identifier, &stored.path, &canonical)
+        let outcome = if self.uses_log(&collection) {
+            self.patch_document_logged(&collection, identifier, actor, patch)
+        } else {
+            (|| {
+                let _lock = self.lock_collection(&collection.path)?;
+                self.recover_locked(&collection)?;
+                let stored = collection.read_document(identifier)?;
+                require_write_access(stored.access, actor)?;
+                let canonical = patch(&stored.bytes)?;
+                self.patch_document_locked(&collection, identifier, &stored.path, &canonical)
+            })()
+        };
+        policy.finish(outcome)
     }
 
     /// Execute a bounded `INSERT`, `UPDATE`, or `DELETE` SQL statement.
@@ -1578,13 +1722,26 @@ impl NativeWriteRoot {
         codec: &dyn DocumentCodec,
     ) -> Result<SqlMutationResult, NativeStorageError> {
         let values = required_object(&plan.ast, "$values", "SQL INSERT values")?;
-        let encoded = codec.encode(&plan.collection, values.clone())?;
+        let collection = self.document_collection(&plan.collection, "SQL INSERT")?;
+        let policy = self.policy(&collection, codec);
+        let outcome = policy
+            .encode(&plan.collection, values.clone())
+            .and_then(|encoded| self.insert_sql_row(plan, access, &encoded));
+        policy.finish(outcome)
+    }
+
+    fn insert_sql_row(
+        &self,
+        plan: &fylo_query::SqlPlan,
+        access: WriteAccess,
+        encoded: &[u8],
+    ) -> Result<SqlMutationResult, NativeStorageError> {
         for _ in 0..16 {
             let identifier = generate_ttid()?;
             match self.put_document(
                 &plan.collection,
                 &identifier,
-                &encoded,
+                encoded,
                 PutDocumentOptions {
                     access,
                     ..PutDocumentOptions::default()
@@ -1624,23 +1781,36 @@ impl NativeWriteRoot {
         let query = StructuredQuery::from_value(&query_value, QueryLimits::default())
             .map_err(|error| query_error(&error))?;
         let collection = self.document_collection(&plan.collection, "SQL UPDATE")?;
-        if self.uses_log(&collection) {
-            match self.sql_update_logged(&collection, (&query, changes), actor, codec) {
+        let policy = self.policy(&collection, codec);
+        let outcome = self.update_sql_rows(&collection, (&query, changes), actor, &policy);
+        policy.finish(outcome)
+    }
+
+    fn update_sql_rows(
+        &self,
+        collection: &super::NativeCollection,
+        (query, changes): (&StructuredQuery, &Map<String, Value>),
+        actor: Option<&WriteActor>,
+        policy: &DocumentPolicy<'_>,
+    ) -> Result<SqlMutationResult, NativeStorageError> {
+        if self.uses_log(collection) {
+            match self.sql_update_logged(collection, (query, changes), actor, policy) {
                 Err(error) if Self::exceeds_log_budget(&error) => {}
                 outcome => return outcome,
             }
         }
+        policy.restart();
         let _lock = self.lock_collection(&collection.path)?;
-        self.recover_locked(&collection)?;
-        let mut documents = matching_documents(&collection, &query, actor)?;
+        self.recover_locked(collection)?;
+        let mut documents = matching_documents(collection, query, actor)?;
         for document in &mut documents {
             let mut fields =
-                codec.decode(&plan.collection, std::mem::take(&mut document.fields))?;
+                policy.decode(&collection.name, std::mem::take(&mut document.fields))?;
             merge_top_level(&mut fields, changes);
-            document.encoded = codec.encode(&plan.collection, fields.clone())?;
+            document.encoded = policy.encode(&collection.name, fields.clone())?;
             document.fields = fields;
         }
-        self.write_sql_updates(&collection, &documents)?;
+        self.write_sql_updates(collection, &documents)?;
         Ok(SqlMutationResult {
             kind: SqlMutationResultKind::Update,
             affected: documents.len(),
@@ -5741,6 +5911,187 @@ mod tests {
         assert!(
             wal <= INDEX_WAL_COMPACT_BYTES.max(snapshot),
             "WAL grew to {wal} bytes against a {snapshot}-byte snapshot"
+        );
+    }
+
+    /// Rejects any document with a `bad` field, as a schema would.
+    struct RejectsBad;
+
+    impl DocumentCodec for RejectsBad {
+        fn decode(
+            &self,
+            _collection: &str,
+            fields: Map<String, Value>,
+        ) -> Result<Map<String, Value>, NativeStorageError> {
+            Ok(fields)
+        }
+
+        fn validate(
+            &self,
+            _collection: &str,
+            fields: &Map<String, Value>,
+        ) -> Result<Option<String>, NativeStorageError> {
+            Ok(fields
+                .contains_key("bad")
+                .then(|| "Property 'bad' does not exist in schema 'users'".to_owned()))
+        }
+
+        fn encode(
+            &self,
+            _collection: &str,
+            fields: Map<String, Value>,
+        ) -> Result<Vec<u8>, NativeStorageError> {
+            encode_document_fields(fields)
+        }
+    }
+
+    fn fields(value: &Value) -> Map<String, Value> {
+        value.as_object().unwrap().clone()
+    }
+
+    #[test]
+    fn the_record_builder_refuses_counts_or_ignores_a_rejected_body_by_mode() {
+        let fixture = TestRoot::create();
+        let writer = NativeWriteRoot::open(&fixture.0).unwrap();
+        let bad = fields(&json!({"name":"Ada","bad":true}));
+        let violations = || schema_violations(writer.path(), "users");
+
+        writer
+            .set_validation_mode("users", super::super::ValidationMode::Strict)
+            .unwrap();
+        let error = writer
+            .put_document_fields_with(
+                "users",
+                "4VRNF52JPCO",
+                bad.clone(),
+                PutDocumentOptions::default(),
+                &RejectsBad,
+            )
+            .unwrap_err();
+        assert_eq!(error.code(), NativeStorageErrorCode::SchemaViolation);
+        assert_eq!(error.code().as_str(), "ESCHEMA");
+        assert_eq!(
+            error.message(),
+            "Property 'bad' does not exist in schema 'users'"
+        );
+        let collection = writer.root.collection("users").unwrap();
+        assert!(collection.document_ids().unwrap().is_empty());
+
+        writer
+            .set_validation_mode("users", super::super::ValidationMode::Warn)
+            .unwrap();
+        writer
+            .put_document_fields_with(
+                "users",
+                "4VRNF52JPCO",
+                bad.clone(),
+                PutDocumentOptions::default(),
+                &RejectsBad,
+            )
+            .unwrap();
+        writer
+            .put_document_fields_with(
+                "users",
+                "4VRNF52JPCP",
+                fields(&json!({"name":"Grace"})),
+                PutDocumentOptions::default(),
+                &RejectsBad,
+            )
+            .unwrap();
+        assert_eq!(violations(), 1);
+        // Both rows end up with `bad`, so both count, once each, whichever
+        // path the update commits through.
+        writer
+            .execute_sql_mutation_with(
+                "UPDATE users SET bad = 1",
+                None,
+                WriteAccess::default(),
+                &RejectsBad,
+            )
+            .unwrap();
+        assert_eq!(violations(), 3);
+
+        writer
+            .set_validation_mode("users", super::super::ValidationMode::Off)
+            .unwrap();
+        writer
+            .patch_document_fields_with(
+                "users",
+                "4VRNF52JPCP",
+                &fields(&json!({"bad":2})),
+                None,
+                &RejectsBad,
+            )
+            .unwrap();
+        assert_eq!(violations(), 3);
+        assert_eq!(
+            collection.read_document("4VRNF52JPCP").unwrap().bytes,
+            br#"{"name":"Grace","bad":2}"#
+        );
+    }
+
+    #[test]
+    fn a_recorded_validation_mode_outranks_strict_schema_and_keeps_the_descriptor() {
+        let fixture = TestRoot::create();
+        let lenient = NativeWriteRoot::open(&fixture.0).unwrap();
+        let strict =
+            NativeWriteRoot::open(&fixture.0)
+                .unwrap()
+                .with_config(super::super::RootConfig {
+                    strict_schema: true,
+                    ..Default::default()
+                });
+        // A collection with no descriptor at all follows the host.
+        assert_eq!(
+            lenient.validation_mode("users").unwrap(),
+            super::super::ValidationMode::Off
+        );
+        assert_eq!(
+            strict.validation_mode("users").unwrap(),
+            super::super::ValidationMode::Strict
+        );
+
+        assert_eq!(
+            lenient
+                .set_validation_mode("users", super::super::ValidationMode::Warn)
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            strict.validation_mode("users").unwrap(),
+            super::super::ValidationMode::Warn
+        );
+        let descriptor: Value = serde_json::from_slice(
+            &fs::read(fixture.0.join(".fylo-catalog/collections/users.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            descriptor,
+            json!({"version":1,"kind":"document","validation":"warn"})
+        );
+
+        // Recording a mode leaves the rest of an existing descriptor alone.
+        lenient
+            .create_collection("orders", CollectionKind::Document, Some(false))
+            .unwrap();
+        let path = fixture.0.join(".fylo-catalog/collections/orders.json");
+        let before: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert!(before.get("validation").is_none());
+        assert_eq!(
+            strict
+                .set_validation_mode("orders", super::super::ValidationMode::Off)
+                .unwrap(),
+            None
+        );
+        let mut after: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(after["validation"], "off");
+        after.as_object_mut().unwrap().remove("validation");
+        assert_eq!(after, before);
+        assert_eq!(
+            strict
+                .set_validation_mode("orders", super::super::ValidationMode::Strict)
+                .unwrap(),
+            Some(super::super::ValidationMode::Off)
         );
     }
 }

@@ -41,6 +41,7 @@ mod record_attributes;
 mod root_open_options;
 mod sidecar_attributes;
 mod spelling_cache;
+mod validation_mode;
 mod write;
 
 use beneath_open::BeneathOpen;
@@ -85,11 +86,12 @@ pub use queue::{
     QueueNackResult, QueuePublishOptions, QueuePublishResult, QueueStats,
 };
 pub use root_open_options::RootOpenOptions;
+pub use validation_mode::ValidationMode;
 pub use write::FAILPOINTS;
 pub use write::version::RepositoryStatus;
 pub use write::{
     DocumentCodec, NativeWriteRoot, PlainDocumentCodec, PutDocumentOptions, PutRawFileOptions,
-    WriteAccess, WriteActor,
+    WriteAccess, WriteActor, schema_violations,
 };
 pub use write::{SqlMutationResult, SqlMutationResultKind};
 
@@ -377,6 +379,7 @@ impl NativeRoot {
                 kind: CollectionKind::Document,
                 shard_width: None,
                 previous_shard_widths: None,
+                validation: None,
             }
         };
         let namespace = match descriptor.kind {
@@ -398,6 +401,7 @@ impl NativeRoot {
                 .into_iter()
                 .map(|width| validate_shard_width(Some(width)))
                 .collect::<Result<Vec<_>, _>>()?,
+            validation: descriptor.validation,
         })
     }
 
@@ -1203,6 +1207,11 @@ struct CollectionDescriptor {
     /// Widths an unfinished reshard is moving this collection away from.
     #[serde(default)]
     previous_shard_widths: Option<Vec<u32>>,
+    /// What writes do about the collection's schema. A descriptor written
+    /// before validation modes existed records none, and the host's
+    /// `strict_schema` setting decides (ADR 0017 section 2).
+    #[serde(default)]
+    validation: Option<ValidationMode>,
 }
 
 #[derive(Deserialize)]
@@ -1373,9 +1382,19 @@ pub struct NativeCollection {
     namespace: String,
     shard_width: u32,
     previous_shard_widths: Vec<u32>,
+    validation: Option<ValidationMode>,
 }
 
 impl NativeCollection {
+    /// Validation mode this collection's descriptor records, if any.
+    ///
+    /// `None` means the host's `strict_schema` setting decides; see
+    /// [`ValidationMode::resolve`].
+    #[must_use]
+    pub const fn validation(&self) -> Option<ValidationMode> {
+        self.validation
+    }
+
     /// Characters of the creation segment this collection's shards use.
     #[must_use]
     pub const fn shard_width(&self) -> u32 {
@@ -2432,6 +2451,9 @@ pub enum NativeStorageErrorCode {
     QueueReceipt,
     /// Queue state exceeded a published resource bound.
     QueueLimit,
+    /// A document did not match its collection's head schema, and the
+    /// collection's validation mode is `strict`.
+    SchemaViolation,
 }
 
 impl NativeStorageErrorCode {
@@ -2459,6 +2481,7 @@ impl NativeStorageErrorCode {
             Self::InvalidQueue => "EQUEUE_INVALID",
             Self::QueueReceipt => "EQUEUE_RECEIPT",
             Self::QueueLimit => "EQUEUE_LIMIT",
+            Self::SchemaViolation => "ESCHEMA",
         }
     }
 }
@@ -2499,6 +2522,12 @@ impl NativeStorageError {
     #[must_use]
     pub const fn code(&self) -> NativeStorageErrorCode {
         self.code
+    }
+
+    /// The description, without the code `Display` puts in front of it.
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.message
     }
 }
 

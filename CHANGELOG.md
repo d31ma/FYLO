@@ -24,6 +24,16 @@
   same validation and encryption as any write. A document without `_v` is
   skipped and counted unless `--include-unversioned` is given (ADR 0017
   section 5).
+- **Schema validation modes per collection (ADR 0017 section 2).**
+  `fylo schema mode <collection> off|warn|strict` (`schemaMode`) records the
+  mode in the collection's catalog descriptor, so it applies to every process
+  that opens the root. `strict` refuses a document the head schema rejects with
+  `ESCHEMA`; `warn` writes it, logs a warning to stderr and counts it, which
+  `inspectCollection` reports as `schemaViolations`; `off` checks nothing. A
+  collection with no recorded mode follows `fylo.strict` as before, and its
+  descriptor bytes do not change. `fylo schema check <collection>`
+  (`schemaCheck`) lists the documents the head schema rejects. `ESCHEMA` is now
+  in the stable error registry.
 
 ### Changed
 
@@ -65,6 +75,14 @@
 
 ### Changed
 
+- **Schemas are enforced in one place, the storage writer's record builder
+  (ADR 0017 section 1).** Every write that stores a document body builds it
+  there, under the collection's validation mode; the engine no longer
+  validates puts on its own.
+- **Writes stamp `_v` whenever the collection has a versioned schema**, in
+  every validation mode, and a `_v` the caller sends is replaced by the head
+  label. Without `fylo.strict`, writes used to store no `_v` (or the caller's),
+  so a document written in the head shape later read as the oldest version.
 - **CHEX and TTID are built in; FYLO no longer needs their binaries.** Schema
   validation now runs in-process through `fylo-chex`, a vendored copy of the
   CHEX v26.32.02 validator core (same regex dialect, error names, and messages).
