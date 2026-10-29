@@ -19,6 +19,8 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 mod beneath_open;
+#[cfg(not(target_family = "wasm"))]
+mod byte_range_lock;
 mod durability;
 mod filesystem_profile;
 mod index_cache;
@@ -35,6 +37,11 @@ mod write;
 use beneath_open::BeneathOpen;
 use spelling_cache::SpellingCache;
 
+#[cfg(not(target_family = "wasm"))]
+pub use byte_range_lock::{
+    ByteLockGuard, ByteRangeLockFile, COLLECTION_WRITER_START, LOCK_RANGE_START, LockByte,
+    LockMode, MAX_POLL_INTERVAL,
+};
 pub use durability::Durability;
 pub use filesystem_profile::FilesystemProfile;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]

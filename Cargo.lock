@@ -704,11 +704,13 @@ dependencies = [
  "fylo-vfs",
  "getrandom 0.4.3",
  "hmac",
+ "libc",
  "rustix",
  "same-file",
  "serde",
  "serde_json",
  "sha2",
+ "windows-sys 0.61.2",
  "xattr",
 ]
 

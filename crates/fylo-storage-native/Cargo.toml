@@ -23,7 +23,17 @@ sha2.workspace = true
 same-file.workspace = true
 
 [target.'cfg(unix)'.dependencies]
+# `fcntl` byte-range locks for `.fxdb` files (ADR 0016 section 7). Already in
+# the graph through `errno`, `getrandom` and others; the `struct flock` layout
+# and the `F_OFD_*` commands differ per target, so they come from here rather
+# than hand-written declarations.
+libc = { workspace = true }
 xattr.workspace = true
+
+# `LockFileEx` byte-range locks and file identity for `.fxdb` files (ADR 0016
+# section 7). Already in the graph through `errno`, `rustix` and `tokio`.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO"] }
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
 rustix.workspace = true
@@ -31,5 +41,16 @@ rustix.workspace = true
 [dev-dependencies]
 fylo-test-support = { version = "0.1.0", path = "../fylo-test-support" }
 
-[lints]
-workspace = true
+# `.fxdb` byte-range locks call `fcntl` and `LockFileEx`, which no safe
+# signature in the graph expresses for a byte range. ADR 0004 confines that to
+# `byte_range_lock/os.rs`; `deny` rather than `forbid` is what lets that one
+# module opt in with a SAFETY comment per block.
+[lints.rust]
+unsafe_code = "deny"
+unused_must_use = "deny"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"

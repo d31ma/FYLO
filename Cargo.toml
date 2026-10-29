@@ -40,6 +40,7 @@ base64 = "0.22.1"
 boa_engine = { version = "0.21.1", default-features = false }
 getrandom = "0.4.3"
 hmac = "0.13.0"
+libc = { version = "0.2.189", default-features = false }
 pbkdf2 = { version = "0.13.0", features = ["hmac"] }
 # CHEX's regex dialect: the same feature set the upstream binary shipped, so a
 # schema matches exactly as it did. `perf` stays off (literal prefilters that
@@ -53,6 +54,7 @@ same-file = "1.0.6"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.151", features = ["preserve_order"] }
 sha2 = "0.11.0"
+windows-sys = { version = "0.61.2", default-features = false }
 xattr = "1.6.1"
 zeroize = "1.8.2"
 
