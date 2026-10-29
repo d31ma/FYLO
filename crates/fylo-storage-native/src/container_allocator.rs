@@ -191,6 +191,58 @@ impl ContainerExtentAllocator {
         }
     }
 
+    /// Take `count` consecutive extents: the lowest run of free ones, a free
+    /// tail extended by growing the file, or new extents at the end. A map
+    /// copy needs a run, because the superblock names only its first extent
+    /// and its length.
+    pub fn allocate_run(
+        &mut self,
+        kind: ContainerExtentKind,
+        owner: u32,
+        count: usize,
+    ) -> Vec<ContainerExtentAllocation> {
+        let mut start = self.slots.len();
+        let mut run = 0;
+        for (index, slot) in self.slots.iter().enumerate() {
+            if *slot == Slot::Free {
+                if run == 0 {
+                    start = index;
+                }
+                run += 1;
+                if run == count {
+                    break;
+                }
+            } else {
+                run = 0;
+                start = self.slots.len();
+            }
+        }
+        (start..start + count)
+            .map(|index| {
+                let sequence = self.next_sequence;
+                self.next_sequence += 1;
+                let taken = Slot::InUse {
+                    kind,
+                    owner,
+                    sequence,
+                    sealed: false,
+                    live_bytes: 0,
+                };
+                let grows_file = index == self.slots.len();
+                if grows_file {
+                    self.slots.push(taken);
+                } else {
+                    self.slots[index] = taken;
+                }
+                ContainerExtentAllocation {
+                    index: index as u64,
+                    sequence,
+                    grows_file,
+                }
+            })
+            .collect()
+    }
+
     /// Mark an extent immutable, with the bytes the location table still
     /// references in it.
     ///
@@ -384,6 +436,31 @@ mod tests {
         assert_eq!(allocator.allocate(SEGMENT, 1).index, 2);
         assert!(allocator.free_extents().is_empty());
         allocator.checkpoint_completed();
+        assert_eq!(allocator.free_extents(), vec![1]);
+    }
+
+    #[test]
+    fn allocates_runs_from_a_gap_a_free_tail_or_the_end() {
+        let mut allocator = ContainerExtentAllocator::new(1);
+        for _ in 0..6 {
+            allocator.allocate(SEGMENT, 1);
+        }
+        for index in [1, 3, 4, 6] {
+            allocator.release(index).unwrap();
+        }
+        allocator.checkpoint_completed();
+        let indices = |run: &[super::ContainerExtentAllocation]| {
+            run.iter()
+                .map(|allocation| (allocation.index, allocation.grows_file))
+                .collect::<Vec<_>>()
+        };
+        let gap = allocator.allocate_run(ContainerExtentKind::Map, 0, 2);
+        assert_eq!(indices(&gap), vec![(3, false), (4, false)]);
+        let tail = allocator.allocate_run(ContainerExtentKind::Map, 0, 2);
+        assert_eq!(indices(&tail), vec![(6, false), (7, true)]);
+        let end = allocator.allocate_run(ContainerExtentKind::Map, 0, 2);
+        assert_eq!(indices(&end), vec![(8, true), (9, true)]);
+        assert_eq!(allocator.extent_count(), 10);
         assert_eq!(allocator.free_extents(), vec![1]);
     }
 

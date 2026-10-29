@@ -112,7 +112,7 @@ snapshots and dictionary) and two **generation slots** (ADR 0015 section 6,
 moved in from `state.slots`, naming the active segment extent and its
 committed length). Each slot pair is written A/B with its own CRC, so an
 in-place slot write never touches the static part. One block per collection keeps two collections from
-ever writing the same sector. An 8 MiB directory holds 2,048 collections and
+ever writing the same sector. An 8 MiB directory holds 2,047 collections (its first 4 KiB is the extent header) and
 chains to a further directory extent past that.
 
 **Extent map.** 32 bytes per extent: state (free, owned, sealed), kind, owner,

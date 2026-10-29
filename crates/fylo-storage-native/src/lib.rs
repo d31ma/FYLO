@@ -22,6 +22,7 @@ mod beneath_open;
 #[cfg(not(target_family = "wasm"))]
 mod byte_range_lock;
 mod container_allocator;
+mod container_file;
 mod durability;
 mod filesystem_profile;
 mod index_cache;
@@ -47,6 +48,7 @@ pub use container_allocator::{
     ContainerAllocatorError, ContainerExtentAllocation, ContainerExtentAllocator,
     ContainerShrinkPlan,
 };
+pub use container_file::{ContainerCollection, ContainerError, ContainerFile};
 pub use durability::Durability;
 pub use filesystem_profile::FilesystemProfile;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
