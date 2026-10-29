@@ -78,8 +78,9 @@ version, which is the same dry run ADR 0017 already requires.
   `ESCHEMASTALE`, and Boa context reuse are dropped.
 - Explorer never has to disable writes for a collection waiting on a native
   migration.
-- Background migration in `fylo serve` and migration in `fylo pack` stay, as
-  ways to converge, not as requirements to read.
+- `fylo schema migrate`, idle-time migration in an embedded process that
+  holds the exclusive lease, and migration in `fylo pack` stay, as ways to
+  converge, not as requirements to read.
 
 ## Consequences
 

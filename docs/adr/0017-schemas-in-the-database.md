@@ -108,7 +108,7 @@ for the collection runs on each post-image, in this order:
 5. encrypt `$encrypted` fields.
 
 `putData`, `batchPutData`, `importBulkData`, `patchDoc`, `patchDocs`, SQL
-`INSERT` and `UPDATE`, and the network server all reach it, because none of
+`INSERT` and `UPDATE` all reach it, because none of
 them can build a record any other way. `restoreDoc`, `restoreCommit`,
 `checkout` and `merge` reinstate stored bodies as they were, with their
 original `_v`, and are not revalidated: they bring back history, and the read
@@ -173,10 +173,13 @@ Each version holds:
   journal, as `reshard` does.
 
 **Fencing.** A collection with an in-database registry sets
-`"schemas": "registry"` in its catalog descriptor, which is parsed with
-`deny_unknown_fields`, so an older binary refuses the collection instead of
-writing unvalidated documents or stopping its log scan at an unknown record
-kind. A `.fxdb` file sets read-only-compatible feature bit
+`"schemas": "registry"` in its catalog descriptor. Today's descriptor parser
+ignores unknown fields, so that alone would not stop an older binary.
+Correction (2026-10-29): the collection's generation state is also written as
+a new `fylo.collection-generation` format version, which older binaries
+already refuse with `ENATIVE_CORRUPT_METADATA` (the second fence ADR 0015
+uses), so an older binary refuses the collection instead of writing
+unvalidated documents or stopping its log scan at an unknown record kind. A `.fxdb` file sets read-only-compatible feature bit
 `READ_ONLY_COMPAT_SCHEMAS` (bit 0), so a build that predates this ADR opens it
 read-only.
 
@@ -310,7 +313,8 @@ builds never execute JavaScript from a database.
 - **On write.** Any write to an old document stores it at the head (section 1,
   step 1), so a collection that is written converges on its own.
 - **Eager, in the background.** `fylo schema migrate <collection>` (and, in
-  `fylo serve`, an idle-time task) rewrites old documents in batches of 256 as
+  an embedded process that holds the root's exclusive lease, an optional
+  idle-time task) rewrites old documents in batches of 256 as
   ordinary commits with new LSNs, under the collection lock for one batch at a
   time. Compaction (ADR 0015 section 7) then drops the old entries. ADR 0015
   compaction keeps an entry's LSN and bytes, so migration is never folded
