@@ -147,13 +147,15 @@
                     <h2>Security</h2>
                     <p>
                         FYLO does not authenticate — your app verifies identity, FYLO enforces
-                        policy. Fields listed in a schema's <code>$encrypted</code> array are stored
-                        with AES-GCM; equality lookups use HMAC blind indexes. POSTIX binds a POSIX
-                        UID, GID, and mode to each protected record on disk. Group membership is
-                        resolved by the trusted application or host POSIX group database. In-process
-                        callers provide only their UID; trusted binary-backed applications may
-                        attach request-scoped virtual groups on the local machine boundary. A shared
-                        writable record needs group write permission, typically <code>0o660</code>;
+                        policy. Encryption is opt-in and off by default. Fields listed in a schema's
+                        <code>$encrypted</code> array are stored with AES-GCM; equality lookups use
+                        HMAC blind indexes. A <code>.fxdb</code> database file is not encrypted
+                        unless encryption is turned on for it. POSTIX binds a POSIX UID, GID, and
+                        mode to each protected record on disk. Group membership is resolved by the
+                        trusted application or host POSIX group database. In-process callers provide
+                        only their UID; trusted binary-backed applications may attach request-scoped
+                        virtual groups on the local machine boundary. A shared writable record needs
+                        group write permission, typically <code>0o660</code>;
                         <code>0o600</code> remains owner-only. The native binary and binary-backed
                         shims enforce it on macOS/Linux POSIX hosts. Windows, Browser, Explorer, and
                         WebView/mobile clients do not provide POSTIX and must use an authenticated
@@ -169,8 +171,8 @@
                     <p>
                         The <code>fylo</code> binary is the only surface: query and administer a
                         local root from the shell, and drive git-like document version control.
-                        There is no server and no network protocol — FYLO opens the database
-                        files directly in your app's process, like SQLite.
+                        There is no server and no network protocol — FYLO opens the database files
+                        directly in your app's process, like SQLite.
                     </p>
                     <pre class="code-block"><code>{cliCode()}</code></pre>
                 </article>

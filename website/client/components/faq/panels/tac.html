@@ -176,9 +176,36 @@
                     role="region"
                     aria-labelledby="faq-encryption-trigger"
                 >
-                    Fields listed in a schema’s $encrypted array are stored with AES-GCM. Equality
-                    lookups use HMAC blind indexes, so queries work without decrypting — with the
-                    documented trade-off that value repetition counts are observable.
+                    Not by default. Encryption is opt-in and off unless you turn it on. Fields
+                    listed in a schema’s $encrypted array are stored with AES-GCM. Equality lookups
+                    use HMAC blind indexes, so queries work without decrypting — with the documented
+                    trade-off that value repetition counts are observable. A .fxdb database file is
+                    not encrypted; whole-file encryption is planned as an opt-in setting chosen when
+                    the database is created, and stays off by default.
+                </div>
+            </div>
+            <div class="w-expand" data-faq="fxdb">
+                <button
+                    id="faq-fxdb-trigger"
+                    type="button"
+                    class="w-expand-header"
+                    on:click="toggle('fxdb')"
+                    aria-expanded="false"
+                    aria-controls="faq-fxdb-answer"
+                >
+                    <span class="w-expand-title">Can a whole database live in one file?</span
+                    ><span class="w-expand-chevron" aria-hidden="true">⌄</span>
+                </button>
+                <div
+                    id="faq-fxdb-answer"
+                    class="w-expand-body"
+                    role="region"
+                    aria-labelledby="faq-fxdb-trigger"
+                >
+                    Yes. Point FYLO at a path ending in .fxdb and its document collections are kept
+                    in that one file, read in place like a SQLite database. A directory root stays
+                    fully supported, and .fxdb is opt-in per database. A .fxdb file is not encrypted
+                    by default: encryption is opt-in.
                 </div>
             </div>
             <div class="w-expand" data-faq="groups">

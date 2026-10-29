@@ -77,6 +77,14 @@ describe('website POSIX access guidance', () => {
         expect(docs).toContain('.as({ uid: 1001, gid: editorsGid, mode: 0o660 })')
         expect(docs).toContain('.as({ mode: 0o600 })')
     })
+
+    test('says encryption is opt-in and off by default, including for .fxdb', async () => {
+        const docs = await Bun.file(
+            path.join(root, 'website/client/components/docs/content/tac.html')
+        ).text()
+        expect(docs).toContain('Encryption is opt-in and off by default')
+        expect(docs).toMatch(/<code>\.fxdb<\/code> database file is not encrypted/)
+    })
 })
 
 describe('website child-scoped FYLO configuration', () => {
@@ -138,8 +146,11 @@ describe('website child-scoped FYLO configuration', () => {
         expect(sampleMarkup.match(/aria-pressed=/g)).toHaveLength(13)
         expect(browserEntry).toContain('requestAnimationFrame(revealLanguageSelections)')
         expect(browserEntry).toContain('strip.querySelector(\'[aria-pressed="true"]\')')
-        expect(faq.match(/aria-controls="faq-[^"]+-answer"/g)).toHaveLength(8)
-        expect(faq.match(/role="region"/g)).toHaveLength(8)
+        expect(faq.match(/aria-controls="faq-[^"]+-answer"/g)).toHaveLength(9)
+        expect(faq.match(/role="region"/g)).toHaveLength(9)
+        // ADR 0016 section 9: wherever .fxdb is introduced, say encryption is off by default.
+        expect(faq).toContain('Can a whole database live in one file?')
+        expect(faq).toMatch(/A \.fxdb file is not encrypted\s+by default: encryption is opt-in/)
         expect(clients).toContain('trusted bootstrap input')
         expect(operations).toContain('administrator-controlled bootstrap input')
         expect(operations).toMatch(/Never\s+derive them from a request/)
