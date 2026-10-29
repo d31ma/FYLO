@@ -6,7 +6,8 @@ use std::process::ExitCode;
 
 use fylo_engine::{AccessContext, WriteEngine};
 use fylo_storage_native::{
-    NativeWriteRoot, PutDocumentOptions, PutRawFileOptions, WriteAccess, WriteActor,
+    CollectionLayout, NativeWriteRoot, PutDocumentOptions, PutRawFileOptions, WriteAccess,
+    WriteActor,
 };
 use serde_json::{Value, json};
 
@@ -83,8 +84,8 @@ fn run(arguments: &[String]) -> Result<String, String> {
             result = Value::from(moved);
             false
         }
-        "push-schema" => {
-            result = push_schema(&writer, arguments)?;
+        "push-schema" | "compact" | "migrate-layout" => {
+            result = run_layout(command, arguments, &writer)?;
             false
         }
         "restore-document" => {
@@ -131,6 +132,31 @@ fn run(arguments: &[String]) -> Result<String, String> {
         "root": writer.path()
     }))
     .map_err(|error| error.to_string())
+}
+
+/// Collection maintenance: `push-schema` (ADR 0017), and the segment
+/// layout's `compact` and `migrate-layout` (ADR 0015).
+fn run_layout(
+    command: &str,
+    arguments: &[String],
+    writer: &NativeWriteRoot,
+) -> Result<Value, String> {
+    if command == "push-schema" {
+        return push_schema(writer, arguments);
+    }
+    let collection = required_option(arguments, "--collection")?;
+    if command == "compact" {
+        let report = writer
+            .compact_collection(collection)
+            .map_err(|error| error.to_string())?;
+        return Ok(json!({ "documentsCopied": report.documents_copied }));
+    }
+    let layout = CollectionLayout::parse(required_option(arguments, "--layout")?)
+        .map_err(|error| error.to_string())?;
+    let report = writer
+        .migrate_layout(collection, layout, false)
+        .map_err(|error| error.to_string())?;
+    Ok(json!({ "layout": report.layout.as_str(), "documents": report.documents }))
 }
 
 fn run_patch(arguments: &[String], writer: &NativeWriteRoot) -> Result<(), String> {

@@ -32,7 +32,7 @@ use sha2::{Digest, Sha256};
 use super::{NativeWriteRoot, json_error, sibling_scratch};
 use crate::{
     CollectionKind, GenerationStatus, MAX_DESCRIPTOR_BYTES, NativeCollection, NativeStorageError,
-    NativeStorageErrorCode, path_exists_no_follow,
+    NativeStorageErrorCode,
 };
 
 /// Live documents of one collection by the `_v` label they are stored at.
@@ -164,9 +164,14 @@ impl CountsRecord {
 impl NativeCollection {
     /// Whether the writer keeps this collection's count: a document
     /// collection whose schema registry has a migration to run.
+    ///
+    /// A segment collection (ADR 0015) is counted by scan on demand instead:
+    /// its counts belong in its schemas snapshot, not in a file per commit.
     #[must_use]
-    pub(crate) fn tracks_schema_versions(&self) -> bool {
-        self.kind == CollectionKind::Document && self.schema_head.is_some_and(|head| head >= 2)
+    pub fn tracks_schema_versions(&self) -> bool {
+        self.kind == CollectionKind::Document
+            && !self.uses_segments()
+            && self.schema_head.is_some_and(|head| head >= 2)
     }
 
     /// The count recorded at this collection's current stable generation, or
@@ -280,7 +285,7 @@ impl NativeWriteRoot {
         let collection = self.root.collection(collection_name)?;
         let generation = collection.stored_generation()?.generation;
         let counts = collection.scan_schema_versions()?;
-        if path_exists_no_follow(&self.root.schema_registry_directory().join(collection_name))? {
+        if collection.tracks_schema_versions() {
             Self::record_schema_counts(&collection, generation, &counts)?;
         }
         Ok(counts)

@@ -32,10 +32,10 @@ use base64::Engine as _;
 use fylo_engine::{AccessContext, EngineError, HotSet, ReadOnlyEngine, WriteEngine};
 use fylo_query::{JoinSpec, QueryLimits, SqlOperation, StructuredQuery, prepare_sql};
 use fylo_storage_native::{
-    CollectionKind, FilesystemProfile, NativeQueue, NativeRoot, NativeStorageError,
-    NativeStorageErrorCode, NativeWriteRoot, PutRawFileOptions, QueueClaimOptions,
-    QueuePublishOptions, RootLease, RootOpenOptions, SqlMutationResultKind, ValidationMode,
-    WriteAccess, WriteActor,
+    CollectionKind, CollectionLayout, FilesystemProfile, NativeQueue, NativeRoot,
+    NativeStorageError, NativeStorageErrorCode, NativeWriteRoot, PutRawFileOptions,
+    QueueClaimOptions, QueuePublishOptions, RootLease, RootOpenOptions, SqlMutationResultKind,
+    ValidationMode, WriteAccess, WriteActor,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -905,6 +905,8 @@ impl Session {
             "dropCollection" => self.drop_collection(request),
             "rebuildCollection" => self.rebuild_collection(request),
             "reshardCollection" => self.reshard_collection(request),
+            "migrateLayout" => self.migrate_layout(request),
+            "compactCollection" => self.compact_collection(request),
             "putData" => self.put_data(request),
             "patchDoc" => self.patch_document(request),
             "delDoc" => self.delete_document(request),
@@ -1425,6 +1427,7 @@ impl Session {
         Ok(json!({
             "collection": inspection.collection,
             "kind": kind,
+            "layout": inspection.layout.as_str(),
             "exists": true,
             "worm": false,
             "docsStored": inspection.document_count + inspection.file_count,
@@ -1630,8 +1633,9 @@ impl Session {
                 ));
             }
         };
+        let layout = optional_layout(request)?;
         self.writer(request)?
-            .create_collection(collection, kind, None)
+            .create_collection_with_layout(collection, kind, None, layout)
             .map_err(|error| storage_error(&error))?;
         Ok(json!({
             "collection": collection,
@@ -1678,6 +1682,45 @@ impl Session {
             .reshard_collection(collection, width)
             .map_err(|error| storage_error(&error))?;
         Ok(json!({ "collection": collection, "shardWidth": width, "moved": moved }))
+    }
+
+    fn migrate_layout(&self, request: &Value) -> Result<Value, MachineError> {
+        let collection = require_string(request, "collection")?;
+        let layout = optional_layout(request)?.ok_or_else(|| {
+            MachineError::new(
+                "EBADREQUEST",
+                "machine request field \"layout\" must be \"files\" or \"segments\"",
+            )
+        })?;
+        let allow = request
+            .get("allowEngineOnlyAccess")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let report = self
+            .writer(request)?
+            .migrate_layout(collection, layout, allow)
+            .map_err(|error| storage_error(&error))?;
+        Ok(json!({
+            "collection": report.collection,
+            "layout": report.layout.as_str(),
+            "documents": report.documents,
+            "deleted": report.deleted,
+        }))
+    }
+
+    fn compact_collection(&self, request: &Value) -> Result<Value, MachineError> {
+        let collection = require_string(request, "collection")?;
+        let report = self
+            .writer(request)?
+            .compact_collection(collection)
+            .map_err(|error| storage_error(&error))?;
+        Ok(json!({
+            "collection": collection,
+            "segmentsCompacted": report.segments_compacted,
+            "documentsCopied": report.documents_copied,
+            "bytesBefore": report.bytes_before,
+            "bytesAfter": report.bytes_after,
+        }))
     }
 
     fn rebuild_collection(&self, request: &Value) -> Result<Value, MachineError> {
@@ -3677,6 +3720,23 @@ fn structured_query(request: &Value) -> Result<StructuredQuery, MachineError> {
     let query = request.get("query").cloned().unwrap_or_else(|| json!({}));
     StructuredQuery::from_value(&query, QueryLimits::default())
         .map_err(|error| MachineError::new("EQUERY_INVALID", error.to_string()))
+}
+
+/// The optional `layout` field of a request.
+fn optional_layout(request: &Value) -> Result<Option<CollectionLayout>, MachineError> {
+    let Some(value) = request.get("layout") else {
+        return Ok(None);
+    };
+    value
+        .as_str()
+        .and_then(|name| CollectionLayout::parse(name).ok())
+        .map(Some)
+        .ok_or_else(|| {
+            MachineError::new(
+                "EBADREQUEST",
+                "machine request field \"layout\" must be \"files\" or \"segments\"",
+            )
+        })
 }
 
 fn require_string<'a>(request: &'a Value, field: &str) -> Result<&'a str, MachineError> {

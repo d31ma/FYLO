@@ -37,6 +37,16 @@
             "retry": "safe"
         },
         {
+            "name": "migrateLayout",
+            "class": "write",
+            "retry": "safe"
+        },
+        {
+            "name": "compactCollection",
+            "class": "derived-write",
+            "retry": "safe"
+        },
+        {
             "name": "verifyCollection",
             "class": "read",
             "retry": "safe"

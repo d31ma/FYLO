@@ -2,8 +2,8 @@ use crate::{LogFormatError, LogRecord, LogSegmentHeader};
 
 /// The valid records of one segment, read front to back.
 ///
-/// A scan stops at the first record that fails to decode or breaks the
-/// sequence. That point is the end of the durable log: an interrupted append
+/// A scan stops at the first record that fails to decode or, in a segment
+/// whose kind requires consecutive numbers, breaks the sequence. That point is the end of the durable log: an interrupted append
 /// leaves a torn tail there, and no acknowledged commit lies beyond it.
 #[derive(Debug, Eq, PartialEq)]
 pub struct LogScan {
@@ -50,10 +50,11 @@ impl LogScan {
     }
 
     fn extend(&mut self, bytes: &[u8], mut expected: u64) {
+        let kind = self.header.kind;
         let mut offset = usize::try_from(self.valid_length).unwrap_or(usize::MAX);
         while offset < bytes.len() {
-            match LogRecord::decode(&bytes[offset..]) {
-                Ok((record, _)) if record.lsn != expected => {
+            match kind.unframe(&bytes[offset..]) {
+                Ok((record, _)) if kind.consecutive() && record.lsn != expected => {
                     self.stopped = Some(LogFormatError::SequenceGap);
                     return;
                 }
@@ -75,10 +76,15 @@ impl LogScan {
 #[cfg(test)]
 mod tests {
     use super::LogScan;
-    use crate::{LogFormatError, LogRecord, LogRecordKind, LogSegmentHeader};
+    use crate::{LogFormatError, LogRecord, LogRecordKind, LogSegmentHeader, LogSegmentKind};
 
     fn segment(lsns: &[u64]) -> Vec<u8> {
+        segment_of(LogSegmentKind::WriteAheadLog, lsns)
+    }
+
+    fn segment_of(kind: LogSegmentKind, lsns: &[u64]) -> Vec<u8> {
         let mut bytes = LogSegmentHeader {
+            kind,
             sequence: 3,
             first_lsn: 10,
         }
@@ -92,7 +98,7 @@ mod tests {
                 manifest: b"{}".to_vec(),
                 blobs: Vec::new(),
             };
-            bytes.extend(record.encode().unwrap());
+            bytes.extend(kind.frame(&record).unwrap());
         }
         bytes
     }
@@ -120,6 +126,22 @@ mod tests {
         let scan = LogScan::segment(&segment(&[10, 12])).unwrap();
         assert_eq!(scan.records.len(), 1);
         assert_eq!(scan.stopped, Some(LogFormatError::SequenceGap));
+    }
+
+    #[test]
+    fn a_document_segment_reads_its_marked_frames() {
+        let bytes = segment_of(LogSegmentKind::Documents, &[10, 11]);
+        let scan = LogScan::segment(&bytes).unwrap();
+        assert_eq!(scan.records.len(), 2);
+        assert_eq!(scan.valid_length, bytes.len() as u64);
+    }
+
+    #[test]
+    fn a_compacted_segment_allows_gaps() {
+        let bytes = segment_of(LogSegmentKind::CompactedDocuments, &[12, 10, 40]);
+        let scan = LogScan::segment(&bytes).unwrap();
+        assert_eq!(scan.records.len(), 3);
+        assert_eq!(scan.stopped, None);
     }
 
     #[test]

@@ -1,5 +1,7 @@
 //! FYLO Rust preview CLI.
 
+mod segment_command;
+
 use std::env;
 use std::fs;
 use std::io::{self, BufReader, Cursor, Read};
@@ -13,6 +15,8 @@ use fylo_machine::{ApplicationConfig, FrameLimits, serve_application, serve_prof
 use fylo_query::{QueryLimits, ScanQuery, StructuredQuery, prepare_sql};
 use fylo_storage_native::{FilesystemProfile, NativeWriteRoot, RootLease, RootOpenOptions};
 use serde_json::{Map, Value, json};
+
+use segment_command::{SegmentCommand, SegmentOptions};
 
 const VERSION: &str = include_str!("../../../VERSION");
 
@@ -64,8 +68,8 @@ fn run(arguments: &[String]) -> Result<String, String> {
     if command == "version" || arguments.iter().any(|argument| argument == "--version") {
         return version_output(arguments);
     }
-    if RETIRED_COMMANDS.contains(&command) {
-        return Err(retired_command(command));
+    if let Some(outcome) = administrative_command(command, arguments) {
+        return outcome;
     }
     let compatibility_command = uses_compat_cli(arguments);
     if !compatibility_command && !is_read_command(command) {
@@ -156,6 +160,34 @@ fn run(arguments: &[String]) -> Result<String, String> {
         }
         _ => Err(usage()),
     }
+}
+
+/// A retired command's explanation, or the result of a segment layout
+/// command, which bypasses the machine protocol.
+fn administrative_command(command: &str, arguments: &[String]) -> Option<Result<String, String>> {
+    if RETIRED_COMMANDS.contains(&command) {
+        return Some(Err(retired_command(command)));
+    }
+    SegmentCommand::COMMANDS
+        .contains(&command)
+        .then(|| run_segment_command(command, arguments))
+}
+
+fn run_segment_command(command: &str, arguments: &[String]) -> Result<String, String> {
+    let application = machine_config(arguments)?;
+    let root = compat_root(arguments, &application)?;
+    let values = positionals(arguments);
+    let collection = required_positional(&values, 1, "collection name")?;
+    let options = SegmentOptions {
+        to: option(arguments, "--to").map(ToOwned::to_owned),
+        out: option(arguments, "--out").map(PathBuf::from),
+        allow_engine_only_access: arguments
+            .iter()
+            .any(|argument| argument == "--allow-engine-only-access"),
+    };
+    let output = SegmentCommand::run(command, (&root, &application), collection, &options);
+    NativeWriteRoot::close_logs().map_err(|error| error.to_string())?;
+    output
 }
 
 fn is_read_command(command: &str) -> bool {
@@ -1733,7 +1765,7 @@ fn retired_command(command: &str) -> String {
 }
 
 fn usage() -> String {
-    "Usage:\n  fylo checkout [-b] <branch> [--root <path>] [--json]\n  fylo branch [--root <path>] [--json]\n  fylo commit -m <message> [--root <path>] [--json]\n  fylo log [--root <path>] [--json]\n  fylo status [--root <path>] [--json]\n  fylo diff [<from>] [<to>] [--root <path>] [--json]\n  fylo restore-commit <commit-id> [--root <path>] [--force] [--json]\n  fylo merge <ref> [-m <message>] [--root <path>] [--json]\n  fylo version [--output json]\n  fylo \"<SQL>\"\n  fylo sql \"<SQL>\"\n  fylo exec --request <json|@path|-> [--root <path>]\n  fylo exec --loop [--root <path>] [--exclusive-root [--hot-set-bytes <n>]]\n  fylo inspect <collection> [--root <path>] [--json]\n  fylo inspect <db.fxdb>\n  fylo get <collection> <doc-id> [--root <path>] [--json]\n  fylo latest <collection> <doc-id> [--root <path>] [--json] [--id-only]\n  fylo rebuild <collection> [--root <path>] [--json]\n  fylo reshard <collection> --width <n> [--root <path>] [--json]\n  fylo verify <collection> [--root <path>] [--json]\n  fylo verify <db.fxdb>\n  fylo deleted <collection> [--root <path>] [--json]\n  fylo restore <collection> <doc-id> [--root <path>] [--json]\n  fylo schema inspect <collection> [--schema-dir <path>] [--json]\n  fylo schema current <collection> [--schema-dir <path>] [--json]\n  fylo schema history <collection> [--schema-dir <path>] [--json]\n  fylo schema doctor <collection> [--schema-dir <path>] [--json]\n  fylo schema validate <collection> <json|@path|-> [--schema-dir <path>] [--json]\n  fylo schema materialize <collection> <json|@path|-> [--schema-dir <path>] [--json]\n  fylo schema migrate <collection> [--include-unversioned] [--schema-dir <path>] [--json]\n  fylo schema mode <collection> [off|warn|strict] [--json]\n  fylo schema check <collection> [--limit <n>] [--schema-dir <path>] [--json]\n  fylo schema push <collection> [--schema-dir <path>] [--json]\n  fylo schema pull <collection> --out <path> [--json]\n\nOptions:\n  --config <path> Load application.json (default: ./application.json)\n  --root <path>   Override fylo.root for this command\n  --schema-dir <path> Override fylo.schema for schema admin commands\n  --json          Emit machine-readable JSON output\n  --id-only       Return only the resolved document id for latest\n  -b              Create a new branch during checkout\n  -m, --message <v> Commit message\n  --force         Allow restore-commit to overwrite uncommitted changes\n  --include-unversioned Also migrate documents with no _v, as the oldest version\n  --request <v>   Machine request payload, @file path, or - for stdin\n  --exclusive-root Acquire an exclusive crash-safe root lease for exec --loop\n  --hot-set-bytes <n> Memory an --exclusive-root session keeps for warm reads; 0 turns it off (default 67108864)\n  --strict-schema Validate writes against the collection head schema (fylo.strict)\n  --shard-width <n> Shard width for collections created by this session (fylo.shard.width)\n  --width <n>     Destination shard width for reshard\n  --limit <n>     Failing documents schema check lists (default 100)\n  --out <path>    Folder schema pull writes the fylo.schema layout to\n  --max-request-bytes <n> Maximum NDJSON request bytes, excluding LF\n  --max-response-bytes <n> Maximum NDJSON response bytes, excluding LF\n  --output <mode> Output mode for version: text or json\n  --version       Print the FYLO runtime version\n  --help          Show this message"
+    "Usage:\n  fylo checkout [-b] <branch> [--root <path>] [--json]\n  fylo branch [--root <path>] [--json]\n  fylo commit -m <message> [--root <path>] [--json]\n  fylo log [--root <path>] [--json]\n  fylo status [--root <path>] [--json]\n  fylo diff [<from>] [<to>] [--root <path>] [--json]\n  fylo restore-commit <commit-id> [--root <path>] [--force] [--json]\n  fylo merge <ref> [-m <message>] [--root <path>] [--json]\n  fylo version [--output json]\n  fylo \"<SQL>\"\n  fylo sql \"<SQL>\"\n  fylo exec --request <json|@path|-> [--root <path>]\n  fylo exec --loop [--root <path>] [--exclusive-root [--hot-set-bytes <n>]]\n  fylo inspect <collection> [--root <path>] [--json]\n  fylo inspect <db.fxdb>\n  fylo get <collection> <doc-id> [--root <path>] [--json]\n  fylo latest <collection> <doc-id> [--root <path>] [--json] [--id-only]\n  fylo rebuild <collection> [--root <path>] [--json]\n  fylo reshard <collection> --width <n> [--root <path>] [--json]\n  fylo verify <collection> [--root <path>] [--json]\n  fylo layout <collection> --to <files|segments> [--allow-engine-only-access] [--root <path>]\n  fylo compact <collection> [--root <path>]\n  fylo export <collection> --out <directory> [--root <path>]\n  fylo verify-segments <collection> [--root <path>]\n  fylo salvage <collection> --out <directory> [--root <path>]\n  fylo verify <db.fxdb>\n  fylo deleted <collection> [--root <path>] [--json]\n  fylo restore <collection> <doc-id> [--root <path>] [--json]\n  fylo schema inspect <collection> [--schema-dir <path>] [--json]\n  fylo schema current <collection> [--schema-dir <path>] [--json]\n  fylo schema history <collection> [--schema-dir <path>] [--json]\n  fylo schema doctor <collection> [--schema-dir <path>] [--json]\n  fylo schema validate <collection> <json|@path|-> [--schema-dir <path>] [--json]\n  fylo schema materialize <collection> <json|@path|-> [--schema-dir <path>] [--json]\n  fylo schema migrate <collection> [--include-unversioned] [--schema-dir <path>] [--json]\n  fylo schema mode <collection> [off|warn|strict] [--json]\n  fylo schema check <collection> [--limit <n>] [--schema-dir <path>] [--json]\n  fylo schema push <collection> [--schema-dir <path>] [--json]\n  fylo schema pull <collection> --out <path> [--json]\n\nOptions:\n  --config <path> Load application.json (default: ./application.json)\n  --root <path>   Override fylo.root for this command\n  --schema-dir <path> Override fylo.schema for schema admin commands\n  --json          Emit machine-readable JSON output\n  --id-only       Return only the resolved document id for latest\n  -b              Create a new branch during checkout\n  -m, --message <v> Commit message\n  --force         Allow restore-commit to overwrite uncommitted changes\n  --include-unversioned Also migrate documents with no _v, as the oldest version\n  --request <v>   Machine request payload, @file path, or - for stdin\n  --exclusive-root Acquire an exclusive crash-safe root lease for exec --loop\n  --hot-set-bytes <n> Memory an --exclusive-root session keeps for warm reads; 0 turns it off (default 67108864)\n  --strict-schema Validate writes against the collection head schema (fylo.strict)\n  --shard-width <n> Shard width for collections created by this session (fylo.shard.width)\n  --width <n>     Destination shard width for reshard\n  --to <layout>   Destination layout for layout: files or segments\n  --out <directory> Empty directory export and salvage write the per-document tree to\n  --allow-engine-only-access Let layout move records owned by other users to segments\n  --limit <n>     Failing documents schema check lists (default 100)\n  --out <path>    Folder schema pull writes the fylo.schema layout to\n  --max-request-bytes <n> Maximum NDJSON request bytes, excluding LF\n  --max-response-bytes <n> Maximum NDJSON response bytes, excluding LF\n  --output <mode> Output mode for version: text or json\n  --version       Print the FYLO runtime version\n  --help          Show this message"
         .replace(
             "  --root <path>   Override fylo.root for this command",
             "  --root <path>   Override fylo.root for this command\n  --filesystem-profile <native|efs-sidecar-v1> Select metadata profile explicitly",

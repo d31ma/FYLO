@@ -29,7 +29,7 @@ impl NativeWriteRoot {
     /// Largest blob area a plan may build before falling back to the journal.
     const LOG_BLOB_BUDGET: usize = LogRecord::MAX_BODY_BYTES - 1024 * 1024;
     const OVER_BUDGET: &'static str = "mutation exceeds the write-ahead log record limit";
-    const DEFAULT_ACCESS_MODE: u32 = 0o600;
+    pub(crate) const DEFAULT_ACCESS_MODE: u32 = 0o600;
 
     pub(crate) fn put_document_logged(
         &self,
@@ -38,6 +38,14 @@ impl NativeWriteRoot {
         canonical: &[u8],
         (metadata, access): (&BTreeMap<String, Value>, WriteAccess),
     ) -> Result<(), NativeStorageError> {
+        if collection.uses_segments() {
+            return self.put_document_segmented(
+                collection,
+                identifier,
+                canonical,
+                (metadata, access),
+            );
+        }
         let after = Self::document_keys(identifier, canonical)?;
         self.commit_logged(collection, || {
             let target = collection
@@ -67,6 +75,9 @@ impl NativeWriteRoot {
         actor: Option<&WriteActor>,
         mut patch: impl FnMut(&[u8]) -> Result<Vec<u8>, NativeStorageError>,
     ) -> Result<(), NativeStorageError> {
+        if collection.uses_segments() {
+            return self.patch_document_segmented(collection, identifier, actor, patch);
+        }
         self.commit_logged(collection, || {
             let stored = collection.read_document(identifier)?;
             require_write_access(stored.access, actor)?;
@@ -87,6 +98,9 @@ impl NativeWriteRoot {
         identifier: &str,
         actor: Option<&WriteActor>,
     ) -> Result<(), NativeStorageError> {
+        if collection.uses_segments() {
+            return self.delete_document_segmented(collection, identifier, actor);
+        }
         self.commit_logged(collection, || {
             let stored = collection.read_document(identifier)?;
             require_write_access(stored.access, actor)?;
@@ -108,6 +122,9 @@ impl NativeWriteRoot {
         identifier: &str,
         actor: Option<&WriteActor>,
     ) -> Result<(), NativeStorageError> {
+        if collection.uses_segments() {
+            return self.restore_document_segmented(collection, identifier, actor);
+        }
         self.commit_logged(collection, || {
             Self::require_no_live_record(collection, identifier)?;
             let deleted = collection.read_deleted_document(identifier)?;
@@ -134,6 +151,14 @@ impl NativeWriteRoot {
         (record, replace): (&Map<String, Value>, bool),
         actor: Option<&WriteActor>,
     ) -> Result<(), NativeStorageError> {
+        if collection.uses_segments() {
+            return self.write_record_metadata_segmented(
+                collection,
+                identifier,
+                (record, replace),
+                actor,
+            );
+        }
         self.commit_logged(collection, || {
             let (target, access) = record_target(collection, identifier)?;
             require_write_access(access, actor)?;
@@ -170,6 +195,9 @@ impl NativeWriteRoot {
         access: WriteAccess,
         actor: Option<&WriteActor>,
     ) -> Result<(), NativeStorageError> {
+        if collection.uses_segments() {
+            return self.set_record_access_segmented(collection, identifier, access, actor);
+        }
         self.commit_logged(collection, || {
             let (target, descriptor) = record_target(collection, identifier)?;
             require_write_access(descriptor, actor)?;
@@ -202,6 +230,9 @@ impl NativeWriteRoot {
         actor: Option<&WriteActor>,
         policy: &DocumentPolicy<'_>,
     ) -> Result<SqlMutationResult, NativeStorageError> {
+        if collection.uses_segments() {
+            return self.sql_update_segmented(collection, (query, changes), actor);
+        }
         self.commit_logged(collection, || {
             policy.restart();
             let documents = matching_documents(collection, query, actor, policy)?;
@@ -237,6 +268,9 @@ impl NativeWriteRoot {
         actor: Option<&WriteActor>,
         codec: &dyn DocumentCodec,
     ) -> Result<SqlMutationResult, NativeStorageError> {
+        if collection.uses_segments() {
+            return self.sql_delete_segmented(collection, query, actor);
+        }
         self.commit_logged(collection, || {
             let documents = matching_documents(collection, query, actor, codec)?;
             let mut plan = CommitPlan::new("delete-many");
@@ -383,7 +417,7 @@ impl NativeWriteRoot {
         ))
     }
 
-    fn access_attribute(ownership: Ownership) -> Result<String, NativeStorageError> {
+    pub(crate) fn access_attribute(ownership: Ownership) -> Result<String, NativeStorageError> {
         let descriptor = crate::AccessDescriptor {
             version: 1,
             uid: ownership.uid.unwrap_or_default(),
@@ -394,7 +428,7 @@ impl NativeWriteRoot {
         Ok(BASE64.encode(encoded))
     }
 
-    fn set_metadata_attribute(
+    pub(crate) fn set_metadata_attribute(
         attributes: &mut BTreeMap<String, String>,
         name: &str,
         value: &Value,

@@ -128,7 +128,7 @@ impl WriteEngine {
         {
             return Ok(Some(counts));
         }
-        let counts = if handle.schema_head().is_some() {
+        let counts = if handle.tracks_schema_versions() {
             self.writer.rebuild_schema_versions(collection)
         } else {
             handle.scan_schema_versions()

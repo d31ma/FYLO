@@ -44,6 +44,11 @@ impl Fixture {
     /// A root with `people`, created by a session whose `fylo.schema`
     /// folder has `v1` only, holding Ada and Grace at `v1`.
     fn new() -> Self {
+        Self::with_layout("files")
+    }
+
+    /// As [`Self::new`], with `people` in `layout` (ADR 0015).
+    fn with_layout(layout: &str) -> Self {
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -63,7 +68,7 @@ impl Fixture {
         let runtime = fixture.runtime();
         success(
             &runtime,
-            &json!({"op":"createCollection","collection":PEOPLE}),
+            &json!({"op":"createCollection","collection":PEOPLE,"layout":layout}),
         );
         fixture
     }
@@ -329,4 +334,54 @@ fn folder_documents_read_in_the_head_shape_and_converge_by_migration() {
         get(&runtime, ADA),
         json!({"name":"Ada Lovelace","ssn":"42","_v":"v2"})
     );
+}
+
+#[test]
+fn a_segment_collection_reads_at_the_head_and_is_counted_by_scan() {
+    let fixture = Fixture::with_layout("segments");
+    let runtime = fixture.runtime();
+    success(&runtime, &json!({"op":"schemaPush","collection":PEOPLE}));
+    Fixture::put_both(&runtime);
+    fixture.add_v2();
+    success(&runtime, &json!({"op":"schemaPush","collection":PEOPLE}));
+
+    let runtime = fixture.runtime();
+    let report = inspect(&runtime);
+    assert_eq!(report["head"], "v2", "{report}");
+    assert_eq!(documents_per_version(&report), [2, 0], "{report}");
+    assert_eq!(report["converged"], false, "{report}");
+    assert_eq!(
+        get(&runtime, ADA),
+        json!({"name":"Ada Lovelace","ssn":"42","_v":"v2"})
+    );
+    assert_eq!(
+        find(&runtime, &by_name("Grace Hopper")),
+        json!({GRACE: {"name":"Grace Hopper","_v":"v2"}}),
+        "a query on the renamed field matches the stored v1 document"
+    );
+
+    success(
+        &runtime,
+        &json!({"op":"patchDoc","collection":PEOPLE,"id":ADA,"newDoc":{"ssn":"43"}}),
+    );
+    let report = inspect(&runtime);
+    assert_eq!(documents_per_version(&report), [1, 1], "{report}");
+    let migrated = success(&runtime, &json!({"op":"schemaMigrate","collection":PEOPLE}));
+    assert_eq!(migrated["migrated"], 1, "{migrated}");
+    let report = inspect(&runtime);
+    assert_eq!(documents_per_version(&report), [0, 2], "{report}");
+    assert_eq!(report["converged"], true, "{report}");
+    assert_eq!(
+        find(&runtime, &by_name("Grace Hopper")),
+        json!({GRACE: {"name":"Grace Hopper","_v":"v2"}})
+    );
+
+    // Segment collections are counted by scan; the writer keeps no file.
+    let registry = fixture.root.join(".fylo-schemas").join(PEOPLE);
+    let files: Vec<String> = fs::read_dir(registry)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("counts"))
+        .collect();
+    assert!(files.is_empty(), "{files:?}");
 }

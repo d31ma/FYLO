@@ -8,10 +8,14 @@ use super::super::{CapturedAttribute, json_error, portable_path, safe_relative_p
 use super::blob_reference::BlobReference;
 use super::commit_manifest::CommitManifest;
 use super::commit_step::CommitStep;
+use super::logged_plan::LoggedPlan;
 use super::move_step::MoveStep;
+use super::placed_record::PlacedRecord;
 use super::record_image::RecordImage;
+use super::step_applier::StepApplier;
 use super::update_step::UpdateStep;
-use crate::{NativeCollection, NativeStorageError, NativeStorageErrorCode};
+use crate::write::{NativeWriteRoot, failpoint};
+use crate::{NativeCollection, NativeRoot, NativeStorageError, NativeStorageErrorCode};
 
 /// Owner, group and mode a step sets, each only when present.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -158,35 +162,15 @@ impl CommitPlan {
         self.blobs.len()
     }
 
-    pub(crate) fn touched(&self) -> &BTreeSet<PathBuf> {
-        &self.touched
-    }
-
     pub(crate) fn steps(&self) -> &[CommitStep] {
         &self.steps
-    }
-
-    pub(crate) fn blobs(&self) -> &[u8] {
-        &self.blobs
-    }
-
-    pub(crate) fn pre_images(&self) -> &[(PathBuf, Option<RecordImage>)] {
-        &self.pre_images
-    }
-
-    pub(crate) fn index_removed(&self) -> &BTreeSet<String> {
-        &self.index_removed
-    }
-
-    pub(crate) fn index_added(&self) -> &BTreeSet<String> {
-        &self.index_added
     }
 
     /// How this plan, once applied, changed the stored `_v` of live
     /// documents (ADR 0017 section 6): a body it writes arrives with its
     /// blob and leaves with its pre-image, and a document it moves into or
     /// out of the live tree is read where the move left it.
-    pub(crate) fn schema_count_delta(
+    fn live_version_delta(
         &self,
         collection: &NativeCollection,
     ) -> Result<SchemaCountDelta, NativeStorageError> {
@@ -300,5 +284,57 @@ impl CommitPlan {
             )
         })?;
         portable_path(relative)
+    }
+}
+
+impl LoggedPlan for CommitPlan {
+    fn schema_count_delta(
+        &self,
+        collection: &NativeCollection,
+    ) -> Result<SchemaCountDelta, NativeStorageError> {
+        self.live_version_delta(collection)
+    }
+
+    fn touched(&self) -> &BTreeSet<PathBuf> {
+        &self.touched
+    }
+
+    fn manifest(&self) -> Result<Vec<u8>, NativeStorageError> {
+        Self::manifest(self)
+    }
+
+    fn blobs(&self) -> &[u8] {
+        &self.blobs
+    }
+
+    fn apply(
+        &self,
+        root: &NativeRoot,
+        collection: &NativeCollection,
+        _placed: &PlacedRecord,
+    ) -> Result<(), (NativeStorageError, bool)> {
+        let applier = StepApplier::live(root, &collection.path);
+        for step in &self.steps {
+            applier
+                .apply(step, &self.blobs)
+                .map_err(|error| (error, false))?;
+        }
+        let delta = NativeWriteRoot::index_lines(&self.index_removed, &self.index_added);
+        NativeWriteRoot::append_index(collection, &delta).map_err(|error| (error, true))?;
+        failpoint("after-log-apply-step").map_err(|error| (error, true))
+    }
+
+    fn undo(
+        &self,
+        root: &NativeRoot,
+        collection: &NativeCollection,
+        index_applied: bool,
+    ) -> Result<(), NativeStorageError> {
+        StepApplier::live(root, &collection.path).undo(&self.steps, &self.pre_images)?;
+        if index_applied {
+            let inverse = NativeWriteRoot::index_lines(&self.index_added, &self.index_removed);
+            NativeWriteRoot::append_index(collection, &inverse)?;
+        }
+        Ok(())
     }
 }

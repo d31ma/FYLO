@@ -183,10 +183,12 @@ export class Fylo {
      */
     collection(name) {
         return {
-            create: (kind) => this.createCollection(name, kind),
+            create: (kind, options) => this.createCollection(name, kind, options),
             drop: () => this.dropCollection(name),
             inspect: () => this.inspectCollection(name),
             rebuild: () => this.rebuildCollection(name),
+            layout: (layout, options) => this.migrateLayout(name, layout, options),
+            compact: () => this.compactCollection(name),
             put: (data, meta) => this.putData(name, data, meta),
             putFile: (file, fileOptions, meta) => this.putFile(name, file, fileOptions, meta),
             get: (id) => this.getDoc(name, id),
@@ -329,8 +331,8 @@ export class Fylo {
     }
 
     // --- Collections ---
-    createCollection(collection, kind = 'document') {
-        return this._op('createCollection', { collection, kind })
+    createCollection(collection, kind = 'document', options = {}) {
+        return this._op('createCollection', { collection, kind, layout: options.layout })
     }
     dropCollection(collection) {
         return this._op('dropCollection', { collection })
@@ -340,6 +342,16 @@ export class Fylo {
     }
     rebuildCollection(collection) {
         return this._op('rebuildCollection', { collection })
+    }
+    migrateLayout(collection, layout, options = {}) {
+        return this._op('migrateLayout', {
+            collection,
+            layout,
+            allowEngineOnlyAccess: options.allowEngineOnlyAccess
+        })
+    }
+    compactCollection(collection) {
+        return this._op('compactCollection', { collection })
     }
 
     // --- Durable serverless queue ---

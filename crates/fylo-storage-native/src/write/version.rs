@@ -191,6 +191,29 @@ impl NativeWriteRoot {
         Ok(())
     }
 
+    /// Version control commits, restores and merges the per-document tree,
+    /// so it refuses a root with a segment collection until it moves to the
+    /// logical record view (ADR 0015 section 1).
+    fn require_no_segment_collections(&self) -> Result<(), NativeStorageError> {
+        let collections = self.root.path().join(".collections");
+        if !crate::path_exists_no_follow(&collections)? {
+            return Ok(());
+        }
+        for entry in fs::read_dir(&collections).map_err(NativeStorageError::io)? {
+            let entry = entry.map_err(NativeStorageError::io)?;
+            if crate::path_exists_no_follow(&entry.path().join("segments"))? {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::Unsupported,
+                    format!(
+                        "version control does not support the segment layout yet; migrate {} to files first",
+                        entry.file_name().to_string_lossy()
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Write one auto-commit when the working tree differs from `HEAD`.
     ///
     /// Returns the new commit identifier, or `None` when the root is not
@@ -204,6 +227,7 @@ impl NativeWriteRoot {
     /// interrupted durable write.
     pub fn commit_if_dirty(&self, message: &str) -> Result<Option<String>, NativeStorageError> {
         self.root.assert_profile_owned()?;
+        self.require_no_segment_collections()?;
         let message = message.trim();
         if message.is_empty() {
             return Err(NativeStorageError::new(
@@ -384,6 +408,7 @@ impl NativeWriteRoot {
         create: bool,
     ) -> Result<serde_json::Value, NativeStorageError> {
         self.root.assert_profile_owned()?;
+        self.require_no_segment_collections()?;
         crate::validate_branch_name(branch)?;
         let repository = self.ensure_repository()?;
         let current = read_head_branch(&repository)?;
@@ -482,6 +507,7 @@ impl NativeWriteRoot {
         force: bool,
     ) -> Result<serde_json::Value, NativeStorageError> {
         self.root.assert_profile_owned()?;
+        self.require_no_segment_collections()?;
         crate::validate_ttid_shape(commit)?;
         let repository = self.ensure_repository()?;
         let branch = read_head_branch(&repository)?;
@@ -520,6 +546,7 @@ impl NativeWriteRoot {
         message: Option<&str>,
     ) -> Result<serde_json::Value, NativeStorageError> {
         self.root.assert_profile_owned()?;
+        self.require_no_segment_collections()?;
         let repository = self.ensure_repository()?;
         if !self.repository_status()?.clean {
             return Err(NativeStorageError::new(
