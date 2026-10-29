@@ -625,6 +625,7 @@ name = "fylo-chex"
 version = "0.1.0"
 dependencies = [
  "regex",
+ "regex-automata",
  "serde_json",
 ]
 

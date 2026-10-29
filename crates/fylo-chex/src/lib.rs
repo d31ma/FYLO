@@ -13,12 +13,30 @@
 //! v26.28. Error names and messages are reproduced byte-for-byte so the machine
 //! envelope did not change across the rewrite; `tests/golden.rs` replays the
 //! envelopes recorded from that build and is what holds the contract in place.
+//!
+//! A schema is compiled once into a [`CompiledSchema`] whose leaves are sparse
+//! DFAs (ADR 0017 section 4). The default `compile` feature holds everything
+//! that needs a regex compiler: the definition check, the compiler, the
+//! schema loader, and the per-thread caches. Without it the crate only loads a
+//! serialized compiled schema and validates with it, linking just
+//! `regex-automata`'s `dfa-search`, which is what the browser build can afford.
 
+#[cfg(feature = "compile")]
 use std::collections::HashMap;
+#[cfg(feature = "compile")]
+use std::sync::Arc;
 
+#[cfg(feature = "compile")]
 use regex::Regex;
 use serde_json::{Map, Value};
 
+mod compiled;
+mod envelope;
+mod tree;
+
+pub use compiled::CompiledSchema;
+
+#[cfg(feature = "compile")]
 const MAX_REGEX_LENGTH: usize = 500;
 const MESSAGE_TRUNCATE_AT: usize = 100;
 
@@ -30,6 +48,7 @@ pub struct ChexError {
     pub message: String,
 }
 
+#[cfg_attr(not(feature = "compile"), allow(dead_code))]
 impl ChexError {
     fn new(name: &'static str, message: String) -> Self {
         Self { name, message }
@@ -170,13 +189,16 @@ fn join_path(path: &str, key: &str) -> String {
 /// compile each leaf's pattern again, which cost more than the match. A
 /// `Regex` clone shares the compiled program. The cache is cleared when it
 /// reaches its bound rather than evicting one entry at a time.
+#[cfg(feature = "compile")]
 const REGEX_CACHE_LIMIT: usize = 4096;
 
+#[cfg(feature = "compile")]
 thread_local! {
     static REGEX_CACHE: std::cell::RefCell<HashMap<String, Regex>> =
         std::cell::RefCell::new(HashMap::new());
 }
 
+#[cfg(feature = "compile")]
 fn cached_regex(pattern: &str) -> std::result::Result<Regex, regex::Error> {
     REGEX_CACHE.with(|cache| {
         if let Some(regex) = cache.borrow().get(pattern) {
@@ -192,12 +214,14 @@ fn cached_regex(pattern: &str) -> std::result::Result<Regex, regex::Error> {
     })
 }
 
+#[cfg(feature = "compile")]
 struct RegexConstraint {
     regex: Regex,
     full_path: String,
     schema_label: String,
 }
 
+#[cfg(feature = "compile")]
 impl RegexConstraint {
     fn compile(pattern: &str, full_path: &str, schema_label: &str) -> Result<Self> {
         if pattern.len() > MAX_REGEX_LENGTH {
@@ -242,139 +266,25 @@ impl RegexConstraint {
 // Schema definition validation
 // ---------------------------------------------------------------------------
 
-fn require_regex_string(value: &Value, full_path: &str, label: &str) -> Result<()> {
-    let Value::String(pattern) = value else {
-        return Err(ChexError::invalid_input(format!(
-            "Schema value for '{}' in schema '{}' must be a regex string",
-            truncate(full_path),
-            truncate(label)
-        )));
-    };
-    if pattern.is_empty() {
-        return Err(ChexError::invalid_input(format!(
-            "Schema pattern for '{}' in schema '{}' cannot be empty",
-            truncate(full_path),
-            truncate(label)
-        )));
-    }
-    RegexConstraint::compile(pattern, full_path, label)?;
-    Ok(())
-}
-
-fn require_object_schema<'a>(
-    schema: &'a Value,
-    label: &str,
-    path: &str,
-) -> Result<&'a Map<String, Value>> {
-    let Value::Object(map) = schema else {
-        return Err(ChexError::invalid_input(format!(
-            "Schema '{}' must be a JSON object",
-            truncate(label)
-        )));
-    };
-    if map.is_empty() {
-        let location = if path.is_empty() {
-            String::new()
-        } else {
-            format!(" at '{}'", truncate(path))
-        };
-        return Err(ChexError::invalid_input(format!(
-            "Schema '{}'{location} must define at least one property",
-            truncate(label)
-        )));
-    }
-    Ok(map)
-}
-
 /// Check that every leaf of `schema` is a compilable, non-empty regex string and
 /// that arrays hold exactly one item schema.
 ///
 /// # Errors
 /// Returns `InvalidInputError` for a malformed schema and `ValidationError`
 /// for a pattern that is too long or does not compile.
+#[cfg(feature = "compile")]
 pub fn validate_definition(schema: &Value, label: &str) -> Result<()> {
-    let map = require_object_schema(schema, label, "")?;
-    validate_definition_map(map, label, "")
-}
-
-fn validate_definition_map(map: &Map<String, Value>, label: &str, path: &str) -> Result<()> {
-    for (schema_key, schema_value) in map {
-        if is_directive(path, schema_key) {
-            continue;
-        }
-        let full_path = join_path(path, data_key(schema_key));
-
-        match schema_value {
-            Value::String(_) => require_regex_string(schema_value, &full_path, label)?,
-            Value::Array(items) => validate_array_definition(items, &full_path, label)?,
-            Value::Object(nested) => validate_object_definition(nested, &full_path, label)?,
-            _ => {
-                return Err(ChexError::invalid_input(format!(
-                    "Schema value for '{}' in schema '{}' must be a regex string",
-                    truncate(&full_path),
-                    truncate(label)
-                )));
-            }
-        }
-    }
-    Ok(())
-}
-
-fn validate_array_definition(items: &[Value], full_path: &str, label: &str) -> Result<()> {
-    let malformed = || {
-        ChexError::invalid_input(format!(
-            "Array schema for '{}' in schema '{}' must contain exactly one regex string or object schema",
-            truncate(full_path),
-            truncate(label)
-        ))
-    };
-    let [item] = items else {
-        return Err(malformed());
-    };
-
-    match item {
-        Value::String(_) => require_regex_string(item, full_path, label),
-        Value::Object(_) => {
-            let nested_path = format!("{full_path}[]");
-            let nested = require_object_schema(item, label, &nested_path)?;
-            validate_definition_map(nested, label, &nested_path)
-        }
-        _ => Err(malformed()),
-    }
-}
-
-fn validate_object_definition(
-    nested: &Map<String, Value>,
-    full_path: &str,
-    label: &str,
-) -> Result<()> {
-    if nested.is_empty() {
-        return Err(ChexError::invalid_input(format!(
-            "Schema '{}' at '{}' must define at least one property",
-            truncate(label),
-            truncate(full_path)
-        )));
-    }
-
-    if is_record_type(nested) {
-        let Some((key_pattern, value_pattern)) = nested.iter().next() else {
-            return Ok(());
-        };
-        require_regex_string(
-            &Value::String(key_pattern.clone()),
-            &format!("{full_path}.<key>"),
-            label,
-        )?;
-        return require_regex_string(value_pattern, full_path, label);
-    }
-
-    validate_definition_map(nested, label, full_path)
+    tree::build(schema, label, &mut |pattern, full_path| {
+        RegexConstraint::compile(pattern, full_path, label).map(drop)
+    })
+    .map(drop)
 }
 
 // ---------------------------------------------------------------------------
 // Data validation
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "compile")]
 /// Validate `data` against an already-definition-checked `schema`.
 ///
 /// # Errors
@@ -387,6 +297,7 @@ pub fn validate_object(
     validate_object_at(schema, data, label, "")
 }
 
+#[cfg(feature = "compile")]
 fn validate_object_at(
     schema: &Map<String, Value>,
     data: &Map<String, Value>,
@@ -415,6 +326,7 @@ fn validate_object_at(
     Ok(())
 }
 
+#[cfg(feature = "compile")]
 fn validate_property(
     schema: &Map<String, Value>,
     data: &Map<String, Value>,
@@ -545,6 +457,7 @@ pub fn parse_schema_document(text: &str, schema_path: &str) -> Result<Value> {
         .map_err(|_| ChexError::schema_load(format!("Failed to load schema from '{schema_path}'")))
 }
 
+#[cfg(feature = "compile")]
 /// Accept `file://` URLs and the leading-slash Windows form returned by URL APIs.
 fn normalize_location(path: &str, require_json_file: bool) -> Result<String> {
     if path.is_empty() {
@@ -568,6 +481,7 @@ fn normalize_location(path: &str, require_json_file: bool) -> Result<String> {
     Ok(normalized)
 }
 
+#[cfg(feature = "compile")]
 fn is_windows_drive_form(path: &str) -> bool {
     let bytes = path.as_bytes();
     bytes.len() >= 4
@@ -577,6 +491,7 @@ fn is_windows_drive_form(path: &str) -> bool {
         && bytes[3] == b'/'
 }
 
+#[cfg(feature = "compile")]
 /// Where a schema reference resolves to, and how it is cached and labelled.
 struct SchemaSource {
     path: String,
@@ -584,14 +499,16 @@ struct SchemaSource {
     cache_key: String,
 }
 
+#[cfg(feature = "compile")]
 /// Loads, definition-checks, and caches schemas, then validates data against them.
 #[derive(Default)]
 pub struct SchemaValidator {
     pub schema_path: Option<String>,
     pub schema_dir: Option<String>,
-    cache: HashMap<String, Value>,
+    cache: HashMap<String, Arc<CompiledSchema>>,
 }
 
+#[cfg(feature = "compile")]
 impl SchemaValidator {
     pub fn new(schema_path: Option<String>, schema_dir: Option<String>) -> Self {
         Self {
@@ -651,18 +568,28 @@ impl SchemaValidator {
         })
     }
 
-    fn schema_for(&mut self, schema_ref: &str) -> Result<(Value, String)> {
+    /// The compiled schema `schema_ref` resolves to. The file is read on every
+    /// call that misses this validator's own cache, so an edited schema takes
+    /// effect at once, but its text is parsed and compiled only once per
+    /// thread.
+    ///
+    /// # Errors
+    /// Returns the CHEX error for an unresolvable, unreadable, or malformed
+    /// schema.
+    pub fn compiled(&mut self, schema_ref: &str) -> Result<Arc<CompiledSchema>> {
         let source = self.source_for(schema_ref)?;
         if let Some(schema) = self.cache.get(&source.cache_key) {
-            return Ok((schema.clone(), source.label));
+            return Ok(Arc::clone(schema));
         }
         let text = std::fs::read_to_string(&source.path).map_err(|_| {
             ChexError::schema_load(format!("Failed to load schema from '{}'", source.path))
         })?;
-        let schema = parse_schema_document(&text, &source.path)?;
-        validate_definition(&schema, &source.label)?;
-        self.cache.insert(source.cache_key, schema.clone());
-        Ok((schema, source.label))
+        let schema = compiled::cache::file(&source.path, &source.label, &text, || {
+            let schema = parse_schema_document(&text, &source.path)?;
+            CompiledSchema::compile(&schema, &source.label)
+        })?;
+        self.cache.insert(source.cache_key, Arc::clone(&schema));
+        Ok(schema)
     }
 
     /// Validate `data`, returning it unchanged on success.
@@ -671,33 +598,30 @@ impl SchemaValidator {
     /// Returns the CHEX error for an unresolvable, unreadable, or malformed
     /// schema, or for data that does not match it.
     pub fn validate(&mut self, schema_ref: &str, data: &Map<String, Value>) -> Result<()> {
-        let (schema, label) = self.schema_for(schema_ref)?;
-        let Value::Object(schema) = schema else {
-            return Err(ChexError::invalid_input(format!(
-                "Schema '{}' must be a JSON object",
-                truncate(&label)
-            )));
-        };
-        validate_object(&schema, data, &label)
+        self.compiled(schema_ref)?.validate(data)
     }
 }
 
+#[cfg(feature = "compile")]
 /// Validate `data` against an in-memory schema.
 ///
 /// # Errors
 /// Returns the CHEX error for a malformed schema or non-matching data.
 pub fn validate_inline(schema: &Value, data: &Map<String, Value>, label: &str) -> Result<()> {
-    validate_definition(schema, label)?;
-    let Value::Object(schema) = schema else {
-        return Err(ChexError::invalid_input(format!(
-            "Schema '{}' must be a JSON object",
-            truncate(label)
-        )));
-    };
-    validate_object(schema, data, label)
+    compile_cached(schema, label)?.validate(data)
 }
 
-#[cfg(test)]
+#[cfg(feature = "compile")]
+/// [`CompiledSchema::compile`], once per distinct `(schema, label)` on this
+/// thread.
+///
+/// # Errors
+/// Returns the definition check's error for a malformed schema.
+pub fn compile_cached(schema: &Value, label: &str) -> Result<Arc<CompiledSchema>> {
+    compiled::cache::inline(schema, label)
+}
+
+#[cfg(all(test, feature = "compile"))]
 mod tests {
     // Behaviour is covered end to end by tests/validation.rs, tests/machine.rs,
     // tests/ffi.rs, and tests/golden.rs. What is left here is the handful of

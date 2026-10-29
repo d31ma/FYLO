@@ -49,6 +49,11 @@ pbkdf2 = { version = "0.13.0", features = ["hmac"] }
 # schema matches exactly as it did. `perf` stays off (literal prefilters that
 # barely help on short field values); `unicode-perl` keeps `\d` and `\w` valid.
 regex = { version = "1.13.1", default-features = false, features = ["std", "unicode-perl", "unicode-case"] }
+# CHEX's compiled form (ADR 0017 section 4): each leaf pattern as a sparse
+# DFA. Already in the graph under `regex`; only DFA search is on here, so the
+# browser build links a DFA loader and searcher but no regex compiler.
+# `fylo-chex`'s `compile` feature adds the parser and the DFA builder natively.
+regex-automata = { version = "0.4.18", default-features = false, features = ["alloc", "dfa-search"] }
 reqwest = { version = "0.13.2", default-features = false, features = ["blocking", "rustls-no-provider"] }
 # `.fxdb` zstd frames in the browser (ADR 0016 section 8): pure Rust, decode
 # only.
