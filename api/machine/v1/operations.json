@@ -230,6 +230,16 @@
             "name": "queueDeadLetters",
             "class": "queue-read",
             "retry": "safe"
+        },
+        {
+            "name": "inspectDatabase",
+            "class": "read",
+            "retry": "safe"
+        },
+        {
+            "name": "verifyDatabase",
+            "class": "read",
+            "retry": "safe"
         }
     ]
 }

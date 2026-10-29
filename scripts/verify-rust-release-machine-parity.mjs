@@ -10,6 +10,7 @@ const registry = JSON.parse(await readFile('api/machine/v1/operations.json', 'ut
 const canonicalOperations = registry.operations.map(({ name }) => name).sort()
 const candidateOnlyOperations = [
     'getFileData',
+    'inspectDatabase',
     'queueAck',
     'queueClaim',
     'queueDeadLetters',
@@ -18,7 +19,8 @@ const candidateOnlyOperations = [
     'queuePublish',
     'queueStats',
     'reshardCollection',
-    'schemaMigrate'
+    'schemaMigrate',
+    'verifyDatabase'
 ]
 const releasedOperations = canonicalOperations.filter(
     (operation) => !candidateOnlyOperations.includes(operation)
@@ -291,6 +293,23 @@ async function runScenario(label, binary, root) {
                 { op: 'reshardCollection', collection: 'assets', width: 2 },
                 { record: false }
             )
+
+            // A .fxdb file is opened by path, never through the root; the
+            // released engine predates it. A missing file is refused.
+            for (const op of ['inspectDatabase', 'verifyDatabase']) {
+                const refused = await request(
+                    `${op}-missing`,
+                    { op, root: join(root, 'missing.fxdb') },
+                    { record: false }
+                ).then(
+                    () => null,
+                    (error) => error
+                )
+                assert(
+                    refused?.message.includes('ENATIVE_NOT_FOUND'),
+                    `${op} did not refuse a missing .fxdb: ${refused?.message}`
+                )
+            }
 
             const published = await request(
                 'queue-publish',

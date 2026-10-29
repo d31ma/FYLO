@@ -1341,6 +1341,8 @@ text.
 | `EROOTLOCKED` / `EROOTLEASELOST`                                       | Exclusive root ownership was unavailable or lost                           | Fail over per your supervisor policy                             |
 | `EFRAME_*`                                                             | Frame-contract violations, as documented above                             | Per the framing rules above                                      |
 | `EQUERYLOOPREQUIRED` / `EQUERYITEMTOOLARGE` / `EQUERYSNAPSHOTTOOLARGE` | Pagination contract violations, as documented above                        | Per the pagination rules above                                   |
+| `EFXDB_NOT_FXDB` / `EFXDB_VERSION`                                     | The file is not a `.fxdb` database, or needs a newer FYLO                  | Do not retry; open it with a build that supports it              |
+| `EFXDB_CORRUPT`                                                        | A `.fxdb` structure failed its checks                                      | Do not retry; run `fylo verify <db.fxdb>`                        |
 | `ENATIVE_IO`                                                           | Native filesystem I/O failed, including disk pressure or xattr operations  | Treat a mutation as ambiguous; inspect the cause before retrying |
 | `EUNKNOWN`                                                             | An engine failure without a more specific classification                   | Treat conservatively; inspect `error.message` diagnostically     |
 
