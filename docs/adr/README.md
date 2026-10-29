@@ -32,7 +32,7 @@ ADR.
 | [0012](0012-opt-in-network-server.md)                       | Accepted | Opt-in network server for one root          |
 | [0013](0013-collection-write-ahead-log.md)                  | Accepted | Collection write-ahead log with group commit |
 | [0014](0014-in-memory-hot-set.md)                           | Accepted | In-memory hot set for `fylo serve`          |
-| [0016](0016-single-file-fxdb-database.md)                   | Proposed | Single-file `.fxdb` databases               |
+| [0016](0016-single-file-fxdb-database.md)                   | Accepted | Single-file `.fxdb` databases               |
 
 ## When another ADR is required
 

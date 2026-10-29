@@ -1,6 +1,7 @@
 # ADR 0016: Single-file `.fxdb` databases
 
-- Status: **Proposed** (awaiting Samuel's approval)
+- Status: **Accepted** (Samuel, 2026-10-29; spike results are added as they
+  arrive and may only settle the codec and the lock qualification list)
 - Date: **2026-10-29**
 - Owners: **FYLO maintainers**
 - Builds on: ADR 0015 (append-only document segments), ADR 0013 (the record
@@ -331,7 +332,7 @@ incompatible flag with `EFORMATUNSUPPORTED`. Downgrading a database means
 ## Spikes before implementation
 
 These run on the Mac Mini after the timed ATLAS benchmarks finish. Their
-results are added here before this ADR is accepted.
+results are added here as they arrive.
 
 | Spike | Question                                                                                    | Decides                                          |
 | ----- | ------------------------------------------------------------------------------------------- | ------------------------------------------------ |
