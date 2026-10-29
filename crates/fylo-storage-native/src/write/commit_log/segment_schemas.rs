@@ -391,7 +391,7 @@ impl SegmentSchemas {
                     handle.read_at(&mut frame, entry.offset).ok()?;
                     Some(frame)
                 })
-                .and_then(|frame| SegmentReader::decode(&frame).ok())
+                .and_then(|frame| SegmentReader::decode(&frame, &*medium.frame_bodies()).ok())
                 .is_some_and(|record| {
                     record.kind == LogRecordKind::Schema
                         && record.lsn == entry.lsn

@@ -199,6 +199,37 @@ file, a nonce and tag sealed with `ContainerSealContext::Record`. Both
 are behind the frame encode/decode the medium owns, so the directory medium
 keeps today's frames byte for byte.
 
+**Codecs (landed).** `SegmentMedium::frame_bodies` says how a medium's frames
+store a record's body: as is for a directory (`fylo_format::PlainBody`), and
+for a container as `segments/container_frames.rs` does it. Every frame the
+segment code writes or reads goes through it: appends, segment openings,
+compaction copies, scans, replays, salvage and point reads. A container frame
+is the directory frame (sync marker, length, CRC-32C) around a stored body: the
+header byte (codec in the low four bits, `0x10` a dictionary id follows,
+`0x20` sealed), the 4-byte dictionary id when one was used, then the record
+body compressed on its own. The length and CRC cover the stored bytes, so
+`fylo verify` and salvage find damage without decompressing.
+
+- Native writers write zstd level 3, the browser LZ4, and a body that would
+  not shrink is stored as is (codec 0). Every build but WASI reads all three;
+  WASI reads no segments and carries neither library.
+- Compaction re-encodes each copied record, so LZ4 records come out as zstd.
+- A codec or flag this build does not know is refused as a newer format
+  (`ENATIVE_UNSUPPORTED` with `EFXDB_VERSION` in the message), never taken for
+  a torn tail: a scan that stops there fails rather than let recovery cut the
+  segment.
+- A damaged frame still names its documents to salvage when its stored body
+  decompresses, as when only its checksum was hit.
+
+**Still to come.** Per-collection dictionaries: training on the first 1 MiB
+of documents at a checkpoint, a `dictionary` extent the checkpoint slot names,
+loading every dictionary a collection's records name, retraining at
+compaction, and their checks in `fylo verify`. The frame header, the
+dictionary id and a codec per dictionary are in place; a collection has no
+dictionary yet, so a frame naming one is refused as damage. Sealing records
+in an encrypted file. Setting the superblock's codec feature bits, which
+`fylo inspect` reports.
+
 ## Order of work
 
 1. **Seam refactor** (directory medium only): introduce `SegmentMedium`,

@@ -1,7 +1,9 @@
 use std::ffi::OsString;
 use std::fmt::Debug;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
+
+use fylo_format::{LogBodyCodec, PlainBody};
 
 use super::{RecordPosition, SlotRecord};
 use crate::{Durability, NativeRoot, NativeStorageError, NativeStorageErrorCode};
@@ -20,6 +22,15 @@ pub(crate) trait SegmentMedium: Debug + Send + Sync {
 
     /// The most bytes one segment may hold.
     fn max_segment_bytes(&self) -> u64;
+
+    /// How record bodies are stored in this medium's frames. A directory
+    /// of segment files stores them as is; a `.fxdb` container stores a
+    /// codec header and the compressed body (ADR 0016 section 4). Every
+    /// frame the segment code writes or reads here goes through it.
+    fn frame_bodies(&self) -> Arc<dyn LogBodyCodec> {
+        static PLAIN: LazyLock<Arc<dyn LogBodyCodec>> = LazyLock::new(|| Arc::new(PlainBody));
+        Arc::clone(&PLAIN)
+    }
 
     /// The numbers of every segment present, in ascending order.
     fn segment_numbers(&self) -> Result<Vec<u64>, NativeStorageError>;

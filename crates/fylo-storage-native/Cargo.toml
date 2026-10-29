@@ -17,7 +17,6 @@ fylo-query = { version = "0.1.0", path = "../fylo-query" }
 fylo-vfs = { version = "0.1.0", path = "../fylo-vfs" }
 getrandom.workspace = true
 hmac.workspace = true
-lz4_flex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -29,8 +28,13 @@ same-file.workspace = true
 # `.fxdb` zstd frames natively; the C library is too large for the browser.
 zstd.workspace = true
 
+# `.fxdb` LZ4 frames: written by the browser, read everywhere. The WASI
+# build reads no `.fxdb` segments, so it carries no codec.
+[target.'cfg(any(not(target_family = "wasm"), target_os = "unknown"))'.dependencies]
+lz4_flex.workspace = true
+
 # `.fxdb` zstd frames in the browser, decode only.
-[target.'cfg(target_family = "wasm")'.dependencies]
+[target.'cfg(all(target_family = "wasm", target_os = "unknown"))'.dependencies]
 ruzstd.workspace = true
 
 [target.'cfg(unix)'.dependencies]

@@ -10,6 +10,10 @@
 //! Bodies come from disk and are not trusted: a decode first reads the
 //! content size the body declares, refuses it above the caller's limit, and
 //! then refuses any body that does not produce exactly that many bytes.
+//!
+//! The WASI build reads no `.fxdb` segments, so it carries neither codec
+//! library: it stores bodies as is and refuses compressed ones as
+//! `Unsupported`.
 
 use std::fmt;
 
@@ -38,7 +42,8 @@ pub enum ContainerCodecError {
     WrongDictionary,
     /// The dictionary is not a zstd dictionary.
     BadDictionary,
-    /// This build cannot write the codec (zstd in WebAssembly).
+    /// This build cannot write the codec (zstd in WebAssembly), or cannot
+    /// read it at all (WASI).
     Unsupported,
     /// The zstd library failed for another reason.
     Library(std::io::Error),
@@ -93,7 +98,7 @@ pub struct ContainerFrameCodec {
     compressor: zstd::bulk::Compressor<'static>,
     #[cfg(not(target_family = "wasm"))]
     decompressor: zstd::bulk::Decompressor<'static>,
-    #[cfg(target_family = "wasm")]
+    #[cfg(all(target_family = "wasm", target_os = "unknown"))]
     decoder: browser_zstd::Decoder,
 }
 
@@ -161,7 +166,7 @@ impl ContainerFrameCodec {
                 decompressor,
             })
         }
-        #[cfg(target_family = "wasm")]
+        #[cfg(all(target_family = "wasm", target_os = "unknown"))]
         {
             let _ = level;
             let decoder = browser_zstd::Decoder::new(dictionary.as_ref())?;
@@ -169,6 +174,11 @@ impl ContainerFrameCodec {
                 dictionary,
                 decoder,
             })
+        }
+        #[cfg(all(target_family = "wasm", not(target_os = "unknown")))]
+        {
+            let _ = level;
+            Ok(Self { dictionary })
         }
     }
 
@@ -187,7 +197,8 @@ impl ContainerFrameCodec {
     }
 
     /// Compress a body the way this build writes: zstd natively, LZ4 in the
-    /// browser. A body compression would not shrink is stored as is.
+    /// browser, as is in WASI. A body compression would not shrink is stored
+    /// as is.
     ///
     /// # Errors
     ///
@@ -201,9 +212,13 @@ impl ContainerFrameCodec {
                 .map_err(ContainerCodecError::Library)?;
             Ok(self.smaller_of(body, ContainerCodec::Zstd, bytes))
         }
-        #[cfg(target_family = "wasm")]
+        #[cfg(all(target_family = "wasm", target_os = "unknown"))]
         {
             self.encode_lz4(body)
+        }
+        #[cfg(all(target_family = "wasm", not(target_os = "unknown")))]
+        {
+            Ok(self.smaller_of(body, ContainerCodec::None, body.to_vec()))
         }
     }
 
@@ -212,10 +227,11 @@ impl ContainerFrameCodec {
     ///
     /// # Errors
     ///
-    /// Returns `Oversized` for a body of 4 GiB or more.
+    /// Returns `Oversized` for a body of 4 GiB or more, or `Unsupported` in
+    /// WASI.
     pub fn encode_lz4(&mut self, body: &[u8]) -> Result<ContainerEncodedBody, ContainerCodecError> {
         let size = u32::try_from(body.len()).map_err(|_| ContainerCodecError::Oversized)?;
-        let block = lz4_flex::block::compress_with_dict(body, self.dictionary_bytes());
+        let block = lz4::compress(body, self.dictionary_bytes())?;
         let mut bytes = Vec::with_capacity(LZ4_SIZE_BYTES + block.len());
         bytes.extend_from_slice(&size.to_le_bytes());
         bytes.extend_from_slice(&block);
@@ -296,8 +312,7 @@ impl ContainerFrameCodec {
         if size > max_bytes {
             return Err(ContainerCodecError::Oversized);
         }
-        let body = lz4_flex::block::decompress_with_dict(block, size, self.dictionary_bytes())
-            .map_err(|_| ContainerCodecError::Corrupt)?;
+        let body = lz4::decompress(block, size, self.dictionary_bytes())?;
         if body.len() == size {
             Ok(body)
         } else {
@@ -312,9 +327,55 @@ impl ContainerFrameCodec {
             .map_err(|_| ContainerCodecError::Corrupt)
     }
 
-    #[cfg(target_family = "wasm")]
+    #[cfg(all(target_family = "wasm", target_os = "unknown"))]
     fn decode_zstd(&mut self, bytes: &[u8], size: usize) -> Result<Vec<u8>, ContainerCodecError> {
         self.decoder.decode(bytes, size)
+    }
+
+    #[cfg(all(target_family = "wasm", not(target_os = "unknown")))]
+    #[allow(clippy::unused_self)]
+    fn decode_zstd(&mut self, _bytes: &[u8], _size: usize) -> Result<Vec<u8>, ContainerCodecError> {
+        Err(ContainerCodecError::Unsupported)
+    }
+}
+
+/// LZ4 blocks, in every build but WASI.
+#[cfg(not(all(target_family = "wasm", not(target_os = "unknown"))))]
+mod lz4 {
+    use super::ContainerCodecError;
+
+    #[allow(clippy::unnecessary_wraps)]
+    pub(super) fn compress(body: &[u8], dictionary: &[u8]) -> Result<Vec<u8>, ContainerCodecError> {
+        Ok(lz4_flex::block::compress_with_dict(body, dictionary))
+    }
+
+    pub(super) fn decompress(
+        block: &[u8],
+        size: usize,
+        dictionary: &[u8],
+    ) -> Result<Vec<u8>, ContainerCodecError> {
+        lz4_flex::block::decompress_with_dict(block, size, dictionary)
+            .map_err(|_| ContainerCodecError::Corrupt)
+    }
+}
+
+#[cfg(all(target_family = "wasm", not(target_os = "unknown")))]
+mod lz4 {
+    use super::ContainerCodecError;
+
+    pub(super) fn compress(
+        _body: &[u8],
+        _dictionary: &[u8],
+    ) -> Result<Vec<u8>, ContainerCodecError> {
+        Err(ContainerCodecError::Unsupported)
+    }
+
+    pub(super) fn decompress(
+        _block: &[u8],
+        _size: usize,
+        _dictionary: &[u8],
+    ) -> Result<Vec<u8>, ContainerCodecError> {
+        Err(ContainerCodecError::Unsupported)
     }
 }
 
@@ -370,7 +431,7 @@ fn zstd_content_size(bytes: &[u8]) -> Result<usize, ContainerCodecError> {
 
 /// zstd decoding in pure Rust, for the browser. Natively it is built only for
 /// the tests that check it reads what the C library writes.
-#[cfg(any(target_family = "wasm", test))]
+#[cfg(any(all(target_family = "wasm", target_os = "unknown"), test))]
 mod browser_zstd {
     use super::{ContainerCodecError, ContainerDictionary};
     use ruzstd::decoding::{BlockDecodingStrategy, Dictionary, FrameDecoder};

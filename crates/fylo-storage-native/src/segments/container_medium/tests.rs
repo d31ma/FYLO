@@ -2,7 +2,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use fylo_format::{ContainerExtentKind, ContainerGenerationSlot};
+use fylo_format::{
+    ContainerExtentKind, ContainerGenerationSlot, LogRecord, LogScan, LogSegmentKind,
+};
 use serde_json::json;
 
 use super::{ContainerMedium, LOCATIONS, SEGMENT};
@@ -144,8 +146,8 @@ fn identifier(number: usize) -> String {
     format!("4VRNF5{:05}", 40_000 + number)
 }
 
-/// Put a document of about 4 KiB, so a 1 MiB extent fills after a few
-/// hundred.
+/// Put a document of about 4 KiB once compressed, so a 1 MiB extent fills
+/// after a few hundred.
 fn put(writer: &NativeWriteRoot, number: usize) {
     put_into(writer, "items", number).unwrap();
 }
@@ -157,7 +159,7 @@ fn put_into(
 ) -> Result<(), crate::NativeStorageError> {
     let body = json!({
         "name": format!("user{number}"),
-        "padding": "x".repeat(4096),
+        "padding": fylo_test_support::incompressible_text(5472),
     })
     .to_string();
     writer.put_document(
@@ -532,20 +534,30 @@ fn a_dropped_collection_recreated_in_one_process_gets_a_fresh_file() {
     assert_eq!(bodies[&identifier(7)]["name"], "user7");
 }
 
-/// Flip one bit just inside the first occurrence of `needle` in the active
-/// segment, as a bad sector would.
-fn damage(fixture: &Fixture, needle: &[u8]) {
+/// Where [`damage`] flips a bit of a record's frame: its checksum, which
+/// leaves the stored body readable, or its codec header byte, which leaves
+/// nothing readable.
+const CHECKSUM: usize = LogSegmentKind::MARKER_BYTES + 4;
+const CODEC_HEADER: usize = LogSegmentKind::MARKER_BYTES + LogRecord::FRAME_BYTES;
+
+/// Flip one bit `at` bytes into the frame of the active segment's first
+/// record that holds `needle`, as a bad sector would. Records are
+/// compressed, so the record is found by decoding them.
+fn damage(fixture: &Fixture, needle: &[u8], at: usize) {
     let file = ContainerFile::open_unchecked(&fixture.file()).unwrap();
     let block = file.collections()[0].block;
     let slot = file.read_generation(block).unwrap().unwrap();
     let mut bytes = vec![0; usize::try_from(slot.committed_length).unwrap()];
     file.read_payload(slot.active_extent, 0, &mut bytes)
         .unwrap();
-    let at = bytes
-        .windows(needle.len())
-        .position(|window| window == needle)
-        .unwrap()
-        + 2;
+    let scan = LogScan::segment_with(&bytes, &*fixture.medium().frame_bodies()).unwrap();
+    let holds = |part: &[u8]| part.windows(needle.len()).any(|window| window == needle);
+    let (offset, _) = scan
+        .records
+        .iter()
+        .find(|(_, record)| holds(&record.manifest) || holds(&record.blobs))
+        .unwrap();
+    let at = usize::try_from(*offset).unwrap() + at;
     file.write_payload(slot.active_extent, at as u64, &[bytes[at] ^ 0x20])
         .unwrap();
     file.sync().unwrap();
@@ -568,7 +580,7 @@ fn a_fresh_salvage_names_the_documents_of_a_damaged_record_after_the_snapshot() 
     for number in 0..10 {
         put(&writer, number);
     }
-    damage(&fixture, br#""user4""#);
+    damage(&fixture, br#""user4""#, CHECKSUM);
     fixture.crash();
     let error = SegmentStore::open(fixture.medium()).unwrap_err();
     assert_eq!(error.code(), NativeStorageErrorCode::CorruptDocument);
@@ -602,7 +614,7 @@ fn a_fresh_salvage_names_nothing_written_again_or_unreadable() {
         put(&writer, number);
     }
     patch(&writer, 4, 1);
-    damage(&fixture, br#""user4""#);
+    damage(&fixture, br#""user4""#, CHECKSUM);
     let report = fresh_salvage(&fixture);
     assert_eq!(report.recovered, 10, "{report:?}");
     assert!(report.lost.is_empty(), "{report:?}");
@@ -614,7 +626,7 @@ fn a_fresh_salvage_names_nothing_written_again_or_unreadable() {
     for number in 0..10 {
         put(&writer, number);
     }
-    damage(&fixture, identifier(4).as_bytes());
+    damage(&fixture, identifier(4).as_bytes(), CODEC_HEADER);
     let report = fresh_salvage(&fixture);
     assert_eq!(report.recovered, 9, "{report:?}");
     assert!(report.lost.is_empty(), "{report:?}");

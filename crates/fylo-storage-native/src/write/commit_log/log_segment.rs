@@ -1,12 +1,15 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use fylo_format::{LogRecord, LogRecordKind, LogScan, LogSegmentHeader, LogSegmentKind};
+use fylo_format::{
+    LogBodyCodec, LogFormatError, LogRecord, LogRecordKind, LogScan, LogSegmentHeader,
+    LogSegmentKind, PlainBody,
+};
 use fylo_vfs as fs;
 
 use super::super::{json_error, sync_directory};
 use super::checkpoint_manifest::CheckpointManifest;
-use crate::segments::{FileSegment, SegmentHandle, SegmentMedium};
+use crate::segments::{FileSegment, SegmentHandle, SegmentMedium, SegmentReader};
 use crate::{Durability, LogPosition, NativeStorageError, NativeStorageErrorCode};
 
 /// The open write-ahead log segment of one collection, or the active
@@ -17,11 +20,13 @@ use crate::{Durability, LogPosition, NativeStorageError, NativeStorageErrorCode}
 /// A segment collection's active segment is never removed: it is sealed when
 /// it grows large, and the next one opens with a checkpoint record. A log
 /// segment is a file at a known path; a document segment lives in its
-/// collection's [`SegmentMedium`].
+/// collection's [`SegmentMedium`], which says how its frames store record
+/// bodies.
 #[derive(Debug)]
 pub(crate) struct LogSegment {
     kind: LogSegmentKind,
     handle: Arc<dyn SegmentHandle>,
+    bodies: Arc<dyn LogBodyCodec>,
     log_path: Option<PathBuf>,
     max_bytes: u64,
     nonce: u64,
@@ -46,6 +51,7 @@ impl LogSegment {
         };
         Self::matching(
             Arc::new(file),
+            Arc::new(PlainBody),
             (Some(path.to_owned()), Self::MAX_LOG_BYTES),
             position,
         )
@@ -61,11 +67,17 @@ impl LogSegment {
         let Some(handle) = medium.write_handle(number)? else {
             return Ok(None);
         };
-        Self::matching(handle, (None, medium.max_segment_bytes()), position)
+        Self::matching(
+            handle,
+            medium.frame_bodies(),
+            (None, medium.max_segment_bytes()),
+            position,
+        )
     }
 
     fn matching(
         handle: Arc<dyn SegmentHandle>,
+        bodies: Arc<dyn LogBodyCodec>,
         (log_path, max_bytes): (Option<PathBuf>, u64),
         position: &LogPosition,
     ) -> Result<Option<Self>, NativeStorageError> {
@@ -79,6 +91,7 @@ impl LogSegment {
         Ok(Some(Self {
             kind: header.map_or(LogSegmentKind::WriteAheadLog, |header| header.kind),
             handle,
+            bodies,
             log_path,
             max_bytes,
             nonce: header.map_or(0, |header| header.sequence),
@@ -105,6 +118,7 @@ impl LogSegment {
         Ok(Self {
             kind: LogSegmentKind::Documents,
             handle,
+            bodies: medium.frame_bodies(),
             log_path: None,
             max_bytes: medium.max_segment_bytes(),
             nonce: sequence,
@@ -137,11 +151,11 @@ impl LogSegment {
             first_lsn: Self::FIRST_LSN,
             generation,
         };
-        let bytes = Self::opening_bytes(&opening, manifest)?;
+        let bytes = Self::opening_bytes(&opening, manifest, &PlainBody)?;
         let file = FileSegment::create(path, &bytes, opening.kind.marked())?;
         Ok(Self::created(
             &opening,
-            Arc::new(file),
+            (Arc::new(file), Arc::new(PlainBody)),
             (Some(path.to_owned()), Self::MAX_LOG_BYTES),
             bytes.len(),
         ))
@@ -163,14 +177,15 @@ impl LogSegment {
             generation,
         };
         let length = std::cell::Cell::new(0);
+        let bodies = medium.frame_bodies();
         let (number, handle) = medium.create_segment(&|number| {
-            let bytes = Self::opening_bytes(&opening(number), manifest.to_vec())?;
+            let bytes = Self::opening_bytes(&opening(number), manifest.to_vec(), &*bodies)?;
             length.set(bytes.len());
             Ok(bytes)
         })?;
         Ok(Self::created(
             &opening(number),
-            handle,
+            (handle, bodies),
             (None, medium.max_segment_bytes()),
             length.get(),
         ))
@@ -180,6 +195,7 @@ impl LogSegment {
     fn opening_bytes(
         opening: &SegmentOpening,
         manifest: Vec<u8>,
+        bodies: &dyn LogBodyCodec,
     ) -> Result<Vec<u8>, NativeStorageError> {
         let header = LogSegmentHeader {
             kind: opening.kind,
@@ -194,19 +210,20 @@ impl LogSegment {
             blobs: Vec::new(),
         };
         let mut bytes = header.encode().to_vec();
-        bytes.extend(Self::frame(opening.kind, &record)?);
+        bytes.extend(Self::frame(opening.kind, &record, bodies)?);
         Ok(bytes)
     }
 
     fn created(
         opening: &SegmentOpening,
-        handle: Arc<dyn SegmentHandle>,
+        (handle, bodies): (Arc<dyn SegmentHandle>, Arc<dyn LogBodyCodec>),
         (log_path, max_bytes): (Option<PathBuf>, u64),
         length: usize,
     ) -> Self {
         Self {
             kind: opening.kind,
             handle,
+            bodies,
             log_path,
             max_bytes,
             nonce: opening.sequence,
@@ -308,15 +325,16 @@ impl LogSegment {
     /// Encode one record as this segment's frame, refusing a body the
     /// format cannot hold.
     pub(crate) fn encode(&self, record: &LogRecord) -> Result<Vec<u8>, NativeStorageError> {
-        Self::frame(self.kind, record)
+        Self::frame(self.kind, record, &*self.bodies)
     }
 
-    /// Encode one record as a frame of `kind`.
+    /// Encode one record as a frame of `kind`, its body stored by `bodies`.
     pub(crate) fn frame(
         kind: LogSegmentKind,
         record: &LogRecord,
+        bodies: &dyn LogBodyCodec,
     ) -> Result<Vec<u8>, NativeStorageError> {
-        kind.frame(record).map_err(|error| {
+        kind.frame_with(record, bodies).map_err(|error| {
             NativeStorageError::new(
                 NativeStorageErrorCode::FileTooLarge,
                 format!("write-ahead log record cannot be encoded: {error}"),
@@ -362,13 +380,27 @@ impl LogSegment {
 
     /// Read and scan a whole document segment, or `None` when it does not
     /// exist or its header never became valid.
+    ///
+    /// A scan that stops at a record this build cannot read fails instead
+    /// of returning: recovery would otherwise cut a newer writer's records
+    /// off as a torn tail, and a rebuild would leave them out.
     pub(crate) fn scan_segment(
         medium: &dyn SegmentMedium,
         number: u64,
     ) -> Result<Option<LogScan>, NativeStorageError> {
-        Ok(medium
+        let Some(scan) = medium
             .read_segment(number)?
-            .and_then(|bytes| LogScan::segment(&bytes).ok()))
+            .and_then(|bytes| LogScan::segment_with(&bytes, &*medium.frame_bodies()).ok())
+        else {
+            return Ok(None);
+        };
+        if let Some(error @ LogFormatError::UnsupportedVersion) = scan.stopped {
+            return Err(SegmentReader::frame_error(
+                error,
+                &format!("segment {number} at byte {}", scan.valid_length),
+            ));
+        }
+        Ok(Some(scan))
     }
 
     /// The header of a segment `length` bytes long, or `None` when it is

@@ -2,7 +2,7 @@ use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use fylo_format::{LogRecord, LogRecordKind, LogSegmentHeader, LogSegmentKind};
+use fylo_format::{LogBodyCodec, LogRecord, LogRecordKind, LogSegmentHeader, LogSegmentKind};
 
 use super::super::{GenerationRecord, failpoint, json_error};
 use super::abort_manifest::AbortManifest;
@@ -105,7 +105,7 @@ impl SegmentCompactor {
             if let Entry::Vacant(slot) = records.entry(key) {
                 slot.insert(reader.record(row)?);
             }
-            let frame = Self::copied_frame(row, &records[&key])?;
+            let frame = Self::copied_frame(row, &records[&key], &*medium.frame_bodies())?;
             copy.write_at(&frame, length)?;
             length += frame.len() as u64;
         }
@@ -292,10 +292,12 @@ impl SegmentCompactor {
     }
 
     /// One live entry as a record of its own, keeping the sequence number
-    /// and generation of the commit it came from.
+    /// and generation of the commit it came from. Its body is compressed
+    /// afresh, so a `.fxdb` collection's LZ4 records come out as zstd.
     fn copied_frame(
         row: &SegmentLocation,
         record: &LogRecord,
+        bodies: &dyn LogBodyCodec,
     ) -> Result<Vec<u8>, NativeStorageError> {
         let document = SegmentDocument::from_record(row, record)?;
         let mut entry = document.entry;
@@ -316,7 +318,7 @@ impl SegmentCompactor {
             manifest: serde_json::to_vec(&manifest).map_err(|error| json_error(&error))?,
             blobs: document.body,
         };
-        LogSegment::frame(LogSegmentKind::CompactedDocuments, &copied)
+        LogSegment::frame(LogSegmentKind::CompactedDocuments, &copied, bodies)
     }
 
     /// A schema record as it is, framed for the compacted segment.
@@ -325,14 +327,15 @@ impl SegmentCompactor {
         entry: &SchemaVersionEntry,
     ) -> Result<Vec<u8>, NativeStorageError> {
         let frame = reader.span(entry.segment, entry.offset, entry.length as usize)?;
-        let record = SegmentReader::decode(&frame)?;
+        let bodies = reader.medium().frame_bodies();
+        let record = SegmentReader::decode(&frame, &*bodies)?;
         if record.kind != LogRecordKind::Schema || record.lsn != entry.lsn {
             return Err(SegmentSchemas::corrupt(&format!(
                 "schema version {} is not at its recorded location",
                 entry.ordinal
             )));
         }
-        LogSegment::frame(LogSegmentKind::CompactedDocuments, &record)
+        LogSegment::frame(LogSegmentKind::CompactedDocuments, &record, &*bodies)
     }
 
     /// Point the schemas snapshot at the copies the adopted segment holds.

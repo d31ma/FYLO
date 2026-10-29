@@ -472,14 +472,17 @@ const CHILD_DATABASE: &str = "FYLO_FXDB_ROOT_CHILD_DATABASE";
 const CHILD_COLLECTION: &str = "FYLO_FXDB_ROOT_CHILD_COLLECTION";
 const CHILD_FIRST: &str = "FYLO_FXDB_ROOT_CHILD_FIRST";
 const CHILD_TEST: &str = "a_child_process";
-/// Documents each writer process puts, of about 48 KiB each, so the 8 MiB
-/// extents of a database fill and every writer takes several.
+/// Documents each writer process puts, of about 48 KiB each once
+/// compressed, so the 8 MiB extents of a database fill and every writer
+/// takes several.
 const CHILD_DOCUMENTS: usize = 200;
+/// Characters of a child document's padding: 48 KiB once compressed.
+const PADDING_CHARS: usize = 64 * 1024;
 const WAIT: Duration = Duration::from_mins(2);
 
 fn padded(collection: &str, number: usize) -> Value {
     let mut value = body(collection, number);
-    value["padding"] = Value::from("x".repeat(48 * 1024));
+    value["padding"] = Value::from(fylo_test_support::incompressible_text(PADDING_CHARS));
     value
 }
 
@@ -525,7 +528,7 @@ fn a_child_process() {
                     for id in collection.document_ids().unwrap() {
                         let bytes = collection.read_document(&id).unwrap().bytes;
                         let value: Value = serde_json::from_slice(&bytes).unwrap();
-                        assert_eq!(value["padding"].as_str().map(str::len), Some(48 * 1024));
+                        assert_eq!(value["padding"].as_str().map(str::len), Some(PADDING_CHARS));
                     }
                 }
                 rounds += 1;

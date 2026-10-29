@@ -1,4 +1,4 @@
-use crate::{LogFormatError, LogRecord, LogSegmentHeader};
+use crate::{LogBodyCodec, LogFormatError, LogRecord, LogSegmentHeader, PlainBody};
 
 /// The valid records of one segment, read front to back.
 ///
@@ -25,6 +25,17 @@ impl LogScan {
     /// Returns an error only when the header itself is invalid. A defect
     /// after the header ends the scan and is reported in [`Self::stopped`].
     pub fn segment(bytes: &[u8]) -> Result<Self, LogFormatError> {
+        Self::segment_with(bytes, &PlainBody)
+    }
+
+    /// Scan a whole segment whose record bodies `codec` stored.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::segment`]. A record the codec cannot read stops the scan
+    /// with its error, `UnsupportedVersion` for an unknown codec, which the
+    /// caller must not take for a torn tail.
+    pub fn segment_with(bytes: &[u8], codec: &dyn LogBodyCodec) -> Result<Self, LogFormatError> {
         let header = LogSegmentHeader::decode(bytes)?;
         let mut scan = Self {
             header,
@@ -32,7 +43,7 @@ impl LogScan {
             valid_length: LogSegmentHeader::ENCODED_BYTES as u64,
             stopped: None,
         };
-        scan.extend(bytes, header.first_lsn);
+        scan.extend(bytes, header.first_lsn, codec);
         Ok(scan)
     }
 
@@ -46,14 +57,14 @@ impl LogScan {
             .last()
             .map_or(self.header.first_lsn, |(_, record)| record.lsn + 1);
         self.stopped = None;
-        self.extend(bytes, next);
+        self.extend(bytes, next, &PlainBody);
     }
 
-    fn extend(&mut self, bytes: &[u8], mut expected: u64) {
+    fn extend(&mut self, bytes: &[u8], mut expected: u64, codec: &dyn LogBodyCodec) {
         let kind = self.header.kind;
         let mut offset = usize::try_from(self.valid_length).unwrap_or(usize::MAX);
         while offset < bytes.len() {
-            match kind.unframe(&bytes[offset..]) {
+            match kind.unframe_with(&bytes[offset..], codec) {
                 Ok((record, _)) if kind.consecutive() && record.lsn != expected => {
                     self.stopped = Some(LogFormatError::SequenceGap);
                     return;

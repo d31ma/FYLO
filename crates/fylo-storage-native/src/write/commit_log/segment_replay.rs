@@ -1,11 +1,11 @@
 use std::collections::BTreeSet;
 
-use fylo_format::{LogRecordKind, LogScan, LogSegmentHeader, LogSegmentKind};
+use fylo_format::{LogFormatError, LogRecordKind, LogScan, LogSegmentHeader, LogSegmentKind};
 
 use super::compaction_manifest::CompactionManifest;
 use super::segment_rebuild::SegmentRebuild;
 use crate::segments::{
-    IndexDelta, LocationTable, RecordPosition, SegmentCommitManifest, SegmentMedium,
+    IndexDelta, LocationTable, RecordPosition, SegmentCommitManifest, SegmentMedium, SegmentReader,
 };
 use crate::write::NativeWriteRoot;
 use crate::{NativeStorageError, NativeStorageErrorCode};
@@ -203,9 +203,10 @@ impl LocationTable {
         handle.read_at(&mut bytes, start)?;
         let mut records = Vec::new();
         let mut cursor = 0;
+        let bodies = medium.frame_bodies();
         while cursor < bytes.len() {
             let offset = start + cursor as u64;
-            let (record, length) = match header.kind.unframe(&bytes[cursor..]) {
+            let (record, length) = match header.kind.unframe_with(&bytes[cursor..], &*bodies) {
                 Ok(framed) => framed,
                 Err(error) if salvaging => {
                     let scan = LogScan {
@@ -215,6 +216,12 @@ impl LocationTable {
                         stopped: Some(error),
                     };
                     return Ok((Some(scan), Some(offset)));
+                }
+                Err(error @ LogFormatError::UnsupportedVersion) => {
+                    return Err(SegmentReader::frame_error(
+                        error,
+                        &format!("segment {number} at byte {offset}"),
+                    ));
                 }
                 Err(error) => return Err(Self::damaged(number, offset, &error.to_string())),
             };
@@ -360,7 +367,8 @@ mod tests {
     /// The table the location log gave when segment `number` opened, and
     /// where its opening checkpoint record starts.
     fn opening(medium: &dyn SegmentMedium, number: u64) -> (LocationTable, RecordPosition) {
-        let scan = LogScan::segment(&medium.require_segment(number).unwrap()).unwrap();
+        let bytes = medium.require_segment(number).unwrap();
+        let scan = LogScan::segment_with(&bytes, &*medium.frame_bodies()).unwrap();
         let (offset, record) = &scan.records[0];
         let manifest: SegmentCheckpointManifest = serde_json::from_slice(&record.manifest).unwrap();
         let table =
@@ -507,7 +515,8 @@ mod tests {
         commit_and_abort(&fixture, (1, 900));
         mutate(&writer, 10..15);
         let medium = fixture.collection().segment_medium().unwrap();
-        let scan = LogScan::segment(&medium.require_segment(1).unwrap()).unwrap();
+        let bytes = medium.require_segment(1).unwrap();
+        let scan = LogScan::segment_with(&bytes, &*medium.frame_bodies()).unwrap();
         assert!(
             scan.records
                 .iter()

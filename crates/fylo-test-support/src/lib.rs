@@ -31,6 +31,24 @@ impl<const N: usize> McdcCase<N> {
     }
 }
 
+/// `chars` characters of fixed text that does not compress: each is one of
+/// 64, picked by a pseudo-random sequence, so a record padded with it keeps
+/// six bits of every character through zstd or LZ4. Tests that fill `.fxdb`
+/// extents by size pad documents with it, since their records are compressed.
+#[must_use]
+pub fn incompressible_text(chars: usize) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+    (0..chars)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            char::from(ALPHABET[usize::try_from(state >> 58).unwrap_or(0)])
+        })
+        .collect()
+}
+
 /// Prove unique-cause modified condition/decision coverage for one decision.
 ///
 /// Every atomic condition must have a pair of cases where only that condition

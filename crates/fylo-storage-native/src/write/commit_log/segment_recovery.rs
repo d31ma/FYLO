@@ -121,12 +121,14 @@ impl SegmentRecovery {
         if scan.valid_length >= bytes.len() as u64 {
             return Ok(());
         }
-        let readable_later = fylo_format::LogSalvage::segment(&bytes).is_ok_and(|salvage| {
-            salvage
-                .records
-                .iter()
-                .any(|(offset, _)| *offset > scan.valid_length)
-        });
+        let bodies = medium.frame_bodies();
+        let readable_later =
+            fylo_format::LogSalvage::segment_with(&bytes, &*bodies).is_ok_and(|salvage| {
+                salvage
+                    .records
+                    .iter()
+                    .any(|(offset, _)| *offset > scan.valid_length)
+            });
         if readable_later {
             return Err(NativeStorageError::new(
                 NativeStorageErrorCode::CorruptDocument,

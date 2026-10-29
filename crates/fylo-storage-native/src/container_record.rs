@@ -30,6 +30,9 @@ const DICTIONARY_ID_BYTES: usize = 4;
 pub enum ContainerRecordError {
     /// The header byte or its dictionary id is malformed.
     Malformed,
+    /// The header byte names a codec or sets a flag this build does not
+    /// know: a newer writer's record, refused rather than misread.
+    Unsupported,
     /// The body is plain in an encrypted file, which would let a writer
     /// without the key slip records in.
     NotSealed,
@@ -45,6 +48,9 @@ impl fmt::Display for ContainerRecordError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Malformed => formatter.write_str("record body header is malformed"),
+            Self::Unsupported => {
+                formatter.write_str("record body uses a codec or flag this build cannot read")
+            }
             Self::NotSealed => {
                 formatter.write_str("record body is not sealed in an encrypted file")
             }
@@ -64,7 +70,7 @@ impl ContainerRecordError {
         match self {
             Self::Locked | Self::Cipher(ContainerCipherError::WrongKey) => "EKEY",
             Self::Cipher(ContainerCipherError::Random) => "ENATIVE_IO",
-            Self::Codec(ContainerCodecError::Unsupported) => "EFXDB_VERSION",
+            Self::Unsupported | Self::Codec(ContainerCodecError::Unsupported) => "EFXDB_VERSION",
             Self::Malformed | Self::NotSealed | Self::Codec(_) | Self::Cipher(_) => "EFXDB_CORRUPT",
         }
     }
@@ -140,18 +146,18 @@ impl<'a> ContainerStoredBody<'a> {
     ///
     /// # Errors
     ///
-    /// Returns `Malformed` for an empty body, unknown flag bits, an unknown
-    /// codec, a missing or zero dictionary id, or a dictionary named without
-    /// compression.
+    /// Returns `Unsupported` for unknown flag bits or an unknown codec, and
+    /// `Malformed` for an empty body, a missing or zero dictionary id, or a
+    /// dictionary named without compression.
     pub fn parse(stored: &'a [u8]) -> Result<Self, ContainerRecordError> {
         let (&header, rest) = stored
             .split_first()
             .ok_or(ContainerRecordError::Malformed)?;
         if header & !KNOWN_FLAGS != 0 {
-            return Err(ContainerRecordError::Malformed);
+            return Err(ContainerRecordError::Unsupported);
         }
         let codec = ContainerCodec::from_code(header & CODEC_MASK)
-            .map_err(|_| ContainerRecordError::Malformed)?;
+            .map_err(|_| ContainerRecordError::Unsupported)?;
         let (dictionary_id, payload) = if header & HAS_DICTIONARY == 0 {
             (0, rest)
         } else {
@@ -170,6 +176,13 @@ impl<'a> ContainerStoredBody<'a> {
             sealed: header & SEALED != 0,
             payload,
         })
+    }
+
+    /// The body itself when it is stored as is, neither compressed nor
+    /// sealed, so a reader need not copy it.
+    #[must_use]
+    pub fn plain(&self) -> Option<&'a [u8]> {
+        (self.codec == ContainerCodec::None && !self.sealed).then_some(self.payload)
     }
 
     /// Open (when sealed) and decompress the body, to at most `max_bytes`.

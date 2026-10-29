@@ -1,6 +1,7 @@
 //! Append-only document segments (ADR 0015): the read side, and the formats
 //! the write side shares with it.
 
+mod container_frames;
 mod container_medium;
 mod directory_medium;
 mod generation_slots;
@@ -23,6 +24,7 @@ mod slot_record;
 mod table_cache;
 mod table_reach;
 
+pub(crate) use container_frames::ContainerFrames;
 pub(crate) use container_medium::{ContainerMedium, ContainerOpen};
 pub(crate) use directory_medium::{DirectoryMedium, FileSegment};
 use generation_slots::GenerationSlots;

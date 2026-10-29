@@ -1,4 +1,4 @@
-use crate::{LogFormatError, LogRecord, LogSegmentHeader, LogSegmentKind};
+use crate::{LogBodyCodec, LogFormatError, LogRecord, LogSegmentHeader, LogSegmentKind, PlainBody};
 
 /// Every record that can still be read from a damaged document segment.
 ///
@@ -25,6 +25,16 @@ impl LogSalvage {
     /// Returns an error when the header is invalid, or `InvalidField` when
     /// the segment is a write-ahead log, whose frames carry no marker.
     pub fn segment(bytes: &[u8]) -> Result<Self, LogFormatError> {
+        Self::segment_with(bytes, &PlainBody)
+    }
+
+    /// Salvage a whole document segment whose record bodies `codec`
+    /// stored. A record the codec cannot read is damage here.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::segment`].
+    pub fn segment_with(bytes: &[u8], codec: &dyn LogBodyCodec) -> Result<Self, LogFormatError> {
         let header = LogSegmentHeader::decode(bytes)?;
         if !header.kind.marked() {
             return Err(LogFormatError::InvalidField);
@@ -34,13 +44,13 @@ impl LogSalvage {
             records: Vec::new(),
             damaged: Vec::new(),
         };
-        salvage.read_from(bytes, LogSegmentHeader::ENCODED_BYTES);
+        salvage.read_from(bytes, LogSegmentHeader::ENCODED_BYTES, codec);
         Ok(salvage)
     }
 
-    fn read_from(&mut self, bytes: &[u8], mut offset: usize) {
+    fn read_from(&mut self, bytes: &[u8], mut offset: usize, codec: &dyn LogBodyCodec) {
         while offset < bytes.len() {
-            offset = match self.header.kind.unframe(&bytes[offset..]) {
+            offset = match self.header.kind.unframe_with(&bytes[offset..], codec) {
                 Ok((record, length)) => {
                     self.records.push((offset as u64, record));
                     offset + length

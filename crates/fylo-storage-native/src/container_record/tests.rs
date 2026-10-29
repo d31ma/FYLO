@@ -115,8 +115,6 @@ fn a_plain_body_in_an_encrypted_file_is_refused() {
 fn malformed_headers_are_refused() {
     for stored in [
         &[][..],
-        &[0x40, 1, 2],
-        &[0x03, 1],
         &[0x11, 1, 0],
         &[0x11, 0, 0, 0, 0, 1],
         &[0x10, 1, 0, 0, 0, 1],
@@ -134,4 +132,17 @@ fn malformed_headers_are_refused() {
         (parsed.codec, parsed.dictionary_id, parsed.sealed),
         (ContainerCodec::None, 0, false)
     );
+    assert_eq!(parsed.plain(), Some(&b"x"[..]));
+}
+
+#[test]
+fn an_unknown_codec_or_flag_is_a_newer_format_not_damage() {
+    for stored in [&[0x03, 1][..], &[0x0F, 1], &[0x40, 1, 2], &[0x81, 1]] {
+        let error = ContainerStoredBody::parse(stored).unwrap_err();
+        assert!(
+            matches!(error, ContainerRecordError::Unsupported),
+            "{stored:?}"
+        );
+        assert_eq!(error.code(), "EFXDB_VERSION");
+    }
 }

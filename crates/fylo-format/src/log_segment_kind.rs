@@ -1,4 +1,4 @@
-use crate::{LogFormatError, LogRecord};
+use crate::{LogBodyCodec, LogFormatError, LogRecord, PlainBody};
 
 /// Which of the two segment families a segment belongs to.
 ///
@@ -89,7 +89,21 @@ impl LogSegmentKind {
     ///
     /// Returns `Oversized` when the body would exceed the record limit.
     pub fn frame(self, record: &LogRecord) -> Result<Vec<u8>, LogFormatError> {
-        let encoded = record.encode()?;
+        self.frame_with(record, &PlainBody)
+    }
+
+    /// Encode one record as a frame of this kind, its body stored by
+    /// `codec`.
+    ///
+    /// # Errors
+    ///
+    /// Returns what [`LogRecord::encode_with`] does.
+    pub fn frame_with(
+        self,
+        record: &LogRecord,
+        codec: &dyn LogBodyCodec,
+    ) -> Result<Vec<u8>, LogFormatError> {
+        let encoded = record.encode_with(codec)?;
         if !self.marked() {
             return Ok(encoded);
         }
@@ -108,8 +122,21 @@ impl LogSegmentKind {
     /// Returns `InvalidField` when a marked frame does not start with the
     /// marker, or the defect [`LogRecord::decode`] reports.
     pub fn unframe(self, bytes: &[u8]) -> Result<(LogRecord, usize), LogFormatError> {
+        self.unframe_with(bytes, &PlainBody)
+    }
+
+    /// Decode one frame of this kind whose body `codec` stored.
+    ///
+    /// # Errors
+    ///
+    /// Returns what [`Self::unframe`] does, or the codec's failure.
+    pub fn unframe_with(
+        self,
+        bytes: &[u8],
+        codec: &dyn LogBodyCodec,
+    ) -> Result<(LogRecord, usize), LogFormatError> {
         if !self.marked() {
-            return LogRecord::decode(bytes);
+            return LogRecord::decode_with(bytes, codec);
         }
         let marker = bytes
             .get(..Self::MARKER_BYTES)
@@ -117,7 +144,7 @@ impl LogSegmentKind {
         if marker != Self::MARKER {
             return Err(LogFormatError::InvalidField);
         }
-        let (record, length) = LogRecord::decode(&bytes[Self::MARKER_BYTES..])?;
+        let (record, length) = LogRecord::decode_with(&bytes[Self::MARKER_BYTES..], codec)?;
         Ok((record, Self::MARKER_BYTES + length))
     }
 

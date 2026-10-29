@@ -21,8 +21,8 @@
 //! under the lease this process is the only writer. Either way the claim
 //! then settles what a writer that stopped left in the collection.
 //!
-//! Records are the plain frames a directory collection writes: no codecs and
-//! no encryption yet.
+//! Records are a directory collection's frames with their bodies compressed
+//! ([`super::ContainerFrames`]); no dictionaries and no encryption yet.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -30,11 +30,12 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use fylo_format::{
     ContainerCheckpointSlot, ContainerExtentKind, ContainerGenerationSlot, ContainerSuperblock,
-    LogScan, LogSegmentHeader,
+    LogBodyCodec, LogScan, LogSegmentHeader,
 };
 
 use super::{
-    MediumIdentity, RecordPosition, SegmentHandle, SegmentMedium, SlotRecord, SnapshotStamp,
+    ContainerFrames, MediumIdentity, RecordPosition, SegmentHandle, SegmentMedium, SlotRecord,
+    SnapshotStamp,
 };
 use crate::{
     ContainerError, ContainerFile, Durability, NativeRoot, NativeStorageError,
@@ -67,6 +68,8 @@ struct Shared {
     collection: u32,
     block: u32,
     capacity: u64,
+    /// How the collection's frames store record bodies.
+    frames: Arc<ContainerFrames>,
     state: Mutex<MediumState>,
     /// Set once this medium may write the collection.
     claim: Mutex<Option<Claim>>,
@@ -263,6 +266,12 @@ impl ContainerMedium {
     /// not yet ([`Shared::writable`]).
     pub(crate) fn claim(&self) -> Result<(), NativeStorageError> {
         self.shared.writable().map(drop)
+    }
+
+    /// How the collection's frames store record bodies.
+    #[cfg(test)]
+    pub(crate) fn frames(&self) -> &ContainerFrames {
+        &self.shared.frames
     }
 }
 
@@ -501,7 +510,8 @@ impl Shared {
         let Some(payload) = self.payload(number)? else {
             return Ok(0);
         };
-        let length = LogScan::segment(&payload).map_or(0, |scan| scan.valid_length);
+        let length =
+            LogScan::segment_with(&payload, &*self.frames).map_or(0, |scan| scan.valid_length);
         self.state().scanned.insert(number, length);
         Ok(length)
     }
@@ -546,6 +556,10 @@ impl SegmentMedium for ContainerMedium {
         self.shared.capacity
     }
 
+    fn frame_bodies(&self) -> Arc<dyn LogBodyCodec> {
+        Arc::clone(&self.shared.frames) as Arc<dyn LogBodyCodec>
+    }
+
     /// The collection's segment extents by sequence number, without the
     /// compacted copy this process has not adopted yet.
     fn segment_numbers(&self) -> Result<Vec<u64>, NativeStorageError> {
@@ -572,7 +586,8 @@ impl SegmentMedium for ContainerMedium {
         let Some(mut payload) = self.shared.payload(number)? else {
             return Ok(None);
         };
-        let valid = LogScan::segment(&payload).map_or(0, |scan| scan.valid_length);
+        let valid = LogScan::segment_with(&payload, &*self.shared.frames)
+            .map_or(0, |scan| scan.valid_length);
         let written = self
             .shared
             .state()

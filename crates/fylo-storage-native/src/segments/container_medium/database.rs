@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 
 use super::{ContainerMedium, ContainerOpen, MediumState, Shared};
 use crate::ContainerCollection;
-use crate::segments::MediumIdentity;
+use crate::segments::{ContainerFrames, MediumIdentity};
 
 /// Media open in this process, by file and directory block.
 type Media = BTreeMap<(PathBuf, u32), Weak<Shared>>;
@@ -36,6 +36,7 @@ impl ContainerMedium {
             collection: collection.header.id,
             block: collection.block,
             capacity,
+            frames: Arc::new(ContainerFrames::new(collection.header.id, Vec::new(), 0)),
             state: Mutex::new(MediumState::default()),
             claim: Mutex::new(None),
         });

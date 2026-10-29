@@ -89,7 +89,7 @@ impl SegmentInspection {
         let mut salvaged = Vec::new();
         for number in medium.segment_numbers()? {
             let bytes = medium.require_segment(number)?;
-            match LogSalvage::segment(&bytes) {
+            match LogSalvage::segment_with(&bytes, &*medium.frame_bodies()) {
                 Ok(salvage) => {
                     for (start, end) in &salvage.damaged {
                         report.damaged.push(format!("{number}:{start}-{end}"));
@@ -125,7 +125,7 @@ impl SegmentInspection {
     ) -> Result<(), NativeStorageError> {
         let bytes = medium.require_segment(number)?;
         verification.segments += 1;
-        let salvage = match LogSalvage::segment(&bytes) {
+        let salvage = match LogSalvage::segment_with(&bytes, &*medium.frame_bodies()) {
             Ok(salvage) => salvage,
             Err(error) => {
                 verification
@@ -454,7 +454,7 @@ impl SegmentInspection {
                 continue;
             }
             let bytes = medium.require_segment(number)?;
-            let Ok(salvage) = LogSalvage::segment(&bytes) else {
+            let Ok(salvage) = LogSalvage::segment_with(&bytes, &*medium.frame_bodies()) else {
                 continue;
             };
             if salvage.header.kind != LogSegmentKind::Documents {
@@ -480,7 +480,7 @@ impl SegmentInspection {
                     .unwrap_or_else(|| salvage.header.first_lsn.saturating_sub(1));
                 let range = usize::try_from(*start).unwrap_or(usize::MAX)
                     ..usize::try_from(*end).unwrap_or(usize::MAX);
-                for id in Self::damaged_ids(bytes.get(range).unwrap_or_default()) {
+                for id in Self::damaged_ids(medium, bytes.get(range).unwrap_or_default()) {
                     if newest.get(&id).is_none_or(|lsn| *lsn <= before) {
                         lost.insert(id);
                     }
@@ -491,14 +491,15 @@ impl SegmentInspection {
     }
 
     /// The document identifiers a damaged frame's manifest still names.
-    fn damaged_ids(frame: &[u8]) -> Vec<String> {
+    fn damaged_ids(medium: &dyn SegmentMedium, frame: &[u8]) -> Vec<String> {
+        let bodies = medium.frame_bodies();
         let Some(manifest) = frame
             .get(LogSegmentKind::MARKER_BYTES..)
-            .and_then(LogRecord::unchecked_manifest)
+            .and_then(|frame| LogRecord::unchecked_manifest_with(frame, &*bodies))
         else {
             return Vec::new();
         };
-        SegmentCommitManifest::decode(manifest)
+        SegmentCommitManifest::decode(&manifest)
             .map(|manifest| {
                 manifest
                     .entries

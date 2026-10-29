@@ -174,12 +174,13 @@ impl SegmentStore {
             .reader
             .span(first.segment, start, Self::span_length(end - start)?)?;
         let mut records: BTreeMap<u64, LogRecord> = BTreeMap::new();
+        let bodies = self.reader.medium().frame_bodies();
         for index in group {
             let location = locations[*index];
             if let Entry::Vacant(slot) = records.entry(location.offset) {
                 let relative = Self::span_length(location.offset - start)?;
                 let frame = &span[relative..relative + location.length as usize];
-                slot.insert(SegmentReader::decode(frame)?);
+                slot.insert(SegmentReader::decode(frame, &*bodies)?);
             }
             let record = &records[&location.offset];
             documents[*index] = Some(SegmentDocument::from_record(location, record)?);

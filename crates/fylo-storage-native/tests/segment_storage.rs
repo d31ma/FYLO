@@ -10,11 +10,11 @@ use std::thread;
 
 use fylo_format::{
     ContainerCheckpointSlot, ContainerCollectionHeader, ContainerExtentKind,
-    ContainerGenerationSlot,
+    ContainerGenerationSlot, LogRecord, LogSegmentHeader, LogSegmentKind,
 };
 use fylo_storage_native::{
-    CollectionKind, CollectionLayout, ContainerFile, NativeRoot, NativeWriteRoot,
-    PutDocumentOptions, RootConfig,
+    CollectionKind, CollectionLayout, ContainerFile, ContainerFrameCodec, ContainerSealContext,
+    ContainerStoredBody, NativeRoot, NativeWriteRoot, PutDocumentOptions, RootConfig,
 };
 use serde_json::{Map, Value, json};
 
@@ -740,16 +740,51 @@ fn export_writes_one_file_per_document(medium: Medium) {
     let _ = fs::remove_dir_all(out);
 }
 
-/// Flip one bit inside the record that holds `needle`.
+/// Flip one bit inside the record that holds `needle`: in a segment
+/// file's body, and in a container's frame checksum, since its bodies are
+/// compressed and the record is found by decoding them.
 fn damage(segment: &Segment, needle: &[u8]) -> Vec<u8> {
     let mut bytes = segment.read();
-    let at = bytes
-        .windows(needle.len())
-        .position(|window| window == needle)
-        .unwrap();
-    bytes[at + 2] ^= 0x20;
+    let at = match segment {
+        Segment::File(_) => {
+            bytes
+                .windows(needle.len())
+                .position(|window| window == needle)
+                .unwrap()
+                + 2
+        }
+        Segment::Extent { .. } => {
+            compressed_record(&bytes, needle) + LogSegmentKind::MARKER_BYTES + 4
+        }
+    };
+    bytes[at] ^= 0x20;
     segment.write(&bytes);
     bytes
+}
+
+/// Where the frame of a container segment's first record holding `needle`
+/// starts.
+fn compressed_record(bytes: &[u8], needle: &[u8]) -> usize {
+    let mut codec = ContainerFrameCodec::new(None).unwrap();
+    let context = ContainerSealContext::Record {
+        collection: 0,
+        lsn: 0,
+        entry: 0,
+    };
+    let mut offset = LogSegmentHeader::ENCODED_BYTES;
+    loop {
+        let frame = &bytes[offset + LogSegmentKind::MARKER_BYTES..];
+        let length = u32::from_le_bytes(frame[..4].try_into().unwrap()) as usize;
+        let stored = &frame[LogRecord::FRAME_BYTES..LogRecord::FRAME_BYTES + length];
+        let body = ContainerStoredBody::parse(stored)
+            .unwrap()
+            .decode(&mut codec, None, context, LogRecord::MAX_BODY_BYTES)
+            .unwrap();
+        if body.windows(needle.len()).any(|window| window == needle) {
+            return offset;
+        }
+        offset += LogSegmentKind::MARKER_BYTES + LogRecord::FRAME_BYTES + length;
+    }
 }
 
 fn verify_finds_damage_and_salvage_keeps_the_rest(medium: Medium) {

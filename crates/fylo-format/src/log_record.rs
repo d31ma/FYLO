@@ -1,11 +1,15 @@
-use crate::{Crc32c, LogFormatError, LogRecordKind};
+use std::borrow::Cow;
+
+use crate::{Crc32c, LogBodyCodec, LogFormatError, LogRecordKind, PlainBody};
 
 /// One framed record in a collection log segment.
 ///
 /// The frame is a little-endian body length, the body's CRC-32C, then the
 /// body: sequence number, kind, generation, manifest length, the manifest
 /// (canonical JSON chosen by the storage layer) and the concatenated blobs the
-/// manifest refers to.
+/// manifest refers to. A [`LogBodyCodec`] may store the body transformed, as
+/// a `.fxdb` file compresses it; the length and checksum are then those of the
+/// stored bytes.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LogRecord {
     /// Log sequence number.
@@ -25,6 +29,8 @@ impl LogRecord {
     pub const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
     /// Bytes of the length and checksum that precede the body.
     pub const FRAME_BYTES: usize = 8;
+    /// Smallest body: a record with an empty manifest and no blobs.
+    pub const MIN_BODY_BYTES: usize = Self::FIXED_BODY_BYTES;
     const FIXED_BODY_BYTES: usize = 21;
 
     /// Encode the framed record.
@@ -33,6 +39,16 @@ impl LogRecord {
     ///
     /// Returns `Oversized` when the body would exceed [`Self::MAX_BODY_BYTES`].
     pub fn encode(&self) -> Result<Vec<u8>, LogFormatError> {
+        self.encode_with(&PlainBody)
+    }
+
+    /// Encode the framed record with its body stored by `codec`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Oversized` when the body would exceed [`Self::MAX_BODY_BYTES`]
+    /// or its stored bytes the codec's bounds, or the codec's failure.
+    pub fn encode_with(&self, codec: &dyn LogBodyCodec) -> Result<Vec<u8>, LogFormatError> {
         let body_length = Self::FIXED_BODY_BYTES
             .checked_add(self.manifest.len())
             .and_then(|length| length.checked_add(self.blobs.len()))
@@ -47,6 +63,10 @@ impl LogRecord {
         body.extend_from_slice(&manifest_length.to_le_bytes());
         body.extend_from_slice(&self.manifest);
         body.extend_from_slice(&self.blobs);
+        let body = codec.store(body)?;
+        if !codec.stored_bytes().contains(&body.len()) {
+            return Err(LogFormatError::Oversized);
+        }
         let mut framed = Vec::with_capacity(Self::FRAME_BYTES + body.len());
         let length = u32::try_from(body.len()).map_err(|_| LogFormatError::Oversized)?;
         framed.extend_from_slice(&length.to_le_bytes());
@@ -65,11 +85,28 @@ impl LogRecord {
     /// length, a checksum mismatch, an unknown kind, or a manifest length that
     /// overruns the body.
     pub fn decode(bytes: &[u8]) -> Result<(Self, usize), LogFormatError> {
+        Self::decode_with(bytes, &PlainBody)
+    }
+
+    /// Decode one framed record whose body `codec` stored, from the start
+    /// of `bytes`.
+    ///
+    /// Returns the record and the number of bytes it occupied.
+    ///
+    /// # Errors
+    ///
+    /// Returns what [`Self::decode`] does, checked against the stored bytes,
+    /// or the codec's failure to load them: `UnsupportedVersion` for a
+    /// codec this build cannot read.
+    pub fn decode_with(
+        bytes: &[u8],
+        codec: &dyn LogBodyCodec,
+    ) -> Result<(Self, usize), LogFormatError> {
         let frame = bytes
             .get(..Self::FRAME_BYTES)
             .ok_or(LogFormatError::Truncated)?;
         let length = u32::from_le_bytes([frame[0], frame[1], frame[2], frame[3]]) as usize;
-        if !(Self::FIXED_BODY_BYTES..=Self::MAX_BODY_BYTES).contains(&length) {
+        if !codec.stored_bytes().contains(&length) {
             return Err(LogFormatError::Oversized);
         }
         let end = Self::FRAME_BYTES + length;
@@ -80,7 +117,14 @@ impl LogRecord {
         if Crc32c::checksum(body) != checksum {
             return Err(LogFormatError::ChecksumMismatch);
         }
-        Ok((Self::decode_body(body)?, end))
+        let body = codec.load(body)?;
+        if body.len() < Self::FIXED_BODY_BYTES {
+            return Err(LogFormatError::InvalidField);
+        }
+        if body.len() > Self::MAX_BODY_BYTES {
+            return Err(LogFormatError::Oversized);
+        }
+        Ok((Self::decode_body(&body)?, end))
     }
 
     /// The manifest bytes of a frame that does not decode, read as far as
@@ -92,6 +136,25 @@ impl LogRecord {
     #[must_use]
     pub fn unchecked_manifest(bytes: &[u8]) -> Option<&[u8]> {
         let body = bytes.get(Self::FRAME_BYTES..)?;
+        Self::manifest_of(body)
+    }
+
+    /// [`Self::unchecked_manifest`] of a frame whose body `codec` stored,
+    /// as far as the codec can still load it.
+    #[must_use]
+    pub fn unchecked_manifest_with<'a>(
+        bytes: &'a [u8],
+        codec: &dyn LogBodyCodec,
+    ) -> Option<Cow<'a, [u8]>> {
+        match codec.unchecked_body(bytes)? {
+            Cow::Borrowed(body) => Self::manifest_of(body).map(Cow::Borrowed),
+            Cow::Owned(body) => {
+                Self::manifest_of(&body).map(|manifest| Cow::Owned(manifest.to_vec()))
+            }
+        }
+    }
+
+    fn manifest_of(body: &[u8]) -> Option<&[u8]> {
         let length = body.get(17..Self::FIXED_BODY_BYTES)?;
         let length = u32::from_le_bytes([length[0], length[1], length[2], length[3]]) as usize;
         body.get(Self::FIXED_BODY_BYTES..Self::FIXED_BODY_BYTES.checked_add(length)?)
