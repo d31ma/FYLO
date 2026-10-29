@@ -29,6 +29,7 @@ mod container_codec;
 mod container_file;
 #[cfg(not(target_family = "wasm"))]
 mod container_lease;
+mod container_record;
 mod durability;
 mod filesystem_profile;
 mod index_cache;
@@ -72,6 +73,7 @@ pub use container_file::{
 };
 #[cfg(not(target_family = "wasm"))]
 pub use container_lease::{ContainerLease, ContainerLeaseError, ContainerLeaseTiming};
+pub use container_record::{ContainerRecordError, ContainerStoredBody};
 pub use durability::Durability;
 pub use filesystem_profile::FilesystemProfile;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]

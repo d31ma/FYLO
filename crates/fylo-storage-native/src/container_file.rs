@@ -545,6 +545,11 @@ impl ContainerFile {
     /// header is not flushed; the commit that first uses the extent flushes
     /// it with its own record.
     ///
+    /// A reused segment extent is cleared first, by a hole where the
+    /// filesystem punches one and with zeros elsewhere, because a segment's
+    /// end is found by scanning to its last valid frame and must never reach
+    /// a former owner's frames. Other kinds record their lengths.
+    ///
     /// # Errors
     ///
     /// Returns the write or resize failure.
@@ -558,9 +563,28 @@ impl ContainerFile {
         if allocation.grows_file {
             self.file()
                 .set_len(self.allocator.extent_count() * self.extent_bytes())?;
+        } else if kind == ContainerExtentKind::Segment {
+            self.clear_extent(allocation.index)?;
         }
         write_extent_header(self.file(), self.extent_bytes(), allocation, kind, owner)?;
         Ok(allocation)
+    }
+
+    fn clear_extent(&self, extent: u64) -> io::Result<()> {
+        let start = extent * self.extent_bytes();
+        if punch_hole(self.file(), start, self.extent_bytes())? {
+            return Ok(());
+        }
+        let zeros = vec![0_u8; 1 << 20];
+        let mut at = start;
+        let end = start + self.extent_bytes();
+        while at < end {
+            let length =
+                usize::try_from(end - at).map_or(zeros.len(), |left| left.min(zeros.len()));
+            write_all_at(self.file(), &zeros[..length], at)?;
+            at += length as u64;
+        }
+        Ok(())
     }
 
     /// Mark an extent immutable.

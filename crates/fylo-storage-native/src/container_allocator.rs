@@ -91,6 +91,8 @@ pub enum ContainerAllocatorError {
 pub struct ContainerExtentAllocator {
     slots: Vec<Slot>,
     next_sequence: u64,
+    /// Extents taken since the last durable map, which that map shows free.
+    unmapped: std::collections::BTreeSet<u64>,
 }
 
 impl ContainerExtentAllocator {
@@ -100,6 +102,7 @@ impl ContainerExtentAllocator {
         Self {
             slots: vec![Slot::Reserved],
             next_sequence,
+            unmapped: std::collections::BTreeSet::new(),
         }
     }
 
@@ -170,6 +173,7 @@ impl ContainerExtentAllocator {
         Ok(Self {
             slots,
             next_sequence,
+            unmapped: std::collections::BTreeSet::new(),
         })
     }
 
@@ -201,6 +205,7 @@ impl ContainerExtentAllocator {
         };
         if let Some(index) = self.slots.iter().position(|slot| *slot == Slot::Free) {
             self.slots[index] = taken;
+            self.unmapped.insert(index as u64);
             return ContainerExtentAllocation {
                 index: index as u64,
                 sequence,
@@ -208,6 +213,7 @@ impl ContainerExtentAllocator {
             };
         }
         self.slots.push(taken);
+        self.unmapped.insert((self.slots.len() - 1) as u64);
         ContainerExtentAllocation {
             index: (self.slots.len() - 1) as u64,
             sequence,
@@ -258,6 +264,7 @@ impl ContainerExtentAllocator {
                 } else {
                     self.slots[index] = taken;
                 }
+                self.unmapped.insert(index as u64);
                 ContainerExtentAllocation {
                     index: index as u64,
                     sequence,
@@ -353,6 +360,60 @@ impl ContainerExtentAllocator {
                 *slot = Slot::Free;
             }
         }
+        self.unmapped.clear();
+    }
+
+    /// Whether the durable map already shows `index` in use. An extent taken
+    /// since the last checkpoint is not, so recovery finds it only through
+    /// a generation slot that names it.
+    #[must_use]
+    pub fn is_mapped(&self, index: u64) -> bool {
+        usize::try_from(index)
+            .ok()
+            .and_then(|at| self.slots.get(at))
+            .is_some_and(|slot| matches!(slot, Slot::InUse { .. }))
+            && !self.unmapped.contains(&index)
+    }
+
+    /// The in-use extent holding allocation `sequence`, with its kind and
+    /// owner: how a segment number, which is a sequence number, finds its
+    /// extent.
+    #[must_use]
+    pub fn find_sequence(&self, sequence: u64) -> Option<(u64, ContainerExtentKind, u32)> {
+        self.slots
+            .iter()
+            .enumerate()
+            .find_map(|(index, slot)| match *slot {
+                Slot::InUse {
+                    kind,
+                    owner,
+                    sequence: held,
+                    ..
+                } if held == sequence => Some((index as u64, kind, owner)),
+                _ => None,
+            })
+    }
+
+    /// The in-use extents of one kind and owner, as `(index, sequence)` in
+    /// sequence order: a collection's segments, oldest first.
+    #[must_use]
+    pub fn owned(&self, kind: ContainerExtentKind, owner: u32) -> Vec<(u64, u64)> {
+        let mut extents: Vec<(u64, u64)> = self
+            .slots
+            .iter()
+            .enumerate()
+            .filter_map(|(index, slot)| match *slot {
+                Slot::InUse {
+                    kind: held_kind,
+                    owner: held_owner,
+                    sequence,
+                    ..
+                } if held_kind == kind && held_owner == owner => Some((index as u64, sequence)),
+                _ => None,
+            })
+            .collect();
+        extents.sort_unstable_by_key(|(_, sequence)| *sequence);
+        extents
     }
 
     /// Forget the free extents at the end of the file, so the next
