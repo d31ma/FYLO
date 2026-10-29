@@ -50,6 +50,12 @@ pub(crate) use table_reach::TableReach;
 pub(crate) fn medium_of(
     collection: &std::path::Path,
 ) -> Result<std::sync::Arc<dyn SegmentMedium>, crate::NativeStorageError> {
+    if !crate::NativeCollection::SEGMENTS_SUPPORTED {
+        return Err(crate::NativeStorageError::new(
+            crate::NativeStorageErrorCode::Unsupported,
+            "this build does not carry the segment layout",
+        ));
+    }
     Ok(match ContainerMedium::of(collection)? {
         Some(medium) => std::sync::Arc::new(medium),
         None => DirectoryMedium::shared(collection),

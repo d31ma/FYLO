@@ -203,6 +203,12 @@ impl NativeRoot {
         let canonical = fs::canonicalize(path).map_err(NativeStorageError::io)?;
         let metadata = fs::metadata(&canonical).map_err(NativeStorageError::io)?;
         if metadata.is_file() {
+            if !NativeCollection::SEGMENTS_SUPPORTED {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::Unsupported,
+                    "this build cannot open a .fxdb database yet",
+                ));
+            }
             return Self::open_database(canonical, options);
         }
         if !metadata.is_dir() {
@@ -341,21 +347,25 @@ impl NativeRoot {
     /// Whether this root is a `.fxdb` database rather than a directory.
     #[must_use]
     pub fn is_database(&self) -> bool {
-        self.database.is_some()
+        self.database().is_some()
     }
 
     /// The live collections of a `.fxdb` database root, in the order they
     /// were created; `None` for a directory root.
     #[must_use]
     pub fn database_collection_names(&self) -> Option<Vec<String>> {
-        self.database
-            .as_ref()
-            .map(|database| database.collection_names())
+        self.database().map(|database| database.collection_names())
     }
 
+    /// The open database of a `.fxdb` root. A build without the segment
+    /// layout never opens one, and saying so here lets it drop every
+    /// database path.
     pub(crate) fn database(
         &self,
     ) -> Option<&std::sync::Arc<container_database::ContainerDatabase>> {
+        if !NativeCollection::SEGMENTS_SUPPORTED {
+            return None;
+        }
         self.database.as_ref()
     }
 
@@ -481,7 +491,7 @@ impl NativeRoot {
     pub fn collection(&self, name: &str) -> Result<NativeCollection, NativeStorageError> {
         self.assert_profile_owned()?;
         validate_collection_name(name)?;
-        if let Some(database) = self.database.as_ref() {
+        if let Some(database) = self.database() {
             return self.database_collection(database, name);
         }
         let descriptor = self
@@ -501,6 +511,13 @@ impl NativeRoot {
         };
         let path = self.canonical.join(namespace).join(name);
         self.verify_path(&path, ExpectedType::Directory)?;
+        if !NativeCollection::SEGMENTS_SUPPORTED && descriptor.layout == CollectionLayout::Segments
+        {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::Unsupported,
+                "this build cannot open a collection with the segment layout",
+            ));
+        }
         let schema_head = descriptor.schema_head()?;
         Ok(NativeCollection {
             root: self.clone(),
@@ -597,7 +614,7 @@ impl NativeRoot {
         &self,
         name: &str,
     ) -> Result<Option<CollectionDescriptor>, NativeStorageError> {
-        if let Some(database) = self.database.as_ref() {
+        if let Some(database) = self.database() {
             return database
                 .collection(name)
                 .map(|collection| Self::database_descriptor(&collection.header.descriptor))
@@ -1683,8 +1700,15 @@ impl NativeCollection {
         self.layout
     }
 
+    /// Whether this build carries the segment layout. The WASI and browser
+    /// builds do not (ADR 0015 section 1), so their segment paths compile
+    /// away instead of growing the engine they ship. A `.fxdb` database
+    /// keeps every collection in segments, so those builds refuse one too
+    /// until the browser engine's size budget makes room for it.
+    pub(crate) const SEGMENTS_SUPPORTED: bool = cfg!(not(target_family = "wasm"));
+
     pub(crate) fn uses_segments(&self) -> bool {
-        self.layout == CollectionLayout::Segments
+        Self::SEGMENTS_SUPPORTED && self.layout == CollectionLayout::Segments
     }
 
     /// Where this segment collection keeps its segments, slots and
@@ -1692,6 +1716,12 @@ impl NativeCollection {
     pub(crate) fn segment_medium(
         &self,
     ) -> Result<std::sync::Arc<dyn segments::SegmentMedium>, NativeStorageError> {
+        if !Self::SEGMENTS_SUPPORTED {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::Unsupported,
+                "this build does not carry the segment layout",
+            ));
+        }
         if let (Some(database), Some(block)) = (self.root.database(), self.block) {
             return Ok(std::sync::Arc::new(database.medium(block)?));
         }

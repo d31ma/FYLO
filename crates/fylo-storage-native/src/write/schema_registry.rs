@@ -142,7 +142,9 @@ impl NativeRoot {
             return SegmentSchemas::for_reader(&*medium, descriptor.schema_head()?).map(Some);
         }
         let collection = self.canonical.join(".collections").join(name);
-        if !path_exists_no_follow(&collection.join("segments"))? {
+        if !crate::NativeCollection::SEGMENTS_SUPPORTED
+            || !path_exists_no_follow(&collection.join("segments"))?
+        {
             return Ok(None);
         }
         self.verify_path(&collection, crate::ExpectedType::Directory)?;

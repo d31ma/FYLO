@@ -45,6 +45,9 @@ impl NativeWriteRoot {
     /// segment, lock contention, or an interrupted durable write, which the
     /// next opener recovers.
     pub fn compact_collection(&self, name: &str) -> Result<CompactionReport, NativeStorageError> {
+        if !crate::NativeCollection::SEGMENTS_SUPPORTED {
+            return Err(SegmentCompactor::maintenance_unsupported());
+        }
         self.root.assert_profile_owned()?;
         self.root.not_yet_in_database("compaction")?;
         let collection = self.root.collection(name)?;
@@ -106,6 +109,9 @@ impl NativeWriteRoot {
         name: &str,
         out: &std::path::Path,
     ) -> Result<LayoutMigrationReport, NativeStorageError> {
+        if !crate::NativeCollection::SEGMENTS_SUPPORTED {
+            return Err(SegmentCompactor::maintenance_unsupported());
+        }
         self.root.assert_profile_owned()?;
         let collection = self.root.collection(name)?;
         SegmentCompactor::require_segments(&collection)?;
@@ -136,6 +142,9 @@ impl NativeWriteRoot {
     /// Returns an error for a file collection or an I/O failure. Defects in
     /// the data are reported, not returned as errors.
     pub fn verify_segments(&self, name: &str) -> Result<SegmentVerification, NativeStorageError> {
+        if !crate::NativeCollection::SEGMENTS_SUPPORTED {
+            return Err(SegmentCompactor::maintenance_unsupported());
+        }
         self.root.assert_profile_owned()?;
         let collection = self.root.collection(name)?;
         SegmentCompactor::require_segments(&collection)?;
@@ -157,6 +166,9 @@ impl NativeWriteRoot {
         name: &str,
         out: &std::path::Path,
     ) -> Result<SalvageReport, NativeStorageError> {
+        if !crate::NativeCollection::SEGMENTS_SUPPORTED {
+            return Err(SegmentCompactor::maintenance_unsupported());
+        }
         self.root.assert_profile_owned()?;
         self.root.not_yet_in_database("salvage")?;
         let collection = self.root.collection(name)?;

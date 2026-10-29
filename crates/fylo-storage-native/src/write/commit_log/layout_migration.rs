@@ -67,6 +67,11 @@ impl NativeWriteRoot {
         layout: CollectionLayout,
         allow_engine_only_access: bool,
     ) -> Result<LayoutMigrationReport, NativeStorageError> {
+        if !NativeCollection::SEGMENTS_SUPPORTED {
+            return Err(Self::unsupported(
+                "this build does not carry the segment layout",
+            ));
+        }
         self.root.assert_profile_owned()?;
         self.root
             .refuse_in_database("a .fxdb database keeps every collection in segments")?;
@@ -133,8 +138,9 @@ impl NativeWriteRoot {
         &self,
         collection: &NativeCollection,
     ) -> Result<bool, NativeStorageError> {
-        // A collection of a `.fxdb` database never migrates.
-        if collection.database_block().is_some() {
+        // A collection of a `.fxdb` database never migrates, and a build
+        // without directory segments has nothing to finish.
+        if !NativeCollection::SEGMENTS_SUPPORTED || collection.database_block().is_some() {
             return Ok(false);
         }
         if crate::path_exists_no_follow(&Self::marker_path(collection)?)? {
@@ -149,6 +155,11 @@ impl NativeWriteRoot {
     }
 
     fn require_migratable(&self, collection: &NativeCollection) -> Result<(), NativeStorageError> {
+        if !NativeCollection::SEGMENTS_SUPPORTED {
+            return Err(Self::unsupported(
+                "this build does not carry the segment layout",
+            ));
+        }
         if collection.kind() != CollectionKind::Document {
             return Err(Self::unsupported(
                 "raw-file collections keep the file layout",

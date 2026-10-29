@@ -374,9 +374,23 @@ impl SegmentCompactor {
         active.full_flush()
     }
 
+    pub(crate) fn maintenance_unsupported() -> NativeStorageError {
+        NativeStorageError::new(
+            NativeStorageErrorCode::Unsupported,
+            "this build does not carry segment maintenance",
+        )
+    }
+
     pub(crate) fn require_segments(
         collection: &NativeCollection,
     ) -> Result<(), NativeStorageError> {
+        // Maintenance stays native: a browser build edits a `.fxdb`
+        // database's segments but leaves compacting, exporting, verifying
+        // and salvaging them to the native engine, so their code compiles
+        // away there.
+        if !NativeCollection::SEGMENTS_SUPPORTED {
+            return Err(Self::maintenance_unsupported());
+        }
         if collection.uses_segments() {
             return Ok(());
         }
