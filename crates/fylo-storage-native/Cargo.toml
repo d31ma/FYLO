@@ -28,15 +28,15 @@ same-file.workspace = true
 # and the `F_OFD_*` commands differ per target, so they come from here rather
 # than hand-written declarations.
 libc = { workspace = true }
+# The filesystem type (`fstatfs`) a `.fxdb` file is on, which decides whether
+# its byte-range locks are trusted.
+rustix.workspace = true
 xattr.workspace = true
 
 # `LockFileEx` byte-range locks and file identity for `.fxdb` files (ADR 0016
 # section 7). Already in the graph through `errno`, `rustix` and `tokio`.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO"] }
-
-[target.'cfg(target_vendor = "apple")'.dependencies]
-rustix.workspace = true
 
 [dev-dependencies]
 fylo-test-support = { version = "0.1.0", path = "../fylo-test-support" }

@@ -12,6 +12,14 @@
   clients cannot name another root, server paths or URLs. `fylo serve --stop`
   stops it gracefully; a killed server is recovered like any crashed process.
   The Node and Rust shims connect with `Fylo.connect` (ADR 0012).
+- **Fylo Explorer opens a `.fxdb` database file in any current browser.** The
+  start screen takes one by picker, file input or drag and drop, including in
+  Firefox and Safari, and opens it read-only. "Edit a copy" streams it into the
+  browser's private storage, and "Save" writes it back over the original where
+  the browser allows it, or downloads it. The file is held by a Worker with no
+  `SharedArrayBuffer` bridge, so the page needs no COOP or COEP headers
+  (ADR 0016). Browsing the collections inside the file arrives with the
+  single-file format in the engine; the folder view is unchanged.
 
 ### Fixed
 

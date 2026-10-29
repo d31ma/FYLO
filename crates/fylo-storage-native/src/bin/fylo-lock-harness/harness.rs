@@ -1,6 +1,6 @@
 //! The harness itself; see `main.rs`.
 
-use fylo_storage_native::{ByteRangeLockFile, LockByte, LockMode};
+use fylo_storage_native::{ByteRangeLockFile, FilesystemInfo, LockByte, LockMode};
 use serde_json::{Value, json};
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -67,6 +67,8 @@ struct Options {
     bytes: Vec<LockByte>,
     mode: Option<LockMode>,
     duplicate_close: bool,
+    read_only_close: bool,
+    read_only: bool,
     foreign_close: bool,
     unlocked: bool,
     machines: u64,
@@ -103,6 +105,8 @@ impl Options {
                 "--byte" => options.bytes.push(parse_byte(&value())),
                 "--mode" => options.mode = Some(parse_mode(&value())),
                 "--duplicate-close" => options.duplicate_close = true,
+                "--read-only-close" => options.read_only_close = true,
+                "--read-only" => options.read_only = true,
                 "--foreign-close" => options.foreign_close = true,
                 "--unlocked" => options.unlocked = true,
                 "--machines" => options.machines = number(&value()),
@@ -273,7 +277,37 @@ fn qualify(options: &Options) -> io::Result<bool> {
         std::env::consts::ARCH
     );
     let started = Instant::now();
-    let outcome = run_checks(options, &path, &mut report);
+    let opened = ByteRangeLockFile::open(&path)?;
+    let filesystem = FilesystemInfo::of(opened.file()).unwrap_or(FilesystemInfo {
+        name: "unknown".to_owned(),
+        remote: true,
+    });
+    let locks = opened.probe();
+    drop(opened);
+    let status = if !locks {
+        "lease fallback"
+    } else if filesystem.byte_range_locks_qualified() {
+        "qualified"
+    } else {
+        "unqualified"
+    };
+    report.note(
+        "filesystem",
+        format!(
+            "{} ({}), byte-range locks: {status}",
+            filesystem.name,
+            if filesystem.remote { "remote" } else { "local" }
+        ),
+    );
+    let outcome = if locks {
+        run_checks(options, &path, &mut report)
+    } else {
+        report.note(
+            "lock checks skipped",
+            "the filesystem refuses byte-range locks; FYLO uses the lock-free lease here",
+        );
+        Ok(())
+    };
     let _ = std::fs::remove_file(&path);
     if let Err(error) = outcome {
         report.check("harness ran to the end", false, error.to_string());
@@ -283,6 +317,9 @@ fn qualify(options: &Options) -> io::Result<bool> {
         "os": std::env::consts::OS,
         "arch": std::env::consts::ARCH,
         "dir": dir.display().to_string(),
+        "filesystem": filesystem.name,
+        "remote": filesystem.remote,
+        "byte_range_locks": status,
         "procs": options.procs,
         "threads": options.threads,
         "seconds": options.seconds,
@@ -302,6 +339,7 @@ fn qualify(options: &Options) -> io::Result<bool> {
 fn run_checks(options: &Options, path: &Path, report: &mut Report) -> io::Result<()> {
     let file = ByteRangeLockFile::open(path)?;
     beyond_the_end(&file, report)?;
+    read_only_file(path, report)?;
     conflict_matrix(&file, path, report)?;
     release_on_exit(&file, path, report)?;
     close_safety(&file, path, report)?;
@@ -326,6 +364,61 @@ fn beyond_the_end(file: &ByteRangeLockFile, report: &mut Report) -> io::Result<(
         format!("all granted: {all}, length after: {length} (expected {FILE_BYTES})"),
     );
     Ok(())
+}
+
+/// A file without write permission still opens read-only and takes the
+/// lease shared.
+fn read_only_file(path: &Path, report: &mut Report) -> io::Result<()> {
+    let mut name = path.as_os_str().to_owned();
+    name.push(".read-only");
+    let copy = PathBuf::from(name);
+    std::fs::write(&copy, b"fxdb")?;
+    let mut permissions = std::fs::metadata(&copy)?.permissions();
+    permissions.set_readonly(true);
+    std::fs::set_permissions(&copy, permissions.clone())?;
+    let outcome = (|| -> io::Result<(bool, bool, bool)> {
+        let reader = ByteRangeLockFile::open_read_only(&copy)?;
+        let lease = reader
+            .try_lock(LockByte::LEASE, LockMode::Shared)?
+            .is_some();
+        let mut bytes = [0; 4];
+        read_exact(reader.file(), &mut bytes)?;
+        let read = &bytes == b"fxdb";
+        let writable_refused = ByteRangeLockFile::open(&copy).is_err();
+        Ok((lease, read, writable_refused))
+    })();
+    #[allow(
+        clippy::permissions_set_readonly_false,
+        reason = "to delete it on Windows"
+    )]
+    permissions.set_readonly(false);
+    let _ = std::fs::set_permissions(&copy, permissions);
+    let _ = std::fs::remove_file(&copy);
+    let (lease, read, writable_refused) = outcome?;
+    report.check(
+        "read-only file: read-only open takes lease shared",
+        lease && read,
+        format!(
+            "lease granted: {lease}, data read: {read}, writable open refused: {writable_refused} \
+             (not refused when running as root)"
+        ),
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+fn read_exact(file: &File, bytes: &mut [u8]) -> io::Result<()> {
+    std::os::unix::fs::FileExt::read_exact_at(file, bytes, 0)
+}
+
+#[cfg(windows)]
+fn read_exact(file: &File, bytes: &mut [u8]) -> io::Result<()> {
+    let read = std::os::windows::fs::FileExt::seek_read(file, bytes, 0)?;
+    if read == bytes.len() {
+        Ok(())
+    } else {
+        Err(io::ErrorKind::UnexpectedEof.into())
+    }
 }
 
 /// A child process holding bytes until its stdin closes.
@@ -510,6 +603,30 @@ fn close_safety(file: &ByteRangeLockFile, path: &Path, report: &mut Report) -> i
         path,
         &[LockByte::LEASE],
         LockMode::Exclusive,
+        &["--read-only-close"],
+    )?;
+    let held = conflicts(file, LockByte::LEASE, LockMode::Exclusive)?;
+    holder.finish()?;
+    report.check(
+        "holder closes a read-only handle",
+        held,
+        format!("lease still held: {held}"),
+    );
+
+    let holder = Holder::start(path, &[LockByte::LEASE], LockMode::Shared, &["--read-only"])?;
+    let exclusive = conflicts(file, LockByte::LEASE, LockMode::Exclusive)?;
+    let shared = !conflicts(file, LockByte::LEASE, LockMode::Shared)?;
+    holder.finish()?;
+    report.check(
+        "read-only process holds lease shared",
+        exclusive && shared,
+        format!("exclusive refused: {exclusive}, shared granted: {shared}"),
+    );
+
+    let holder = Holder::start(
+        path,
+        &[LockByte::LEASE],
+        LockMode::Exclusive,
         &["--foreign-close"],
     )?;
     let held = conflicts(file, LockByte::LEASE, LockMode::Exclusive)?;
@@ -525,7 +642,11 @@ fn close_safety(file: &ByteRangeLockFile, path: &Path, report: &mut Report) -> i
 }
 
 fn hold(options: &Options) -> io::Result<()> {
-    let file = ByteRangeLockFile::open(options.file())?;
+    let file = if options.read_only {
+        ByteRangeLockFile::open_read_only(options.file())?
+    } else {
+        ByteRangeLockFile::open(options.file())?
+    };
     let mode = options.mode.unwrap_or(LockMode::Exclusive);
     let mut guards = Vec::new();
     for &byte in &options.bytes {
@@ -533,6 +654,9 @@ fn hold(options: &Options) -> io::Result<()> {
     }
     if options.duplicate_close {
         drop(ByteRangeLockFile::open(options.file())?);
+    }
+    if options.read_only_close {
+        drop(ByteRangeLockFile::open_read_only(options.file())?);
     }
     if options.foreign_close {
         drop(File::open(options.file())?);

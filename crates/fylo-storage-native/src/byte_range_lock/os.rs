@@ -218,3 +218,56 @@ pub(super) fn unlock(file: &File, byte: u64) -> io::Result<()> {
         Err(io::Error::last_os_error())
     }
 }
+
+/// The filesystem's name as the OS reports it, and whether it is remote.
+#[cfg(windows)]
+#[allow(
+    unsafe_code,
+    reason = "ADR 0004/0016: volume and remote-protocol queries fill caller buffers"
+)]
+pub(super) fn filesystem(file: &File) -> io::Result<(String, bool)> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_REMOTE_PROTOCOL_INFO, FileRemoteProtocolInfo, GetFileInformationByHandleEx,
+        GetVolumeInformationByHandleW,
+    };
+    let mut name = [0_u16; 64];
+    let capacity = u32::try_from(name.len()).expect("small buffer");
+    // SAFETY: the handle is borrowed from a live `File` for the call. Every
+    // optional out-pointer is null, which the function accepts, and `name`
+    // is a valid, exclusively borrowed buffer of `capacity` UTF-16 units
+    // that outlives the call.
+    let named = unsafe {
+        GetVolumeInformationByHandleW(
+            raw_handle(file),
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            name.as_mut_ptr(),
+            capacity,
+        )
+    };
+    if named == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let length = name
+        .iter()
+        .position(|&unit| unit == 0)
+        .unwrap_or(name.len());
+    let mut protocol = FILE_REMOTE_PROTOCOL_INFO::default();
+    let size =
+        u32::try_from(std::mem::size_of::<FILE_REMOTE_PROTOCOL_INFO>()).expect("small struct");
+    // SAFETY: as above; `protocol` is a valid, exclusively borrowed struct of
+    // exactly `size` bytes, the type this information class writes. The call
+    // fails on a local file, which is the answer rather than an error.
+    let remote = unsafe {
+        GetFileInformationByHandleEx(
+            raw_handle(file),
+            FileRemoteProtocolInfo,
+            (&raw mut protocol).cast(),
+            size,
+        )
+    } != 0;
+    Ok((String::from_utf16_lossy(&name[..length]), remote))
+}

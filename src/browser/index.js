@@ -15,6 +15,17 @@ export {
     ensureRootPermission
 } from './fsa-filesystem.js'
 export { FyloWorkerClient, createWorkerClient } from './worker/client.js'
+export {
+    SingleFileDatabase,
+    FXDB_MEDIA_TYPE,
+    databaseFromDrop,
+    hasFxdbMagic,
+    listWorkingCopies,
+    pickDatabaseFile,
+    removeWorkingCopy,
+    saveDatabase,
+    workingCopyName
+} from './fxdb-client.mjs'
 export { WasmIndexScannerFactory, createWasmIndexScannerFactory } from './wasm/index-scanner.js'
 export { BrowserCore } from './core/engine.js'
 export { createMemoryFilesystem, MemoryFilesystem } from './core/memory-filesystem.js'

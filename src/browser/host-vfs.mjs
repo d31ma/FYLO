@@ -30,7 +30,10 @@ export const OPEN_APPEND = 1 << 5
 const ENOENT = -2
 const EIO = -5
 const EBADF = -9
+const EACCES = -13
 const EEXIST = -17
+const EROFS = -30
+const ESTALE = -116
 
 /**
  * Build the import object for one module instance.
@@ -181,6 +184,12 @@ function errno(error) {
             return EEXIST
         case 'EBADF':
             return EBADF
+        case 'EACCES':
+            return EACCES
+        case 'EROFS':
+            return EROFS
+        case 'ESTALE':
+            return ESTALE
         default:
             return EIO
     }

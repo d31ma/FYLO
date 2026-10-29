@@ -32,10 +32,12 @@ use std::path::Path;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
+mod filesystem;
 mod os;
 #[cfg(test)]
 mod tests;
 
+pub use filesystem::FilesystemInfo;
 use os::FileKey;
 
 /// First byte of the reserved lock range.
@@ -43,6 +45,8 @@ pub const LOCK_RANGE_START: u64 = 1 << 62;
 /// Offset of collection writer bytes from [`LOCK_RANGE_START`]. The bytes
 /// below it are kept for further database-wide locks.
 pub const COLLECTION_WRITER_START: u64 = 4096;
+/// A reserved byte that [`ByteRangeLockFile::probe`] takes and releases.
+const PROBE: u64 = LOCK_RANGE_START + 2;
 /// The longest a waiting [`ByteRangeLockFile::lock`] sleeps between tries.
 pub const MAX_POLL_INTERVAL: Duration = Duration::from_millis(1);
 const FIRST_POLL_INTERVAL: Duration = Duration::from_micros(20);
@@ -52,8 +56,9 @@ const FIRST_POLL_INTERVAL: Duration = Duration::from_micros(20);
 pub struct LockByte(u64);
 
 impl LockByte {
-    /// The database lease. `fylo serve` holds it exclusively; local processes
-    /// sharing the file hold it shared.
+    /// The database lease. Every process holds it shared while it has the file
+    /// open; an operation that needs the file to itself (`compact --shrink`,
+    /// an in-place `pack --sealed`) takes it exclusive.
     pub const LEASE: Self = Self(LOCK_RANGE_START);
     /// Extent allocation: taking a free extent or growing the file.
     pub const ALLOCATION: Self = Self(LOCK_RANGE_START + 1);
@@ -97,11 +102,26 @@ pub enum LockMode {
 struct Holders {
     shared: u32,
     exclusive: bool,
+    /// The descriptor the OS lock was taken through, if any; it must also be
+    /// the one that releases it.
+    os: Option<Descriptor>,
+}
+
+/// Which of a file's descriptors a request goes through.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Descriptor {
+    /// The one the file was first opened with in this process.
+    First,
+    /// A writable one added when the first was read-only.
+    Writable,
 }
 
 #[derive(Debug, Default)]
 struct LockState {
     held: HashMap<u64, Holders>,
+    /// Set by [`ByteRangeLockFile::set_process_local`]: every byte is then
+    /// decided in the registry alone, with no OS call.
+    process_local: bool,
     /// Descriptors for this file opened while it was locked, closed once it
     /// is not.
     deferred_closes: Vec<File>,
@@ -110,6 +130,10 @@ struct LockState {
 #[derive(Debug)]
 struct SharedFile {
     file: File,
+    first_writable: bool,
+    /// Set by the first writable open after a read-only one, and kept until
+    /// the last handle closes, since closing it could drop locks on macOS.
+    writable: OnceLock<File>,
     state: Mutex<LockState>,
     released: Condvar,
 }
@@ -117,6 +141,22 @@ struct SharedFile {
 impl SharedFile {
     fn state(&self) -> MutexGuard<'_, LockState> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn descriptor(&self, descriptor: Descriptor) -> &File {
+        match descriptor {
+            Descriptor::First => &self.file,
+            Descriptor::Writable => self.writable.get().unwrap_or(&self.file),
+        }
+    }
+
+    /// The writable descriptor, when the process has one.
+    fn writable(&self) -> Option<Descriptor> {
+        if self.first_writable {
+            Some(Descriptor::First)
+        } else {
+            self.writable.get().map(|_| Descriptor::Writable)
+        }
     }
 }
 
@@ -138,6 +178,7 @@ fn registry() -> MutexGuard<'static, Registry> {
 #[derive(Debug)]
 pub struct ByteRangeLockFile {
     key: FileKey,
+    writable: bool,
     // Taken in `drop`, so the last user closes the handle under the registry
     // lock and no newer open of the file can lock it first.
     shared: Option<Arc<SharedFile>>,
@@ -150,36 +191,78 @@ impl ByteRangeLockFile {
     ///
     /// Returns the open failure, or a failure to read the file's identity.
     pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
-        let path = path.as_ref();
-        let file = OpenOptions::new().read(true).write(true).open(path)?;
+        Self::open_with(path.as_ref(), true)
+    }
+
+    /// Open an existing file for reading, on a read-only file or mount too.
+    ///
+    /// When the process already has the file open, this shares that handle,
+    /// so closing it never drops another handle's locks. A read-only handle
+    /// takes only the lease byte, and only shared.
+    ///
+    /// # Errors
+    ///
+    /// Returns the open failure, or a failure to read the file's identity.
+    pub fn open_read_only(path: impl AsRef<Path>) -> io::Result<Self> {
+        Self::open_with(path.as_ref(), false)
+    }
+
+    fn open_with(path: &Path, writable: bool) -> io::Result<Self> {
+        let file = OpenOptions::new().read(true).write(writable).open(path)?;
         let key = os::file_key(&file, path)?;
         let mut registry = registry();
         if let Some((shared, users)) = registry.get_mut(&key) {
             *users += 1;
             let shared = Arc::clone(shared);
             drop(registry);
-            let mut state = shared.state();
-            if state.held.is_empty() {
-                drop(file);
+            let spare = if writable && !shared.first_writable {
+                shared.writable.set(file).err()
             } else {
-                state.deferred_closes.push(file);
+                Some(file)
+            };
+            if let Some(file) = spare {
+                let mut state = shared.state();
+                if state.held.is_empty() {
+                    drop(file);
+                } else {
+                    state.deferred_closes.push(file);
+                }
             }
-            drop(state);
             return Ok(Self {
                 key,
+                writable,
                 shared: Some(shared),
             });
         }
         let shared = Arc::new(SharedFile {
             file,
+            first_writable: writable,
+            writable: OnceLock::new(),
             state: Mutex::default(),
             released: Condvar::new(),
         });
         registry.insert(key.clone(), (Arc::clone(&shared), 1));
         Ok(Self {
             key,
+            writable,
             shared: Some(shared),
         })
+    }
+
+    /// The descriptor this handle's requests and I/O go through.
+    fn descriptor(&self) -> Descriptor {
+        if self.writable {
+            self.shared()
+                .writable()
+                .expect("a writable handle registered a writable descriptor")
+        } else {
+            Descriptor::First
+        }
+    }
+
+    /// Whether this handle may write and take every byte.
+    pub fn is_writable(&self) -> bool {
+        self.writable
     }
 
     fn shared(&self) -> &SharedFile {
@@ -188,11 +271,23 @@ impl ByteRangeLockFile {
             .expect("a byte-range lock file is only emptied by drop")
     }
 
-    /// The file, for reads and writes. Every handle to it in this process
-    /// returns the same one.
+    /// The file, for reads and, from a writable handle, writes. Every
+    /// handle to it in this process shares the same descriptors.
     #[must_use]
     pub fn file(&self) -> &File {
-        &self.shared().file
+        self.shared().descriptor(self.descriptor())
+    }
+
+    /// A read-only handle takes the lease byte shared, and nothing else.
+    fn check_access(&self, byte: LockByte, mode: LockMode) -> io::Result<()> {
+        if self.writable || (byte == LockByte::LEASE && mode == LockMode::Shared) {
+            Ok(())
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!("a read-only handle cannot take the {byte} lock"),
+            ))
+        }
     }
 
     /// Take `byte` without waiting.
@@ -203,12 +298,14 @@ impl ByteRangeLockFile {
     ///
     /// # Errors
     ///
-    /// Returns an OS failure other than a conflict, such as `ENOLCK` from a
-    /// filesystem with no lock manager.
+    /// Returns [`io::ErrorKind::PermissionDenied`] when a read-only handle
+    /// asks for any byte but the lease shared, or an OS failure other than a
+    /// conflict, such as `ENOLCK` from a filesystem with no lock manager.
     pub fn try_lock(&self, byte: LockByte, mode: LockMode) -> io::Result<Option<ByteLockGuard>> {
+        self.check_access(byte, mode)?;
         let shared = self.shared();
         let mut state = shared.state();
-        if !Self::try_lock_in(shared, &mut state, byte, mode)? {
+        if !Self::try_lock_in(shared, self.descriptor(), &mut state, byte, mode)? {
             return Ok(None);
         }
         drop(state);
@@ -225,19 +322,21 @@ impl ByteRangeLockFile {
     /// # Errors
     ///
     /// Returns [`io::ErrorKind::TimedOut`] when the byte is still held at the
-    /// deadline, or an OS failure as [`Self::try_lock`] does.
+    /// deadline, or a failure as [`Self::try_lock`] does.
     pub fn lock(
         &self,
         byte: LockByte,
         mode: LockMode,
         timeout: Duration,
     ) -> io::Result<ByteLockGuard> {
+        self.check_access(byte, mode)?;
         let deadline = Instant::now() + timeout;
         let mut interval = FIRST_POLL_INTERVAL;
         let shared = self.shared();
+        let descriptor = self.descriptor();
         let mut state = shared.state();
         loop {
-            if Self::try_lock_in(shared, &mut state, byte, mode)? {
+            if Self::try_lock_in(shared, descriptor, &mut state, byte, mode)? {
                 drop(state);
                 return Ok(ByteLockGuard {
                     file: self.clone(),
@@ -264,39 +363,77 @@ impl ByteRangeLockFile {
 
     fn try_lock_in(
         shared: &SharedFile,
+        descriptor: Descriptor,
         state: &mut LockState,
         byte: LockByte,
         mode: LockMode,
     ) -> io::Result<bool> {
         let holders = state.held.get(&byte.0).copied().unwrap_or_default();
+        let file = shared.descriptor(descriptor);
+        let os = (!state.process_local).then_some(descriptor);
         let next = match mode {
             LockMode::Exclusive => {
                 if holders.exclusive || holders.shared > 0 {
                     return Ok(false);
                 }
-                if !os::try_lock(&shared.file, byte.0, true)? {
+                if os.is_some() && !os::try_lock(file, byte.0, true)? {
                     return Ok(false);
                 }
                 Holders {
                     shared: 0,
                     exclusive: true,
+                    os,
                 }
             }
             LockMode::Shared => {
                 if holders.exclusive {
                     return Ok(false);
                 }
-                if holders.shared == 0 && !os::try_lock(&shared.file, byte.0, false)? {
-                    return Ok(false);
-                }
+                let os = if holders.shared == 0 {
+                    if os.is_some() && !os::try_lock(file, byte.0, false)? {
+                        return Ok(false);
+                    }
+                    os
+                } else {
+                    holders.os
+                };
                 Holders {
                     shared: holders.shared + 1,
                     exclusive: false,
+                    os,
                 }
             }
         };
         state.held.insert(byte.0, next);
         Ok(true)
+    }
+
+    /// Decide every byte inside this process alone, with no OS lock, from
+    /// the next request on; `false` returns to OS locks.
+    ///
+    /// This is for a process that writes the file alone under the lock-free
+    /// lease (ADR 0016 section 7), where the filesystem's locks are
+    /// unqualified or refused: its threads still exclude each other on writer
+    /// and allocation bytes. It applies to every handle to the file in the
+    /// process. A byte already held keeps the OS lock it was taken with until
+    /// it is released.
+    pub fn set_process_local(&self, local: bool) {
+        self.shared().state().process_local = local;
+    }
+
+    /// Whether this filesystem grants a byte-range lock at all, found by
+    /// taking and releasing a reserved byte. Any failure counts as no: the
+    /// lock-free lease needs none. `true` does not make the locks trusted;
+    /// see [`FilesystemInfo::byte_range_locks_qualified`].
+    pub fn probe(&self) -> bool {
+        let file = self.file();
+        // A read-only descriptor can only take a shared lock.
+        match os::try_lock(file, PROBE, self.writable) {
+            Ok(true) => os::unlock(file, PROBE).is_ok(),
+            // Another process probing at this moment: the locks work.
+            Ok(false) => true,
+            Err(_) => false,
+        }
     }
 
     fn release(&self, byte: LockByte, mode: LockMode) -> io::Result<()> {
@@ -315,10 +452,13 @@ impl ByteRangeLockFile {
         if !last {
             return Ok(());
         }
+        let os = holders.os;
         state.held.remove(&byte.0);
         // Released in the registry even when the OS refuses: the handle
         // still drops whatever the OS kept when its last user closes it.
-        let result = os::unlock(&shared.file, byte.0);
+        let result = os.map_or(Ok(()), |descriptor| {
+            os::unlock(shared.descriptor(descriptor), byte.0)
+        });
         if state.held.is_empty() {
             state.deferred_closes.clear();
         }
@@ -335,6 +475,7 @@ impl Clone for ByteRangeLockFile {
         }
         Self {
             key: self.key.clone(),
+            writable: self.writable,
             shared: self.shared.clone(),
         }
     }

@@ -1,4 +1,4 @@
-use super::{ByteRangeLockFile, LOCK_RANGE_START, LockByte, LockMode};
+use super::{ByteRangeLockFile, FilesystemInfo, LOCK_RANGE_START, LockByte, LockMode};
 use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -261,4 +261,130 @@ fn read_at(file: &std::fs::File, len: usize, offset: u64) -> Vec<u8> {
     let read = std::os::windows::fs::FileExt::seek_read(file, &mut bytes, offset).expect("read");
     assert_eq!(read, len);
     bytes
+}
+
+#[test]
+fn a_local_filesystem_is_named_and_takes_a_probe_lock() {
+    let (_dir, path) = database("brl-probe");
+    let file = ByteRangeLockFile::open(&path).expect("open");
+    let filesystem = FilesystemInfo::of(file.file()).expect("filesystem");
+    assert!(!filesystem.name.is_empty());
+    assert!(file.probe(), "{filesystem:?} refused a byte-range lock");
+    // The probe leaves nothing held.
+    assert!(
+        ByteRangeLockFile::open(&path)
+            .expect("open again")
+            .try_lock(LockByte::LEASE, LockMode::Exclusive)
+            .expect("lock")
+            .is_some()
+    );
+}
+
+#[test]
+fn process_local_bytes_still_exclude_threads_in_the_process() {
+    let (_dir, path) = database("brl-local");
+    let file = ByteRangeLockFile::open(&path).expect("open");
+    file.set_process_local(true);
+    let other = ByteRangeLockFile::open(&path).expect("open again");
+    let held = file
+        .try_lock(LockByte::collection_writer(0), LockMode::Exclusive)
+        .expect("lock")
+        .expect("free");
+    assert!(
+        other
+            .try_lock(LockByte::collection_writer(0), LockMode::Exclusive)
+            .expect("try")
+            .is_none()
+    );
+    drop(held);
+    let shared = other
+        .try_lock(LockByte::LEASE, LockMode::Shared)
+        .expect("lock")
+        .expect("free");
+    assert!(
+        file.try_lock(LockByte::LEASE, LockMode::Exclusive)
+            .expect("try")
+            .is_none()
+    );
+    drop(shared);
+    file.set_process_local(false);
+    assert!(
+        file.try_lock(LockByte::LEASE, LockMode::Exclusive)
+            .expect("lock")
+            .is_some()
+    );
+}
+
+#[test]
+fn a_read_only_handle_takes_only_the_lease_shared() {
+    let (_dir, path) = database("brl-read-only");
+    let reader = ByteRangeLockFile::open_read_only(&path).expect("open read-only");
+    assert!(!reader.is_writable());
+    for (byte, mode) in [
+        (LockByte::LEASE, LockMode::Exclusive),
+        (LockByte::ALLOCATION, LockMode::Exclusive),
+        (LockByte::collection_writer(0), LockMode::Exclusive),
+        (LockByte::collection_writer(0), LockMode::Shared),
+    ] {
+        assert_eq!(
+            reader.try_lock(byte, mode).expect_err("refused").kind(),
+            ErrorKind::PermissionDenied
+        );
+    }
+    let lease = reader
+        .try_lock(LockByte::LEASE, LockMode::Shared)
+        .expect("lock")
+        .expect("free");
+    let writer = ByteRangeLockFile::open(&path).expect("open writable");
+    assert!(
+        writer
+            .try_lock(LockByte::LEASE, LockMode::Exclusive)
+            .expect("try")
+            .is_none()
+    );
+    drop(lease);
+    assert!(reader.probe());
+}
+
+#[test]
+fn a_writer_opened_after_a_reader_writes_what_the_reader_reads() {
+    let (_dir, path) = database("brl-reader-first");
+    let reader = ByteRangeLockFile::open_read_only(&path).expect("open read-only");
+    let _lease = reader
+        .try_lock(LockByte::LEASE, LockMode::Shared)
+        .expect("lock")
+        .expect("free");
+    let writer = ByteRangeLockFile::open(&path).expect("open writable");
+    let _writer_byte = writer
+        .try_lock(LockByte::collection_writer(1), LockMode::Exclusive)
+        .expect("lock")
+        .expect("free");
+    write_at(writer.file(), b"DATA", 0);
+    assert_eq!(read_at(reader.file(), 4, 0), b"DATA");
+    // Shared lease holders stack across read-only and writable handles.
+    assert!(
+        writer
+            .try_lock(LockByte::LEASE, LockMode::Shared)
+            .expect("lock")
+            .is_some()
+    );
+}
+
+#[test]
+fn closing_a_reader_keeps_a_writers_locks() {
+    let (_dir, path) = database("brl-reader-close");
+    let writer = ByteRangeLockFile::open(&path).expect("open writable");
+    let _held = writer
+        .try_lock(LockByte::ALLOCATION, LockMode::Exclusive)
+        .expect("lock")
+        .expect("free");
+    let reader = ByteRangeLockFile::open_read_only(&path).expect("open read-only");
+    assert!(!reader.is_writable());
+    drop(reader);
+    assert!(
+        writer
+            .try_lock(LockByte::ALLOCATION, LockMode::Exclusive)
+            .expect("try")
+            .is_none()
+    );
 }
