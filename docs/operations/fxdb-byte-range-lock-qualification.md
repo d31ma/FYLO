@@ -36,6 +36,9 @@ OS lock call.
 
 `fylo_storage_native::ByteRangeLockFile` takes one byte, shared or exclusive,
 with a non-waiting `try_lock` or a waiting `lock(byte, mode, timeout)`.
+`open(path)` opens the file for reading and writing; `open_read_only(path)`
+works on a read-only file or mount too, shares the process's existing handle
+when there is one, and may take only the lease byte, shared.
 
 | Byte                       | Offset                          | Use                                                          |
 | -------------------------- | ------------------------------- | ------------------------------------------------------------ |
@@ -116,13 +119,16 @@ It creates a 32 KiB scratch file in the directory and runs:
 3. **Release.** A child holding lease, allocation and writer 0 exits normally,
    then another is killed (`SIGKILL`, `TerminateProcess`); the harness times
    how long until all three bytes are free.
-4. **Close safety.** A holder that opens and drops a second
-   `ByteRangeLockFile` keeps its locks (must pass). A holder that opens and
+4. **Read-only.** A file without write permission opens with
+   `open_read_only`, reads, and takes the lease shared; a read-only process's
+   shared lease refuses an exclusive request from another process.
+5. **Close safety.** A holder that opens and drops a second
+   `ByteRangeLockFile`, writable or read-only, keeps its locks (must pass). A holder that opens and
    closes the path with plain `std::fs` is reported, not judged.
-5. **Control.** Two seconds of the load below with the locks switched off. It
+6. **Control.** Two seconds of the load below with the locks switched off. It
    must show overlaps or lost updates, which proves the witness can see one on
    this filesystem.
-6. **Load.** `procs` processes of `threads` threads, each thread with its own
+7. **Load.** `procs` processes of `threads` threads, each thread with its own
    handle, for `seconds`. Each round takes the lease shared (30 %) or exclusive
    (5 %), the allocation byte (15 %) or a random writer byte (50 %), by
    `try_lock` a quarter of the time and by a waiting `lock` otherwise. An
