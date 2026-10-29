@@ -9,8 +9,10 @@ if (releasedBinary === rustBinary) throw new Error('released and Rust binaries m
 const registry = JSON.parse(await readFile('api/machine/v1/operations.json', 'utf8'))
 const canonicalOperations = registry.operations.map(({ name }) => name).sort()
 const candidateOnlyOperations = [
+    'compactCollection',
     'getFileData',
     'inspectDatabase',
+    'migrateLayout',
     'queueAck',
     'queueClaim',
     'queueDeadLetters',
@@ -297,6 +299,26 @@ async function runScenario(label, binary, root) {
             await request(
                 'reshard-assets',
                 { op: 'reshardCollection', collection: 'assets', width: 2 },
+                { record: false }
+            )
+            await request(
+                'create-segmented',
+                { op: 'createCollection', collection: 'segmented', layout: 'segments' },
+                { record: false }
+            )
+            await request(
+                'compact-segmented',
+                { op: 'compactCollection', collection: 'segmented' },
+                { record: false }
+            )
+            await request(
+                'migrate-segmented',
+                { op: 'migrateLayout', collection: 'segmented', layout: 'files' },
+                { record: false }
+            )
+            await request(
+                'drop-segmented',
+                { op: 'dropCollection', collection: 'segmented' },
                 { record: false }
             )
 

@@ -177,6 +177,28 @@ layout below exactly as an older release wrote it. Raw-file collections and
 structural operations (create, drop, reshard, rebuild, version control) use
 the transaction journal.
 
+A document collection can instead keep its documents in append-only segment
+files ([ADR 0015](docs/adr/0015-append-only-document-segments.md)): set
+`fylo.layout` to `"segments"` for new collections, or move one with
+`fylo layout <collection> --to segments`. Each segment record holds one
+document's exact JSON and all its metadata, the segment being appended to is
+the write-ahead log, and a read is one positioned read:
+
+```text
+<root>/.collections/<collection>/
+  segments/
+    0000000001.seg         ← sealed, immutable
+    0000000002.seg         ← active: commits append here
+    state.slots            ← generation slots, updated in place
+    locations.snapshot     ← id → record location (derived)
+    locations.wal
+  index/                   ← prefix index, unchanged (derived)
+  docs                     ← a plain file, so older releases refuse the collection
+```
+
+`fylo export` writes the one-file-per-document tree back out byte for byte,
+and `fylo compact` reclaims the space old versions take.
+
 Every transactional collection mutation publishes an odd `writing` generation
 before changing records and the next even `stable` generation after commit.
 Readers materialize against one stable generation and retry if it changes. On

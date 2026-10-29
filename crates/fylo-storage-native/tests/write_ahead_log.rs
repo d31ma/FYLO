@@ -132,7 +132,7 @@ fn a_commit_leaves_a_v2_state_and_a_checkpoint_returns_to_v1() {
     assert_eq!(fixture.state()["format"], "fylo.collection-generation.v2");
     assert_eq!(fixture.state()["state"], "stable");
     assert!(fixture.segment().is_file());
-    NativeWriteRoot::close_logs().unwrap();
+    NativeWriteRoot::close_logs_under(writer.path()).unwrap();
     assert_eq!(fixture.state()["format"], "fylo.collection-generation.v1");
     assert!(!fixture.transactions().join("log").exists());
     fixture.index_matches_rebuild();

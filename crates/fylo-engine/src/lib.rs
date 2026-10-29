@@ -27,11 +27,11 @@ use fylo_query::{
     SqlPlan, StructuredQuery, index_entries_for_document,
 };
 use fylo_storage_native::{
-    AccessDescriptor, CollectionKind, DocumentCodec, GenerationState, GenerationStatus,
-    IndexVerification, NativeAccess, NativeCollection, NativeRoot, NativeStorageError,
-    NativeStorageErrorCode, NativeWriteRoot, PutDocumentOptions, RepositoryHistory, RootConfig,
-    RootOpenOptions, SqlMutationResult, StoredBytes, StoredRawFile, ValidationMode,
-    VersionVerification, WriteAccess, WriteActor,
+    AccessDescriptor, CollectionKind, CollectionLayout, DocumentCodec, GenerationState,
+    GenerationStatus, IndexVerification, NativeAccess, NativeCollection, NativeRoot,
+    NativeStorageError, NativeStorageErrorCode, NativeWriteRoot, PutDocumentOptions,
+    RepositoryHistory, RootConfig, RootOpenOptions, SqlMutationResult, StoredBytes, StoredRawFile,
+    ValidationMode, VersionVerification, WriteAccess, WriteActor,
 };
 use hot_set::HotReader;
 pub use hot_set::{HotSet, HotSetStatistics};
@@ -812,6 +812,8 @@ impl AccessContext {
 }
 
 impl ReadOnlyEngine {
+    const SEGMENT_READ_BATCH: usize = 256;
+
     /// Attach schema-driven decryption without changing the repository identity.
     ///
     /// # Errors
@@ -1703,31 +1705,60 @@ impl ReadOnlyEngine {
                 None => collection.document_ids().map_err(EngineError::storage)?,
             };
             let mut records = Vec::new();
-            for identifier in identifiers {
-                let stored = collection
-                    .read_document(&identifier)
+            for batch in identifiers.chunks(Self::read_batch(&collection)) {
+                let stored_batch = collection
+                    .read_documents(batch)
                     .map_err(EngineError::storage)?;
-                if !read_access_allowed(stored.access, actor) {
-                    continue;
-                }
-                let record = self.build_record(collection.name(), &identifier, &stored)?;
-                if !query.matches(
-                    record.document.fields(),
-                    record.metadata.created_at,
-                    record.metadata.updated_at,
-                ) {
-                    continue;
-                }
-                records.push(record);
-                if query
-                    .limit()
-                    .is_some_and(|limit| limit > 0 && records.len() >= limit)
-                {
-                    break;
+                for (identifier, stored) in batch.iter().zip(stored_batch) {
+                    if let Some(record) =
+                        self.query_record(&collection, query, actor, (identifier, stored))?
+                    {
+                        records.push(record);
+                    }
+                    if query
+                        .limit()
+                        .is_some_and(|limit| limit > 0 && records.len() >= limit)
+                    {
+                        return Ok(records);
+                    }
                 }
             }
             Ok(records)
         })
+    }
+
+    /// Documents a query reads at a time. A segment collection reads a batch
+    /// with a few coalesced reads; a file collection reads one file per
+    /// document either way, so it reads one at a time and stops at a limit
+    /// without reading further.
+    fn read_batch(collection: &NativeCollection) -> usize {
+        match collection.layout() {
+            CollectionLayout::Segments => Self::SEGMENT_READ_BATCH,
+            CollectionLayout::Files => 1,
+        }
+    }
+
+    /// The query result for one stored document, or `None` when the actor
+    /// may not read it or the predicate does not match.
+    fn query_record(
+        &self,
+        collection: &NativeCollection,
+        query: &StructuredQuery,
+        actor: Option<&AccessContext>,
+        (identifier, stored): (&str, StoredBytes),
+    ) -> Result<Option<ReadDocument>, EngineError> {
+        if !read_access_allowed(stored.access, actor) {
+            return Ok(None);
+        }
+        let record = self.build_record(collection.name(), identifier, &stored)?;
+        if !query.matches(
+            record.document.fields(),
+            record.metadata.created_at,
+            record.metadata.updated_at,
+        ) {
+            return Ok(None);
+        }
+        Ok(Some(record))
     }
 
     /// Execute a structured query across retained tombstones.
@@ -1886,6 +1917,7 @@ impl ReadOnlyEngine {
             Ok(CollectionInspection {
                 collection: collection.name().to_owned(),
                 kind: collection.kind(),
+                layout: collection.layout(),
                 generation: generation.generation,
                 state: generation.state,
                 document_count,
@@ -2284,6 +2316,8 @@ pub struct CollectionInspection {
     pub collection: String,
     /// Document or file collection.
     pub kind: CollectionKind,
+    /// How the collection stores its documents.
+    pub layout: CollectionLayout,
     /// Stable transaction generation.
     pub generation: u64,
     /// Stable/writing state observed by the reader.

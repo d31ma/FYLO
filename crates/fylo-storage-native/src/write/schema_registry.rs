@@ -224,7 +224,13 @@ impl NativeWriteRoot {
 
     /// Rewrite `state.json` in the fenced format. Recovery has just left it
     /// stable with an empty log, so only its format changes.
+    ///
+    /// A segment collection keeps its generation in slots, and its fixed
+    /// marker and `docs` file already fence older releases (ADR 0015).
     fn fence_generation(&self, collection: &NativeCollection) -> Result<(), NativeStorageError> {
+        if collection.uses_segments() {
+            return Ok(());
+        }
         let stored = collection.stored_generation()?;
         if stored.schema_fenced() {
             return Ok(());

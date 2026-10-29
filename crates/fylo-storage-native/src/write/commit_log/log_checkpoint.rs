@@ -121,7 +121,7 @@ impl LogCheckpoint {
         Ok(())
     }
 
-    fn compact_index(collection: &NativeCollection) -> Result<(), NativeStorageError> {
+    pub(crate) fn compact_index(collection: &NativeCollection) -> Result<(), NativeStorageError> {
         let index = collection.path.join("index");
         let wal = index.join("keys.wal");
         let snapshot = index.join("keys.snapshot");

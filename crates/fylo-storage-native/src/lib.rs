@@ -21,6 +21,7 @@ use sha2::{Digest, Sha256};
 mod beneath_open;
 #[cfg(not(target_family = "wasm"))]
 mod byte_range_lock;
+mod collection_layout;
 #[cfg(not(target_family = "wasm"))]
 mod container_access;
 mod container_allocator;
@@ -39,6 +40,7 @@ mod profile_manifest;
 mod queue;
 mod record_attributes;
 mod root_open_options;
+mod segments;
 mod sidecar_attributes;
 mod spelling_cache;
 mod validation_mode;
@@ -52,6 +54,7 @@ pub use byte_range_lock::{
     ByteLockGuard, ByteRangeLockFile, COLLECTION_WRITER_START, FilesystemInfo, LOCK_RANGE_START,
     LockByte, LockMode, MAX_POLL_INTERVAL,
 };
+pub use collection_layout::CollectionLayout;
 #[cfg(not(target_family = "wasm"))]
 pub use container_access::{ContainerWriteAccess, ContainerWriteOptions};
 pub use container_allocator::{
@@ -90,6 +93,7 @@ pub use validation_mode::ValidationMode;
 pub use write::FAILPOINTS;
 pub use write::schema_registry::{MAX_SCHEMA_VERSION_BYTES, utc_timestamp};
 pub use write::version::RepositoryStatus;
+pub use write::{CompactionReport, LayoutMigrationReport, SalvageReport, SegmentVerification};
 pub use write::{
     DocumentCodec, NativeWriteRoot, PlainDocumentCodec, PutDocumentOptions, PutRawFileOptions,
     WriteAccess, WriteActor, schema_violations,
@@ -354,6 +358,7 @@ impl NativeRoot {
                 kind: CollectionKind::Document,
                 shard_width: None,
                 previous_shard_widths: None,
+                layout: CollectionLayout::Files,
                 validation: None,
                 schemas: None,
                 schema_head: None,
@@ -370,6 +375,7 @@ impl NativeRoot {
             name: name.to_owned(),
             path,
             kind: descriptor.kind,
+            layout: descriptor.layout,
             namespace: namespace.to_owned(),
             shard_width: validate_shard_width(descriptor.shard_width)?,
             previous_shard_widths: descriptor
@@ -1240,6 +1246,9 @@ struct CollectionDescriptor {
     /// Widths an unfinished reshard is moving this collection away from.
     #[serde(default)]
     previous_shard_widths: Option<Vec<u32>>,
+    /// How documents are stored. A descriptor without it uses files.
+    #[serde(default)]
+    layout: CollectionLayout,
     /// What writes do about the collection's schema. A descriptor written
     /// before validation modes existed records none, and the host's
     /// `strict_schema` setting decides (ADR 0017 section 2).
@@ -1437,6 +1446,7 @@ pub struct NativeCollection {
     name: String,
     path: PathBuf,
     kind: CollectionKind,
+    layout: CollectionLayout,
     namespace: String,
     shard_width: u32,
     previous_shard_widths: Vec<u32>,
@@ -1467,6 +1477,67 @@ impl NativeCollection {
     /// push cannot take it down again.
     pub(crate) fn generation_fenced(&self, stored: &GenerationState) -> bool {
         self.schema_head.is_some() || stored.schema_fenced()
+    }
+
+    /// How this collection stores its documents.
+    #[must_use]
+    pub const fn layout(&self) -> CollectionLayout {
+        self.layout
+    }
+
+    pub(crate) fn uses_segments(&self) -> bool {
+        self.layout == CollectionLayout::Segments
+    }
+
+    fn segment_store(&self) -> Result<segments::SegmentStore, NativeStorageError> {
+        segments::SegmentStore::open(&self.path)
+    }
+
+    fn segment_generation(&self) -> Result<GenerationState, NativeStorageError> {
+        let Some(slot) =
+            segments::GenerationSlots::at(&segments::SegmentPaths::of(&self.path).slots())
+                .read()?
+        else {
+            return Ok(GenerationState {
+                format: GenerationState::FORMAT_V2.into(),
+                generation: 0,
+                state: GenerationStatus::Writing,
+                transaction_id: Some(segments::SlotRecord::LOST_TRANSACTION.into()),
+                log: None,
+            });
+        };
+        let position = LogPosition {
+            nonce: format!("{:016x}", slot.segment),
+            length: slot.length,
+            next_lsn: slot.next_lsn,
+            records: slot.records,
+        };
+        Ok(GenerationState {
+            format: GenerationState::FORMAT_V2.into(),
+            generation: slot.generation,
+            state: if slot.writing {
+                GenerationStatus::Writing
+            } else {
+                GenerationStatus::Stable
+            },
+            transaction_id: slot
+                .writing
+                .then(|| format!("{}{}", Self::SEGMENT_TRANSACTION_PREFIX, position.nonce)),
+            log: Some(position),
+        })
+    }
+
+    /// Transaction identifiers a segment collection's slots report while
+    /// writing. They share the log's prefix, so recovery treats them alike.
+    pub(crate) const SEGMENT_TRANSACTION_PREFIX: &'static str = "log-segment-";
+
+    /// The file holding the log a published position describes.
+    pub(crate) fn logged_segment_path(&self, position: &LogPosition) -> PathBuf {
+        if !self.uses_segments() {
+            return self.log_segment_path();
+        }
+        let number = u64::from_str_radix(&position.nonce, 16).unwrap_or(u64::MAX);
+        segments::SegmentPaths::of(&self.path).segment(number)
     }
 
     /// Characters of the creation segment this collection's shards use.
@@ -1516,6 +1587,9 @@ impl NativeCollection {
     /// the write-ahead log against it.
     pub(crate) fn stored_generation(&self) -> Result<GenerationState, NativeStorageError> {
         self.root.assert_profile_owned()?;
+        if self.uses_segments() {
+            return self.segment_generation();
+        }
         let path = self
             .root
             .canonical
@@ -1560,7 +1634,7 @@ impl NativeCollection {
         if state.state == GenerationStatus::Writing {
             return Ok(state);
         }
-        let segment = self.log_segment_path();
+        let segment = self.logged_segment_path(position);
         let length = match fs::symlink_metadata(&segment) {
             Ok(metadata) => Some(metadata.len()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
@@ -1624,6 +1698,9 @@ impl NativeCollection {
                 "document enumeration is not available for file collections",
             ));
         }
+        if self.uses_segments() {
+            return Ok(self.segment_store()?.ids(segments::LocationState::Live));
+        }
         self.document_ids_at(&self.path.join("docs"))
     }
 
@@ -1640,6 +1717,9 @@ impl NativeCollection {
                 NativeStorageErrorCode::Unsupported,
                 "deleted-document enumeration is not available for file collections",
             ));
+        }
+        if self.uses_segments() {
+            return Ok(self.segment_store()?.ids(segments::LocationState::Deleted));
         }
         self.document_ids_at(&self.path.join(".deleted"))
     }
@@ -1813,7 +1893,54 @@ impl NativeCollection {
                 "JSON document reads are not available for file collections",
             ));
         }
+        if self.uses_segments() {
+            return self.read_segment_document(identifier, segments::LocationState::Live);
+        }
         self.read_document_at(&self.path.join("docs"), identifier)
+    }
+
+    /// Read many live documents, in the order given.
+    ///
+    /// A segment collection reads neighbouring records together; a file
+    /// collection reads each document as [`Self::read_document`] does.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first error any document's read would return.
+    pub fn read_documents(
+        &self,
+        identifiers: &[String],
+    ) -> Result<Vec<StoredBytes>, NativeStorageError> {
+        if !self.uses_segments() {
+            return identifiers
+                .iter()
+                .map(|identifier| self.read_document(identifier))
+                .collect();
+        }
+        self.root.assert_profile_owned()?;
+        for identifier in identifiers {
+            validate_ttid_shape(identifier)?;
+        }
+        let store = self.segment_store()?;
+        store
+            .documents(identifiers, segments::LocationState::Live)?
+            .into_iter()
+            .map(|document| {
+                let path = store.paths().segment(document.location.segment);
+                document.into_stored(path)
+            })
+            .collect()
+    }
+
+    fn read_segment_document(
+        &self,
+        identifier: &str,
+        state: segments::LocationState,
+    ) -> Result<StoredBytes, NativeStorageError> {
+        let store = self.segment_store()?;
+        let document = store.document(identifier, state)?;
+        let path = store.paths().segment(document.location.segment);
+        document.into_stored(path)
     }
 
     /// Read one live record's developer metadata (`user.fylo.meta.*` xattrs).
@@ -1831,6 +1958,12 @@ impl NativeCollection {
     ) -> Result<BTreeMap<String, Value>, NativeStorageError> {
         self.root.assert_profile_owned()?;
         validate_ttid_shape(identifier)?;
+        if self.uses_segments() {
+            let document = self
+                .segment_store()?
+                .document(identifier, segments::LocationState::Live)?;
+            return decode_custom_metadata(&document.attributes()?);
+        }
         let path = if self.kind == CollectionKind::Document {
             self.read_document(identifier)?.path
         } else {
@@ -1860,6 +1993,9 @@ impl NativeCollection {
                 NativeStorageErrorCode::Unsupported,
                 "deleted JSON document reads are not available for file collections",
             ));
+        }
+        if self.uses_segments() {
+            return self.read_segment_document(identifier, segments::LocationState::Deleted);
         }
         self.read_document_at(&self.path.join(".deleted"), identifier)
     }
@@ -3259,6 +3395,10 @@ pub struct RootConfig {
     /// registry when a write engine opens (ADR 0017 section 3). Off by
     /// default, so the registry changes only on `fylo schema push`.
     pub schema_auto_push: bool,
+    /// How document collections that do not exist yet store their
+    /// documents. Never consulted for a collection that already exists;
+    /// `fylo layout` migrates one.
+    pub layout: CollectionLayout,
 }
 
 /// This process's identifier, or zero where the platform has none.

@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Map, Value};
 
 use crate::RootConfig;
-use fylo_storage_native::Durability;
+use fylo_storage_native::{CollectionLayout, Durability};
 
 use super::application_config::ApplicationConfig;
 use super::secret_reference::SecretReference;
@@ -23,11 +23,12 @@ impl Settings {
     const DURABILITY_KEY: &'static str = "durability";
     const PATH_KEY: &'static str = "path";
     const AUTO_PUSH_KEY: &'static str = "autoPush";
+    const LAYOUT_KEY: &'static str = "layout";
     const MINIMUM_SHARD_WIDTH: u64 = 1;
     const MAXIMUM_SHARD_WIDTH: u64 = 4;
     const MINIMUM_KEY_BYTES: usize = 32;
     const PATH_ERROR: &'static str = "must be a nonempty path without NUL";
-    const KEYS: [&'static str; 8] = [
+    const KEYS: [&'static str; 9] = [
         Self::ROOT_KEY,
         Self::STRICT_KEY,
         Self::SCHEMA_KEY,
@@ -36,6 +37,7 @@ impl Settings {
         Self::CIPHER_KEY,
         Self::CHEX_KEY,
         Self::DURABILITY_KEY,
+        Self::LAYOUT_KEY,
     ];
     const CREDENTIAL_ERROR: &'static str = "fylo.encryption.key and fylo.cipher.salt require paired secret references; key must contain at least 32 UTF-8 bytes and salt must not be empty";
 
@@ -56,6 +58,7 @@ impl Settings {
             Self::schema(settings.get(Self::SCHEMA_KEY), directory, &mut secrets)?;
         let strict_schema = Self::strict(settings.get(Self::STRICT_KEY))?;
         let durability = Self::durability(settings.get(Self::DURABILITY_KEY))?;
+        let layout = Self::layout(settings.get(Self::LAYOUT_KEY))?;
         let shard_width = Self::member(settings, Self::SHARD_KEY, "width")?
             .map(Self::shard_width)
             .transpose()?;
@@ -78,6 +81,7 @@ impl Settings {
                 shard_width,
                 durability,
                 schema_auto_push,
+                layout,
             },
             schema,
             credentials,
@@ -124,6 +128,18 @@ impl Settings {
             .as_str()
             .and_then(Durability::parse)
             .ok_or_else(|| "fylo.durability must be \"process\" or \"power-loss\"".into())
+    }
+
+    /// `fylo.layout`: `"files"` (the default) or `"segments"`, for document
+    /// collections created from now on.
+    fn layout(value: Option<&Value>) -> Result<CollectionLayout, String> {
+        let Some(value) = value else {
+            return Ok(CollectionLayout::default());
+        };
+        value
+            .as_str()
+            .and_then(|name| CollectionLayout::parse(name).ok())
+            .ok_or_else(|| "fylo.layout must be \"files\" or \"segments\"".into())
     }
 
     /// `fylo.chex.binary` selected the external validator FYLO used to spawn.

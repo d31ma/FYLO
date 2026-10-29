@@ -21,8 +21,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use super::{
-    CollectionKind, ExpectedType, MAX_DOCUMENT_BYTES, NativeRoot, NativeStorageError,
-    NativeStorageErrorCode, path_exists_no_follow, validate_ttid_shape,
+    CollectionKind, CollectionLayout, ExpectedType, MAX_DOCUMENT_BYTES, NativeRoot,
+    NativeStorageError, NativeStorageErrorCode, path_exists_no_follow, validate_ttid_shape,
 };
 
 const TRANSACTION_FORMAT: &str = "fylo.collection-transaction.v1";
@@ -40,6 +40,7 @@ const DEFAULT_ACCESS_MODE: u32 = 0o600;
 mod commit_log;
 mod document_codec;
 pub(crate) mod schema_registry;
+pub use commit_log::{CompactionReport, LayoutMigrationReport, SalvageReport, SegmentVerification};
 pub(crate) mod version;
 
 use document_codec::DocumentPolicy;
@@ -455,9 +456,15 @@ impl NativeWriteRoot {
     /// failed durable repair.
     pub fn recover_collection(&self, collection: &str) -> Result<bool, NativeStorageError> {
         self.root.assert_profile_owned()?;
+        let opened = self.root.collection(collection)?;
+        let migrated = {
+            let _lock = self.lock_collection(&opened.path)?;
+            self.finish_layout_migration_if_pending(&opened)?
+        };
+        // A finished migration changed the layout the first handle names.
         let collection = self.root.collection(collection)?;
         let _lock = self.lock_collection(&collection.path)?;
-        self.recover_locked(&collection)
+        Ok(self.recover_locked(&collection)? || migrated)
     }
 
     /// Create one document at an explicitly supplied TTID.
@@ -1094,7 +1101,7 @@ impl NativeWriteRoot {
         }
         let access = self.validate_access(access)?;
         let collection = self.writable_collection(collection_name)?;
-        if self.uses_log(&collection) && cfg!(unix) {
+        if self.uses_log(&collection) && (cfg!(unix) || collection.uses_segments()) {
             return self.set_record_access_logged(&collection, identifier, access, actor);
         }
         let _lock = self.lock_collection(&collection.path)?;
@@ -1303,6 +1310,12 @@ impl NativeWriteRoot {
         }
         let _lock = self.lock_collection(&collection.path)?;
         self.recover_locked(&collection)?;
+        if collection.uses_segments() {
+            // Segments are not sharded: the width only shapes an export or a
+            // migration back to files, so nothing moves.
+            self.write_shard_width(collection_name, width, &[])?;
+            return Ok(0);
+        }
         let mut leaving: Vec<u32> = previous;
         if recorded != width && !leaving.contains(&recorded) {
             leaving.push(recorded);
@@ -1386,6 +1399,9 @@ impl NativeWriteRoot {
     pub fn rebuild_collection(&self, collection_name: &str) -> Result<(), NativeStorageError> {
         self.root.assert_profile_owned()?;
         let collection = self.root.collection(collection_name)?;
+        if collection.uses_segments() {
+            return self.rebuild_segment_collection(&collection);
+        }
         let _lock = self.lock_collection(&collection.path)?;
         self.recover_locked(&collection)?;
         let mut transaction = Transaction::begin(self, &collection, "rebuild-index")?;
@@ -1515,6 +1531,46 @@ impl NativeWriteRoot {
         kind: CollectionKind,
         versioned: Option<bool>,
     ) -> Result<bool, NativeStorageError> {
+        self.create_collection_with_layout(collection_name, kind, versioned, None)
+    }
+
+    /// Create one collection with an explicit layout, overriding the root's
+    /// `layout` setting. An existing collection keeps the layout it has;
+    /// `migrate_layout` moves it.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::create_collection`], and `Unsupported` for the segment
+    /// layout on a raw-file collection or a non-native profile.
+    pub fn create_collection_with_layout(
+        &self,
+        collection_name: &str,
+        kind: CollectionKind,
+        versioned: Option<bool>,
+        layout: Option<CollectionLayout>,
+    ) -> Result<bool, NativeStorageError> {
+        if layout == Some(CollectionLayout::Segments) && kind != CollectionKind::Document {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::Unsupported,
+                "raw-file collections keep the file layout",
+            ));
+        }
+        let writer = match layout {
+            Some(layout) => &self.clone().with_config(super::RootConfig {
+                layout,
+                ..self.config
+            }),
+            None => self,
+        };
+        writer.create_collection_as_configured(collection_name, kind, versioned)
+    }
+
+    fn create_collection_as_configured(
+        &self,
+        collection_name: &str,
+        kind: CollectionKind,
+        versioned: Option<bool>,
+    ) -> Result<bool, NativeStorageError> {
         self.root.assert_profile_owned()?;
         super::validate_collection_name(collection_name)?;
         let existing = self.collection_if_present(collection_name)?;
@@ -1562,6 +1618,12 @@ impl NativeWriteRoot {
                 }),
             );
             descriptor.insert("shardWidth".into(), Value::from(width));
+            if self.creates_segments(kind)? {
+                descriptor.insert(
+                    "layout".into(),
+                    Value::from(CollectionLayout::Segments.as_str()),
+                );
+            }
             if versioned == Some(false) {
                 descriptor.insert("versioned".into(), Value::from(false));
             }
@@ -1576,6 +1638,17 @@ impl NativeWriteRoot {
             CollectionKind::File => ".buckets",
         };
         let collection_root = self.root.path().join(namespace).join(collection_name);
+        let layout = match &existing {
+            Some(collection) => collection.layout,
+            None if self.creates_segments(kind)? => CollectionLayout::Segments,
+            None => CollectionLayout::Files,
+        };
+        if layout == CollectionLayout::Segments {
+            commit_log::SegmentLayout::create_empty(&self.root, &collection_root, 0)?;
+            let collection = self.root.collection(collection_name)?;
+            commit_log::SegmentLayout::write_marker(&generation_path(self, &collection))?;
+            return Ok(existing.is_none());
+        }
         for directory in [
             collection_root.clone(),
             collection_root.join("docs"),
@@ -1600,6 +1673,21 @@ impl NativeWriteRoot {
         Ok(existing.is_none())
     }
 
+    /// Whether a collection created now gets the segment layout: a document
+    /// collection on the native profile when the root asks for segments.
+    fn creates_segments(&self, kind: CollectionKind) -> Result<bool, NativeStorageError> {
+        if self.config.layout != CollectionLayout::Segments || kind != CollectionKind::Document {
+            return Ok(false);
+        }
+        if self.filesystem_profile() != super::FilesystemProfile::Native {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::Unsupported,
+                "the segment layout requires the native filesystem profile",
+            ));
+        }
+        Ok(true)
+    }
+
     /// Remove one collection and the descriptor that names it.
     ///
     /// # Errors
@@ -1622,6 +1710,16 @@ impl NativeWriteRoot {
             self.recover_locked(&collection)?;
         }
         remove_dir_durable(&collection.path)?;
+        if collection.uses_segments() {
+            // The fixed segment marker would make a later file collection of the
+            // same name unreadable.
+            let state = generation_path(self, &collection);
+            if let Some(directory) = state.parent()
+                && path_exists_no_follow(directory)?
+            {
+                remove_dir_durable(directory)?;
+            }
+        }
         let descriptor_path = self
             .root
             .catalog_root()
@@ -1914,6 +2012,7 @@ impl NativeWriteRoot {
         &self,
         collection: &super::NativeCollection,
     ) -> Result<bool, NativeStorageError> {
+        self.require_no_pending_migration(collection)?;
         let log_recovered = if self.filesystem_profile() == super::FilesystemProfile::Native {
             self.settle_log(collection)?
         } else {
@@ -1921,6 +2020,21 @@ impl NativeWriteRoot {
         };
         let journal_recovered = self.recover_journal_locked(collection)?;
         Ok(log_recovered || journal_recovered)
+    }
+
+    /// Finish a layout migration a crash interrupted. The caller's view of
+    /// the collection then names the wrong layout, so it is told to retry.
+    pub(crate) fn require_no_pending_migration(
+        &self,
+        collection: &super::NativeCollection,
+    ) -> Result<(), NativeStorageError> {
+        if self.finish_layout_migration_if_pending(collection)? {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::ConcurrentWrite,
+                "an interrupted layout migration was completed; retry the operation",
+            ));
+        }
+        Ok(())
     }
 
     fn recover_journal_locked(
@@ -3697,6 +3811,19 @@ pub(crate) fn durable_replace_private(path: &Path, bytes: &[u8]) -> Result<(), N
     durable_replace_with_mode(path, bytes, 0o600)
 }
 
+/// Replace a segment collection's own file (ADR 0015 section 10): readable
+/// by the root owner only where the platform has POSIX modes, and an
+/// ordinary durable replace elsewhere.
+pub(crate) fn durable_replace_owner_only(
+    path: &Path,
+    bytes: &[u8],
+) -> Result<(), NativeStorageError> {
+    if cfg!(unix) {
+        return durable_replace_with_mode(path, bytes, 0o600);
+    }
+    durable_replace(path, bytes)
+}
+
 fn durable_replace_with_mode(
     path: &Path,
     bytes: &[u8],
@@ -4943,7 +5070,7 @@ fn set_mode(_path: &Path, _mode: u32) -> Result<(), NativeStorageError> {
 /// The list is the contract the crash matrix enumerates, so a new failpoint
 /// must be declared here to be injectable — which is also what stops it from
 /// being added without coverage.
-pub const FAILPOINTS: [&str; 25] = [
+pub const FAILPOINTS: [&str; 32] = [
     "before-file-write",
     "after-file-rename",
     "after-file-sync",
@@ -4969,6 +5096,13 @@ pub const FAILPOINTS: [&str; 25] = [
     "after-checkpoint-flush",
     "after-checkpoint-remove",
     "after-schema-file",
+    "after-compaction-copy",
+    "after-compaction-sync",
+    "after-compaction-record",
+    "after-compaction-remove",
+    "after-layout-staging",
+    "after-layout-marker",
+    "after-layout-swap",
 ];
 
 pub(crate) fn failpoint(name: &str) -> Result<(), NativeStorageError> {

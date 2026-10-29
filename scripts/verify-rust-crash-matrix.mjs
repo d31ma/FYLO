@@ -250,6 +250,34 @@ async function verifyNativeCrashScenarios() {
     await requestRequired(versionedSeed, { op: 'commit', message: 'crash matrix seed' })
     await versionedSeed.close()
 
+    // A segment collection (ADR 0015) is a third template. Its writes append
+    // to a document segment, so the log failpoints are reached through a
+    // different apply, and compaction and layout migration have failpoints of
+    // their own. The deleted record is restored and deleted again, so
+    // compaction has dead versions to drop.
+    const segmentTemplate = join(workspace, 'segment-template')
+    await mkdir(segmentTemplate, { recursive: true })
+    const segmentSeed = new Fylo(segmentTemplate, { binary: machineBinary, exclusiveRoot: true })
+    await segmentSeed.ready
+    await requestRequired(segmentSeed, {
+        op: 'createCollection',
+        collection,
+        kind: 'document',
+        layout: 'segments'
+    })
+    for (const [id, data] of [
+        [identifier, { name: 'Ada', score: 42 }],
+        [secondIdentifier, { name: 'Grace', score: 50 }],
+        [deletedIdentifier, { name: 'Linus', score: 1 }]
+    ]) {
+        await requestRequired(segmentSeed, { op: 'putData', collection, id, data })
+    }
+    await requestRequired(segmentSeed, { op: 'delDoc', collection, id: deletedIdentifier })
+    await requestRequired(segmentSeed, { op: 'restoreDoc', collection, id: deletedIdentifier })
+    await requestRequired(segmentSeed, { op: 'delDoc', collection, id: deletedIdentifier })
+    await segmentSeed.close()
+    const onSegments = (scenario) => ({ ...scenario, template: () => segmentTemplate })
+
     const { failpoints } = JSON.parse((await run(binary, ['failpoints'])).stdout)
     assert(Array.isArray(failpoints) && failpoints.length > 0, 'Rust declared no failpoints')
 
@@ -469,6 +497,134 @@ async function verifyNativeCrashScenarios() {
                 `${root}-schemas`
             ]
         },
+        {
+            name: 'migrate-into-segments',
+            args: (root) => [
+                'migrate-layout',
+                '--root',
+                root,
+                '--collection',
+                collection,
+                '--layout',
+                'segments'
+            ]
+        },
+        onSegments({
+            name: 'put-document-segments',
+            args: (root) => [
+                'put-document',
+                '--root',
+                root,
+                '--collection',
+                collection,
+                '--id',
+                '4VRNF52JPD1',
+                '--document',
+                '{"name":"Hopper","score":7}'
+            ]
+        }),
+        onSegments({
+            name: 'patch-fields-segments',
+            args: (root) => [
+                'patch-fields',
+                '--root',
+                root,
+                '--collection',
+                collection,
+                '--id',
+                identifier,
+                '--changes',
+                '{"score":51}'
+            ]
+        }),
+        onSegments({
+            name: 'delete-document-segments',
+            args: (root) => [
+                'delete-document',
+                '--root',
+                root,
+                '--collection',
+                collection,
+                '--id',
+                identifier
+            ]
+        }),
+        onSegments({
+            name: 'restore-document-segments',
+            args: (root) => [
+                'restore-document',
+                '--root',
+                root,
+                '--collection',
+                collection,
+                '--id',
+                deletedIdentifier
+            ]
+        }),
+        onSegments({
+            name: 'set-metadata-segments',
+            args: (root) => [
+                'set-metadata',
+                '--root',
+                root,
+                '--collection',
+                collection,
+                '--id',
+                identifier,
+                '--record',
+                '{"reviewer":"crash"}'
+            ]
+        }),
+        onSegments({
+            name: 'set-access-segments',
+            args: (root) => [
+                'set-access',
+                '--root',
+                root,
+                '--collection',
+                collection,
+                '--id',
+                identifier,
+                '--mode',
+                '640'
+            ]
+        }),
+        onSegments({
+            name: 'sql-update-segments',
+            args: (root) => [
+                'sql',
+                '--root',
+                root,
+                '--statement',
+                `UPDATE ${collection} SET score = 77 WHERE name = 'Ada'`
+            ]
+        }),
+        onSegments({
+            name: 'sql-delete-segments',
+            args: (root) => [
+                'sql',
+                '--root',
+                root,
+                '--statement',
+                `DELETE FROM ${collection} WHERE name = 'Grace'`
+            ]
+        }),
+        onSegments({
+            name: 'compact-segments',
+            args: (root) => ['compact', '--root', root, '--collection', collection]
+        }),
+        onSegments({
+            name: 'migrate-out-of-segments',
+            args: (root) => [
+                'migrate-layout',
+                '--root',
+                root,
+                '--collection',
+                collection,
+                '--layout',
+                'files'
+            ]
+        }),
         {
             name: 'commit',
             template: () => versionedTemplate,
@@ -918,7 +1074,7 @@ async function assertRecoverable(binary, root, failpoint, scenario, action) {
         }
         const survivor = (await database.getDoc(collection, secondIdentifier))[secondIdentifier]
         assert(
-            survivor !== undefined || scenario.name === 'sql-delete',
+            survivor !== undefined || scenario.name.startsWith('sql-delete'),
             `${label}: an untouched document disappeared`
         )
     } finally {

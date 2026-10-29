@@ -34,6 +34,7 @@ ADR.
 | [0012](0012-opt-in-network-server.md)                       | Withdrawn | Opt-in network server for one root (removed; FYLO is embedded) |
 | [0013](0013-collection-write-ahead-log.md)                  | Accepted | Collection write-ahead log with group commit |
 | [0014](0014-in-memory-hot-set.md)                           | Accepted | In-memory hot set for exclusive embedded sessions |
+| [0015](0015-append-only-document-segments.md)               | Accepted | Append-only document segments               |
 | [0016](0016-single-file-fxdb-database.md)                   | Accepted | Single-file `.fxdb` databases               |
 | [0017](0017-schemas-in-the-database.md)                     | Accepted | Schemas in the database, validated at the commit |
 | [0018](0018-json-only-schema-migrations.md)                 | Accepted | JSON-only schema migrations                 |

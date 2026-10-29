@@ -47,6 +47,37 @@ Before downgrading FYLO, stop every writer or run `fylo recover` on each
 collection: a release older than the write-ahead log refuses a collection
 whose log has not been checkpointed, rather than ignore its writes.
 
+## Collection layout
+
+`fylo.layout` chooses how document collections created from now on store
+their documents ([ADR 0015](adr/0015-append-only-document-segments.md)):
+
+- `"files"` (the default) keeps one JSON file per document under `docs/`,
+  with its metadata in extended attributes.
+- `"segments"` keeps documents in a few append-only segment files under
+  `segments/`. A read is one positioned read and a broad query a few large
+  reads, which matters most when the root sits on a network share. A write
+  appends to a file that already exists.
+
+```json
+{ "fylo": { "layout": "segments" } }
+```
+
+The setting never changes an existing collection. `createCollection` also
+takes `"layout"` for one collection, and `fylo layout <collection> --to
+segments|files` moves an existing one, after checking the copy against every
+document. Raw-file collections, the EFS profile and roots with version control
+keep the file layout. A segment collection enforces `.as()` access in FYLO
+but gives records no operating-system owner of their own, so a collection
+whose records name other owners needs `--allow-engine-only-access` to move.
+
+`fylo compact <collection>` reclaims the space old versions take,
+`fylo export <collection> --out <directory>` writes the one-file-per-document
+tree without changing the collection, and `fylo verify-segments` and
+`fylo salvage` check and rescue a damaged one. Before downgrading to a release
+older than segments, move each segment collection back with
+`fylo layout <collection> --to files`; older releases refuse it.
+
 ## Discovery and precedence
 
 The CLI looks for `application.json` in its current working directory. Use
@@ -97,15 +128,15 @@ input: never accept them from requests, uploads, or tenant-controlled data.
 Remove the `FYLO_` prefix, lowercase each word, and turn each underscore into a
 nested key:
 
-| Old environment setting | New JSON location | JSON type |
-| --- | --- | --- |
-| `FYLO_ROOT` | `fylo.root` | string path |
-| `FYLO_SCHEMA` | `fylo.schema` | string path |
-| `FYLO_STRICT` | `fylo.strict` | boolean |
-| `FYLO_SHARD_WIDTH` | `fylo.shard.width` | integer, 1-4 |
-| `FYLO_CHEX_BINARY` | removed; CHEX is built in | — |
-| `FYLO_ENCRYPTION_KEY` | `fylo.encryption.key` | string secret reference |
-| `FYLO_CIPHER_SALT` | `fylo.cipher.salt` | string secret reference |
+| Old environment setting | New JSON location         | JSON type               |
+| ----------------------- | ------------------------- | ----------------------- |
+| `FYLO_ROOT`             | `fylo.root`               | string path             |
+| `FYLO_SCHEMA`           | `fylo.schema`             | string path             |
+| `FYLO_STRICT`           | `fylo.strict`             | boolean                 |
+| `FYLO_SHARD_WIDTH`      | `fylo.shard.width`        | integer, 1-4            |
+| `FYLO_CHEX_BINARY`      | removed; CHEX is built in | —                       |
+| `FYLO_ENCRYPTION_KEY`   | `fylo.encryption.key`     | string secret reference |
+| `FYLO_CIPHER_SALT`      | `fylo.cipher.salt`        | string secret reference |
 
 `fylo.schema` may also be an object, `{ "path": "./schemas", "autoPush": true }`.
 `path` is the folder, and `autoPush` (default `false`) pushes the folder's new

@@ -9,6 +9,9 @@ pub enum LogRecordKind {
     Abort,
     /// Marks the state every earlier record has been made durable in.
     Checkpoint,
+    /// Adopts a compacted document segment in place of the segments it
+    /// replaces.
+    Compaction,
 }
 
 impl LogRecordKind {
@@ -19,6 +22,7 @@ impl LogRecordKind {
             Self::Commit => 1,
             Self::Abort => 2,
             Self::Checkpoint => 3,
+            Self::Compaction => 4,
         }
     }
 
@@ -32,6 +36,7 @@ impl LogRecordKind {
             1 => Ok(Self::Commit),
             2 => Ok(Self::Abort),
             3 => Ok(Self::Checkpoint),
+            4 => Ok(Self::Compaction),
             _ => Err(LogFormatError::InvalidField),
         }
     }

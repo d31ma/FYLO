@@ -2,19 +2,23 @@ use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use fylo_format::{LogRecord, LogRecordKind, LogScan, LogSegmentHeader};
+use fylo_format::{LogRecord, LogRecordKind, LogScan, LogSegmentHeader, LogSegmentKind};
 use fylo_vfs::{self as fs, File, OpenOptions};
 
 use super::super::{json_error, sync_directory};
 use super::checkpoint_manifest::CheckpointManifest;
 use crate::{Durability, LogPosition, NativeStorageError, NativeStorageErrorCode};
 
-/// The open write-ahead log segment of one collection.
+/// The open write-ahead log segment of one collection, or the active
+/// document segment of a segment collection (ADR 0015).
 ///
-/// There is one segment at a time. A checkpoint removes it, and the next
-/// commit creates a new one whose first record is a checkpoint.
+/// A file collection has one log segment at a time. A checkpoint removes it,
+/// and the next commit creates a new one whose first record is a checkpoint.
+/// A segment collection's active segment is never removed: it is sealed when
+/// it grows large, and the next one opens with a checkpoint record.
 #[derive(Debug)]
 pub(crate) struct LogSegment {
+    kind: LogSegmentKind,
     file: Arc<File>,
     path: PathBuf,
     nonce: u64,
@@ -47,6 +51,7 @@ impl LogSegment {
             return Ok(None);
         }
         Ok(Some(Self {
+            kind: header.map_or(LogSegmentKind::WriteAheadLog, |header| header.kind),
             file: Arc::new(file),
             path: path.to_owned(),
             nonce: header.map_or(0, |header| header.sequence),
@@ -55,6 +60,30 @@ impl LogSegment {
             records: position.records,
             fresh: false,
         }))
+    }
+
+    /// Open a document segment whose valid length a recovery scan found.
+    pub(crate) fn open_scanned(
+        path: &Path,
+        (sequence, length): (u64, u64),
+        next_lsn: u64,
+    ) -> Result<Self, NativeStorageError> {
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path)
+            .map_err(NativeStorageError::io)?;
+        file.set_len(length).map_err(NativeStorageError::io)?;
+        Ok(Self {
+            kind: LogSegmentKind::Documents,
+            file: Arc::new(file),
+            path: path.to_owned(),
+            nonce: sequence,
+            length,
+            next_lsn,
+            records: 0,
+            fresh: false,
+        })
     }
 
     /// Create the segment with its opening checkpoint record. Nothing is
@@ -72,34 +101,64 @@ impl LogSegment {
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(error) => return Err(NativeStorageError::io(error)),
         }
-        let nonce = Self::random_nonce()?;
-        let header = LogSegmentHeader {
-            sequence: nonce,
-            first_lsn: Self::FIRST_LSN,
-        };
         let manifest = serde_json::to_vec(checkpoint).map_err(|error| json_error(&error))?;
-        let record = LogRecord {
-            lsn: Self::FIRST_LSN,
-            kind: LogRecordKind::Checkpoint,
+        let opening = SegmentOpening {
+            kind: LogSegmentKind::WriteAheadLog,
+            sequence: Self::random_nonce()?,
+            first_lsn: Self::FIRST_LSN,
             generation,
+        };
+        Self::create_with(path, &opening, manifest)
+    }
+
+    /// Create document segment `number`, opening with a checkpoint record
+    /// whose manifest is `manifest`, at sequence number `first_lsn`.
+    pub(crate) fn create_documents(
+        path: &Path,
+        (number, first_lsn): (u64, u64),
+        manifest: Vec<u8>,
+        generation: u64,
+    ) -> Result<Self, NativeStorageError> {
+        let opening = SegmentOpening {
+            kind: LogSegmentKind::Documents,
+            sequence: number,
+            first_lsn,
+            generation,
+        };
+        Self::create_with(path, &opening, manifest)
+    }
+
+    fn create_with(
+        path: &Path,
+        opening: &SegmentOpening,
+        manifest: Vec<u8>,
+    ) -> Result<Self, NativeStorageError> {
+        let header = LogSegmentHeader {
+            kind: opening.kind,
+            sequence: opening.sequence,
+            first_lsn: opening.first_lsn,
+        };
+        let record = LogRecord {
+            lsn: opening.first_lsn,
+            kind: LogRecordKind::Checkpoint,
+            generation: opening.generation,
             manifest,
             blobs: Vec::new(),
         };
         let mut bytes = header.encode().to_vec();
-        bytes.extend(Self::encode(&record)?);
-        let mut file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .open(path)
-            .map_err(NativeStorageError::io)?;
+        bytes.extend(Self::frame(opening.kind, &record)?);
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create_new(true);
+        Self::owner_only(&mut options, opening.kind);
+        let mut file = options.open(path).map_err(NativeStorageError::io)?;
         file.write_all(&bytes).map_err(NativeStorageError::io)?;
         Ok(Self {
+            kind: opening.kind,
             file: Arc::new(file),
             path: path.to_owned(),
-            nonce,
+            nonce: opening.sequence,
             length: bytes.len() as u64,
-            next_lsn: Self::FIRST_LSN + 1,
+            next_lsn: opening.first_lsn + 1,
             records: 0,
             fresh: true,
         })
@@ -193,14 +252,51 @@ impl LogSegment {
         }
     }
 
-    /// Encode one record, refusing a body the format cannot hold.
-    pub(crate) fn encode(record: &LogRecord) -> Result<Vec<u8>, NativeStorageError> {
-        record.encode().map_err(|error| {
+    /// Encode one record as this segment's frame, refusing a body the
+    /// format cannot hold.
+    pub(crate) fn encode(&self, record: &LogRecord) -> Result<Vec<u8>, NativeStorageError> {
+        Self::frame(self.kind, record)
+    }
+
+    /// Encode one record as a frame of `kind`.
+    pub(crate) fn frame(
+        kind: LogSegmentKind,
+        record: &LogRecord,
+    ) -> Result<Vec<u8>, NativeStorageError> {
+        kind.frame(record).map_err(|error| {
             NativeStorageError::new(
                 NativeStorageErrorCode::FileTooLarge,
                 format!("write-ahead log record cannot be encoded: {error}"),
             )
         })
+    }
+
+    /// The segment's identity: its number, for a document segment.
+    pub(crate) fn sequence(&self) -> u64 {
+        self.nonce
+    }
+
+    /// Records appended since the segment was opened or last checkpointed.
+    pub(crate) fn records(&self) -> u64 {
+        self.records
+    }
+
+    /// Start counting records again after a checkpoint.
+    pub(crate) fn reset_records(&mut self) {
+        self.records = 0;
+    }
+
+    /// Flush the segment through the drive cache (`F_FULLFSYNC` on Apple),
+    /// with its directory entry when the segment is new.
+    pub(crate) fn full_flush(&mut self) -> Result<(), NativeStorageError> {
+        self.file.sync_all().map_err(NativeStorageError::io)?;
+        if self.fresh {
+            if let Some(directory) = self.path.parent() {
+                sync_directory(directory)?;
+            }
+            self.fresh = false;
+        }
+        Ok(())
     }
 
     /// Read and scan a whole segment, or `None` when it does not exist or
@@ -223,6 +319,19 @@ impl LogSegment {
         }
     }
 
+    /// A document segment is readable by the root owner only (ADR 0015
+    /// section 10). A log segment keeps the default mode it always had.
+    #[cfg(unix)]
+    pub(crate) fn owner_only(options: &mut OpenOptions, kind: LogSegmentKind) {
+        use std::os::unix::fs::OpenOptionsExt;
+        if kind.marked() {
+            options.mode(0o600);
+        }
+    }
+
+    #[cfg(not(unix))]
+    pub(crate) fn owner_only(_options: &mut OpenOptions, _kind: LogSegmentKind) {}
+
     fn random_nonce() -> Result<u64, NativeStorageError> {
         let mut bytes = [0_u8; 8];
         getrandom::fill(&mut bytes).map_err(|error| {
@@ -237,6 +346,14 @@ impl LogSegment {
     fn hex(value: u64) -> String {
         format!("{value:016x}")
     }
+}
+
+/// How a new segment starts.
+struct SegmentOpening {
+    kind: LogSegmentKind,
+    sequence: u64,
+    first_lsn: u64,
+    generation: u64,
 }
 
 /// What a flush needs, held outside the commit queue's lock.

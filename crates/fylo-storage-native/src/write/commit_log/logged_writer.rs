@@ -7,8 +7,8 @@ use fylo_format::{LogRecord, LogRecordKind};
 use fylo_vfs::{self as fs, OpenOptions};
 
 use super::super::{
-    CollectionWriteLock, GenerationRecord, NativeWriteRoot, ensure_directory, failpoint,
-    json_error, sibling_scratch,
+    CollectionWriteLock, GenerationRecord, NativeWriteRoot, ensure_directory, json_error,
+    sibling_scratch,
 };
 use super::abort_manifest::AbortManifest;
 use super::checkpoint_manifest::CheckpointManifest;
@@ -16,7 +16,10 @@ use super::commit_plan::CommitPlan;
 use super::commit_queue::{BusyPeriod, CommitQueue, QueueState, SchemaFence};
 use super::log_checkpoint::LogCheckpoint;
 use super::log_segment::LogSegment;
-use super::step_applier::StepApplier;
+use super::logged_plan::LoggedPlan;
+use super::placed_record::PlacedRecord;
+use super::segment_checkpoint::SegmentCheckpoint;
+use super::segment_recovery::SegmentRecovery;
 use crate::{
     CollectionKind, FilesystemProfile, GenerationState, GenerationStatus, LogPosition,
     NativeCollection, NativeStorageError, NativeStorageErrorCode, path_exists_no_follow,
@@ -24,7 +27,7 @@ use crate::{
 
 /// What a plan closure hands back: the plan to commit, if any, and the value
 /// the caller returns once it is committed.
-pub(crate) type Planned<T> = (Option<CommitPlan>, T);
+pub(crate) type Planned<T, P = CommitPlan> = (Option<P>, T);
 
 impl NativeWriteRoot {
     const LOG_TRANSACTION_PREFIX: &'static str = "log-";
@@ -42,14 +45,14 @@ impl NativeWriteRoot {
     ///
     /// `plan` runs under the collection lock and may run more than once when
     /// another writer in this process holds a commit on the same files.
-    pub(crate) fn commit_logged<T>(
+    pub(crate) fn commit_logged<T, P: LoggedPlan>(
         &self,
         collection: &NativeCollection,
-        mut plan: impl FnMut() -> Result<Planned<T>, NativeStorageError>,
+        mut plan: impl FnMut() -> Result<Planned<T, P>, NativeStorageError>,
     ) -> Result<T, NativeStorageError> {
         let queue = CommitQueue::shared(&collection.path);
         let mut state = queue.lock();
-        let (lsn, plan, value) = loop {
+        let (placed, plan, value) = loop {
             while state.exclusive.is_some()
                 || state
                     .busy
@@ -83,16 +86,16 @@ impl NativeWriteRoot {
                 continue;
             }
             match self.append_commit(collection, busy, &planned) {
-                Ok(lsn) => break (lsn, planned, value),
+                Ok(placed) => break (placed, planned, value),
                 Err(error) => {
                     Self::end_idle(&queue, &mut state, collection);
                     return Err(error);
                 }
             }
         };
-        let flushed = self.flush_until(&queue, state, lsn);
+        let flushed = self.flush_until(&queue, state, placed.lsn);
         let outcome = match flushed {
-            Ok(()) => self.apply_or_abort(collection, &queue, lsn, &plan),
+            Ok(()) => self.apply_or_abort(collection, &queue, &placed, &plan),
             Err(error) => Err(error),
         };
         let finished = Self::finish_member(collection, &queue, &plan);
@@ -107,32 +110,66 @@ impl NativeWriteRoot {
     ) -> Result<bool, NativeStorageError> {
         let recovered = self.recover_log_if_needed(collection)?;
         let stored = collection.stored_generation()?;
-        if stored.state == GenerationStatus::Stable {
-            LogCheckpoint::run(collection, stored.generation)?;
+        if stored.state != GenerationStatus::Stable {
+            return Ok(recovered);
         }
+        if collection.uses_segments() {
+            let segment = Self::open_active_segment(collection, &stored)?;
+            SegmentCheckpoint::run(collection, segment, stored.generation)?;
+            return Ok(recovered);
+        }
+        LogCheckpoint::run(collection, stored.generation)?;
         Ok(recovered)
     }
 
     /// Checkpoint every collection this process logged to, so a closing
     /// process leaves the v1 layout that older releases can open.
     ///
+    /// A root or collection that was removed since this process wrote to it
+    /// has nothing left to checkpoint and is skipped.
+    ///
     /// # Errors
     ///
     /// Returns the first recovery or checkpoint failure.
     pub fn close_logs() -> Result<(), NativeStorageError> {
+        Self::close_logs_matching(|_| true)
+    }
+
+    /// Checkpoint every collection of the root at `root` that this process
+    /// logged to, leaving other roots' logs alone.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first recovery or checkpoint failure.
+    pub fn close_logs_under(root: impl AsRef<Path>) -> Result<(), NativeStorageError> {
+        let root = root.as_ref();
+        Self::close_logs_matching(|origin| origin == root)
+    }
+
+    fn close_logs_matching(selected: impl Fn(&Path) -> bool) -> Result<(), NativeStorageError> {
         for queue in CommitQueue::all() {
             let origin = queue.lock().origin.clone();
-            let Some((root, name)) = origin else {
+            let Some((root, name)) = origin.filter(|(root, _)| selected(root)) else {
                 continue;
             };
-            let writer = Self::open(&root)?;
-            let collection = writer.root.collection(&name)?;
-            if !path_exists_no_follow(&collection.log_directory())? {
-                continue;
+            match Self::close_log(&root, &name) {
+                Err(error) if root.exists() => return Err(error),
+                _ => {}
             }
-            let _guard = writer.lock_collection(&collection.path)?;
-            writer.settle_log(&collection)?;
         }
+        Ok(())
+    }
+
+    fn close_log(root: &Path, name: &str) -> Result<(), NativeStorageError> {
+        let writer = Self::open(root)?;
+        let Some(collection) = writer.collection_if_present(name)? else {
+            return Ok(());
+        };
+        if !path_exists_no_follow(&collection.log_directory())? {
+            return Ok(());
+        }
+        let _guard = writer.lock_collection(&collection.path)?;
+        writer.settle_log(&collection)?;
         Ok(())
     }
 
@@ -142,9 +179,10 @@ impl NativeWriteRoot {
             &collection.path.join("locks"),
             "collection.lock",
         )?;
+        self.require_no_pending_migration(collection)?;
         let mut stored = collection.stored_generation()?;
         if Self::log_needs_recovery(collection, &stored)? {
-            super::log_recovery::LogRecovery::run(self, collection, &stored)?;
+            self.run_log_recovery(collection, &stored)?;
             stored = collection.stored_generation()?;
         }
         if stored.state == GenerationStatus::Writing {
@@ -152,9 +190,15 @@ impl NativeWriteRoot {
             stored = collection.stored_generation()?;
         }
         let segment = match &stored.log {
-            Some(position) => LogSegment::open_matching(&collection.log_segment_path(), position)?,
+            Some(position) => {
+                LogSegment::open_matching(&collection.logged_segment_path(position), position)?
+            }
             None => None,
         };
+        let segment = Self::rotate_if_full(collection, segment, &stored)?;
+        if collection.uses_segments() {
+            stored = collection.stored_generation()?;
+        }
         let durable = segment.as_ref().map_or((0, 0, 0), |segment| {
             let position = segment.position();
             (position.length, position.next_lsn - 1, position.records)
@@ -177,12 +221,65 @@ impl NativeWriteRoot {
         })
     }
 
-    fn append_commit(
+    /// A segment collection seals a full active segment before the next
+    /// busy period appends to it.
+    fn rotate_if_full(
+        collection: &NativeCollection,
+        segment: Option<LogSegment>,
+        stored: &GenerationState,
+    ) -> Result<Option<LogSegment>, NativeStorageError> {
+        if !collection.uses_segments() {
+            return Ok(segment);
+        }
+        let segment = segment.ok_or_else(|| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                "segment collection's active segment does not match its slot",
+            )
+        })?;
+        if !SegmentCheckpoint::wanted(collection, &segment)? {
+            return Ok(Some(segment));
+        }
+        SegmentCheckpoint::run(collection, segment, stored.generation).map(Some)
+    }
+
+    pub(crate) fn open_active_segment(
+        collection: &NativeCollection,
+        stored: &GenerationState,
+    ) -> Result<LogSegment, NativeStorageError> {
+        let position = stored.log.as_ref().ok_or_else(|| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                "segment collection has no segment position",
+            )
+        })?;
+        LogSegment::open_matching(&collection.logged_segment_path(position), position)?.ok_or_else(
+            || {
+                NativeStorageError::new(
+                    NativeStorageErrorCode::CorruptMetadata,
+                    "segment collection's active segment does not match its slot",
+                )
+            },
+        )
+    }
+
+    fn run_log_recovery(
+        &self,
+        collection: &NativeCollection,
+        stored: &GenerationState,
+    ) -> Result<(), NativeStorageError> {
+        if collection.uses_segments() {
+            return SegmentRecovery::run(self, collection, stored);
+        }
+        super::log_recovery::LogRecovery::run(self, collection, stored)
+    }
+
+    fn append_commit<P: LoggedPlan>(
         &self,
         collection: &NativeCollection,
         busy: &mut BusyPeriod,
-        plan: &CommitPlan,
-    ) -> Result<u64, NativeStorageError> {
+        plan: &P,
+    ) -> Result<PlacedRecord, NativeStorageError> {
         if busy.segment.is_none() {
             busy.segment = Some(Self::create_segment(
                 &self.root,
@@ -208,11 +305,23 @@ impl NativeWriteRoot {
             manifest: plan.manifest()?,
             blobs: plan.blobs().to_vec(),
         };
-        segment.append(&LogSegment::encode(&record)?, 1)?;
+        let encoded = segment.encode(&record)?;
+        let placed = PlacedRecord {
+            segment: segment.sequence(),
+            offset: segment.length(),
+            length: u32::try_from(encoded.len()).map_err(|_| {
+                NativeStorageError::new(
+                    NativeStorageErrorCode::FileTooLarge,
+                    "commit record exceeds the segment record limit",
+                )
+            })?,
+            lsn,
+        };
+        segment.append(&encoded, 1)?;
         busy.members += 1;
         busy.pending.extend(plan.touched().iter().cloned());
         busy.appended_lsn = lsn;
-        Ok(lsn)
+        Ok(placed)
     }
 
     fn create_segment(
@@ -335,18 +444,18 @@ impl NativeWriteRoot {
         busy.stranded |= removed.is_err();
     }
 
-    fn apply_or_abort(
+    fn apply_or_abort<P: LoggedPlan>(
         &self,
         collection: &NativeCollection,
         queue: &Arc<CommitQueue>,
-        lsn: u64,
-        plan: &CommitPlan,
+        placed: &PlacedRecord,
+        plan: &P,
     ) -> Result<(), NativeStorageError> {
-        let (error, index_applied) = match Self::apply_plan(&self.root, collection, plan) {
+        let (error, index_applied) = match plan.apply(&self.root, collection, placed) {
             Ok(()) => return Ok(()),
             Err(failure) => failure,
         };
-        match self.roll_back(collection, queue, (lsn, plan), index_applied) {
+        match self.roll_back(collection, queue, (placed.lsn, plan), index_applied) {
             Ok(()) => Err(error),
             Err(rollback) => {
                 let mut state = queue.lock();
@@ -363,34 +472,14 @@ impl NativeWriteRoot {
         }
     }
 
-    fn apply_plan(
-        root: &crate::NativeRoot,
-        collection: &NativeCollection,
-        plan: &CommitPlan,
-    ) -> Result<(), (NativeStorageError, bool)> {
-        let applier = StepApplier::live(root, &collection.path);
-        for step in plan.steps() {
-            applier
-                .apply(step, plan.blobs())
-                .map_err(|error| (error, false))?;
-        }
-        let delta = Self::index_lines(plan.index_removed(), plan.index_added());
-        Self::append_index(collection, &delta).map_err(|error| (error, true))?;
-        failpoint("after-log-apply-step").map_err(|error| (error, true))
-    }
-
-    fn roll_back(
+    fn roll_back<P: LoggedPlan>(
         &self,
         collection: &NativeCollection,
         queue: &Arc<CommitQueue>,
-        (lsn, plan): (u64, &CommitPlan),
+        (lsn, plan): (u64, &P),
         index_applied: bool,
     ) -> Result<(), NativeStorageError> {
-        StepApplier::live(&self.root, &collection.path).undo(plan.steps(), plan.pre_images())?;
-        if index_applied {
-            let inverse = Self::index_lines(plan.index_added(), plan.index_removed());
-            Self::append_index(collection, &inverse)?;
-        }
+        plan.undo(&self.root, collection, index_applied)?;
         let mut state = queue.lock();
         let busy = state
             .busy
@@ -410,15 +499,16 @@ impl NativeWriteRoot {
             manifest,
             blobs: Vec::new(),
         };
-        segment.append(&LogSegment::encode(&record)?, 1)?;
+        let encoded = segment.encode(&record)?;
+        segment.append(&encoded, 1)?;
         busy.appended_lsn = abort_lsn;
         self.flush_until(queue, state, abort_lsn)
     }
 
-    fn finish_member(
+    fn finish_member<P: LoggedPlan>(
         collection: &NativeCollection,
         queue: &Arc<CommitQueue>,
-        plan: &CommitPlan,
+        plan: &P,
     ) -> Result<(), NativeStorageError> {
         let mut state = queue.lock();
         let busy = state
@@ -456,9 +546,15 @@ impl NativeWriteRoot {
     /// The busy period is consumed first, so its segment handle is closed
     /// before a checkpoint removes the log: Windows cannot remove a directory
     /// that holds an open file.
-    fn end_busy(collection: &NativeCollection, busy: BusyPeriod) -> Result<(), NativeStorageError> {
+    fn end_busy(
+        collection: &NativeCollection,
+        mut busy: BusyPeriod,
+    ) -> Result<(), NativeStorageError> {
         let published = Self::publish_end(collection, &busy)?;
         let generation = busy.generation + 2;
+        if collection.uses_segments() {
+            return Self::end_segment_busy(collection, &mut busy, published.is_some());
+        }
         drop(busy);
         let Some(position) = published else {
             return Ok(());
@@ -466,6 +562,24 @@ impl NativeWriteRoot {
         if Self::wants_checkpoint(collection, &position)? {
             LogCheckpoint::run(collection, generation)?;
         }
+        Ok(())
+    }
+
+    /// A segment collection checkpoints while the busy period still holds
+    /// the collection lock, because the checkpoint appends to the active
+    /// segment and may rewrite the location snapshot.
+    fn end_segment_busy(
+        collection: &NativeCollection,
+        busy: &mut BusyPeriod,
+        published: bool,
+    ) -> Result<(), NativeStorageError> {
+        let Some(segment) = busy.segment.take() else {
+            return Ok(());
+        };
+        if !published || !SegmentCheckpoint::wanted(collection, &segment)? {
+            return Ok(());
+        }
+        SegmentCheckpoint::run(collection, segment, busy.generation + 2)?;
         Ok(())
     }
 
@@ -504,7 +618,7 @@ impl NativeWriteRoot {
             || LogCheckpoint::index_wants_compaction(collection)?)
     }
 
-    fn index_lines(removed: &BTreeSet<String>, added: &BTreeSet<String>) -> Vec<u8> {
+    pub(crate) fn index_lines(removed: &BTreeSet<String>, added: &BTreeSet<String>) -> Vec<u8> {
         let mut lines = Vec::new();
         for (sign, key) in removed
             .iter()
@@ -544,6 +658,9 @@ impl NativeWriteRoot {
         collection: &NativeCollection,
         record: &GenerationRecord,
     ) -> Result<(), NativeStorageError> {
+        if collection.uses_segments() {
+            return SegmentCheckpoint::publish_current(collection, record);
+        }
         let path = LogCheckpoint::state_path(collection)?;
         let mut bytes = serde_json::to_vec(record).map_err(|error| json_error(&error))?;
         bytes.push(b'\n');
@@ -573,7 +690,7 @@ impl NativeWriteRoot {
         if !Self::log_needs_recovery(collection, &stored)? {
             return Ok(false);
         }
-        super::log_recovery::LogRecovery::run(self, collection, &stored)?;
+        self.run_log_recovery(collection, &stored)?;
         Ok(true)
     }
 
@@ -588,9 +705,11 @@ impl NativeWriteRoot {
                 .is_some_and(|identifier| identifier.starts_with(Self::LOG_TRANSACTION_PREFIX)));
         }
         match &stored.log {
-            Some(position) => {
-                Ok(LogSegment::open_matching(&collection.log_segment_path(), position)?.is_none())
-            }
+            Some(position) => Ok(LogSegment::open_matching(
+                &collection.logged_segment_path(position),
+                position,
+            )?
+            .is_none()),
             None => Self::leftover_log_needs_recovery(collection, stored.generation),
         }
     }
