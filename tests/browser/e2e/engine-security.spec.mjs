@@ -213,6 +213,8 @@ test.afterAll(() => {
     for (const fixture of [registryFixture, folderFixture]) {
         if (fixture) rmSync(fixture.work, { recursive: true, force: true })
     }
+    // Database fixtures run to tens of megabytes; a worker keeps none.
+    if (FIXTURES !== FIXTURE_ROOT) rmSync(FIXTURES, { recursive: true, force: true })
 })
 
 test.describe('encrypted directory roots', () => {

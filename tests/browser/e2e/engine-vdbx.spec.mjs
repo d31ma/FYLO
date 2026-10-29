@@ -370,6 +370,11 @@ async function requireOpfs(harness) {
 
 let fixture
 
+// Database fixtures run to tens of megabytes; a worker keeps none.
+test.afterAll(() => {
+    if (fixture) rmSync(fixture.paths.directory, { recursive: true, force: true })
+})
+
 test.beforeAll(async ({}, workerInfo) => {
     test.setTimeout(600_000)
     const paths = fixturePaths(`${workerInfo.project.name}-${workerInfo.workerIndex}`)
@@ -933,13 +938,28 @@ test('a Worker killed mid-batch leaves a working copy native verifies', async ({
             await page.waitForTimeout(100)
         }
         expect(reopened.error, `reopen: ${reopened.error}`).toBeUndefined()
-        const [verified, listed] = expectOk(
-            await harness.exec(reopened.id, [
+        // Firefox can let a terminated Worker's last write land after its
+        // Web Lock is released, and a read that sees the file change under
+        // it refuses with EENGINE_CONCURRENT_WRITE rather than answer from
+        // a torn view. That refusal is the engine working; read again.
+        let reread
+        evidence.concurrentRetries = 0
+        for (let attempt = 0; attempt < 10; attempt++) {
+            reread = await harness.exec(reopened.id, [
                 { op: 'verifyDatabase' },
                 { op: 'findDocs', collection: 'users', query: { $onlyIds: true } }
-            ]),
-            'browser after the crash'
-        )
+            ])
+            if (!reread.some((frame) => frame.error?.code === 'EENGINE_CONCURRENT_WRITE')) break
+            evidence.concurrentRetries++
+            await page.waitForTimeout(200)
+        }
+        if (evidence.concurrentRetries > 0) {
+            testInfo.annotations.push({
+                type: 'concurrent-write-retry',
+                description: `read again ${evidence.concurrentRetries} time(s) after the kill`
+            })
+        }
+        const [verified, listed] = expectOk(reread, 'browser after the crash')
         expect(verified.result.ok).toBe(true)
         const present = new Set(listed.result)
         const survived = batch.filter((id) => present.has(id)).length
