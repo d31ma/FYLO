@@ -284,6 +284,16 @@ fn registry_documents_read_query_and_write_in_the_head_shape_until_they_converge
         find(&runtime, &by_name("Ada Lovelace")),
         json!({ADA: {"name":"Ada Lovelace","ssn":"43","_v":"v2"}})
     );
+
+    // SQL `WHERE` compares decrypted values, not ciphertext.
+    let deleted = success(
+        &runtime,
+        &json!({"op":"executeSQL","sql":"DELETE FROM people WHERE ssn = '43'"}),
+    );
+    assert_eq!(deleted, 1);
+    let report = inspect(&runtime);
+    assert_eq!(documents_per_version(&report), [0, 1], "{report}");
+    assert_eq!(report["converged"], true, "{report}");
 }
 
 #[test]

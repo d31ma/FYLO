@@ -42,6 +42,28 @@
   same validation and encryption as any write. A document without `_v` is
   skipped and counted unless `--include-unversioned` is given (ADR 0017
   section 5).
+- **Reads return the head schema shape (ADR 0017 section 5, lazy migration).**
+  `getDoc`, `findDocs`, joins, SQL `SELECT`, deleted-document reads and the hot
+  set decrypt a document stored below its collection's head at the version it
+  was written at and migrate it in memory; stored bytes do not change. Queries,
+  and SQL `UPDATE` and `DELETE` `WHERE`, match the migrated document, so a
+  query on a renamed field answers the same before and after
+  `schemaMigrate`. Until a collection converges, an index plan that touches a
+  field a pending migration writes or renames falls back to reading every
+  document; other fields keep the index. A patch or SQL `UPDATE` of an old
+  document stores it in the head shape. A `_v` the schema does not list fails
+  the read with `ESCHEMA`.
+- **Convergence counts (ADR 0017 section 6).** For a registry collection with
+  two or more versions, the writer keeps the number of live documents per
+  stored `_v` in `.fylo-schemas/<collection>/counts.json` (a separate
+  `counts.<hash>.json` per branch worktree), updated from each commit's
+  before- and after-images on the write-ahead log and the transaction journal,
+  stamped with the collection generation and recounted by scan when stale,
+  for example after crash recovery, checkout, merge or `restoreCommit`.
+  Folder-only collections are counted by scan on demand. `schemaInspect` and
+  `fylo schema inspect` now report `validation`, `head`, the documents at each
+  version, `unversioned`, `unknownVersions` and `converged`; a converged
+  collection's reads stop consulting migrations.
 - **Schema validation modes per collection (ADR 0017 section 2).**
   `fylo schema mode <collection> off|warn|strict` (`schemaMode`) records the
   mode in the collection's catalog descriptor, so it applies to every process
@@ -88,8 +110,9 @@
 - Strict validation compiles each pattern once per process instead of on every
   write, and a process derives its encryption keys once instead of on every
   request.
-- The README no longer says reads upgrade old documents to the head schema;
-  they never did. ADR 0017 plans it.
+- SQL `UPDATE` and `DELETE` `WHERE` clauses now match decrypted values, so a
+  condition on an `$encrypted` field finds its documents instead of comparing
+  against ciphertext.
 
 ### Changed
 

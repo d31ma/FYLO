@@ -57,15 +57,35 @@
         <ul>
             <li>Documents carry <code>_v</code>, their version label.</li>
             <li>
-                Reads return each document as stored. <code>schemaMaterialize</code> migrates one to
-                the head shape in memory; read-time migration is planned in ADR 0017.
+                Every read returns documents in the head shape: <code>getDoc</code>,
+                <code>findDocs</code>, joins, SQL <code>SELECT</code> and the hot set. A document
+                stored below the head is decrypted at the version it was written at and migrated in
+                memory; its stored bytes do not change until something writes it.
+            </li>
+            <li>
+                Queries and SQL <code>UPDATE</code> and <code>DELETE</code> match the migrated
+                document, so a query on a renamed field gives the same answer before and after
+                <code>fylo schema migrate</code>. Until the collection converges, a query on a field a
+                migration writes or renames reads every document instead of the index; other fields
+                keep it.
+            </li>
+            <li>
+                A patch of an old document migrates it first, so the stored document moves to the
+                head shape.
             </li>
             <li>
                 Strict writes validate against the head schema with the built-in CHEX validator.
             </li>
             <li>
-                <code>schemaMaterialize</code> treats a document missing <code>_v</code> as the
-                oldest version.
+                A document missing <code>_v</code> is treated as the oldest version. One whose
+                <code>_v</code> the schema does not list fails the read with <code>ESCHEMA</code>.
+            </li>
+            <li>
+                <code>fylo schema inspect &lt;collection&gt;</code> reports the validation mode, the
+                head, how many documents are stored at each version and whether the collection has
+                converged, every document at the head. A converged collection's reads cost one
+                comparison of <code>_v</code>. The writer keeps the count for a registry collection
+                beside its registry and recounts it by scan whenever it is stale.
             </li>
             <li>
                 <code>fylo schema migrate &lt;collection&gt;</code> rewrites every document below

@@ -186,3 +186,73 @@ fn a_push_interrupted_after_its_version_file_leaves_the_old_head() {
     assert!(output.status.success(), "{output:?}");
     assert_eq!(fixture.head(), Some(1));
 }
+
+#[test]
+fn inspect_counts_documents_per_version_and_get_reads_the_head_shape() {
+    let fixture = Fixture::new("inspect");
+    let root = fixture.root();
+    let schemas = fixture.schemas();
+    let push = || {
+        let output = fixture.run(&[
+            "schema",
+            "push",
+            "items",
+            "--root",
+            path(&root),
+            "--schema-dir",
+            path(&schemas),
+        ]);
+        assert!(output.status.success(), "{output:?}");
+    };
+    push();
+    NativeWriteRoot::open(&root)
+        .unwrap()
+        .put_document(
+            "items",
+            "4VRNF52JPCO",
+            br#"{"title":"Notes","_v":"v1"}"#,
+            fylo_storage_native::PutDocumentOptions::default(),
+        )
+        .unwrap();
+    let folder = schemas.join("items");
+    fs::write(
+        folder.join("manifest.json"),
+        br#"{"current":"v2","versions":[{"v":"v1"},{"v":"v2"}]}"#,
+    )
+    .unwrap();
+    fs::write(folder.join("history/v2.schema.json"), br#"{"name":"^.+$"}"#).unwrap();
+    fs::create_dir_all(folder.join("migrations")).unwrap();
+    fs::write(
+        folder.join("migrations/v1-to-v2.json"),
+        br#"{"steps":[{"rename":"title","to":"name"}]}"#,
+    )
+    .unwrap();
+    push();
+
+    let inspected = fixture.run(&["schema", "inspect", "items", "--root", path(&root)]);
+    assert!(inspected.status.success(), "{inspected:?}");
+    let report = text(&inspected);
+    for line in [
+        "Current: v2",
+        "  v1: 1 document(s)",
+        "  v2 (head): 0 document(s)",
+        "Converged: no",
+    ] {
+        assert!(
+            report.lines().any(|found| found == line),
+            "{line}\n{report}"
+        );
+    }
+    let got = fixture.run(&[
+        "get",
+        "items",
+        "4VRNF52JPCO",
+        "--root",
+        path(&root),
+        "--json",
+    ]);
+    assert!(got.status.success(), "{got:?}");
+    let got = text(&got);
+    assert!(got.contains("\"name\""), "{got}");
+    assert!(!got.contains("title"), "{got}");
+}
