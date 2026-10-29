@@ -23,7 +23,8 @@
 //! What it cannot do is stop an owner that is paused between checking the
 //! lease and writing, then resumes after a takeover. The owner narrows that
 //! window by checking before every commit and renewing well inside the
-//! takeover time; `fylo serve` on a qualified filesystem closes it.
+//! takeover time; byte-range locks, on a filesystem qualified for them, close
+//! it.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};

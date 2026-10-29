@@ -219,13 +219,17 @@ drifts toward the front of the file. Space is returned to the disk two ways:
 
 ### 7. Locking and processes
 
-- **`fylo serve`** holds the database lease for its life (ADR 0012); other
-  processes go through it. This is the recommended mode on network storage.
+- **Embedded, like SQLite** (Samuel, 2026-10-29). There is no FYLO server
+  and no `fylo serve`: every process that uses a database opens the file
+  itself, as it would a `.db` or `.sqlite` file. A server that reads a
+  `.fxdb` file is just another such process, and FYLO runs one only in tests.
 - **Several local processes** coordinate with OS byte-range locks on a
   reserved range far beyond any data offset (2⁶² and up): one lock byte for
   the database lease, one for extent allocation, and one per collection
-  (indexed by its directory block) for writers. Readers take no lock; they
-  read through the slots. `fcntl` open-file-description locks (`F_OFD_SETLK`)
+  (indexed by its directory block) for writers. Every process holds the lease
+  byte shared while it has the file open; an operation that needs the file to
+  itself (`compact --shrink`, `pack --sealed` in place) takes it exclusive.
+  Readers take no other lock; they read through the slots. `fcntl` open-file-description locks (`F_OFD_SETLK`)
   on Linux, `fcntl` on macOS, `LockFileEx` on Windows. These replace the lock
   files and the `hard_link` path for `.fxdb` databases.
 - Byte-range locks are enabled on a filesystem only after the multi-process
@@ -244,8 +248,13 @@ drifts toward the front of the file. Space is returned to the disk two ways:
   one contender win, and the winner deletes the older files. An owner checks
   before each commit that its generation is still the highest. A clean close
   marks the lease free instead of deleting it, so generations only grow and
-  the next writer takes it at once. Other processes reach the database
-  through `fylo serve`.
+  the next writer takes it at once.
+- Under the lease, **readers are never blocked**: any number of processes,
+  on any machine, read through the slots exactly as they do with locks. A
+  second writer waits for the lease up to its busy timeout (5 s by default,
+  as SQLite's `busy_timeout`) and then fails with `EBUSY`; a process can also
+  open the file read-only and never ask for it. A crashed writer holds up
+  other writers for the takeover time, never readers.
 
 **Filesystem requirements.** A `.fxdb` database needs only positional reads
 and writes, resizing the file, flushing the file, and exclusive create for the
@@ -361,7 +370,7 @@ port it.
 - Every API that takes a root takes a `.fxdb` path. A root path that names an
   existing regular file is opened as a container; one that names a directory,
   or a path ending in `/`, is a directory root. `Fylo.open('orders.fxdb')`
-  and `fylo serve --root orders.fxdb` follow the same rule.
+  and every CLI command follow the same rule.
 
 ### 12. Compatibility
 
@@ -458,7 +467,9 @@ Costs:
 
 - `fylo pack`, `unpack`, `compact [--shrink]`, `verify`, `salvage` and
   `inspect`, as above.
-- On network storage, run `fylo serve` next to the file and connect to it,
-  rather than opening the file from several machines.
+- On network storage, open the file directly from each machine. Where the
+  filesystem's byte-range locks are qualified, writers on several machines
+  share it; elsewhere they take turns through the lease. Readers on any
+  machine are never blocked.
 - Back up a live database with `fylo pack --sealed` (a consistent copy), or
   copy the file while no writer has it open.
