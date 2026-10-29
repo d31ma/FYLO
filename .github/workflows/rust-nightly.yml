@@ -77,6 +77,11 @@ jobs:
                   cargo +nightly-2026-07-20 fuzz run portable_inputs
                   -- -max_total_time=180 -timeout=10 -rss_limit_mb=4096
 
+            - name: Fuzz .fxdb container structures
+              run: >-
+                  cargo +nightly-2026-07-20 fuzz run container_structures
+                  -- -max_total_time=180 -timeout=10 -rss_limit_mb=4096
+
             - name: Record exact qualification identity
               if: always()
               run: |

@@ -21,6 +21,14 @@ use sha2::{Digest, Sha256};
 mod beneath_open;
 #[cfg(not(target_family = "wasm"))]
 mod byte_range_lock;
+#[cfg(not(target_family = "wasm"))]
+mod container_access;
+mod container_allocator;
+mod container_cipher;
+mod container_codec;
+mod container_file;
+#[cfg(not(target_family = "wasm"))]
+mod container_lease;
 mod durability;
 mod filesystem_profile;
 mod index_cache;
@@ -42,6 +50,27 @@ pub use byte_range_lock::{
     ByteLockGuard, ByteRangeLockFile, COLLECTION_WRITER_START, FilesystemInfo, LOCK_RANGE_START,
     LockByte, LockMode, MAX_POLL_INTERVAL,
 };
+#[cfg(not(target_family = "wasm"))]
+pub use container_access::{ContainerWriteAccess, ContainerWriteOptions};
+pub use container_allocator::{
+    ContainerAllocatorError, ContainerExtentAllocation, ContainerExtentAllocator,
+    ContainerExtentCensus, ContainerKindCensus, ContainerShrinkPlan,
+};
+pub use container_cipher::{
+    ContainerCipher, ContainerCipherError, ContainerSealContext, KEY_CHECK_BYTES, NONCE_BYTES,
+    SALT_BYTES, TAG_BYTES,
+};
+#[cfg(not(target_family = "wasm"))]
+pub use container_codec::train_dictionary;
+pub use container_codec::{
+    ContainerCodecError, ContainerDictionary, ContainerEncodedBody, ContainerFrameCodec,
+    DICTIONARY_TRAINING_BYTES, MAX_DICTIONARY_BYTES, ZSTD_SEALED_LEVEL, ZSTD_WRITE_LEVEL,
+};
+pub use container_file::{
+    ContainerCollection, ContainerCollectionReport, ContainerError, ContainerFile, ContainerReport,
+};
+#[cfg(not(target_family = "wasm"))]
+pub use container_lease::{ContainerLease, ContainerLeaseError, ContainerLeaseTiming};
 pub use durability::Durability;
 pub use filesystem_profile::FilesystemProfile;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]

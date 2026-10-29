@@ -62,7 +62,9 @@ that uses them:
 - buckets (raw-file collections), which need large-object extents that span
   more than one extent; a follow-up ADR;
 - document version control, for ADR 0015's reason;
-- the embedded queue (ADR 0009) and the `EfsSidecarV1` profile;
+- the embedded queue (ADR 0009). The `EfsSidecarV1` profile (ADR 0010) has no
+  `.fxdb` form and needs none: a `.fxdb` file uses no extended attributes or
+  hard links, which are what that profile works around;
 - transactions that span several collections. One file makes them possible
   (section 6), but they are a separate decision.
 
@@ -80,7 +82,9 @@ A directory root stays fully supported. `.fxdb` is opt-in per database.
   ext4: an unknown **incompatible** flag refuses the file, an unknown
   **read-only-compatible** flag opens it read-only, and an unknown
   **compatible** flag is ignored. Encryption and the sealed mode are
-  incompatible flags; a new codec is an incompatible flag.
+  incompatible flags; a new codec is an incompatible flag. Read-only-compatible
+  bit 0, `READ_ONLY_COMPAT_SCHEMAS`, is reserved for schemas stored in the
+  database (ADR 0017).
 
 ### 3. File layout
 
@@ -97,18 +101,22 @@ two from 1 MiB to 64 MiB. Every extent begins with a 64-byte extent header:
 magic, kind, owning collection id, **sequence number**, and a CRC-32C. The
 sequence number comes from a counter in the superblock and is never reused.
 
-**Superblock.** Magic, format version and flags, extent size, extent count,
-superblock generation, the checkpoint LSN per collection, the extents that
-hold the current extent map, the codec and the encryption header (section 9),
-and a CRC-32C. A checkpoint writes the copy that does not hold the newest
+**Superblock.** Magic, format version and feature flags (including which
+codecs appear), extent size, extent count, superblock generation, the next
+extent sequence number, the first directory extent, the extents that hold the
+current extent map, the encryption header (section 9), and a CRC-32C. A checkpoint writes the copy that does not hold the newest
 valid generation and flushes; a reader takes the valid copy with the higher
 generation. This is ADR 0015's slot rule at file scale.
 
-**Collection directory.** One 4 KiB block per collection: its name and id,
-its catalog descriptor, its two **generation slots** (ADR 0015 section 6,
-moved in from `state.slots`), its active segment extent and the extents of
-its current snapshots. One block per collection keeps two collections from
-ever writing the same sector. An 8 MiB directory holds 2,048 collections and
+**Collection directory.** One 4 KiB block per collection: a static part
+written when the collection is created (its name, id and catalog descriptor,
+with its own CRC), two **checkpoint slots** (the checkpoint LSN and position,
+and the extents, lengths and SHA-256 of its current location and index
+snapshots and dictionary) and two **generation slots** (ADR 0015 section 6,
+moved in from `state.slots`, naming the active segment extent and its
+committed length). Each slot pair is written A/B with its own CRC, so an
+in-place slot write never touches the static part. One block per collection keeps two collections from
+ever writing the same sector. An 8 MiB directory holds 2,047 collections (its first 4 KiB is the extent header) and
 chains to a further directory extent past that.
 
 **Extent map.** 32 bytes per extent: state (free, owned, sealed), kind, owner,
@@ -204,27 +212,68 @@ drifts toward the front of the file. Space is returned to the disk two ways:
   `FSCTL_SET_ZERO_DATA` on a sparse NTFS file. Support is probed at open on a
   free extent and remembered for the life of the handle; a failure only means
   the space is kept;
-- **tail truncation**, everywhere, including EFS (NFS 4.1 has no hole
-  punching): `fylo compact --shrink` relocates the live extents nearest the
+- **tail truncation**, on every filesystem, including those with no hole
+  punching (NFS 4.1, FAT, exFAT): `fylo compact --shrink` relocates the live extents nearest the
   end into free extents nearer the front, through the same copy, record and
   checkpoint steps, then truncates the file after the last owned extent.
 
 ### 7. Locking and processes
 
-- **`fylo serve`** holds the database lease for its life (ADR 0012); other
-  processes go through it. This is the recommended mode on network storage.
+- **Embedded, like SQLite** (Samuel, 2026-10-29). There is no FYLO server
+  and no `fylo serve`: every process that uses a database opens the file
+  itself, as it would a `.db` or `.sqlite` file. A server that reads a
+  `.fxdb` file is just another such process, and FYLO runs one only in tests.
 - **Several local processes** coordinate with OS byte-range locks on a
   reserved range far beyond any data offset (2⁶² and up): one lock byte for
   the database lease, one for extent allocation, and one per collection
-  (indexed by its directory block) for writers. Readers take no lock; they
-  read through the slots. `fcntl` open-file-description locks (`F_OFD_SETLK`)
+  (indexed by its directory block) for writers. Every process holds the lease
+  byte shared while it has the file open; an operation that needs the file to
+  itself (`compact --shrink`, `pack --sealed` in place) takes it exclusive.
+  Readers take no other lock; they read through the slots. `fcntl` open-file-description locks (`F_OFD_SETLK`)
   on Linux, `fcntl` on macOS, `LockFileEx` on Windows. These replace the lock
   files and the `hard_link` path for `.fxdb` databases.
 - Byte-range locks are enabled on a filesystem only after the multi-process
-  load harness passes on it. Until then a `.fxdb` database on that
-  filesystem opens with an exclusive lease: one process at a time. The
-  qualification list starts with APFS and NTFS locally, the ATLAS SMB share,
-  and the local NFS 4.1 server.
+  load harness passes on it. The qualification list starts with APFS and NTFS
+  locally, the ATLAS SMB share, and the local NFS 4.1 server.
+- **Any other filesystem still works** (Samuel, 2026-10-29: FYLO must not
+  depend on EFS or any one filesystem). Where locks are unqualified, or the
+  filesystem refuses them (`ENOLCK`, `EOPNOTSUPP`), one process at a time
+  writes the database. It holds a numbered lease file beside it,
+  `<name>.fxdb.lease.<generation>`, made with exclusive create
+  (`O_CREAT | O_EXCL`, `CREATE_NEW`), which every filesystem FYLO targets
+  honours; the highest generation owns the database. The owner rewrites its
+  lease on a heartbeat. A contender that sees the lease unchanged for the
+  takeover time (30 s by default, timed on its own clock, so hosts need not
+  agree on the time) creates the next generation; exclusive create lets only
+  one contender win, and the winner deletes the older files. An owner checks
+  before each commit that its generation is still the highest. A clean close
+  marks the lease free instead of deleting it, so generations only grow and
+  the next writer takes it at once.
+- Under the lease, **readers are never blocked**: any number of processes,
+  on any machine, read through the slots exactly as they do with locks. A
+  second writer waits for the lease up to its busy timeout (5 s by default,
+  as SQLite's `busy_timeout`) and then fails with `EBUSY`; a process can also
+  open the file read-only and never ask for it. A crashed writer holds up
+  other writers for the takeover time, never readers; a lease last written
+  more than twice the takeover time ago, by its writer's clock, is taken over
+  at once.
+- **Choosing the mode.** A writer uses byte-range locks when its filesystem
+  is qualified and grants a probe lock, and the lease otherwise. A caller can
+  also ask for **exclusive mode**, the lease everywhere, as SQLite's
+  `locking_mode=EXCLUSIVE`. The modes exclude each other: a lease writer
+  whose filesystem grants locks at all also holds the lease byte exclusive,
+  and a lock writer waits while any lease is held, taking over one a crash
+  left. Unsupported: one host whose filesystem refuses every lock sharing a
+  file with another host that writes through locks.
+
+**Filesystem requirements.** A `.fxdb` database needs only positional reads
+and writes, resizing the file, flushing the file, and exclusive create for the
+fallback lease. It does not need atomic rename, directory flushes after
+creation, extended attributes, hard links, sparse files, hole punching or
+byte-range locks; each is used when present and probed, never assumed. On a
+filesystem without sparse files, growing by an extent writes its zeros. On
+FAT32, files stop at 4 GiB and growth past that fails with `EFBIG`; exFAT has
+no such limit.
 
 ### 8. Compression
 
@@ -235,12 +284,24 @@ extent, and named by id in each frame. A later dictionary is trained at
 compaction when it improves the ratio by at least 10%; records keep the
 dictionary they were written with until compaction rewrites them.
 
-The codec must be **pure Rust**, because the browser build has no C
-toolchain, and it counts against the browser engine's budget of 1,792 KiB
-(640 KiB gzipped). The candidates are `lz4_flex` (block mode with a
-dictionary) and zstd written natively and read with `ruzstd` in the browser.
-Spike 4 below decides between them; the chosen crate is reviewed under
-ADR 0004.
+**Codecs (decided by Samuel, 2026-10-29, from spike 4).** Each frame's codec
+byte names how it was compressed: `0` none, `1` zstd, `2` LZ4.
+
+- Native writers use **zstd level 3** with the collection's dictionary,
+  through the C library (`zstd` crate). It needs an ADR 0004 dependency
+  review before it lands.
+- The browser cannot carry the C library: compiled to WebAssembly it adds
+  433 KB, more than the engine's remaining 224 KB of budget. The browser reads
+  zstd frames with **`ruzstd`** (pure Rust, +16 KB gzipped).
+- The browser writes **LZ4** frames with **`lz4_flex`** (pure Rust, +6 KB
+  gzipped), using the same dictionary's raw bytes. `ruzstd` cannot compress
+  with a dictionary.
+- Native compaction rewrites LZ4 frames as zstd.
+
+On three 5,000-document test sets, zstd level 3 with a 32 KiB dictionary
+stored documents at 2.9x to 3.4x and LZ4 with a dictionary at 2.1x to 2.6x;
+every codec decoded a document in under 10 µs
+(`fxdb/spike-4-codec.md` in the project files).
 
 A **sealed** file (section 11) recompresses its extents in 64 KiB blocks for
 a better ratio; a point read then decompresses one block.
@@ -319,7 +380,7 @@ port it.
 - Every API that takes a root takes a `.fxdb` path. A root path that names an
   existing regular file is opened as a container; one that names a directory,
   or a path ending in `/`, is a directory root. `Fylo.open('orders.fxdb')`
-  and `fylo serve --root orders.fxdb` follow the same rule.
+  and every CLI command follow the same rule.
 
 ### 12. Compatibility
 
@@ -339,7 +400,7 @@ results are added here as they arrive.
 | 1     | Cold `pread` latency on one long-open file on the raw ATLAS share, with and without caching | whether a cold read under 1 ms is possible there |
 | 2     | Byte-range locks between two machines on CITADEL, and on the local NFS 4.1 server            | section 7's starting qualification list          |
 | 3     | Whether `F_PUNCHHOLE` from macOS frees space on the ATLAS share                              | whether shrinking there needs `--shrink`         |
-| 4     | `lz4_flex` and zstd with a dictionary on the 5k fixture: ratio, decode time and code size    | the codec in section 8                           |
+| 4     | `lz4_flex` and zstd with a dictionary on the 5k fixture: ratio, decode time and code size    | **Done 2026-10-29:** section 8's codecs          |
 
 ## Consequences
 
@@ -347,7 +408,7 @@ Benefits:
 
 - a database is one file to copy, back up, mail or open in Explorer;
 - one open and one header read per database instead of several files per
-  collection, which is what matters on SMB and EFS;
+  collection, which is what matters on network filesystems;
 - JOINs read both collections from the same moment, through one handle;
 - the browser and mobile builds open databases with no bridge and no special
   hosting headers, in every browser;
@@ -416,7 +477,9 @@ Costs:
 
 - `fylo pack`, `unpack`, `compact [--shrink]`, `verify`, `salvage` and
   `inspect`, as above.
-- On network storage, run `fylo serve` next to the file and connect to it,
-  rather than opening the file from several machines.
+- On network storage, open the file directly from each machine. Where the
+  filesystem's byte-range locks are qualified, writers on several machines
+  share it; elsewhere they take turns through the lease. Readers on any
+  machine are never blocked.
 - Back up a live database with `fylo pack --sealed` (a consistent copy), or
   copy the file while no writer has it open.

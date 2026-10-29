@@ -26,4 +26,11 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "container_structures"
+path = "fuzz_targets/container_structures.rs"
+test = false
+doc = false
+bench = false
+
 [workspace]

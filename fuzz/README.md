@@ -6,6 +6,7 @@ Install the pinned Rust nightly selected by release engineering and
 ```bash
 cargo fuzz run query_snapshot -- -max_len=2097152
 cargo fuzz run portable_inputs -- -max_len=1048576
+cargo fuzz run container_structures -- -max_len=8192
 ```
 
 The target sends arbitrary snapshot and query bytes through the same bounded
