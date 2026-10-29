@@ -10,7 +10,9 @@ cargo-fuzz = true
 [dependencies]
 fylo-format = { version = "0.1.0", path = "../crates/fylo-format" }
 fylo-query = { version = "0.1.0", path = "../crates/fylo-query" }
+fylo-storage-native = { version = "0.1.0", path = "../crates/fylo-storage-native" }
 libfuzzer-sys = "0.4.10"
+serde_json = "1"
 
 [[bin]]
 name = "query_snapshot"
@@ -29,6 +31,27 @@ bench = false
 [[bin]]
 name = "container_structures"
 path = "fuzz_targets/container_structures.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "container_codec"
+path = "fuzz_targets/container_codec.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "container_cipher"
+path = "fuzz_targets/container_cipher.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "container_file"
+path = "fuzz_targets/container_file.rs"
 test = false
 doc = false
 bench = false

@@ -231,6 +231,25 @@ fn payloads_stay_inside_their_extent() {
     ));
 }
 
+// Found by the `container_file` fuzz target: an extent index read from a
+// damaged location overflowed the header offset.
+#[test]
+fn an_extent_beyond_any_file_is_refused_without_overflow() {
+    let (_guard, path) = created("fxdb-extent-overflow");
+    let container = ContainerFile::open_reader(&path).expect("open container");
+    for extent in [u64::MAX, (u64::MAX >> SHIFT) + 1] {
+        assert!(matches!(
+            container.expect_extent(extent, SEGMENT, 1, 1),
+            Err(ContainerError::Io(error)) if error.kind() == ErrorKind::InvalidInput
+        ));
+    }
+    let past_the_map = container.allocator().extent_count();
+    assert!(matches!(
+        container.expect_extent(past_the_map, SEGMENT, 1, 1),
+        Err(ContainerError::Io(error)) if error.kind() == ErrorKind::UnexpectedEof
+    ));
+}
+
 #[test]
 fn a_checkpoint_persists_the_extent_map() {
     let (_guard, path) = created("fxdb-checkpoint");

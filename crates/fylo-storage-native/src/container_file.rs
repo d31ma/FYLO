@@ -518,8 +518,9 @@ impl ContainerFile {
     ///
     /// # Errors
     ///
-    /// Returns the read failure, or a decoding error; `InvalidField` means
-    /// the extent was freed and reused, and the caller retries.
+    /// Returns the read failure, `InvalidInput` for an extent no file could
+    /// hold, or a decoding error; `InvalidField` means the extent was freed
+    /// and reused, and the caller retries.
     pub fn expect_extent(
         &self,
         extent: u64,
@@ -527,8 +528,17 @@ impl ContainerFile {
         owner: u32,
         sequence: u64,
     ) -> Result<ContainerExtentHeader, ContainerError> {
+        // The extent comes from a location the file itself recorded, so it is
+        // untrusted. One past the map is not refused: a reader's map can
+        // predate extents a writer has added since.
+        let at = extent.checked_mul(self.extent_bytes()).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "container extent is beyond any file",
+            )
+        })?;
         let mut bytes = [0_u8; ContainerExtentHeader::ENCODED_BYTES];
-        read_exact_at(self.file(), &mut bytes, extent * self.extent_bytes())?;
+        read_exact_at(self.file(), &mut bytes, at)?;
         Ok(ContainerExtentHeader::expect(
             &bytes, extent, kind, owner, sequence,
         )?)
