@@ -17,6 +17,8 @@ import {
 } from './opfs-bridge.mjs'
 
 const ATTRIBUTE_MANIFEST = '.fylo-attributes.json'
+/** How long the bridge trusts one `Atomics.waitAsync` before looking itself. */
+const WAKE_CHECK_MS = 100
 
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
@@ -56,9 +58,14 @@ async function serve(message) {
             // `Atomics.waitAsync` where the engine supports it; a macrotask
             // poll otherwise. Either way this must never park the thread, or
             // the OPFS promises this Worker exists to run would not resolve.
+            // The wait is bounded because WebKit can lose the wakeup: after
+            // OPFS work between waits, a notify sometimes unregisters the
+            // waiter without settling its promise, and the engine Worker then
+            // waits forever (about one session in eight on Safari 26). The
+            // loop rechecks STATE, so a timeout costs one look every 100 ms.
             const waited =
                 typeof Atomics.waitAsync === 'function'
-                    ? Atomics.waitAsync(control, STATE, observed)
+                    ? Atomics.waitAsync(control, STATE, observed, WAKE_CHECK_MS)
                     : { async: false }
             if (waited.async) await waited.value
             else await new Promise((resume) => setTimeout(resume, 0))
