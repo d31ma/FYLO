@@ -514,6 +514,9 @@ impl NativeWriteRoot {
         if let Some(mode) = source.validation() {
             descriptor.insert("validation".into(), Value::from(mode.as_str()));
         }
+        if let Some(fields) = source.root.recorded_encrypted_fields(source.name())? {
+            descriptor.insert("encrypted".into(), Value::from(fields));
+        }
         packed.add_database_collection(source.name(), descriptor)?;
         let collection = packed.root.collection(source.name())?;
         let _lock = packed.lock_collection(&collection)?;
@@ -738,6 +741,9 @@ impl NativeWriteRoot {
         let mut descriptor: Map<String, Value> = Self::default_descriptor(source);
         if let Some(mode) = source.validation() {
             descriptor.insert("validation".into(), Value::from(mode.as_str()));
+        }
+        if let Some(fields) = source.root.recorded_encrypted_fields(name)? {
+            descriptor.insert("encrypted".into(), Value::from(fields));
         }
         let mut encoded = serde_json::to_vec(&descriptor).map_err(|error| json_error(&error))?;
         encoded.push(b'\n');

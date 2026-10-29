@@ -529,6 +529,7 @@ impl NativeRoot {
                 validation: None,
                 schemas: None,
                 schema_head: None,
+                encrypted: None,
             });
         let namespace = match descriptor.kind {
             CollectionKind::Document => ".collections",
@@ -601,6 +602,29 @@ impl NativeRoot {
             schema_head: descriptor.schema_head()?,
             block: Some(collection.block),
         })
+    }
+
+    /// The collection's encrypted-fields record: the `$encrypted` paths a
+    /// keyed writer with a `fylo.schema` folder last recorded for it, or
+    /// `None` when none has. A collection of a `.fxdb` database is read
+    /// from the directory as it is now, since another process may have
+    /// replaced its descriptor.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid name or a corrupt descriptor.
+    pub fn recorded_encrypted_fields(
+        &self,
+        name: &str,
+    ) -> Result<Option<Vec<String>>, NativeStorageError> {
+        self.assert_profile_owned()?;
+        validate_collection_name(name)?;
+        if let Some(database) = self.database() {
+            database.refresh();
+        }
+        Ok(self
+            .collection_descriptor(name)?
+            .and_then(|descriptor| descriptor.encrypted))
     }
 
     /// Ordinal of a collection's schema registry head, or `None` while its
@@ -1500,6 +1524,12 @@ struct CollectionDescriptor {
     /// Ordinal of the schema registry's head version.
     #[serde(default)]
     schema_head: Option<u32>,
+    /// The encrypted-fields record: the `$encrypted` paths of the head
+    /// schema, as the last keyed writer whose `fylo.schema` folder declares
+    /// the collection recorded them, so a writer without that folder still
+    /// encrypts them, or is refused without the key.
+    #[serde(default)]
+    encrypted: Option<Vec<String>>,
 }
 
 impl CollectionDescriptor {

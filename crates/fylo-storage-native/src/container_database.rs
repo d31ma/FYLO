@@ -388,6 +388,32 @@ impl ContainerDatabase {
         Ok(())
     }
 
+    /// Replace the catalog descriptor of the collection named `name`, which
+    /// this process holds the lock of, and checkpoint the map, so other
+    /// processes reading the directory again find the new descriptor.
+    pub(crate) fn replace_descriptor(
+        &self,
+        name: &str,
+        descriptor: &[u8],
+    ) -> Result<(), NativeStorageError> {
+        self.require_key()?;
+        self.file.change_map(|open| {
+            open.replace_descriptor(name, descriptor)
+                .map_err(ContainerMedium::error)?;
+            open.checkpoint()
+        })
+    }
+
+    /// Read the directory again if another process changed the file since
+    /// this open last did, so a descriptor another process replaced is the
+    /// one [`Self::collection`] answers with. A failure keeps the directory
+    /// this open read.
+    pub(crate) fn refresh(&self) {
+        if !self.locked {
+            let _ = self.file.lock().refresh();
+        }
+    }
+
     /// The medium of the collection in directory block `block`.
     pub(crate) fn medium(&self, block: u32) -> Result<ContainerMedium, NativeStorageError> {
         self.require_key()?;

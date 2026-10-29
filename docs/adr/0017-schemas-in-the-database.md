@@ -217,6 +217,22 @@ write:
   folder has versions the root does not, it pushes them once and records that
   it did, so upgrading does not silently drop validation.
 
+**The encrypted-fields record (added 2026-10-29).** A collection created after
+that one-time import, with `autoPush` off, has no registry: only the folder
+declares its `$encrypted` fields, and a writer without the folder (another
+process, or the browser engine) used to store new secrets in plaintext beside
+the ciphertext. So the database also records each such collection's head
+`$encrypted` list as `"encrypted": [...]` in its catalog descriptor (a `.fxdb`
+database keeps it in the static part of the collection's directory block,
+rewritten in place as a drop rewrites it). A keyed writer whose folder
+declares the collection keeps the record equal to the folder's head list,
+when it creates the collection and before each write; a collection with a
+registry needs none. Every writer encrypts what the record lists as well as
+what its own folder declares, so one without the folder encrypts with the key
+or is refused with `EENGINE_ENCRYPTION` without it, and a keyed reader without
+the folder can decrypt. `fylo pack` and `unpack` carry the record; a dropped
+collection takes it with it. A release without the record ignores the field.
+
 ### 4. One compiled validator, native and browser
 
 CHEX source is compiled once per version, when it is pushed, into a

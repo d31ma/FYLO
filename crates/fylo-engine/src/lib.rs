@@ -289,6 +289,7 @@ impl WriteEngine {
         metadata: BTreeMap<String, Value>,
         access: WriteAccess,
     ) -> Result<(), EngineError> {
+        self.record_encrypted_fields(collection)?;
         let codec = EngineDocumentCodec::new(self);
         let outcome = self.writer.put_document_fields_with(
             collection,
@@ -313,6 +314,7 @@ impl WriteEngine {
         fields: Map<String, Value>,
         actor: Option<&AccessContext>,
     ) -> Result<(), EngineError> {
+        self.record_encrypted_fields(collection)?;
         let codec = EngineDocumentCodec::new(self);
         let actor = actor.map(write_actor);
         let outcome =
@@ -336,6 +338,7 @@ impl WriteEngine {
         changes: &Map<String, Value>,
         actor: Option<&AccessContext>,
     ) -> Result<(), EngineError> {
+        self.record_encrypted_fields(collection)?;
         let codec = EngineDocumentCodec::new(self);
         let actor = actor.map(write_actor);
         let outcome = self.writer.patch_document_fields_with(
@@ -367,7 +370,45 @@ impl WriteEngine {
         let outcome =
             self.writer
                 .execute_sql_mutation_with(sql, actor.as_ref(), insert_access, &codec);
-        codec.finish(outcome)
+        // The statement names its collection, so the record follows the
+        // rows it encoded rather than leading them.
+        let encoded = codec.encoded.take();
+        let result = codec.finish(outcome)?;
+        for collection in encoded {
+            self.record_encrypted_fields(&collection)?;
+        }
+        Ok(result)
+    }
+
+    /// Bring `collection`'s encrypted-fields record up to the `$encrypted`
+    /// list this engine's `fylo.schema` folder declares, when the engine has
+    /// the key and the collection no registry, so a writer without the
+    /// folder encrypts those fields too, or is refused without the key. A
+    /// collection that does not exist records nothing; the write that
+    /// follows reports it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unreadable schema folder, lock contention,
+    /// or an interrupted durable write.
+    pub fn record_encrypted_fields(&self, collection: &str) -> Result<(), EngineError> {
+        let Some(encryption) = self.encryption.as_ref() else {
+            return Ok(());
+        };
+        match encryption.record_folder_declaration(collection) {
+            Err(error)
+                if matches!(
+                    error.storage_code(),
+                    Some(
+                        NativeStorageErrorCode::NotFound
+                            | NativeStorageErrorCode::InvalidCollection
+                    )
+                ) =>
+            {
+                Ok(())
+            }
+            outcome => outcome,
+        }
     }
 
     /// Rewrite one stored document at the head schema version: read it,
@@ -733,6 +774,8 @@ struct EngineDocumentCodec<'a> {
     /// Version chains read for this mutation, which holds its collection
     /// against other writers while it decodes.
     chains: std::cell::RefCell<BTreeMap<String, Option<Arc<VersionChain>>>>,
+    /// Collections this mutation encoded a body for.
+    encoded: std::cell::RefCell<std::collections::BTreeSet<String>>,
 }
 
 impl<'a> EngineDocumentCodec<'a> {
@@ -741,6 +784,7 @@ impl<'a> EngineDocumentCodec<'a> {
             engine,
             failure: std::cell::RefCell::new(None),
             chains: std::cell::RefCell::new(BTreeMap::new()),
+            encoded: std::cell::RefCell::default(),
         }
     }
 
@@ -819,6 +863,9 @@ impl DocumentCodec for EngineDocumentCodec<'_> {
         collection: &str,
         fields: Map<String, Value>,
     ) -> Result<Vec<u8>, NativeStorageError> {
+        if !self.encoded.borrow().contains(collection) {
+            self.encoded.borrow_mut().insert(collection.to_owned());
+        }
         self.engine
             .encode(collection, fields)
             .map_err(|error| self.fail(error))

@@ -267,10 +267,11 @@ test.describe('encrypted directory roots', () => {
         const reads = readsOf(fixture)
         const { browser, native } = await browserAndNative(fylo, fixture, reads)
         expectSameOutcomes(browser, native, 'browser and keyless native')
-        // Without the folder the browser cannot know the fields, but the
-        // ciphertext it finds makes it refuse rather than hand it out. A query
-        // on an encrypted value matches nothing, since only ciphertext is
-        // indexed, and may say so.
+        // Without the folder the browser knows the fields only from the
+        // collection's encrypted-fields record, and without the key it
+        // refuses rather than hand out what it finds. A query on an encrypted
+        // value matches nothing, since only ciphertext is indexed, and may
+        // say so.
         for (const frame of browser) {
             if (frame.ok && frame.op === 'findDocs') {
                 expect(frame.result, 'an empty answer, not data').toEqual({})
@@ -283,11 +284,9 @@ test.describe('encrypted directory roots', () => {
     test('a folder-declared encrypted collection gets no plaintext secrets from the browser', async ({
         fylo
     }, testInfo) => {
-        // Known engine bug, native too: without `autoPush` a collection made
-        // after the folder's one-time import never gets its `$encrypted` list
-        // into the registry, so a keyless writer cannot tell it holds secrets
-        // and stores new ones in the clear. Remove this once that is fixed.
-        test.fail(true, 'keyless writes store plaintext in a folder-declared encrypted collection')
+        // Without `autoPush` a collection made after the folder's one-time
+        // import has no registry, so only its encrypted-fields record, which
+        // the keyed native writer kept, tells the browser it holds secrets.
         const fixture = folderFixture
         const writes = writesOf(fixture)
         const { browser, dump } = await browserAndNative(fylo, fixture, writes)

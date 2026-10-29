@@ -194,6 +194,22 @@ impl SchemaRegistry {
         self.store.write_import_record(record)
     }
 
+    /// The collection's encrypted-fields record, read as it is now.
+    pub(crate) fn encrypted_record(&self, collection: &str) -> Result<Option<Vec<String>>, String> {
+        self.store
+            .encrypted_record(collection)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Record `fields` as the collection's encrypted-fields record.
+    pub(crate) fn write_encrypted_record(
+        &self,
+        collection: &str,
+        fields: &[String],
+    ) -> Result<bool, NativeStorageError> {
+        self.store.write_encrypted_record(collection, fields)
+    }
+
     pub(crate) const VERSION_FIELD: &'static str = "_v";
 
     /// Migrate `document` from its `_v` (the first version when it has none)

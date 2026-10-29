@@ -1049,6 +1049,50 @@ impl ContainerFile {
             dropped: true,
             ..collection.header.clone()
         };
+        self.rewrite_header(block, header)?;
+        self.release_owned_by(header_id)?;
+        Ok(block)
+    }
+
+    /// Replace the catalog descriptor of the live collection named `name`:
+    /// rewrite its block's static part, as a drop does, and flush. Returns
+    /// the collection's block.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ReadOnly` or `Locked`, `InvalidInput` when no live
+    /// collection has that name, a format error for a descriptor past
+    /// [`ContainerCollectionHeader::MAX_DESCRIPTOR_BYTES`], or the write or
+    /// flush failure.
+    pub fn replace_descriptor(
+        &mut self,
+        name: &str,
+        descriptor: &[u8],
+    ) -> Result<u32, ContainerError> {
+        self.require_writable()?;
+        let collection = self
+            .collections
+            .iter()
+            .find(|collection| !collection.header.dropped && collection.header.name == name)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "no such container collection")
+            })?;
+        let block = collection.block;
+        let header = ContainerCollectionHeader {
+            descriptor: descriptor.to_vec(),
+            ..collection.header.clone()
+        };
+        self.rewrite_header(block, header)?;
+        Ok(block)
+    }
+
+    /// Write `header` as the static part of directory block `block`, sealed
+    /// when the file is encrypted, flush, and keep it as this open's view.
+    fn rewrite_header(
+        &mut self,
+        block: u32,
+        header: ContainerCollectionHeader,
+    ) -> Result<(), ContainerError> {
         let bytes = match &self.cipher {
             Some(cipher) => ContainerCollectionHeader::encode_sealed(&cipher.seal(
                 ContainerSealContext::Directory { block },
@@ -1063,8 +1107,7 @@ impl ContainerFile {
         )?;
         self.sync()?;
         self.collection_mut(block)?.header = header;
-        self.release_owned_by(header_id)?;
-        Ok(block)
+        Ok(())
     }
 
     /// Release every extent a dropped collection still owns: one a crash

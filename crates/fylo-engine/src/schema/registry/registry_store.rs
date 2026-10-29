@@ -40,6 +40,19 @@ pub(crate) trait SchemaRegistryStore {
     fn import_record(&self) -> Result<Option<Vec<u8>>, NativeStorageError>;
 
     fn write_import_record(&self, record: &[u8]) -> Result<(), NativeStorageError>;
+
+    /// A collection's encrypted-fields record, or `None` when none was
+    /// recorded.
+    fn encrypted_record(&self, collection: &str)
+    -> Result<Option<Vec<String>>, NativeStorageError>;
+
+    /// Record `fields` as a collection's encrypted-fields record; whether it
+    /// changed.
+    fn write_encrypted_record(
+        &self,
+        collection: &str,
+        fields: &[String],
+    ) -> Result<bool, NativeStorageError>;
 }
 
 /// The registry of a directory root: `<root>/.fylo-schemas/<collection>/
@@ -100,5 +113,23 @@ impl SchemaRegistryStore for DirectoryRegistryStore {
 
     fn write_import_record(&self, record: &[u8]) -> Result<(), NativeStorageError> {
         self.writer()?.write_schema_import_record(record)
+    }
+
+    fn encrypted_record(
+        &self,
+        collection: &str,
+    ) -> Result<Option<Vec<String>>, NativeStorageError> {
+        match self.root.recorded_encrypted_fields(collection) {
+            Err(error) if error.code() == NativeStorageErrorCode::InvalidCollection => Ok(None),
+            outcome => outcome,
+        }
+    }
+
+    fn write_encrypted_record(
+        &self,
+        collection: &str,
+        fields: &[String],
+    ) -> Result<bool, NativeStorageError> {
+        self.writer()?.record_encrypted_fields(collection, fields)
     }
 }

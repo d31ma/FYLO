@@ -499,3 +499,53 @@ fn strict_sql_update_refuses_an_invalid_assignment_in_a_segment_collection() {
     assert_eq!(code, "ESCHEMA");
     assert_eq!(fixture.stored(PEOPLE, ID), before);
 }
+
+#[test]
+fn a_folder_declared_encrypted_collection_refuses_plaintext_from_a_writer_without_the_folder() {
+    let fixture = pii();
+    let keyed = fixture.runtime(false, true);
+    // Created after the folder's one-time import, without autoPush: only the
+    // folder declares `ssn` encrypted until a keyed writer records it.
+    success(&keyed, &json!({"op":"createCollection","collection":PII}));
+    success(
+        &keyed,
+        &json!({"op":"putData","collection":PII,"id":ID,"data":{"name":"Cy","ssn":"4444"}}),
+    );
+    drop(keyed);
+    let keyless = InvocationRuntime::new(
+        InvocationOptions::new(
+            RootOpenOptions::new(&fixture.root),
+            ApplicationConfig {
+                root: Some(fixture.root.clone()),
+                hot_set_bytes: None,
+                ..ApplicationConfig::default()
+            },
+            FrameLimits::default(),
+            (
+                Instant::now() + Duration::from_secs(30),
+                Duration::from_millis(100),
+            ),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    for request in [
+        json!({"op":"putData","collection":PII,"id":"4VRNF52JPCP","data":{"name":"Bo","ssn":"9999"}}),
+        json!({"op":"patchDoc","collection":PII,"id":ID,"newDoc":{"ssn":"8888"}}),
+        sql("UPDATE pii SET ssn = '7777' WHERE name = 'Cy'"),
+    ] {
+        assert_eq!(
+            refused(&keyless, &request),
+            "EENGINE_ENCRYPTION",
+            "{request}"
+        );
+    }
+    let found = NativeRoot::open(&fixture.root)
+        .unwrap()
+        .collection(PII)
+        .unwrap()
+        .document_ids()
+        .unwrap();
+    assert_eq!(found, vec![ID.to_owned()]);
+    assert!(is_ciphertext(&fixture.stored(PII, ID)["ssn"]));
+}

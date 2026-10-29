@@ -443,6 +443,83 @@ impl NativeWriteRoot {
         Ok(previous)
     }
 
+    /// Record `fields` as `collection_name`'s encrypted-fields record, the
+    /// `$encrypted` paths every later writer of this root encrypts whether
+    /// or not it has the `fylo.schema` folder that declares them. Returns
+    /// whether the record changed; an empty list replaces a record but
+    /// never creates one.
+    ///
+    /// A directory root keeps the record in the catalog descriptor, and a
+    /// `.fxdb` database in the static part of the collection's directory
+    /// block, which is rewritten in place as a drop rewrites it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a missing collection, an unsafe path, lock
+    /// contention, a descriptor past its size limit, or an interrupted
+    /// durable write.
+    pub fn record_encrypted_fields(
+        &self,
+        collection_name: &str,
+        fields: &[String],
+    ) -> Result<bool, NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        let unchanged = |recorded: Option<Vec<String>>| {
+            recorded.map_or(fields.is_empty(), |recorded| recorded == fields)
+        };
+        if unchanged(self.root.recorded_encrypted_fields(collection_name)?) {
+            return Ok(false);
+        }
+        let collection = self.root.collection(collection_name)?;
+        let _lock = self.lock_collection(&collection)?;
+        // Read again under the lock: another writer may have recorded it.
+        if unchanged(self.root.recorded_encrypted_fields(collection_name)?) {
+            return Ok(false);
+        }
+        let record = Value::from(fields.to_vec());
+        if let Some(database) = self.root.database() {
+            let current = database.collection(collection_name).ok_or_else(|| {
+                NativeStorageError::new(
+                    NativeStorageErrorCode::NotFound,
+                    format!("collection \"{collection_name}\" does not exist"),
+                )
+            })?;
+            let mut descriptor: Map<String, Value> =
+                serde_json::from_slice(&current.header.descriptor)
+                    .map_err(|error| json_error(&error))?;
+            descriptor.insert("encrypted".into(), record);
+            let encoded = Value::Object(descriptor).to_string().into_bytes();
+            database.replace_descriptor(collection_name, &encoded)?;
+            return Ok(true);
+        }
+        let catalog = self
+            .root
+            .catalog_root()
+            .join(".fylo-catalog")
+            .join("collections");
+        let path = catalog.join(format!("{collection_name}.json"));
+        let mut descriptor: Map<String, Value> = if path_exists_no_follow(&path)? {
+            read_bounded_json(&path, super::MAX_DESCRIPTOR_BYTES)?
+        } else {
+            fs::create_dir_all(&catalog).map_err(NativeStorageError::io)?;
+            Map::from_iter([
+                ("version".into(), Value::from(1)),
+                (
+                    "kind".into(),
+                    Value::from(match collection.kind() {
+                        CollectionKind::Document => "document",
+                        CollectionKind::File => "file",
+                    }),
+                ),
+            ])
+        };
+        descriptor.insert("encrypted".into(), record);
+        let mut encoded = serde_json::to_vec(&descriptor).map_err(|error| json_error(&error))?;
+        encoded.push(b'\n');
+        durable_replace(&path, &encoded)?;
+        Ok(true)
+    }
+
     /// Open a materialized worktree whose catalog and repository metadata live
     /// at another canonical root.
     ///

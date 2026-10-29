@@ -13,6 +13,7 @@ use serde_json::{Map, Value};
 use sha2::Sha256;
 use zeroize::Zeroizing;
 
+use crate::EngineError;
 use crate::schema::SchemaRegistry;
 
 const MAX_SCHEMA_MANIFEST_BYTES: u64 = 1024 * 1024;
@@ -215,7 +216,16 @@ impl EncryptionReader {
 
     /// The `$encrypted` list of `version`, or of the head when `version` is
     /// `None` or not a version the collection has. `None` when the collection
-    /// has neither a registry nor a configured folder to declare one.
+    /// has neither a registry, a configured folder, nor an encrypted-fields
+    /// record to declare one.
+    ///
+    /// A collection without a registry also honours its encrypted-fields
+    /// record, which keyed writers with the folder keep (see
+    /// [`Self::record_folder_declaration`]): a writer without the folder
+    /// encrypts what the record lists, or is refused without the key, rather
+    /// than store a declared field in plaintext. The head's list is the
+    /// folder's and the record's together; a document at a version the
+    /// folder lists decodes with that version's list, as before.
     fn declared_fields_at(
         &self,
         collection: &str,
@@ -228,17 +238,58 @@ impl EncryptionReader {
             };
             return Ok(Some(at.unwrap_or(head).encrypted.clone()));
         }
+        let recorded = self.registry.encrypted_record(collection)?;
         let Some(root) = self.schema_root.as_deref() else {
-            return Ok(None);
+            return Ok(recorded);
         };
         let Some(manifest) = self.manifest(collection)? else {
-            return Ok(Some(Vec::new()));
+            return Ok(Some(recorded.unwrap_or_default()));
         };
-        let version = version
-            .filter(|version| manifest.versions.iter().any(|entry| entry.v == *version))
-            .unwrap_or(&manifest.current);
-        let schema = Self::version_schema(root, collection, version)?;
-        encrypted_list(collection, &schema).map(Some)
+        let listed = version.filter(|version| {
+            *version != manifest.current
+                && manifest.versions.iter().any(|entry| entry.v == *version)
+        });
+        let schema = Self::version_schema(root, collection, listed.unwrap_or(&manifest.current))?;
+        let mut fields = encrypted_list(collection, &schema)?;
+        if listed.is_none() {
+            for field in recorded.unwrap_or_default() {
+                if !fields.contains(&field) {
+                    fields.push(field);
+                }
+            }
+        }
+        Ok(Some(fields))
+    }
+
+    /// Keep `collection`'s encrypted-fields record equal to the head
+    /// `$encrypted` list its `fylo.schema` folder declares, so writers
+    /// without the folder honour it. Only a keyed writer whose folder
+    /// declares the collection records anything: one without the key could
+    /// not have written the fields it lists, and a collection with a schema
+    /// registry keeps its lists in the database already.
+    pub(crate) fn record_folder_declaration(&self, collection: &str) -> Result<(), EngineError> {
+        if self.key.is_none()
+            || self
+                .registry
+                .head(collection)
+                .map_err(EngineError::schema)?
+                .is_some()
+        {
+            return Ok(());
+        }
+        let Some(root) = self.schema_root.as_deref() else {
+            return Ok(());
+        };
+        let Some(manifest) = self.manifest(collection).map_err(EngineError::schema)? else {
+            return Ok(());
+        };
+        let fields = Self::version_schema(root, collection, &manifest.current)
+            .and_then(|schema| encrypted_list(collection, &schema))
+            .map_err(EngineError::schema)?;
+        self.registry
+            .write_encrypted_record(collection, &fields)
+            .map(|_| ())
+            .map_err(EngineError::storage)
     }
 
     pub(crate) fn blind_index(&self, value: &str) -> Result<String, String> {

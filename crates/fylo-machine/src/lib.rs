@@ -1698,9 +1698,23 @@ impl Session {
             }
         };
         let layout = optional_layout(request)?;
-        self.writer(request)?
+        let writer = self.writer(request)?;
+        writer
             .create_collection_with_layout(collection, kind, None, layout)
             .map_err(|error| storage_error(&error))?;
+        // A keyed session whose folder declares the collection records its
+        // encrypted fields now, before any session without the folder can
+        // write to it. A `.fxdb` database has no place for the folder's
+        // one-time import, so a folder never writes one; only a pack brings
+        // a record into it.
+        if self.config.credentials.is_some()
+            && self.schema_path(request).is_some()
+            && !writer.native_root().is_database()
+        {
+            self.write_engine(request)?
+                .record_encrypted_fields(collection)
+                .map_err(|error| engine_error(&error))?;
+        }
         Ok(json!({
             "collection": collection,
             "kind": match kind {
