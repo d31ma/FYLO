@@ -585,20 +585,27 @@ impl Session {
         InvocationOptions::check_work_budget(budget)?;
         let active =
             active_worktree(repository).map_err(|error| Self::invocation_machine_error(&error))?;
-        self.recover_invocation_root(repository, repository, budget)?;
+        self.recover_invocation_root(repository, repository, Some(budget))?;
         if active != *repository {
-            self.recover_invocation_root(&active, repository, budget)?;
+            self.recover_invocation_root(&active, repository, Some(budget))?;
         }
         Ok(())
+    }
+
+    /// [`InvocationOptions::check_work_budget`] when there is a budget.
+    fn check_budget(
+        budget: Option<(std::time::Instant, std::time::Duration)>,
+    ) -> std::io::Result<()> {
+        budget.map_or(Ok(()), InvocationOptions::check_work_budget)
     }
 
     fn recover_invocation_root(
         &self,
         root: &std::path::Path,
         repository: &std::path::Path,
-        budget: (std::time::Instant, std::time::Duration),
+        budget: Option<(std::time::Instant, std::time::Duration)>,
     ) -> std::io::Result<()> {
-        InvocationOptions::check_work_budget(budget)?;
+        Self::check_budget(budget)?;
         let options = self
             .root_options(root.to_path_buf(), repository.to_path_buf())
             .map_err(|error| Self::invocation_machine_error(&error))?;
@@ -608,7 +615,7 @@ impl Session {
         let writer = NativeWriteRoot::open_profiled(options)
             .map_err(|error| std::io::Error::other(error.to_string()))?;
         for (name, has_live_directory) in names {
-            InvocationOptions::check_work_budget(budget)?;
+            Self::check_budget(budget)?;
             match writer.recover_collection(&name) {
                 Ok(_) => {}
                 Err(error)
@@ -621,7 +628,7 @@ impl Session {
 
     fn invocation_collection_names(
         root: &NativeRoot,
-        budget: (std::time::Instant, std::time::Duration),
+        budget: Option<(std::time::Instant, std::time::Duration)>,
     ) -> std::io::Result<std::collections::BTreeMap<String, bool>> {
         let mut names = std::collections::BTreeMap::new();
         for namespace in [".collections", ".buckets"] {
@@ -643,13 +650,13 @@ impl Session {
         directory: &std::path::Path,
         catalog: bool,
         names: &mut std::collections::BTreeMap<String, bool>,
-        budget: (std::time::Instant, std::time::Duration),
+        budget: Option<(std::time::Instant, std::time::Duration)>,
     ) -> std::io::Result<()> {
         if !Self::invocation_directory_exists(directory)? {
             return Ok(());
         }
         for entry in fylo_vfs::read_dir(directory)? {
-            InvocationOptions::check_work_budget(budget)?;
+            Self::check_budget(budget)?;
             let entry = entry?;
             if fylo_storage_native::is_platform_companion(&entry.file_name()) {
                 continue;
@@ -867,12 +874,10 @@ impl Session {
         let Ok(active) = active_worktree(&repository) else {
             return false;
         };
-        // ponytail: fixed budget; this is a one-off repair, not an invocation.
-        let budget = (
-            std::time::Instant::now() + std::time::Duration::from_mins(5),
-            std::time::Duration::from_millis(1),
-        );
-        self.recover_invocation_root(&active, &repository, budget)
+        // No budget: this is a one-off repair, not an invocation, and a
+        // deadline would need `Instant::now`, which panics in a browser and
+        // took the module down mid-recovery.
+        self.recover_invocation_root(&active, &repository, None)
             .is_ok()
     }
 

@@ -3608,8 +3608,40 @@ fn unreadable_lock_record(path: &Path) -> Result<LockRecord, NativeStorageError>
 fn own_process_identity() -> Option<String> {
     static IDENTITY: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     IDENTITY
-        .get_or_init(|| process_identity(super::process_id()))
+        .get_or_init(|| {
+            #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+            {
+                browser_session_identity()
+            }
+            #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+            {
+                process_identity(super::process_id())
+            }
+        })
         .clone()
+}
+
+/// A browser module has no pid to record, and a lock record without an
+/// identity reads as live for the whole lock TTL, so a crashed tab would
+/// lock its collections out of the next session, and out of a native process
+/// the root is copied to, for five minutes. A random identity per module
+/// instance says plainly that the owner is a session no other process can
+/// observe, which every reader treats as gone: the root's Web Lock, not the
+/// record, is what keeps a second live session out.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn browser_session_identity() -> Option<String> {
+    let mut bytes = [0_u8; 16];
+    fylo_vfs::host_random(&mut bytes).ok()?;
+    Some(format!("browser:{}", hex_lower(&bytes)))
+}
+
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn hex_lower(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    bytes.iter().fold(String::new(), |mut text, byte| {
+        let _ = write!(text, "{byte:02x}");
+        text
+    })
 }
 
 fn lock_owner_alive(record: &LockRecord) -> bool {
@@ -3647,7 +3679,20 @@ fn process_identity(pid: u32) -> Option<String> {
     .map(|value| format!("win32:{value}"))
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+/// Nothing outside the module can be observed from a browser, so the only
+/// owner that reads as live is this module instance itself; any other
+/// session's record is a crashed tab's, since the root's Web Lock keeps a
+/// second live session out.
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+fn process_identity(_pid: u32) -> Option<String> {
+    own_process_identity()
+}
+
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "windows",
+    all(target_arch = "wasm32", target_os = "unknown")
+)))]
 fn process_identity(pid: u32) -> Option<String> {
     let platform = if cfg!(target_os = "macos") {
         "darwin"
@@ -3660,7 +3705,10 @@ fn process_identity(pid: u32) -> Option<String> {
 
 // Only the Windows and generic-Unix process-identity probes shell out; Linux
 // reads /proc directly.
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(
+    target_os = "linux",
+    all(target_arch = "wasm32", target_os = "unknown")
+)))]
 fn command_output(program: &str, arguments: &[&str]) -> Option<String> {
     let output = std::process::Command::new(program)
         .args(arguments)

@@ -27,8 +27,10 @@ export const STATE_IDLE = 0
 export const STATE_REQUEST = 1
 export const STATE_RESPONSE = 2
 
-/** Room for one raw file plus its framing; the engine bounds records well below this. */
+/** The shared area one call crosses; larger reads and writes go in slices. */
 export const BRIDGE_BYTES = 64 * 1024 * 1024
+/** The most file bytes one call carries, leaving room for the request JSON. */
+const CHUNK_BYTES = 16 * 1024 * 1024
 
 export function createBridgeBuffer() {
     return new SharedArrayBuffer(CONTROL_SLOTS * 4 + BRIDGE_BYTES)
@@ -91,13 +93,33 @@ export function createBridgeBackend(buffer, rootPath) {
         close(handle) {
             call({ op: 'close', handle })
         },
+        // A read or write larger than the shared area crosses in slices, so a
+        // file is limited by OPFS, not by the bridge.
         readAt(handle, offset, into) {
-            const { result, payload } = call({ op: 'read', handle, offset, length: into.length })
-            into.set(payload.subarray(0, result))
-            return result
+            let done = 0
+            while (done < into.length) {
+                const length = Math.min(into.length - done, CHUNK_BYTES)
+                const { result, payload } = call({
+                    op: 'read',
+                    handle,
+                    offset: offset + done,
+                    length
+                })
+                into.set(payload.subarray(0, result), done)
+                done += result
+                if (result < length) break
+            }
+            return done
         },
         writeAt(handle, offset, from) {
-            return call({ op: 'write', handle, offset }, from).result
+            let done = 0
+            do {
+                const slice = from.subarray(done, done + CHUNK_BYTES)
+                const result = call({ op: 'write', handle, offset: offset + done }, slice).result
+                done += result
+                if (result < slice.length) break
+            } while (done < from.length)
+            return done
         },
         truncate(handle, length) {
             call({ op: 'truncate', handle, length })
