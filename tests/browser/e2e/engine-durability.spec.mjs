@@ -297,7 +297,13 @@ async function attempt(iterations, meta, check) {
     try {
         iterations.push({ ...meta, ...(await check()) })
     } catch (error) {
-        iterations.push({ ...meta, error: String(error?.message ?? error).split('\n')[0] })
+        iterations.push({
+            ...meta,
+            error: String(error?.message ?? error)
+                .split('\n')
+                .slice(0, 8)
+                .join(' | ')
+        })
     }
 }
 
