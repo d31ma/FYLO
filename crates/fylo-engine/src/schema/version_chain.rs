@@ -117,7 +117,9 @@ impl VersionChain {
             ChainSource::Registry(versions) => {
                 SchemaRegistry::materialize_through(collection, versions, document)
             }
-            ChainSource::Folder(folder) => SchemaTools::new(folder).materialize(collection, document),
+            ChainSource::Folder(folder) => {
+                SchemaTools::new(folder).materialize(collection, document)
+            }
         }
     }
 
@@ -143,8 +145,11 @@ impl VersionChain {
                 }
                 ChainSource::Folder(folder) => {
                     let paths = SchemaPaths::new(folder, collection);
-                    let migration =
-                        SchemaMigration::load(&paths, &self.labels[index - 1], &self.labels[index])?;
+                    let migration = SchemaMigration::load(
+                        &paths,
+                        &self.labels[index - 1],
+                        &self.labels[index],
+                    )?;
                     fields.extend(migration.written_fields());
                 }
             }

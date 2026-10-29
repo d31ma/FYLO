@@ -2965,7 +2965,12 @@ impl<'a> Transaction<'a> {
         )?;
         self.finished = true;
         if let Some((counts, delta)) = counted {
-            NativeWriteRoot::schema_counts_after_commit(self.collection, counts, &delta, generation);
+            NativeWriteRoot::schema_counts_after_commit(
+                self.collection,
+                counts,
+                &delta,
+                generation,
+            );
         }
         remove_dir_durable(&self.root)?;
         Ok(())

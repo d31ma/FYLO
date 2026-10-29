@@ -6,6 +6,7 @@ use std::sync::{Arc, MutexGuard};
 use fylo_format::{LogRecord, LogRecordKind};
 use fylo_vfs::{self as fs, OpenOptions};
 
+use super::super::schema_counts::SchemaCountDelta;
 use super::super::{
     CollectionWriteLock, GenerationRecord, NativeWriteRoot, ensure_directory, failpoint,
     json_error, sibling_scratch,
@@ -13,7 +14,6 @@ use super::super::{
 use super::abort_manifest::AbortManifest;
 use super::checkpoint_manifest::CheckpointManifest;
 use super::commit_plan::CommitPlan;
-use super::super::schema_counts::SchemaCountDelta;
 use super::commit_queue::{BusyPeriod, CommitQueue, QueueState, SchemaFence};
 use super::log_checkpoint::LogCheckpoint;
 use super::log_segment::LogSegment;

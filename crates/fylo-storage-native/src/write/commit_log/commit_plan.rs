@@ -204,7 +204,8 @@ impl CommitPlan {
                     }
                 }
                 CommitStep::Move(rename) => {
-                    let from = SchemaCountDelta::is_live_document(&safe_relative_path(&rename.from)?);
+                    let from =
+                        SchemaCountDelta::is_live_document(&safe_relative_path(&rename.from)?);
                     let to = safe_relative_path(&rename.to)?;
                     if from == SchemaCountDelta::is_live_document(&to) {
                         continue;
