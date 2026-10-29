@@ -4,6 +4,17 @@
 
 ### Added
 
+- **Encrypted `.fxdb` databases, opt-in and off by default (ADR 0016
+  section 9).** `fylo create app.fxdb --encrypt`, `fylo pack --encrypt`, or
+  `fylo.encryption.file: true` in `application.json` creates a database
+  whose record frames, directory, dictionaries and schema snapshots are
+  sealed with AES-256-GCM under a key derived from `fylo.encryption.key`,
+  compressed first. A frame is bound to its collection and LSN, so one moved
+  into another collection or copied over another record is refused. Opened
+  without the key the database is locked: it lists no collections, and a
+  read of one and every write fail with the new `EKEY` code, as does a wrong
+  key. `fylo inspect` reports `encrypted` and `locked`; `fylo verify` works
+  without the key. `fylo create <db.fxdb>` makes an empty plain database.
 - **`fylo pack` and `fylo unpack` (ADR 0016 section 11).** `fylo pack <root>
   --out app.fxdb` copies every document collection of a directory root, in
   the file or the segment layout, into a new `.fxdb` database with its

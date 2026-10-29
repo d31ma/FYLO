@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use crate::{FilesystemProfile, RootLease};
+use crate::{DatabaseKey, FilesystemProfile, RootLease};
 
 /// Additive root admission options, separate from the existing `RootConfig`.
 #[derive(Clone, Debug)]
@@ -9,6 +9,7 @@ pub struct RootOpenOptions {
     pub(crate) repository: Option<PathBuf>,
     pub(crate) profile: FilesystemProfile,
     pub(crate) lease: Option<RootLease>,
+    pub(crate) database_key: Option<DatabaseKey>,
 }
 
 impl RootOpenOptions {
@@ -20,6 +21,7 @@ impl RootOpenOptions {
             repository: None,
             profile: FilesystemProfile::Native,
             lease: None,
+            database_key: None,
         }
     }
 
@@ -42,6 +44,22 @@ impl RootOpenOptions {
     pub fn with_lease(mut self, lease: RootLease) -> Self {
         self.lease = Some(lease);
         self
+    }
+
+    /// Unlock an encrypted `.fxdb` database with `key` (ADR 0016 section 9).
+    /// A directory root and a plain database ignore it. Without it an
+    /// encrypted database opens locked: it lists no collections, and every
+    /// read of one and every write fails with `EKEY`.
+    #[must_use]
+    pub fn with_database_key(mut self, key: DatabaseKey) -> Self {
+        self.database_key = Some(key);
+        self
+    }
+
+    /// The key an encrypted `.fxdb` database is unlocked with, if any.
+    #[must_use]
+    pub fn database_key(&self) -> Option<&DatabaseKey> {
+        self.database_key.as_ref()
     }
 
     /// Selected filesystem root before canonicalization.

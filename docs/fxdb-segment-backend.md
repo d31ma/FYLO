@@ -195,8 +195,8 @@ the map, and a checkpoint only when a stopped writer left something.
 ## Encryption and codecs
 
 Record frames gain ADR 0016 section 4's codec byte and, in an encrypted
-file, a nonce and tag sealed with `ContainerSealContext::Record`. Both
-are behind the frame encode/decode the medium owns, so the directory medium
+file, an LSN, a nonce and a tag sealed with `ContainerSealContext::Record`.
+Both are behind the frame encode/decode the medium owns, so the directory medium
 keeps today's frames byte for byte.
 
 **Codecs (landed).** `SegmentMedium::frame_bodies` says how a medium's frames
@@ -269,7 +269,41 @@ the superblock's `INCOMPAT_CODEC_ZSTD` (natively) or `INCOMPAT_CODEC_LZ4`
 (the browser) through a map checkpoint under the allocation byte, the way
 schema versions set theirs, and `fylo inspect` lists them under `codecs`.
 
-**Still to come.** Sealing records in an encrypted file.
+**Sealed records (landed).** ADR 0016 section 9. Encryption is opt-in per
+database and off by default: `fylo create db.fxdb --encrypt`, `fylo pack
+--encrypt`, or `fylo.encryption.file: true` in `application.json` creates an
+encrypted file, keyed by `fylo.encryption.key` (see
+[configuration](configuration.md#encrypted-databases)). Every other database
+is plain, and its frames are as above.
+
+- A sealed frame's stored body is the header byte with `0x20` set, the
+  dictionary id when one was used, the record's 8-byte LSN in the clear,
+  then a random 96-bit nonce, the compressed body sealed with AES-256-GCM
+  and the 16-byte tag: compress, then encrypt. The key is HKDF-SHA256 of
+  the secret and the superblock's salt, checked against its key-check value
+  when the file opens.
+- The associated data is `ContainerSealContext::Record`: the collection's
+  name and the record's LSN (one frame holds one whole record, so its entry
+  is 0). A frame moved into another collection, or copied over another
+  record, does not open; it fails as `EFXDB_CORRUPT` and is never taken for
+  a torn tail. Replay also requires each record's LSN to follow the one
+  before it, across incremental replays, and a point read checks the LSN its
+  location names, so a valid older frame copied over a newer one is refused
+  rather than served.
+- The CRC-32C covers the stored, sealed bytes, so `fylo verify` and salvage
+  check frames without the key. Only the key tells a frame moved whole from
+  its place.
+- `segments/container_frames.rs` seals and opens frames with the cipher the
+  process-wide open holds; a writer's upgrade and a reader's reopen after a
+  lease loss unlock their file with it.
+- Opened without the key, a database is **locked**: it lists no
+  collections, and a read of one and every write fail with `EKEY`,
+  leaving the file untouched. A wrong key fails with `EKEY` when the root
+  opens. `fylo inspect` reports `encrypted` and `locked`, and lists the
+  collections only with the key.
+- The generation slots and the superblock stay in the clear (ADR 0016
+  section 9), so a copy of the whole file put back in place of a newer one
+  is not detected.
 
 ## Order of work
 
@@ -377,8 +411,7 @@ app.fxdb` works the same way.
 
 **Not yet** (they fail with `ENATIVE_UNSUPPORTED` or are left for later):
 compaction (it needs a second per-collection lock byte), salvage, setting a
-collection's validation mode (a rewrite of its block's static part), an
-encrypted database (a root takes no key yet), the root's
+collection's validation mode (a rewrite of its block's static part), the root's
 own write options (exclusive mode and timeouts are the process defaults),
 and `fylo pack --sealed`.
 

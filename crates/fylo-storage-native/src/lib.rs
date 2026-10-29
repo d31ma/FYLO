@@ -32,6 +32,7 @@ mod container_file;
 #[cfg(not(target_family = "wasm"))]
 mod container_lease;
 mod container_record;
+mod database_key;
 mod durability;
 mod filesystem_profile;
 mod index_cache;
@@ -79,6 +80,7 @@ pub use container_file::{
 #[cfg(not(target_family = "wasm"))]
 pub use container_lease::{ContainerLease, ContainerLeaseError, ContainerLeaseTiming};
 pub use container_record::{ContainerRecordError, ContainerStoredBody};
+pub use database_key::DatabaseKey;
 pub use durability::Durability;
 pub use filesystem_profile::FilesystemProfile;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -291,7 +293,8 @@ impl NativeRoot {
         if let Some(lease) = options.lease.as_ref() {
             lease.assert_owned()?;
         }
-        let database = container_database::ContainerDatabase::open(&canonical)?;
+        let database =
+            container_database::ContainerDatabase::open(&canonical, options.database_key.as_ref())?;
         Ok(Self {
             catalog_root: canonical.clone(),
             repository_root: canonical.clone(),
@@ -309,7 +312,25 @@ impl NativeRoot {
     ///
     /// Returns an error when `path` exists or the file cannot be created.
     pub fn create_database(path: impl AsRef<Path>) -> Result<(), NativeStorageError> {
-        container_database::ContainerDatabase::create(path.as_ref())
+        container_database::ContainerDatabase::create(path.as_ref(), None)
+    }
+
+    /// Create an empty, encrypted `.fxdb` database at `path`, which must not
+    /// exist (ADR 0016 section 9). Its records, collection directory,
+    /// dictionaries and snapshots are sealed with a file key derived from
+    /// `key` and a random salt; a root opens it with the same key
+    /// ([`RootOpenOptions::with_database_key`]). Encryption is opt-in:
+    /// [`Self::create_database`] makes a plain database.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `path` exists, the file cannot be created, or
+    /// no random salt can be drawn.
+    pub fn create_encrypted_database(
+        path: impl AsRef<Path>,
+        key: &DatabaseKey,
+    ) -> Result<(), NativeStorageError> {
+        container_database::ContainerDatabase::create(path.as_ref(), Some(key))
     }
 
     /// Close this process's handle on the `.fxdb` database at `path`: give
@@ -347,8 +368,17 @@ impl NativeRoot {
         self.database().is_some()
     }
 
+    /// Whether this root is an encrypted `.fxdb` database, and whether it
+    /// was opened without its key, which leaves it locked: `None` for a
+    /// directory root.
+    #[must_use]
+    pub fn database_encryption(&self) -> Option<(bool, bool)> {
+        self.database()
+            .map(|database| (database.is_encrypted(), database.is_locked()))
+    }
+
     /// The live collections of a `.fxdb` database root, in the order they
-    /// were created; `None` for a directory root.
+    /// were created; `None` for a directory root. A locked one lists none.
     #[must_use]
     pub fn database_collection_names(&self) -> Option<Vec<String>> {
         self.database().map(|database| database.collection_names())
@@ -538,6 +568,7 @@ impl NativeRoot {
         database: &container_database::ContainerDatabase,
         name: &str,
     ) -> Result<NativeCollection, NativeStorageError> {
+        database.require_key()?;
         let collection = database.collection(name).ok_or_else(|| {
             NativeStorageError::new(
                 NativeStorageErrorCode::NotFound,
@@ -2921,6 +2952,9 @@ pub enum NativeStorageErrorCode {
     /// A document did not match its collection's head schema, and the
     /// collection's validation mode is `strict`.
     SchemaViolation,
+    /// An encrypted `.fxdb` database was opened without its key, or with
+    /// another (ADR 0016 section 9).
+    KeyRequired,
 }
 
 impl NativeStorageErrorCode {
@@ -2950,6 +2984,7 @@ impl NativeStorageErrorCode {
             Self::QueueReceipt => "EQUEUE_RECEIPT",
             Self::QueueLimit => "EQUEUE_LIMIT",
             Self::SchemaViolation => "ESCHEMA",
+            Self::KeyRequired => "EKEY",
         }
     }
 }

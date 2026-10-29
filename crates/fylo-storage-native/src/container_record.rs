@@ -4,9 +4,13 @@
 //! In a `.fxdb` file that body starts with one header byte: the codec in the
 //! low four bits, then a flag for a dictionary id and a flag for a sealed
 //! body. A 4-byte dictionary id follows when a dictionary was used. The rest
-//! is the compressed record, and in an encrypted file it is sealed: nonce,
-//! ciphertext, tag. The frame's CRC covers these stored bytes, so a verifier
-//! needs no key to find damage.
+//! is the compressed record, and in an encrypted file it is sealed: the
+//! record's LSN in the clear, then nonce, ciphertext, tag. The frame's CRC
+//! covers these stored bytes, so a verifier needs no key to find damage.
+//!
+//! The associated data binds a sealed body to its collection and LSN, so
+//! the reader must know the LSN before it opens the body: it stands outside
+//! the seal, and a body whose clear LSN was changed does not open.
 //!
 //! Compression comes before sealing, because ciphertext does not compress.
 
@@ -24,6 +28,7 @@ const HAS_DICTIONARY: u8 = 0x10;
 const SEALED: u8 = 0x20;
 const KNOWN_FLAGS: u8 = CODEC_MASK | HAS_DICTIONARY | SEALED;
 const DICTIONARY_ID_BYTES: usize = 4;
+const LSN_BYTES: usize = 8;
 
 /// Why a stored record body could not be written or read.
 #[derive(Debug)]
@@ -98,11 +103,15 @@ pub struct ContainerStoredBody<'a> {
     pub dictionary_id: u32,
     /// Whether the compressed bytes are sealed.
     pub sealed: bool,
+    /// The LSN a sealed body is bound to, kept in the clear before its
+    /// nonce; zero for a body that is not sealed.
+    pub lsn: u64,
     payload: &'a [u8],
 }
 
 impl<'a> ContainerStoredBody<'a> {
-    /// Compress `body` and, when `cipher` is given, seal it for `context`.
+    /// Compress `body` and, when `cipher` is given, seal it for `context`,
+    /// a record's, whose LSN is stored in the clear in front of the seal.
     /// Natively the codec writes zstd; with `lz4` set, or in WebAssembly, it
     /// writes LZ4. A body compression would not shrink is stored as is.
     ///
@@ -126,17 +135,24 @@ impl<'a> ContainerStoredBody<'a> {
         if encoded.dictionary_id != 0 {
             header |= HAS_DICTIONARY;
         }
-        let payload = match cipher {
+        let (lsn, payload) = match cipher {
             Some(cipher) => {
                 header |= SEALED;
-                cipher.seal(context, &encoded.bytes)?
+                let lsn = match context {
+                    ContainerSealContext::Record { lsn, .. } => lsn,
+                    _ => 0,
+                };
+                (Some(lsn), cipher.seal(context, &encoded.bytes)?)
             }
-            None => encoded.bytes,
+            None => (None, encoded.bytes),
         };
-        let mut stored = Vec::with_capacity(1 + DICTIONARY_ID_BYTES + payload.len());
+        let mut stored = Vec::with_capacity(1 + DICTIONARY_ID_BYTES + LSN_BYTES + payload.len());
         stored.push(header);
         if encoded.dictionary_id != 0 {
             stored.extend_from_slice(&encoded.dictionary_id.to_le_bytes());
+        }
+        if let Some(lsn) = lsn {
+            stored.extend_from_slice(&lsn.to_le_bytes());
         }
         stored.extend_from_slice(&payload);
         Ok(stored)
@@ -147,8 +163,9 @@ impl<'a> ContainerStoredBody<'a> {
     /// # Errors
     ///
     /// Returns `Unsupported` for unknown flag bits or an unknown codec, and
-    /// `Malformed` for an empty body, a missing or zero dictionary id, or a
-    /// dictionary named without compression.
+    /// `Malformed` for an empty body, a missing or zero dictionary id, a
+    /// dictionary named without compression, or a sealed body too short for
+    /// its LSN.
     pub fn parse(stored: &'a [u8]) -> Result<Self, ContainerRecordError> {
         let (&header, rest) = stored
             .split_first()
@@ -170,10 +187,20 @@ impl<'a> ContainerStoredBody<'a> {
             }
             (id, payload)
         };
+        let sealed = header & SEALED != 0;
+        let (lsn, payload) = if sealed {
+            let (lsn, payload) = payload
+                .split_first_chunk::<LSN_BYTES>()
+                .ok_or(ContainerRecordError::Malformed)?;
+            (u64::from_le_bytes(*lsn), payload)
+        } else {
+            (0, payload)
+        };
         Ok(Self {
             codec,
             dictionary_id,
-            sealed: header & SEALED != 0,
+            sealed,
+            lsn,
             payload,
         })
     }
@@ -183,6 +210,18 @@ impl<'a> ContainerStoredBody<'a> {
     #[must_use]
     pub fn plain(&self) -> Option<&'a [u8]> {
         (self.codec == ContainerCodec::None && !self.sealed).then_some(self.payload)
+    }
+
+    /// Where a sealed body of collection `collection` must open: its
+    /// collection and the LSN it carries in the clear. A frame holds one
+    /// whole record, so its entry index is zero.
+    #[must_use]
+    pub const fn record_context(&self, collection: u32) -> ContainerSealContext {
+        ContainerSealContext::Record {
+            collection,
+            lsn: self.lsn,
+            entry: 0,
+        }
     }
 
     /// Open (when sealed) and decompress the body, to at most `max_bytes`.

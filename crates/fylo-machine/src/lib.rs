@@ -894,7 +894,7 @@ impl Session {
             "getFileData" => self.get_file_data(request),
             "findDocs" => self.find_documents(request),
             "inspectCollection" => self.inspect_collection(request),
-            "inspectDatabase" => Self::inspect_database(&self.database_path(request, operation)?),
+            "inspectDatabase" => self.inspect_database(&self.database_path(request, operation)?),
             "verifyDatabase" => Self::verify_database(&self.database_path(request, operation)?),
             "verifyCollection" => self.verify_collection(request),
             "log" => self.history(request),
@@ -1155,7 +1155,10 @@ impl Session {
     /// Admit a `.fxdb` database root. A database is owned through its own
     /// file (ADR 0016 section 7), so it takes no root lease: opening it
     /// checks it, and a missing one is created, as a missing directory root
-    /// is.
+    /// is: plain, unless `fylo.encryption.file` asks for an encrypted one
+    /// (ADR 0016 section 9). An encrypted database opens with the
+    /// configured key, and without one it is locked: it lists no
+    /// collections and refuses reads of one and every write with `EKEY`.
     fn admit_database(&self, root: PathBuf) -> Result<PathBuf, MachineError> {
         if self.filesystem_profile != FilesystemProfile::Native {
             return Err(MachineError::new(
@@ -1166,9 +1169,13 @@ impl Session {
         if fylo_vfs::metadata(&root)
             .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
         {
-            NativeRoot::create_database(&root).map_err(|error| storage_error(&error))?;
+            match self.config.creation_key() {
+                Some(key) => NativeRoot::create_encrypted_database(&root, key),
+                None => NativeRoot::create_database(&root),
+            }
+            .map_err(|error| storage_error(&error))?;
         }
-        NativeRoot::open_profiled(RootOpenOptions::new(&root))
+        NativeRoot::open_profiled(self.config.with_database_key(RootOpenOptions::new(&root)))
             .map_err(|error| storage_error(&error))?;
         Ok(root)
     }
@@ -1179,7 +1186,9 @@ impl Session {
         repository_root: PathBuf,
     ) -> Result<RootOpenOptions, MachineError> {
         if NativeRoot::names_database(&repository_root) {
-            return Ok(RootOpenOptions::new(root).with_profile(self.filesystem_profile));
+            return Ok(self.config.with_database_key(
+                RootOpenOptions::new(root).with_profile(self.filesystem_profile),
+            ));
         }
         let lease = self
             .leases
@@ -1481,10 +1490,18 @@ impl Session {
     }
 
     /// Describe a `.fxdb` file from its superblock, map and directory,
-    /// without reading a record or taking a lock (ADR 0016).
-    fn inspect_database(path: &Path) -> Result<Value, MachineError> {
+    /// without reading a record or taking a lock (ADR 0016). An encrypted
+    /// file is unlocked with the configured key to list its collections;
+    /// without one it reports `locked` and lists none, and a wrong key
+    /// fails with `EKEY`.
+    fn inspect_database(&self, path: &Path) -> Result<Value, MachineError> {
         let report = fylo_storage_native::ContainerFile::open_reader(path)
-            .and_then(|container| container.report())
+            .and_then(|mut container| {
+                if let Some(key) = &self.config.database_key {
+                    container.unlock_with_key(key)?;
+                }
+                container.report()
+            })
             .map_err(|error| MachineError::new(error.code(), error.to_string()))?;
         serde_json::to_value(report).map_err(|error| serialization_error(&error))
     }

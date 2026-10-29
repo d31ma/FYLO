@@ -83,6 +83,10 @@ impl SegmentReader {
                 "{what} names a compression dictionary that is missing or damaged \
                  (EFXDB_CORRUPT); `fylo verify` reports which"
             )),
+            LogFormatError::Unauthenticated => Self::corrupt(&format!(
+                "{what} does not open with the database key: it was altered, or moved \
+                 from another collection or record (EFXDB_CORRUPT)"
+            )),
             _ => Self::corrupt(&format!("{what} is damaged: {error}")),
         }
     }

@@ -17,10 +17,21 @@ pub(crate) struct SegmentDocument {
 
 impl SegmentDocument {
     /// The document `location` names inside `record`.
+    ///
+    /// The record must be the one the location names, by LSN as well as by
+    /// entry: an older record of the same document put in its place, as a
+    /// replayed frame of an encrypted file would be, is refused rather than
+    /// read as the newest. A row that names no LSN, which no writer leaves
+    /// for a live document, is checked by entry alone.
     pub(crate) fn from_record(
         location: &SegmentLocation,
         record: &LogRecord,
     ) -> Result<Self, NativeStorageError> {
+        if location.lsn != 0 && record.lsn != location.lsn {
+            return Err(Self::corrupt(
+                "segment record is not the one its location names",
+            ));
+        }
         let manifest = SegmentCommitManifest::decode(&record.manifest)?;
         let entry = manifest
             .entries

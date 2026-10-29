@@ -290,3 +290,55 @@ fn errors_keep_original_line_numbers() {
         "invalid .env secret declaration at line 3"
     );
 }
+
+#[test]
+fn encryption_file_opts_into_encrypted_databases_with_the_key_alone() {
+    let fixture = Fixture::new();
+    // A key generated for this test, at the minimum length.
+    std::fs::write(
+        fixture.0.join(".env"),
+        format!(
+            "FYLO_UNIT_DATABASE_KEY={}\n",
+            "generated-unit-key-".repeat(2)
+        ),
+    )
+    .unwrap();
+    let plain = fixture.load(r#"{"fylo":{"root":"db.fxdb"}}"#).unwrap();
+    assert!(plain.database_key.is_none());
+    assert!(!plain.encrypt_databases);
+    assert!(plain.creation_key().is_none());
+
+    let config = fixture
+        .load(r#"{"fylo":{"encryption":{"key":"${FYLO_UNIT_DATABASE_KEY}","file":true}}}"#)
+        .unwrap();
+    assert!(config.encrypt_databases);
+    assert!(config.creation_key().is_some());
+    // A database key alone encrypts files, and no field.
+    assert!(config.credentials.is_none());
+    let unset =
+        fixture.load(r#"{"fylo":{"encryption":{"key":"${FYLO_UNIT_DATABASE_KEY}","file":false}}}"#);
+    assert!(unset.is_err(), "a key without file still needs its salt");
+}
+
+#[test]
+fn encryption_file_errors_are_stable() {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.0.join(".env"), "FYLO_UNIT_SHORT_KEY=short\n").unwrap();
+    assert_eq!(
+        fixture.error(r#"{"fylo":{"encryption":{"file":"yes"}}}"#),
+        "fylo.encryption.file must be a boolean"
+    );
+    assert_eq!(
+        fixture.error(r#"{"fylo":{"encryption":{"file":true}}}"#),
+        "fylo.encryption.file requires fylo.encryption.key, the secret a database's key is derived from"
+    );
+    assert!(
+        fixture
+            .error(r#"{"fylo":{"encryption":{"key":"${FYLO_UNIT_SHORT_KEY}","file":true}}}"#)
+            .contains("32")
+    );
+    assert_eq!(
+        fixture.error(r#"{"fylo":{"encryption":{"files":true}}}"#),
+        "unknown key under fylo.encryption; use documented nested configuration keys"
+    );
+}

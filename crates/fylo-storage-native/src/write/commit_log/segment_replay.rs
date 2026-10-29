@@ -1,6 +1,8 @@
 use std::collections::BTreeSet;
 
-use fylo_format::{LogRecordKind, LogScan, LogSegmentHeader, LogSegmentKind};
+use fylo_format::{
+    LogFormatError, LogRecord, LogRecordKind, LogScan, LogSegmentHeader, LogSegmentKind,
+};
 
 use super::compaction_manifest::CompactionManifest;
 use super::segment_rebuild::SegmentRebuild;
@@ -22,7 +24,8 @@ impl IndexDelta {
         (from, to): (RecordPosition, RecordPosition),
     ) -> Result<Vec<u8>, NativeStorageError> {
         let present = medium.segment_numbers()?;
-        let (scans, _) = LocationTable::replayed_scans(medium, &present, (from, to), false)?;
+        let (scans, _) =
+            LocationTable::replayed_scans(medium, &present, (from, to), (None, false))?;
         let aborted = SegmentRebuild::aborted(scans.iter().map(|(_, scan)| scan))?;
         let mut lines = Vec::new();
         for (_, scan) in &scans {
@@ -87,9 +90,17 @@ impl LocationTable {
         salvaging: bool,
     ) -> Result<(), NativeStorageError> {
         let present: Vec<u64> = medium.segment_numbers()?;
-        let (scans, damage) = Self::replayed_scans(medium, &present, (from, to), salvaging)?;
+        let (scans, damage) =
+            Self::replayed_scans(medium, &present, (from, to), (self.replayed(), salvaging))?;
         if let Some(damage) = damage {
             self.mark_damaged(damage);
+        }
+        if let Some((number, (_, record))) = scans
+            .iter()
+            .rev()
+            .find_map(|(number, scan)| scan.records.last().map(|last| (*number, last)))
+        {
+            self.note_replayed(number, record.lsn);
         }
         let aborted = SegmentRebuild::aborted(scans.iter().map(|(_, scan)| scan))?;
         for (number, scan) in &scans {
@@ -121,7 +132,9 @@ impl LocationTable {
     }
 
     /// The records between two positions, as one scan per segment, of the
-    /// segments `present`.
+    /// segments `present`. `replayed`, the segment and LSN of the record a
+    /// replay that stopped at `from` applied last, is what the first
+    /// record in that segment must follow.
     ///
     /// The segment `from` names may be gone. A medium without a location
     /// log writes a location snapshot at every checkpoint, sealing
@@ -134,7 +147,7 @@ impl LocationTable {
         medium: &dyn SegmentMedium,
         present: &[u64],
         (from, to): (RecordPosition, RecordPosition),
-        salvaging: bool,
+        (replayed, salvaging): (Option<(u64, u64)>, bool),
     ) -> Result<(Vec<(u64, LogScan)>, Option<RecordPosition>), NativeStorageError> {
         if to <= from {
             return Ok((Vec::new(), None));
@@ -151,7 +164,11 @@ impl LocationTable {
         for number in numbers {
             let start = (number == from.segment).then_some(from.offset);
             let end = (number == to.segment).then_some(to.offset);
-            let (scan, damage) = Self::replayed_span(medium, number, (start, end), salvaging)?;
+            let previous = replayed
+                .filter(|(segment, _)| start.is_some() && *segment == number)
+                .map(|(_, lsn)| lsn);
+            let (scan, damage) =
+                Self::replayed_span(medium, number, (start, end), (previous, salvaging))?;
             if let Some(scan) = scan {
                 scans.push((number, scan));
             }
@@ -170,14 +187,18 @@ impl LocationTable {
 
     /// The records of segment `number` from `start` to `end`, by default
     /// from its first record to its end, or `None` for a compacted segment.
-    /// Every record in the span must decode: it was committed. When
-    /// `salvaging`, the first that does not ends the span instead, and its
-    /// offset comes back with the records before it.
+    /// Every record in the span must decode: it was committed. Their LSNs
+    /// follow one another, and `previous`, the record before the span when
+    /// a replay already applied it, as in every segment of commits, so a
+    /// record put in another's place, as a replayed frame of an encrypted
+    /// file would be, is damage too. When `salvaging`, the first that does
+    /// not ends the span instead, and its offset comes back with the
+    /// records before it.
     fn replayed_span(
         medium: &dyn SegmentMedium,
         number: u64,
         (start, end): (Option<u64>, Option<u64>),
-        salvaging: bool,
+        (previous, salvaging): (Option<u64>, bool),
     ) -> Result<(Option<LogScan>, Option<u64>), NativeStorageError> {
         let handle = medium.read_handle(number)?;
         let mut header = [0_u8; LogSegmentHeader::ENCODED_BYTES];
@@ -206,7 +227,19 @@ impl LocationTable {
         let bodies = medium.frame_bodies();
         while cursor < bytes.len() {
             let offset = start + cursor as u64;
-            let (record, length) = match header.kind.unframe_with(&bytes[cursor..], &*bodies) {
+            let expected = records
+                .last()
+                .map(|(_, record): &(u64, LogRecord)| record.lsn)
+                .or(previous)
+                .map(|lsn| lsn + 1);
+            let framed = header
+                .kind
+                .unframe_with(&bytes[cursor..], &*bodies)
+                .and_then(|(record, length)| match expected {
+                    Some(expected) if record.lsn != expected => Err(LogFormatError::SequenceGap),
+                    _ => Ok((record, length)),
+                });
+            let (record, length) = match framed {
                 Ok(framed) => framed,
                 Err(error) if salvaging => {
                     let scan = LogScan {

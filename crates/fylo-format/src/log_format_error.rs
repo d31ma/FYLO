@@ -21,16 +21,23 @@ pub enum LogFormatError {
     /// A whole frame names a compression dictionary that is missing or
     /// damaged, so its body cannot be read.
     MissingDictionary,
+    /// A whole frame's sealed body does not open with the file's key: it
+    /// was altered, or belongs to another collection or record. Its
+    /// checksum matched, so it is no torn write.
+    Unauthenticated,
 }
 
 impl LogFormatError {
     /// Whether the frame is whole but this reader cannot read its body: it
-    /// uses a newer format, or names a dictionary that cannot be loaded. A
-    /// scan that stops there has not found a torn tail, and nothing after
-    /// it may be cut off.
+    /// uses a newer format, names a dictionary that cannot be loaded, or
+    /// does not open with the file's key. A scan that stops there has not
+    /// found a torn tail, and nothing after it may be cut off.
     #[must_use]
     pub const fn is_unreadable(self) -> bool {
-        matches!(self, Self::UnsupportedVersion | Self::MissingDictionary)
+        matches!(
+            self,
+            Self::UnsupportedVersion | Self::MissingDictionary | Self::Unauthenticated
+        )
     }
 }
 
@@ -46,6 +53,9 @@ impl std::fmt::Display for LogFormatError {
             Self::SequenceGap => "log sequence number does not follow the previous record",
             Self::MissingDictionary => {
                 "log record names a compression dictionary that is missing or damaged"
+            }
+            Self::Unauthenticated => {
+                "log record is sealed for another place, or was altered after sealing"
             }
         };
         formatter.write_str(message)

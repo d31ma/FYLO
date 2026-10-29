@@ -15,8 +15,8 @@ use super::segment_checkpoint::SegmentCheckpoint;
 use super::segment_import::SegmentImport;
 use crate::segments::LocationState;
 use crate::{
-    DICTIONARY_TRAINING_BYTES, FilesystemProfile, NativeCollection, NativeRoot, NativeStorageError,
-    NativeStorageErrorCode, path_exists_no_follow,
+    DICTIONARY_TRAINING_BYTES, DatabaseKey, FilesystemProfile, NativeCollection, NativeRoot,
+    NativeStorageError, NativeStorageErrorCode, RootOpenOptions, path_exists_no_follow,
 };
 
 /// Converts between a directory root and a `.fxdb` database (ADR 0016
@@ -60,6 +60,30 @@ impl NativeWriteRoot {
         out: &Path,
         allow_engine_only_access: bool,
     ) -> Result<DatabasePackReport, NativeStorageError> {
+        self.pack_with(out, allow_engine_only_access, None)
+    }
+
+    /// [`Self::pack_database`], into a database encrypted with `key`
+    /// (ADR 0016 section 9), which opens with the same key.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`Self::pack_database`].
+    pub fn pack_encrypted_database(
+        &self,
+        out: &Path,
+        allow_engine_only_access: bool,
+        key: &DatabaseKey,
+    ) -> Result<DatabasePackReport, NativeStorageError> {
+        self.pack_with(out, allow_engine_only_access, Some(key))
+    }
+
+    fn pack_with(
+        &self,
+        out: &Path,
+        allow_engine_only_access: bool,
+        key: Option<&DatabaseKey>,
+    ) -> Result<DatabasePackReport, NativeStorageError> {
         if !NativeCollection::SEGMENTS_SUPPORTED {
             return Err(Self::pack_unsupported(
                 "this build cannot write a .fxdb database",
@@ -92,7 +116,7 @@ impl NativeWriteRoot {
         }
         Self::remove_staging(&staging)?;
         let built = self
-            .build_pack(&collections, &staging, allow_engine_only_access)
+            .build_pack(&collections, &staging, (allow_engine_only_access, key))
             .and_then(|report| Self::flush_staging(&staging).map(|()| report))
             .and_then(|report| failpoint("after-pack-staging").map(|()| report));
         let report = match built {
@@ -125,6 +149,11 @@ impl NativeWriteRoot {
                 "fylo unpack takes a .fxdb database, and this root is a directory",
             ));
         };
+        // A locked database lists no collections; unpacking it would write
+        // an empty root, not its documents.
+        if let Some(database) = self.root.database() {
+            database.require_key()?;
+        }
         let unpacked = Self::writing(Self::empty_output(out)?);
         let outcome = self.unpack_into(&unpacked, &names);
         if outcome.is_err() {
@@ -278,10 +307,17 @@ impl NativeWriteRoot {
         &self,
         collections: &[NativeCollection],
         staging: &Path,
-        allow_engine_only_access: bool,
+        (allow_engine_only_access, key): (bool, Option<&DatabaseKey>),
     ) -> Result<DatabasePackReport, NativeStorageError> {
-        NativeRoot::create_database(staging)?;
-        let outcome = Self::open(staging).and_then(|packed| {
+        let mut options = RootOpenOptions::new(staging);
+        match key {
+            Some(key) => {
+                NativeRoot::create_encrypted_database(staging, key)?;
+                options = options.with_database_key(key.clone());
+            }
+            None => NativeRoot::create_database(staging)?,
+        }
+        let outcome = Self::open_profiled(options).and_then(|packed| {
             let mut report = DatabasePackReport::default();
             for collection in collections {
                 report.collections.push(self.pack_collection(

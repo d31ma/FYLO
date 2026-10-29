@@ -22,7 +22,10 @@ impl ContainerMedium {
     /// when the last operation holding it ends.
     pub(crate) fn attach(file: &Arc<ContainerOpen>, collection: &ContainerCollection) -> Self {
         let key = (file.path().to_owned(), collection.block);
-        let capacity = file.lock().payload_capacity();
+        let (capacity, cipher) = {
+            let open = file.lock();
+            (open.payload_capacity(), open.shared_cipher())
+        };
         let mut media = Self::media();
         media.retain(|_, shared| shared.strong_count() > 0);
         if let Some(shared) = media.get(&key).and_then(Weak::upgrade)
@@ -37,13 +40,16 @@ impl ContainerMedium {
             collection: collection.header.id,
             block: collection.block,
             capacity,
-            frames: Arc::new(ContainerFrames::with_source(
-                collection.header.id,
-                Arc::new(FileDictionaries {
-                    file: Arc::clone(file),
-                    collection: collection.header.id,
-                }),
-            )),
+            frames: Arc::new(
+                ContainerFrames::with_source(
+                    collection.header.id,
+                    Arc::new(FileDictionaries {
+                        file: Arc::clone(file),
+                        collection: collection.header.id,
+                    }),
+                )
+                .sealed_with(cipher),
+            ),
             state: Mutex::new(MediumState::default()),
             claim: Mutex::new(None),
         });

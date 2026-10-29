@@ -8,6 +8,16 @@
 //! The length and checksum cover those stored bytes. A directory collection
 //! never comes here, so its frames stay byte for byte what they were.
 //!
+//! In an encrypted file every body is sealed after it is compressed
+//! (ADR 0016 section 9). The record's LSN, the first eight bytes of its
+//! body, is taken out and stored in the clear in front of the seal, and the
+//! associated data binds the seal to the collection and that LSN: a frame
+//! copied into another collection, or given another LSN, does not open. A
+//! frame replayed at another place in a segment of commits is refused by
+//! the scan, whose LSNs must follow one another. Either failure is
+//! `Unauthenticated`, which no scan takes for a torn tail, and so is a body
+//! left plain in an encrypted file.
+//!
 //! Natively a record is written as zstd, in the browser as LZ4, and as is
 //! when compression would not shrink it, each with the collection's current
 //! dictionary when it has one. Every build reads all three. A
@@ -27,13 +37,17 @@ use std::sync::{Arc, Mutex, PoisonError};
 use fylo_format::{ContainerSuperblock, LogBodyCodec, LogFormatError, LogRecord};
 
 use crate::{
-    ContainerCodecError, ContainerDictionary, ContainerFrameCodec, ContainerRecordError,
-    ContainerSealContext, ContainerStoredBody, NONCE_BYTES, TAG_BYTES,
+    ContainerCipher, ContainerCodecError, ContainerDictionary, ContainerFrameCodec,
+    ContainerRecordError, ContainerSealContext, ContainerStoredBody, NONCE_BYTES, TAG_BYTES,
 };
 
 /// Stored bytes beyond the record: the header byte, a dictionary id, and the
-/// nonce and tag a sealed body will carry.
+/// nonce and tag a sealed body carries. Its LSN moves out of the sealed
+/// bytes into the clear, so it adds nothing.
 const STORED_OVERHEAD: usize = 1 + 4 + NONCE_BYTES + TAG_BYTES;
+
+/// Bytes of the LSN that opens every record body.
+const LSN_BYTES: usize = 8;
 
 /// Where a collection's dictionaries are kept, for one a record names that
 /// this process has not loaded: another process trained it since, or this
@@ -63,6 +77,9 @@ pub(crate) struct ContainerFrames {
     /// Write LZ4 natively too, as the browser does.
     lz4: AtomicBool,
     codecs: Mutex<BTreeMap<u32, ContainerFrameCodec>>,
+    /// The file key, in an encrypted file: every body is sealed with it,
+    /// and one that is not is refused.
+    cipher: Option<Arc<ContainerCipher>>,
 }
 
 impl ContainerFrames {
@@ -85,7 +102,13 @@ impl ContainerFrames {
             writing: AtomicU32::new(writing),
             lz4: AtomicBool::new(false),
             codecs: Mutex::new(BTreeMap::new()),
+            cipher: None,
         }
+    }
+
+    /// These bodies, sealed with `cipher` when the file is encrypted.
+    pub(crate) fn sealed_with(self, cipher: Option<Arc<ContainerCipher>>) -> Self {
+        Self { cipher, ..self }
     }
 
     /// The bodies of collection `collection`, holding no dictionary yet
@@ -213,27 +236,34 @@ impl ContainerFrames {
         body(codec)
     }
 
-    /// Nothing is sealed yet: an encrypted file's records wait for their
-    /// frame binding (ADR 0016 section 9), so the context is never used.
-    fn context(&self) -> ContainerSealContext {
+    /// Where the record whose body opens with `lsn` is sealed: its
+    /// collection and LSN. A frame holds one whole record, so its entry
+    /// index is zero.
+    fn context(&self, lsn: u64) -> ContainerSealContext {
         ContainerSealContext::Record {
             collection: self.collection,
-            lsn: 0,
+            lsn,
             entry: 0,
         }
     }
 
     /// A stored body's failure as a scan sees it. What this build cannot
-    /// read is `UnsupportedVersion`, never damage: a sealed body included,
-    /// since records are not sealed yet. A dictionary that is missing or
-    /// that zstd refuses is `MissingDictionary`, which no scan takes for a
-    /// torn tail either.
+    /// read is `UnsupportedVersion`, never damage: a sealed body in a file
+    /// opened without a key included. A body that does not open with the
+    /// file's key, or that is plain in an encrypted file, is
+    /// `Unauthenticated`: its checksum matched, so it is no torn write. A
+    /// dictionary that is missing or that zstd refuses is
+    /// `MissingDictionary`, which no scan takes for a torn tail either.
     fn format_error(error: &ContainerRecordError) -> LogFormatError {
         match error {
             ContainerRecordError::Unsupported
             | ContainerRecordError::Locked
             | ContainerRecordError::Codec(ContainerCodecError::Unsupported) => {
                 LogFormatError::UnsupportedVersion
+            }
+            ContainerRecordError::NotSealed
+            | ContainerRecordError::Cipher(crate::ContainerCipherError::Unauthenticated) => {
+                LogFormatError::Unauthenticated
             }
             ContainerRecordError::Codec(
                 ContainerCodecError::WrongDictionary | ContainerCodecError::BadDictionary,
@@ -250,7 +280,14 @@ impl LogBodyCodec for ContainerFrames {
     fn store(&self, body: Vec<u8>) -> Result<Vec<u8>, LogFormatError> {
         self.with_codec(self.writing.load(Ordering::Acquire), |codec| {
             let lz4 = self.lz4.load(Ordering::Relaxed);
-            ContainerStoredBody::encode(codec, None, self.context(), &body, lz4)
+            let Some(cipher) = self.cipher.as_deref() else {
+                return ContainerStoredBody::encode(codec, None, self.context(0), &body, lz4);
+            };
+            let (lsn, rest) = body
+                .split_first_chunk::<LSN_BYTES>()
+                .ok_or(ContainerRecordError::Malformed)?;
+            let context = self.context(u64::from_le_bytes(*lsn));
+            ContainerStoredBody::encode(codec, Some(cipher), context, rest, lz4)
         })
         .map_err(|error| Self::format_error(&error))
     }
@@ -258,14 +295,25 @@ impl LogBodyCodec for ContainerFrames {
     fn load<'a>(&self, stored: &'a [u8]) -> Result<Cow<'a, [u8]>, LogFormatError> {
         let parsed =
             ContainerStoredBody::parse(stored).map_err(|error| Self::format_error(&error))?;
-        if let Some(body) = parsed.plain() {
+        if self.cipher.is_none()
+            && let Some(body) = parsed.plain()
+        {
             return Ok(Cow::Borrowed(body));
         }
-        self.with_codec(parsed.dictionary_id, |codec| {
-            parsed.decode(codec, None, self.context(), LogRecord::MAX_BODY_BYTES)
-        })
-        .map(Cow::Owned)
-        .map_err(|error| Self::format_error(&error))
+        let cipher = self.cipher.as_deref();
+        let context = parsed.record_context(self.collection);
+        let decoded = self
+            .with_codec(parsed.dictionary_id, |codec| {
+                parsed.decode(codec, cipher, context, LogRecord::MAX_BODY_BYTES)
+            })
+            .map_err(|error| Self::format_error(&error))?;
+        if !parsed.sealed {
+            return Ok(Cow::Owned(decoded));
+        }
+        let mut body = Vec::with_capacity(LSN_BYTES + decoded.len());
+        body.extend_from_slice(&parsed.lsn.to_le_bytes());
+        body.extend_from_slice(&decoded);
+        Ok(Cow::Owned(body))
     }
 
     fn stored_bytes(&self) -> RangeInclusive<usize> {

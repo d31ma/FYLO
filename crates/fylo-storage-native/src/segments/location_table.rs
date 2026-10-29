@@ -22,6 +22,10 @@ pub(crate) struct LocationTable {
     /// Where a salvaging replay met a record it could not read and
     /// stopped; the table holds nothing the records from there derive.
     damage: Option<RecordPosition>,
+    /// The segment and LSN of the last record replayed, so the next
+    /// replay from where this one stopped checks that its first record
+    /// follows it.
+    replayed: Option<(u64, u64)>,
 }
 
 impl LocationTable {
@@ -43,6 +47,7 @@ impl LocationTable {
             overlay: BTreeMap::new(),
             reach: start,
             damage: None,
+            replayed: None,
         };
         table.extend(medium, reach)?;
         Ok(table)
@@ -68,6 +73,7 @@ impl LocationTable {
             overlay: BTreeMap::new(),
             reach,
             damage: None,
+            replayed: None,
         };
         table.replay_salvaging(medium, (from, to))?;
         Ok(table)
@@ -76,6 +82,17 @@ impl LocationTable {
     /// Where a salvaging load stopped at a record it could not read.
     pub(crate) fn damage(&self) -> Option<RecordPosition> {
         self.damage
+    }
+
+    /// The segment and LSN of the last record a replay applied, which the
+    /// next replay's first record in that segment must follow.
+    pub(crate) fn replayed(&self) -> Option<(u64, u64)> {
+        self.replayed
+    }
+
+    /// Note the last record a replay applied.
+    pub(crate) fn note_replayed(&mut self, segment: u64, lsn: u64) {
+        self.replayed = Some((segment, lsn));
     }
 
     /// Record that the replay stopped at `at`, the first record it could

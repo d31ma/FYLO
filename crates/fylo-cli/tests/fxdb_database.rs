@@ -24,6 +24,23 @@ impl Fixture {
             .output()
             .unwrap()
     }
+
+    /// Run with `secret` as the database key `keyed.json` names, a
+    /// configuration that does not encrypt new databases by itself.
+    fn run_keyed(&self, secret: &str, arguments: &[&str]) -> Output {
+        fs::write(
+            self.0.join("keyed.json"),
+            r#"{"fylo":{"encryption":{"key":"${FYLO_CLI_TEST_DATABASE_KEY}","file":true}}}"#,
+        )
+        .unwrap();
+        Command::new(BINARY)
+            .current_dir(&self.0)
+            .args(arguments)
+            .args(["--config", "keyed.json"])
+            .env("FYLO_CLI_TEST_DATABASE_KEY", secret)
+            .output()
+            .unwrap()
+    }
 }
 
 impl Drop for Fixture {
@@ -213,4 +230,131 @@ fn a_pack_stopped_after_staging_leaves_no_database() {
     assert_eq!(names, ["app.fxdb", "data"]);
     let got = fixture.run(&["get", "users", &identifier, "--root", "app.fxdb", "--json"]);
     assert!(got.status.success(), "{got:?}");
+}
+
+/// A key generated for one test; no real secret is ever written.
+fn generated_secret(name: &str) -> String {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    format!("generated-{name}-{stamp:032x}-{}", std::process::id())
+}
+
+fn contains(bytes: &[u8], needle: &[u8]) -> bool {
+    bytes.windows(needle.len()).any(|window| window == needle)
+}
+
+#[test]
+fn create_encrypt_makes_a_database_only_its_key_opens() {
+    let fixture = Fixture::new("encrypt");
+    let secret = generated_secret("encrypt");
+    // --encrypt needs the key.
+    let keyless = fixture.run(&["create", "app.fxdb", "--encrypt"]);
+    assert!(!keyless.status.success(), "{keyless:?}");
+    assert!(String::from_utf8_lossy(&keyless.stderr).contains("EKEY"));
+    assert!(!fixture.0.join("app.fxdb").exists());
+
+    let create = fixture.run_keyed(&secret, &["create", "app.fxdb", "--encrypt"]);
+    assert!(create.status.success(), "{create:?}");
+    assert_eq!(json(&create)["encrypted"], true);
+    let again = fixture.run_keyed(&secret, &["create", "app.fxdb"]);
+    assert!(!again.status.success(), "{again:?}");
+    let collection = fixture.run_keyed(
+        &secret,
+        &[
+            "exec",
+            "--request",
+            r#"{"op":"createCollection","collection":"users"}"#,
+            "--root",
+            "app.fxdb",
+        ],
+    );
+    assert!(collection.status.success(), "{collection:?}");
+    let insert = fixture.run_keyed(
+        &secret,
+        &[
+            "sql",
+            "INSERT INTO users (name, team) VALUES ('NUMBAT-CANARY', 'red')",
+            "--root",
+            "app.fxdb",
+        ],
+    );
+    assert!(insert.status.success(), "{insert:?}");
+    let identifier = String::from_utf8(insert.stdout).unwrap().trim().to_owned();
+    let got = fixture.run_keyed(
+        &secret,
+        &["get", "users", &identifier, "--root", "app.fxdb", "--json"],
+    );
+    assert!(got.status.success(), "{got:?}");
+    assert_eq!(json(&got)[&identifier]["name"], "NUMBAT-CANARY");
+    let bytes = fs::read(fixture.0.join("app.fxdb")).unwrap();
+    assert!(!contains(&bytes, b"NUMBAT-CANARY"));
+
+    // Without the key, inspect reports it locked, verify passes, and a read
+    // is refused.
+    let inspect = fixture.run(&["inspect", "app.fxdb"]);
+    assert!(inspect.status.success(), "{inspect:?}");
+    let report = json(&inspect);
+    assert_eq!(report["encrypted"], true);
+    assert_eq!(report["locked"], true);
+    assert_eq!(report["collections"], serde_json::json!([]));
+    let verify = fixture.run(&["verify", "app.fxdb"]);
+    assert!(verify.status.success(), "{verify:?}");
+    let locked = fixture.run(&["get", "users", &identifier, "--root", "app.fxdb", "--json"]);
+    assert!(!locked.status.success(), "{locked:?}");
+    assert!(String::from_utf8_lossy(&locked.stderr).contains("EKEY"));
+    let wrong = fixture.run_keyed(
+        &generated_secret("wrong"),
+        &["get", "users", &identifier, "--root", "app.fxdb", "--json"],
+    );
+    assert!(!wrong.status.success(), "{wrong:?}");
+    assert!(String::from_utf8_lossy(&wrong.stderr).contains("does not match"));
+    assert_eq!(fs::read(fixture.0.join("app.fxdb")).unwrap(), bytes);
+
+    // With it, inspect lists the collections.
+    let inspect = fixture.run_keyed(&secret, &["inspect", "app.fxdb"]);
+    assert!(inspect.status.success(), "{inspect:?}");
+    assert_eq!(json(&inspect)["locked"], false);
+    assert_eq!(json(&inspect)["collections"][0]["name"], "users");
+}
+
+#[test]
+fn pack_encrypt_seals_a_root_and_unpack_needs_its_key() {
+    let fixture = Fixture::new("pack-encrypt");
+    let secret = generated_secret("pack");
+    let identifier = seeded_root(&fixture, "data");
+    let pack = fixture.run_keyed(&secret, &["pack", "data", "--out", "app.fxdb", "--encrypt"]);
+    assert!(pack.status.success(), "{pack:?}");
+    let bytes = fs::read(fixture.0.join("app.fxdb")).unwrap();
+    assert!(!contains(&bytes, b"\"ada\""));
+    let report = json(&fixture.run(&["inspect", "app.fxdb"]));
+    assert_eq!(report["encrypted"], true);
+    let got = fixture.run_keyed(
+        &secret,
+        &["get", "users", &identifier, "--root", "app.fxdb", "--json"],
+    );
+    assert!(got.status.success(), "{got:?}");
+    assert_eq!(json(&got)[&identifier]["name"], "ada");
+
+    let locked = fixture.run(&["unpack", "app.fxdb", "--out", "restored"]);
+    assert!(!locked.status.success(), "{locked:?}");
+    assert!(String::from_utf8_lossy(&locked.stderr).contains("EKEY"));
+    let unpack = fixture.run_keyed(&secret, &["unpack", "app.fxdb", "--out", "restored"]);
+    assert!(unpack.status.success(), "{unpack:?}");
+    assert_eq!(json(&unpack)["collections"][0]["documents"], 1);
+}
+
+#[test]
+fn create_makes_a_plain_database_by_default() {
+    let fixture = Fixture::new("create-plain");
+    let create = fixture.run(&["create", "app.fxdb"]);
+    assert!(create.status.success(), "{create:?}");
+    assert_eq!(json(&create)["encrypted"], false);
+    assert_eq!(
+        json(&fixture.run(&["inspect", "app.fxdb"]))["encrypted"],
+        false
+    );
+    let directory = fixture.run(&["create", "data"]);
+    assert!(!directory.status.success(), "{directory:?}");
 }

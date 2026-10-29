@@ -1521,6 +1521,9 @@ impl NativeWriteRoot {
         collection_name: &str,
     ) -> Result<Option<super::NativeCollection>, NativeStorageError> {
         if let Some(database) = self.root.database() {
+            // A handle without an encrypted database's key may not even
+            // learn whether a collection exists.
+            database.require_key()?;
             if database.collection(collection_name).is_none() {
                 return Ok(None);
             }

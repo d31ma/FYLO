@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use fylo_machine::ApplicationConfig;
-use fylo_storage_native::{CollectionLayout, NativeWriteRoot};
+use fylo_storage_native::{CollectionLayout, NativeWriteRoot, RootOpenOptions};
 use serde_json::{Value, json};
 
 /// The segment layout's administrative commands (ADR 0015): `layout`,
@@ -23,9 +23,11 @@ impl SegmentCommand {
         collection: &str,
         options: &SegmentOptions,
     ) -> Result<String, String> {
-        let writer = NativeWriteRoot::open(root)
-            .map_err(|error| error.to_string())?
-            .with_config(application.storage);
+        let writer = NativeWriteRoot::open_profiled(
+            application.with_database_key(RootOpenOptions::new(root)),
+        )
+        .map_err(|error| error.to_string())?
+        .with_config(application.storage);
         let output = match command {
             "layout" => Self::layout(&writer, collection, options),
             "compact" => Self::compact(&writer, collection),

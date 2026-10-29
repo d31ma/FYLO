@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use fylo_format::{
     ContainerCodec, Crc32c, LogBodyCodec, LogFormatError, LogRecord, LogRecordKind, LogScan,
@@ -9,8 +10,8 @@ use serde_json::json;
 use super::ContainerFrames;
 use crate::segments::{ContainerMedium, SegmentMedium, SegmentReader};
 use crate::{
-    CollectionKind, CollectionLayout, NativeRoot, NativeStorageErrorCode, NativeWriteRoot,
-    PutDocumentOptions, RootConfig, train_dictionary,
+    CollectionKind, CollectionLayout, ContainerCipher, NativeRoot, NativeStorageErrorCode,
+    NativeWriteRoot, PutDocumentOptions, RootConfig, train_dictionary,
 };
 
 /// Where a frame's codec header byte sits, after the marker, length and
@@ -153,6 +154,120 @@ fn a_frame_names_its_dictionary_and_needs_it_to_be_read() {
     let without = ContainerFrames::new(2, Vec::new(), 0);
     let error = SegmentReader::decode(&framed, &without).unwrap_err();
     assert_eq!(error.code(), NativeStorageErrorCode::CorruptDocument);
+}
+
+/// A file key derived from a freshly generated secret, as an encrypted
+/// file's would be.
+fn file_key() -> Arc<ContainerCipher> {
+    let secret = ContainerCipher::new_salt().unwrap();
+    Arc::new(ContainerCipher::derive(
+        &secret,
+        &ContainerCipher::new_salt().unwrap(),
+    ))
+}
+
+/// The bodies of collection `collection`, sealed with `key`.
+fn sealed(collection: u32, key: &Arc<ContainerCipher>) -> ContainerFrames {
+    ContainerFrames::new(collection, Vec::new(), 0).sealed_with(Some(Arc::clone(key)))
+}
+
+#[test]
+fn a_sealed_frame_round_trips_compressed_with_its_lsn_in_the_clear() {
+    let key = file_key();
+    let frames = sealed(2, &key);
+    for (blobs, codec) in [
+        (document(4).repeat(4).into_bytes(), 1),
+        (b"Halifax".to_vec(), 0),
+    ] {
+        let large = record(&blobs);
+        let stored = frame(&frames, &large);
+        assert_eq!(stored[HEADER], 0x20 | codec, "sealed, compressed first");
+        assert_eq!(stored[HEADER + 1..HEADER + 9], 17_u64.to_le_bytes());
+        assert!(!stored.windows(7).any(|window| window == b"Halifax"));
+        assert!(
+            !stored.windows(6).any(|window| window == b"format"),
+            "the manifest is sealed too"
+        );
+        assert_eq!(
+            LogSegmentKind::Documents.unframe_with(&stored, &frames),
+            Ok((large.clone(), stored.len()))
+        );
+    }
+}
+
+#[test]
+fn a_sealed_frame_opens_only_in_its_collection_at_its_lsn_with_its_key() {
+    let key = file_key();
+    let large = record(document(5).repeat(3).as_bytes());
+    let framed = frame(&sealed(2, &key), &large);
+    let refused = |framed: &[u8], frames: &ContainerFrames| {
+        assert_eq!(
+            LogSegmentKind::Documents.unframe_with(framed, frames),
+            Err(LogFormatError::Unauthenticated)
+        );
+        let error = SegmentReader::decode(framed, frames).unwrap_err();
+        assert_eq!(error.code(), NativeStorageErrorCode::CorruptDocument);
+        assert!(error.to_string().contains("EFXDB_CORRUPT"), "{error}");
+    };
+    // Moved into another collection of the same file.
+    refused(&framed, &sealed(3, &key));
+    // Read with another file's key.
+    refused(&framed, &sealed(2, &file_key()));
+    // Given another LSN in the clear, with a checksum that matches.
+    let mut stored = framed[HEADER..].to_vec();
+    stored[1..9].copy_from_slice(&18_u64.to_le_bytes());
+    refused(&frame_of(&stored), &sealed(2, &key));
+    // A flipped tag bit: the checksum finds it without the key, and once
+    // the checksum is made to match, the tag does.
+    let mut flipped = framed.clone();
+    *flipped.last_mut().unwrap() ^= 0x01;
+    assert_eq!(
+        LogSegmentKind::Documents.unframe_with(&flipped, &sealed(2, &key)),
+        Err(LogFormatError::ChecksumMismatch)
+    );
+    refused(&frame_of(&flipped[HEADER..]), &sealed(2, &key));
+    // A plain frame slipped into an encrypted file.
+    let plain = frame(&ContainerFrames::new(2, Vec::new(), 0), &large);
+    refused(&plain, &sealed(2, &key));
+    // Without the key the body is not read, and is no damage either.
+    assert_eq!(
+        LogSegmentKind::Documents.unframe_with(&framed, &ContainerFrames::new(2, Vec::new(), 0)),
+        Err(LogFormatError::UnsupportedVersion)
+    );
+}
+
+#[test]
+fn a_frame_that_does_not_open_stops_a_scan_without_being_a_torn_tail() {
+    let key = file_key();
+    let frames = sealed(2, &key);
+    let mut segment = LogSegmentHeader {
+        kind: LogSegmentKind::Documents,
+        sequence: 1,
+        first_lsn: 17,
+    }
+    .encode()
+    .to_vec();
+    let first = record(document(1).as_bytes());
+    let second = LogRecord {
+        lsn: 18,
+        ..record(document(2).as_bytes())
+    };
+    segment.extend(frame(&frames, &first));
+    let kept = segment.len();
+    segment.extend(frame(&sealed(9, &key), &second));
+    let scan = LogScan::segment_with(&segment, &frames).unwrap();
+    assert_eq!(scan.records.len(), 1);
+    assert_eq!(scan.valid_length, kept as u64);
+    assert_eq!(scan.stopped, Some(LogFormatError::Unauthenticated));
+    assert!(LogFormatError::Unauthenticated.is_unreadable());
+
+    // A frame replayed after its own record opens, and the scan refuses it
+    // because its LSN does not follow.
+    segment.truncate(kept);
+    segment.extend(frame(&frames, &first));
+    let scan = LogScan::segment_with(&segment, &frames).unwrap();
+    assert_eq!(scan.records.len(), 1);
+    assert_eq!(scan.stopped, Some(LogFormatError::SequenceGap));
 }
 
 /// A root whose segment collection `items` keeps its segments in a

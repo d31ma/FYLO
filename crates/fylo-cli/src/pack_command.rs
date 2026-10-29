@@ -1,11 +1,17 @@
 use std::path::{Path, PathBuf};
 
 use fylo_machine::ApplicationConfig;
-use fylo_storage_native::{DatabasePackReport, NativeWriteRoot};
+use fylo_storage_native::{
+    DatabaseKey, DatabasePackReport, NativeRoot, NativeWriteRoot, RootOpenOptions,
+};
 use serde_json::{Value, json};
 
-/// `fylo pack <root> --out <db.fxdb>` and `fylo unpack <db.fxdb> --out
-/// <directory>` (ADR 0016 section 11).
+/// `fylo pack <root> --out <db.fxdb>`, `fylo unpack <db.fxdb> --out
+/// <directory>` and `fylo create <db.fxdb>` (ADR 0016 section 11).
+///
+/// `--encrypt`, or `fylo.encryption.file` in the configuration, makes the
+/// database `create` or `pack` writes an encrypted one, sealed with
+/// `fylo.encryption.key` (ADR 0016 section 9). Without either it is plain.
 ///
 /// Like `export` and `salvage`, they write outside the machine protocol on
 /// purpose: they take an output path, which a machine protocol client must
@@ -13,15 +19,18 @@ use serde_json::{Value, json};
 pub struct PackCommand;
 
 impl PackCommand {
-    pub const COMMANDS: [&'static str; 2] = ["pack", "unpack"];
+    pub const COMMANDS: [&'static str; 3] = ["pack", "unpack", "create"];
 
     /// Run one command on `source`: the directory root to pack, or the
-    /// database to unpack.
+    /// database to unpack or create.
     pub fn run(
         command: &str,
         (source, application): (&Path, &ApplicationConfig),
         options: &PackOptions,
     ) -> Result<String, String> {
+        if command == "create" {
+            return Self::create(source, application, options);
+        }
         let out = options.out.as_deref().ok_or_else(|| match command {
             "pack" => "pack needs --out <db.fxdb>".to_owned(),
             _ => "unpack needs --out <directory>".to_owned(),
@@ -32,16 +41,58 @@ impl PackCommand {
                     .into(),
             );
         }
-        let writer = NativeWriteRoot::open(source)
-            .map_err(|error| error.to_string())?
-            .with_config(application.storage);
-        let report = match command {
-            "pack" => writer.pack_database(out, options.allow_engine_only_access),
+        let key = Self::encryption_key(application, options)?;
+        let writer = NativeWriteRoot::open_profiled(
+            application.with_database_key(RootOpenOptions::new(source)),
+        )
+        .map_err(|error| error.to_string())?
+        .with_config(application.storage);
+        let report = match (command, key) {
+            ("pack", Some(key)) => {
+                writer.pack_encrypted_database(out, options.allow_engine_only_access, key)
+            }
+            ("pack", None) => writer.pack_database(out, options.allow_engine_only_access),
             _ => writer.unpack_database(out),
         }
         .map_err(|error| error.to_string())?;
         serde_json::to_string_pretty(&Self::render(source, out, &report))
             .map_err(|error| error.to_string())
+    }
+
+    /// Create an empty database at `path`, which must not exist.
+    fn create(
+        path: &Path,
+        application: &ApplicationConfig,
+        options: &PackOptions,
+    ) -> Result<String, String> {
+        if !NativeRoot::names_database(path) {
+            return Err("create needs a path that ends in .fxdb".into());
+        }
+        let key = Self::encryption_key(application, options)?;
+        match key {
+            Some(key) => NativeRoot::create_encrypted_database(path, key),
+            None => NativeRoot::create_database(path),
+        }
+        .map_err(|error| error.to_string())?;
+        serde_json::to_string_pretty(&json!({
+            "database": path.display().to_string(),
+            "encrypted": key.is_some(),
+        }))
+        .map_err(|error| error.to_string())
+    }
+
+    /// The key a new database is sealed with: `Some` under `--encrypt` or
+    /// `fylo.encryption.file`, which both need `fylo.encryption.key`.
+    fn encryption_key<'a>(
+        application: &'a ApplicationConfig,
+        options: &PackOptions,
+    ) -> Result<Option<&'a DatabaseKey>, String> {
+        if !options.encrypt {
+            return Ok(application.creation_key());
+        }
+        application.database_key.as_ref().map(Some).ok_or_else(|| {
+            "EKEY: --encrypt needs the database key in fylo.encryption.key".to_owned()
+        })
     }
 
     fn render(source: &Path, out: &Path, report: &DatabasePackReport) -> Value {
@@ -70,5 +121,6 @@ impl PackCommand {
 pub struct PackOptions {
     pub out: Option<PathBuf>,
     pub sealed: bool,
+    pub encrypt: bool,
     pub allow_engine_only_access: bool,
 }

@@ -23,7 +23,9 @@
 //!
 //! Records are a directory collection's frames with their bodies compressed
 //! ([`super::ContainerFrames`]), with the collection's dictionary once it has
-//! one ([`dictionaries`]); no encryption yet.
+//! one ([`dictionaries`]), and sealed with the file key when the file is
+//! encrypted. An encrypted file's collections are known only once the open
+//! is unlocked, so every medium over one has the key.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -219,8 +221,10 @@ impl ContainerMedium {
             #[cfg(not(target_family = "wasm"))]
             ContainerError::Lease(_) => NativeStorageErrorCode::RootLeaseLost,
             ContainerError::CollectionExists => NativeStorageErrorCode::InvalidCollection,
-            ContainerError::ReadOnly | ContainerError::Locked => {
-                NativeStorageErrorCode::Unsupported
+            ContainerError::ReadOnly => NativeStorageErrorCode::Unsupported,
+            ContainerError::Locked
+            | ContainerError::Cipher(crate::ContainerCipherError::WrongKey) => {
+                NativeStorageErrorCode::KeyRequired
             }
             _ => NativeStorageErrorCode::CorruptMetadata,
         };

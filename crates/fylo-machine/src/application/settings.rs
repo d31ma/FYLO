@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Map, Value};
 
 use crate::RootConfig;
-use fylo_storage_native::{CollectionLayout, Durability};
+use fylo_storage_native::{CollectionLayout, DatabaseKey, Durability};
 
 use super::application_config::ApplicationConfig;
 use super::secret_reference::SecretReference;
@@ -22,6 +22,8 @@ impl Settings {
     const CHEX_KEY: &'static str = "chex";
     const DURABILITY_KEY: &'static str = "durability";
     const PATH_KEY: &'static str = "path";
+    const SECRET_KEY: &'static str = "key";
+    const FILE_KEY: &'static str = "file";
     const AUTO_PUSH_KEY: &'static str = "autoPush";
     const LAYOUT_KEY: &'static str = "layout";
     const MINIMUM_SHARD_WIDTH: u64 = 1;
@@ -62,17 +64,22 @@ impl Settings {
         let shard_width = Self::member(settings, Self::SHARD_KEY, "width")?
             .map(Self::shard_width)
             .transpose()?;
-        let secret = Self::secret_setting(
-            Self::member(settings, Self::ENCRYPTION_KEY, "key")?,
-            "fylo.encryption.key",
-            &mut secrets,
-        )?;
+        let (secret, encrypt_databases) =
+            Self::encryption(settings.get(Self::ENCRYPTION_KEY), &mut secrets)?;
         let salt = Self::secret_setting(
             Self::member(settings, Self::CIPHER_KEY, "salt")?,
             "fylo.cipher.salt",
             &mut secrets,
         )?;
-        let credentials = Self::credentials(secret, salt)?;
+        let database_key = secret.as_deref().map(DatabaseKey::new);
+        let credentials = match (secret, salt) {
+            // A database key alone encrypts files, and no field.
+            (Some(secret), None) if encrypt_databases => {
+                Self::require_key_length(&secret)?;
+                None
+            }
+            (secret, salt) => Self::credentials(secret, salt)?,
+        };
         Self::reject_removed_chex(settings)?;
         Ok(ApplicationConfig {
             root,
@@ -85,8 +92,43 @@ impl Settings {
             },
             schema,
             credentials,
+            database_key,
+            encrypt_databases,
             hot_set_bytes: None,
         })
+    }
+
+    /// `fylo.encryption`: `key`, a secret reference, and `file`, whether a
+    /// `.fxdb` database created with this configuration is encrypted with
+    /// it (ADR 0016 section 9). Encryption is opt-in: `file` is off unless
+    /// set, and it needs the key.
+    fn encryption(
+        value: Option<&Value>,
+        secrets: &mut Secrets,
+    ) -> Result<(Option<String>, bool), String> {
+        let Some(value) = value else {
+            return Ok((None, false));
+        };
+        let name = "fylo.encryption";
+        let encryption = Self::object(value, name)?;
+        Self::known_keys(encryption, &[Self::SECRET_KEY, Self::FILE_KEY], name)?;
+        let secret = Self::secret_setting(
+            encryption.get(Self::SECRET_KEY),
+            "fylo.encryption.key",
+            secrets,
+        )?;
+        let file = match encryption.get(Self::FILE_KEY) {
+            None => false,
+            Some(value) => value
+                .as_bool()
+                .ok_or("fylo.encryption.file must be a boolean")?,
+        };
+        if file && secret.is_none() {
+            return Err(
+                "fylo.encryption.file requires fylo.encryption.key, the secret a database's key is derived from".into(),
+            );
+        }
+        Ok((secret, file))
     }
 
     /// `fylo.schema`: the folder path, or `{"path": ..., "autoPush": bool}`

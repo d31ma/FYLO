@@ -258,6 +258,10 @@
             "retryable": false
         },
         {
+            "code": "EKEY",
+            "retryable": false
+        },
+        {
             "code": "ESCHEMA",
             "retryable": false
         },

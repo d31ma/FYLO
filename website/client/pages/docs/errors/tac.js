@@ -135,6 +135,12 @@ export default class {
             retry: 'Do not retry; run fylo verify on the file.'
         },
         {
+            code: 'EKEY',
+            meaning:
+                'The .fxdb database is encrypted and was opened without its key, or with a different one.',
+            retry: 'Do not retry; configure fylo.encryption.key with the key the database was created with.'
+        },
+        {
             code: 'ENATIVE_IO',
             meaning: 'Native filesystem I/O failed, including disk pressure or xattr operations.',
             retry: 'Treat a mutation as ambiguous; inspect the cause before retrying.'

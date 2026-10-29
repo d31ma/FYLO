@@ -11,6 +11,12 @@
 //! allocation byte, the map is read afresh when another process checkpointed
 //! it, changed, and checkpointed before the byte is let go, so writers in
 //! several processes never hand out the same extent.
+//!
+//! An encrypted file opens locked. The first handle that brings its key
+//! unlocks the open, which keeps the derived key and unlocks every file it
+//! opens afresh with it: a writer's reopen, and a reader's after a lost
+//! lease. A handle without the key keeps away from the collections itself
+//! (`ContainerDatabase`), so one handle's key never serves another.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -19,7 +25,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
 use super::{ContainerMedium, SEGMENT};
-use crate::{ContainerError, ContainerFile, NativeStorageError};
+use crate::{ContainerCipher, ContainerError, ContainerFile, NativeStorageError};
 #[cfg(not(target_family = "wasm"))]
 use crate::{ContainerWriteAccess, ContainerWriteOptions};
 
@@ -47,6 +53,9 @@ pub(crate) struct Open {
     /// How many times this open became a writer. A claim on a collection
     /// holds for the writer it was made under ([`Self::writer_epoch`]).
     epoch: u64,
+    /// The key an encrypted file was unlocked with, for every file this
+    /// open reads afresh.
+    cipher: Option<Arc<ContainerCipher>>,
     /// What lets this process write, once it has written.
     #[cfg(not(target_family = "wasm"))]
     pub(super) access: Option<WriteRight>,
@@ -154,7 +163,12 @@ impl ContainerOpen {
             // A writer whose lease another process took over reads on;
             // its next write opens the file to write afresh and claims its
             // collections again.
-            if let Ok(file) = ContainerFile::open_reader(&self.path) {
+            if let Ok(mut file) = ContainerFile::open_reader(&self.path)
+                && open
+                    .cipher
+                    .clone()
+                    .is_none_or(|cipher| file.unlock_with(cipher).is_ok())
+            {
                 open.file = file;
                 open.access = None;
                 open.forget_tables();
@@ -218,6 +232,7 @@ impl Open {
             segments: BTreeMap::new(),
             seals: Vec::new(),
             epoch: 0,
+            cipher: None,
             #[cfg(not(target_family = "wasm"))]
             access: None,
         }
@@ -234,6 +249,23 @@ impl Open {
         self.seals.clear();
     }
 
+    /// Unlock an encrypted file with `cipher`, a key derived for it and
+    /// checked against it, and keep the key for the files this open reads
+    /// afresh. Nothing happens for a plain file or one already unlocked.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Cipher(WrongKey)` for another file's key, or the failure to
+    /// read the directory.
+    pub(crate) fn unlock(&mut self, cipher: &Arc<ContainerCipher>) -> Result<(), ContainerError> {
+        if !self.file.is_locked() {
+            return Ok(());
+        }
+        self.file.unlock_with(Arc::clone(cipher))?;
+        self.cipher = Some(Arc::clone(cipher));
+        Ok(())
+    }
+
     /// Reopen the file to write: natively as ADR 0016 section 7
     /// coordinates writers; in WebAssembly without coordination, which the
     /// host provides. Extents a dropped collection still owns, which a
@@ -242,8 +274,12 @@ impl Open {
         #[cfg(not(target_family = "wasm"))]
         {
             let options = ContainerOpen::write_options();
-            let (file, access) =
+            let (mut file, access) =
                 ContainerFile::open_writer(path, options).map_err(ContainerMedium::error)?;
+            if let Some(cipher) = &self.cipher {
+                file.unlock_with(Arc::clone(cipher))
+                    .map_err(ContainerMedium::error)?;
+            }
             self.file = file;
             self.access = Some(WriteRight {
                 access,
@@ -254,7 +290,12 @@ impl Open {
         }
         #[cfg(target_family = "wasm")]
         {
-            self.file = ContainerFile::open_unchecked(path).map_err(ContainerMedium::error)?;
+            let mut file = ContainerFile::open_unchecked(path).map_err(ContainerMedium::error)?;
+            if let Some(cipher) = &self.cipher {
+                file.unlock_with(Arc::clone(cipher))
+                    .map_err(ContainerMedium::error)?;
+            }
+            self.file = file;
         }
         self.forget_tables();
         self.epoch += 1;

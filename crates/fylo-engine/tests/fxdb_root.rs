@@ -1,7 +1,9 @@
 //! The engine over a `.fxdb` database root (ADR 0016 section 11): writes
 //! through `WriteEngine`, then reads, prefix-index queries and a reopen
 //! through `ReadOnlyEngine`, with nothing beside the file but its lease, and
-//! schema versions pushed into the file's registry (ADR 0017 section 3).
+//! schema versions pushed into the file's registry (ADR 0017 section 3). An
+//! encrypted database opens with its key, and is locked without it (ADR
+//! 0016 section 9).
 
 use std::fs;
 use std::path::PathBuf;
@@ -11,7 +13,8 @@ use fylo_engine::{EngineErrorCode, ReadOnlyEngine, WriteEngine};
 use fylo_format::ContainerSuperblock;
 use fylo_query::{QueryLimits, StructuredQuery};
 use fylo_storage_native::{
-    CollectionKind, ContainerFile, NativeRoot, NativeWriteRoot, RootConfig, WriteAccess,
+    CollectionKind, ContainerFile, DatabaseKey, NativeRoot, NativeStorageErrorCode,
+    NativeWriteRoot, RootConfig, RootOpenOptions, WriteAccess,
 };
 use serde_json::{Map, Value, json};
 
@@ -294,4 +297,70 @@ fn the_engine_pushes_and_validates_schema_versions_in_a_database() {
     let refused = put(&writer, 4, json!({ "name": "user4", "squad": "green" })).unwrap_err();
     assert_eq!(refused.code(), EngineErrorCode::Schema, "{refused}");
     put(&writer, 4, json!({ "name": "user4", "squad": "red" })).unwrap();
+}
+
+#[test]
+fn the_engine_reads_an_encrypted_database_only_with_its_key() {
+    let database = Database::create();
+    let path = database.0.join("sealed.fxdb");
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    // A key generated for this test; no real secret is written.
+    let key = DatabaseKey::new(format!("generated-engine-{stamp:032x}"));
+    NativeRoot::create_encrypted_database(&path, &key).unwrap();
+    let keyed = || RootOpenOptions::new(&path).with_database_key(key.clone());
+    NativeWriteRoot::open_profiled(keyed())
+        .unwrap()
+        .create_collection("users", CollectionKind::Document, None)
+        .unwrap();
+    let engine = WriteEngine::open_profiled(keyed()).unwrap();
+    for number in 0..4 {
+        let team = ["red", "blue"][number % 2];
+        engine
+            .put_document(
+                "users",
+                &identifier(number),
+                fields(&json!({ "name": format!("ECHIDNA{number}"), "team": team })),
+                WriteAccess::default(),
+            )
+            .unwrap();
+    }
+    drop(engine);
+    NativeRoot::close_database(&path).unwrap();
+    let bytes = fs::read(&path).unwrap();
+    assert!(!bytes.windows(7).any(|window| window == b"ECHIDNA"));
+
+    let reader = ReadOnlyEngine::open_profiled(keyed()).unwrap();
+    let blue = json!({"$ops":[{"team":{"$eq":"blue"}}]});
+    assert_eq!(find(&reader, "users", &blue), ["ECHIDNA1", "ECHIDNA3"]);
+    drop(reader);
+    NativeRoot::close_database(&path).unwrap();
+
+    // Without the key the database is locked, and nothing is written.
+    let locked = ReadOnlyEngine::open(&path).unwrap();
+    let refused = locked.get("users", &identifier(1)).unwrap_err();
+    assert_eq!(
+        refused.storage_code(),
+        Some(NativeStorageErrorCode::KeyRequired),
+        "{refused}"
+    );
+    let writer = WriteEngine::open(&path).unwrap();
+    let refused = writer
+        .put_document(
+            "users",
+            &identifier(9),
+            fields(&json!({ "name": "late" })),
+            WriteAccess::default(),
+        )
+        .unwrap_err();
+    assert_eq!(
+        refused.storage_code(),
+        Some(NativeStorageErrorCode::KeyRequired),
+        "{refused}"
+    );
+    drop((locked, writer));
+    NativeRoot::close_database(&path).unwrap();
+    assert_eq!(fs::read(&path).unwrap(), bytes);
 }

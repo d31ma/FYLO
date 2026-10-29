@@ -18,6 +18,7 @@ use crate::{
 };
 
 mod dictionaries;
+mod encryption;
 mod processes;
 mod schemas;
 

@@ -67,6 +67,7 @@ impl Fixture {
             schema: Some(self.schema.clone()),
             credentials: credentials.then(|| (KEY.into(), "fixture-salt".into())),
             hot_set_bytes: None,
+            ..ApplicationConfig::default()
         };
         let options = InvocationOptions::new(
             RootOpenOptions::new(&self.root),

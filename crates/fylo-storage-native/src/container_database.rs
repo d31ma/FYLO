@@ -12,6 +12,12 @@
 //! A reader takes no lock. A writer opens the file to write on its first
 //! write, as every container medium does, and claims each collection it
 //! writes; the collection's write lock is that claim.
+//!
+//! An encrypted database (ADR 0016 section 9) is opened with the key a
+//! root was given, which unlocks the process's open of the file. A handle
+//! opened without it is locked: it lists no collections, and every read
+//! of one and every write fails with `EKEY`, even while another handle in
+//! the process has unlocked the open. A wrong key is refused at open.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -20,13 +26,17 @@ use fylo_format::ContainerSuperblock;
 
 use crate::segments::{ContainerMedium, ContainerOpen, TableCache};
 use crate::{
-    ContainerCollection, ContainerError, ContainerFile, NativeStorageError, NativeStorageErrorCode,
+    ContainerCipher, ContainerCollection, ContainerError, ContainerFile, DatabaseKey,
+    NativeStorageError, NativeStorageErrorCode,
 };
 
 /// A handle on one `.fxdb` database this process has open.
 #[derive(Debug)]
 pub(crate) struct ContainerDatabase {
     file: Arc<ContainerOpen>,
+    /// Whether the file is encrypted and this handle was opened without
+    /// its key.
+    locked: bool,
 }
 
 /// This process's claim on one collection, held while it is written: the
@@ -41,8 +51,12 @@ impl ContainerDatabase {
     const EXTENT_SHIFT: u8 = ContainerSuperblock::DEFAULT_EXTENT_SHIFT;
 
     /// The database at `path`, which names a regular file, opened to read
-    /// unless this process already has it open.
-    pub(crate) fn open(path: &Path) -> Result<Arc<Self>, NativeStorageError> {
+    /// unless this process already has it open. An encrypted one is
+    /// unlocked with `key`, or the handle is locked without it.
+    pub(crate) fn open(
+        path: &Path,
+        key: Option<&DatabaseKey>,
+    ) -> Result<Arc<Self>, NativeStorageError> {
         let file = ContainerOpen::open(path).map_err(|error| {
             // A file too short for the two superblock copies is no database
             // either.
@@ -57,20 +71,38 @@ impl ContainerDatabase {
                 ContainerMedium::error(error)
             }
         })?;
-        if file.lock().is_encrypted() {
-            return Err(NativeStorageError::new(
-                NativeStorageErrorCode::Unsupported,
-                "an encrypted .fxdb database needs its key, which a root does not take yet",
-            ));
-        }
-        Ok(Arc::new(Self { file }))
+        let locked = {
+            let mut open = file.lock();
+            match key {
+                _ if !open.is_encrypted() => false,
+                None => true,
+                Some(key) => {
+                    let superblock = open.superblock();
+                    let cipher = ContainerCipher::open_file(
+                        key.secret(),
+                        &superblock.key_salt,
+                        &superblock.key_check,
+                    )
+                    .map_err(|_| Self::wrong_key())?;
+                    open.unlock(&Arc::new(cipher))
+                        .map_err(ContainerMedium::error)?;
+                    false
+                }
+            }
+        };
+        Ok(Arc::new(Self { file, locked }))
     }
 
     /// Create an empty database at `path`, which must not exist, and make
-    /// its name durable. What this process kept of a file of the same
-    /// name, since removed, is forgotten.
-    pub(crate) fn create(path: &Path) -> Result<(), NativeStorageError> {
-        ContainerFile::create(path, Self::EXTENT_SHIFT).map_err(ContainerMedium::error)?;
+    /// its name durable. With `key` it is encrypted (ADR 0016 section 9);
+    /// without, plain. What this process kept of a file of the same name,
+    /// since removed, is forgotten.
+    pub(crate) fn create(path: &Path, key: Option<&DatabaseKey>) -> Result<(), NativeStorageError> {
+        match key {
+            Some(key) => ContainerFile::create_encrypted(path, Self::EXTENT_SHIFT, key.secret()),
+            None => ContainerFile::create(path, Self::EXTENT_SHIFT),
+        }
+        .map_err(ContainerMedium::error)?;
         if let Ok(canonical) = fylo_vfs::canonicalize(path) {
             Self::close(&canonical);
         }
@@ -103,12 +135,43 @@ impl ContainerDatabase {
         }
     }
 
+    /// Whether the database is encrypted.
+    pub(crate) fn is_encrypted(&self) -> bool {
+        self.file.lock().is_encrypted()
+    }
+
+    /// Whether the database is encrypted and this handle has no key for it.
+    pub(crate) const fn is_locked(&self) -> bool {
+        self.locked
+    }
+
+    /// Refuse what a handle without the key may not do: read a collection,
+    /// or write.
+    pub(crate) fn require_key(&self) -> Result<(), NativeStorageError> {
+        if self.locked {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::KeyRequired,
+                "the .fxdb database is encrypted and was opened without its key \
+                 (fylo.encryption.key)",
+            ));
+        }
+        Ok(())
+    }
+
+    fn wrong_key() -> NativeStorageError {
+        NativeStorageError::new(
+            NativeStorageErrorCode::KeyRequired,
+            "the encryption key does not match this .fxdb database (fylo.encryption.key)",
+        )
+    }
+
     /// Claim the collection in `block` for this process's writes, waiting
     /// for a writer in another process that holds it.
     pub(crate) fn lock_writer(
         &self,
         block: u32,
     ) -> Result<ContainerWriterLock, NativeStorageError> {
+        self.require_key()?;
         let medium = self.medium(block)?;
         medium.claim()?;
         Ok(ContainerWriterLock { _medium: medium })
@@ -120,8 +183,12 @@ impl ContainerDatabase {
         self.find(|collection| collection.header.name == name)
     }
 
-    /// The names of the live collections, in block order.
+    /// The names of the live collections, in block order; none for a
+    /// handle without the key.
     pub(crate) fn collection_names(&self) -> Vec<String> {
+        if self.locked {
+            return Vec::new();
+        }
         let mut open = self.file.lock();
         // A failure keeps the directory this open read.
         let _ = open.refresh();
@@ -141,6 +208,7 @@ impl ContainerDatabase {
         name: &str,
         descriptor: &[u8],
     ) -> Result<bool, NativeStorageError> {
+        self.require_key()?;
         self.file
             .change_map(|open| match open.add_collection(name, descriptor) {
                 Ok(_) => open.checkpoint().map(|()| true),
@@ -153,6 +221,7 @@ impl ContainerDatabase {
     /// give its extents back and checkpoint the map, then forget what this
     /// process read of it.
     pub(crate) fn drop_collection(&self, name: &str) -> Result<(), NativeStorageError> {
+        self.require_key()?;
         let collection = self.collection(name).ok_or_else(|| {
             NativeStorageError::new(
                 NativeStorageErrorCode::NotFound,
@@ -172,6 +241,7 @@ impl ContainerDatabase {
 
     /// The medium of the collection in directory block `block`.
     pub(crate) fn medium(&self, block: u32) -> Result<ContainerMedium, NativeStorageError> {
+        self.require_key()?;
         let collection = self
             .find(|collection| collection.block == block)
             .ok_or_else(|| {
@@ -184,8 +254,11 @@ impl ContainerDatabase {
     }
 
     /// The live collection `matches` picks, reading the directory again
-    /// when this open knows none.
+    /// when this open knows none; none for a handle without the key.
     fn find(&self, matches: impl Fn(&ContainerCollection) -> bool) -> Option<ContainerCollection> {
+        if self.locked {
+            return None;
+        }
         let live = |collections: &[ContainerCollection]| {
             collections
                 .iter()

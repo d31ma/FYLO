@@ -164,13 +164,23 @@ impl ContainerCipher {
         key_check: &[u8; KEY_CHECK_BYTES],
     ) -> Result<Self, ContainerCipherError> {
         let cipher = Self::derive(secret, salt);
-        let difference = cipher
+        cipher.check(key_check)?;
+        Ok(cipher)
+    }
+
+    /// Check this key against a file's key-check value, in constant time.
+    ///
+    /// # Errors
+    ///
+    /// Returns `WrongKey` when the key is not that file's.
+    pub fn check(&self, key_check: &[u8; KEY_CHECK_BYTES]) -> Result<(), ContainerCipherError> {
+        let difference = self
             .key_check
             .iter()
             .zip(key_check)
             .fold(0_u8, |difference, (a, b)| difference | (a ^ b));
         if difference == 0 {
-            Ok(cipher)
+            Ok(())
         } else {
             Err(ContainerCipherError::WrongKey)
         }

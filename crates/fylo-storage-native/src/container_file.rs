@@ -8,6 +8,7 @@
 
 use std::io;
 use std::path::Path;
+use std::sync::Arc;
 
 use fylo_format::{
     ContainerCheckpointSlot, ContainerCollectionHeader, ContainerExtentHeader, ContainerExtentKind,
@@ -211,7 +212,7 @@ pub struct ContainerFile {
     superblock_in_a: bool,
     allocator: ContainerExtentAllocator,
     collections: Vec<ContainerCollection>,
-    cipher: Option<ContainerCipher>,
+    cipher: Option<Arc<ContainerCipher>>,
 }
 
 const SUPERBLOCK_BYTES: u64 = ContainerSuperblock::ENCODED_BYTES as u64;
@@ -522,11 +523,36 @@ impl ContainerFile {
         if !self.is_encrypted() || self.cipher.is_some() {
             return Ok(());
         }
-        self.cipher = Some(ContainerCipher::open_file(
+        self.unlock_with(Arc::new(ContainerCipher::derive(
             secret,
             &self.superblock.key_salt,
-            &self.superblock.key_check,
-        )?);
+        )))
+    }
+
+    /// Unlock an encrypted file with the key a root is configured with,
+    /// as [`Self::unlock`] does with its secret.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`Self::unlock`].
+    pub fn unlock_with_key(&mut self, key: &crate::DatabaseKey) -> Result<(), ContainerError> {
+        self.unlock(key.secret())
+    }
+
+    /// Unlock an encrypted file with a key already derived for it, as
+    /// another open of the same file derived it ([`Self::shared_cipher`]),
+    /// and read its directory. A plain file needs no key, and this does
+    /// nothing for one.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`Self::unlock`].
+    pub fn unlock_with(&mut self, cipher: Arc<ContainerCipher>) -> Result<(), ContainerError> {
+        if !self.is_encrypted() || self.cipher.is_some() {
+            return Ok(());
+        }
+        cipher.check(&self.superblock.key_check)?;
+        self.cipher = Some(cipher);
         match self.read_directory() {
             Ok(collections) => {
                 self.collections = collections;
@@ -543,7 +569,15 @@ impl ContainerFile {
     /// and snapshots with. `None` for a plain file or a locked one.
     #[must_use]
     pub fn cipher(&self) -> Option<&ContainerCipher> {
-        self.cipher.as_ref()
+        self.cipher.as_deref()
+    }
+
+    /// The file key, shared, for record frames that seal and open bodies
+    /// without holding the file, and for another open of the same file to
+    /// unlock with ([`Self::unlock_with`]).
+    #[must_use]
+    pub fn shared_cipher(&self) -> Option<Arc<ContainerCipher>> {
+        self.cipher.clone()
     }
 
     fn require_writable(&self) -> Result<(), ContainerError> {
