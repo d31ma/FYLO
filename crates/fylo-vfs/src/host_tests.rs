@@ -502,3 +502,28 @@ fn reports_a_missing_host_rather_than_pretending_to_store() {
         "{error}"
     );
 }
+
+#[test]
+fn classifies_host_errnos_the_way_a_native_build_does() {
+    install();
+    let root = scratch("errnos");
+    let target = root.join("present");
+    write(&target, b"x").expect("write");
+
+    let missing = read(root.join("absent")).unwrap_err();
+    assert_eq!(missing.kind(), std::io::ErrorKind::NotFound);
+    assert_eq!(
+        missing.to_string(),
+        "No such file or directory (os error 2)"
+    );
+
+    let clash = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&target)
+        .unwrap_err();
+    assert_eq!(clash.kind(), std::io::ErrorKind::AlreadyExists);
+    assert_eq!(clash.to_string(), "File exists (os error 17)");
+
+    let _ = std::fs::remove_dir_all(root);
+}

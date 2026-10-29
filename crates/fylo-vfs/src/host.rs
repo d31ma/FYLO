@@ -265,7 +265,36 @@ fn check(code: i32) -> io::Result<()> {
     if code == 0 {
         return Ok(());
     }
-    Err(io::Error::from_raw_os_error(-code))
+    Err(host_error(-code))
+}
+
+/// The error a host errno stands for, in Linux's numbering and wording, which
+/// is what the host contract uses.
+///
+/// `io::Error::from_raw_os_error` will not do: `wasm32-unknown-unknown` has no
+/// errno table, so it describes every code as "operation successful" and
+/// classifies none, and a caller matching on `NotFound` or `AlreadyExists`
+/// sees an uncategorized failure instead.
+fn host_error(errno: i32) -> io::Error {
+    let (kind, text) = match errno {
+        1 => (ErrorKind::PermissionDenied, "Operation not permitted"),
+        2 => (ErrorKind::NotFound, "No such file or directory"),
+        5 => (ErrorKind::Other, "Input/output error"),
+        9 => (ErrorKind::Other, "Bad file descriptor"),
+        13 => (ErrorKind::PermissionDenied, "Permission denied"),
+        16 => (ErrorKind::ResourceBusy, "Device or resource busy"),
+        17 => (ErrorKind::AlreadyExists, "File exists"),
+        20 => (ErrorKind::NotADirectory, "Not a directory"),
+        21 => (ErrorKind::IsADirectory, "Is a directory"),
+        22 => (ErrorKind::InvalidInput, "Invalid argument"),
+        27 => (ErrorKind::FileTooLarge, "File too large"),
+        28 => (ErrorKind::StorageFull, "No space left on device"),
+        30 => (ErrorKind::ReadOnlyFilesystem, "Read-only file system"),
+        39 => (ErrorKind::DirectoryNotEmpty, "Directory not empty"),
+        116 => (ErrorKind::StaleNetworkFileHandle, "Stale file handle"),
+        _ => (ErrorKind::Other, "Unknown error"),
+    };
+    io::Error::new(kind, format!("{text} (os error {errno})"))
 }
 
 fn path_bytes(path: &Path) -> io::Result<&[u8]> {
@@ -737,7 +766,9 @@ fn stat(path: &Path) -> io::Result<HostStat> {
     let code = unsafe { (host.stat)(bytes.as_ptr(), bytes.len(), &raw mut out) };
     check(code)?;
     if out.kind == HOST_KIND_MISSING {
-        return Err(io::Error::new(ErrorKind::NotFound, "entry not found"));
+        // Worded as a native stat of a missing path is, so that both builds
+        // report the same message.
+        return Err(host_error(2));
     }
     Ok(out)
 }
