@@ -633,22 +633,52 @@ impl NativeWriteRoot {
                 out.display()
             ))
         };
+        if path_exists_no_follow(out)? {
+            Self::remove_staging(staging)?;
+            return Err(exists());
+        }
         match fylo_vfs::hard_link(staging, out) {
             Ok(()) => fylo_vfs::remove_file(staging).map_err(NativeStorageError::io)?,
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                 Self::remove_staging(staging)?;
                 return Err(exists());
             }
-            Err(error) if error.kind() == std::io::ErrorKind::Unsupported => {
-                if path_exists_no_follow(out)? {
-                    Self::remove_staging(staging)?;
-                    return Err(exists());
-                }
-                fylo_vfs::rename(staging, out).map_err(NativeStorageError::io)?;
-            }
-            Err(error) => return Err(NativeStorageError::io(error)),
+            // Any other failure means the filesystem has no hard links:
+            // exFAT and FAT answer `EPERM`, macOS SMB shares `ENOTSUP`, which
+            // `std` does not map to `Unsupported`.
+            Err(_) => Self::adopt_without_link(staging, out, exists)?,
         }
         sync_parent(out)
+    }
+
+    /// Name `staging` as `out` where hard links are refused: reserve the name
+    /// by exclusive create, then rename the staging file over that empty
+    /// reservation, which every filesystem replaces in one step. A refused
+    /// link on an SMB share can leave an empty file at `out`; one that was
+    /// absent just before the link and is still empty is taken as that.
+    fn adopt_without_link(
+        staging: &Path,
+        out: &Path,
+        exists: impl Fn() -> NativeStorageError,
+    ) -> Result<(), NativeStorageError> {
+        let reserved = match fylo_vfs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(out)
+        {
+            Ok(_) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
+            Err(error) => return Err(NativeStorageError::io(error)),
+        };
+        if !reserved {
+            let debris = fylo_vfs::symlink_metadata(out)
+                .is_ok_and(|metadata| metadata.is_file() && metadata.len() == 0);
+            if !debris {
+                Self::remove_staging(staging)?;
+                return Err(exists());
+            }
+        }
+        fylo_vfs::rename(staging, out).map_err(NativeStorageError::io)
     }
 
     /// Write one collection of this database as a file layout collection of
@@ -750,5 +780,62 @@ impl PackedCollection {
             deleted,
             schema_versions,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::NativeWriteRoot;
+    use crate::NativeStorageError;
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn scratch(name: &str) -> PathBuf {
+        let directory = std::env::temp_dir().join(format!(
+            "fylo-adopt-{name}-{}-{}",
+            std::process::id(),
+            crate::wall_clock()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        directory
+    }
+
+    fn refused() -> NativeStorageError {
+        NativeWriteRoot::pack_unsupported("output appeared")
+    }
+
+    #[test]
+    fn without_hard_links_the_staging_file_takes_a_free_or_empty_name() {
+        let directory = scratch("free");
+        for debris in [false, true] {
+            let staging = directory.join(".db.pack-staging");
+            let out = directory.join("db.fxdb");
+            fs::write(&staging, b"database").unwrap();
+            if debris {
+                // What a refused link on an SMB share leaves behind.
+                fs::write(&out, b"").unwrap();
+            }
+            NativeWriteRoot::adopt_without_link(&staging, &out, refused).unwrap();
+            assert_eq!(fs::read(&out).unwrap(), b"database");
+            assert!(!staging.exists());
+            fs::remove_file(&out).unwrap();
+        }
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn without_hard_links_a_file_already_at_the_output_is_never_replaced() {
+        let directory = scratch("taken");
+        let staging = directory.join(".db.pack-staging");
+        let out = directory.join("db.fxdb");
+        fs::write(&staging, b"database").unwrap();
+        fs::write(&out, b"someone else's").unwrap();
+        assert!(NativeWriteRoot::adopt_without_link(&staging, &out, refused).is_err());
+        assert_eq!(fs::read(&out).unwrap(), b"someone else's");
+        assert!(!staging.exists());
+        fs::remove_dir_all(directory).unwrap();
     }
 }
