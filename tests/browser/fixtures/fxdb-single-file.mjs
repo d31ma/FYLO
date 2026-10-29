@@ -33,7 +33,7 @@ const evidence = {
     }
 }
 
-const SCENARIOS = { file, url, opfs, download, engine }
+const SCENARIOS = { file, url, opfs, download, engine, inspect }
 
 // Working copies need the origin-private file system. Every current browser
 // ships it, but Playwright's Linux WebKit build does not, and that is a gap in
@@ -218,6 +218,54 @@ async function download() {
     } finally {
         await database.close()
         await removeWorkingCopy(name)
+    }
+}
+
+/**
+ * Inspect a real `.fxdb`, written by the `fxdb_fixture` example, through every
+ * host: picked file, ranged requests, and an OPFS working copy where there is
+ * one. Each must hand the engine the same bytes, so each report must match.
+ */
+async function inspect() {
+    const FIXTURE = '/target/browser-fixtures/fixture.fxdb'
+    evidence.step = 'fetch-fixture'
+    evidence.expected = await (await fetch('/target/browser-fixtures/fixture.json')).json()
+    const picked = new File([await (await fetch(FIXTURE)).arrayBuffer()], 'fixture.fxdb')
+    const sources = { file: { kind: 'file', file: picked }, url: { kind: 'url', url: FIXTURE } }
+    const copy = workingCopyName('fixture.fxdb')
+    if (typeof navigator.storage?.getDirectory === 'function') {
+        sources.opfs = { kind: 'opfs', name: copy, copyFrom: picked }
+    }
+    evidence.reports = {}
+    for (const [label, source] of Object.entries(sources)) {
+        evidence.step = `inspect-${label}`
+        const database = await SingleFileDatabase.open(
+            source,
+            open({ moduleUrl: '/dist-web/fylo-browser.wasm' })
+        )
+        try {
+            const request = { op: 'inspectDatabase', root: database.info.path }
+            const [frame] = (await database.exec(`${JSON.stringify(request)}\n`))
+                .split('\n')
+                .filter(Boolean)
+                .map((line) => JSON.parse(line))
+            evidence.reports[label] = frame.ok ? frame.result : { error: frame.error }
+        } finally {
+            await database.close()
+        }
+    }
+    if (sources.opfs) await removeWorkingCopy(copy)
+
+    evidence.step = 'inspect-stub'
+    const stub = await SingleFileDatabase.open(
+        { kind: 'file', file: new File([stubBytes(64 * 1024)], 'stub.fxdb') },
+        open({ moduleUrl: '/dist-web/fylo-browser.wasm' })
+    )
+    try {
+        const request = { op: 'inspectDatabase', root: stub.info.path }
+        evidence.stubFrame = JSON.parse((await stub.exec(`${JSON.stringify(request)}\n`)).trim())
+    } finally {
+        await stub.close()
     }
 }
 

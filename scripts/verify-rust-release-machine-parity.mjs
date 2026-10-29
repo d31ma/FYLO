@@ -17,7 +17,8 @@ const candidateOnlyOperations = [
     'queueNack',
     'queuePublish',
     'queueStats',
-    'reshardCollection'
+    'reshardCollection',
+    'schemaMigrate'
 ]
 const releasedOperations = canonicalOperations.filter(
     (operation) => !candidateOnlyOperations.includes(operation)
@@ -483,6 +484,27 @@ async function runScenario(label, binary, root) {
             schemaDir: schemaRoot,
             document: { _v: 'v1', fullName: 'Grace Hopper', active: true }
         })
+        if (label === 'rust') {
+            await request(
+                'create-profiles',
+                { op: 'createCollection', collection: 'profiles' },
+                { record: false }
+            )
+            await request(
+                'put-profile',
+                {
+                    op: 'putData',
+                    collection: 'profiles',
+                    data: { _v: 'v1', fullName: 'Grace Hopper', active: true }
+                },
+                { record: false }
+            )
+            await request(
+                'schema-migrate',
+                { op: 'schemaMigrate', collection: 'profiles', schemaDir: schemaRoot },
+                { record: false }
+            )
+        }
     } finally {
         await machine.close()
     }
@@ -560,6 +582,7 @@ class Machine {
 async function createSchemaFixture(root) {
     const collection = join(root, 'profiles')
     await mkdir(join(collection, 'history'), { recursive: true })
+    await mkdir(join(collection, 'migrations'), { recursive: true })
     await mkdir(join(collection, 'upgraders'), { recursive: true })
     await writeFile(
         join(collection, 'manifest.json'),
@@ -573,6 +596,12 @@ async function createSchemaFixture(root) {
         join(collection, 'history', 'v2.schema.json'),
         JSON.stringify({ name: '^.+$', active: '^(true|false)$' })
     )
+    await writeFile(
+        join(collection, 'migrations', 'v1-to-v2.json'),
+        JSON.stringify({ steps: [{ rename: 'fullName', to: 'name' }] })
+    )
+    // Released builds run this JavaScript upgrader; JSON migrations replaced
+    // it (ADR 0018). Both produce the same document.
     await writeFile(
         join(collection, 'upgraders', 'v1-to-v2.js'),
         'export default async (document) => ({ name: document.fullName, active: document.active })\n'
@@ -591,6 +620,7 @@ function canonicalize(value, context, key = '') {
         normalized = normalized.replaceAll(`/private${context.root}`, '<root>')
         normalized = normalized.replaceAll(context.root, '<root>')
         normalized = normalized.replaceAll(schemaRoot, '<schema>')
+        normalized = normalizeMigrationStep(normalized)
         if (key === 'path') {
             normalized = normalized.replace(/\/[^/]+\/(?=<id:[^>]+>)/g, '/<shard>/')
         }
@@ -612,12 +642,22 @@ function canonicalize(value, context, key = '') {
     return Object.fromEntries(
         entries
             .filter(([entryKey]) => entryKey !== 'durationMs')
-            .sort(([left], [right]) => left.localeCompare(right))
             .map(([entryKey, item]) => [
-                canonicalize(entryKey, context),
+                normalizeMigrationStep(canonicalize(entryKey, context)),
                 canonicalize(item, context, entryKey)
             ])
+            .sort(([left], [right]) => left.localeCompare(right))
     )
+}
+
+// Released builds report a JavaScript upgrader per version step
+// (`upgraderPath`, `upgraders/<from>-to-<to>.js`); JSON migrations replaced
+// them (ADR 0018).
+function normalizeMigrationStep(text) {
+    return text
+        .replace(/^upgrader(Path|Exists)$/, 'migration$1')
+        .replace(/\/upgraders\/([^/]+)-to-([^/]+)\.js/g, '/migrations/$1-to-$2.json')
+        .replace(/Missing upgrader /g, 'Missing migration ')
 }
 
 function normalizeHandshake(value) {
@@ -636,6 +676,8 @@ function normalizeHandshake(value) {
     delete normalized.capabilities?.schemaValidation
     // The hot set (ADR 0014) is newer than every released build.
     delete normalized.capabilities?.hotSet
+    // So is the single-file `.fxdb` database (ADR 0016).
+    delete normalized.capabilities?.singleFileDatabase
     return normalized
 }
 

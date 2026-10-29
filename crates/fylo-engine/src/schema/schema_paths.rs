@@ -21,7 +21,16 @@ impl<'a> SchemaPaths<'a> {
             .join(format!("{version}.schema.json"))
     }
 
-    pub(super) fn upgrader(&self, from: &str, to: &str) -> PathBuf {
+    pub(super) fn migration(&self, from: &str, to: &str) -> PathBuf {
+        self.root
+            .join(self.collection)
+            .join("migrations")
+            .join(format!("{from}-to-{to}.json"))
+    }
+
+    /// Where a JavaScript upgrader used to live, so that an error can point at
+    /// one that ADR 0018 retired.
+    pub(super) fn legacy_upgrader(&self, from: &str, to: &str) -> PathBuf {
         self.root
             .join(self.collection)
             .join("upgraders")

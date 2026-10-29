@@ -331,7 +331,13 @@ When enabled at creation (`fylo create db.fxdb --encrypt`, or
   `EKEY` at open, not as corruption.
 
 Without the key, only the superblock and extent headers are readable: sizes,
-counts and the format version, not collection names or documents. A lost key
+counts and the format version, not collection names or documents. A process
+without the key opens the file **locked**: `fylo inspect` reports
+`encrypted: true, locked: true` and lists no collections, and every write
+fails with `EKEY` until the file is unlocked. A collection block's static part
+is sealed with its block number as associated data, so a block copied to
+another position is refused; its slots stay in the clear, since they hold only
+counts and positions. A lost key
 loses the database; `fylo unpack` to a directory root stays the way to keep a
 plain copy. Key rotation rewrites the file through compaction and is a
 follow-up.

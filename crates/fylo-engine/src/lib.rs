@@ -314,6 +314,57 @@ impl WriteEngine {
         codec.finish(outcome)
     }
 
+    /// Rewrite one stored document at the head schema version: read it,
+    /// apply the JSON migrations from its `_v` (ADR 0018), then validate and
+    /// encrypt it as a put would, in one read-modify-write (ADR 0017
+    /// section 5, eager migration).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no schema root is configured, the document is
+    /// missing or denied, a migration fails, or the head schema rejects the
+    /// migrated document.
+    pub fn migrate_document(
+        &self,
+        collection: &str,
+        identifier: &str,
+        actor: Option<&AccessContext>,
+    ) -> Result<(), EngineError> {
+        self.schema_tools()?;
+        let codec = MigratingDocumentCodec(EngineDocumentCodec::new(self));
+        let actor = actor.map(write_actor);
+        let outcome = self.writer.patch_document_fields_with(
+            collection,
+            identifier,
+            &Map::new(),
+            actor.as_ref(),
+            &codec,
+        );
+        codec.0.finish(outcome)
+    }
+
+    /// [`Self::decode_fields`] for a document about to be migrated, which
+    /// schema materialization takes to be at the oldest version when it has
+    /// no `_v`; it is decrypted as that version, too.
+    fn decode_fields_as_written(
+        &self,
+        collection: &str,
+        fields: Map<String, Value>,
+    ) -> Result<Map<String, Value>, EngineError> {
+        let Some(encryption) = self.encryption.as_ref() else {
+            return self.decode_fields(collection, fields);
+        };
+        let version = match fields.get("_v").and_then(Value::as_str) {
+            Some(version) => Some(version.to_owned()),
+            None => encryption
+                .oldest_version(collection)
+                .map_err(EngineError::encryption)?,
+        };
+        encryption
+            .decode_document_at(collection, fields, version.as_deref())
+            .map_err(EngineError::encryption)
+    }
+
     fn decode_fields(
         &self,
         collection: &str,
@@ -389,13 +440,13 @@ impl WriteEngine {
             .unwrap_or_else(|| document.clone()))
     }
 
-    /// Materialize one document at the head schema version by executing the
-    /// collection's ordered JavaScript upgrader chain in the embedded runtime.
+    /// Materialize one document at the head schema version by applying the
+    /// collection's ordered chain of JSON migrations (ADR 0018).
     ///
     /// # Errors
     ///
-    /// Returns an error when the manifest or upgrader chain is invalid, an
-    /// upgrader throws, or an upgrader does not return a JSON object.
+    /// Returns an error when the manifest is invalid, a migration is missing
+    /// or malformed, or a step meets a field of the wrong type.
     pub fn schema_materialize(
         &self,
         collection: &str,
@@ -473,6 +524,32 @@ impl<'a> EngineDocumentCodec<'a> {
                 .into_inner()
                 .unwrap_or_else(|| EngineError::storage(error))
         })
+    }
+}
+
+/// [`EngineDocumentCodec`] with the stored document migrated to the head
+/// schema version after it is decoded.
+struct MigratingDocumentCodec<'a>(EngineDocumentCodec<'a>);
+
+impl DocumentCodec for MigratingDocumentCodec<'_> {
+    fn decode(
+        &self,
+        collection: &str,
+        fields: Map<String, Value>,
+    ) -> Result<Map<String, Value>, NativeStorageError> {
+        let engine = self.0.engine;
+        engine
+            .decode_fields_as_written(collection, fields)
+            .and_then(|fields| engine.schema_materialize(collection, &fields))
+            .map_err(|error| self.0.fail(error))
+    }
+
+    fn encode(
+        &self,
+        collection: &str,
+        fields: Map<String, Value>,
+    ) -> Result<Vec<u8>, NativeStorageError> {
+        self.0.encode(collection, fields)
     }
 }
 

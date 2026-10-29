@@ -233,14 +233,84 @@
                     </dd>
                     <dt>Format</dt>
                     <dd>
-                        <logic :if="dbMagic">FYLO database (.fxdb header)</logic>
-                        <logic :if="!dbMagic">no .fxdb header found</logic>
+                        <logic :if="dbReport">FYLO database, {dbReport.format}</logic>
+                        <logic :if="!dbReport && dbMagic">.fxdb header, but unreadable</logic>
+                        <logic :if="!dbReport && !dbMagic">no .fxdb header found</logic>
                     </dd>
                 </dl>
-                <p class="explorer-hint">
-                    Browsing the collections inside a .fxdb file arrives with the single-file
-                    format in the engine. Until then Explorer opens, copies and saves the file.
-                </p>
+                <logic :if="dbReport">
+                    <section class="explorer-database-report" aria-label="Inside the database">
+                        <dl class="explorer-database-facts">
+                            <dt>Generation</dt>
+                            <dd>{dbReport.generation}</dd>
+                            <dt>Extents</dt>
+                            <dd>
+                                {dbReport.extentCount} of
+                                {databaseSizeLabel(dbReport.extentBytes)}
+                            </dd>
+                            <dt>Encrypted</dt>
+                            <dd>{databaseFlag(dbReport.encrypted)}</dd>
+                            <dt>Sealed</dt>
+                            <dd>{databaseFlag(dbReport.sealed)}</dd>
+                            <dt>Codecs</dt>
+                            <dd>{dbReport.codecs.join(', ') || 'none'}</dd>
+                        </dl>
+                        <h3>Collections</h3>
+                        <logic :if="dbRows.collections.length === 0">
+                            <p>This database has no collections yet.</p>
+                        </logic>
+                        <logic :if="dbRows.collections.length > 0">
+                            <table class="explorer-table explorer-database-collections">
+                                <thead>
+                                    <tr>
+                                        <th>Name</th>
+                                        <th class="explorer-num">Records</th>
+                                        <th class="explorer-num">Checkpoint</th>
+                                        <th>State</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <loop :for="let row of dbRows.collections">
+                                        <tr>
+                                            <td>{row.name}</td>
+                                            <td class="explorer-num">{row.records}</td>
+                                            <td class="explorer-num">
+                                                {row.checkpoint === null ? 'none' : row.checkpoint}
+                                            </td>
+                                            <td>{row.dropped ? 'dropped' : 'live'}</td>
+                                        </tr>
+                                    </loop>
+                                </tbody>
+                            </table>
+                        </logic>
+                        <h3>Extents</h3>
+                        <table class="explorer-table explorer-database-extents">
+                            <thead>
+                                <tr>
+                                    <th>Kind</th>
+                                    <th class="explorer-num">Extents</th>
+                                    <th class="explorer-num">Sealed</th>
+                                    <th class="explorer-num">Live</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <loop :for="let row of dbRows.extents">
+                                    <tr>
+                                        <td>{row.kind}</td>
+                                        <td class="explorer-num">{row.extents}</td>
+                                        <td class="explorer-num">{row.sealed}</td>
+                                        <td class="explorer-num">{databaseSizeLabel(row.liveBytes)}</td>
+                                    </tr>
+                                </loop>
+                            </tbody>
+                        </table>
+                    </section>
+                </logic>
+                <logic :if="dbReportError">
+                    <p class="explorer-hint" role="status">
+                        The engine could not read this file: {dbReportError}
+                    </p>
+                </logic>
                 <div class="explorer-tool-row">
                     <logic :if="dbMode === 'read' && canCopyDatabase">
                         <button type="button" class="w-btn w-btn-filled" on:click="editDatabaseCopy()">

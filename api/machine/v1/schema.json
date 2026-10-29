@@ -62,6 +62,7 @@
                         "schemaDoctor",
                         "schemaValidate",
                         "schemaMaterialize",
+                        "schemaMigrate",
                         "queuePublish",
                         "queueClaim",
                         "queueAck",
@@ -146,7 +147,8 @@
                 "delete": { "type": "object" },
                 "options": { "type": "object" },
                 "url": { "type": "string" },
-                "limitOrOptions": { "type": ["integer", "object"] }
+                "limitOrOptions": { "type": ["integer", "object"] },
+                "includeUnversioned": { "type": "boolean" }
             },
             "additionalProperties": false
         },

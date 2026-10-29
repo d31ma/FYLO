@@ -12,6 +12,7 @@ use std::fmt;
 
 use aes_gcm::Aes256Gcm;
 use aes_gcm::aead::{Aead, KeyInit, Payload};
+use fylo_format::ContainerExtentKind;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use zeroize::Zeroizing;
@@ -81,6 +82,8 @@ pub enum ContainerSealContext {
         collection: u32,
         /// The checkpoint that wrote it.
         checkpoint: u64,
+        /// Which snapshot: `Locations` or `Index`.
+        kind: ContainerExtentKind,
     },
 }
 
@@ -97,7 +100,8 @@ impl ContainerSealContext {
             Self::Snapshot {
                 collection,
                 checkpoint,
-            } => (4, collection, checkpoint, 0),
+                kind,
+            } => (4, collection, checkpoint, u32::from(kind.code())),
         };
         let mut bytes = [0_u8; 28];
         bytes[..8].copy_from_slice(b"FXSEAL\0\x01");

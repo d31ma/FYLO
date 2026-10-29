@@ -76,6 +76,12 @@ fn a_unit_opens_only_where_it_was_sealed() {
         ContainerSealContext::Snapshot {
             collection: 3,
             checkpoint: 41,
+            kind: fylo_format::ContainerExtentKind::Locations,
+        },
+        ContainerSealContext::Snapshot {
+            collection: 3,
+            checkpoint: 41,
+            kind: fylo_format::ContainerExtentKind::Index,
         },
     ] {
         assert_eq!(
