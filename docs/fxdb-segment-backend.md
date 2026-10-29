@@ -232,6 +232,10 @@ body compressed on its own. The length and CRC cover the stored bytes, so
   checkpoint use it: zstd natively, LZ4 with the same bytes as its prefix in
   the browser. A collection whose records cannot train one is not retried
   until the writer reopens.
+- `fylo pack` trains each collection's dictionary the same way, on the
+  first 1 MiB of its documents in identifier order, but before it writes
+  them, so the packed records use it from the start rather than wait for a
+  compaction.
 - A `dictionary` extent holds a 32-byte header (`FXDC`, the id, whether the
   bytes are sealed, their length and CRC-32C) and the dictionary, sealed in
   an encrypted file with `ContainerSealContext::Dictionary` for its

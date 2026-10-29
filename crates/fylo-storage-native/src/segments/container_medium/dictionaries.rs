@@ -147,9 +147,7 @@ impl ContainerMedium {
 
     /// Record bodies of the collection's commits that carry documents, as
     /// the frames compress them, up to [`DICTIONARY_TRAINING_BYTES`]: the
-    /// first ones, or with `newest` the newest. A deletion's record carries
-    /// only its manifest, and would teach a dictionary nothing of the
-    /// documents.
+    /// first ones, or with `newest` the newest.
     pub(super) fn samples(&self, newest: bool) -> Result<Vec<Vec<u8>>, NativeStorageError> {
         let mut numbers = self.segment_numbers()?;
         if newest {
@@ -168,14 +166,7 @@ impl ContainerMedium {
             if newest {
                 records.reverse();
             }
-            for (_, record) in records {
-                if record.kind != LogRecordKind::Commit || record.blobs.is_empty() {
-                    continue;
-                }
-                let Ok(encoded) = record.encode() else {
-                    continue;
-                };
-                let body = encoded[LogRecord::FRAME_BYTES..].to_vec();
+            for body in records.iter().filter_map(|(_, record)| sample(record)) {
                 total += body.len();
                 samples.push(body);
                 if total >= DICTIONARY_TRAINING_BYTES {
@@ -184,6 +175,30 @@ impl ContainerMedium {
             }
         }
         Ok(samples)
+    }
+
+    /// Before records are imported into a collection that has no
+    /// dictionary: train one on `records`, the first to come, when their
+    /// bodies reach 1 MiB, and make it current, so that the import writes
+    /// them with it as a checkpoint would have the records after it.
+    pub(super) fn prime(&self, records: &[LogRecord]) -> Result<bool, NativeStorageError> {
+        if !cfg!(not(target_family = "wasm"))
+            || self.shared.state().untrainable
+            || self
+                .newest_checkpoint()?
+                .is_some_and(|slot| slot.dictionary.is_some())
+        {
+            return Ok(false);
+        }
+        let samples: Vec<Vec<u8>> = records.iter().filter_map(sample).collect();
+        if samples.iter().map(Vec::len).sum::<usize>() < DICTIONARY_TRAINING_BYTES {
+            return Ok(false);
+        }
+        let Some(dictionary) = self.trained(&samples) else {
+            return Ok(false);
+        };
+        self.replace_dictionary(dictionary)?;
+        Ok(true)
     }
 
     /// Make `dictionary` current: write it to a `dictionary` extent,
@@ -346,6 +361,17 @@ impl ContainerMedium {
 
 /// The bytes `samples` take stored with `dictionary`, or with none; `None`
 /// when the dictionary does not load.
+/// The body of `record` as a dictionary trains on it, or `None` for a
+/// record that holds no document. A deletion's record carries only its
+/// manifest, and would teach a dictionary nothing of the documents.
+fn sample(record: &LogRecord) -> Option<Vec<u8>> {
+    if record.kind != LogRecordKind::Commit || record.blobs.is_empty() {
+        return None;
+    }
+    let encoded = record.encode().ok()?;
+    Some(encoded[LogRecord::FRAME_BYTES..].to_vec())
+}
+
 fn stored_bytes(dictionary: Option<&ContainerDictionary>, samples: &[Vec<u8>]) -> Option<usize> {
     let mut codec = ContainerFrameCodec::new(dictionary.cloned()).ok()?;
     let mut total = 0;

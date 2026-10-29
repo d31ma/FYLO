@@ -4,11 +4,14 @@
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
+use fylo_format::{ContainerDictionaryHeader, ContainerExtentHeader};
+
 use fylo_storage_native::{
-    CollectionKind, CollectionLayout, ContainerFile, NativeRoot, NativeStorageErrorCode,
-    NativeWriteRoot, PutDocumentOptions, RootConfig, ValidationMode,
+    CollectionKind, CollectionLayout, ContainerFile, ContainerReport, NativeRoot,
+    NativeStorageErrorCode, NativeWriteRoot, PutDocumentOptions, RootConfig, ValidationMode,
 };
 use serde_json::{Map, Value, json};
 
@@ -343,6 +346,9 @@ fn a_segment_root_unpacks_to_what_export_writes() {
     let census = report.extents.by_kind["segment"];
     assert!(census.extents >= 2 && census.sealed >= 1, "{census:?}");
     assert!(census.live_bytes > 7 * 1024 * 1024, "{census:?}");
+    // The documents reach a mebibyte, so the pack trained the collection's
+    // compression dictionary before it wrote them.
+    require_packed_dictionary(&out, &report, &scratch.0.join("damaged.fxdb"));
     // The packed database takes writes like any other.
     put(&NativeWriteRoot::open(&out).unwrap(), "items", 500, 0);
 
@@ -382,6 +388,52 @@ fn a_segment_root_unpacks_to_what_export_writes() {
     assert_eq!(state["format"], "fylo.collection-generation.v3");
     // The unpacked root takes writes too.
     put(&NativeWriteRoot::open(&unpacked).unwrap(), "items", 501, 0);
+}
+
+/// Require that `out`'s one collection has a dictionary and that its
+/// records name it: with it damaged in a copy at `damaged`, `fylo verify`
+/// says so and none of them can be read.
+fn require_packed_dictionary(out: &Path, report: &ContainerReport, damaged: &Path) {
+    let items = &report.collections[0];
+    assert_eq!((items.dictionary, items.dictionaries), (Some(1), 1));
+    let verified = ContainerFile::open_reader(out).unwrap().verify().unwrap();
+    assert!(verified.problems.is_empty(), "{:?}", verified.problems);
+    fs::copy(out, damaged).unwrap();
+    let extents = ContainerFile::open_unchecked(damaged)
+        .unwrap()
+        .dictionary_extents(items.id)
+        .unwrap();
+    let [(extent, 1)] = extents[..] else {
+        panic!("{extents:?}");
+    };
+    let mut file = fs::OpenOptions::new().write(true).open(damaged).unwrap();
+    let stored = ContainerExtentHeader::PAYLOAD_OFFSET
+        + u64::try_from(ContainerDictionaryHeader::ENCODED_BYTES).unwrap();
+    file.seek(SeekFrom::Start(extent * report.extent_bytes + stored + 64))
+        .unwrap();
+    file.write_all(b"damage").unwrap();
+    drop(file);
+    let verified = ContainerFile::open_reader(damaged)
+        .unwrap()
+        .verify()
+        .unwrap();
+    assert!(
+        verified
+            .problems
+            .iter()
+            .any(|problem| problem.code == "dictionaryDamaged"),
+        "{:?}",
+        verified.problems
+    );
+    let error = NativeRoot::open(damaged)
+        .and_then(|root| root.collection("items"))
+        .and_then(|items| items.read_document(&identifier(200)))
+        .unwrap_err();
+    assert_eq!(
+        error.code(),
+        NativeStorageErrorCode::CorruptDocument,
+        "{error}"
+    );
 }
 
 #[test]

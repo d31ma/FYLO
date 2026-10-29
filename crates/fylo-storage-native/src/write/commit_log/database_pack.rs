@@ -15,8 +15,8 @@ use super::segment_checkpoint::SegmentCheckpoint;
 use super::segment_import::SegmentImport;
 use crate::segments::LocationState;
 use crate::{
-    FilesystemProfile, NativeCollection, NativeRoot, NativeStorageError, NativeStorageErrorCode,
-    path_exists_no_follow,
+    DICTIONARY_TRAINING_BYTES, FilesystemProfile, NativeCollection, NativeRoot, NativeStorageError,
+    NativeStorageErrorCode, path_exists_no_follow,
 };
 
 /// Converts between a directory root and a `.fxdb` database (ADR 0016
@@ -342,6 +342,9 @@ impl NativeWriteRoot {
         if !versions.is_empty() {
             medium.mark_schemas()?;
         }
+        let mut ordered: Vec<&DocumentImage> = images.iter().collect();
+        ordered.sort_by(|left, right| left.id.cmp(&right.id));
+        medium.prime_dictionary(&Self::first_records(&ordered, generation)?)?;
         for (index, version) in versions.iter().enumerate() {
             let ordinal = u32::try_from(index + 1).map_err(|_| {
                 NativeStorageError::new(
@@ -356,8 +359,6 @@ impl NativeWriteRoot {
                 (&record, false),
             )?;
         }
-        let mut ordered: Vec<&DocumentImage> = images.iter().collect();
-        ordered.sort_by(|left, right| left.id.cmp(&right.id));
         for image in ordered {
             let record = |lsn| SegmentImport::document_record(image, lsn, generation);
             Self::append_packed(
@@ -372,6 +373,27 @@ impl NativeWriteRoot {
         SegmentCheckpoint::publish(collection, &stable, epoch)?;
         SegmentCheckpoint::run(collection, segment, generation)?;
         Ok(())
+    }
+
+    /// The records of the first documents of `ordered` whose bodies reach
+    /// what a dictionary trains on, or of all of them, for the medium to
+    /// train the collection's dictionary on before they are written: a
+    /// collection that holds that much gets it at its first checkpoint, and
+    /// a pack writes every record after it.
+    fn first_records(
+        ordered: &[&DocumentImage],
+        generation: u64,
+    ) -> Result<Vec<LogRecord>, NativeStorageError> {
+        let (mut records, mut total) = (Vec::new(), 0);
+        for image in ordered {
+            if total >= DICTIONARY_TRAINING_BYTES {
+                break;
+            }
+            let record = SegmentImport::document_record(image, 0, generation)?;
+            total += record.blobs.len();
+            records.push(record);
+        }
+        Ok(records)
     }
 
     /// Append the record `record` builds for the next sequence number,

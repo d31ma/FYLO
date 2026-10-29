@@ -31,7 +31,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use fylo_format::{
     ContainerCheckpointSlot, ContainerExtentKind, ContainerGenerationSlot, ContainerSuperblock,
-    LogBodyCodec, LogScan, LogSegmentHeader,
+    LogBodyCodec, LogRecord, LogScan, LogSegmentHeader,
 };
 
 use super::{
@@ -958,6 +958,10 @@ impl SegmentMedium for ContainerMedium {
         self.release_unused()
     }
 
+    fn prime_dictionary(&self, records: &[LogRecord]) -> Result<bool, NativeStorageError> {
+        self.prime(records)
+    }
+
     fn has_location_log(&self) -> bool {
         false
     }
@@ -965,10 +969,13 @@ impl SegmentMedium for ContainerMedium {
     /// The run the newest checkpoint slot names and the position it
     /// records, read under one lock so they belong together. A collection
     /// that never checkpointed has an empty snapshot reaching back to the
-    /// start.
+    /// start. The map is read again first if another process checkpointed
+    /// it since, since the slot is read from the file and may name extents
+    /// only that map shows.
     fn read_location_checkpoint(&self) -> Result<(Vec<u8>, RecordPosition), NativeStorageError> {
         let (id, block) = (self.shared.collection, self.shared.block);
-        let file = self.shared.file();
+        let mut file = self.shared.file();
+        file.refresh()?;
         let Some(checkpoint) = file.read_checkpoint(block).map_err(Self::error)? else {
             return Ok((Vec::new(), RecordPosition::START));
         };

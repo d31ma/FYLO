@@ -3,7 +3,7 @@ use std::fmt::Debug;
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
 
-use fylo_format::{LogBodyCodec, PlainBody};
+use fylo_format::{LogBodyCodec, LogRecord, PlainBody};
 
 use super::{RecordPosition, SlotRecord};
 use crate::{Durability, NativeRoot, NativeStorageError, NativeStorageErrorCode};
@@ -161,6 +161,15 @@ pub(crate) trait SegmentMedium: Debug + Send + Sync {
     /// compression dictionary no record names any longer.
     fn release_unused_dictionaries(&self) -> Result<(), NativeStorageError> {
         Ok(())
+    }
+
+    /// Before records are imported into a new collection, under the
+    /// collection lock: train a compression dictionary on `records`, the
+    /// first to come, when they hold enough to train one, so that they are
+    /// written with it rather than wait for a compaction. Returns whether
+    /// it did.
+    fn prime_dictionary(&self, _records: &[LogRecord]) -> Result<bool, NativeStorageError> {
+        Ok(false)
     }
 
     /// Whether location rows go to a location log. A medium without one
