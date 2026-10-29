@@ -1514,11 +1514,11 @@ impl Session {
             }
             .map_err(|error| engine_error(&error));
         }
-        let writer = self.writer(request)?;
-        let actor = write_actor(request)?;
-        let mutation = writer
+        let actor = actor(request)?;
+        let mutation = self
+            .write_engine(request)?
             .execute_sql_mutation(statement, actor.as_ref(), access(request)?)
-            .map_err(|error| storage_error(&error))?;
+            .map_err(|error| engine_error(&error))?;
         match mutation.kind {
             SqlMutationResultKind::Insert => mutation
                 .identifiers
@@ -1761,10 +1761,10 @@ impl Session {
                 "machine request field \"newDoc\" must be an object",
             ));
         };
-        let actor = write_actor(request)?;
-        self.writer(request)?
+        let actor = actor(request)?;
+        self.write_engine(request)?
             .patch_document_fields(collection, identifier, changes, actor.as_ref())
-            .map_err(|error| storage_error(&error))?;
+            .map_err(|error| engine_error(&error))?;
         Ok(Value::String(identifier.to_owned()))
     }
 
@@ -2228,12 +2228,12 @@ impl Session {
             ));
         };
         let matched = self.matching_identifiers(request, collection, update)?;
-        let writer = self.writer(request)?;
-        let actor = write_actor(request)?;
+        let engine = self.write_engine(request)?;
+        let actor = actor(request)?;
         for identifier in &matched {
-            writer
+            engine
                 .patch_document_fields(collection, identifier, changes, actor.as_ref())
-                .map_err(|error| storage_error(&error))?;
+                .map_err(|error| engine_error(&error))?;
         }
         Ok(Value::from(matched.len()))
     }

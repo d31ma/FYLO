@@ -13,6 +13,27 @@
   stops it gracefully; a killed server is recovered like any crashed process.
   The Node and Rust shims connect with `Fylo.connect` (ADR 0012).
 
+### Fixed
+
+- **`patchDoc`, `patchDocs`, and SQL `INSERT` and `UPDATE` now encrypt
+  `$encrypted` fields.** They wrote those fields in plaintext, after which every
+  read of the collection failed. A document already stored that way still
+  fails closed on read; delete it and put it again.
+- **The same writes now validate in strict mode** against the head schema, as
+  the whole merged document, and stamp `_v`. They used to store invalid values,
+  unknown fields, and (for SQL `INSERT`) no `_v`.
+- **Strict mode works with `$encrypted`.** CHEX treated the `$encrypted` list
+  as a required property, so every strict write to an encrypting collection
+  failed.
+- **An encrypted string stays a string.** `"999"`, `"true"` and `"null"` came
+  back from decryption as a number, a boolean and null. Values already stored
+  keep the old behavior until rewritten.
+- Strict validation compiles each pattern once per process instead of on every
+  write, and a process derives its encryption keys once instead of on every
+  request.
+- The README no longer says reads upgrade old documents to the head schema;
+  they never did. ADR 0017 plans it.
+
 ### Changed
 
 - **CHEX and TTID are built in; FYLO no longer needs their binaries.** Schema

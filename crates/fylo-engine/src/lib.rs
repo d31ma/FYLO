@@ -24,10 +24,11 @@ use fylo_query::{
     SqlPlan, StructuredQuery, index_entries_for_document,
 };
 use fylo_storage_native::{
-    AccessDescriptor, CollectionKind, GenerationState, GenerationStatus, IndexVerification,
-    NativeAccess, NativeCollection, NativeRoot, NativeStorageError, NativeStorageErrorCode,
-    NativeWriteRoot, PutDocumentOptions, RepositoryHistory, RootConfig, RootOpenOptions,
-    StoredBytes, StoredRawFile, VersionVerification, WriteAccess, WriteActor,
+    AccessDescriptor, CollectionKind, DocumentCodec, GenerationState, GenerationStatus,
+    IndexVerification, NativeAccess, NativeCollection, NativeRoot, NativeStorageError,
+    NativeStorageErrorCode, NativeWriteRoot, PutDocumentOptions, RepositoryHistory, RootConfig,
+    RootOpenOptions, SqlMutationResult, StoredBytes, StoredRawFile, VersionVerification,
+    WriteAccess, WriteActor,
 };
 use hot_set::HotReader;
 pub use hot_set::{HotSet, HotSetStatistics};
@@ -264,6 +265,70 @@ impl WriteEngine {
             .map_err(EngineError::storage)
     }
 
+    /// Shallow-merge `changes` into one stored document, then validate and
+    /// encrypt the merged document exactly as a put would.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a missing document, a denied write, a stored
+    /// field that does not decrypt, a merged document the schema rejects, or
+    /// any durable write failure.
+    pub fn patch_document_fields(
+        &self,
+        collection: &str,
+        identifier: &str,
+        changes: &Map<String, Value>,
+        actor: Option<&AccessContext>,
+    ) -> Result<(), EngineError> {
+        let codec = EngineDocumentCodec::new(self);
+        let actor = actor.map(write_actor);
+        let outcome = self.writer.patch_document_fields_with(
+            collection,
+            identifier,
+            changes,
+            actor.as_ref(),
+            &codec,
+        );
+        codec.finish(outcome)
+    }
+
+    /// Execute a SQL `INSERT`, `UPDATE` or `DELETE`, validating and encrypting
+    /// every row it writes exactly as a put would.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed SQL, a denied record, a row the schema
+    /// rejects, a stored field that does not decrypt, or any durable write
+    /// failure.
+    pub fn execute_sql_mutation(
+        &self,
+        sql: &str,
+        actor: Option<&AccessContext>,
+        insert_access: WriteAccess,
+    ) -> Result<SqlMutationResult, EngineError> {
+        let codec = EngineDocumentCodec::new(self);
+        let actor = actor.map(write_actor);
+        let outcome =
+            self.writer
+                .execute_sql_mutation_with(sql, actor.as_ref(), insert_access, &codec);
+        codec.finish(outcome)
+    }
+
+    fn decode_fields(
+        &self,
+        collection: &str,
+        fields: Map<String, Value>,
+    ) -> Result<Map<String, Value>, EngineError> {
+        if let Some(encryption) = self.encryption.as_ref() {
+            encryption
+                .decode_document(collection, fields)
+                .map_err(EngineError::encryption)
+        } else {
+            reject_undeclared_ciphertext(collection, &fields).map_err(EngineError::encryption)?;
+            Ok(fields)
+        }
+    }
+
     /// `schemaInspect` for one collection.
     ///
     /// # Errors
@@ -375,6 +440,61 @@ impl WriteEngine {
         Document::try_from_value(Value::Object(fields), DocumentLimits::default())
             .and_then(|document| document.encode())
             .map_err(EngineError::format)
+    }
+}
+
+/// The write engine's validation and encryption, handed to storage for the
+/// mutations whose post-images storage computes itself (ADR 0017 section 1).
+///
+/// Storage reports codec failures as storage errors, so the engine error that
+/// caused one is kept here and returned in its place, with its own code.
+struct EngineDocumentCodec<'a> {
+    engine: &'a WriteEngine,
+    failure: std::cell::RefCell<Option<EngineError>>,
+}
+
+impl<'a> EngineDocumentCodec<'a> {
+    fn new(engine: &'a WriteEngine) -> Self {
+        Self {
+            engine,
+            failure: std::cell::RefCell::new(None),
+        }
+    }
+
+    fn fail(&self, error: EngineError) -> NativeStorageError {
+        let stand_in = NativeStorageError::codec_rejected(error.to_string());
+        self.failure.replace(Some(error));
+        stand_in
+    }
+
+    fn finish<T>(self, outcome: Result<T, NativeStorageError>) -> Result<T, EngineError> {
+        outcome.map_err(|error| {
+            self.failure
+                .into_inner()
+                .unwrap_or_else(|| EngineError::storage(error))
+        })
+    }
+}
+
+impl DocumentCodec for EngineDocumentCodec<'_> {
+    fn decode(
+        &self,
+        collection: &str,
+        fields: Map<String, Value>,
+    ) -> Result<Map<String, Value>, NativeStorageError> {
+        self.engine
+            .decode_fields(collection, fields)
+            .map_err(|error| self.fail(error))
+    }
+
+    fn encode(
+        &self,
+        collection: &str,
+        fields: Map<String, Value>,
+    ) -> Result<Vec<u8>, NativeStorageError> {
+        self.engine
+            .encode(collection, fields)
+            .map_err(|error| self.fail(error))
     }
 }
 

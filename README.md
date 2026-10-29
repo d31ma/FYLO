@@ -935,11 +935,17 @@ export default function upgrade(doc) {
 Behavior:
 
 - Documents carry `_v` (version label)
-- Reads materialize old docs to head shape in memory
-- Strict writes validate against head schema with the built-in CHEX validator
-- Documents missing `_v` are treated as oldest version (legacy upgrade on read)
+- In strict mode, every write that stores a document body validates the whole
+  resulting document against the head schema with the built-in CHEX validator
+  and stamps `_v`: `putData`, `batchPutData`, `importBulkData`, `patchDoc`,
+  `patchDocs`, and SQL `INSERT` and `UPDATE`. A patch is validated as the
+  merged document, not as the fields it sends
+- Reads return each document as stored, at the version it was written.
+  `schemaMaterialize` (`fylo schema materialize`) upgrades one document to the
+  head shape in memory; read-time migration is planned in ADR 0017
+- `schemaMaterialize` treats a document missing `_v` as the oldest version
 - Any collection directory under `fylo.schema` that contains a `manifest.json` is auto-created on `new Fylo(...)`; await `fylo.ready()` if you need the bootstrap to settle before issuing reads from a synchronous probe (mutation/query methods await internally)
-- FYLO schemas do not support arrays of objects — declare each nested object as its own collection. A schema that would accept `items: [{ name: '...' }]` will throw `FYLO schema '...' does not support arrays of objects at '$.items'` on first read. Arrays of scalars and nested objects (as fields) are fine.
+- FYLO documents cannot hold arrays of objects — declare each nested object as its own collection. A write of a document with `items: [{ name: '...' }]` fails with `EARRAYOFOBJECTS`, even if its CHEX schema describes the array. Arrays of scalars and nested objects (as fields) are fine.
 
 ---
 
@@ -957,6 +963,9 @@ Fields declared in `$encrypted` arrays are stored with AES-GCM. Equality queries
     "payload?": { "verifier?": "^.+$" }
 }
 ```
+
+`$encrypted` describes how fields are stored; it is not a document property,
+so it works with strict mode and a document never carries it.
 
 Nested fields use a **slash-separated** path (`payload/verifier`), matching the
 index field-path format. A dotted path such as `payload.verifier` is accepted

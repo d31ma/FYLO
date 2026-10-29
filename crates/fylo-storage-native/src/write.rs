@@ -38,7 +38,10 @@ const INDEX_WAL_COMPACT_BYTES: u64 = 64 * 1024;
 const DEFAULT_ACCESS_MODE: u32 = 0o600;
 
 mod commit_log;
+mod document_codec;
 pub(crate) mod version;
+
+pub use document_codec::{DocumentCodec, PlainDocumentCodec};
 
 static UNIQUE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static TTID_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -714,23 +717,46 @@ impl NativeWriteRoot {
         changes: &Map<String, Value>,
         actor: Option<&WriteActor>,
     ) -> Result<(), NativeStorageError> {
+        self.patch_document_fields_with(
+            collection_name,
+            identifier,
+            changes,
+            actor,
+            &PlainDocumentCodec,
+        )
+    }
+
+    /// [`Self::patch_document_fields`], decoding the stored body and encoding
+    /// the merged result through `codec`, so the whole post-image is validated
+    /// and its declared fields encrypted.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::patch_document_fields`], plus any error `codec` returns.
+    pub fn patch_document_fields_with(
+        &self,
+        collection_name: &str,
+        identifier: &str,
+        changes: &Map<String, Value>,
+        actor: Option<&WriteActor>,
+        codec: &dyn DocumentCodec,
+    ) -> Result<(), NativeStorageError> {
         self.root.assert_profile_owned()?;
         validate_ttid_shape(identifier)?;
         let collection = self.document_collection(collection_name, "patch_document_fields")?;
+        let patch = |bytes: &[u8]| {
+            let mut document = codec.decode(collection_name, parse_document_fields(bytes)?)?;
+            merge_top_level(&mut document, changes);
+            codec.encode(collection_name, document)
+        };
         if self.uses_log(&collection) {
-            return self.patch_document_logged(&collection, identifier, actor, |bytes| {
-                let mut document = parse_document_fields(bytes)?;
-                merge_top_level(&mut document, changes);
-                encode_document_fields(document)
-            });
+            return self.patch_document_logged(&collection, identifier, actor, patch);
         }
         let _lock = self.lock_collection(&collection.path)?;
         self.recover_locked(&collection)?;
         let stored = collection.read_document(identifier)?;
         require_write_access(stored.access, actor)?;
-        let mut document = parse_document_fields(&stored.bytes)?;
-        merge_top_level(&mut document, changes);
-        let canonical = encode_document_fields(document)?;
+        let canonical = patch(&stored.bytes)?;
         self.patch_document_locked(&collection, identifier, &stored.path, &canonical)
     }
 
@@ -752,6 +778,23 @@ impl NativeWriteRoot {
         actor: Option<&WriteActor>,
         insert_access: WriteAccess,
     ) -> Result<SqlMutationResult, NativeStorageError> {
+        self.execute_sql_mutation_with(sql, actor, insert_access, &PlainDocumentCodec)
+    }
+
+    /// [`Self::execute_sql_mutation`], with `INSERT` rows and `UPDATE`
+    /// post-images encoded through `codec` and `UPDATE` pre-images decoded
+    /// through it before the assignments merge.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::execute_sql_mutation`], plus any error `codec` returns.
+    pub fn execute_sql_mutation_with(
+        &self,
+        sql: &str,
+        actor: Option<&WriteActor>,
+        insert_access: WriteAccess,
+        codec: &dyn DocumentCodec,
+    ) -> Result<SqlMutationResult, NativeStorageError> {
         self.root.assert_profile_owned()?;
         let plan = prepare_sql(sql, QueryLimits::default()).map_err(|error| query_error(&error))?;
         if plan.explain && !plan.analyze {
@@ -761,8 +804,8 @@ impl NativeWriteRoot {
             ));
         }
         match plan.operation {
-            SqlOperation::Insert => self.execute_sql_insert(&plan, insert_access),
-            SqlOperation::Update => self.execute_sql_update(&plan, actor),
+            SqlOperation::Insert => self.execute_sql_insert(&plan, insert_access, codec),
+            SqlOperation::Update => self.execute_sql_update(&plan, actor, codec),
             SqlOperation::Delete => self.execute_sql_delete(&plan, actor),
             _ => Err(NativeStorageError::new(
                 NativeStorageErrorCode::InvalidQuery,
@@ -1532,9 +1575,10 @@ impl NativeWriteRoot {
         &self,
         plan: &fylo_query::SqlPlan,
         access: WriteAccess,
+        codec: &dyn DocumentCodec,
     ) -> Result<SqlMutationResult, NativeStorageError> {
         let values = required_object(&plan.ast, "$values", "SQL INSERT values")?;
-        let encoded = encode_document_fields(values.clone())?;
+        let encoded = codec.encode(&plan.collection, values.clone())?;
         for _ in 0..16 {
             let identifier = generate_ttid()?;
             match self.put_document(
@@ -1569,6 +1613,7 @@ impl NativeWriteRoot {
         &self,
         plan: &fylo_query::SqlPlan,
         actor: Option<&WriteActor>,
+        codec: &dyn DocumentCodec,
     ) -> Result<SqlMutationResult, NativeStorageError> {
         let changes = required_object(&plan.ast, "$set", "SQL UPDATE assignments")?;
         let query_value = plan
@@ -1580,7 +1625,7 @@ impl NativeWriteRoot {
             .map_err(|error| query_error(&error))?;
         let collection = self.document_collection(&plan.collection, "SQL UPDATE")?;
         if self.uses_log(&collection) {
-            match self.sql_update_logged(&collection, (&query, changes), actor) {
+            match self.sql_update_logged(&collection, (&query, changes), actor, codec) {
                 Err(error) if Self::exceeds_log_budget(&error) => {}
                 outcome => return outcome,
             }
@@ -1589,8 +1634,11 @@ impl NativeWriteRoot {
         self.recover_locked(&collection)?;
         let mut documents = matching_documents(&collection, &query, actor)?;
         for document in &mut documents {
-            merge_top_level(&mut document.fields, changes);
-            document.encoded = encode_document_fields(document.fields.clone())?;
+            let mut fields =
+                codec.decode(&plan.collection, std::mem::take(&mut document.fields))?;
+            merge_top_level(&mut fields, changes);
+            document.encoded = codec.encode(&plan.collection, fields.clone())?;
+            document.fields = fields;
         }
         self.write_sql_updates(&collection, &documents)?;
         Ok(SqlMutationResult {

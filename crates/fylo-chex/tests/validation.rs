@@ -557,3 +557,50 @@ fn throws_when_exact_length_field_is_too_long() {
         "RegEx pattern fails for property 'code' in schema",
     );
 }
+
+// ---------------------------------------------------------------------------
+// FYLO's `$encrypted` directive (ADR 0017 section 4)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn top_level_encrypted_list_is_not_a_property() {
+    let schema = json!({ "$encrypted": ["ssn"], "name": "^.+$", "ssn?": "^[0-9-]+$" });
+    fylo_chex::validate_inline(&schema, &object(json!({ "name": "Ada" })), "pii")
+        .expect("a document need not carry the directive");
+    fylo_chex::validate_inline(
+        &schema,
+        &object(json!({ "name": "Ada", "ssn": "123-45" })),
+        "pii",
+    )
+    .expect("declared fields still validate");
+    expect_error(
+        fylo_chex::validate_inline(
+            &schema,
+            &object(json!({ "name": "Ada", "$encrypted": ["name"] })),
+            "pii",
+        ),
+        "Property '$encrypted' does not exist in schema 'pii'",
+    );
+}
+
+#[test]
+fn nested_encrypted_key_is_an_ordinary_property() {
+    let schema = json!({ "payload": { "$encrypted": "^x$" } });
+    expect_error(
+        fylo_chex::validate_inline(&schema, &object(json!({ "payload": {} })), "nested"),
+        "Property 'payload.$encrypted' cannot be null or undefined",
+    );
+}
+
+#[test]
+fn a_pattern_validates_the_same_on_every_use() {
+    let schema = json!({ "code": "^[A-Z]{3}$" });
+    for _ in 0..3 {
+        fylo_chex::validate_inline(&schema, &object(json!({ "code": "ABC" })), "codes")
+            .expect("a cached pattern still matches");
+        expect_error(
+            fylo_chex::validate_inline(&schema, &object(json!({ "code": "abc" })), "codes"),
+            "RegEx pattern fails for property 'code'",
+        );
+    }
+}

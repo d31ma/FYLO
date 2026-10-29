@@ -55,7 +55,10 @@ pub use queue::{
 pub use root_open_options::RootOpenOptions;
 pub use write::FAILPOINTS;
 pub use write::version::RepositoryStatus;
-pub use write::{NativeWriteRoot, PutDocumentOptions, PutRawFileOptions, WriteAccess, WriteActor};
+pub use write::{
+    DocumentCodec, NativeWriteRoot, PlainDocumentCodec, PutDocumentOptions, PutRawFileOptions,
+    WriteAccess, WriteActor,
+};
 pub use write::{SqlMutationResult, SqlMutationResultKind};
 
 /// Maximum collection descriptor bytes.
@@ -2437,6 +2440,13 @@ pub struct NativeStorageError {
 }
 
 impl NativeStorageError {
+    /// A [`DocumentCodec`] refused a body. Reported as a malformed document;
+    /// a codec that needs its own error code keeps it beside the call.
+    #[must_use]
+    pub fn codec_rejected(message: impl Into<String>) -> Self {
+        Self::new(NativeStorageErrorCode::CorruptDocument, message)
+    }
+
     fn new(code: NativeStorageErrorCode, message: impl Into<String>) -> Self {
         Self {
             code,

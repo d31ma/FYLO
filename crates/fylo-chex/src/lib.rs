@@ -144,6 +144,16 @@ fn is_record_type(schema: &Map<String, Value>) -> bool {
     schema.len() == 1 && schema.keys().next().is_some_and(|key| key.starts_with('^'))
 }
 
+/// FYLO's field-encryption list, which sits beside the properties at the top
+/// of a schema. It describes how fields are stored, not a field of the
+/// document, so neither the definition check nor data validation treats it as
+/// a property.
+const ENCRYPTED_DIRECTIVE: &str = "$encrypted";
+
+fn is_directive(path: &str, schema_key: &str) -> bool {
+    path.is_empty() && schema_key == ENCRYPTED_DIRECTIVE
+}
+
 fn join_path(path: &str, key: &str) -> String {
     if path.is_empty() {
         key.to_string()
@@ -155,6 +165,32 @@ fn join_path(path: &str, key: &str) -> String {
 // ---------------------------------------------------------------------------
 // Regex constraints
 // ---------------------------------------------------------------------------
+
+/// Patterns compiled so far on this thread. Every validated write used to
+/// compile each leaf's pattern again, which cost more than the match. A
+/// `Regex` clone shares the compiled program. The cache is cleared when it
+/// reaches its bound rather than evicting one entry at a time.
+const REGEX_CACHE_LIMIT: usize = 4096;
+
+thread_local! {
+    static REGEX_CACHE: std::cell::RefCell<HashMap<String, Regex>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
+fn cached_regex(pattern: &str) -> std::result::Result<Regex, regex::Error> {
+    REGEX_CACHE.with(|cache| {
+        if let Some(regex) = cache.borrow().get(pattern) {
+            return Ok(regex.clone());
+        }
+        let regex = Regex::new(pattern)?;
+        let mut cache = cache.borrow_mut();
+        if cache.len() >= REGEX_CACHE_LIMIT {
+            cache.clear();
+        }
+        cache.insert(pattern.to_owned(), regex.clone());
+        Ok(regex)
+    })
+}
 
 struct RegexConstraint {
     regex: Regex,
@@ -171,7 +207,7 @@ impl RegexConstraint {
                 truncate(schema_label)
             )));
         }
-        let regex = Regex::new(pattern).map_err(|_| {
+        let regex = cached_regex(pattern).map_err(|_| {
             ChexError::validation(format!(
                 "Invalid RegEx pattern for '{}' in schema '{}'",
                 truncate(full_path),
@@ -263,6 +299,9 @@ pub fn validate_definition(schema: &Value, label: &str) -> Result<()> {
 
 fn validate_definition_map(map: &Map<String, Value>, label: &str, path: &str) -> Result<()> {
     for (schema_key, schema_value) in map {
+        if is_directive(path, schema_key) {
+            continue;
+        }
         let full_path = join_path(path, data_key(schema_key));
 
         match schema_value {
@@ -356,7 +395,8 @@ fn validate_object_at(
 ) -> Result<()> {
     // Schema keys may carry a trailing `?` for nullability; data keys never do.
     for key in data.keys() {
-        if schema.contains_key(key) || schema.contains_key(&format!("{key}?")) {
+        let declared = schema.contains_key(key) && !is_directive(path, key);
+        if declared || schema.contains_key(&format!("{key}?")) {
             continue;
         }
         return Err(ChexError::validation(format!(
@@ -367,6 +407,9 @@ fn validate_object_at(
     }
 
     for schema_key in schema.keys() {
+        if is_directive(path, schema_key) {
+            continue;
+        }
         validate_property(schema, data, schema_key, label, path)?;
     }
     Ok(())

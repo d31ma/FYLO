@@ -217,7 +217,36 @@ struct SchemaManifest {
     current: String,
 }
 
+/// Keys derived so far in this process, by a SHA-256 of the secret and salt.
+///
+/// PBKDF2 at 100,000 iterations costs about 28 ms in a release build, and
+/// every machine request that touches an encrypting collection opens a fresh
+/// engine. The derived keys are the same every time, so a process derives
+/// them once. The secret itself is not kept.
+static DERIVED_KEYS: std::sync::Mutex<Vec<([u8; 32], SecretKey, SecretKey)>> =
+    std::sync::Mutex::new(Vec::new());
+
 fn derive_keys(secret: &str, salt: &str) -> Result<(SecretKey, SecretKey), String> {
+    let fingerprint: [u8; 32] = {
+        use sha2::Digest as _;
+        let mut digest = Sha256::new();
+        digest.update((secret.len() as u64).to_le_bytes());
+        digest.update(secret.as_bytes());
+        digest.update(salt.as_bytes());
+        digest.finalize().into()
+    };
+    let mut cache = DERIVED_KEYS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((_, key, hmac_key)) = cache.iter().find(|(seen, _, _)| *seen == fingerprint) {
+        return Ok((key.clone(), hmac_key.clone()));
+    }
+    let (key, hmac_key) = derive_keys_uncached(secret, salt)?;
+    cache.push((fingerprint, key.clone(), hmac_key.clone()));
+    Ok((key, hmac_key))
+}
+
+fn derive_keys_uncached(secret: &str, salt: &str) -> Result<(SecretKey, SecretKey), String> {
     if secret.len() < 32 {
         return Err("fylo.encryption.key must be at least 32 UTF-8 bytes long".into());
     }
@@ -305,6 +334,12 @@ fn child_path(parent: &str, child: &str) -> String {
 
 fn stringify_stored_value(value: &Value) -> String {
     let rendered = match value {
+        // A string whose text is also JSON (`"999"`, `"true"`, `"null"`) is
+        // stored quoted, or `decode_stored_value` would parse it back as a
+        // number, boolean or null. Every other string keeps the JavaScript
+        // engine's unquoted form, and both readers parse a quoted one back to
+        // the same string.
+        Value::String(text) if serde_json::from_str::<Value>(text).is_ok() => value.to_string(),
         Value::String(value) => value.clone(),
         Value::Null => "null".to_owned(),
         other => other.to_string(),
