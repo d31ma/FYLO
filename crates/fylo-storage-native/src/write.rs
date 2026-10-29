@@ -1680,6 +1680,12 @@ impl NativeWriteRoot {
         if self.config.layout != CollectionLayout::Segments || kind != CollectionKind::Document {
             return Ok(false);
         }
+        if !super::NativeCollection::SEGMENTS_SUPPORTED {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::Unsupported,
+                "this build does not carry the segment layout",
+            ));
+        }
         if self.filesystem_profile() != super::FilesystemProfile::Native {
             return Err(NativeStorageError::new(
                 NativeStorageErrorCode::Unsupported,

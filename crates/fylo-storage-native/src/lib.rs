@@ -370,6 +370,13 @@ impl NativeRoot {
         };
         let path = self.canonical.join(namespace).join(name);
         self.verify_path(&path, ExpectedType::Directory)?;
+        if !NativeCollection::SEGMENTS_SUPPORTED && descriptor.layout == CollectionLayout::Segments
+        {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::Unsupported,
+                "this build cannot open a collection with the segment layout",
+            ));
+        }
         let schema_head = descriptor.schema_head()?;
         Ok(NativeCollection {
             root: self.clone(),
@@ -1494,8 +1501,13 @@ impl NativeCollection {
         self.layout
     }
 
+    /// Whether this build carries the segment layout. The WASI and browser
+    /// builds do not (ADR 0015 section 1), so their segment paths compile
+    /// away instead of growing the engine they ship.
+    pub(crate) const SEGMENTS_SUPPORTED: bool = cfg!(not(target_family = "wasm"));
+
     pub(crate) fn uses_segments(&self) -> bool {
-        self.layout == CollectionLayout::Segments
+        Self::SEGMENTS_SUPPORTED && self.layout == CollectionLayout::Segments
     }
 
     fn segment_store(&self) -> Result<segments::SegmentStore, NativeStorageError> {

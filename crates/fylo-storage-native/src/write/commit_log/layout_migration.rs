@@ -131,6 +131,9 @@ impl NativeWriteRoot {
         &self,
         collection: &NativeCollection,
     ) -> Result<bool, NativeStorageError> {
+        if !NativeCollection::SEGMENTS_SUPPORTED {
+            return Ok(false);
+        }
         if crate::path_exists_no_follow(&Self::marker_path(collection)?)? {
             self.finish_layout_migration(collection)?;
             return Ok(true);
@@ -143,6 +146,11 @@ impl NativeWriteRoot {
     }
 
     fn require_migratable(&self, collection: &NativeCollection) -> Result<(), NativeStorageError> {
+        if !NativeCollection::SEGMENTS_SUPPORTED {
+            return Err(Self::unsupported(
+                "this build does not carry the segment layout",
+            ));
+        }
         if collection.kind() != CollectionKind::Document {
             return Err(Self::unsupported(
                 "raw-file collections keep the file layout",
