@@ -18,7 +18,9 @@ const candidateOnlyOperations = [
     'queuePublish',
     'queueStats',
     'reshardCollection',
-    'schemaMigrate'
+    'schemaCheck',
+    'schemaMigrate',
+    'schemaMode'
 ]
 const releasedOperations = canonicalOperations.filter(
     (operation) => !candidateOnlyOperations.includes(operation)
@@ -504,6 +506,16 @@ async function runScenario(label, binary, root) {
                 { op: 'schemaMigrate', collection: 'profiles', schemaDir: schemaRoot },
                 { record: false }
             )
+            await request(
+                'schema-mode',
+                { op: 'schemaMode', collection: 'profiles', mode: 'warn' },
+                { record: false }
+            )
+            await request(
+                'schema-check',
+                { op: 'schemaCheck', collection: 'profiles', schemaDir: schemaRoot },
+                { record: false }
+            )
         }
     } finally {
         await machine.close()
@@ -682,6 +694,13 @@ function normalizeHandshake(value) {
 }
 
 function normalizeKnownReleaseDeltas(operation, value) {
+    if (operation === 'inspectCollection' && value && typeof value === 'object') {
+        // Validation modes (ADR 0017 section 2) are newer than every release.
+        const released = structuredClone(value)
+        delete released.validation
+        delete released.schemaViolations
+        return released
+    }
     if (operation !== 'diff' || !Array.isArray(value?.changes)) return value
     const normalized = structuredClone(value)
     // v26.30.06 loses custom xattrs while copying a branch and consequently
