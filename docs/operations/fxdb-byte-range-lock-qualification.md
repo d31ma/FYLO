@@ -122,6 +122,11 @@ fylo-lock-harness verify --file /Volumes/ATLAS/locktest.fxdb 0.json 1.json
 `verify` sums every machine's entries and compares them with the counters in
 the file.
 
+On the local NFS 4.1 server, `bun run fxdb:locks:nfs` builds the Linux harness
+in Docker, starts the same kernel nfsd as `bun run efs:local`, runs `qualify`
+from one client, and then `share` from two clients against one file. Pass
+`--cache-dir` to keep the build cache off the Docker disk image.
+
 ## Qualification
 
 | Filesystem                          | Machine                 | Date       | Result  | Kill release | Load (8 × 2, 10 s)                         | Path open+close drops locks |
