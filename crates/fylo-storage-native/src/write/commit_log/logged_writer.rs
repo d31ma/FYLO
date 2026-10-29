@@ -159,7 +159,7 @@ impl NativeWriteRoot {
                 continue;
             };
             match Self::close_log(&root, &name) {
-                Err(error) if root.exists() => return Err(error),
+                Err(error) if fs::metadata(&root).is_ok() => return Err(error),
                 _ => {}
             }
         }

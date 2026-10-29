@@ -4026,7 +4026,7 @@ fn cleanup_orphan_transactions(
     let Some(root) = state.parent() else {
         return Ok(());
     };
-    if !root.exists() {
+    if fs::metadata(root).is_err() {
         return Ok(());
     }
     for entry in read_dir_without_companions(root).map_err(NativeStorageError::io)? {
@@ -4081,7 +4081,7 @@ fn ensure_plain_parent(root: &Path, target: &Path) -> Result<(), NativeStorageEr
             ));
         };
         current.push(segment);
-        if current.exists() {
+        if fs::metadata(&current).is_ok() {
             let metadata = fs::symlink_metadata(&current).map_err(NativeStorageError::io)?;
             if metadata.file_type().is_symlink() || !metadata.is_dir() {
                 return Err(NativeStorageError::new(

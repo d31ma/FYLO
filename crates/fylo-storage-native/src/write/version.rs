@@ -316,7 +316,7 @@ impl NativeWriteRoot {
     pub fn repository_status(&self) -> Result<RepositoryStatus, NativeStorageError> {
         self.root.assert_profile_owned()?;
         let repository = self.repository_root().join(".fylo-vcs");
-        if !repository.join("HEAD").is_file() {
+        if !fs::metadata(repository.join("HEAD")).is_ok_and(|metadata| metadata.is_file()) {
             return Ok(RepositoryStatus {
                 enabled: false,
                 branch: None,
@@ -366,7 +366,7 @@ impl NativeWriteRoot {
     ) -> Result<RepositoryDiff, NativeStorageError> {
         self.root.assert_profile_owned()?;
         let repository = self.repository_root().join(".fylo-vcs");
-        if !repository.join("HEAD").is_file() {
+        if !fs::metadata(repository.join("HEAD")).is_ok_and(|metadata| metadata.is_file()) {
             return Err(NativeStorageError::new(
                 NativeStorageErrorCode::NotFound,
                 "FYLO root has no version repository",
@@ -421,7 +421,7 @@ impl NativeWriteRoot {
         let current = read_head_branch(&repository)?;
         let reference_path = branch_reference_path(&repository, branch);
         let created = if create {
-            if reference_path.is_file() {
+            if fs::metadata(&reference_path).is_ok_and(|metadata| metadata.is_file()) {
                 return Err(NativeStorageError::new(
                     NativeStorageErrorCode::CorruptMetadata,
                     format!("branch already exists: {branch}"),
@@ -429,7 +429,7 @@ impl NativeWriteRoot {
             }
             let current_reference = read_branch_reference(&repository, &current)?;
             let target = branch_worktree(self.repository_root(), branch)?;
-            if target.exists() {
+            if fs::metadata(&target).is_ok() {
                 return Err(NativeStorageError::new(
                     NativeStorageErrorCode::CorruptMetadata,
                     format!("branch worktree already exists: {branch}"),
@@ -464,7 +464,7 @@ impl NativeWriteRoot {
             write_branch_reference(&repository, &reference)?;
             true
         } else {
-            if !reference_path.is_file() {
+            if !fs::metadata(&reference_path).is_ok_and(|metadata| metadata.is_file()) {
                 return Err(NativeStorageError::new(
                     NativeStorageErrorCode::NotFound,
                     format!("branch not found: {branch}"),
@@ -675,7 +675,7 @@ impl NativeWriteRoot {
             ensure_repository_directory(self.repository_root(), Path::new(relative))?;
         }
         let main_reference = branch_reference_path(&repository, DEFAULT_BRANCH);
-        if !main_reference.is_file() {
+        if !fs::metadata(&main_reference).is_ok_and(|metadata| metadata.is_file()) {
             let now = iso8601_millis(super::unix_millis()?);
             write_branch_reference(
                 &repository,
@@ -689,7 +689,7 @@ impl NativeWriteRoot {
                 },
             )?;
         }
-        if !repository.join("HEAD").is_file() {
+        if !fs::metadata(repository.join("HEAD")).is_ok_and(|metadata| metadata.is_file()) {
             write_head_branch(&repository, DEFAULT_BRANCH)?;
         }
         recover_materialization_transactions(&repository_root, &repository)?;
@@ -741,7 +741,7 @@ impl NativeWriteRoot {
             manifest.targets.push(MaterializationTarget {
                 relative: path_to_wire(&relative),
                 collection: collection.clone(),
-                had_current: self.path().join(&relative).exists(),
+                had_current: fs::metadata(self.path().join(&relative)).is_ok(),
                 should_install: target_collections.get(collection) == Some(data_directory),
             });
         }
@@ -762,14 +762,14 @@ impl NativeWriteRoot {
                 let current = self.path().join(&relative);
                 let backup = previous.join(&relative);
                 let next = stage.join(&relative);
-                if current.exists() {
+                if fs::metadata(&current).is_ok() {
                     fs::create_dir_all(backup.parent().ok_or_else(unsafe_repository_path)?)
                         .map_err(NativeStorageError::io)?;
                     rename_durable(&current, &backup)?;
                     manifest.phase = MaterializationPhase::BackupMoved;
                     write_materialization_manifest(&transaction, &manifest)?;
                 }
-                if next.exists() {
+                if fs::metadata(&next).is_ok() {
                     fs::create_dir_all(current.parent().ok_or_else(unsafe_repository_path)?)
                         .map_err(NativeStorageError::io)?;
                     rename_durable(&next, &current)?;
@@ -1931,7 +1931,7 @@ fn copy_worktree(
     let mut generations = BTreeMap::new();
     for data_directory in DATA_DIRECTORIES {
         let current = source.join(data_directory);
-        if current.is_dir() {
+        if fs::metadata(&current).is_ok_and(|metadata| metadata.is_dir()) {
             if context.filesystem_profile() == crate::FilesystemProfile::EfsSidecarV1 {
                 context.verify_path(&current, crate::ExpectedType::Directory)?;
                 for entry in
@@ -2502,7 +2502,7 @@ fn write_tree_node(
 
 fn write_object(repository: &Path, hash: &str, bytes: &[u8]) -> Result<(), NativeStorageError> {
     let target = object_path(repository, hash)?;
-    if target.is_file() {
+    if fs::metadata(&target).is_ok_and(|metadata| metadata.is_file()) {
         return Ok(());
     }
     let parent = target.parent().ok_or_else(|| {
