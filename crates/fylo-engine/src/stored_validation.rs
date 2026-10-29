@@ -9,18 +9,24 @@
 //! than stored unvalidated. Under `off` nothing is checked, so nothing is
 //! refused.
 
+use fylo_storage_native::ValidationMode;
+
 use crate::{EngineError, WriteEngine};
 
 impl WriteEngine {
     /// Refuse to validate `collection` when this build cannot.
     ///
     /// It can when the collection's registry head is portable and its stored
-    /// validator loads, or when the collection has no schema at all. It
-    /// cannot when the head is not portable, has no stored validator, or its
-    /// stored bytes are refused, and it cannot when the collection's only
-    /// schema is in a `fylo.schema` folder, which would have to be compiled.
-    /// A folder this build cannot inspect, such as any folder in a browser,
-    /// counts as holding a schema.
+    /// validator loads. It cannot when the head is not portable, has no
+    /// stored validator, or its stored bytes are refused.
+    ///
+    /// A collection without a registry can only have a schema in a
+    /// `fylo.schema` folder, which would have to be compiled, so it is
+    /// refused when the attached folder may hold one (a folder this build
+    /// cannot inspect, as in a browser, counts as holding one) and when its
+    /// descriptor records `strict` or `warn`, which only a collection meant
+    /// to have a schema does. Without either it has no schema to validate,
+    /// as natively.
     ///
     /// # Errors
     ///
@@ -33,16 +39,25 @@ impl WriteEngine {
                 .map(drop)
                 .map_err(EngineError::schema_unavailable);
         }
-        match self.schema.as_deref() {
-            Some(schema) if schema.may_have_schema(collection) => {
-                Err(EngineError::schema_unavailable(format!(
-                    "collection {collection} has no schema registry, and a build without a \
-                     regex compiler cannot compile its fylo.schema folder; push the schema \
-                     into the registry with a native build (fylo schema push)"
-                )))
-            }
-            _ => Ok(()),
+        let in_folder = self
+            .schema
+            .as_deref()
+            .is_some_and(|schema| schema.may_have_schema(collection));
+        // A collection that does not exist yet records nothing; a write to it
+        // fails, or creates it, in storage.
+        let recorded = self
+            .writer
+            .collection(collection)
+            .ok()
+            .and_then(|collection| collection.validation());
+        if in_folder || matches!(recorded, Some(ValidationMode::Strict | ValidationMode::Warn)) {
+            return Err(EngineError::schema_unavailable(format!(
+                "collection {collection} has no schema registry, and a build without a regex \
+                 compiler cannot compile a fylo.schema folder; push the schema into the \
+                 registry with a native build (fylo schema push)"
+            )));
         }
+        Ok(())
     }
 }
 

@@ -360,3 +360,22 @@ fn a_collection_without_a_schema_needs_no_validator() {
         .require_stored_validator(COLLECTION)
         .unwrap();
 }
+
+#[test]
+fn a_recorded_validation_mode_without_a_registry_is_unavailable() {
+    use fylo_storage_native::ValidationMode;
+
+    let fixture = Fixture::new();
+    let engine = WriteEngine::open(fixture.root()).unwrap();
+    fixture.create_collection(&engine);
+    // A browser has no `fylo.schema` folder to look in, but a collection
+    // whose descriptor asks for validation is meant to have a schema.
+    for mode in [ValidationMode::Strict, ValidationMode::Warn] {
+        engine.set_validation_mode(COLLECTION, mode).unwrap();
+        assert!(unavailable(&engine).contains("no schema registry"));
+    }
+    engine
+        .set_validation_mode(COLLECTION, ValidationMode::Off)
+        .unwrap();
+    engine.require_stored_validator(COLLECTION).unwrap();
+}
