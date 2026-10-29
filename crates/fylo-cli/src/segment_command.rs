@@ -96,6 +96,7 @@ impl SegmentCommand {
             "segments": verification.segments,
             "records": verification.records,
             "documents": verification.documents,
+            "schemaVersions": verification.schema_versions,
             "defects": verification.defects,
             "ok": verification.defects.is_empty(),
         }))
@@ -116,6 +117,7 @@ impl SegmentCommand {
             "recovered": report.recovered,
             "damaged": report.damaged,
             "lost": report.lost,
+            "schemaVersions": report.schema_versions,
         }))
     }
 

@@ -83,6 +83,15 @@ impl LogRecovery {
         let applier = StepApplier::replay(&writer.root, &collection.path);
         let mut generation = 0;
         for (_, record) in &scan.records {
+            // Compaction and schema records belong to document segments
+            // only; one in a write-ahead log is damage, not something to
+            // skip.
+            if matches!(
+                record.kind,
+                LogRecordKind::Compaction | LogRecordKind::Schema
+            ) {
+                return Err(Self::corrupt("write-ahead log holds a segment-only record"));
+            }
             if record.kind != LogRecordKind::Commit || aborted.contains(&record.lsn) {
                 continue;
             }

@@ -8,13 +8,15 @@ use super::super::{
 };
 use super::log_segment::LogSegment;
 use super::segment_checkpoint::SegmentCheckpoint;
+use super::segment_schemas::SegmentSchemas;
 use crate::segments::{GenerationSlots, SegmentPaths, SlotRecord};
 use crate::{NativeRoot, NativeStorageError};
 
 /// Lays out an empty segment collection (ADR 0015 section 2).
 ///
 /// The layout holds the first active segment, opening with a checkpoint
-/// record, empty location files, generation slots, an empty prefix index,
+/// record, empty location files, an empty schemas snapshot, generation
+/// slots, an empty prefix index,
 /// and a plain file named `docs`, so an older release that looks for the
 /// per-document tree finds a file where it expects a directory and refuses.
 pub(crate) struct SegmentLayout;
@@ -43,6 +45,7 @@ impl SegmentLayout {
         ensure_directory(root, paths.directory())?;
         durable_replace_owner_only(&paths.locations_snapshot(), b"")?;
         durable_replace_owner_only(&paths.locations_wal(), b"")?;
+        SegmentSchemas::empty().write(&paths)?;
         let slot = Self::create_first_segment(&paths, directory, generation)?;
         GenerationSlots::at(&paths.slots()).create(&slot)?;
         durable_replace(&directory.join("docs"), Self::FENCE)?;

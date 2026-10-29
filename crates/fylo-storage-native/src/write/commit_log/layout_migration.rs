@@ -14,6 +14,7 @@ use super::log_checkpoint::LogCheckpoint;
 use super::segment_checkpoint::SegmentCheckpoint;
 use super::segment_import::SegmentImport;
 use super::segment_layout::SegmentLayout;
+use super::segment_schemas::SegmentSchemas;
 use crate::segments::{LocationState, SegmentPaths, TableCache};
 use crate::{
     CollectionKind, CollectionLayout, FilesystemProfile, NativeCollection, NativeStorageError,
@@ -71,6 +72,8 @@ impl NativeWriteRoot {
         self.require_migratable(&collection)?;
         let _lock = self.lock_collection(&collection.path)?;
         self.recover_locked(&collection)?;
+        // Recovery may have moved the descriptor's schema head.
+        let collection = self.root.collection(name)?;
         let images = DocumentImage::read_collection(&collection)?;
         let report = LayoutMigrationReport::of(name, layout, &images);
         if collection.layout() == layout {
@@ -81,11 +84,20 @@ impl NativeWriteRoot {
         }
         let generation = collection.stored_generation()?.generation;
         let target = generation + 2 - generation % 2 + 2;
+        let versions = self.registry_versions(&collection)?;
         let staging = collection.path.join(Self::STAGING);
-        self.build_staging(&collection, (layout, target), &images, &staging)?;
+        self.build_staging(
+            &collection,
+            (layout, target),
+            (&images, &versions),
+            &staging,
+        )?;
         if let Err(error) = failpoint("after-layout-staging") {
             remove_dir_durable(&staging)?;
             return Err(error);
+        }
+        if layout == CollectionLayout::Files {
+            self.write_registry_files(&collection, &versions)?;
         }
         Self::write_marker(&collection, layout, target)?;
         let swapped = failpoint("after-layout-marker")
@@ -172,19 +184,75 @@ impl NativeWriteRoot {
         Ok(())
     }
 
+    /// The collection's schema registry, version by version from ordinal 1,
+    /// which a migration carries over (ADR 0017 section 3): a segment
+    /// collection's schema records become the directory registry's files,
+    /// and those files become schema records. A segment collection's
+    /// descriptor is first brought up to its records' head, which the file
+    /// layout reads.
+    fn registry_versions(
+        &self,
+        collection: &NativeCollection,
+    ) -> Result<Vec<Vec<u8>>, NativeStorageError> {
+        if collection.uses_segments() {
+            let schemas = SegmentSchemas::load(
+                &SegmentPaths::of(&collection.path),
+                collection.schema_head(),
+            )?;
+            if let Some(head) = schemas.head()
+                && Some(head) != collection.schema_head()
+            {
+                self.write_schema_head(collection, head)?;
+            }
+            return Ok(schemas
+                .entries()
+                .iter()
+                .map(|entry| entry.version.as_bytes().to_vec())
+                .collect());
+        }
+        (1..=collection.schema_head().unwrap_or(0))
+            .map(|ordinal| self.root.read_schema_version(collection.name(), ordinal))
+            .collect()
+    }
+
+    /// Write a segment collection's versions as the directory registry's
+    /// files before the swap. A file layout collection reads them from its
+    /// descriptor's head down; until the swap nothing reads them, and a
+    /// migration run again writes them again.
+    fn write_registry_files(
+        &self,
+        collection: &NativeCollection,
+        versions: &[Vec<u8>],
+    ) -> Result<(), NativeStorageError> {
+        for (index, version) in versions.iter().enumerate() {
+            let ordinal = u32::try_from(index + 1)
+                .map_err(|_| Self::unsupported("schema registry has too many versions"))?;
+            durable_replace(
+                &self.schema_version_path(collection.name(), ordinal)?,
+                version,
+            )?;
+        }
+        Ok(())
+    }
+
     fn build_staging(
         &self,
         collection: &NativeCollection,
         (layout, generation): (CollectionLayout, u64),
-        images: &[DocumentImage],
+        (images, versions): (&[DocumentImage], &[Vec<u8>]),
         staging: &Path,
     ) -> Result<(), NativeStorageError> {
         if crate::path_exists_no_follow(staging)? {
             remove_dir_durable(staging)?;
         }
         let outcome = self
-            .write_staging(collection, (layout, generation), images, staging)
-            .and_then(|()| Self::verify_staging(collection, layout, images, staging));
+            .write_staging(
+                collection,
+                (layout, generation),
+                (images, versions),
+                staging,
+            )
+            .and_then(|()| Self::verify_staging(collection, layout, (images, versions), staging));
         if outcome.is_err() && crate::path_exists_no_follow(staging)? {
             remove_dir_durable(staging)?;
         }
@@ -195,12 +263,12 @@ impl NativeWriteRoot {
         &self,
         collection: &NativeCollection,
         (layout, generation): (CollectionLayout, u64),
-        images: &[DocumentImage],
+        (images, versions): (&[DocumentImage], &[Vec<u8>]),
         staging: &Path,
     ) -> Result<(), NativeStorageError> {
         match layout {
             CollectionLayout::Segments => {
-                SegmentImport::build(&self.root, staging, images, generation)
+                SegmentImport::build(&self.root, staging, (images, versions), generation)
             }
             CollectionLayout::Files => {
                 FileExport::build(&self.root, staging, images, collection.shard_width())
@@ -211,9 +279,24 @@ impl NativeWriteRoot {
     fn verify_staging(
         collection: &NativeCollection,
         layout: CollectionLayout,
-        images: &[DocumentImage],
+        (images, versions): (&[DocumentImage], &[Vec<u8>]),
         staging: &Path,
     ) -> Result<(), NativeStorageError> {
+        if layout == CollectionLayout::Segments {
+            let staged = SegmentSchemas::load(&SegmentPaths::of(staging), None)?;
+            let same = staged.entries().len() == versions.len()
+                && staged
+                    .entries()
+                    .iter()
+                    .zip(versions)
+                    .all(|(entry, version)| entry.version.as_bytes() == version.as_slice());
+            if !same {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::CorruptMetadata,
+                    "layout migration copy does not hold the collection's schema registry",
+                ));
+            }
+        }
         let copies = match layout {
             CollectionLayout::Segments => DocumentImage::read_segments(staging)?,
             CollectionLayout::Files => images
@@ -343,21 +426,30 @@ impl NativeWriteRoot {
         marker: &LayoutMigrationMarker,
     ) -> Result<(), NativeStorageError> {
         let state = LogCheckpoint::state_path(collection)?;
+        // A file layout collection with a registry keeps the fenced
+        // generation format older releases refuse (ADR 0017 section 3).
+        let fenced = self
+            .root
+            .collection(collection.name())?
+            .schema_head()
+            .is_some();
         if marker.to == CollectionLayout::Files {
             write_json_durable(
                 &state,
                 &GenerationRecord::writing(
                     marker.generation - 1,
                     Self::MIGRATION_TRANSACTION.into(),
-                ),
+                )
+                .fenced(fenced),
             )?;
         }
         self.write_layout(collection, marker.to)?;
         match marker.to {
             CollectionLayout::Segments => SegmentLayout::write_marker(&state),
-            CollectionLayout::Files => {
-                write_json_durable(&state, &GenerationRecord::stable(marker.generation))
-            }
+            CollectionLayout::Files => write_json_durable(
+                &state,
+                &GenerationRecord::stable(marker.generation).fenced(fenced),
+            ),
         }
     }
 

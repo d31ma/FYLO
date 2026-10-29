@@ -5143,7 +5143,7 @@ fn set_mode(_path: &Path, _mode: u32) -> Result<(), NativeStorageError> {
 /// The list is the contract the crash matrix enumerates, so a new failpoint
 /// must be declared here to be injectable — which is also what stops it from
 /// being added without coverage.
-pub const FAILPOINTS: [&str; 32] = [
+pub const FAILPOINTS: [&str; 34] = [
     "before-file-write",
     "after-file-rename",
     "after-file-sync",
@@ -5169,6 +5169,8 @@ pub const FAILPOINTS: [&str; 32] = [
     "after-checkpoint-flush",
     "after-checkpoint-remove",
     "after-schema-file",
+    "after-schema-record",
+    "after-schemas-snapshot",
     "after-compaction-copy",
     "after-compaction-sync",
     "after-compaction-record",

@@ -34,6 +34,8 @@ mod segment_operations;
 mod segment_plan;
 mod segment_rebuild;
 mod segment_recovery;
+mod segment_schema_commit;
+mod segment_schemas;
 mod segment_verification;
 mod step_applier;
 mod update_step;
@@ -44,6 +46,7 @@ pub use compaction_report::CompactionReport;
 pub use layout_migration_report::LayoutMigrationReport;
 pub use salvage_report::SalvageReport;
 pub(crate) use segment_layout::SegmentLayout;
+pub(crate) use segment_schemas::SegmentSchemas;
 pub use segment_verification::SegmentVerification;
 
 /// A file's modification time in whole Unix milliseconds.
