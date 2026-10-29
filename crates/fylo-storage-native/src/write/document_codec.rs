@@ -10,7 +10,7 @@ use crate::{NativeStorageError, NativeStorageErrorCode, ValidationMode};
 /// What happens to a document body between storage and the mutation that
 /// rewrites it.
 ///
-/// Every mutation that stores a body builds it through a [`DocumentPolicy`],
+/// Every mutation that stores a body builds it through a `DocumentPolicy`,
 /// which runs these steps in the order ADR 0017 section 1 fixes. Storage
 /// computes some post-images itself (a shallow patch merges into the stored
 /// body, and SQL `INSERT` and `UPDATE` build bodies from a statement), and the
