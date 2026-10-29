@@ -648,6 +648,8 @@ impl NativeWriteRoot {
             // `std` does not map to `Unsupported`.
             Err(_) => Self::adopt_without_link(staging, out, exists)?,
         }
+        // The staging file's lease, marked free when the build closed it.
+        Self::remove_staging(staging)?;
         sync_parent(out)
     }
 
