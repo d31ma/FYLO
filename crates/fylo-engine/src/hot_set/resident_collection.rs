@@ -1,14 +1,18 @@
 use fylo_storage_native::{CollectionKind, GenerationState, LogPosition};
 
+use crate::lazy_migration::MigrationGuard;
+
 /// What a collection was when its resident entries were read: its kind, the
-/// stable generation and write-ahead log end they belong to, and the fields
-/// its schema encrypts.
+/// stable generation and write-ahead log end they belong to, the fields its
+/// schema encrypts, and the fields its index cannot answer for while it has
+/// documents below its head schema version.
 #[derive(Debug)]
 pub(crate) struct ResidentCollection {
     kind: CollectionKind,
     generation: u64,
     log: Option<LogPosition>,
     encrypted_fields: Vec<String>,
+    migration_guard: Option<MigrationGuard>,
 }
 
 impl ResidentCollection {
@@ -16,12 +20,14 @@ impl ResidentCollection {
         kind: CollectionKind,
         state: GenerationState,
         encrypted_fields: Vec<String>,
+        migration_guard: Option<MigrationGuard>,
     ) -> Self {
         Self {
             kind,
             generation: state.generation,
             log: state.log,
             encrypted_fields,
+            migration_guard,
         }
     }
 
@@ -43,6 +49,10 @@ impl ResidentCollection {
 
     pub(crate) fn encrypted_fields(&self) -> &[String] {
         &self.encrypted_fields
+    }
+
+    pub(crate) const fn migration_guard(&self) -> Option<&MigrationGuard> {
+        self.migration_guard.as_ref()
     }
 
     pub(crate) fn is_document_collection(&self) -> bool {

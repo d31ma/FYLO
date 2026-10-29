@@ -96,7 +96,16 @@ impl<'a> HotReader<'a> {
         let collection = self.engine.open_collection(name)?;
         let state = ReadOnlyEngine::stable_generation(&collection)?;
         let encrypted = self.engine.encrypted_fields(name)?;
-        let header = Arc::new(ResidentCollection::new(collection.kind(), state, encrypted));
+        let guard = match collection.kind() {
+            CollectionKind::Document => self.engine.migration_guard(&collection)?,
+            CollectionKind::File => None,
+        };
+        let header = Arc::new(ResidentCollection::new(
+            collection.kind(),
+            state,
+            encrypted,
+            guard,
+        ));
         self.hot_set
             .admit_header(self.epoch, &self.key, Arc::clone(&header));
         Ok((header, Some(collection)))
@@ -162,13 +171,19 @@ impl<'a> HotReader<'a> {
     }
 
     /// The index narrows the candidates when the query has a safe equality
-    /// plan; otherwise every live document is a candidate.
+    /// plan, and the index is right for its fields in the head shape;
+    /// otherwise every live document is a candidate.
     fn candidates(
         source: &mut DocumentSource<'_>,
         header: &ResidentCollection,
         query: &StructuredQuery,
     ) -> Result<Arc<Vec<String>>, EngineError> {
-        match EqualityPlan::new(query, header.encrypted_fields()) {
+        let plan = EqualityPlan::new(query, header.encrypted_fields()).filter(|plan| {
+            header
+                .migration_guard()
+                .is_none_or(|guard| guard.allows(plan))
+        });
+        match plan {
             Some(plan) => {
                 let snapshot = source.snapshot()?;
                 Ok(Arc::new(plan.scan(&snapshot)?))

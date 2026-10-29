@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
+use super::super::schema_counts::SchemaCountDelta;
 use super::placed_record::PlacedRecord;
 use crate::{NativeCollection, NativeRoot, NativeStorageError};
 
@@ -27,6 +28,16 @@ pub(crate) trait LoggedPlan {
         collection: &NativeCollection,
         placed: &PlacedRecord,
     ) -> Result<(), (NativeStorageError, bool)>;
+
+    /// How this plan, once applied, changed the stored `_v` of the live
+    /// documents of a collection that keeps convergence counts (ADR 0017
+    /// section 6). A plan of a collection that keeps none changes nothing.
+    fn schema_count_delta(
+        &self,
+        _collection: &NativeCollection,
+    ) -> Result<SchemaCountDelta, NativeStorageError> {
+        Ok(SchemaCountDelta::default())
+    }
 
     /// Undo a failed apply from the in-memory pre-images.
     fn undo(

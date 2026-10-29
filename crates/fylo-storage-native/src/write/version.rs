@@ -736,6 +736,10 @@ impl NativeWriteRoot {
                 should_install: target_collections.get(collection) == Some(data_directory),
             });
         }
+        // The swap replaces documents outside any collection transaction, so
+        // no commit keeps the schema version counts (ADR 0017 section 6);
+        // drop them, and the rebuild below counts again.
+        self.invalidate_schema_counts_of(collections.iter().map(|(_, name)| name.as_str()))?;
         write_materialization_manifest(&transaction, &manifest)?;
         let outcome = (|| {
             self.stage_repository_tree(repository, tree, &stage)?;

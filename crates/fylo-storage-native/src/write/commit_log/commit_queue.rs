@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::thread::ThreadId;
 
+use super::super::schema_counts::{SchemaCountDelta, SchemaVersionCounts};
 use super::log_segment::LogSegment;
 use crate::{NativeStorageError, NativeStorageErrorCode};
 
@@ -47,6 +48,12 @@ pub(crate) struct BusyPeriod {
     /// section 3), decided once under the lock so every publication of the
     /// period keeps it.
     pub(crate) fence: SchemaFence,
+    /// The collection's schema version count when the period began, and the
+    /// change of every commit applied since (ADR 0017 section 6). `None`
+    /// when the collection is not tracked or a change could not be read, in
+    /// which case the count is left stale.
+    pub(crate) schema_counts: Option<SchemaVersionCounts>,
+    pub(crate) schema_delta: SchemaCountDelta,
 }
 
 /// Whether a collection's generation state is written in the schema

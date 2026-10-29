@@ -5,8 +5,10 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use fylo_storage_native::NativeStorageErrorCode;
+use fylo_storage_native::{CollectionKind, NativeStorageErrorCode, SchemaVersionCounts};
 use serde_json::{Map, Value, json};
+
+use crate::lazy_migration::Convergence;
 
 use crate::schema::{
     LoadedVersion, SchemaImport, SchemaPull, SchemaPush, SchemaPushReport, SchemaTools,
@@ -83,7 +85,100 @@ impl WriteEngine {
             }
             Ok((total, sample))
         };
-        SchemaPush::new(&self.registry, schema_dir, collection).run(actor, Some(&mut documents))
+        let report = SchemaPush::new(&self.registry, schema_dir, collection)
+            .run(actor, Some(&mut documents))?;
+        // A head with a migration starts the convergence count (ADR 0017
+        // section 6). The writer would count at its next commit anyway, and
+        // a reader by scan, so a failure here is not the push's.
+        if self
+            .registry
+            .head_ordinal(collection)
+            .is_ok_and(|head| head.is_some_and(|head| head >= 2))
+        {
+            let _ = self.writer.rebuild_schema_versions(collection);
+        }
+        Ok(report)
+    }
+
+    /// Live documents of `collection` by the version they are stored at, or
+    /// `None` when it is not an existing document collection. A count the
+    /// writer keeps is recorded again when it is stale.
+    fn schema_version_counts(
+        &self,
+        collection: &str,
+    ) -> Result<Option<SchemaVersionCounts>, EngineError> {
+        let handle = match self.writer.native_root().collection(collection) {
+            Ok(handle) => handle,
+            Err(error)
+                if matches!(
+                    error.code(),
+                    NativeStorageErrorCode::NotFound | NativeStorageErrorCode::InvalidCollection
+                ) =>
+            {
+                return Ok(None);
+            }
+            Err(error) => return Err(EngineError::storage(error)),
+        };
+        if handle.kind() != CollectionKind::Document {
+            return Ok(None);
+        }
+        if let Some(counts) = handle
+            .recorded_schema_versions()
+            .map_err(EngineError::storage)?
+        {
+            return Ok(Some(counts));
+        }
+        let counts = if handle.tracks_schema_versions() {
+            self.writer.rebuild_schema_versions(collection)
+        } else {
+            handle.scan_schema_versions()
+        };
+        counts.map(Some).map_err(EngineError::storage)
+    }
+
+    /// `report`, a `schemaInspect` result, with the collection's validation
+    /// mode and where its documents stand against the head (ADR 0017
+    /// section 6): the documents at each version, those without `_v`
+    /// (counted at the oldest), those at a version the schema does not list,
+    /// and whether every document is at the head.
+    pub(crate) fn with_convergence(
+        &self,
+        collection: &str,
+        mut report: Value,
+    ) -> Result<Value, EngineError> {
+        let Some(counts) = self.schema_version_counts(collection)? else {
+            return Ok(report);
+        };
+        let head = report["current"].as_str().map(str::to_owned);
+        let labels: Vec<String> = report["versions"]
+            .as_array()
+            .map(|versions| {
+                versions
+                    .iter()
+                    .filter_map(|entry| entry["version"].as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let (per_version, unknown, converged) =
+            Convergence::report(&labels, head.as_deref(), &counts);
+        if let Some(versions) = report["versions"].as_array_mut() {
+            for (entry, documents) in versions.iter_mut().zip(per_version) {
+                entry["documents"] = json!(documents);
+            }
+        }
+        let mode = self.validation_mode(collection)?;
+        let Some(fields) = report.as_object_mut() else {
+            return Ok(report);
+        };
+        fields.insert("validation".into(), json!(mode.as_str()));
+        fields.insert("head".into(), json!(head));
+        fields.insert("documents".into(), json!(counts.total()));
+        fields.insert("unversioned".into(), json!(counts.unversioned));
+        if !unknown.is_empty() {
+            fields.insert("unknownVersions".into(), json!(unknown));
+        }
+        fields.insert("converged".into(), json!(converged));
+        Ok(report)
     }
 
     /// One stored document, decrypted at the version it was written at, or

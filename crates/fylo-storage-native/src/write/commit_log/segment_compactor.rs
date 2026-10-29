@@ -85,7 +85,7 @@ impl SegmentCompactor {
             first_lsn: self.rows.iter().map(|row| row.lsn).min().unwrap_or(1),
         };
         let mut options = OpenOptions::new();
-        options.write(true).create(true).truncate(true);
+        let _ = options.write(true).create(true).truncate(true);
         LogSegment::owner_only(&mut options, LogSegmentKind::CompactedDocuments);
         let mut file = options.open(&path).map_err(NativeStorageError::io)?;
         file.write_all(&header.encode())

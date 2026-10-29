@@ -561,6 +561,17 @@ async function runScenario(label, binary, root) {
                 { op: 'schemaCheck', collection: 'profiles', schemaDir: schemaRoot },
                 { record: false }
             )
+            // Convergence counts (ADR 0017 section 6) postdate the release.
+            const converged = await request(
+                'schema-inspect-converged',
+                { op: 'schemaInspect', collection: 'profiles', schemaDir: schemaRoot },
+                { record: false }
+            )
+            assertEqual(
+                [converged.head, converged.documents, converged.converged],
+                ['v2', 1, true],
+                'schemaInspect convergence'
+            )
             // The schema registry (ADR 0017 section 3) postdates the release.
             await request(
                 'create-registered',
@@ -783,6 +794,23 @@ function normalizeKnownReleaseDeltas(operation, value) {
         const released = structuredClone(value)
         delete released.validation
         delete released.schemaViolations
+        return released
+    }
+    if (operation === 'schemaInspect' && value && typeof value === 'object') {
+        // Convergence counts (ADR 0017 section 6) are newer than every
+        // release; they appear once the collection exists.
+        const released = structuredClone(value)
+        for (const field of [
+            'validation',
+            'head',
+            'documents',
+            'unversioned',
+            'unknownVersions',
+            'converged'
+        ]) {
+            delete released[field]
+        }
+        for (const version of released.versions ?? []) delete version.documents
         return released
     }
     if (operation !== 'diff' || !Array.isArray(value?.changes)) return value

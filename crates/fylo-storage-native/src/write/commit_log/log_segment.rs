@@ -148,7 +148,7 @@ impl LogSegment {
         let mut bytes = header.encode().to_vec();
         bytes.extend(Self::frame(opening.kind, &record)?);
         let mut options = OpenOptions::new();
-        options.read(true).write(true).create_new(true);
+        let _ = options.read(true).write(true).create_new(true);
         Self::owner_only(&mut options, opening.kind);
         let mut file = options.open(path).map_err(NativeStorageError::io)?;
         file.write_all(&bytes).map_err(NativeStorageError::io)?;
