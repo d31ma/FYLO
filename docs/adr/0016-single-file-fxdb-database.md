@@ -1,0 +1,421 @@
+# ADR 0016: Single-file `.fxdb` databases
+
+- Status: **Proposed** (awaiting Samuel's approval)
+- Date: **2026-10-29**
+- Owners: **FYLO maintainers**
+- Builds on: ADR 0015 (append-only document segments), ADR 0013 (the record
+  format and commit protocol), ADR 0014 (the hot set's log-end check) and
+  ADR 0008 (the portable WebAssembly engine).
+- Amends: ADR 0008's browser storage, for databases held in a `.fxdb` file.
+- Design notes and options considered: "A single-file format for FYLO
+  databases" (https://claude.ai/artifact/R83hiCJU8CFmXNi2mS4LDM).
+
+## Context
+
+A FYLO root is a directory tree. Even with ADR 0015's segments, a collection is
+a folder of segment files, a slot file, two location files, a prefix index and
+lock files, and a root holds one such folder per collection plus a catalog and
+a transaction journal. Samuel asked for a database to be **one file** with its
+own extension that:
+
+1. holds the database's documents and indexes;
+2. only the `fylo` engine reads;
+3. is compressed but read in place, without extracting it first;
+4. grows and shrinks with the data, as a sparse disk image does.
+
+Two measurements point the same way. On the raw ATLAS SMB share the cost of a
+query is round trips: an open is about 2.2 ms and an `flistxattr` about 3 ms,
+so a 250-row query over per-document files took 1.8 s. Inside an APFS sparse
+image stored on the same share, which is one file to the SMB client, a
+2,500-row query took 114 ms (both with the hot set off, 2026-10-28,
+`docs/QUERY_RELEASE_QUALIFICATION.md`). The image needs mounting, only works on
+macOS, and wedged with error 45 under `hdiutil attach`. A file format of our
+own gets the one-file benefit on every platform without a mount.
+
+The browser is the second reason. Fylo Explorer still runs the JavaScript
+engine over a folder picked through File System Access, which only Chromium
+offers. The WebAssembly engine (ADR 0008) calls its host synchronously, and
+browser folder operations are asynchronous, so today's WebAssembly path
+bridges them through a second Worker and a `SharedArrayBuffer`. That needs
+the page served cross-origin isolated, which static hosts such as GitHub Pages
+cannot do. An engine that needs exactly one file needs no bridge: a Worker can
+read a picked `File` synchronously and can hold one synchronous OPFS access
+handle.
+
+## Decision
+
+A FYLO database can be a single **`.fxdb` file**: a header followed by
+fixed-size **extents**, each holding one of the files an ADR 0015 collection
+keeps today. Records inside are ADR 0015 records, compressed one at a time,
+and optionally encrypted. The same Rust code reads and writes it natively,
+under WASI and in the browser.
+
+### 1. Scope
+
+Version 1 covers **document collections** of a root, on the `Native` profile,
+on macOS, Linux and Windows natively, and in the WebAssembly engines.
+
+Not in version 1, and refused with `ELAYOUTUNSUPPORTED` when packing a root
+that uses them:
+
+- buckets (raw-file collections), which need large-object extents that span
+  more than one extent; a follow-up ADR;
+- document version control, for ADR 0015's reason;
+- the embedded queue (ADR 0009) and the `EfsSidecarV1` profile;
+- transactions that span several collections. One file makes them possible
+  (section 6), but they are a separate decision.
+
+A directory root stays fully supported. `.fxdb` is opt-in per database.
+
+### 2. Name and identity
+
+- Extension **`.fxdb`** (Fylo Explorer database). `.fx` was rejected because
+  DirectX and HLSL effect files already use it.
+- Magic: the 8 bytes `89 46 58 44 42 0D 0A 1A` (`\x89FXDB\r\n\x1a`), PNG's
+  pattern, so a file mangled by a text-mode transfer or truncated at a high
+  bit fails the magic check instead of parsing.
+- Media type `application/vnd.d31ma.fxdb`; macOS type `com.d31ma.fxdb`.
+- The format version is a major number and three feature-flag sets, as in
+  ext4: an unknown **incompatible** flag refuses the file, an unknown
+  **read-only-compatible** flag opens it read-only, and an unknown
+  **compatible** flag is ignored. Encryption and the sealed mode are
+  incompatible flags; a new codec is an incompatible flag.
+
+### 3. File layout
+
+| Offset    | Content                                                                 |
+| --------- | ----------------------------------------------------------------------- |
+| 0         | superblock copy A, 4 KiB                                                |
+| 4 KiB     | superblock copy B, 4 KiB                                                |
+| 8 KiB     | reserved, zero, to the first extent boundary                            |
+| 1 extent  | extent 1, the collection directory                                      |
+| n extents | extents 2 and up: segments, snapshots, dictionaries, maps or free space |
+
+**Extent size** is fixed per file at creation: 8 MiB by default, a power of
+two from 1 MiB to 64 MiB. Every extent begins with a 64-byte extent header:
+magic, kind, owning collection id, **sequence number**, and a CRC-32C. The
+sequence number comes from a counter in the superblock and is never reused.
+
+**Superblock.** Magic, format version and flags, extent size, extent count,
+superblock generation, the checkpoint LSN per collection, the extents that
+hold the current extent map, the codec and the encryption header (section 9),
+and a CRC-32C. A checkpoint writes the copy that does not hold the newest
+valid generation and flushes; a reader takes the valid copy with the higher
+generation. This is ADR 0015's slot rule at file scale.
+
+**Collection directory.** One 4 KiB block per collection: its name and id,
+its catalog descriptor, its two **generation slots** (ADR 0015 section 6,
+moved in from `state.slots`), its active segment extent and the extents of
+its current snapshots. One block per collection keeps two collections from
+ever writing the same sector. An 8 MiB directory holds 2,048 collections and
+chains to a further directory extent past that.
+
+**Extent map.** 32 bytes per extent: state (free, owned, sealed), kind, owner,
+sequence number and live bytes. A 1 TiB file at 8 MiB extents has a 4 MiB
+map. The map is written copy-on-write into free extents at each checkpoint,
+and the superblock names the current one. Between checkpoints it is rebuilt
+from the records that change it (section 6).
+
+**Extent kinds:**
+
+| Kind         | Holds                                                              | Source of truth? |
+| ------------ | ------------------------------------------------------------------ | ---------------- |
+| `directory`  | collection blocks                                                  | yes              |
+| `segment`    | ADR 0015 records for one collection                                | yes              |
+| `dictionary` | a compression dictionary for one collection                        | yes              |
+| `locations`  | ADR 0015 `locations.snapshot`, possibly a run of extents           | no, derived      |
+| `index`      | the prefix index snapshot (`index/keys.snapshot`), possibly a run  | no, derived      |
+| `map`        | an extent map copy                                                 | no, derived      |
+| `free`       | nothing                                                            | n/a              |
+
+A dictionary is part of the source of truth because the records compressed
+with it cannot be read without it. It is never freed while a record names it.
+
+### 4. Records
+
+The record frame is ADR 0015's (sync marker, length, CRC-32C, body) with one
+added **frame header byte** for the codec, and a 4-byte dictionary id when a
+dictionary was used. When the file is encrypted, the frame also carries a
+12-byte nonce and a 16-byte tag (section 9), and the CRC covers the
+ciphertext so that `fylo verify` can check integrity without the key.
+
+The manifest, the entry fields and their meaning are ADR 0015 section 3
+unchanged, so every rule that rebuilds locations, indexes or the per-document
+tree from records still holds.
+
+### 5. Reads
+
+A process opens the file once and keeps the handle. Opening reads the
+superblocks, the directory and the extent map, then the location snapshot of
+each collection it touches: memory-mapped natively, read into memory in
+WebAssembly. Records written since the snapshot are found by replaying each
+collection's active segment from the checkpoint to the committed length in
+its slot. That tail is bounded by the checkpoint interval, so it costs a few
+reads, and it replaces ADR 0015's `locations.wal` and `keys.wal` files: the
+deltas live only in memory.
+
+A point read is a location lookup and **one `pread`**. A query that hydrates
+many rows sorts locations by offset and reads up to 1 MiB at a time (ADR 0015
+section 5). Each read checks the frame CRC, decrypts if needed, decompresses
+one record, and checks the body SHA-256.
+
+A reader holding a location re-checks the target extent's header sequence
+number when it reads. A mismatch means the extent was freed and reused since
+the location was resolved; the reader treats it as a moved generation and
+retries, which is today's protocol.
+
+### 6. Writes and extents
+
+The commit protocol is ADR 0015 section 6 with the active segment file
+replaced by the collection's active segment extent:
+
+1. under the collection's write lock, build the record;
+2. publish `writing` in the collection's slot;
+3. append the record to the active extent and flush the file. **This is the
+   commit point.**
+4. publish `stable`.
+
+A flush covers the whole file, so group commit can retire waiting writers of
+several collections with one flush.
+
+**Taking a new extent.** When the active extent cannot hold the next record,
+the writer takes the database's allocation lock, picks the lowest-numbered
+free extent (or extends the file by one extent), writes its extent header with
+a new sequence number, and appends a **seal record** to the old extent that
+names the new extent and its sequence number. The seal record and the new
+header are flushed with the commit that first uses the new extent. Recovery
+follows seal records from the checkpointed active extent, so an extent taken
+after the last checkpoint is found without the map.
+
+**Compaction** is ADR 0015 section 7. The live entries of mostly-dead sealed
+extents are copied into new extents, a compaction record in the collection's
+active extent names the new extents and the ones they replace, and the
+replaced extents become free. A freed extent is **reused only after the next
+checkpoint** has written a map that shows it free. Readers in other processes
+that still hold locations into it are protected by the sequence-number check
+in section 5.
+
+**Shrinking.** Free extents are reused first, lowest number first, so data
+drifts toward the front of the file. Space is returned to the disk two ways:
+
+- **hole punching** of free extents where the filesystem supports it:
+  `F_PUNCHHOLE` on APFS, `fallocate(FALLOC_FL_PUNCH_HOLE)` on Linux,
+  `FSCTL_SET_ZERO_DATA` on a sparse NTFS file. Support is probed at open on a
+  free extent and remembered for the life of the handle; a failure only means
+  the space is kept;
+- **tail truncation**, everywhere, including EFS (NFS 4.1 has no hole
+  punching): `fylo compact --shrink` relocates the live extents nearest the
+  end into free extents nearer the front, through the same copy, record and
+  checkpoint steps, then truncates the file after the last owned extent.
+
+### 7. Locking and processes
+
+- **`fylo serve`** holds the database lease for its life (ADR 0012); other
+  processes go through it. This is the recommended mode on network storage.
+- **Several local processes** coordinate with OS byte-range locks on a
+  reserved range far beyond any data offset (2⁶² and up): one lock byte for
+  the database lease, one for extent allocation, and one per collection
+  (indexed by its directory block) for writers. Readers take no lock; they
+  read through the slots. `fcntl` open-file-description locks (`F_OFD_SETLK`)
+  on Linux, `fcntl` on macOS, `LockFileEx` on Windows. These replace the lock
+  files and the `hard_link` path for `.fxdb` databases.
+- Byte-range locks are enabled on a filesystem only after the multi-process
+  load harness passes on it. Until then a `.fxdb` database on that
+  filesystem opens with an exclusive lease: one process at a time. The
+  qualification list starts with APFS and NTFS locally, the ATLAS SMB share,
+  and the local NFS 4.1 server.
+
+### 8. Compression
+
+Each record body is compressed on its own, so a point read decompresses one
+document. A **dictionary** is trained per collection from its first 1 MiB of
+documents at the first checkpoint that has them, stored in a `dictionary`
+extent, and named by id in each frame. A later dictionary is trained at
+compaction when it improves the ratio by at least 10%; records keep the
+dictionary they were written with until compaction rewrites them.
+
+The codec must be **pure Rust**, because the browser build has no C
+toolchain, and it counts against the browser engine's budget of 1,792 KiB
+(640 KiB gzipped). The candidates are `lz4_flex` (block mode with a
+dictionary) and zstd written natively and read with `ruzstd` in the browser.
+Spike 4 below decides between them; the chosen crate is reviewed under
+ADR 0004.
+
+A **sealed** file (section 11) recompresses its extents in 64 KiB blocks for
+a better ratio; a point read then decompresses one block.
+
+### 9. Encryption
+
+Encryption is **opt-in per database and off by default**. The documentation
+and the website say so plainly wherever `.fxdb` is introduced, and
+`fylo inspect` reports `encrypted: false` for a plain file.
+
+When enabled at creation (`fylo create db.fxdb --encrypt`, or
+`encryption: { file: true }` in `application.json`):
+
+- the file key is derived with HKDF-SHA256, built on the existing `hmac` and
+  `sha2` crates, from the secret named by `fylo.encryption.key` and a random
+  32-byte salt stored in the superblock;
+- every record frame, the collection directory, dictionaries and snapshot
+  extents are sealed with **AES-256-GCM** (the `aes-gcm` crate the engine
+  already uses for `$encrypted` fields), compressed first;
+- each sealed unit takes a **fresh random 96-bit nonce**, never one derived
+  from the LSN, because compaction and packing rewrite the same LSN with
+  different bytes;
+- the associated data binds a frame to its collection id, LSN and entry index,
+  so a frame cannot be moved into another collection or replayed as another
+  record unnoticed;
+- the superblock keeps a key-check value, so a wrong key is reported as
+  `EKEY` at open, not as corruption.
+
+Without the key, only the superblock and extent headers are readable: sizes,
+counts and the format version, not collection names or documents. A lost key
+loses the database; `fylo unpack` to a directory root stays the way to keep a
+plain copy. Key rotation rewrites the file through compaction and is a
+follow-up.
+
+### 10. WebAssembly and Fylo Explorer
+
+The container lives in the Rust storage crates and does all its I/O through
+the `fylo-vfs` seam, so `fylo.wasm` (WASI) and `fylo-browser.wasm` run the same
+code. It needs six host operations on one file, and the `HostVfs` table
+already has all of them (`open`, `stat`, `read_at`, `write_at`, `truncate`,
+`flush`), so the host ABI does not change. Hosts:
+
+| Host                              | How it opens the file                                     | Writes                         |
+| --------------------------------- | --------------------------------------------------------- | ------------------------------ |
+| Browser, a picked or dropped file | a `File` read with `FileReaderSync` in the engine Worker  | none, read-only snapshot       |
+| Browser, a working copy           | one OPFS `FileSystemSyncAccessHandle`, opened before start | in place                       |
+| Browser, a hosted sealed file     | synchronous ranged `XMLHttpRequest` in the engine Worker  | none                           |
+| iOS and Android shells            | a native `HostVfs` over the app's file handle             | in place                       |
+| WASI runtime                      | a preopened file                                          | in place                       |
+
+None of these needs the `SharedArrayBuffer` bridge or cross-origin isolation.
+A browser cannot write a user-picked file in place (File System Access only
+replaces a file whole), so Explorer edits a picked file through an OPFS
+working copy and writes it back with **Save** or downloads it. A working copy
+is owned by one tab through Web Locks. A browser cannot lock a file against a
+native process, so a picked file is read as a snapshot: the slots and
+committed lengths read at open, re-read when the file's size or modification
+time changes.
+
+Explorer gains **Open database** (file picker, file input and drag and drop),
+which works in every current browser, not only Chromium. Explorer's folder
+view stays on the JavaScript engine until it is retired; this ADR does not
+port it.
+
+### 11. Packing, unpacking and operations
+
+- `fylo pack <root> --out db.fxdb` builds a `.fxdb` from a directory root (file
+  or segment layout), with ADR 0015's staging, oracle and commit steps.
+  `--sealed` produces a read-only, block-compressed file with no free extents.
+- `fylo unpack db.fxdb --out <root>` writes a directory root in the file
+  layout, byte-identical to ADR 0015's export.
+- `fylo compact db.fxdb [--shrink]`, `fylo verify db.fxdb`,
+  `fylo salvage db.fxdb --out <root>` (stepping over damage by sync marker and
+  extent header) and `fylo inspect db.fxdb` (extent counts by kind, free and
+  dead bytes, flags, encryption).
+- Every API that takes a root takes a `.fxdb` path. A root path that names an
+  existing regular file is opened as a container; one that names a directory,
+  or a path ending in `/`, is a directory root. `Fylo.open('orders.fxdb')`
+  and `fylo serve --root orders.fxdb` follow the same rule.
+
+### 12. Compatibility
+
+An older binary given a `.fxdb` path finds a regular file where it expects a
+root directory and fails before writing anything; the verification suite
+pins the exact error for the current release. A newer binary refuses an unknown
+incompatible flag with `EFORMATUNSUPPORTED`. Downgrading a database means
+`fylo unpack` first.
+
+## Spikes before implementation
+
+These run on the Mac Mini after the timed ATLAS benchmarks finish. Their
+results are added here before this ADR is accepted.
+
+| Spike | Question                                                                                    | Decides                                          |
+| ----- | ------------------------------------------------------------------------------------------- | ------------------------------------------------ |
+| 1     | Cold `pread` latency on one long-open file on the raw ATLAS share, with and without caching | whether a cold read under 1 ms is possible there |
+| 2     | Byte-range locks between two machines on CITADEL, and on the local NFS 4.1 server            | section 7's starting qualification list          |
+| 3     | Whether `F_PUNCHHOLE` from macOS frees space on the ATLAS share                              | whether shrinking there needs `--shrink`         |
+| 4     | `lz4_flex` and zstd with a dictionary on the 5k fixture: ratio, decode time and code size    | the codec in section 8                           |
+
+## Consequences
+
+Benefits:
+
+- a database is one file to copy, back up, mail or open in Explorer;
+- one open and one header read per database instead of several files per
+  collection, which is what matters on SMB and EFS;
+- JOINs read both collections from the same moment, through one handle;
+- the browser and mobile builds open databases with no bridge and no special
+  hosting headers, in every browser;
+- compressed records, and real protection when encryption is on.
+
+Costs:
+
+- an extent allocator, a free map and a reuse check that ADR 0015's
+  directory layout does not need;
+- damage to both superblock copies or the directory loses access to the whole
+  database until `fylo salvage` recovers its records;
+- one OS owner and mode for the whole database: per-collection OS permissions
+  are gone (per-record access descriptors still apply, as in ADR 0015
+  section 10);
+- a flush covers all collections, so a heavy import can lengthen another
+  collection's commit. Imports write and flush their extents in chunks
+  before their commit records to keep that small;
+- byte-range locks are new to FYLO and need their own qualification per
+  filesystem.
+
+## Alternatives considered
+
+- **A page-based file with B-trees, like SQLite or LMDB.** Compressed pages
+  need their own offset map, every commit writes the log and later the page,
+  and it replaces ADR 0013 and ADR 0015 with a new engine.
+- **SQLite as the container.** A C dependency and a format FYLO does not own,
+  and SQLite's documentation warns against its locking on network
+  filesystems, which is ATLAS and EFS.
+- **A band bundle, like a macOS sparse bundle.** The safest on network storage
+  (a freed band is a deleted file), but it is a folder, not one file.
+- **One `.fxdb` per collection.** No consistent snapshot across collections
+  for JOINs, an open per collection on a cold start, and no path to atomic
+  multi-collection writes. An application that wants that isolation can still
+  use one `.fxdb` per collection.
+- **Whole-file compression (zip, gzip).** Needs extraction to read.
+
+## Verification
+
+- `fylo-format` unit and fuzz targets for the superblock, directory, extent
+  header, map and frame parsers: truncation at every byte, bit flips, both
+  superblocks damaged, a reused extent with a stale sequence number, unknown
+  flags of each class.
+- The ADR 0015 conformance suites run against a `.fxdb` database as a third
+  layout.
+- **Crash matrix:** new failpoints `after-extent-header`, `after-seal-record`,
+  `after-superblock-write`, `after-map-write`, `after-shrink-relocate`,
+  `after-shrink-truncate`, `after-pack-staging`, plus ADR 0015's, under
+  `abort`, `enospc` and `edquot`.
+- **Reuse race:** readers holding locations while a compactor frees and a
+  writer reuses the same extents, for 10 minutes, with every read checked.
+- **Pack oracle:** directory root → `.fxdb` → directory root on the 5k and 25k
+  fixtures, identical by ADR 0015's oracle; and the same through `--sealed`.
+- **Encryption:** wrong key, swapped frames between collections, a replayed
+  frame, and a flipped tag bit are each detected.
+- **Browser:** Playwright opens a packed `.fxdb` read-only from a file input,
+  edits an OPFS copy and saves it, with no cross-origin isolation; the
+  WebAssembly size budget still passes; the artifact interchange script runs
+  the same NDJSON against `fylo` and `fylo.wasm` on a `.fxdb` database.
+- **Multi-process:** the load harness with byte-range locks on each
+  filesystem before it is qualified (section 7).
+- **Benchmarks:** point, selective, broad and range reads and durable writes
+  at 5k and 25k on the Mac, in the APFS image on ATLAS, on the raw ATLAS
+  share and from the Surface, against the ADR 0015 layout, with load recorded.
+
+## Operations
+
+- `fylo pack`, `unpack`, `compact [--shrink]`, `verify`, `salvage` and
+  `inspect`, as above.
+- On network storage, run `fylo serve` next to the file and connect to it,
+  rather than opening the file from several machines.
+- Back up a live database with `fylo pack --sealed` (a consistent copy), or
+  copy the file while no writer has it open.
