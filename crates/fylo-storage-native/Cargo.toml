@@ -40,7 +40,8 @@ ruzstd.workspace = true
 # than hand-written declarations.
 libc = { workspace = true }
 # The filesystem type (`fstatfs`) a `.fxdb` file is on, which decides whether
-# its byte-range locks are trusted.
+# its byte-range locks are trusted, and `fallocate` hole punching of free
+# extents on Linux.
 rustix.workspace = true
 xattr.workspace = true
 

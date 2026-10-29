@@ -4,7 +4,7 @@ use fylo_format::{
     ContainerSuperblock,
 };
 use std::io::ErrorKind;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 // 1 MiB extents keep the test files small.
 const SHIFT: u8 = ContainerSuperblock::MIN_EXTENT_SHIFT;
@@ -57,7 +57,7 @@ fn checkpoint(checkpoint: u64) -> ContainerCheckpointSlot {
     }
 }
 
-fn file_length(path: &PathBuf) -> u64 {
+fn file_length(path: &Path) -> u64 {
     std::fs::metadata(path).expect("stat container").len()
 }
 
@@ -327,4 +327,91 @@ fn checkpoints_alternate_between_the_superblock_copies() {
     let (newest, in_a) =
         ContainerSuperblock::newest(&bytes[..size], &bytes[size..2 * size]).expect("superblocks");
     assert_eq!((newest.generation, in_a), (6, false));
+}
+
+fn released_tail(path: &Path) -> ContainerFile {
+    let mut container = ContainerFile::open(path).expect("open container");
+    let kept = container.allocate(SEGMENT, 1).expect("allocate");
+    container
+        .write_payload(kept.index, 0, b"kept")
+        .expect("write kept");
+    for _ in 0..3 {
+        let replaced = container.allocate(SEGMENT, 1).expect("allocate");
+        container
+            .write_payload(replaced.index, 0, &vec![7_u8; 256 * 1024])
+            .expect("write replaced");
+        container.seal(replaced.index, 0).expect("seal");
+        container.release(replaced.index).expect("release");
+    }
+    container.sync().expect("sync");
+    container.checkpoint().expect("checkpoint");
+    container
+}
+
+#[test]
+fn shrinking_cuts_free_extents_off_the_end() {
+    let (_guard, path) = created("fxdb-shrink");
+    let mut container = released_tail(&path);
+    // Extents 4 to 6 are free, but the new map sits at 7, after them.
+    assert_eq!(container.allocator().free_extents(), vec![2, 4, 5, 6]);
+    assert_eq!(container.shrink_free_tail().expect("shrink"), 0);
+    // The next checkpoint moves the map to 2, which frees the tail.
+    container.checkpoint().expect("checkpoint");
+    assert_eq!(container.superblock().map_first_extent, 2);
+    assert_eq!(file_length(&path), 8 * EXTENT_BYTES);
+    assert_eq!(
+        container.shrink_free_tail().expect("shrink"),
+        3 * EXTENT_BYTES
+    );
+    assert_eq!(file_length(&path), 5 * EXTENT_BYTES);
+    drop(container);
+    let container = ContainerFile::open(&path).expect("reopen container");
+    assert_eq!(container.superblock().extent_count, 5);
+    let mut kept = [0_u8; 4];
+    container
+        .read_payload(3, 0, &mut kept)
+        .expect("read kept payload");
+    assert_eq!(&kept, b"kept");
+}
+
+#[test]
+fn an_older_superblock_that_outlives_a_shrink_still_opens() {
+    let (_guard, path) = created("fxdb-shrink-fallback");
+    {
+        let mut container = released_tail(&path);
+        container.checkpoint().expect("checkpoint");
+        container.shrink_free_tail().expect("shrink");
+    }
+    // Tear the newest copy; the older one describes eight extents.
+    let mut bytes = std::fs::read(&path).expect("read container");
+    let newest_at = {
+        let size = ContainerSuperblock::ENCODED_BYTES;
+        let (_, in_a) = ContainerSuperblock::newest(&bytes[..size], &bytes[size..2 * size])
+            .expect("superblocks");
+        if in_a { 0 } else { size }
+    };
+    bytes[newest_at + 100] ^= 0xff;
+    std::fs::write(&path, &bytes).expect("tear newest copy");
+    let container = ContainerFile::open(&path).expect("open on the older copy");
+    assert_eq!(container.superblock().extent_count, 8);
+    assert_eq!(file_length(&path), 8 * EXTENT_BYTES);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn punching_returns_free_extents_space_where_supported() {
+    use std::os::unix::fs::MetadataExt;
+    let (_guard, path) = created("fxdb-punch");
+    let container = released_tail(&path);
+    let before = std::fs::metadata(&path).expect("stat").blocks();
+    let punched = container.punch_free_extents().expect("punch");
+    let after = std::fs::metadata(&path).expect("stat").blocks();
+    assert_eq!(file_length(&path), 8 * EXTENT_BYTES);
+    if punched > 0 {
+        assert_eq!(punched, 4);
+        assert!(after < before, "{after} blocks after, {before} before");
+    }
+    let mut kept = [0_u8; 4];
+    container.read_payload(3, 0, &mut kept).expect("read kept");
+    assert_eq!(&kept, b"kept");
 }

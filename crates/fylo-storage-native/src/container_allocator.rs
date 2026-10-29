@@ -331,6 +331,17 @@ impl ContainerExtentAllocator {
         }
     }
 
+    /// Forget the free extents at the end of the file, so the next
+    /// checkpoint's map no longer describes them and the file can be cut
+    /// after them. Returns the new extent count. Released extents are kept:
+    /// they become free only once a checkpoint is durable.
+    pub fn truncate_free_tail(&mut self) -> u64 {
+        while self.slots.len() > 1 && self.slots.last() == Some(&Slot::Free) {
+            self.slots.pop();
+        }
+        self.extent_count()
+    }
+
     /// Free extents, whose disk space may be returned by punching a hole.
     #[must_use]
     pub fn free_extents(&self) -> Vec<u64> {
@@ -462,6 +473,24 @@ mod tests {
         assert_eq!(indices(&end), vec![(8, true), (9, true)]);
         assert_eq!(allocator.extent_count(), 10);
         assert_eq!(allocator.free_extents(), vec![1]);
+    }
+
+    #[test]
+    fn truncates_only_free_extents_at_the_end() {
+        let mut allocator = ContainerExtentAllocator::new(1);
+        for _ in 0..5 {
+            allocator.allocate(SEGMENT, 1);
+        }
+        for index in [2, 4, 5] {
+            allocator.release(index).unwrap();
+        }
+        // Released, not yet free: nothing goes.
+        assert_eq!(allocator.truncate_free_tail(), 6);
+        allocator.checkpoint_completed();
+        assert_eq!(allocator.truncate_free_tail(), 4);
+        assert_eq!(allocator.free_extents(), vec![2]);
+        assert_eq!(allocator.allocate(SEGMENT, 1).index, 2);
+        assert_eq!(allocator.allocate(SEGMENT, 1).index, 4);
     }
 
     #[test]

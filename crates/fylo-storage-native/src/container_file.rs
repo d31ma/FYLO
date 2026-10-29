@@ -188,6 +188,12 @@ impl ContainerFile {
         container.superblock_in_a = in_a;
         container.allocator = container.read_map()?;
         container.collections = container.read_directory()?;
+        // An older superblock copy can describe more extents than a later
+        // shrink left in the file; give them back their zeros.
+        let required = container.allocator.extent_count() * container.extent_bytes();
+        if container.file().metadata()?.len() < required {
+            container.file().set_len(required)?;
+        }
         Ok(container)
     }
 
@@ -517,6 +523,51 @@ impl ContainerFile {
         Ok(())
     }
 
+    /// Return the free extents at the end of the file to the filesystem:
+    /// checkpoint a map that no longer describes them, then cut the file.
+    /// A crash before the cut leaves a longer file, which opens as before.
+    /// Returns the bytes released.
+    ///
+    /// # Errors
+    ///
+    /// Returns the checkpoint or resize failure.
+    pub fn shrink_free_tail(&mut self) -> Result<u64, ContainerError> {
+        let before = self.file().metadata()?.len();
+        if self.allocator.truncate_free_tail() == self.superblock.extent_count {
+            return Ok(0);
+        }
+        self.checkpoint()?;
+        let length = self.allocator.extent_count() * self.extent_bytes();
+        if length < before {
+            self.file().set_len(length)?;
+            self.sync()?;
+        }
+        Ok(before.saturating_sub(length))
+    }
+
+    /// Punch holes over the free extents, where the filesystem can, so their
+    /// space goes back to the disk while the file keeps its length. Returns
+    /// how many extents were punched; zero where the platform or filesystem
+    /// cannot punch holes, which only means the space is kept.
+    ///
+    /// # Errors
+    ///
+    /// Returns a failure other than the filesystem not supporting it.
+    pub fn punch_free_extents(&self) -> Result<u64, ContainerError> {
+        let mut punched = 0;
+        for extent in self.allocator.free_extents() {
+            if !punch_hole(
+                self.file(),
+                extent * self.extent_bytes(),
+                self.extent_bytes(),
+            )? {
+                break;
+            }
+            punched += 1;
+        }
+        Ok(punched)
+    }
+
     fn directory_blocks(&self) -> u64 {
         self.payload_capacity() / BLOCK_BYTES
     }
@@ -619,6 +670,31 @@ fn placeholder_superblock() -> ContainerSuperblock {
         key_salt: [0; 32],
         key_check: [0; 16],
     }
+}
+
+/// Deallocate a range, keeping the file's length. `false` when the
+/// filesystem or platform cannot.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn punch_hole(file: &File, offset: u64, length: u64) -> io::Result<bool> {
+    use rustix::fs::FallocateFlags;
+    match rustix::fs::fallocate(
+        file,
+        FallocateFlags::PUNCH_HOLE | FallocateFlags::KEEP_SIZE,
+        offset,
+        length,
+    ) {
+        Ok(()) => Ok(true),
+        Err(rustix::io::Errno::OPNOTSUPP | rustix::io::Errno::NOSYS) => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
+// macOS `F_PUNCHHOLE` and Windows `FSCTL_SET_ZERO_DATA` need an `unsafe`
+// call that ADR 0004 has not reviewed yet; until then the space is kept and
+// `shrink_free_tail` returns it.
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+fn punch_hole(_file: &File, _offset: u64, _length: u64) -> io::Result<bool> {
+    Ok(false)
 }
 
 fn write_extent_header(
