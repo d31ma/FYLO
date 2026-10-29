@@ -542,7 +542,8 @@ jobs:
                   bun ./scripts/verify-artifact-interchange.mjs \
                     --binary release-assets/fylo-linux-x64 \
                     --wasm target/wasm32-wasip1/release/fylo-rust.wasm
-                  bun run rust:browser:host
+                  bun ./scripts/verify-browser-wasm-host.mjs \
+                    --binary release-assets/fylo-linux-x64
                   bun ./scripts/verify-browser-wasm-budgets.mjs \
                     --output target/wasm-budget-release.json
 

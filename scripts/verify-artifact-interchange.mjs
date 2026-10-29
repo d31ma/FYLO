@@ -82,9 +82,9 @@ const EXPECTED_DIVERGENCE = new Set([
     'result.capabilities.documentBuckets.putInputs',
     // POSIX uid/gid/mode needs syscalls WASI does not have.
     'result.capabilities.machineAccess',
-    // CHEX runs in-process natively; its regex tables would push the Wasm
-    // engine past its size budget, so the Wasm build reports no validator.
-    'result.capabilities.schemaValidation'
+    // Both validate with CHEX, but the Wasm build has no regex compiler: it
+    // validates only with the compiled validators in the schema registry.
+    'result.capabilities.schemaValidation.compiledOnly'
 ])
 
 try {

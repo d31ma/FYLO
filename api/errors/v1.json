@@ -260,6 +260,10 @@
         {
             "code": "ESCHEMACONFLICT",
             "retryable": false
+        },
+        {
+            "code": "ESCHEMAUNAVAILABLE",
+            "retryable": false
         }
     ]
 }

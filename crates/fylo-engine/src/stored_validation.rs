@@ -50,7 +50,12 @@ impl WriteEngine {
             .collection(collection)
             .ok()
             .and_then(|collection| collection.validation());
-        if in_folder || matches!(recorded, Some(ValidationMode::Strict | ValidationMode::Warn)) {
+        if in_folder
+            || matches!(
+                recorded,
+                Some(ValidationMode::Strict | ValidationMode::Warn)
+            )
+        {
             return Err(EngineError::schema_unavailable(format!(
                 "collection {collection} has no schema registry, and a build without a regex \
                  compiler cannot compile a fylo.schema folder; push the schema into the \

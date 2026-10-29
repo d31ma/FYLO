@@ -1020,6 +1020,15 @@ fylo schema pull article --out ./schemas-copy --root /mnt/fylo     # write the f
   `schemaDoctor` read it, whether or not `fylo.schema` is configured, and edits
   to the folder take effect at the next push. A collection without one keeps
   reading the folder, as before.
+- The WebAssembly builds (`fylo.wasm`, `fylo-browser.wasm`) have no regex
+  compiler. They validate with the compiled validator a native push stored in
+  the registry, which gives the same results and messages as the native
+  binary. Where they cannot validate (a head version that is not portable, a
+  record whose compiled validator is missing or refused, or a collection with
+  no registry whose schema is in a `fylo.schema` folder or whose descriptor
+  records `strict` or `warn`) they refuse `strict` and `warn` writes with
+  `ESCHEMAUNAVAILABLE` rather than store an unvalidated document; `off` writes
+  as before. Push schemas with a native build.
 - `"schema": { "path": "./schemas", "autoPush": true }` in `application.json`
   pushes every folder collection the root has whenever a write opens the root,
   which keeps the "edit the file, the next write uses it" workflow for
@@ -1313,10 +1322,12 @@ printf '%s\n' '{"op":"handshake"}' | fylo exec --loop --root /mnt/fylo
 FYLO runtime and protocol versions, immutable release commit and target,
 effective frame limits, and supported capabilities. The `schemaValidation`
 capability names the built-in CHEX validator and the CHEX release it follows;
-WebAssembly builds report `false`. Source and locally compiled development
-executions explicitly report an unknown commit; release builds embed the
-immutable source revision and build target. A handshake is side-effect-free
-and does not create the configured root or initialize a collection.
+WebAssembly builds add `compiledOnly: true`, because they validate only with
+the compiled validators in a root's schema registry. Source and locally
+compiled development executions explicitly report an unknown commit; release
+builds embed the immutable source revision and build target. A handshake is
+side-effect-free and does not create the configured root or initialize a
+collection.
 
 Capability records are versioned contracts. `documentBuckets.version === 1`
 advertises raw-file collections (`kind: "file"`), their supported machine
@@ -1411,6 +1422,7 @@ text.
 | `EQUERYLOOPREQUIRED` / `EQUERYITEMTOOLARGE` / `EQUERYSNAPSHOTTOOLARGE` | Pagination contract violations, as documented above                        | Per the pagination rules above                                   |
 | `ESCHEMA`                                                              | A document does not match the head schema, or a schema is invalid          | Do not retry; fix the document or schema                         |
 | `ESCHEMACONFLICT`                                                      | A pushed schema label is already committed with different content          | Do not retry; give the changed schema a new version label        |
+| `ESCHEMAUNAVAILABLE`                                                   | This build cannot validate the collection's head schema version            | Do not retry; push the schema natively, or write natively        |
 | `EFXDB_NOT_FXDB` / `EFXDB_VERSION`                                     | The file is not a `.fxdb` database, or needs a newer FYLO                  | Do not retry; open it with a build that supports it              |
 | `EFXDB_CORRUPT`                                                        | A `.fxdb` structure failed its checks                                      | Do not retry; run `fylo verify <db.fxdb>`                        |
 | `ENATIVE_IO`                                                           | Native filesystem I/O failed, including disk pressure or xattr operations  | Treat a mutation as ambiguous; inspect the cause before retrying |

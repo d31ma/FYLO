@@ -9,7 +9,7 @@ cannot supply something.
 | Target | native triples | `wasm32-wasip1` | `wasm32-unknown-unknown` |
 | Storage | `std::fs` | `std::fs` over WASI preopens | host `HostVfs` table |
 | Driven by | a spawned process | any WASI runtime | an embedder that fills the table |
-| Release build (develop, 2026-10-10) | ~7.97 MiB (macOS arm64) | ~2.04 MiB | ~1.41 MiB, ~480 KiB gzip (1.75 MiB / 640 KiB budget) |
+| Release build (develop, 2026-10-10) | ~7.97 MiB (macOS arm64) | ~2.04 MiB | ~1.67 MiB, ~565 KiB gzip with the CHEX validator, built at `opt-level = "z"` (2026-10-29; 1.75 MiB / 640 KiB budget) |
 | Verified by | crash matrix, soak, interchange | native/WASI interchange | `browser:engine:e2e` (Chromium, Firefox), host-table corpus |
 
 `fylo` and `fylo.wasm` are **interchangeable**. A shim spawns one or the other,
@@ -125,7 +125,7 @@ can replace the JavaScript engine.
 | --- | --- | --- | --- | --- |
 | Kernel-enforced single writer (`exclusiveRoot`) | yes | **no** | **no** | WASI preview 1 has no advisory locking. The lease still records its owner, so a supervisor can see who holds the root, but nothing refuses a second writer. |
 | POSIX uid/gid/mode (`machineAccess`) | macOS, Linux only | **no** | **no** | Needs `chown`/`chmod`. Already absent on Windows, so the capability set already expressed this. |
-| Schema validation (`schemaValidate`, `schemaMaterialize`, `$encrypted` fields) | yes, CHEX built in | **no** | **no** | CHEX runs in-process in the native binary, but its regex Unicode tables add about 390 KB, which would push the browser engine past its size budget. Neither Wasm build links the validator. No build has an upgrader runtime: migrations are JSON steps (ADR 0018). |
+| Schema validation (`schemaValidate`, `schemaCheck`, `strict` and `warn` writes) | yes, compiled from each version's CHEX source | yes, from the schema registry's stored DFAs; otherwise refuses | yes, from the schema registry's stored DFAs; otherwise refuses | A regex compiler would push the browser engine past its size budget, so the Wasm builds link only `regex-automata`'s DFA search (ADR 0017 section 4). They validate with the DFAs `fylo schema push` stored in each version's `compiled` field, loaded through the validating `from_bytes`, and give the native binary's results and messages. They fail closed: a head version that is not portable (a Unicode `\b`), whose `compiled` bytes are missing or refused, or a collection with no registry whose schema is in a `fylo.schema` folder or whose descriptor records `strict` or `warn`, refuses `strict` and `warn` writes with `ESCHEMAUNAVAILABLE`; `off` writes as before. Schemas are compiled, so pushed, natively. No build has an upgrader runtime: migrations are JSON steps (ADR 0018). |
 | URL ingestion (`putData` with `file.url`, `importBulkData` with a URL) | yes | **no** | **no** | No TLS stack in the module. A browser already has a network stack carrying the origin's CORS, cookies, and policy; bundling one would add megabytes *and* route around those protections. The host fetches and supplies the bytes. |
 | Extended attributes | native xattrs (unix), alternate data stream (Windows) | `.fylo-attrs` sidecar | host-owned manifest through `read_attrs` / `write_attrs` | No xattrs under WASI or in a browser. Same JSON-and-base64 manifest, different location. |
 | Inode identity check on open | yes | **no** | **no** | Catches a symlink or rename swapped in between the path check and the read. WASI scopes the guest to preopened directories it cannot escape; a browser host has no inodes. |
@@ -135,7 +135,8 @@ can replace the JavaScript engine.
 
 A supervisor should read these from the handshake rather than from this table:
 `exclusiveRoot`, `machineAccess`, `documentBuckets.putInputs`, and
-`schemaValidation` each report the truth for the running artifact.
+`schemaValidation` each report the truth for the running artifact; a Wasm
+build's `schemaValidation` carries `compiledOnly: true`.
 
 ## Does WebAssembly replace the binary?
 
@@ -148,8 +149,10 @@ Choose the native binary when you need any of:
 - **more than one writer process against one root** — the kernel lease is the
   only thing that makes that safe, and WebAssembly has no equivalent;
 - **POSIX ownership and permissions** on documents;
-- **schema validation or field encryption**, which only the native binary
-  includes;
+- **field encryption**, which only the native binary includes;
+- **schema authoring**: `fylo schema push` compiles CHEX, which needs the
+  regex compiler only the native binary links, and only the native binary
+  validates a schema that is not portable;
 - **ingestion straight from a URL** rather than from bytes the caller supplies.
 
 Everything else is a swap.

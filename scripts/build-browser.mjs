@@ -60,7 +60,10 @@ const CUSTOM_ENTROPY = '--cfg getrandom_backend="custom"'
 
 // The whole engine is transfer-bound in a browser, so it is optimized for size;
 // the index kernel is the scan hot path and keeps the release profile's speed.
-const ENGINE_PROFILE = { CARGO_PROFILE_RELEASE_OPT_LEVEL: 's' }
+// `z` rather than `s` since the engine links the CHEX validator (ADR 0017
+// section 4): at `s` the module measured 1,900,375 bytes, past its 1,792 KiB
+// budget, and at `z` 1,750,942 (578,155 gzipped).
+const ENGINE_PROFILE = { CARGO_PROFILE_RELEASE_OPT_LEVEL: 'z' }
 
 const WASM_ARTIFACTS = [
     ['fylo_browser_index.wasm', 'fylo-index.wasm', 'src/browser/wasm/Cargo.toml', '', {}],
