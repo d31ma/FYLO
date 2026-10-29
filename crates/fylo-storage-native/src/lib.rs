@@ -88,6 +88,7 @@ pub use queue::{
 pub use root_open_options::RootOpenOptions;
 pub use validation_mode::ValidationMode;
 pub use write::FAILPOINTS;
+pub use write::schema_registry::{MAX_SCHEMA_VERSION_BYTES, utc_timestamp};
 pub use write::version::RepositoryStatus;
 pub use write::{
     DocumentCodec, NativeWriteRoot, PlainDocumentCodec, PutDocumentOptions, PutRawFileOptions,
@@ -347,6 +348,61 @@ impl NativeRoot {
     pub fn collection(&self, name: &str) -> Result<NativeCollection, NativeStorageError> {
         self.assert_profile_owned()?;
         validate_collection_name(name)?;
+        let descriptor = self
+            .collection_descriptor(name)?
+            .unwrap_or(CollectionDescriptor {
+                kind: CollectionKind::Document,
+                shard_width: None,
+                previous_shard_widths: None,
+                validation: None,
+                schemas: None,
+                schema_head: None,
+            });
+        let namespace = match descriptor.kind {
+            CollectionKind::Document => ".collections",
+            CollectionKind::File => ".buckets",
+        };
+        let path = self.canonical.join(namespace).join(name);
+        self.verify_path(&path, ExpectedType::Directory)?;
+        let schema_head = descriptor.schema_head()?;
+        Ok(NativeCollection {
+            root: self.clone(),
+            name: name.to_owned(),
+            path,
+            kind: descriptor.kind,
+            namespace: namespace.to_owned(),
+            shard_width: validate_shard_width(descriptor.shard_width)?,
+            previous_shard_widths: descriptor
+                .previous_shard_widths
+                .unwrap_or_default()
+                .into_iter()
+                .map(|width| validate_shard_width(Some(width)))
+                .collect::<Result<Vec<_>, _>>()?,
+            validation: descriptor.validation,
+            schema_head,
+        })
+    }
+
+    /// Ordinal of a collection's schema registry head, or `None` while its
+    /// schemas are read from `fylo.schema` (ADR 0017 section 3).
+    ///
+    /// Reads only the catalog descriptor, so it answers for a collection
+    /// whose directory does not exist yet.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid name or a corrupt descriptor.
+    pub fn schema_registry_head(&self, name: &str) -> Result<Option<u32>, NativeStorageError> {
+        self.assert_profile_owned()?;
+        validate_collection_name(name)?;
+        self.collection_descriptor(name)?
+            .map_or(Ok(None), |descriptor| descriptor.schema_head())
+    }
+
+    fn collection_descriptor(
+        &self,
+        name: &str,
+    ) -> Result<Option<CollectionDescriptor>, NativeStorageError> {
         let descriptor_path = self
             .catalog_root
             .join(".fylo-catalog")
@@ -368,41 +424,18 @@ impl NativeRoot {
                 ));
             }
             let bytes = fs::read(&descriptor_path).map_err(NativeStorageError::io)?;
-            serde_json::from_slice::<CollectionDescriptor>(&bytes).map_err(|error| {
-                NativeStorageError::new(
-                    NativeStorageErrorCode::CorruptMetadata,
-                    format!("collection descriptor is corrupt: {error}"),
-                )
-            })?
+            Some(
+                serde_json::from_slice::<CollectionDescriptor>(&bytes).map_err(|error| {
+                    NativeStorageError::new(
+                        NativeStorageErrorCode::CorruptMetadata,
+                        format!("collection descriptor is corrupt: {error}"),
+                    )
+                })?,
+            )
         } else {
-            CollectionDescriptor {
-                kind: CollectionKind::Document,
-                shard_width: None,
-                previous_shard_widths: None,
-                validation: None,
-            }
+            None
         };
-        let namespace = match descriptor.kind {
-            CollectionKind::Document => ".collections",
-            CollectionKind::File => ".buckets",
-        };
-        let path = self.canonical.join(namespace).join(name);
-        self.verify_path(&path, ExpectedType::Directory)?;
-        Ok(NativeCollection {
-            root: self.clone(),
-            name: name.to_owned(),
-            path,
-            kind: descriptor.kind,
-            namespace: namespace.to_owned(),
-            shard_width: validate_shard_width(descriptor.shard_width)?,
-            previous_shard_widths: descriptor
-                .previous_shard_widths
-                .unwrap_or_default()
-                .into_iter()
-                .map(|width| validate_shard_width(Some(width)))
-                .collect::<Result<Vec<_>, _>>()?,
-            validation: descriptor.validation,
-        })
+        Ok(descriptor)
     }
 
     /// Read the active branch's first-parent commit history without
@@ -1212,6 +1245,31 @@ struct CollectionDescriptor {
     /// `strict_schema` setting decides (ADR 0017 section 2).
     #[serde(default)]
     validation: Option<ValidationMode>,
+    /// `"registry"` once the collection's schemas live in the root (ADR 0017
+    /// section 3); absent while they are read from `fylo.schema`.
+    #[serde(default)]
+    schemas: Option<String>,
+    /// Ordinal of the schema registry's head version.
+    #[serde(default)]
+    schema_head: Option<u32>,
+}
+
+impl CollectionDescriptor {
+    /// The only `schemas` value this release writes.
+    const SCHEMAS_REGISTRY: &'static str = "registry";
+
+    /// The registry head, refusing a descriptor whose schema fields disagree:
+    /// an unknown `schemas` value is a layout this build cannot honour.
+    fn schema_head(&self) -> Result<Option<u32>, NativeStorageError> {
+        match (self.schemas.as_deref(), self.schema_head) {
+            (None, None) => Ok(None),
+            (Some(Self::SCHEMAS_REGISTRY), Some(head)) if head >= 1 => Ok(Some(head)),
+            _ => Err(NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                "collection descriptor has an invalid schema registry",
+            )),
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -1383,6 +1441,7 @@ pub struct NativeCollection {
     shard_width: u32,
     previous_shard_widths: Vec<u32>,
     validation: Option<ValidationMode>,
+    schema_head: Option<u32>,
 }
 
 impl NativeCollection {
@@ -1393,6 +1452,21 @@ impl NativeCollection {
     #[must_use]
     pub const fn validation(&self) -> Option<ValidationMode> {
         self.validation
+    }
+
+    /// Ordinal of the schema registry's head version, or `None` while this
+    /// collection's schemas are read from `fylo.schema` (ADR 0017 section 3).
+    #[must_use]
+    pub const fn schema_head(&self) -> Option<u32> {
+        self.schema_head
+    }
+
+    /// Whether a generation state written now must carry the registry fence:
+    /// the descriptor names a registry, or the state already carries it. The
+    /// fence is sticky so that a writer whose descriptor was read before a
+    /// push cannot take it down again.
+    pub(crate) fn generation_fenced(&self, stored: &GenerationState) -> bool {
+        self.schema_head.is_some() || stored.schema_fenced()
     }
 
     /// Characters of the creation segment this collection's shards use.
@@ -2359,6 +2433,17 @@ impl GenerationState {
     pub const FORMAT_V1: &'static str = "fylo.collection-generation.v1";
     /// Format of a collection with commits in its write-ahead log.
     pub const FORMAT_V2: &'static str = "fylo.collection-generation.v2";
+    /// Format of a collection whose schemas live in the root's registry, with
+    /// or without a write-ahead log (ADR 0017 section 3). A release that
+    /// predates the registry refuses it as corrupt metadata, which is the
+    /// fence that stops it writing documents it cannot validate.
+    pub const FORMAT_V3: &'static str = "fylo.collection-generation.v3";
+
+    /// Whether this state carries the schema registry fence.
+    #[must_use]
+    pub fn schema_fenced(&self) -> bool {
+        self.format == Self::FORMAT_V3
+    }
 
     fn validate(&self) -> Result<(), NativeStorageError> {
         let valid_transaction = match self.state {
@@ -2369,6 +2454,7 @@ impl GenerationState {
                 .is_some_and(|identifier| !identifier.is_empty()),
         };
         let valid_format = match self.log {
+            _ if self.schema_fenced() => true,
             None => self.format == Self::FORMAT_V1,
             Some(_) => self.format == Self::FORMAT_V2,
         };
@@ -3169,6 +3255,10 @@ pub struct RootConfig {
     pub shard_width: Option<u32>,
     /// How hard each commit's write-ahead log append is flushed.
     pub durability: Durability,
+    /// Push the `fylo.schema` folder's new versions into the root's schema
+    /// registry when a write engine opens (ADR 0017 section 3). Off by
+    /// default, so the registry changes only on `fylo schema push`.
+    pub schema_auto_push: bool,
 }
 
 /// This process's identifier, or zero where the platform has none.

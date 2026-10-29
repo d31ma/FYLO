@@ -43,6 +43,28 @@ pub(crate) struct BusyPeriod {
     pub(crate) flushing: bool,
     pub(crate) failure: Option<(NativeStorageErrorCode, String)>,
     pub(crate) stranded: bool,
+    /// Whether `state.json` carries the schema registry fence (ADR 0017
+    /// section 3), decided once under the lock so every publication of the
+    /// period keeps it.
+    pub(crate) fence: SchemaFence,
+}
+
+/// Whether a collection's generation state is written in the schema
+/// registry's fenced format.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SchemaFence {
+    Absent,
+    Present,
+}
+
+impl SchemaFence {
+    pub(crate) const fn new(fenced: bool) -> Self {
+        if fenced { Self::Present } else { Self::Absent }
+    }
+
+    pub(crate) const fn is_present(self) -> bool {
+        matches!(self, Self::Present)
+    }
 }
 
 impl CommitQueue {

@@ -16,7 +16,8 @@ use crate::{NativeCollection, NativeStorageError, NativeStorageErrorCode, path_e
 /// Makes every applied commit durable in its files and removes the log.
 ///
 /// Afterwards the collection is exactly the layout the journal and every
-/// reader already know, and `state.json` is back to the v1 format.
+/// reader already know, and `state.json` is back to the v1 format, or to v3
+/// for a collection whose schemas live in the registry.
 pub(crate) struct LogCheckpoint;
 
 impl LogCheckpoint {
@@ -34,7 +35,8 @@ impl LogCheckpoint {
         Self::full_flush(&collection.log_segment_path())?;
         failpoint("after-checkpoint-flush")?;
         let state = Self::state_path(collection)?;
-        write_json_durable(&state, &GenerationRecord::stable(generation))?;
+        let fenced = collection.generation_fenced(&collection.stored_generation()?);
+        write_json_durable(&state, &GenerationRecord::stable(generation).fenced(fenced))?;
         remove_dir_durable(&directory)?;
         failpoint("after-checkpoint-remove")
     }

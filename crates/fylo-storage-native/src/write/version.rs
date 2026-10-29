@@ -2601,7 +2601,7 @@ fn read_head_branch(repository: &Path) -> Result<String, NativeStorageError> {
 }
 
 /// `Date.prototype.toISOString` without a calendar dependency.
-fn iso8601_millis(milliseconds: u64) -> String {
+pub(crate) fn iso8601_millis(milliseconds: u64) -> String {
     let seconds = milliseconds / 1000;
     let millis = milliseconds % 1000;
     let (hour, minute, second) = (seconds / 3600 % 24, seconds / 60 % 60, seconds % 60);

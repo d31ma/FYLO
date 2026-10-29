@@ -39,6 +39,7 @@ const DEFAULT_ACCESS_MODE: u32 = 0o600;
 
 mod commit_log;
 mod document_codec;
+pub(crate) mod schema_registry;
 pub(crate) mod version;
 
 use document_codec::DocumentPolicy;
@@ -1630,6 +1631,7 @@ impl NativeWriteRoot {
         if path_exists_no_follow(&descriptor_path)? {
             fs::remove_file(&descriptor_path).map_err(NativeStorageError::io)?;
         }
+        self.remove_schema_registry(collection_name)?;
         Ok(())
     }
 
@@ -2540,7 +2542,7 @@ impl TransactionManifest {
     }
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct GenerationRecord {
     format: String,
@@ -2571,6 +2573,15 @@ impl GenerationRecord {
             transaction_id: None,
             log: None,
         }
+    }
+
+    /// This record in the registry-fenced format when `fenced` holds (ADR
+    /// 0017 section 3). The v3 format admits a log position or none.
+    pub(crate) fn fenced(mut self, fenced: bool) -> Self {
+        if fenced {
+            super::GenerationState::FORMAT_V3.clone_into(&mut self.format);
+        }
+        self
     }
 }
 
@@ -3295,7 +3306,8 @@ fn write_generation(
     writer.root.assert_profile_owned()?;
     let path = generation_path(writer, collection);
     ensure_directory(&writer.root, path.parent().expect("generation has parent"))?;
-    write_json_durable(&path, &generation)
+    let fenced = collection.generation_fenced(&collection.stored_generation()?);
+    write_json_durable(&path, &generation.clone().fenced(fenced))
 }
 
 fn is_capture_scratch(name: &std::ffi::OsStr) -> bool {
@@ -4931,7 +4943,7 @@ fn set_mode(_path: &Path, _mode: u32) -> Result<(), NativeStorageError> {
 /// The list is the contract the crash matrix enumerates, so a new failpoint
 /// must be declared here to be injectable — which is also what stops it from
 /// being added without coverage.
-pub const FAILPOINTS: [&str; 24] = [
+pub const FAILPOINTS: [&str; 25] = [
     "before-file-write",
     "after-file-rename",
     "after-file-sync",
@@ -4956,6 +4968,7 @@ pub const FAILPOINTS: [&str; 24] = [
     "after-log-apply-step",
     "after-checkpoint-flush",
     "after-checkpoint-remove",
+    "after-schema-file",
 ];
 
 pub(crate) fn failpoint(name: &str) -> Result<(), NativeStorageError> {

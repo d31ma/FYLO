@@ -13,7 +13,7 @@ use super::super::{
 use super::abort_manifest::AbortManifest;
 use super::checkpoint_manifest::CheckpointManifest;
 use super::commit_plan::CommitPlan;
-use super::commit_queue::{BusyPeriod, CommitQueue, QueueState};
+use super::commit_queue::{BusyPeriod, CommitQueue, QueueState, SchemaFence};
 use super::log_checkpoint::LogCheckpoint;
 use super::log_segment::LogSegment;
 use super::step_applier::StepApplier;
@@ -173,6 +173,7 @@ impl NativeWriteRoot {
             flushing: false,
             failure: None,
             stranded: false,
+            fence: SchemaFence::new(collection.generation_fenced(&stored)),
         })
     }
 
@@ -194,7 +195,8 @@ impl NativeWriteRoot {
         }
         let segment = busy.segment.as_mut().expect("segment created above");
         if !busy.published_writing {
-            let writing = GenerationRecord::log_writing(busy.generation + 1, segment.position());
+            let writing = GenerationRecord::log_writing(busy.generation + 1, segment.position())
+                .fenced(busy.fence.is_present());
             Self::publish_quietly(collection, &writing)?;
             busy.published_writing = true;
         }
@@ -478,13 +480,17 @@ impl NativeWriteRoot {
         }
         let generation = busy.generation + 2;
         let Some(segment) = busy.segment.as_ref() else {
-            Self::publish_quietly(collection, &GenerationRecord::stable(generation))?;
+            Self::publish_quietly(
+                collection,
+                &GenerationRecord::stable(generation).fenced(busy.fence.is_present()),
+            )?;
             return Ok(None);
         };
         let position = segment.position();
         Self::publish_quietly(
             collection,
-            &GenerationRecord::log_stable(generation, position.clone()),
+            &GenerationRecord::log_stable(generation, position.clone())
+                .fenced(busy.fence.is_present()),
         )?;
         Ok(Some(position))
     }

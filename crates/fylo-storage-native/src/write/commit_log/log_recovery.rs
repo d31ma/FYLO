@@ -41,7 +41,8 @@ impl LogRecovery {
         let stable = generation + 2 - generation % 2;
         LogCheckpoint::run(collection, stable)?;
         let state = LogCheckpoint::state_path(collection)?;
-        write_json_durable(&state, &GenerationRecord::stable(stable))
+        let fenced = collection.generation_fenced(stored);
+        write_json_durable(&state, &GenerationRecord::stable(stable).fenced(fenced))
     }
 
     /// The checkpoint record every segment opens with, if the segment got
