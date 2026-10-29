@@ -66,7 +66,7 @@ export function databaseEngineUrl(
 }
 
 /** The machine op that describes a `.fxdb` container without changing it. */
-export const FXDB_INSPECT_OP = 'inspectContainer'
+export const FXDB_INSPECT_OP = 'inspectDatabase'
 
 /**
  * Turn the engine's container report into rows the view can loop over.

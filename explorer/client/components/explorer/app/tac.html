@@ -233,8 +233,9 @@
                     </dd>
                     <dt>Format</dt>
                     <dd>
-                        <logic :if="dbMagic">FYLO database (.fxdb header)</logic>
-                        <logic :if="!dbMagic">no .fxdb header found</logic>
+                        <logic :if="dbReport">FYLO database, {dbReport.format}</logic>
+                        <logic :if="!dbReport && dbMagic">.fxdb header, but unreadable</logic>
+                        <logic :if="!dbReport && !dbMagic">no .fxdb header found</logic>
                     </dd>
                 </dl>
                 <logic :if="dbReport">
