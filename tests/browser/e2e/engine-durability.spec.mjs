@@ -1188,7 +1188,8 @@ test.describe('large data', () => {
 
 test.describe('storage', () => {
     test('the storage estimate grows with writes and shrinks after dropCollection', async ({
-        fylo
+        fylo,
+        browserName
     }, testInfo) => {
         test.setTimeout(300_000)
         const root = browserRoot('storage')
@@ -1236,7 +1237,23 @@ test.describe('storage', () => {
             })
             return
         }
-        expect(written - dropped, JSON.stringify(evidence)).toBeGreaterThanOrEqual(MEANINGFUL)
+        // The bytes themselves must be gone from the root, in every browser.
+        const left = Object.values(await fylo.dump(root)).reduce(
+            (sum, content) => sum + Buffer.from(content, 'base64').length,
+            0
+        )
+        expect(left, JSON.stringify(evidence)).toBeLessThan(BYTES + MEANINGFUL)
+        if (browserName === 'webkit') {
+            // WebKit's estimate does not give the space back while the profile
+            // is open (it moved by 1 MiB after an 8 MiB drop on Safari 26), so
+            // only the files above can show the drop there.
+            testInfo.annotations.push({
+                type: 'estimate-not-reclaimed',
+                description: JSON.stringify(evidence)
+            })
+        } else {
+            expect(written - dropped, JSON.stringify(evidence)).toBeGreaterThanOrEqual(MEANINGFUL)
+        }
         await fylo.remove(root)
     })
 })
