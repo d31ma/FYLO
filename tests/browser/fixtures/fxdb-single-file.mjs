@@ -1,7 +1,8 @@
 // Qualify the single-file hosts in a real browser, on a page served without
 // COOP or COEP, and publish the result for the Playwright spec to assert.
 //
-// `?scenario=` picks one of: file, url, opfs, download, engine.
+// `?scenario=` picks one of: file, url, opfs, download, engine, inspect,
+// documents.
 
 import {
     SingleFileDatabase,
@@ -33,12 +34,12 @@ const evidence = {
     }
 }
 
-const SCENARIOS = { file, url, opfs, download, engine, inspect }
+const SCENARIOS = { file, url, opfs, download, engine, inspect, documents }
 
 // Working copies need the origin-private file system. Every current browser
 // ships it, but Playwright's Linux WebKit build does not, and that is a gap in
 // the test browser rather than a pass.
-const NEEDS_OPFS = new Set(['opfs', 'download'])
+const NEEDS_OPFS = new Set(['opfs', 'download', 'documents'])
 
 try {
     if (!SCENARIOS[scenario]) throw new Error(`unknown scenario ${scenario}`)
@@ -266,6 +267,77 @@ async function inspect() {
         evidence.stubFrame = JSON.parse((await stub.exec(`${JSON.stringify(request)}\n`)).trim())
     } finally {
         await stub.close()
+    }
+}
+
+/** Run machine requests against the database and return their results. */
+async function requests(database, frames) {
+    const ndjson = frames
+        .map((frame) => JSON.stringify({ ...frame, root: database.info.path }))
+        .join('\n')
+    const replies = (await database.exec(`${ndjson}\n`))
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line))
+    for (const reply of replies) {
+        if (!reply.ok) throw new Error(`${reply.op}: ${reply.error?.code} ${reply.error?.message}`)
+    }
+    return replies.map((reply) => reply.result)
+}
+
+/** Read the documents of a database the native engine wrote, then edit an
+ * OPFS working copy of it and read the edit back after reopening. */
+async function documents() {
+    evidence.step = 'fetch-database'
+    const bytes = await (await fetch('/target/browser-fixtures/documents.fxdb')).arrayBuffer()
+    const picked = new File([bytes], 'documents.fxdb')
+    evidence.step = 'read-picked'
+    const reader = await SingleFileDatabase.open(
+        { kind: 'file', file: picked },
+        open({ moduleUrl: '/dist-web/fylo-browser.wasm' })
+    )
+    try {
+        const [red] = await requests(reader, [
+            { op: 'findDocs', collection: 'users', query: { $ops: [{ team: { $eq: 'red' } }] } }
+        ])
+        evidence.red = Object.values(red)
+            .map((document) => document.name)
+            .sort()
+    } finally {
+        await reader.close()
+    }
+    const copy = workingCopyName('documents.fxdb')
+    try {
+        evidence.step = 'edit-opfs'
+        const writer = await SingleFileDatabase.open(
+            { kind: 'opfs', name: copy, copyFrom: picked },
+            open({ moduleUrl: '/dist-web/fylo-browser.wasm' })
+        )
+        try {
+            const [identifier] = await requests(writer, [
+                { op: 'putData', collection: 'users', data: { name: 'browser', team: 'red' } }
+            ])
+            evidence.written = identifier
+        } finally {
+            await writer.close()
+        }
+        evidence.step = 'reopen-opfs'
+        const reopened = await SingleFileDatabase.open(
+            { kind: 'opfs', name: copy },
+            open({ moduleUrl: '/dist-web/fylo-browser.wasm' })
+        )
+        try {
+            const [found, all] = await requests(reopened, [
+                { op: 'getDoc', collection: 'users', id: evidence.written },
+                { op: 'findDocs', collection: 'users', query: {} }
+            ])
+            evidence.reread = found[evidence.written]?.name
+            evidence.total = Object.keys(all).length
+        } finally {
+            await reopened.close()
+        }
+    } finally {
+        await removeWorkingCopy(copy)
     }
 }
 

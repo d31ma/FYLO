@@ -39,7 +39,7 @@ impl NativeWriteRoot {
     pub(crate) fn uses_log(&self, collection: &NativeCollection) -> bool {
         self.filesystem_profile() == FilesystemProfile::Native
             && collection.kind == CollectionKind::Document
-            && cfg!(any(unix, windows))
+            && (cfg!(any(unix, windows)) || collection.uses_segments())
     }
 
     /// Commit one mutation through the collection's write-ahead log.

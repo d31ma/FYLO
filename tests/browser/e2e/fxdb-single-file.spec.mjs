@@ -34,6 +34,37 @@ test.beforeAll(async () => {
         { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] }
     )
     await writeFile('target/browser-fixtures/fixture.json', report)
+    // A database with documents, written through the native CLI.
+    await rm('target/browser-fixtures/documents.fxdb', { force: true })
+    const requests = [
+        { op: 'createCollection', collection: 'users' },
+        ...['ada', 'bo', 'cy', 'di'].map((name, index) => ({
+            op: 'putData',
+            collection: 'users',
+            data: { name, team: index % 2 === 0 ? 'red' : 'blue' }
+        }))
+    ]
+    execFileSync(
+        'cargo',
+        [
+            'run',
+            '--quiet',
+            '--locked',
+            '-p',
+            'fylo-cli',
+            '--bin',
+            'fylo-rust',
+            '--',
+            'exec',
+            '--loop',
+            '--root',
+            'target/browser-fixtures/documents.fxdb'
+        ],
+        {
+            input: requests.map((request) => JSON.stringify(request)).join('\n') + '\n',
+            stdio: ['pipe', 'ignore', 'inherit']
+        }
+    )
 })
 
 async function run(page, testInfo, scenario) {
@@ -141,4 +172,11 @@ test('inspects a real .fxdb through every single-file host', async ({ page }, te
         'orders'
     ])
     expect(evidence.stubFrame.ok).toBe(false)
+})
+
+test('reads and edits the documents of a real .fxdb database', async ({ page }, testInfo) => {
+    const evidence = await run(page, testInfo, 'documents')
+    expect(evidence.red).toEqual(['ada', 'cy'])
+    expect(evidence.reread).toBe('browser')
+    expect(evidence.total).toBe(5)
 })
