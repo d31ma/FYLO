@@ -24,6 +24,11 @@ use crate::{ContainerCipher, ContainerCipherError, ContainerSealContext};
 mod dictionary;
 mod punch;
 use punch::punch_hole;
+mod sealed_image;
+pub use sealed_image::ContainerSealedReport;
+use sealed_image::SealedImage;
+#[cfg(not(target_family = "wasm"))]
+mod sealing;
 mod snapshot;
 mod verify;
 pub use verify::{ContainerProblem, ContainerProblemSeverity, ContainerVerifyReport};
@@ -41,9 +46,12 @@ pub enum ContainerError {
     CollectionExists,
     /// No collection block is free in the directory extent.
     DirectoryFull,
-    /// The file may only be read (sealed, or a read-only-compatible feature
-    /// this build lacks).
+    /// The file may only be read (a reader's open, or a read-only-compatible
+    /// feature this build lacks).
     ReadOnly,
+    /// The file is a sealed pack (`fylo pack --sealed`), which is never
+    /// written.
+    Sealed,
     /// Other writers kept the file past the busy timeout (`EBUSY`).
     Busy,
     /// The file is encrypted and has not been unlocked with its key
@@ -65,6 +73,10 @@ impl std::fmt::Display for ContainerError {
             Self::CollectionExists => formatter.write_str("container collection already exists"),
             Self::DirectoryFull => formatter.write_str("container collection directory is full"),
             Self::ReadOnly => formatter.write_str("container may only be read"),
+            Self::Sealed => formatter.write_str(
+                "the .fxdb database is sealed (fylo pack --sealed) and may only be read; \
+                 unpack it, or pack it again without --sealed, to write to it",
+            ),
             Self::Busy => formatter.write_str("container is busy with other writers"),
             Self::Locked => formatter.write_str("container is encrypted and needs its key"),
             Self::Cipher(error) => write!(formatter, "container encryption: {error}"),
@@ -90,7 +102,7 @@ impl ContainerError {
             Self::Format(_) | Self::Allocator(_) => "EFXDB_CORRUPT",
             Self::CollectionExists => "EFXDB_EXISTS",
             Self::DirectoryFull => "EFXDB_FULL",
-            Self::ReadOnly => "EROFS",
+            Self::ReadOnly | Self::Sealed => "EROFS",
             Self::Busy => "EBUSY",
             Self::Locked | Self::Cipher(ContainerCipherError::WrongKey) => "EKEY",
             Self::Cipher(ContainerCipherError::Unauthenticated) => "EFXDB_CORRUPT",
@@ -166,6 +178,9 @@ pub struct ContainerReport {
     pub locked: bool,
     /// Whether the file is a sealed, read-only pack.
     pub sealed: bool,
+    /// A sealed file's blocks.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocks: Option<ContainerSealedReport>,
     /// Codecs some frame may use.
     pub codecs: Vec<&'static str>,
     /// Extents by state and kind.
@@ -212,7 +227,11 @@ pub struct ContainerFile {
     superblock_in_a: bool,
     allocator: ContainerExtentAllocator,
     collections: Vec<ContainerCollection>,
+    /// The record key of an encrypted file. A sealed file seals its blocks
+    /// instead, with the key its image holds.
     cipher: Option<Arc<ContainerCipher>>,
+    /// The blocks of a sealed file, which every read goes through.
+    image: Option<SealedImage>,
 }
 
 const SUPERBLOCK_BYTES: u64 = ContainerSuperblock::ENCODED_BYTES as u64;
@@ -341,6 +360,27 @@ impl ContainerFile {
         Self::from_handle(handle, false)
     }
 
+    /// Refuse the file `file` with `Sealed` when its superblock says it is a
+    /// sealed pack, before anything is taken to write it.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Sealed`, or the read failure. A superblock that does not
+    /// decode is left for the open to report.
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn refuse_sealed(file: &File) -> Result<(), ContainerError> {
+        let mut copies = vec![0_u8; 2 * ContainerSuperblock::ENCODED_BYTES];
+        read_exact_at(file, &mut copies, 0)?;
+        let newest = ContainerSuperblock::newest(
+            &copies[..ContainerSuperblock::ENCODED_BYTES],
+            &copies[ContainerSuperblock::ENCODED_BYTES..],
+        );
+        match newest {
+            Ok((superblock, _)) if superblock.is_sealed() => Err(ContainerError::Sealed),
+            _ => Ok(()),
+        }
+    }
+
     pub(crate) fn from_handle(handle: Handle, writable: bool) -> Result<Self, ContainerError> {
         let mut container = Self {
             handle,
@@ -350,6 +390,7 @@ impl ContainerFile {
             allocator: ContainerExtentAllocator::new(1),
             collections: Vec::new(),
             cipher: None,
+            image: None,
         };
         let mut copies = vec![0_u8; 2 * ContainerSuperblock::ENCODED_BYTES];
         read_exact_at(container.file(), &mut copies, 0)?;
@@ -357,13 +398,26 @@ impl ContainerFile {
             &copies[..ContainerSuperblock::ENCODED_BYTES],
             &copies[ContainerSuperblock::ENCODED_BYTES..],
         )?;
+        if writable && superblock.is_sealed() {
+            return Err(ContainerError::Sealed);
+        }
         if writable && superblock.requires_read_only() {
             return Err(ContainerError::ReadOnly);
         }
+        if superblock.is_sealed() {
+            container.image = Some(SealedImage::load(container.file(), &superblock)?);
+        }
         container.superblock = superblock;
         container.superblock_in_a = in_a;
-        container.allocator = container.read_map()?;
-        // An encrypted directory waits for the key.
+        // An encrypted directory waits for the key, and so does the map of
+        // an encrypted sealed file, whose blocks hold it.
+        if container
+            .image
+            .as_ref()
+            .is_none_or(|image| !image.is_locked())
+        {
+            container.allocator = container.read_map()?;
+        }
         if !container.is_encrypted() {
             container.collections = container.read_directory()?;
         }
@@ -395,6 +449,10 @@ impl ContainerFile {
     /// Returns the read failure or a decoding error; the open keeps what it
     /// had.
     pub fn refresh(&mut self) -> Result<bool, ContainerError> {
+        // A sealed file never changes.
+        if self.image.is_some() {
+            return Ok(false);
+        }
         let mut copies = vec![0_u8; 2 * ContainerSuperblock::ENCODED_BYTES];
         read_exact_at(self.file(), &mut copies, 0)?;
         let (superblock, in_a) = ContainerSuperblock::newest(
@@ -508,7 +566,23 @@ impl ContainerFile {
     /// Whether the file is encrypted and not yet unlocked.
     #[must_use]
     pub fn is_locked(&self) -> bool {
-        self.is_encrypted() && self.cipher.is_none()
+        match &self.image {
+            Some(image) => image.is_locked(),
+            None => self.is_encrypted() && self.cipher.is_none(),
+        }
+    }
+
+    /// Whether records, the directory, dictionaries and snapshots are each
+    /// sealed with the file key: in an encrypted file that is not sealed.
+    /// A sealed file seals its blocks instead, and what they hold is plain.
+    fn seals_units(&self) -> bool {
+        self.is_encrypted() && self.image.is_none()
+    }
+
+    /// Whether the file is a sealed pack (`fylo pack --sealed`).
+    #[must_use]
+    pub fn is_sealed(&self) -> bool {
+        self.image.is_some()
     }
 
     /// Unlock an encrypted file with its secret and read its directory. A
@@ -520,7 +594,7 @@ impl ContainerFile {
     /// `Cipher(Unauthenticated)` for a damaged directory block, or the read
     /// failure.
     pub fn unlock(&mut self, secret: &[u8]) -> Result<(), ContainerError> {
-        if !self.is_encrypted() || self.cipher.is_some() {
+        if !self.is_locked() {
             return Ok(());
         }
         self.unlock_with(Arc::new(ContainerCipher::derive(
@@ -548,10 +622,31 @@ impl ContainerFile {
     ///
     /// The same as [`Self::unlock`].
     pub fn unlock_with(&mut self, cipher: Arc<ContainerCipher>) -> Result<(), ContainerError> {
-        if !self.is_encrypted() || self.cipher.is_some() {
+        if !self.is_locked() {
             return Ok(());
         }
         cipher.check(&self.superblock.key_check)?;
+        if let Some(image) = &mut self.image {
+            // The blocks hold the map and the directory, both plain.
+            image.set_cipher(Some(cipher));
+            let opened = self.read_map().and_then(|allocator| {
+                self.allocator = allocator;
+                self.read_directory()
+            });
+            return match opened {
+                Ok(collections) => {
+                    self.collections = collections;
+                    Ok(())
+                }
+                Err(error) => {
+                    self.allocator = ContainerExtentAllocator::new(1);
+                    if let Some(image) = &mut self.image {
+                        image.set_cipher(None);
+                    }
+                    Err(error)
+                }
+            };
+        }
         self.cipher = Some(cipher);
         match self.read_directory() {
             Ok(collections) => {
@@ -581,7 +676,9 @@ impl ContainerFile {
     }
 
     fn require_writable(&self) -> Result<(), ContainerError> {
-        if !self.writable {
+        if self.image.is_some() {
+            Err(ContainerError::Sealed)
+        } else if !self.writable {
             Err(ContainerError::ReadOnly)
         } else if self.is_locked() {
             Err(ContainerError::Locked)
@@ -641,7 +738,24 @@ impl ContainerFile {
     /// failure.
     pub fn read_payload(&self, extent: u64, offset: u64, buffer: &mut [u8]) -> io::Result<()> {
         let at = self.payload_offset(extent, offset, buffer.len())?;
-        read_exact_at(self.file(), buffer, at)
+        self.read_at(buffer, at)
+    }
+
+    /// Read `buffer.len()` bytes of the container at `offset`: from the
+    /// file, or from the blocks of a sealed one.
+    fn read_at(&self, buffer: &mut [u8], offset: u64) -> io::Result<()> {
+        match &self.image {
+            Some(image) => image.read(self.file(), buffer, offset),
+            None => read_exact_at(self.file(), buffer, offset),
+        }
+    }
+
+    /// The container's length: the file's, or a sealed file's image's.
+    fn container_bytes(&self) -> io::Result<u64> {
+        match &self.image {
+            Some(image) => Ok(image.image_bytes()),
+            None => Ok(self.file().metadata()?.len()),
+        }
     }
 
     /// Write payload bytes of one extent, without flushing.
@@ -685,7 +799,7 @@ impl ContainerFile {
             )
         })?;
         let mut bytes = [0_u8; ContainerExtentHeader::ENCODED_BYTES];
-        read_exact_at(self.file(), &mut bytes, at)?;
+        self.read_at(&mut bytes, at)?;
         Ok(ContainerExtentHeader::expect(
             &bytes, extent, kind, owner, sequence,
         )?)
@@ -1228,6 +1342,7 @@ impl ContainerFile {
             encrypted: self.is_encrypted(),
             locked: self.is_locked(),
             sealed: superblock.is_sealed(),
+            blocks: self.image.as_ref().map(SealedImage::report),
             codecs,
             extents: self.allocator.census(),
             collections: self
@@ -1263,7 +1378,7 @@ impl ContainerFile {
             .filter(|_| extent >= 1)
             .ok_or(ContainerAllocatorError::OutOfRange)?;
         let mut bytes = [0_u8; ContainerExtentHeader::ENCODED_BYTES];
-        read_exact_at(self.file(), &mut bytes, at)?;
+        self.read_at(&mut bytes, at)?;
         Ok(ContainerExtentHeader::decode(&bytes)?)
     }
 
@@ -1307,7 +1422,7 @@ impl ContainerFile {
             let at = extent * superblock.extent_bytes()
                 + ContainerExtentHeader::PAYLOAD_OFFSET
                 + (page % pages_per_extent) * PAGE_BYTES;
-            read_exact_at(self.file(), &mut page_bytes, at)?;
+            self.read_at(&mut page_bytes, at)?;
             decoded.push(ContainerExtentMapPage::decode(&page_bytes)?);
         }
         Ok(ContainerExtentAllocator::from_map(

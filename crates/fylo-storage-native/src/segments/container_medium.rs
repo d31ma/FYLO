@@ -251,7 +251,9 @@ impl ContainerMedium {
             #[cfg(not(target_family = "wasm"))]
             ContainerError::Lease(_) => NativeStorageErrorCode::RootLeaseLost,
             ContainerError::CollectionExists => NativeStorageErrorCode::InvalidCollection,
-            ContainerError::ReadOnly => NativeStorageErrorCode::Unsupported,
+            ContainerError::ReadOnly | ContainerError::Sealed => {
+                NativeStorageErrorCode::Unsupported
+            }
             ContainerError::Locked
             | ContainerError::Cipher(crate::ContainerCipherError::WrongKey) => {
                 NativeStorageErrorCode::KeyRequired
@@ -542,20 +544,34 @@ impl Shared {
         buffer: &mut [u8],
     ) -> Result<(), NativeStorageError> {
         let held = file.allocator().in_use(extent) == Some((SEGMENT, self.collection, number));
-        if !held
-            || file
-                .expect_extent(extent, SEGMENT, self.collection, number)
-                .is_err()
-        {
+        if !held {
             return Err(ContainerMedium::moved());
+        }
+        match file.expect_extent(extent, SEGMENT, self.collection, number) {
+            Ok(_) => {}
+            Err(ContainerError::Io(error)) if error.kind() == std::io::ErrorKind::InvalidData => {
+                return Err(Self::damaged_block(&error));
+            }
+            Err(_) => return Err(ContainerMedium::moved()),
         }
         file.read_payload(extent, offset, buffer)
             .map_err(|error| match error.kind() {
                 std::io::ErrorKind::InvalidInput | std::io::ErrorKind::UnexpectedEof => {
                     ContainerMedium::moved()
                 }
+                std::io::ErrorKind::InvalidData => Self::damaged_block(&error),
                 _ => NativeStorageError::io(error),
             })
+    }
+
+    /// A block of a sealed file that fails its checks, which is damage to
+    /// the records it holds, never a segment that moved: a sealed file
+    /// never changes.
+    fn damaged_block(error: &std::io::Error) -> NativeStorageError {
+        NativeStorageError::new(
+            NativeStorageErrorCode::CorruptDocument,
+            format!("segment container: {error}"),
+        )
     }
 
     /// Every payload byte of segment `number`, or `None` when the
@@ -1039,6 +1055,11 @@ impl SegmentMedium for ContainerMedium {
 
     fn prime_dictionary(&self, records: &[LogRecord]) -> Result<bool, NativeStorageError> {
         self.prime(records)
+    }
+
+    fn write_uncompressed(&self) {
+        self.shared.frames.write_uncompressed();
+        self.shared.state().untrainable = true;
     }
 
     fn has_location_log(&self) -> bool {

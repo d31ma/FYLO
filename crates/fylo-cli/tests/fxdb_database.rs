@@ -174,13 +174,61 @@ fn pack_and_unpack_carry_a_root_through_a_database() {
 }
 
 #[test]
-fn pack_refuses_sealed_and_an_existing_output() {
+fn a_sealed_pack_is_read_everywhere_and_written_nowhere() {
+    let fixture = Fixture::new("pack-sealed");
+    let identifier = seeded_root(&fixture, "data");
+    let sealed = fixture.run(&["pack", "data", "--out", "sealed.fxdb", "--sealed"]);
+    assert!(sealed.status.success(), "{sealed:?}");
+    let report = json(&sealed);
+    assert_eq!(report["collections"][0]["documents"], 1);
+    assert!(
+        report["sealed"]["storedBytes"].as_u64().unwrap() > 0,
+        "{report}"
+    );
+    let inspect = json(&fixture.run(&["inspect", "sealed.fxdb"]));
+    assert_eq!(inspect["sealed"], true);
+    assert_eq!(inspect["extents"]["free"], 0);
+    let verify = fixture.run(&["verify", "sealed.fxdb"]);
+    assert!(verify.status.success(), "{verify:?}");
+    let got = fixture.run(&[
+        "get",
+        "users",
+        &identifier,
+        "--root",
+        "sealed.fxdb",
+        "--json",
+    ]);
+    assert!(got.status.success(), "{got:?}");
+    assert_eq!(json(&got)[&identifier]["name"], "ada");
+    let selected = fixture.run(&["sql", "SELECT team FROM users", "--root", "sealed.fxdb"]);
+    assert!(selected.status.success(), "{selected:?}");
+    assert!(String::from_utf8_lossy(&selected.stdout).contains("red"));
+    let insert = fixture.run(&[
+        "sql",
+        "INSERT INTO users (name) VALUES ('bob')",
+        "--root",
+        "sealed.fxdb",
+    ]);
+    assert!(!insert.status.success());
+    assert!(
+        String::from_utf8_lossy(&insert.stderr).contains("EROFS"),
+        "{insert:?}"
+    );
+    // A live database backs up the same way.
+    let pack = fixture.run(&["pack", "data", "--out", "app.fxdb"]);
+    assert!(pack.status.success(), "{pack:?}");
+    let backup = fixture.run(&["pack", "app.fxdb", "--out", "backup.fxdb", "--sealed"]);
+    assert!(backup.status.success(), "{backup:?}");
+    let unpack = fixture.run(&["unpack", "backup.fxdb", "--out", "restored"]);
+    assert!(unpack.status.success(), "{unpack:?}");
+    let got = fixture.run(&["get", "users", &identifier, "--root", "restored", "--json"]);
+    assert_eq!(json(&got)[&identifier]["team"], "red");
+}
+
+#[test]
+fn pack_refuses_an_existing_output() {
     let fixture = Fixture::new("pack-refuse");
     seeded_root(&fixture, "data");
-    let sealed = fixture.run(&["pack", "data", "--out", "app.fxdb", "--sealed"]);
-    assert!(!sealed.status.success());
-    assert!(String::from_utf8_lossy(&sealed.stderr).contains("not supported yet"));
-    assert!(!fixture.0.join("app.fxdb").exists());
     fs::write(fixture.0.join("app.fxdb"), b"keep").unwrap();
     let existing = fixture.run(&["pack", "data", "--out", "app.fxdb"]);
     assert!(!existing.status.success());
@@ -221,6 +269,37 @@ fn a_pack_stopped_after_staging_leaves_no_database() {
     let pack = fixture.run(&["pack", "data", "--out", "app.fxdb"]);
     assert!(pack.status.success(), "{pack:?}");
     // Beside the root's own owner lock files, only the database is left.
+    let mut names: Vec<_> = fs::read_dir(&fixture.0)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| !name.starts_with(".data.fylo-root-owner"))
+        .collect();
+    names.sort();
+    assert_eq!(names, ["app.fxdb", "data"]);
+    let got = fixture.run(&["get", "users", &identifier, "--root", "app.fxdb", "--json"]);
+    assert!(got.status.success(), "{got:?}");
+}
+
+#[test]
+fn a_sealed_pack_stopped_after_staging_leaves_no_database() {
+    let fixture = Fixture::new("pack-sealed-crash");
+    let identifier = seeded_root(&fixture, "data");
+    let stopped = Command::new(BINARY)
+        .current_dir(&fixture.0)
+        .args(["pack", "data", "--out", "app.fxdb", "--sealed"])
+        .env("FYLO_RUST_FAILPOINT", "after-pack-staging")
+        .env("FYLO_RUST_FAILPOINT_ACTION", "abort")
+        .output()
+        .unwrap();
+    assert!(!stopped.status.success(), "{stopped:?}");
+    // The verified sealed staging file is left, the plain one it was made
+    // from is gone, and no database is under the name.
+    assert!(!fixture.0.join("app.fxdb").exists());
+    assert!(fixture.0.join(".app.fxdb.seal-staging").is_file());
+    assert!(!fixture.0.join(".app.fxdb.pack-staging").exists());
+
+    let pack = fixture.run(&["pack", "data", "--out", "app.fxdb", "--sealed"]);
+    assert!(pack.status.success(), "{pack:?}");
     let mut names: Vec<_> = fs::read_dir(&fixture.0)
         .unwrap()
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())

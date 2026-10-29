@@ -1,17 +1,22 @@
 //! `fylo pack` and `fylo unpack` (ADR 0016 section 11): a directory root,
 //! in the file or the segment layout, into a `.fxdb` database and back to
-//! a directory root in the file layout, checked by ADR 0015's oracle.
+//! a directory root in the file layout, checked by ADR 0015's oracle; and
+//! `fylo pack --sealed`, into a read-only database recompressed in blocks,
+//! from a directory root or a live database.
 
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-use fylo_format::{ContainerDictionaryHeader, ContainerExtentHeader};
+use fylo_format::{
+    ContainerDictionaryHeader, ContainerExtentHeader, ContainerExtentKind, ContainerSealedHeader,
+};
 
 use fylo_storage_native::{
-    CollectionKind, CollectionLayout, ContainerFile, ContainerReport, NativeRoot,
-    NativeStorageErrorCode, NativeWriteRoot, PutDocumentOptions, RootConfig, ValidationMode,
+    CollectionKind, CollectionLayout, ContainerFile, ContainerReport, DatabaseKey,
+    DatabasePackReport, NativeRoot, NativeStorageErrorCode, NativeWriteRoot, PutDocumentOptions,
+    RootConfig, RootOpenOptions, ValidationMode,
 };
 use serde_json::{Map, Value, json};
 
@@ -552,4 +557,347 @@ fn a_stopped_packs_staging_file_is_removed_by_the_next_pack() {
         documents(&NativeRoot::open(&out).unwrap(), "items").len(),
         1
     );
+}
+
+/// The plain and the sealed pack of `source` beside it, as `fylo pack`
+/// and `fylo pack --sealed` write them, with the sealed one's report.
+fn pack_both(
+    writer: &NativeWriteRoot,
+    scratch: &Scratch,
+    key: Option<&DatabaseKey>,
+) -> (PathBuf, PathBuf, DatabasePackReport) {
+    let plain = scratch.0.join("plain.fxdb");
+    writer.pack_database(&plain, false).unwrap();
+    let sealed = scratch.0.join("sealed.fxdb");
+    let report = writer.pack_sealed_database(&sealed, false, key).unwrap();
+    (plain, sealed, report)
+}
+
+#[test]
+fn a_sealed_pack_unpacks_to_what_export_writes() {
+    let scratch = Scratch::new("sealed");
+    let source = scratch.root("source");
+    let segments = writer(&source, CollectionLayout::Segments);
+    segments
+        .create_collection("items", CollectionKind::Document, None)
+        .unwrap();
+    for ordinal in 1..=2 {
+        segments
+            .commit_schema_version("items", ordinal, version(ordinal).as_bytes(), |_| Ok(()))
+            .unwrap();
+    }
+    for number in 0..60 {
+        put(&segments, "items", number, 200);
+    }
+    for number in [3, 7] {
+        segments
+            .delete_document("items", &identifier(number), None)
+            .unwrap();
+    }
+    let exported = scratch.0.join("exported");
+    segments.export_collection("items", &exported).unwrap();
+    let bodies = documents(&NativeRoot::open(&source).unwrap(), "items");
+
+    let (plain, sealed, report) = pack_both(&segments, &scratch, None);
+    assert_eq!(report.collections[0].documents, 58);
+    assert_eq!(report.collections[0].deleted, 2);
+    let blocks = report.sealed.unwrap();
+    assert!(
+        blocks.stored_blocks > 0 && blocks.stored_blocks < blocks.blocks,
+        "{blocks:?}"
+    );
+    // Only the two databases are left beside the source: no staging file.
+    assert_eq!(
+        scratch.names(),
+        ["exported", "plain.fxdb", "sealed.fxdb", "source"]
+    );
+    // Read-only, with no free extents, and much smaller than the plain
+    // pack, whose extents keep their unused tails.
+    let file = ContainerFile::open_reader(&sealed).unwrap();
+    assert!(file.is_sealed() && file.superblock().is_sealed());
+    let inspected = file.report().unwrap();
+    assert!(inspected.sealed && !inspected.encrypted, "{inspected:?}");
+    assert_eq!(inspected.extents.free, 0, "{inspected:?}");
+    assert_eq!(inspected.blocks, Some(blocks));
+    let verified = file.verify().unwrap();
+    assert!(verified.ok && verified.problems.is_empty(), "{verified:?}");
+    assert!(verified.checked_extents >= 5, "{verified:?}");
+    let (plain_bytes, sealed_bytes) = (
+        fs::metadata(&plain).unwrap().len(),
+        fs::metadata(&sealed).unwrap().len(),
+    );
+    assert!(
+        sealed_bytes * 10 < plain_bytes,
+        "{sealed_bytes} vs {plain_bytes}"
+    );
+    assert_eq!(inspected.file_bytes, sealed_bytes);
+    // Every read path reads it through its blocks.
+    let packed = NativeRoot::open(&sealed).unwrap();
+    assert_eq!(documents(&packed, "items"), bodies);
+    assert_eq!(packed.schema_registry_head("items").unwrap(), Some(2));
+    assert_eq!(
+        packed.read_schema_version("items", 1).unwrap(),
+        version(1).as_bytes()
+    );
+
+    // ADR 0016's pack oracle through --sealed: root, sealed database, root.
+    let unpacked = scratch.0.join("unpacked");
+    let report = NativeWriteRoot::open(&sealed)
+        .unwrap()
+        .unpack_database(&unpacked)
+        .unwrap();
+    assert_eq!(report.collections[0].schema_versions, 2);
+    assert_eq!(
+        collection_tree(&unpacked.join(".collections/items")),
+        collection_tree(&exported)
+    );
+}
+
+#[test]
+fn a_live_database_backs_up_to_a_sealed_pack() {
+    let scratch = Scratch::new("backup");
+    let live = scratch.0.join("db.fxdb");
+    NativeRoot::create_database(&live).unwrap();
+    let database = NativeWriteRoot::open(&live).unwrap();
+    for collection in ["items", "notes"] {
+        database
+            .create_collection(collection, CollectionKind::Document, None)
+            .unwrap();
+    }
+    for number in 0..25 {
+        put(&database, "items", number, 50);
+    }
+    put(&database, "notes", 1, 0);
+    database
+        .delete_document("items", &identifier(4), None)
+        .unwrap();
+    let before = documents(&NativeRoot::open(&live).unwrap(), "items");
+
+    // A plain pack still takes only a directory root.
+    let error = database
+        .pack_database(&scratch.0.join("copy.fxdb"), false)
+        .unwrap_err();
+    assert_eq!(error.code(), NativeStorageErrorCode::Unsupported);
+    assert!(error.to_string().contains("--sealed"), "{error}");
+    let backup = scratch.0.join("backup.fxdb");
+    let report = database.pack_sealed_database(&backup, false, None).unwrap();
+    let counts: Vec<_> = report
+        .collections
+        .iter()
+        .map(|packed| (packed.collection.as_str(), packed.documents, packed.deleted))
+        .collect();
+    assert_eq!(counts, [("items", 24, 1), ("notes", 1, 0)]);
+
+    // The live database takes writes after the backup, which keeps the
+    // moment it was taken.
+    put(&database, "items", 99, 0);
+    let copy = NativeRoot::open(&backup).unwrap();
+    assert_eq!(
+        copy.database_collection_names().unwrap(),
+        ["items", "notes"]
+    );
+    assert_eq!(documents(&copy, "items"), before);
+    assert_eq!(documents(&copy, "notes").len(), 1);
+    // A sealed database packs again, read without a claim.
+    let again = scratch.0.join("again.fxdb");
+    NativeWriteRoot::open(&backup)
+        .unwrap()
+        .pack_sealed_database(&again, false, None)
+        .unwrap();
+    assert_eq!(
+        documents(&NativeRoot::open(&again).unwrap(), "items"),
+        before
+    );
+    let _ = NativeRoot::close_database(&backup);
+    let _ = NativeRoot::close_database(&again);
+}
+
+#[test]
+fn an_encrypted_sealed_pack_round_trips_with_its_key() {
+    let scratch = Scratch::new("sealed-encrypted");
+    let source = scratch.root("source");
+    let files = writer(&source, CollectionLayout::Files);
+    files
+        .create_collection("items", CollectionKind::Document, None)
+        .unwrap();
+    for number in 0..20 {
+        put(&files, "items", number, 30);
+    }
+    let bodies = documents(&NativeRoot::open(&source).unwrap(), "items");
+    let key = DatabaseKey::new(b"a sealed pack's secret, 32 bytes or more".to_vec());
+    let (_, sealed, _) = pack_both(&files, &scratch, Some(&key));
+
+    // Without the key the file is locked: only the blocks' checksums
+    // can be checked, and nothing is listed or read.
+    let mut file = ContainerFile::open_reader(&sealed).unwrap();
+    let report = file.report().unwrap();
+    assert!(
+        report.sealed && report.encrypted && report.locked,
+        "{report:?}"
+    );
+    assert!(report.collections.is_empty());
+    let verified = file.verify().unwrap();
+    assert!(verified.ok && verified.checked_extents == 0, "{verified:?}");
+    let locked = NativeRoot::open(&sealed).unwrap();
+    assert_eq!(locked.database_encryption(), Some((true, true)));
+    assert!(locked.database_collection_names().unwrap().is_empty());
+    let wrong = NativeRoot::open_profiled(
+        RootOpenOptions::new(&sealed).with_database_key(DatabaseKey::new(vec![7; 40])),
+    )
+    .unwrap_err();
+    assert_eq!(wrong.code(), NativeStorageErrorCode::KeyRequired);
+    // No document's name is in the file in the clear.
+    let bytes = fs::read(&sealed).unwrap();
+    assert!(!bytes.windows(6).any(|window| window == b"items1"));
+
+    file.unlock_with_key(&key).unwrap();
+    let verified = file.verify().unwrap();
+    assert!(verified.ok && verified.checked_extents >= 5, "{verified:?}");
+    let keyed = || RootOpenOptions::new(&sealed).with_database_key(key.clone());
+    assert_eq!(
+        documents(&NativeRoot::open_profiled(keyed()).unwrap(), "items"),
+        bodies
+    );
+    let unpacked = scratch.0.join("unpacked");
+    NativeWriteRoot::open_profiled(keyed())
+        .unwrap()
+        .unpack_database(&unpacked)
+        .unwrap();
+    assert_eq!(
+        documents(&NativeRoot::open(&unpacked).unwrap(), "items"),
+        bodies
+    );
+
+    // An encrypted database is backed up only into an encrypted pack.
+    let encrypted = scratch.0.join("encrypted.fxdb");
+    files
+        .pack_encrypted_database(&encrypted, false, &key)
+        .unwrap();
+    let live = NativeWriteRoot::open_profiled(
+        RootOpenOptions::new(&encrypted).with_database_key(key.clone()),
+    )
+    .unwrap();
+    let error = live
+        .pack_sealed_database(&scratch.0.join("leak.fxdb"), false, None)
+        .unwrap_err();
+    assert_eq!(error.code(), NativeStorageErrorCode::KeyRequired);
+    assert!(!scratch.0.join("leak.fxdb").exists());
+    let backup = scratch.0.join("backup.fxdb");
+    live.pack_sealed_database(&backup, false, Some(&key))
+        .unwrap();
+    let reopened =
+        NativeRoot::open_profiled(RootOpenOptions::new(&backup).with_database_key(key.clone()))
+            .unwrap();
+    assert_eq!(reopened.database_encryption(), Some((true, false)));
+    assert_eq!(documents(&reopened, "items"), bodies);
+    for path in [&sealed, &encrypted, &backup] {
+        let _ = NativeRoot::close_database(path);
+    }
+}
+
+#[test]
+fn a_sealed_database_refuses_every_write() {
+    let scratch = Scratch::new("sealed-writes");
+    let source = scratch.root("source");
+    let files = writer(&source, CollectionLayout::Files);
+    files
+        .create_collection("items", CollectionKind::Document, None)
+        .unwrap();
+    put(&files, "items", 1, 0);
+    let sealed = scratch.0.join("sealed.fxdb");
+    files.pack_sealed_database(&sealed, false, None).unwrap();
+    let original = fs::read(&sealed).unwrap();
+
+    let database = NativeWriteRoot::open(&sealed).unwrap();
+    let refused = [
+        database.put_document(
+            "items",
+            &identifier(2),
+            b"{\"name\":\"new\"}",
+            PutDocumentOptions::default(),
+        ),
+        database.delete_document("items", &identifier(1), None),
+        database
+            .create_collection("more", CollectionKind::Document, None)
+            .map(|_created| ()),
+        database.drop_collection("items"),
+        database.compact_database(true).map(|_| ()),
+    ];
+    for result in refused {
+        let error = result.unwrap_err();
+        assert_eq!(error.code(), NativeStorageErrorCode::Unsupported, "{error}");
+        assert!(error.to_string().contains("sealed"), "{error}");
+        assert!(error.to_string().contains("EROFS"), "{error}");
+    }
+    let error = ContainerFile::open_unchecked(&sealed).unwrap_err();
+    assert_eq!(error.code(), "EROFS");
+    // Nothing was written, and no lease was taken beside it.
+    assert_eq!(fs::read(&sealed).unwrap(), original);
+    assert_eq!(scratch.names(), ["sealed.fxdb", "source"]);
+    assert_eq!(
+        documents(&NativeRoot::open(&sealed).unwrap(), "items").len(),
+        1
+    );
+    let _ = NativeRoot::close_database(&sealed);
+}
+
+#[test]
+fn verify_finds_a_damaged_sealed_block_and_reads_fail_cleanly() {
+    let scratch = Scratch::new("sealed-damage");
+    let source = scratch.root("source");
+    let files = writer(&source, CollectionLayout::Files);
+    files
+        .create_collection("items", CollectionKind::Document, None)
+        .unwrap();
+    for number in 0..10 {
+        put(&files, "items", number, 100);
+    }
+    let sealed = scratch.0.join("sealed.fxdb");
+    files.pack_sealed_database(&sealed, false, None).unwrap();
+    // The first stored block of the collection's segment extent, from the
+    // block index.
+    let file = ContainerFile::open_reader(&sealed).unwrap();
+    let id = file.collections()[0].header.id;
+    let extent_bytes = 1_u64 << file.superblock().extent_shift;
+    let segment = file.allocator().owned(ContainerExtentKind::Segment, id)[0].0;
+    drop(file);
+    let mut bytes = fs::read(&sealed).unwrap();
+    let header = ContainerSealedHeader::decode(&bytes[8192..]).unwrap();
+    let start = usize::try_from(header.index_offset).unwrap();
+    let blocks = header.decode_index(&bytes[start..]).unwrap();
+    let number = segment * extent_bytes / ContainerSealedHeader::BLOCK_BYTES;
+    let block = blocks[usize::try_from(number).unwrap()];
+    assert!(!block.is_hole());
+    bytes[usize::try_from(block.offset).unwrap() + block.length as usize / 2] ^= 0x10;
+    let damaged = scratch.0.join("damaged.fxdb");
+    fs::write(&damaged, &bytes).unwrap();
+
+    let verified = ContainerFile::open_reader(&damaged)
+        .unwrap()
+        .verify()
+        .unwrap();
+    assert!(!verified.ok, "{verified:?}");
+    let problem = &verified.problems[0];
+    assert_eq!(
+        (problem.code, problem.extent),
+        ("sealedBlockDamaged", Some(segment))
+    );
+    assert!(
+        problem.message.contains(&format!("block {number}")),
+        "{problem:?}"
+    );
+    // A read that needs the block fails rather than return other bytes.
+    let error = NativeRoot::open(&damaged)
+        .and_then(|root| root.collection("items"))
+        .and_then(|items| items.document_ids().map(|_| items))
+        .and_then(|items| items.read_document(&identifier(0)))
+        .unwrap_err();
+    assert_eq!(
+        error.code(),
+        NativeStorageErrorCode::CorruptDocument,
+        "{error}"
+    );
+    assert!(error.to_string().contains("damaged"), "{error}");
+    let _ = NativeRoot::close_database(&damaged);
+    let _ = NativeRoot::close_database(&sealed);
 }

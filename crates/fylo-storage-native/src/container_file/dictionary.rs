@@ -112,7 +112,7 @@ impl ContainerFile {
         if self.is_locked() {
             return Err(ContainerError::Locked);
         }
-        if header.sealed != self.is_encrypted() {
+        if header.sealed != self.seals_units() {
             return Err(ContainerFormatError::InvalidField.into());
         }
         let mut stored = vec![0_u8; header.length as usize];

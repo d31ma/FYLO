@@ -34,7 +34,7 @@ use std::ops::RangeInclusive;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use fylo_format::{ContainerSuperblock, LogBodyCodec, LogFormatError, LogRecord};
+use fylo_format::{ContainerCodec, ContainerSuperblock, LogBodyCodec, LogFormatError, LogRecord};
 
 use crate::{
     ContainerCipher, ContainerCodecError, ContainerDictionary, ContainerFrameCodec,
@@ -76,6 +76,8 @@ pub(crate) struct ContainerFrames {
     writing: AtomicU32,
     /// Write LZ4 natively too, as the browser does.
     lz4: AtomicBool,
+    /// Store bodies as is, for a sealed pack to compress in blocks.
+    uncompressed: AtomicBool,
     codecs: Mutex<BTreeMap<u32, ContainerFrameCodec>>,
     /// The file key, in an encrypted file: every body is sealed with it,
     /// and one that is not is refused.
@@ -101,6 +103,7 @@ impl ContainerFrames {
             source: None,
             writing: AtomicU32::new(writing),
             lz4: AtomicBool::new(false),
+            uncompressed: AtomicBool::new(false),
             codecs: Mutex::new(BTreeMap::new()),
             cipher: None,
         }
@@ -182,6 +185,12 @@ impl ContainerFrames {
     #[cfg(test)]
     pub(crate) fn write_lz4(&self, lz4: bool) {
         self.lz4.store(lz4, Ordering::Relaxed);
+    }
+
+    /// Store new record bodies as is, uncompressed, in a plain file: the
+    /// staging file of a sealed pack, whose blocks compress them together.
+    pub(crate) fn write_uncompressed(&self) {
+        self.uncompressed.store(true, Ordering::Relaxed);
     }
 
     /// Dictionary `id`, loaded from the source when it is not held yet.
@@ -278,6 +287,12 @@ impl ContainerFrames {
 
 impl LogBodyCodec for ContainerFrames {
     fn store(&self, body: Vec<u8>) -> Result<Vec<u8>, LogFormatError> {
+        if self.cipher.is_none() && self.uncompressed.load(Ordering::Relaxed) {
+            let mut stored = Vec::with_capacity(1 + body.len());
+            stored.push(ContainerCodec::None.code());
+            stored.extend_from_slice(&body);
+            return Ok(stored);
+        }
         self.with_codec(self.writing.load(Ordering::Acquire), |codec| {
             let lz4 = self.lz4.load(Ordering::Relaxed);
             let Some(cipher) = self.cipher.as_deref() else {

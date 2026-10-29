@@ -85,6 +85,11 @@ pub enum ContainerSealContext {
         /// Which snapshot: `Locations`, `Index` or `Schemas`.
         kind: ContainerExtentKind,
     },
+    /// A block of a sealed file's image (ADR 0016 sections 8 and 11).
+    Block {
+        /// The block number: its offset in the image over the block size.
+        number: u64,
+    },
 }
 
 impl ContainerSealContext {
@@ -102,6 +107,7 @@ impl ContainerSealContext {
                 checkpoint,
                 kind,
             } => (4, collection, checkpoint, u32::from(kind.code())),
+            Self::Block { number } => (5, 0, number, 0),
         };
         let mut bytes = [0_u8; 28];
         bytes[..8].copy_from_slice(b"FXSEAL\0\x01");

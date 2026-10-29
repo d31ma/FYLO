@@ -166,6 +166,11 @@ impl ContainerDatabase {
         self.file.lock().is_encrypted()
     }
 
+    /// Whether the database is a sealed pack, which is never written.
+    pub(crate) fn is_sealed(&self) -> bool {
+        self.file.lock().is_sealed()
+    }
+
     /// Whether the database is encrypted and this handle has no key for it.
     pub(crate) const fn is_locked(&self) -> bool {
         self.locked

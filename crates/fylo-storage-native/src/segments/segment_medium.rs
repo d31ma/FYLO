@@ -187,6 +187,13 @@ pub(crate) trait SegmentMedium: Debug + Send + Sync {
         Ok(false)
     }
 
+    /// Before records are imported into a new collection that a sealed pack
+    /// will recompress in blocks (ADR 0016 section 8): store every record
+    /// body from now on as is, and train no dictionary, since a block
+    /// compresses many records at once far better than one record
+    /// compresses alone. A directory medium stores bodies as is already.
+    fn write_uncompressed(&self) {}
+
     /// Whether location rows go to a location log. A medium without one
     /// (a `.fxdb` container) keeps them only in memory: a location table is
     /// its snapshot and the rows the records after the snapshot's position

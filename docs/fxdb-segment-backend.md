@@ -520,8 +520,9 @@ app.fxdb` works the same way.
 **Not yet** (they fail with `ENATIVE_UNSUPPORTED` or are left for later):
 setting a collection's validation mode (a rewrite of its block's static
 part), the root's own write options (exclusive mode and timeouts are the
-process defaults), and `fylo pack --sealed`. Compaction, shrinking and
-salvage are in "Compaction and shrinking".
+process defaults), and sealing a database in place (`fylo pack --sealed`
+needs `--out`). Compaction, shrinking and salvage are in "Compaction and
+shrinking"; sealed files are in "Sealed packs".
 
 ## Packing and unpacking
 
@@ -537,7 +538,8 @@ a directory root, in the file or the segment layout, into a new database.
   uses buckets (any entry in `.buckets/`), document version control
   (`.fylo-vcs/`) or the embedded queue (any entry in `.fylo-queue/`), and a
   root on the EFS sidecar profile. It refuses an existing `--out` with
-  `ENATIVE_UNSUPPORTED`, and a database root: `fylo pack` takes a directory.
+  `ENATIVE_UNSUPPORTED`, and a database root without `--sealed`: a plain
+  pack takes a directory.
 - It takes every collection's lock, in name order, and recovers each, as
   `fylo export` does, and holds them all until the database has its name,
   so nothing writes the source meanwhile. A collection created during a
@@ -580,11 +582,69 @@ files are checked against the documents with the same oracle. An unpack that
 fails removes what it wrote; one that stops leaves a partial root, which a
 second unpack refuses until it is removed.
 
+**`fylo pack <root|db.fxdb> --out sealed.fxdb --sealed [--encrypt]`**
+writes a sealed file: a read-only image of the database, for distribution
+or backup (ADR 0016 sections 8 and 11). See "Sealed packs".
+
 **Not carried:** the record of the one-time `fylo.schema` import, which a
 database has no place for ("Schema versions"); the earlier widths of an
 unfinished reshard, since every document is read wherever it is and
 written at the collection's current width; and record ownership, which a
 database does not give records (ADR 0016 "Costs").
+
+## Sealed packs
+
+ADR 0016 sections 8 and 11, as `NativeWriteRoot::pack_sealed_database`,
+`container_file/sealing.rs` (writing) and `container_file/sealed_image.rs`
+(reading).
+
+- **Source.** A directory root, packed as above, or a live `.fxdb`
+  database, so a sealed pack is also a consistent backup: each collection
+  is locked and recovered as `fylo export` does, and its documents and
+  schema versions are read through the engine. Either way the records go
+  to a plain staging file, `.<name>.pack-staging`, stored uncompressed and
+  with no dictionary trained, so the blocks compress them whole.
+- **Renumbering.** The staging container's in-use extents keep their order
+  and get new numbers, its free extents and its map are dropped, and a new
+  map follows the last of them, so the image has no free extent. Each
+  extent header's number and every slot's references follow; the newest
+  slot of each pair becomes the first and the second is zeroed.
+- **Layout.** Superblocks A and B stay in the clear at 0 and 4 KiB and carry
+  `INCOMPAT_SEALED` (with `INCOMPAT_ENCRYPTED`, its salt and key check, in
+  an encrypted file). `ContainerSealedHeader` is at 8 KiB: the magic
+  `FXSEALED`, the image's length, the block count and where the block index
+  is and its CRC-32C. Blocks start at 12 KiB. Each covers 64 KiB of the
+  image and stores a codec byte and the block at zstd level 19, or the
+  block as is when that is smaller; a block of zeros stores nothing. The
+  index after the last block gives each block's offset, length and CRC-32C,
+  so a point read opens the one block that holds its record. The image's
+  first 8 KiB, the superblocks, are read from the file itself.
+- **Encryption.** Under `--encrypt`, or when the source database is
+  encrypted (its key, `fylo.encryption.key`, then also seals the output),
+  each block is sealed with AES-256-GCM, its number the associated data
+  (`ContainerSealContext::Block`), so a block moved to another place does
+  not open. The records inside are plain: the blocks carry the seal.
+  Without the key the file is locked as any encrypted database is.
+- **Check.** Before it has its name, the sealed staging file,
+  `.<name>.seal-staging`, is opened as a reader and checked with the oracle
+  against the plain staging file; then the plain one is removed and the
+  commit is a pack's.
+- **Reading.** Every read path opens it: the engine, the machine protocol,
+  `get`, `find`, `sql`, `inspect` (which reports `blocks`), `verify` and
+  `unpack`, and the browser engine. A few decoded blocks are cached, since a
+  scan reads a block's records in turn.
+- **Writing.** Every write is refused before any lease is taken, with
+  `EROFS` (`ENATIVE_UNSUPPORTED` through the machine protocol): an open for
+  writing, a document or SQL write, creating or dropping a collection,
+  compaction, shrinking and rebuild. `fylo unpack`, or a pack without
+  `--sealed`, gives a database that takes writes.
+- **Verify.** `fylo verify` checks every block's CRC-32C without the key and,
+  with it, that each opens and decompresses to its 64 KiB; a bad block is
+  `sealedBlockDamaged` at the extent it falls in, and the rest of the check
+  then stops. A read of a damaged block fails with `EFXDB_CORRUPT`.
+- **Not yet:** sealing a database in place (the database's exclusive lease
+  byte, then the image written over it); `--out` is required. Sealing runs
+  natively only: the browser reads a sealed file but cannot write one.
 
 ## Schema versions
 

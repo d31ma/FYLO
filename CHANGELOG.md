@@ -24,11 +24,23 @@
   only then gives it its name, so a stop leaves no `--out`; the next pack
   removes the staging file. It refuses an existing `--out`, and a root with
   buckets, version control or the embedded queue with `ELAYOUTUNSUPPORTED`;
-  `--sealed` is not supported yet. `fylo unpack app.fxdb --out <directory>`
+  `fylo unpack app.fxdb --out <directory>`
   writes a directory root in the file layout, each collection as
   `fylo export` writes it, with its descriptor and schema registry. Both
   bypass the machine protocol, as `export` does. New failpoint
   `after-pack-staging`.
+- **Sealed `.fxdb` packs (ADR 0016 sections 8 and 11).** `fylo pack
+  <root|db.fxdb> --out sealed.fxdb --sealed` writes a read-only image of a
+  directory root or of a live database, so it also takes a consistent
+  backup. Its free extents are dropped and the rest renumbered, and the
+  image is stored in 64 KiB blocks compressed at zstd level 19 with an index,
+  so a point read opens one block. Under `--encrypt`, or from an encrypted
+  database, each block is sealed with AES-256-GCM bound to its number. Every
+  read path opens it, the browser engine included, and `fylo inspect`
+  reports its `blocks`; every write fails with the new `EROFS` code
+  (`ENATIVE_UNSUPPORTED` through the machine protocol). `fylo verify`
+  reports a damaged block as `sealedBlockDamaged`, and a read of one fails
+  with `EFXDB_CORRUPT`.
 - **In-memory hot set for exclusive embedded sessions.** A session that holds
   the root's exclusive lease (`fylo exec --loop --exclusive-root`, or the Rust
   `FrameSession`) keeps parsed documents, index snapshots, id lists and

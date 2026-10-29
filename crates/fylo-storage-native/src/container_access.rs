@@ -135,13 +135,16 @@ impl ContainerFile {
     ///
     /// # Errors
     ///
-    /// Returns `Busy` when other writers keep it past the busy timeout, or
-    /// an open, read or lock failure.
+    /// Returns `Busy` when other writers keep it past the busy timeout,
+    /// `Sealed` for a sealed file, or an open, read or lock failure.
     pub fn open_writer(
         path: &Path,
         options: ContainerWriteOptions,
     ) -> Result<(Self, ContainerWriteAccess), ContainerError> {
         let handle = ByteRangeLockFile::open(path)?;
+        // A sealed file is never written: it is refused before a lease or
+        // a lock byte is taken for it.
+        ContainerFile::refuse_sealed(handle.file())?;
         let qualified = FilesystemInfo::of(handle.file())?.byte_range_locks_qualified();
         let locks_granted = handle.probe();
         let deadline = Instant::now() + options.busy_timeout;

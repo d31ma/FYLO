@@ -21,7 +21,7 @@ use fylo_format::{
 };
 use sha2::{Digest, Sha256};
 
-use super::{ContainerError, ContainerFile, read_exact_at, write_extent_header};
+use super::{ContainerError, ContainerFile, write_extent_header};
 use crate::ContainerSealContext;
 use crate::container_allocator::{ContainerAllocatorError, ContainerExtentAllocation};
 
@@ -260,7 +260,7 @@ impl ContainerFile {
         expected: Option<(ContainerExtentKind, u32)>,
     ) -> Result<ContainerExtentHeader, ContainerError> {
         let mut bytes = [0_u8; ContainerExtentHeader::ENCODED_BYTES];
-        read_exact_at(self.file(), &mut bytes, extent * self.extent_bytes())?;
+        self.read_at(&mut bytes, extent * self.extent_bytes())?;
         let header = ContainerExtentHeader::decode(&bytes)?;
         let matches = expected.map_or_else(
             || require_snapshot_kind(header.kind).is_ok(),

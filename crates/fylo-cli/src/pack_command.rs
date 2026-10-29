@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use fylo_machine::ApplicationConfig;
 use fylo_storage_native::{
-    DatabaseKey, DatabasePackReport, NativeRoot, NativeWriteRoot, RootOpenOptions,
+    ContainerFile, DatabaseKey, DatabasePackReport, NativeRoot, NativeWriteRoot, RootOpenOptions,
 };
 use serde_json::{Value, json};
 
@@ -12,6 +12,12 @@ use serde_json::{Value, json};
 /// `--encrypt`, or `fylo.encryption.file` in the configuration, makes the
 /// database `create` or `pack` writes an encrypted one, sealed with
 /// `fylo.encryption.key` (ADR 0016 section 9). Without either it is plain.
+///
+/// `pack --sealed` writes a sealed database: read-only, with no free
+/// extents, recompressed in 64 KiB blocks (ADR 0016 sections 8 and 11). It
+/// also takes a `.fxdb` database as its source, a consistent copy of a
+/// live one for a backup; an encrypted source packs encrypted, with the
+/// same key.
 ///
 /// Like `export` and `salvage`, they write outside the machine protocol on
 /// purpose: they take an output path, which a machine protocol client must
@@ -35,23 +41,23 @@ impl PackCommand {
             "pack" => "pack needs --out <db.fxdb>".to_owned(),
             _ => "unpack needs --out <directory>".to_owned(),
         })?;
-        if options.sealed {
-            return Err(
-                "ENATIVE_UNSUPPORTED: fylo pack --sealed is not supported yet; a plain pack is a consistent copy too"
-                    .into(),
-            );
+        if options.sealed && command != "pack" {
+            return Err("--sealed is an option of pack".into());
         }
-        let key = Self::encryption_key(application, options)?;
+        let mut key = Self::encryption_key(application, options)?;
         let writer = NativeWriteRoot::open_profiled(
             application.with_database_key(RootOpenOptions::new(source)),
         )
         .map_err(|error| error.to_string())?
         .with_config(application.storage);
+        if options.sealed && key.is_none() && Self::encrypted_database(source) {
+            key = application.database_key.as_ref();
+        }
+        let allow = options.allow_engine_only_access;
         let report = match (command, key) {
-            ("pack", Some(key)) => {
-                writer.pack_encrypted_database(out, options.allow_engine_only_access, key)
-            }
-            ("pack", None) => writer.pack_database(out, options.allow_engine_only_access),
+            ("pack", key) if options.sealed => writer.pack_sealed_database(out, allow, key),
+            ("pack", Some(key)) => writer.pack_encrypted_database(out, allow, key),
+            ("pack", None) => writer.pack_database(out, allow),
             _ => writer.unpack_database(out),
         }
         .map_err(|error| error.to_string())?;
@@ -81,6 +87,12 @@ impl PackCommand {
         .map_err(|error| error.to_string())
     }
 
+    /// Whether `source` is an encrypted `.fxdb` database, whose sealed pack
+    /// is encrypted with its key.
+    fn encrypted_database(source: &Path) -> bool {
+        source.is_file() && ContainerFile::open_reader(source).is_ok_and(|file| file.is_encrypted())
+    }
+
     /// The key a new database is sealed with: `Some` under `--encrypt` or
     /// `fylo.encryption.file`, which both need `fylo.encryption.key`.
     fn encryption_key<'a>(
@@ -108,11 +120,15 @@ impl PackCommand {
                 })
             })
             .collect();
-        json!({
+        let mut rendered = json!({
             "source": source.display().to_string(),
             "out": out.display().to_string(),
             "collections": collections,
-        })
+        });
+        if let Some(sealed) = &report.sealed {
+            rendered["sealed"] = json!(sealed);
+        }
+        rendered
     }
 }
 

@@ -895,7 +895,7 @@ impl Session {
             "findDocs" => self.find_documents(request),
             "inspectCollection" => self.inspect_collection(request),
             "inspectDatabase" => self.inspect_database(&self.database_path(request, operation)?),
-            "verifyDatabase" => Self::verify_database(&self.database_path(request, operation)?),
+            "verifyDatabase" => self.verify_database(&self.database_path(request, operation)?),
             "verifyCollection" => self.verify_collection(request),
             "log" => self.history(request),
             "getMeta" => self.get_metadata(request),
@@ -1510,9 +1510,21 @@ impl Session {
     /// change (ADR 0016 section 11). Damage is reported in the result, whose
     /// `ok` is false when any problem is an error; the frame fails only when
     /// the file cannot be opened or read.
-    fn verify_database(path: &Path) -> Result<Value, MachineError> {
+    ///
+    /// An encrypted sealed file holds its structures in sealed blocks, so
+    /// without the key only the blocks' checksums are checked; with the
+    /// configured key every block is opened and the structures are checked
+    /// too. A wrong key fails with `EKEY`.
+    fn verify_database(&self, path: &Path) -> Result<Value, MachineError> {
         let report = fylo_storage_native::ContainerFile::open_reader(path)
-            .and_then(|container| container.verify())
+            .and_then(|mut container| {
+                if container.is_sealed()
+                    && let Some(key) = &self.config.database_key
+                {
+                    container.unlock_with_key(key)?;
+                }
+                container.verify()
+            })
             .map_err(|error| MachineError::new(error.code(), error.to_string()))?;
         serde_json::to_value(report).map_err(|error| serialization_error(&error))
     }

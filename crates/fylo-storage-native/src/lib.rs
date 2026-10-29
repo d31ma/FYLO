@@ -75,7 +75,8 @@ pub use container_codec::{
 };
 pub use container_file::{
     ContainerCollection, ContainerCollectionReport, ContainerError, ContainerFile,
-    ContainerProblem, ContainerProblemSeverity, ContainerReport, ContainerVerifyReport,
+    ContainerProblem, ContainerProblemSeverity, ContainerReport, ContainerSealedReport,
+    ContainerVerifyReport,
 };
 #[cfg(not(target_family = "wasm"))]
 pub use container_lease::{ContainerLease, ContainerLeaseError, ContainerLeaseTiming};

@@ -3,6 +3,9 @@
 pub struct DatabasePackReport {
     /// Every collection copied, in the order it was copied.
     pub collections: Vec<PackedCollection>,
+    /// The blocks of a sealed pack (`fylo pack --sealed`); `None` for any
+    /// other pack, and for an unpack.
+    pub sealed: Option<crate::ContainerSealedReport>,
 }
 
 /// One collection `fylo pack` or `fylo unpack` copied.

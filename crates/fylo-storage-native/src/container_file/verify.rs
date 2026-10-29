@@ -33,7 +33,7 @@ use fylo_format::{
 };
 use sha2::{Digest, Sha256};
 
-use super::{BLOCK_BYTES, ContainerError, ContainerFile, SUPERBLOCK_BYTES, read_exact_at};
+use super::{BLOCK_BYTES, ContainerError, ContainerFile, SUPERBLOCK_BYTES};
 
 /// The largest read verification makes at once while hashing a snapshot.
 const HASH_CHUNK_BYTES: u64 = 1 << 20;
@@ -77,7 +77,9 @@ pub struct ContainerProblem {
     /// `tornSlot`, `slotDamaged`, `snapshotOutOfRange`,
     /// `snapshotExtentMismatch`, `snapshotNotInMap`,
     /// `snapshotHashMismatch`, `dictionaryDamaged`, `dictionaryMismatch`,
-    /// `dictionaryMissing` or `dictionaryUnused`.
+    /// `dictionaryMissing`, `dictionaryUnused` or, in a sealed file,
+    /// `sealedBlockDamaged`, whose extent is the one of the image the
+    /// block holds part of.
     pub code: &'static str,
     /// The extent concerned, if one is.
     pub extent: Option<u64>,
@@ -144,6 +146,12 @@ impl ContainerFile {
     /// encrypted file; an unlocked or plain file also has every extent
     /// owner checked against the collections that exist.
     ///
+    /// A sealed file has every block checked first: its stored bytes
+    /// against the index, without the key, and, unless it is locked, that
+    /// it opens and decompresses. Its structures are then checked as any
+    /// container's, through the blocks, when every block is sound and the
+    /// file is not locked.
+    ///
     /// Damage is reported in the result, not as an error.
     ///
     /// # Errors
@@ -152,7 +160,25 @@ impl ContainerFile {
     /// other than the file ending early.
     pub fn verify(&self) -> Result<ContainerVerifyReport, ContainerError> {
         let mut findings = Findings::default();
-        let file_bytes = self.file().metadata()?.len();
+        if let Some(image) = &self.image {
+            // A sealed file's structures are read through its blocks, so
+            // they are checked only once every block is sound, and only
+            // with the key in an encrypted one.
+            for (block, message) in image.damaged_blocks(self.file())? {
+                findings.error(
+                    "sealedBlockDamaged",
+                    Some(
+                        block * fylo_format::ContainerSealedHeader::BLOCK_BYTES
+                            / self.extent_bytes(),
+                    ),
+                    format!("sealed block {block} is damaged: {message}"),
+                );
+            }
+            if !findings.problems.is_empty() || image.is_locked() {
+                return Ok(findings.report());
+            }
+        }
+        let file_bytes = self.container_bytes()?;
         if file_bytes < 2 * SUPERBLOCK_BYTES {
             findings.error(
                 "fileTooShort",
@@ -171,7 +197,7 @@ impl ContainerFile {
 
     fn verify_superblocks(&self, findings: &mut Findings) -> Result<(), ContainerError> {
         let mut copies = vec![0_u8; 2 * ContainerSuperblock::ENCODED_BYTES];
-        read_exact_at(self.file(), &mut copies, 0)?;
+        self.read_at(&mut copies, 0)?;
         let (copy_a, copy_b) = copies.split_at(ContainerSuperblock::ENCODED_BYTES);
         let (in_force, other, names) = if self.superblock_in_a {
             (copy_a, copy_b, ("A", "B"))
@@ -314,7 +340,7 @@ impl ContainerFile {
             return Ok(None);
         }
         let mut bytes = [0_u8; ContainerExtentHeader::ENCODED_BYTES];
-        read_exact_at(self.file(), &mut bytes, at)?;
+        self.read_at(&mut bytes, at)?;
         Ok(Some(ContainerExtentHeader::decode(&bytes)))
     }
 
@@ -331,12 +357,12 @@ impl ContainerFile {
             if at + BLOCK_BYTES > file_bytes {
                 break;
             }
-            read_exact_at(self.file(), &mut bytes, at)?;
+            self.read_at(&mut bytes, at)?;
             if all_zero(&bytes) {
                 break;
             }
             let block = u32::try_from(block).map_err(|_| ContainerFormatError::Oversized)?;
-            let decoded = if self.is_encrypted() {
+            let decoded = if self.seals_units() {
                 ContainerCollectionHeader::decode_sealed(&bytes).map(|_| None)
             } else {
                 ContainerCollectionHeader::decode(&bytes).map(|header| Some(header.id))
@@ -698,7 +724,7 @@ impl ContainerFile {
                     .map_err(|_| ContainerFormatError::Oversized)?;
                 let at =
                     extent * self.extent_bytes() + ContainerExtentHeader::PAYLOAD_OFFSET + offset;
-                read_exact_at(self.file(), &mut buffer[..take], at)?;
+                self.read_at(&mut buffer[..take], at)?;
                 hasher.update(&buffer[..take]);
                 offset += take as u64;
             }

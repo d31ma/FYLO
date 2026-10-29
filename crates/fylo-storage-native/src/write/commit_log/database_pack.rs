@@ -34,11 +34,21 @@ use crate::{
 /// leaves no `--out`, only the staging file, which the next pack to the same
 /// name removes.
 ///
+/// `pack --sealed` builds the same staging file with every record body
+/// stored as is, then writes it as a sealed file: read-only, with no free
+/// extents, recompressed in 64 KiB blocks (ADR 0016 sections 8 and 11). The
+/// sealed file is checked against the source with the oracle again, read
+/// through its blocks, before it is given its name. It also takes a `.fxdb`
+/// database as its source, a consistent copy of a live one: every
+/// collection's claim is held from the first read to the commit, so no
+/// writer in any process commits to it meanwhile.
+///
 /// `unpack` writes a database's collections as a new directory root in the
 /// file layout: for each, the tree `fylo export` writes, its catalog
 /// descriptor and its schema registry.
 impl NativeWriteRoot {
     const PACK_STAGING_SUFFIX: &'static str = ".pack-staging";
+    const SEAL_STAGING_SUFFIX: &'static str = ".seal-staging";
 
     /// Pack this directory root into a new `.fxdb` database at `out`, which
     /// must not exist.
@@ -60,7 +70,7 @@ impl NativeWriteRoot {
         out: &Path,
         allow_engine_only_access: bool,
     ) -> Result<DatabasePackReport, NativeStorageError> {
-        self.pack_with(out, allow_engine_only_access, None)
+        self.pack_with(out, allow_engine_only_access, (None, false))
     }
 
     /// [`Self::pack_database`], into a database encrypted with `key`
@@ -75,14 +85,40 @@ impl NativeWriteRoot {
         allow_engine_only_access: bool,
         key: &DatabaseKey,
     ) -> Result<DatabasePackReport, NativeStorageError> {
-        self.pack_with(out, allow_engine_only_access, Some(key))
+        self.pack_with(out, allow_engine_only_access, (Some(key), false))
+    }
+
+    /// Pack this root, a directory root or a `.fxdb` database, into a new
+    /// sealed database at `out`, which must not exist: read-only, with no
+    /// free extents, and recompressed in 64 KiB blocks (ADR 0016 sections 8
+    /// and 11). With `key` the blocks are sealed with it, and a database
+    /// that is encrypted packs only with a key, so its documents never land
+    /// in a plain file.
+    ///
+    /// From a database this is a consistent copy for a backup: every
+    /// collection's claim is held from the first read to the commit, so
+    /// writers of the database, in this process or another, wait for it,
+    /// and its readers do not. A sealed database is read without a claim,
+    /// since nothing writes it.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`Self::pack_database`], but that a database is taken;
+    /// `EKEY` for an encrypted database without `key` or a locked one.
+    pub fn pack_sealed_database(
+        &self,
+        out: &Path,
+        allow_engine_only_access: bool,
+        key: Option<&DatabaseKey>,
+    ) -> Result<DatabasePackReport, NativeStorageError> {
+        self.pack_with(out, allow_engine_only_access, (key, true))
     }
 
     fn pack_with(
         &self,
         out: &Path,
         allow_engine_only_access: bool,
-        key: Option<&DatabaseKey>,
+        (key, sealed): (Option<&DatabaseKey>, bool),
     ) -> Result<DatabasePackReport, NativeStorageError> {
         if !NativeCollection::SEGMENTS_SUPPORTED {
             return Err(Self::pack_unsupported(
@@ -90,13 +126,33 @@ impl NativeWriteRoot {
             ));
         }
         self.root.assert_profile_owned()?;
-        if self.root.is_database() {
-            return Err(Self::pack_unsupported(
-                "fylo pack takes a directory root, and this root is already a .fxdb database",
-            ));
+        let database = self.root.database();
+        match database {
+            Some(_) if !sealed => {
+                return Err(Self::pack_unsupported(
+                    "fylo pack takes a directory root, and this root is already a .fxdb \
+                     database; fylo pack --sealed copies one",
+                ));
+            }
+            Some(database) => {
+                database.require_key()?;
+                if database.is_encrypted() && key.is_none() {
+                    return Err(NativeStorageError::new(
+                        NativeStorageErrorCode::KeyRequired,
+                        "the .fxdb database is encrypted, so its sealed pack is encrypted too \
+                         and needs the key (fylo.encryption.key)",
+                    ));
+                }
+            }
+            None => self.require_packable()?,
         }
-        self.require_packable()?;
-        let names = self.packed_collection_names()?;
+        let names = match self.root.database_collection_names() {
+            Some(mut names) => {
+                names.sort();
+                names
+            }
+            None => self.packed_collection_names()?,
+        };
         // A bare file name lives in the working directory, which the commit
         // flushes.
         let out = &match out.parent() {
@@ -104,33 +160,128 @@ impl NativeWriteRoot {
             _ => out.to_owned(),
         };
         Self::require_new_output(out)?;
-        let staging = Self::pack_staging(out)?;
-        let mut locks = Vec::with_capacity(names.len());
-        let mut collections = Vec::with_capacity(names.len());
-        for name in &names {
-            let collection = self.root.collection(name)?;
-            locks.push(self.lock_collection(&collection)?);
-            self.recover_locked(&collection)?;
-            // Recovery may have moved the descriptor's schema head.
-            collections.push(self.root.collection(name)?);
-        }
+        let staging = Self::pack_staging(out, Self::PACK_STAGING_SUFFIX)?;
+        let sealing = Self::pack_staging(out, Self::SEAL_STAGING_SUFFIX)?;
+        let collections = self.packed_collections(&names)?;
         Self::remove_staging(&staging)?;
+        Self::remove_staging(&sealing)?;
         let built = self
-            .build_pack(&collections, &staging, (allow_engine_only_access, key))
-            .and_then(|report| Self::flush_staging(&staging).map(|()| report))
-            .and_then(|report| failpoint("after-pack-staging").map(|()| report));
-        let report = match built {
-            Ok(report) => report,
+            .build_pack(
+                &collections.1,
+                &staging,
+                (allow_engine_only_access, if sealed { None } else { key }),
+                sealed,
+            )
+            .and_then(|report| {
+                if !sealed {
+                    return Ok((report, &staging));
+                }
+                let blocks = self.seal_pack(&collections.1, &staging, &sealing, key)?;
+                Self::remove_staging(&staging)?;
+                Ok((
+                    DatabasePackReport {
+                        sealed: Some(blocks),
+                        ..report
+                    },
+                    &sealing,
+                ))
+            })
+            .and_then(|(report, built)| Self::flush_staging(built).map(|()| (report, built)))
+            .and_then(|built| failpoint("after-pack-staging").map(|()| built));
+        let (report, built) = match built {
+            Ok(built) => built,
             Err(error) => {
-                // The staging file is never read; one this cannot remove is
+                // A staging file is never read; one this cannot remove is
                 // removed by the next pack.
                 let _ = Self::remove_staging(&staging);
+                let _ = Self::remove_staging(&sealing);
                 return Err(error);
             }
         };
-        Self::adopt_staging(&staging, out)?;
-        drop(locks);
+        Self::adopt_staging(built, out)?;
+        drop(collections);
         Ok(report)
+    }
+
+    /// Write the container `staging` as a sealed file at `sealing`.
+    #[cfg(not(target_family = "wasm"))]
+    fn write_sealed(
+        staging: &Path,
+        sealing: &Path,
+        key: Option<&DatabaseKey>,
+    ) -> Result<crate::ContainerSealedReport, NativeStorageError> {
+        crate::ContainerFile::open_reader(staging)
+            .and_then(|file| file.write_sealed(sealing, key.map(DatabaseKey::secret)))
+            .map_err(crate::segments::ContainerMedium::error)
+    }
+
+    /// The browser carries no zstd compressor, so it reads sealed files
+    /// but never writes one.
+    #[cfg(target_family = "wasm")]
+    fn write_sealed(
+        _staging: &Path,
+        _sealing: &Path,
+        _key: Option<&DatabaseKey>,
+    ) -> Result<crate::ContainerSealedReport, NativeStorageError> {
+        Err(Self::pack_unsupported(
+            "this build cannot write a sealed .fxdb database",
+        ))
+    }
+
+    /// The collections named `names`, in that order, each locked and
+    /// recovered, as `fylo export` does, with the locks to hold until the
+    /// pack has its name. A sealed database is never written, so it takes
+    /// no lock and needs no recovery.
+    fn packed_collections(
+        &self,
+        names: &[String],
+    ) -> Result<(Vec<super::CollectionGuard>, Vec<NativeCollection>), NativeStorageError> {
+        let read_only = self
+            .root
+            .database()
+            .is_some_and(|database| database.is_sealed());
+        let mut locks = Vec::with_capacity(names.len());
+        let mut collections = Vec::with_capacity(names.len());
+        for name in names {
+            let collection = self.root.collection(name)?;
+            if !read_only {
+                locks.push(self.lock_collection(&collection)?);
+                self.recover_locked(&collection)?;
+            }
+            // Recovery may have moved the descriptor's schema head.
+            collections.push(self.root.collection(name)?);
+        }
+        Ok((locks, collections))
+    }
+
+    /// Write the plain staging file `staging`, which [`Self::build_pack`]
+    /// built and checked, as a sealed file at `sealing`, sealed with `key`
+    /// when one is given, and check it against `collections`, the source,
+    /// with the oracle again, reading it through its blocks. This process's
+    /// open of it is closed before this returns.
+    fn seal_pack(
+        &self,
+        collections: &[NativeCollection],
+        staging: &Path,
+        sealing: &Path,
+        key: Option<&DatabaseKey>,
+    ) -> Result<crate::ContainerSealedReport, NativeStorageError> {
+        let blocks = Self::write_sealed(staging, sealing, key)?;
+        let mut options = RootOpenOptions::new(sealing);
+        if let Some(key) = key {
+            options = options.with_database_key(key.clone());
+        }
+        let outcome = Self::open_profiled(options).and_then(|packed| {
+            for source in collections {
+                let images = DocumentImage::read_collection(source)?;
+                let copy = packed.root.collection(source.name())?;
+                Self::require_registry(&*copy.segment_medium()?, &self.registry_versions(source)?)?;
+                DocumentImage::require_same(&images, &DocumentImage::read_collection(&copy)?)?;
+            }
+            Ok(())
+        });
+        NativeRoot::close_database(sealing)?;
+        outcome.map(|()| blocks)
     }
 
     /// Write this `.fxdb` database's collections as a new directory root in
@@ -168,14 +319,7 @@ impl NativeWriteRoot {
         unpacked: &Self,
         names: &[String],
     ) -> Result<DatabasePackReport, NativeStorageError> {
-        let mut locks = Vec::with_capacity(names.len());
-        let mut collections = Vec::with_capacity(names.len());
-        for name in names {
-            let collection = self.root.collection(name)?;
-            locks.push(self.lock_collection(&collection)?);
-            self.recover_locked(&collection)?;
-            collections.push(collection);
-        }
+        let (_locks, collections) = self.packed_collections(names)?;
         let mut report = DatabasePackReport::default();
         for collection in &collections {
             report
@@ -263,9 +407,9 @@ impl NativeWriteRoot {
         Ok(())
     }
 
-    /// The staging file of a pack to `out`: a hidden sibling, so the rename
-    /// that commits it stays in one directory.
-    fn pack_staging(out: &Path) -> Result<PathBuf, NativeStorageError> {
+    /// The staging file of a pack to `out` with `suffix`: a hidden sibling,
+    /// so the rename that commits it stays in one directory.
+    fn pack_staging(out: &Path, suffix: &str) -> Result<PathBuf, NativeStorageError> {
         let name = out.file_name().ok_or_else(|| {
             NativeStorageError::new(
                 NativeStorageErrorCode::UnsafePath,
@@ -273,11 +417,7 @@ impl NativeWriteRoot {
             )
         })?;
         let parent = out.parent().unwrap_or_else(|| Path::new("."));
-        Ok(parent.join(format!(
-            ".{}{}",
-            name.to_string_lossy(),
-            Self::PACK_STAGING_SUFFIX
-        )))
+        Ok(parent.join(format!(".{}{suffix}", name.to_string_lossy())))
     }
 
     /// Remove a staging file and the lease files beside it, and forget this
@@ -300,7 +440,8 @@ impl NativeWriteRoot {
         Ok(())
     }
 
-    /// Build the database in `staging` and verify every collection of it.
+    /// Build the database in `staging` and verify every collection of it,
+    /// with every record body stored as is when it is to be `sealed`.
     /// This process's open of the file is closed before it returns, so the
     /// file is renamed with no writer holding it.
     fn build_pack(
@@ -308,6 +449,7 @@ impl NativeWriteRoot {
         collections: &[NativeCollection],
         staging: &Path,
         (allow_engine_only_access, key): (bool, Option<&DatabaseKey>),
+        sealed: bool,
     ) -> Result<DatabasePackReport, NativeStorageError> {
         let mut options = RootOpenOptions::new(staging);
         match key {
@@ -323,7 +465,7 @@ impl NativeWriteRoot {
                 report.collections.push(self.pack_collection(
                     &packed,
                     collection,
-                    allow_engine_only_access,
+                    (allow_engine_only_access, sealed),
                 )?);
             }
             Ok(report)
@@ -332,16 +474,19 @@ impl NativeWriteRoot {
         outcome
     }
 
-    /// Copy one collection into the database `packed`, then check the copy
-    /// against `images`, the source's documents.
+    /// Copy one collection into the database `packed`, uncompressed for a
+    /// sealed pack, then check the copy against `images`, the source's
+    /// documents.
     fn pack_collection(
         &self,
         packed: &Self,
         source: &NativeCollection,
-        allow_engine_only_access: bool,
+        (allow_engine_only_access, sealed): (bool, bool),
     ) -> Result<PackedCollection, NativeStorageError> {
         let images = DocumentImage::read_collection(source)?;
-        if !allow_engine_only_access {
+        // A database's records have their access enforced in FYLO only
+        // already, so copying them into another changes nothing.
+        if !allow_engine_only_access && !self.root.is_database() {
             Self::require_owner_only_access(source, &images)?;
         }
         let versions = self.registry_versions(source)?;
@@ -352,7 +497,7 @@ impl NativeWriteRoot {
         packed.add_database_collection(source.name(), descriptor)?;
         let collection = packed.root.collection(source.name())?;
         let _lock = packed.lock_collection(&collection)?;
-        Self::import_records(&collection, (&images, &versions))?;
+        Self::import_records(&collection, (&images, &versions), sealed)?;
         let medium = collection.segment_medium()?;
         Self::require_registry(&*medium, &versions)?;
         DocumentImage::require_same(&images, &DocumentImage::read_segments(medium)?)?;
@@ -363,12 +508,15 @@ impl NativeWriteRoot {
     /// a commit record of its own in identifier order, as a migration to
     /// segments does (`SegmentImport`), taking a new segment extent when
     /// the next record does not fit. A checkpoint then folds the locations,
-    /// the prefix index and the schemas snapshot from the records.
+    /// the prefix index and the schemas snapshot from the records. For a
+    /// sealed pack the bodies are stored as is, and no dictionary is
+    /// trained: the blocks compress them.
     ///
     /// Nothing here is recovered: a pack that stops discards the file.
     fn import_records(
         collection: &NativeCollection,
         (images, versions): (&[DocumentImage], &[Vec<u8>]),
+        uncompressed: bool,
     ) -> Result<(), NativeStorageError> {
         let medium = collection.segment_medium()?;
         let stored = collection.stored_generation()?;
@@ -380,7 +528,11 @@ impl NativeWriteRoot {
         }
         let mut ordered: Vec<&DocumentImage> = images.iter().collect();
         ordered.sort_by(|left, right| left.id.cmp(&right.id));
-        medium.prime_dictionary(&Self::first_records(&ordered, generation)?)?;
+        if uncompressed {
+            medium.write_uncompressed();
+        } else {
+            medium.prime_dictionary(&Self::first_records(&ordered, generation)?)?;
+        }
         for (index, version) in versions.iter().enumerate() {
             let ordinal = u32::try_from(index + 1).map_err(|_| {
                 NativeStorageError::new(

@@ -167,10 +167,15 @@ impl ContainerOpen {
     ///
     /// # Errors
     ///
-    /// Returns `EBUSY` when other writers keep the file, a lost lease, or
-    /// the open failure.
+    /// Returns `EBUSY` when other writers keep the file, a lost lease,
+    /// `EROFS` for a sealed file, or the open failure.
     pub(crate) fn writable(&self) -> Result<MutexGuard<'_, Open>, NativeStorageError> {
         let mut open = self.lock();
+        // A sealed file is refused before anything, a lease included, is
+        // taken for it.
+        if open.file.is_sealed() {
+            return Err(ContainerMedium::error(ContainerError::Sealed));
+        }
         if !open.file.is_writable() {
             open.upgrade(&self.path)?;
         }
