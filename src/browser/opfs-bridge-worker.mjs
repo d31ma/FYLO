@@ -78,7 +78,7 @@ async function serve(message) {
             result = outcome.result ?? 0
             answer = outcome.payload ?? new Uint8Array()
         } catch (error) {
-            status = error?.name === 'NotFoundError' ? -2 : error?.code === 'EEXIST' ? -17 : -5
+            status = errno(error)
             answer = encoder.encode(error instanceof Error ? error.message : String(error))
         }
         if (answer.length > data.length) {
@@ -153,11 +153,13 @@ async function perform(context, request, payload) {
         case 'unlink': {
             const { parent, name } = await parentOf(context, request.path, false)
             await parent.removeEntry(name)
+            await dropAttributes(context, request.path)
             return {}
         }
         case 'rmdir': {
             const { parent, name } = await parentOf(context, request.path, false)
             await parent.removeEntry(name, { recursive: request.recursive })
+            await dropAttributes(context, request.path)
             return {}
         }
         case 'rename':
@@ -255,7 +257,23 @@ async function stat(context, path) {
 }
 
 async function rename(context, from, to) {
-    const source = await fileHandle(context, from, false)
+    const origin = await parentOf(context, from, false)
+    let source
+    try {
+        source = await origin.parent.getFileHandle(origin.name)
+    } catch (error) {
+        if (error?.name !== 'TypeMismatchError') throw error
+        // A directory: the engine stages whole trees (a merge, a rebuild) and
+        // renames them into place, as it would on a disk.
+        await renameDirectory(context, origin, to)
+        await moveAttributes(context, from, to)
+        return
+    }
+    await renameFile(context, source, from, to)
+    await moveAttributes(context, from, to)
+}
+
+async function renameFile(context, source, from, to) {
     const { parent, name } = await parentOf(context, to, true)
     if (typeof source.move === 'function') {
         await source.move(parent, name)
@@ -276,6 +294,99 @@ async function rename(context, from, to) {
     }
     const origin = await parentOf(context, from, false)
     await origin.parent.removeEntry(origin.name)
+}
+
+/**
+ * Rename a directory the way POSIX `rename(2)` does: onto nothing, or onto an
+ * empty directory it replaces. Not every engine can `move` a directory
+ * handle, so the fallback copies the tree and removes the source, which is
+ * not atomic; FYLO's journals recover an interrupted one, as for files.
+ */
+async function renameDirectory(context, origin, to) {
+    const source = await origin.parent.getDirectoryHandle(origin.name)
+    const { parent, name } = await parentOf(context, to, true)
+    let existing
+    try {
+        existing = await parent.getDirectoryHandle(name)
+    } catch (error) {
+        if (error?.name !== 'NotFoundError') throw error
+    }
+    if (existing) {
+        for await (const _ of existing.keys()) {
+            const error = new Error(`rename target is not empty: ${to}`)
+            error.code = 'ENOTEMPTY'
+            throw error
+        }
+        await parent.removeEntry(name)
+    }
+    if (typeof source.move === 'function') {
+        try {
+            await source.move(parent, name)
+            return
+        } catch (error) {
+            // Engines that move only files say so this way; copy instead.
+            if (
+                !['NotSupportedError', 'TypeMismatchError', 'InvalidModificationError'].includes(
+                    error?.name
+                )
+            ) {
+                throw error
+            }
+        }
+    }
+    await copyDirectory(source, await parent.getDirectoryHandle(name, { create: true }))
+    await origin.parent.removeEntry(origin.name, { recursive: true })
+}
+
+async function copyDirectory(source, target) {
+    for await (const [name, child] of source.entries()) {
+        if (child.kind === 'directory') {
+            await copyDirectory(child, await target.getDirectoryHandle(name, { create: true }))
+            continue
+        }
+        const bytes = new Uint8Array(await (await child.getFile()).arrayBuffer())
+        const access = await (
+            await target.getFileHandle(name, { create: true })
+        ).createSyncAccessHandle()
+        try {
+            access.truncate(0)
+            access.write(bytes, { at: 0 })
+            access.flush()
+        } finally {
+            access.close()
+        }
+    }
+}
+
+/** Forget a removed entry's attributes, as unlinking an inode does. */
+async function dropAttributes(context, path) {
+    const manifest = await loadAttributes(context)
+    let dropped = false
+    for (const key of Object.keys(manifest)) {
+        if (key !== path && !key.startsWith(`${path}/`)) continue
+        delete manifest[key]
+        dropped = true
+    }
+    if (dropped) await saveAttributes(context, manifest)
+}
+
+/**
+ * Carry a renamed entry's attributes, and those of everything under it, to
+ * the new path. On a disk they live on the inode and move with it; here they
+ * are keyed by path, so a rename that left them behind would strip a record
+ * of its metadata.
+ */
+async function moveAttributes(context, from, to) {
+    const manifest = await loadAttributes(context)
+    const prefix = `${from}/`
+    let moved = false
+    for (const key of Object.keys(manifest)) {
+        if (key !== from && !key.startsWith(prefix)) continue
+        manifest[`${to}${key.slice(from.length)}`] = manifest[key]
+        delete manifest[key]
+        moved = true
+    }
+    if (moved) await saveAttributes(context, manifest)
 }
 
 async function loadAttributes(context) {
@@ -300,6 +411,23 @@ async function saveAttributes(context, manifest) {
         access.flush()
     } finally {
         access.close()
+    }
+}
+
+/** The negative errno a failed OPFS call stands for. */
+function errno(error) {
+    if (error?.name === 'NotFoundError') return -2
+    switch (error?.code) {
+        case 'EEXIST':
+            return -17
+        case 'ENOTEMPTY':
+            return -39
+        case 'EACCES':
+            return -13
+        case 'EBADF':
+            return -9
+        default:
+            return -5
     }
 }
 
