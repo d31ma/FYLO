@@ -37,6 +37,17 @@
   (off by default), and the first write open of a root with a folder imports
   its existing collections once. A registry collection writes its generation
   state as `fylo.collection-generation.v3`, which older releases refuse.
+- **The WebAssembly builds validate schema writes (ADR 0017 section 4).**
+  `fylo.wasm` and `fylo-browser.wasm` link CHEX without a regex compiler and
+  validate a registry collection with the DFAs `fylo schema push` stored in
+  its head version, with the native binary's results and messages; strict,
+  warn and off work as natively. They fail closed: a head that is not
+  portable or whose stored validator is missing or refused, and a collection
+  without a registry whose schema is in a `fylo.schema` folder or whose
+  descriptor records `strict` or `warn`, refuse strict and warn writes with
+  the new `ESCHEMAUNAVAILABLE`. Their handshake's `schemaValidation` is the
+  CHEX record with `compiledOnly: true` instead of `false`. The browser engine
+  is now built at `opt-level = "z"`, which keeps it within its size budget.
 - **`fylo schema migrate <collection>`** (`schemaMigrate`) rewrites the
   documents below a collection's head schema version at the head, through the
   same validation and encryption as any write. A document without `_v` is

@@ -1011,19 +1011,7 @@ impl Session {
                     "integrity": "sha256-full-content"
                 }),
             ),
-            (
-                "schemaValidation".into(),
-                if cfg!(target_family = "wasm") {
-                    Value::Bool(false)
-                } else {
-                    json!({
-                        "version": 1,
-                        "validator": "chex",
-                        "chexVersion": CHEX_VERSION,
-                        "inProcess": true
-                    })
-                },
-            ),
+            ("schemaValidation".into(), schema_validation_capability()),
             (
                 "serverlessQueue".into(),
                 if self.filesystem_profile == FilesystemProfile::Native {
@@ -3646,6 +3634,24 @@ fn unix_millis() -> u64 {
         .map_or(0, |elapsed| {
             u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
         })
+}
+
+/// Every build links the CHEX validator (ADR 0017 sections 4 and 7). A
+/// WebAssembly build has no regex compiler: it validates only with the
+/// compiled validators a native push stored in the schema registry, and
+/// refuses `strict` and `warn` writes to a collection it cannot validate with
+/// `ESCHEMAUNAVAILABLE`, which `compiledOnly` tells a supervisor to expect.
+fn schema_validation_capability() -> Value {
+    let mut capability = json!({
+        "version": 1,
+        "validator": "chex",
+        "chexVersion": CHEX_VERSION,
+        "inProcess": true
+    });
+    if cfg!(target_family = "wasm") {
+        capability["compiledOnly"] = Value::Bool(true);
+    }
+    capability
 }
 
 fn serverless_queue_capability() -> Value {

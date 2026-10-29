@@ -541,7 +541,7 @@ fn contains_ciphertext(value: &Value) -> bool {
     }
 }
 
-fn decode_base64_url(encoded: &str) -> Result<Vec<u8>, String> {
+pub(crate) fn decode_base64_url(encoded: &str) -> Result<Vec<u8>, String> {
     let mut source = encoded.as_bytes().to_vec();
     for byte in &mut source {
         match *byte {

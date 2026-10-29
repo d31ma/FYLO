@@ -26,10 +26,15 @@ xattr.workspace = true
 fylo-test-support = { version = "0.1.0", path = "../fylo-test-support" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-# CHEX schema validation runs in-process. Its regex Unicode tables add ~390 KB
-# to the browser engine, past the Wasm size budget, so neither Wasm artifact
-# validates schemas (the same scope they had when CHEX was a subprocess).
+# CHEX schema validation runs in-process, compiling each schema from its
+# source with `regex` and `regex-automata`'s DFA builder.
 fylo-chex = { version = "0.1.0", path = "../fylo-chex" }
+
+# A regex compiler would push the browser engine past its size budget, so the
+# WebAssembly builds link only `regex-automata`'s DFA search and validate with
+# the DFAs a native push stored in the schema registry (ADR 0017 section 4).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+fylo-chex = { version = "0.1.0", path = "../fylo-chex", default-features = false }
 
 [target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
 getrandom.workspace = true

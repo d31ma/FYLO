@@ -11,6 +11,8 @@ mod hot_set;
 mod lazy_migration;
 mod schema;
 mod schema_admin;
+#[cfg(any(test, target_arch = "wasm32"))]
+mod stored_validation;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -511,6 +513,8 @@ impl WriteEngine {
     /// read or decrypted.
     pub fn schema_check(&self, collection: &str, limit: usize) -> Result<Value, EngineError> {
         let current = self.schema_current(collection)?;
+        #[cfg(target_arch = "wasm32")]
+        self.require_stored_validator(collection)?;
         let handle = self
             .writer
             .collection(collection)
@@ -618,6 +622,8 @@ impl WriteEngine {
         collection: &str,
         document: &Map<String, Value>,
     ) -> Result<Map<String, Value>, EngineError> {
+        #[cfg(target_arch = "wasm32")]
+        self.require_stored_validator(collection)?;
         if let Some(validated) = self
             .registry
             .validate_against_head(collection, document)
@@ -799,6 +805,12 @@ impl DocumentCodec for EngineDocumentCodec<'_> {
         collection: &str,
         fields: &Map<String, Value>,
     ) -> Result<Option<String>, NativeStorageError> {
+        // Storage asks only under `strict` and `warn`, and a build that
+        // cannot validate refuses the write in both (ADR 0017 section 4).
+        #[cfg(target_arch = "wasm32")]
+        self.engine
+            .require_stored_validator(collection)
+            .map_err(|error| self.fail(error))?;
         Ok(self.engine.violation(collection, fields))
     }
 
@@ -2391,6 +2403,10 @@ pub enum EngineErrorCode {
     /// A schema declares an array whose items are objects, which the
     /// document format refuses on every write (ADR 0017 section 2).
     ArrayOfObjects,
+    /// This build cannot validate the collection's head schema version, so
+    /// it refuses the write rather than store an unvalidated document
+    /// (ADR 0017 section 4, "Fail closed").
+    SchemaUnavailable,
 }
 
 impl EngineErrorCode {
@@ -2409,6 +2425,7 @@ impl EngineErrorCode {
             Self::Schema => "ESCHEMA",
             Self::SchemaConflict => "ESCHEMACONFLICT",
             Self::ArrayOfObjects => "EARRAYOFOBJECTS",
+            Self::SchemaUnavailable => "ESCHEMAUNAVAILABLE",
         }
     }
 }
@@ -2432,6 +2449,11 @@ impl EngineError {
 
     fn schema(message: String) -> Self {
         Self::new(EngineErrorCode::Schema, message)
+    }
+
+    #[cfg(any(test, target_arch = "wasm32"))]
+    fn schema_unavailable(message: String) -> Self {
+        Self::new(EngineErrorCode::SchemaUnavailable, message)
     }
 
     fn storage(error: NativeStorageError) -> Self {

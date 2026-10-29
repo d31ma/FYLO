@@ -114,6 +114,12 @@ export default class {
             retry: 'Do not retry; give the changed schema a new version label.'
         },
         {
+            code: 'ESCHEMAUNAVAILABLE',
+            meaning:
+                "This build cannot validate the collection's head schema version, so a strict or warn write is refused.",
+            retry: 'Do not retry; push the schema with a native build, or write natively.'
+        },
+        {
             code: 'EFXDB_NOT_FXDB',
             meaning: 'The file is not a .fxdb database.',
             retry: 'Do not retry; check the path.'

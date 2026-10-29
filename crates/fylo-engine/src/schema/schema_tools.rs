@@ -39,6 +39,20 @@ impl SchemaTools {
         Ok(SchemaManifest::load(&paths)?.map(SchemaManifest::current))
     }
 
+    /// Whether the folder may hold a schema for `collection`: a manifest or a
+    /// flat schema file, or a path this build cannot inspect (any path in a
+    /// browser), which a build that cannot validate must assume holds one.
+    #[cfg(any(test, target_arch = "wasm32"))]
+    pub(crate) fn may_have_schema(&self, collection: &str) -> bool {
+        let paths = SchemaPaths::new(&self.schema_dir, collection);
+        [paths.manifest(), paths.flat()].iter().any(|path| {
+            std::fs::symlink_metadata(path).map_or_else(
+                |error| error.kind() != std::io::ErrorKind::NotFound,
+                |_| true,
+            )
+        })
+    }
+
     pub(crate) fn materialize(
         &self,
         collection: &str,
