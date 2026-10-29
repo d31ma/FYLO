@@ -65,6 +65,10 @@ impl ContainerSuperblock {
         | Self::INCOMPAT_SEALED
         | Self::INCOMPAT_CODEC_ZSTD
         | Self::INCOMPAT_CODEC_LZ4;
+    /// Collections carry schema-version records and a schema registry
+    /// (ADR 0017). Reserved: this build does not know it yet, so it opens
+    /// such a file read-only rather than write unvalidated documents.
+    pub const READ_ONLY_COMPAT_SCHEMAS: u32 = 1 << 0;
     const KNOWN_READ_ONLY_COMPAT: u32 = 0;
     const CHECKED_BYTES: usize = Self::ENCODED_BYTES - 4;
 

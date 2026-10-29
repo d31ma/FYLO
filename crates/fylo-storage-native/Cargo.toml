@@ -14,6 +14,7 @@ fylo-query = { version = "0.1.0", path = "../fylo-query" }
 fylo-vfs = { version = "0.1.0", path = "../fylo-vfs" }
 getrandom.workspace = true
 hmac.workspace = true
+lz4_flex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -21,6 +22,12 @@ sha2.workspace = true
 # Inode identity has no meaning on a host filesystem, which has no links.
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 same-file.workspace = true
+# `.fxdb` zstd frames natively; the C library is too large for the browser.
+zstd.workspace = true
+
+# `.fxdb` zstd frames in the browser, decode only.
+[target.'cfg(target_family = "wasm")'.dependencies]
+ruzstd.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 # `fcntl` byte-range locks for `.fxdb` files (ADR 0016 section 7). Already in
@@ -39,6 +46,8 @@ xattr.workspace = true
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO"] }
 
 [dev-dependencies]
+# Checks the browser's zstd decoder reads what the native writer produces.
+ruzstd.workspace = true
 fylo-test-support = { version = "0.1.0", path = "../fylo-test-support" }
 
 # `.fxdb` byte-range locks call `fcntl` and `LockFileEx`, which no safe

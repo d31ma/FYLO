@@ -82,7 +82,9 @@ A directory root stays fully supported. `.fxdb` is opt-in per database.
   ext4: an unknown **incompatible** flag refuses the file, an unknown
   **read-only-compatible** flag opens it read-only, and an unknown
   **compatible** flag is ignored. Encryption and the sealed mode are
-  incompatible flags; a new codec is an incompatible flag.
+  incompatible flags; a new codec is an incompatible flag. Read-only-compatible
+  bit 0, `READ_ONLY_COMPAT_SCHEMAS`, is reserved for schemas stored in the
+  database (ADR 0017).
 
 ### 3. File layout
 
