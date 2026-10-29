@@ -404,9 +404,24 @@ results are added here as they arrive.
 | Spike | Question                                                                                    | Decides                                          |
 | ----- | ------------------------------------------------------------------------------------------- | ------------------------------------------------ |
 | 1     | Cold `pread` latency on one long-open file on the raw ATLAS share, with and without caching | whether a cold read under 1 ms is possible there |
-| 2     | Byte-range locks between two machines on CITADEL, and on the local NFS 4.1 server            | section 7's starting qualification list          |
-| 3     | Whether `F_PUNCHHOLE` from macOS frees space on the ATLAS share                              | whether shrinking there needs `--shrink`         |
+| 2     | Byte-range locks between two machines on CITADEL, and on the local NFS 4.1 server            | **Partly done 2026-10-29:** see below            |
+| 3     | Whether `F_PUNCHHOLE` from macOS frees space on the ATLAS share                              | **Done 2026-10-29:** it does not; see below      |
 | 4     | `lz4_flex` and zstd with a dictionary on the 5k fixture: ratio, decode time and code size    | **Done 2026-10-29:** section 8's codecs          |
+
+**Spikes 2 and 3 on CITADEL from macOS 27.2 (SMB 3.1.1, Samba, one client).**
+Every `fcntl` lock call on an `smbfs` mount, `F_SETLK`, `F_SETLKW` and
+`F_OFD_SETLK` alike, fails with `ENOTSUP`, so the probe in section 7 finds no
+locks and a macOS writer on the share uses the lease. The only server-side
+byte-range lock the macOS client offers is its own `fsctl`, which is exclusive
+only, held per handle, mandatory (other handles cannot read the locked bytes)
+and released when the process closes any other read-write handle on the file;
+each operation costs a round trip, 8 to 25 ms median while the ATLAS
+benchmarks ran. FYLO does not use it. `F_PUNCHHOLE` also fails with `ENOTSUP`
+and frees nothing (on local APFS it freed exactly the punched 8 MiB), so a
+`.fxdb` on the share returns space only by tail truncation (`fylo compact
+--shrink`). Still open: locks between two client machines on the share, and
+the local NFS 4.1 server. Scripts and the full report are in
+`fxdb-spikes/REPORT.md` on HAVEN.
 
 ## Consequences
 
