@@ -3,8 +3,8 @@ use std::ops::Range;
 use serde_json::{Map, Value};
 
 use super::schema_manifest::SchemaManifest;
+use super::schema_migration::SchemaMigration;
 use super::schema_paths::SchemaPaths;
-use super::schema_upgrader::SchemaUpgrader;
 
 pub(super) struct SchemaUpgrade<'a> {
     paths: &'a SchemaPaths<'a>,
@@ -113,7 +113,7 @@ impl<'a> SchemaUpgrade<'a> {
         for index in range {
             let from = &self.manifest.versions[index].version;
             let to = &self.manifest.versions[index + 1].version;
-            document = SchemaUpgrader::new(self.paths, from, to).run(&document)?;
+            SchemaMigration::load(self.paths, from, to)?.apply(&mut document)?;
         }
         Ok(document)
     }

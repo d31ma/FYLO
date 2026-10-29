@@ -29,7 +29,7 @@ export default class {
         {
             href: '/docs/schemas',
             title: 'Schemas & migrations',
-            text: 'Versioned chex schemas, upgraders that run on read, strict writes, and why arrays of objects are rejected.'
+            text: 'Versioned chex schemas, JSON migrations between versions, strict writes, and why arrays of objects are rejected.'
         },
         {
             href: '/docs/security',

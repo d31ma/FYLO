@@ -25,11 +25,7 @@ xattr.workspace = true
 [dev-dependencies]
 fylo-test-support = { version = "0.1.0", path = "../fylo-test-support" }
 
-# Schema upgraders run in an embedded JavaScript runtime. Neither Wasm artifact
-# supports schema materialization, so neither links the runtime, which would
-# otherwise be most of the module.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-boa_engine.workspace = true
 # CHEX schema validation runs in-process. Its regex Unicode tables add ~390 KB
 # to the browser engine, past the Wasm size budget, so neither Wasm artifact
 # validates schemas (the same scope they had when CHEX was a subprocess).

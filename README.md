@@ -890,8 +890,8 @@ Schemas live under `fylo.schema` in a per-collection layout:
     history/
       v1.schema.json       ← chex regex schema
       v2.schema.json       ← head is whichever manifest.current points at
-    upgraders/
-      v1-to-v2.js          ← export default async (doc) => upgradedDoc
+    migrations/
+      v1-to-v2.json        ← { "steps": [ ... ] }, run when moving v1 → v2
 ```
 
 `manifest.json`:
@@ -917,20 +917,51 @@ Chex regex schemas (`history/v2.schema.json`):
 }
 ```
 
-Upgraders are pure functions:
+Migrations are JSON, not code (ADR 0018). `migrations/v1-to-v2.json` lists
+the steps that turn a v1 document into a v2 one:
 
-```js
-export default function upgrade(doc) {
-    return {
-        ...doc,
-        slug:
-            String(doc.title ?? '')
-                .toLowerCase()
-                .replace(/[^a-z0-9]+/g, '-')
-                .replace(/^-+|-+$/g, '') || 'untitled'
-    }
+```json
+{
+    "steps": [{ "slugify": "slug", "from": "title" }]
 }
 ```
+
+Steps run in order on the document with `_v` removed, then `_v` is stamped
+with the target version. A document several versions behind runs each step
+file along the manifest history, in order. Each step is an object with exactly
+one operation key, whose value is the field it works on, plus that operation's
+parameters. Fields are slash-separated paths through nested objects
+(`payload/verifier`); writing a path creates missing parent objects.
+
+| Step                                                 | Effect                                                                                 |
+| ---------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `{"rename": "a", "to": "b"}`                         | move the field                                                                         |
+| `{"copy": "a", "to": "b"}`                           | copy the field                                                                         |
+| `{"default": "a", "value": 0}`                       | set the field only if it is missing or `null`                                          |
+| `{"set": "a", "value": 0}`                           | set the field unconditionally                                                          |
+| `{"remove": "a"}`                                    | delete the field                                                                       |
+| `{"convert": "a", "to": "number"}`                   | convert to `"string"`, `"number"` or `"boolean"` (`"true"`/`"false"`, `1`/`0`)         |
+| `{"map": "a", "values": {"y": true}, "else": false}` | replace the value by its entry in `values`, else by `else` (if given)                  |
+| `{"wrap": "a"}`                                      | turn a value that is not an array into a one-element array                             |
+| `{"lower": "a"}`, `{"upper": "a"}`                   | change a string's case (Unicode full case mapping)                                     |
+| `{"trim": "a"}`                                      | remove leading and trailing whitespace                                                 |
+| `{"replace": "a", "find": "x", "with": "y"}`         | replace every occurrence of literal text (no regex)                                    |
+| `{"template": "a", "value": "{first} {name/last}"}`  | set a string built from other fields; `{{` and `}}` are literal braces                 |
+| `{"slugify": "a", "from": "title"}`                  | lower-case `from`, join runs of ASCII letters and digits with `-`, `untitled` if empty |
+
+A step whose source field is missing does nothing, except `set`, `template`
+and `slugify`, which always write their field. `default`, `convert` and the
+string steps treat `null` as missing; a missing or `null` placeholder or
+`slugify` source reads as empty text. A field of the wrong type (for example
+`lower` on a number) fails the migration. A step with an unknown parameter or
+two operation keys is rejected.
+
+FYLO never runs JavaScript from a schema folder. A version step that has only
+an old `upgraders/v1-to-v2.js` file fails `schemaMaterialize` with an error
+pointing at ADR 0018; rewrite it as steps. A change the steps cannot express is
+an application update in two versions: add a version whose schema accepts both
+the old and the new shape, rewrite the documents with `patchDocs` or SQL
+`UPDATE`, then add a version that accepts only the new shape.
 
 Behavior:
 
@@ -941,7 +972,7 @@ Behavior:
   `patchDocs`, and SQL `INSERT` and `UPDATE`. A patch is validated as the
   merged document, not as the fields it sends
 - Reads return each document as stored, at the version it was written.
-  `schemaMaterialize` (`fylo schema materialize`) upgrades one document to the
+  `schemaMaterialize` (`fylo schema materialize`) migrates one document to the
   head shape in memory; read-time migration is planned in ADR 0017
 - `schemaMaterialize` treats a document missing `_v` as the oldest version
 - Any collection directory under `fylo.schema` that contains a `manifest.json` is auto-created on `new Fylo(...)`; await `fylo.ready()` if you need the bootstrap to settle before issuing reads from a synchronous probe (mutation/query methods await internally)

@@ -26,9 +26,9 @@ pub(super) struct SchemaVersionStatus {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) next_version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) upgrader_path: Option<PathBuf>,
+    pub(super) migration_path: Option<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) upgrader_exists: Option<bool>,
+    pub(super) migration_exists: Option<bool>,
 }
 
 impl SchemaVersionStatus {
@@ -38,10 +38,10 @@ impl SchemaVersionStatus {
         let exists = path.is_file();
         let actual_sha256 = Self::file_hash(&path, exists);
         let next_version = manifest.versions.get(index + 1).map(Self::version_label);
-        let upgrader_path = next_version
+        let migration_path = next_version
             .as_ref()
-            .map(|next| paths.upgrader(&entry.version, next));
-        let upgrader_exists = upgrader_path.as_deref().map(Self::file_exists);
+            .map(|next| paths.migration(&entry.version, next));
+        let migration_exists = migration_path.as_deref().map(Self::file_exists);
         let sha256_ok = Self::hash_status(entry, actual_sha256.as_ref());
         Self {
             version: entry.version.clone(),
@@ -53,8 +53,8 @@ impl SchemaVersionStatus {
             actual_sha256,
             sha256_ok,
             next_version,
-            upgrader_path,
-            upgrader_exists,
+            migration_path,
+            migration_exists,
         }
     }
 

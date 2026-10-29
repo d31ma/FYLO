@@ -93,8 +93,8 @@ impl SchemaDiagnosis {
         seen.push(version.version.clone());
         Self::check_file(version, issues);
         Self::check_hash(version, issues);
-        let missing_upgrader = Self::upgrader_is_missing(version);
-        Self::check_upgrader(version, missing_upgrader, issues);
+        let missing_migration = Self::migration_is_missing(version);
+        Self::check_migration(version, missing_migration, issues);
     }
 
     fn check_duplicate(label: &str, seen: &[String], issues: &mut Vec<String>) {
@@ -122,17 +122,17 @@ impl SchemaDiagnosis {
         }
     }
 
-    fn upgrader_is_missing(version: &SchemaVersionStatus) -> bool {
-        version.next_version.is_some() && version.upgrader_exists != Some(true)
+    fn migration_is_missing(version: &SchemaVersionStatus) -> bool {
+        version.next_version.is_some() && version.migration_exists != Some(true)
     }
 
-    fn check_upgrader(version: &SchemaVersionStatus, missing: bool, issues: &mut Vec<String>) {
+    fn check_migration(version: &SchemaVersionStatus, missing: bool, issues: &mut Vec<String>) {
         if missing {
             issues.push(format!(
-                "Missing upgrader {}->{}: {}",
+                "Missing migration {}->{}: {}",
                 version.version,
                 serde_json::to_value(&version.next_version).expect("version label is serializable"),
-                serde_json::to_value(&version.upgrader_path).expect("schema path is serializable")
+                serde_json::to_value(&version.migration_path).expect("schema path is serializable")
             ));
         }
     }
