@@ -12,14 +12,24 @@ export default defineConfig({
         baseURL: 'http://127.0.0.1:4173',
         trace: 'retain-on-failure'
     },
-    webServer: {
-        // Cross-origin isolation, without which SharedArrayBuffer — and the
-        // Atomics bridge OPFS needs — does not exist.
-        command: 'node scripts/serve-isolated.mjs 4173 .',
-        url: 'http://127.0.0.1:4173/tests/browser/fixtures/wasm-opfs.html',
-        reuseExistingServer: true,
-        timeout: 30_000
-    },
+    webServer: [
+        {
+            // Cross-origin isolation, without which SharedArrayBuffer — and the
+            // Atomics bridge OPFS needs — does not exist.
+            command: 'node scripts/serve-isolated.mjs 4173 .',
+            url: 'http://127.0.0.1:4173/tests/browser/fixtures/wasm-opfs.html',
+            reuseExistingServer: true,
+            timeout: 30_000
+        },
+        {
+            // No isolation, as a static host serves a page: the single-file
+            // hosts must work without SharedArrayBuffer.
+            command: 'node scripts/serve-isolated.mjs 4174 . --no-isolation',
+            url: 'http://127.0.0.1:4174/tests/browser/fixtures/fxdb-single-file.html',
+            reuseExistingServer: true,
+            timeout: 30_000
+        }
+    ],
     projects: [
         { name: 'chromium', use: { browserName: 'chromium' } },
         { name: 'firefox', use: { browserName: 'firefox' } },
