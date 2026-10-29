@@ -291,14 +291,20 @@ creating a file (bucket) collection, creating a collection with the file
 layout, an explicitly versioned collection and every version control
 operation that writes or needs the repository (`fylo status` reports
 version control as off), moving a collection between layouts or resharding
-it, and a root lease on a database path, so the embedded queue and the
-machine protocol, which hold one, refuse a database. The `EfsSidecarV1`
-profile and a separate worktree root have no `.fxdb` form.
+it, and a root lease on a database path, so the embedded queue, which
+holds one, and `fylo exec --exclusive-root` refuse a database. The
+`EfsSidecarV1` profile and a separate worktree root have no `.fxdb` form.
+
+**The machine protocol and the CLI** admit a database root without a root
+lease: the database is owned through its own file (ADR 0016 section 7), so
+a session checks it by opening it, and creates it when it is missing, as it
+creates a missing directory root. Every document operation, SQL included,
+then runs as it does on a directory root, and `fylo <command> --root
+app.fxdb` works the same way.
 
 **Not yet** (they fail with `ENATIVE_UNSUPPORTED` or are left for later):
 compaction (it needs a second per-collection lock byte), salvage, setting a
 collection's validation mode (a rewrite of its block's static part), an
-encrypted database (a root takes no key yet), the machine protocol and CLI
-(a root lease and collection listing that know a database), the root's
+encrypted database (a root takes no key yet), the root's
 own write options (exclusive mode and timeouts are the process defaults),
 and `fylo pack` and `fylo unpack`.

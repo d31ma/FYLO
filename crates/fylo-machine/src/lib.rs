@@ -1124,6 +1124,9 @@ impl Session {
         } else {
             root
         };
+        if NativeRoot::names_database(&root) {
+            return self.admit_database(root);
+        }
         let mut leases = self.leases.borrow_mut();
         if let Some(lease) = leases.get(&root) {
             assert_repository_lease(&root, lease)?;
@@ -1149,11 +1152,35 @@ impl Session {
         Ok(root)
     }
 
+    /// Admit a `.fxdb` database root. A database is owned through its own
+    /// file (ADR 0016 section 7), so it takes no root lease: opening it
+    /// checks it, and a missing one is created, as a missing directory root
+    /// is.
+    fn admit_database(&self, root: PathBuf) -> Result<PathBuf, MachineError> {
+        if self.filesystem_profile != FilesystemProfile::Native {
+            return Err(MachineError::new(
+                "ELAYOUTUNSUPPORTED",
+                "a .fxdb database needs the native filesystem profile",
+            ));
+        }
+        if fylo_vfs::metadata(&root)
+            .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+        {
+            NativeRoot::create_database(&root).map_err(|error| storage_error(&error))?;
+        }
+        NativeRoot::open_profiled(RootOpenOptions::new(&root))
+            .map_err(|error| storage_error(&error))?;
+        Ok(root)
+    }
+
     fn root_options(
         &self,
         root: PathBuf,
         repository_root: PathBuf,
     ) -> Result<RootOpenOptions, MachineError> {
+        if NativeRoot::names_database(&repository_root) {
+            return Ok(RootOpenOptions::new(root).with_profile(self.filesystem_profile));
+        }
         let lease = self
             .leases
             .borrow()
@@ -2845,6 +2872,10 @@ fn assert_repository_lease(
 }
 
 fn active_worktree(repository_root: &std::path::Path) -> Result<PathBuf, MachineError> {
+    // A `.fxdb` database has no worktrees.
+    if NativeRoot::names_database(repository_root) {
+        return Ok(repository_root.to_path_buf());
+    }
     let head_path = repository_root.join(".fylo-vcs").join("HEAD");
     let head_metadata = match fylo_vfs::symlink_metadata(&head_path) {
         Ok(metadata) => metadata,

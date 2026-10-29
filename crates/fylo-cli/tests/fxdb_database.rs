@@ -80,3 +80,33 @@ fn verify_prints_the_report_and_fails_on_damage() {
     assert!(!missing.status.success());
     assert!(String::from_utf8_lossy(&missing.stderr).contains("ENATIVE_NOT_FOUND"));
 }
+
+#[test]
+fn commands_and_sql_run_against_a_database_root() {
+    let fixture = Fixture::new("root");
+    let create = fixture.run(&[
+        "exec",
+        "--request",
+        r#"{"op":"createCollection","collection":"users"}"#,
+        "--root",
+        "app.fxdb",
+    ]);
+    assert!(create.status.success(), "{create:?}");
+    let insert = fixture.run(&[
+        "sql",
+        "INSERT INTO users (name, team) VALUES ('ada', 'red')",
+        "--root",
+        "app.fxdb",
+    ]);
+    assert!(insert.status.success(), "{insert:?}");
+    let identifier = String::from_utf8(insert.stdout).unwrap().trim().to_owned();
+    let got = fixture.run(&["get", "users", &identifier, "--root", "app.fxdb", "--json"]);
+    assert!(got.status.success(), "{got:?}");
+    assert_eq!(json(&got)[&identifier]["name"], "ada");
+    // The database is the only thing the commands created.
+    let names: Vec<_> = fs::read_dir(&fixture.0)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(names, ["app.fxdb"]);
+}
