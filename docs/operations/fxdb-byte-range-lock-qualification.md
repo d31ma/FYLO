@@ -161,7 +161,11 @@ the file.
 On the local NFS 4.1 server, `bun run fxdb:locks:nfs` builds the Linux harness
 in Docker, starts the same kernel nfsd as `bun run efs:local`, runs `qualify`
 from one client, and then `share` from two clients against one file. Pass
-`--cache-dir` to keep the build cache off the Docker disk image.
+`--cache-dir` to keep the build cache off the Docker disk image (a cache on a
+slow network share has broken builds; Docker's own volumes are the safer
+default), `--export ext4` to serve a loop-mounted ext4 image instead of tmpfs,
+and `--repeat N` to run the two-client load N times. With `bun run`, pass the
+flags without a `--`.
 
 ## Qualification
 
@@ -173,7 +177,7 @@ from one client, and then `share` from two clients against one file. Pass
 | APFS, macOS 27.2                    | Mac Mini (M4, 10 cores) | 2026-10-29 | passed  | 1.1 ms       | 207,669 exclusive entries, 0 overlaps; control caught 306,385; longest wait 91 ms | **yes**, as expected        |
 | SMB 3.1.1 (`smbfs`, CITADEL HAVEN share), macOS | Mac Mini   | 2026-10-29 | lease fallback | | the probe lock was refused, so the lock checks are skipped | |
 | NFS 4.1, local nfsd, one client     | Linux 7.0 client in Docker on the Mac Mini | 2026-10-29 | passed | 1.1 ms | 35,120 exclusive entries, 0 overlaps; control caught 21,230; longest wait 257 ms | no |
-| NFS 4.1, local nfsd, two clients    | two Linux clients in Docker on the Mac Mini | 2026-10-29 | rerun pending | | 28,136 exclusive entries across clients, 0 overlaps, no lost updates; failed on `EDEADLK` from non-waiting requests, now counted as a conflict | |
+| NFS 4.1, local nfsd, two clients    | two Linux clients in Docker on the Mac Mini | 2026-10-29 | passed, one unexplained overlap | | 10 of 10 runs passed (15 s, 4 × 2 per client, `--sync`): ext4 export 45,428 exclusive entries, tmpfs export 101,418, 0 overlaps; one earlier tmpfs run had 1 overlap and 1 lost update in 23,700 entries | |
 | NTFS, Windows 11 26H2 (ARM64)      | Surface (Snapdragon X, 10 cores) | 2026-10-29 | passed | 1.6 ms | 34,244 exclusive entries, 0 overlaps; control caught 84,300; longest wait 6.0 s | no |
 | SMB, ATLAS on CITADEL               | two machines            | spike 2, run by the design thread |  |       |                                            |                             |
 
@@ -189,3 +193,10 @@ on the client (`nolock`, `local_lock=posix` or `local_lock=all`) is named
 `nfs-local-lock` and is never qualified. The Linux NFS client answers some
 cross-client conflicts with `EDEADLK` even to a non-waiting request; FYLO
 treats it as a conflict and retries.
+
+NFS stays unqualified. Across two clients, exclusion held in ten runs on two
+exports, but one earlier run saw a holder read a counter one behind the last
+holder's flushed write, which is what a client page cache that missed the
+other client's change looks like. Byte-range locks on NFS would also need
+every reader to revalidate its cache after each lock, which FYLO does not
+promise. On NFS a `.fxdb` uses the lock-free lease.
