@@ -8,6 +8,7 @@ use super::commit_step::CommitStep;
 use super::move_step::MoveStep;
 use super::record_image::RecordImage;
 use super::update_step::UpdateStep;
+use crate::platform_companion::remove_companion;
 use crate::{ExpectedType, NativeRoot, NativeStorageError, NativeStorageErrorCode};
 use crate::{path_exists_no_follow, write::failpoint};
 
@@ -194,7 +195,10 @@ impl<'a> StepApplier<'a> {
 
     fn remove_if_present(path: &Path) -> Result<(), NativeStorageError> {
         match fs::remove_file(path) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                remove_companion(path);
+                Ok(())
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(NativeStorageError::io(error)),
         }

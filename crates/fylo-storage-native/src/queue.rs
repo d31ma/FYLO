@@ -51,6 +51,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+use super::platform_companion::read_dir_without_companions;
 use super::write::{ensure_directory, unix_millis};
 use super::{
     ExpectedType, NativeRoot, NativeStorageError, NativeStorageErrorCode, RootLease,
@@ -1403,7 +1404,7 @@ fn read_ids(
     let before = same_file::Handle::from_path(root).map_err(NativeStorageError::io)?;
     let mut ids = Vec::new();
     let mut scanned = 0usize;
-    for entry in fs::read_dir(root).map_err(NativeStorageError::io)? {
+    for entry in read_dir_without_companions(root).map_err(NativeStorageError::io)? {
         let entry = entry.map_err(NativeStorageError::io)?;
         scanned = scanned.saturating_add(1);
         if scanned > MAX_DIRECTORY_ENTRIES {

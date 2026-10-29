@@ -13,6 +13,7 @@ use super::file_export::FileExport;
 use super::log_segment::LogSegment;
 use super::segment_checkpoint::SegmentCheckpoint;
 use super::segment_import::SegmentImport;
+use crate::platform_companion::{read_dir_without_companions, remove_companion};
 use crate::segments::LocationState;
 use crate::{
     DICTIONARY_TRAINING_BYTES, DatabaseKey, FilesystemProfile, NativeCollection, NativeRoot,
@@ -361,7 +362,7 @@ impl NativeWriteRoot {
         if !path_exists_no_follow(directory)? {
             return Ok(None);
         }
-        let mut entries = fylo_vfs::read_dir(directory).map_err(NativeStorageError::io)?;
+        let mut entries = read_dir_without_companions(directory).map_err(NativeStorageError::io)?;
         entries
             .next()
             .transpose()
@@ -377,7 +378,7 @@ impl NativeWriteRoot {
             return Ok(Vec::new());
         }
         let mut names = Vec::new();
-        for entry in fylo_vfs::read_dir(&directory).map_err(NativeStorageError::io)? {
+        for entry in read_dir_without_companions(&directory).map_err(NativeStorageError::io)? {
             let entry = entry.map_err(NativeStorageError::io)?;
             let kind = entry.file_type().map_err(NativeStorageError::io)?;
             let name = entry.file_name().to_str().map(ToOwned::to_owned);
@@ -427,6 +428,7 @@ impl NativeWriteRoot {
             let _ = NativeRoot::close_database(staging);
             fylo_vfs::remove_file(staging).map_err(NativeStorageError::io)?;
         }
+        remove_companion(staging);
         let (Some(parent), Some(name)) = (staging.parent(), staging.file_name()) else {
             return Ok(());
         };
@@ -435,6 +437,7 @@ impl NativeWriteRoot {
             let entry = entry.map_err(NativeStorageError::io)?;
             if entry.file_name().to_string_lossy().starts_with(&leases) {
                 fylo_vfs::remove_file(entry.path()).map_err(NativeStorageError::io)?;
+                remove_companion(&entry.path());
             }
         }
         Ok(())
@@ -754,12 +757,13 @@ impl NativeWriteRoot {
 
     /// Remove everything in `out`.
     pub(super) fn clear_output(out: &Path) -> Result<(), NativeStorageError> {
-        for entry in fylo_vfs::read_dir(out).map_err(NativeStorageError::io)? {
+        for entry in read_dir_without_companions(out).map_err(NativeStorageError::io)? {
             let entry = entry.map_err(NativeStorageError::io)?;
             if entry.file_type().map_err(NativeStorageError::io)?.is_dir() {
                 remove_dir_durable(&entry.path())?;
             } else {
                 fylo_vfs::remove_file(entry.path()).map_err(NativeStorageError::io)?;
+                remove_companion(&entry.path());
             }
         }
         Ok(())

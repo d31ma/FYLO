@@ -38,6 +38,7 @@ mod filesystem_profile;
 mod index_cache;
 mod lease;
 mod log_position;
+mod platform_companion;
 mod profile_manifest;
 mod queue;
 mod record_attributes;
@@ -88,6 +89,7 @@ pub use filesystem_profile::FilesystemProfile;
 pub use fylo_vfs::host_now_unix_ms;
 pub use lease::RootLease;
 pub use log_position::LogPosition;
+pub use platform_companion::is_platform_companion;
 pub use queue::{
     NativeQueue, QueueAckResult, QueueClaimOptions, QueueDeadLetter, QueueDelivery,
     QueueNackResult, QueuePublishOptions, QueuePublishResult, QueueStats,
@@ -3589,7 +3591,12 @@ fn validate_branch_name(name: &str) -> Result<(), NativeStorageError> {
         && !name.contains("..")
         && !name.contains("//")
         && !name.ends_with('/')
-        && !name.as_bytes().ends_with(b".lock");
+        && !name.as_bytes().ends_with(b".lock")
+        // A ref is a file under its name, and a companion's name is the
+        // platform's.
+        && !name
+            .split('/')
+            .any(|segment| platform_companion::is_platform_companion(std::ffi::OsStr::new(segment)));
     if valid {
         Ok(())
     } else {
@@ -3941,7 +3948,7 @@ fn path_exists_no_follow(path: &Path) -> Result<bool, NativeStorageError> {
 }
 
 fn read_dir_sorted(path: &Path) -> Result<Vec<fs::DirEntry>, NativeStorageError> {
-    let mut entries = fs::read_dir(path)
+    let mut entries = platform_companion::read_dir_without_companions(path)
         .map_err(NativeStorageError::io)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(NativeStorageError::io)?;

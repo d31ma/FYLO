@@ -193,7 +193,9 @@ impl NativeWriteRoot {
         out: &std::path::Path,
     ) -> Result<crate::NativeRoot, NativeStorageError> {
         fylo_vfs::create_dir_all(out).map_err(NativeStorageError::io)?;
-        let occupied = fylo_vfs::read_dir(out)
+        // The platform's companions are not output, so they leave the
+        // directory empty.
+        let occupied = crate::platform_companion::read_dir_without_companions(out)
             .map_err(NativeStorageError::io)?
             .next()
             .is_some();

@@ -158,6 +158,18 @@
 
 ### Fixed
 
+- **A directory root works on exFAT, FAT and the SMB and NFS shares where
+  macOS keeps extended attributes in `._<name>` files.** macOS writes one
+  `AppleDouble` companion beside every file and directory that carries an
+  attribute on such a volume, and Finder a `.DS_Store` in each directory it
+  shows, and FYLO read each as damage: opening a collection failed with
+  `ENATIVE_UNSAFE_PATH: document shard is not a regular directory: …/._0`,
+  and index rebuild, recovery, rollback, `fylo unpack`, the queue and version
+  control failed alike. Every directory FYLO lists now skips those exact
+  names, which no name FYLO writes can take — a branch name may no longer
+  have a segment beginning `._` or named `.DS_Store` — and removing a file
+  or directory also removes its companion, so a shard, log or collection
+  directory left holding only orphaned companions can still be removed.
 - **A read of a `.vdbx` database right after a crashed write no longer fails
   with `EENGINE_CONCURRENT_WRITE`.** A reader that finds a collection's slot
   `writing` tells a running writer from one that stopped by the lock bytes

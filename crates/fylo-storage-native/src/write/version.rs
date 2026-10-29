@@ -18,6 +18,7 @@ use super::{
     sync_directory,
 };
 use crate::MAX_VERSION_TREE_BYTES;
+use crate::platform_companion::{read_dir_without_companions, remove_companion};
 
 /// Bytes hashed for one content-addressed blob.
 const MAX_BLOB_BYTES: u64 = 64 * 1024 * 1024;
@@ -177,7 +178,7 @@ impl NativeWriteRoot {
             ));
         }
         let mut recovery_needed = false;
-        for entry in fs::read_dir(&staging).map_err(NativeStorageError::io)? {
+        for entry in read_dir_without_companions(&staging).map_err(NativeStorageError::io)? {
             let entry = entry.map_err(NativeStorageError::io)?;
             let kind = entry.file_type().map_err(NativeStorageError::io)?;
             if kind.is_symlink() {
@@ -205,7 +206,7 @@ impl NativeWriteRoot {
         if !crate::path_exists_no_follow(&collections)? {
             return Ok(());
         }
-        for entry in fs::read_dir(&collections).map_err(NativeStorageError::io)? {
+        for entry in read_dir_without_companions(&collections).map_err(NativeStorageError::io)? {
             let entry = entry.map_err(NativeStorageError::io)?;
             if crate::path_exists_no_follow(&entry.path().join("segments"))? {
                 return Err(NativeStorageError::new(
@@ -722,7 +723,7 @@ impl NativeWriteRoot {
         self.collect_tree_collections(tree, &mut collections, &mut target_collections);
         for data_directory in DATA_DIRECTORIES {
             let root = self.path().join(data_directory);
-            let Ok(entries) = fs::read_dir(root) else {
+            let Ok(entries) = read_dir_without_companions(root) else {
                 continue;
             };
             for entry in entries {
@@ -1082,7 +1083,7 @@ impl NativeWriteRoot {
         let mut entries = Vec::new();
         for data_directory in DATA_DIRECTORIES {
             let data_root = self.path().join(data_directory);
-            let Ok(children) = fs::read_dir(&data_root) else {
+            let Ok(children) = read_dir_without_companions(&data_root) else {
                 continue;
             };
             for child in children {
@@ -1156,7 +1157,7 @@ impl NativeWriteRoot {
         (shard_width, namespace_root, collection, kind): (u32, &Path, &str, &'static str),
         entries: &mut Vec<SnapshotEntry>,
     ) -> Result<(), NativeStorageError> {
-        let Ok(shards) = fs::read_dir(namespace_root) else {
+        let Ok(shards) = read_dir_without_companions(namespace_root) else {
             return Ok(());
         };
         for shard in shards {
@@ -1168,7 +1169,9 @@ impl NativeWriteRoot {
             if !file_type.is_dir() {
                 continue;
             }
-            for record in fs::read_dir(shard.path()).map_err(NativeStorageError::io)? {
+            for record in
+                read_dir_without_companions(shard.path()).map_err(NativeStorageError::io)?
+            {
                 let record = record.map_err(NativeStorageError::io)?;
                 let metadata =
                     fs::symlink_metadata(record.path()).map_err(NativeStorageError::io)?;
@@ -1667,6 +1670,7 @@ fn remove_materialized_target(path: &Path) -> Result<(), NativeStorageError> {
     }
     let parent = path.parent().ok_or_else(unsafe_repository_path)?;
     fs::remove_dir_all(path).map_err(NativeStorageError::io)?;
+    remove_companion(path);
     sync_directory(parent)
 }
 
@@ -1792,7 +1796,7 @@ fn recover_materialization_transactions(
     let staging = repository.join("staging");
     fs::create_dir_all(&staging).map_err(NativeStorageError::io)?;
     let mut transactions = Vec::new();
-    for entry in fs::read_dir(&staging).map_err(NativeStorageError::io)? {
+    for entry in read_dir_without_companions(&staging).map_err(NativeStorageError::io)? {
         let entry = entry.map_err(NativeStorageError::io)?;
         let kind = entry.file_type().map_err(NativeStorageError::io)?;
         if kind.is_symlink() {
@@ -1839,7 +1843,7 @@ fn collect_branch_references(
     directory: &Path,
     references: &mut Vec<BranchReference>,
 ) -> Result<(), NativeStorageError> {
-    for entry in fs::read_dir(directory).map_err(NativeStorageError::io)? {
+    for entry in read_dir_without_companions(directory).map_err(NativeStorageError::io)? {
         let entry = entry.map_err(NativeStorageError::io)?;
         let kind = entry.file_type().map_err(NativeStorageError::io)?;
         if kind.is_symlink() {
@@ -1905,7 +1909,7 @@ fn verify_profiled_directory(
     path: &Path,
 ) -> Result<(), NativeStorageError> {
     context.verify_path(path, crate::ExpectedType::Directory)?;
-    for entry in fs::read_dir(path).map_err(NativeStorageError::io)? {
+    for entry in read_dir_without_companions(path).map_err(NativeStorageError::io)? {
         let entry = entry.map_err(NativeStorageError::io)?;
         let kind = entry.file_type().map_err(NativeStorageError::io)?;
         if kind.is_dir() {
@@ -1930,7 +1934,9 @@ fn copy_worktree(
         if current.is_dir() {
             if context.filesystem_profile() == crate::FilesystemProfile::EfsSidecarV1 {
                 context.verify_path(&current, crate::ExpectedType::Directory)?;
-                for entry in fs::read_dir(&current).map_err(NativeStorageError::io)? {
+                for entry in
+                    read_dir_without_companions(&current).map_err(NativeStorageError::io)?
+                {
                     let entry = entry.map_err(NativeStorageError::io)?;
                     let name = entry.file_name().to_string_lossy().into_owned();
                     if entry.file_type().map_err(NativeStorageError::io)?.is_dir()
@@ -1968,7 +1974,9 @@ fn copy_directory(
 ) -> Result<(), NativeStorageError> {
     context.assert_profile_owned()?;
     fs::create_dir_all(target).map_err(NativeStorageError::io)?;
-    for entry in fs::read_dir(source).map_err(NativeStorageError::io)? {
+    // A companion is the platform's, not a record: the copy's own attributes
+    // are copied below, and the platform writes the target's companion.
+    for entry in read_dir_without_companions(source).map_err(NativeStorageError::io)? {
         let entry = entry.map_err(NativeStorageError::io)?;
         let kind = entry.file_type().map_err(NativeStorageError::io)?;
         let destination = target.join(entry.file_name());
@@ -2115,7 +2123,7 @@ fn find_staged_record(
 ) -> Result<Option<PathBuf>, NativeStorageError> {
     for namespace in ["docs", ".deleted"] {
         let root = stage.join(data_directory).join(collection).join(namespace);
-        let Ok(shards) = fs::read_dir(root) else {
+        let Ok(shards) = read_dir_without_companions(root) else {
             continue;
         };
         for shard in shards {
@@ -2123,7 +2131,9 @@ fn find_staged_record(
             if !shard.file_type().map_err(NativeStorageError::io)?.is_dir() {
                 continue;
             }
-            for entry in fs::read_dir(shard.path()).map_err(NativeStorageError::io)? {
+            for entry in
+                read_dir_without_companions(shard.path()).map_err(NativeStorageError::io)?
+            {
                 let entry = entry.map_err(NativeStorageError::io)?;
                 let name = entry.file_name();
                 if crate::is_scratch_file(&name.to_string_lossy()) {

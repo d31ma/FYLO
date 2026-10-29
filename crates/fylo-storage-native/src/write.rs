@@ -20,6 +20,9 @@ use fylo_query::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use super::platform_companion::{
+    read_dir_without_companions, remove_companion, remove_emptied_dir,
+};
 use super::{
     CollectionKind, CollectionLayout, ExpectedType, MAX_DOCUMENT_BYTES, NativeRoot,
     NativeStorageError, NativeStorageErrorCode, path_exists_no_follow, validate_ttid_shape,
@@ -1876,6 +1879,7 @@ impl NativeWriteRoot {
             .join(format!("{collection_name}.json"));
         if path_exists_no_follow(&descriptor_path)? {
             fs::remove_file(&descriptor_path).map_err(NativeStorageError::io)?;
+            remove_companion(&descriptor_path);
         }
         self.remove_schema_registry(collection_name)?;
         Ok(())
@@ -2492,9 +2496,10 @@ fn next_meta_updated_at(root: &NativeRoot, path: &Path) -> Result<u64, NativeSto
 /// as many empty directories as it created and the collection would stay slow
 /// to walk forever. `remove_dir` refuses a non-empty directory, which is
 /// exactly the guard wanted here: a shard that still holds a record is left
-/// alone rather than inspected and raced.
+/// alone rather than inspected and raced. A shard holding nothing but the
+/// orphaned companions of records that moved out is empty all the same.
 fn remove_emptied_shards(root: &Path) -> Result<(), NativeStorageError> {
-    let Ok(shards) = fs::read_dir(root) else {
+    let Ok(shards) = read_dir_without_companions(root) else {
         return Ok(());
     };
     for shard in shards {
@@ -2504,7 +2509,7 @@ fn remove_emptied_shards(root: &Path) -> Result<(), NativeStorageError> {
         }
         // A failure means the shard still holds records, or vanished under a
         // concurrent recovery. Either way it is not this pass's business.
-        if fs::remove_dir(shard.path()).is_ok() {
+        if remove_emptied_dir(&shard.path()).is_ok() {
             sync_parent(&shard.path())?;
         }
     }
@@ -2517,7 +2522,7 @@ fn reshard_moves(
     leaving: &[u32],
 ) -> Result<Vec<(PathBuf, PathBuf)>, NativeStorageError> {
     let mut moves = Vec::new();
-    let Ok(shards) = fs::read_dir(root) else {
+    let Ok(shards) = read_dir_without_companions(root) else {
         return Ok(moves);
     };
     for shard in shards {
@@ -2525,7 +2530,7 @@ fn reshard_moves(
         if !shard.metadata().map_err(NativeStorageError::io)?.is_dir() {
             continue;
         }
-        for record in fs::read_dir(shard.path()).map_err(NativeStorageError::io)? {
+        for record in read_dir_without_companions(shard.path()).map_err(NativeStorageError::io)? {
             let record = record.map_err(NativeStorageError::io)?;
             let path = record.path();
             if !fs::symlink_metadata(&path)
@@ -3713,7 +3718,7 @@ fn is_capture_scratch(name: &std::ffi::OsStr) -> bool {
 
 fn read_captures(root: &Path) -> Result<Vec<Capture>, NativeStorageError> {
     let directory = root.join("captures");
-    let mut entries = fs::read_dir(&directory)
+    let mut entries = read_dir_without_companions(&directory)
         .map_err(NativeStorageError::io)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(NativeStorageError::io)?;
@@ -3782,6 +3787,14 @@ fn clear_readonly(_target: &Path, _metadata: &fs::Metadata) -> Result<(), Native
 /// must not be stopped by either, so the read-only attribute is cleared and a
 /// directory is removed as one.
 fn remove_capture_target(target: &Path) -> Result<bool, NativeStorageError> {
+    let removed = remove_capture_target_itself(target)?;
+    if removed {
+        remove_companion(target);
+    }
+    Ok(removed)
+}
+
+fn remove_capture_target_itself(target: &Path) -> Result<bool, NativeStorageError> {
     match fs::remove_file(target) {
         Ok(()) => return Ok(true),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
@@ -3796,7 +3809,7 @@ fn remove_capture_target(target: &Path) -> Result<bool, NativeStorageError> {
         Err(error) => return Err(NativeStorageError::io(error)),
     };
     if metadata.is_dir() {
-        fs::remove_dir(target).map_err(NativeStorageError::io)?;
+        remove_emptied_dir(target).map_err(NativeStorageError::io)?;
         return Ok(true);
     }
     clear_readonly(target, &metadata)?;
@@ -4015,7 +4028,7 @@ fn cleanup_orphan_transactions(
     if !root.exists() {
         return Ok(());
     }
-    for entry in fs::read_dir(root).map_err(NativeStorageError::io)? {
+    for entry in read_dir_without_companions(root).map_err(NativeStorageError::io)? {
         let entry = entry.map_err(NativeStorageError::io)?;
         if entry.file_name() == "state.json" || entry.file_name() == "log" {
             continue;
@@ -4844,6 +4857,7 @@ fn now_millis() -> Result<u64, NativeStorageError> {
 fn remove_dir_durable(path: &Path) -> Result<(), NativeStorageError> {
     let parent = path.parent().map(Path::to_owned);
     fs::remove_dir_all(path).map_err(NativeStorageError::io)?;
+    remove_companion(path);
     if let Some(parent) = parent {
         sync_directory(&parent)?;
     }

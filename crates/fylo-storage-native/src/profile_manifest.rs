@@ -143,7 +143,7 @@ impl ProfileManifest {
             (FilesystemProfile::EfsSidecarV1, Some(descriptor)) => Ok(Some(descriptor)),
             (FilesystemProfile::EfsSidecarV1, None) => {
                 Self::identity(root)?;
-                if fs::read_dir(root)
+                if crate::platform_companion::read_dir_without_companions(root)
                     .map_err(NativeStorageError::io)?
                     .next()
                     .is_some()

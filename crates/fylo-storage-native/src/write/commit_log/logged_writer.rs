@@ -21,6 +21,7 @@ use super::logged_plan::LoggedPlan;
 use super::placed_record::PlacedRecord;
 use super::segment_checkpoint::SegmentCheckpoint;
 use super::segment_recovery::SegmentRecovery;
+use crate::platform_companion::{remove_companion, remove_emptied_dir};
 use crate::{
     CollectionKind, FilesystemProfile, GenerationState, GenerationStatus, LogPosition,
     NativeCollection, NativeStorageError, NativeStorageErrorCode, path_exists_no_follow,
@@ -458,8 +459,9 @@ impl NativeWriteRoot {
             return;
         };
         busy.segment = None;
-        let removed =
-            fs::remove_file(&path).and_then(|()| path.parent().map_or(Ok(()), fs::remove_dir));
+        let removed = fs::remove_file(&path)
+            .inspect(|()| remove_companion(&path))
+            .and_then(|()| path.parent().map_or(Ok(()), remove_emptied_dir));
         busy.stranded |= removed.is_err();
     }
 

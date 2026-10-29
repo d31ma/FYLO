@@ -651,6 +651,9 @@ impl Session {
         for entry in fylo_vfs::read_dir(directory)? {
             InvocationOptions::check_work_budget(budget)?;
             let entry = entry?;
+            if fylo_storage_native::is_platform_companion(&entry.file_name()) {
+                continue;
+            }
             let kind = entry.file_type()?;
             if kind.is_symlink() || (catalog && !kind.is_file()) || (!catalog && !kind.is_dir()) {
                 return Err(std::io::Error::other(
