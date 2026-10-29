@@ -39,8 +39,8 @@ use spelling_cache::SpellingCache;
 
 #[cfg(not(target_family = "wasm"))]
 pub use byte_range_lock::{
-    ByteLockGuard, ByteRangeLockFile, COLLECTION_WRITER_START, LOCK_RANGE_START, LockByte,
-    LockMode, MAX_POLL_INTERVAL,
+    ByteLockGuard, ByteRangeLockFile, COLLECTION_WRITER_START, FilesystemInfo, LOCK_RANGE_START,
+    LockByte, LockMode, MAX_POLL_INTERVAL,
 };
 pub use durability::Durability;
 pub use filesystem_profile::FilesystemProfile;

@@ -1,6 +1,6 @@
 //! The harness itself; see `main.rs`.
 
-use fylo_storage_native::{ByteRangeLockFile, LockByte, LockMode};
+use fylo_storage_native::{ByteRangeLockFile, FilesystemInfo, LockByte, LockMode};
 use serde_json::{Value, json};
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -273,7 +273,37 @@ fn qualify(options: &Options) -> io::Result<bool> {
         std::env::consts::ARCH
     );
     let started = Instant::now();
-    let outcome = run_checks(options, &path, &mut report);
+    let opened = ByteRangeLockFile::open(&path)?;
+    let filesystem = FilesystemInfo::of(opened.file()).unwrap_or(FilesystemInfo {
+        name: "unknown".to_owned(),
+        remote: true,
+    });
+    let locks = opened.probe();
+    drop(opened);
+    let status = if !locks {
+        "lease fallback"
+    } else if filesystem.byte_range_locks_qualified() {
+        "qualified"
+    } else {
+        "unqualified"
+    };
+    report.note(
+        "filesystem",
+        format!(
+            "{} ({}), byte-range locks: {status}",
+            filesystem.name,
+            if filesystem.remote { "remote" } else { "local" }
+        ),
+    );
+    let outcome = if locks {
+        run_checks(options, &path, &mut report)
+    } else {
+        report.note(
+            "lock checks skipped",
+            "the filesystem refuses byte-range locks; FYLO uses the lock-free lease here",
+        );
+        Ok(())
+    };
     let _ = std::fs::remove_file(&path);
     if let Err(error) = outcome {
         report.check("harness ran to the end", false, error.to_string());
@@ -283,6 +313,9 @@ fn qualify(options: &Options) -> io::Result<bool> {
         "os": std::env::consts::OS,
         "arch": std::env::consts::ARCH,
         "dir": dir.display().to_string(),
+        "filesystem": filesystem.name,
+        "remote": filesystem.remote,
+        "byte_range_locks": status,
         "procs": options.procs,
         "threads": options.threads,
         "seconds": options.seconds,

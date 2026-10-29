@@ -32,10 +32,12 @@ use std::path::Path;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
+mod filesystem;
 mod os;
 #[cfg(test)]
 mod tests;
 
+pub use filesystem::FilesystemInfo;
 use os::FileKey;
 
 /// First byte of the reserved lock range.
@@ -43,6 +45,8 @@ pub const LOCK_RANGE_START: u64 = 1 << 62;
 /// Offset of collection writer bytes from [`LOCK_RANGE_START`]. The bytes
 /// below it are kept for further database-wide locks.
 pub const COLLECTION_WRITER_START: u64 = 4096;
+/// A reserved byte that [`ByteRangeLockFile::probe`] takes and releases.
+const PROBE: u64 = LOCK_RANGE_START + 2;
 /// The longest a waiting [`ByteRangeLockFile::lock`] sleeps between tries.
 pub const MAX_POLL_INTERVAL: Duration = Duration::from_millis(1);
 const FIRST_POLL_INTERVAL: Duration = Duration::from_micros(20);
@@ -52,8 +56,9 @@ const FIRST_POLL_INTERVAL: Duration = Duration::from_micros(20);
 pub struct LockByte(u64);
 
 impl LockByte {
-    /// The database lease. `fylo serve` holds it exclusively; local processes
-    /// sharing the file hold it shared.
+    /// The database lease. Every process holds it shared while it has the file
+    /// open; an operation that needs the file to itself (`compact --shrink`,
+    /// an in-place `pack --sealed`) takes it exclusive.
     pub const LEASE: Self = Self(LOCK_RANGE_START);
     /// Extent allocation: taking a free extent or growing the file.
     pub const ALLOCATION: Self = Self(LOCK_RANGE_START + 1);
@@ -97,11 +102,16 @@ pub enum LockMode {
 struct Holders {
     shared: u32,
     exclusive: bool,
+    /// Whether the OS holds the byte for this process too.
+    os: bool,
 }
 
 #[derive(Debug, Default)]
 struct LockState {
     held: HashMap<u64, Holders>,
+    /// Set by [`ByteRangeLockFile::set_process_local`]: every byte is then
+    /// decided in the registry alone, with no OS call.
+    process_local: bool,
     /// Descriptors for this file opened while it was locked, closed once it
     /// is not.
     deferred_closes: Vec<File>,
@@ -269,34 +279,69 @@ impl ByteRangeLockFile {
         mode: LockMode,
     ) -> io::Result<bool> {
         let holders = state.held.get(&byte.0).copied().unwrap_or_default();
+        let use_os = !state.process_local;
         let next = match mode {
             LockMode::Exclusive => {
                 if holders.exclusive || holders.shared > 0 {
                     return Ok(false);
                 }
-                if !os::try_lock(&shared.file, byte.0, true)? {
+                if use_os && !os::try_lock(&shared.file, byte.0, true)? {
                     return Ok(false);
                 }
                 Holders {
                     shared: 0,
                     exclusive: true,
+                    os: use_os,
                 }
             }
             LockMode::Shared => {
                 if holders.exclusive {
                     return Ok(false);
                 }
-                if holders.shared == 0 && !os::try_lock(&shared.file, byte.0, false)? {
-                    return Ok(false);
-                }
+                let os = if holders.shared == 0 {
+                    if use_os && !os::try_lock(&shared.file, byte.0, false)? {
+                        return Ok(false);
+                    }
+                    use_os
+                } else {
+                    holders.os
+                };
                 Holders {
                     shared: holders.shared + 1,
                     exclusive: false,
+                    os,
                 }
             }
         };
         state.held.insert(byte.0, next);
         Ok(true)
+    }
+
+    /// Decide every byte inside this process alone, with no OS lock, from
+    /// the next request on; `false` returns to OS locks.
+    ///
+    /// This is for a process that writes the file alone under the lock-free
+    /// lease (ADR 0016 section 7), where the filesystem's locks are
+    /// unqualified or refused: its threads still exclude each other on writer
+    /// and allocation bytes. It applies to every handle to the file in the
+    /// process. A byte already held keeps the OS lock it was taken with until
+    /// it is released.
+    pub fn set_process_local(&self, local: bool) {
+        self.shared().state().process_local = local;
+    }
+
+    /// Whether this filesystem grants a byte-range lock at all, found by
+    /// taking and releasing a reserved byte. Any failure counts as no: the
+    /// lock-free lease needs none. `true` does not make the locks trusted;
+    /// see [`FilesystemInfo::byte_range_locks_qualified`].
+    pub fn probe(&self) -> bool {
+        let file = &self.shared().file;
+        match os::try_lock(file, PROBE, true) {
+            Ok(true) => os::unlock(file, PROBE).is_ok(),
+            // Another process probing at this moment: the locks work.
+            Ok(false) => true,
+            Err(_) => false,
+        }
     }
 
     fn release(&self, byte: LockByte, mode: LockMode) -> io::Result<()> {
@@ -315,10 +360,15 @@ impl ByteRangeLockFile {
         if !last {
             return Ok(());
         }
+        let os = holders.os;
         state.held.remove(&byte.0);
         // Released in the registry even when the OS refuses: the handle
         // still drops whatever the OS kept when its last user closes it.
-        let result = os::unlock(&shared.file, byte.0);
+        let result = if os {
+            os::unlock(&shared.file, byte.0)
+        } else {
+            Ok(())
+        };
         if state.held.is_empty() {
             state.deferred_closes.clear();
         }
