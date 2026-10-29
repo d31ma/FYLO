@@ -15,7 +15,7 @@ use super::segment_checkpoint::SegmentCheckpoint;
 use super::segment_import::SegmentImport;
 use super::segment_layout::SegmentLayout;
 use super::segment_schemas::SegmentSchemas;
-use crate::segments::{DirectoryMedium, LocationState, TableCache};
+use crate::segments::{DirectoryMedium, LocationState, SegmentMedium, TableCache};
 use crate::{
     CollectionKind, CollectionLayout, FilesystemProfile, NativeCollection, NativeStorageError,
     NativeStorageErrorCode,
@@ -180,7 +180,7 @@ impl NativeWriteRoot {
 
     /// Refuse records whose descriptor names an owner other than the root's,
     /// whose operating system ownership a segment collection cannot keep.
-    fn require_owner_only_access(
+    pub(super) fn require_owner_only_access(
         collection: &NativeCollection,
         images: &[DocumentImage],
     ) -> Result<(), NativeStorageError> {
@@ -207,7 +207,7 @@ impl NativeWriteRoot {
     /// and those files become schema records. A segment collection's
     /// descriptor is first brought up to its records' head, which the file
     /// layout reads.
-    fn registry_versions(
+    pub(super) fn registry_versions(
         &self,
         collection: &NativeCollection,
     ) -> Result<Vec<Vec<u8>>, NativeStorageError> {
@@ -234,7 +234,7 @@ impl NativeWriteRoot {
     /// files before the swap. A file layout collection reads them from its
     /// descriptor's head down; until the swap nothing reads them, and a
     /// migration run again writes them again.
-    fn write_registry_files(
+    pub(super) fn write_registry_files(
         &self,
         collection: &NativeCollection,
         versions: &[Vec<u8>],
@@ -298,19 +298,7 @@ impl NativeWriteRoot {
         staging: &Path,
     ) -> Result<(), NativeStorageError> {
         if layout == CollectionLayout::Segments {
-            let staged = SegmentSchemas::load(&DirectoryMedium::of(staging), None)?;
-            let same = staged.entries().len() == versions.len()
-                && staged
-                    .entries()
-                    .iter()
-                    .zip(versions)
-                    .all(|(entry, version)| entry.version.as_bytes() == version.as_slice());
-            if !same {
-                return Err(NativeStorageError::new(
-                    NativeStorageErrorCode::CorruptMetadata,
-                    "layout migration copy does not hold the collection's schema registry",
-                ));
-            }
+            Self::require_registry(&DirectoryMedium::of(staging), versions)?;
         }
         let copies = match layout {
             CollectionLayout::Segments => {
@@ -326,6 +314,28 @@ impl NativeWriteRoot {
                 .collect::<Result<Vec<_>, _>>()?,
         };
         DocumentImage::require_same(images, &copies)
+    }
+
+    /// Fail unless the segment layout `medium` holds has exactly the
+    /// schema registry `versions`: the registry half of the oracle.
+    pub(super) fn require_registry(
+        medium: &dyn SegmentMedium,
+        versions: &[Vec<u8>],
+    ) -> Result<(), NativeStorageError> {
+        let staged = SegmentSchemas::load(medium, None)?;
+        let same = staged.entries().len() == versions.len()
+            && staged
+                .entries()
+                .iter()
+                .zip(versions)
+                .all(|(entry, version)| entry.version.as_bytes() == version.as_slice());
+        if !same {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                "layout copy does not hold the collection's schema registry",
+            ));
+        }
+        Ok(())
     }
 
     fn write_marker(
@@ -497,7 +507,7 @@ impl NativeWriteRoot {
         durable_replace(&path, &encoded)
     }
 
-    fn default_descriptor(collection: &NativeCollection) -> Map<String, Value> {
+    pub(super) fn default_descriptor(collection: &NativeCollection) -> Map<String, Value> {
         let mut descriptor = Map::new();
         descriptor.insert("version".into(), Value::from(1));
         descriptor.insert("kind".into(), Value::from("document"));
@@ -505,7 +515,7 @@ impl NativeWriteRoot {
         descriptor
     }
 
-    fn descriptor_path(&self, name: &str) -> PathBuf {
+    pub(super) fn descriptor_path(&self, name: &str) -> PathBuf {
         self.root
             .catalog_root()
             .join(".fylo-catalog")

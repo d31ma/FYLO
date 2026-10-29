@@ -88,7 +88,7 @@ fn run(arguments: &[String]) -> Result<String, String> {
             result = Value::from(moved);
             false
         }
-        "push-schema" | "schema-head" | "compact" | "migrate-layout" => {
+        "push-schema" | "schema-head" | "compact" | "migrate-layout" | "pack" => {
             result = run_layout(command, arguments, &writer)?;
             false
         }
@@ -138,8 +138,9 @@ fn run(arguments: &[String]) -> Result<String, String> {
     .map_err(|error| error.to_string())
 }
 
-/// Collection maintenance: `push-schema` and `schema-head` (ADR 0017), and
-/// the segment layout's `compact` and `migrate-layout` (ADR 0015).
+/// Collection maintenance: `push-schema` and `schema-head` (ADR 0017), the
+/// segment layout's `compact` and `migrate-layout` (ADR 0015), and `pack`
+/// (ADR 0016), which only reads the root it packs.
 fn run_layout(
     command: &str,
     arguments: &[String],
@@ -147,6 +148,12 @@ fn run_layout(
 ) -> Result<Value, String> {
     if command == "push-schema" {
         return push_schema(writer, arguments);
+    }
+    if command == "pack" {
+        let report = writer
+            .pack_database(Path::new(required_option(arguments, "--out")?), false)
+            .map_err(|error| error.to_string())?;
+        return Ok(Value::from(report.collections.len()));
     }
     let collection = required_option(arguments, "--collection")?;
     if command == "schema-head" {
@@ -424,7 +431,8 @@ fn usage() -> String {
      [--actor-groups <gid,...>]]\n  fylo-write-preview reshard --root <path> \
      --collection <name> --width <0-4>\n  fylo-write-preview push-schema --root <path> \
      --collection <name> --schema-dir <path>\n  fylo-write-preview schema-head --root <path> \
-     --collection <name>\n  fylo-write-preview failpoints"
+     --collection <name>\n  fylo-write-preview pack --root <path> --out <db.fxdb>\n  \
+     fylo-write-preview failpoints"
         .into()
 }
 

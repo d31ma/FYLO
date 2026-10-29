@@ -177,7 +177,9 @@ impl NativeWriteRoot {
         SegmentInspection::salvage(&collection, out)
     }
 
-    fn empty_output(out: &std::path::Path) -> Result<crate::NativeRoot, NativeStorageError> {
+    pub(super) fn empty_output(
+        out: &std::path::Path,
+    ) -> Result<crate::NativeRoot, NativeStorageError> {
         fylo_vfs::create_dir_all(out).map_err(NativeStorageError::io)?;
         let occupied = fylo_vfs::read_dir(out)
             .map_err(NativeStorageError::io)?

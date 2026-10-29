@@ -604,6 +604,13 @@ async function verifyNativeCrashScenarios() {
             args: (root) => ['compact', '--root', root, '--collection', collection]
         }),
         onSegments({
+            // ADR 0016 section 11: a pack builds a staging file beside its
+            // output and only reads the source, so every interruption must
+            // leave the source as it was and no output.
+            name: 'pack-segments',
+            args: (root) => ['pack', '--root', root, '--out', join(root, 'packed.fxdb')]
+        }),
+        onSegments({
             name: 'migrate-out-of-segments',
             args: (root) => [
                 'migrate-layout',

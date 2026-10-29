@@ -316,7 +316,10 @@ impl NativeWriteRoot {
     ///
     /// A segment collection keeps its generation in slots, and its fixed
     /// marker and `docs` file already fence older releases (ADR 0015).
-    fn fence_generation(&self, collection: &NativeCollection) -> Result<(), NativeStorageError> {
+    pub(super) fn fence_generation(
+        &self,
+        collection: &NativeCollection,
+    ) -> Result<(), NativeStorageError> {
         if collection.uses_segments() {
             return Ok(());
         }

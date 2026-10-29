@@ -243,7 +243,7 @@ in an encrypted file. Setting the superblock's codec feature bits, which
 4. **Frames**: codec byte, dictionaries, sealing.
 5. **Root integration**: a root path ending in `.fxdb` opens a container;
    `fylo pack` and `fylo unpack` convert between a directory root and a
-   file.
+   file ("Packing and unpacking").
 
 ## Root integration
 
@@ -339,7 +339,70 @@ compaction (it needs a second per-collection lock byte), salvage, setting a
 collection's validation mode (a rewrite of its block's static part), an
 encrypted database (a root takes no key yet), the root's
 own write options (exclusive mode and timeouts are the process defaults),
-and `fylo pack` and `fylo unpack`.
+and `fylo pack --sealed`.
+
+## Packing and unpacking
+
+ADR 0016 section 11, as `NativeWriteRoot::pack_database` and
+`unpack_database` and the CLI's `fylo pack` and `fylo unpack`. Like
+`fylo export`, they take an output path and so are not machine protocol
+operations.
+
+**`fylo pack <root> --out db.fxdb`** copies every document collection of
+a directory root, in the file or the segment layout, into a new database.
+
+- It refuses with `ELAYOUTUNSUPPORTED`, naming the feature, a root that
+  uses buckets (any entry in `.buckets/`), document version control
+  (`.fylo-vcs/`) or the embedded queue (any entry in `.fylo-queue/`), and a
+  root on the EFS sidecar profile. It refuses an existing `--out` with
+  `ENATIVE_UNSUPPORTED`, and a database root: `fylo pack` takes a directory.
+- It takes every collection's lock, in name order, and recovers each, as
+  `fylo export` does, and holds them all until the database has its name,
+  so nothing writes the source meanwhile. A collection created during a
+  pack is not in it.
+- It builds the database in a staging file beside `--out`,
+  `.<name>.pack-staging`, first removing one a stopped pack left and the
+  lease files beside it. Each collection becomes a directory block whose
+  descriptor keeps the source's shard width and validation mode. Its
+  schema versions are appended first, as schema records in ordinal order
+  (setting `READ_ONLY_COMPAT_SCHEMAS` first), then each document as a commit
+  record of its own in identifier order, with its body, attributes, mode
+  and modification time: the records a layout migration to segments writes
+  (`SegmentImport`). When the next record does not fit in the active
+  extent, the extent is sealed with the bytes it holds and the next opens
+  with a checkpoint record, as a checkpoint's rotation does. A closing
+  checkpoint then folds the location, index and schemas snapshots from the
+  records.
+- The oracle is ADR 0015's: every collection of the staging file has the
+  same live and deleted identifiers as the source, the same bytes,
+  attributes, mode and modification time for every document, and the same
+  schema registry. Records naming another owner need
+  `--allow-engine-only-access`, as `fylo layout` does.
+- The commit: the staging file is closed, flushed, and passes the
+  `after-pack-staging` failpoint; then it is linked to `--out` (a link
+  fails on an existing name, so a file that appeared meanwhile is never
+  replaced; where links are missing, a rename after a check), the staging
+  name is removed and the directory flushed. A stop at any point leaves no
+  `--out`, and at most the staging file, which nothing reads and the next
+  pack to the same name removes. A failure the process survives removes it
+  at once.
+
+**`fylo unpack db.fxdb --out <root>`** writes a new directory root in the
+file layout into an absent or empty `--out`. For each collection, under its
+lock: the catalog descriptor (the source's shard width and validation
+mode), the tree `fylo export` writes (`docs/`, `.deleted/`, `index/`, with
+each document's attributes, mode, owner and modification time), and, for a
+collection with schema versions, the registry files, the fenced generation
+state and the descriptor's head, in a registry commit's order. The written
+files are checked against the documents with the same oracle. An unpack that
+fails removes what it wrote; one that stops leaves a partial root, which a
+second unpack refuses until it is removed.
+
+**Not carried:** the record of the one-time `fylo.schema` import, which a
+database has no place for ("Schema versions"); the earlier widths of an
+unfinished reshard, since every document is read wherever it is and
+written at the collection's current width; and record ownership, which a
+database does not give records (ADR 0016 "Costs").
 
 ## Schema versions
 

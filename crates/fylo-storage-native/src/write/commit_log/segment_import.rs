@@ -88,6 +88,33 @@ impl SegmentImport {
         image: &DocumentImage,
         generation: u64,
     ) -> Result<SegmentLocation, NativeStorageError> {
+        let record = Self::document_record(image, segment.next_lsn(), generation)?;
+        let encoded = segment.encode(&record)?;
+        let location = SegmentLocation {
+            id: image.id.clone(),
+            segment: segment.sequence(),
+            offset: segment.length(),
+            length: u32::try_from(encoded.len()).map_err(|_| {
+                NativeStorageError::new(
+                    NativeStorageErrorCode::FileTooLarge,
+                    "document record is too large",
+                )
+            })?,
+            entry: 0,
+            state: image.state,
+            lsn: record.lsn,
+        };
+        segment.append(&encoded, 1)?;
+        Ok(location)
+    }
+
+    /// The commit record that holds `image` alone, at sequence number
+    /// `lsn`, with the index keys a live document adds.
+    pub(crate) fn document_record(
+        image: &DocumentImage,
+        lsn: u64,
+        generation: u64,
+    ) -> Result<LogRecord, NativeStorageError> {
         let entry = SegmentEntry {
             id: image.id.clone(),
             state: image.state,
@@ -112,30 +139,13 @@ impl SegmentImport {
             index_removed: Vec::new(),
             index_added: added.into_iter().collect(),
         };
-        let record = LogRecord {
-            lsn: segment.next_lsn(),
+        Ok(LogRecord {
+            lsn,
             kind: LogRecordKind::Commit,
             generation,
             manifest: serde_json::to_vec(&manifest).map_err(|error| json_error(&error))?,
             blobs: image.body.clone(),
-        };
-        let encoded = segment.encode(&record)?;
-        let location = SegmentLocation {
-            id: image.id.clone(),
-            segment: segment.sequence(),
-            offset: segment.length(),
-            length: u32::try_from(encoded.len()).map_err(|_| {
-                NativeStorageError::new(
-                    NativeStorageErrorCode::FileTooLarge,
-                    "document record is too large",
-                )
-            })?,
-            entry: 0,
-            state: image.state,
-            lsn: record.lsn,
-        };
-        segment.append(&encoded, 1)?;
-        Ok(location)
+        })
     }
 
     fn append_schema(
@@ -143,14 +153,7 @@ impl SegmentImport {
         (ordinal, version): (u32, &[u8]),
         generation: u64,
     ) -> Result<SchemaVersionEntry, NativeStorageError> {
-        let record = LogRecord {
-            lsn: segment.next_lsn(),
-            kind: LogRecordKind::Schema,
-            generation,
-            manifest: serde_json::to_vec(&SchemaVersionManifest::new(ordinal, version))
-                .map_err(|error| json_error(&error))?,
-            blobs: version.to_vec(),
-        };
+        let record = Self::schema_record((ordinal, version), segment.next_lsn(), generation)?;
         let encoded = segment.encode(&record)?;
         let placed = (
             segment.sequence(),
@@ -164,6 +167,23 @@ impl SegmentImport {
         );
         segment.append(&encoded, 1)?;
         SegmentSchemas::entry_of(placed, &record)
+    }
+
+    /// The schema record that commits `version` as ordinal `ordinal`, at
+    /// sequence number `lsn`.
+    pub(crate) fn schema_record(
+        (ordinal, version): (u32, &[u8]),
+        lsn: u64,
+        generation: u64,
+    ) -> Result<LogRecord, NativeStorageError> {
+        Ok(LogRecord {
+            lsn,
+            kind: LogRecordKind::Schema,
+            generation,
+            manifest: serde_json::to_vec(&SchemaVersionManifest::new(ordinal, version))
+                .map_err(|error| json_error(&error))?,
+            blobs: version.to_vec(),
+        })
     }
 
     pub(crate) fn encoded_attributes(

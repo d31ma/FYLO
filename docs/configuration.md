@@ -78,6 +78,14 @@ tree without changing the collection, and `fylo verify-segments` and
 older than segments, move each segment collection back with
 `fylo layout <collection> --to files`; older releases refuse it.
 
+`fylo pack <root> --out app.fxdb` copies a whole directory root, in either
+layout, into a new single-file `.fxdb` database, after checking the copy
+against every document; `fylo unpack app.fxdb --out <directory>` writes a
+database back out as a directory root in the file layout, each collection
+as `fylo export` writes it. Pack refuses a root with buckets, version
+control or the embedded queue, which a database does not hold yet, and
+never replaces an existing file (ADR 0016).
+
 ## Discovery and precedence
 
 The CLI looks for `application.json` in its current working directory. Use

@@ -42,7 +42,10 @@ mod document_codec;
 pub(crate) mod schema_counts;
 pub(crate) mod schema_registry;
 pub(crate) use commit_log::SegmentSchemas;
-pub use commit_log::{CompactionReport, LayoutMigrationReport, SalvageReport, SegmentVerification};
+pub use commit_log::{
+    CompactionReport, DatabasePackReport, LayoutMigrationReport, PackedCollection, SalvageReport,
+    SegmentVerification,
+};
 pub(crate) mod version;
 
 use document_codec::DocumentPolicy;
@@ -1725,12 +1728,6 @@ impl NativeWriteRoot {
         kind: CollectionKind,
         versioned: Option<bool>,
     ) -> Result<bool, NativeStorageError> {
-        let database = self.root.database().ok_or_else(|| {
-            NativeStorageError::new(
-                NativeStorageErrorCode::CorruptMetadata,
-                "a directory root has no .fxdb database",
-            )
-        })?;
         if kind == CollectionKind::File {
             return Err(NativeRoot::database_unsupported(
                 "a .fxdb database holds no file collections or buckets",
@@ -1741,21 +1738,43 @@ impl NativeWriteRoot {
                 "a .fxdb database has no version control",
             ));
         }
-        let created = database.collection(collection_name).is_none() && {
-            let width = super::validated_shard_width(self.config.shard_width)?;
-            let mut descriptor = Map::new();
-            descriptor.insert("version".into(), Value::from(1));
-            descriptor.insert("kind".into(), Value::from("document"));
-            descriptor.insert("shardWidth".into(), Value::from(width));
-            descriptor.insert(
-                "layout".into(),
-                Value::from(CollectionLayout::Segments.as_str()),
-            );
-            database.add_collection(
+        let width = super::validated_shard_width(self.config.shard_width)?;
+        self.add_database_collection(collection_name, Self::database_descriptor(width))
+    }
+
+    /// The catalog descriptor of a new collection of a `.fxdb` database: a
+    /// document collection in segments at shard width `width`.
+    pub(crate) fn database_descriptor(width: u32) -> Map<String, Value> {
+        let mut descriptor = Map::new();
+        descriptor.insert("version".into(), Value::from(1));
+        descriptor.insert("kind".into(), Value::from("document"));
+        descriptor.insert("shardWidth".into(), Value::from(width));
+        descriptor.insert(
+            "layout".into(),
+            Value::from(CollectionLayout::Segments.as_str()),
+        );
+        descriptor
+    }
+
+    /// Add the collection `collection_name` with catalog descriptor
+    /// `descriptor` to this `.fxdb` database root, unless a live collection
+    /// has the name, and complete its layout. Returns whether it was added.
+    pub(crate) fn add_database_collection(
+        &self,
+        collection_name: &str,
+        descriptor: Map<String, Value>,
+    ) -> Result<bool, NativeStorageError> {
+        let database = self.root.database().ok_or_else(|| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                "a directory root has no .fxdb database",
+            )
+        })?;
+        let created = database.collection(collection_name).is_none()
+            && database.add_collection(
                 collection_name,
                 &crate::segments::ContainerMedium::descriptor(descriptor),
-            )?
-        };
+            )?;
         let collection = self.root.collection(collection_name)?;
         let _lock = self.lock_collection(&collection)?;
         commit_log::SegmentLayout::create_in_database(
@@ -5280,7 +5299,7 @@ fn set_mode(_path: &Path, _mode: u32) -> Result<(), NativeStorageError> {
 /// The list is the contract the crash matrix enumerates, so a new failpoint
 /// must be declared here to be injectable — which is also what stops it from
 /// being added without coverage.
-pub const FAILPOINTS: [&str; 34] = [
+pub const FAILPOINTS: [&str; 35] = [
     "before-file-write",
     "after-file-rename",
     "after-file-sync",
@@ -5315,6 +5334,7 @@ pub const FAILPOINTS: [&str; 34] = [
     "after-layout-staging",
     "after-layout-marker",
     "after-layout-swap",
+    "after-pack-staging",
 ];
 
 pub(crate) fn failpoint(name: &str) -> Result<(), NativeStorageError> {

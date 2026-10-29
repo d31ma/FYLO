@@ -4,6 +4,20 @@
 
 ### Added
 
+- **`fylo pack` and `fylo unpack` (ADR 0016 section 11).** `fylo pack <root>
+  --out app.fxdb` copies every document collection of a directory root, in
+  the file or the segment layout, into a new `.fxdb` database with its
+  schema versions, shard widths and validation modes. It builds the file as
+  `.<name>.pack-staging` beside `--out` while holding every collection's
+  lock, checks it against the source with ADR 0015's oracle, flushes it and
+  only then gives it its name, so a stop leaves no `--out`; the next pack
+  removes the staging file. It refuses an existing `--out`, and a root with
+  buckets, version control or the embedded queue with `ELAYOUTUNSUPPORTED`;
+  `--sealed` is not supported yet. `fylo unpack app.fxdb --out <directory>`
+  writes a directory root in the file layout, each collection as
+  `fylo export` writes it, with its descriptor and schema registry. Both
+  bypass the machine protocol, as `export` does. New failpoint
+  `after-pack-staging`.
 - **In-memory hot set for exclusive embedded sessions.** A session that holds
   the root's exclusive lease (`fylo exec --loop --exclusive-root`, or the Rust
   `FrameSession`) keeps parsed documents, index snapshots, id lists and

@@ -95,7 +95,10 @@ pub use write::FAILPOINTS;
 pub use write::schema_counts::SchemaVersionCounts;
 pub use write::schema_registry::{MAX_SCHEMA_VERSION_BYTES, utc_timestamp};
 pub use write::version::RepositoryStatus;
-pub use write::{CompactionReport, LayoutMigrationReport, SalvageReport, SegmentVerification};
+pub use write::{
+    CompactionReport, DatabasePackReport, LayoutMigrationReport, PackedCollection, SalvageReport,
+    SegmentVerification,
+};
 pub use write::{
     DocumentCodec, NativeWriteRoot, PlainDocumentCodec, PutDocumentOptions, PutRawFileOptions,
     WriteAccess, WriteActor, schema_violations,
