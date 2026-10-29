@@ -206,8 +206,11 @@ impl NativeCollection {
         Ok(counts)
     }
 
-    /// The count recorded at `generation`, if the file says so.
-    pub(crate) fn read_schema_counts(&self, generation: u64) -> Option<SchemaVersionCounts> {
+    /// The count recorded at `generation`, if the file says so. A caller that
+    /// read the stable generation itself uses this in place of
+    /// [`Self::recorded_schema_versions`].
+    #[must_use]
+    pub fn read_schema_counts(&self, generation: u64) -> Option<SchemaVersionCounts> {
         let path = self.schema_counts_path();
         let metadata = fs::symlink_metadata(&path).ok()?;
         if metadata.file_type().is_symlink()

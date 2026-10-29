@@ -168,25 +168,23 @@ impl ReadOnlyEngine {
 
     /// Live documents of `collection` by stored version: the count the
     /// writer recorded at the current generation, else a scan, kept for
-    /// this engine's lifetime at the generation it describes.
+    /// this engine's lifetime at the generation it describes. Once kept, a
+    /// query pays one read of the generation state.
     pub(crate) fn schema_version_counts(
         &self,
         collection: &NativeCollection,
     ) -> Result<SchemaVersionCounts, EngineError> {
-        if let Some(counts) = collection
-            .recorded_schema_versions()
-            .map_err(EngineError::storage)?
-        {
-            return Ok(counts);
-        }
         let before = Self::stable_generation(collection)?;
         let key = (collection.name().to_owned(), before.generation);
         if let Some(counts) = lock(&self.counts).get(&key) {
             return Ok(counts.clone());
         }
-        let counts = collection
-            .scan_schema_versions()
-            .map_err(EngineError::storage)?;
+        let counts = match collection.read_schema_counts(before.generation) {
+            Some(counts) => counts,
+            None => collection
+                .scan_schema_versions()
+                .map_err(EngineError::storage)?,
+        };
         let after = Self::read_attempt_generation(collection)?;
         if after.is_some_and(|after| {
             after.state == GenerationStatus::Stable && after.generation == before.generation
