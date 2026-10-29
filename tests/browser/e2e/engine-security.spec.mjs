@@ -380,10 +380,6 @@ test.describe('encrypted .fxdb databases', () => {
         const harness = await openFxdb(page)
         const reason = await harness.opfs()
         test.skip(reason !== '', reason)
-        // Known engine bug, native too: on a .fxdb a keyless SQL UPDATE writes
-        // plaintext into a registry-declared encrypted field, which the same
-        // statement on a directory root refuses. Remove this once fixed.
-        test.fail(true, 'keyless SQL UPDATE writes plaintext into an encrypted .fxdb field')
         const fixture = registryFixture
         const before = expectOk(
             keyedExec(fixture.keys, packed, [{ op: 'findDocs', collection: 'pii', query: {} }]),
