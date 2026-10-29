@@ -111,6 +111,25 @@ pub(crate) trait SegmentMedium: Debug + Send + Sync {
     /// readers replay the records from there.
     fn replace_location_snapshot(&self, bytes: &[u8]) -> Result<(), NativeStorageError>;
 
+    /// The schemas snapshot's bytes (ADR 0017 section 3), or `None` when
+    /// there is none.
+    fn read_schemas_snapshot(&self) -> Result<Option<Vec<u8>>, NativeStorageError>;
+
+    /// What changes whenever the schemas snapshot does, so a reader can
+    /// keep it decoded: its length and modification time, or `None` when
+    /// there is none.
+    fn schemas_snapshot_stamp(
+        &self,
+    ) -> Result<Option<(u64, Option<std::time::SystemTime>)>, NativeStorageError>;
+
+    /// Durably replace the schemas snapshot.
+    fn replace_schemas_snapshot(&self, bytes: &[u8]) -> Result<(), NativeStorageError>;
+
+    /// Put the schemas snapshot back as `previous` held it, `None` meaning
+    /// there was none, for a schema commit or compaction being rolled back.
+    /// This is a compensating step, so it passes no failpoint.
+    fn restore_schemas_snapshot(&self, previous: Option<&[u8]>) -> Result<(), NativeStorageError>;
+
     /// Whether location rows go to a location log. A medium without one
     /// (a `.fxdb` container) keeps them only in memory: a location table is
     /// its snapshot and the rows the records after the snapshot's position

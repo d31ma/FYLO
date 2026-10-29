@@ -105,7 +105,7 @@ impl LocationTable {
                     LogRecordKind::Compaction => {
                         let manifest = CompactionManifest::decode(&record.manifest)?;
                         if present.contains(&manifest.segment) {
-                            CompactionManifest::adopted_rows(medium, self, manifest.segment)?
+                            CompactionManifest::adopted(medium, self, manifest.segment)?.0
                         } else {
                             Vec::new()
                         }

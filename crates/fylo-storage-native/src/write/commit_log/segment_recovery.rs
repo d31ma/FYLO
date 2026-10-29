@@ -9,6 +9,7 @@ use super::log_segment::LogSegment;
 use super::segment_checkpoint::SegmentCheckpoint;
 use super::segment_plan::SegmentPlan;
 use super::segment_rebuild::SegmentRebuild;
+use super::segment_schemas::SegmentSchemas;
 use crate::segments::{
     LocationTable, SegmentCheckpointManifest, SegmentCommitManifest, SegmentLocation,
     SegmentMedium, TableCache, TableReach,
@@ -22,14 +23,22 @@ use crate::{GenerationState, NativeCollection, NativeStorageError, NativeStorage
 /// record (an append nobody was told succeeded), cuts the location and index
 /// logs back to the last checkpoint, and replays every later commit and
 /// compaction. When a derived file no longer matches what the checkpoint
-/// recorded, both are rebuilt from segments. Segments that no location
-/// refers to any more (a compaction's inputs or an unadopted output) are
-/// removed, and a checkpoint closes the recovery.
+/// recorded, both are rebuilt from segments. The schema registry (ADR 0017
+/// section 3) starts from the schemas snapshot the checkpoint named and
+/// replays the schema records after it, or is rebuilt from every schema
+/// record when the snapshot is not that one; the catalog descriptor's head
+/// is then brought up to the records'. Segments that no location or schema
+/// version refers to any more (a compaction's inputs or an unadopted output)
+/// are removed, and a checkpoint closes the recovery.
 pub(crate) struct SegmentRecovery;
+
+/// Where a compacted segment holds each schema record it copied, by
+/// sequence number: segment, offset and length.
+pub(crate) type SchemaCopies = std::collections::BTreeMap<u64, (u64, u64, u32)>;
 
 impl SegmentRecovery {
     pub(crate) fn run(
-        _writer: &NativeWriteRoot,
+        writer: &NativeWriteRoot,
         collection: &NativeCollection,
         stored: &GenerationState,
     ) -> Result<(), NativeStorageError> {
@@ -52,9 +61,17 @@ impl SegmentRecovery {
             &segment,
             SegmentCheckpoint::next_stable(stored, seen),
         )?;
-        if !Self::replay_from_checkpoint(collection, &*medium, (number, &scan))? {
-            SegmentRebuild::run(collection)?;
+        match Self::replay_from_checkpoint(collection, &*medium, (number, &scan))? {
+            None => SegmentRebuild::run(collection)?,
+            Some(schemas) => {
+                let schemas = match schemas {
+                    Some(schemas) => schemas,
+                    None => SegmentSchemas::rebuild_from(&*medium)?,
+                };
+                schemas.write_if_changed(&*medium)?;
+            }
         }
+        Self::settle_schema_head(writer, collection, &*medium)?;
         TableCache::shared().forget(&*medium);
         Self::remove_unreferenced(&*medium, number)?;
         SegmentCheckpoint::run(collection, segment, generation)?;
@@ -122,19 +139,25 @@ impl SegmentRecovery {
         Ok(())
     }
 
-    /// Replay every record after the last checkpoint. Returns false when
-    /// there is no checkpoint, or the derived files no longer match it.
+    /// Replay every record after the last checkpoint. Returns `None` when
+    /// there is no checkpoint, or the derived files no longer match it, and
+    /// otherwise the schema registry replayed from the checkpoint's schemas
+    /// snapshot, or `None` inside when the snapshot is not the one the
+    /// checkpoint named and must be rebuilt.
+    #[allow(clippy::option_option)]
     fn replay_from_checkpoint(
         collection: &NativeCollection,
         medium: &dyn SegmentMedium,
         (number, scan): (u64, &LogScan),
-    ) -> Result<bool, NativeStorageError> {
+    ) -> Result<Option<Option<SegmentSchemas>>, NativeStorageError> {
         let Some((start, checkpoint)) = Self::last_checkpoint(scan) else {
-            return Ok(false);
+            return Ok(None);
         };
         if !Self::cut_back(collection, medium, &checkpoint)? {
-            return Ok(false);
+            return Ok(None);
         }
+        let mut schemas =
+            SegmentSchemas::checkpointed(medium, checkpoint.schemas_snapshot_sha256.as_deref())?;
         let aborted = SegmentRebuild::aborted([scan])?;
         let reach = TableReach::checkpoint(medium, checkpoint.locations_wal_length);
         let mut table = LocationTable::load(medium, reach)?;
@@ -145,7 +168,15 @@ impl SegmentRecovery {
                     Self::replay_commit(collection, (number, *offset, lengths[index]), record)?
                 }
                 LogRecordKind::Compaction if !aborted.contains(&record.lsn) => {
-                    Self::replay_compaction(medium, &table, record)?
+                    let (rows, copies) = Self::replay_compaction(medium, &table, record)?;
+                    schemas = schemas.map(|schemas| schemas.relocated(&copies));
+                    rows
+                }
+                LogRecordKind::Schema if !aborted.contains(&record.lsn) => {
+                    let entry =
+                        SegmentSchemas::entry_of((number, *offset, lengths[index]), record)?;
+                    schemas = schemas.and_then(|schemas| schemas.with(entry).ok());
+                    Vec::new()
                 }
                 _ => Vec::new(),
             };
@@ -154,7 +185,25 @@ impl SegmentRecovery {
                 table.apply(row);
             }
         }
-        Ok(true)
+        Ok(Some(schemas))
+    }
+
+    /// Bring the catalog descriptor's registry head up to the records'. The
+    /// descriptor is written after a schema record commits, so a crash
+    /// between the two leaves it behind; it never leads, and a descriptor
+    /// that does is refused by loading the registry.
+    fn settle_schema_head(
+        writer: &NativeWriteRoot,
+        collection: &NativeCollection,
+        medium: &dyn SegmentMedium,
+    ) -> Result<(), NativeStorageError> {
+        let schemas = SegmentSchemas::load(medium, collection.schema_head())?;
+        match schemas.head() {
+            Some(head) if Some(head) > collection.schema_head() => {
+                writer.write_schema_head(collection, head)
+            }
+            _ => Ok(()),
+        }
     }
 
     fn last_checkpoint(scan: &LogScan) -> Option<(usize, SegmentCheckpointManifest)> {
@@ -222,33 +271,61 @@ impl SegmentRecovery {
     }
 
     /// Point every location whose newest entry the compacted segment holds a
-    /// copy of at that copy, and remove the segments it replaced.
+    /// copy of at that copy, and remove the segments it replaced. Returns
+    /// the rows and where the compacted segment holds each schema record.
     fn replay_compaction(
         medium: &dyn SegmentMedium,
         table: &LocationTable,
         record: &fylo_format::LogRecord,
-    ) -> Result<Vec<SegmentLocation>, NativeStorageError> {
+    ) -> Result<(Vec<SegmentLocation>, SchemaCopies), NativeStorageError> {
         let manifest = CompactionManifest::decode(&record.manifest)?;
-        let rows = CompactionManifest::adopted_rows(medium, table, manifest.segment)?;
+        let adopted = CompactionManifest::adopted(medium, table, manifest.segment)?;
         for replaced in &manifest.replaces {
             medium.remove_segment(*replaced)?;
         }
-        Ok(rows)
+        Ok(adopted)
     }
 
     /// Remove every segment other than the active one that no location row
-    /// refers to.
+    /// and no schema version refers to.
+    ///
+    /// As a second guard for the registry, a segment that holds a schema
+    /// record the registry does not list at its sequence number, and that
+    /// no abort record in it cancels, is kept: losing a version would let
+    /// writes skip validation, and keeping a segment costs only space.
     pub(crate) fn remove_unreferenced(
         medium: &dyn SegmentMedium,
         active: u64,
     ) -> Result<(), NativeStorageError> {
         let table = LocationTable::load(medium, TableReach::written(medium)?)?;
-        let referenced: BTreeSet<u64> = table.rows().iter().map(|row| row.segment).collect();
+        let schemas = SegmentSchemas::load(medium, None)?;
+        let mut referenced: BTreeSet<u64> = table.rows().iter().map(|row| row.segment).collect();
+        referenced.extend(schemas.segments());
+        let listed: BTreeSet<u64> = schemas.entries().iter().map(|entry| entry.lsn).collect();
         for number in medium.segment_numbers()? {
-            if number != active && !referenced.contains(&number) {
+            if number != active
+                && !referenced.contains(&number)
+                && !Self::holds_unlisted_schema(medium, number, &listed)?
+            {
                 medium.remove_segment(number)?;
             }
         }
         Ok(())
+    }
+
+    fn holds_unlisted_schema(
+        medium: &dyn SegmentMedium,
+        number: u64,
+        listed: &BTreeSet<u64>,
+    ) -> Result<bool, NativeStorageError> {
+        let Some(scan) = LogSegment::scan_segment(medium, number)? else {
+            return Ok(false);
+        };
+        let aborted = SegmentRebuild::aborted([&scan])?;
+        Ok(scan.records.iter().any(|(_, record)| {
+            record.kind == LogRecordKind::Schema
+                && !listed.contains(&record.lsn)
+                && !aborted.contains(&record.lsn)
+        }))
     }
 }

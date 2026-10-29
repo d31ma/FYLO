@@ -15,4 +15,8 @@ pub struct SalvageReport {
     /// still reads; otherwise its byte range in `damaged` is all that is
     /// known of them.
     pub lost: Vec<String>,
+    /// Ordinals of the schema versions recovered from schema records,
+    /// written to `.fylo-schemas/<ordinal>.json` under the output tree in
+    /// the directory registry's file format (ADR 0017 section 3).
+    pub schema_versions: Vec<u32>,
 }

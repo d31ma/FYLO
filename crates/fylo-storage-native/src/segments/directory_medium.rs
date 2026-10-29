@@ -8,7 +8,9 @@ use super::{
     GenerationSlots, MediumIdentity, PositionedRead, RecordPosition, SegmentHandle, SegmentMedium,
     SegmentPaths, SlotRecord,
 };
-use crate::write::{durable_replace_owner_only, ensure_directory, sync_directory};
+use crate::write::{
+    durable_replace_owner_only, ensure_directory, sibling_scratch, sync_directory, sync_parent,
+};
 use crate::{Durability, NativeRoot, NativeStorageError, NativeStorageErrorCode};
 
 /// A segment collection kept as files in its collection directory's
@@ -213,6 +215,55 @@ impl SegmentMedium for DirectoryMedium {
 
     fn replace_location_snapshot(&self, bytes: &[u8]) -> Result<(), NativeStorageError> {
         durable_replace_owner_only(&self.paths.locations_snapshot(), bytes)
+    }
+
+    fn read_schemas_snapshot(&self) -> Result<Option<Vec<u8>>, NativeStorageError> {
+        Self::read_if_present(&self.paths.schemas_snapshot())
+    }
+
+    fn schemas_snapshot_stamp(
+        &self,
+    ) -> Result<Option<(u64, Option<std::time::SystemTime>)>, NativeStorageError> {
+        match fs::metadata(self.paths.schemas_snapshot()) {
+            Ok(metadata) => Ok(Some((metadata.len(), metadata.modified().ok()))),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(NativeStorageError::io(error)),
+        }
+    }
+
+    fn replace_schemas_snapshot(&self, bytes: &[u8]) -> Result<(), NativeStorageError> {
+        durable_replace_owner_only(&self.paths.schemas_snapshot(), bytes)
+    }
+
+    fn restore_schemas_snapshot(&self, previous: Option<&[u8]>) -> Result<(), NativeStorageError> {
+        let path = self.paths.schemas_snapshot();
+        if self.read_schemas_snapshot()?.as_deref() == previous {
+            return Ok(());
+        }
+        let Some(bytes) = previous else {
+            fs::remove_file(&path).map_err(NativeStorageError::io)?;
+            return sync_parent(&path);
+        };
+        let scratch = sibling_scratch(&path);
+        let written = (|| {
+            let mut options = OpenOptions::new();
+            #[cfg(unix)]
+            std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+            // Chained into `open`, as in `create_compaction`.
+            let mut file = options
+                .create_new(true)
+                .write(true)
+                .open(&scratch)
+                .map_err(NativeStorageError::io)?;
+            file.write_all(bytes).map_err(NativeStorageError::io)?;
+            crate::sync_handle(&file).map_err(NativeStorageError::io)?;
+            fs::rename(&scratch, &path).map_err(NativeStorageError::io)?;
+            sync_parent(&path)
+        })();
+        if written.is_err() {
+            let _ = fs::remove_file(&scratch);
+        }
+        written
     }
 
     fn has_location_log(&self) -> bool {

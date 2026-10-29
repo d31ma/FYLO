@@ -2206,3 +2206,24 @@ html[w-theme='light'] .explorer-version-cur {
 .explorer-database-report h3 {
     margin: 0.5rem 0 0;
 }
+
+/* --- Schemas (ADR 0017): read-only notice and the field that failed --- */
+
+.explorer-schema-notice {
+    padding: 0 1rem 0.5rem;
+}
+
+.jsonedit-line.is-invalid .jsonedit-input {
+    border-color: var(--w-error, #e5484d);
+    outline: 1px solid var(--w-error, #e5484d);
+}
+
+.jsonedit-error,
+.explorer-field-error {
+    color: var(--w-error, #e5484d);
+    font-size: 0.85rem;
+}
+
+.jsonedit-error {
+    margin-left: 0.5rem;
+}

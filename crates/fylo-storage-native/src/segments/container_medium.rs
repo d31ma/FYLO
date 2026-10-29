@@ -34,6 +34,7 @@ use fylo_format::{
 };
 
 use super::{MediumIdentity, RecordPosition, SegmentHandle, SegmentMedium, SlotRecord};
+use crate::write::SegmentSchemas;
 use crate::{
     ContainerError, ContainerFile, Durability, NativeRoot, NativeStorageError,
     NativeStorageErrorCode,
@@ -842,6 +843,36 @@ impl SegmentMedium for ContainerMedium {
             }
             Self::release_index_runs(open, id, index.as_ref()).map_err(Self::error)
         })
+    }
+
+    /// A `.fxdb` collection holds no schema versions yet, since a database
+    /// refuses schema commits, so its schemas snapshot is always the empty
+    /// one. A schemas run (extent kind 7) holds it once a database can.
+    fn read_schemas_snapshot(&self) -> Result<Option<Vec<u8>>, NativeStorageError> {
+        SegmentSchemas::empty().encode().map(Some)
+    }
+
+    fn schemas_snapshot_stamp(
+        &self,
+    ) -> Result<Option<(u64, Option<std::time::SystemTime>)>, NativeStorageError> {
+        Ok(self
+            .read_schemas_snapshot()?
+            .map(|bytes| (bytes.len() as u64, None)))
+    }
+
+    fn replace_schemas_snapshot(&self, bytes: &[u8]) -> Result<(), NativeStorageError> {
+        if self.read_schemas_snapshot()?.as_deref() == Some(bytes) {
+            return Ok(());
+        }
+        Err(NativeStorageError::new(
+            NativeStorageErrorCode::Unsupported,
+            "schema versions are not supported in a .fxdb database yet",
+        ))
+    }
+
+    /// Nothing to put back: the snapshot never changes.
+    fn restore_schemas_snapshot(&self, _previous: Option<&[u8]>) -> Result<(), NativeStorageError> {
+        Ok(())
     }
 
     fn has_location_log(&self) -> bool {

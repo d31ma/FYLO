@@ -8,6 +8,7 @@ use super::document_image::DocumentImage;
 use super::file_export::FileExport;
 use super::salvage_report::SalvageReport;
 use super::segment_rebuild::SegmentRebuild;
+use super::segment_schemas::{SchemaVersionManifest, SegmentSchemas};
 use super::segment_verification::SegmentVerification;
 use crate::segments::{
     LocationTable, RecordPosition, SegmentCommitManifest, SegmentDocument, SegmentLocation,
@@ -66,6 +67,7 @@ impl SegmentInspection {
                 return Ok(verification);
             }
         };
+        Self::verify_schemas(&*medium, &scans, &mut verification);
         let rebuilt = LocationTable::from_rows(Self::winners(&scans)?);
         for (row, rebuilt) in Self::pairs(&rows, &rebuilt) {
             verification.defects.push(format!(
@@ -101,6 +103,7 @@ impl SegmentInspection {
         }
         let newest = Self::salvaged(&salvaged)?;
         report.lost = Self::lost(&medium, &newest)?;
+        let versions = Self::salvaged_schemas(&salvaged);
         let images = newest
             .into_values()
             .filter(|(_, document)| document.entry.state != crate::segments::LocationState::Absent)
@@ -110,6 +113,7 @@ impl SegmentInspection {
         fylo_vfs::create_dir_all(out).map_err(NativeStorageError::io)?;
         let root = NativeRoot::open(out)?;
         FileExport::build(&root, &root.canonical, &images, collection.shard_width())?;
+        report.schema_versions = Self::write_schemas(out, &versions)?;
         Ok(report)
     }
 
@@ -141,8 +145,58 @@ impl SegmentInspection {
             if record.kind == LogRecordKind::Commit {
                 Self::verify_bodies(number, (*offset, record), verification)?;
             }
+            if record.kind == LogRecordKind::Schema
+                && let Err(error) = SchemaVersionManifest::of(record)
+            {
+                verification
+                    .defects
+                    .push(format!("segment {number} offset {offset}: {error}"));
+            }
         }
         Ok(())
+    }
+
+    /// Compare the schemas snapshot with a rebuild from the schema records.
+    fn verify_schemas(
+        medium: &dyn SegmentMedium,
+        scans: &[(u64, fylo_format::LogScan)],
+        verification: &mut SegmentVerification,
+    ) {
+        let rebuilt = match SegmentSchemas::rebuild(scans) {
+            Ok(rebuilt) => rebuilt,
+            Err(error) => {
+                verification
+                    .defects
+                    .push(format!("cannot rebuild the schema registry: {error}"));
+                return;
+            }
+        };
+        verification.schema_versions = rebuilt.entries().len();
+        let listed = |schemas: &SegmentSchemas| -> Vec<(u32, u64, String)> {
+            schemas
+                .entries()
+                .iter()
+                .map(|entry| (entry.ordinal, entry.lsn, entry.sha256.clone()))
+                .collect()
+        };
+        match SegmentSchemas::read(medium) {
+            Ok(Some(Some(snapshot))) if listed(&snapshot) == listed(&rebuilt) => {}
+            Ok(Some(Some(snapshot))) => verification.defects.push(format!(
+                "schemas snapshot lists versions up to {} but the schema records hold up to {}",
+                snapshot.head().unwrap_or(0),
+                rebuilt.head().unwrap_or(0)
+            )),
+            Ok(None) if rebuilt.head().is_none() => {}
+            Ok(None) => verification
+                .defects
+                .push("schemas snapshot is missing".to_owned()),
+            Ok(Some(None)) => verification
+                .defects
+                .push("schemas snapshot cannot be read".to_owned()),
+            Err(error) => verification
+                .defects
+                .push(format!("schemas snapshot cannot be read: {error}")),
+        }
     }
 
     fn verify_bodies(
@@ -300,6 +354,58 @@ impl SegmentInspection {
             }
             Err(error) => Err(error),
         }
+    }
+
+    /// Every readable schema version no readable abort record cancelled, by
+    /// ordinal. A version committed twice keeps its newest record.
+    fn salvaged_schemas(salvaged: &[(u64, LogSalvage)]) -> BTreeMap<u32, (u64, Vec<u8>)> {
+        let mut aborted = BTreeSet::new();
+        for (_, salvage) in salvaged {
+            for (_, record) in &salvage.records {
+                if record.kind == LogRecordKind::Abort
+                    && let Ok(manifest) = serde_json::from_slice::<
+                        super::abort_manifest::AbortManifest,
+                    >(&record.manifest)
+                {
+                    aborted.insert(manifest.aborts);
+                }
+            }
+        }
+        let mut versions: BTreeMap<u32, (u64, Vec<u8>)> = BTreeMap::new();
+        for (_, salvage) in salvaged {
+            for (_, record) in &salvage.records {
+                if record.kind != LogRecordKind::Schema || aborted.contains(&record.lsn) {
+                    continue;
+                }
+                let Ok(manifest) = SchemaVersionManifest::of(record) else {
+                    continue;
+                };
+                let newer = versions
+                    .get(&manifest.ordinal)
+                    .is_none_or(|(lsn, _)| record.lsn >= *lsn);
+                if newer {
+                    versions.insert(manifest.ordinal, (record.lsn, record.blobs.clone()));
+                }
+            }
+        }
+        versions
+    }
+
+    /// Write salvaged schema versions as the directory registry's files.
+    fn write_schemas(
+        out: &Path,
+        versions: &BTreeMap<u32, (u64, Vec<u8>)>,
+    ) -> Result<Vec<u32>, NativeStorageError> {
+        if versions.is_empty() {
+            return Ok(Vec::new());
+        }
+        let directory = out.join(".fylo-schemas");
+        fylo_vfs::create_dir_all(&directory).map_err(NativeStorageError::io)?;
+        for (ordinal, (_, version)) in versions {
+            fylo_vfs::write(directory.join(format!("{ordinal}.json")), version)
+                .map_err(NativeStorageError::io)?;
+        }
+        Ok(versions.keys().copied().collect())
     }
 
     /// Identifiers whose newest version no salvaged entry reached: those

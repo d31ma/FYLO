@@ -166,6 +166,18 @@ Each version holds:
   compiled validators and the per-version document counts (section 6). The
   head is the newest schema record at or before the checkpoint LSN, plus
   replay. A missing or mismatched snapshot is rebuilt from the records.
+  Correction (2026-10-29): for a segment collection the schemas snapshot is
+  the file `segments/schemas.snapshot` beside the location files, and the
+  checkpoint record's manifest names it by digest (`schemasSnapshotSha256`),
+  as it names the location and index snapshots. A schema commit rewrites the
+  snapshot right after its record is flushed and before it publishes
+  `stable`, then checkpoints, so readers never replay schema records and
+  recovery replays only those after the checkpoint whose snapshot still
+  matches. The snapshot also lists each record's location, which keeps
+  compaction from dropping a segment that holds one; the per-version counts
+  of section 6 have a reserved `counts` field. The descriptor's
+  `"schemas": "registry"` and `schemaHead` are still written, after the
+  record commits, and follow the records, which are authoritative.
 - **Directory roots on the file layout**: the registry is
   `<root>/.fylo-schemas/<collection>/<ordinal>.json`, one immutable file per
   version, and the head ordinal is in the catalog descriptor. Adding a version

@@ -7,6 +7,11 @@
 // cross-client case a second machine would be.
 //
 //   bun scripts/verify-fxdb-locks-nfs.mjs [--cache-dir DIR] [--seconds 10]
+//       [--export tmpfs|ext4] [--repeat 1]
+//
+// `--export ext4` serves a loop-mounted ext4 image instead of tmpfs, whose
+// coarse change attribute can leave another client's page cache stale.
+// `--repeat N` runs the two-client load N times and reports every result.
 //
 // Needs Docker with privileged containers.
 import { mkdir, readFile } from 'node:fs/promises'
@@ -16,9 +21,13 @@ import { parseArgs } from 'node:util'
 const { values: options } = parseArgs({
     options: {
         'cache-dir': { type: 'string' },
-        seconds: { type: 'string', default: '10' }
+        seconds: { type: 'string', default: '10' },
+        export: { type: 'string', default: 'tmpfs' },
+        repeat: { type: 'string', default: '1' }
     }
 })
+if (!['tmpfs', 'ext4'].includes(options.export)) throw new Error('--export is tmpfs or ext4')
+const repeats = Math.max(1, Number(options.repeat))
 const repo = process.cwd()
 const toolchain = (await readFile('rust-toolchain.toml', 'utf8')).match(
     /channel\s*=\s*"([^"]+)"/
@@ -42,7 +51,7 @@ ENV PATH=/root/.cargo/bin:$PATH CARGO_TARGET_DIR=/target
 # What rust-toolchain.toml asks for, so a --rm build does not fetch it each run.
 RUN rustup component add clippy rustfmt && rustup target add wasm32-unknown-unknown`
 const client = `FROM ${BASE}
-RUN dnf -y -q install nfs-utils procps-ng findutils && dnf clean all`
+RUN dnf -y -q install nfs-utils procps-ng findutils e2fsprogs && dnf clean all`
 
 const started = Date.now()
 await cleanUp()
@@ -76,12 +85,24 @@ try {
             '--seconds',
             seconds,
             '--label',
-            'NFS 4.1 (local nfsd), one client',
+            `NFS 4.1 (local nfsd, ${options.export} export), one client`,
             '--json',
             '/mnt/nfs/locks/single.json'
         ])
     )
-    await step('Two clients loading one file', twoClients)
+    const failed = []
+    for (let run = 1; run <= repeats; run++) {
+        try {
+            await step(`Two clients loading one file (${run} of ${repeats})`, twoClients)
+        } catch (error) {
+            console.log(`   FAILED: ${error.message.split('\n')[0]}`)
+            failed.push(run)
+        }
+    }
+    console.log(
+        `Two-client runs on ${options.export}: ${repeats - failed.length} of ${repeats} passed`
+    )
+    if (failed.length) throw new Error(`two-client runs ${failed.join(', ')} failed`)
     console.log(`NFS lock lane passed in ${Math.round((Date.now() - started) / 1000)} s`)
 } finally {
     await cleanUp()
@@ -135,10 +156,19 @@ async function cleanUp() {
     for (const container of ['a', 'b']) {
         await docker(['rm', '-f', `${NAME}-${container}`], { check: false, quiet: true })
     }
-    await docker(['exec', `${NAME}-nfsd`, 'sh', '-c', 'exportfs -ua; rpc.nfsd 0'], {
-        check: false,
-        quiet: true
-    })
+    await docker(
+        [
+            'exec',
+            `${NAME}-nfsd`,
+            'sh',
+            '-c',
+            'exportfs -ua; rpc.nfsd 0; umount /export 2>/dev/null; true'
+        ],
+        {
+            check: false,
+            quiet: true
+        }
+    )
     await docker(['rm', '-f', `${NAME}-nfsd`], { check: false, quiet: true })
     await docker(['network', 'rm', network], { check: false, quiet: true })
 }
@@ -156,7 +186,13 @@ function volumes() {
 
 async function startNfsServer() {
     await docker(['network', 'create', network], { check: false, quiet: true })
-    // An overlay filesystem cannot be exported; tmpfs can.
+    // An overlay filesystem cannot be exported; tmpfs and a loop-mounted ext4
+    // image can.
+    const exported =
+        options.export === 'ext4'
+            ? 'truncate -s 256M /export.img && mkfs.ext4 -q /export.img && mkdir -p /export && ' +
+              'mount -o loop /export.img /export && '
+            : ''
     await docker(
         [
             'run',
@@ -166,12 +202,12 @@ async function startNfsServer() {
             '--network',
             network,
             '--privileged',
-            '--tmpfs',
-            '/export:size=256m',
+            ...(options.export === 'tmpfs' ? ['--tmpfs', '/export:size=256m'] : []),
             `${NAME}-client`,
             'sh',
             '-c',
-            'chmod 777 /export && echo "/export *(rw,sync,no_subtree_check,no_root_squash,fsid=0,insecure)" > /etc/exports && ' +
+            exported +
+                'chmod 777 /export && echo "/export *(rw,sync,no_subtree_check,no_root_squash,fsid=0,insecure)" > /etc/exports && ' +
                 'mount -t nfsd nfsd /proc/fs/nfsd && rpcbind && rpc.nfsd -N 3 -V 4.1 8 2>/dev/null; ' +
                 'exportfs -ra && rpc.mountd -N 3 && echo READY && sleep infinity'
         ],

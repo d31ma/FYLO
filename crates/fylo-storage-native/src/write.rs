@@ -41,6 +41,7 @@ mod commit_log;
 mod document_codec;
 pub(crate) mod schema_counts;
 pub(crate) mod schema_registry;
+pub(crate) use commit_log::SegmentSchemas;
 pub use commit_log::{CompactionReport, LayoutMigrationReport, SalvageReport, SegmentVerification};
 pub(crate) mod version;
 
@@ -4777,7 +4778,7 @@ fn remove_dir_durable(path: &Path) -> Result<(), NativeStorageError> {
     Ok(())
 }
 
-fn sync_parent(path: &Path) -> Result<(), NativeStorageError> {
+pub(crate) fn sync_parent(path: &Path) -> Result<(), NativeStorageError> {
     let parent = path.parent().ok_or_else(|| {
         NativeStorageError::new(NativeStorageErrorCode::Io, "storage path has no parent")
     })?;
@@ -4834,7 +4835,7 @@ fn open_directory(path: &Path) -> std::io::Result<File> {
     File::open(path)
 }
 
-fn sibling_scratch(path: &Path) -> PathBuf {
+pub(crate) fn sibling_scratch(path: &Path) -> PathBuf {
     let name = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -5273,7 +5274,7 @@ fn set_mode(_path: &Path, _mode: u32) -> Result<(), NativeStorageError> {
 /// The list is the contract the crash matrix enumerates, so a new failpoint
 /// must be declared here to be injectable — which is also what stops it from
 /// being added without coverage.
-pub const FAILPOINTS: [&str; 32] = [
+pub const FAILPOINTS: [&str; 34] = [
     "before-file-write",
     "after-file-rename",
     "after-file-sync",
@@ -5299,6 +5300,8 @@ pub const FAILPOINTS: [&str; 32] = [
     "after-checkpoint-flush",
     "after-checkpoint-remove",
     "after-schema-file",
+    "after-schema-record",
+    "after-schemas-snapshot",
     "after-compaction-copy",
     "after-compaction-sync",
     "after-compaction-record",

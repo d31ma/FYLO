@@ -109,6 +109,57 @@ function sharedAssetUrl(pathname, build, origin) {
     return asset.href
 }
 
+// --- Schemas (ADR 0017) ---
+
+/** Validation modes that mean a collection's writes are checked against a schema. */
+const CHECKED_MODES = new Set(['strict', 'warn'])
+
+/**
+ * Whether a collection has a schema the folder view must not write around.
+ *
+ * The folder view runs the JavaScript engine, which cannot validate, so a
+ * collection with an in-database registry or a checked validation mode is
+ * read-only there (ADR 0017 section 8, step 6).
+ *
+ * @param {Record<string, any> | null | undefined} descriptor its catalog descriptor
+ * @param {boolean} [hasRegistry] whether `.fylo-schemas/<collection>/` exists
+ */
+export function collectionHasSchema(descriptor, hasRegistry = false) {
+    if (hasRegistry) return true
+    if (!descriptor || typeof descriptor !== 'object') return false
+    return (
+        descriptor.schemas === 'registry' ||
+        descriptor.schemaHead !== undefined ||
+        CHECKED_MODES.has(descriptor.validation)
+    )
+}
+
+/**
+ * Read a refused write as a schema failure, with the field that failed.
+ *
+ * `ESCHEMA` carries CHEX's message, which names the property path in quotes:
+ * "Property 'name' does not exist…", "RegEx pattern fails for property
+ * 'email'…", "Type mismatch for 'tags[2]'…". `ESCHEMAUNAVAILABLE` names no
+ * field: this build cannot validate the collection at all.
+ *
+ * @param {unknown} error
+ * @returns {{ code: 'ESCHEMA' | 'ESCHEMAUNAVAILABLE', path: string, field: string, message: string } | null}
+ */
+export function schemaFailure(error) {
+    const failure = /** @type {{ code?: unknown, message?: unknown }} */ (error ?? {})
+    const message = String(failure.message ?? error ?? '')
+    const named = /^(ESCHEMAUNAVAILABLE|ESCHEMA)\b[:\s]*/.exec(message)
+    const code = [failure.code, named?.[1]].find(
+        (value) => value === 'ESCHEMA' || value === 'ESCHEMAUNAVAILABLE'
+    )
+    if (!code) return null
+    const text = named ? message.slice(named[0].length) : message
+    if (code === 'ESCHEMAUNAVAILABLE') return { code, path: '', field: '', message: text }
+    const path = /(?:[Pp]roperty|for) '([^']+)'/.exec(text)?.[1] ?? ''
+    const field = path.split(/[.[]/)[0] ?? ''
+    return { code, path, field, message: text }
+}
+
 function limitError(operation, actual, maximum) {
     return `${operation} is limited to ${formatBytes(maximum)}; selected input is ${formatBytes(actual)}. Use the FYLO CLI for larger data.`
 }
@@ -479,8 +530,13 @@ export default class {
     /** @type {{ key: string, id: string, mime: string, size: string, modified: string } | null} */
     rawMeta = null
     error = ''
-    writable = false
+    /** Whether the user enabled writes on the root. */
+    rootWritable = false
     lockWarning = false
+    /** Collections with a schema, which the folder view keeps read-only. */
+    schemaLocked = safeRecord()
+    /** @type {ReturnType<typeof schemaFailure>} the last write's schema failure */
+    fieldError = null
     /** @type {'' | 'new' | 'edit'} */
     editing = ''
     draft = ''
@@ -716,6 +772,18 @@ export default class {
         const asset = engineAssetUrl(globalThis.__FYLO_BUILD)
         this._lib ??= await import(asset)
         return this._lib
+    }
+
+    /**
+     * Whether the open collection can be written here: writes are enabled on
+     * the root and the collection has no schema the folder view would skip.
+     */
+    get writable() {
+        return this.rootWritable && !this.schemaLocked[this.active]
+    }
+
+    set writable(value) {
+        this.rootWritable = Boolean(value)
     }
 
     @onMount
@@ -1125,6 +1193,8 @@ export default class {
         for (const name of this.collections) this.kinds[name] = 'document'
         for (const name of this.buckets) this.kinds[name] = 'file'
         this.shardLayouts = safeRecord()
+        const registries = new Set(await this._fs.list('/.fylo-schemas').catch(() => []))
+        const locked = safeRecord()
         await Promise.all(
             [...this.collections, ...this.buckets].map(async (name) => {
                 const descriptor = await this._fs
@@ -1132,8 +1202,10 @@ export default class {
                     .then(JSON.parse)
                     .catch(() => ({}))
                 this.shardLayouts[name] = normalizeShardLayout(descriptor)
+                if (collectionHasSchema(descriptor, registries.has(name))) locked[name] = true
             })
         )
+        this.schemaLocked = locked
         this.view = 'docs'
         this.rootName = handle.name
         this.writable = writable
@@ -2798,6 +2870,10 @@ export default class {
                     this.error = 'Enable writes before importing.'
                     return
                 }
+                if (this.schemaLocked[collection]) {
+                    this.error = `${collection} has a schema, which this folder view cannot check, so it cannot import into it.`
+                    return
+                }
                 if (!collection) {
                     this.error = 'Choose a target collection to import into.'
                     return
@@ -3049,6 +3125,17 @@ export default class {
                 this.error = 'Read-only mode: only SELECT statements — enable writes for DML/DDL'
                 return
             }
+            const lockedTarget = /^SELECT\b/i.test(statement)
+                ? ''
+                : Object.keys(this.schemaLocked).find((name) =>
+                      new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(
+                          statement
+                      )
+                  )
+            if (lockedTarget) {
+                this.error = `${lockedTarget} has a schema, which this folder view cannot check, so it only runs SELECT on it. Write to it with the FYLO CLI or your application.`
+                return
+            }
             try {
                 // Indexes are accelerators: rebuild each document collection
                 // into the in-memory overlay once, so a SELECT works on a
@@ -3187,15 +3274,18 @@ export default class {
      */
     editView() {
         const last = this.editFields.length - 1
+        const failed = this.fieldError?.field
         return this.editFields.map((f, i) => ({
             ...f,
             comma: i < last,
             quoted: f.type === 'string',
-            literal: f.type === 'null'
+            literal: f.type === 'null',
+            invalid: Boolean(failed) && f.key === failed
         }))
     }
 
     startNew() {
+        this.fieldError = null
         this.editing = 'new'
         this.draft = '' // blank + placeholder; a fresh <textarea> can't show a value attr
     }
@@ -3218,20 +3308,24 @@ export default class {
             const type = valueType(v)
             return { key, type, value: fieldValue(v), regex: this.regexFor(key, type) }
         })
+        this.fieldError = null
         this.editing = 'edit'
     }
 
     cancelEdit() {
         this.editing = ''
         this.editFields = []
+        this.fieldError = null
     }
 
     draftInput(event) {
         this.draft = event.target.value
+        this.fieldError = null
     }
 
     // Document pane: a field's value changed (its key and type stay fixed).
     fieldValueInput(key, event) {
+        if (this.fieldError?.field === key) this.fieldError = null
         const value = event.target.value
         this.editFields = this.editFields.map((f) => (f.key === key ? { ...f, value } : f))
     }
@@ -3277,9 +3371,28 @@ export default class {
                 await this.select(finalId)
                 this.flash(finalId, wasEdit ? 'updated' : 'added')
             } catch (err) {
-                this.error = String(err?.message ?? err)
+                // A schema refusal belongs on the field that failed, not in the
+                // page-wide banner.
+                this.fieldError = schemaFailure(err)
+                if (!this.fieldError) this.error = String(err?.message ?? err)
             }
         })
+    }
+
+    /** Whether a schema refusal names no field the field editor shows. */
+    fieldErrorOffEditor() {
+        if (!this.fieldError) return false
+        return !this.editFields.some((f) => f.key === this.fieldError?.field)
+    }
+
+    /** The message shown with a schema refusal that names no field of the editor. */
+    schemaErrorText() {
+        const failure = this.fieldError
+        if (!failure) return ''
+        if (failure.code === 'ESCHEMAUNAVAILABLE') {
+            return `This browser cannot validate ${this.active}'s schema, so it will not write to it. ${failure.message}`.trim()
+        }
+        return failure.path ? `${failure.path}: ${failure.message}` : failure.message
     }
 
     // Merge the edited field regexes into the collection's schema.json (a flat

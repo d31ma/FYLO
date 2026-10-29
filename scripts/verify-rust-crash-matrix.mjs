@@ -475,27 +475,8 @@ async function verifyNativeCrashScenarios() {
             // A schema registry commit writes the version file, then fences
             // the generation state, then moves the descriptor's head.
             name: 'push-schema',
-            prepare: async (_binary, root) => {
-                const folder = join(`${root}-schemas`, collection)
-                await mkdir(join(folder, 'history'), { recursive: true })
-                await writeFile(
-                    join(folder, 'manifest.json'),
-                    JSON.stringify({ current: 'v1', versions: [{ v: 'v1' }] })
-                )
-                await writeFile(
-                    join(folder, 'history', 'v1.schema.json'),
-                    JSON.stringify({ name: '^.+$', score: '^[0-9]+$' })
-                )
-            },
-            args: (root) => [
-                'push-schema',
-                '--root',
-                root,
-                '--collection',
-                collection,
-                '--schema-dir',
-                `${root}-schemas`
-            ]
+            prepare: prepareSchemaFolder,
+            args: pushSchemaArguments
         },
         {
             name: 'migrate-into-segments',
@@ -608,6 +589,15 @@ async function verifyNativeCrashScenarios() {
                 '--statement',
                 `DELETE FROM ${collection} WHERE name = 'Grace'`
             ]
+        }),
+        onSegments({
+            // A segment collection commits the version as a schema record
+            // (ADR 0017 section 3): the record is appended and flushed, the
+            // schemas snapshot rewritten, `stable` published, the descriptor
+            // brought up to the head, and a checkpoint names the snapshot.
+            name: 'push-schema-segments',
+            prepare: prepareSchemaFolder,
+            args: pushSchemaArguments
         }),
         onSegments({
             name: 'compact-segments',
@@ -1008,6 +998,77 @@ async function verifyQueueCrashScenarios(binary, source, workspace) {
  * the root must always open, recover idempotently, and land on a stable even
  * generation with an index that matches its documents.
  */
+async function prepareSchemaFolder(_binary, root) {
+    const folder = join(`${root}-schemas`, collection)
+    await mkdir(join(folder, 'history'), { recursive: true })
+    await writeFile(
+        join(folder, 'manifest.json'),
+        JSON.stringify({ current: 'v1', versions: [{ v: 'v1' }] })
+    )
+    await writeFile(
+        join(folder, 'history', 'v1.schema.json'),
+        JSON.stringify({ name: '^.+$', score: '^[0-9]+$' })
+    )
+}
+
+function pushSchemaArguments(root) {
+    return [
+        'push-schema',
+        '--root',
+        root,
+        '--collection',
+        collection,
+        '--schema-dir',
+        `${root}-schemas`
+    ]
+}
+
+// A segment collection's schema record is durable from the moment its flush
+// returns. A crash after that must recover the new head; an in-process
+// failure there must roll back to the old one. Either way the registry is
+// never half committed: the reader's head, the schemas snapshot and the
+// descriptor agree.
+async function assertSchemaRegistry(binary, root, failpoint, scenario, action, label) {
+    const recordPoints = ['after-schema-record', 'after-schemas-snapshot']
+    const reported = await run(binary, [
+        'schema-head',
+        '--root',
+        root,
+        '--collection',
+        collection
+    ])
+    assert(reported.exitCode === 0, `${label}: the schema head is unreadable: ${reported.stderr}`)
+    const head = JSON.parse(reported.stdout).result ?? 0
+    assert(head === 0 || head === 1, `${label}: schema head ${head} is neither the old nor the new`)
+    const descriptorPath = join(root, '.fylo-catalog', 'collections', `${collection}.json`)
+    const descriptor = JSON.parse(await readFile(descriptorPath, 'utf8'))
+    if (scenario.name === 'push-schema') {
+        assert(
+            (descriptor.schemaHead ?? 0) === head,
+            `${label}: the descriptor's head ${descriptor.schemaHead} disagrees with ${head}`
+        )
+        return
+    }
+    const snapshot = JSON.parse(
+        await readFile(join(root, '.collections', collection, 'segments', 'schemas.snapshot'), 'utf8')
+    )
+    assert(
+        snapshot.versions.length === head,
+        `${label}: the schemas snapshot lists ${snapshot.versions.length} versions, the head is ${head}`
+    )
+    assert(
+        (descriptor.schemaHead ?? 0) === head,
+        `${label}: recovery left the descriptor's head ${descriptor.schemaHead} behind the records' ${head}`
+    )
+    if (recordPoints.includes(failpoint)) {
+        const expected = action === 'abort' ? 1 : 0
+        assert(
+            head === expected,
+            `${label}: expected head ${expected} after the record was flushed, found ${head}`
+        )
+    }
+}
+
 async function assertRecoverable(binary, root, failpoint, scenario, action) {
     const label = `${failpoint}/${scenario.name}/${action}`
     const recoveryCollection = scenario.name.endsWith('-file') ? fileCollection : collection
@@ -1056,6 +1117,9 @@ async function assertRecoverable(binary, root, failpoint, scenario, action) {
         JSON.parse(second.stdout).recovered === false,
         `${label}: recovery is not idempotent — the second pass still had work`
     )
+    if (scenario.name.startsWith('push-schema')) {
+        await assertSchemaRegistry(binary, root, failpoint, scenario, action, label)
+    }
 
     const database = new Fylo(root, { binary: machineBinary, exclusiveRoot: true })
     await database.ready

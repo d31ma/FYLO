@@ -5,6 +5,7 @@ use fylo_format::{LogRecordKind, LogScan};
 use super::super::{NativeWriteRoot, durable_replace};
 use super::abort_manifest::AbortManifest;
 use super::log_segment::LogSegment;
+use super::segment_schemas::SegmentSchemas;
 use crate::segments::{
     LocationState, LocationTable, SegmentCommitManifest, SegmentLocation, SegmentMedium,
     SegmentStore, TableCache,
@@ -12,8 +13,9 @@ use crate::segments::{
 use crate::{NativeCollection, NativeStorageError, NativeStorageErrorCode};
 
 /// Rebuilds every derived file of a segment collection from its segments
-/// alone: documents are the truth, the location table and the prefix index
-/// are accelerators (ADR 0015 section 8).
+/// alone: documents and schema records are the truth, the location table,
+/// the schemas snapshot and the prefix index are accelerators (ADR 0015
+/// section 8, ADR 0017 section 3).
 ///
 /// For each document the entry with the highest sequence number wins, an
 /// entry an abort record cancelled never wins, and between identical copies
@@ -23,11 +25,12 @@ pub(crate) struct SegmentRebuild;
 impl SegmentRebuild {
     const INDEX_BATCH: usize = 256;
 
-    /// Rebuild the location table and the index. Runs under the collection
-    /// lock.
+    /// Rebuild the location table, the schemas snapshot and the index. Runs
+    /// under the collection lock.
     pub(crate) fn run(collection: &NativeCollection) -> Result<(), NativeStorageError> {
         let medium = collection.segment_medium()?;
         let scans = Self::scan_all(&*medium)?;
+        SegmentSchemas::rebuild(&scans)?.write_if_changed(&*medium)?;
         let table = LocationTable::from_rows(Self::winners(&scans)?);
         medium.replace_location_snapshot(&table.encode_snapshot()?)?;
         medium.reset_location_log()?;
