@@ -188,11 +188,14 @@ are qualified and granted, the writer holds the lease byte shared beside
 writers in other processes; elsewhere, or in exclusive mode, the
 single-writer lease lets one process write and every other writer fails
 with `EBUSY` (`EROOTLOCKED`) after its busy timeout, while readers carry
-on. The writer checks its right (`assert_writable`) before every write
-through the medium and renews a lease from those same calls once a third of
-its takeover time has passed; one that lost its lease fails with
-`EVDBX_LEASE_LOST` (`EROOTLEASELOST`), and its open goes back to reading,
-so the next write opens the file and claims its collections afresh.
+on. A lease whose owner process stopped on the same host is taken over at
+once, through the marker lock the owner holds in the temporary directory;
+one from another host waits out the takeover time. The writer checks its
+right (`assert_writable`) before every write through the medium and renews
+a lease from those same calls once a third of its takeover time has passed;
+one that lost its lease fails with `EVDBX_LEASE_LOST` (`EROOTLEASELOST`),
+and its open goes back to reading, so the next write opens the file and
+claims its collections afresh.
 
 **Claiming a collection.** A medium's first write claims its collection.
 Where writers share the file, the claim takes the collection's writer byte

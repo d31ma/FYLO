@@ -187,6 +187,26 @@ fn a_second_writer_process_is_busy_under_the_lease_while_a_reader_reads() {
 }
 
 #[test]
+fn a_writer_takes_over_at_once_from_a_killed_writer_process_on_this_host() {
+    let fixture = Fixture::create("vdbx-medium-killed");
+    put_into(&fixture.writer(), "items", 0).unwrap();
+    fixture.crash();
+
+    let mut holder = spawn("hold", &fixture.0, &[]);
+    wait_until(&fixture.0.join("hold.ready"), &mut [&mut holder]);
+    holder.kill().unwrap();
+    holder.wait().unwrap();
+    // The lease the killed writer left is not waited out for its takeover
+    // time (30 s), which is longer than the busy timeout (5 s).
+    let started = Instant::now();
+    put_into(&fixture.writer(), "items", 1).unwrap();
+    assert!(started.elapsed() < ContainerWriteOptions::default().busy_timeout);
+    let bodies = fixture.bodies();
+    assert_eq!(bodies.len(), 3);
+    assert!(bodies.contains_key(&identifier(100)));
+}
+
+#[test]
 fn writer_processes_of_two_collections_commit_side_by_side_under_locks() {
     let fixture = Fixture::create("vdbx-medium-locks");
     fixture

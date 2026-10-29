@@ -1,8 +1,12 @@
 use super::{ContainerLease, ContainerLeaseError, ContainerLeaseTiming};
 use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Barrier};
 use std::thread;
 use std::time::{Duration, Instant};
+
+const CHILD_DATABASE: &str = "FYLO_VDBX_LEASE_CHILD_DATABASE";
+const CHILD_TEST: &str = "container_lease::tests::a_child_process";
 
 struct Database(PathBuf);
 
@@ -156,4 +160,135 @@ fn an_empty_lease_left_by_a_crash_during_creation_is_taken_over() {
     std::fs::write(path.with_file_name("app.vdbx.lease.x"), b"").expect("ignored");
     let lease = ContainerLease::acquire(&path, FAST, Duration::from_secs(5)).expect("take over");
     assert_eq!(lease.generation(), 5);
+}
+
+/// In a child process the parent spawned: take the lease with the default
+/// timing, say so, and hold it, never renewing, until the parent kills it.
+#[test]
+fn a_child_process() {
+    let Ok(database) = std::env::var(CHILD_DATABASE) else {
+        return;
+    };
+    let database = PathBuf::from(database);
+    let lease = ContainerLease::acquire(&database, ContainerLeaseTiming::default(), Duration::ZERO)
+        .expect("child acquire");
+    std::fs::write(database.with_extension("ready"), b"").expect("signal");
+    thread::sleep(Duration::from_mins(2));
+    drop(lease);
+}
+
+/// Spawn a child holding the lease on `database`, with `temporary` as its
+/// temporary directory when given, and wait until it holds it.
+fn holder(database: &Path, temporary: Option<&Path>) -> Child {
+    let mut command = Command::new(std::env::current_exe().expect("test binary"));
+    command
+        .args(["--exact", CHILD_TEST, "--nocapture", "--test-threads=1"])
+        .env(CHILD_DATABASE, database)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if let Some(temporary) = temporary {
+        command
+            .env("TMPDIR", temporary)
+            .env("TMP", temporary)
+            .env("TEMP", temporary);
+    }
+    let mut child = command.spawn().expect("spawn holder");
+    let deadline = Instant::now() + Duration::from_mins(1);
+    while !database.with_extension("ready").exists() {
+        assert!(
+            child.try_wait().expect("poll holder").is_none(),
+            "the holder stopped before it took the lease"
+        );
+        assert!(Instant::now() < deadline, "the holder never took the lease");
+        thread::sleep(Duration::from_millis(10));
+    }
+    child
+}
+
+fn kill(mut child: Child) {
+    child.kill().expect("kill holder");
+    child.wait().expect("reap holder");
+}
+
+fn markers_named(owner: &str, directory: &Path) -> bool {
+    directory
+        .join(format!("{}{owner}", super::MARKER_PREFIX))
+        .exists()
+}
+
+fn owner_of(database: &Path, generation: u64) -> String {
+    let bytes = std::fs::read(database.with_file_name(format!("app.vdbx.lease.{generation}")))
+        .expect("read lease");
+    super::owner_token(&bytes).expect("owner token").to_owned()
+}
+
+#[test]
+fn a_held_lease_keeps_a_locked_marker_until_it_is_released() {
+    let (_guard, path) = database("vdbx-lease-marker");
+    let first = ContainerLease::acquire(&path, FAST, Duration::ZERO).expect("acquire");
+    let owner = owner_of(&path, 1);
+    assert!(markers_named(&owner, &std::env::temp_dir()));
+    // This process's own live owner is not taken for a stopped one.
+    assert!(!super::owner_stopped(
+        &std::fs::read(path.with_file_name("app.vdbx.lease.1")).expect("read")
+    ));
+    first.release().expect("release");
+    assert!(!markers_named(&owner, &std::env::temp_dir()));
+    let second = ContainerLease::acquire(&path, FAST, Duration::ZERO).expect("acquire");
+    let owner = owner_of(&path, 2);
+    drop(second);
+    assert!(!markers_named(&owner, &std::env::temp_dir()));
+}
+
+#[test]
+fn a_killed_owner_on_this_host_is_taken_over_at_once_and_a_live_one_is_not() {
+    let (_guard, path) = database("vdbx-lease-killed");
+    let child = holder(&path, None);
+    let owner = owner_of(&path, 1);
+    assert!(markers_named(&owner, &std::env::temp_dir()));
+    // Alive, it keeps the lease for the whole takeover time.
+    assert_eq!(
+        busy(ContainerLease::acquire(
+            &path,
+            ContainerLeaseTiming::default(),
+            Duration::from_secs(1)
+        )),
+        1
+    );
+    kill(child);
+    let started = Instant::now();
+    let lease = ContainerLease::acquire(
+        &path,
+        ContainerLeaseTiming::default(),
+        Duration::from_secs(1),
+    )
+    .expect("taken over at once");
+    assert!(started.elapsed() < Duration::from_secs(1));
+    assert_eq!(lease.generation(), 2);
+    assert_eq!(lease_files(&path), vec!["app.vdbx.lease.2"]);
+    assert!(!markers_named(&owner, &std::env::temp_dir()));
+}
+
+#[test]
+fn a_killed_owner_whose_marker_this_host_cannot_see_is_waited_out() {
+    let (guard, path) = database("vdbx-lease-elsewhere");
+    // Another temporary directory stands in for another host: the marker
+    // is not where this process looks.
+    let elsewhere = guard.0.join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).expect("create directory");
+    let child = holder(&path, Some(&elsewhere));
+    let owner = owner_of(&path, 1);
+    assert!(markers_named(&owner, &elsewhere));
+    kill(child);
+    assert_eq!(
+        busy(ContainerLease::acquire(
+            &path,
+            ContainerLeaseTiming::default(),
+            Duration::from_secs(1)
+        )),
+        1
+    );
+    // The takeover time still applies.
+    let lease = ContainerLease::acquire(&path, FAST, Duration::from_secs(5)).expect("take over");
+    assert_eq!(lease.generation(), 2);
 }

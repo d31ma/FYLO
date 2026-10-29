@@ -279,6 +279,41 @@ drifts toward the front of the file. Space is returned to the disk two ways:
   other writers for the takeover time, never readers; a lease last written
   more than twice the takeover time ago, by its writer's clock, is taken over
   at once.
+- **A crashed writer on the same host is taken over at once** (2026-10-29).
+  On the ATLAS share a writer killed with `kill -9` held the others up for
+  65 s: a contender gives up after its 5 s busy timeout, long before it has
+  watched the lease for the 30 s takeover time, so only the twice-the-takeover
+  rule on the writer's clock let the next process in. The lease owner now
+  also holds an exclusive byte-range lock on a marker file named after its
+  owner token in the system temporary directory, taken before the lease
+  names the token. The OS lets that lock go when the process stops, however
+  it stops, so a contender that finds the marker in its own temporary
+  directory and gets its lock takes over without waiting. The marker is used
+  only on a filesystem whose locks are qualified (the temporary directory is
+  local: APFS, ext4, tmpfs or NTFS); an owner on another host, one with
+  another temporary directory, or one that wrote no marker is waited out as
+  before. The lease file's format is unchanged: the owner token it already
+  holds names the marker. A process-id check (`kill(pid, 0)`, `OpenProcess`)
+  was considered and not taken: it is only sound with a host identity that
+  tells machines, boots and PID namespaces apart (hostnames collide, and a
+  boot identifier needs `sysctl` on macOS and unsafe FFI on Windows, a new
+  entry in the ADR 0004 inventory), and a reused process id or an unreaped
+  zombie reads as alive; the marker lock has none of these problems and uses
+  the byte-range lock code already qualified for `.vdbx` files.
+- **The takeover time stays 30 s** (2026-10-29). Across hosts the 65 s is
+  set by the twice-the-takeover rule, so a shorter takeover time is the
+  only lever there: 15 s would bring it to about 30 s. Renewing is cheap
+  (a directory listing and a write and flush of about 10 ms on SMB, once per
+  third of the takeover time while writing), so the cost is not I/O but
+  margin: a
+  writer renews only from its writes, so a commit has two thirds of the
+  takeover time after its last check (20 s today, 10 s at 15 s) before a
+  paused or very slow writer can be taken over under it, and the clock-skew
+  tolerance of the wall-clock rule halves with it. A background renewing
+  thread would not help: a paused process stops its thread too, which is the
+  case the margin is for, and it would keep an idle writer's lease alive,
+  where today an idle writer's lease lapses and another writer may take it.
+  Shortening the takeover time is left to the owner.
 - **Choosing the mode.** A writer uses byte-range locks when its filesystem
   is qualified and grants a probe lock, and the lease otherwise. A caller can
   also ask for **exclusive mode**, the lease everywhere, as SQLite's

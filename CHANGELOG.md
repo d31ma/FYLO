@@ -170,6 +170,14 @@
   have a segment beginning `._` or named `.DS_Store` — and removing a file
   or directory also removes its companion, so a shard, log or collection
   directory left holding only orphaned companions can still be removed.
+- **A writer no longer waits a minute for a `.vdbx` lease a crashed writer on
+  the same machine left (ADR 0016 section 7).** Where the lock-free lease is
+  used (SMB, NFS, exclusive mode), a writer killed with `kill -9` kept every
+  other writer out for 65 s on the ATLAS share. The lease owner now holds a
+  lock on a marker file in the system temporary directory, which the OS lets
+  go when the process stops, so the next writer on that machine takes the
+  lease over at once. A crashed writer on another machine is still waited
+  out for the takeover time.
 - **A read of a `.vdbx` database right after a crashed write no longer fails
   with `EENGINE_CONCURRENT_WRITE`.** A reader that finds a collection's slot
   `writing` tells a running writer from one that stopped by the lock bytes

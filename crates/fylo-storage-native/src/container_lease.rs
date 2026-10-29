@@ -24,6 +24,20 @@
 //! writer's own clock, is taken over at once: that much skew between hosts'
 //! clocks would be a fault of its own.
 //!
+//! An owner on the same host as its contender is not waited out at all once
+//! its process has stopped. Beside its lease, the owner holds an exclusive
+//! byte-range lock on a marker file named after its owner token in the
+//! system temporary directory, and the OS lets that lock go when the process
+//! stops, however it stops. A contender that finds the marker for the lease's
+//! owner in its own temporary directory and gets the lock takes over at once.
+//! A marker only counts on a filesystem whose locks are qualified, and it is
+//! written before the lease names its token, so a contender that finds no
+//! marker, or cannot lock it, waits as before: an owner on another host, one
+//! with another temporary directory, or one from before markers.
+//! Process ids were not used: whether a process id names the owner depends
+//! on telling hosts and PID namespaces apart and on the id not being reused,
+//! while a lock the owner holds needs neither.
+//!
 //! What it cannot do is stop an owner that is paused between checking the
 //! lease and writing, then resumes after a takeover. The owner narrows that
 //! window by checking before every commit and renewing well inside the
@@ -35,8 +49,13 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use crate::{ByteLockGuard, ByteRangeLockFile, FilesystemInfo, LockByte, LockMode};
+
 const SUFFIX: &str = ".lease.";
 const FORMAT: &str = "fylo.vdbx-lease.v1";
+/// The name of an owner's marker in the temporary directory, before its
+/// owner token.
+const MARKER_PREFIX: &str = "fylo-vdbx-lease-";
 
 /// How long a lease may go unrenewed before another process takes it over.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -102,6 +121,9 @@ pub struct ContainerLease {
     owner: String,
     beat: u64,
     file: File,
+    /// The owner's marker and its lock, where the temporary directory can
+    /// hold one.
+    marker: Option<(PathBuf, ByteLockGuard)>,
     released: bool,
 }
 
@@ -110,7 +132,8 @@ impl ContainerLease {
     ///
     /// A live owner keeps it; a lease left unchanged for
     /// [`ContainerLeaseTiming::takeover_after`] is taken over, so taking over
-    /// a crashed owner's lease needs a `wait` at least that long.
+    /// a crashed owner's lease needs a `wait` at least that long, unless the
+    /// owner ran on this host and its marker shows it stopped.
     ///
     /// # Errors
     ///
@@ -133,6 +156,8 @@ impl ContainerLease {
                         Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
                         Err(error) => return Err(error.into()),
                         Ok(bytes) if is_free(&bytes) => Some(generation + 1),
+                        // The owner's process on this host has stopped.
+                        Ok(bytes) if owner_stopped(&bytes) => Some(generation + 1),
                         // Long past even a generous clock skew: no need to
                         // watch it go unrenewed.
                         Ok(bytes)
@@ -196,13 +221,18 @@ impl ContainerLease {
         };
         let mut owner = [0_u8; 16];
         getrandom::fill(&mut owner).map_err(|error| io::Error::other(error.to_string()))?;
+        let owner = format!("{:032x}", u128::from_le_bytes(owner));
+        // Locked before the lease names the token, so a contender never
+        // finds a marker that is not locked yet.
+        let marker = hold_marker(&owner);
         let mut lease = Self {
             directory: directory.to_path_buf(),
             prefix: prefix.to_owned(),
             generation,
-            owner: format!("{:032x}", u128::from_le_bytes(owner)),
+            owner,
             beat: 0,
             file,
+            marker,
             released: false,
         };
         lease.write_state(HELD)?;
@@ -296,7 +326,18 @@ impl ContainerLease {
         if self.assert_owned().is_ok() {
             self.write_state(FREE)?;
         }
+        self.drop_marker();
         Ok(())
+    }
+
+    /// Let the marker's lock go and remove it, once the lease no longer
+    /// needs it.
+    fn drop_marker(&mut self) {
+        if let Some((path, guard)) = self.marker.take() {
+            // Closed before it is removed, which Windows needs.
+            drop(guard);
+            let _ = remove_if_present(&path);
+        }
     }
 }
 
@@ -305,7 +346,66 @@ impl Drop for ContainerLease {
         if !self.released && self.assert_owned().is_ok() {
             let _ = self.write_state(FREE);
         }
+        self.drop_marker();
     }
+}
+
+/// Create and lock the marker for owner token `owner`, or `None` where the
+/// temporary directory cannot hold one whose lock is trusted. The lease
+/// works without it; only a takeover after a crash waits longer.
+fn hold_marker(owner: &str) -> Option<(PathBuf, ByteLockGuard)> {
+    let path = std::env::temp_dir().join(format!("{MARKER_PREFIX}{owner}"));
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .ok()?;
+    let guard = ByteRangeLockFile::open(&path)
+        .ok()
+        .filter(|file| {
+            FilesystemInfo::of(file.file()).is_ok_and(|info| info.byte_range_locks_qualified())
+        })
+        .and_then(|file| file.try_lock(LockByte::LEASE, LockMode::Exclusive).ok())
+        .flatten();
+    if guard.is_none() {
+        let _ = remove_if_present(&path);
+    }
+    Some(path).zip(guard)
+}
+
+/// Whether the lease `bytes` belong to an owner whose process has stopped
+/// on this host: its marker is in this process's temporary directory and
+/// its lock is free. The marker is then removed.
+fn owner_stopped(bytes: &[u8]) -> bool {
+    let Some(owner) = owner_token(bytes) else {
+        return false;
+    };
+    let path = std::env::temp_dir().join(format!("{MARKER_PREFIX}{owner}"));
+    if !path.exists() {
+        return false;
+    }
+    let stopped = ByteRangeLockFile::open(&path).is_ok_and(|file| {
+        FilesystemInfo::of(file.file()).is_ok_and(|info| info.byte_range_locks_qualified())
+            && file
+                .try_lock(LockByte::LEASE, LockMode::Exclusive)
+                .is_ok_and(|guard| guard.is_some())
+    });
+    if stopped {
+        let _ = remove_if_present(&path);
+    }
+    stopped
+}
+
+/// The owner token a lease names: 32 lowercase hex digits, so it is safe in
+/// a file name.
+fn owner_token(bytes: &[u8]) -> Option<&str> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    let start = text.find("\"owner\":\"")? + "\"owner\":\"".len();
+    let token = text.get(start..start + 32)?;
+    token
+        .bytes()
+        .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+        .then_some(token)
 }
 
 fn now_ms() -> u128 {
