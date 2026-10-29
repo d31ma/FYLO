@@ -358,10 +358,7 @@ fn a_descriptor_ahead_of_the_records_fails_closed() {
     let fixture = Fixture::segments("ahead");
     fixture.commit(1).unwrap();
     fixture.set_descriptor_head(4);
-    let error = fixture
-        .root()
-        .schema_registry_head("items")
-        .unwrap_err();
+    let error = fixture.root().schema_registry_head("items").unwrap_err();
     assert_eq!(error.code(), NativeStorageErrorCode::CorruptMetadata);
     assert!(fixture.commit(2).is_err());
 }
@@ -434,10 +431,7 @@ fn salvage_writes_the_versions_as_registry_files() {
     fixture.put(1, &json!({ "name": "Ada" }));
     fixture.commit(2).unwrap();
     let out = scratch("salvage-out");
-    let report = fixture
-        .writer()
-        .salvage_collection("items", &out)
-        .unwrap();
+    let report = fixture.writer().salvage_collection("items", &out).unwrap();
     assert_eq!(report.schema_versions, vec![1, 2]);
     assert_eq!(report.recovered, 1);
     for ordinal in [1, 2] {
@@ -466,10 +460,7 @@ fn verify_reports_a_damaged_schema_record() {
     let verification = fixture.writer().verify_segments("items").unwrap();
     assert!(!verification.defects.is_empty(), "{verification:?}");
     let out = scratch("damage-out");
-    let report = fixture
-        .writer()
-        .salvage_collection("items", &out)
-        .unwrap();
+    let report = fixture.writer().salvage_collection("items", &out).unwrap();
     assert!(report.schema_versions.is_empty(), "{report:?}");
     assert_eq!(report.recovered, 1);
     let _ = fs::remove_dir_all(out);

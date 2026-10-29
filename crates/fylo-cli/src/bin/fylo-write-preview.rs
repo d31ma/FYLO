@@ -30,14 +30,16 @@ fn main() -> ExitCode {
     }
 }
 
+/// The crash matrix enumerates this rather than keeping its own list.
+fn failpoints() -> Result<String, String> {
+    serde_json::to_string(&json!({ "failpoints": fylo_storage_native::FAILPOINTS.as_slice() }))
+        .map_err(|error| error.to_string())
+}
+
 fn run(arguments: &[String]) -> Result<String, String> {
     let command = arguments.first().map(String::as_str).ok_or_else(usage)?;
     if command == "failpoints" {
-        // The crash matrix enumerates this rather than keeping its own list.
-        return serde_json::to_string(
-            &json!({ "failpoints": fylo_storage_native::FAILPOINTS.as_slice() }),
-        )
-        .map_err(|error| error.to_string());
+        return failpoints();
     }
     let root = required_option(arguments, "--root")?;
     let writer = NativeWriteRoot::open(root).map_err(|error| error.to_string())?;
@@ -86,7 +88,7 @@ fn run(arguments: &[String]) -> Result<String, String> {
             result = Value::from(moved);
             false
         }
-        "push-schema" | "compact" | "migrate-layout" => {
+        "push-schema" | "schema-head" | "compact" | "migrate-layout" => {
             result = run_layout(command, arguments, &writer)?;
             false
         }
@@ -136,8 +138,8 @@ fn run(arguments: &[String]) -> Result<String, String> {
     .map_err(|error| error.to_string())
 }
 
-/// Collection maintenance: `push-schema` (ADR 0017), and the segment
-/// layout's `compact` and `migrate-layout` (ADR 0015).
+/// Collection maintenance: `push-schema` and `schema-head` (ADR 0017), and
+/// the segment layout's `compact` and `migrate-layout` (ADR 0015).
 fn run_layout(
     command: &str,
     arguments: &[String],
@@ -147,6 +149,15 @@ fn run_layout(
         return push_schema(writer, arguments);
     }
     let collection = required_option(arguments, "--collection")?;
+    if command == "schema-head" {
+        // The registry head as a reader sees it: from the descriptor, or for
+        // a segment collection from its schema records.
+        return writer
+            .native_root()
+            .schema_registry_head(collection)
+            .map(|head| head.map_or(Value::Null, Value::from))
+            .map_err(|error| error.to_string());
+    }
     if command == "compact" {
         let report = writer
             .compact_collection(collection)
@@ -412,7 +423,8 @@ fn usage() -> String {
      restore-document --root <path> --collection <name> --id <ttid> [--actor-uid <uid> \
      [--actor-groups <gid,...>]]\n  fylo-write-preview reshard --root <path> \
      --collection <name> --width <0-4>\n  fylo-write-preview push-schema --root <path> \
-     --collection <name> --schema-dir <path>\n  fylo-write-preview failpoints"
+     --collection <name> --schema-dir <path>\n  fylo-write-preview schema-head --root <path> \
+     --collection <name>\n  fylo-write-preview failpoints"
         .into()
 }
 

@@ -152,7 +152,7 @@ impl SegmentCompactor {
             return Err(error);
         }
         let store = SegmentStore::open_for_writer(&collection.path)?;
-        let (rows, copies) = CompactionManifest::adopted(&paths, store.table(), number)?;
+        let (rows, schema_copies) = CompactionManifest::adopted(&paths, store.table(), number)?;
         let previous: Vec<SegmentLocation> = rows
             .iter()
             .filter_map(|row| store.table().get(&row.id).cloned())
@@ -160,7 +160,7 @@ impl SegmentCompactor {
         let previous_schemas = SegmentSchemas::snapshot_bytes(&paths)?;
         let applied = failpoint("after-compaction-record")
             .and_then(|()| SegmentPlan::append_locations(&collection.path, &rows))
-            .and_then(|()| Self::relocate_schemas(collection, &paths, &copies));
+            .and_then(|()| Self::relocate_schemas(collection, &paths, &schema_copies));
         if let Err(error) = applied {
             Self::roll_back(
                 collection,
