@@ -10,6 +10,7 @@ import {
     REQUEST_LEN,
     RESULT,
     STATE,
+    STATE_CLOSED,
     STATE_IDLE,
     STATE_REQUEST,
     STATE_RESPONSE,
@@ -55,6 +56,10 @@ async function serve(message) {
         // this Worker exists to run — the OPFS calls would never resolve.
         let observed = Atomics.load(control, STATE)
         while (observed !== STATE_REQUEST) {
+            if (observed === STATE_CLOSED) {
+                shutDown(context)
+                return
+            }
             // `Atomics.waitAsync` where the engine supports it; a macrotask
             // poll otherwise. Either way this must never park the thread, or
             // the OPFS promises this Worker exists to run would not resolve.
@@ -96,9 +101,27 @@ async function serve(message) {
         Atomics.store(control, STATUS, status)
         Atomics.store(control, RESULT, result)
         Atomics.store(control, PAYLOAD_LEN, answer.length)
-        Atomics.store(control, STATE, STATE_RESPONSE)
+        // Only over the request: a close that arrived while this call ran
+        // must survive, or the engine would carry on in a closed session.
+        const previous = Atomics.compareExchange(control, STATE, STATE_REQUEST, STATE_RESPONSE)
         Atomics.notify(control, STATE)
+        if (previous === STATE_CLOSED) {
+            shutDown(context)
+            return
+        }
     }
+}
+
+/**
+ * Give back every handle and end this Worker: the session closed.
+ *
+ * WebKit can keep a page's Workers running after it reloads, and an open sync
+ * access handle there blocks the next page from writing that file.
+ */
+function shutDown(context) {
+    for (const access of context.handles.values()) access?.close()
+    context.handles.clear()
+    self.close()
 }
 
 async function perform(context, request, payload) {

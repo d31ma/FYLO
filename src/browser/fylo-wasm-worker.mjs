@@ -13,7 +13,7 @@
 // Protocol: post `{ id, ndjson }`, receive `{ id, ndjson }` or `{ id, error }`.
 
 import { createHostImports, exec } from './host-vfs.mjs'
-import { createBridgeBackend } from './opfs-bridge.mjs'
+import { CONTROL_SLOTS, STATE, STATE_CLOSED, createBridgeBackend } from './opfs-bridge.mjs'
 
 /** @type {WebAssembly.Instance | undefined} */
 let instance
@@ -21,6 +21,8 @@ let instance
 let releaseLock
 /** @type {string | undefined} */
 let lastHostError
+/** @type {Int32Array | undefined} */
+let control
 
 // Progress markers. A Worker parked in `Atomics.wait` cannot report where it
 // stopped, so a hang is otherwise indistinguishable from slow work.
@@ -35,6 +37,12 @@ self.onmessage = async (event) => {
         const answer = exec(instance, ndjson, trace)
         trace('executed')
         self.postMessage({ id, ndjson: answer, hostError: lastHostError })
+        // The page closed the session (`closeBridge`) while this batch ran:
+        // give the root back now rather than when, or if, WebKit ends us.
+        if (control && Atomics.load(control, STATE) === STATE_CLOSED) {
+            releaseLock?.()
+            self.close()
+        }
     } catch (error) {
         self.postMessage({ id, error: error instanceof Error ? error.message : String(error) })
     }
@@ -49,6 +57,7 @@ async function open(moduleUrl, root, buffer) {
                 `${globalThis.crossOriginIsolated === true}.`
         )
     }
+    control = new Int32Array(buffer, 0, CONTROL_SLOTS)
     trace('locking')
     await acquireRootLock(root)
     trace('locked')

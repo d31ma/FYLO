@@ -84,25 +84,24 @@ export function createBridgeBackend(buffer, rootPath) {
         if (payload?.length) data.set(payload, encoded.length)
         Atomics.store(control, REQUEST_LEN, encoded.length)
         Atomics.store(control, PAYLOAD_LEN, payload?.length ?? 0)
-        Atomics.store(control, STATE, STATE_REQUEST)
+        // Every transition is a compare-and-swap, so a close is never overwritten.
+        if (Atomics.compareExchange(control, STATE, STATE_IDLE, STATE_REQUEST) !== STATE_IDLE) {
+            throw closedError(request)
+        }
         Atomics.notify(control, STATE)
         // Blocks this Worker. The bridge Worker is a different thread, so it is
         // free to run its promises while this one is parked.
         for (;;) {
             const state = Atomics.load(control, STATE)
             if (state === STATE_RESPONSE) break
-            if (state === STATE_CLOSED) {
-                const error = new Error(`bridge closed during ${request.op}`)
-                error.code = 'EIO'
-                throw error
-            }
+            if (state === STATE_CLOSED) throw closedError(request)
             Atomics.wait(control, STATE, STATE_REQUEST)
         }
         const status = Atomics.load(control, STATUS)
         const result = Atomics.load(control, RESULT)
         const length = Atomics.load(control, PAYLOAD_LEN)
         const answer = length > 0 ? data.slice(0, length) : new Uint8Array()
-        Atomics.store(control, STATE, STATE_IDLE)
+        Atomics.compareExchange(control, STATE, STATE_RESPONSE, STATE_IDLE)
         if (status !== 0) {
             const error = new Error(decoder.decode(answer) || `bridge call failed: ${request.op}`)
             error.code = status === -2 ? 'ENOENT' : status === -17 ? 'EEXIST' : 'EIO'
@@ -188,6 +187,12 @@ export function createBridgeBackend(buffer, rootPath) {
             console.error(message)
         }
     }
+}
+
+function closedError(request) {
+    const error = new Error(`bridge closed before ${request.op} finished`)
+    error.code = 'EIO'
+    return error
 }
 
 /** Keep every host operation inside the root granted to this engine. */
