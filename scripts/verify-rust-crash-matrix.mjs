@@ -651,6 +651,23 @@ async function verifyNativeCrashScenarios() {
             name: 'pack-segments',
             args: (root) => ['pack', '--root', root, '--out', join(root, 'packed.vdbx')]
         }),
+        onDatabase({
+            // ADR 0016 section 9: a rekey packs the database into a staging
+            // file beside it and renames that over it, so every interruption
+            // before the rename leaves the database as it was, plain here.
+            // The new key is a secret reference, resolved from the
+            // environment as fylo.encryption.key is.
+            name: 'rekey-database',
+            env: { FYLO_CRASH_MATRIX_REKEY_KEY: 'crash-matrix-generated-key-not-a-real-secret' },
+            args: (root) => [
+                'rekey',
+                '--root',
+                join(root, 'db.vdbx'),
+                '--encrypt',
+                '--new-key',
+                '${FYLO_CRASH_MATRIX_REKEY_KEY}'
+            ]
+        }),
         onSegments({
             name: 'migrate-out-of-segments',
             args: (root) => [
@@ -699,6 +716,7 @@ async function verifyNativeCrashScenarios() {
                 await cloneRoot(scenario.template ? scenario.template() : template, root)
                 if (scenario.prepare) await scenario.prepare(binary, root)
                 const failed = await run(binary, scenario.args(root), {
+                    ...scenario.env,
                     FYLO_RUST_FAILPOINT: failpoint,
                     FYLO_RUST_FAILPOINT_ACTION: action
                 })

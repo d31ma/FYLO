@@ -43,6 +43,28 @@ impl Fixture {
     }
 }
 
+impl Fixture {
+    /// Run `fylo rekey` on `app.vdbx` opened with `old`, the key
+    /// `keyed.json` names, with `new` as the secret `${FYLO_CLI_TEST_NEW_KEY}`
+    /// names, in the environment.
+    fn rekey(&self, old: &str, new: &str, arguments: &[&str]) -> Output {
+        fs::write(
+            self.0.join("keyed.json"),
+            r#"{"fylo":{"encryption":{"key":"${FYLO_CLI_TEST_DATABASE_KEY}","file":true}}}"#,
+        )
+        .unwrap();
+        Command::new(BINARY)
+            .current_dir(&self.0)
+            .args(["rekey", "app.vdbx"])
+            .args(arguments)
+            .args(["--config", "keyed.json"])
+            .env("FYLO_CLI_TEST_DATABASE_KEY", old)
+            .env("FYLO_CLI_TEST_NEW_KEY", new)
+            .output()
+            .unwrap()
+    }
+}
+
 impl Drop for Fixture {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
@@ -538,4 +560,90 @@ fn compact_shrinks_and_salvage_writes_out_a_database() {
     assert!(got.status.success(), "{got:?}");
     assert_eq!(json(&got)[&identifiers[0]]["team"], "red");
     assert!(fixture.0.join("salvaged/.collections/users/docs").is_dir());
+}
+
+#[test]
+fn rekey_moves_an_encrypted_database_to_the_secret_new_key_names() {
+    let fixture = Fixture::new("rekey");
+    let (old, new) = (generated_secret("old"), generated_secret("new"));
+    let identifier = seeded_root(&fixture, "data");
+    let pack = fixture.run_keyed(&old, &["pack", "data", "--out", "app.vdbx", "--encrypt"]);
+    assert!(pack.status.success(), "{pack:?}");
+    let bytes = fs::read(fixture.0.join("app.vdbx")).unwrap();
+    let new_key = ["--new-key", "${FYLO_CLI_TEST_NEW_KEY}"];
+
+    // The new key is a secret reference, never a literal, and the old key
+    // must open the database: a wrong one changes nothing.
+    let literal = fixture.rekey(&old, &new, &["--new-key", &new]);
+    assert!(!literal.status.success(), "{literal:?}");
+    let refused = String::from_utf8_lossy(&literal.stderr);
+    assert!(refused.contains("secret reference"), "{refused}");
+    assert!(!refused.contains(&new), "{refused}");
+    let wrong = fixture.rekey(&generated_secret("wrong"), &new, &new_key);
+    assert!(!wrong.status.success(), "{wrong:?}");
+    assert!(String::from_utf8_lossy(&wrong.stderr).contains("EKEY"));
+    let keyless = fixture.run(&["rekey", "app.vdbx", "--new-key", "${FYLO_CLI_TEST_NEW_KEY}"]);
+    assert!(!keyless.status.success(), "{keyless:?}");
+    for usage in [
+        &[][..],
+        &["--encrypt", "--new-key", "${FYLO_CLI_TEST_NEW_KEY}"][..],
+    ] {
+        let refused = fixture.rekey(&old, &new, usage);
+        assert!(!refused.status.success(), "{refused:?}");
+    }
+    assert_eq!(fs::read(fixture.0.join("app.vdbx")).unwrap(), bytes);
+
+    let rekey = fixture.rekey(&old, &new, &new_key);
+    assert!(rekey.status.success(), "{rekey:?}");
+    let report = json(&rekey);
+    assert_eq!(report["encrypted"], true);
+    assert_eq!(report["collections"][0]["collection"], "users");
+    assert_eq!(report["collections"][0]["documents"], 1);
+    let get = |secret: &str| {
+        fixture.run_keyed(
+            secret,
+            &["get", "users", &identifier, "--root", "app.vdbx", "--json"],
+        )
+    };
+    let stale = get(&old);
+    assert!(!stale.status.success(), "{stale:?}");
+    assert!(String::from_utf8_lossy(&stale.stderr).contains("EKEY"));
+    let got = get(&new);
+    assert!(got.status.success(), "{got:?}");
+    assert_eq!(json(&got)[&identifier]["name"], "ada");
+    let verify = fixture.run(&["verify", "app.vdbx"]);
+    assert!(verify.status.success(), "{verify:?}");
+    let mut names: Vec<_> = fs::read_dir(&fixture.0)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| !name.starts_with(".data.fylo-root-owner"))
+        .collect();
+    names.sort();
+    assert_eq!(names, ["app.vdbx", "data", "keyed.json"]);
+
+    // --decrypt writes it plain, and a plain database is refused a new key
+    // unless --encrypt asks for one.
+    let decrypt = fixture.rekey(&new, &new, &["--decrypt"]);
+    assert!(decrypt.status.success(), "{decrypt:?}");
+    assert_eq!(json(&decrypt)["encrypted"], false);
+    assert_eq!(
+        json(&fixture.run(&["inspect", "app.vdbx"]))["encrypted"],
+        false
+    );
+    let plain = fixture.rekey(&new, &old, &new_key);
+    assert!(!plain.status.success(), "{plain:?}");
+    let refused = String::from_utf8_lossy(&plain.stderr);
+    assert!(
+        refused.contains("plain") && refused.contains("--encrypt"),
+        "{refused}"
+    );
+    let encrypt = fixture.rekey(
+        &new,
+        &old,
+        &["--encrypt", "--new-key", "${FYLO_CLI_TEST_NEW_KEY}"],
+    );
+    assert!(encrypt.status.success(), "{encrypt:?}");
+    let got = get(&old);
+    assert!(got.status.success(), "{got:?}");
+    assert_eq!(json(&got)[&identifier]["team"], "red");
 }

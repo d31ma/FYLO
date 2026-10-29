@@ -416,6 +416,8 @@ is plain, and its frames are as above.
 - The generation slots and the superblock stay in the clear (ADR 0016
   section 9), so a copy of the whole file put back in place of a newer one
   is not detected.
+- The key is rotated, and a plain database encrypted or an encrypted one
+  decrypted, by rewriting the file with `fylo rekey`; see "Rekeying".
 
 ## Order of work
 
@@ -649,6 +651,71 @@ ADR 0016 sections 8 and 11, as `NativeWriteRoot::pack_sealed_database`,
 - **Not yet:** sealing a database in place (the database's exclusive lease
   byte, then the image written over it); `--out` is required. Sealing runs
   natively only: the browser reads a sealed file but cannot write one.
+
+## Rekeying
+
+ADR 0016 section 9, as `NativeWriteRoot::rekey_database`
+(`write/commit_log/database_rekey.rs`) and `fylo rekey`.
+
+- **Command.** `fylo rekey db.vdbx --new-key '${NAME}'` rotates the key of an
+  encrypted database; `--new-key '${NAME}' --encrypt` encrypts a plain one,
+  and `--decrypt` writes an encrypted one plain. `--new-key` takes a secret
+  reference as `fylo.encryption.key` does, resolved from the environment and
+  then from a `.env` file beside the configuration (`--config`, or
+  `application.json` in the working directory); a literal key is refused without
+  being echoed, and the secret must be at least 32 bytes. The old key is
+  `fylo.encryption.key`. A rotation of a plain database, a decryption of a
+  plain one and an encryption of an encrypted one are refused with
+  `ENATIVE_UNSUPPORTED`; a directory root is refused too.
+- **Old key first.** The database is opened with the old key, so a wrong or
+  missing one fails with `EKEY` before anything is locked or written.
+- **Hold.** The database is held exclusively throughout, as `fylo compact
+  --shrink` holds it: the lease byte held exclusive under OS locks, or this
+  process the one writer under the lease. Writers in other processes are
+  waited out for the busy timeout (`EROOTLOCKED` after it) and kept out
+  until the commit. Collections are listed inside the hold, then each is
+  locked and recovered. A thread renews the hold every 500 ms while the copy
+  runs, and the writer epoch is compared before the commit: a hold lost
+  meanwhile fails with `EROOTLEASELOST` and nothing changed.
+- **Copy.** As a pack of a live database: every collection with its
+  documents, deleted documents, schema versions, shard width and validation
+  mode goes to `.<name>.pack-staging` beside the database, encrypted with
+  the new secret under a salt drawn for it (or plain for `--decrypt`), with
+  its dictionaries trained afresh and its indexes rebuilt; then it is
+  checked against the source with the pack oracle, flushed, and the
+  `after-pack-staging` failpoint is passed.
+- **Commit.** The staging file is renamed over the database and the
+  directory is flushed. A rename replaces the name in one step on every
+  filesystem, those without hard links or locks included, so at any stop the
+  path names the old file, which opens with the old key, or the new one,
+  which opens with the new key. A stop before it leaves the staging file,
+  which nothing reads and the next pack or rekey of that name removes; a
+  failure the process survives removes it at once. No new failpoint: the
+  pack's covers the copy.
+- **Old opens.** The two files never share a key salt, since at least one is
+  encrypted under a fresh one, and the salt identifies the file at a path.
+  A writer that opened the old file while it waited reads the superblock at
+  the path once it has the write right, and when the salt differs drops the
+  right and opens the path again (`ContainerFile::open_writer`). In this
+  process the old open is retired at the commit; a process that had the old
+  file open keeps reading it whole, and its first write finds the other
+  salt when it upgrades to writer and fails with `EROOTLEASELOST`
+  ("replaced (fylo rekey)"), so nothing writes the old file after the
+  commit. Opening
+  the database again reads the new file. The table and index cache
+  identities carry the salt, so nothing cached for the old file is served
+  for the new one.
+- **Sealed.** A sealed database is never written, so it takes no hold: it is
+  resealed, as `fylo pack --sealed` writes one, under the new key, and the
+  sealed file renamed over the old the same way. Two reseals of one sealed
+  file at once are not guarded, as two sealed packs to one `--out` are not.
+- **Not covered.** A Windows volume without POSIX rename semantics (FAT,
+  exFAT and many SMB servers) may refuse to replace a file that a process
+  has open, the rekey's own open included; the rekey then fails and leaves
+  the database as it was. Readers in other processes are told only when
+  they next open the path. A rekey of a database opened before it changes
+  its size and its free extents, as any writer's recovery does, but no
+  record.
 
 ## Schema versions
 

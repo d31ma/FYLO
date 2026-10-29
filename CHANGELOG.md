@@ -4,6 +4,22 @@
 
 ### Added
 
+- **`fylo rekey` rotates a `.vdbx` database's key (ADR 0016 section 9).**
+  `fylo rekey app.vdbx --new-key '${NAME}'` rewrites an encrypted database
+  under the secret `${NAME}` names, resolved as `fylo.encryption.key` is;
+  a literal key is refused. `--encrypt` encrypts a plain database and
+  `--decrypt` writes an encrypted one plain; a rotation of a plain database
+  is refused with `ENATIVE_UNSUPPORTED`. The database is opened with the
+  old key first, so a wrong one fails with `EKEY` and changes nothing, then
+  held exclusively as `fylo compact --shrink` holds it, packed into
+  `.<name>.pack-staging` under a fresh salt, checked with the pack oracle,
+  flushed and renamed over the database: at any stop the path holds the old
+  file or the new one whole, and the next pack or rekey removes a staging
+  file left behind. Writers that opened the old file meanwhile open the new
+  one; a process that had it open reads it on and is refused writes with
+  `EROOTLEASELOST` until it opens the path again. A sealed database is
+  resealed under the new key. `NativeWriteRoot::rekey_database` and
+  `DatabaseRekey` expose it to Rust callers.
 - **Encrypted `.vdbx` databases, opt-in and off by default (ADR 0016
   section 9).** `fylo create app.vdbx --encrypt`, `fylo pack --encrypt`, or
   `fylo.encryption.file: true` in `application.json` creates a database

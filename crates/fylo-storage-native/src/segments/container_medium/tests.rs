@@ -22,6 +22,7 @@ mod dictionaries;
 mod encryption;
 mod extent_faults;
 mod processes;
+mod rekey;
 mod schemas;
 mod stranded_writes;
 

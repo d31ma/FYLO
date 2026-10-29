@@ -452,8 +452,28 @@ is sealed with its block number as associated data, so a block copied to
 another position is refused; its slots stay in the clear, since they hold only
 counts and positions. A lost key
 loses the database; `fylo unpack` to a directory root stays the way to keep a
-plain copy. Key rotation rewrites the file through compaction and is a
-follow-up.
+plain copy.
+
+The key is rotated with `fylo rekey db.vdbx --new-key '${NAME}'`, which names
+the new secret the way `fylo.encryption.key` names the current one: an
+environment variable, or a `.env` file beside the configuration; a literal key
+on the command line is refused. A rekey is a `fylo pack` of the database into
+itself. It takes the database exclusively, as `fylo compact --shrink` does,
+locks and recovers every collection, copies them into a staging file beside the
+database encrypted with the new secret under a fresh salt, checks the copy
+against the source with the pack oracle, flushes it and renames it over the
+database. The rename is the commit point, so a stop at any moment leaves the
+old file, which opens with the old key, or the new one, which opens with the
+new key; a staging file a stop leaves behind is never read and the next pack or
+rekey removes it. The old key is checked first: a database opened with a wrong
+key fails with `EKEY` before anything is written. A writer that opened the old
+file while the rekey held it finds another key salt at the path once it gets
+in and opens the new file; a process that already had the old file open keeps
+reading it whole, and is refused every write until it opens the path again.
+`fylo rekey --encrypt` encrypts a plain database and `fylo rekey --decrypt`
+writes an encrypted one plain; a key rotation of a plain database is refused.
+A sealed database is resealed under the new key, since nothing writes it. See
+`docs/vdbx-segment-backend.md`, "Rekeying".
 
 ### 10. WebAssembly and Fylo Explorer
 

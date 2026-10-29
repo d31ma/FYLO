@@ -14,6 +14,7 @@ mod database_maintenance;
 mod database_maintenance_report;
 mod database_pack;
 mod database_pack_report;
+mod database_rekey;
 mod document_image;
 mod file_export;
 mod layout_migration;
@@ -50,6 +51,7 @@ pub(crate) use commit_queue::CommitQueue;
 pub use compaction_report::CompactionReport;
 pub use database_maintenance_report::{DatabaseCompactionReport, DatabaseSalvageReport};
 pub use database_pack_report::{DatabasePackReport, PackedCollection};
+pub use database_rekey::DatabaseRekey;
 pub use layout_migration_report::LayoutMigrationReport;
 pub use salvage_report::SalvageReport;
 #[cfg(test)]

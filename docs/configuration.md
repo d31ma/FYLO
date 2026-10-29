@@ -117,6 +117,16 @@ A different key fails with `EKEY` too. `fylo verify app.vdbx` checks the
 file without the key, and `fylo inspect app.vdbx` reports `encrypted` and
 `locked`. Losing the key loses the documents: there is no recovery.
 
+`fylo rekey app.vdbx --new-key '${FYLO_NEW_ENCRYPTION_KEY}'` rewrites an
+encrypted database under another key. `--new-key` names the new secret the
+way `fylo.encryption.key` names the current one, from the environment or a
+`.env` file beside the configuration, and a literal key is refused; the
+database opens with `fylo.encryption.key` first, so a wrong one changes
+nothing. The new file replaces the old in one rename, so a stop leaves one
+or the other whole. Then set `fylo.encryption.key` to the new secret.
+`fylo rekey app.vdbx --new-key '${NAME}' --encrypt` encrypts a plain
+database and `fylo rekey app.vdbx --decrypt` writes an encrypted one plain.
+
 ## Discovery and precedence
 
 The CLI looks for `application.json` in its current working directory. Use

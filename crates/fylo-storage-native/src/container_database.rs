@@ -149,12 +149,14 @@ impl ContainerDatabase {
             return;
         };
         let mut open = file.lock();
+        let salt = open.superblock().key_salt;
         for collection in open.collections() {
-            let identity = ContainerMedium::identity_of(path, collection);
+            let identity = ContainerMedium::identity_of(path, &salt, collection);
             TableCache::shared().forget_identity(&identity);
             ContainerMedium::forget_index(&identity);
         }
-        if open.is_writable() && open.allocator().has_unsaved_changes() {
+        // A file `fylo rekey` replaced is never written again.
+        if open.is_writable() && !open.is_retired() && open.allocator().has_unsaved_changes() {
             // A failure leaves the previous map, which the next writer
             // settles.
             let _ = open.change_map(|_| Ok(()));
@@ -261,6 +263,29 @@ impl ContainerDatabase {
         self.file.exclusively(run)
     }
 
+    /// Check that this process still writes the file under the right it
+    /// holds, renewing its lease where it writes under one, without opening
+    /// the file to write again ([`ContainerOpen::keep_writing`]): for an
+    /// operation that holds the file to itself ([`Self::exclusively`]) but
+    /// writes another. Returns which writer this process is, which changes
+    /// when it lost the file and opened it to write again.
+    ///
+    /// # Errors
+    ///
+    /// Returns `EKEY` for a handle without the key, or what
+    /// [`ContainerOpen::keep_writing`] returns.
+    pub(crate) fn hold_writer(&self) -> Result<u64, NativeStorageError> {
+        self.require_key()?;
+        self.file.keep_writing()
+    }
+
+    /// Never write this process's open of the file again, after `fylo
+    /// rekey` replaced the file at its path: every handle on it reads the
+    /// old file on, and a write fails.
+    pub(crate) fn retire(&self) {
+        self.file.lock().retire();
+    }
+
     /// The last extent in use with a free one before it, as the map on
     /// disk shows it: what a shrink moves next.
     pub(crate) fn movable_tail(&self) -> Result<Option<ContainerTailExtent>, NativeStorageError> {
@@ -356,7 +381,8 @@ impl ContainerDatabase {
             open.forget_table(collection.header.id);
             open.checkpoint()
         })?;
-        let identity = ContainerMedium::identity_of(self.file.path(), &collection);
+        let salt = self.file.lock().superblock().key_salt;
+        let identity = ContainerMedium::identity_of(self.file.path(), &salt, &collection);
         TableCache::shared().forget_identity(&identity);
         ContainerMedium::forget_index(&identity);
         Ok(())

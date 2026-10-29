@@ -697,6 +697,34 @@ impl ContainerFile {
         &self.superblock
     }
 
+    /// Whether `path` still names this file, as far as `fylo rekey` can
+    /// have changed it: a rekey replaces the file with another whose key
+    /// salt differs, since at least one of the two is encrypted under a salt
+    /// drawn for it alone. A path that names nothing, or no container, does
+    /// not name this file.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read failure other than the file being absent or short.
+    pub fn is_named_by(&self, path: &Path) -> Result<bool, ContainerError> {
+        let file = match OpenOptions::new().read(true).open(path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(error.into()),
+        };
+        let mut copies = vec![0_u8; 2 * ContainerSuperblock::ENCODED_BYTES];
+        match read_exact_at(&file, &mut copies, 0) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(false),
+            Err(error) => return Err(error.into()),
+        }
+        let newest = ContainerSuperblock::newest(
+            &copies[..ContainerSuperblock::ENCODED_BYTES],
+            &copies[ContainerSuperblock::ENCODED_BYTES..],
+        );
+        Ok(newest.is_ok_and(|(superblock, _)| superblock.key_salt == self.superblock.key_salt))
+    }
+
     /// The collections in the directory, in block order.
     #[must_use]
     pub fn collections(&self) -> &[ContainerCollection] {

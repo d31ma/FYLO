@@ -342,3 +342,39 @@ fn encryption_file_errors_are_stable() {
         "unknown key under fylo.encryption; use documented nested configuration keys"
     );
 }
+
+#[test]
+fn a_new_database_key_is_named_by_a_secret_reference_as_the_configured_one_is() {
+    let fixture = Fixture::new();
+    let config = fixture.0.join(Fixture::APPLICATION_FILE);
+    // Keys generated for this test: one at the minimum length, one short.
+    std::fs::write(
+        fixture.0.join(".env"),
+        format!(
+            "FYLO_UNIT_NEXT_KEY={}\nFYLO_UNIT_SHORT_NEXT_KEY=short\n",
+            "generated-next-key-".repeat(2)
+        ),
+    )
+    .unwrap();
+    let resolve = |reference: &str| {
+        ApplicationConfig::database_key_reference(Some(&config), reference, "--new-key")
+    };
+    assert!(resolve("${FYLO_UNIT_NEXT_KEY}").is_ok());
+    // A literal is refused without echoing it, as fylo.encryption.key is.
+    let literal = "generated-literal-secret-of-forty-bytes!";
+    let error = resolve(literal).unwrap_err();
+    assert_eq!(
+        error,
+        "--new-key must use a ${NAME} secret reference, not a literal credential"
+    );
+    assert!(!error.contains(literal));
+    assert_eq!(
+        resolve("${FYLO_UNIT_SHORT_NEXT_KEY}").unwrap_err(),
+        "--new-key must name a secret of at least 32 UTF-8 bytes"
+    );
+    assert_eq!(
+        resolve("${FYLO_UNIT_ABSENT_NEXT_KEY}").unwrap_err(),
+        "missing referenced secret FYLO_UNIT_ABSENT_NEXT_KEY"
+    );
+    assert!(resolve("prefix-${FYLO_UNIT_NEXT_KEY}").is_err());
+}

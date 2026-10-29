@@ -133,6 +133,12 @@ impl ContainerFile {
     /// Open an existing container to write, coordinating with other writers
     /// the way its filesystem allows.
     ///
+    /// The file is opened before the right to write is taken, so a writer
+    /// that waited for it while `fylo rekey` replaced the file at `path`
+    /// holds the replaced file once it gets it. It then lets the right go
+    /// and opens `path` again, until the file it holds is the one `path`
+    /// names: never writing a file no longer in the directory.
+    ///
     /// # Errors
     ///
     /// Returns `Busy` when other writers keep it past the busy timeout,
@@ -141,13 +147,32 @@ impl ContainerFile {
         path: &Path,
         options: ContainerWriteOptions,
     ) -> Result<(Self, ContainerWriteAccess), ContainerError> {
+        let deadline = Instant::now() + options.busy_timeout;
+        loop {
+            let (file, access) = Self::open_writer_once(path, options, deadline)?;
+            if file.is_named_by(path)? {
+                return Ok((file, access));
+            }
+            drop((file, access));
+            if Instant::now() >= deadline {
+                return Err(ContainerError::Busy);
+            }
+        }
+    }
+
+    /// Open the file at `path` and take the right to write it, by
+    /// `deadline`.
+    fn open_writer_once(
+        path: &Path,
+        options: ContainerWriteOptions,
+        deadline: Instant,
+    ) -> Result<(Self, ContainerWriteAccess), ContainerError> {
         let handle = ByteRangeLockFile::open(path)?;
         // A sealed file is never written: it is refused before a lease or
         // a lock byte is taken for it.
         ContainerFile::refuse_sealed(handle.file())?;
         let qualified = FilesystemInfo::of(handle.file())?.byte_range_locks_qualified();
         let locks_granted = handle.probe();
-        let deadline = Instant::now() + options.busy_timeout;
         let access = if qualified && locks_granted && !options.exclusive {
             clear_lease(path, options, deadline)?;
             ContainerWriteAccess::SharedLocks {

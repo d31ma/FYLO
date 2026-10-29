@@ -46,8 +46,9 @@ pub(crate) mod schema_counts;
 pub(crate) mod schema_registry;
 pub(crate) use commit_log::SegmentSchemas;
 pub use commit_log::{
-    CompactionReport, DatabaseCompactionReport, DatabasePackReport, DatabaseSalvageReport,
-    LayoutMigrationReport, PackedCollection, SalvageReport, SegmentVerification,
+    CompactionReport, DatabaseCompactionReport, DatabasePackReport, DatabaseRekey,
+    DatabaseSalvageReport, LayoutMigrationReport, PackedCollection, SalvageReport,
+    SegmentVerification,
 };
 #[cfg(test)]
 pub(crate) use commit_log::{CopiedHook, SegmentCompactor};

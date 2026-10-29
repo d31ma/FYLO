@@ -23,9 +23,13 @@ impl ContainerMedium {
     /// when the last operation holding it ends.
     pub(crate) fn attach(file: &Arc<ContainerOpen>, collection: &ContainerCollection) -> Self {
         let key = (file.path().to_owned(), collection.block);
-        let (capacity, cipher) = {
+        let (capacity, cipher, salt) = {
             let open = file.lock();
-            (open.payload_capacity(), open.shared_cipher())
+            (
+                open.payload_capacity(),
+                open.shared_cipher(),
+                open.superblock().key_salt,
+            )
         };
         let mut media = Self::media();
         media.retain(|_, shared| shared.strong_count() > 0);
@@ -37,7 +41,7 @@ impl ContainerMedium {
         }
         let shared = Arc::new(Shared {
             file: Arc::clone(file),
-            identity: Self::identity_of(file.path(), collection),
+            identity: Self::identity_of(file.path(), &salt, collection),
             collection: collection.header.id,
             block: collection.block,
             capacity,
@@ -59,16 +63,25 @@ impl ContainerMedium {
         Self { shared }
     }
 
-    /// The identity of `collection` in the file at `path`: the path, the
-    /// collection's id and a digest of its descriptor, which names when it
-    /// was created.
-    pub(crate) fn identity_of(path: &Path, collection: &ContainerCollection) -> MediumIdentity {
+    /// The identity of `collection` in the file at `path`, whose key salt
+    /// is `salt`: the path, the collection's id, a digest of its descriptor,
+    /// which names when it was created, and for an encrypted file its salt,
+    /// so what this process cached of a file `fylo rekey` replaced is never
+    /// taken for the new file's.
+    pub(crate) fn identity_of(
+        path: &Path,
+        salt: &[u8; 32],
+        collection: &ContainerCollection,
+    ) -> MediumIdentity {
         let mut identity = OsString::from(path.as_os_str());
         identity.push(format!(
             "#{}#{}",
             collection.header.id,
             &crate::sha256_hex(&collection.header.descriptor)[..16]
         ));
+        if salt.iter().any(|byte| *byte != 0) {
+            identity.push(format!("#{}", crate::hex_bytes(&salt[..8])));
+        }
         MediumIdentity::new(identity)
     }
 

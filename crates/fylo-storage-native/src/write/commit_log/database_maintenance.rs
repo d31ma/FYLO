@@ -213,7 +213,7 @@ impl NativeWriteRoot {
         Ok(report)
     }
 
-    fn require_database(
+    pub(super) fn require_database(
         &self,
         command: &str,
     ) -> Result<std::sync::Arc<ContainerDatabase>, NativeStorageError> {

@@ -25,7 +25,9 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
 use super::{ContainerMedium, SEGMENT};
-use crate::{ContainerCipher, ContainerError, ContainerFile, NativeStorageError};
+use crate::{
+    ContainerCipher, ContainerError, ContainerFile, NativeStorageError, NativeStorageErrorCode,
+};
 #[cfg(not(target_family = "wasm"))]
 use crate::{ContainerWriteAccess, ContainerWriteOptions};
 
@@ -56,6 +58,10 @@ pub(crate) struct Open {
     /// The key an encrypted file was unlocked with, for every file this
     /// open reads afresh.
     cipher: Option<Arc<ContainerCipher>>,
+    /// Whether `fylo rekey` replaced the file at the path with another,
+    /// which this open never writes: it reads the file it has on, and every
+    /// write fails ([`ContainerOpen::writable`]).
+    retired: bool,
     /// What lets this process write, once it has written.
     #[cfg(not(target_family = "wasm"))]
     pub(super) access: Option<WriteRight>,
@@ -158,6 +164,20 @@ impl ContainerOpen {
         &self.path
     }
 
+    /// What a write through an open of a file `fylo rekey` replaced fails
+    /// with: the database at `path` is another file now, which a new open
+    /// reads, with its key.
+    pub(crate) fn replaced(path: &Path) -> NativeStorageError {
+        NativeStorageError::new(
+            NativeStorageErrorCode::RootLeaseLost,
+            format!(
+                "the .vdbx database {} was replaced (fylo rekey) after this process opened it; \
+                 open it again, with its new key",
+                path.display()
+            ),
+        )
+    }
+
     pub(crate) fn lock(&self) -> MutexGuard<'_, Open> {
         self.open.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -176,6 +196,9 @@ impl ContainerOpen {
         if open.file.is_sealed() {
             return Err(ContainerMedium::error(ContainerError::Sealed));
         }
+        if open.retired {
+            return Err(Self::replaced(&self.path));
+        }
         if !open.file.is_writable() {
             open.upgrade(&self.path)?;
         }
@@ -190,6 +213,43 @@ impl ContainerOpen {
             return Err(ContainerMedium::error(error));
         }
         Ok(open)
+    }
+
+    /// Check that this open still writes the file under the right it took,
+    /// renewing a lease once a third of its takeover time has passed, but
+    /// never open the file to write again, as [`Self::writable`] would: an
+    /// operation that holds the file to itself must not go on once another
+    /// writer could have written it. Returns [`Open::writer_epoch`].
+    ///
+    /// # Errors
+    ///
+    /// Returns `EROOTLEASELOST` when this open no longer writes the file,
+    /// or a lost lease, after which it reads on, or a file `fylo rekey`
+    /// replaced.
+    pub(crate) fn keep_writing(&self) -> Result<u64, NativeStorageError> {
+        #[cfg_attr(target_family = "wasm", allow(unused_mut))]
+        let mut open = self.lock();
+        if open.retired {
+            return Err(Self::replaced(&self.path));
+        }
+        if !open.file.is_writable() {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::RootLeaseLost,
+                format!(
+                    "this process no longer writes the .vdbx database {}: another writer \
+                     may have written it since",
+                    self.path.display()
+                ),
+            ));
+        }
+        #[cfg(not(target_family = "wasm"))]
+        if let Some(right) = &mut open.access
+            && let Err(error) = right.check()
+        {
+            open.demote(&self.path);
+            return Err(ContainerMedium::error(error));
+        }
+        Ok(open.epoch)
     }
 
     /// Take `byte` exclusive through the writable open's lock handle,
@@ -431,6 +491,7 @@ impl Open {
             seals: Vec::new(),
             epoch: 0,
             cipher: None,
+            retired: false,
             #[cfg(not(target_family = "wasm"))]
             access: None,
         }
@@ -464,21 +525,53 @@ impl Open {
         Ok(())
     }
 
+    /// Mark this open's file as replaced by `fylo rekey`: it reads on, and
+    /// never writes again ([`Self::retired`]).
+    pub(crate) fn retire(&mut self) {
+        self.retired = true;
+    }
+
+    /// Whether `fylo rekey` replaced this open's file ([`Self::retire`]).
+    pub(crate) const fn is_retired(&self) -> bool {
+        self.retired
+    }
+
     /// Give up writing: read on through a reader's open, unlocked with the
     /// key this open keeps, so the next write opens the file to write
-    /// afresh and claims its collections again.
+    /// afresh and claims its collections again. Where `fylo rekey` replaced
+    /// the file meanwhile, this open reads the one it has on and is retired.
     #[cfg(not(target_family = "wasm"))]
     fn demote(&mut self, path: &Path) {
-        if let Ok(mut file) = ContainerFile::open_reader(path)
-            && self
+        if let Ok(mut file) = ContainerFile::open_reader(path) {
+            if file.superblock().key_salt != self.file.superblock().key_salt {
+                self.retired = true;
+                return;
+            }
+            if self
                 .cipher
                 .clone()
                 .is_none_or(|cipher| file.unlock_with(cipher).is_ok())
-        {
-            self.file = file;
-            self.access = None;
-            self.forget_tables();
+            {
+                self.file = file;
+                self.access = None;
+                self.forget_tables();
+            }
         }
+    }
+
+    /// Refuse to write `file`, just opened at `path`, in place of this
+    /// open's: `fylo rekey` replaced the file since this process read it.
+    /// This open reads the one it has on and is retired.
+    fn require_same_file(
+        &mut self,
+        path: &Path,
+        file: &ContainerFile,
+    ) -> Result<(), NativeStorageError> {
+        if file.superblock().key_salt == self.file.superblock().key_salt {
+            return Ok(());
+        }
+        self.retired = true;
+        Err(ContainerOpen::replaced(path))
     }
 
     /// Reopen the file to write: natively as ADR 0016 section 7
@@ -491,6 +584,7 @@ impl Open {
             let options = ContainerOpen::write_options();
             let (mut file, access) =
                 ContainerFile::open_writer(path, options).map_err(ContainerMedium::error)?;
+            self.require_same_file(path, &file)?;
             if let Some(cipher) = &self.cipher {
                 file.unlock_with(Arc::clone(cipher))
                     .map_err(ContainerMedium::error)?;
@@ -506,6 +600,7 @@ impl Open {
         #[cfg(target_family = "wasm")]
         {
             let mut file = ContainerFile::open_unchecked(path).map_err(ContainerMedium::error)?;
+            self.require_same_file(path, &file)?;
             if let Some(cipher) = &self.cipher {
                 file.unlock_with(Arc::clone(cipher))
                     .map_err(ContainerMedium::error)?;

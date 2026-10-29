@@ -131,6 +131,25 @@ impl Settings {
         Ok((secret, file))
     }
 
+    /// The database key `reference` names, a `${NAME}` secret reference
+    /// resolved from the environment or the `.env` file in `directory`, as
+    /// `fylo.encryption.key` is; `name` names the setting in errors.
+    pub(super) fn database_key(
+        reference: &str,
+        name: &str,
+        directory: &Path,
+    ) -> Result<DatabaseKey, String> {
+        let mut secrets = Secrets::new(directory);
+        let secret = Self::resolve_secret(&Value::from(reference), name, &mut secrets)?;
+        if secret.len() < Self::MINIMUM_KEY_BYTES {
+            return Err(format!(
+                "{name} must name a secret of at least {} UTF-8 bytes",
+                Self::MINIMUM_KEY_BYTES
+            ));
+        }
+        Ok(DatabaseKey::new(secret))
+    }
+
     /// `fylo.schema`: the folder path, or `{"path": ..., "autoPush": bool}`
     /// to also push the folder's new versions into the root's schema
     /// registry when a write engine opens (ADR 0017 section 3).

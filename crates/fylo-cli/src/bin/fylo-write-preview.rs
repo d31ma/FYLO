@@ -6,8 +6,8 @@ use std::process::ExitCode;
 
 use fylo_engine::{AccessContext, WriteEngine};
 use fylo_storage_native::{
-    CollectionLayout, NativeWriteRoot, PutDocumentOptions, PutRawFileOptions, WriteAccess,
-    WriteActor,
+    CollectionLayout, DatabaseRekey, NativeWriteRoot, PutDocumentOptions, PutRawFileOptions,
+    WriteAccess, WriteActor,
 };
 use serde_json::{Value, json};
 
@@ -88,7 +88,7 @@ fn run(arguments: &[String]) -> Result<String, String> {
             result = Value::from(moved);
             false
         }
-        "push-schema" | "schema-head" | "compact" | "migrate-layout" | "pack" => {
+        "push-schema" | "schema-head" | "compact" | "migrate-layout" | "pack" | "rekey" => {
             result = run_layout(command, arguments, &writer)?;
             false
         }
@@ -140,8 +140,10 @@ fn run(arguments: &[String]) -> Result<String, String> {
 
 /// Collection maintenance: `push-schema` and `schema-head` (ADR 0017), the
 /// segment layout's `compact` and `migrate-layout` (ADR 0015), `compact`
-/// of a whole `.vdbx` database when no collection is named, and `pack`
-/// (ADR 0016), which only reads the root it packs.
+/// of a whole `.vdbx` database when no collection is named, `pack`
+/// (ADR 0016), which only reads the root it packs, and `rekey --encrypt`
+/// of a plain database, under the key `--new-key` names as a secret
+/// reference.
 fn run_layout(
     command: &str,
     arguments: &[String],
@@ -153,6 +155,20 @@ fn run_layout(
     if command == "pack" {
         let report = writer
             .pack_database(Path::new(required_option(arguments, "--out")?), false)
+            .map_err(|error| error.to_string())?;
+        return Ok(Value::from(report.collections.len()));
+    }
+    if command == "rekey" {
+        let key = fylo_machine::ApplicationConfig::database_key_reference(
+            option(arguments, "--config").map(Path::new),
+            required_option(arguments, "--new-key")?,
+            "--new-key",
+        )?;
+        if !arguments.iter().any(|argument| argument == "--encrypt") {
+            return Err("rekey here encrypts a plain database and needs --encrypt".into());
+        }
+        let report = writer
+            .rekey_database(DatabaseRekey::Encrypt(&key))
             .map_err(|error| error.to_string())?;
         return Ok(Value::from(report.collections.len()));
     }
@@ -446,6 +462,7 @@ fn usage() -> String {
      --collection <name> --schema-dir <path>\n  fylo-write-preview schema-head --root <path> \
      --collection <name>\n  fylo-write-preview compact --root <path> [--collection <name> | \
      --shrink]\n  fylo-write-preview pack --root <path> --out <db.vdbx>\n  \
+     fylo-write-preview rekey --root <db.vdbx> --encrypt --new-key '${NAME}'\n  \
      fylo-write-preview failpoints"
         .into()
 }

@@ -2,12 +2,14 @@ use std::path::{Path, PathBuf};
 
 use fylo_machine::ApplicationConfig;
 use fylo_storage_native::{
-    ContainerFile, DatabaseKey, DatabasePackReport, NativeRoot, NativeWriteRoot, RootOpenOptions,
+    ContainerFile, DatabaseKey, DatabasePackReport, DatabaseRekey, NativeRoot, NativeWriteRoot,
+    RootOpenOptions,
 };
 use serde_json::{Value, json};
 
 /// `fylo pack <root> --out <db.vdbx>`, `fylo unpack <db.vdbx> --out
-/// <directory>` and `fylo create <db.vdbx>` (ADR 0016 section 11).
+/// <directory>` and `fylo create <db.vdbx>` (ADR 0016 section 11), and
+/// `fylo rekey <db.vdbx>` (ADR 0016 section 9).
 ///
 /// `--encrypt`, or `fylo.encryption.file` in the configuration, makes the
 /// database `create` or `pack` writes an encrypted one, sealed with
@@ -19,13 +21,20 @@ use serde_json::{Value, json};
 /// live one for a backup; an encrypted source packs encrypted, with the
 /// same key.
 ///
+/// `rekey --new-key '${NAME}'` rewrites an encrypted database, opened with
+/// `fylo.encryption.key`, under the secret the reference names, resolved
+/// as `fylo.encryption.key` is: from the environment or the `.env` file
+/// beside the configuration, never from a literal on the command line.
+/// `--encrypt` with `--new-key` encrypts a plain database, and `--decrypt`
+/// writes an encrypted one plain.
+///
 /// Like `export` and `salvage`, they write outside the machine protocol on
 /// purpose: they take an output path, which a machine protocol client must
-/// never be able to name.
+/// never be able to name, or replace the database file whole.
 pub struct PackCommand;
 
 impl PackCommand {
-    pub const COMMANDS: [&'static str; 3] = ["pack", "unpack", "create"];
+    pub const COMMANDS: [&'static str; 4] = ["pack", "unpack", "create", "rekey"];
 
     /// Run one command on `source`: the directory root to pack, or the
     /// database to unpack or create.
@@ -34,6 +43,12 @@ impl PackCommand {
         (source, application): (&Path, &ApplicationConfig),
         options: &PackOptions,
     ) -> Result<String, String> {
+        if command == "rekey" {
+            return Self::rekey(source, application, options);
+        }
+        if options.rekey_to.is_some() {
+            return Err("--new-key and --decrypt are options of rekey".into());
+        }
         if command == "create" {
             return Self::create(source, application, options);
         }
@@ -87,6 +102,57 @@ impl PackCommand {
         .map_err(|error| error.to_string())
     }
 
+    /// Rewrite the database at `path` under `--new-key`, or encrypt or
+    /// decrypt it.
+    fn rekey(
+        path: &Path,
+        application: &ApplicationConfig,
+        options: &PackOptions,
+    ) -> Result<String, String> {
+        if options.out.is_some() || options.sealed {
+            return Err(
+                "rekey rewrites the database in place and takes no --out or --sealed".into(),
+            );
+        }
+        let rekey = match (&options.rekey_to, options.encrypt) {
+            (Some(RekeyTo::Plain), true) => {
+                return Err("rekey takes --encrypt or --decrypt, not both".into());
+            }
+            (None, true) => {
+                return Err(
+                    "rekey --encrypt needs --new-key '${NAME}', the secret to encrypt with".into(),
+                );
+            }
+            (None, false) => {
+                return Err(
+                    "rekey needs --new-key '${NAME}', the secret the database is encrypted with \
+                     from now on, or --decrypt"
+                        .into(),
+                );
+            }
+            (Some(RekeyTo::Key(key)), true) => DatabaseRekey::Encrypt(key),
+            (Some(RekeyTo::Key(key)), false) => DatabaseRekey::Rotate(key),
+            (Some(RekeyTo::Plain), false) => DatabaseRekey::Decrypt,
+        };
+        let writer = NativeWriteRoot::open_profiled(
+            application.with_database_key(RootOpenOptions::new(path)),
+        )
+        .map_err(|error| error.to_string())?
+        .with_config(application.storage);
+        let report = writer
+            .rekey_database(rekey)
+            .map_err(|error| error.to_string())?;
+        let mut rendered = json!({
+            "database": path.display().to_string(),
+            "encrypted": !matches!(rekey, DatabaseRekey::Decrypt),
+            "collections": Self::collections(&report),
+        });
+        if let Some(sealed) = &report.sealed {
+            rendered["sealed"] = json!(sealed);
+        }
+        serde_json::to_string_pretty(&rendered).map_err(|error| error.to_string())
+    }
+
     /// Whether `source` is an encrypted `.vdbx` database, whose sealed pack
     /// is encrypted with its key.
     fn encrypted_database(source: &Path) -> bool {
@@ -108,7 +174,19 @@ impl PackCommand {
     }
 
     fn render(source: &Path, out: &Path, report: &DatabasePackReport) -> Value {
-        let collections: Vec<Value> = report
+        let mut rendered = json!({
+            "source": source.display().to_string(),
+            "out": out.display().to_string(),
+            "collections": Self::collections(report),
+        });
+        if let Some(sealed) = &report.sealed {
+            rendered["sealed"] = json!(sealed);
+        }
+        rendered
+    }
+
+    fn collections(report: &DatabasePackReport) -> Vec<Value> {
+        report
             .collections
             .iter()
             .map(|packed| {
@@ -119,24 +197,26 @@ impl PackCommand {
                     "schemaVersions": packed.schema_versions,
                 })
             })
-            .collect();
-        let mut rendered = json!({
-            "source": source.display().to_string(),
-            "out": out.display().to_string(),
-            "collections": collections,
-        });
-        if let Some(sealed) = &report.sealed {
-            rendered["sealed"] = json!(sealed);
-        }
-        rendered
+            .collect()
     }
 }
 
-/// The flags `pack` and `unpack` read.
+/// The flags `pack`, `unpack`, `create` and `rekey` read.
 #[derive(Debug, Default)]
 pub struct PackOptions {
     pub out: Option<PathBuf>,
     pub sealed: bool,
     pub encrypt: bool,
     pub allow_engine_only_access: bool,
+    /// `rekey --new-key` or `rekey --decrypt`.
+    pub rekey_to: Option<RekeyTo>,
+}
+
+/// What `rekey` rewrites a database with.
+#[derive(Debug)]
+pub enum RekeyTo {
+    /// `--new-key`: the key its secret reference names.
+    Key(DatabaseKey),
+    /// `--decrypt`: no key.
+    Plain,
 }

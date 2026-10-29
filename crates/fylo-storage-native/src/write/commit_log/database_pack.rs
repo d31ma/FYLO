@@ -161,14 +161,34 @@ impl NativeWriteRoot {
             _ => out.to_owned(),
         };
         Self::require_new_output(out)?;
+        let collections = self.packed_collections(&names)?;
+        let (report, built) =
+            self.stage_pack(&collections.1, out, (allow_engine_only_access, key, sealed))?;
+        Self::adopt_staging(&built, out)?;
+        drop(collections);
+        Ok(report)
+    }
+
+    /// Build the database `out` is to hold from `collections`, the source,
+    /// as a staging file beside it, check it against them with the oracle
+    /// and flush it: as a sealed file when `sealed`, encrypted with `key`
+    /// when one is given. Returns the report and the staging file, which
+    /// only a rename then gives its name. A staging file a stopped pack or
+    /// rekey of the same name left is removed first, and a build that fails
+    /// removes its own.
+    pub(super) fn stage_pack(
+        &self,
+        collections: &[NativeCollection],
+        out: &Path,
+        (allow_engine_only_access, key, sealed): (bool, Option<&DatabaseKey>, bool),
+    ) -> Result<(DatabasePackReport, PathBuf), NativeStorageError> {
         let staging = Self::pack_staging(out, Self::PACK_STAGING_SUFFIX)?;
         let sealing = Self::pack_staging(out, Self::SEAL_STAGING_SUFFIX)?;
-        let collections = self.packed_collections(&names)?;
         Self::remove_staging(&staging)?;
         Self::remove_staging(&sealing)?;
         let built = self
             .build_pack(
-                &collections.1,
+                collections,
                 &staging,
                 (allow_engine_only_access, if sealed { None } else { key }),
                 sealed,
@@ -177,7 +197,7 @@ impl NativeWriteRoot {
                 if !sealed {
                     return Ok((report, &staging));
                 }
-                let blocks = self.seal_pack(&collections.1, &staging, &sealing, key)?;
+                let blocks = self.seal_pack(collections, &staging, &sealing, key)?;
                 Self::remove_staging(&staging)?;
                 Ok((
                     DatabasePackReport {
@@ -189,19 +209,16 @@ impl NativeWriteRoot {
             })
             .and_then(|(report, built)| Self::flush_staging(built).map(|()| (report, built)))
             .and_then(|built| failpoint("after-pack-staging").map(|()| built));
-        let (report, built) = match built {
-            Ok(built) => built,
+        match built {
+            Ok((report, built)) => Ok((report, built.clone())),
             Err(error) => {
                 // A staging file is never read; one this cannot remove is
-                // removed by the next pack.
+                // removed by the next pack or rekey.
                 let _ = Self::remove_staging(&staging);
                 let _ = Self::remove_staging(&sealing);
-                return Err(error);
+                Err(error)
             }
-        };
-        Self::adopt_staging(built, out)?;
-        drop(collections);
-        Ok(report)
+        }
     }
 
     /// Write the container `staging` as a sealed file at `sealing`.
@@ -233,7 +250,7 @@ impl NativeWriteRoot {
     /// recovered, as `fylo export` does, with the locks to hold until the
     /// pack has its name. A sealed database is never written, so it takes
     /// no lock and needs no recovery.
-    fn packed_collections(
+    pub(super) fn packed_collections(
         &self,
         names: &[String],
     ) -> Result<(Vec<super::CollectionGuard>, Vec<NativeCollection>), NativeStorageError> {
@@ -423,7 +440,7 @@ impl NativeWriteRoot {
 
     /// Remove a staging file and the lease files beside it, and forget this
     /// process's open of it, as a stopped pack leaves them.
-    fn remove_staging(staging: &Path) -> Result<(), NativeStorageError> {
+    pub(super) fn remove_staging(staging: &Path) -> Result<(), NativeStorageError> {
         if path_exists_no_follow(staging)? {
             let _ = NativeRoot::close_database(staging);
             fylo_vfs::remove_file(staging).map_err(NativeStorageError::io)?;
@@ -769,7 +786,7 @@ impl NativeWriteRoot {
         Ok(())
     }
 
-    fn pack_unsupported(message: &str) -> NativeStorageError {
+    pub(super) fn pack_unsupported(message: &str) -> NativeStorageError {
         NativeStorageError::new(NativeStorageErrorCode::Unsupported, message)
     }
 }

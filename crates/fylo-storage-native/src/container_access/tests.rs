@@ -105,3 +105,68 @@ fn a_lease_left_by_a_crash_is_cleared_by_the_next_writer() {
         assert_eq!(ContainerLease::held_generation(&path).expect("lease"), None);
     }
 }
+
+/// Rename a container with another key salt over `path`, as `fylo rekey`
+/// commits, and return its salt.
+fn rekeyed(path: &PathBuf) -> [u8; 32] {
+    let staging = path.with_extension("staging");
+    ContainerFile::create_encrypted(
+        &staging,
+        fylo_format::ContainerSuperblock::MIN_EXTENT_SHIFT,
+        b"a secret generated for this test, never a real one",
+    )
+    .expect("create the new file");
+    std::fs::rename(&staging, path).expect("rename over");
+    ContainerFile::open_reader(path)
+        .expect("reader")
+        .superblock()
+        .key_salt
+}
+
+#[test]
+fn a_writer_that_waited_through_a_rekey_writes_the_new_file() {
+    // Locks where they are qualified, and the lease, with a takeover time
+    // the wait never reaches.
+    for exclusive in [false, true] {
+        let (_guard, path) = created("vdbx-access-rekeyed");
+        let options = ContainerWriteOptions {
+            exclusive,
+            lease_timing: ContainerLeaseTiming::default(),
+            ..QUICK
+        };
+        // The rekey's hold on the file, which keeps every other writer out.
+        let (old, mut access) = ContainerFile::open_writer(&path, options).expect("rekey");
+        access
+            .hold_exclusively(options.busy_timeout)
+            .expect("exclusive");
+        let waiting = std::thread::spawn({
+            let path = path.clone();
+            let patient = ContainerWriteOptions {
+                busy_timeout: Duration::from_secs(20),
+                ..options
+            };
+            move || ContainerFile::open_writer(&path, patient)
+        });
+        // The waiting writer opens the old file, then waits for the right
+        // to write it, which it gets only after the rename.
+        std::thread::sleep(Duration::from_millis(300));
+        let salt = rekeyed(&path);
+        drop((old, access));
+        let (file, _access) = waiting.join().expect("thread").expect("waited");
+        assert_eq!(file.superblock().key_salt, salt, "exclusive: {exclusive}");
+        assert!(file.is_named_by(&path).expect("named"));
+    }
+}
+
+#[test]
+fn a_file_is_named_by_its_path_until_a_rekey_replaces_it() {
+    let (_guard, path) = created("vdbx-access-named");
+    let old = ContainerFile::open_reader(&path).expect("reader");
+    assert!(old.is_named_by(&path).expect("named"));
+    rekeyed(&path);
+    assert!(!old.is_named_by(&path).expect("replaced"));
+    assert!(
+        !old.is_named_by(&path.with_extension("absent"))
+            .expect("absent")
+    );
+}
