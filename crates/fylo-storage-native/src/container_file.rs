@@ -58,6 +58,34 @@ impl std::fmt::Display for ContainerError {
     }
 }
 
+impl ContainerError {
+    /// The stable error code machine clients see.
+    #[must_use]
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Io(error) if error.kind() == io::ErrorKind::NotFound => "ENATIVE_NOT_FOUND",
+            Self::Io(error) if error.kind() == io::ErrorKind::PermissionDenied => "EACCES",
+            Self::Io(_) => "ENATIVE_IO",
+            Self::Format(ContainerFormatError::BadMagic) => "EFXDB_NOT_FXDB",
+            Self::Format(
+                ContainerFormatError::UnsupportedVersion
+                | ContainerFormatError::IncompatibleFeature,
+            ) => "EFXDB_VERSION",
+            Self::Format(_) | Self::Allocator(_) => "EFXDB_CORRUPT",
+            Self::CollectionExists => "EFXDB_EXISTS",
+            Self::DirectoryFull => "EFXDB_FULL",
+            Self::ReadOnly => "EROFS",
+            Self::Busy => "EBUSY",
+            #[cfg(not(target_family = "wasm"))]
+            Self::Lease(crate::ContainerLeaseError::Busy { .. }) => "EBUSY",
+            #[cfg(not(target_family = "wasm"))]
+            Self::Lease(crate::ContainerLeaseError::Lost) => "EFXDB_LEASE_LOST",
+            #[cfg(not(target_family = "wasm"))]
+            Self::Lease(crate::ContainerLeaseError::Io(_)) => "ENATIVE_IO",
+        }
+    }
+}
+
 impl std::error::Error for ContainerError {}
 
 impl From<io::Error> for ContainerError {

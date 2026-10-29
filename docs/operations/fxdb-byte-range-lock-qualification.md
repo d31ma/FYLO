@@ -168,6 +168,7 @@ from one client, and then `share` from two clients against one file. Pass
 | ----------------------------------- | ----------------------- | ---------- | ------- | ------------ | ------------------------------------------ | --------------------------- |
 | ext4, Linux 6.18 (x86_64)           | cloud container         | 2026-10-29 | passed  | 1.1 ms       | 159,090 exclusive entries, 0 overlaps; control caught 246,052 | no                          |
 | tmpfs, Linux 6.18 (x86_64)          | cloud container         | 2026-10-29 | passed  | 1.2 ms       | 157,772 exclusive entries, 0 overlaps; control caught 245,836 | no                          |
+| ext4 stress (16 × 4, 8 writers, 60 s) | cloud container       | 2026-10-29 | passed  |              | 1,144,672 exclusive entries, 0 overlaps; longest wait 471 ms | |
 | APFS, macOS                         | Mac Mini                | pending    |         |              |                                            |                             |
 | NFS 4.1, local server (`efs:local`) | Linux client in Docker on the Mac Mini | pending |   |              |                                            |                             |
 | NTFS, Windows                       | Surface                 | pending    |         |              |                                            |                             |

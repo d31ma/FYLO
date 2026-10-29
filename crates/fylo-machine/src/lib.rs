@@ -21,7 +21,7 @@ pub use request_frame::RequestFrame;
 use std::io::{BufRead, Read, Write};
 #[cfg(not(target_arch = "wasm32"))]
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
@@ -894,6 +894,7 @@ impl Session {
             "getFileData" => self.get_file_data(request),
             "findDocs" => self.find_documents(request),
             "inspectCollection" => self.inspect_collection(request),
+            "inspectDatabase" => Self::inspect_database(&self.database_path(request)?),
             "verifyCollection" => self.verify_collection(request),
             "log" => self.history(request),
             "getMeta" => self.get_metadata(request),
@@ -964,6 +965,14 @@ impl Session {
                     "version": 1,
                     "profiles": ["native", "efs-sidecar-v1"],
                     "efsQualified": false
+                }),
+            ),
+            (
+                "singleFileDatabase".into(),
+                json!({
+                    "version": 1,
+                    "extension": "fxdb",
+                    "operations": ["inspectDatabase"]
                 }),
             ),
             (
@@ -1419,6 +1428,30 @@ impl Session {
             "deletedDocs": inspection.deleted_count,
             "indexedDocs": indexed,
         }))
+    }
+
+    /// The `.fxdb` file a request names: its `root`, or the session's.
+    fn database_path(&self, request: &Value) -> Result<PathBuf, MachineError> {
+        request
+            .get("root")
+            .and_then(Value::as_str)
+            .map(PathBuf::from)
+            .or_else(|| self.default_root.clone())
+            .ok_or_else(|| {
+                MachineError::new(
+                    "EBADREQUEST",
+                    "inspectDatabase requires a .fxdb path as root",
+                )
+            })
+    }
+
+    /// Describe a `.fxdb` file from its superblock, map and directory,
+    /// without reading a record or taking a lock (ADR 0016).
+    fn inspect_database(path: &Path) -> Result<Value, MachineError> {
+        let report = fylo_storage_native::ContainerFile::open_reader(path)
+            .and_then(|container| container.report())
+            .map_err(|error| MachineError::new(error.code(), error.to_string()))?;
+        serde_json::to_value(report).map_err(|error| serialization_error(&error))
     }
 
     fn verify_collection(&self, request: &Value) -> Result<Value, MachineError> {
@@ -3623,6 +3656,41 @@ mod tests {
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
             .collect()
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn inspect_database_describes_a_fxdb_file_without_a_root() {
+        let dir = std::env::temp_dir().join(format!(
+            "fylo-machine-fxdb-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("app.fxdb");
+        fylo_storage_native::ContainerFile::create(&path, 20).unwrap();
+        {
+            let mut container = fylo_storage_native::ContainerFile::open_unchecked(&path).unwrap();
+            container.add_collection("users", b"").unwrap();
+        }
+        let request = json!({"op": "inspectDatabase", "root": path});
+        let frames = run(&format!(
+            "{request}\n{}\n",
+            json!({"op": "inspectDatabase", "root": dir.join("missing.fxdb")})
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(frames[0]["ok"], json!(true), "{}", frames[0]);
+        let result = &frames[0]["result"];
+        assert_eq!(result["format"], json!("fylo.fxdb"));
+        assert_eq!(result["encrypted"], json!(false));
+        assert_eq!(result["collections"][0]["name"], json!("users"));
+        assert_eq!(frames[1]["ok"], json!(false));
+        assert_eq!(frames[1]["error"]["code"], json!("ENATIVE_NOT_FOUND"));
+        let capabilities = &run("{\"op\":\"handshake\"}\n")[0]["result"]["capabilities"];
+        assert_eq!(
+            capabilities["singleFileDatabase"]["operations"],
+            json!(["inspectDatabase"])
+        );
     }
 
     #[test]
