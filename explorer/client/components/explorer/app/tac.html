@@ -70,20 +70,17 @@
         </w-alert>
     </logic>
 
-    <switch :value="status">
-        <case :when="'unsupported'">
-            <div class="explorer-center">
+    <logic :if="status === 'pick' || status === 'unsupported'">
+        <div class="explorer-center">
+            <logic :if="status === 'unsupported'">
                 <h2>{unsupportedBrowser} can't open local folders</h2>
                 <p>
                     Fylo Explorer needs the File System Access API to read a real FYLO folder.
                     {unsupportedBrowser} does not provide it. Use a current desktop version of
-                    Chrome, Edge, or Brave instead.
+                    Chrome, Edge, or Brave instead, or open a single .fxdb database file below.
                 </p>
-            </div>
-        </case>
-
-        <case :when="'pick'">
-            <div class="explorer-center">
+            </logic>
+            <logic :if="status === 'pick'">
                 <div class="explorer-intro">
                     <h1>Fylo Explorer (FX)</h1>
                     <p class="explorer-intro-lead">
@@ -158,6 +155,112 @@
                             </li>
                         </loop>
                     </ul>
+                </logic>
+            </logic>
+            <section
+                :class="databaseDropping ? 'explorer-database-open is-dropping' : 'explorer-database-open'"
+                aria-labelledby="explorer-database-heading"
+                on:dragover="databaseDragOver(event)"
+                on:dragleave="databaseDragLeave()"
+                on:drop="databaseDrop(event)"
+            >
+                <h2 id="explorer-database-heading">Open a database file</h2>
+                <p>
+                    A .fxdb file holds a whole FYLO database. It opens read-only in any current
+                    browser, including Firefox and Safari. Drop one here or choose it.
+                    <logic :if="canCopyDatabase">
+                        To change it, edit a copy kept in this browser and save it back.
+                    </logic>
+                </p>
+                <div class="explorer-tool-row">
+                    <logic :if="canPickDatabase">
+                        <button type="button" class="w-btn w-btn-filled" on:click="openDatabasePicker()">
+                            Open database…
+                        </button>
+                    </logic>
+                    <label
+                        :class="canPickDatabase ? 'w-btn w-btn-outlined explorer-upload' : 'w-btn w-btn-filled explorer-upload'"
+                    >
+                        <logic :if="canPickDatabase">Choose file…</logic>
+                        <logic :if="!canPickDatabase">Open database…</logic>
+                        <input
+                            type="file"
+                            accept=".fxdb,application/vnd.d31ma.fxdb"
+                            aria-label="Database file to open"
+                            on:change="databaseInput(event)"
+                        />
+                    </label>
+                </div>
+                <logic :if="workingCopies.length > 0">
+                    <h3>Copies being edited in this browser</h3>
+                    <ul class="explorer-list explorer-recent-list">
+                        <loop :for="let copy of workingCopies">
+                            <li class="explorer-recent-root">
+                                <button
+                                    type="button"
+                                    class="w-btn w-btn-text explorer-recent-open"
+                                    on:click="resumeWorkingCopy(copy)"
+                                >
+                                    <span class="explorer-recent-name">{copy.name}</span>
+                                </button>
+                                <button
+                                    type="button"
+                                    class="w-btn w-btn-text w-btn--sm"
+                                    :aria-label="'Discard the working copy ' + copy.name"
+                                    on:click="discardWorkingCopy(copy)"
+                                >
+                                    Discard
+                                </button>
+                            </li>
+                        </loop>
+                    </ul>
+                </logic>
+            </section>
+        </div>
+    </logic>
+
+    <switch :value="status">
+        <case :when="'database'">
+            <div class="explorer-center explorer-database">
+                <h2>{dbName}</h2>
+                <dl class="explorer-database-facts">
+                    <dt>Size</dt>
+                    <dd>{databaseSizeLabel()}</dd>
+                    <dt>Opened</dt>
+                    <dd>
+                        <logic :if="dbMode === 'read'">read-only, as picked</logic>
+                        <logic :if="dbMode === 'copy'">as a working copy in this browser</logic>
+                    </dd>
+                    <dt>Format</dt>
+                    <dd>
+                        <logic :if="dbMagic">FYLO database (.fxdb header)</logic>
+                        <logic :if="!dbMagic">no .fxdb header found</logic>
+                    </dd>
+                </dl>
+                <p class="explorer-hint">
+                    Browsing the collections inside a .fxdb file arrives with the single-file
+                    format in the engine. Until then Explorer opens, copies and saves the file.
+                </p>
+                <div class="explorer-tool-row">
+                    <logic :if="dbMode === 'read' && canCopyDatabase">
+                        <button type="button" class="w-btn w-btn-filled" on:click="editDatabaseCopy()">
+                            Edit a copy
+                        </button>
+                    </logic>
+                    <logic :if="dbMode === 'copy'">
+                        <button type="button" class="w-btn w-btn-filled" on:click="saveDatabaseCopy()">
+                            Save
+                        </button>
+                    </logic>
+                    <button type="button" class="w-btn w-btn-outlined" on:click="closeDatabase()">
+                        Close
+                    </button>
+                </div>
+                <logic :if="dbProgress">
+                    <p role="status">{dbProgress}</p>
+                </logic>
+                <logic :if="dbMessage">
+                    <p role="status">{dbMessage}</p>
                 </logic>
             </div>
         </case>
@@ -1131,7 +1234,7 @@
             </div>
         </case>
 
-        <case default>
+        <case :when="'boot'">
             <div class="explorer-center"><p>Starting…</p></div>
         </case>
     </switch>

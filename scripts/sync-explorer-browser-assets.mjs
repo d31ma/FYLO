@@ -10,6 +10,7 @@ for (const [from, to = from] of [
     ['fylo.mjs', 'fylo-web.mjs'],
     ['shared.js'],
     ['dedicated.js'],
+    ['fxdb-worker.js'],
     ['fylo-index.wasm']
 ]) {
     const output = new URL(to, destination)

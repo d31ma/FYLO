@@ -38,6 +38,14 @@ if (!engineOnly) {
         '--outfile',
         './dist-web/dedicated.js'
     ])
+    // The single-file `.fxdb` Worker (ADR 0016): no SharedArrayBuffer bridge.
+    await run('bun', [
+        'build',
+        './src/browser/fylo-single-file-worker.mjs',
+        '--target=browser',
+        '--outfile',
+        './dist-web/fxdb-worker.js'
+    ])
 }
 
 // The index kernel accelerates queries beside the JavaScript core; the browser
@@ -87,7 +95,7 @@ if (engineOnly) {
     console.log('Built dist-web/fylo-browser.wasm')
 } else {
     console.log(
-        `Built dist-web/fylo.mjs, shared.js, dedicated.js${
+        `Built dist-web/fylo.mjs, shared.js, dedicated.js, fxdb-worker.js${
             withWasm ? `, ${WASM_ARTIFACTS.map(([, published]) => published).join(', ')}` : ''
         }`
     )

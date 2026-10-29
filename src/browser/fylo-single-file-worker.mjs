@@ -26,13 +26,12 @@
 // - `close` closes the file and releases the lock.
 
 import { OPEN_READ, OPEN_WRITE, createHostImports, exec } from './host-vfs.mjs'
+import { WORKING_COPY_DIRECTORY, isWorkingCopyName } from './fxdb-names.mjs'
 import {
     DEFAULT_DATABASE_PATH,
-    WORKING_COPY_DIRECTORY,
     createAccessHandleBackend,
     createFileBackend,
-    createRangeBackend,
-    isWorkingCopyName
+    createRangeBackend
 } from './single-file-vfs.mjs'
 
 const COPY_CHUNK_BYTES = 4 * 1024 * 1024

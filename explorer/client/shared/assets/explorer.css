@@ -2157,3 +2157,39 @@ html[w-theme='light'] .explorer-version-cur {
         opacity: 0.4;
     }
 }
+
+/* --- Open database: one .fxdb file (ADR 0016) --- */
+
+.explorer-database-open {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.75rem;
+    max-width: 44rem;
+    width: 100%;
+    margin-top: 1.5rem;
+    padding: 1.25rem;
+    border: 2px dashed var(--w-outline-variant, rgba(127, 127, 127, 0.4));
+    border-radius: 12px;
+}
+
+.explorer-database-open.is-dropping {
+    border-color: var(--w-primary, currentColor);
+    background: rgba(127, 127, 127, 0.08);
+}
+
+.explorer-database-facts {
+    display: grid;
+    grid-template-columns: auto auto;
+    gap: 0.35rem 1rem;
+    text-align: left;
+    margin: 0;
+}
+
+.explorer-database-facts dt {
+    font-weight: 600;
+}
+
+.explorer-database-facts dd {
+    margin: 0;
+}

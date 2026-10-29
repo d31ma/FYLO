@@ -20,19 +20,6 @@ import { KIND_DIRECTORY, KIND_FILE, KIND_MISSING, OPEN_CREATE, OPEN_WRITE } from
 /** Where the engine finds the database unless the caller names another path. */
 export const DEFAULT_DATABASE_PATH = '/database.fxdb'
 
-/** The OPFS directory that holds Explorer's working copies. */
-export const WORKING_COPY_DIRECTORY = 'fylo-fxdb'
-
-/** Working copy names: one plain file name, nothing hidden, `.fxdb` at the end. */
-export function isWorkingCopyName(name) {
-    return (
-        typeof name === 'string' &&
-        name.length <= 200 &&
-        /^[A-Za-z0-9][A-Za-z0-9 ._()-]*\.fxdb$/.test(name) &&
-        !name.includes('..')
-    )
-}
-
 /**
  * Read-only backend over a `File` or `Blob`.
  *
