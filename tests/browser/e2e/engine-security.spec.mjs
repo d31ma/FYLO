@@ -311,7 +311,7 @@ test.describe('encrypted directory roots', () => {
     })
 })
 
-test.describe('encrypted .fxdb databases', () => {
+test.describe('encrypted .vdbx databases', () => {
     let packed
     let forged
 
@@ -319,7 +319,7 @@ test.describe('encrypted .fxdb databases', () => {
         mkdirSync(FIXTURES, { recursive: true })
         // `fylo pack` carries the schema registry and the ciphertext into a
         // database file as they are.
-        packed = join(FIXTURES, 'encrypted-fields.fxdb')
+        packed = join(FIXTURES, 'encrypted-fields.vdbx')
         rmSync(packed, { force: true })
         const pack = spawnSync(nativeBinary(), ['pack', registryFixture.root, '--out', packed], {
             encoding: 'utf8'
@@ -334,7 +334,7 @@ test.describe('encrypted .fxdb databases', () => {
                 ...PEOPLE.map((data) => ({ op: 'putData', collection: 'pii', data }))
             ])
         )
-        forged = join(FIXTURES, 'encrypted-file.fxdb')
+        forged = join(FIXTURES, 'encrypted-file.vdbx')
         rmSync(forged, { force: true })
         const sealed = spawnSync(
             nativeBinary(),
@@ -359,13 +359,13 @@ test.describe('encrypted .fxdb databases', () => {
     test('field-encrypted documents in a database file refuse every read', async ({
         page
     }, testInfo) => {
-        const harness = await openFxdb(page)
+        const harness = await openVdbx(page)
         const reads = readsOf(registryFixture)
         const native = nativeExec(join(FIXTURES, copyOf(packed, 'keyless-reads')), reads)
         const file = await harness.open({ kind: 'file', url: `/${packed}` })
         try {
             const frames = await harness.exec(file.id, reads)
-            await testInfo.attach('encrypted-fields-fxdb-reads', {
+            await testInfo.attach('encrypted-fields-vdbx-reads', {
                 body: JSON.stringify(frames, null, 2),
                 contentType: 'application/json'
             })
@@ -379,7 +379,7 @@ test.describe('encrypted .fxdb databases', () => {
     test('a working copy of a field-encrypted database takes no plaintext secrets', async ({
         page
     }, testInfo) => {
-        const harness = await openFxdb(page)
+        const harness = await openVdbx(page)
         const reason = await harness.opfs()
         test.skip(reason !== '', reason)
         const fixture = registryFixture
@@ -391,19 +391,19 @@ test.describe('encrypted .fxdb databases', () => {
         const native = nativeExec(join(FIXTURES, copyOf(packed, 'keyless-writes')), writes)
         const copy = await harness.open({
             kind: 'copy',
-            label: 'encrypted.fxdb',
+            label: 'encrypted.vdbx',
             url: `/${packed}`
         })
         try {
             const frames = await harness.exec(copy.id, writes)
-            await testInfo.attach('encrypted-fields-fxdb-writes', {
+            await testInfo.attach('encrypted-fields-vdbx-writes', {
                 body: JSON.stringify(frames, null, 2),
                 contentType: 'application/json'
             })
             // The browser does what keyless native does, then must refuse
             // every write: none can be encrypted without the key.
             expectSameOutcomes(frames, native, 'working copy and keyless native')
-            const saved = join(FIXTURES, 'encrypted-fields.after.fxdb')
+            const saved = join(FIXTURES, 'encrypted-fields.after.vdbx')
             writeFileSync(saved, await harness.snapshot(copy.id))
             const after = keyedExec(fixture.keys, saved, [
                 { op: 'findDocs', collection: 'pii', query: {} }
@@ -421,7 +421,7 @@ test.describe('encrypted .fxdb databases', () => {
     test('a whole-file encrypted database is refused as native refuses it', async ({
         page
     }, testInfo) => {
-        const harness = await openFxdb(page)
+        const harness = await openVdbx(page)
         const requests = [
             { op: 'inspectDatabase' },
             { op: 'verifyDatabase' },
@@ -434,7 +434,7 @@ test.describe('encrypted .fxdb databases', () => {
         const file = await harness.open({ kind: 'file', url: `/${forged}` })
         try {
             const frames = await harness.exec(file.id, requests)
-            await testInfo.attach('encrypted-file-fxdb', {
+            await testInfo.attach('encrypted-file-vdbx', {
                 body: JSON.stringify(frames, null, 2),
                 contentType: 'application/json'
             })
@@ -458,7 +458,7 @@ test('encryption is off unless configured: native roots and databases carry no m
     ]
     const directory = nativeRoot('security-plain')
     const holder = nativeRoot('security-plain-db')
-    const database = join(holder, 'plain.fxdb')
+    const database = join(holder, 'plain.vdbx')
     try {
         expectOk(nativeExec(directory, requests))
         expectOk(nativeExec(database, requests))
@@ -491,14 +491,14 @@ test('a root the browser writes is plain', async ({ fylo }) => {
 })
 
 test('a database the browser writes is plain', async ({ page }) => {
-    const harness = await openFxdb(page)
+    const harness = await openVdbx(page)
     const reason = await harness.opfs()
     test.skip(reason !== '', reason)
     mkdirSync(FIXTURES, { recursive: true })
-    const database = join(FIXTURES, 'plain.fxdb')
+    const database = join(FIXTURES, 'plain.vdbx')
     rmSync(database, { force: true })
     expectOk(nativeExec(database, [{ op: 'createCollection', collection: 'people' }]))
-    const opened = await harness.open({ kind: 'copy', label: 'plain.fxdb', url: `/${database}` })
+    const opened = await harness.open({ kind: 'copy', label: 'plain.vdbx', url: `/${database}` })
     try {
         expectOk(
             await harness.exec(
@@ -510,7 +510,7 @@ test('a database the browser writes is plain', async ({ page }) => {
         const bytes = await harness.snapshot(opened.id)
         expectPlainSuperblocks(bytes)
         expect(sealedFrames(bytes)).toBe(0)
-        const saved = join(FIXTURES, 'plain.after.fxdb')
+        const saved = join(FIXTURES, 'plain.after.vdbx')
         writeFileSync(saved, bytes)
         const [inspected, all] = expectOk(
             nativeExec(saved, [
@@ -563,12 +563,12 @@ test('the engine module stays within its size and startup budgets', async ({
 
     // On the plain origin, the single-file Worker: start, instantiate, then
     // the first answer.
-    const harness = await openFxdb(page)
+    const harness = await openVdbx(page)
     mkdirSync(FIXTURES, { recursive: true })
-    const database = join(FIXTURES, 'startup.fxdb')
+    const database = join(FIXTURES, 'startup.vdbx')
     rmSync(database, { force: true })
     expectOk(nativeExec(database, [{ op: 'createCollection', collection: 'people' }]))
-    const startup = await page.evaluate((url) => globalThis.fxdb.startup({ url }), `/${database}`)
+    const startup = await page.evaluate((url) => globalThis.vdbx.startup({ url }), `/${database}`)
     expect(startup.error).toBeUndefined()
     expect(startup.handshake.ok).toBe(true)
     expect(startup.handshake.result.buildTarget).toBe('browser-wasm32')
@@ -655,7 +655,7 @@ function sealedFrames(bytes) {
     const extent = 2 ** bytes[24]
     let sealed = 0
     for (let at = extent; at + extent <= bytes.length; at += extent) {
-        if (bytes.toString('latin1', at, at + 8) !== 'FXEXTNT\0' || bytes[at + 10] !== 2) continue
+        if (bytes.toString('latin1', at, at + 8) !== 'VDXEXTNT' || bytes[at + 10] !== 2) continue
         let offset = at + 4096 + 32
         while (offset + 13 <= at + extent && bytes.readUInt32LE(offset) === 0x015259f5) {
             const length = bytes.readUInt32LE(offset + 4)
@@ -682,27 +682,27 @@ function expectPlainTree(files, label) {
 
 /** A copy for native next to `path`, so nothing native does reaches the browser's file. */
 function copyOf(path, label) {
-    const name = `${path.split('/').pop()}.${label}.fxdb`
+    const name = `${path.split('/').pop()}.${label}.vdbx`
     writeFileSync(join(FIXTURES, name), readFileSync(path))
     return name
 }
 
 /** The single-file harness on the plain origin. */
-async function openFxdb(page) {
-    await page.goto(`${PLAIN_ORIGIN}/tests/browser/fixtures/fxdb-harness.html`, {
+async function openVdbx(page) {
+    await page.goto(`${PLAIN_ORIGIN}/tests/browser/fixtures/vdbx-harness.html`, {
         waitUntil: 'domcontentloaded'
     })
     await expect(page.locator('[data-status="ready"]')).toBeVisible()
     return {
-        opfs: () => page.evaluate(() => globalThis.fxdb.opfs()),
+        opfs: () => page.evaluate(() => globalThis.vdbx.opfs()),
         async open(source) {
-            const opened = await page.evaluate((source) => globalThis.fxdb.open(source), source)
+            const opened = await page.evaluate((source) => globalThis.vdbx.open(source), source)
             expect(opened.error, `open: ${opened.error}`).toBeUndefined()
             return opened
         },
         async exec(id, requests) {
             const answer = await page.evaluate(
-                ([id, requests]) => globalThis.fxdb.exec(id, requests, 120_000),
+                ([id, requests]) => globalThis.vdbx.exec(id, requests, 120_000),
                 [id, requests]
             )
             expect(answer.timedOut).toBeUndefined()
@@ -711,10 +711,10 @@ async function openFxdb(page) {
             return answer.frames
         },
         async snapshot(id) {
-            const shot = await page.evaluate((id) => globalThis.fxdb.snapshot(id), id)
+            const shot = await page.evaluate((id) => globalThis.vdbx.snapshot(id), id)
             return gunzipSync(Buffer.from(shot.gzipBase64, 'base64'))
         },
-        close: (id) => page.evaluate((id) => globalThis.fxdb.close(id), id),
-        removeCopy: (name) => page.evaluate((name) => globalThis.fxdb.removeCopy(name), name)
+        close: (id) => page.evaluate((id) => globalThis.vdbx.close(id), id),
+        removeCopy: (name) => page.evaluate((name) => globalThis.vdbx.removeCopy(name), name)
     }
 }

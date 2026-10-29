@@ -222,7 +222,7 @@ that one-time import, with `autoPush` off, has no registry: only the folder
 declares its `$encrypted` fields, and a writer without the folder (another
 process, or the browser engine) used to store new secrets in plaintext beside
 the ciphertext. So the database also records each such collection's head
-`$encrypted` list as `"encrypted": [...]` in its catalog descriptor (a `.fxdb`
+`$encrypted` list as `"encrypted": [...]` in its catalog descriptor (a `.vdbx`
 database keeps it in the static part of the collection's directory block,
 rewritten in place as a drop rewrites it). A keyed writer whose folder
 declares the collection keeps the record equal to the folder's head list,

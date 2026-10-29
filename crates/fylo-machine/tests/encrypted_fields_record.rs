@@ -2,7 +2,7 @@
 //! `fylo.schema` folder declares keeps them encrypted for every writer. A
 //! keyed writer with the folder records the head's list in the database
 //! (the catalog descriptor of a directory root, the directory block of a
-//! `.fxdb` database), and a writer without the folder encrypts what the
+//! `.vdbx` database), and a writer without the folder encrypts what the
 //! record lists, or is refused without the key, rather than store a declared
 //! field in plaintext.
 
@@ -71,7 +71,7 @@ impl Fixture {
     }
 
     fn database(&self) -> PathBuf {
-        self.parent.join("app.fxdb")
+        self.parent.join("app.vdbx")
     }
 
     /// Answer `requests` against `root` in one session, with the schema
@@ -389,7 +389,7 @@ fn a_dropped_collection_takes_its_record_with_it() {
         &directory,
         json!({"op":"createCollection","collection":PII}),
     );
-    let database = fixture.parent.join("dropped.fxdb");
+    let database = fixture.parent.join("dropped.vdbx");
     NativeWriteRoot::open(&directory)
         .unwrap()
         .pack_database(&database, true)

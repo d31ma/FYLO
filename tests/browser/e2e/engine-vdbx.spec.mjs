@@ -1,4 +1,4 @@
-// `.fxdb` round trips between fylo-browser.wasm and the native engine.
+// `.vdbx` round trips between fylo-browser.wasm and the native engine.
 //
 // The native engine writes a database with zstd frames and trained
 // dictionaries; the browser must read every document of it exactly as native
@@ -8,7 +8,7 @@
 // reported, never a trap, a hang or a file native refuses.
 //
 // The page is served without COOP or COEP, as a static host serves it, so the
-// engine runs through the single-file Worker (`dist-web/fxdb-worker.js`).
+// engine runs through the single-file Worker (`dist-web/vdbx-worker.js`).
 
 import { expect, test } from './browser-test.mjs'
 import { comparable, expectOk, mintIds, nativeExec } from './engine-harness.mjs'
@@ -19,7 +19,7 @@ import { isDeepStrictEqual } from 'node:util'
 import { gunzipSync } from 'node:zlib'
 
 const PLAIN_ORIGIN = 'http://127.0.0.1:4174'
-const FIXTURES = 'target/browser-fixtures/engine-fxdb'
+const FIXTURES = 'target/browser-fixtures/engine-vdbx'
 
 // A collection trains its zstd dictionary at its first checkpoint once its
 // records reach 1 MiB (container_codec.rs, DICTIONARY_TRAINING_BYTES), and a
@@ -32,7 +32,7 @@ const TEAMS = ['red', 'blue', 'green', 'gold']
 const CITIES = ['Lagos', 'Lima', 'Oslo', 'Pune', 'Kyiv', 'Quito', 'Hanoi', 'Perth', 'Turin']
 const STATUSES = ['open', 'paid', 'shipped', 'returned']
 
-// A `.fxdb` record frame: sync marker, length, CRC-32C, then the stored body,
+// A `.vdbx` record frame: sync marker, length, CRC-32C, then the stored body,
 // whose first byte holds the codec in its low four bits and 0x10 when a
 // dictionary id follows (segments/container_frames.rs, container_record.rs).
 const SYNC_MARKER = 0x015259f5
@@ -212,7 +212,7 @@ function recordFrames(bytes) {
     const extent = 2 ** bytes[24]
     const frames = []
     for (let at = extent; at + extent <= bytes.length; at += extent) {
-        if (bytes.toString('latin1', at, at + 8) !== 'FXEXTNT\0' || bytes[at + 10] !== 2) continue
+        if (bytes.toString('latin1', at, at + 8) !== 'VDXEXTNT' || bytes[at + 10] !== 2) continue
         const owner = bytes.readUInt32LE(at + 12)
         let offset = at + 4096 + 32
         while (offset + 13 <= at + extent && bytes.readUInt32LE(offset) === SYNC_MARKER) {
@@ -274,13 +274,13 @@ function corruptPayload(bytes, frame, at) {
 }
 
 /** The single-file harness page, driven from Node. */
-class FxdbPage {
+class VdbxPage {
     static async open(page) {
-        await page.goto(`${PLAIN_ORIGIN}/tests/browser/fixtures/fxdb-harness.html`, {
+        await page.goto(`${PLAIN_ORIGIN}/tests/browser/fixtures/vdbx-harness.html`, {
             waitUntil: 'domcontentloaded'
         })
         await expect(page.locator('[data-status="ready"]')).toBeVisible()
-        const harness = new FxdbPage(page)
+        const harness = new VdbxPage(page)
         expect((await harness.surface()).crossOriginIsolated).toBe(false)
         return harness
     }
@@ -290,12 +290,12 @@ class FxdbPage {
     }
 
     surface() {
-        return this.page.evaluate(() => globalThis.fxdb.surface())
+        return this.page.evaluate(() => globalThis.vdbx.surface())
     }
 
     /** Why OPFS working copies cannot run here, or ''. */
     opfs() {
-        return this.page.evaluate(() => globalThis.fxdb.opfs())
+        return this.page.evaluate(() => globalThis.vdbx.opfs())
     }
 
     /** Open a database and fail the test if the Worker refuses it. */
@@ -306,13 +306,13 @@ class FxdbPage {
     }
 
     tryOpen(source) {
-        return this.page.evaluate((source) => globalThis.fxdb.open(source), source)
+        return this.page.evaluate((source) => globalThis.vdbx.open(source), source)
     }
 
     /** The raw answer: `{ frames }`, `{ error, code }` or `{ timedOut }`. */
     run(id, requests, timeoutMs = 300_000) {
         return this.page.evaluate(
-            ([id, requests, timeoutMs]) => globalThis.fxdb.exec(id, requests, timeoutMs),
+            ([id, requests, timeoutMs]) => globalThis.vdbx.exec(id, requests, timeoutMs),
             [id, requests, timeoutMs]
         )
     }
@@ -328,26 +328,26 @@ class FxdbPage {
 
     start(id, requests) {
         return this.page.evaluate(
-            ([id, requests]) => globalThis.fxdb.start(id, requests),
+            ([id, requests]) => globalThis.vdbx.start(id, requests),
             [id, requests]
         )
     }
 
     kill(id) {
-        return this.page.evaluate((id) => globalThis.fxdb.kill(id), id)
+        return this.page.evaluate((id) => globalThis.vdbx.kill(id), id)
     }
 
     close(id) {
-        return this.page.evaluate((id) => globalThis.fxdb.close(id), id)
+        return this.page.evaluate((id) => globalThis.vdbx.close(id), id)
     }
 
     removeCopy(name) {
-        return this.page.evaluate((name) => globalThis.fxdb.removeCopy(name), name)
+        return this.page.evaluate((name) => globalThis.vdbx.removeCopy(name), name)
     }
 
     /** The whole file back in Node, checked against the digest the page took. */
     async snapshot(id) {
-        const shot = await this.page.evaluate((id) => globalThis.fxdb.snapshot(id), id)
+        const shot = await this.page.evaluate((id) => globalThis.vdbx.snapshot(id), id)
         const bytes = gunzipSync(Buffer.from(shot.gzipBase64, 'base64'))
         expect(bytes.length).toBe(shot.size)
         expect(sha256(bytes)).toBe(shot.sha256)
@@ -378,7 +378,7 @@ test.beforeAll(async ({}, workerInfo) => {
 
     // The main database: two collections with trained dictionaries, one
     // without, every frame written by native zstd.
-    const database = paths.disk('native.fxdb')
+    const database = paths.disk('native.vdbx')
     expectOk(
         nativeExec(database, [
             { op: 'createCollection', collection: 'users' },
@@ -402,7 +402,7 @@ test.beforeAll(async ({}, workerInfo) => {
     expect(inspected.result.codecs).toEqual(['zstd'])
 
     // A small database for damage, whose frames are easy to find.
-    const small = paths.disk('small.fxdb')
+    const small = paths.disk('small.vdbx')
     const smallIds = mintIds(40)
     expectOk(
         nativeExec(small, [
@@ -432,7 +432,7 @@ test('reads a native database, dictionaries and all, exactly as native does', as
 }, testInfo) => {
     // Firefox takes minutes for these reads on a loaded machine.
     test.setTimeout(1_200_000)
-    const harness = await FxdbPage.open(page)
+    const harness = await VdbxPage.open(page)
     // Ranged requests are slower per open, so they get fewer point reads.
     const reads = {
         file: [...readsOf(fixture.ids, 150), ...QUERIES],
@@ -453,13 +453,13 @@ test('reads a native database, dictionaries and all, exactly as native does', as
 
     // A picked file, then the same file by ranged requests.
     for (const kind of ['file', 'url']) {
-        const opened = await harness.open({ kind, url: fixture.paths.url('native.fxdb') })
+        const opened = await harness.open({ kind, url: fixture.paths.url('native.vdbx') })
         try {
             expect(opened.info.writable).toBe(false)
             const started = Date.now()
             const browser = await harness.exec(opened.id, reads[kind], 540_000)
             evidence[kind] = { ms: Date.now() - started, frames: browser.length }
-            console.log(`fxdb reads over ${kind}: ${evidence[kind].ms} ms`)
+            console.log(`vdbx reads over ${kind}: ${evidence[kind].ms} ms`)
             expectOk(browser, `browser reads (${kind})`)
             expectSameFrames(browser, native[kind], `reads over ${kind}`)
         } finally {
@@ -469,14 +469,14 @@ test('reads a native database, dictionaries and all, exactly as native does', as
     const documents = Object.values(fixture.ids).reduce((sum, list) => sum + list.length, 0)
     expect(documents).toBe(2 * DICTIONARY_RECORDS + NOTES)
     expect(sha256(readFileSync(fixture.database)), 'reading changed nothing').toBe(before)
-    await attach(testInfo, 'fxdb-native-reads', evidence)
+    await attach(testInfo, 'vdbx-native-reads', evidence)
 })
 
 test('edits a working copy in LZ4 that native reads, verifies and keeps writing, round after round', async ({
     page
 }, testInfo) => {
     test.setTimeout(900_000)
-    const harness = await FxdbPage.open(page)
+    const harness = await VdbxPage.open(page)
     await requireOpfs(harness)
     const { paths } = fixture
     const evidence = {}
@@ -546,8 +546,8 @@ test('edits a working copy in LZ4 that native reads, verifies and keeps writing,
     try {
         const opened = await harness.open({
             kind: 'copy',
-            label: 'round-trip.fxdb',
-            url: paths.url('native.fxdb')
+            label: 'round-trip.vdbx',
+            url: paths.url('native.vdbx')
         })
         copy = opened.name
         expect(opened.info.writable).toBe(true)
@@ -562,7 +562,7 @@ test('edits a working copy in LZ4 that native reads, verifies and keeps writing,
         evidence.round1.readMs = Date.now() - started
         const bytes = await harness.snapshot(opened.id)
         await harness.close(opened.id)
-        writeFileSync(paths.disk('round1.fxdb'), bytes)
+        writeFileSync(paths.disk('round1.vdbx'), bytes)
 
         // The browser's frames are LZ4, with the collection's dictionary
         // where it has one; what native wrote stays zstd.
@@ -576,12 +576,12 @@ test('edits a working copy in LZ4 that native reads, verifies and keeps writing,
 
         // Round 2, native: the same answers, a clean verify, then more writes.
         const native = expectOk(
-            nativeExec(paths.disk('round1.fxdb'), reads),
+            nativeExec(paths.disk('round1.vdbx'), reads),
             'native round 2 reads'
         )
         expectSameFrames(native, browserView, 'native reading the browser file')
         const [verified, nativeInspect] = expectOk(
-            nativeExec(paths.disk('round1.fxdb'), [
+            nativeExec(paths.disk('round1.vdbx'), [
                 { op: 'verifyDatabase' },
                 { op: 'inspectDatabase' }
             ])
@@ -615,16 +615,16 @@ test('edits a working copy in LZ4 that native reads, verifies and keeps writing,
                 .map((id) => ({ op: 'delDoc', collection: 'users', id })),
             ...browserEvents.slice(0, 30).map((id) => ({ op: 'delDoc', collection: 'events', id }))
         ]
-        expectOk(nativeExec(paths.disk('round1.fxdb'), round2), 'native round 2 writes')
+        expectOk(nativeExec(paths.disk('round1.vdbx'), round2), 'native round 2 writes')
         ids.users.push(...nativeUsers)
         ids.events.push(...nativeEvents)
         const reads3 = [...readsOf(ids), ...QUERIES]
         const nativeView = expectOk(
-            nativeExec(paths.disk('round1.fxdb'), reads3),
+            nativeExec(paths.disk('round1.vdbx'), reads3),
             'native round 2 view'
         )
         evidence.round2 = {
-            census: census(readFileSync(paths.disk('round1.fxdb')), collections)
+            census: census(readFileSync(paths.disk('round1.vdbx')), collections)
         }
         // Native writes zstd again, with the collection's dictionary.
         expect(evidence.round2.census.users['zstd+dict']).toBeGreaterThan(
@@ -635,8 +635,8 @@ test('edits a working copy in LZ4 that native reads, verifies and keeps writing,
         await harness.removeCopy(copy)
         const again = await harness.open({
             kind: 'copy',
-            label: 'round-trip.fxdb',
-            url: paths.url('round1.fxdb')
+            label: 'round-trip.vdbx',
+            url: paths.url('round1.vdbx')
         })
         copy = again.name
         expectSameFrames(
@@ -667,18 +667,18 @@ test('edits a working copy in LZ4 that native reads, verifies and keeps writing,
         const browserFinal = expectOk(await harness.exec(again.id, reads4), 'browser round 3 view')
         const finalBytes = await harness.snapshot(again.id)
         await harness.close(again.id)
-        writeFileSync(paths.disk('round3.fxdb'), finalBytes)
+        writeFileSync(paths.disk('round3.vdbx'), finalBytes)
         evidence.round3 = { census: census(finalBytes, collections) }
         expect(evidence.round3.census.notes.lz4 ?? 0).toBeGreaterThan(
             evidence.round1.census.notes.lz4 ?? 0
         )
         expectSameFrames(
-            expectOk(nativeExec(paths.disk('round3.fxdb'), reads4), 'native final reads'),
+            expectOk(nativeExec(paths.disk('round3.vdbx'), reads4), 'native final reads'),
             browserFinal,
             'native reading the third round'
         )
         const [finalVerify] = expectOk(
-            nativeExec(paths.disk('round3.fxdb'), [{ op: 'verifyDatabase' }])
+            nativeExec(paths.disk('round3.vdbx'), [{ op: 'verifyDatabase' }])
         )
         expect(finalVerify.result).toMatchObject({ ok: true, problems: [] })
 
@@ -689,8 +689,8 @@ test('edits a working copy in LZ4 that native reads, verifies and keeps writing,
         )
         expect(lz4.length).toBeGreaterThan(0)
         const damaged = corruptPayload(bytes, lz4[Math.floor(lz4.length / 2)], 0.5)
-        writeFileSync(paths.disk('lz4-damaged.fxdb'), damaged)
-        copyFileSync(paths.disk('lz4-damaged.fxdb'), paths.disk('lz4-damaged.native.fxdb'))
+        writeFileSync(paths.disk('lz4-damaged.vdbx'), damaged)
+        copyFileSync(paths.disk('lz4-damaged.vdbx'), paths.disk('lz4-damaged.native.vdbx'))
         const damageReads = [
             { op: 'verifyDatabase' },
             ...['users', 'orders', 'notes', 'events'].map((collection) => ({
@@ -700,10 +700,10 @@ test('edits a working copy in LZ4 that native reads, verifies and keeps writing,
             })),
             ...browserUsers.map((id) => ({ op: 'getDoc', collection: 'users', id }))
         ]
-        const reader = await harness.open({ kind: 'file', url: paths.url('lz4-damaged.fxdb') })
+        const reader = await harness.open({ kind: 'file', url: paths.url('lz4-damaged.vdbx') })
         try {
             const browserDamage = await harness.exec(reader.id, damageReads)
-            const nativeDamage = nativeExec(paths.disk('lz4-damaged.native.fxdb'), damageReads)
+            const nativeDamage = nativeExec(paths.disk('lz4-damaged.native.vdbx'), damageReads)
             evidence.lz4Damage = browserDamage
                 .filter((frame) => !frame.ok)
                 .slice(0, 3)
@@ -714,7 +714,7 @@ test('edits a working copy in LZ4 that native reads, verifies and keeps writing,
         }
     } finally {
         if (copy) await harness.removeCopy(copy)
-        await attach(testInfo, 'fxdb-round-trips', evidence)
+        await attach(testInfo, 'vdbx-round-trips', evidence)
     }
 })
 
@@ -722,7 +722,7 @@ test('a picked file and a hosted file refuse writes and keep their bytes', async
     page
 }, testInfo) => {
     test.setTimeout(300_000)
-    const harness = await FxdbPage.open(page)
+    const harness = await VdbxPage.open(page)
     const { paths, ids } = fixture
     const [fresh] = mintIds(1)
     const attempts = [
@@ -744,7 +744,7 @@ test('a picked file and a hosted file refuse writes and keep their bytes', async
     const expected = sha256(readFileSync(fixture.database))
     const evidence = {}
     for (const kind of ['file', 'url']) {
-        const opened = await harness.open({ kind, url: paths.url('native.fxdb') })
+        const opened = await harness.open({ kind, url: paths.url('native.vdbx') })
         try {
             expect(opened.info.writable).toBe(false)
             const refused = await harness.exec(opened.id, attempts)
@@ -776,14 +776,14 @@ test('a picked file and a hosted file refuse writes and keep their bytes', async
         evidence.file.map((frame) => frame.error?.code)
     )
     expect(sha256(readFileSync(fixture.database))).toBe(expected)
-    await attach(testInfo, 'fxdb-read-only-refusals', evidence)
+    await attach(testInfo, 'vdbx-read-only-refusals', evidence)
 })
 
 test('reports damaged and truncated files the way native does, without a trap or a hang', async ({
     page
 }, testInfo) => {
     test.setTimeout(600_000)
-    const harness = await FxdbPage.open(page)
+    const harness = await VdbxPage.open(page)
     const { paths, smallIds } = fixture
     const small = readFileSync(fixture.small)
     const extent = 2 ** small[24]
@@ -832,11 +832,11 @@ test('reports damaged and truncated files the way native does, without a trap or
     ]
     const evidence = {}
     for (const [label, bytes] of Object.entries(variants)) {
-        const name = `damaged-${label.replaceAll(' ', '-')}.fxdb`
+        const name = `damaged-${label.replaceAll(' ', '-')}.vdbx`
         writeFileSync(paths.disk(name), bytes)
         // Native gets its own copy, so nothing it might repair reaches the browser.
-        writeFileSync(paths.disk(`${name}.native.fxdb`), bytes)
-        const native = nativeExec(paths.disk(`${name}.native.fxdb`), requests)
+        writeFileSync(paths.disk(`${name}.native.vdbx`), bytes)
+        const native = nativeExec(paths.disk(`${name}.native.vdbx`), requests)
         const opened = await harness.open({ kind: 'file', url: paths.url(name) })
         try {
             const answer = await harness.run(opened.id, requests, 120_000)
@@ -860,7 +860,7 @@ test('reports damaged and truncated files the way native does, without a trap or
                 expectSameFrames(answer.frames, native, label, refusal)
                 for (const frame of answer.frames.filter((frame) => !frame.ok)) {
                     expect(frame.error.code, label).toMatch(
-                        /^(ENATIVE_DOCUMENT|ENATIVE_METADATA|EFXDB_CORRUPT)$/
+                        /^(ENATIVE_DOCUMENT|ENATIVE_METADATA|EVDBX_CORRUPT)$/
                     )
                 }
             } else {
@@ -877,14 +877,14 @@ test('reports damaged and truncated files the way native does, without a trap or
             await harness.close(opened.id)
         }
     }
-    await attach(testInfo, 'fxdb-damage', evidence)
+    await attach(testInfo, 'vdbx-damage', evidence)
 })
 
 test('a Worker killed mid-batch leaves a working copy native verifies', async ({
     page
 }, testInfo) => {
     test.setTimeout(600_000)
-    const harness = await FxdbPage.open(page)
+    const harness = await VdbxPage.open(page)
     await requireOpfs(harness)
     const { paths } = fixture
     const evidence = {}
@@ -898,8 +898,8 @@ test('a Worker killed mid-batch leaves a working copy native verifies', async ({
     }))
     const opened = await harness.open({
         kind: 'copy',
-        label: 'crash.fxdb',
-        url: paths.url('native.fxdb')
+        label: 'crash.vdbx',
+        url: paths.url('native.vdbx')
     })
     const copy = opened.name
     let reopened
@@ -969,9 +969,9 @@ test('a Worker killed mid-batch leaves a working copy native verifies', async ({
         const browserView = expectOk(await harness.exec(reopened.id, reads))
         const bytes = await harness.snapshot(reopened.id)
         await harness.close(reopened.id)
-        writeFileSync(paths.disk('crashed.fxdb'), bytes)
+        writeFileSync(paths.disk('crashed.vdbx'), bytes)
         const [nativeVerify] = expectOk(
-            nativeExec(paths.disk('crashed.fxdb'), [{ op: 'verifyDatabase' }])
+            nativeExec(paths.disk('crashed.vdbx'), [{ op: 'verifyDatabase' }])
         )
         evidence.nativeVerify = nativeVerify.result
         expect(nativeVerify.result.ok).toBe(true)
@@ -979,13 +979,13 @@ test('a Worker killed mid-batch leaves a working copy native verifies', async ({
             nativeVerify.result.problems.filter((problem) => problem.severity !== 'warning')
         ).toEqual([])
         expectSameFrames(
-            expectOk(nativeExec(paths.disk('crashed.fxdb'), reads)),
+            expectOk(nativeExec(paths.disk('crashed.vdbx'), reads)),
             browserView,
             'native reading the crashed copy'
         )
         const [more] = mintIds(1)
         expectOk(
-            nativeExec(paths.disk('crashed.fxdb'), [
+            nativeExec(paths.disk('crashed.vdbx'), [
                 { op: 'putData', collection: 'users', id: more, data: user(2) }
             ])
         )
@@ -994,7 +994,7 @@ test('a Worker killed mid-batch leaves a working copy native verifies', async ({
         // close it so the cleanup does not hide that failure behind its own.
         if (reopened?.id !== undefined) await harness.close(reopened.id).catch(() => {})
         await harness.removeCopy(copy)
-        await attach(testInfo, 'fxdb-crash', evidence)
+        await attach(testInfo, 'vdbx-crash', evidence)
     }
 })
 

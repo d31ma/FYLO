@@ -1,14 +1,14 @@
-// A remote control for `fylo-browser.wasm` over a single `.fxdb` file, on a
+// A remote control for `fylo-browser.wasm` over a single `.vdbx` file, on a
 // page served without cross-origin isolation, as a static host serves one.
 //
 // `engine-harness.mjs` drives the engine over an OPFS folder; this page drives
 // it over one database file through the shipped single-file Worker
-// (`dist-web/fxdb-worker.js`). It runs no scenario of its own: it exposes
-// `globalThis.fxdb`, and the specs open databases from bytes they hand over,
+// (`dist-web/vdbx-worker.js`). It runs no scenario of its own: it exposes
+// `globalThis.vdbx`, and the specs open databases from bytes they hand over,
 // run batches, kill the Worker mid-batch, and take the file back out to the
 // native engine.
 //
-// Bytes cross the page boundary as base64, gzipped when asked: a `.fxdb`
+// Bytes cross the page boundary as base64, gzipped when asked: a `.vdbx`
 // preallocates whole extents, so a 64 MiB file is mostly zeros and shrinks to
 // a few hundred kilobytes. A source can also name a URL on this origin, which
 // is how the specs hand over large native fixtures.
@@ -17,9 +17,9 @@ import {
     SingleFileDatabase,
     removeWorkingCopy,
     workingCopyName
-} from '/src/browser/fxdb-client.mjs'
+} from '/src/browser/vdbx-client.mjs'
 
-const WORKER_URL = '/dist-web/fxdb-worker.js'
+const WORKER_URL = '/dist-web/vdbx-worker.js'
 const MODULE_URL = '/dist-web/fylo-browser.wasm'
 
 /** @type {Map<number, { database: SingleFileDatabase, name?: string, kind: string }>} */
@@ -57,14 +57,14 @@ async function open(source) {
     let opened
     try {
         if (source.kind === 'copy') {
-            name = source.name ?? workingCopyName(source.label ?? 'harness.fxdb')
+            name = source.name ?? workingCopyName(source.label ?? 'harness.vdbx')
             opened = { kind: 'opfs', name, copyFrom: await blobOf(source) }
         } else if (source.kind === 'opfs') {
             name = source.name
             opened = { kind: 'opfs', name }
         } else if (source.kind === 'file') {
             const blob = await blobOf(source)
-            opened = { kind: 'file', file: new File([blob], source.label ?? 'picked.fxdb') }
+            opened = { kind: 'file', file: new File([blob], source.label ?? 'picked.vdbx') }
         } else if (source.kind === 'url') {
             opened = { kind: 'url', url: source.url }
         } else {
@@ -108,7 +108,7 @@ async function run(id, requests, timeoutMs) {
     return Promise.race([answer, timeout])
 }
 
-globalThis.fxdb = {
+globalThis.vdbx = {
     surface() {
         return {
             crossOriginIsolated: globalThis.crossOriginIsolated === true,
@@ -224,7 +224,7 @@ globalThis.fxdb = {
                 handshake: first.frames?.[0] ?? first
             }
         } finally {
-            await globalThis.fxdb.close(opened.id)
+            await globalThis.vdbx.close(opened.id)
         }
     }
 }
