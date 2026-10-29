@@ -179,7 +179,14 @@ flags without a `--`.
 | NFS 4.1, local nfsd, one client     | Linux 7.0 client in Docker on the Mac Mini | 2026-10-29 | passed | 1.1 ms | 35,120 exclusive entries, 0 overlaps; control caught 21,230; longest wait 257 ms | no |
 | NFS 4.1, local nfsd, two clients    | two Linux clients in Docker on the Mac Mini | 2026-10-29 | passed, one unexplained overlap | | 10 of 10 runs passed (15 s, 4 × 2 per client, `--sync`): ext4 export 45,428 exclusive entries, tmpfs export 101,418, 0 overlaps; one earlier tmpfs run had 1 overlap and 1 lost update in 23,700 entries | |
 | NTFS, Windows 11 26H2 (ARM64)      | Surface (Snapdragon X, 10 cores) | 2026-10-29 | passed | 1.6 ms | 34,244 exclusive entries, 0 overlaps; control caught 84,300; longest wait 6.0 s | no |
-| SMB, ATLAS on CITADEL               | two machines            | spike 2, run by the design thread |  |       |                                            |                             |
+| SMB 3.1.1 (`smbfs`, CITADEL ATLAS share), macOS | Mac Mini, two writer processes | 2026-10-29 | lease fallback | lease taken over 65 s after `kill -9` | the probe lock was refused, so the lock checks are skipped; writers 2 and 3 got `EBUSY` after 5.0 s while writer 1 held the lease; a reader ran 23,333 checked queries meanwhile with 0 failures | |
+
+On the ATLAS share, writing a `.fxdb` first needed two fixes, both on
+develop: the lease file is flushed with `fsync`, because `smbfs` refuses
+`F_FULLFSYNC` (`0a65795`), and `fylo pack` falls back to a rename when the
+filesystem refuses hard links with any error (`9f666cd`). Numbers and the
+full sequence are in `docs/QUERY_RELEASE_QUALIFICATION.md`, "Single-file
+`.fxdb` databases on ATLAS".
 
 A filesystem joins `QUALIFIED` in
 `crates/fylo-storage-native/src/byte_range_lock/filesystem.rs`, the list of

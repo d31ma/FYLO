@@ -695,6 +695,117 @@ migration in both directions.
 
 Logs, scripts and raw JSON are in `/Volumes/FORGE/Logs/FYLO/fylo-segments/`.
 
+## Single-file `.fxdb` databases on ATLAS, 2026-10-29
+
+ADR 0016 spikes 1 and 2: the segment-layout fixtures above, built locally
+with the same generator (two collections of 5,000 or 25,000 documents),
+packed into one `.fxdb` each and read on the raw ATLAS SMB share. Apple M4,
+16 GiB, macOS 27.2, Rust 1.97.1, release build of develop `512879d`, with
+a harness of `readcheck`'s queries plus a range scan and puts. Other builds
+kept the one-minute load at 5 to 8. Every run checked the identifier and
+body oracles for the selective, broad and range results.
+
+**Two defects found and fixed.** Develop at `16d52b8` could not write a
+`.fxdb` on the share at all. The lease file was flushed with
+`File::sync_data`, which is `F_FULLFSYNC` on Apple platforms, and macOS
+`smbfs` refuses that with `ENOTSUP`; it now uses a plain `fsync`
+(`0a65795`). `fylo pack` then still failed at the end, because it names
+its output with a hard link, `smbfs` refuses `link` with `ENOTSUP`, and Rust
+reports that errno as `Uncategorized`, so the rename fallback never ran;
+the fallback now takes any refused link (`9f666cd`). The timings below were
+taken at `512879d`, which has the first fix, on databases packed locally and
+copied to the share. At `9f666cd`, `fylo pack` straight onto the share
+succeeded in 9.7 s (5k) and 24.4 s (25k), and `fylo verify` passed on both.
+The pack still leaves its staging file's lease, marked free, behind as
+`.<name>.fxdb.pack-staging.lease.1`.
+
+**Size.** A `.fxdb` holds whole 8 MiB extents, and each collection's
+segments, dictionary, location table and index snapshot take at least one
+extent each, so a small database is mostly free extent space.
+
+| Fixture | Directory root (allocated / file bytes / files) | `.fxdb` file | Allocated on the server |
+| ------- | ----------------------------------------------- | -----------: | ----------------------: |
+| 5k      | 46.9 MiB / 17.5 MiB / 10,010                    |       96 MiB |                  96 MiB |
+| 25k     | 234.7 MiB / 87.5 MiB / 50,010                   |      144 MiB |                 128 MiB |
+
+**Warm reads.** Each `.fxdb` column is the median p50 of three fresh
+processes (30 samples at 5k and 10 at 25k, broad and range capped at 10).
+The segment column is the raw-share segment result above.
+
+| Query (ms, p50)                         | Segments, raw share | `.fxdb`, raw share | `.fxdb`, local APFS |
+| --------------------------------------- | ------------------: | -----------------: | ------------------: |
+| 5k selective, 50 rows                   |                0.78 |               0.59 |                0.53 |
+| 5k selective, parsed cache evicted      |               22.87 |              29.00 |               22.30 |
+| 5k broad, 2,500 rows                    |               21.77 |              18.96 |               19.49 |
+| 5k range, 5,000 rows                    |               40.24 |              32.65 |               32.35 |
+| 25k selective, 250 rows                 |                8.87 |               2.71 |                2.83 |
+| 25k selective, parsed cache evicted     |              322.48 |             117.65 |              112.64 |
+| 25k broad, 12,500 rows                  |              143.52 |              72.97 |               70.89 |
+| 25k range, 25,000 rows                  |              337.38 |             136.78 |              138.77 |
+
+Warm queries on the share run at local speed: a process reads the file
+through one handle, and the SMB client caches it.
+
+**Open and first query.** The segment layout paid 1.9 s (5k) and 5.4 s
+(25k) for the first query after opening on the share. No `purge` was
+available (sudo asks for a password), so a cold read was forced by
+touching the file and dropping CITADEL's page cache over SSH before each
+fresh process. The first such read after the copy was the slowest; the
+next two were close to a fresh process with the client cache warm, so the
+Mac's SMB client may still have held pages.
+
+| Open + first selective query (ms)    |          5k |             25k |
+| ------------------------------------ | ----------: | --------------: |
+| First read after the copy            | 63.6 + 488  |    19.8 + 1,717 |
+| After touch and cache drop, 2 runs   | 9–10 + 36–39 |    5–14 + 248–291 |
+| Fresh process, client cache warm     | 12.6 + 37   |      12.2 + 233 |
+| Fresh process, local APFS            | 0.2 + 28    |       0.1 + 243 |
+
+The 25k first query costs about 240 ms on the local disk as well, so
+after the first contact it is bound by loading the index snapshot, not by
+the share. A `fylo find` process for the same query took 98–302 ms at 5k
+and 284–421 ms at 25k after a touch and cache drop.
+
+**Puts.** 100 durable puts in one process into the `items` collection,
+after the reads, with the default `process` durability:
+
+| Put (ms)                        | 5k, share | 25k, share | 5k, local APFS | 25k, local APFS |
+| ------------------------------- | --------: | ---------: | -------------: | --------------: |
+| First put (takes the lease)     |     164.3 |      158.8 |            1.9 |             0.8 |
+| p50                             |     15.89 |      16.43 |           0.22 |            0.23 |
+| p95                             |     17.41 |      20.26 |           0.26 |            0.32 |
+
+On the share the writer holds the lock-free lease (the next section), and
+before every commit it lists the lease directory to check it still owns
+the lease. Each commit also flushes to the server. Locally it holds the
+lease byte through byte-range locks instead. `fylo verify` passed on both
+share databases after the puts (0.75 s and 0.70 s).
+
+**Locks (spike 2).** On the share `FilesystemInfo` reports `smbfs`,
+remote and not qualified, and the probe lock is refused, so a writer takes
+the lock-free lease. `fylo-lock-harness qualify` there reports "lease
+fallback". With two writer processes on this Mac and a 5k database on the
+share:
+
+- The first writer took lease generation 1 in its first put (180 ms).
+- Two further writers each failed with `EROOTLOCKED: ... container is busy
+  with other writers (EBUSY)` after 5.02 s and 5.08 s, the default busy
+  timeout.
+- A reader ran 23,333 checked selective queries over those 15 s with no
+  failure: p50 0.56 ms, p95 0.83 ms, longest 384 ms.
+- After the first writer closed, the next writer took the lease in 161 ms.
+- After `kill -9` of a writer holding the lease, a new writer got `EBUSY`
+  at once and again 35 s later. At 65 s, past twice the 30 s takeover time,
+  it took the lease over in 226 ms. Readers kept working throughout.
+
+On local APFS, for comparison, the same steps let all three writers write
+together through byte-range locks.
+
+Logs, scripts, the harness source and raw JSON are in
+`/Volumes/FORGE/Logs/FYLO/fxdb-atlas/`. The `spike1-unpatched`,
+`spike1-patched-packfail` and `atlas-smb-*` folders hold the runs that hit
+the two defects.
+
 ## Cloud Run and Azure Functions, local only, 2026-10-11
 
 `bun run cloudrun:local` and `bun run azure:local`
