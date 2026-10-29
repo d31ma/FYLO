@@ -20,7 +20,7 @@ export default class {
         },
         {
             group: 'Schemas',
-            items: 'schemaInspect, schemaCurrent, schemaHistory, schemaDoctor, schemaValidate, schemaMaterialize'
+            items: 'schemaInspect, schemaCurrent, schemaHistory, schemaDoctor, schemaValidate, schemaMaterialize, schemaMode, schemaCheck, schemaMigrate, schemaPush, schemaPull'
         },
         {
             group: 'Serverless queue',

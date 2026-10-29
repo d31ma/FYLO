@@ -109,6 +109,11 @@ export default class {
             retry: 'Narrow the query.'
         },
         {
+            code: 'ESCHEMACONFLICT',
+            meaning: 'A pushed schema label is already committed with different content.',
+            retry: 'Do not retry; give the changed schema a new version label.'
+        },
+        {
             code: 'EFXDB_NOT_FXDB',
             meaning: 'The file is not a .fxdb database.',
             retry: 'Do not retry; check the path.'

@@ -985,6 +985,57 @@ Behavior:
 - Any collection directory under `fylo.schema` that contains a `manifest.json` is auto-created on `new Fylo(...)`; await `fylo.ready()` if you need the bootstrap to settle before issuing reads from a synchronous probe (mutation/query methods await internally)
 - FYLO documents cannot hold arrays of objects — declare each nested object as its own collection. A write of a document with `items: [{ name: '...' }]` fails with `EARRAYOFOBJECTS`, even if its CHEX schema describes the array. Arrays of scalars and nested objects (as fields) are fine.
 
+### Schema registry: `fylo schema push` and `pull`
+
+The folder is where schemas are written and kept in source control. A
+directory root also keeps its own copy, the **schema registry** (ADR 0017
+section 3): each committed version of a collection's schema is one immutable
+file, `<root>/.fylo-schemas/<collection>/<ordinal>.json`, holding its label
+(the `_v` value), the CHEX schema with its `$encrypted` list, its SHA-256,
+its JSON migration from the previous version, the compiled validator and when
+and by what it was committed. The collection's catalog descriptor records the
+head version.
+
+```bash
+fylo schema push article --schema-dir ./schemas --root /mnt/fylo   # commit new versions
+fylo schema pull article --out ./schemas-copy --root /mnt/fylo     # write the folder layout back out
+```
+
+- `fylo schema push` (`schemaPush`) commits, in manifest order, each version of
+  the folder that the registry does not have yet. Before committing it
+  migrates the collection's documents (all of them up to 10,000, an evenly
+  spaced sample above that) to the new head and validates them there; if any
+  fail it commits nothing and names the first failures. A label already
+  committed with different content is refused with `ESCHEMACONFLICT`:
+  committed versions never change, so give the change a new label. It also
+  refuses a migration with a JavaScript upgrader (ADR 0018), a top-level `$`
+  key other than `$encrypted`, and an array whose items are objects
+  (`EARRAYOFOBJECTS`). A version with a pattern that has no DFA form (a
+  Unicode `\b`) is committed with a warning that builds without a regex
+  compiler cannot validate it.
+- `fylo schema pull` (`schemaPull`) writes the registry out as a
+  `fylo.schema` folder: manifest, history and migrations.
+- Once a collection has a registry, validation, `_v` stamping, `$encrypted`
+  lists, `schemaMaterialize`, `schemaMigrate`, `schemaInspect` and
+  `schemaDoctor` read it, whether or not `fylo.schema` is configured, and edits
+  to the folder take effect at the next push. A collection without one keeps
+  reading the folder, as before.
+- `"schema": { "path": "./schemas", "autoPush": true }` in `application.json`
+  pushes every folder collection the root has whenever a write opens the root,
+  which keeps the "edit the file, the next write uses it" workflow for
+  development. It is off by default; `"schema": "./schemas"` is the same as
+  `{ "path": "./schemas" }`.
+- The first time a write opens a root with a `fylo.schema` folder, every
+  existing collection the folder versions is imported into the registry once,
+  without a dry run, and `<root>/.fylo-schemas/import.json` records it, so
+  upgrading does not silently drop validation. Collections created later wait
+  for a push.
+- A collection with a registry also writes its generation state in a format
+  older releases refuse with `ENATIVE_METADATA`, so a binary that cannot read
+  the registry cannot write unvalidated documents to it.
+- Push and pull work on the `main` branch: the registry is shared by every
+  branch, and a push checks the documents of the checked-out one.
+
 ---
 
 ## Encryption
@@ -1084,6 +1135,8 @@ fylo schema doctor article --schema-dir ./schemas
 fylo schema validate article @article.json --schema-dir ./schemas --json
 fylo schema mode article warn --root /mnt/fylo        # off, warn or strict
 fylo schema check article --schema-dir ./schemas --json  # documents the head rejects
+fylo schema push article --schema-dir ./schemas          # commit new versions to the registry
+fylo schema pull article --out ./schemas-copy            # write the registry back out
 ```
 
 Each collection has a schema validation mode, kept in its catalog descriptor
@@ -1356,6 +1409,8 @@ text.
 | `EROOTLOCKED` / `EROOTLEASELOST`                                       | Exclusive root ownership was unavailable or lost                           | Fail over per your supervisor policy                             |
 | `EFRAME_*`                                                             | Frame-contract violations, as documented above                             | Per the framing rules above                                      |
 | `EQUERYLOOPREQUIRED` / `EQUERYITEMTOOLARGE` / `EQUERYSNAPSHOTTOOLARGE` | Pagination contract violations, as documented above                        | Per the pagination rules above                                   |
+| `ESCHEMA`                                                              | A document does not match the head schema, or a schema is invalid          | Do not retry; fix the document or schema                         |
+| `ESCHEMACONFLICT`                                                      | A pushed schema label is already committed with different content          | Do not retry; give the changed schema a new version label        |
 | `EFXDB_NOT_FXDB` / `EFXDB_VERSION`                                     | The file is not a `.fxdb` database, or needs a newer FYLO                  | Do not retry; open it with a build that supports it              |
 | `EFXDB_CORRUPT`                                                        | A `.fxdb` structure failed its checks                                      | Do not retry; run `fylo verify <db.fxdb>`                        |
 | `ENATIVE_IO`                                                           | Native filesystem I/O failed, including disk pressure or xattr operations  | Treat a mutation as ambiguous; inspect the cause before retrying |

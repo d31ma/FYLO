@@ -19,6 +19,24 @@
   (ADR 0016). Browsing the collections inside the file arrives with the
   single-file format in the engine; the folder view is unchanged.
 
+- **Schema registry for directory roots (ADR 0017 section 3).** A root keeps
+  each committed version of a collection's schema as an immutable file,
+  `<root>/.fylo-schemas/<collection>/<ordinal>.json` (label, CHEX source with
+  `$encrypted`, SHA-256, JSON migration, compiled validator, commit time and
+  actor), with the head in the collection's catalog descriptor.
+  `fylo schema push <collection>` (`schemaPush`) commits the `fylo.schema`
+  folder's new versions in manifest order after a dry run that migrates the
+  collection's documents (a sample above 10,000) and validates them; it refuses
+  a changed committed label with the new `ESCHEMACONFLICT`, JavaScript
+  upgraders, `$` directives other than `$encrypted`, and arrays of objects
+  (`EARRAYOFOBJECTS`). `fylo schema pull <collection> --out DIR`
+  (`schemaPull`) writes the registry back out as the folder layout. Once a
+  collection has a registry, validation, `_v` stamping, encryption lists,
+  materialization and migration read it, with or without a folder.
+  `fylo.schema` may be `{ "path": ..., "autoPush": true }` to push at open
+  (off by default), and the first write open of a root with a folder imports
+  its existing collections once. A registry collection writes its generation
+  state as `fylo.collection-generation.v3`, which older releases refuse.
 - **`fylo schema migrate <collection>`** (`schemaMigrate`) rewrites the
   documents below a collection's head schema version at the head, through the
   same validation and encryption as any write. A document without `_v` is

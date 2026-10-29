@@ -107,6 +107,11 @@ nested key:
 | `FYLO_ENCRYPTION_KEY` | `fylo.encryption.key` | string secret reference |
 | `FYLO_CIPHER_SALT` | `fylo.cipher.salt` | string secret reference |
 
+`fylo.schema` may also be an object, `{ "path": "./schemas", "autoPush": true }`.
+`path` is the folder, and `autoPush` (default `false`) pushes the folder's new
+versions into the root's schema registry whenever a write opens the root, as
+`fylo schema push` would (ADR 0017 section 3).
+
 CHEX schema validation now runs inside FYLO, so `fylo.chex.binary` no longer
 exists. A configuration that still sets `fylo.chex` fails with a message asking
 you to remove it.
