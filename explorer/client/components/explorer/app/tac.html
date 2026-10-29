@@ -10,7 +10,7 @@
                 >{rootName}</w-chip
             >
         </logic>
-        <logic :if="status === 'open' && writable">
+        <logic :if="status === 'open' && rootWritable">
             <span class="explorer-write-status" role="status" aria-label="Write access enabled"
                 >writes on</span
             >
@@ -38,7 +38,7 @@
         >
             <w-icon name="◐"></w-icon>
         </button>
-        <logic :if="status === 'open' && !writable">
+        <logic :if="status === 'open' && !rootWritable">
             <button type="button" class="w-btn w-btn-outlined w-btn--sm" on:click="enableWrites()">
                 Enable writes
             </button>
@@ -63,7 +63,7 @@
             </button>
         </div>
     </logic>
-    <logic :if="writable && lockWarning">
+    <logic :if="rootWritable && lockWarning">
         <w-alert variant="warning" title="Database may be in use">
             This root has live lock files — another FYLO process may be writing to it. There is no
             cross-process locking from a browser; concurrent writes are last-writer-wins.
@@ -367,6 +367,15 @@
                     </button>
                 </logic>
             </div>
+            <logic :if="view === 'docs' && active && schemaLocked[active]">
+                <div class="explorer-schema-notice" role="note">
+                    <w-alert variant="info" title="Read-only: this collection has a schema">
+                        This folder view runs an engine that cannot check {active}'s schema,
+                        so it does not write to it. Write to it with the FYLO CLI or your
+                        application.
+                    </w-alert>
+                </div>
+            </logic>
             <div
                 :class="'explorer-body ' + paneClass()"
                 :style="bodyStyle()"
@@ -1129,6 +1138,9 @@
                             :value="draft"
                             on:input="draftInput(event)"
                         ></textarea>
+                        <logic :if="fieldError">
+                            <p class="explorer-field-error" role="alert">{schemaErrorText()}</p>
+                        </logic>
                         <div class="explorer-filter">
                             <button
                                 type="button"
@@ -1150,7 +1162,7 @@
                         <div class="explorer-jsonedit">
                             <div class="jsonedit-brace">{</div>
                             <loop :for="let f of editView()">
-                                <div class="jsonedit-line">
+                                <div :class="f.invalid ? 'jsonedit-line is-invalid' : 'jsonedit-line'">
                                     <span class="jsonedit-key">"{f.key}":</span>
                                     <logic :if="f.literal">
                                         <span class="jsonedit-lit">null</span>
@@ -1163,6 +1175,7 @@
                                             class="w-input jsonedit-input"
                                             spellcheck="false"
                                             aria-label="Value for {f.key}"
+                                            :aria-invalid="f.invalid ? 'true' : 'false'"
                                             :size="f.value.length || 1"
                                             :value="f.value"
                                             on:input="fieldValueInput(f.key, event)"
@@ -1174,10 +1187,18 @@
                                     <logic :if="f.comma"
                                         ><span class="jsonedit-punct">,</span></logic
                                     >
+                                    <logic :if="f.invalid">
+                                        <span class="jsonedit-error" role="alert"
+                                            >{fieldError.message}</span
+                                        >
+                                    </logic>
                                 </div>
                             </loop>
                             <div class="jsonedit-brace">}</div>
                         </div>
+                        <logic :if="fieldErrorOffEditor()">
+                            <p class="explorer-field-error" role="alert">{schemaErrorText()}</p>
+                        </logic>
                         <div class="explorer-filter">
                             <button
                                 type="button"
