@@ -3,12 +3,12 @@ use std::path::Path;
 use serde_json::json;
 
 use super::super::{
-    durable_replace, durable_replace_owner_only, ensure_directory, json_error, sync_directory,
-    write_if_missing, write_json_durable,
+    durable_replace, ensure_directory, json_error, sync_directory, write_if_missing,
+    write_json_durable,
 };
 use super::log_segment::LogSegment;
 use super::segment_checkpoint::SegmentCheckpoint;
-use crate::segments::{GenerationSlots, SegmentPaths, SlotRecord};
+use crate::segments::{DirectoryMedium, SegmentMedium, SlotRecord};
 use crate::{NativeRoot, NativeStorageError};
 
 /// Lays out an empty segment collection (ADR 0015 section 2).
@@ -33,18 +33,18 @@ impl SegmentLayout {
         directory: &Path,
         generation: u64,
     ) -> Result<(), NativeStorageError> {
-        let paths = SegmentPaths::of(directory);
-        if crate::path_exists_no_follow(&paths.slots())? {
+        let medium = DirectoryMedium::of(directory);
+        if medium.has_slots()? {
             return Ok(());
         }
         ensure_directory(root, directory)?;
         ensure_directory(root, &directory.join("locks"))?;
         Self::create_index(root, directory)?;
-        ensure_directory(root, paths.directory())?;
-        durable_replace_owner_only(&paths.locations_snapshot(), b"")?;
-        durable_replace_owner_only(&paths.locations_wal(), b"")?;
-        let slot = Self::create_first_segment(&paths, directory, generation)?;
-        GenerationSlots::at(&paths.slots()).create(&slot)?;
+        medium.create_directory(root)?;
+        medium.replace_location_snapshot(b"")?;
+        medium.reset_location_log()?;
+        let slot = Self::create_first_segment(&medium, directory, generation)?;
+        medium.create_slots(&slot)?;
         durable_replace(&directory.join("docs"), Self::FENCE)?;
         sync_directory(directory)
     }
@@ -78,18 +78,15 @@ impl SegmentLayout {
     }
 
     fn create_first_segment(
-        paths: &SegmentPaths,
+        medium: &dyn SegmentMedium,
         directory: &Path,
         generation: u64,
     ) -> Result<SlotRecord, NativeStorageError> {
-        let manifest = SegmentCheckpoint::manifest(directory)?;
+        let manifest = SegmentCheckpoint::manifest(directory, medium)?;
         let bytes = serde_json::to_vec(&manifest).map_err(|error| json_error(&error))?;
-        let path = paths.segment(Self::FIRST_SEGMENT);
-        if crate::path_exists_no_follow(&path)? {
-            fylo_vfs::remove_file(&path).map_err(NativeStorageError::io)?;
-        }
+        medium.remove_segment(Self::FIRST_SEGMENT)?;
         let mut segment = LogSegment::create_documents(
-            &path,
+            medium,
             (Self::FIRST_SEGMENT, Self::FIRST_LSN),
             bytes,
             generation,

@@ -14,7 +14,7 @@ use super::log_checkpoint::LogCheckpoint;
 use super::segment_checkpoint::SegmentCheckpoint;
 use super::segment_import::SegmentImport;
 use super::segment_layout::SegmentLayout;
-use crate::segments::{LocationState, SegmentPaths, TableCache};
+use crate::segments::{DirectoryMedium, LocationState, TableCache};
 use crate::{
     CollectionKind, CollectionLayout, FilesystemProfile, NativeCollection, NativeStorageError,
     NativeStorageErrorCode,
@@ -215,7 +215,9 @@ impl NativeWriteRoot {
         staging: &Path,
     ) -> Result<(), NativeStorageError> {
         let copies = match layout {
-            CollectionLayout::Segments => DocumentImage::read_segments(staging)?,
+            CollectionLayout::Segments => {
+                DocumentImage::read_segments(DirectoryMedium::shared(staging))?
+            }
             CollectionLayout::Files => images
                 .iter()
                 .map(|image| {
@@ -270,7 +272,7 @@ impl NativeWriteRoot {
         let staging = collection.path.join(Self::STAGING);
         let retired = collection.path.join(Self::RETIRED);
         self.finish_state(collection, &marker)?;
-        TableCache::shared().forget(&SegmentPaths::of(&collection.path));
+        TableCache::shared().forget(&*collection.segment_medium());
         remove_dir_durable(&retired)?;
         if crate::path_exists_no_follow(&staging)? {
             remove_dir_durable(&staging)?;

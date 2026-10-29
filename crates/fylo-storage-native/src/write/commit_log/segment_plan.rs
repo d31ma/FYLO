@@ -1,14 +1,12 @@
 use std::collections::BTreeSet;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use fylo_format::LogRecord;
-use fylo_vfs::OpenOptions;
 
 use super::logged_plan::LoggedPlan;
 use super::placed_record::PlacedRecord;
 use crate::segments::{
-    LocationState, SegmentBody, SegmentCommitManifest, SegmentEntry, SegmentLocation, SegmentPaths,
+    LocationState, SegmentBody, SegmentCommitManifest, SegmentEntry, SegmentLocation, SegmentMedium,
 };
 use crate::write::{NativeWriteRoot, failpoint, json_error};
 use crate::{NativeCollection, NativeRoot, NativeStorageError, NativeStorageErrorCode};
@@ -136,7 +134,7 @@ impl SegmentPlan {
 
     /// Append location rows to the collection's location log.
     pub(crate) fn append_locations(
-        collection: &Path,
+        medium: &dyn SegmentMedium,
         rows: &[SegmentLocation],
     ) -> Result<(), NativeStorageError> {
         if rows.is_empty() {
@@ -146,12 +144,7 @@ impl SegmentPlan {
         for row in rows {
             bytes.extend_from_slice(&row.encode()?);
         }
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(SegmentPaths::of(collection).locations_wal())
-            .map_err(NativeStorageError::io)?;
-        file.write_all(&bytes).map_err(NativeStorageError::io)
+        medium.append_location_log(&bytes)
     }
 }
 
@@ -181,7 +174,7 @@ impl LoggedPlan for SegmentPlan {
         collection: &NativeCollection,
         placed: &PlacedRecord,
     ) -> Result<(), (NativeStorageError, bool)> {
-        Self::append_locations(&collection.path, &self.rows(placed))
+        Self::append_locations(&*collection.segment_medium(), &self.rows(placed))
             .map_err(|error| (error, false))?;
         let delta = NativeWriteRoot::index_lines(&self.index_removed, &self.index_added);
         NativeWriteRoot::append_index(collection, &delta).map_err(|error| (error, true))?;
@@ -194,7 +187,7 @@ impl LoggedPlan for SegmentPlan {
         collection: &NativeCollection,
         index_applied: bool,
     ) -> Result<(), NativeStorageError> {
-        Self::append_locations(&collection.path, &self.undo_rows())?;
+        Self::append_locations(&*collection.segment_medium(), &self.undo_rows())?;
         if index_applied {
             let inverse = NativeWriteRoot::index_lines(&self.index_added, &self.index_removed);
             NativeWriteRoot::append_index(collection, &inverse)?;

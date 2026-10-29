@@ -1,12 +1,12 @@
-use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use fylo_format::{LogRecord, LogRecordKind, LogScan, LogSegmentHeader, LogSegmentKind};
-use fylo_vfs::{self as fs, File, OpenOptions};
+use fylo_vfs as fs;
 
 use super::super::{json_error, sync_directory};
 use super::checkpoint_manifest::CheckpointManifest;
+use crate::segments::{FileSegment, SegmentHandle, SegmentMedium};
 use crate::{Durability, LogPosition, NativeStorageError, NativeStorageErrorCode};
 
 /// The open write-ahead log segment of one collection, or the active
@@ -15,12 +15,15 @@ use crate::{Durability, LogPosition, NativeStorageError, NativeStorageErrorCode}
 /// A file collection has one log segment at a time. A checkpoint removes it,
 /// and the next commit creates a new one whose first record is a checkpoint.
 /// A segment collection's active segment is never removed: it is sealed when
-/// it grows large, and the next one opens with a checkpoint record.
+/// it grows large, and the next one opens with a checkpoint record. A log
+/// segment is a file at a known path; a document segment lives in its
+/// collection's [`SegmentMedium`].
 #[derive(Debug)]
 pub(crate) struct LogSegment {
     kind: LogSegmentKind,
-    file: Arc<File>,
-    path: PathBuf,
+    handle: Arc<dyn SegmentHandle>,
+    log_path: Option<PathBuf>,
+    max_bytes: u64,
     nonce: u64,
     length: u64,
     next_lsn: u64,
@@ -30,21 +33,44 @@ pub(crate) struct LogSegment {
 
 impl LogSegment {
     const FIRST_LSN: u64 = 1;
-    const MAX_SEGMENT_BYTES: u64 = 1024 * 1024 * 1024;
+    const MAX_LOG_BYTES: u64 = 1024 * 1024 * 1024;
 
-    /// Open the segment `position` describes, or `None` when the file is
-    /// missing or differs from it.
+    /// Open the log segment `position` describes, or `None` when the file
+    /// is missing or differs from it.
     pub(crate) fn open_matching(
         path: &Path,
         position: &LogPosition,
     ) -> Result<Option<Self>, NativeStorageError> {
-        let file = match OpenOptions::new().read(true).write(true).open(path) {
-            Ok(file) => file,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(NativeStorageError::io(error)),
+        let Some(file) = FileSegment::open(path)? else {
+            return Ok(None);
         };
-        let length = file.metadata().map_err(NativeStorageError::io)?.len();
-        let header = Self::read_header(&file)?;
+        Self::matching(
+            Arc::new(file),
+            (Some(path.to_owned()), Self::MAX_LOG_BYTES),
+            position,
+        )
+    }
+
+    /// Open the document segment `position` describes, or `None` when it is
+    /// missing or differs from it.
+    pub(crate) fn open_segment_matching(
+        medium: &dyn SegmentMedium,
+        position: &LogPosition,
+    ) -> Result<Option<Self>, NativeStorageError> {
+        let number = u64::from_str_radix(&position.nonce, 16).unwrap_or(u64::MAX);
+        let Some(handle) = medium.write_handle(number)? else {
+            return Ok(None);
+        };
+        Self::matching(handle, (None, medium.max_segment_bytes()), position)
+    }
+
+    fn matching(
+        handle: Arc<dyn SegmentHandle>,
+        (log_path, max_bytes): (Option<PathBuf>, u64),
+        position: &LogPosition,
+    ) -> Result<Option<Self>, NativeStorageError> {
+        let length = handle.length()?;
+        let header = Self::read_header(&*handle, length)?;
         let matches = header.is_some_and(|header| Self::hex(header.sequence) == position.nonce)
             && length == position.length;
         if !matches {
@@ -52,8 +78,9 @@ impl LogSegment {
         }
         Ok(Some(Self {
             kind: header.map_or(LogSegmentKind::WriteAheadLog, |header| header.kind),
-            file: Arc::new(file),
-            path: path.to_owned(),
+            handle,
+            log_path,
+            max_bytes,
             nonce: header.map_or(0, |header| header.sequence),
             length,
             next_lsn: position.next_lsn,
@@ -64,20 +91,22 @@ impl LogSegment {
 
     /// Open a document segment whose valid length a recovery scan found.
     pub(crate) fn open_scanned(
-        path: &Path,
+        medium: &dyn SegmentMedium,
         (sequence, length): (u64, u64),
         next_lsn: u64,
     ) -> Result<Self, NativeStorageError> {
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(path)
-            .map_err(NativeStorageError::io)?;
-        file.set_len(length).map_err(NativeStorageError::io)?;
+        let handle = medium.write_handle(sequence)?.ok_or_else(|| {
+            NativeStorageError::io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("segment {sequence} does not exist"),
+            ))
+        })?;
+        handle.truncate(length)?;
         Ok(Self {
             kind: LogSegmentKind::Documents,
-            file: Arc::new(file),
-            path: path.to_owned(),
+            handle,
+            log_path: None,
+            max_bytes: medium.max_segment_bytes(),
             nonce: sequence,
             length,
             next_lsn,
@@ -108,13 +137,20 @@ impl LogSegment {
             first_lsn: Self::FIRST_LSN,
             generation,
         };
-        Self::create_with(path, &opening, manifest)
+        let bytes = Self::opening_bytes(&opening, manifest)?;
+        let file = FileSegment::create(path, &bytes, opening.kind.marked())?;
+        Ok(Self::created(
+            &opening,
+            Arc::new(file),
+            (Some(path.to_owned()), Self::MAX_LOG_BYTES),
+            bytes.len(),
+        ))
     }
 
     /// Create document segment `number`, opening with a checkpoint record
     /// whose manifest is `manifest`, at sequence number `first_lsn`.
     pub(crate) fn create_documents(
-        path: &Path,
+        medium: &dyn SegmentMedium,
         (number, first_lsn): (u64, u64),
         manifest: Vec<u8>,
         generation: u64,
@@ -125,14 +161,21 @@ impl LogSegment {
             first_lsn,
             generation,
         };
-        Self::create_with(path, &opening, manifest)
+        let bytes = Self::opening_bytes(&opening, manifest)?;
+        let handle = medium.create_segment(number, &bytes)?;
+        Ok(Self::created(
+            &opening,
+            handle,
+            (None, medium.max_segment_bytes()),
+            bytes.len(),
+        ))
     }
 
-    fn create_with(
-        path: &Path,
+    /// A new segment's header and opening checkpoint record.
+    fn opening_bytes(
         opening: &SegmentOpening,
         manifest: Vec<u8>,
-    ) -> Result<Self, NativeStorageError> {
+    ) -> Result<Vec<u8>, NativeStorageError> {
         let header = LogSegmentHeader {
             kind: opening.kind,
             sequence: opening.sequence,
@@ -147,21 +190,26 @@ impl LogSegment {
         };
         let mut bytes = header.encode().to_vec();
         bytes.extend(Self::frame(opening.kind, &record)?);
-        let mut options = OpenOptions::new();
-        options.read(true).write(true).create_new(true);
-        Self::owner_only(&mut options, opening.kind);
-        let mut file = options.open(path).map_err(NativeStorageError::io)?;
-        file.write_all(&bytes).map_err(NativeStorageError::io)?;
-        Ok(Self {
+        Ok(bytes)
+    }
+
+    fn created(
+        opening: &SegmentOpening,
+        handle: Arc<dyn SegmentHandle>,
+        (log_path, max_bytes): (Option<PathBuf>, u64),
+        length: usize,
+    ) -> Self {
+        Self {
             kind: opening.kind,
-            file: Arc::new(file),
-            path: path.to_owned(),
+            handle,
+            log_path,
+            max_bytes,
             nonce: opening.sequence,
-            length: bytes.len() as u64,
+            length: length as u64,
             next_lsn: opening.first_lsn + 1,
             records: 0,
             fresh: true,
-        })
+        }
     }
 
     /// Append encoded records. A failed append is cut back off, so nothing
@@ -178,7 +226,7 @@ impl LogSegment {
         self.length += bytes.len() as u64;
         self.next_lsn += records;
         self.records += records;
-        if self.length > Self::MAX_SEGMENT_BYTES {
+        if self.length > self.max_bytes {
             return Err(NativeStorageError::new(
                 NativeStorageErrorCode::FileTooLarge,
                 "write-ahead log segment exceeds its limit",
@@ -187,19 +235,15 @@ impl LogSegment {
         Ok(())
     }
 
-    /// Write at the segment's known end. The handle is not opened for
-    /// appending, because Windows cannot truncate an append-only handle, and a
-    /// failed append must be cut back off.
+    /// Write at the segment's known end, so a failed append can be cut back
+    /// off.
     fn write_at_end(&self, bytes: &[u8]) -> Result<(), NativeStorageError> {
-        let mut file = &*self.file;
-        file.seek(SeekFrom::Start(self.length))
-            .and_then(|_| file.write_all(bytes))
-            .map_err(NativeStorageError::io)
+        self.handle.write_at(bytes, self.length)
     }
 
     /// Cut the segment back to `length` bytes.
     pub(crate) fn truncate(&mut self, length: u64) -> Result<(), NativeStorageError> {
-        self.file.set_len(length).map_err(NativeStorageError::io)?;
+        self.handle.truncate(length)?;
         self.length = length;
         Ok(())
     }
@@ -218,11 +262,14 @@ impl LogSegment {
     /// A handle a flusher can use without holding the queue's state.
     pub(crate) fn flush_handle(&self) -> LogFlush {
         LogFlush {
-            file: Arc::clone(&self.file),
-            directory: self
-                .fresh
-                .then(|| self.path.parent().map(Path::to_owned))
-                .flatten(),
+            handle: Arc::clone(&self.handle),
+            created: self.fresh,
+            log_parent: self
+                .log_path
+                .as_deref()
+                .and_then(Path::parent)
+                .and_then(Path::parent)
+                .map(Path::to_owned),
         }
     }
 
@@ -231,8 +278,9 @@ impl LogSegment {
         self.fresh = false;
     }
 
-    pub(crate) fn path(&self) -> &Path {
-        &self.path
+    /// The file of a write-ahead log segment; `None` for a document segment.
+    pub(crate) fn log_path(&self) -> Option<&Path> {
+        self.log_path.as_deref()
     }
 
     pub(crate) fn next_lsn(&self) -> u64 {
@@ -287,20 +335,18 @@ impl LogSegment {
     }
 
     /// Flush the segment through the drive cache (`F_FULLFSYNC` on Apple),
-    /// with its directory entry when the segment is new.
+    /// with its name when the segment is new.
     pub(crate) fn full_flush(&mut self) -> Result<(), NativeStorageError> {
-        self.file.sync_all().map_err(NativeStorageError::io)?;
+        self.handle.sync(Durability::PowerLoss)?;
         if self.fresh {
-            if let Some(directory) = self.path.parent() {
-                sync_directory(directory)?;
-            }
+            self.handle.sync_created()?;
             self.fresh = false;
         }
         Ok(())
     }
 
-    /// Read and scan a whole segment, or `None` when it does not exist or
-    /// its header never became valid.
+    /// Read and scan a whole log segment, or `None` when it does not exist
+    /// or its header never became valid.
     pub(crate) fn scan(path: &Path) -> Result<Option<LogScan>, NativeStorageError> {
         match fs::read(path) {
             Ok(bytes) => Ok(LogScan::segment(&bytes).ok()),
@@ -309,28 +355,30 @@ impl LogSegment {
         }
     }
 
-    fn read_header(file: &File) -> Result<Option<LogSegmentHeader>, NativeStorageError> {
+    /// Read and scan a whole document segment, or `None` when it does not
+    /// exist or its header never became valid.
+    pub(crate) fn scan_segment(
+        medium: &dyn SegmentMedium,
+        number: u64,
+    ) -> Result<Option<LogScan>, NativeStorageError> {
+        Ok(medium
+            .read_segment(number)?
+            .and_then(|bytes| LogScan::segment(&bytes).ok()))
+    }
+
+    /// The header of a segment `length` bytes long, or `None` when it is
+    /// too short to hold one or its header is not valid.
+    fn read_header(
+        handle: &dyn SegmentHandle,
+        length: u64,
+    ) -> Result<Option<LogSegmentHeader>, NativeStorageError> {
         let mut bytes = [0_u8; LogSegmentHeader::ENCODED_BYTES];
-        let mut reader = file;
-        match std::io::Read::read_exact(&mut reader, &mut bytes) {
-            Ok(()) => Ok(LogSegmentHeader::decode(&bytes).ok()),
-            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => Ok(None),
-            Err(error) => Err(NativeStorageError::io(error)),
+        if length < bytes.len() as u64 {
+            return Ok(None);
         }
+        handle.read_at(&mut bytes, 0)?;
+        Ok(LogSegmentHeader::decode(&bytes).ok())
     }
-
-    /// A document segment is readable by the root owner only (ADR 0015
-    /// section 10). A log segment keeps the default mode it always had.
-    #[cfg(unix)]
-    pub(crate) fn owner_only(options: &mut OpenOptions, kind: LogSegmentKind) {
-        use std::os::unix::fs::OpenOptionsExt;
-        if kind.marked() {
-            options.mode(0o600);
-        }
-    }
-
-    #[cfg(not(unix))]
-    pub(crate) fn owner_only(_options: &mut OpenOptions, _kind: LogSegmentKind) {}
 
     fn random_nonce() -> Result<u64, NativeStorageError> {
         let mut bytes = [0_u8; 8];
@@ -359,21 +407,21 @@ struct SegmentOpening {
 /// What a flush needs, held outside the commit queue's lock.
 #[derive(Debug)]
 pub(crate) struct LogFlush {
-    file: Arc<File>,
-    directory: Option<PathBuf>,
+    handle: Arc<dyn SegmentHandle>,
+    created: bool,
+    log_parent: Option<PathBuf>,
 }
 
 impl LogFlush {
+    /// Flush the segment and, when it is new, its name. A new log segment
+    /// may sit in a new directory, so that directory's parent is flushed
+    /// too.
     pub(crate) fn run(&self, durability: Durability) -> Result<(), NativeStorageError> {
         crate::write::failpoint("before-log-sync")?;
-        match durability {
-            Durability::Process => crate::sync_handle(&self.file),
-            Durability::PowerLoss => self.file.sync_all(),
-        }
-        .map_err(NativeStorageError::io)?;
-        if let Some(directory) = &self.directory {
-            sync_directory(directory)?;
-            if let Some(parent) = directory.parent() {
+        self.handle.sync(durability)?;
+        if self.created {
+            self.handle.sync_created()?;
+            if let Some(parent) = &self.log_parent {
                 sync_directory(parent)?;
             }
         }

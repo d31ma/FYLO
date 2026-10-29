@@ -38,7 +38,7 @@ impl NativeWriteRoot {
     ) -> Result<(), NativeStorageError> {
         let after = Self::document_keys(identifier, canonical)?;
         self.commit_logged(collection, || {
-            let store = SegmentStore::open_for_writer(&collection.path)?;
+            let store = SegmentStore::open_for_writer(collection.segment_medium())?;
             let previous = store.table().get(identifier).cloned();
             if previous.is_some() {
                 return Err(NativeStorageError::new(
@@ -116,7 +116,7 @@ impl NativeWriteRoot {
         actor: Option<&WriteActor>,
     ) -> Result<(), NativeStorageError> {
         self.commit_logged(collection, || {
-            let store = SegmentStore::open_for_writer(&collection.path)?;
+            let store = SegmentStore::open_for_writer(collection.segment_medium())?;
             if store.location(identifier, LocationState::Live).is_some() {
                 return Err(NativeStorageError::new(
                     NativeStorageErrorCode::CorruptMetadata,
@@ -269,7 +269,8 @@ impl NativeWriteRoot {
         collection: &NativeCollection,
         identifier: &str,
     ) -> Result<SegmentDocument, NativeStorageError> {
-        SegmentStore::open_for_writer(&collection.path)?.document(identifier, LocationState::Live)
+        SegmentStore::open_for_writer(collection.segment_medium())?
+            .document(identifier, LocationState::Live)
     }
 
     /// Move a document between live and deleted, keeping its body,
@@ -297,7 +298,7 @@ impl NativeWriteRoot {
         query: &StructuredQuery,
         actor: Option<&WriteActor>,
     ) -> Result<SegmentMatches, NativeStorageError> {
-        let store = SegmentStore::open_for_writer(&collection.path)?;
+        let store = SegmentStore::open_for_writer(collection.segment_medium())?;
         let limit = query.limit().filter(|limit| *limit > 0);
         let mut matches = Vec::new();
         for batch in store
@@ -388,14 +389,11 @@ impl NativeWriteRoot {
     }
 
     /// The owner and group a record of this collection is filed under when
-    /// a write names neither: the owner of its segment directory, which is
-    /// the owner a file this root's writer creates gets.
+    /// a write names neither: the owner a file this root's writer creates
+    /// gets.
     #[cfg(unix)]
     fn segment_owner(collection: &NativeCollection) -> Result<(u32, u32), NativeStorageError> {
-        use std::os::unix::fs::MetadataExt;
-        let metadata = fylo_vfs::symlink_metadata(collection.path.join("segments"))
-            .map_err(NativeStorageError::io)?;
-        Ok((metadata.uid(), metadata.gid()))
+        collection.segment_medium().owner()
     }
 
     #[cfg(not(unix))]

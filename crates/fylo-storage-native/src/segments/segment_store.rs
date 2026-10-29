@@ -1,13 +1,12 @@
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
-use std::path::Path;
 use std::sync::Arc;
 
 use fylo_format::LogRecord;
 
 use super::{
-    GenerationSlots, LocationState, LocationTable, SegmentDocument, SegmentLocation, SegmentPaths,
-    SegmentReader, TableCache,
+    LocationState, LocationTable, SegmentDocument, SegmentLocation, SegmentMedium, SegmentReader,
+    TableCache,
 };
 use crate::{NativeStorageError, NativeStorageErrorCode};
 
@@ -18,7 +17,7 @@ use crate::{NativeStorageError, NativeStorageErrorCode};
 /// segment in a few large requests instead of one per document.
 #[derive(Debug)]
 pub(crate) struct SegmentStore {
-    paths: SegmentPaths,
+    medium: Arc<dyn SegmentMedium>,
     table: Arc<LocationTable>,
     reader: SegmentReader,
 }
@@ -29,37 +28,30 @@ impl SegmentStore {
 
     /// The view a reader gets: the location log as far as the published
     /// slot says it reaches.
-    pub(crate) fn open(collection: &Path) -> Result<Self, NativeStorageError> {
-        let paths = SegmentPaths::of(collection);
-        let slot = GenerationSlots::at(&paths.slots()).require()?;
-        let table = TableCache::shared().table(&paths, slot.table_epoch, slot.locations_length)?;
-        Ok(Self::with(paths, table))
+    pub(crate) fn open(medium: Arc<dyn SegmentMedium>) -> Result<Self, NativeStorageError> {
+        let slot = medium.require_slot()?;
+        let table =
+            TableCache::shared().table(&*medium, slot.table_epoch, slot.locations_length)?;
+        Ok(Self::with(medium, table))
     }
 
     /// The view a writer plans against under the collection lock: every
     /// location row already appended, including those of busy-period
     /// members that have applied but not yet published.
-    pub(crate) fn open_for_writer(collection: &Path) -> Result<Self, NativeStorageError> {
-        let paths = SegmentPaths::of(collection);
-        let slot = GenerationSlots::at(&paths.slots()).require()?;
-        let wal_length = Self::file_length(&paths.locations_wal())?;
-        let table = TableCache::shared().table(&paths, slot.table_epoch, wal_length)?;
-        Ok(Self::with(paths, table))
+    pub(crate) fn open_for_writer(
+        medium: Arc<dyn SegmentMedium>,
+    ) -> Result<Self, NativeStorageError> {
+        let slot = medium.require_slot()?;
+        let wal_length = medium.location_log_length()?;
+        let table = TableCache::shared().table(&*medium, slot.table_epoch, wal_length)?;
+        Ok(Self::with(medium, table))
     }
 
-    fn with(paths: SegmentPaths, table: Arc<LocationTable>) -> Self {
+    fn with(medium: Arc<dyn SegmentMedium>, table: Arc<LocationTable>) -> Self {
         Self {
-            reader: SegmentReader::new(paths.clone()),
-            paths,
+            reader: SegmentReader::new(Arc::clone(&medium)),
+            medium,
             table,
-        }
-    }
-
-    pub(crate) fn file_length(path: &Path) -> Result<u64, NativeStorageError> {
-        match fylo_vfs::metadata(path) {
-            Ok(metadata) => Ok(metadata.len()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
-            Err(error) => Err(NativeStorageError::io(error)),
         }
     }
 
@@ -67,8 +59,8 @@ impl SegmentStore {
         &self.table
     }
 
-    pub(crate) fn paths(&self) -> &SegmentPaths {
-        &self.paths
+    pub(crate) fn medium(&self) -> &dyn SegmentMedium {
+        &*self.medium
     }
 
     pub(crate) fn ids(&self, state: LocationState) -> Vec<String> {

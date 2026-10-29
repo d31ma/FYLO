@@ -3,9 +3,10 @@ use std::path::{Path, PathBuf};
 use fylo_vfs::{File, OpenOptions};
 
 use super::{PositionedRead, SlotRecord};
-use crate::{NativeStorageError, NativeStorageErrorCode};
+use crate::NativeStorageError;
 
-/// The two generation slots of a segment collection.
+/// The two generation slots of a segment collection kept in a directory,
+/// in its `state.slots` file.
 ///
 /// A publication overwrites, in place and without a flush, the slot that does
 /// not hold the newest valid generation. A torn write leaves the other slot,
@@ -34,16 +35,6 @@ impl GenerationSlots {
         };
         let (newest, _) = Self::newest(&Self::read_both(&file)?);
         Ok(newest)
-    }
-
-    /// The newest valid slot, failing when neither is valid.
-    pub(crate) fn require(&self) -> Result<SlotRecord, NativeStorageError> {
-        self.read()?.ok_or_else(|| {
-            NativeStorageError::new(
-                NativeStorageErrorCode::CorruptMetadata,
-                "segment collection has no valid generation slot",
-            )
-        })
     }
 
     /// Write `record` over the older slot.

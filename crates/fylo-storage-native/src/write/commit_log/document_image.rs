@@ -1,10 +1,11 @@
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use fylo_vfs::{self as fs, File};
 
 use super::record_image::RecordImage;
-use crate::segments::{LocationState, SegmentDocument, SegmentStore};
+use crate::segments::{LocationState, SegmentDocument, SegmentMedium, SegmentStore};
 use crate::{NativeCollection, NativeStorageError, NativeStorageErrorCode};
 
 /// Everything that makes up one stored document, in a form both layouts
@@ -28,7 +29,7 @@ impl DocumentImage {
         collection: &NativeCollection,
     ) -> Result<Vec<Self>, NativeStorageError> {
         if collection.uses_segments() {
-            return Self::read_segments(&collection.path);
+            return Self::read_segments(collection.segment_medium());
         }
         let mut images = Vec::new();
         for id in collection.document_ids()? {
@@ -45,9 +46,11 @@ impl DocumentImage {
         Ok(images)
     }
 
-    /// Every live and deleted document of the segment layout in `directory`.
-    pub(crate) fn read_segments(directory: &Path) -> Result<Vec<Self>, NativeStorageError> {
-        let store = SegmentStore::open_for_writer(directory)?;
+    /// Every live and deleted document of the segment layout `medium` holds.
+    pub(crate) fn read_segments(
+        medium: Arc<dyn SegmentMedium>,
+    ) -> Result<Vec<Self>, NativeStorageError> {
+        let store = SegmentStore::open_for_writer(medium)?;
         let mut images = Vec::new();
         for state in [LocationState::Live, LocationState::Deleted] {
             for batch in store.ids(state).chunks(Self::BATCH) {

@@ -5,16 +5,14 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use fylo_format::{LogRecord, LogRecordKind};
 
-use super::super::{
-    NativeWriteRoot, durable_replace, durable_replace_owner_only, json_error, sync_directory,
-};
+use super::super::{NativeWriteRoot, durable_replace, json_error};
 use super::document_image::DocumentImage;
 use super::log_segment::LogSegment;
 use super::segment_checkpoint::SegmentCheckpoint;
 use super::segment_layout::SegmentLayout;
 use crate::segments::{
-    GenerationSlots, LocationState, LocationTable, SegmentBody, SegmentCommitManifest,
-    SegmentEntry, SegmentLocation, SegmentPaths, SlotRecord,
+    DirectoryMedium, LocationState, LocationTable, SegmentBody, SegmentCommitManifest,
+    SegmentEntry, SegmentLocation, SegmentMedium, SlotRecord,
 };
 use crate::{LogPosition, NativeRoot, NativeStorageError, NativeStorageErrorCode};
 
@@ -34,8 +32,8 @@ impl SegmentImport {
         generation: u64,
     ) -> Result<(), NativeStorageError> {
         SegmentLayout::create_empty(root, directory, generation)?;
-        let paths = SegmentPaths::of(directory);
-        let mut segment = Self::open_first(&paths)?;
+        let medium = DirectoryMedium::of(directory);
+        let mut segment = Self::open_first(&medium)?;
         let mut rows = Vec::with_capacity(images.len());
         let mut keys = BTreeSet::new();
         let mut ordered: Vec<&DocumentImage> = images.iter().collect();
@@ -46,23 +44,20 @@ impl SegmentImport {
                 keys.extend(NativeWriteRoot::document_keys(&image.id, &image.body)?);
             }
         }
-        durable_replace_owner_only(
-            &paths.locations_snapshot(),
-            &LocationTable::from_rows(rows).encode_snapshot()?,
-        )?;
+        medium.replace_location_snapshot(&LocationTable::from_rows(rows).encode_snapshot()?)?;
         Self::write_keys(directory, keys)?;
-        Self::close(&paths, directory, segment, generation)
+        Self::close(&medium, directory, segment, generation)
     }
 
-    fn open_first(paths: &SegmentPaths) -> Result<LogSegment, NativeStorageError> {
-        let slot = GenerationSlots::at(&paths.slots()).require()?;
+    fn open_first(medium: &dyn SegmentMedium) -> Result<LogSegment, NativeStorageError> {
+        let slot = medium.require_slot()?;
         let position = LogPosition {
             nonce: format!("{:016x}", slot.segment),
             length: slot.length,
             next_lsn: slot.next_lsn,
             records: slot.records,
         };
-        LogSegment::open_matching(&paths.segment(slot.segment), &position)?.ok_or_else(|| {
+        LogSegment::open_segment_matching(medium, &position)?.ok_or_else(|| {
             NativeStorageError::new(
                 NativeStorageErrorCode::CorruptMetadata,
                 "new segment layout does not match its slot",
@@ -147,12 +142,12 @@ impl SegmentImport {
 
     /// Append the closing checkpoint, flush, and publish the stable slot.
     fn close(
-        paths: &SegmentPaths,
+        medium: &dyn SegmentMedium,
         directory: &Path,
         mut segment: LogSegment,
         generation: u64,
     ) -> Result<(), NativeStorageError> {
-        let manifest = SegmentCheckpoint::manifest(directory)?;
+        let manifest = SegmentCheckpoint::manifest(directory, medium)?;
         let record = LogRecord {
             lsn: segment.next_lsn(),
             kind: LogRecordKind::Checkpoint,
@@ -163,7 +158,7 @@ impl SegmentImport {
         let encoded = segment.encode(&record)?;
         segment.append(&encoded, 1)?;
         segment.full_flush()?;
-        GenerationSlots::at(&paths.slots()).publish(&SlotRecord {
+        medium.publish_slot(&SlotRecord {
             generation,
             writing: false,
             segment: segment.sequence(),
@@ -173,12 +168,6 @@ impl SegmentImport {
             locations_length: 0,
             table_epoch: 0,
         })?;
-        let slots = fylo_vfs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(paths.slots())
-            .map_err(NativeStorageError::io)?;
-        crate::sync_handle(&slots).map_err(NativeStorageError::io)?;
-        sync_directory(paths.directory())
+        medium.sync_slots()
     }
 }

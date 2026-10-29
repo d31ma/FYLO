@@ -190,9 +190,7 @@ impl NativeWriteRoot {
             stored = collection.stored_generation()?;
         }
         let segment = match &stored.log {
-            Some(position) => {
-                LogSegment::open_matching(&collection.logged_segment_path(position), position)?
-            }
+            Some(position) => Self::open_logged(collection, position)?,
             None => None,
         };
         let segment = Self::rotate_if_full(collection, segment, &stored)?;
@@ -253,14 +251,25 @@ impl NativeWriteRoot {
                 "segment collection has no segment position",
             )
         })?;
-        LogSegment::open_matching(&collection.logged_segment_path(position), position)?.ok_or_else(
-            || {
-                NativeStorageError::new(
-                    NativeStorageErrorCode::CorruptMetadata,
-                    "segment collection's active segment does not match its slot",
-                )
-            },
-        )
+        Self::open_logged(collection, position)?.ok_or_else(|| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                "segment collection's active segment does not match its slot",
+            )
+        })
+    }
+
+    /// Open the segment a published position describes: the write-ahead
+    /// log of a file collection, or the active segment of a segment
+    /// collection. `None` when it is missing or differs from the position.
+    fn open_logged(
+        collection: &NativeCollection,
+        position: &LogPosition,
+    ) -> Result<Option<LogSegment>, NativeStorageError> {
+        if collection.uses_segments() {
+            return LogSegment::open_segment_matching(&*collection.segment_medium(), position);
+        }
+        LogSegment::open_matching(&collection.log_segment_path(), position)
     }
 
     fn run_log_recovery(
@@ -437,7 +446,10 @@ impl NativeWriteRoot {
             busy.stranded |= segment.rewind(rewind).is_err();
             return;
         }
-        let path = segment.path().to_owned();
+        let Some(path) = segment.log_path().map(Path::to_owned) else {
+            busy.stranded = true;
+            return;
+        };
         busy.segment = None;
         let removed =
             fs::remove_file(&path).and_then(|()| path.parent().map_or(Ok(()), fs::remove_dir));
@@ -705,11 +717,7 @@ impl NativeWriteRoot {
                 .is_some_and(|identifier| identifier.starts_with(Self::LOG_TRANSACTION_PREFIX)));
         }
         match &stored.log {
-            Some(position) => Ok(LogSegment::open_matching(
-                &collection.logged_segment_path(position),
-                position,
-            )?
-            .is_none()),
+            Some(position) => Ok(Self::open_logged(collection, position)?.is_none()),
             None => Self::leftover_log_needs_recovery(collection, stored.generation),
         }
     }

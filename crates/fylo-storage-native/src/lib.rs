@@ -1489,15 +1489,18 @@ impl NativeCollection {
         self.layout == CollectionLayout::Segments
     }
 
+    /// Where this segment collection keeps its segments, slots and
+    /// location files.
+    pub(crate) fn segment_medium(&self) -> std::sync::Arc<dyn segments::SegmentMedium> {
+        segments::DirectoryMedium::shared(&self.path)
+    }
+
     fn segment_store(&self) -> Result<segments::SegmentStore, NativeStorageError> {
-        segments::SegmentStore::open(&self.path)
+        segments::SegmentStore::open(self.segment_medium())
     }
 
     fn segment_generation(&self) -> Result<GenerationState, NativeStorageError> {
-        let Some(slot) =
-            segments::GenerationSlots::at(&segments::SegmentPaths::of(&self.path).slots())
-                .read()?
-        else {
+        let Some(slot) = self.segment_medium().read_slot()? else {
             return Ok(GenerationState {
                 format: GenerationState::FORMAT_V2.into(),
                 generation: 0,
@@ -1530,15 +1533,6 @@ impl NativeCollection {
     /// Transaction identifiers a segment collection's slots report while
     /// writing. They share the log's prefix, so recovery treats them alike.
     pub(crate) const SEGMENT_TRANSACTION_PREFIX: &'static str = "log-segment-";
-
-    /// The file holding the log a published position describes.
-    pub(crate) fn logged_segment_path(&self, position: &LogPosition) -> PathBuf {
-        if !self.uses_segments() {
-            return self.log_segment_path();
-        }
-        let number = u64::from_str_radix(&position.nonce, 16).unwrap_or(u64::MAX);
-        segments::SegmentPaths::of(&self.path).segment(number)
-    }
 
     /// Characters of the creation segment this collection's shards use.
     #[must_use]
@@ -1634,11 +1628,15 @@ impl NativeCollection {
         if state.state == GenerationStatus::Writing {
             return Ok(state);
         }
-        let segment = self.logged_segment_path(position);
-        let length = match fs::symlink_metadata(&segment) {
-            Ok(metadata) => Some(metadata.len()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-            Err(error) => return Err(NativeStorageError::io(error)),
+        let length = if self.uses_segments() {
+            let number = u64::from_str_radix(&position.nonce, 16).unwrap_or(u64::MAX);
+            Some(self.segment_medium().segment_length(number)?)
+        } else {
+            match fs::symlink_metadata(self.log_segment_path()) {
+                Ok(metadata) => Some(metadata.len()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => return Err(NativeStorageError::io(error)),
+            }
         };
         if length == Some(position.length) {
             return Ok(state);
@@ -1926,7 +1924,7 @@ impl NativeCollection {
             .documents(identifiers, segments::LocationState::Live)?
             .into_iter()
             .map(|document| {
-                let path = store.paths().segment(document.location.segment);
+                let path = store.medium().segment_path(document.location.segment);
                 document.into_stored(path)
             })
             .collect()
@@ -1939,7 +1937,7 @@ impl NativeCollection {
     ) -> Result<StoredBytes, NativeStorageError> {
         let store = self.segment_store()?;
         let document = store.document(identifier, state)?;
-        let path = store.paths().segment(document.location.segment);
+        let path = store.medium().segment_path(document.location.segment);
         document.into_stored(path)
     }
 

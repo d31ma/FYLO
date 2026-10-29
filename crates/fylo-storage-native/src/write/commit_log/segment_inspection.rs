@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
+use std::sync::Arc;
 
 use fylo_format::{LogRecordKind, LogSalvage};
 
@@ -9,7 +10,7 @@ use super::salvage_report::SalvageReport;
 use super::segment_rebuild::SegmentRebuild;
 use super::segment_verification::SegmentVerification;
 use crate::segments::{
-    LocationTable, SegmentCommitManifest, SegmentDocument, SegmentLocation, SegmentPaths,
+    LocationTable, SegmentCommitManifest, SegmentDocument, SegmentLocation, SegmentMedium,
     SegmentStore,
 };
 use crate::{NativeCollection, NativeRoot, NativeStorageError};
@@ -22,15 +23,15 @@ impl SegmentInspection {
     pub(crate) fn verify(
         collection: &NativeCollection,
     ) -> Result<SegmentVerification, NativeStorageError> {
-        let paths = SegmentPaths::of(&collection.path);
+        let medium = collection.segment_medium();
         let mut verification = SegmentVerification::default();
-        for number in paths.segment_numbers()? {
-            Self::verify_segment(&paths, number, &mut verification)?;
+        for number in medium.segment_numbers()? {
+            Self::verify_segment(&*medium, number, &mut verification)?;
         }
-        let store = SegmentStore::open_for_writer(&collection.path)?;
+        let store = SegmentStore::open_for_writer(Arc::clone(&medium))?;
         let rows: Vec<SegmentLocation> = store.table().rows().into_iter().cloned().collect();
         verification.documents = rows.len();
-        let scans = match SegmentRebuild::scan_all(&paths) {
+        let scans = match SegmentRebuild::scan_all(&*medium) {
             Ok(scans) => scans,
             Err(error) => {
                 verification
@@ -55,11 +56,11 @@ impl SegmentInspection {
         collection: &NativeCollection,
         out: &Path,
     ) -> Result<SalvageReport, NativeStorageError> {
-        let paths = SegmentPaths::of(&collection.path);
+        let medium = collection.segment_medium();
         let mut report = SalvageReport::default();
         let mut salvaged = Vec::new();
-        for number in paths.segment_numbers()? {
-            let bytes = fylo_vfs::read(paths.segment(number)).map_err(NativeStorageError::io)?;
+        for number in medium.segment_numbers()? {
+            let bytes = medium.require_segment(number)?;
             match LogSalvage::segment(&bytes) {
                 Ok(salvage) => {
                     for (start, end) in &salvage.damaged {
@@ -87,11 +88,11 @@ impl SegmentInspection {
     }
 
     fn verify_segment(
-        paths: &SegmentPaths,
+        medium: &dyn SegmentMedium,
         number: u64,
         verification: &mut SegmentVerification,
     ) -> Result<(), NativeStorageError> {
-        let bytes = fylo_vfs::read(paths.segment(number)).map_err(NativeStorageError::io)?;
+        let bytes = medium.require_segment(number)?;
         verification.segments += 1;
         let salvage = match LogSalvage::segment(&bytes) {
             Ok(salvage) => salvage,
@@ -255,7 +256,7 @@ impl SegmentInspection {
         collection: &NativeCollection,
         newest: &BTreeMap<String, (u64, SegmentDocument)>,
     ) -> Vec<String> {
-        let Ok(store) = SegmentStore::open_for_writer(&collection.path) else {
+        let Ok(store) = SegmentStore::open_for_writer(collection.segment_medium()) else {
             return Vec::new();
         };
         store

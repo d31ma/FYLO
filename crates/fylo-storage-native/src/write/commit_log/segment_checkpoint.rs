@@ -2,12 +2,11 @@ use std::path::Path;
 
 use fylo_format::{LogRecord, LogRecordKind};
 
-use super::super::{GenerationRecord, durable_replace_owner_only, failpoint, json_error};
+use super::super::{GenerationRecord, failpoint, json_error};
 use super::log_checkpoint::LogCheckpoint;
 use super::log_segment::LogSegment;
 use crate::segments::{
-    GenerationSlots, LocationTable, SegmentCheckpointManifest, SegmentPaths, SegmentStore,
-    SlotRecord, TableCache,
+    LocationTable, SegmentCheckpointManifest, SegmentMedium, SlotRecord, TableCache,
 };
 use crate::{GenerationState, NativeCollection, NativeStorageError, NativeStorageErrorCode};
 
@@ -31,10 +30,9 @@ impl SegmentCheckpoint {
         collection: &NativeCollection,
         segment: &LogSegment,
     ) -> Result<bool, NativeStorageError> {
-        let paths = SegmentPaths::of(&collection.path);
         Ok(segment.records() >= Self::CHECKPOINT_RECORDS
             || segment.length() >= Self::ROTATE_BYTES
-            || SegmentStore::file_length(&paths.locations_wal())? > Self::LOCATIONS_FOLD_BYTES
+            || collection.segment_medium().location_log_length()? > Self::LOCATIONS_FOLD_BYTES
             || LogCheckpoint::index_wants_compaction(collection)?)
     }
 
@@ -64,26 +62,26 @@ impl SegmentCheckpoint {
         segment: LogSegment,
         (generation, seal): (u64, bool),
     ) -> Result<LogSegment, NativeStorageError> {
-        let paths = SegmentPaths::of(&collection.path);
-        let mut epoch = GenerationSlots::at(&paths.slots()).require()?.table_epoch;
-        let fold = SegmentStore::file_length(&paths.locations_wal())? > Self::LOCATIONS_FOLD_BYTES;
+        let medium = collection.segment_medium();
+        let mut epoch = medium.require_slot()?.table_epoch;
+        let fold = medium.location_log_length()? > Self::LOCATIONS_FOLD_BYTES;
         let mut generation = generation;
         if fold {
             let writing = GenerationRecord::log_writing(generation + 1, segment.position());
             Self::publish(collection, &writing, epoch)?;
             generation += 2;
             epoch = epoch.wrapping_add(1);
-            Self::fold_locations(&paths)?;
+            Self::fold_locations(&*medium)?;
         }
-        Self::flush_logs(collection, &paths)?;
+        Self::flush_logs(collection, &*medium)?;
         LogCheckpoint::compact_index(collection)?;
         failpoint("after-checkpoint-flush")?;
-        let manifest = Self::manifest(&collection.path)?;
-        let mut segment = Self::record(&paths, segment, &manifest, (generation, seal))?;
+        let manifest = Self::manifest(&collection.path, &*medium)?;
+        let mut segment = Self::record(&*medium, segment, &manifest, (generation, seal))?;
         segment.reset_records();
         let stable = GenerationRecord::log_stable(generation, segment.position());
         Self::publish(collection, &stable, epoch)?;
-        TableCache::shared().forget(&paths);
+        TableCache::shared().forget(&*medium);
         Ok(segment)
     }
 
@@ -94,7 +92,7 @@ impl SegmentCheckpoint {
         record: &GenerationRecord,
         epoch: u32,
     ) -> Result<(), NativeStorageError> {
-        let paths = SegmentPaths::of(&collection.path);
+        let medium = collection.segment_medium();
         let position = record.log.as_ref().ok_or_else(|| {
             NativeStorageError::new(
                 NativeStorageErrorCode::CorruptMetadata,
@@ -113,10 +111,10 @@ impl SegmentCheckpoint {
             length: position.length,
             next_lsn: position.next_lsn,
             records: position.records,
-            locations_length: SegmentStore::file_length(&paths.locations_wal())?,
+            locations_length: medium.location_log_length()?,
             table_epoch: epoch,
         };
-        GenerationSlots::at(&paths.slots()).publish(&slot)
+        medium.publish_slot(&slot)
     }
 
     /// Publish keeping the current table epoch.
@@ -124,9 +122,9 @@ impl SegmentCheckpoint {
         collection: &NativeCollection,
         record: &GenerationRecord,
     ) -> Result<(), NativeStorageError> {
-        let paths = SegmentPaths::of(&collection.path);
-        let epoch = GenerationSlots::at(&paths.slots())
-            .read()?
+        let epoch = collection
+            .segment_medium()
+            .read_slot()?
             .map_or(0, |slot| slot.table_epoch);
         Self::publish(collection, record, epoch)
     }
@@ -141,13 +139,11 @@ impl SegmentCheckpoint {
         segment: &LogSegment,
         generation: u64,
     ) -> Result<u64, NativeStorageError> {
-        let paths = SegmentPaths::of(&collection.path);
-        let epoch = GenerationSlots::at(&paths.slots())
-            .read()?
-            .map_or(0, |slot| slot.table_epoch);
+        let medium = collection.segment_medium();
+        let epoch = medium.read_slot()?.map_or(0, |slot| slot.table_epoch);
         let writing = GenerationRecord::log_writing(generation + 1, segment.position());
         Self::publish(collection, &writing, epoch.wrapping_add(1))?;
-        TableCache::shared().forget(&paths);
+        TableCache::shared().forget(&*medium);
         Ok(generation + 2)
     }
 
@@ -157,22 +153,19 @@ impl SegmentCheckpoint {
         generation + 2 - generation % 2
     }
 
-    fn fold_locations(paths: &SegmentPaths) -> Result<(), NativeStorageError> {
-        let wal_length = SegmentStore::file_length(&paths.locations_wal())?;
-        let table = LocationTable::load(paths, wal_length)?;
-        durable_replace_owner_only(&paths.locations_snapshot(), &table.encode_snapshot()?)?;
-        durable_replace_owner_only(&paths.locations_wal(), b"")
+    fn fold_locations(medium: &dyn SegmentMedium) -> Result<(), NativeStorageError> {
+        let wal_length = medium.location_log_length()?;
+        let table = LocationTable::load(medium, wal_length)?;
+        medium.replace_location_snapshot(&table.encode_snapshot()?)?;
+        medium.reset_location_log()
     }
 
     fn flush_logs(
         collection: &NativeCollection,
-        paths: &SegmentPaths,
+        medium: &dyn SegmentMedium,
     ) -> Result<(), NativeStorageError> {
-        let index = collection.path.join("index");
-        for path in [paths.locations_wal(), index.join("keys.wal")] {
-            Self::flush_file(&path)?;
-        }
-        Ok(())
+        medium.sync_location_log()?;
+        Self::flush_file(&collection.path.join("index").join("keys.wal"))
     }
 
     fn flush_file(path: &Path) -> Result<(), NativeStorageError> {
@@ -188,17 +181,18 @@ impl SegmentCheckpoint {
     }
 
     /// The checkpoint manifest describing the derived files of the
-    /// collection in `directory` as they are now.
+    /// collection in `directory`, whose segments `medium` holds, as they
+    /// are now.
     pub(crate) fn manifest(
         directory: &Path,
+        medium: &dyn SegmentMedium,
     ) -> Result<SegmentCheckpointManifest, NativeStorageError> {
-        let paths = SegmentPaths::of(directory);
         let index = directory.join("index");
         Ok(SegmentCheckpointManifest {
             format: SegmentCheckpointManifest::FORMAT.into(),
-            locations_wal_length: SegmentStore::file_length(&paths.locations_wal())?,
-            locations_snapshot_sha256: Self::digest(&paths.locations_snapshot())?,
-            keys_wal_length: SegmentStore::file_length(&index.join("keys.wal"))?,
+            locations_wal_length: medium.location_log_length()?,
+            locations_snapshot_sha256: crate::sha256_hex(&medium.read_location_snapshot()?),
+            keys_wal_length: Self::file_length(&index.join("keys.wal"))?,
             snapshot_sha256: Self::digest(&index.join("keys.snapshot"))?,
         })
     }
@@ -213,17 +207,26 @@ impl SegmentCheckpoint {
         }
     }
 
+    /// A file's length, or zero when it does not exist.
+    pub(crate) fn file_length(path: &Path) -> Result<u64, NativeStorageError> {
+        match fylo_vfs::metadata(path) {
+            Ok(metadata) => Ok(metadata.len()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
+            Err(error) => Err(NativeStorageError::io(error)),
+        }
+    }
+
     /// Append the checkpoint record, or seal the segment and open the next
     /// one with it.
     fn record(
-        paths: &SegmentPaths,
+        medium: &dyn SegmentMedium,
         mut segment: LogSegment,
         manifest: &SegmentCheckpointManifest,
         (generation, seal): (u64, bool),
     ) -> Result<LogSegment, NativeStorageError> {
         let bytes = serde_json::to_vec(manifest).map_err(|error| json_error(&error))?;
         if seal {
-            return Self::rotate(paths, &segment, bytes, generation);
+            return Self::rotate(medium, &segment, bytes, generation);
         }
         let record = LogRecord {
             lsn: segment.next_lsn(),
@@ -239,14 +242,14 @@ impl SegmentCheckpoint {
     }
 
     fn rotate(
-        paths: &SegmentPaths,
+        medium: &dyn SegmentMedium,
         sealed: &LogSegment,
         manifest: Vec<u8>,
         generation: u64,
     ) -> Result<LogSegment, NativeStorageError> {
-        let number = paths.segment_numbers()?.last().copied().unwrap_or(0) + 1;
+        let number = medium.segment_numbers()?.last().copied().unwrap_or(0) + 1;
         let mut next = LogSegment::create_documents(
-            &paths.segment(number),
+            medium,
             (number, sealed.next_lsn()),
             manifest,
             generation,

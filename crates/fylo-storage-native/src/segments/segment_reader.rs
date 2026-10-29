@@ -2,24 +2,23 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use fylo_format::{LogRecord, LogSegmentKind};
-use fylo_vfs::File;
 
-use super::{PositionedRead, SegmentLocation, SegmentPaths};
+use super::{SegmentHandle, SegmentLocation, SegmentMedium};
 use crate::{NativeStorageError, NativeStorageErrorCode};
 
 /// Reads records out of a collection's segments, keeping each segment open
 /// once it has been read.
 #[derive(Debug)]
 pub(crate) struct SegmentReader {
-    paths: SegmentPaths,
-    files: Mutex<BTreeMap<u64, Arc<File>>>,
+    medium: Arc<dyn SegmentMedium>,
+    handles: Mutex<BTreeMap<u64, Arc<dyn SegmentHandle>>>,
 }
 
 impl SegmentReader {
-    pub(crate) fn new(paths: SegmentPaths) -> Self {
+    pub(crate) fn new(medium: Arc<dyn SegmentMedium>) -> Self {
         Self {
-            paths,
-            files: Mutex::new(BTreeMap::new()),
+            medium,
+            handles: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -30,9 +29,9 @@ impl SegmentReader {
         offset: u64,
         length: usize,
     ) -> Result<Vec<u8>, NativeStorageError> {
-        let file = self.file(segment)?;
+        let handle = self.handle(segment)?;
         let mut bytes = vec![0_u8; length];
-        PositionedRead::exact(&file, &mut bytes, offset).map_err(Self::vanished)?;
+        handle.read_at(&mut bytes, offset)?;
         Ok(bytes)
     }
 
@@ -58,35 +57,14 @@ impl SegmentReader {
         }
     }
 
-    fn file(&self, segment: u64) -> Result<Arc<File>, NativeStorageError> {
-        let mut files = self.files.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(file) = files.get(&segment) {
-            return Ok(Arc::clone(file));
+    fn handle(&self, segment: u64) -> Result<Arc<dyn SegmentHandle>, NativeStorageError> {
+        let mut handles = self.handles.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(handle) = handles.get(&segment) {
+            return Ok(Arc::clone(handle));
         }
-        let file = Arc::new(
-            File::open(self.paths.segment(segment))
-                .map_err(NativeStorageError::io)
-                .map_err(Self::vanished)?,
-        );
-        files.insert(segment, Arc::clone(&file));
-        Ok(file)
-    }
-
-    /// A segment that compaction removed, or that ends before a location,
-    /// means the generation moved under the reader, which readers retry.
-    fn vanished(error: NativeStorageError) -> NativeStorageError {
-        let kind = error.source.as_ref().map(std::io::Error::kind);
-        let moved = matches!(
-            kind,
-            Some(std::io::ErrorKind::NotFound | std::io::ErrorKind::UnexpectedEof)
-        ) || (cfg!(windows) && kind == Some(std::io::ErrorKind::PermissionDenied));
-        if !moved {
-            return error;
-        }
-        NativeStorageError::new(
-            NativeStorageErrorCode::ConcurrentWrite,
-            "a segment changed while it was read",
-        )
+        let handle = self.medium.read_handle(segment)?;
+        handles.insert(segment, Arc::clone(&handle));
+        Ok(handle)
     }
 
     fn corrupt(message: &str) -> NativeStorageError {

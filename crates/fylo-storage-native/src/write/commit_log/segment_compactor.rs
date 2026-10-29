@@ -1,12 +1,10 @@
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Write;
-use std::path::PathBuf;
+use std::sync::Arc;
 
 use fylo_format::{LogRecord, LogRecordKind, LogSegmentHeader, LogSegmentKind};
-use fylo_vfs::OpenOptions;
 
-use super::super::{GenerationRecord, failpoint, json_error, sync_directory};
+use super::super::{GenerationRecord, failpoint, json_error};
 use super::abort_manifest::AbortManifest;
 use super::compaction_manifest::CompactionManifest;
 use super::compaction_report::CompactionReport;
@@ -15,10 +13,12 @@ use super::segment_checkpoint::SegmentCheckpoint;
 use super::segment_plan::SegmentPlan;
 use super::segment_recovery::SegmentRecovery;
 use crate::segments::{
-    SegmentCommitManifest, SegmentDocument, SegmentLocation, SegmentPaths, SegmentReader,
+    SegmentCommitManifest, SegmentDocument, SegmentLocation, SegmentMedium, SegmentReader,
     SegmentStore,
 };
-use crate::{GenerationState, NativeCollection, NativeStorageError, NativeStorageErrorCode};
+use crate::{
+    Durability, GenerationState, NativeCollection, NativeStorageError, NativeStorageErrorCode,
+};
 
 /// Reclaims the space dead entries take in sealed segments (ADR 0015
 /// section 7).
@@ -35,8 +35,6 @@ pub(crate) struct SegmentCompactor {
 
 impl SegmentCompactor {
     const SMALL_SEGMENT_BYTES: u64 = 16 * 1024 * 1024;
-    const TEMPORARY_PREFIX: &'static str = "compacting-";
-    const TEMPORARY_SUFFIX: &'static str = ".tmp";
 
     /// Choose what to compact. Runs under the collection lock. The active
     /// segment is sealed first when it holds documents, so everything
@@ -46,8 +44,8 @@ impl SegmentCompactor {
         stored: &GenerationState,
         active: LogSegment,
     ) -> Result<Option<Self>, NativeStorageError> {
-        let paths = SegmentPaths::of(&collection.path);
-        let store = SegmentStore::open_for_writer(&collection.path)?;
+        let medium = collection.segment_medium();
+        let store = SegmentStore::open_for_writer(Arc::clone(&medium))?;
         let active_number = active.sequence();
         let holds_documents = store
             .table()
@@ -59,37 +57,26 @@ impl SegmentCompactor {
         } else {
             active
         };
-        Self::remove_temporaries(&paths)?;
-        SegmentRecovery::remove_unreferenced(&paths, active.sequence())?;
-        let store = SegmentStore::open_for_writer(&collection.path)?;
-        Self::choose(&paths, &store, active.sequence())
+        medium.remove_compactions()?;
+        SegmentRecovery::remove_unreferenced(&*medium, active.sequence())?;
+        let store = SegmentStore::open_for_writer(Arc::clone(&medium))?;
+        Self::choose(&*medium, &store, active.sequence())
     }
 
     /// Copy every live entry of the chosen segments, in identifier order,
-    /// into a temporary compacted segment. Runs without the lock.
-    pub(crate) fn copy(
-        &self,
-        collection: &NativeCollection,
-    ) -> Result<PathBuf, NativeStorageError> {
-        let paths = SegmentPaths::of(&collection.path);
-        let path = paths.directory().join(format!(
-            "{}{}{}",
-            Self::TEMPORARY_PREFIX,
-            crate::process_id(),
-            Self::TEMPORARY_SUFFIX
-        ));
-        let reader = SegmentReader::new(paths);
+    /// into this process's compacted copy. Runs without the lock.
+    pub(crate) fn copy(&self, collection: &NativeCollection) -> Result<(), NativeStorageError> {
+        let medium = collection.segment_medium();
+        let reader = SegmentReader::new(Arc::clone(&medium));
         let header = LogSegmentHeader {
             kind: LogSegmentKind::CompactedDocuments,
             sequence: 0,
             first_lsn: self.rows.iter().map(|row| row.lsn).min().unwrap_or(1),
         };
-        let mut options = OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        LogSegment::owner_only(&mut options, LogSegmentKind::CompactedDocuments);
-        let mut file = options.open(&path).map_err(NativeStorageError::io)?;
-        file.write_all(&header.encode())
-            .map_err(NativeStorageError::io)?;
+        let copy = medium.create_compaction()?;
+        let encoded = header.encode();
+        copy.write_at(&encoded, 0)?;
+        let mut length = encoded.len() as u64;
         let mut records: BTreeMap<(u64, u64), LogRecord> = BTreeMap::new();
         for row in &self.rows {
             let key = (row.segment, row.offset);
@@ -97,11 +84,12 @@ impl SegmentCompactor {
                 slot.insert(reader.record(row)?);
             }
             let frame = Self::copied_frame(row, &records[&key])?;
-            file.write_all(&frame).map_err(NativeStorageError::io)?;
+            copy.write_at(&frame, length)?;
+            length += frame.len() as u64;
         }
-        file.sync_all().map_err(NativeStorageError::io)?;
+        copy.sync(Durability::PowerLoss)?;
         failpoint("after-compaction-copy")?;
-        Ok(path)
+        Ok(())
     }
 
     /// Adopt the copy. Runs under the collection lock: the compaction record
@@ -110,16 +98,12 @@ impl SegmentCompactor {
         &self,
         collection: &NativeCollection,
         (stored, mut active): (&GenerationState, LogSegment),
-        copied: &std::path::Path,
     ) -> Result<CompactionReport, NativeStorageError> {
-        let paths = SegmentPaths::of(&collection.path);
-        let number = paths.segment_numbers()?.last().copied().unwrap_or(0) + 1;
-        let adopted = paths.segment(number);
-        let sha256 = crate::sha256_hex(&fylo_vfs::read(copied).map_err(NativeStorageError::io)?);
-        fylo_vfs::rename(copied, &adopted).map_err(NativeStorageError::io)?;
-        sync_directory(paths.directory())?;
+        let medium = collection.segment_medium();
+        let sha256 = crate::sha256_hex(&medium.read_compaction()?);
+        let number = medium.adopt_compaction()?;
         if let Err(error) = failpoint("after-compaction-sync") {
-            Self::remove_quietly(&adopted);
+            Self::remove_quietly(&*medium, number);
             return Err(error);
         }
         let writing = GenerationRecord::log_writing(stored.generation + 1, active.position());
@@ -130,35 +114,35 @@ impl SegmentCompactor {
         let recorded =
             Self::append_record(&mut active, (number, sha256), &self.candidates, generation);
         if let Err(error) = recorded {
-            Self::cancel(collection, &mut active, (before, generation), &adopted)?;
+            Self::cancel(collection, &mut active, (before, generation), number)?;
             return Err(error);
         }
-        let store = SegmentStore::open_for_writer(&collection.path)?;
-        let rows = CompactionManifest::adopted_rows(&paths, store.table(), number)?;
+        let store = SegmentStore::open_for_writer(Arc::clone(&medium))?;
+        let rows = CompactionManifest::adopted_rows(&*medium, store.table(), number)?;
         let previous: Vec<SegmentLocation> = rows
             .iter()
             .filter_map(|row| store.table().get(&row.id).cloned())
             .collect();
         let applied = failpoint("after-compaction-record")
-            .and_then(|()| SegmentPlan::append_locations(&collection.path, &rows));
+            .and_then(|()| SegmentPlan::append_locations(&*medium, &rows));
         if let Err(error) = applied {
             Self::roll_back(
                 collection,
                 &mut active,
                 (lsn, generation),
-                (&previous, &adopted),
+                (&previous, number),
             )?;
             return Err(error);
         }
         let stable = GenerationRecord::log_stable(generation, active.position());
         SegmentCheckpoint::publish_current(collection, &stable)?;
-        SegmentRecovery::remove_unreferenced(&paths, active.sequence())?;
+        SegmentRecovery::remove_unreferenced(&*medium, active.sequence())?;
         failpoint("after-compaction-remove")?;
         Ok(CompactionReport {
             segments_compacted: self.candidates.len(),
             documents_copied: rows.len(),
             bytes_before: self.bytes_before,
-            bytes_after: SegmentStore::file_length(&adopted)?,
+            bytes_after: medium.segment_length(number)?,
         })
     }
 
@@ -170,9 +154,10 @@ impl SegmentCompactor {
         collection: &NativeCollection,
         active: &mut LogSegment,
         (lsn, generation): (u64, u64),
-        (previous, adopted): (&[SegmentLocation], &std::path::Path),
+        (previous, adopted): (&[SegmentLocation], u64),
     ) -> Result<(), NativeStorageError> {
-        SegmentPlan::append_locations(&collection.path, previous)?;
+        let medium = collection.segment_medium();
+        SegmentPlan::append_locations(&*medium, previous)?;
         let manifest =
             serde_json::to_vec(&AbortManifest::new(lsn)).map_err(|error| json_error(&error))?;
         let record = LogRecord {
@@ -187,7 +172,7 @@ impl SegmentCompactor {
         active.full_flush()?;
         let stable = GenerationRecord::log_stable(generation, active.position());
         SegmentCheckpoint::publish_current(collection, &stable)?;
-        Self::remove_quietly(adopted);
+        Self::remove_quietly(&*medium, adopted);
         Ok(())
     }
 
@@ -197,23 +182,23 @@ impl SegmentCompactor {
         collection: &NativeCollection,
         active: &mut LogSegment,
         (before, generation): ((u64, u64, u64), u64),
-        adopted: &std::path::Path,
+        adopted: u64,
     ) -> Result<(), NativeStorageError> {
         active.rewind(before)?;
         let stable = GenerationRecord::log_stable(generation, active.position());
         SegmentCheckpoint::publish_current(collection, &stable)?;
-        Self::remove_quietly(adopted);
+        Self::remove_quietly(&*collection.segment_medium(), adopted);
         Ok(())
     }
 
     /// Remove a copy nothing refers to. A copy that cannot be removed now is
     /// unreferenced, so the next recovery or compaction removes it.
-    fn remove_quietly(path: &std::path::Path) {
-        let _ = fylo_vfs::remove_file(path);
+    fn remove_quietly(medium: &dyn SegmentMedium, adopted: u64) {
+        let _ = medium.remove_segment(adopted);
     }
 
     fn choose(
-        paths: &SegmentPaths,
+        medium: &dyn SegmentMedium,
         store: &SegmentStore,
         active: u64,
     ) -> Result<Option<Self>, NativeStorageError> {
@@ -226,11 +211,11 @@ impl SegmentCompactor {
         }
         let mut candidates = Vec::new();
         let mut bytes_before = 0;
-        for number in paths.segment_numbers()? {
+        for number in medium.segment_numbers()? {
             if number == active {
                 continue;
             }
-            let size = SegmentStore::file_length(&paths.segment(number))?;
+            let size = medium.segment_length(number)?;
             let live_bytes: u64 = live.get(&number).map_or(0, |records| {
                 records.values().map(|length| u64::from(*length)).sum()
             });
@@ -307,19 +292,6 @@ impl SegmentCompactor {
         let encoded = active.encode(&record)?;
         active.append(&encoded, 1)?;
         active.full_flush()
-    }
-
-    /// Remove copies an interrupted compaction left. The compaction lock is
-    /// held, so no other compactor is writing one.
-    fn remove_temporaries(paths: &SegmentPaths) -> Result<(), NativeStorageError> {
-        for entry in fylo_vfs::read_dir(paths.directory()).map_err(NativeStorageError::io)? {
-            let entry = entry.map_err(NativeStorageError::io)?;
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if name.starts_with(Self::TEMPORARY_PREFIX) && name.ends_with(Self::TEMPORARY_SUFFIX) {
-                fylo_vfs::remove_file(entry.path()).map_err(NativeStorageError::io)?;
-            }
-        }
-        Ok(())
     }
 
     pub(crate) fn require_segments(

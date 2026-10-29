@@ -2,11 +2,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use fylo_format::{LogRecordKind, LogScan};
 
-use super::super::{NativeWriteRoot, durable_replace, durable_replace_owner_only};
+use super::super::{NativeWriteRoot, durable_replace};
 use super::abort_manifest::AbortManifest;
 use super::log_segment::LogSegment;
 use crate::segments::{
-    LocationState, LocationTable, SegmentCommitManifest, SegmentLocation, SegmentPaths,
+    LocationState, LocationTable, SegmentCommitManifest, SegmentLocation, SegmentMedium,
     SegmentStore, TableCache,
 };
 use crate::{NativeCollection, NativeStorageError, NativeStorageErrorCode};
@@ -26,19 +26,19 @@ impl SegmentRebuild {
     /// Rebuild the location table and the index. Runs under the collection
     /// lock.
     pub(crate) fn run(collection: &NativeCollection) -> Result<(), NativeStorageError> {
-        let paths = SegmentPaths::of(&collection.path);
-        let scans = Self::scan_all(&paths)?;
+        let medium = collection.segment_medium();
+        let scans = Self::scan_all(&*medium)?;
         let table = LocationTable::from_rows(Self::winners(&scans)?);
-        durable_replace_owner_only(&paths.locations_snapshot(), &table.encode_snapshot()?)?;
-        durable_replace_owner_only(&paths.locations_wal(), b"")?;
-        TableCache::shared().forget(&paths);
+        medium.replace_location_snapshot(&table.encode_snapshot()?)?;
+        medium.reset_location_log()?;
+        TableCache::shared().forget(&*medium);
         Self::rebuild_index(collection)
     }
 
     /// Rebuild only the prefix index from the documents the location log
     /// already names.
     pub(crate) fn rebuild_index(collection: &NativeCollection) -> Result<(), NativeStorageError> {
-        let store = SegmentStore::open_for_writer(&collection.path)?;
+        let store = SegmentStore::open_for_writer(collection.segment_medium())?;
         let mut keys = BTreeSet::new();
         for batch in store.ids(LocationState::Live).chunks(Self::INDEX_BATCH) {
             for document in store.documents(batch, LocationState::Live)? {
@@ -60,11 +60,11 @@ impl SegmentRebuild {
 
     /// Scan every segment present, with its number.
     pub(crate) fn scan_all(
-        paths: &SegmentPaths,
+        medium: &dyn SegmentMedium,
     ) -> Result<Vec<(u64, LogScan)>, NativeStorageError> {
         let mut scans = Vec::new();
-        for number in paths.segment_numbers()? {
-            let scan = LogSegment::scan(&paths.segment(number))?.ok_or_else(|| {
+        for number in medium.segment_numbers()? {
+            let scan = LogSegment::scan_segment(medium, number)?.ok_or_else(|| {
                 NativeStorageError::new(
                     NativeStorageErrorCode::CorruptDocument,
                     format!("segment {number} has no valid header; run fylo salvage"),

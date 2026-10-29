@@ -56,10 +56,10 @@ impl NativeWriteRoot {
         let Some(compactor) = self.prepare_compaction(&collection)? else {
             return Ok(CompactionReport::default());
         };
-        let copied = compactor.copy(&collection)?;
+        compactor.copy(&collection)?;
         let _lock = self.lock_collection(&collection.path)?;
         let (stored, active) = self.settled_active(&collection)?;
-        compactor.adopt(&collection, (&stored, active), &copied)
+        compactor.adopt(&collection, (&stored, active))
     }
 
     fn prepare_compaction(

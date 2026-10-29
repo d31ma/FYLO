@@ -1,12 +1,9 @@
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
-use std::path::Path;
 use std::sync::Arc;
 
-use fylo_vfs::File;
-
-use super::{LocationState, PositionedRead, SegmentLocation, SegmentPaths};
-use crate::{NativeStorageError, NativeStorageErrorCode};
+use super::{LocationState, SegmentLocation, SegmentMedium};
+use crate::NativeStorageError;
 
 /// Every document's newest location: the sorted snapshot with the location
 /// log's later rows laid over it.
@@ -24,14 +21,17 @@ pub(crate) struct LocationTable {
 
 impl LocationTable {
     /// Load the snapshot and the first `wal_length` bytes of the log.
-    pub(crate) fn load(paths: &SegmentPaths, wal_length: u64) -> Result<Self, NativeStorageError> {
-        let snapshot = SegmentLocation::decode_all(&Self::read_all(&paths.locations_snapshot())?)?;
+    pub(crate) fn load(
+        medium: &dyn SegmentMedium,
+        wal_length: u64,
+    ) -> Result<Self, NativeStorageError> {
+        let snapshot = SegmentLocation::decode_all(&medium.read_location_snapshot()?)?;
         let mut table = Self {
             snapshot: Arc::new(snapshot),
             overlay: BTreeMap::new(),
             wal_length: 0,
         };
-        table.extend(paths, wal_length)?;
+        table.extend(medium, wal_length)?;
         Ok(table)
     }
 
@@ -39,13 +39,13 @@ impl LocationTable {
     /// `wal_length`.
     pub(crate) fn extend(
         &mut self,
-        paths: &SegmentPaths,
+        medium: &dyn SegmentMedium,
         wal_length: u64,
     ) -> Result<(), NativeStorageError> {
         if wal_length <= self.wal_length {
             return Ok(());
         }
-        let tail = Self::read_range(&paths.locations_wal(), self.wal_length, wal_length)?;
+        let tail = medium.read_location_log(self.wal_length, wal_length)?;
         for row in SegmentLocation::decode_all(&tail)? {
             self.apply(row);
         }
@@ -121,27 +121,6 @@ impl LocationTable {
 
     fn is_undo(row: &SegmentLocation) -> bool {
         row.state == LocationState::Absent && row.lsn == 0
-    }
-
-    fn read_all(path: &Path) -> Result<Vec<u8>, NativeStorageError> {
-        match fylo_vfs::read(path) {
-            Ok(bytes) => Ok(bytes),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
-            Err(error) => Err(NativeStorageError::io(error)),
-        }
-    }
-
-    fn read_range(path: &Path, start: u64, end: u64) -> Result<Vec<u8>, NativeStorageError> {
-        let file = File::open(path).map_err(NativeStorageError::io)?;
-        let size = usize::try_from(end - start).map_err(|_| {
-            NativeStorageError::new(
-                NativeStorageErrorCode::FileTooLarge,
-                "segment location log exceeds the address space",
-            )
-        })?;
-        let mut bytes = vec![0_u8; size];
-        PositionedRead::exact(&file, &mut bytes, start)?;
-        Ok(bytes)
     }
 }
 

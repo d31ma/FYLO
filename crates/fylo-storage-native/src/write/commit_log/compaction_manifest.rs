@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use super::log_segment::LogSegment;
 use super::segment_rebuild::SegmentRebuild;
-use crate::segments::{LocationTable, SegmentLocation, SegmentPaths};
+use crate::segments::{LocationTable, SegmentLocation, SegmentMedium};
 use crate::{NativeStorageError, NativeStorageErrorCode};
 
 /// The manifest of a compaction record: the compacted segment a collection
@@ -39,11 +39,11 @@ impl CompactionManifest {
     /// compacted segment copied to that copy. A copy whose document was
     /// written again after the copy was taken is dead on arrival.
     pub(crate) fn adopted_rows(
-        paths: &SegmentPaths,
+        medium: &dyn SegmentMedium,
         table: &LocationTable,
         segment: u64,
     ) -> Result<Vec<SegmentLocation>, NativeStorageError> {
-        let scan = LogSegment::scan(&paths.segment(segment))?.ok_or_else(|| {
+        let scan = LogSegment::scan_segment(medium, segment)?.ok_or_else(|| {
             NativeStorageError::new(
                 NativeStorageErrorCode::CorruptDocument,
                 format!("compacted segment {segment} has no valid header"),

@@ -34,6 +34,7 @@ mod segment_operations;
 mod segment_plan;
 mod segment_rebuild;
 mod segment_recovery;
+mod segment_replay;
 mod segment_verification;
 mod step_applier;
 mod update_step;

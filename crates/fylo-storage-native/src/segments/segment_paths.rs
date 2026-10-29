@@ -4,7 +4,8 @@ use fylo_vfs as fs;
 
 use crate::NativeStorageError;
 
-/// Where a segment collection keeps each of its files.
+/// Where a segment collection kept in a directory keeps each of its files:
+/// the layout behind [`super::DirectoryMedium`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct SegmentPaths {
     directory: PathBuf,

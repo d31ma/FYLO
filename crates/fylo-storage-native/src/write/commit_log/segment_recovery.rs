@@ -10,8 +10,8 @@ use super::segment_checkpoint::SegmentCheckpoint;
 use super::segment_plan::SegmentPlan;
 use super::segment_rebuild::SegmentRebuild;
 use crate::segments::{
-    LocationTable, SegmentCheckpointManifest, SegmentCommitManifest, SegmentLocation, SegmentPaths,
-    SegmentStore, TableCache,
+    LocationTable, SegmentCheckpointManifest, SegmentCommitManifest, SegmentLocation,
+    SegmentMedium, TableCache,
 };
 use crate::{GenerationState, NativeCollection, NativeStorageError, NativeStorageErrorCode};
 
@@ -33,9 +33,9 @@ impl SegmentRecovery {
         collection: &NativeCollection,
         stored: &GenerationState,
     ) -> Result<(), NativeStorageError> {
-        let paths = SegmentPaths::of(&collection.path);
-        let (number, scan) = Self::active_scan(&paths, stored)?;
-        Self::require_torn_tail_only(&paths, number, &scan)?;
+        let medium = collection.segment_medium();
+        let (number, scan) = Self::active_scan(&*medium, stored)?;
+        Self::require_torn_tail_only(&*medium, number, &scan)?;
         let seen = scan
             .records
             .iter()
@@ -46,21 +46,17 @@ impl SegmentRecovery {
             .records
             .last()
             .map_or(scan.header.first_lsn, |(_, record)| record.lsn + 1);
-        let segment = LogSegment::open_scanned(
-            &paths.segment(number),
-            (number, scan.valid_length),
-            next_lsn,
-        )?;
+        let segment = LogSegment::open_scanned(&*medium, (number, scan.valid_length), next_lsn)?;
         let generation = SegmentCheckpoint::bump_epoch(
             collection,
             &segment,
             SegmentCheckpoint::next_stable(stored, seen),
         )?;
-        if !Self::replay_from_checkpoint(collection, &paths, (number, &scan))? {
+        if !Self::replay_from_checkpoint(collection, &*medium, (number, &scan))? {
             SegmentRebuild::run(collection)?;
         }
-        TableCache::shared().forget(&paths);
-        Self::remove_unreferenced(&paths, number)?;
+        TableCache::shared().forget(&*medium);
+        Self::remove_unreferenced(&*medium, number)?;
         SegmentCheckpoint::run(collection, segment, generation)?;
         Ok(())
     }
@@ -69,20 +65,20 @@ impl SegmentRecovery {
     /// newest slot names, or else the highest-numbered segment a commit
     /// (not a compaction) wrote.
     fn active_scan(
-        paths: &SegmentPaths,
+        medium: &dyn SegmentMedium,
         stored: &GenerationState,
     ) -> Result<(u64, LogScan), NativeStorageError> {
         let named = stored
             .log
             .as_ref()
             .and_then(|position| u64::from_str_radix(&position.nonce, 16).ok());
-        let mut candidates: Vec<u64> = paths.segment_numbers()?;
+        let mut candidates: Vec<u64> = medium.segment_numbers()?;
         candidates.reverse();
         if let Some(named) = named {
             candidates.insert(0, named);
         }
         for number in candidates {
-            if let Some(scan) = LogSegment::scan(&paths.segment(number))?
+            if let Some(scan) = LogSegment::scan_segment(medium, number)?
                 && scan.header.kind == LogSegmentKind::Documents
             {
                 return Ok((number, scan));
@@ -100,11 +96,11 @@ impl SegmentRecovery {
     /// committed data, and cutting there would lose it, so recovery stops
     /// and asks for a salvage instead.
     fn require_torn_tail_only(
-        paths: &SegmentPaths,
+        medium: &dyn SegmentMedium,
         number: u64,
         scan: &LogScan,
     ) -> Result<(), NativeStorageError> {
-        let bytes = fylo_vfs::read(paths.segment(number)).map_err(NativeStorageError::io)?;
+        let bytes = medium.require_segment(number)?;
         if scan.valid_length >= bytes.len() as u64 {
             return Ok(());
         }
@@ -130,17 +126,17 @@ impl SegmentRecovery {
     /// there is no checkpoint, or the derived files no longer match it.
     fn replay_from_checkpoint(
         collection: &NativeCollection,
-        paths: &SegmentPaths,
+        medium: &dyn SegmentMedium,
         (number, scan): (u64, &LogScan),
     ) -> Result<bool, NativeStorageError> {
         let Some((start, checkpoint)) = Self::last_checkpoint(scan) else {
             return Ok(false);
         };
-        if !Self::cut_back(collection, paths, &checkpoint)? {
+        if !Self::cut_back(collection, medium, &checkpoint)? {
             return Ok(false);
         }
         let aborted = SegmentRebuild::aborted([scan])?;
-        let mut table = LocationTable::load(paths, checkpoint.locations_wal_length)?;
+        let mut table = LocationTable::load(medium, checkpoint.locations_wal_length)?;
         let lengths = SegmentRebuild::frame_lengths(scan);
         for (index, (offset, record)) in scan.records.iter().enumerate().skip(start + 1) {
             let rows = match record.kind {
@@ -148,11 +144,11 @@ impl SegmentRecovery {
                     Self::replay_commit(collection, (number, *offset, lengths[index]), record)?
                 }
                 LogRecordKind::Compaction if !aborted.contains(&record.lsn) => {
-                    Self::replay_compaction(paths, &table, record)?
+                    Self::replay_compaction(medium, &table, record)?
                 }
                 _ => Vec::new(),
             };
-            SegmentPlan::append_locations(&collection.path, &rows)?;
+            SegmentPlan::append_locations(medium, &rows)?;
             for row in rows {
                 table.apply(row);
             }
@@ -178,40 +174,31 @@ impl SegmentRecovery {
     /// snapshots are the ones it recorded.
     fn cut_back(
         collection: &NativeCollection,
-        paths: &SegmentPaths,
+        medium: &dyn SegmentMedium,
         checkpoint: &SegmentCheckpointManifest,
     ) -> Result<bool, NativeStorageError> {
+        let locations_match = crate::sha256_hex(&medium.read_location_snapshot()?)
+            == checkpoint.locations_snapshot_sha256
+            && medium.location_log_length()? >= checkpoint.locations_wal_length;
+        if !locations_match {
+            return Ok(false);
+        }
         let keys = collection.path.join("index");
-        let logs = [
-            (
-                paths.locations_snapshot(),
-                &checkpoint.locations_snapshot_sha256,
-                paths.locations_wal(),
-                checkpoint.locations_wal_length,
-            ),
-            (
-                keys.join("keys.snapshot"),
-                &checkpoint.snapshot_sha256,
-                keys.join("keys.wal"),
-                checkpoint.keys_wal_length,
-            ),
-        ];
-        for (snapshot, digest, wal, length) in &logs {
-            let matches = SegmentCheckpoint::digest(snapshot)? == **digest
-                && SegmentStore::file_length(wal)? >= *length;
-            if !matches {
-                return Ok(false);
-            }
+        let keys_wal = keys.join("keys.wal");
+        let keys_match = SegmentCheckpoint::digest(&keys.join("keys.snapshot"))?
+            == checkpoint.snapshot_sha256
+            && SegmentCheckpoint::file_length(&keys_wal)? >= checkpoint.keys_wal_length;
+        if !keys_match {
+            return Ok(false);
         }
-        for (_, _, wal, length) in logs {
-            OpenOptions::new()
-                .create(true)
-                .truncate(false)
-                .write(true)
-                .open(&wal)
-                .and_then(|file| file.set_len(length))
-                .map_err(NativeStorageError::io)?;
-        }
+        medium.truncate_location_log(checkpoint.locations_wal_length)?;
+        OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(&keys_wal)
+            .and_then(|file| file.set_len(checkpoint.keys_wal_length))
+            .map_err(NativeStorageError::io)?;
         Ok(true)
     }
 
@@ -230,14 +217,14 @@ impl SegmentRecovery {
     /// Point every location whose newest entry the compacted segment holds a
     /// copy of at that copy, and remove the segments it replaced.
     fn replay_compaction(
-        paths: &SegmentPaths,
+        medium: &dyn SegmentMedium,
         table: &LocationTable,
         record: &fylo_format::LogRecord,
     ) -> Result<Vec<SegmentLocation>, NativeStorageError> {
         let manifest = CompactionManifest::decode(&record.manifest)?;
-        let rows = CompactionManifest::adopted_rows(paths, table, manifest.segment)?;
+        let rows = CompactionManifest::adopted_rows(medium, table, manifest.segment)?;
         for replaced in &manifest.replaces {
-            Self::remove_segment(paths, *replaced)?;
+            medium.remove_segment(*replaced)?;
         }
         Ok(rows)
     }
@@ -245,30 +232,17 @@ impl SegmentRecovery {
     /// Remove every segment other than the active one that no location row
     /// refers to.
     pub(crate) fn remove_unreferenced(
-        paths: &SegmentPaths,
+        medium: &dyn SegmentMedium,
         active: u64,
     ) -> Result<(), NativeStorageError> {
-        let wal_length = SegmentStore::file_length(&paths.locations_wal())?;
-        let table = LocationTable::load(paths, wal_length)?;
+        let wal_length = medium.location_log_length()?;
+        let table = LocationTable::load(medium, wal_length)?;
         let referenced: BTreeSet<u64> = table.rows().iter().map(|row| row.segment).collect();
-        for number in paths.segment_numbers()? {
+        for number in medium.segment_numbers()? {
             if number != active && !referenced.contains(&number) {
-                Self::remove_segment(paths, number)?;
+                medium.remove_segment(number)?;
             }
         }
         Ok(())
-    }
-
-    /// Remove a segment. On Windows another process may still hold it open;
-    /// it is then left for the next recovery or compaction to remove.
-    fn remove_segment(paths: &SegmentPaths, number: u64) -> Result<(), NativeStorageError> {
-        match fylo_vfs::remove_file(paths.segment(number)) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) if cfg!(windows) && error.kind() == std::io::ErrorKind::PermissionDenied => {
-                Ok(())
-            }
-            Err(error) => Err(NativeStorageError::io(error)),
-        }
     }
 }
