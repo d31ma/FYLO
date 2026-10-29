@@ -121,8 +121,10 @@ try {
             .map((line) => JSON.parse(line))
         const failure = evidence.frames.find((frame) => !frame.ok)
         // A host failure carries its reason out of band; the frame only has an
-        // errno, which would name a disk fault for a browser API gap.
-        evidence.reason = answer.hostError ?? failure?.error?.message ?? ''
+        // errno, which would name a disk fault for a browser API gap. A batch
+        // that succeeded has no reason: its last host error is an expected
+        // probe, such as the NotFoundError of a stat on a missing path.
+        evidence.reason = failure ? (answer.hostError ?? failure.error?.message ?? '') : ''
         if (!failure) evidence.status = 'passed'
         else evidence.status = /directory bridge/.test(evidence.reason) ? 'unsupported' : 'failed'
     }
