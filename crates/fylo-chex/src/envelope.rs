@@ -19,8 +19,6 @@
 //! checksum catches a corrupted record, and each DFA goes through
 //! `regex-automata`'s validating `from_bytes`.
 
-use std::collections::HashMap;
-
 use regex_automata::dfa::sparse;
 use serde_json::Value;
 
@@ -166,16 +164,20 @@ impl CompiledSchema {
                 truncate(&label)
             )));
         }
-        let source: Value = serde_json::from_slice(reader.section("schema")?)
+        // `from_str`, not `from_slice`: the engine already links the former.
+        let source: Value = serde_json::from_str(reader.text("schema")?)
             .map_err(|_| corrupt("schema is not JSON"))?;
 
         let count = reader.u32("entry count")?;
-        let mut dfas: HashMap<&str, &[u8]> = HashMap::new();
+        // A sorted list rather than a hash map: a schema has a few dozen
+        // patterns, and the browser build stays smaller.
+        let mut dfas: Vec<(&str, &[u8])> = Vec::new();
         for _ in 0..count {
             let pattern = reader.text("pattern")?;
             let dfa = reader.section("DFA")?;
-            if dfas.insert(pattern, dfa).is_some() {
-                return Err(corrupt("duplicate pattern"));
+            match dfas.binary_search_by_key(&pattern, |(pattern, _)| pattern) {
+                Ok(_) => return Err(corrupt("duplicate pattern")),
+                Err(at) => dfas.insert(at, (pattern, dfa)),
             }
         }
         if !reader.bytes.is_empty() {
@@ -183,9 +185,10 @@ impl CompiledSchema {
         }
 
         let schema = Self::assemble(source, &label, &mut |pattern, _| {
-            let Some(bytes) = dfas.get(pattern) else {
+            let Ok(at) = dfas.binary_search_by_key(&pattern, |(pattern, _)| pattern) else {
                 return Err(corrupt("a pattern has no DFA"));
             };
+            let bytes = dfas[at].1;
             let (dfa, read) = sparse::DFA::from_bytes(bytes)
                 .map_err(|error| corrupt(&format!("invalid DFA: {error}")))?;
             if read != bytes.len() {

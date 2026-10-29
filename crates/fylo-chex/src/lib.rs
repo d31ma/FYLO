@@ -284,11 +284,11 @@ pub fn validate_definition(schema: &Value, label: &str) -> Result<()> {
 // Data validation
 // ---------------------------------------------------------------------------
 
-#[cfg(feature = "compile")]
 /// Validate `data` against an already-definition-checked `schema`.
 ///
 /// # Errors
 /// Returns `ValidationError` for the first property that does not match.
+#[cfg(feature = "compile")]
 pub fn validate_object(
     schema: &Map<String, Value>,
     data: &Map<String, Value>,
@@ -457,8 +457,8 @@ pub fn parse_schema_document(text: &str, schema_path: &str) -> Result<Value> {
         .map_err(|_| ChexError::schema_load(format!("Failed to load schema from '{schema_path}'")))
 }
 
-#[cfg(feature = "compile")]
 /// Accept `file://` URLs and the leading-slash Windows form returned by URL APIs.
+#[cfg(feature = "compile")]
 fn normalize_location(path: &str, require_json_file: bool) -> Result<String> {
     if path.is_empty() {
         return Err(ChexError::config("A schema path is required".to_string()));
@@ -491,16 +491,16 @@ fn is_windows_drive_form(path: &str) -> bool {
         && bytes[3] == b'/'
 }
 
-#[cfg(feature = "compile")]
 /// Where a schema reference resolves to, and how it is cached and labelled.
+#[cfg(feature = "compile")]
 struct SchemaSource {
     path: String,
     label: String,
     cache_key: String,
 }
 
-#[cfg(feature = "compile")]
 /// Loads, definition-checks, and caches schemas, then validates data against them.
+#[cfg(feature = "compile")]
 #[derive(Default)]
 pub struct SchemaValidator {
     pub schema_path: Option<String>,
@@ -602,21 +602,21 @@ impl SchemaValidator {
     }
 }
 
-#[cfg(feature = "compile")]
 /// Validate `data` against an in-memory schema.
 ///
 /// # Errors
 /// Returns the CHEX error for a malformed schema or non-matching data.
+#[cfg(feature = "compile")]
 pub fn validate_inline(schema: &Value, data: &Map<String, Value>, label: &str) -> Result<()> {
     compile_cached(schema, label)?.validate(data)
 }
 
-#[cfg(feature = "compile")]
 /// [`CompiledSchema::compile`], once per distinct `(schema, label)` on this
 /// thread.
 ///
 /// # Errors
 /// Returns the definition check's error for a malformed schema.
+#[cfg(feature = "compile")]
 pub fn compile_cached(schema: &Value, label: &str) -> Result<Arc<CompiledSchema>> {
     compiled::cache::inline(schema, label)
 }

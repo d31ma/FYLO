@@ -5,8 +5,6 @@
 //! and the loader of stored compiled schemas share one walk and therefore
 //! report the same first error for the same schema.
 
-use std::collections::HashSet;
-
 use serde_json::{Map, Value};
 
 use crate::{
@@ -19,13 +17,16 @@ pub(crate) struct ObjectNode<L> {
     pub(crate) fields: Vec<Field<L>>,
     /// Every data key this level accepts: each schema key, and each nullable
     /// schema key without its `?`. The top-level `$encrypted` directive is not
-    /// one of them.
-    accepted: HashSet<String>,
+    /// one of them. Sorted; a sorted list keeps the browser build smaller than
+    /// a hash set would.
+    accepted: Vec<String>,
 }
 
 impl<L> ObjectNode<L> {
     pub(crate) fn accepts(&self, key: &str) -> bool {
-        self.accepted.contains(key)
+        self.accepted
+            .binary_search_by(|accepted| accepted.as_str().cmp(key))
+            .is_ok()
     }
 }
 
@@ -127,7 +128,7 @@ fn build_map<L>(
     leaf: &mut impl FnMut(&str, &str) -> Result<L>,
 ) -> Result<ObjectNode<L>> {
     let mut fields = Vec::with_capacity(map.len());
-    let mut accepted = HashSet::with_capacity(map.len());
+    let mut accepted = Vec::with_capacity(map.len());
     for (schema_key, schema_value) in map {
         if is_directive(path, schema_key) {
             continue;
@@ -148,15 +149,17 @@ fn build_map<L>(
                 )));
             }
         };
-        accepted.insert(schema_key.clone());
+        accepted.push(schema_key.clone());
         if is_nullable(schema_key) {
-            accepted.insert(data_key(schema_key).to_owned());
+            accepted.push(data_key(schema_key).to_owned());
         }
         fields.push(Field {
             schema_key: schema_key.clone(),
             node,
         });
     }
+    accepted.sort_unstable();
+    accepted.dedup();
     Ok(ObjectNode { fields, accepted })
 }
 
