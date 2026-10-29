@@ -67,7 +67,7 @@ fn doctor_reports_findings_in_original_order() {
     ]}));
     let report = fixture.tools().doctor("people");
     let path = json!(fixture.path("people/history/v1.schema.json"));
-    let upgrader = json!(fixture.path("people/upgraders/v1-to-v1.js"));
+    let migration = json!(fixture.path("people/migrations/v1-to-v1.json"));
     assert_eq!(report["ok"], false);
     assert_eq!(report["warnings"], json!([]));
     assert_eq!(
@@ -75,7 +75,7 @@ fn doctor_reports_findings_in_original_order() {
         json!([
             format!("Missing schema version file: {path}"),
             format!("SHA-256 mismatch for v1: {path}"),
-            format!("Missing upgrader v1->\"v1\": {upgrader}"),
+            format!("Missing migration v1->\"v1\": {migration}"),
             "Duplicate version label: v1",
             format!("Missing schema version file: {path}"),
             "Current version is not declared in manifest.versions: missing"
@@ -163,87 +163,6 @@ fn current_document_without_a_version_remains_unstamped() {
             .materialize("people", document.as_object().unwrap())
             .unwrap(),
         *document.as_object().unwrap()
-    );
-}
-
-#[test]
-fn materialize_runs_arrow_upgrader_and_removes_old_version() {
-    let fixture = SchemaFixture::new();
-    fixture.versions();
-    fixture.upgrader(
-        b"export default doc => ({ ...doc, oldVersion: doc._v === undefined, name: 'Samuel' });",
-    );
-    let document = json!({"_v":"v1","name":"Sam"});
-    assert_eq!(
-        fixture
-            .tools()
-            .materialize("people", document.as_object().unwrap())
-            .unwrap(),
-        *json!({"_v":"v2","oldVersion":true,"name":"Samuel"})
-            .as_object()
-            .unwrap()
-    );
-}
-
-#[test]
-fn materialize_awaits_async_function_upgrader() {
-    let fixture = SchemaFixture::new();
-    fixture.versions();
-    fixture.upgrader(b"export default async function(doc) { return { ready: true }; }");
-    assert_eq!(
-        fixture
-            .tools()
-            .materialize("people", &Map::default())
-            .unwrap(),
-        *json!({"_v":"v2","ready":true}).as_object().unwrap()
-    );
-}
-
-#[test]
-fn materialize_rejects_a_non_callable_default_export() {
-    let fixture = SchemaFixture::new();
-    fixture.versions();
-    fixture.upgrader(b"export default 42;");
-    assert_eq!(
-        fixture
-            .tools()
-            .materialize("people", &Map::default())
-            .unwrap_err(),
-        format!(
-            "Upgrader at {} must default-export an async (doc) => doc function",
-            fixture.path("people/upgraders/v1-to-v2.js").display()
-        )
-    );
-}
-
-#[test]
-fn materialize_rejects_a_non_object_return() {
-    let fixture = SchemaFixture::new();
-    fixture.versions();
-    fixture.upgrader(b"export default doc => [];");
-    assert_eq!(
-        fixture
-            .tools()
-            .materialize("people", &Map::default())
-            .unwrap_err(),
-        "Upgrader v1->v2 for 'people' must return an object"
-    );
-}
-
-#[test]
-fn materialize_reports_invalid_upgrader_utf8() {
-    let fixture = SchemaFixture::new();
-    fixture.versions();
-    fixture.upgrader(&[0xff]);
-    assert_eq!(
-        fixture
-            .tools()
-            .materialize("people", &Map::default())
-            .unwrap_err(),
-        format!(
-            "upgrader {} is not valid UTF-8",
-            fixture.path("people/upgraders/v1-to-v2.js").display()
-        )
     );
 }
 
@@ -369,41 +288,6 @@ fn validation_rejects_a_malformed_schema() {
 }
 
 #[test]
-fn materialize_runs_each_version_in_manifest_order() {
-    let fixture = SchemaFixture::new();
-    fixture.manifest(&json!({"current":"v3","versions":[{"v":"v1"},{"v":"v2"},{"v":"v3"}]}));
-    fixture.upgrader(b"export default doc => ({ order: 'first' });");
-    fs::write(
-        fixture.path("people/upgraders/v2-to-v3.js"),
-        b"export default doc => ({ order: doc.order + '-second' });",
-    )
-    .unwrap();
-    assert_eq!(
-        fixture
-            .tools()
-            .materialize("people", &Map::default())
-            .unwrap(),
-        *json!({"order":"first-second","_v":"v3"})
-            .as_object()
-            .unwrap()
-    );
-}
-
-#[test]
-fn materialize_reports_rejected_promise() {
-    let fixture = SchemaFixture::new();
-    fixture.versions();
-    fixture.upgrader(b"export default async function(doc) { throw new Error('rejected'); }");
-    assert!(
-        fixture
-            .tools()
-            .materialize("people", &Map::default())
-            .unwrap_err()
-            .starts_with("upgrader v1->v2 failed:")
-    );
-}
-
-#[test]
 fn validation_removes_the_version_field_before_checking() {
     let fixture = SchemaFixture::new();
     fixture.flat_schema(&json!({"name":"^[A-Za-z]+$"}));
@@ -434,5 +318,286 @@ fn validation_reads_a_schema_edited_between_calls() {
             .validate_against_head("people", document.as_object().unwrap())
             .unwrap(),
         Some(document.as_object().unwrap().clone())
+    );
+}
+
+#[allow(clippy::needless_pass_by_value)] // lets tests pass `json!` literals
+fn materialized(fixture: &SchemaFixture, document: Value) -> Result<Value, String> {
+    fixture
+        .tools()
+        .materialize("people", document.as_object().unwrap())
+        .map(Value::Object)
+}
+
+#[allow(clippy::needless_pass_by_value)]
+fn migrated(steps: Value, document: Value) -> Result<Value, String> {
+    let fixture = SchemaFixture::new();
+    fixture.versions();
+    fixture.steps(&steps);
+    materialized(&fixture, document)
+}
+
+#[test]
+fn materialize_runs_steps_on_the_unversioned_document_and_stamps_head() {
+    assert_eq!(
+        migrated(
+            json!([{"set":"oldVersion","value":true},{"rename":"name","to":"fullName"}]),
+            json!({"_v":"v1","name":"Sam"})
+        )
+        .unwrap(),
+        json!({"_v":"v2","oldVersion":true,"fullName":"Sam"})
+    );
+}
+
+#[test]
+fn materialize_runs_each_version_in_manifest_order() {
+    let fixture = SchemaFixture::new();
+    fixture.manifest(&json!({"current":"v3","versions":[{"v":"v1"},{"v":"v2"},{"v":"v3"}]}));
+    fixture.steps(&json!([{"set":"order","value":"first"}]));
+    fs::write(
+        fixture.path("people/migrations/v2-to-v3.json"),
+        br#"{"steps":[{"template":"order","value":"{order}-second"}]}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        materialized(&fixture, json!({})).unwrap(),
+        json!({"order":"first-second","_v":"v3"})
+    );
+}
+
+#[test]
+fn materialize_reports_a_missing_migration() {
+    let fixture = SchemaFixture::new();
+    fixture.versions();
+    assert_eq!(
+        materialized(&fixture, json!({})).unwrap_err(),
+        format!(
+            "Missing migration v1->v2 for collection 'people' at {}",
+            fixture.path("people/migrations/v1-to-v2.json").display()
+        )
+    );
+}
+
+#[test]
+fn materialize_refuses_a_javascript_upgrader() {
+    let fixture = SchemaFixture::new();
+    fixture.versions();
+    fixture.legacy_upgrader(b"export default doc => doc;");
+    let error = materialized(&fixture, json!({})).unwrap_err();
+    assert!(error.contains("JavaScript upgrader v1->v2"), "{error}");
+    assert!(error.contains("ADR 0018"), "{error}");
+}
+
+#[test]
+fn materialize_reports_an_invalid_migration_file() {
+    let fixture = SchemaFixture::new();
+    fixture.versions();
+    let path = fixture.path("people/migrations/v1-to-v2.json");
+    for (source, expected) in [
+        (&b"{"[..], "is not valid JSON"),
+        (br"[]", "must be an object"),
+        (br#"{"steps":[],"extra":1}"#, "does not take \"extra\""),
+        (
+            br#"{"steps":[{"rename":"a"}]}"#,
+            "step 1: migration step field \"to\" must be a string",
+        ),
+        (
+            br#"{"steps":[{"rename":"a","to":"b","value":1}]}"#,
+            "does not take \"value\"",
+        ),
+        (
+            br#"{"steps":[{"set":"a","remove":"a","value":1}]}"#,
+            "use one operation per step",
+        ),
+        (br#"{"steps":[{"eval":"a"}]}"#, "names no known operation"),
+        (br#"{"steps":[{"remove":"a//b"}]}"#, "empty segment"),
+        (
+            br#"{"steps":[{"convert":"a","to":"date"}]}"#,
+            "cannot convert to \"date\"",
+        ),
+    ] {
+        fixture.migration(source);
+        let error = materialized(&fixture, json!({})).unwrap_err();
+        assert!(
+            error.starts_with(&format!("migration {}", path.display())) && error.contains(expected),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn rename_copy_and_remove_reach_nested_fields() {
+    assert_eq!(
+        migrated(
+            json!([
+                {"rename":"profile/first","to":"name/given"},
+                {"copy":"name/given","to":"display"},
+                {"remove":"profile/legacy"},
+                {"rename":"missing","to":"ignored"}
+            ]),
+            json!({"profile":{"first":"Sam","legacy":1}})
+        )
+        .unwrap(),
+        json!({"profile":{},"name":{"given":"Sam"},"display":"Sam","_v":"v2"})
+    );
+}
+
+#[test]
+fn a_path_through_a_non_object_fails() {
+    let error = migrated(
+        json!([{"set":"name/given","value":"x"}]),
+        json!({"name":"Sam"}),
+    )
+    .unwrap_err();
+    assert!(error.contains("crosses a non-object"), "{error}");
+}
+
+#[test]
+fn default_fills_only_missing_or_null_fields() {
+    assert_eq!(
+        migrated(
+            json!([
+                {"default":"a","value":1},
+                {"default":"b","value":2},
+                {"default":"c","value":3}
+            ]),
+            json!({"a":null,"b":false})
+        )
+        .unwrap(),
+        json!({"a":1,"b":false,"c":3,"_v":"v2"})
+    );
+}
+
+#[test]
+fn convert_follows_javascript_string_and_strict_number_and_boolean_rules() {
+    assert_eq!(
+        migrated(
+            json!([
+                {"convert":"age","to":"number"},
+                {"convert":"score","to":"string"},
+                {"convert":"whole","to":"string"},
+                {"convert":"active","to":"boolean"},
+                {"convert":"flag","to":"number"},
+                {"convert":"none","to":"number"}
+            ]),
+            json!({"age":" 42 ","score":1.5,"whole":2.0,"active":"true","flag":true,"none":null})
+        )
+        .unwrap(),
+        json!({"age":42,"score":"1.5","whole":"2","active":true,"flag":1,"none":null,"_v":"v2"})
+    );
+    for (step, document) in [
+        (
+            json!({"convert":"age","to":"number"}),
+            json!({"age":"forty"}),
+        ),
+        (
+            json!({"convert":"active","to":"boolean"}),
+            json!({"active":"yes"}),
+        ),
+        (
+            json!({"convert":"tags","to":"string"}),
+            json!({"tags":["a"]}),
+        ),
+    ] {
+        let error = migrated(json!([step]), document).unwrap_err();
+        assert!(error.contains("cannot convert"), "{error}");
+    }
+}
+
+#[test]
+fn map_replaces_listed_values_and_falls_back_to_else() {
+    let steps = json!([{"map":"status","values":{"1":"active","0":"inactive"},"else":"unknown"}]);
+    assert_eq!(
+        migrated(steps.clone(), json!({"status":1})).unwrap()["status"],
+        "active"
+    );
+    assert_eq!(
+        migrated(steps.clone(), json!({"status":"7"})).unwrap()["status"],
+        "unknown"
+    );
+    assert_eq!(migrated(steps, json!({})).unwrap(), json!({"_v":"v2"}));
+    assert_eq!(
+        migrated(
+            json!([{"map":"status","values":{"1":"active"}}]),
+            json!({"status":2})
+        )
+        .unwrap()["status"],
+        2
+    );
+}
+
+#[test]
+fn wrap_puts_a_scalar_in_an_array_once() {
+    assert_eq!(
+        migrated(
+            json!([{"wrap":"tag"},{"wrap":"tags"}]),
+            json!({"tag":"a","tags":["b"]})
+        )
+        .unwrap(),
+        json!({"tag":["a"],"tags":["b"],"_v":"v2"})
+    );
+}
+
+#[test]
+fn string_steps_edit_text_and_reject_other_types() {
+    assert_eq!(
+        migrated(
+            json!([
+                {"trim":"name"},
+                {"lower":"email"},
+                {"upper":"code"},
+                {"replace":"phone","find":"-","with":""},
+                {"lower":"missing"}
+            ]),
+            json!({"name":"  Sam  ","email":"Sam@Example.COM","code":"straße","phone":"555-01-23"})
+        )
+        .unwrap(),
+        json!({"name":"Sam","email":"sam@example.com","code":"STRASSE","phone":"5550123","_v":"v2"})
+    );
+    let error = migrated(json!([{"lower":"age"}]), json!({"age":3})).unwrap_err();
+    assert!(error.contains("needs a string at age"), "{error}");
+    let error = migrated(json!([{"replace":"a","find":"","with":"x"}]), json!({})).unwrap_err();
+    assert!(error.contains("non-empty \"find\""), "{error}");
+}
+
+#[test]
+fn template_fills_placeholders_and_keeps_doubled_braces() {
+    assert_eq!(
+        migrated(
+            json!([{"template":"label","value":"{{{name/first}}} {name/last} #{n}{missing}"}]),
+            json!({"name":{"first":"Sam","last":"Delma"},"n":7})
+        )
+        .unwrap()["label"],
+        "{Sam} Delma #7"
+    );
+    for template in ["{open", "close}"] {
+        let error =
+            migrated(json!([{"template":"label","value":template}]), json!({})).unwrap_err();
+        assert!(error.contains("migration template"), "{error}");
+    }
+}
+
+#[test]
+fn slugify_matches_the_retired_javascript_slug_upgrader() {
+    for (title, slug) in [
+        (json!("Hello, World!"), "hello-world"),
+        (json!("  --Rust & Bun 2026-- "), "rust-bun-2026"),
+        (json!("Crème brûlée"), "cr-me-br-l-e"),
+        (json!("!!!"), "untitled"),
+        (json!(null), "untitled"),
+        (json!(42), "42"),
+    ] {
+        assert_eq!(
+            migrated(
+                json!([{"slugify":"slug","from":"title"}]),
+                json!({"title":title})
+            )
+            .unwrap()["slug"],
+            slug
+        );
+    }
+    assert_eq!(
+        migrated(json!([{"slugify":"slug","from":"title"}]), json!({})).unwrap()["slug"],
+        "untitled"
     );
 }

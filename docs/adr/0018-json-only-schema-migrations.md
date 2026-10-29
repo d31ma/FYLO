@@ -45,7 +45,7 @@ So the common transformations stay expressible, the step table gains:
 
 | Step                                          | Effect                                                                 |
 | --------------------------------------------- | ---------------------------------------------------------------------- |
-| `{"lower": "x"}`, `{"upper": "x"}`            | change a string's case (Unicode simple case mapping)                   |
+| `{"lower": "x"}`, `{"upper": "x"}`            | change a string's case (Unicode full case mapping)                     |
 | `{"trim": "x"}`                               | remove leading and trailing whitespace                                 |
 | `{"replace": "x", "find": "a", "with": "b"}`  | replace every occurrence of literal text                               |
 | `{"template": "x", "value": "{a} {b/c}"}`     | build a string from other fields, by slash-separated path              |

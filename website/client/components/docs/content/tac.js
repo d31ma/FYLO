@@ -633,8 +633,8 @@ export default class {
             '  history/',
             '    v1.schema.json       ← chex regex schema',
             '    v2.schema.json       ← head schema',
-            '  upgraders/',
-            '    v1-to-v2.js          ← export default (doc) => upgradedDoc'
+            '  migrations/',
+            '    v1-to-v2.json        ← { "steps": [{ "rename": "fullName", "to": "name" }] }'
         ].join('\n')
     }
 

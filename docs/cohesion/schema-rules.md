@@ -4,6 +4,10 @@
 > through the vendored `fylo-chex` crate. The external process lifecycle,
 > transport, respawn, and fake-executable tests described below no longer
 > exist. The rest of this record still describes the schema split.
+>
+> **Superseded for Boa (ADR 0018, 2026-10-29).** Migrations are JSON steps;
+> `boa_engine`, the module loader and JavaScript upgraders are removed. The Boa
+> and upgrader-module details below are historical.
 
 ## Scope and acceptance
 

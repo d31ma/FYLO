@@ -17,7 +17,7 @@ impl SchemaFixture {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir_all(directory.join("people/history")).unwrap();
-        fs::create_dir_all(directory.join("people/upgraders")).unwrap();
+        fs::create_dir_all(directory.join("people/migrations")).unwrap();
         Self(directory)
     }
 
@@ -45,8 +45,17 @@ impl SchemaFixture {
         self.manifest(&json!({"current":"v2","versions":[{"v":"v1"},{"v":"v2"}]}));
     }
 
-    pub(super) fn upgrader(&self, source: &[u8]) {
-        fs::write(self.0.join("people/upgraders/v1-to-v2.js"), source).unwrap();
+    pub(super) fn migration(&self, source: &[u8]) {
+        fs::write(self.path("people/migrations/v1-to-v2.json"), source).unwrap();
+    }
+
+    pub(super) fn steps(&self, steps: &Value) {
+        self.migration(&serde_json::to_vec(&json!({ "steps": steps })).unwrap());
+    }
+
+    pub(super) fn legacy_upgrader(&self, source: &[u8]) {
+        fs::create_dir_all(self.path("people/upgraders")).unwrap();
+        fs::write(self.path("people/upgraders/v1-to-v2.js"), source).unwrap();
     }
 
     pub(super) fn flat_schema(&self, schema: &Value) {

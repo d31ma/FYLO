@@ -19,6 +19,19 @@
   (ADR 0016). Browsing the collections inside the file arrives with the
   single-file format in the engine; the folder view is unchanged.
 
+### Changed
+
+- **Schema migrations are JSON, not JavaScript (ADR 0018).** A version step is
+  now `fylo.schema/<collection>/migrations/<from>-to-<to>.json`, a list of
+  declarative steps (`rename`, `default`, `set`, `remove`, `copy`, `convert`,
+  `map`, `wrap`, `lower`, `upper`, `trim`, `replace`, `template` and
+  `slugify`) that every build runs the same way. FYLO no longer runs
+  `upgraders/*.js` files, and the Boa JavaScript runtime is gone from the
+  binary. A step that still has only a `.js` upgrader fails `schemaMaterialize`
+  with an error pointing at ADR 0018; the README's slug upgrader is one
+  `slugify` step. `schemaInspect` reports `migrationPath` and
+  `migrationExists` in place of `upgraderPath` and `upgraderExists`.
+
 ### Fixed
 
 - **`patchDoc`, `patchDocs`, and SQL `INSERT` and `UPDATE` now encrypt

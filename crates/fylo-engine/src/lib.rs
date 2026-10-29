@@ -389,13 +389,13 @@ impl WriteEngine {
             .unwrap_or_else(|| document.clone()))
     }
 
-    /// Materialize one document at the head schema version by executing the
-    /// collection's ordered JavaScript upgrader chain in the embedded runtime.
+    /// Materialize one document at the head schema version by applying the
+    /// collection's ordered chain of JSON migrations (ADR 0018).
     ///
     /// # Errors
     ///
-    /// Returns an error when the manifest or upgrader chain is invalid, an
-    /// upgrader throws, or an upgrader does not return a JSON object.
+    /// Returns an error when the manifest is invalid, a migration is missing
+    /// or malformed, or a step meets a field of the wrong type.
     pub fn schema_materialize(
         &self,
         collection: &str,
