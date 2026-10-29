@@ -180,6 +180,8 @@ flags without a `--`.
 | NFS 4.1, local nfsd, two clients    | two Linux clients in Docker on the Mac Mini | 2026-10-29 | passed, one unexplained overlap | | 10 of 10 runs passed (15 s, 4 × 2 per client, `--sync`): ext4 export 45,428 exclusive entries, tmpfs export 101,418, 0 overlaps; one earlier tmpfs run had 1 overlap and 1 lost update in 23,700 entries | |
 | NTFS, Windows 11 26H2 (ARM64)      | Surface (Snapdragon X, 10 cores) | 2026-10-29 | passed | 1.6 ms | 34,244 exclusive entries, 0 overlaps; control caught 84,300; longest wait 6.0 s | no |
 | SMB 3.1.1 (`smbfs`, CITADEL ATLAS share), macOS | Mac Mini, two writer processes | 2026-10-29 | lease fallback | lease taken over 65 s after `kill -9` | the probe lock was refused, so the lock checks are skipped; writers 2 and 3 got `EBUSY` after 5.0 s while writer 1 held the lease; a reader ran 23,333 checked queries meanwhile with 0 failures | |
+| exFAT, macOS 27.2 (FSKit, 2 GiB image on HAVEN) | Mac Mini (M4, 10 cores) | 2026-10-29 | passed; not in `QUALIFIED`, so a writer uses the lease | 1.3 ms | 239,431 exclusive entries, 0 overlaps; control caught 357,022; longest wait 70 ms | **yes**, as expected |
+| NTFS, Windows 11 26H2 (ARM64), second drive (F:) | Surface (Snapdragon X, 10 cores) | 2026-10-29 | passed | 1.2 ms | 34,047 exclusive entries, 0 overlaps; control caught 82,499; longest wait 3.3 s | no |
 
 On the ATLAS share, writing a `.vdbx` first needed two fixes, both on
 develop: the lease file is flushed with `fsync`, because `smbfs` refuses
@@ -187,6 +189,82 @@ develop: the lease file is flushed with `fsync`, because `smbfs` refuses
 filesystem refuses hard links with any error (`9f666cd`). Numbers and the
 full sequence are in `docs/QUERY_RELEASE_QUALIFICATION.md`, "Single-file
 `.vdbx` databases on ATLAS".
+
+### Database checks on exFAT and NTFS
+
+Beyond the lock harness, each of these filesystems ran a whole database
+through the release CLI and the spike harness
+(`/Volumes/FORGE/Logs/FYLO/fxdb-atlas/scripts/fxdbcheck.rs`), at develop
+`70d468b`. The checks:
+
+- **CLI round trip:** `create`, `createCollection`, three `INSERT`s, then
+  `SELECT`, `find`, `get`, `DELETE`, `verify` and `inspect`.
+- **Pack and unpack:** pack a 2,000-document root (two collections) onto
+  the filesystem, verify it, unpack it there, and check every document.
+- **Compaction:** delete half the documents, run `compact` and then
+  `compact --shrink`, and verify the database with the oracle on the 1,000
+  documents left.
+- **Writers:** the two-writer sequence on a packed 5,000-document database.
+- **Crash test:** three rounds of `kill -9` on a writer in the middle of its
+  puts, then a read, `verify`, and the next writer.
+
+| Check | exFAT, macOS 27.2 | NTFS, Windows 11 (F:) |
+| ----- | ----------------- | --------------------- |
+| What FYLO picks | lease, lease byte held exclusive (probe granted, unqualified) | byte-range locks (qualified) |
+| CLI round trip | passed | passed |
+| `fylo pack` onto the filesystem | passed (10.7 s for 2 × 2,000 documents) | passed (3.4 s) |
+| `fylo unpack` onto the filesystem | **fails**: directory root, see below | passed, all 2,000 documents match |
+| `compact`, then `compact --shrink` | passed; 112 → 120 → 112 MiB, 0 extents punched | passed; 112 → 120 → 112 MiB, 1 extent punched |
+| `verify` after shrinking | ok | ok |
+| Second and third writer while the first holds the file | `EBUSY` after 5.0 s each | both wrote at once (73 ms, 51 ms) |
+| Reader during the writers | 30,545 checked queries, 0 failures, longest 28 ms | 14,961 checked queries, 0 failures, longest 538 ms |
+| Next writer after the holder closed | 41 ms | 34 ms |
+| Next writer after `kill -9` of the holder | `EBUSY` at 0 s and 35 s; took the lease over at 65 s | at once (12 ms) |
+| Crash test, 3 rounds | 0 acknowledged puts lost, `verify` ok every round; next writer after 61–64 s | 0 acknowledged puts lost, `verify` ok every round; next writer after 22–27 ms |
+| Size of a 3-document database | 40 MiB, all allocated | 40 MiB |
+
+What the volumes offered, from direct probes:
+
+- **exFAT (macOS FSKit):** `fsync`, `F_FULLFSYNC` and a directory `fsync`
+  work. Byte-range locks work, with the harness result above. There are no
+  sparse files: a 64 MiB `ftruncate` allocated 64 MiB. `F_PUNCHHOLE` returns
+  `ENOTTY`, which `70d468b` treats as "cannot punch". `link` returns
+  `ENOTSUP`, so pack takes its rename path (`9f666cd`). macOS keeps extended
+  attributes in AppleDouble `._<name>` files beside the database and its
+  lease (`._rt.vdbx`, `._rt.vdbx.lease.5`). They are harmless to a `.vdbx`
+  file.
+- **NTFS:** byte-range locks are qualified. Hole punching works: compaction
+  marks the file sparse and frees the extent.
+
+Known failures:
+
+- **Directory roots on exFAT under macOS** (not a `.vdbx` failure; a fix is
+  in progress). macOS writes AppleDouble `._<name>` files next to a root's
+  shard directories. Building a directory root there then fails with
+  `ENATIVE_UNSAFE_PATH: document shard is not a regular directory:
+  …/.collections/items/docs/._0`, and `fylo unpack` onto exFAT fails with
+  `ENATIVE_METADATA: layout copy failed verification: document 4VRNF520000
+  differs in the copy`.
+- **`cargo test -p fylo-storage-native` does not compile on Windows.** The
+  test helper `copy_frame` in
+  `src/segments/container_medium/tests/encryption.rs:402` imports
+  `std::os::unix::fs::FileExt`, which fails with `E0433` and then `E0599`
+  for `read_exact_at` and `write_all_at`. All nine integration test targets
+  of the crate pass on Windows, among them `vdbx_pack` (10) and `vdbx_root`
+  (8). So does `cargo test -p fylo-cli --test vdbx_database` (12).
+- **The ENOTTY corruption, fixed in `70d468b`.** Before that commit,
+  `ENOTTY` from `F_PUNCHHOLE` on exFAT failed `clear_extent` after the
+  extent had already been allocated. The first `createCollection` on a
+  fresh database failed. Later writes reported `ENATIVE_CONCURRENT_WRITE`,
+  reads reported "segment collection has no valid generation slot", and
+  `fylo verify` found an `extentHeaderMismatch`. `70d468b` makes the punch
+  fall back to writing zeros. A failed clear still leaves the extent
+  allocated, so another filesystem error at that point could leave the same
+  mismatch.
+
+Logs and raw JSON: `/Volumes/FORGE/Logs/FYLO/fxdb-atlas/exfat/` and
+`/Volumes/FORGE/Logs/FYLO/fxdb-atlas/ntfs/`. The run at `7f7d1ec`, before
+the ENOTTY fix, is in `exfat-7f7d1ec/`.
 
 A filesystem joins `QUALIFIED` in
 `crates/fylo-storage-native/src/byte_range_lock/filesystem.rs`, the list of
