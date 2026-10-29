@@ -1,4 +1,13 @@
 mod canonical_metadata;
+mod container_bytes;
+mod container_checkpoint_slot;
+mod container_collection_header;
+mod container_extent_header;
+mod container_extent_kind;
+mod container_extent_map;
+mod container_format_error;
+mod container_generation_slot;
+mod container_superblock;
 mod crc32c;
 mod document;
 mod document_limits;
@@ -13,6 +22,14 @@ mod log_segment_header;
 mod ttid_timestamps;
 
 pub use canonical_metadata::CanonicalMetadata;
+pub use container_checkpoint_slot::{ContainerCheckpointSlot, ContainerSnapshotRef};
+pub use container_collection_header::ContainerCollectionHeader;
+pub use container_extent_header::ContainerExtentHeader;
+pub use container_extent_kind::ContainerExtentKind;
+pub use container_extent_map::{ContainerExtentMapPage, ContainerExtentState};
+pub use container_format_error::ContainerFormatError;
+pub use container_generation_slot::ContainerGenerationSlot;
+pub use container_superblock::ContainerSuperblock;
 pub use crc32c::Crc32c;
 pub use document::Document;
 pub use document_limits::DocumentLimits;

@@ -97,17 +97,21 @@ two from 1 MiB to 64 MiB. Every extent begins with a 64-byte extent header:
 magic, kind, owning collection id, **sequence number**, and a CRC-32C. The
 sequence number comes from a counter in the superblock and is never reused.
 
-**Superblock.** Magic, format version and flags, extent size, extent count,
-superblock generation, the checkpoint LSN per collection, the extents that
-hold the current extent map, the codec and the encryption header (section 9),
-and a CRC-32C. A checkpoint writes the copy that does not hold the newest
+**Superblock.** Magic, format version and feature flags (including which
+codecs appear), extent size, extent count, superblock generation, the next
+extent sequence number, the first directory extent, the extents that hold the
+current extent map, the encryption header (section 9), and a CRC-32C. A checkpoint writes the copy that does not hold the newest
 valid generation and flushes; a reader takes the valid copy with the higher
 generation. This is ADR 0015's slot rule at file scale.
 
-**Collection directory.** One 4 KiB block per collection: its name and id,
-its catalog descriptor, its two **generation slots** (ADR 0015 section 6,
-moved in from `state.slots`), its active segment extent and the extents of
-its current snapshots. One block per collection keeps two collections from
+**Collection directory.** One 4 KiB block per collection: a static part
+written when the collection is created (its name, id and catalog descriptor,
+with its own CRC), two **checkpoint slots** (the checkpoint LSN and position,
+and the extents, lengths and SHA-256 of its current location and index
+snapshots and dictionary) and two **generation slots** (ADR 0015 section 6,
+moved in from `state.slots`, naming the active segment extent and its
+committed length). Each slot pair is written A/B with its own CRC, so an
+in-place slot write never touches the static part. One block per collection keeps two collections from
 ever writing the same sector. An 8 MiB directory holds 2,048 collections and
 chains to a further directory extent past that.
 
@@ -235,12 +239,24 @@ extent, and named by id in each frame. A later dictionary is trained at
 compaction when it improves the ratio by at least 10%; records keep the
 dictionary they were written with until compaction rewrites them.
 
-The codec must be **pure Rust**, because the browser build has no C
-toolchain, and it counts against the browser engine's budget of 1,792 KiB
-(640 KiB gzipped). The candidates are `lz4_flex` (block mode with a
-dictionary) and zstd written natively and read with `ruzstd` in the browser.
-Spike 4 below decides between them; the chosen crate is reviewed under
-ADR 0004.
+**Codecs (decided by Samuel, 2026-10-29, from spike 4).** Each frame's codec
+byte names how it was compressed: `0` none, `1` zstd, `2` LZ4.
+
+- Native writers use **zstd level 3** with the collection's dictionary,
+  through the C library (`zstd` crate). It needs an ADR 0004 dependency
+  review before it lands.
+- The browser cannot carry the C library: compiled to WebAssembly it adds
+  433 KB, more than the engine's remaining 224 KB of budget. The browser reads
+  zstd frames with **`ruzstd`** (pure Rust, +16 KB gzipped).
+- The browser writes **LZ4** frames with **`lz4_flex`** (pure Rust, +6 KB
+  gzipped), using the same dictionary's raw bytes. `ruzstd` cannot compress
+  with a dictionary.
+- Native compaction rewrites LZ4 frames as zstd.
+
+On three 5,000-document test sets, zstd level 3 with a 32 KiB dictionary
+stored documents at 2.9x to 3.4x and LZ4 with a dictionary at 2.1x to 2.6x;
+every codec decoded a document in under 10 µs
+(`fxdb/spike-4-codec.md` in the project files).
 
 A **sealed** file (section 11) recompresses its extents in 64 KiB blocks for
 a better ratio; a point read then decompresses one block.
@@ -339,7 +355,7 @@ results are added here as they arrive.
 | 1     | Cold `pread` latency on one long-open file on the raw ATLAS share, with and without caching | whether a cold read under 1 ms is possible there |
 | 2     | Byte-range locks between two machines on CITADEL, and on the local NFS 4.1 server            | section 7's starting qualification list          |
 | 3     | Whether `F_PUNCHHOLE` from macOS frees space on the ATLAS share                              | whether shrinking there needs `--shrink`         |
-| 4     | `lz4_flex` and zstd with a dictionary on the 5k fixture: ratio, decode time and code size    | the codec in section 8                           |
+| 4     | `lz4_flex` and zstd with a dictionary on the 5k fixture: ratio, decode time and code size    | **Done 2026-10-29:** section 8's codecs          |
 
 ## Consequences
 
