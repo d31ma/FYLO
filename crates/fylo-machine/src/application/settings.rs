@@ -82,6 +82,7 @@ impl Settings {
             },
             schema,
             credentials,
+            hot_set_bytes: None,
         })
     }
 

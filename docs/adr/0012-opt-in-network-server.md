@@ -1,9 +1,18 @@
 # ADR 0012: Opt-in network server for one root
 
-- Status: **Accepted**
+- Status: **Withdrawn** (2026-10-29)
 - Date: **2026-10-28**
 - Owners: **FYLO maintainers**
-- Amends: ADR 0007 (FYLO no longer "opens no server"; storage stays filesystem-only)
+- Amended: ADR 0007 (FYLO no longer "opens no server"); withdrawn, so ADR 0007
+  stands as written
+
+> **Withdrawn 2026-10-29.** FYLO is an embedded library, like SQLite: apps open
+> the database files directly in their own process. `fylo serve`, its flags,
+> `Fylo.connect` and the `fyloServe` hello were removed before release, and no
+> network server ships. The hot set moved to embedded sessions that hold the
+> root's exclusive lease (`exec --loop --exclusive-root`; see ADR 0014). A
+> server exists only as a test fixture that simulates an app server reading the
+> database. The rest of this record is kept as history.
 
 ## Context
 

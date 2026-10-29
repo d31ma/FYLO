@@ -221,8 +221,9 @@ same queue, so a batch shares flushes while each item stays its own atomic
 commit, as today.
 
 Writers in different processes do not batch with each other: they serialize
-on the collection lock as they do today. The planned `fylo serve` process is
-where concurrent writers meet one queue.
+on the collection lock as they do today. A process that holds the root's
+exclusive lease (`exec --loop --exclusive-root`) is where concurrent writers
+meet one queue.
 
 ### 6. Failure in a live writer
 
@@ -382,8 +383,8 @@ source of truth, and the durability promise above.
 - **Checkpoints** run at 4,096 records, at 16 MiB, or when `keys.wal` outgrows
   the larger of 64 KiB and the snapshot. That is the compaction rule, moved
   from the write path to here. A clean close is
-  `NativeWriteRoot::close_logs()`, which the write CLI, `fylo exec` (single
-  request and `--loop`) and `fylo serve` call on exit.
+  `NativeWriteRoot::close_logs()`, which the write CLI and `fylo exec` (single
+  request and `--loop`) call on exit.
 - **Locks.** There is no `--exclusive-root` shortcut: a process started
   without that flag never checks the lease, so the file lock stays. A native
   lock is one exclusive create instead of link-then-check, because the hard

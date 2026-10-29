@@ -1,4 +1,4 @@
-//! Compatibility entry point for the native NDJSON machine server.
+//! Compatibility entry point for the native NDJSON machine session on stdio.
 //!
 //! The primary `fylo-rust exec --loop` command and this preview binary share
 //! the same dispatcher and implement the complete canonical operation registry.

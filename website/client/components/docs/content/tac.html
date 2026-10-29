@@ -169,8 +169,8 @@
                     <p>
                         The <code>fylo</code> binary is the only surface: query and administer a
                         local root from the shell, and drive git-like document version control.
-                        No server is needed — every client owns its database directly, and the
-                        opt-in <code>fylo serve</code> shares one root over TCP.
+                        There is no server and no network protocol — FYLO opens the database
+                        files directly in your app's process, like SQLite.
                     </p>
                     <pre class="code-block"><code>{cliCode()}</code></pre>
                 </article>

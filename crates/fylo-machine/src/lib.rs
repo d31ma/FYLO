@@ -5,14 +5,11 @@
 //! permission, or transaction semantics.
 
 mod application;
+mod frame_access;
 mod frame_session;
 mod invocation_options;
 mod invocation_runtime;
-mod operation_field;
-mod remote_policy;
 mod request_frame;
-#[cfg(not(target_arch = "wasm32"))]
-mod server;
 mod strict;
 
 pub use application::ApplicationConfig;
@@ -20,8 +17,6 @@ pub use frame_session::FrameSession;
 pub use invocation_options::InvocationOptions;
 pub use invocation_runtime::InvocationRuntime;
 pub use request_frame::RequestFrame;
-#[cfg(not(target_arch = "wasm32"))]
-pub use server::{MachineServer, ServeOptions, ServeToken, ServerHandle};
 
 use std::io::{BufRead, Read, Write};
 #[cfg(not(target_arch = "wasm32"))]
@@ -361,7 +356,6 @@ fn execute_invocation_frame(
         cursor_sequence: std::cell::Cell::new(0),
         startup_error: None,
         persistent: false,
-        remote: false,
         hot_set: None,
         hot_engine: std::cell::RefCell::new(None),
     };
@@ -423,6 +417,7 @@ impl Session {
                 .to_path_buf()
         });
         let supplied_lease = options.as_ref().and_then(RootOpenOptions::owning_lease);
+        let owns_root = exclusive_root || supplied_lease.is_some();
         let limits = limits.clamped();
         let mut leases = std::collections::BTreeMap::new();
         let startup_error = if exclusive_root
@@ -469,6 +464,7 @@ impl Session {
         } else {
             None
         };
+        let hot_set = Self::hot_set_for(&config, persistent && owns_root && !leases.is_empty());
         Self {
             default_root,
             filesystem_profile: profile,
@@ -479,10 +475,18 @@ impl Session {
             cursor_sequence: std::cell::Cell::new(0),
             startup_error,
             persistent,
-            remote: false,
-            hot_set: None,
+            hot_set,
             hot_engine: std::cell::RefCell::new(None),
         }
+    }
+}
+
+impl Session {
+    /// A hot set for a persistent session that holds its root's exclusive
+    /// lease, unless the application turned it off with a zero budget.
+    fn hot_set_for(config: &ApplicationConfig, owns_root: bool) -> Option<Arc<HotSet>> {
+        let budget = config.hot_set_bytes.unwrap_or(HotSet::DEFAULT_BUDGET_BYTES);
+        (owns_root && budget > 0).then(|| Arc::new(HotSet::new(budget)))
     }
 }
 
@@ -496,9 +500,8 @@ struct Session {
     cursor_sequence: std::cell::Cell<u64>,
     startup_error: Option<MachineError>,
     persistent: bool,
-    /// A network client: it may not name host paths, URLs or other roots.
-    remote: bool,
-    /// Resident reads shared by every session of one server.
+    /// Resident reads of the default root. Only a session that holds the
+    /// root's exclusive lease has one: every write then passes through it.
     hot_set: Option<Arc<HotSet>>,
     /// The engine opened for the hot set, with the hot-set epoch it was
     /// opened in. A clear may follow a checkout, so it reopens after one.
@@ -787,12 +790,7 @@ impl Session {
             )?;
             return Ok(FrameOutcome::Terminate);
         }
-        let admitted = if self.remote {
-            remote_policy::RemotePolicy::check(&request, self.default_root.as_deref())
-        } else {
-            Ok(())
-        };
-        match admitted.and_then(|()| self.dispatch(&request)) {
+        match self.dispatch_frame(&request, operation.as_deref()) {
             Ok(result) => self.write_success(
                 output,
                 operation.as_deref(),
@@ -819,6 +817,24 @@ impl Session {
         let (read, oversized, delimited) =
             read_frame(input, self.limits.max_request_bytes, &mut frame)?;
         Ok((frame, read, oversized, delimited))
+    }
+
+    /// Dispatch one frame, clearing the hot set around any frame that may
+    /// write.
+    fn dispatch_frame(
+        &self,
+        request: &Value,
+        operation: Option<&str>,
+    ) -> Result<Value, MachineError> {
+        let writes = frame_access::FrameAccess::of(operation) == frame_access::FrameAccess::Write;
+        if writes {
+            self.clear_hot_set();
+        }
+        let result = self.dispatch(request);
+        if writes {
+            self.clear_hot_set();
+        }
+        result
     }
 
     fn dispatch(&self, request: &Value) -> Result<Value, MachineError> {
@@ -857,7 +873,8 @@ impl Session {
             .is_ok()
     }
 
-    /// Recovery rewrote the root, so nothing resident can be trusted.
+    /// Forget every resident read: around each frame that may write, and
+    /// after recovery rewrote the root.
     fn clear_hot_set(&self) {
         if let Some(hot_set) = &self.hot_set {
             hot_set.clear();
@@ -970,8 +987,12 @@ impl Session {
                     "version": 1,
                     "collectionKind": "file",
                     "operations": DOCUMENT_BUCKET_OPERATIONS,
-                    "putInputs": self.document_put_inputs(),
-                    "getOutputs": self.document_get_outputs(),
+                    "putInputs": if cfg!(target_family = "wasm") {
+                        &["path"][..]
+                    } else {
+                        &["path", "url"][..]
+                    },
+                    "getOutputs": ["base64", "path"],
                     "integrity": "sha256-full-content"
                 }),
             ),
@@ -996,6 +1017,7 @@ impl Session {
                     Value::Bool(false)
                 },
             ),
+            ("hotSet".into(), self.hot_set_capability()),
         ]);
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         let capabilities = {
@@ -1013,25 +1035,6 @@ impl Session {
             );
             capabilities
         };
-        self.with_network_server(capabilities)
-    }
-
-    fn with_network_server(
-        &self,
-        mut capabilities: serde_json::Map<String, Value>,
-    ) -> serde_json::Map<String, Value> {
-        if self.remote {
-            capabilities.insert(
-                "networkServer".into(),
-                json!({
-                    "version": 1,
-                    "execution": "shared-reads",
-                    "hostPaths": false,
-                    "rootOverride": false,
-                    "hotSet": self.hot_set_capability()
-                }),
-            );
-        }
         capabilities
     }
 
@@ -1040,27 +1043,6 @@ impl Session {
         self.hot_set
             .as_ref()
             .map_or(Value::Bool(false), |hot_set| json!(hot_set.statistics()))
-    }
-
-    /// A network client cannot name a file on the server's disk or make the
-    /// server fetch a URL, so it has no file inputs and only inline output.
-    fn document_put_inputs(&self) -> &'static [&'static str] {
-        if self.remote {
-            return &[];
-        }
-        if cfg!(target_family = "wasm") {
-            &["path"]
-        } else {
-            &["path", "url"]
-        }
-    }
-
-    fn document_get_outputs(&self) -> &'static [&'static str] {
-        if self.remote {
-            &["base64"]
-        } else {
-            &["base64", "path"]
-        }
     }
 
     fn handshake(&self) -> Value {
@@ -1187,14 +1169,22 @@ impl Session {
 
     fn engine(&self, request: &Value) -> Result<ReadOnlyEngine, MachineError> {
         match &self.hot_set {
-            Some(hot_set) => self.resident_engine(request, hot_set),
-            None => self.open_engine(request),
+            Some(hot_set) if Self::names_session_defaults(request) => {
+                self.resident_engine(request, hot_set)
+            }
+            _ => self.open_engine(request),
         }
     }
 
+    /// The hot set holds only the default root under the session's schema
+    /// directory, so a request naming either of its own is read from storage.
+    fn names_session_defaults(request: &Value) -> bool {
+        request.get("root").is_none() && request.get("schemaDir").is_none()
+    }
+
     /// The engine this session opened since the hot set's last clear, so a
-    /// warm read opens nothing. A served session has one root and one
-    /// schema directory, so one engine answers every request.
+    /// warm read opens nothing. Every request it answers names the default
+    /// root and schema directory, so one engine answers them all.
     fn resident_engine(
         &self,
         request: &Value,
@@ -4125,7 +4115,6 @@ mod tests {
             cursor_sequence: std::cell::Cell::new(0),
             startup_error: None,
             persistent: false,
-            remote: false,
             hot_set: None,
             hot_engine: std::cell::RefCell::new(None),
         };

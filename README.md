@@ -986,32 +986,15 @@ hold a plaintext value for it.
 
 ## Remote Access
 
-By default there is none. Every client owns its database directly: the CLI and
-language shims drive the `fylo` binary against a local root, and the
-browser/mobile clients embed the engine over an on-device OPFS store (see
-[Browser access](#browser-access)).
+There is none, by design. FYLO is an embedded library, like SQLite: it opens
+the database files directly in your app's process and speaks no network
+protocol. The CLI and language shims drive the `fylo` binary against a local
+root, and the browser/mobile clients embed the engine over an on-device OPFS
+store (see [Browser access](#browser-access)).
 
-When a root must be reached from another machine, run `fylo serve` next to
-the disk instead of mounting the root over the network. It owns the root and
-answers the machine protocol over TCP, so each operation costs one round trip
-rather than hundreds of remote file calls:
-
-```bash
-openssl rand -hex 32 > serve.token && chmod 600 serve.token
-fylo serve --root ./db --listen 192.168.1.10:7878 --token-file serve.token
-fylo serve --stop --connect 192.168.1.10:7878 --token-file serve.token
-```
-
-```js
-import { Fylo } from './clients/node/fylo.mjs'
-const db = Fylo.connect({ host: '192.168.1.10', port: 7878, token })
-```
-
-The Rust shim has `Fylo::connect("192.168.1.10:7878", token)`. There is no
-default address and no unauthenticated access, but there is no encryption yet
-either: keep the listener on loopback, a trusted LAN, or a tunnel. A remote
-client cannot name another root, server paths, or URLs. See
-[ADR 0012](docs/adr/0012-opt-in-network-server.md).
+When the database lives on network storage, run your app server next to the
+files and have clients talk to your app, rather than opening a live root over
+SMB or NFS from another machine.
 
 The PostgREST-style filter grammar (`role=eq.admin&age=gte.30`) lives on as a
 query front-end: `queryFromSearch` in `src/query/postgrest.js` translates it
@@ -1356,6 +1339,12 @@ releases it; persistent metadata is only diagnostic/fencing state and is not a
 PID-file claim, so PID reuse and stale metadata cannot retain ownership. Every
 request verifies the unique owner generation, and a replaced former owner
 fails closed with `EROOTLEASELOST`.
+
+Because nothing else can write the root, an exclusive session also keeps a
+hot set of parsed documents and indexes in memory, 64 MiB by default.
+`--hot-set-bytes <n>` sets the budget and `0` turns it off; the handshake
+reports it as `capabilities.hotSet` (see
+[ADR 0014](docs/adr/0014-in-memory-hot-set.md)).
 
 The lease contract is supported on native local filesystems on macOS, Linux,
 and Windows. Containers on the same host can share it only when they share the

@@ -1,10 +1,9 @@
-use crate::RequestFrame;
-
-/// Whether a frame only reads the root, and so may run beside other reads.
+/// Whether a frame only reads the root, so the session's hot set may answer
+/// it and need not be cleared around it.
 ///
 /// Only operations known to read through the read-only engine qualify. Any
-/// other frame, including one that cannot be parsed, is treated as a write:
-/// it runs alone and clears the hot set before and after.
+/// other frame, including one without an operation, is treated as a write:
+/// the session clears the hot set before and after it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum FrameAccess {
     Read,
@@ -25,12 +24,7 @@ impl FrameAccess {
         "log",
     ];
 
-    pub(crate) fn of(frame: &RequestFrame) -> Self {
-        let operation = frame.operation();
-        Self::for_operation(operation.as_deref())
-    }
-
-    fn for_operation(operation: Option<&str>) -> Self {
+    pub(crate) fn of(operation: Option<&str>) -> Self {
         if operation.is_some_and(|operation| Self::READ_OPERATIONS.contains(&operation)) {
             return Self::Read;
         }

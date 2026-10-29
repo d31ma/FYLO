@@ -4,14 +4,12 @@
 
 ### Added
 
-- **`fylo serve`: one process owns a root and serves it over TCP.** A remote
-  client pays one network round trip per operation instead of running the root
-  live over SMB or NFS. The server holds the root lease until it stops, runs
-  frames one at a time, requires a shared token from a private file, has no
-  default address, and bounds frame size, connections and idle time. Remote
-  clients cannot name another root, server paths or URLs. `fylo serve --stop`
-  stops it gracefully; a killed server is recovered like any crashed process.
-  The Node and Rust shims connect with `Fylo.connect` (ADR 0012).
+- **In-memory hot set for exclusive embedded sessions.** A session that holds
+  the root's exclusive lease (`fylo exec --loop --exclusive-root`, or the Rust
+  `FrameSession`) keeps parsed documents, index snapshots, id lists and
+  collection headers in memory, 64 MiB by default. `--hot-set-bytes <n>` sets
+  the budget and `0` turns it off. Every handshake reports it as
+  `capabilities.hotSet`: the budget and counters, or `false` (ADR 0014).
 
 ### Changed
 
@@ -28,11 +26,19 @@
 - One-frame serverless invocations now accept `schemaValidate` and
   `strict_schema=true`. They were refused only because the external CHEX helper
   had no invocation deadline or descendant teardown (ADR 0011, amended).
+- `getDoc`, `findDocs` and the other reads that only need a collection's kind
+  no longer list the collection to learn it.
 
 ### Removed
 
 - The `fylo.chex.binary` setting. A configuration that still sets `fylo.chex`
   fails with a message asking you to remove it.
+- **`fylo serve` and `Fylo.connect` were removed before release.** FYLO is an
+  embedded library, like SQLite: your app opens the database files directly in
+  its own process. There is no network server, no `fyloServe` hello and no
+  `capabilities.networkServer`. On network storage, run your app server next to
+  the files. ADR 0012 is withdrawn; the hot set it led to now runs in exclusive
+  embedded sessions.
 
 ## 26.33.02 - 2026-08-11
 
