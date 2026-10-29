@@ -1,0 +1,502 @@
+//! Extent allocation for `.fxdb` containers (ADR 0016 section 6).
+//!
+//! This is the in-memory model of the extent map: which extents are free,
+//! which hold what, and which were released since the last checkpoint. It does
+//! no I/O. The container writes the extent headers, seal records and map pages
+//! it decides on, and calls back here once they are durable.
+
+use fylo_format::{ContainerExtentKind, ContainerExtentMapPage, ContainerExtentState};
+
+/// One extent as the allocator sees it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Slot {
+    /// Extent 0: the superblock region, never allocated.
+    Reserved,
+    /// Reusable.
+    Free,
+    /// Holds data.
+    InUse {
+        kind: ContainerExtentKind,
+        owner: u32,
+        sequence: u64,
+        sealed: bool,
+        live_bytes: u64,
+    },
+    /// Released by a committed compaction, not yet reusable. A reader in
+    /// another process may still hold a location into it until a checkpoint
+    /// has written a map that shows it free.
+    Released,
+}
+
+/// What [`ContainerExtentAllocator::allocate`] handed out.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ContainerExtentAllocation {
+    /// The extent's index.
+    pub index: u64,
+    /// Its new, never-reused sequence number, for its header.
+    pub sequence: u64,
+    /// Whether the file must grow by one extent to hold it.
+    pub grows_file: bool,
+}
+
+/// How to shrink a file by relocating its last extents (ADR 0016 section 6).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContainerShrinkPlan {
+    /// `(from, to)` extent moves, last extent first. Each is a compaction copy
+    /// into a free extent nearer the front.
+    pub moves: Vec<(u64, u64)>,
+    /// Extent count once the moves are committed and checkpointed; the file is
+    /// then truncated to this many extents.
+    pub extent_count: u64,
+}
+
+/// Why an allocator operation was refused.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ContainerAllocatorError {
+    /// The extent is not in use, so it cannot be sealed or released.
+    NotInUse,
+    /// The index is past the end of the file, or is the superblock region.
+    OutOfRange,
+    /// The map pages do not describe every extent exactly once, or describe
+    /// extent 0 as anything but in use by the format.
+    InconsistentMap,
+}
+
+/// The in-memory extent map of one `.fxdb` container.
+#[derive(Clone, Debug)]
+pub struct ContainerExtentAllocator {
+    slots: Vec<Slot>,
+    next_sequence: u64,
+}
+
+impl ContainerExtentAllocator {
+    /// A new file: extent 0 is the superblock region and nothing else exists.
+    #[must_use]
+    pub fn new(next_sequence: u64) -> Self {
+        Self {
+            slots: vec![Slot::Reserved],
+            next_sequence,
+        }
+    }
+
+    /// Rebuild the allocator from the extent-map pages of the last checkpoint.
+    ///
+    /// Recovery then replays the allocations, seals and releases recorded
+    /// after that checkpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InconsistentMap` unless the pages cover extents 1 through
+    /// `extent_count - 1` exactly once.
+    pub fn from_map(
+        extent_count: u64,
+        next_sequence: u64,
+        pages: &[ContainerExtentMapPage],
+    ) -> Result<Self, ContainerAllocatorError> {
+        let count =
+            usize::try_from(extent_count).map_err(|_| ContainerAllocatorError::InconsistentMap)?;
+        if count == 0 {
+            return Err(ContainerAllocatorError::InconsistentMap);
+        }
+        let mut slots: Vec<Option<Slot>> = vec![None; count];
+        slots[0] = Some(Slot::Reserved);
+        for page in pages {
+            for (offset, entry) in page.entries.iter().enumerate() {
+                let index = page
+                    .first_extent
+                    .checked_add(offset as u64)
+                    .and_then(|index| usize::try_from(index).ok())
+                    .filter(|index| *index >= 1 && *index < count)
+                    .ok_or(ContainerAllocatorError::InconsistentMap)?;
+                if slots[index].is_some() {
+                    return Err(ContainerAllocatorError::InconsistentMap);
+                }
+                slots[index] = Some(match *entry {
+                    ContainerExtentState::Free => Slot::Free,
+                    ContainerExtentState::Owned {
+                        kind,
+                        owner,
+                        sequence,
+                    } => Slot::InUse {
+                        kind,
+                        owner,
+                        sequence,
+                        sealed: false,
+                        live_bytes: 0,
+                    },
+                    ContainerExtentState::Sealed {
+                        kind,
+                        owner,
+                        sequence,
+                        live_bytes,
+                    } => Slot::InUse {
+                        kind,
+                        owner,
+                        sequence,
+                        sealed: true,
+                        live_bytes,
+                    },
+                });
+            }
+        }
+        let slots = slots
+            .into_iter()
+            .collect::<Option<Vec<_>>>()
+            .ok_or(ContainerAllocatorError::InconsistentMap)?;
+        Ok(Self {
+            slots,
+            next_sequence,
+        })
+    }
+
+    /// Extent slots in the file, including the superblock region.
+    #[must_use]
+    pub fn extent_count(&self) -> u64 {
+        self.slots.len() as u64
+    }
+
+    /// The next sequence number, for the superblock.
+    #[must_use]
+    pub fn next_sequence(&self) -> u64 {
+        self.next_sequence
+    }
+
+    /// Take the lowest-numbered free extent, or grow the file by one.
+    ///
+    /// Lowest first keeps data drifting toward the front of the file, so a
+    /// later tail truncation has less to move.
+    pub fn allocate(&mut self, kind: ContainerExtentKind, owner: u32) -> ContainerExtentAllocation {
+        let sequence = self.next_sequence;
+        self.next_sequence += 1;
+        let taken = Slot::InUse {
+            kind,
+            owner,
+            sequence,
+            sealed: false,
+            live_bytes: 0,
+        };
+        if let Some(index) = self.slots.iter().position(|slot| *slot == Slot::Free) {
+            self.slots[index] = taken;
+            return ContainerExtentAllocation {
+                index: index as u64,
+                sequence,
+                grows_file: false,
+            };
+        }
+        self.slots.push(taken);
+        ContainerExtentAllocation {
+            index: (self.slots.len() - 1) as u64,
+            sequence,
+            grows_file: true,
+        }
+    }
+
+    /// Mark an extent immutable, with the bytes the location table still
+    /// references in it.
+    ///
+    /// # Errors
+    ///
+    /// Returns `OutOfRange` or `NotInUse`.
+    pub fn seal(&mut self, index: u64, live: u64) -> Result<(), ContainerAllocatorError> {
+        match self.slot_mut(index)? {
+            Slot::InUse {
+                sealed, live_bytes, ..
+            } => {
+                *sealed = true;
+                *live_bytes = live;
+                Ok(())
+            }
+            _ => Err(ContainerAllocatorError::NotInUse),
+        }
+    }
+
+    /// Release an extent that a committed compaction replaced. It becomes
+    /// reusable only after [`Self::checkpoint_completed`].
+    ///
+    /// # Errors
+    ///
+    /// Returns `OutOfRange` or `NotInUse`.
+    pub fn release(&mut self, index: u64) -> Result<(), ContainerAllocatorError> {
+        let slot = self.slot_mut(index)?;
+        if !matches!(slot, Slot::InUse { .. }) {
+            return Err(ContainerAllocatorError::NotInUse);
+        }
+        *slot = Slot::Released;
+        Ok(())
+    }
+
+    /// The map pages a checkpoint writes. Released extents are written as
+    /// free: once these pages are durable, no reader can resolve a location
+    /// into them any more.
+    #[must_use]
+    pub fn map_pages(&self) -> Vec<ContainerExtentMapPage> {
+        let entries: Vec<ContainerExtentState> = self.slots[1..]
+            .iter()
+            .map(|slot| match *slot {
+                Slot::InUse {
+                    kind,
+                    owner,
+                    sequence,
+                    sealed: false,
+                    ..
+                } => ContainerExtentState::Owned {
+                    kind,
+                    owner,
+                    sequence,
+                },
+                Slot::InUse {
+                    kind,
+                    owner,
+                    sequence,
+                    sealed: true,
+                    live_bytes,
+                } => ContainerExtentState::Sealed {
+                    kind,
+                    owner,
+                    sequence,
+                    live_bytes,
+                },
+                Slot::Free | Slot::Released | Slot::Reserved => ContainerExtentState::Free,
+            })
+            .collect();
+        entries
+            .chunks(ContainerExtentMapPage::ENTRIES_PER_PAGE)
+            .enumerate()
+            .map(|(page, chunk)| ContainerExtentMapPage {
+                first_extent: 1 + (page * ContainerExtentMapPage::ENTRIES_PER_PAGE) as u64,
+                entries: chunk.to_vec(),
+            })
+            .collect()
+    }
+
+    /// The pages from [`Self::map_pages`] are durable: released extents are
+    /// now free and may be reused.
+    pub fn checkpoint_completed(&mut self) {
+        for slot in &mut self.slots {
+            if *slot == Slot::Released {
+                *slot = Slot::Free;
+            }
+        }
+    }
+
+    /// Free extents, whose disk space may be returned by punching a hole.
+    #[must_use]
+    pub fn free_extents(&self) -> Vec<u64> {
+        self.indices_where(|slot| *slot == Slot::Free)
+    }
+
+    /// Plan a tail truncation: move sealed extents from the end into free
+    /// extents nearer the front, last first. An unsealed (active) extent is
+    /// never moved, and nothing moves past it.
+    #[must_use]
+    pub fn shrink_plan(&self) -> ContainerShrinkPlan {
+        let mut free = self
+            .slots
+            .iter()
+            .enumerate()
+            .filter(|(_, slot)| **slot == Slot::Free)
+            .map(|(index, _)| index);
+        let mut moves = Vec::new();
+        let mut kept = vec![true; self.slots.len()];
+        let mut targets_taken = Vec::new();
+        for index in (1..self.slots.len()).rev() {
+            match self.slots[index] {
+                Slot::Free => kept[index] = false,
+                Slot::InUse { sealed: true, .. } => {
+                    match free.next().filter(|target| *target < index) {
+                        Some(target) => {
+                            moves.push((index as u64, target as u64));
+                            targets_taken.push(target);
+                            kept[index] = false;
+                        }
+                        None => break,
+                    }
+                }
+                Slot::InUse { sealed: false, .. } | Slot::Released | Slot::Reserved => break,
+            }
+        }
+        for target in targets_taken {
+            kept[target] = true;
+        }
+        let extent_count = kept
+            .iter()
+            .rposition(|keep| *keep)
+            .map_or(1, |last| last as u64 + 1);
+        ContainerShrinkPlan {
+            moves,
+            extent_count,
+        }
+    }
+
+    fn indices_where(&self, wanted: impl Fn(&Slot) -> bool) -> Vec<u64> {
+        self.slots
+            .iter()
+            .enumerate()
+            .filter(|(_, slot)| wanted(slot))
+            .map(|(index, _)| index as u64)
+            .collect()
+    }
+
+    fn slot_mut(&mut self, index: u64) -> Result<&mut Slot, ContainerAllocatorError> {
+        usize::try_from(index)
+            .ok()
+            .filter(|index| *index >= 1)
+            .and_then(|index| self.slots.get_mut(index))
+            .ok_or(ContainerAllocatorError::OutOfRange)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ContainerAllocatorError, ContainerExtentAllocator, ContainerShrinkPlan};
+    use fylo_format::{ContainerExtentKind, ContainerExtentMapPage};
+
+    const SEGMENT: ContainerExtentKind = ContainerExtentKind::Segment;
+
+    #[test]
+    fn grows_then_reuses_the_lowest_free_extent() {
+        let mut allocator = ContainerExtentAllocator::new(1);
+        let first = allocator.allocate(SEGMENT, 1);
+        let second = allocator.allocate(SEGMENT, 1);
+        assert_eq!(
+            (first.index, first.sequence, first.grows_file),
+            (1, 1, true)
+        );
+        assert_eq!(
+            (second.index, second.sequence, second.grows_file),
+            (2, 2, true)
+        );
+        allocator.seal(1, 0).unwrap();
+        allocator.release(1).unwrap();
+        allocator.checkpoint_completed();
+        let reused = allocator.allocate(SEGMENT, 2);
+        assert_eq!(
+            (reused.index, reused.sequence, reused.grows_file),
+            (1, 3, false)
+        );
+    }
+
+    #[test]
+    fn does_not_reuse_a_released_extent_before_the_checkpoint() {
+        let mut allocator = ContainerExtentAllocator::new(1);
+        allocator.allocate(SEGMENT, 1);
+        allocator.release(1).unwrap();
+        assert_eq!(allocator.allocate(SEGMENT, 1).index, 2);
+        assert!(allocator.free_extents().is_empty());
+        allocator.checkpoint_completed();
+        assert_eq!(allocator.free_extents(), vec![1]);
+    }
+
+    #[test]
+    fn refuses_bad_indices() {
+        let mut allocator = ContainerExtentAllocator::new(1);
+        assert_eq!(
+            allocator.release(0),
+            Err(ContainerAllocatorError::OutOfRange)
+        );
+        assert_eq!(
+            allocator.release(5),
+            Err(ContainerAllocatorError::OutOfRange)
+        );
+        allocator.allocate(SEGMENT, 1);
+        allocator.release(1).unwrap();
+        assert_eq!(allocator.release(1), Err(ContainerAllocatorError::NotInUse));
+        assert_eq!(allocator.seal(1, 0), Err(ContainerAllocatorError::NotInUse));
+    }
+
+    #[test]
+    fn round_trips_through_map_pages() {
+        let mut allocator = ContainerExtentAllocator::new(1);
+        for _ in 0..300 {
+            allocator.allocate(SEGMENT, 1);
+        }
+        allocator.seal(4, 1234).unwrap();
+        allocator.release(7).unwrap();
+        let pages = allocator.map_pages();
+        assert_eq!(pages.len(), 3);
+        for page in &pages {
+            let bytes = page.encode().unwrap();
+            assert_eq!(ContainerExtentMapPage::decode(&bytes).as_ref(), Ok(page));
+        }
+        let rebuilt =
+            ContainerExtentAllocator::from_map(allocator.extent_count(), 301, &pages).unwrap();
+        assert_eq!(rebuilt.map_pages(), pages);
+        // The released extent comes back free, as the checkpoint wrote it.
+        assert_eq!(rebuilt.free_extents(), vec![7]);
+    }
+
+    #[test]
+    fn rejects_a_map_with_gaps_or_overlaps() {
+        let mut allocator = ContainerExtentAllocator::new(1);
+        for _ in 0..3 {
+            allocator.allocate(SEGMENT, 1);
+        }
+        let pages = allocator.map_pages();
+        assert_eq!(
+            ContainerExtentAllocator::from_map(5, 4, &pages).map(|_| ()),
+            Err(ContainerAllocatorError::InconsistentMap)
+        );
+        let doubled = [pages.clone(), pages].concat();
+        assert_eq!(
+            ContainerExtentAllocator::from_map(4, 4, &doubled).map(|_| ()),
+            Err(ContainerAllocatorError::InconsistentMap)
+        );
+    }
+
+    #[test]
+    fn plans_a_tail_truncation() {
+        // Extents 1..=6: 1 active, 2 free, 3 sealed, 4 free, 5 sealed, 6 sealed.
+        let mut allocator = ContainerExtentAllocator::new(1);
+        for _ in 0..6 {
+            allocator.allocate(SEGMENT, 1);
+        }
+        for index in [2, 3, 4, 5, 6] {
+            allocator.seal(index, 10).unwrap();
+        }
+        allocator.release(2).unwrap();
+        allocator.release(4).unwrap();
+        allocator.checkpoint_completed();
+        assert_eq!(
+            allocator.shrink_plan(),
+            ContainerShrinkPlan {
+                moves: vec![(6, 2), (5, 4)],
+                extent_count: 5,
+            }
+        );
+    }
+
+    #[test]
+    fn never_moves_an_active_extent() {
+        let mut allocator = ContainerExtentAllocator::new(1);
+        for _ in 0..3 {
+            allocator.allocate(SEGMENT, 1);
+        }
+        allocator.seal(1, 0).unwrap();
+        allocator.release(1).unwrap();
+        allocator.checkpoint_completed();
+        // Extent 3 is still active, so nothing behind it can move.
+        let plan = allocator.shrink_plan();
+        assert!(plan.moves.is_empty());
+        assert_eq!(plan.extent_count, 4);
+    }
+
+    #[test]
+    fn drops_trailing_free_extents_without_moving_anything() {
+        let mut allocator = ContainerExtentAllocator::new(1);
+        for _ in 0..4 {
+            allocator.allocate(SEGMENT, 1);
+        }
+        for index in [3, 4] {
+            allocator.seal(index, 0).unwrap();
+            allocator.release(index).unwrap();
+        }
+        allocator.checkpoint_completed();
+        assert_eq!(
+            allocator.shrink_plan(),
+            ContainerShrinkPlan {
+                moves: Vec::new(),
+                extent_count: 3,
+            }
+        );
+    }
+}

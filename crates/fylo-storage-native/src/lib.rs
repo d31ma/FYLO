@@ -21,6 +21,7 @@ use sha2::{Digest, Sha256};
 mod beneath_open;
 #[cfg(not(target_family = "wasm"))]
 mod byte_range_lock;
+mod container_allocator;
 mod durability;
 mod filesystem_profile;
 mod index_cache;
@@ -41,6 +42,10 @@ use spelling_cache::SpellingCache;
 pub use byte_range_lock::{
     ByteLockGuard, ByteRangeLockFile, COLLECTION_WRITER_START, FilesystemInfo, LOCK_RANGE_START,
     LockByte, LockMode, MAX_POLL_INTERVAL,
+};
+pub use container_allocator::{
+    ContainerAllocatorError, ContainerExtentAllocation, ContainerExtentAllocator,
+    ContainerShrinkPlan,
 };
 pub use durability::Durability;
 pub use filesystem_profile::FilesystemProfile;
