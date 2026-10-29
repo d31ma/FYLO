@@ -1082,7 +1082,22 @@ fylo checkout main --root /mnt/fylo
 fylo schema inspect article --schema-dir ./schemas --json
 fylo schema doctor article --schema-dir ./schemas
 fylo schema validate article @article.json --schema-dir ./schemas --json
+fylo schema mode article warn --root /mnt/fylo        # off, warn or strict
+fylo schema check article --schema-dir ./schemas --json  # documents the head rejects
 ```
+
+Each collection has a schema validation mode, kept in its catalog descriptor
+so every process that opens the root uses it. `strict` refuses a document the
+head schema rejects with `ESCHEMA` and writes nothing. `warn` writes it anyway,
+logs a warning to stderr and counts it; `inspectCollection` reports the mode
+and this process's count as `validation` and `schemaViolations`. `off` checks
+nothing. Every mode still stamps `_v` and encrypts `$encrypted` fields, and the
+mode applies to every write that stores a document body: `putData`,
+`batchPutData`, `importBulkData`, `patchDoc`, `patchDocs` and SQL `INSERT` and
+`UPDATE`. A collection with no recorded mode follows `fylo.strict`
+(`--strict-schema`): `strict` when it is on, `off` otherwise. Use `warn` while
+adopting a schema over existing data, and `fylo schema check` to find the
+documents to fix before switching to `strict`.
 
 `status` and `diff` compare document payloads only (`docs/` and `.deleted/`),
 so rebuilt indexes, event journals, lock files, and mtime-only changes do not
