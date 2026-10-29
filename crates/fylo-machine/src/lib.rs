@@ -2099,7 +2099,9 @@ impl Session {
         } else {
             let sequence = self.cursor_sequence.get().wrapping_add(1);
             self.cursor_sequence.set(sequence);
-            let token = format!("fqc1.{}.{sequence}", std::process::id());
+            // `std::process::id` panics in a browser module and takes the whole
+            // batch down with it, writes already applied included.
+            let token = format!("fqc1.{}.{sequence}", fylo_storage_native::process_id());
             let sorted = bounded_query_snapshot(rows)?;
             cursors.insert(
                 token.clone(),

@@ -1,3 +1,5 @@
+use std::io::{BufRead, Write};
+
 use fylo_storage_native::{RootLease, RootOpenOptions};
 
 use crate::{ApplicationConfig, FrameLimits, FrameOutcome, RequestFrame, Session};
@@ -27,6 +29,39 @@ impl FrameSession {
             session,
             open: true,
         }
+    }
+
+    /// A session over no default root, for an embedder whose storage is its
+    /// own host table, such as the browser module: each request names its
+    /// root, nothing is leased, and query cursors last as long as the session
+    /// does rather than one batch of frames.
+    #[must_use]
+    pub fn embedded(application: ApplicationConfig, limits: FrameLimits) -> Self {
+        let session = Session::open(None, application, (limits, false, true));
+        Self {
+            session,
+            open: true,
+        }
+    }
+
+    /// Answer every frame `input` holds, as `exec --loop` does, and keep the
+    /// session for the next batch.
+    ///
+    /// # Errors
+    /// Returns an error when the transport fails.
+    pub fn serve<R: BufRead, W: Write>(
+        &mut self,
+        input: &mut R,
+        output: &mut W,
+    ) -> std::io::Result<()> {
+        while self.open {
+            match self.session.handle_frame(input, output)? {
+                FrameOutcome::Handled => {}
+                FrameOutcome::Terminate => self.open = false,
+                FrameOutcome::Eof => break,
+            }
+        }
+        Ok(())
     }
 
     /// The largest request frame this session accepts.

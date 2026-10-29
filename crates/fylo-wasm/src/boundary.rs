@@ -10,7 +10,9 @@
 
 use std::io::Cursor;
 
-use fylo_machine::{FrameLimits, RootConfig, serve_configured};
+use std::cell::RefCell;
+
+use fylo_machine::{ApplicationConfig, FrameLimits, FrameSession, RootConfig};
 use fylo_vfs::{HOST_ABI_VERSION, HostStat, HostVfs, install_host};
 
 /// ABI this module implements. A host that does not recognize it must refuse
@@ -142,23 +144,43 @@ pub extern "C" fn fylo_exec(request: *const u8, len: usize) -> u64 {
     let input = unsafe { std::slice::from_raw_parts(request, len) }.to_vec();
     let mut reader = Cursor::new(input);
     let mut output = Vec::new();
-    // A browser has no environment, so the knobs are explicit. Frame limits are
-    // the published defaults; the host bounds its own buffers.
-    if serve_configured(
-        &mut reader,
-        &mut output,
-        None,
-        FrameLimits::default(),
-        RootConfig::default(),
-    )
-    .is_err()
-    {
+    let served = SESSION.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        // A frame that ends a session (one cut off mid-line) ends only that
+        // batch's session; the next batch starts a fresh one, as a new
+        // `exec --loop` process would.
+        if !slot.as_ref().is_some_and(FrameSession::is_open) {
+            *slot = Some(open_session());
+        }
+        slot.as_mut()
+            .map_or(Ok(()), |session| session.serve(&mut reader, &mut output))
+    });
+    if served.is_err() {
         return pack(
             br#"{"protocolVersion":1,"ok":false,"op":null,"requestId":null,"durationMs":0,"error":{"name":"FyloMachineError","message":"machine session failed","code":"EUNKNOWN"}}"#
                 .to_vec(),
         );
     }
     pack(output)
+}
+
+thread_local! {
+    /// The module's one machine session. It outlives each `fylo_exec` call so
+    /// that a query cursor handed out in one batch still pages in the next,
+    /// which is the `persistent-process` scope the handshake advertises.
+    static SESSION: RefCell<Option<FrameSession>> = const { RefCell::new(None) };
+}
+
+/// A browser has no environment, so the knobs are explicit. Frame limits are
+/// the published defaults; the host bounds its own buffers.
+fn open_session() -> FrameSession {
+    FrameSession::embedded(
+        ApplicationConfig {
+            storage: RootConfig::default(),
+            ..ApplicationConfig::default()
+        },
+        FrameLimits::default(),
+    )
 }
 
 /// Hand a buffer to the host as a packed pointer and length.
