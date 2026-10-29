@@ -21,6 +21,8 @@ impl Settings {
     const CIPHER_KEY: &'static str = "cipher";
     const CHEX_KEY: &'static str = "chex";
     const DURABILITY_KEY: &'static str = "durability";
+    const PATH_KEY: &'static str = "path";
+    const AUTO_PUSH_KEY: &'static str = "autoPush";
     const MINIMUM_SHARD_WIDTH: u64 = 1;
     const MAXIMUM_SHARD_WIDTH: u64 = 4;
     const MINIMUM_KEY_BYTES: usize = 32;
@@ -50,12 +52,8 @@ impl Settings {
             directory,
             &mut secrets,
         )?;
-        let schema = Self::path_setting(
-            settings.get(Self::SCHEMA_KEY),
-            "fylo.schema",
-            directory,
-            &mut secrets,
-        )?;
+        let (schema, schema_auto_push) =
+            Self::schema(settings.get(Self::SCHEMA_KEY), directory, &mut secrets)?;
         let strict_schema = Self::strict(settings.get(Self::STRICT_KEY))?;
         let durability = Self::durability(settings.get(Self::DURABILITY_KEY))?;
         let shard_width = Self::member(settings, Self::SHARD_KEY, "width")?
@@ -79,11 +77,42 @@ impl Settings {
                 strict_schema,
                 shard_width,
                 durability,
+                schema_auto_push,
             },
             schema,
             credentials,
             hot_set_bytes: None,
         })
+    }
+
+    /// `fylo.schema`: the folder path, or `{"path": ..., "autoPush": bool}`
+    /// to also push the folder's new versions into the root's schema
+    /// registry when a write engine opens (ADR 0017 section 3).
+    fn schema(
+        value: Option<&Value>,
+        directory: &Path,
+        secrets: &mut Secrets,
+    ) -> Result<(Option<PathBuf>, bool), String> {
+        let Some(Value::Object(schema)) = value else {
+            let path = Self::path_setting(value, "fylo.schema", directory, secrets)?;
+            return Ok((path, false));
+        };
+        Self::known_keys(
+            schema,
+            &[Self::PATH_KEY, Self::AUTO_PUSH_KEY],
+            "fylo.schema",
+        )?;
+        let path = schema
+            .get(Self::PATH_KEY)
+            .ok_or("fylo.schema.path is required when fylo.schema is an object")?;
+        let path = Self::resolve_path(path, "fylo.schema.path", directory, secrets)?;
+        let auto_push = match schema.get(Self::AUTO_PUSH_KEY) {
+            None => false,
+            Some(value) => value
+                .as_bool()
+                .ok_or("fylo.schema.autoPush must be a boolean")?,
+        };
+        Ok((Some(path), auto_push))
     }
 
     /// `fylo.durability`: `"process"` (the default) or `"power-loss"`.
@@ -201,13 +230,18 @@ impl Settings {
         directory: &Path,
         secrets: &mut Secrets,
     ) -> Result<PathBuf, String> {
-        let source = value
-            .as_str()
-            .ok_or_else(|| format!("{name} must be a string"))?;
+        let source = value.as_str().ok_or_else(|| Self::string_error(name))?;
         let resolved = secrets.resolve(source)?;
         Self::require_path_content(&resolved, name)?;
         Self::require_path_without_null(&resolved, name)?;
         Ok(directory.join(resolved))
+    }
+
+    fn string_error(name: &str) -> String {
+        if name == "fylo.schema" {
+            return "fylo.schema must be a string or an object with a path".into();
+        }
+        format!("{name} must be a string")
     }
 
     fn require_path_content(value: &str, name: &str) -> Result<(), String> {

@@ -83,6 +83,10 @@ fn run(arguments: &[String]) -> Result<String, String> {
             result = Value::from(moved);
             false
         }
+        "push-schema" => {
+            result = push_schema(&writer, arguments)?;
+            false
+        }
         "restore-document" => {
             let collection = required_option(arguments, "--collection")?;
             let identifier = required_option(arguments, "--id")?;
@@ -346,6 +350,20 @@ fn decode_hex(value: &str) -> Result<Vec<u8>, String> {
         .collect()
 }
 
+/// `fylo schema push` without the CLI's configuration, so the crash matrix
+/// can interrupt a schema registry commit.
+fn push_schema(writer: &NativeWriteRoot, arguments: &[String]) -> Result<Value, String> {
+    WriteEngine::from_writer(writer.clone())
+        .with_schema_configuration(required_option(arguments, "--schema-dir")?, None)
+        .map_err(|error| error.to_string())?
+        .schema_push(
+            required_option(arguments, "--collection")?,
+            None,
+            Some("fylo-write-preview"),
+        )
+        .map_err(|error| error.to_string())
+}
+
 fn usage() -> String {
     "Usage:\n  fylo-write-preview recover --root <path> --collection <name>\n  \
      fylo-write-preview put-document --root <path> --collection <name> --id <ttid> --document \
@@ -365,7 +383,8 @@ fn usage() -> String {
      fylo-write-preview commit --root <path> --message <message>\n  fylo-write-preview \
      restore-document --root <path> --collection <name> --id <ttid> [--actor-uid <uid> \
      [--actor-groups <gid,...>]]\n  fylo-write-preview reshard --root <path> \
-     --collection <name> --width <0-4>\n  fylo-write-preview failpoints"
+     --collection <name> --width <0-4>\n  fylo-write-preview push-schema --root <path> \
+     --collection <name> --schema-dir <path>\n  fylo-write-preview failpoints"
         .into()
 }
 

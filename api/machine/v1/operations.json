@@ -207,6 +207,16 @@
             "retry": "safe"
         },
         {
+            "name": "schemaPush",
+            "class": "write",
+            "retry": "safe"
+        },
+        {
+            "name": "schemaPull",
+            "class": "read",
+            "retry": "safe"
+        },
+        {
             "name": "queuePublish",
             "class": "queue-write",
             "retry": "conditional-idempotency-key"

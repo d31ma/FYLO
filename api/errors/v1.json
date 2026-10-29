@@ -256,6 +256,10 @@
         {
             "code": "ESCHEMA",
             "retryable": false
+        },
+        {
+            "code": "ESCHEMACONFLICT",
+            "retryable": false
         }
     ]
 }

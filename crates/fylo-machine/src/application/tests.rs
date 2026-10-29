@@ -127,7 +127,36 @@ fn invalid_schema_is_rejected_before_invalid_strict_flag() {
     let fixture = Fixture::new();
     assert_eq!(
         fixture.error(r#"{"fylo":{"schema":false,"strict":0}}"#),
-        "fylo.schema must be a string"
+        "fylo.schema must be a string or an object with a path"
+    );
+}
+
+#[test]
+fn schema_accepts_a_path_or_an_object_with_auto_push() {
+    let fixture = Fixture::new();
+    let plain = fixture.load(r#"{"fylo":{"schema":"schemas"}}"#).unwrap();
+    assert_eq!(plain.schema, Some(fixture.0.join("schemas")));
+    assert!(!plain.storage.schema_auto_push);
+    let object = fixture
+        .load(r#"{"fylo":{"schema":{"path":"schemas","autoPush":true}}}"#)
+        .unwrap();
+    assert_eq!(object.schema, Some(fixture.0.join("schemas")));
+    assert!(object.storage.schema_auto_push);
+    let default = fixture
+        .load(r#"{"fylo":{"schema":{"path":"schemas"}}}"#)
+        .unwrap();
+    assert!(!default.storage.schema_auto_push);
+    assert_eq!(
+        fixture.error(r#"{"fylo":{"schema":{"autoPush":true}}}"#),
+        "fylo.schema.path is required when fylo.schema is an object"
+    );
+    assert_eq!(
+        fixture.error(r#"{"fylo":{"schema":{"path":"schemas","autoPush":"yes"}}}"#),
+        "fylo.schema.autoPush must be a boolean"
+    );
+    assert_eq!(
+        fixture.error(r#"{"fylo":{"schema":{"path":"schemas","push":true}}}"#),
+        "unknown key under fylo.schema; use documented nested configuration keys"
     );
 }
 

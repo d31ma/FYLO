@@ -13,14 +13,23 @@ use serde_json::{Map, Value};
 use sha2::Sha256;
 use zeroize::Zeroizing;
 
+use crate::schema::SchemaRegistry;
+
 const MAX_SCHEMA_MANIFEST_BYTES: u64 = 1024 * 1024;
 const MAX_SCHEMA_BYTES: u64 = 16 * 1024 * 1024;
 const PBKDF2_ITERATIONS: u32 = 100_000;
 type SecretKey = Zeroizing<[u8; 32]>;
 
+/// Field encryption, with each collection's `$encrypted` lists read from its
+/// schema registry when it has one, else from the `fylo.schema` folder.
+///
+/// Every engine has one, because a registry collection needs its lists even
+/// where no `fylo.schema` is configured. With neither a registry nor a folder
+/// a collection declares nothing and stored ciphertext fails closed.
 #[derive(Clone)]
 pub(crate) struct EncryptionReader {
-    schema_root: PathBuf,
+    schema_root: Option<PathBuf>,
+    registry: SchemaRegistry,
     key: Option<SecretKey>,
     hmac_key: Option<SecretKey>,
 }
@@ -39,9 +48,20 @@ pub(crate) fn reject_undeclared_ciphertext(
 }
 
 impl EncryptionReader {
+    /// No folder and no keys: only registry collections declare fields.
+    pub(crate) fn unconfigured(registry: SchemaRegistry) -> Self {
+        Self {
+            schema_root: None,
+            registry,
+            key: None,
+            hmac_key: None,
+        }
+    }
+
     pub(crate) fn open(
         schema_root: impl AsRef<Path>,
         credentials: Option<(&str, &str)>,
+        registry: SchemaRegistry,
     ) -> Result<Self, String> {
         let schema_root = fs::canonicalize(schema_root.as_ref())
             .map_err(|error| format!("cannot open FYLO schema root: {error}"))?;
@@ -51,16 +71,27 @@ impl EncryptionReader {
         {
             return Err("FYLO schema root is not a directory".into());
         }
+        Self::unconfigured(registry).with_credentials(credentials, Some(schema_root))
+    }
+
+    /// This reader with `credentials`' keys, keeping its folder unless
+    /// `schema_root` names one.
+    pub(crate) fn with_credentials(
+        mut self,
+        credentials: Option<(&str, &str)>,
+        schema_root: Option<PathBuf>,
+    ) -> Result<Self, String> {
         let keys = credentials
             .map(|(secret, salt)| derive_keys(secret, salt))
             .transpose()?;
         let (key, hmac_key) =
             keys.map_or((None, None), |(key, hmac_key)| (Some(key), Some(hmac_key)));
-        Ok(Self {
-            schema_root,
-            key,
-            hmac_key,
-        })
+        self.key = key;
+        self.hmac_key = hmac_key;
+        if schema_root.is_some() {
+            self.schema_root = schema_root;
+        }
+        Ok(self)
     }
 
     /// Decrypt with the `$encrypted` list of the version the document was
@@ -84,7 +115,10 @@ impl EncryptionReader {
         mut fields: Map<String, Value>,
         version: Option<&str>,
     ) -> Result<Map<String, Value>, String> {
-        let encrypted = self.encrypted_fields_at(collection, version)?;
+        let Some(encrypted) = self.declared_fields_at(collection, version)? else {
+            reject_undeclared_ciphertext(collection, &fields)?;
+            return Ok(fields);
+        };
         if encrypted.is_empty() {
             if fields.values().any(contains_ciphertext) {
                 return Err(format!(
@@ -113,7 +147,10 @@ impl EncryptionReader {
         collection: &str,
         mut fields: Map<String, Value>,
     ) -> Result<Map<String, Value>, String> {
-        let encrypted = self.encrypted_fields(collection)?;
+        let Some(encrypted) = self.declared_fields_at(collection, None)? else {
+            reject_undeclared_ciphertext(collection, &fields)?;
+            return Ok(fields);
+        };
         if encrypted.is_empty() {
             return Ok(fields);
         }
@@ -134,6 +171,9 @@ impl EncryptionReader {
     /// The oldest version in the manifest, which a document without `_v` is
     /// taken to be at by schema materialization.
     pub(crate) fn oldest_version(&self, collection: &str) -> Result<Option<String>, String> {
+        if let Some(first) = self.registry.versions(collection)?.first() {
+            return Ok(Some(first.label().to_owned()));
+        }
         Ok(self
             .manifest(collection)?
             .and_then(|manifest| manifest.versions.into_iter().next())
@@ -141,60 +181,64 @@ impl EncryptionReader {
     }
 
     fn manifest(&self, collection: &str) -> Result<Option<SchemaManifest>, String> {
+        let Some(root) = self.schema_root.as_deref() else {
+            return Ok(None);
+        };
         let manifest_path = PathBuf::from(collection).join("manifest.json");
-        if !self.path_exists(&manifest_path)? {
+        if !Self::path_exists(root, &manifest_path)? {
             return Ok(None);
         }
-        let manifest: SchemaManifest =
-            serde_json::from_slice(&self.read_file(&manifest_path, MAX_SCHEMA_MANIFEST_BYTES)?)
-                .map_err(|error| format!("schema manifest is corrupt: {error}"))?;
+        let manifest: SchemaManifest = serde_json::from_slice(&Self::read_file(
+            root,
+            &manifest_path,
+            MAX_SCHEMA_MANIFEST_BYTES,
+        )?)
+        .map_err(|error| format!("schema manifest is corrupt: {error}"))?;
         validate_version(&manifest.current)?;
         Ok(Some(manifest))
     }
 
-    fn version_schema(&self, collection: &str, version: &str) -> Result<Value, String> {
+    fn version_schema(root: &Path, collection: &str, version: &str) -> Result<Value, String> {
         validate_version(version)?;
         let schema_path = PathBuf::from(collection)
             .join("history")
             .join(format!("{version}.schema.json"));
-        serde_json::from_slice(&self.read_file(&schema_path, MAX_SCHEMA_BYTES)?)
+        serde_json::from_slice(&Self::read_file(root, &schema_path, MAX_SCHEMA_BYTES)?)
             .map_err(|error| format!("schema {version} is corrupt: {error}"))
     }
 
     pub(crate) fn encrypted_fields(&self, collection: &str) -> Result<Vec<String>, String> {
-        self.encrypted_fields_at(collection, None)
+        Ok(self
+            .declared_fields_at(collection, None)?
+            .unwrap_or_default())
     }
 
     /// The `$encrypted` list of `version`, or of the head when `version` is
-    /// `None` or not a version the manifest lists.
-    fn encrypted_fields_at(
+    /// `None` or not a version the collection has. `None` when the collection
+    /// has neither a registry nor a configured folder to declare one.
+    fn declared_fields_at(
         &self,
         collection: &str,
         version: Option<&str>,
-    ) -> Result<Vec<String>, String> {
+    ) -> Result<Option<Vec<String>>, String> {
+        if let Some(head) = self.registry.head(collection)? {
+            let at = match version {
+                Some(label) => self.registry.at_label(collection, label)?,
+                None => None,
+            };
+            return Ok(Some(at.unwrap_or(head).encrypted.clone()));
+        }
+        let Some(root) = self.schema_root.as_deref() else {
+            return Ok(None);
+        };
         let Some(manifest) = self.manifest(collection)? else {
-            return Ok(Vec::new());
+            return Ok(Some(Vec::new()));
         };
         let version = version
             .filter(|version| manifest.versions.iter().any(|entry| entry.v == *version))
             .unwrap_or(&manifest.current);
-        let schema = self.version_schema(collection, version)?;
-        let Some(encrypted) = schema.get("$encrypted") else {
-            return Ok(Vec::new());
-        };
-        let encrypted = encrypted.as_array().ok_or_else(|| {
-            format!("schema $encrypted for {collection} must be an array of field names")
-        })?;
-        encrypted
-            .iter()
-            .map(|field| {
-                let field = field.as_str().ok_or_else(|| {
-                    format!("schema $encrypted for {collection} must contain only strings")
-                })?;
-                validate_field_path(field)?;
-                Ok(field.to_owned())
-            })
-            .collect()
+        let schema = Self::version_schema(root, collection, version)?;
+        encrypted_list(collection, &schema).map(Some)
     }
 
     pub(crate) fn blind_index(&self, value: &str) -> Result<String, String> {
@@ -210,8 +254,8 @@ impl EncryptionReader {
         ))
     }
 
-    fn path_exists(&self, relative: &Path) -> Result<bool, String> {
-        let path = self.schema_root.join(relative);
+    fn path_exists(root: &Path, relative: &Path) -> Result<bool, String> {
+        let path = root.join(relative);
         match fs::symlink_metadata(path) {
             Ok(_) => Ok(true),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
@@ -219,8 +263,8 @@ impl EncryptionReader {
         }
     }
 
-    fn read_file(&self, relative: &Path, max_bytes: u64) -> Result<Vec<u8>, String> {
-        let mut current = self.schema_root.clone();
+    fn read_file(root: &Path, relative: &Path, max_bytes: u64) -> Result<Vec<u8>, String> {
+        let mut current = root.to_owned();
         for component in relative.components() {
             let Component::Normal(segment) = component else {
                 return Err("schema path contains an unsafe component".into());
@@ -234,7 +278,7 @@ impl EncryptionReader {
         }
         let canonical = fs::canonicalize(&current)
             .map_err(|error| format!("cannot canonicalize schema path: {error}"))?;
-        if !canonical.starts_with(&self.schema_root) {
+        if !canonical.starts_with(root) {
             return Err("schema path escapes the canonical schema root".into());
         }
         let file =
@@ -250,6 +294,26 @@ impl EncryptionReader {
         }
         read_bounded(file.take(max_bytes.saturating_add(1)), max_bytes)
     }
+}
+
+/// A schema's `$encrypted` list, each entry a checked slash-separated path.
+pub(crate) fn encrypted_list(collection: &str, schema: &Value) -> Result<Vec<String>, String> {
+    let Some(encrypted) = schema.get("$encrypted") else {
+        return Ok(Vec::new());
+    };
+    let encrypted = encrypted.as_array().ok_or_else(|| {
+        format!("schema $encrypted for {collection} must be an array of field names")
+    })?;
+    encrypted
+        .iter()
+        .map(|field| {
+            let field = field.as_str().ok_or_else(|| {
+                format!("schema $encrypted for {collection} must contain only strings")
+            })?;
+            validate_field_path(field)?;
+            Ok(field.to_owned())
+        })
+        .collect()
 }
 
 #[derive(Deserialize)]
@@ -418,7 +482,7 @@ pub(crate) fn is_encrypted_field(field: &str, encrypted: &[String]) -> bool {
         .any(|pattern| field == pattern || field.starts_with(&format!("{pattern}/")))
 }
 
-fn encode_base64_url(bytes: &[u8]) -> String {
+pub(crate) fn encode_base64_url(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
@@ -541,7 +605,7 @@ fn base64_value(byte: u8) -> Result<u8, String> {
     }
 }
 
-fn validate_version(version: &str) -> Result<(), String> {
+pub(crate) fn validate_version(version: &str) -> Result<(), String> {
     let valid = !version.is_empty()
         && version.len() <= 128
         && version

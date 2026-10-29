@@ -52,8 +52,8 @@ assert(
     'response schema protocol version drift'
 )
 assert(
-    schema.$defs.request.properties.op.enum.length === 50,
-    'filesystem-only machine registry must have 50 operations'
+    schema.$defs.request.properties.op.enum.length === 52,
+    'filesystem-only machine registry must have 52 operations'
 )
 
 const registeredOperations = operations.operations.map(({ name }) => name).sort()

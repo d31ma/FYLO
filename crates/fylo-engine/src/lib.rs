@@ -9,6 +9,7 @@ mod equality_operation;
 mod equality_plan;
 mod hot_set;
 mod schema;
+mod schema_admin;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -32,7 +33,7 @@ use fylo_storage_native::{
 };
 use hot_set::HotReader;
 pub use hot_set::{HotSet, HotSetStatistics};
-use schema::SchemaTools;
+use schema::{SchemaRegistry, SchemaTools};
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 
@@ -46,6 +47,7 @@ pub struct ReadOnlyEngine {
     root: NativeRoot,
     encryption: Option<EncryptionReader>,
     hot_set: Option<Arc<HotSet>>,
+    registry: SchemaRegistry,
 }
 
 /// Native FYLO write engine.
@@ -59,6 +61,7 @@ pub struct WriteEngine {
     writer: NativeWriteRoot,
     encryption: Option<EncryptionReader>,
     schema: Option<std::rc::Rc<SchemaTools>>,
+    registry: SchemaRegistry,
 }
 
 pub use fylo_storage_native::RootConfig as EngineConfig;
@@ -76,10 +79,41 @@ impl WriteEngine {
     ) -> Result<Self, EngineError> {
         let schema_root = schema_root.as_ref().to_path_buf();
         self.encryption = Some(
-            EncryptionReader::open(&schema_root, credentials).map_err(EngineError::encryption)?,
+            EncryptionReader::open(&schema_root, credentials, self.registry.clone())
+                .map_err(EngineError::encryption)?,
         );
         self.schema = Some(std::rc::Rc::new(SchemaTools::new(schema_root)));
         Ok(self)
+    }
+
+    /// Attach field encryption keys without a `fylo.schema` folder, for
+    /// collections whose schemas live in the root's registry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid encryption credentials.
+    pub fn with_encryption_credentials(
+        mut self,
+        secret: &str,
+        salt: &str,
+    ) -> Result<Self, EngineError> {
+        self.encryption = Some(Self::rekeyed(
+            self.encryption.take(),
+            &self.registry,
+            (secret, salt),
+        )?);
+        Ok(self)
+    }
+
+    fn rekeyed(
+        reader: Option<EncryptionReader>,
+        registry: &SchemaRegistry,
+        credentials: (&str, &str),
+    ) -> Result<EncryptionReader, EngineError> {
+        reader
+            .unwrap_or_else(|| EncryptionReader::unconfigured(registry.clone()))
+            .with_credentials(Some(credentials), None)
+            .map_err(EngineError::encryption)
     }
 
     /// Apply host-supplied runtime knobs to this engine and its writer.
@@ -117,11 +151,22 @@ impl WriteEngine {
     /// Returns an error before recovery or writes for a mismatched profile,
     /// invalid lease, or unsafe root.
     pub fn open_profiled(options: RootOpenOptions) -> Result<Self, EngineError> {
-        Ok(Self {
-            writer: NativeWriteRoot::open_profiled(options).map_err(EngineError::storage)?,
-            encryption: None,
+        NativeWriteRoot::open_profiled(options)
+            .map(Self::from_writer)
+            .map_err(EngineError::storage)
+    }
+
+    /// A write engine over a root the caller already opened.
+    #[must_use]
+    pub fn from_writer(writer: NativeWriteRoot) -> Self {
+        let registry =
+            SchemaRegistry::directory(writer.native_root().clone(), Some(writer.clone()));
+        Self {
+            writer,
+            encryption: Some(EncryptionReader::unconfigured(registry.clone())),
             schema: None,
-        })
+            registry,
+        }
     }
 
     /// Open a materialized branch worktree with catalog and repository
@@ -331,7 +376,9 @@ impl WriteEngine {
         identifier: &str,
         actor: Option<&AccessContext>,
     ) -> Result<(), EngineError> {
-        self.schema_tools()?;
+        if self.registry_head(collection)?.is_none() {
+            self.schema_tools()?;
+        }
         let codec = MigratingDocumentCodec(EngineDocumentCodec::new(self));
         let actor = actor.map(write_actor);
         let outcome = self.writer.patch_document_fields_with(
@@ -420,7 +467,7 @@ impl WriteEngine {
     /// missing or not a document collection, or a stored document cannot be
     /// read or decrypted.
     pub fn schema_check(&self, collection: &str, limit: usize) -> Result<Value, EngineError> {
-        let schema = self.schema_tools()?;
+        let current = self.schema_current(collection)?;
         let handle = self
             .writer
             .collection(collection)
@@ -442,7 +489,7 @@ impl WriteEngine {
                 ));
             };
             let fields = self.decode_fields(collection, fields)?;
-            if let Err(reason) = schema.validate_against_head(collection, &fields) {
+            if let Some(reason) = self.violation(collection, &fields) {
                 failed += 1;
                 if failures.len() < limit {
                     failures.push(json!({ "id": identifier, "error": reason }));
@@ -451,8 +498,8 @@ impl WriteEngine {
         }
         Ok(json!({
             "collection": collection,
-            "schemaDir": schema.schema_dir(),
-            "current": schema.current_version(collection).map_err(EngineError::schema)?,
+            "schemaDir": self.schema_folder(),
+            "current": current,
             "validation": self.validation_mode(collection)?.as_str(),
             "checked": identifiers.len(),
             "failed": failed,
@@ -468,6 +515,9 @@ impl WriteEngine {
     /// Returns an error when no schema root is configured or the manifest is
     /// corrupt.
     pub fn schema_inspect(&self, collection: &str) -> Result<Value, EngineError> {
+        if self.registry_head(collection)?.is_some() {
+            return self.registry_inspection(collection);
+        }
         self.schema_tools()?
             .inspect(collection)
             .map_err(EngineError::schema)
@@ -479,6 +529,9 @@ impl WriteEngine {
     ///
     /// Returns an error when no schema root is configured.
     pub fn schema_doctor(&self, collection: &str) -> Result<Value, EngineError> {
+        if self.registry_head(collection)?.is_some() {
+            return self.registry_diagnosis(collection);
+        }
         Ok(self.schema_tools()?.doctor(collection))
     }
 
@@ -489,6 +542,9 @@ impl WriteEngine {
     /// Returns an error when no schema root is configured or the manifest is
     /// corrupt.
     pub fn schema_current(&self, collection: &str) -> Result<Option<String>, EngineError> {
+        if let Some(head) = self.registry_head(collection)? {
+            return Ok(Some(head.label().to_owned()));
+        }
         self.schema_tools()?
             .current_version(collection)
             .map_err(EngineError::schema)
@@ -514,6 +570,13 @@ impl WriteEngine {
         collection: &str,
         document: &Map<String, Value>,
     ) -> Result<Map<String, Value>, EngineError> {
+        if let Some(validated) = self
+            .registry
+            .validate_against_head(collection, document)
+            .map_err(EngineError::schema)?
+        {
+            return Ok(validated);
+        }
         Ok(self
             .schema_tools()?
             .validate_against_head(collection, document)
@@ -533,6 +596,13 @@ impl WriteEngine {
         collection: &str,
         document: &Map<String, Value>,
     ) -> Result<Map<String, Value>, EngineError> {
+        if let Some(materialized) = self
+            .registry
+            .materialize(collection, document)
+            .map_err(EngineError::schema)?
+        {
+            return Ok(materialized);
+        }
         self.schema_tools()?
             .materialize(collection, document)
             .map_err(EngineError::schema)
@@ -551,9 +621,14 @@ impl WriteEngine {
     /// not. Storage decides from the collection's validation mode whether this
     /// runs and what a failure does.
     fn violation(&self, collection: &str, fields: &Map<String, Value>) -> Option<String> {
-        self.schema
-            .as_ref()
-            .and_then(|schema| schema.validate_against_head(collection, fields).err())
+        match self.registry.validate_against_head(collection, fields) {
+            Ok(Some(_)) => None,
+            Err(reason) => Some(reason),
+            Ok(None) => self
+                .schema
+                .as_ref()
+                .and_then(|schema| schema.validate_against_head(collection, fields).err()),
+        }
     }
 
     /// The bytes a write stores for the post-image `fields`: `_v` stamped,
@@ -563,12 +638,22 @@ impl WriteEngine {
     fn encode(&self, collection: &str, fields: Map<String, Value>) -> Result<Vec<u8>, EngineError> {
         let fields = if let Some(encryption) = self.encryption.as_ref() {
             // Stamp before encrypting: the stamp is plaintext metadata, and
-            // encryption must see the post-image the schema describes.
-            let fields = match self.schema.as_ref() {
-                Some(schema) => schema
+            // encryption must see the post-image the schema describes. A
+            // collection with a schema registry is stamped with its head
+            // there, whether or not a `fylo.schema` folder is configured.
+            let fields = match (self.registry_head(collection)?, self.schema.as_ref()) {
+                (Some(head), _) => {
+                    let mut fields = fields;
+                    fields.insert(
+                        SchemaRegistry::VERSION_FIELD.into(),
+                        Value::String(head.label().to_owned()),
+                    );
+                    fields
+                }
+                (None, Some(schema)) => schema
                     .stamp_head(collection, fields)
                     .map_err(EngineError::schema)?,
-                None => fields,
+                (None, None) => fields,
             };
             encryption
                 .encode_document(collection, fields)
@@ -726,8 +811,28 @@ impl ReadOnlyEngine {
         credentials: Option<(&str, &str)>,
     ) -> Result<Self, EngineError> {
         self.encryption = Some(
-            EncryptionReader::open(schema_root, credentials).map_err(EngineError::encryption)?,
+            EncryptionReader::open(schema_root, credentials, self.registry.clone())
+                .map_err(EngineError::encryption)?,
         );
+        Ok(self)
+    }
+
+    /// Attach decryption keys without a `fylo.schema` folder, for collections
+    /// whose schemas live in the root's registry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid encryption credentials.
+    pub fn with_encryption_credentials(
+        mut self,
+        secret: &str,
+        salt: &str,
+    ) -> Result<Self, EngineError> {
+        self.encryption = Some(WriteEngine::rekeyed(
+            self.encryption.take(),
+            &self.registry,
+            (secret, salt),
+        )?);
         Ok(self)
     }
 
@@ -759,10 +864,15 @@ impl ReadOnlyEngine {
     ///
     /// Returns an error for unsafe roots, incompatible profiles, or invalid leases.
     pub fn open_profiled(options: RootOpenOptions) -> Result<Self, EngineError> {
+        let root = NativeRoot::open_profiled(options).map_err(EngineError::storage)?;
+        // One head per collection for this engine's lifetime: every read it
+        // answers sees the same schema version.
+        let registry = SchemaRegistry::directory(root.clone(), None).with_remembered_heads();
         Ok(Self {
-            root: NativeRoot::open_profiled(options).map_err(EngineError::storage)?,
-            encryption: None,
+            root,
+            encryption: Some(EncryptionReader::unconfigured(registry.clone())),
             hot_set: None,
+            registry,
         })
     }
 
@@ -2205,6 +2315,12 @@ pub enum EngineErrorCode {
     Unsupported,
     /// A document failed schema validation, or schema tooling failed.
     Schema,
+    /// A schema version label is already committed with different content;
+    /// committed versions are immutable (ADR 0017 section 3).
+    SchemaConflict,
+    /// A schema declares an array whose items are objects, which the
+    /// document format refuses on every write (ADR 0017 section 2).
+    ArrayOfObjects,
 }
 
 impl EngineErrorCode {
@@ -2221,6 +2337,8 @@ impl EngineErrorCode {
             Self::Access => "EACCES",
             Self::Unsupported => "EENGINE_UNSUPPORTED",
             Self::Schema => "ESCHEMA",
+            Self::SchemaConflict => "ESCHEMACONFLICT",
+            Self::ArrayOfObjects => "EARRAYOFOBJECTS",
         }
     }
 }

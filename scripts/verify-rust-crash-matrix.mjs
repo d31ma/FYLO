@@ -444,6 +444,32 @@ async function verifyNativeCrashScenarios() {
             args: (root) => ['reshard', '--root', root, '--collection', collection, '--width', '3']
         },
         {
+            // A schema registry commit writes the version file, then fences
+            // the generation state, then moves the descriptor's head.
+            name: 'push-schema',
+            prepare: async (_binary, root) => {
+                const folder = join(`${root}-schemas`, collection)
+                await mkdir(join(folder, 'history'), { recursive: true })
+                await writeFile(
+                    join(folder, 'manifest.json'),
+                    JSON.stringify({ current: 'v1', versions: [{ v: 'v1' }] })
+                )
+                await writeFile(
+                    join(folder, 'history', 'v1.schema.json'),
+                    JSON.stringify({ name: '^.+$', score: '^[0-9]+$' })
+                )
+            },
+            args: (root) => [
+                'push-schema',
+                '--root',
+                root,
+                '--collection',
+                collection,
+                '--schema-dir',
+                `${root}-schemas`
+            ]
+        },
+        {
             name: 'commit',
             template: () => versionedTemplate,
             prepare: async (binary, root) => {

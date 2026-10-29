@@ -22,6 +22,8 @@ const candidateOnlyOperations = [
     'schemaCheck',
     'schemaMigrate',
     'schemaMode',
+    'schemaPull',
+    'schemaPush',
     'verifyDatabase'
 ]
 const releasedOperations = canonicalOperations.filter(
@@ -29,11 +31,13 @@ const releasedOperations = canonicalOperations.filter(
 )
 const workspace = await mkdtemp(join(tmpdir(), 'fylo-release-machine-parity-'))
 const schemaRoot = join(workspace, 'schema')
+const registrySchemaRoot = join(workspace, 'registry-schema')
 const applicationConfig = join(workspace, 'application.json')
 const rawSource = join(workspace, 'source.bin')
 
 try {
     await createSchemaFixture(schemaRoot)
+    await createRegistrySchemaFixture(registrySchemaRoot)
     await writeFile(applicationConfig, JSON.stringify({ fylo: { schema: schemaRoot } }))
     await writeFile(rawSource, new Uint8Array([0, 1, 2, 3, 254, 255]))
 
@@ -535,6 +539,32 @@ async function runScenario(label, binary, root) {
                 { op: 'schemaCheck', collection: 'profiles', schemaDir: schemaRoot },
                 { record: false }
             )
+            // The schema registry (ADR 0017 section 3) postdates the release.
+            await request(
+                'create-registered',
+                { op: 'createCollection', collection: 'registered' },
+                { record: false }
+            )
+            const pushed = await request(
+                'schema-push',
+                { op: 'schemaPush', collection: 'registered', schemaDir: registrySchemaRoot },
+                { record: false }
+            )
+            assertEqual(
+                pushed.pushed.map(({ label }) => label),
+                ['v1'],
+                'schemaPush committed versions'
+            )
+            const pulled = await request(
+                'schema-pull',
+                {
+                    op: 'schemaPull',
+                    collection: 'registered',
+                    out: join(workspace, `${label}-pulled-schema`)
+                },
+                { record: false }
+            )
+            assertEqual(pulled.current, 'v1', 'schemaPull current version')
         }
     } finally {
         await machine.close()
@@ -636,6 +666,19 @@ async function createSchemaFixture(root) {
     await writeFile(
         join(collection, 'upgraders', 'v1-to-v2.js'),
         'export default async (document) => ({ name: document.fullName, active: document.active })\n'
+    )
+}
+
+async function createRegistrySchemaFixture(root) {
+    const collection = join(root, 'registered')
+    await mkdir(join(collection, 'history'), { recursive: true })
+    await writeFile(
+        join(collection, 'manifest.json'),
+        JSON.stringify({ current: 'v1', versions: [{ v: 'v1' }] })
+    )
+    await writeFile(
+        join(collection, 'history', 'v1.schema.json'),
+        JSON.stringify({ title: '^.+$' })
     )
 }
 

@@ -931,6 +931,8 @@ impl Session {
             "schemaMode" => self.schema_mode(request),
             "schemaCheck" => self.schema_check(request),
             "schemaMigrate" => self.schema_migrate(request),
+            "schemaPush" => self.schema_push(request),
+            "schemaPull" => self.schema_pull(request),
             "importBulkData" => self.import_bulk_data(request),
             "queuePublish" => self.queue_publish(request),
             "queueClaim" => self.queue_claim(request),
@@ -1231,7 +1233,14 @@ impl Session {
                         .map(|(key, salt)| (key.as_str(), salt.as_str())),
                 )
                 .map_err(|error| engine_error(&error)),
-            None => Ok(engine),
+            // Keys without a folder still decrypt the collections whose
+            // schemas are in the root's registry.
+            None => match self.config.credentials.as_ref() {
+                Some((key, salt)) => engine
+                    .with_encryption_credentials(key, salt)
+                    .map_err(|error| engine_error(&error)),
+                None => Ok(engine),
+            },
         }
     }
 
@@ -1508,9 +1517,20 @@ impl Session {
     fn writer(&self, request: &Value) -> Result<NativeWriteRoot, MachineError> {
         let repository_root = self.root(request)?;
         let active_root = active_worktree(&repository_root)?;
-        NativeWriteRoot::open_profiled(self.root_options(active_root, repository_root)?)
-            .map(|writer| writer.with_config(self.config.storage))
-            .map_err(|error| storage_error(&error))
+        let writer =
+            NativeWriteRoot::open_profiled(self.root_options(active_root, repository_root)?)
+                .map(|writer| writer.with_config(self.config.storage))
+                .map_err(|error| storage_error(&error))?;
+        // A request that never decodes documents still opens the root, so the
+        // one-time import happens on this binary's first open, whatever the
+        // request. Without a folder there is nothing to import.
+        if self
+            .schema_path(request)
+            .is_some_and(|schema| schema.is_dir())
+        {
+            self.configured(WriteEngine::from_writer(writer.clone()), request)?;
+        }
+        Ok(writer)
     }
 
     fn write_engine(&self, request: &Value) -> Result<WriteEngine, MachineError> {
@@ -1518,19 +1538,36 @@ impl Session {
         let root = active_worktree(&repository_root)?;
         let engine = WriteEngine::open_profiled(self.root_options(root, repository_root)?)
             .map_err(|error| engine_error(&error))?;
-        let engine = match self.schema_path(request) {
-            Some(schema) => engine
-                .with_schema_configuration(
-                    schema,
-                    self.config
-                        .credentials
-                        .as_ref()
-                        .map(|(secret, salt)| (secret.as_str(), salt.as_str())),
-                )
-                .map_err(|error| engine_error(&error))?,
-            None => engine,
-        };
-        Ok(engine.with_config(self.config.storage))
+        self.configured(engine, request)
+    }
+
+    /// `engine` with this session's schema folder, keys and storage knobs,
+    /// after the one-time import of the folder into the root's schema
+    /// registry and, under `fylo.schema.autoPush`, a push of its new versions
+    /// (ADR 0017 section 3).
+    fn configured(
+        &self,
+        engine: WriteEngine,
+        request: &Value,
+    ) -> Result<WriteEngine, MachineError> {
+        let credentials = self
+            .config
+            .credentials
+            .as_ref()
+            .map(|(secret, salt)| (secret.as_str(), salt.as_str()));
+        let engine = match (self.schema_path(request), credentials) {
+            (Some(schema), _) => engine.with_schema_configuration(schema, credentials),
+            // Keys without a folder still encrypt the collections whose
+            // schemas are in the registry.
+            (None, Some((secret, salt))) => engine.with_encryption_credentials(secret, salt),
+            (None, None) => Ok(engine),
+        }
+        .map_err(|error| engine_error(&error))?
+        .with_config(self.config.storage);
+        engine
+            .synchronize_schemas()
+            .map_err(|error| engine_error(&error))?;
+        Ok(engine)
     }
 
     fn schema_path(&self, request: &Value) -> Option<PathBuf> {
@@ -2458,7 +2495,7 @@ impl Session {
             .map_err(|error| engine_error(&error))?;
         Ok(json!({
             "collection": collection,
-            "schemaDir": engine.schema_dir().map_err(|error| engine_error(&error))?,
+            "schemaDir": engine.schema_folder(),
             "current": current,
             "valid": true,
             "document": validated,
@@ -2539,7 +2576,7 @@ impl Session {
             .map_err(|error| engine_error(&error))?;
         Ok(json!({
             "collection": collection,
-            "schemaDir": engine.schema_dir().map_err(|error| engine_error(&error))?,
+            "schemaDir": engine.schema_folder(),
             "current": current,
             "document": materialized,
         }))
@@ -2592,13 +2629,55 @@ impl Session {
         }
         Ok(json!({
             "collection": collection,
-            "schemaDir": engine.schema_dir().map_err(|error| engine_error(&error))?,
+            "schemaDir": engine.schema_folder(),
             "current": current,
             "scanned": rows.len(),
             "migrated": migrated,
             "atHead": at_head,
             "unversioned": unversioned,
         }))
+    }
+
+    /// `fylo schema push`: commit the versions of the request's or the
+    /// session's `fylo.schema` folder that the collection's schema registry
+    /// lacks, after a dry run over its documents (ADR 0017 section 3).
+    fn schema_push(&self, request: &Value) -> Result<Value, MachineError> {
+        let collection = require_string(request, "collection")?;
+        self.require_main_worktree(request)?;
+        let actor = request
+            .get("access")
+            .and_then(|access| access.get("uid"))
+            .and_then(Value::as_u64)
+            .map(|uid| format!("uid {uid}"));
+        self.write_engine(request)?
+            .schema_push(collection, None, actor.as_deref())
+            .map_err(|error| engine_error(&error))
+    }
+
+    /// `fylo schema pull`: write the collection's schema registry to `out`
+    /// in the `fylo.schema` folder layout.
+    fn schema_pull(&self, request: &Value) -> Result<Value, MachineError> {
+        let collection = require_string(request, "collection")?;
+        let out = require_string(request, "out")?;
+        self.require_main_worktree(request)?;
+        self.write_engine(request)?
+            .schema_pull(collection, std::path::Path::new(out))
+            .map_err(|error| engine_error(&error))
+    }
+
+    /// The registry lives beside the catalog, which every branch shares, but
+    /// a push dry-runs against the documents of the checked-out worktree and
+    /// fences its generation state. Refuse on another branch rather than
+    /// check, or fence, the wrong ones.
+    fn require_main_worktree(&self, request: &Value) -> Result<(), MachineError> {
+        let repository_root = self.root(request)?;
+        if active_worktree(&repository_root)? != repository_root {
+            return Err(MachineError::new(
+                "ESCHEMA",
+                "schema push and pull work on the main branch; check out main first",
+            ));
+        }
+        Ok(())
     }
 
     fn write_success<W: Write>(

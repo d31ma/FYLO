@@ -67,6 +67,8 @@
                         "schemaMode",
                         "schemaCheck",
                         "schemaMigrate",
+                        "schemaPush",
+                        "schemaPull",
                         "queuePublish",
                         "queueClaim",
                         "queueAck",
@@ -153,7 +155,8 @@
                 "options": { "type": "object" },
                 "url": { "type": "string" },
                 "limitOrOptions": { "type": ["integer", "object"] },
-                "includeUnversioned": { "type": "boolean" }
+                "includeUnversioned": { "type": "boolean" },
+                "out": { "type": "string", "minLength": 1 }
             },
             "additionalProperties": false
         },
