@@ -4,15 +4,15 @@
     <p class="doc-lede">
         Schemas are optional, versioned, and enforced by the <code>chex</code> binary. Old documents
         are not rewritten when the schema moves forward — they are materialized to the head shape in
-        memory as they are read, by upgrader functions you write.
+        memory by JSON migration steps you write.
     </p>
 
     <div class="doc-section">
         <h2>Layout</h2>
         <p>
-            Schemas live under <code>fylo.schema</code> in <code>application.json</code>, one directory per collection. Any directory
-            there containing a <code>manifest.json</code> is auto-created as a collection when the
-            database opens.
+            Schemas live under <code>fylo.schema</code> in <code>application.json</code>, one
+            directory per collection. Any directory there containing a <code>manifest.json</code> is
+            auto-created as a collection when the database opens.
         </p>
         <pre class="code-block"><code>{layoutCode}</code></pre>
         <pre class="code-block"><code>{manifestCode}</code></pre>
@@ -24,26 +24,54 @@
     </div>
 
     <div class="doc-section">
-        <h2>Upgraders</h2>
+        <h2>Migrations</h2>
         <p>
-            An upgrader is a pure function from one version's document shape to the next. FYLO
-            chains them on read, so a v1 document written two years ago is returned in v3 shape
-            without ever being rewritten on disk.
+            A migration is JSON, not code (ADR 0018). <code>migrations/v1-to-v2.json</code> lists
+            the steps that turn a v1 document into a v2 one. Steps run in order on the document with
+            <code>_v</code> removed, then <code>_v</code> is stamped with the target version. FYLO
+            chains the step files along the manifest history, so a v1 document written two years ago
+            is materialized in v3 shape without ever being rewritten on disk.
         </p>
-        <pre class="code-block"><code>{upgraderCode}</code></pre>
+        <pre class="code-block"><code>{migrationCode}</code></pre>
+        <p>
+            Each step has exactly one operation key, whose value is the field it works on as a
+            slash-separated path, plus that operation's parameters:
+        </p>
+        <pre class="code-block"><code>{stepsCode}</code></pre>
+        <p>
+            A step whose source field is missing does nothing, except <code>set</code>,
+            <code>template</code> and <code>slugify</code>, which always write their field. A field
+            of the wrong type, such as <code>lower</code> on a number, fails the migration.
+        </p>
+        <p>
+            FYLO never runs JavaScript from a schema folder: a version step that has only an old
+            <code>upgraders/v1-to-v2.js</code> file fails with an error pointing at ADR 0018. A
+            change the steps cannot express is an application update in two versions: add a version
+            whose schema accepts both shapes, rewrite the documents with <code>patchDocs</code> or
+            SQL <code>UPDATE</code>, then add a version that accepts only the new shape.
+        </p>
     </div>
 
     <div class="doc-section">
         <h2>Behaviour</h2>
         <ul>
             <li>Documents carry <code>_v</code>, their version label.</li>
-            <li>Reads materialize old documents to head shape in memory.</li>
             <li>
-                Strict writes validate against the head schema via the <code>chex</code> binary.
+                Reads return each document as stored. <code>schemaMaterialize</code> migrates one to
+                the head shape in memory; read-time migration is planned in ADR 0017.
             </li>
             <li>
-                A document missing <code>_v</code> is treated as the oldest version and upgraded on
-                read.
+                Strict writes validate against the head schema with the built-in CHEX validator.
+            </li>
+            <li>
+                <code>schemaMaterialize</code> treats a document missing <code>_v</code> as the
+                oldest version.
+            </li>
+            <li>
+                <code>fylo schema migrate &lt;collection&gt;</code> rewrites every document below
+                the head version at the head, validating and encrypting it as a write would. It
+                skips documents without <code>_v</code> unless given
+                <code>--include-unversioned</code>.
             </li>
             <li>
                 Mutation and query methods await schema bootstrap internally. If you need it settled
@@ -70,15 +98,15 @@
     <div class="doc-section">
         <h2>Strict mode</h2>
         <p>
-            Set <code>fylo.strict</code> to <code>true</code> to validate every document against the head schema before
-            it is written. Without it, schemas still drive read-time upgrades and encryption
-            registration but do not gate writes.
+            Set <code>fylo.strict</code> to <code>true</code> to validate every document against the
+            head schema before it is written. Without it, schemas still drive migrations and
+            encryption registration but do not gate writes.
         </p>
         <pre class="code-block"><code>{cliCode}</code></pre>
         <p>
             <code>schema doctor</code> is the readiness check: it reports a manifest that disagrees
-            with the files on disk, a missing upgrader in the chain, or a schema that the data model
-            cannot accept.
+            with the files on disk, a missing migration in the chain, or a schema that the data
+            model cannot accept.
         </p>
     </div>
 

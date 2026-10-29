@@ -2,17 +2,38 @@
 // GitHub Pages serves one: no COOP, no COEP, so no `SharedArrayBuffer`.
 
 import { expect, test } from './browser-test.mjs'
+import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { STUB_SIZE, stubBytes } from '../fixtures/fxdb-stub.mjs'
 
 const PLAIN_ORIGIN = 'http://127.0.0.1:4174'
 
 test.beforeAll(async () => {
+    test.setTimeout(600_000)
     const path = 'target/browser-fixtures/stub.fxdb'
     await mkdir(dirname(path), { recursive: true })
     await writeFile(path, stubBytes())
+    // A real container, and the report the native engine gives for it. The
+    // example refuses to overwrite, so a previous run's file goes first.
+    await rm('target/browser-fixtures/fixture.fxdb', { force: true })
+    const report = execFileSync(
+        'cargo',
+        [
+            'run',
+            '--quiet',
+            '--locked',
+            '-p',
+            'fylo-storage-native',
+            '--example',
+            'fxdb_fixture',
+            '--',
+            'target/browser-fixtures/fixture.fxdb'
+        ],
+        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] }
+    )
+    await writeFile('target/browser-fixtures/fixture.json', report)
 })
 
 async function run(page, testInfo, scenario) {
@@ -106,4 +127,18 @@ test('runs fylo-browser.wasm over a single file without isolation', async ({ pag
     expect(evidence.info.engine).toBe(true)
     expect(evidence.frames[0]?.ok, JSON.stringify(evidence.frames)).toBe(true)
     expect(evidence.frames[0]?.result?.buildTarget).toBe('browser-wasm32')
+})
+
+test('inspects a real .fxdb through every single-file host', async ({ page }, testInfo) => {
+    const evidence = await run(page, testInfo, 'inspect')
+    const labels = Object.keys(evidence.reports)
+    expect(labels).toEqual(expect.arrayContaining(['file', 'url']))
+    for (const label of labels) {
+        expect(evidence.reports[label], label).toEqual(evidence.expected)
+    }
+    expect(evidence.expected.collections.map((collection) => collection.name)).toEqual([
+        'users',
+        'orders'
+    ])
+    expect(evidence.stubFrame.ok).toBe(false)
 })

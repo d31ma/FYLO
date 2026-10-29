@@ -63,12 +63,28 @@ impl EncryptionReader {
         })
     }
 
+    /// Decrypt with the `$encrypted` list of the version the document was
+    /// written at, its `_v`, so that a later version that renames or drops an
+    /// encrypted field does not leave old documents unreadable. A document
+    /// without `_v`, or at a version the manifest does not list, is decrypted
+    /// with the head's list, as it was written outside strict mode.
     pub(crate) fn decode_document(
         &self,
         collection: &str,
-        mut fields: Map<String, Value>,
+        fields: Map<String, Value>,
     ) -> Result<Map<String, Value>, String> {
-        let encrypted = self.encrypted_fields(collection)?;
+        let version = fields.get("_v").and_then(Value::as_str).map(str::to_owned);
+        self.decode_document_at(collection, fields, version.as_deref())
+    }
+
+    /// [`Self::decode_document`] for a document taken to be at `version`.
+    pub(crate) fn decode_document_at(
+        &self,
+        collection: &str,
+        mut fields: Map<String, Value>,
+        version: Option<&str>,
+    ) -> Result<Map<String, Value>, String> {
+        let encrypted = self.encrypted_fields_at(collection, version)?;
         if encrypted.is_empty() {
             if fields.values().any(contains_ciphertext) {
                 return Err(format!(
@@ -115,9 +131,16 @@ impl EncryptionReader {
         Ok(fields)
     }
 
-    /// Load the head schema version and body, or `None` for an unversioned
-    /// collection.
-    pub(crate) fn head_schema(&self, collection: &str) -> Result<Option<(String, Value)>, String> {
+    /// The oldest version in the manifest, which a document without `_v` is
+    /// taken to be at by schema materialization.
+    pub(crate) fn oldest_version(&self, collection: &str) -> Result<Option<String>, String> {
+        Ok(self
+            .manifest(collection)?
+            .and_then(|manifest| manifest.versions.into_iter().next())
+            .map(|entry| entry.v))
+    }
+
+    fn manifest(&self, collection: &str) -> Result<Option<SchemaManifest>, String> {
         let manifest_path = PathBuf::from(collection).join("manifest.json");
         if !self.path_exists(&manifest_path)? {
             return Ok(None);
@@ -126,19 +149,36 @@ impl EncryptionReader {
             serde_json::from_slice(&self.read_file(&manifest_path, MAX_SCHEMA_MANIFEST_BYTES)?)
                 .map_err(|error| format!("schema manifest is corrupt: {error}"))?;
         validate_version(&manifest.current)?;
+        Ok(Some(manifest))
+    }
+
+    fn version_schema(&self, collection: &str, version: &str) -> Result<Value, String> {
+        validate_version(version)?;
         let schema_path = PathBuf::from(collection)
             .join("history")
-            .join(format!("{}.schema.json", manifest.current));
-        let schema: Value =
-            serde_json::from_slice(&self.read_file(&schema_path, MAX_SCHEMA_BYTES)?)
-                .map_err(|error| format!("head schema is corrupt: {error}"))?;
-        Ok(Some((manifest.current, schema)))
+            .join(format!("{version}.schema.json"));
+        serde_json::from_slice(&self.read_file(&schema_path, MAX_SCHEMA_BYTES)?)
+            .map_err(|error| format!("schema {version} is corrupt: {error}"))
     }
 
     pub(crate) fn encrypted_fields(&self, collection: &str) -> Result<Vec<String>, String> {
-        let Some((_, schema)) = self.head_schema(collection)? else {
+        self.encrypted_fields_at(collection, None)
+    }
+
+    /// The `$encrypted` list of `version`, or of the head when `version` is
+    /// `None` or not a version the manifest lists.
+    fn encrypted_fields_at(
+        &self,
+        collection: &str,
+        version: Option<&str>,
+    ) -> Result<Vec<String>, String> {
+        let Some(manifest) = self.manifest(collection)? else {
             return Ok(Vec::new());
         };
+        let version = version
+            .filter(|version| manifest.versions.iter().any(|entry| entry.v == *version))
+            .unwrap_or(&manifest.current);
+        let schema = self.version_schema(collection, version)?;
         let Some(encrypted) = schema.get("$encrypted") else {
             return Ok(Vec::new());
         };
@@ -215,6 +255,13 @@ impl EncryptionReader {
 #[derive(Deserialize)]
 struct SchemaManifest {
     current: String,
+    #[serde(default)]
+    versions: Vec<ManifestVersion>,
+}
+
+#[derive(Deserialize)]
+struct ManifestVersion {
+    v: String,
 }
 
 /// Keys derived so far in this process, by a SHA-256 of the secret and salt.

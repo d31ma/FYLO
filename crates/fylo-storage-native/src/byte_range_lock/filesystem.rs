@@ -39,7 +39,11 @@ impl FilesystemInfo {
 }
 
 /// `(OS, filesystem name, remote)` for every filesystem that has passed.
-const QUALIFIED: &[(&str, &str, bool)] = &[("linux", "ext4", false), ("linux", "tmpfs", false)];
+const QUALIFIED: &[(&str, &str, bool)] = &[
+    ("linux", "ext4", false),
+    ("linux", "tmpfs", false),
+    ("windows", "NTFS", false),
+];
 
 #[cfg(target_os = "linux")]
 fn detect(file: &File) -> io::Result<FilesystemInfo> {

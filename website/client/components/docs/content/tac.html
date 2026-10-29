@@ -133,7 +133,7 @@
                     <h2>Schema versioning</h2>
                     <p>
                         Schemas are CHEX regex documents with a per-collection manifest, history,
-                        and pure upgrader functions — all on disk, so they apply no matter which
+                        and JSON migration steps — all on disk, so they apply no matter which
                         language writes. Documents carry a <code>_v</code> label; old shapes
                         materialize to head on read, and strict writes validate against the head
                         schema.

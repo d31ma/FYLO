@@ -397,15 +397,26 @@ fn an_older_superblock_that_outlives_a_shrink_still_opens() {
     assert_eq!(file_length(&path), 8 * EXTENT_BYTES);
 }
 
-#[cfg(target_os = "linux")]
+/// The bytes the file has allocated on disk, which a punched hole frees.
+#[cfg(unix)]
+fn allocated_bytes(path: &Path) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(path).expect("stat").blocks() * 512
+}
+
+#[cfg(windows)]
+fn allocated_bytes(path: &Path) -> u64 {
+    super::punch::allocated_bytes(path).expect("allocated size")
+}
+
+#[cfg(any(unix, windows))]
 #[test]
 fn punching_returns_free_extents_space_where_supported() {
-    use std::os::unix::fs::MetadataExt;
     let (_guard, path) = created("fxdb-punch");
     let container = released_tail(&path);
-    let before = std::fs::metadata(&path).expect("stat").blocks();
+    let before = allocated_bytes(&path);
     let punched = container.punch_free_extents().expect("punch");
-    let after = std::fs::metadata(&path).expect("stat").blocks();
+    let after = allocated_bytes(&path);
     assert_eq!(file_length(&path), 8 * EXTENT_BYTES);
     if punched > 0 {
         assert_eq!(punched, 4);
@@ -496,4 +507,101 @@ fn a_reader_opens_a_file_a_writer_may_not() {
         Err(ContainerError::ReadOnly)
     ));
     ContainerFile::open_reader(&path).expect("a reader still opens it");
+}
+
+const SECRET: &[u8] = b"correct horse battery staple";
+
+fn encrypted(name: &str) -> (Database, PathBuf) {
+    let (guard, path) = database(name);
+    ContainerFile::create_encrypted(&path, SHIFT, SECRET).expect("create encrypted container");
+    (guard, path)
+}
+
+#[test]
+fn an_encrypted_file_lists_nothing_until_unlocked() {
+    let (_guard, path) = encrypted("fxdb-encrypted-locked");
+    {
+        let mut writer = ContainerFile::open_unchecked(&path).unwrap();
+        assert!(writer.is_encrypted() && writer.is_locked());
+        let refused = writer.add_collection("users", b"{}").unwrap_err();
+        assert!(matches!(refused, ContainerError::Locked));
+        assert_eq!(refused.code(), "EKEY");
+        writer.unlock(SECRET).unwrap();
+        writer
+            .add_collection("users", b"{\"kind\":\"document\"}")
+            .unwrap();
+        writer.add_collection("orders", b"{}").unwrap();
+    }
+    let mut reader = ContainerFile::open_reader(&path).unwrap();
+    assert!(reader.collections().is_empty());
+    let report = reader.report().unwrap();
+    assert!(report.encrypted && report.locked && report.collections.is_empty());
+
+    let wrong = reader.unlock(b"not the secret").unwrap_err();
+    assert_eq!(wrong.code(), "EKEY");
+    assert!(reader.is_locked());
+
+    reader.unlock(SECRET).unwrap();
+    let names: Vec<_> = reader
+        .collections()
+        .iter()
+        .map(|collection| collection.header.name.as_str())
+        .collect();
+    assert_eq!(names, ["users", "orders"]);
+    assert_eq!(
+        reader.collections()[0].header.descriptor,
+        b"{\"kind\":\"document\"}"
+    );
+    assert!(!reader.report().unwrap().locked);
+}
+
+#[test]
+fn an_encrypted_directory_hides_collection_names() {
+    let (_guard, path) = encrypted("fxdb-encrypted-names");
+    let mut writer = ContainerFile::open_unchecked(&path).unwrap();
+    writer.unlock(SECRET).unwrap();
+    writer
+        .add_collection("payroll-salaries", b"{\"secret\":\"descriptor\"}")
+        .unwrap();
+    drop(writer);
+    let bytes = std::fs::read(&path).unwrap();
+    for needle in [&b"payroll-salaries"[..], b"descriptor"] {
+        assert!(!bytes.windows(needle.len()).any(|window| window == needle));
+    }
+}
+
+#[test]
+fn a_sealed_collection_block_moved_to_another_block_is_refused() {
+    let (_guard, path) = encrypted("fxdb-encrypted-moved");
+    let directory = {
+        let mut writer = ContainerFile::open_unchecked(&path).unwrap();
+        writer.unlock(SECRET).unwrap();
+        writer.add_collection("first", b"{}").unwrap();
+        writer.add_collection("second", b"{}").unwrap();
+        writer.superblock().directory_extent
+    };
+    // Copy block 0 over block 1: its checksum still holds, but it was sealed
+    // for block 0.
+    let block_at = |block: u64| directory * EXTENT_BYTES + 4096 + block * 4096;
+    let mut bytes = std::fs::read(&path).unwrap();
+    let first = usize::try_from(block_at(0)).unwrap();
+    let second = usize::try_from(block_at(1)).unwrap();
+    bytes.copy_within(first..first + 4096, second);
+    std::fs::write(&path, bytes).unwrap();
+
+    let mut reader = ContainerFile::open_reader(&path).unwrap();
+    let refused = reader.unlock(SECRET).unwrap_err();
+    assert_eq!(refused.code(), "EFXDB_CORRUPT");
+    assert!(reader.is_locked());
+}
+
+#[test]
+fn unlocking_a_plain_file_does_nothing() {
+    let (_guard, path) = created("fxdb-plain-unlock");
+    let mut writer = ContainerFile::open_unchecked(&path).unwrap();
+    assert!(!writer.is_encrypted() && !writer.is_locked());
+    writer.unlock(b"anything").unwrap();
+    assert!(writer.cipher().is_none());
+    writer.add_collection("users", b"{}").unwrap();
+    assert!(!writer.report().unwrap().locked);
 }

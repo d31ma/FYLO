@@ -37,7 +37,8 @@ ruzstd.workspace = true
 # `fcntl` byte-range locks for `.fxdb` files (ADR 0016 section 7). Already in
 # the graph through `errno`, `getrandom` and others; the `struct flock` layout
 # and the `F_OFD_*` commands differ per target, so they come from here rather
-# than hand-written declarations.
+# than hand-written declarations. Also `F_PUNCHHOLE` and `fpunchhole_t` for
+# hole punching of free extents on macOS.
 libc = { workspace = true }
 # The filesystem type (`fstatfs`) a `.fxdb` file is on, which decides whether
 # its byte-range locks are trusted, and `fallocate` hole punching of free
@@ -48,17 +49,19 @@ xattr.workspace = true
 # `LockFileEx` byte-range locks and file identity for `.fxdb` files (ADR 0016
 # section 7). Already in the graph through `errno`, `rustix` and `tokio`.
 [target.'cfg(windows)'.dependencies]
-windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO"] }
+# `FSCTL_SET_SPARSE` and `FSCTL_SET_ZERO_DATA` hole punching of free extents.
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Ioctl"] }
 
 [dev-dependencies]
 # Checks the browser's zstd decoder reads what the native writer produces.
 ruzstd.workspace = true
 fylo-test-support = { version = "0.1.0", path = "../fylo-test-support" }
 
-# `.fxdb` byte-range locks call `fcntl` and `LockFileEx`, which no safe
-# signature in the graph expresses for a byte range. ADR 0004 confines that to
-# `byte_range_lock/os.rs`; `deny` rather than `forbid` is what lets that one
-# module opt in with a SAFETY comment per block.
+# `.fxdb` byte-range locks call `fcntl` and `LockFileEx`, and hole punching
+# calls `fcntl(F_PUNCHHOLE)` and `DeviceIoControl`, which no safe signature in
+# the graph expresses. ADR 0004 confines that to `byte_range_lock/os.rs` and
+# `container_file/punch.rs`; `deny` rather than `forbid` is what lets those
+# modules opt in with a SAFETY comment per block.
 [lints.rust]
 unsafe_code = "deny"
 unused_must_use = "deny"

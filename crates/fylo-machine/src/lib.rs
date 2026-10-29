@@ -21,7 +21,7 @@ pub use request_frame::RequestFrame;
 use std::io::{BufRead, Read, Write};
 #[cfg(not(target_arch = "wasm32"))]
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
@@ -894,6 +894,7 @@ impl Session {
             "getFileData" => self.get_file_data(request),
             "findDocs" => self.find_documents(request),
             "inspectCollection" => self.inspect_collection(request),
+            "inspectDatabase" => Self::inspect_database(&self.database_path(request)?),
             "verifyCollection" => self.verify_collection(request),
             "log" => self.history(request),
             "getMeta" => self.get_metadata(request),
@@ -928,6 +929,7 @@ impl Session {
             "schemaMaterialize" => self.schema_materialize(request),
             "schemaMode" => self.schema_mode(request),
             "schemaCheck" => self.schema_check(request),
+            "schemaMigrate" => self.schema_migrate(request),
             "importBulkData" => self.import_bulk_data(request),
             "queuePublish" => self.queue_publish(request),
             "queueClaim" => self.queue_claim(request),
@@ -966,6 +968,14 @@ impl Session {
                     "version": 1,
                     "profiles": ["native", "efs-sidecar-v1"],
                     "efsQualified": false
+                }),
+            ),
+            (
+                "singleFileDatabase".into(),
+                json!({
+                    "version": 1,
+                    "extension": "fxdb",
+                    "operations": ["inspectDatabase"]
                 }),
             ),
             (
@@ -1425,6 +1435,30 @@ impl Session {
             "validation": validation.as_str(),
             "schemaViolations": inspection.schema_violations,
         }))
+    }
+
+    /// The `.fxdb` file a request names: its `root`, or the session's.
+    fn database_path(&self, request: &Value) -> Result<PathBuf, MachineError> {
+        request
+            .get("root")
+            .and_then(Value::as_str)
+            .map(PathBuf::from)
+            .or_else(|| self.default_root.clone())
+            .ok_or_else(|| {
+                MachineError::new(
+                    "EBADREQUEST",
+                    "inspectDatabase requires a .fxdb path as root",
+                )
+            })
+    }
+
+    /// Describe a `.fxdb` file from its superblock, map and directory,
+    /// without reading a record or taking a lock (ADR 0016).
+    fn inspect_database(path: &Path) -> Result<Value, MachineError> {
+        let report = fylo_storage_native::ContainerFile::open_reader(path)
+            .and_then(|container| container.report())
+            .map_err(|error| MachineError::new(error.code(), error.to_string()))?;
+        serde_json::to_value(report).map_err(|error| serialization_error(&error))
     }
 
     fn verify_collection(&self, request: &Value) -> Result<Value, MachineError> {
@@ -2496,6 +2530,62 @@ impl Session {
             "schemaDir": engine.schema_dir().map_err(|error| engine_error(&error))?,
             "current": current,
             "document": materialized,
+        }))
+    }
+
+    /// Rewrite every document below the head schema version at the head,
+    /// one read-modify-write per document (ADR 0017 section 5). A document
+    /// without `_v` is ambiguous outside strict mode, which never stamped it,
+    /// so it is migrated only when the request sets `includeUnversioned`.
+    fn schema_migrate(&self, request: &Value) -> Result<Value, MachineError> {
+        let collection = require_string(request, "collection")?;
+        let include_unversioned = request.get("includeUnversioned") == Some(&Value::Bool(true));
+        let engine = self.write_engine(request)?;
+        let Some(current) = engine
+            .schema_current(collection)
+            .map_err(|error| engine_error(&error))?
+        else {
+            return Err(MachineError::new(
+                "ESCHEMA",
+                format!("collection '{collection}' has no versioned schema to migrate to"),
+            ));
+        };
+        let query = StructuredQuery::from_value(&json!({}), QueryLimits::default())
+            .map_err(|error| MachineError::new("EQUERY_INVALID", error.to_string()))?;
+        let actor = actor(request)?;
+        let reader = self.engine(request)?;
+        let rows = match actor.as_ref() {
+            Some(actor) => reader.find_as(collection, &query, actor),
+            None => reader.find(collection, &query),
+        }
+        .map_err(|error| engine_error(&error))?;
+        let (mut migrated, mut at_head, mut unversioned) = (0_usize, 0_usize, 0_usize);
+        for row in &rows {
+            match row.document.fields().get("_v").and_then(Value::as_str) {
+                Some(version) if version == current => at_head += 1,
+                None if !include_unversioned => unversioned += 1,
+                _ => {
+                    engine
+                        .migrate_document(collection, &row.metadata.id, actor.as_ref())
+                        .map_err(|error| {
+                            let failure = engine_error(&error);
+                            MachineError::new(
+                                &failure.code,
+                                format!("document {}: {}", row.metadata.id, failure.message),
+                            )
+                        })?;
+                    migrated += 1;
+                }
+            }
+        }
+        Ok(json!({
+            "collection": collection,
+            "schemaDir": engine.schema_dir().map_err(|error| engine_error(&error))?,
+            "current": current,
+            "scanned": rows.len(),
+            "migrated": migrated,
+            "atHead": at_head,
+            "unversioned": unversioned,
         }))
     }
 
@@ -3683,6 +3773,41 @@ mod tests {
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
             .collect()
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn inspect_database_describes_a_fxdb_file_without_a_root() {
+        let dir = std::env::temp_dir().join(format!(
+            "fylo-machine-fxdb-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("app.fxdb");
+        fylo_storage_native::ContainerFile::create(&path, 20).unwrap();
+        {
+            let mut container = fylo_storage_native::ContainerFile::open_unchecked(&path).unwrap();
+            container.add_collection("users", b"").unwrap();
+        }
+        let request = json!({"op": "inspectDatabase", "root": path});
+        let frames = run(&format!(
+            "{request}\n{}\n",
+            json!({"op": "inspectDatabase", "root": dir.join("missing.fxdb")})
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(frames[0]["ok"], json!(true), "{}", frames[0]);
+        let result = &frames[0]["result"];
+        assert_eq!(result["format"], json!("fylo.fxdb"));
+        assert_eq!(result["encrypted"], json!(false));
+        assert_eq!(result["collections"][0]["name"], json!("users"));
+        assert_eq!(frames[1]["ok"], json!(false));
+        assert_eq!(frames[1]["error"]["code"], json!("ENATIVE_NOT_FOUND"));
+        let capabilities = &run("{\"op\":\"handshake\"}\n")[0]["result"]["capabilities"];
+        assert_eq!(
+            capabilities["singleFileDatabase"]["operations"],
+            json!(["inspectDatabase"])
+        );
     }
 
     #[test]

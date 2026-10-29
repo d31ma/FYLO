@@ -19,8 +19,31 @@
   (ADR 0016). Browsing the collections inside the file arrives with the
   single-file format in the engine; the folder view is unchanged.
 
+- **`fylo schema migrate <collection>`** (`schemaMigrate`) rewrites the
+  documents below a collection's head schema version at the head, through the
+  same validation and encryption as any write. A document without `_v` is
+  skipped and counted unless `--include-unversioned` is given (ADR 0017
+  section 5).
+
+### Changed
+
+- **Schema migrations are JSON, not JavaScript (ADR 0018).** A version step is
+  now `fylo.schema/<collection>/migrations/<from>-to-<to>.json`, a list of
+  declarative steps (`rename`, `default`, `set`, `remove`, `copy`, `convert`,
+  `map`, `wrap`, `lower`, `upper`, `trim`, `replace`, `template` and
+  `slugify`) that every build runs the same way. FYLO no longer runs
+  `upgraders/*.js` files, and the Boa JavaScript runtime is gone from the
+  binary. A step that still has only a `.js` upgrader fails `schemaMaterialize`
+  with an error pointing at ADR 0018; the README's slug upgrader is one
+  `slugify` step. `schemaInspect` reports `migrationPath` and
+  `migrationExists` in place of `upgraderPath` and `upgraderExists`.
+
 ### Fixed
 
+- **A document is decrypted with the `$encrypted` list of the version it was
+  written at.** Reads used the head version's list, so once a new version
+  renamed or dropped an encrypted field, older documents came back with
+  ciphertext in that field.
 - **`patchDoc`, `patchDocs`, and SQL `INSERT` and `UPDATE` now encrypt
   `$encrypted` fields.** They wrote those fields in plaintext, after which every
   read of the collection failed. A document already stored that way still
