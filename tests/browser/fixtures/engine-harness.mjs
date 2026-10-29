@@ -10,7 +10,7 @@
 // Worker takes the root's Web Lock on its first batch, so a second session on
 // the same root waits there until the first one goes away.
 
-import { createBridgeBuffer } from '/src/browser/opfs-bridge.mjs'
+import { closeBridge, createBridgeBuffer } from '/src/browser/opfs-bridge.mjs'
 
 const MODULE_URL = '/dist-web/fylo-browser.wasm'
 
@@ -93,6 +93,8 @@ class Session {
 
     kill() {
         this.killed = true
+        // Woken first, or WebKit keeps a Worker parked mid-call holding the root's lock.
+        closeBridge(this.buffer)
         this.engine.terminate()
         this.bridge.terminate()
         for (const settle of this.waiting.values()) settle({ killed: true })
@@ -177,6 +179,12 @@ function fromBase64(text) {
     for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index)
     return bytes
 }
+
+// A reload or navigation ends every session; wake their engines first, as
+// `kill` does, so WebKit releases their locks.
+addEventListener('pagehide', () => {
+    for (const session of sessions.values()) closeBridge(session.buffer)
+})
 
 globalThis.fylo = {
     surface() {

@@ -26,6 +26,8 @@ export const RESULT = 4
 export const STATE_IDLE = 0
 export const STATE_REQUEST = 1
 export const STATE_RESPONSE = 2
+/** The session is ending: the engine's pending call fails instead of waiting. */
+export const STATE_CLOSED = 3
 
 /** The shared area one call crosses; larger reads and writes go in slices. */
 export const BRIDGE_BYTES = 64 * 1024 * 1024
@@ -34,6 +36,22 @@ const CHUNK_BYTES = 16 * 1024 * 1024
 
 export function createBridgeBuffer() {
     return new SharedArrayBuffer(CONTROL_SLOTS * 4 + BRIDGE_BYTES)
+}
+
+/**
+ * Wake the engine Worker out of its wait before the session ends.
+ *
+ * Call this before terminating the engine Worker, and from `pagehide`. WebKit
+ * does not release the Web Lock of a Worker terminated while it is parked in
+ * `Atomics.wait` (Safari 26): the root stays locked by a dead Worker and the
+ * next session on it waits forever. A Worker woken first releases it.
+ *
+ * @param {SharedArrayBuffer} buffer the session's bridge buffer
+ */
+export function closeBridge(buffer) {
+    const control = new Int32Array(buffer, 0, CONTROL_SLOTS)
+    Atomics.store(control, STATE, STATE_CLOSED)
+    Atomics.notify(control, STATE)
 }
 
 /**
@@ -70,7 +88,14 @@ export function createBridgeBackend(buffer, rootPath) {
         Atomics.notify(control, STATE)
         // Blocks this Worker. The bridge Worker is a different thread, so it is
         // free to run its promises while this one is parked.
-        while (Atomics.load(control, STATE) !== STATE_RESPONSE) {
+        for (;;) {
+            const state = Atomics.load(control, STATE)
+            if (state === STATE_RESPONSE) break
+            if (state === STATE_CLOSED) {
+                const error = new Error(`bridge closed during ${request.op}`)
+                error.code = 'EIO'
+                throw error
+            }
             Atomics.wait(control, STATE, STATE_REQUEST)
         }
         const status = Atomics.load(control, STATUS)
