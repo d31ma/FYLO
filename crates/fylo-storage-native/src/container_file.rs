@@ -18,6 +18,7 @@ use fylo_vfs::{File, OpenOptions};
 use crate::container_allocator::{
     ContainerAllocatorError, ContainerExtentAllocation, ContainerExtentAllocator,
 };
+use crate::{ContainerCipher, ContainerCipherError, ContainerSealContext};
 
 mod punch;
 use punch::punch_hole;
@@ -40,6 +41,11 @@ pub enum ContainerError {
     ReadOnly,
     /// Other writers kept the file past the busy timeout (`EBUSY`).
     Busy,
+    /// The file is encrypted and has not been unlocked with its key
+    /// (`EKEY`).
+    Locked,
+    /// Encryption refused: a wrong key, or a sealed unit that is damaged.
+    Cipher(ContainerCipherError),
     /// The single-writer lease refused or was lost.
     #[cfg(not(target_family = "wasm"))]
     Lease(crate::ContainerLeaseError),
@@ -55,6 +61,8 @@ impl std::fmt::Display for ContainerError {
             Self::DirectoryFull => formatter.write_str("container collection directory is full"),
             Self::ReadOnly => formatter.write_str("container may only be read"),
             Self::Busy => formatter.write_str("container is busy with other writers"),
+            Self::Locked => formatter.write_str("container is encrypted and needs its key"),
+            Self::Cipher(error) => write!(formatter, "container encryption: {error}"),
             #[cfg(not(target_family = "wasm"))]
             Self::Lease(error) => write!(formatter, "container lease: {error}"),
         }
@@ -79,6 +87,9 @@ impl ContainerError {
             Self::DirectoryFull => "EFXDB_FULL",
             Self::ReadOnly => "EROFS",
             Self::Busy => "EBUSY",
+            Self::Locked | Self::Cipher(ContainerCipherError::WrongKey) => "EKEY",
+            Self::Cipher(ContainerCipherError::Unauthenticated) => "EFXDB_CORRUPT",
+            Self::Cipher(ContainerCipherError::Random) => "ENATIVE_IO",
             #[cfg(not(target_family = "wasm"))]
             Self::Lease(crate::ContainerLeaseError::Busy { .. }) => "EBUSY",
             #[cfg(not(target_family = "wasm"))]
@@ -106,6 +117,12 @@ impl From<ContainerFormatError> for ContainerError {
 impl From<ContainerAllocatorError> for ContainerError {
     fn from(error: ContainerAllocatorError) -> Self {
         Self::Allocator(error)
+    }
+}
+
+impl From<ContainerCipherError> for ContainerError {
+    fn from(error: ContainerCipherError) -> Self {
+        Self::Cipher(error)
     }
 }
 
@@ -139,6 +156,9 @@ pub struct ContainerReport {
     pub file_bytes: u64,
     /// Whether records are encrypted. Off unless the database asked for it.
     pub encrypted: bool,
+    /// Whether the file is encrypted and was opened without its key, so
+    /// the collections are not listed.
+    pub locked: bool,
     /// Whether the file is a sealed, read-only pack.
     pub sealed: bool,
     /// Codecs some frame may use.
@@ -181,6 +201,7 @@ pub struct ContainerFile {
     superblock_in_a: bool,
     allocator: ContainerExtentAllocator,
     collections: Vec<ContainerCollection>,
+    cipher: Option<ContainerCipher>,
 }
 
 const SUPERBLOCK_BYTES: u64 = ContainerSuperblock::ENCODED_BYTES as u64;
@@ -199,11 +220,43 @@ impl ContainerFile {
     /// Returns the creation, write or flush failure, or `InvalidField` for an
     /// extent shift outside the format's range.
     pub fn create(path: &Path, extent_shift: u8) -> Result<(), ContainerError> {
+        Self::create_with(path, extent_shift, None)
+    }
+
+    /// Create a new, empty container whose records, directory, dictionaries
+    /// and snapshots are sealed with a key derived from `secret` (ADR 0016
+    /// section 9). Encryption is opt-in; [`Self::create`] makes a plain file.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`Self::create`], and `Cipher(Random)` when no salt can be
+    /// drawn.
+    pub fn create_encrypted(
+        path: &Path,
+        extent_shift: u8,
+        secret: &[u8],
+    ) -> Result<(), ContainerError> {
+        Self::create_with(path, extent_shift, Some(secret))
+    }
+
+    fn create_with(
+        path: &Path,
+        extent_shift: u8,
+        secret: Option<&[u8]>,
+    ) -> Result<(), ContainerError> {
         if !(ContainerSuperblock::MIN_EXTENT_SHIFT..=ContainerSuperblock::MAX_EXTENT_SHIFT)
             .contains(&extent_shift)
         {
             return Err(ContainerFormatError::InvalidField.into());
         }
+        let (incompat, key_salt, key_check) = match secret {
+            Some(secret) => {
+                let salt = ContainerCipher::new_salt()?;
+                let check = ContainerCipher::derive(secret, &salt).key_check();
+                (ContainerSuperblock::INCOMPAT_ENCRYPTED, salt, check)
+            }
+            None => (0, [0; 32], [0; 16]),
+        };
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -233,9 +286,9 @@ impl ContainerFile {
             map_extent_count: 1,
             compat: 0,
             read_only_compat: 0,
-            incompat: 0,
-            key_salt: [0; 32],
-            key_check: [0; 16],
+            incompat,
+            key_salt,
+            key_check,
         };
         write_all_at(&file, &superblock.encode(), 0)?;
         crate::sync_handle(&file)?;
@@ -263,7 +316,8 @@ impl ContainerFile {
 
     /// Open a container to read. It takes no lock and is never blocked by
     /// writers; it works on read-only files and mounts, and on sealed files.
-    /// Every write fails with `ReadOnly`.
+    /// Every write fails with `ReadOnly`. An encrypted file opens locked:
+    /// call [`Self::unlock`] before reading its collections.
     ///
     /// # Errors
     ///
@@ -284,6 +338,7 @@ impl ContainerFile {
             superblock_in_a: true,
             allocator: ContainerExtentAllocator::new(1),
             collections: Vec::new(),
+            cipher: None,
         };
         let mut copies = vec![0_u8; 2 * ContainerSuperblock::ENCODED_BYTES];
         read_exact_at(container.file(), &mut copies, 0)?;
@@ -297,7 +352,10 @@ impl ContainerFile {
         container.superblock = superblock;
         container.superblock_in_a = in_a;
         container.allocator = container.read_map()?;
-        container.collections = container.read_directory()?;
+        // An encrypted directory waits for the key.
+        if !container.is_encrypted() {
+            container.collections = container.read_directory()?;
+        }
         // An older superblock copy can describe more extents than a later
         // shrink left in the file; give them back their zeros.
         let required = container.allocator.extent_count() * container.extent_bytes();
@@ -324,11 +382,61 @@ impl ContainerFile {
         self.writable
     }
 
+    /// Whether the file was created encrypted.
+    #[must_use]
+    pub fn is_encrypted(&self) -> bool {
+        self.superblock.incompat & ContainerSuperblock::INCOMPAT_ENCRYPTED != 0
+    }
+
+    /// Whether the file is encrypted and not yet unlocked.
+    #[must_use]
+    pub fn is_locked(&self) -> bool {
+        self.is_encrypted() && self.cipher.is_none()
+    }
+
+    /// Unlock an encrypted file with its secret and read its directory. A
+    /// plain file needs no key, and this does nothing for one.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Cipher(WrongKey)` for a secret that is not this file's,
+    /// `Cipher(Unauthenticated)` for a damaged directory block, or the read
+    /// failure.
+    pub fn unlock(&mut self, secret: &[u8]) -> Result<(), ContainerError> {
+        if !self.is_encrypted() || self.cipher.is_some() {
+            return Ok(());
+        }
+        self.cipher = Some(ContainerCipher::open_file(
+            secret,
+            &self.superblock.key_salt,
+            &self.superblock.key_check,
+        )?);
+        match self.read_directory() {
+            Ok(collections) => {
+                self.collections = collections;
+                Ok(())
+            }
+            Err(error) => {
+                self.cipher = None;
+                Err(error)
+            }
+        }
+    }
+
+    /// The file key, for the segment store to seal records, dictionaries
+    /// and snapshots with. `None` for a plain file or a locked one.
+    #[must_use]
+    pub fn cipher(&self) -> Option<&ContainerCipher> {
+        self.cipher.as_ref()
+    }
+
     fn require_writable(&self) -> Result<(), ContainerError> {
-        if self.writable {
-            Ok(())
-        } else {
+        if !self.writable {
             Err(ContainerError::ReadOnly)
+        } else if self.is_locked() {
+            Err(ContainerError::Locked)
+        } else {
+            Ok(())
         }
     }
 
@@ -511,9 +619,17 @@ impl ContainerFile {
             dropped: false,
             descriptor: descriptor.to_vec(),
         };
-        let mut bytes = header.encode()?;
-        bytes.resize(ContainerCollectionHeader::BLOCK_BYTES, 0);
         let block_number = u32::try_from(block).map_err(|_| ContainerError::DirectoryFull)?;
+        let mut bytes = match &self.cipher {
+            Some(cipher) => ContainerCollectionHeader::encode_sealed(&cipher.seal(
+                ContainerSealContext::Directory {
+                    block: block_number,
+                },
+                &header.encode_body()?,
+            )?)?,
+            None => header.encode()?,
+        };
+        bytes.resize(ContainerCollectionHeader::BLOCK_BYTES, 0);
         self.write_payload(
             self.superblock.directory_extent,
             block as u64 * BLOCK_BYTES,
@@ -727,7 +843,8 @@ impl ContainerFile {
             extent_bytes: self.extent_bytes(),
             extent_count: superblock.extent_count,
             file_bytes: self.file().metadata()?.len(),
-            encrypted: superblock.incompat & ContainerSuperblock::INCOMPAT_ENCRYPTED != 0,
+            encrypted: self.is_encrypted(),
+            locked: self.is_locked(),
             sealed: superblock.is_sealed(),
             codecs,
             extents: self.allocator.census(),
@@ -810,11 +927,18 @@ impl ContainerFile {
             if block_bytes.iter().all(|byte| *byte == 0) {
                 break;
             }
-            let header = ContainerCollectionHeader::decode(&block_bytes)?;
+            let block = u32::try_from(block).map_err(|_| ContainerFormatError::Oversized)?;
+            let header = match &self.cipher {
+                Some(cipher) => ContainerCollectionHeader::decode_body(&cipher.open(
+                    ContainerSealContext::Directory { block },
+                    ContainerCollectionHeader::decode_sealed(&block_bytes)?,
+                )?)?,
+                None => ContainerCollectionHeader::decode(&block_bytes)?,
+            };
             let checkpoint_at = ContainerCollectionHeader::CHECKPOINT_SLOTS_OFFSET;
             let generation_at = ContainerCollectionHeader::GENERATION_SLOTS_OFFSET;
             collections.push(ContainerCollection {
-                block: u32::try_from(block).map_err(|_| ContainerFormatError::Oversized)?,
+                block,
                 header,
                 checkpoint: ContainerCheckpointSlot::newest(
                     &block_bytes[checkpoint_at..generation_at],
