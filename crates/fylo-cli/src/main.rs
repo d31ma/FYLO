@@ -713,6 +713,8 @@ fn schema_request(
         "doctor" => "schemaDoctor",
         "validate" => "schemaValidate",
         "materialize" => "schemaMaterialize",
+        "mode" => "schemaMode",
+        "check" => "schemaCheck",
         _ => return Err("missing or invalid schema command".into()),
     };
     insert_op(request, operation);
@@ -736,6 +738,21 @@ fn schema_request(
             return Err("JSON document input must be an object".into());
         }
         request.insert("document".into(), document);
+    }
+    if action == "mode"
+        && let Some(mode) = values.get(3)
+    {
+        if fylo_storage_native::ValidationMode::parse(mode).is_none() {
+            return Err(format!(
+                "invalid validation mode {mode}: expected off, warn or strict"
+            ));
+        }
+        request.insert("mode".into(), json!(mode));
+    }
+    if action == "check"
+        && let Some(limit) = optional_usize(arguments, "--limit")?
+    {
+        request.insert("limit".into(), json!(limit));
     }
     Ok(())
 }
@@ -809,7 +826,7 @@ fn render_compat_result(
             result,
         )),
         "inspect" => Ok(format!(
-            "Collection {}\nExists: {}\nWORM mode: {}\nStored documents: {}\nDeleted documents: {}\nIndexed documents: {}",
+            "Collection {}\nExists: {}\nWORM mode: {}\nStored documents: {}\nDeleted documents: {}\nIndexed documents: {}\nSchema validation: {}",
             result["collection"].as_str().unwrap_or_default(),
             yes_no(result["exists"].as_bool().unwrap_or(false)),
             if result["worm"].as_bool().unwrap_or(false) {
@@ -819,7 +836,8 @@ fn render_compat_result(
             },
             result["docsStored"],
             result["deletedDocs"],
-            result["indexedDocs"]
+            result["indexedDocs"],
+            result["validation"].as_str().unwrap_or("off")
         )),
         "get" | "latest" | "deleted" => {
             if result.as_object().is_some_and(Map::is_empty) {
@@ -904,6 +922,17 @@ fn render_schema(action: &str, result: &Value) -> Result<String, String> {
             result["versions"].as_array().map_or(0, Vec::len)
         )),
         "history" => pretty(&result["versions"]),
+        "mode" => Ok(format!(
+            "Schema validation for {}: {}{}",
+            result["collection"].as_str().unwrap_or_default(),
+            result["validation"].as_str().unwrap_or_default(),
+            if result["recorded"].is_null() {
+                " (from fylo.strict; not recorded in the collection)"
+            } else {
+                ""
+            }
+        )),
+        "check" => Ok(render_schema_check(result)),
         "doctor" => Ok(format!(
             "Schema doctor {}: {}\nSchema dir: {}",
             result["collection"].as_str().unwrap_or_default(),
@@ -916,6 +945,28 @@ fn render_schema(action: &str, result: &Value) -> Result<String, String> {
         )),
         _ => pretty(result),
     }
+}
+
+fn render_schema_check(result: &Value) -> String {
+    let mut lines = vec![format!(
+        "Schema check {} at {} ({}): {} of {} document(s) fail",
+        result["collection"].as_str().unwrap_or_default(),
+        result["current"].as_str().unwrap_or("unversioned"),
+        result["validation"].as_str().unwrap_or_default(),
+        result["failed"],
+        result["checked"]
+    )];
+    for document in result["documents"].as_array().into_iter().flatten() {
+        lines.push(format!(
+            "{}  {}",
+            document["id"].as_str().unwrap_or_default(),
+            document["error"].as_str().unwrap_or_default()
+        ));
+    }
+    if result["truncated"] == Value::Bool(true) {
+        lines.push("(more not listed; raise --limit)".into());
+    }
+    lines.join("\n")
 }
 
 fn render_sql(statement: &str, result: &Value, arguments: &[String]) -> Result<String, String> {
@@ -1512,7 +1563,7 @@ fn retired_command(command: &str) -> String {
 }
 
 fn usage() -> String {
-    "Usage:\n  fylo checkout [-b] <branch> [--root <path>] [--json]\n  fylo branch [--root <path>] [--json]\n  fylo commit -m <message> [--root <path>] [--json]\n  fylo log [--root <path>] [--json]\n  fylo status [--root <path>] [--json]\n  fylo diff [<from>] [<to>] [--root <path>] [--json]\n  fylo restore-commit <commit-id> [--root <path>] [--force] [--json]\n  fylo merge <ref> [-m <message>] [--root <path>] [--json]\n  fylo version [--output json]\n  fylo \"<SQL>\"\n  fylo sql \"<SQL>\"\n  fylo exec --request <json|@path|-> [--root <path>]\n  fylo exec --loop [--root <path>] [--exclusive-root [--hot-set-bytes <n>]]\n  fylo inspect <collection> [--root <path>] [--json]\n  fylo get <collection> <doc-id> [--root <path>] [--json]\n  fylo latest <collection> <doc-id> [--root <path>] [--json] [--id-only]\n  fylo rebuild <collection> [--root <path>] [--json]\n  fylo reshard <collection> --width <n> [--root <path>] [--json]\n  fylo verify <collection> [--root <path>] [--json]\n  fylo deleted <collection> [--root <path>] [--json]\n  fylo restore <collection> <doc-id> [--root <path>] [--json]\n  fylo schema inspect <collection> [--schema-dir <path>] [--json]\n  fylo schema current <collection> [--schema-dir <path>] [--json]\n  fylo schema history <collection> [--schema-dir <path>] [--json]\n  fylo schema doctor <collection> [--schema-dir <path>] [--json]\n  fylo schema validate <collection> <json|@path|-> [--schema-dir <path>] [--json]\n  fylo schema materialize <collection> <json|@path|-> [--schema-dir <path>] [--json]\n\nOptions:\n  --config <path> Load application.json (default: ./application.json)\n  --root <path>   Override fylo.root for this command\n  --schema-dir <path> Override fylo.schema for schema admin commands\n  --json          Emit machine-readable JSON output\n  --id-only       Return only the resolved document id for latest\n  -b              Create a new branch during checkout\n  -m, --message <v> Commit message\n  --force         Allow restore-commit to overwrite uncommitted changes\n  --request <v>   Machine request payload, @file path, or - for stdin\n  --exclusive-root Acquire an exclusive crash-safe root lease for exec --loop\n  --hot-set-bytes <n> Memory an --exclusive-root session keeps for warm reads; 0 turns it off (default 67108864)\n  --strict-schema Validate writes against the collection head schema (fylo.strict)\n  --shard-width <n> Shard width for collections created by this session (fylo.shard.width)\n  --width <n>     Destination shard width for reshard\n  --max-request-bytes <n> Maximum NDJSON request bytes, excluding LF\n  --max-response-bytes <n> Maximum NDJSON response bytes, excluding LF\n  --output <mode> Output mode for version: text or json\n  --version       Print the FYLO runtime version\n  --help          Show this message"
+    "Usage:\n  fylo checkout [-b] <branch> [--root <path>] [--json]\n  fylo branch [--root <path>] [--json]\n  fylo commit -m <message> [--root <path>] [--json]\n  fylo log [--root <path>] [--json]\n  fylo status [--root <path>] [--json]\n  fylo diff [<from>] [<to>] [--root <path>] [--json]\n  fylo restore-commit <commit-id> [--root <path>] [--force] [--json]\n  fylo merge <ref> [-m <message>] [--root <path>] [--json]\n  fylo version [--output json]\n  fylo \"<SQL>\"\n  fylo sql \"<SQL>\"\n  fylo exec --request <json|@path|-> [--root <path>]\n  fylo exec --loop [--root <path>] [--exclusive-root [--hot-set-bytes <n>]]\n  fylo inspect <collection> [--root <path>] [--json]\n  fylo get <collection> <doc-id> [--root <path>] [--json]\n  fylo latest <collection> <doc-id> [--root <path>] [--json] [--id-only]\n  fylo rebuild <collection> [--root <path>] [--json]\n  fylo reshard <collection> --width <n> [--root <path>] [--json]\n  fylo verify <collection> [--root <path>] [--json]\n  fylo deleted <collection> [--root <path>] [--json]\n  fylo restore <collection> <doc-id> [--root <path>] [--json]\n  fylo schema inspect <collection> [--schema-dir <path>] [--json]\n  fylo schema current <collection> [--schema-dir <path>] [--json]\n  fylo schema history <collection> [--schema-dir <path>] [--json]\n  fylo schema doctor <collection> [--schema-dir <path>] [--json]\n  fylo schema validate <collection> <json|@path|-> [--schema-dir <path>] [--json]\n  fylo schema materialize <collection> <json|@path|-> [--schema-dir <path>] [--json]\n  fylo schema mode <collection> [off|warn|strict] [--json]\n  fylo schema check <collection> [--limit <n>] [--schema-dir <path>] [--json]\n\nOptions:\n  --config <path> Load application.json (default: ./application.json)\n  --root <path>   Override fylo.root for this command\n  --schema-dir <path> Override fylo.schema for schema admin commands\n  --json          Emit machine-readable JSON output\n  --id-only       Return only the resolved document id for latest\n  -b              Create a new branch during checkout\n  -m, --message <v> Commit message\n  --force         Allow restore-commit to overwrite uncommitted changes\n  --request <v>   Machine request payload, @file path, or - for stdin\n  --exclusive-root Acquire an exclusive crash-safe root lease for exec --loop\n  --hot-set-bytes <n> Memory an --exclusive-root session keeps for warm reads; 0 turns it off (default 67108864)\n  --strict-schema Validate writes against the collection head schema (fylo.strict)\n  --shard-width <n> Shard width for collections created by this session (fylo.shard.width)\n  --width <n>     Destination shard width for reshard\n  --limit <n>     Failing documents schema check lists (default 100)\n  --max-request-bytes <n> Maximum NDJSON request bytes, excluding LF\n  --max-response-bytes <n> Maximum NDJSON response bytes, excluding LF\n  --output <mode> Output mode for version: text or json\n  --version       Print the FYLO runtime version\n  --help          Show this message"
         .replace(
             "  --root <path>   Override fylo.root for this command",
             "  --root <path>   Override fylo.root for this command\n  --filesystem-profile <native|efs-sidecar-v1> Select metadata profile explicitly",

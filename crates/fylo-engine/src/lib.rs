@@ -27,8 +27,8 @@ use fylo_storage_native::{
     AccessDescriptor, CollectionKind, DocumentCodec, GenerationState, GenerationStatus,
     IndexVerification, NativeAccess, NativeCollection, NativeRoot, NativeStorageError,
     NativeStorageErrorCode, NativeWriteRoot, PutDocumentOptions, RepositoryHistory, RootConfig,
-    RootOpenOptions, SqlMutationResult, StoredBytes, StoredRawFile, VersionVerification,
-    WriteAccess, WriteActor,
+    RootOpenOptions, SqlMutationResult, StoredBytes, StoredRawFile, ValidationMode,
+    VersionVerification, WriteAccess, WriteActor,
 };
 use hot_set::HotReader;
 pub use hot_set::{HotSet, HotSetStatistics};
@@ -234,15 +234,15 @@ impl WriteEngine {
         metadata: BTreeMap<String, Value>,
         access: WriteAccess,
     ) -> Result<(), EngineError> {
-        let bytes = self.encode(collection, fields)?;
-        self.writer
-            .put_document(
-                collection,
-                identifier,
-                &bytes,
-                PutDocumentOptions { metadata, access },
-            )
-            .map_err(EngineError::storage)
+        let codec = EngineDocumentCodec::new(self);
+        let outcome = self.writer.put_document_fields_with(
+            collection,
+            identifier,
+            fields,
+            PutDocumentOptions { metadata, access },
+            &codec,
+        );
+        codec.finish(outcome)
     }
 
     /// Replace one document body, encrypting every schema-declared field first.
@@ -258,11 +258,12 @@ impl WriteEngine {
         fields: Map<String, Value>,
         actor: Option<&AccessContext>,
     ) -> Result<(), EngineError> {
-        let bytes = self.encode(collection, fields)?;
+        let codec = EngineDocumentCodec::new(self);
         let actor = actor.map(write_actor);
-        self.writer
-            .patch_document(collection, identifier, &bytes, actor.as_ref())
-            .map_err(EngineError::storage)
+        let outcome =
+            self.writer
+                .patch_document_with(collection, identifier, fields, actor.as_ref(), &codec);
+        codec.finish(outcome)
     }
 
     /// Shallow-merge `changes` into one stored document, then validate and
@@ -327,6 +328,86 @@ impl WriteEngine {
             reject_undeclared_ciphertext(collection, &fields).map_err(EngineError::encryption)?;
             Ok(fields)
         }
+    }
+
+    /// The validation mode writes to `collection` run under (ADR 0017
+    /// section 2).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a missing collection or a corrupt descriptor.
+    pub fn validation_mode(&self, collection: &str) -> Result<ValidationMode, EngineError> {
+        self.writer
+            .validation_mode(collection)
+            .map_err(EngineError::storage)
+    }
+
+    /// Record `mode` in `collection`'s catalog descriptor. Returns the mode
+    /// the descriptor recorded before, if any.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a missing collection or a failed durable write.
+    pub fn set_validation_mode(
+        &self,
+        collection: &str,
+        mode: ValidationMode,
+    ) -> Result<Option<ValidationMode>, EngineError> {
+        self.writer
+            .set_validation_mode(collection, mode)
+            .map_err(EngineError::storage)
+    }
+
+    /// `fylo schema check`: every live document of `collection` the head
+    /// schema rejects, whatever the collection's validation mode, so a
+    /// collection in `warn` mode can be brought into line before it becomes
+    /// `strict`. At most `limit` failures are listed; `failed` counts all.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no schema root is configured, the collection is
+    /// missing or not a document collection, or a stored document cannot be
+    /// read or decrypted.
+    pub fn schema_check(&self, collection: &str, limit: usize) -> Result<Value, EngineError> {
+        let schema = self.schema_tools()?;
+        let handle = self
+            .writer
+            .collection(collection)
+            .map_err(EngineError::storage)?;
+        let identifiers = handle.document_ids().map_err(EngineError::storage)?;
+        let mut failures = Vec::new();
+        let mut failed = 0_usize;
+        for identifier in &identifiers {
+            let stored = match handle.read_document(identifier) {
+                Ok(stored) => stored,
+                // Deleted since it was listed.
+                Err(error) if error.code() == NativeStorageErrorCode::NotFound => continue,
+                Err(error) => return Err(EngineError::storage(error)),
+            };
+            let Ok(Value::Object(fields)) = serde_json::from_slice::<Value>(&stored.bytes) else {
+                return Err(EngineError::new(
+                    EngineErrorCode::CorruptData,
+                    format!("stored document {identifier} is not a JSON object"),
+                ));
+            };
+            let fields = self.decode_fields(collection, fields)?;
+            if let Err(reason) = schema.validate_against_head(collection, &fields) {
+                failed += 1;
+                if failures.len() < limit {
+                    failures.push(json!({ "id": identifier, "error": reason }));
+                }
+            }
+        }
+        Ok(json!({
+            "collection": collection,
+            "schemaDir": schema.schema_dir(),
+            "current": schema.current_version(collection).map_err(EngineError::schema)?,
+            "validation": self.validation_mode(collection)?.as_str(),
+            "checked": identifiers.len(),
+            "failed": failed,
+            "documents": failures,
+            "truncated": failed > limit,
+        }))
     }
 
     /// `schemaInspect` for one collection.
@@ -415,20 +496,28 @@ impl WriteEngine {
         })
     }
 
+    /// Why `fields` does not match `collection`'s head schema, if it does
+    /// not. Storage decides from the collection's validation mode whether this
+    /// runs and what a failure does.
+    fn violation(&self, collection: &str, fields: &Map<String, Value>) -> Option<String> {
+        self.schema
+            .as_ref()
+            .and_then(|schema| schema.validate_against_head(collection, fields).err())
+    }
+
+    /// The bytes a write stores for the post-image `fields`: `_v` stamped,
+    /// declared fields encrypted, canonically encoded. Validation is not part
+    /// of it; storage runs [`Self::violation`] first, under the collection's
+    /// validation mode, so the stamp and encryption apply in every mode.
     fn encode(&self, collection: &str, fields: Map<String, Value>) -> Result<Vec<u8>, EngineError> {
         let fields = if let Some(encryption) = self.encryption.as_ref() {
-            // Validate before encrypting: CHEX must see the plaintext the
-            // schema describes, and the `_v` stamp it returns must survive.
-            //
-            // The JavaScript engine validates and stamps `_v` only in strict
-            // mode, so an unconditional native stamp would make the same put
-            // produce different bytes in the two engines.
+            // Stamp before encrypting: the stamp is plaintext metadata, and
+            // encryption must see the post-image the schema describes.
             let fields = match self.schema.as_ref() {
-                Some(schema) if self.writer.config().strict_schema => schema
-                    .validate_against_head(collection, &fields)
-                    .map_err(EngineError::schema)?
-                    .unwrap_or(fields),
-                _ => fields,
+                Some(schema) => schema
+                    .stamp_head(collection, fields)
+                    .map_err(EngineError::schema)?,
+                None => fields,
             };
             encryption
                 .encode_document(collection, fields)
@@ -485,6 +574,14 @@ impl DocumentCodec for EngineDocumentCodec<'_> {
         self.engine
             .decode_fields(collection, fields)
             .map_err(|error| self.fail(error))
+    }
+
+    fn validate(
+        &self,
+        collection: &str,
+        fields: &Map<String, Value>,
+    ) -> Result<Option<String>, NativeStorageError> {
+        Ok(self.engine.violation(collection, fields))
     }
 
     fn encode(
@@ -1588,6 +1685,11 @@ impl ReadOnlyEngine {
                 file_count,
                 deleted_count,
                 index_bytes,
+                validation: collection.validation(),
+                schema_violations: fylo_storage_native::schema_violations(
+                    self.root.path(),
+                    collection.name(),
+                ),
                 read_only: true,
             })
         })
@@ -1987,6 +2089,12 @@ pub struct CollectionInspection {
     pub deleted_count: usize,
     /// Immutable index snapshot bytes, or zero when absent.
     pub index_bytes: usize,
+    /// Validation mode the collection's descriptor records. `None` means the
+    /// writing host's `strict_schema` setting decides (ADR 0017 section 2).
+    pub validation: Option<ValidationMode>,
+    /// Writes this process committed in `warn` mode although the schema
+    /// rejected them.
+    pub schema_violations: u64,
     /// Always true for this preview engine.
     pub read_only: bool,
 }
@@ -2054,6 +2162,12 @@ impl EngineError {
     }
 
     fn storage(error: NativeStorageError) -> Self {
+        // Storage enforces the schema (ADR 0017 section 1), but a rejected
+        // document is the same schema failure it was when the engine refused
+        // it, with the same code and message.
+        if error.code() == NativeStorageErrorCode::SchemaViolation {
+            return Self::schema(error.message().to_owned());
+        }
         Self {
             code: EngineErrorCode::Storage,
             message: error.to_string(),

@@ -320,7 +320,7 @@ fn patch_doc_keeps_other_encrypted_fields_encrypted() {
     let stored = fixture.stored(PII, ID);
     assert!(is_ciphertext(&stored["ssn"]), "{stored}");
     let read = success(&runtime, &json!({"op":"getDoc","collection":PII,"id":ID}));
-    assert_eq!(read[ID], json!({"name":"Grace","ssn":"111-22"}));
+    assert_eq!(read[ID], json!({"name":"Grace","ssn":"111-22","_v":"v1"}));
 }
 
 #[test]
@@ -410,5 +410,8 @@ fn encrypted_strings_that_read_as_json_stay_strings() {
         &json!({"op":"putData","collection":PII,"id":ID,"data":data}),
     );
     let read = success(&runtime, &json!({"op":"getDoc","collection":PII,"id":ID}));
-    assert_eq!(read[ID], data);
+    assert_eq!(
+        read[ID],
+        json!({"a":"999","b":"true","c":"null","d":"[1]","e":42,"_v":"v1"})
+    );
 }

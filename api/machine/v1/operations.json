@@ -192,6 +192,16 @@
             "retry": "safe"
         },
         {
+            "name": "schemaMode",
+            "class": "write",
+            "retry": "safe"
+        },
+        {
+            "name": "schemaCheck",
+            "class": "read",
+            "retry": "safe"
+        },
+        {
             "name": "queuePublish",
             "class": "queue-write",
             "retry": "conditional-idempotency-key"

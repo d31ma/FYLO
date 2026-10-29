@@ -8,9 +8,10 @@ use fylo_query::{IndexLookupValue, StructuredQuery, index_entries_for_document};
 use serde_json::{Map, Value};
 
 use super::super::{
-    CapturedAttribute, DocumentCodec, NativeWriteRoot, SqlMutationResult, SqlMutationResultKind,
-    WriteAccess, WriteActor, capture_attributes, deleted_document_path, json_error,
-    matching_documents, merge_top_level, next_meta_updated_at, record_target, require_write_access,
+    CapturedAttribute, DocumentCodec, DocumentPolicy, NativeWriteRoot, SqlMutationResult,
+    SqlMutationResultKind, WriteAccess, WriteActor, capture_attributes, deleted_document_path,
+    json_error, matching_documents, merge_top_level, next_meta_updated_at, record_target,
+    require_write_access,
 };
 use super::commit_plan::{CommitPlan, Ownership};
 use super::logged_writer::Planned;
@@ -199,17 +200,18 @@ impl NativeWriteRoot {
         collection: &NativeCollection,
         (query, changes): (&StructuredQuery, &Map<String, Value>),
         actor: Option<&WriteActor>,
-        codec: &dyn DocumentCodec,
+        policy: &DocumentPolicy<'_>,
     ) -> Result<SqlMutationResult, NativeStorageError> {
         self.commit_logged(collection, || {
+            policy.restart();
             let documents = matching_documents(collection, query, actor)?;
             let mut plan = CommitPlan::new("update-many");
             let mut identifiers = Vec::with_capacity(documents.len());
             for document in documents {
                 let stored = collection.read_document(&document.identifier)?;
-                let mut fields = codec.decode(&collection.name, document.fields)?;
+                let mut fields = policy.decode(&collection.name, document.fields)?;
                 merge_top_level(&mut fields, changes);
-                let canonical = codec.encode(&collection.name, fields)?;
+                let canonical = policy.encode(&collection.name, fields)?;
                 plan.index_delta(
                     &Self::document_keys(&document.identifier, &stored.bytes)?,
                     &Self::document_keys(&document.identifier, &canonical)?,
