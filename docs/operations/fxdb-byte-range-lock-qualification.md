@@ -103,9 +103,24 @@ It creates a 32 KiB scratch file in the directory and runs:
    counter must equal the number of entries the holders reported, so an
    overlap or a lost update fails the run.
 
-Add `--sync` to flush the data before each release, for runs where the
-processes are on different machines (spike 2). The exit status is 1 when any
-check fails. `cargo test -p fylo-storage-native` runs a two-second version.
+The exit status is 1 when any check fails. `cargo test -p fylo-storage-native`
+runs a two-second version.
+
+Across machines (spike 2), every machine runs part of the load on one shared
+file, with `--sync` so each holder flushes its data before releasing, and
+`--start-at` so they start together:
+
+```sh
+fylo-lock-harness prepare --file /Volumes/ATLAS/locktest.fxdb    # once
+fylo-lock-harness share --file /Volumes/ATLAS/locktest.fxdb --machines 2 --machine 0 \
+    --start-at 1793000000 --sync --json 0.json                   # machine 0
+fylo-lock-harness share --file <same file> --machines 2 --machine 1 \
+    --start-at 1793000000 --sync --json 1.json                   # machine 1
+fylo-lock-harness verify --file /Volumes/ATLAS/locktest.fxdb 0.json 1.json
+```
+
+`verify` sums every machine's entries and compares them with the counters in
+the file.
 
 ## Qualification
 

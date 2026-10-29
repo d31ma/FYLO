@@ -25,10 +25,18 @@ pub(crate) fn main() -> ExitCode {
             Ok(true)
         }
         Some("hold") => hold(&Options::parse(&args[1..])).map(|()| true),
+        Some("prepare") => prepare(&Options::parse(&args[1..])).map(|()| true),
+        Some("share") => share(&Options::parse(&args[1..])).map(|()| true),
+        Some("verify") => verify(&args[1..]),
         _ => {
             eprintln!(
                 "usage: fylo-lock-harness qualify --dir DIR [--procs N] [--threads N] \
-                 [--seconds N] [--writers N] [--sync] [--label NAME] [--json FILE]"
+                 [--seconds N] [--writers N] [--sync] [--label NAME] [--json FILE]\n       \
+                 fylo-lock-harness prepare --file FILE\n       \
+                 fylo-lock-harness share --file FILE --machines M --machine I \
+                 [--start-at UNIX_SECONDS] [--procs N] [--threads N] [--seconds N] \
+                 [--writers N] [--sync] [--json FILE]\n       \
+                 fylo-lock-harness verify --file FILE [--writers N] RESULT.json..."
             );
             return ExitCode::from(2);
         }
@@ -61,6 +69,9 @@ struct Options {
     duplicate_close: bool,
     foreign_close: bool,
     unlocked: bool,
+    machines: u64,
+    machine: u64,
+    start_at: Option<u64>,
 }
 
 impl Options {
@@ -70,6 +81,7 @@ impl Options {
             threads: 2,
             seconds: 10,
             writers: 4,
+            machines: 1,
             ..Self::default()
         };
         let mut args = args.iter();
@@ -93,6 +105,9 @@ impl Options {
                 "--duplicate-close" => options.duplicate_close = true,
                 "--foreign-close" => options.foreign_close = true,
                 "--unlocked" => options.unlocked = true,
+                "--machines" => options.machines = number(&value()),
+                "--machine" => options.machine = number(&value()),
+                "--start-at" => options.start_at = Some(number(&value())),
                 other => panic!("unknown flag {other}"),
             }
         }
@@ -629,6 +644,8 @@ fn run_load(options: &Options, path: &Path, seconds: u64, unlocked: bool) -> io:
             ("--threads", options.threads),
             ("--seconds", seconds),
             ("--writers", u64::from(options.writers)),
+            ("--machines", options.machines),
+            ("--machine", options.machine),
         ] {
             command.args([flag, &value.to_string()]);
         }
@@ -668,6 +685,103 @@ fn run_load(options: &Options, path: &Path, seconds: u64, unlocked: bool) -> io:
         lost,
         failed_workers,
     })
+}
+
+// ---------------------------------------------------------- across machines ---
+
+/// Zero the witness data of a file every machine will share.
+fn prepare(options: &Options) -> io::Result<()> {
+    std::fs::write(
+        options.file(),
+        vec![0; usize::try_from(FILE_BYTES).expect("small")],
+    )
+}
+
+/// Run this machine's share of a load on a file other machines also load.
+fn share(options: &Options) -> io::Result<()> {
+    let holders = options.machines * options.procs * options.threads;
+    if options.machine >= options.machines || holders == 0 || holders > MAX_HOLDERS {
+        return Err(io::Error::other(format!(
+            "need machine < machines and machines × procs × threads in 1..={MAX_HOLDERS}"
+        )));
+    }
+    if let Some(start_at) = options.start_at {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        std::thread::sleep(Duration::from_secs(start_at.saturating_sub(now)));
+    }
+    let run = run_load(options, options.file(), options.seconds, false)?;
+    let result = json!({
+        "machine": options.machine,
+        "os": std::env::consts::OS,
+        "acquired": run.totals.acquired,
+        "shared": run.totals.shared,
+        "violations": run.totals.violations,
+        "contended": run.totals.contended,
+        "timeouts": run.totals.timeouts,
+        "max_wait_us": run.totals.max_wait_us,
+        "errors": run.totals.errors,
+        "failed_workers": run.failed_workers,
+    });
+    println!("{result}");
+    if let Some(json_path) = &options.json {
+        std::fs::write(json_path, serde_json::to_vec_pretty(&result)?)?;
+    }
+    Ok(())
+}
+
+/// Check every machine's results against the counters in the shared file.
+fn verify(args: &[String]) -> io::Result<bool> {
+    let (flags, results): (Vec<&String>, Vec<&String>) = {
+        let mut flags = Vec::new();
+        let mut results = Vec::new();
+        let mut args = args.iter();
+        while let Some(arg) = args.next() {
+            if arg.starts_with("--") {
+                flags.push(arg);
+                flags.extend(args.next());
+            } else {
+                results.push(arg);
+            }
+        }
+        (flags, results)
+    };
+    let options = Options::parse(&flags.into_iter().cloned().collect::<Vec<_>>());
+    let mut totals = Totals::new(options.writers);
+    let mut failed_workers = 0;
+    for path in &results {
+        let value: Value = serde_json::from_slice(&std::fs::read(path)?)?;
+        totals.add(&value);
+        failed_workers += value["failed_workers"].as_u64().unwrap_or(1);
+    }
+    let file = File::open(options.file())?;
+    let mut lost = Vec::new();
+    for (index, byte) in slots(options.writers).iter().enumerate() {
+        let counted = read_u64(&file, SLOT_BYTES * index as u64 + 8)?;
+        if counted != totals.acquired[index] {
+            lost.push(format!(
+                "{byte}: file counted {counted}, holders {}",
+                totals.acquired[index]
+            ));
+        }
+    }
+    let exclusive: u64 = totals.acquired.iter().sum();
+    let passed = failed_workers == 0
+        && totals.violations == 0
+        && totals.errors.is_empty()
+        && lost.is_empty();
+    println!(
+        "{} {} machines: {exclusive} exclusive and {} shared entries, overlaps seen: {}, \
+         lost updates: {:?}, failed workers: {failed_workers}, errors: {:?}",
+        if passed { "PASSED" } else { "FAILED" },
+        results.len(),
+        totals.shared,
+        totals.violations,
+        lost,
+        totals.errors
+    );
+    Ok(passed)
 }
 
 struct Totals {
@@ -733,7 +847,8 @@ fn worker(options: &Options) {
     let errors: Vec<String> = std::thread::scope(|scope| {
         let threads: Vec<_> = (0..options.threads)
             .map(|thread| {
-                let holder = options.id * options.threads + thread;
+                let holder =
+                    (options.machine * options.procs + options.id) * options.threads + thread;
                 let counters = &counters;
                 scope.spawn(move || {
                     worker_thread(options, holder, deadline, counters).map_err(|e| e.to_string())
@@ -848,7 +963,7 @@ fn exclusive_section(
     hold_for: Duration,
 ) -> io::Result<u64> {
     let base = SLOT_BYTES * slot as u64;
-    let holders = options.procs * options.threads;
+    let holders = options.machines * options.procs * options.threads;
     let shared_inside = |file: &File| -> io::Result<u64> {
         let mut inside = 0;
         if lease {
