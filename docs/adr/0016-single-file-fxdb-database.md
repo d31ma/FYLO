@@ -62,7 +62,9 @@ that uses them:
 - buckets (raw-file collections), which need large-object extents that span
   more than one extent; a follow-up ADR;
 - document version control, for ADR 0015's reason;
-- the embedded queue (ADR 0009) and the `EfsSidecarV1` profile;
+- the embedded queue (ADR 0009). The `EfsSidecarV1` profile (ADR 0010) has no
+  `.fxdb` form and needs none: a `.fxdb` file uses no extended attributes or
+  hard links, which are what that profile works around;
 - transactions that span several collections. One file makes them possible
   (section 6), but they are a separate decision.
 
@@ -208,8 +210,8 @@ drifts toward the front of the file. Space is returned to the disk two ways:
   `FSCTL_SET_ZERO_DATA` on a sparse NTFS file. Support is probed at open on a
   free extent and remembered for the life of the handle; a failure only means
   the space is kept;
-- **tail truncation**, everywhere, including EFS (NFS 4.1 has no hole
-  punching): `fylo compact --shrink` relocates the live extents nearest the
+- **tail truncation**, on every filesystem, including those with no hole
+  punching (NFS 4.1, FAT, exFAT): `fylo compact --shrink` relocates the live extents nearest the
   end into free extents nearer the front, through the same copy, record and
   checkpoint steps, then truncates the file after the last owned extent.
 
@@ -225,10 +227,26 @@ drifts toward the front of the file. Space is returned to the disk two ways:
   on Linux, `fcntl` on macOS, `LockFileEx` on Windows. These replace the lock
   files and the `hard_link` path for `.fxdb` databases.
 - Byte-range locks are enabled on a filesystem only after the multi-process
-  load harness passes on it. Until then a `.fxdb` database on that
-  filesystem opens with an exclusive lease: one process at a time. The
-  qualification list starts with APFS and NTFS locally, the ATLAS SMB share,
-  and the local NFS 4.1 server.
+  load harness passes on it. The qualification list starts with APFS and NTFS
+  locally, the ATLAS SMB share, and the local NFS 4.1 server.
+- **Any other filesystem still works** (Samuel, 2026-10-29: FYLO must not
+  depend on EFS or any one filesystem). Where locks are unqualified, or the
+  filesystem refuses them (`ENOLCK`, `EOPNOTSUPP`), one process at a time
+  writes the database. It holds a lease file beside it, `<name>.fxdb.lease`,
+  made with exclusive create (`O_CREAT | O_EXCL`, `CREATE_NEW`), which every
+  filesystem FYLO targets honours. The lease names its owner and host and is
+  renewed on a heartbeat, so a crashed owner's lease can be taken over after
+  it expires. Other processes reach the database through `fylo serve`. The
+  file is deleted on a clean close.
+
+**Filesystem requirements.** A `.fxdb` database needs only positional reads
+and writes, resizing the file, flushing the file, and exclusive create for the
+fallback lease. It does not need atomic rename, directory flushes after
+creation, extended attributes, hard links, sparse files, hole punching or
+byte-range locks; each is used when present and probed, never assumed. On a
+filesystem without sparse files, growing by an extent writes its zeros. On
+FAT32, files stop at 4 GiB and growth past that fails with `EFBIG`; exFAT has
+no such limit.
 
 ### 8. Compression
 
@@ -363,7 +381,7 @@ Benefits:
 
 - a database is one file to copy, back up, mail or open in Explorer;
 - one open and one header read per database instead of several files per
-  collection, which is what matters on SMB and EFS;
+  collection, which is what matters on network filesystems;
 - JOINs read both collections from the same moment, through one handle;
 - the browser and mobile builds open databases with no bridge and no special
   hosting headers, in every browser;
