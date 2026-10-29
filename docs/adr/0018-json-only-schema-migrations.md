@@ -1,6 +1,6 @@
 # ADR 0018: JSON-only schema migrations
 
-- Status: **Proposed** (draft for Samuel's review, 2026-10-29)
+- Status: **Accepted** (Samuel, 2026-10-29)
 - Date: **2026-10-29**
 - Owners: **FYLO maintainers**
 - Amends: ADR 0017 section 5 (migrations), and the parts of sections 6 and 7
