@@ -65,7 +65,7 @@ fn file_length(path: &Path) -> u64 {
 fn a_new_container_opens_empty() {
     let (_guard, path) = created("fxdb-new");
     assert_eq!(file_length(&path), 3 * EXTENT_BYTES);
-    let container = ContainerFile::open(&path).expect("open container");
+    let container = ContainerFile::open_unchecked(&path).expect("open container");
     let superblock = container.superblock();
     assert_eq!(superblock.generation, 1);
     assert_eq!(superblock.extent_shift, SHIFT);
@@ -109,12 +109,12 @@ fn a_file_that_is_not_a_container_is_refused() {
     let (_guard, path) = database("fxdb-garbage");
     std::fs::write(&path, vec![0x5a_u8; 16 * 1024]).expect("write garbage");
     assert!(matches!(
-        ContainerFile::open(&path),
+        ContainerFile::open_unchecked(&path),
         Err(ContainerError::Format(ContainerFormatError::BadMagic))
     ));
     std::fs::write(&path, b"short").expect("write short file");
     assert!(matches!(
-        ContainerFile::open(&path),
+        ContainerFile::open_unchecked(&path),
         Err(ContainerError::Io(error)) if error.kind() == ErrorKind::UnexpectedEof
     ));
 }
@@ -123,7 +123,7 @@ fn a_file_that_is_not_a_container_is_refused() {
 fn collections_and_their_slots_survive_reopening() {
     let (_guard, path) = created("fxdb-collections");
     {
-        let mut container = ContainerFile::open(&path).expect("open container");
+        let mut container = ContainerFile::open_unchecked(&path).expect("open container");
         let users = container
             .add_collection("users", b"{\"schema\":1}")
             .expect("add users")
@@ -151,7 +151,7 @@ fn collections_and_their_slots_survive_reopening() {
         container.sync().expect("sync");
         assert!(container.publish_generation(9, generation(1, 0)).is_err());
     }
-    let container = ContainerFile::open(&path).expect("reopen container");
+    let container = ContainerFile::open_unchecked(&path).expect("reopen container");
     let collections = container.collections();
     assert_eq!(collections.len(), 2);
     assert_eq!(collections[0].header.name, "users");
@@ -169,7 +169,7 @@ fn collections_and_their_slots_survive_reopening() {
 fn a_torn_generation_slot_falls_back_to_the_other() {
     let (_guard, path) = created("fxdb-torn-slot");
     let block = {
-        let mut container = ContainerFile::open(&path).expect("open container");
+        let mut container = ContainerFile::open_unchecked(&path).expect("open container");
         let block = container.add_collection("users", b"").expect("add").block;
         container
             .publish_generation(block, generation(1, 10))
@@ -190,7 +190,7 @@ fn a_torn_generation_slot_falls_back_to_the_other() {
     let at = usize::try_from(slot_b).expect("offset") + 9;
     bytes[at] ^= 0xff;
     std::fs::write(&path, &bytes).expect("tear slot");
-    let container = ContainerFile::open(&path).expect("reopen container");
+    let container = ContainerFile::open_unchecked(&path).expect("reopen container");
     assert_eq!(
         container.collections()[0].generation,
         Some(generation(1, 10))
@@ -200,7 +200,7 @@ fn a_torn_generation_slot_falls_back_to_the_other() {
 #[test]
 fn payloads_stay_inside_their_extent() {
     let (_guard, path) = created("fxdb-payload");
-    let mut container = ContainerFile::open(&path).expect("open container");
+    let mut container = ContainerFile::open_unchecked(&path).expect("open container");
     let segment = container.allocate(SEGMENT, 1).expect("allocate");
     assert_eq!((segment.index, segment.grows_file), (3, true));
     assert_eq!(file_length(&path), 4 * EXTENT_BYTES);
@@ -235,7 +235,7 @@ fn payloads_stay_inside_their_extent() {
 fn a_checkpoint_persists_the_extent_map() {
     let (_guard, path) = created("fxdb-checkpoint");
     let (first, second) = {
-        let mut container = ContainerFile::open(&path).expect("open container");
+        let mut container = ContainerFile::open_unchecked(&path).expect("open container");
         let first = container.allocate(SEGMENT, 1).expect("allocate");
         let second = container.allocate(SEGMENT, 1).expect("allocate");
         container.seal(first.index, 4096).expect("seal");
@@ -250,7 +250,7 @@ fn a_checkpoint_persists_the_extent_map() {
         );
         (first, second)
     };
-    let mut container = ContainerFile::open(&path).expect("reopen container");
+    let mut container = ContainerFile::open_unchecked(&path).expect("reopen container");
     let superblock = container.superblock().clone();
     assert_eq!(superblock.generation, 2);
     assert_eq!(superblock.extent_count, 6);
@@ -272,7 +272,7 @@ fn a_checkpoint_persists_the_extent_map() {
 #[test]
 fn a_released_extent_is_reused_only_after_a_checkpoint() {
     let (_guard, path) = created("fxdb-release");
-    let mut container = ContainerFile::open(&path).expect("open container");
+    let mut container = ContainerFile::open_unchecked(&path).expect("open container");
     let replaced = container.allocate(SEGMENT, 1).expect("allocate");
     container.seal(replaced.index, 0).expect("seal");
     container.release(replaced.index).expect("release");
@@ -287,7 +287,7 @@ fn a_released_extent_is_reused_only_after_a_checkpoint() {
 fn a_torn_superblock_falls_back_to_the_older_copy() {
     let (_guard, path) = created("fxdb-torn-superblock");
     {
-        let mut container = ContainerFile::open(&path).expect("open container");
+        let mut container = ContainerFile::open_unchecked(&path).expect("open container");
         container.allocate(SEGMENT, 1).expect("allocate");
         container
             .checkpoint()
@@ -301,7 +301,7 @@ fn a_torn_superblock_falls_back_to_the_older_copy() {
     let mut bytes = std::fs::read(&path).expect("read container");
     bytes[100] ^= 0xff;
     std::fs::write(&path, &bytes).expect("tear copy A");
-    let container = ContainerFile::open(&path).expect("reopen container");
+    let container = ContainerFile::open_unchecked(&path).expect("reopen container");
     let superblock = container.superblock();
     // Copy B still names the map it was written with, which the second
     // checkpoint released but did not overwrite.
@@ -314,7 +314,7 @@ fn a_torn_superblock_falls_back_to_the_older_copy() {
 #[test]
 fn checkpoints_alternate_between_the_superblock_copies() {
     let (_guard, path) = created("fxdb-alternate");
-    let mut container = ContainerFile::open(&path).expect("open container");
+    let mut container = ContainerFile::open_unchecked(&path).expect("open container");
     for expected in 2..=6 {
         container.checkpoint().expect("checkpoint");
         assert_eq!(container.superblock().generation, expected);
@@ -330,7 +330,7 @@ fn checkpoints_alternate_between_the_superblock_copies() {
 }
 
 fn released_tail(path: &Path) -> ContainerFile {
-    let mut container = ContainerFile::open(path).expect("open container");
+    let mut container = ContainerFile::open_unchecked(path).expect("open container");
     let kept = container.allocate(SEGMENT, 1).expect("allocate");
     container
         .write_payload(kept.index, 0, b"kept")
@@ -365,7 +365,7 @@ fn shrinking_cuts_free_extents_off_the_end() {
     );
     assert_eq!(file_length(&path), 5 * EXTENT_BYTES);
     drop(container);
-    let container = ContainerFile::open(&path).expect("reopen container");
+    let container = ContainerFile::open_unchecked(&path).expect("reopen container");
     assert_eq!(container.superblock().extent_count, 5);
     let mut kept = [0_u8; 4];
     container
@@ -392,7 +392,7 @@ fn an_older_superblock_that_outlives_a_shrink_still_opens() {
     };
     bytes[newest_at + 100] ^= 0xff;
     std::fs::write(&path, &bytes).expect("tear newest copy");
-    let container = ContainerFile::open(&path).expect("open on the older copy");
+    let container = ContainerFile::open_unchecked(&path).expect("open on the older copy");
     assert_eq!(container.superblock().extent_count, 8);
     assert_eq!(file_length(&path), 8 * EXTENT_BYTES);
 }
@@ -441,4 +441,59 @@ fn the_report_says_plainly_that_encryption_is_off() {
         json["collections"][0]["checkpointLsn"],
         serde_json::Value::Null
     );
+}
+
+#[test]
+fn a_reader_reads_a_read_only_file_and_cannot_write() {
+    let (_guard, path) = created("fxdb-reader");
+    {
+        let mut container = ContainerFile::open_unchecked(&path).expect("open container");
+        container.add_collection("users", b"").expect("add");
+        let segment = container.allocate(SEGMENT, 1).expect("allocate");
+        container
+            .write_payload(segment.index, 0, b"hello")
+            .expect("write");
+        container.checkpoint().expect("checkpoint");
+    }
+    let mut permissions = std::fs::metadata(&path).expect("stat").permissions();
+    permissions.set_readonly(true);
+    std::fs::set_permissions(&path, permissions).expect("make read-only");
+    let mut reader = ContainerFile::open_reader(&path).expect("open to read");
+    assert!(!reader.is_writable());
+    assert_eq!(reader.collections()[0].header.name, "users");
+    let mut hello = [0_u8; 5];
+    reader.read_payload(3, 0, &mut hello).expect("read");
+    assert_eq!(&hello, b"hello");
+    assert!(matches!(
+        reader.allocate(SEGMENT, 1),
+        Err(ContainerError::ReadOnly)
+    ));
+    assert!(matches!(reader.checkpoint(), Err(ContainerError::ReadOnly)));
+    assert!(matches!(
+        reader.add_collection("orders", b""),
+        Err(ContainerError::ReadOnly)
+    ));
+    assert_eq!(
+        reader
+            .write_payload(3, 0, b"x")
+            .expect_err("read-only")
+            .kind(),
+        ErrorKind::PermissionDenied
+    );
+}
+
+#[test]
+fn a_reader_opens_a_file_a_writer_may_not() {
+    let (_guard, path) = created("fxdb-reader-ro-compat");
+    let mut bytes = std::fs::read(&path).expect("read container");
+    let size = ContainerSuperblock::ENCODED_BYTES;
+    let mut superblock = ContainerSuperblock::decode(&bytes[..size]).expect("decode");
+    superblock.read_only_compat = ContainerSuperblock::READ_ONLY_COMPAT_SCHEMAS;
+    bytes[..size].copy_from_slice(&superblock.encode());
+    std::fs::write(&path, &bytes).expect("write flag");
+    assert!(matches!(
+        ContainerFile::open_unchecked(&path),
+        Err(ContainerError::ReadOnly)
+    ));
+    ContainerFile::open_reader(&path).expect("a reader still opens it");
 }

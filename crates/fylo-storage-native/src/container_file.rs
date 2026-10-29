@@ -145,6 +145,7 @@ pub(crate) type Handle = File;
 #[derive(Debug)]
 pub struct ContainerFile {
     handle: Handle,
+    writable: bool,
     superblock: ContainerSuperblock,
     superblock_in_a: bool,
     allocator: ContainerExtentAllocator,
@@ -210,7 +211,10 @@ impl ContainerFile {
         Ok(())
     }
 
-    /// Open an existing container for reading and writing.
+    /// Open an existing container for reading and writing, with no
+    /// coordination with other writers: for a host that coordinates them
+    /// itself, as the browser does with a Web Lock, and for tests. Natively,
+    /// use [`Self::open_writer`].
     ///
     /// # Errors
     ///
@@ -218,17 +222,33 @@ impl ContainerFile {
     /// superblocks, map or directory, `Allocator(InconsistentMap)` when the
     /// map does not describe the file, and `ReadOnly` for a file this build
     /// may only read.
-    pub fn open(path: &Path) -> Result<Self, ContainerError> {
+    pub fn open_unchecked(path: &Path) -> Result<Self, ContainerError> {
         #[cfg(not(target_family = "wasm"))]
         let handle = crate::ByteRangeLockFile::open(path)?;
         #[cfg(target_family = "wasm")]
         let handle = OpenOptions::new().read(true).write(true).open(path)?;
-        Self::from_handle(handle)
+        Self::from_handle(handle, true)
     }
 
-    pub(crate) fn from_handle(handle: Handle) -> Result<Self, ContainerError> {
+    /// Open a container to read. It takes no lock and is never blocked by
+    /// writers; it works on read-only files and mounts, and on sealed files.
+    /// Every write fails with `ReadOnly`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the open or read failure, or a decoding error.
+    pub fn open_reader(path: &Path) -> Result<Self, ContainerError> {
+        #[cfg(not(target_family = "wasm"))]
+        let handle = crate::ByteRangeLockFile::open_read_only(path)?;
+        #[cfg(target_family = "wasm")]
+        let handle = OpenOptions::new().read(true).open(path)?;
+        Self::from_handle(handle, false)
+    }
+
+    pub(crate) fn from_handle(handle: Handle, writable: bool) -> Result<Self, ContainerError> {
         let mut container = Self {
             handle,
+            writable,
             superblock: placeholder_superblock(),
             superblock_in_a: true,
             allocator: ContainerExtentAllocator::new(1),
@@ -240,7 +260,7 @@ impl ContainerFile {
             &copies[..ContainerSuperblock::ENCODED_BYTES],
             &copies[ContainerSuperblock::ENCODED_BYTES..],
         )?;
-        if superblock.requires_read_only() {
+        if writable && superblock.requires_read_only() {
             return Err(ContainerError::ReadOnly);
         }
         container.superblock = superblock;
@@ -250,7 +270,7 @@ impl ContainerFile {
         // An older superblock copy can describe more extents than a later
         // shrink left in the file; give them back their zeros.
         let required = container.allocator.extent_count() * container.extent_bytes();
-        if container.file().metadata()?.len() < required {
+        if writable && container.file().metadata()?.len() < required {
             container.file().set_len(required)?;
         }
         Ok(container)
@@ -264,6 +284,20 @@ impl ContainerFile {
         #[cfg(target_family = "wasm")]
         {
             &self.handle
+        }
+    }
+
+    /// Whether this open may write.
+    #[must_use]
+    pub fn is_writable(&self) -> bool {
+        self.writable
+    }
+
+    fn require_writable(&self) -> Result<(), ContainerError> {
+        if self.writable {
+            Ok(())
+        } else {
+            Err(ContainerError::ReadOnly)
         }
     }
 
@@ -328,6 +362,12 @@ impl ContainerFile {
     /// Returns `InvalidInput` for a range outside the extent, or the write
     /// failure.
     pub fn write_payload(&self, extent: u64, offset: u64, bytes: &[u8]) -> io::Result<()> {
+        if !self.writable {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "container is open to read",
+            ));
+        }
         let at = self.payload_offset(extent, offset, bytes.len())?;
         write_all_at(self.file(), bytes, at)
     }
@@ -373,6 +413,7 @@ impl ContainerFile {
         kind: ContainerExtentKind,
         owner: u32,
     ) -> Result<ContainerExtentAllocation, ContainerError> {
+        self.require_writable()?;
         let allocation = self.allocator.allocate(kind, owner);
         if allocation.grows_file {
             self.file()
@@ -388,6 +429,7 @@ impl ContainerFile {
     ///
     /// Returns `Allocator` when the extent is not in use.
     pub fn seal(&mut self, extent: u64, live_bytes: u64) -> Result<(), ContainerError> {
+        self.require_writable()?;
         Ok(self.allocator.seal(extent, live_bytes)?)
     }
 
@@ -398,6 +440,7 @@ impl ContainerFile {
     ///
     /// Returns `Allocator` when the extent is not in use.
     pub fn release(&mut self, extent: u64) -> Result<(), ContainerError> {
+        self.require_writable()?;
         Ok(self.allocator.release(extent)?)
     }
 
@@ -412,6 +455,7 @@ impl ContainerFile {
         name: &str,
         descriptor: &[u8],
     ) -> Result<&ContainerCollection, ContainerError> {
+        self.require_writable()?;
         if self
             .collections
             .iter()
@@ -465,6 +509,7 @@ impl ContainerFile {
         block: u32,
         slot: ContainerGenerationSlot,
     ) -> Result<(), ContainerError> {
+        self.require_writable()?;
         let directory = self.superblock.directory_extent;
         let at =
             self.slot_pair_offset(block, ContainerCollectionHeader::GENERATION_SLOTS_OFFSET)?;
@@ -493,6 +538,7 @@ impl ContainerFile {
         block: u32,
         slot: ContainerCheckpointSlot,
     ) -> Result<(), ContainerError> {
+        self.require_writable()?;
         let directory = self.superblock.directory_extent;
         let at =
             self.slot_pair_offset(block, ContainerCollectionHeader::CHECKPOINT_SLOTS_OFFSET)?;
@@ -522,6 +568,7 @@ impl ContainerFile {
     ///
     /// Returns the write, resize or flush failure.
     pub fn checkpoint(&mut self) -> Result<(), ContainerError> {
+        self.require_writable()?;
         let old_first = self.superblock.map_first_extent;
         for extent in old_first..old_first + u64::from(self.superblock.map_extent_count) {
             self.allocator.release(extent)?;
@@ -591,6 +638,7 @@ impl ContainerFile {
     ///
     /// Returns the checkpoint or resize failure.
     pub fn shrink_free_tail(&mut self) -> Result<u64, ContainerError> {
+        self.require_writable()?;
         let before = self.file().metadata()?.len();
         if self.allocator.truncate_free_tail() == self.superblock.extent_count {
             return Ok(0);
@@ -613,6 +661,7 @@ impl ContainerFile {
     ///
     /// Returns a failure other than the filesystem not supporting it.
     pub fn punch_free_extents(&self) -> Result<u64, ContainerError> {
+        self.require_writable()?;
         let mut punched = 0;
         for extent in self.allocator.free_extents() {
             if !punch_hole(

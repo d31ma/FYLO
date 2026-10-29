@@ -77,7 +77,7 @@ fn an_exclusive_writer_keeps_every_other_writer_out() {
         ));
     }
     // Readers are never kept out.
-    ContainerFile::open(&path).expect("reader");
+    ContainerFile::open_reader(&path).expect("reader");
     drop(access);
     let (_next, next) = ContainerFile::open_writer(&path, QUICK).expect("after release");
     if qualified_here(&path) {

@@ -128,7 +128,7 @@ impl ContainerFile {
             handle.set_process_local(true);
             ContainerWriteAccess::Lease { lease, lease_byte }
         };
-        Ok((Self::from_handle(handle)?, access))
+        Ok((Self::from_handle(handle, true)?, access))
     }
 }
 
