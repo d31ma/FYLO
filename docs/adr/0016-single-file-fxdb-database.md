@@ -254,7 +254,17 @@ drifts toward the front of the file. Space is returned to the disk two ways:
   second writer waits for the lease up to its busy timeout (5 s by default,
   as SQLite's `busy_timeout`) and then fails with `EBUSY`; a process can also
   open the file read-only and never ask for it. A crashed writer holds up
-  other writers for the takeover time, never readers.
+  other writers for the takeover time, never readers; a lease last written
+  more than twice the takeover time ago, by its writer's clock, is taken over
+  at once.
+- **Choosing the mode.** A writer uses byte-range locks when its filesystem
+  is qualified and grants a probe lock, and the lease otherwise. A caller can
+  also ask for **exclusive mode**, the lease everywhere, as SQLite's
+  `locking_mode=EXCLUSIVE`. The modes exclude each other: a lease writer
+  whose filesystem grants locks at all also holds the lease byte exclusive,
+  and a lock writer waits while any lease is held, taking over one a crash
+  left. Unsupported: one host whose filesystem refuses every lock sharing a
+  file with another host that writes through locks.
 
 **Filesystem requirements.** A `.fxdb` database needs only positional reads
 and writes, resizing the file, flushing the file, and exclusive create for the

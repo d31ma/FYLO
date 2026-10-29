@@ -20,6 +20,10 @@
 //! only grow: a contender that decided on generation `n + 1` long ago can
 //! never create it after a later owner restarted the count.
 //!
+//! A lease last written longer ago than twice the takeover time, by the
+//! writer's own clock, is taken over at once: that much skew between hosts'
+//! clocks would be a fault of its own.
+//!
 //! What it cannot do is stop an owner that is paused between checking the
 //! lease and writing, then resumes after a takeover. The owner narrows that
 //! window by checking before every commit and renewing well inside the
@@ -129,6 +133,16 @@ impl ContainerLease {
                         Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
                         Err(error) => return Err(error.into()),
                         Ok(bytes) if is_free(&bytes) => Some(generation + 1),
+                        // Long past even a generous clock skew: no need to
+                        // watch it go unrenewed.
+                        Ok(bytes)
+                            if written_ms(&bytes).is_some_and(|written| {
+                                now_ms().saturating_sub(written)
+                                    > 2 * timing.takeover_after.as_millis()
+                            }) =>
+                        {
+                            Some(generation + 1)
+                        }
                         Ok(bytes) => {
                             let now = Instant::now();
                             match &observed {
@@ -200,6 +214,25 @@ impl ContainerLease {
         Ok(Some(lease))
     }
 
+    /// The generation of a lease some process holds on `database`, if the
+    /// newest lease is not marked free. It may belong to a crashed process.
+    ///
+    /// # Errors
+    ///
+    /// Returns a filesystem failure.
+    pub fn held_generation(database: &Path) -> io::Result<Option<u64>> {
+        let (directory, prefix) = lease_location(database)?;
+        let Some(generation) = generations(&directory, &prefix)?.last().copied() else {
+            return Ok(None);
+        };
+        match fs::read(directory.join(format!("{prefix}{generation}"))) {
+            Ok(bytes) if is_free(&bytes) => Ok(None),
+            Ok(_) => Ok(Some(generation)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
     /// This lease's generation; a takeover always raises it.
     #[must_use]
     pub fn generation(&self) -> u64 {
@@ -236,11 +269,12 @@ impl ContainerLease {
     fn write_state(&mut self, state: &str) -> Result<(), ContainerLeaseError> {
         // Fixed width, so a rewrite never leaves a longer old tail behind.
         let body = format!(
-            "{{\"format\":\"{FORMAT}\",\"state\":\"{state}\",\"generation\":{:20},\"owner\":\"{}\",\"pid\":{:10},\"beat\":{:20}}}\n",
+            "{{\"format\":\"{FORMAT}\",\"state\":\"{state}\",\"generation\":{:20},\"owner\":\"{}\",\"pid\":{:10},\"beat\":{:20},\"written_ms\":{:20}}}\n",
             self.generation,
             self.owner,
             std::process::id(),
             self.beat,
+            now_ms(),
         );
         let mut file = &self.file;
         io::Seek::seek(&mut file, io::SeekFrom::Start(0))?;
@@ -271,6 +305,23 @@ impl Drop for ContainerLease {
             let _ = self.write_state(FREE);
         }
     }
+}
+
+fn now_ms() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis())
+}
+
+/// When the lease was last written, by its writer's clock.
+fn written_ms(bytes: &[u8]) -> Option<u128> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    let start = text.find("\"written_ms\":")? + "\"written_ms\":".len();
+    let digits = text[start..].trim_start();
+    let end = digits
+        .find(|character: char| !character.is_ascii_digit())
+        .unwrap_or(digits.len());
+    digits[..end].parse().ok()
 }
 
 const HELD: &str = "held";

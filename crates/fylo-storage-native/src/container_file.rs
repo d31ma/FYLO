@@ -35,6 +35,11 @@ pub enum ContainerError {
     /// The file may only be read (sealed, or a read-only-compatible feature
     /// this build lacks).
     ReadOnly,
+    /// Other writers kept the file past the busy timeout (`EBUSY`).
+    Busy,
+    /// The single-writer lease refused or was lost.
+    #[cfg(not(target_family = "wasm"))]
+    Lease(crate::ContainerLeaseError),
 }
 
 impl std::fmt::Display for ContainerError {
@@ -46,6 +51,9 @@ impl std::fmt::Display for ContainerError {
             Self::CollectionExists => formatter.write_str("container collection already exists"),
             Self::DirectoryFull => formatter.write_str("container collection directory is full"),
             Self::ReadOnly => formatter.write_str("container may only be read"),
+            Self::Busy => formatter.write_str("container is busy with other writers"),
+            #[cfg(not(target_family = "wasm"))]
+            Self::Lease(error) => write!(formatter, "container lease: {error}"),
         }
     }
 }
@@ -83,13 +91,17 @@ pub struct ContainerCollection {
     pub checkpoint: Option<ContainerCheckpointSlot>,
 }
 
+/// The file under a container: natively the shared lock handle, which every
+/// open of the file in the process uses, and in WebAssembly the host file.
+#[cfg(not(target_family = "wasm"))]
+pub(crate) type Handle = crate::ByteRangeLockFile;
+#[cfg(target_family = "wasm")]
+pub(crate) type Handle = File;
+
 /// An open `.fxdb` container.
 #[derive(Debug)]
 pub struct ContainerFile {
-    #[cfg(not(target_family = "wasm"))]
-    handle: crate::ByteRangeLockFile,
-    #[cfg(target_family = "wasm")]
-    handle: File,
+    handle: Handle,
     superblock: ContainerSuperblock,
     superblock_in_a: bool,
     allocator: ContainerExtentAllocator,
@@ -168,6 +180,10 @@ impl ContainerFile {
         let handle = crate::ByteRangeLockFile::open(path)?;
         #[cfg(target_family = "wasm")]
         let handle = OpenOptions::new().read(true).write(true).open(path)?;
+        Self::from_handle(handle)
+    }
+
+    pub(crate) fn from_handle(handle: Handle) -> Result<Self, ContainerError> {
         let mut container = Self {
             handle,
             superblock: placeholder_superblock(),

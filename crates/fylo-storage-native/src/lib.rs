@@ -21,6 +21,8 @@ use sha2::{Digest, Sha256};
 mod beneath_open;
 #[cfg(not(target_family = "wasm"))]
 mod byte_range_lock;
+#[cfg(not(target_family = "wasm"))]
+mod container_access;
 mod container_allocator;
 mod container_cipher;
 mod container_codec;
@@ -48,6 +50,8 @@ pub use byte_range_lock::{
     ByteLockGuard, ByteRangeLockFile, COLLECTION_WRITER_START, FilesystemInfo, LOCK_RANGE_START,
     LockByte, LockMode, MAX_POLL_INTERVAL,
 };
+#[cfg(not(target_family = "wasm"))]
+pub use container_access::{ContainerWriteAccess, ContainerWriteOptions};
 pub use container_allocator::{
     ContainerAllocatorError, ContainerExtentAllocation, ContainerExtentAllocator,
     ContainerShrinkPlan,
