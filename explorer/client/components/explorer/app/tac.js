@@ -57,6 +57,46 @@ export function databaseWorkerUrl(
     return sharedAssetUrl('/shared/assets/fxdb-worker.js', build, origin)
 }
 
+/** The whole engine, run in that Worker over the file. @param {unknown} build @param {string} [origin] */
+export function databaseEngineUrl(
+    build,
+    origin = globalThis.location?.origin ?? 'https://fylo.invalid'
+) {
+    return sharedAssetUrl('/shared/assets/fylo-browser.wasm', build, origin)
+}
+
+/** The machine op that describes a `.fxdb` container without changing it. */
+export const FXDB_INSPECT_OP = 'inspectContainer'
+
+/**
+ * Turn the engine's container report into rows the view can loop over.
+ *
+ * @param {any} report the `result` of a successful inspect frame
+ */
+export function databaseReportRows(report) {
+    const extents = report?.extents ?? {}
+    const kinds = Object.entries(extents.byKind ?? {}).map(([kind, census]) => ({
+        kind,
+        extents: census.extents ?? 0,
+        sealed: census.sealed ?? 0,
+        liveBytes: census.liveBytes ?? 0
+    }))
+    return {
+        collections: (report?.collections ?? []).map((collection) => ({
+            name: String(collection.name),
+            id: collection.id,
+            records: collection.records ?? 0,
+            checkpoint: collection.checkpointLsn ?? null,
+            dropped: collection.dropped === true
+        })),
+        extents: [
+            ...kinds,
+            { kind: 'free', extents: extents.free ?? 0, sealed: 0, liveBytes: 0 },
+            { kind: 'released', extents: extents.released ?? 0, sealed: 0, liveBytes: 0 }
+        ]
+    }
+}
+
 function sharedAssetUrl(pathname, build, origin) {
     const base = new URL(origin)
     if (!/^https?:$/.test(base.protocol)) throw new Error('Invalid FYLO Explorer asset origin')
@@ -386,6 +426,12 @@ export default class {
     dbMagic = false
     dbProgress = ''
     dbMessage = ''
+    /** The engine's report of what the file holds, or null until it reads it. */
+    dbReport = null
+    /** @type {{ collections: any[], extents: any[] }} */
+    dbRows = { collections: [], extents: [] }
+    /** Why the engine could not read the file, when it could not. */
+    dbReportError = ''
 
     /** @type {{ name: string, handle: any }[]} */
     roots = []
@@ -874,7 +920,7 @@ export default class {
                 const { SingleFileDatabase } = await this.lib()
                 this._database = await SingleFileDatabase.open(
                     { kind: 'file', file },
-                    { workerUrl: databaseWorkerUrl(globalThis.__FYLO_BUILD) }
+                    this.databaseOpenOptions()
                 )
                 this._databaseFile = file
                 this._databaseHandle = handle ?? null
@@ -900,7 +946,7 @@ export default class {
                 this._database = await SingleFileDatabase.open(
                     { kind: 'opfs', name, copyFrom: file },
                     {
-                        workerUrl: databaseWorkerUrl(globalThis.__FYLO_BUILD),
+                        ...this.databaseOpenOptions(),
                         onProgress: ({ copied, total }) => {
                             this.dbProgress = `Copying… ${Math.floor((copied / Math.max(total, 1)) * 100)}%`
                         }
@@ -946,7 +992,7 @@ export default class {
                 const { SingleFileDatabase } = await this.lib()
                 this._database = await SingleFileDatabase.open(
                     { kind: 'opfs', name: copy.name },
-                    { workerUrl: databaseWorkerUrl(globalThis.__FYLO_BUILD) }
+                    this.databaseOpenOptions()
                 )
                 this._workingCopy = copy.name
                 await this.showDatabase(copy.name, 'copy')
@@ -981,7 +1027,17 @@ export default class {
         this._workingCopy = ''
         this.dbProgress = ''
         this.dbMessage = ''
+        this.dbReport = null
+        this.dbRows = { collections: [], extents: [] }
+        this.dbReportError = ''
         await open?.close().catch(() => {})
+    }
+
+    databaseOpenOptions() {
+        return {
+            workerUrl: databaseWorkerUrl(globalThis.__FYLO_BUILD),
+            moduleUrl: databaseEngineUrl(globalThis.__FYLO_BUILD)
+        }
     }
 
     async showDatabase(name, mode) {
@@ -992,7 +1048,35 @@ export default class {
         this.dbMode = mode
         this.dbMagic = hasFxdbMagic(await this._database.read(0, 8))
         this.dbMessage = ''
+        await this.inspectDatabase()
         this.status = 'database'
+    }
+
+    // Ask the engine what the file holds. It reads only the superblock, the
+    // extent map and the collection directory, so this is cheap even for a
+    // large file, and it never writes.
+    async inspectDatabase() {
+        this.dbReport = null
+        this.dbRows = { collections: [], extents: [] }
+        this.dbReportError = ''
+        if (!this._database) return
+        try {
+            const request = { op: FXDB_INSPECT_OP, root: this._database.info.path }
+            const answer = await this._database.exec(`${JSON.stringify(request)}\n`)
+            const frame = JSON.parse(answer.split('\n').find(Boolean) ?? '{}')
+            if (!frame.ok) {
+                this.dbReportError = frame.error?.message ?? 'the engine could not read this file'
+                return
+            }
+            this.dbReport = frame.result
+            this.dbRows = databaseReportRows(frame.result)
+        } catch (err) {
+            this.dbReportError = String(err?.message ?? err)
+        }
+    }
+
+    databaseFlag(value) {
+        return value ? 'yes' : 'no'
     }
 
     canOpenFolders() {

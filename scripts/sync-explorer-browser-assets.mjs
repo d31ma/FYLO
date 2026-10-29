@@ -11,7 +11,9 @@ for (const [from, to = from] of [
     ['shared.js'],
     ['dedicated.js'],
     ['fxdb-worker.js'],
-    ['fylo-index.wasm']
+    ['fylo-index.wasm'],
+    // The whole engine, which Explorer runs over a single .fxdb file.
+    ['fylo-browser.wasm']
 ]) {
     const output = new URL(to, destination)
     // Replace instead of copying over the prior artifact. File Provider roots
