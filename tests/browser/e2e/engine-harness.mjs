@@ -15,6 +15,7 @@ import {
     mkdtempSync,
     readFileSync,
     readdirSync,
+    realpathSync,
     rmSync,
     statSync
 } from 'node:fs'
@@ -47,9 +48,11 @@ export function nativeBinary() {
     return NATIVE
 }
 
-/** A fresh temporary directory for a native root. */
+/** A fresh temporary directory for a native root, by its real path. */
 export function nativeRoot(label) {
-    return mkdtempSync(join(tmpdir(), `fylo-e2e-${label}-`))
+    // The real path: macOS hands out /var/folders/..., which the engine
+    // reports as /private/var/folders/..., so a scrubbed root would differ.
+    return realpathSync(mkdtempSync(join(tmpdir(), `fylo-e2e-${label}-`)))
 }
 
 /**
