@@ -54,7 +54,7 @@ pub use byte_range_lock::{
 pub use container_access::{ContainerWriteAccess, ContainerWriteOptions};
 pub use container_allocator::{
     ContainerAllocatorError, ContainerExtentAllocation, ContainerExtentAllocator,
-    ContainerShrinkPlan,
+    ContainerExtentCensus, ContainerKindCensus, ContainerShrinkPlan,
 };
 pub use container_cipher::{
     ContainerCipher, ContainerCipherError, ContainerSealContext, KEY_CHECK_BYTES, NONCE_BYTES,
@@ -66,7 +66,9 @@ pub use container_codec::{
     ContainerCodecError, ContainerDictionary, ContainerEncodedBody, ContainerFrameCodec,
     DICTIONARY_TRAINING_BYTES, MAX_DICTIONARY_BYTES, ZSTD_SEALED_LEVEL, ZSTD_WRITE_LEVEL,
 };
-pub use container_file::{ContainerCollection, ContainerError, ContainerFile};
+pub use container_file::{
+    ContainerCollection, ContainerCollectionReport, ContainerError, ContainerFile, ContainerReport,
+};
 #[cfg(not(target_family = "wasm"))]
 pub use container_lease::{ContainerLease, ContainerLeaseError, ContainerLeaseTiming};
 pub use durability::Durability;

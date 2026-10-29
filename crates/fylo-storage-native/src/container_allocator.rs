@@ -50,6 +50,30 @@ pub struct ContainerShrinkPlan {
     pub extent_count: u64,
 }
 
+/// Extent counts by state and kind.
+#[derive(Clone, Debug, Default, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContainerExtentCensus {
+    /// Reusable extents.
+    pub free: u64,
+    /// Extents replaced since the last checkpoint, reusable after the next.
+    pub released: u64,
+    /// Extents in use, by kind name.
+    pub by_kind: std::collections::BTreeMap<&'static str, ContainerKindCensus>,
+}
+
+/// Extents of one kind.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContainerKindCensus {
+    /// Extents of this kind.
+    pub extents: u64,
+    /// How many of them are sealed.
+    pub sealed: u64,
+    /// Bytes the sealed ones still hold live.
+    pub live_bytes: u64,
+}
+
 /// Why an allocator operation was refused.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ContainerAllocatorError {
@@ -340,6 +364,33 @@ impl ContainerExtentAllocator {
             self.slots.pop();
         }
         self.extent_count()
+    }
+
+    /// How many extents are in each state, for `fylo inspect`.
+    #[must_use]
+    pub fn census(&self) -> ContainerExtentCensus {
+        let mut census = ContainerExtentCensus::default();
+        for slot in &self.slots[1..] {
+            match *slot {
+                Slot::Free => census.free += 1,
+                Slot::Released => census.released += 1,
+                Slot::InUse {
+                    kind,
+                    sealed,
+                    live_bytes,
+                    ..
+                } => {
+                    let entry = census.by_kind.entry(kind.name()).or_default();
+                    entry.extents += 1;
+                    if sealed {
+                        entry.sealed += 1;
+                        entry.live_bytes += live_bytes;
+                    }
+                }
+                Slot::Reserved => {}
+            }
+        }
+        census
     }
 
     /// Free extents, whose disk space may be returned by punching a hole.

@@ -91,6 +91,49 @@ pub struct ContainerCollection {
     pub checkpoint: Option<ContainerCheckpointSlot>,
 }
 
+/// What `fylo inspect` reports about a container. It reads only the
+/// superblock, map and directory, never a record.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContainerReport {
+    /// Always `fylo.fxdb`.
+    pub format: &'static str,
+    /// Superblock generation in force.
+    pub generation: u64,
+    /// Bytes per extent.
+    pub extent_bytes: u64,
+    /// Extents the map describes, including the superblock region.
+    pub extent_count: u64,
+    /// The file's length.
+    pub file_bytes: u64,
+    /// Whether records are encrypted. Off unless the database asked for it.
+    pub encrypted: bool,
+    /// Whether the file is a sealed, read-only pack.
+    pub sealed: bool,
+    /// Codecs some frame may use.
+    pub codecs: Vec<&'static str>,
+    /// Extents by state and kind.
+    pub extents: crate::ContainerExtentCensus,
+    /// The collections, in directory order.
+    pub collections: Vec<ContainerCollectionReport>,
+}
+
+/// One collection in a [`ContainerReport`].
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContainerCollectionReport {
+    /// Its name.
+    pub name: String,
+    /// Its id.
+    pub id: u32,
+    /// Whether it was dropped and awaits release.
+    pub dropped: bool,
+    /// Records committed, as its newest generation slot counts them.
+    pub records: u64,
+    /// The newest checkpoint's LSN, if it has checkpointed.
+    pub checkpoint_lsn: Option<u64>,
+}
+
 /// The file under a container: natively the shared lock handle, which every
 /// open of the file in the process uses, and in WebAssembly the host file.
 #[cfg(not(target_family = "wasm"))]
@@ -582,6 +625,47 @@ impl ContainerFile {
             punched += 1;
         }
         Ok(punched)
+    }
+
+    /// Describe the container for `fylo inspect`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the failure to read the file's length.
+    pub fn report(&self) -> Result<ContainerReport, ContainerError> {
+        let superblock = &self.superblock;
+        let mut codecs = Vec::new();
+        if superblock.incompat & ContainerSuperblock::INCOMPAT_CODEC_ZSTD != 0 {
+            codecs.push("zstd");
+        }
+        if superblock.incompat & ContainerSuperblock::INCOMPAT_CODEC_LZ4 != 0 {
+            codecs.push("lz4");
+        }
+        Ok(ContainerReport {
+            format: "fylo.fxdb",
+            generation: superblock.generation,
+            extent_bytes: self.extent_bytes(),
+            extent_count: superblock.extent_count,
+            file_bytes: self.file().metadata()?.len(),
+            encrypted: superblock.incompat & ContainerSuperblock::INCOMPAT_ENCRYPTED != 0,
+            sealed: superblock.is_sealed(),
+            codecs,
+            extents: self.allocator.census(),
+            collections: self
+                .collections
+                .iter()
+                .map(|collection| ContainerCollectionReport {
+                    name: collection.header.name.clone(),
+                    id: collection.header.id,
+                    dropped: collection.header.dropped,
+                    records: collection
+                        .generation
+                        .as_ref()
+                        .map_or(0, |slot| slot.record_count),
+                    checkpoint_lsn: collection.checkpoint.as_ref().map(|slot| slot.lsn),
+                })
+                .collect(),
+        })
     }
 
     fn directory_blocks(&self) -> u64 {

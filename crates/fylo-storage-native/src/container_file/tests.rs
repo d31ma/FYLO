@@ -415,3 +415,30 @@ fn punching_returns_free_extents_space_where_supported() {
     container.read_payload(3, 0, &mut kept).expect("read kept");
     assert_eq!(&kept, b"kept");
 }
+
+#[test]
+fn the_report_says_plainly_that_encryption_is_off() {
+    let (_guard, path) = created("fxdb-report");
+    let mut container = released_tail(&path);
+    let users = container.add_collection("users", b"").expect("add").block;
+    container
+        .publish_generation(users, generation(4, 400))
+        .expect("publish");
+    let report = container.report().expect("report");
+    assert!(!report.encrypted);
+    assert!(!report.sealed);
+    assert_eq!(report.extent_count, 8);
+    assert_eq!(report.file_bytes, 8 * EXTENT_BYTES);
+    assert_eq!(report.extents.free, 4);
+    assert_eq!(report.extents.by_kind["segment"].extents, 1);
+    assert_eq!(report.extents.by_kind["map"].extents, 1);
+    assert_eq!(report.collections[0].name, "users");
+    assert_eq!(report.collections[0].records, 4);
+    let json = serde_json::to_value(&report).expect("serialize");
+    assert_eq!(json["encrypted"], serde_json::Value::Bool(false));
+    assert_eq!(json["extents"]["byKind"]["directory"]["extents"], 1);
+    assert_eq!(
+        json["collections"][0]["checkpointLsn"],
+        serde_json::Value::Null
+    );
+}

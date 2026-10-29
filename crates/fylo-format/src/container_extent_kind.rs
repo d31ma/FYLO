@@ -31,6 +31,19 @@ impl ContainerExtentKind {
         }
     }
 
+    /// The kind's name in reports.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Directory => "directory",
+            Self::Segment => "segment",
+            Self::Dictionary => "dictionary",
+            Self::Locations => "locations",
+            Self::Index => "index",
+            Self::Map => "map",
+        }
+    }
+
     /// Decode a kind code.
     ///
     /// # Errors
