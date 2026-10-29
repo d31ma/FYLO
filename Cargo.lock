@@ -699,6 +699,7 @@ dependencies = [
 name = "fylo-storage-native"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm",
  "base64",
  "fylo-format",
  "fylo-query",
@@ -716,6 +717,7 @@ dependencies = [
  "sha2",
  "windows-sys 0.61.2",
  "xattr",
+ "zeroize",
  "zstd",
 ]
 

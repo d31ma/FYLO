@@ -22,6 +22,7 @@ mod beneath_open;
 #[cfg(not(target_family = "wasm"))]
 mod byte_range_lock;
 mod container_allocator;
+mod container_cipher;
 mod container_codec;
 mod container_file;
 #[cfg(not(target_family = "wasm"))]
@@ -50,6 +51,10 @@ pub use byte_range_lock::{
 pub use container_allocator::{
     ContainerAllocatorError, ContainerExtentAllocation, ContainerExtentAllocator,
     ContainerShrinkPlan,
+};
+pub use container_cipher::{
+    ContainerCipher, ContainerCipherError, ContainerSealContext, KEY_CHECK_BYTES, NONCE_BYTES,
+    SALT_BYTES, TAG_BYTES,
 };
 #[cfg(not(target_family = "wasm"))]
 pub use container_codec::train_dictionary;
