@@ -138,11 +138,12 @@ impl SchemaCountDelta {
         let mut components = relative.components();
         components.next() == Some(Component::Normal("docs".as_ref()))
             && relative
+                .extension()
+                .is_some_and(|extension| extension == "json")
+            && relative
                 .file_name()
                 .and_then(|name| name.to_str())
-                .is_some_and(|name| {
-                    name.ends_with(".json") && !name.ends_with(crate::SIDECAR_SUFFIX)
-                })
+                .is_some_and(|name| !name.ends_with(crate::SIDECAR_SUFFIX))
     }
 }
 
@@ -233,15 +234,31 @@ impl NativeCollection {
             return directory.join("counts.json");
         }
         let digest = Sha256::digest(worktree.to_string_lossy().as_bytes());
-        let name: String = digest[..8]
+        let name = digest[..8]
             .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect();
+            .fold(String::with_capacity(16), |mut name, byte| {
+                use std::fmt::Write as _;
+                let _ = write!(name, "{byte:02x}");
+                name
+            });
         directory.join(format!("counts.{name}.json"))
     }
 }
 
 impl NativeWriteRoot {
+    /// Drop the counts of each existing collection in `names`.
+    pub(crate) fn invalidate_schema_counts_of<'a>(
+        &self,
+        names: impl IntoIterator<Item = &'a str>,
+    ) -> Result<(), NativeStorageError> {
+        for name in names {
+            if let Ok(handle) = self.root.collection(name) {
+                Self::invalidate_schema_counts(&handle)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Count `collection` by scan under its lock, after recovery, and record
     /// the count at its current generation.
     ///

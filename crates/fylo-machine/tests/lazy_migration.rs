@@ -68,7 +68,7 @@ impl Fixture {
         fixture
     }
 
-    fn put_both(&self, runtime: &InvocationRuntime) {
+    fn put_both(runtime: &InvocationRuntime) {
         success(
             runtime,
             &put(ADA, &json!({"fullName":"Ada Lovelace","ssn":"42"})),
@@ -208,7 +208,7 @@ fn registry_documents_read_query_and_write_in_the_head_shape_until_they_converge
     let fixture = Fixture::new();
     let runtime = fixture.runtime();
     success(&runtime, &json!({"op":"schemaPush","collection":PEOPLE}));
-    fixture.put_both(&runtime);
+    Fixture::put_both(&runtime);
     fixture.add_v2();
     success(&runtime, &json!({"op":"schemaPush","collection":PEOPLE}));
 
@@ -300,7 +300,7 @@ fn registry_documents_read_query_and_write_in_the_head_shape_until_they_converge
 fn folder_documents_read_in_the_head_shape_and_converge_by_migration() {
     let fixture = Fixture::new();
     let runtime = fixture.runtime();
-    fixture.put_both(&runtime);
+    Fixture::put_both(&runtime);
     fixture.add_v2();
 
     let runtime = fixture.runtime();
