@@ -73,18 +73,11 @@ impl Fixture {
         .unwrap();
     }
 
-    fn create_collection(&self, engine: &WriteEngine) {
-        engine
-            .writer
-            .create_collection(COLLECTION, CollectionKind::Document, None)
-            .unwrap();
-    }
-
     /// Author `chex`, create the collection and push it into the registry.
     fn pushed(&self, chex: &Value) -> WriteEngine {
         self.author(chex);
         let engine = self.engine();
-        self.create_collection(&engine);
+        create_collection(&engine);
         engine.schema_push(COLLECTION, None, None).unwrap();
         engine
     }
@@ -113,6 +106,13 @@ impl Drop for Fixture {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.parent);
     }
+}
+
+fn create_collection(engine: &WriteEngine) {
+    engine
+        .writer
+        .create_collection(COLLECTION, CollectionKind::Document, None)
+        .unwrap();
 }
 
 fn corpus_fixture(name: &str) -> Value {
@@ -333,7 +333,7 @@ fn a_schema_only_in_the_folder_is_unavailable() {
     let fixture = Fixture::new();
     fixture.author(&json!({ "name": "^[a-z]+$" }));
     let engine = fixture.engine();
-    fixture.create_collection(&engine);
+    create_collection(&engine);
     assert!(unavailable(&engine).contains("no schema registry"));
 
     // A flat `<collection>.schema.json` is a schema too.
@@ -351,7 +351,7 @@ fn a_schema_only_in_the_folder_is_unavailable() {
 fn a_collection_without_a_schema_needs_no_validator() {
     let fixture = Fixture::new();
     let engine = fixture.engine();
-    fixture.create_collection(&engine);
+    create_collection(&engine);
     engine.require_stored_validator(COLLECTION).unwrap();
     drop(engine);
     // Nor does one opened without any folder.
@@ -367,7 +367,7 @@ fn a_recorded_validation_mode_without_a_registry_is_unavailable() {
 
     let fixture = Fixture::new();
     let engine = WriteEngine::open(fixture.root()).unwrap();
-    fixture.create_collection(&engine);
+    create_collection(&engine);
     // A browser has no `fylo.schema` folder to look in, but a collection
     // whose descriptor asks for validation is meant to have a schema.
     for mode in [ValidationMode::Strict, ValidationMode::Warn] {
