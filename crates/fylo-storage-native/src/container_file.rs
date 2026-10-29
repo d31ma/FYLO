@@ -22,6 +22,7 @@ use crate::{ContainerCipher, ContainerCipherError, ContainerSealContext};
 
 mod punch;
 use punch::punch_hole;
+mod snapshot;
 
 /// Why a container operation failed.
 #[derive(Debug)]
