@@ -650,6 +650,7 @@ fn invocation_retains_host_storage_schema_credentials_and_published_frame_limits
         },
         schema: Some(schema.clone()),
         credentials: Some((FIXTURE_KEY.into(), "fixture-salt".into())),
+        hot_set_bytes: None,
     };
     let limits = FrameLimits {
         max_request_bytes: 8192,

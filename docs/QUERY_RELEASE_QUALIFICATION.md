@@ -535,7 +535,12 @@ bounded multi-process load (30 s) committed 1,297 writes, served 18,458
 coherent reads, and passed all 100 settled checks with no lost writes or
 duplicate owners.
 
-## Hot set in fylo serve, 2026-10-28
+## Hot set, 2026-10-28 (measured in the since-removed fylo serve)
+
+`fylo serve` was removed on 2026-10-29: FYLO is embedded, and the hot set now
+runs in sessions that hold the root's exclusive lease
+(`exec --loop --exclusive-root`), where reads run one at a time. The numbers
+below are kept as measured.
 
 **Change.** `fylo serve` keeps parsed documents, index snapshots, id lists and
 collection headers in memory under a byte budget (ADR 0014, default 64 MiB).
@@ -577,7 +582,8 @@ investigated further, because the hot set is on by default.
 
 **From the Surface.** The Surface is on Wi-Fi. Each sample is paired with an
 empty round trip (`handshake`) taken just before it, reported as RTT. 100
-samples (30 for broad), two runs each, p50.
+samples (30 for broad), two runs each, p50. These times include a network hop
+to `fylo serve` that no longer exists; an embedded app does not pay it.
 
 | Read (p50, ms) | Before | RTT | Hot set off | RTT | Hot set on | RTT |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -596,8 +602,8 @@ the hot set, took 39–64 ms on the image and 212–298 ms on the raw share
 14.8 s and did not repeat.
 
 **Concurrency and budget.** `crates/fylo-machine/tests/hot_set_server.rs`
-runs four rounds of three readers and two writers over TCP and checks every
-row for coherence and for going backwards, and every acknowledged write with a
+ran, over TCP at the time, four rounds of three readers and two writers and
+checked every row for coherence and for going backwards, and every acknowledged write with a
 settled `getDoc` and `findDocs` on another connection: 768 settled checks, no
 stale or incoherent row, also under a 4 KiB budget. On the real binary, six
 readers and one writer ran for 30 s against the image root, sampling the hot

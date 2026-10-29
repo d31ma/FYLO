@@ -1,17 +1,14 @@
-use std::sync::Arc;
-
-use fylo_engine::HotSet;
 use fylo_storage_native::{RootLease, RootOpenOptions};
 
 use crate::{ApplicationConfig, FrameLimits, FrameOutcome, RequestFrame, Session};
 
-/// A persistent machine session that a network server drives one frame at a
-/// time.
+/// A persistent machine session that the host drives one frame at a time.
 ///
 /// It is the `exec --loop --exclusive-root` session over a root lease the
-/// server already holds, so it keeps its query cursors between frames.
-/// Frames come from a network client, which cannot name another root or a
-/// host path or URL.
+/// host already holds, for a host that reads frames from its own transport.
+/// It keeps its query cursors between frames and, unless the application's
+/// hot-set budget is zero, answers warm reads from memory. Frames run as the
+/// host, exactly as they would on `exec --loop`.
 pub struct FrameSession {
     session: Session,
     open: bool,
@@ -25,21 +22,11 @@ impl FrameSession {
     #[must_use]
     pub fn open(lease: RootLease, application: ApplicationConfig, limits: FrameLimits) -> Self {
         let options = RootOpenOptions::new(lease.root()).with_lease(lease);
-        let mut session = Session::open(Some(options), application, (limits, true, true));
-        session.remote = true;
+        let session = Session::open(Some(options), application, (limits, true, true));
         Self {
             session,
             open: true,
         }
-    }
-
-    /// Answer reads from `hot_set`, which every session of one server shares.
-    ///
-    /// The server must clear it around every frame that may write.
-    #[must_use]
-    pub fn with_hot_set(mut self, hot_set: Arc<HotSet>) -> Self {
-        self.session.hot_set = Some(hot_set);
-        self
     }
 
     /// The largest request frame this session accepts.

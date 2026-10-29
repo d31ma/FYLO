@@ -634,6 +634,8 @@ function normalizeHandshake(value) {
     // are built in now, which the schemaValidation capability reports instead.
     delete normalized.dependencies
     delete normalized.capabilities?.schemaValidation
+    // The hot set (ADR 0014) is newer than every released build.
+    delete normalized.capabilities?.hotSet
     return normalized
 }
 

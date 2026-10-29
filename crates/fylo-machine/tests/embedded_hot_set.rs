@@ -1,18 +1,20 @@
-//! `fylo serve` with a hot set: concurrent readers and writers never see an
+//! The hot set in an embedded session that holds the root's exclusive
+//! lease: clients of an application server that embeds FYLO never see an
 //! incoherent or stale settled row, warm reads come from memory, and the
 //! resident bytes stay within the budget under load.
 
-use std::io::{BufRead, BufReader, Write};
+mod support;
+
+use std::io::{BufRead, BufReader, Cursor, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use fylo_machine::{ApplicationConfig, MachineServer, ServeOptions, ServeToken, ServerHandle};
+use fylo_machine::{ApplicationConfig, FrameLimits, serve, serve_exclusive};
 use serde_json::{Value, json};
+use support::app_server::AppServer;
 
-const TOKEN: &str = "hot-set-server-contract-token-0123456789";
 const COLLECTION: &str = "records";
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
@@ -28,7 +30,7 @@ impl Fixture {
             .unwrap()
             .as_nanos();
         let parent = std::env::temp_dir().join(format!(
-            "fylo-hot-serve-{}-{stamp}-{}",
+            "fylo-embedded-hot-{}-{stamp}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed),
         ));
@@ -38,17 +40,11 @@ impl Fixture {
     }
 
     fn start(&self, hot_set_bytes: usize) -> Running {
-        let options = ServeOptions::new(
-            "127.0.0.1:0".parse().unwrap(),
-            ServeToken::new(TOKEN).unwrap(),
-        )
-        .with_max_connections(32)
-        .with_hot_set_budget(hot_set_bytes);
-        let server = MachineServer::bind(&self.root, ApplicationConfig::default(), options)
-            .expect("server binds");
-        let handle = server.handle();
-        let thread = std::thread::spawn(move || server.run());
-        Running { handle, thread }
+        let application = ApplicationConfig {
+            hot_set_bytes: Some(hot_set_bytes),
+            ..ApplicationConfig::default()
+        };
+        Running(AppServer::start(&self.root, application))
     }
 }
 
@@ -58,26 +54,19 @@ impl Drop for Fixture {
     }
 }
 
-struct Running {
-    handle: ServerHandle,
-    thread: JoinHandle<std::io::Result<()>>,
-}
+struct Running(AppServer);
 
 impl Running {
     fn address(&self) -> SocketAddr {
-        self.handle.local_addr()
+        self.0.address()
     }
 
     fn client(&self) -> Client {
-        Client::authenticated(self.address())
+        Client::connect(self.address())
     }
 
     fn stop(self) {
-        self.handle.shutdown();
-        self.thread
-            .join()
-            .expect("server thread")
-            .expect("clean release");
+        drop(self.0);
     }
 }
 
@@ -87,16 +76,13 @@ struct Client {
 }
 
 impl Client {
-    fn authenticated(address: SocketAddr) -> Self {
+    fn connect(address: SocketAddr) -> Self {
         let writer = TcpStream::connect(address).unwrap();
         writer
             .set_read_timeout(Some(Duration::from_mins(1)))
             .unwrap();
         let reader = BufReader::new(writer.try_clone().unwrap());
-        let mut client = Self { writer, reader };
-        let reply = client.call(&json!({ "fyloServe": 1, "token": TOKEN }));
-        assert_eq!(reply["ok"], json!(true), "hello refused: {reply}");
-        client
+        Self { writer, reader }
     }
 
     fn call(&mut self, frame: &Value) -> Value {
@@ -113,8 +99,7 @@ impl Client {
     }
 
     fn hot_set(&mut self) -> Value {
-        self.result(&json!({ "op": "handshake" }))["capabilities"]["networkServer"]["hotSet"]
-            .clone()
+        self.result(&json!({ "op": "handshake" }))["capabilities"]["hotSet"].clone()
     }
 
     fn get(&mut self, id: &str) -> Value {
@@ -178,7 +163,7 @@ fn coherence_failure(identifier: &str, row: &Value) -> Option<String> {
 
 /// Readers check every row they see for coherence and for going backwards.
 fn reader(address: SocketAddr, count: usize, stop: &AtomicBool) -> (u64, Vec<String>) {
-    let mut client = Client::authenticated(address);
+    let mut client = Client::connect(address);
     let mut seen = vec![0_u64; count];
     let mut failures = Vec::new();
     let mut reads = 0;
@@ -207,8 +192,8 @@ fn reader(address: SocketAddr, count: usize, stop: &AtomicBool) -> (u64, Vec<Str
 /// A writer owns some documents. After each acknowledged write, a read on
 /// its second connection must already see it: the settled check.
 fn writer(address: SocketAddr, owned: &[usize], steps: u64) -> (u64, Vec<String>) {
-    let mut writes = Client::authenticated(address);
-    let mut reads = Client::authenticated(address);
+    let mut writes = Client::connect(address);
+    let mut reads = Client::connect(address);
     let mut failures = Vec::new();
     let mut settled = 0;
     for sequence in 1..=steps {
@@ -338,7 +323,7 @@ fn the_budget_holds_under_load() {
             writer(address, &[0, 50, 100], 5)
         });
         let monitor = scope.spawn(|| {
-            let mut client = Client::authenticated(address);
+            let mut client = Client::connect(address);
             let mut peak = 0;
             while !stop.load(Ordering::SeqCst) {
                 let statistics = client.hot_set();
@@ -379,4 +364,27 @@ fn a_zero_budget_turns_the_hot_set_off() {
     assert_eq!(client.get(&id(1))["number"], json!(1));
     drop(client);
     running.stop();
+}
+
+fn handshake_hot_set(exclusive: bool, root: PathBuf) -> Value {
+    let mut input = Cursor::new(b"{\"op\":\"handshake\"}\n".to_vec());
+    let mut output = Vec::new();
+    let session = if exclusive { serve_exclusive } else { serve };
+    session(&mut input, &mut output, Some(root), FrameLimits::default()).unwrap();
+    let frame: Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(frame["ok"], json!(true), "{frame}");
+    frame["result"]["capabilities"]["hotSet"].clone()
+}
+
+/// Without the exclusive lease another process may write the root, so a
+/// session has no hot set; `exec --loop --exclusive-root` has one by default.
+#[test]
+fn only_a_session_holding_the_exclusive_lease_keeps_a_hot_set() {
+    let fixture = Fixture::new();
+    assert_eq!(handshake_hot_set(false, fixture.root.clone()), json!(false));
+    let statistics = handshake_hot_set(true, fixture.root.clone());
+    assert_eq!(
+        statistics["budgetBytes"],
+        json!(fylo_engine::HotSet::DEFAULT_BUDGET_BYTES)
+    );
 }

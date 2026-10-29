@@ -87,18 +87,18 @@
     </div>
 
     <div class="doc-section">
-        <h2>Remote access is opt-in and unencrypted</h2>
+        <h2>There is no remote access</h2>
         <p>
-            By default every client owns its database directly: the CLI and language shims drive
-            the binary against a local root, and the browser and mobile clients embed the engine
-            over an on-device store.
+            By design. FYLO is embedded, like SQLite: it opens the database files directly in your
+            app's process and speaks no network protocol. The CLI and language shims drive the
+            binary against a local root, and the browser and mobile clients embed the engine over an
+            on-device store.
         </p>
         <p>
-            To reach a root from another machine, run <code>fylo serve</code> next to its disk. It
-            owns the root, requires a shared token, and runs one request at a time. It has no TLS
-            yet, so keep it on loopback, a trusted network, or a tunnel. Mounting a live root over a
-            network filesystem instead inherits that layer's weaker locking and consistency; the
-            supported storage targets are local POSIX filesystems and NTFS.
+            When the database lives on network storage, run your app server next to the files and
+            have clients talk to your app. Opening a live root over a network filesystem from
+            another machine inherits that layer's weaker locking and consistency; the supported
+            storage targets are local POSIX filesystems and NTFS.
         </p>
     </div>
 

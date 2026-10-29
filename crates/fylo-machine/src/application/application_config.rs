@@ -11,6 +11,9 @@ pub struct ApplicationConfig {
     pub storage: RootConfig,
     pub schema: Option<PathBuf>,
     pub credentials: Option<(String, String)>,
+    /// Memory a session holding the root's exclusive lease keeps for warm
+    /// reads (ADR 0014). `None` is the default budget; zero turns it off.
+    pub hot_set_bytes: Option<usize>,
 }
 
 impl ApplicationConfig {

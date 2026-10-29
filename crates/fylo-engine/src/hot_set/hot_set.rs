@@ -17,7 +17,8 @@ use super::resident_store::ResidentStore;
 /// and is served only for that generation. A hot set cannot see a change it
 /// was not told about: attach it only where one process is the root's only
 /// writer and calls [`Self::clear`] after every frame that may change the
-/// root, as `fylo serve` does while it holds the root lease.
+/// root, as an `exec --loop --exclusive-root` session does while it holds the
+/// root lease.
 ///
 /// The budget bounds what the hot set retains. A reader still holding an
 /// entry after it is evicted keeps that memory alive until it finishes.
