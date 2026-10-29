@@ -605,3 +605,35 @@ fn unlocking_a_plain_file_does_nothing() {
     writer.add_collection("users", b"{}").unwrap();
     assert!(!writer.report().unwrap().locked);
 }
+
+#[test]
+fn a_reused_segment_extent_holds_none_of_its_former_bytes() {
+    let (_guard, path) = created("fxdb-reuse-clears");
+    let mut container = ContainerFile::open_unchecked(&path).unwrap();
+    let first = container.allocate(SEGMENT, 1).unwrap();
+    container
+        .write_payload(first.index, 0, &vec![0xAB; 64 * 1024])
+        .unwrap();
+    assert!(!container.allocator().is_mapped(first.index));
+    container.checkpoint().unwrap();
+    assert!(container.allocator().is_mapped(first.index));
+    container.release(first.index).unwrap();
+    container.checkpoint().unwrap();
+
+    let second = container.allocate(SEGMENT, 1).unwrap();
+    assert_eq!(second.index, first.index);
+    assert_eq!(
+        container.allocator().find_sequence(second.sequence),
+        Some((second.index, SEGMENT, 1))
+    );
+    assert_eq!(container.allocator().find_sequence(first.sequence), None);
+    assert_eq!(
+        container.allocator().owned(SEGMENT, 1),
+        [(second.index, second.sequence)]
+    );
+    let mut payload = vec![0xFF_u8; 64 * 1024];
+    container
+        .read_payload(second.index, 0, &mut payload)
+        .unwrap();
+    assert!(payload.iter().all(|byte| *byte == 0));
+}
