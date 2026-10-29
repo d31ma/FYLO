@@ -170,8 +170,10 @@ from one client, and then `share` from two clients against one file. Pass
 | ext4, Linux 6.18 (x86_64)           | cloud container         | 2026-10-29 | passed  | 1.1 ms       | 159,090 exclusive entries, 0 overlaps; control caught 246,052 | no                          |
 | tmpfs, Linux 6.18 (x86_64)          | cloud container         | 2026-10-29 | passed  | 1.2 ms       | 157,772 exclusive entries, 0 overlaps; control caught 245,836 | no                          |
 | ext4 stress (16 × 4, 8 writers, 60 s) | cloud container       | 2026-10-29 | passed  |              | 1,144,672 exclusive entries, 0 overlaps; longest wait 471 ms | |
-| APFS, macOS                         | Mac Mini                | pending    |         |              |                                            |                             |
-| NFS 4.1, local server (`efs:local`) | Linux client in Docker on the Mac Mini | pending |   |              |                                            |                             |
+| APFS, macOS 27.2                    | Mac Mini (M4, 10 cores) | 2026-10-29 | passed  | 1.1 ms       | 207,669 exclusive entries, 0 overlaps; control caught 306,385; longest wait 91 ms | **yes**, as expected        |
+| SMB 3.1.1 (`smbfs`, CITADEL HAVEN share), macOS | Mac Mini   | 2026-10-29 | lease fallback | | the probe lock was refused, so the lock checks are skipped | |
+| NFS 4.1, local nfsd, one client     | Linux 7.0 client in Docker on the Mac Mini | 2026-10-29 | passed | 1.1 ms | 35,120 exclusive entries, 0 overlaps; control caught 21,230; longest wait 257 ms | no |
+| NFS 4.1, local nfsd, two clients    | two Linux clients in Docker on the Mac Mini | 2026-10-29 | rerun pending | | 28,136 exclusive entries across clients, 0 overlaps, no lost updates; failed on `EDEADLK` from non-waiting requests, now counted as a conflict | |
 | NTFS, Windows 11 26H2 (ARM64)      | Surface (Snapdragon X, 10 cores) | 2026-10-29 | passed | 1.6 ms | 34,244 exclusive entries, 0 overlaps; control caught 84,300; longest wait 6.0 s | no |
 | SMB, ATLAS on CITADEL               | two machines            | spike 2, run by the design thread |  |       |                                            |                             |
 
@@ -180,3 +182,10 @@ A filesystem joins `QUALIFIED` in
 those where `.fxdb` byte-range locks are enabled, only with a passed row here.
 A filesystem whose probe fails is recorded as "lease fallback": it is
 supported, through the lock-free lease.
+
+On Linux every NFS version has one `fstatfs` magic number, so FYLO reads the
+mount table: an NFS 4.1 mount is named `nfs4.1`, and a mount whose locks stay
+on the client (`nolock`, `local_lock=posix` or `local_lock=all`) is named
+`nfs-local-lock` and is never qualified. The Linux NFS client answers some
+cross-client conflicts with `EDEADLK` even to a non-waiting request; FYLO
+treats it as a conflict and retries.

@@ -38,7 +38,9 @@ if (options['cache-dir']) await mkdir(cache.target, { recursive: true })
 const builder = `FROM ${BASE}
 RUN dnf -y -q install gcc make tar gzip findutils which && dnf clean all
 RUN curl -sSf https://sh.rustup.rs | sh -s -- -y -q --profile minimal --default-toolchain ${toolchain}
-ENV PATH=/root/.cargo/bin:$PATH CARGO_TARGET_DIR=/target`
+ENV PATH=/root/.cargo/bin:$PATH CARGO_TARGET_DIR=/target
+# What rust-toolchain.toml asks for, so a --rm build does not fetch it each run.
+RUN rustup component add clippy rustfmt && rustup target add wasm32-unknown-unknown`
 const client = `FROM ${BASE}
 RUN dnf -y -q install nfs-utils procps-ng findutils && dnf clean all`
 
@@ -74,7 +76,9 @@ try {
             '--seconds',
             seconds,
             '--label',
-            'NFS 4.1 (local nfsd), one client'
+            'NFS 4.1 (local nfsd), one client',
+            '--json',
+            '/mnt/nfs/locks/single.json'
         ])
     )
     await step('Two clients loading one file', twoClients)

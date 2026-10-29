@@ -42,6 +42,7 @@ impl FilesystemInfo {
 const QUALIFIED: &[(&str, &str, bool)] = &[
     ("linux", "ext4", false),
     ("linux", "tmpfs", false),
+    ("macos", "apfs", false),
     ("windows", "NTFS", false),
 ];
 
@@ -69,10 +70,51 @@ fn detect(file: &File) -> io::Result<FilesystemInfo> {
         0x6573_5546 => ("fuse", true),
         _ => ("unknown", true),
     };
-    Ok(FilesystemInfo {
-        name: name.to_owned(),
-        remote,
-    })
+    let name = if magic == 0x6969 {
+        nfs_name(file).unwrap_or_else(|| "nfs".to_owned())
+    } else {
+        name.to_owned()
+    };
+    Ok(FilesystemInfo { name, remote })
+}
+
+/// One NFS magic number covers every version, so the mount table tells them
+/// apart: `nfs4.1` for an NFS 4.1 mount, and `nfs-local-lock` for a mount
+/// whose locks stay on this client (`local_lock=posix` or `all`, or `nolock`),
+/// which is never qualified.
+#[cfg(target_os = "linux")]
+fn nfs_name(file: &File) -> Option<String> {
+    use std::os::unix::fs::MetadataExt;
+    let dev = file.metadata().ok()?.dev();
+    let device = format!("{}:{}", rustix::fs::major(dev), rustix::fs::minor(dev));
+    let table = std::fs::read_to_string("/proc/self/mountinfo").ok()?;
+    nfs_name_in(&table, &device)
+}
+
+/// The NFS name for `device` (`major:minor`) in a `/proc/self/mountinfo`.
+#[cfg(target_os = "linux")]
+fn nfs_name_in(table: &str, device: &str) -> Option<String> {
+    let line = table
+        .lines()
+        .find(|line| line.split(' ').nth(2) == Some(device))?;
+    let (mount, filesystem) = line.split_once(" - ")?;
+    let options = mount
+        .split(' ')
+        .nth(5)
+        .into_iter()
+        .chain(filesystem.split(' ').nth(2))
+        .flat_map(|options| options.split(','))
+        .collect::<Vec<_>>();
+    if options
+        .iter()
+        .any(|option| matches!(*option, "nolock" | "local_lock=posix" | "local_lock=all"))
+    {
+        return Some("nfs-local-lock".to_owned());
+    }
+    let version = options
+        .iter()
+        .find_map(|option| option.strip_prefix("vers="))?;
+    Some(format!("nfs{version}"))
 }
 
 /// `f_type` is signed on some targets and unsigned on others; the magic
@@ -112,4 +154,30 @@ fn detect(_file: &File) -> io::Result<FilesystemInfo> {
 fn detect(file: &File) -> io::Result<FilesystemInfo> {
     let (name, remote) = super::os::filesystem(file)?;
     Ok(FilesystemInfo { name, remote })
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::nfs_name_in;
+
+    const TABLE: &str = "\
+22 1 0:21 / / rw,relatime - ext4 /dev/vda rw
+40 22 0:45 / /mnt/nfs rw,relatime - nfs4 server:/ rw,vers=4.1,rsize=1048576,hard,proto=tcp,local_lock=none,addr=172.18.0.2
+41 22 0:46 / /mnt/old rw,relatime - nfs server:/old rw,vers=3,nolock,proto=tcp
+42 22 0:47 / /mnt/local rw,relatime - nfs4 server:/ rw,vers=4.2,local_lock=all
+";
+
+    #[test]
+    fn nfs_mounts_are_named_by_version_and_local_locking() {
+        assert_eq!(nfs_name_in(TABLE, "0:45").as_deref(), Some("nfs4.1"));
+        assert_eq!(
+            nfs_name_in(TABLE, "0:46").as_deref(),
+            Some("nfs-local-lock")
+        );
+        assert_eq!(
+            nfs_name_in(TABLE, "0:47").as_deref(),
+            Some("nfs-local-lock")
+        );
+        assert_eq!(nfs_name_in(TABLE, "9:9"), None);
+    }
 }

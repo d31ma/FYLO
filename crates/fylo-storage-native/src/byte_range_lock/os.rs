@@ -91,8 +91,11 @@ fn set_lock(file: &File, byte: u64, kind: libc::c_short) -> io::Result<bool> {
         let error = io::Error::last_os_error();
         match error.raw_os_error() {
             Some(libc::EINTR) => {}
-            // POSIX allows either for "held by another owner".
-            Some(libc::EAGAIN | libc::EACCES) => return Ok(false),
+            // POSIX allows either for "held by another owner". The Linux NFS
+            // 4.1 client also answers some cross-client conflicts with
+            // EDEADLK (NFS4ERR_DEADLOCK), even to a request that never
+            // waits: the byte was not granted, so it is a conflict too.
+            Some(libc::EAGAIN | libc::EACCES | libc::EDEADLK) => return Ok(false),
             _ => return Err(error),
         }
     }
