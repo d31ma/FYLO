@@ -535,6 +535,93 @@ bounded multi-process load (30 s) committed 1,297 writes, served 18,458
 coherent reads, and passed all 100 settled checks with no lost writes or
 duplicate owners.
 
+## Hot set in fylo serve, 2026-10-28
+
+**Change.** `fylo serve` keeps parsed documents, index snapshots, id lists and
+collection headers in memory under a byte budget (ADR 0014, default 64 MiB).
+Reads share the executor; any other frame runs alone and clears the hot set.
+Separately, `getDoc` and `findDocs` no longer list the whole collection to
+learn its kind, with or without the hot set.
+
+**Setup.** Apple M4, macOS 27.2, Rust 1.97.1, release opt-level 3. Before is
+develop at `cf52abf` (with the write-ahead log); after is this change, with the
+hot set on (64 MiB) and off (`--hot-set-bytes 0`). Fixtures follow the
+2026-10-11 workload (two collections, `group = n % 100`, 912-byte body): 5,000
+documents per collection in an APFS sparse image stored on ATLAS, and 500 per
+collection copied to the raw ATLAS SMB share. The one-minute load was 2.2 to 6
+during the in-process runs and 2.8 to 8 during the network runs. Every sample
+checked its row count. Raw results, load samples and the bench sources are in
+`/Volumes/FORGE/Logs/FYLO/fylo-hotset/`.
+
+**In process.** Time for `FrameSession::answer`: request parsing, dispatch,
+the read and the encoded response. 200 samples per run (30 on the raw share),
+three warmups; p50, with the range across runs.
+
+| Read (p50) | Before | After, hot set off | After, hot set on |
+| --- | ---: | ---: | ---: |
+| Image 5k: `getDoc` | 5.20 ms | 245 µs | 2.9 µs |
+| Image 5k: selective, 50 rows | 7.63 ms | 2.71 ms | 77.8 µs (76.1–79.6) |
+| Image 5k: broad, 2,500 rows | 114 ms | 116 ms | 4.08 ms |
+| Image 5k: engine `find` only, 50 rows | 2.37 ms | 2.51 ms | 28.9 µs |
+| Raw share 500: `getDoc` | 14.2–24.2 ms | 16.3–18.8 ms | 3.0 µs |
+| Raw share 500: selective, 5 rows | 39.2–43.3 ms | 79.3–86.6 ms | 11.2–11.4 µs |
+| Raw share 500: broad, 250 rows | 1.82–2.28 s | 1.40–1.86 s | 366–387 µs |
+
+The warm 50-row read is under 0.1 ms in process (p95 81–85 µs); the engine
+itself takes 29 µs and the rest is encoding 51 KB of JSON. Before the change a
+`getDoc` listed every document and tombstone in the collection to learn its
+kind, which is most of its 5.2 ms. On the raw share with the hot set off, the
+selective read is about twice develop's; the likely reason is that develop's
+listing warmed the SMB client's cache for the opens that followed. This was not
+investigated further, because the hot set is on by default.
+
+**From the Surface.** The Surface is on Wi-Fi. Each sample is paired with an
+empty round trip (`handshake`) taken just before it, reported as RTT. 100
+samples (30 for broad), two runs each, p50.
+
+| Read (p50, ms) | Before | RTT | Hot set off | RTT | Hot set on | RTT |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Image 5k: `getDoc` | 12.45 / 12.25 | 5.2 / 5.1 | 5.24 / 5.21 | 4.9 / 4.9 | 4.20 / 4.38 | 4.1 / 4.4 |
+| Image 5k: selective, 50 rows | 14.99 / 14.80 | 5.3 / 4.9 | 9.47 / 11.86 | 5.3 / 5.3 | 5.71 / 5.33 | 5.2 / 4.4 |
+| Image 5k: broad, 2,500 rows | 185.5 / 185.1 | 4.5 / 4.5 | 149.5 / 147.1 | 4.5 / 4.1 | 67.8 / 72.0 | 3.8 / 4.5 |
+| Raw 500: `getDoc` | 22.82 / 19.77 | 5.9 / 5.2 | 7.93 / 13.78 | 5.2 / 5.5 | 4.22 / 4.31 | 4.4 / 4.7 |
+| Raw 500: selective, 5 rows | 36.27 / 45.24 | 5.7 / 5.1 | 20.76 / 43.29 | 5.6 / 5.7 | 4.08 / 4.46 | 4.1 / 4.5 |
+| Raw 500: broad, 250 rows | 1,476.7 / 1,353.3 | 6.6 / 6.7 | 1,408.2 / 1,382.3 | 6.8 / 7.1 | 19.6 / 19.3 | 5.7 / 5.1 |
+
+With the hot set a warm `getDoc` or small query costs one round trip; the
+50-row read adds about 0.5 ms to move 51 KB over Wi-Fi, and the broad read is
+mostly the 2.5 MB transfer. The first query of a new connection, which fills
+the hot set, took 39–64 ms on the image and 212–298 ms on the raw share
+(1,460–1,645 ms before). One first query, on the freshly created image, took
+14.8 s and did not repeat.
+
+**Concurrency and budget.** `crates/fylo-machine/tests/hot_set_server.rs`
+runs four rounds of three readers and two writers over TCP and checks every
+row for coherence and for going backwards, and every acknowledged write with a
+settled `getDoc` and `findDocs` on another connection: 768 settled checks, no
+stale or incoherent row, also under a 4 KiB budget. On the real binary, six
+readers and one writer ran for 30 s against the image root, sampling the hot
+set every 50 ms from another connection:
+
+| Load (30 s) | Reads, hot set off | Reads, hot set on | Peak resident | Peak RSS |
+| --- | ---: | ---: | ---: | ---: |
+| 1 write/s, 64 MiB | 50,518 | 584,631 and 679,433 | 14.7 MB | 88–91 MB either way |
+| 50 writes/s, 64 MiB, interleaved | 43,363 / 30,619 / 37,295 | 27,158 / 52,194 / 30,945 | 5.9 MB | 76–216 MB |
+| 50 writes/s, 4 MiB | | 46,701 | 1.46 MB | 215 MB |
+
+No run had an error or an incoherent row, and resident bytes never exceeded
+the budget. Under 50 writes a second every write empties the hot set, so it
+gives no gain, and the spread between runs is wider than the difference. A
+first version that opened the collection twice on refill read 22,546 rows
+against 37,104 with the hot set off; refills now cost the same file calls as a
+plain read. Per-document invalidation from the write-ahead log's commit
+records is the step that would keep a write-heavy hot set warm.
+
+**Windows.** On the Surface (native Windows) the workspace tests pass,
+including the hot-set suites. The one failure there,
+`write_ahead_log.rs::a_commit_leaves_a_v2_state_and_a_checkpoint_returns_to_v1`,
+is a develop race in that file's tests under parallel threads and passes alone.
+
 ## Cloud Run and Azure Functions, local only, 2026-10-11
 
 `bun run cloudrun:local` and `bun run azure:local`
