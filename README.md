@@ -975,6 +975,13 @@ Behavior:
   `schemaMaterialize` (`fylo schema materialize`) migrates one document to the
   head shape in memory; read-time migration is planned in ADR 0017
 - `schemaMaterialize` treats a document missing `_v` as the oldest version
+- `fylo schema migrate <collection>` (`schemaMigrate`) rewrites every document
+  below the head version at the head, validating and encrypting each as a
+  write would, and is safe to run again. Documents without `_v` are skipped
+  and counted, because outside strict mode they may already be in the head
+  shape; `--include-unversioned` migrates them as the oldest version
+- A document is decrypted with the `$encrypted` list of the version in its
+  `_v`, so a later version may rename or drop an encrypted field
 - Any collection directory under `fylo.schema` that contains a `manifest.json` is auto-created on `new Fylo(...)`; await `fylo.ready()` if you need the bootstrap to settle before issuing reads from a synchronous probe (mutation/query methods await internally)
 - FYLO documents cannot hold arrays of objects — declare each nested object as its own collection. A write of a document with `items: [{ name: '...' }]` fails with `EARRAYOFOBJECTS`, even if its CHEX schema describes the array. Arrays of scalars and nested objects (as fields) are fine.
 

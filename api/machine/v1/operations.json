@@ -192,6 +192,11 @@
             "retry": "safe"
         },
         {
+            "name": "schemaMigrate",
+            "class": "write",
+            "retry": "safe"
+        },
+        {
             "name": "queuePublish",
             "class": "queue-write",
             "retry": "conditional-idempotency-key"

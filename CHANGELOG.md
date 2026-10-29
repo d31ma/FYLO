@@ -19,6 +19,12 @@
   (ADR 0016). Browsing the collections inside the file arrives with the
   single-file format in the engine; the folder view is unchanged.
 
+- **`fylo schema migrate <collection>`** (`schemaMigrate`) rewrites the
+  documents below a collection's head schema version at the head, through the
+  same validation and encryption as any write. A document without `_v` is
+  skipped and counted unless `--include-unversioned` is given (ADR 0017
+  section 5).
+
 ### Changed
 
 - **Schema migrations are JSON, not JavaScript (ADR 0018).** A version step is
@@ -34,6 +40,10 @@
 
 ### Fixed
 
+- **A document is decrypted with the `$encrypted` list of the version it was
+  written at.** Reads used the head version's list, so once a new version
+  renamed or dropped an encrypted field, older documents came back with
+  ciphertext in that field.
 - **`patchDoc`, `patchDocs`, and SQL `INSERT` and `UPDATE` now encrypt
   `$encrypted` fields.** They wrote those fields in plaintext, after which every
   read of the collection failed. A document already stored that way still

@@ -10,9 +10,9 @@
     <div class="doc-section">
         <h2>Layout</h2>
         <p>
-            Schemas live under <code>fylo.schema</code> in <code>application.json</code>, one directory per collection. Any directory
-            there containing a <code>manifest.json</code> is auto-created as a collection when the
-            database opens.
+            Schemas live under <code>fylo.schema</code> in <code>application.json</code>, one
+            directory per collection. Any directory there containing a <code>manifest.json</code> is
+            auto-created as a collection when the database opens.
         </p>
         <pre class="code-block"><code>{layoutCode}</code></pre>
         <pre class="code-block"><code>{manifestCode}</code></pre>
@@ -29,8 +29,8 @@
             A migration is JSON, not code (ADR 0018). <code>migrations/v1-to-v2.json</code> lists
             the steps that turn a v1 document into a v2 one. Steps run in order on the document with
             <code>_v</code> removed, then <code>_v</code> is stamped with the target version. FYLO
-            chains the step files along the manifest history, so a v1 document written two years
-            ago is materialized in v3 shape without ever being rewritten on disk.
+            chains the step files along the manifest history, so a v1 document written two years ago
+            is materialized in v3 shape without ever being rewritten on disk.
         </p>
         <pre class="code-block"><code>{migrationCode}</code></pre>
         <p>
@@ -57,15 +57,21 @@
         <ul>
             <li>Documents carry <code>_v</code>, their version label.</li>
             <li>
-                Reads return each document as stored. <code>schemaMaterialize</code> migrates one
-                to the head shape in memory; read-time migration is planned in ADR 0017.
+                Reads return each document as stored. <code>schemaMaterialize</code> migrates one to
+                the head shape in memory; read-time migration is planned in ADR 0017.
             </li>
             <li>
-                Strict writes validate against the head schema via the <code>chex</code> binary.
+                Strict writes validate against the head schema with the built-in CHEX validator.
             </li>
             <li>
                 <code>schemaMaterialize</code> treats a document missing <code>_v</code> as the
                 oldest version.
+            </li>
+            <li>
+                <code>fylo schema migrate &lt;collection&gt;</code> rewrites every document below
+                the head version at the head, validating and encrypting it as a write would. It
+                skips documents without <code>_v</code> unless given
+                <code>--include-unversioned</code>.
             </li>
             <li>
                 Mutation and query methods await schema bootstrap internally. If you need it settled
@@ -92,15 +98,15 @@
     <div class="doc-section">
         <h2>Strict mode</h2>
         <p>
-            Set <code>fylo.strict</code> to <code>true</code> to validate every document against the head schema before
-            it is written. Without it, schemas still drive migrations and encryption registration
-            but do not gate writes.
+            Set <code>fylo.strict</code> to <code>true</code> to validate every document against the
+            head schema before it is written. Without it, schemas still drive migrations and
+            encryption registration but do not gate writes.
         </p>
         <pre class="code-block"><code>{cliCode}</code></pre>
         <p>
             <code>schema doctor</code> is the readiness check: it reports a manifest that disagrees
-            with the files on disk, a missing migration in the chain, or a schema that the data model
-            cannot accept.
+            with the files on disk, a missing migration in the chain, or a schema that the data
+            model cannot accept.
         </p>
     </div>
 

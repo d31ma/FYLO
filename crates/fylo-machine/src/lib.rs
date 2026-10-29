@@ -927,6 +927,7 @@ impl Session {
             "schemaDoctor" => self.schema_doctor(request),
             "schemaValidate" => self.schema_validate(request),
             "schemaMaterialize" => self.schema_materialize(request),
+            "schemaMigrate" => self.schema_migrate(request),
             "importBulkData" => self.import_bulk_data(request),
             "queuePublish" => self.queue_publish(request),
             "queueClaim" => self.queue_claim(request),
@@ -2469,6 +2470,62 @@ impl Session {
             "schemaDir": engine.schema_dir().map_err(|error| engine_error(&error))?,
             "current": current,
             "document": materialized,
+        }))
+    }
+
+    /// Rewrite every document below the head schema version at the head,
+    /// one read-modify-write per document (ADR 0017 section 5). A document
+    /// without `_v` is ambiguous outside strict mode, which never stamped it,
+    /// so it is migrated only when the request sets `includeUnversioned`.
+    fn schema_migrate(&self, request: &Value) -> Result<Value, MachineError> {
+        let collection = require_string(request, "collection")?;
+        let include_unversioned = request.get("includeUnversioned") == Some(&Value::Bool(true));
+        let engine = self.write_engine(request)?;
+        let Some(current) = engine
+            .schema_current(collection)
+            .map_err(|error| engine_error(&error))?
+        else {
+            return Err(MachineError::new(
+                "ESCHEMA",
+                format!("collection '{collection}' has no versioned schema to migrate to"),
+            ));
+        };
+        let query = StructuredQuery::from_value(&json!({}), QueryLimits::default())
+            .map_err(|error| MachineError::new("EQUERY_INVALID", error.to_string()))?;
+        let actor = actor(request)?;
+        let reader = self.engine(request)?;
+        let rows = match actor.as_ref() {
+            Some(actor) => reader.find_as(collection, &query, actor),
+            None => reader.find(collection, &query),
+        }
+        .map_err(|error| engine_error(&error))?;
+        let (mut migrated, mut at_head, mut unversioned) = (0_usize, 0_usize, 0_usize);
+        for row in &rows {
+            match row.document.fields().get("_v").and_then(Value::as_str) {
+                Some(version) if version == current => at_head += 1,
+                None if !include_unversioned => unversioned += 1,
+                _ => {
+                    engine
+                        .migrate_document(collection, &row.metadata.id, actor.as_ref())
+                        .map_err(|error| {
+                            let failure = engine_error(&error);
+                            MachineError::new(
+                                &failure.code,
+                                format!("document {}: {}", row.metadata.id, failure.message),
+                            )
+                        })?;
+                    migrated += 1;
+                }
+            }
+        }
+        Ok(json!({
+            "collection": collection,
+            "schemaDir": engine.schema_dir().map_err(|error| engine_error(&error))?,
+            "current": current,
+            "scanned": rows.len(),
+            "migrated": migrated,
+            "atHead": at_head,
+            "unversioned": unversioned,
         }))
     }
 

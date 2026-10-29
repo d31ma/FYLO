@@ -17,7 +17,8 @@ const candidateOnlyOperations = [
     'queueNack',
     'queuePublish',
     'queueStats',
-    'reshardCollection'
+    'reshardCollection',
+    'schemaMigrate'
 ]
 const releasedOperations = canonicalOperations.filter(
     (operation) => !candidateOnlyOperations.includes(operation)
@@ -483,6 +484,27 @@ async function runScenario(label, binary, root) {
             schemaDir: schemaRoot,
             document: { _v: 'v1', fullName: 'Grace Hopper', active: true }
         })
+        if (label === 'rust') {
+            await request(
+                'create-profiles',
+                { op: 'createCollection', collection: 'profiles' },
+                { record: false }
+            )
+            await request(
+                'put-profile',
+                {
+                    op: 'putData',
+                    collection: 'profiles',
+                    data: { _v: 'v1', fullName: 'Grace Hopper', active: true }
+                },
+                { record: false }
+            )
+            await request(
+                'schema-migrate',
+                { op: 'schemaMigrate', collection: 'profiles', schemaDir: schemaRoot },
+                { record: false }
+            )
+        }
     } finally {
         await machine.close()
     }
@@ -654,6 +676,8 @@ function normalizeHandshake(value) {
     delete normalized.capabilities?.schemaValidation
     // The hot set (ADR 0014) is newer than every released build.
     delete normalized.capabilities?.hotSet
+    // So is the single-file `.fxdb` database (ADR 0016).
+    delete normalized.capabilities?.singleFileDatabase
     return normalized
 }
 
