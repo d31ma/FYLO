@@ -24,6 +24,8 @@ struct Fixture {
     parent: PathBuf,
     root: PathBuf,
     efs: bool,
+    /// The main root, when this is a branch worktree.
+    repository: Option<PathBuf>,
     /// The EFS profile's root lease, held from first use until released for
     /// a child process to take.
     lease: RefCell<Option<RootLease>>,
@@ -45,6 +47,7 @@ impl Fixture {
             parent,
             root,
             efs,
+            repository: None,
             lease: RefCell::new(None),
         };
         let writer = fixture.writer();
@@ -64,12 +67,27 @@ impl Fixture {
             parent: root.parent().unwrap().to_owned(),
             root: root.to_owned(),
             efs,
+            repository: None,
+            lease: RefCell::new(None),
+        }
+    }
+
+    /// A view of the branch worktree at `root`, checked out from this root.
+    fn branch(&self, root: &Path) -> Self {
+        Self {
+            parent: self.parent.clone(),
+            root: root.to_owned(),
+            efs: self.efs,
+            repository: Some(self.root.clone()),
             lease: RefCell::new(None),
         }
     }
 
     fn options(&self) -> RootOpenOptions {
-        let options = RootOpenOptions::new(&self.root);
+        let mut options = RootOpenOptions::new(&self.root);
+        if let Some(repository) = &self.repository {
+            options = options.with_repository(repository);
+        }
         if !self.efs {
             return options;
         }
@@ -135,7 +153,7 @@ impl Fixture {
 
 impl Drop for Fixture {
     fn drop(&mut self) {
-        if std::env::var(CHILD).is_err() {
+        if std::env::var(CHILD).is_err() && self.repository.is_none() {
             let _ = fs::remove_dir_all(&self.parent);
         }
     }
@@ -399,4 +417,56 @@ fn a_crash_on_the_journal_leaves_the_count_right_or_stale() {
         crash_and_recover(true, "patch", failpoint);
         crash_and_recover(true, "delete", failpoint);
     }
+}
+
+#[test]
+fn restore_checkout_and_merge_leave_each_worktree_counted() {
+    let fixture = Fixture::new(false);
+    let writer = fixture.writer();
+    put(&writer, 1, Some("v1"));
+    put(&writer, 2, Some("v1"));
+    let first = writer.commit_if_dirty("two at v1").unwrap().unwrap();
+    writer
+        .patch_document(ITEMS, &id(1), &body(Some("v2"), 1), None)
+        .unwrap();
+    put(&writer, 3, None);
+    writer
+        .commit_if_dirty("one moved, one unversioned")
+        .unwrap();
+    assert_eq!(fixture.scanned(), counts(&[("v1", 1), ("v2", 1)], 1));
+    fixture.assert_kept("before the restore");
+
+    // Materializing a commit replaces the documents under the count.
+    writer.restore_repository_commit(&first, true).unwrap();
+    fixture.assert_kept("restored");
+    assert_eq!(fixture.scanned(), counts(&[("v1", 2)], 0));
+
+    // A branch shares the registry but keeps its own count.
+    let main = writer.repository_branches().unwrap()["current"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let checkout = writer.checkout_repository("feature", true).unwrap();
+    let branch = fixture.branch(Path::new(checkout["root"].as_str().unwrap()));
+    let branch_writer = branch.writer();
+    put(&branch_writer, 4, Some("v2"));
+    branch.assert_kept("branch write");
+    assert_eq!(branch.scanned(), counts(&[("v1", 2), ("v2", 1)], 0));
+    fixture.assert_kept("main after a branch write");
+    assert_eq!(fixture.scanned(), counts(&[("v1", 2)], 0));
+    let files = fs::read_dir(fixture.counts_file().parent().unwrap())
+        .unwrap()
+        .filter(|entry| {
+            let name = entry.as_ref().unwrap().file_name();
+            let name = name.to_string_lossy();
+            name.starts_with("counts.") && name.ends_with(".json")
+        })
+        .count();
+    assert_eq!(files, 2, "one count per worktree");
+    branch_writer.commit_if_dirty("one at v2").unwrap().unwrap();
+
+    writer.checkout_repository(&main, false).unwrap();
+    writer.merge_repository("feature", None).unwrap();
+    fixture.assert_kept("merged");
+    assert_eq!(fixture.scanned(), counts(&[("v1", 2), ("v2", 1)], 0));
 }

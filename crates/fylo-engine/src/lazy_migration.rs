@@ -223,3 +223,66 @@ impl ReadOnlyEngine {
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
+
+#[cfg(test)]
+mod tests {
+    use fylo_query::{QueryLimits, StructuredQuery};
+    use serde_json::json;
+
+    use super::*;
+
+    fn plan(query: &Value) -> EqualityPlan {
+        let query = StructuredQuery::from_value(query, QueryLimits::default()).unwrap();
+        EqualityPlan::new(&query, &[]).unwrap()
+    }
+
+    fn counts(versions: &[(&str, u64)], unversioned: u64) -> SchemaVersionCounts {
+        SchemaVersionCounts {
+            versions: versions
+                .iter()
+                .map(|(label, count)| ((*label).to_owned(), *count))
+                .collect(),
+            unversioned,
+        }
+    }
+
+    #[test]
+    fn the_index_is_kept_for_fields_no_migration_touches() {
+        // v1 -> v2 renames `name` to `fullName`.
+        let guard = MigrationGuard {
+            fields: BTreeSet::from(["_v".to_owned(), "name".to_owned(), "fullName".to_owned()]),
+        };
+        assert!(guard.allows(&plan(&json!({"$ops":[{"city":{"$eq":"Paris"}}]}))));
+        assert!(guard.allows(&plan(&json!({"$ops":[{"address.city":{"$eq":"Paris"}}]}))));
+        for field in ["fullName", "name", "_v", "fullName.first"] {
+            assert!(
+                !guard.allows(&plan(&json!({"$ops":[{field:{"$eq":"Ada"}}]}))),
+                "{field}"
+            );
+        }
+        // One operation of a union that touches a migrated field is enough.
+        assert!(!guard.allows(&plan(
+            &json!({"$ops":[{"city":{"$eq":"Paris"}},{"fullName":{"$eq":"Ada"}}]})
+        )));
+    }
+
+    #[test]
+    fn the_report_counts_unversioned_documents_at_the_oldest_version() {
+        let labels = ["v1".to_owned(), "v2".to_owned(), "v3".to_owned()];
+        let (per_version, unknown, converged) = Convergence::report(
+            &labels,
+            Some("v3"),
+            &counts(&[("v1", 2), ("v3", 5), ("v9", 1)], 3),
+        );
+        assert_eq!(per_version, [5, 0, 5]);
+        assert_eq!(unknown, BTreeMap::from([("v9".to_owned(), 1)]));
+        assert!(!converged);
+        let (per_version, unknown, converged) =
+            Convergence::report(&labels, Some("v3"), &counts(&[("v3", 5)], 0));
+        assert_eq!(per_version, [0, 0, 5]);
+        assert!(unknown.is_empty());
+        assert!(converged);
+        // An empty collection has converged.
+        assert!(Convergence::report(&labels, Some("v3"), &counts(&[], 0)).2);
+    }
+}
