@@ -67,18 +67,23 @@ impl SegmentReader {
     /// A frame that does not decode, as a storage error. One this build
     /// cannot read, such as a record compressed with a codec it does not
     /// know, is refused as a newer format (`EFXDB_VERSION`), never taken
-    /// for damage or a torn tail; anything else is damage.
+    /// for damage or a torn tail. One whose compression dictionary is
+    /// missing or damaged is refused as damage and says so; anything else
+    /// is damage.
     pub(crate) fn frame_error(error: LogFormatError, what: &str) -> NativeStorageError {
-        if error == LogFormatError::UnsupportedVersion {
-            NativeStorageError::new(
+        match error {
+            LogFormatError::UnsupportedVersion => NativeStorageError::new(
                 NativeStorageErrorCode::Unsupported,
                 format!(
                     "{what} uses a record codec or format this build cannot read \
                      (EFXDB_VERSION)"
                 ),
-            )
-        } else {
-            Self::corrupt(&format!("{what} is damaged: {error}"))
+            ),
+            LogFormatError::MissingDictionary => Self::corrupt(&format!(
+                "{what} names a compression dictionary that is missing or damaged \
+                 (EFXDB_CORRUPT); `fylo verify` reports which"
+            )),
+            _ => Self::corrupt(&format!("{what} is damaged: {error}")),
         }
     }
 

@@ -2,8 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use fylo_format::{
-    LogBodyCodec, LogFormatError, LogRecord, LogRecordKind, LogScan, LogSegmentHeader,
-    LogSegmentKind, PlainBody,
+    LogBodyCodec, LogRecord, LogRecordKind, LogScan, LogSegmentHeader, LogSegmentKind, PlainBody,
 };
 use fylo_vfs as fs;
 
@@ -381,9 +380,10 @@ impl LogSegment {
     /// Read and scan a whole document segment, or `None` when it does not
     /// exist or its header never became valid.
     ///
-    /// A scan that stops at a record this build cannot read fails instead
-    /// of returning: recovery would otherwise cut a newer writer's records
-    /// off as a torn tail, and a rebuild would leave them out.
+    /// A scan that stops at a record this build cannot read, or whose
+    /// dictionary is missing, fails instead of returning: recovery would
+    /// otherwise cut a whole record and those after it off as a torn tail,
+    /// and a rebuild would leave them out.
     pub(crate) fn scan_segment(
         medium: &dyn SegmentMedium,
         number: u64,
@@ -394,7 +394,7 @@ impl LogSegment {
         else {
             return Ok(None);
         };
-        if let Some(error @ LogFormatError::UnsupportedVersion) = scan.stopped {
+        if let Some(error) = scan.stopped.filter(|error| error.is_unreadable()) {
             return Err(SegmentReader::frame_error(
                 error,
                 &format!("segment {number} at byte {}", scan.valid_length),

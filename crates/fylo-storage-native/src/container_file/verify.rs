@@ -15,10 +15,21 @@
 //! one taken after the last checkpoint, which recovery finds by its seal
 //! record, or one released with its old header left in place. Those are
 //! counted, not reported.
+//!
+//! Dictionaries are checked like the records that need them: each
+//! `dictionary` extent's stored bytes against its header's CRC-32C, the
+//! dictionary a checkpoint slot names against the extent that holds it,
+//! and the header of every frame in a mapped segment extent against the
+//! collection's dictionaries, so a record naming one the file does not
+//! hold is found before a read fails on it. A frame's codec header and
+//! dictionary id are outside anything sealed, so none of it needs the key.
+
+use std::collections::{BTreeMap, BTreeSet};
 
 use fylo_format::{
-    ContainerCheckpointSlot, ContainerCollectionHeader, ContainerExtentHeader, ContainerExtentKind,
-    ContainerFormatError, ContainerGenerationSlot, ContainerSnapshotRef, ContainerSuperblock,
+    ContainerCheckpointSlot, ContainerCollectionHeader, ContainerDictionaryHeader,
+    ContainerExtentHeader, ContainerExtentKind, ContainerFormatError, ContainerGenerationSlot,
+    ContainerSnapshotRef, ContainerSuperblock, LogScan,
 };
 use sha2::{Digest, Sha256};
 
@@ -64,8 +75,9 @@ pub struct ContainerProblem {
     /// `superblockCopyDamaged`, `fileTooShort`, `extentHeaderMismatch`,
     /// `unknownOwner`, `unexpectedOwner`, `directoryBlockDamaged`,
     /// `tornSlot`, `slotDamaged`, `snapshotOutOfRange`,
-    /// `snapshotExtentMismatch`, `snapshotNotInMap` or
-    /// `snapshotHashMismatch`.
+    /// `snapshotExtentMismatch`, `snapshotNotInMap`,
+    /// `snapshotHashMismatch`, `dictionaryDamaged`, `dictionaryMismatch`,
+    /// `dictionaryMissing` or `dictionaryUnused`.
     pub code: &'static str,
     /// The extent concerned, if one is.
     pub extent: Option<u64>,
@@ -79,6 +91,9 @@ struct Findings {
     checked_extents: u64,
     unmapped_headers: u64,
     problems: Vec<ContainerProblem>,
+    /// The dictionary each collection's newest checkpoint names, by
+    /// collection id, where the directory says which collection a block is.
+    current_dictionaries: BTreeMap<u32, u32>,
 }
 
 impl Findings {
@@ -123,8 +138,9 @@ impl ContainerFile {
     /// anything and without the key, for `fylo verify`: both superblock
     /// copies, the file's length against the map, the header of every
     /// extent the map shows in use, every collection block and slot pair in
-    /// the directory, and each collection's newest location and index
-    /// snapshots against their SHA-256. Works on readers and on a locked
+    /// the directory, each collection's newest location and index
+    /// snapshots against their SHA-256, and its dictionaries and the
+    /// dictionary every frame names. Works on readers and on a locked
     /// encrypted file; an unlocked or plain file also has every extent
     /// owner checked against the collections that exist.
     ///
@@ -149,6 +165,7 @@ impl ContainerFile {
         self.verify_length(file_bytes, &mut findings);
         self.verify_extents(file_bytes, &mut findings)?;
         self.verify_directory(file_bytes, &mut findings)?;
+        self.verify_frame_dictionaries(file_bytes, &mut findings)?;
         Ok(findings.report())
     }
 
@@ -263,6 +280,21 @@ impl ContainerFile {
                         ),
                     );
                 }
+                Ok(_)
+                    if kind == ContainerExtentKind::Dictionary
+                        && (extent + 1) * extent_bytes <= file_bytes =>
+                {
+                    if let Err(error) = self.stored_dictionary(extent)? {
+                        findings.error(
+                            "dictionaryDamaged",
+                            Some(extent),
+                            format!(
+                                "dictionary extent {extent} of collection {owner} is damaged: \
+                                 {error}; the records compressed with it cannot be read"
+                            ),
+                        );
+                    }
+                }
                 Ok(_) => {}
             }
             verify_owner(extent, kind, owner, collection_ids.as_deref(), findings);
@@ -345,6 +377,9 @@ impl ContainerFile {
                 findings,
             );
             if let Some((slot, _)) = ContainerCheckpointSlot::newest(checkpoints) {
+                if let Some(named) = slot.dictionary {
+                    self.verify_named_dictionary((block, collection), named, file_bytes, findings)?;
+                }
                 for (kind, snapshot) in [
                     (ContainerExtentKind::Locations, slot.locations),
                     (ContainerExtentKind::Index, slot.index),
@@ -464,6 +499,182 @@ impl ContainerFile {
                      will be rebuilt from the segments"
                 ),
             );
+        }
+        Ok(())
+    }
+
+    /// The header of the dictionary in `extent`, checked with its stored
+    /// bytes, or what is wrong with it. An extent the map does not reach
+    /// reads as truncated.
+    fn stored_dictionary(
+        &self,
+        extent: u64,
+    ) -> Result<Result<ContainerDictionaryHeader, ContainerFormatError>, ContainerError> {
+        let mut bytes = [0_u8; ContainerDictionaryHeader::ENCODED_BYTES];
+        match self.read_payload(extent, 0, &mut bytes) {
+            Ok(()) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::InvalidInput | std::io::ErrorKind::UnexpectedEof
+                ) =>
+            {
+                return Ok(Err(ContainerFormatError::Truncated));
+            }
+            Err(error) => return Err(error.into()),
+        }
+        let header = match ContainerDictionaryHeader::decode(&bytes) {
+            Ok(header) => header,
+            Err(error) => return Ok(Err(error)),
+        };
+        let mut stored = vec![0_u8; header.length as usize];
+        if self
+            .read_payload(extent, bytes.len() as u64, &mut stored)
+            .is_err()
+        {
+            return Ok(Err(ContainerFormatError::Oversized));
+        }
+        Ok(header.check(&stored).map(|()| header))
+    }
+
+    /// Check the dictionary a checkpoint slot names: an extent inside the
+    /// file holding a dictionary of the collection, with the id and length
+    /// the slot records, and stored bytes that match their checksum.
+    fn verify_named_dictionary(
+        &self,
+        (block, collection): (u32, Option<u32>),
+        (extent, id, length): (u64, u32, u32),
+        file_bytes: u64,
+        findings: &mut Findings,
+    ) -> Result<(), ContainerError> {
+        if let Some(collection) = collection {
+            findings.current_dictionaries.insert(collection, id);
+        }
+        let header = self
+            .read_extent_header(extent, file_bytes)?
+            .and_then(Result::ok)
+            .filter(|header| header.index == extent);
+        let holds = header.is_some_and(|header| {
+            header.kind == ContainerExtentKind::Dictionary
+                && collection.is_none_or(|collection| header.owner == collection)
+        });
+        if !holds {
+            findings.error(
+                "dictionaryMismatch",
+                Some(extent),
+                format!(
+                    "collection block {block}'s checkpoint names dictionary {id} in extent \
+                     {extent}, which does not hold a dictionary of that collection"
+                ),
+            );
+            return Ok(());
+        }
+        match self.stored_dictionary(extent)? {
+            Ok(header) if (header.id, header.length) == (id, length) => {}
+            Ok(header) => findings.error(
+                "dictionaryMismatch",
+                Some(extent),
+                format!(
+                    "collection block {block}'s checkpoint names dictionary {id} of {length} \
+                     bytes in extent {extent}, which holds dictionary {} of {} bytes",
+                    header.id, header.length
+                ),
+            ),
+            // The extent check already reported a mapped one.
+            Err(_) if self.allocator.in_use(extent).is_some() => {}
+            Err(error) => findings.error(
+                "dictionaryDamaged",
+                Some(extent),
+                format!("dictionary {id} in extent {extent} is damaged: {error}"),
+            ),
+        }
+        Ok(())
+    }
+
+    /// Check that every frame of every mapped segment extent names a
+    /// dictionary its collection holds, and warn of a dictionary that
+    /// neither a frame nor a checkpoint names, which the next compaction
+    /// releases. Each segment is read to the first frame that does not
+    /// check; whatever follows is a torn tail or damage that recovery and
+    /// `fylo verify-segments` report.
+    fn verify_frame_dictionaries(
+        &self,
+        file_bytes: u64,
+        findings: &mut Findings,
+    ) -> Result<(), ContainerError> {
+        let mut held: BTreeMap<u32, BTreeMap<u32, u64>> = BTreeMap::new();
+        let mut segments: BTreeMap<u32, Vec<u64>> = BTreeMap::new();
+        let in_file = |extent: u64| (extent + 1) * self.extent_bytes() <= file_bytes;
+        for extent in 1..self.allocator.extent_count() {
+            match self.allocator.in_use(extent) {
+                Some((ContainerExtentKind::Dictionary, owner, _)) if in_file(extent) => {
+                    if let Ok(header) = self.stored_dictionary(extent)? {
+                        held.entry(owner).or_default().insert(header.id, extent);
+                    }
+                }
+                Some((ContainerExtentKind::Segment, owner, _)) if in_file(extent) => {
+                    segments.entry(owner).or_default().push(extent);
+                }
+                _ => {}
+            }
+        }
+        let capacity = usize::try_from(self.payload_capacity())
+            .map_err(|_| ContainerFormatError::Oversized)?;
+        let mut payload = vec![0_u8; capacity];
+        for (owner, extents) in segments {
+            let frames = crate::segments::ContainerFrames::new(owner, Vec::new(), 0);
+            let dictionaries = held.remove(&owner).unwrap_or_default();
+            let mut named = BTreeSet::new();
+            let mut missing: BTreeMap<u32, (u64, u64)> = BTreeMap::new();
+            for extent in extents {
+                self.read_payload(extent, 0, &mut payload)?;
+                let Ok((bodies, _)) = LogScan::stored_bodies(&payload, &frames) else {
+                    continue;
+                };
+                for (_, stored) in bodies {
+                    let Ok(parsed) = crate::ContainerStoredBody::parse(stored) else {
+                        continue;
+                    };
+                    let id = parsed.dictionary_id;
+                    if id == 0 {
+                        continue;
+                    }
+                    named.insert(id);
+                    if !dictionaries.contains_key(&id) {
+                        missing.entry(id).or_insert((extent, 0)).1 += 1;
+                    }
+                }
+            }
+            for (id, (extent, records)) in missing {
+                findings.error(
+                    "dictionaryMissing",
+                    Some(extent),
+                    format!(
+                        "{records} records of collection {owner} name dictionary {id}, which \
+                         the file does not hold or holds damaged; they cannot be read"
+                    ),
+                );
+            }
+            let unused = dictionaries
+                .into_iter()
+                .filter(|(id, _)| !named.contains(id))
+                .collect();
+            held.insert(owner, unused);
+        }
+        for (owner, unused) in held {
+            let current = findings.current_dictionaries.get(&owner).copied();
+            for (id, extent) in unused {
+                if Some(id) != current {
+                    findings.warning(
+                        "dictionaryUnused",
+                        Some(extent),
+                        format!(
+                            "dictionary {id} of collection {owner} is named by no record or \
+                             checkpoint; the next compaction releases it"
+                        ),
+                    );
+                }
+            }
         }
         Ok(())
     }

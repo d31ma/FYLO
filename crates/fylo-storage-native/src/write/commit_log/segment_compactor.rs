@@ -55,6 +55,12 @@ impl SegmentCompactor {
         active: LogSegment,
     ) -> Result<Option<Self>, NativeStorageError> {
         let medium = collection.segment_medium()?;
+        // A newer dictionary is made current first, so the copy, the
+        // checkpoint that seals the active segment and the next segment
+        // all use it, and the one it replaces can be released at adoption:
+        // the active segment is sealed for it even when it holds no
+        // documents, so no record left in it names the old one.
+        let retrained = medium.retrain_dictionary()?;
         let store = SegmentStore::open_for_writer(Arc::clone(&medium))?;
         let active_number = active.sequence();
         let holds_documents = store
@@ -62,7 +68,7 @@ impl SegmentCompactor {
             .rows()
             .iter()
             .any(|row| row.segment == active_number);
-        let active = if holds_documents {
+        let active = if holds_documents || retrained {
             SegmentCheckpoint::seal(collection, active, stored.generation)?
         } else {
             active
@@ -162,6 +168,7 @@ impl SegmentCompactor {
         SegmentCheckpoint::publish_current(collection, &stable)?;
         SegmentRecovery::remove_unreferenced(&*medium, active.sequence())?;
         failpoint("after-compaction-remove")?;
+        medium.release_unused_dictionaries()?;
         Ok(CompactionReport {
             segments_compacted: self.candidates.len(),
             documents_copied: rows.len(),

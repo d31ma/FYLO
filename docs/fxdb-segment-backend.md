@@ -221,14 +221,51 @@ body compressed on its own. The length and CRC cover the stored bytes, so
 - A damaged frame still names its documents to salvage when its stored body
   decompresses, as when only its checksum was hit.
 
-**Still to come.** Per-collection dictionaries: training on the first 1 MiB
-of documents at a checkpoint, a `dictionary` extent the checkpoint slot names,
-loading every dictionary a collection's records name, retraining at
-compaction, and their checks in `fylo verify`. The frame header, the
-dictionary id and a codec per dictionary are in place; a collection has no
-dictionary yet, so a frame naming one is refused as damage. Sealing records
-in an encrypted file. Setting the superblock's codec feature bits, which
-`fylo inspect` reports.
+**Dictionaries (landed).** `segments/container_medium/dictionaries.rs` and
+`container_file/dictionary.rs`, ADR 0016 section 8:
+
+- A collection writes without a dictionary until its records reach 1 MiB.
+  The first location checkpoint that finds them trains a 32 KiB zstd
+  dictionary on those records (natively only: the trainer is the C
+  library's), writes it to a `dictionary` extent and names it in the
+  checkpoint slot (extent, id, stored length). Records written after that
+  checkpoint use it: zstd natively, LZ4 with the same bytes as its prefix in
+  the browser. A collection whose records cannot train one is not retried
+  until the writer reopens.
+- A `dictionary` extent holds a 32-byte header (`FXDC`, the id, whether the
+  bytes are sealed, their length and CRC-32C) and the dictionary, sealed in
+  an encrypted file with `ContainerSealContext::Dictionary` for its
+  collection and id. It never changes, so a checkpoint that keeps naming it
+  carries the slot field and needs no copy.
+- Every record keeps the dictionary it was written with until compaction
+  rewrites it, so a reader loads whichever dictionary a frame names from the
+  collection's `dictionary` extents the first time it meets it. A frame
+  naming a dictionary the file does not hold, or holds damaged, fails as
+  `EFXDB_CORRUPT` and is never taken for a torn tail: recovery refuses the
+  collection rather than cut records off.
+- Compaction trains a candidate on the newest 1 MiB of records and keeps it
+  only when it stores them at least 10% smaller than the current one. A new
+  dictionary is named by its own checkpoint before the active segment is
+  sealed, so the copy and every later record use it. After the compacted
+  segments are removed, every dictionary that is neither current nor named
+  by a remaining record is released; when any segment cannot be read to its
+  end, none is.
+- A crash between writing a dictionary and the slot naming it leaves one no
+  record names. It is harmless: the next dictionary takes a higher id,
+  `fylo verify` warns of it (`dictionaryUnused`), and the next compaction
+  releases it.
+- `fylo verify` checks every `dictionary` extent's bytes against its header,
+  the dictionary each slot names, and that every frame's dictionary id
+  resolves (`dictionaryDamaged`, `dictionaryMismatch`, `dictionaryMissing`),
+  all without the key. `fylo inspect` reports each collection's current
+  dictionary and how many it holds.
+
+**Codec feature bits (landed).** A writer's first claim of a collection sets
+the superblock's `INCOMPAT_CODEC_ZSTD` (natively) or `INCOMPAT_CODEC_LZ4`
+(the browser) through a map checkpoint under the allocation byte, the way
+schema versions set theirs, and `fylo inspect` lists them under `codecs`.
+
+**Still to come.** Sealing records in an encrypted file.
 
 ## Order of work
 

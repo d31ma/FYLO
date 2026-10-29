@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use fylo_format::{LogFormatError, LogRecordKind, LogScan, LogSegmentHeader, LogSegmentKind};
+use fylo_format::{LogRecordKind, LogScan, LogSegmentHeader, LogSegmentKind};
 
 use super::compaction_manifest::CompactionManifest;
 use super::segment_rebuild::SegmentRebuild;
@@ -217,7 +217,7 @@ impl LocationTable {
                     };
                     return Ok((Some(scan), Some(offset)));
                 }
-                Err(error @ LogFormatError::UnsupportedVersion) => {
+                Err(error) if error.is_unreadable() => {
                     return Err(SegmentReader::frame_error(
                         error,
                         &format!("segment {number} at byte {offset}"),

@@ -102,6 +102,29 @@ impl LogRecord {
         bytes: &[u8],
         codec: &dyn LogBodyCodec,
     ) -> Result<(Self, usize), LogFormatError> {
+        let (body, end) = Self::stored_body(bytes, codec)?;
+        let body = codec.load(body)?;
+        if body.len() < Self::FIXED_BODY_BYTES {
+            return Err(LogFormatError::InvalidField);
+        }
+        if body.len() > Self::MAX_BODY_BYTES {
+            return Err(LogFormatError::Oversized);
+        }
+        Ok((Self::decode_body(&body)?, end))
+    }
+
+    /// The stored body of the frame at the start of `bytes`, checked
+    /// against the frame's length and checksum but not loaded, and the
+    /// number of bytes the frame occupies.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Truncated` for a short frame, `Oversized` for a length the
+    /// codec does not allow, or `ChecksumMismatch`.
+    pub fn stored_body<'a>(
+        bytes: &'a [u8],
+        codec: &dyn LogBodyCodec,
+    ) -> Result<(&'a [u8], usize), LogFormatError> {
         let frame = bytes
             .get(..Self::FRAME_BYTES)
             .ok_or(LogFormatError::Truncated)?;
@@ -117,14 +140,7 @@ impl LogRecord {
         if Crc32c::checksum(body) != checksum {
             return Err(LogFormatError::ChecksumMismatch);
         }
-        let body = codec.load(body)?;
-        if body.len() < Self::FIXED_BODY_BYTES {
-            return Err(LogFormatError::InvalidField);
-        }
-        if body.len() > Self::MAX_BODY_BYTES {
-            return Err(LogFormatError::Oversized);
-        }
-        Ok((Self::decode_body(&body)?, end))
+        Ok((body, end))
     }
 
     /// The manifest bytes of a frame that does not decode, read as far as

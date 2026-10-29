@@ -20,6 +20,7 @@ use crate::container_allocator::{
 };
 use crate::{ContainerCipher, ContainerCipherError, ContainerSealContext};
 
+mod dictionary;
 mod punch;
 use punch::punch_hole;
 mod snapshot;
@@ -186,6 +187,12 @@ pub struct ContainerCollectionReport {
     pub records: u64,
     /// The newest checkpoint's LSN, if it has checkpointed.
     pub checkpoint_lsn: Option<u64>,
+    /// The id of the dictionary new records are compressed with, as the
+    /// newest checkpoint names it, if the collection has one.
+    pub dictionary: Option<u32>,
+    /// Dictionaries the map shows the collection holding: the current one
+    /// and older ones some record may still name.
+    pub dictionaries: u64,
 }
 
 /// The file under a container: natively the shared lock handle, which every
@@ -1084,6 +1091,29 @@ impl ContainerFile {
         Ok(true)
     }
 
+    /// Set incompatible feature bits in the superblock, durably, before the
+    /// file holds what they name: a writer about to write a codec the
+    /// superblock does not list yet (ADR 0016 sections 2 and 8). It works as
+    /// [`Self::add_read_only_compat`] does. Returns whether anything changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ReadOnly` for a reader, or the checkpoint failure, after
+    /// which the superblock in memory is as it was.
+    pub fn add_incompat(&mut self, features: u32) -> Result<bool, ContainerError> {
+        self.require_writable()?;
+        let previous = self.superblock.incompat;
+        if previous & features == features {
+            return Ok(false);
+        }
+        self.superblock.incompat = previous | features;
+        if let Err(error) = self.checkpoint() {
+            self.superblock.incompat = previous;
+            return Err(error);
+        }
+        Ok(true)
+    }
+
     /// Return the free extents at the end of the file to the filesystem:
     /// checkpoint a map that no longer describes them, then cut the file.
     /// A crash before the cut leaves a longer file, which opens as before.
@@ -1168,9 +1198,29 @@ impl ContainerFile {
                         .as_ref()
                         .map_or(0, |slot| slot.record_count),
                     checkpoint_lsn: collection.checkpoint.as_ref().map(|slot| slot.lsn),
+                    dictionary: collection
+                        .checkpoint
+                        .as_ref()
+                        .and_then(|slot| slot.dictionary)
+                        .map(|(_, id, _)| id),
+                    dictionaries: self
+                        .allocator
+                        .owned(ContainerExtentKind::Dictionary, collection.header.id)
+                        .len() as u64,
                 })
                 .collect(),
         })
+    }
+
+    /// Read and decode the header of `extent`.
+    fn read_extent_header_at(&self, extent: u64) -> Result<ContainerExtentHeader, ContainerError> {
+        let at = extent
+            .checked_mul(self.extent_bytes())
+            .filter(|_| extent >= 1)
+            .ok_or(ContainerAllocatorError::OutOfRange)?;
+        let mut bytes = [0_u8; ContainerExtentHeader::ENCODED_BYTES];
+        read_exact_at(self.file(), &mut bytes, at)?;
+        Ok(ContainerExtentHeader::decode(&bytes)?)
     }
 
     fn directory_blocks(&self) -> u64 {

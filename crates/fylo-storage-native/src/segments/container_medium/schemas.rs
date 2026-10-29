@@ -163,7 +163,7 @@ impl ContainerMedium {
     /// `checkpoint` names it: the same run in a plain file, and a copy
     /// sealed for the new checkpoint in an encrypted one. The caller
     /// releases the run it replaces once the new slot is recorded.
-    fn carried(
+    pub(super) fn carried(
         file: &mut ContainerFile,
         (id, kind): (u32, ContainerExtentKind),
         (number, run): (u64, ContainerSnapshotRef),
@@ -178,7 +178,7 @@ impl ContainerMedium {
 
     /// [`Self::carried`] for a derived run that may be dropped: one that
     /// cannot be read is carried as none, to be rebuilt.
-    fn carried_if_readable(
+    pub(super) fn carried_if_readable(
         file: &mut ContainerFile,
         (id, kind): (u32, ContainerExtentKind),
         (number, run): (u64, Option<ContainerSnapshotRef>),

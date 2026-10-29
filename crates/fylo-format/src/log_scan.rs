@@ -1,5 +1,8 @@
 use crate::{LogBodyCodec, LogFormatError, LogRecord, LogSegmentHeader, PlainBody};
 
+/// Stored frame bodies with their offsets, and the length they reach.
+type StoredBodies<'a> = (Vec<(u64, &'a [u8])>, u64);
+
 /// The valid records of one segment, read front to back.
 ///
 /// A scan stops at the first record that fails to decode or, in a segment
@@ -45,6 +48,33 @@ impl LogScan {
         };
         scan.extend(bytes, header.first_lsn, codec);
         Ok(scan)
+    }
+
+    /// The stored bodies of a segment's frames, front to back, each checked
+    /// against its frame's length and checksum but not loaded, with the
+    /// offset its frame starts at, and the length the frames reach. It
+    /// stops at the first frame that does not check, as a scan does, but
+    /// needs neither a codec's dictionaries nor a key: `fylo verify` reads
+    /// the codec header of each this way.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only when the header itself is invalid.
+    pub fn stored_bodies<'a>(
+        bytes: &'a [u8],
+        codec: &dyn LogBodyCodec,
+    ) -> Result<StoredBodies<'a>, LogFormatError> {
+        let kind = LogSegmentHeader::decode(bytes)?.kind;
+        let mut bodies = Vec::new();
+        let mut offset = LogSegmentHeader::ENCODED_BYTES;
+        while let Some(rest) = bytes.get(offset..).filter(|rest| !rest.is_empty()) {
+            let Ok((body, length)) = kind.stored_frame(rest, codec) else {
+                break;
+            };
+            bodies.push((offset as u64, body));
+            offset += length;
+        }
+        Ok((bodies, offset as u64))
     }
 
     /// Continue a scan over bytes appended after `valid_length`.
@@ -163,6 +193,26 @@ mod tests {
         scan.resume(&long);
         assert_eq!(scan.records.len(), 3);
         assert_eq!(scan.valid_length, long.len() as u64);
+    }
+
+    #[test]
+    fn stored_bodies_stop_where_a_scan_does() {
+        let bytes = segment_of(LogSegmentKind::Documents, &[10, 11, 12]);
+        let scan = LogScan::segment(&bytes).unwrap();
+        let (bodies, end) = LogScan::stored_bodies(&bytes, &crate::PlainBody).unwrap();
+        assert_eq!(end, bytes.len() as u64);
+        assert_eq!(
+            bodies.iter().map(|(offset, _)| *offset).collect::<Vec<_>>(),
+            scan.records
+                .iter()
+                .map(|(offset, _)| *offset)
+                .collect::<Vec<_>>()
+        );
+        let second = usize::try_from(bodies[1].0).unwrap();
+        let mut damaged = bytes.clone();
+        damaged[second + 20] ^= 1;
+        let (bodies, end) = LogScan::stored_bodies(&damaged, &crate::PlainBody).unwrap();
+        assert_eq!((bodies.len(), end), (1, second as u64));
     }
 
     #[test]

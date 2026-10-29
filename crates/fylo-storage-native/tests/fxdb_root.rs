@@ -482,7 +482,10 @@ const WAIT: Duration = Duration::from_mins(2);
 
 fn padded(collection: &str, number: usize) -> Value {
     let mut value = body(collection, number);
-    value["padding"] = Value::from(fylo_test_support::incompressible_text(PADDING_CHARS));
+    value["padding"] = Value::from(fylo_test_support::incompressible_text(
+        u64::try_from(number).unwrap(),
+        PADDING_CHARS,
+    ));
     value
 }
 

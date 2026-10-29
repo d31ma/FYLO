@@ -148,6 +148,32 @@ impl LogSegmentKind {
         Ok((record, Self::MARKER_BYTES + length))
     }
 
+    /// The stored body of the frame of this kind at the start of `bytes`,
+    /// checked but not loaded, and the bytes the frame occupies
+    /// ([`LogRecord::stored_body`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidField` when a marked frame does not start with the
+    /// marker, or what [`LogRecord::stored_body`] returns.
+    pub fn stored_frame<'a>(
+        self,
+        bytes: &'a [u8],
+        codec: &dyn LogBodyCodec,
+    ) -> Result<(&'a [u8], usize), LogFormatError> {
+        if !self.marked() {
+            return LogRecord::stored_body(bytes, codec);
+        }
+        let marker = bytes
+            .get(..Self::MARKER_BYTES)
+            .ok_or(LogFormatError::Truncated)?;
+        if marker != Self::MARKER {
+            return Err(LogFormatError::InvalidField);
+        }
+        let (body, length) = LogRecord::stored_body(&bytes[Self::MARKER_BYTES..], codec)?;
+        Ok((body, Self::MARKER_BYTES + length))
+    }
+
     /// The offset of the next sync marker at or after `from`, if any.
     #[must_use]
     pub fn next_marker(bytes: &[u8], from: usize) -> Option<usize> {

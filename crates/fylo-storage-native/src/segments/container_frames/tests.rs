@@ -234,7 +234,7 @@ fn padded(number: usize, round: usize) -> serde_json::Value {
         "name": format!("user{number}"),
         "round": round,
         "notes": "Leave it at the side door if nobody answers the bell. ".repeat(40),
-        "noise": fylo_test_support::incompressible_text(2048),
+        "noise": fylo_test_support::incompressible_text(u64::try_from(number * 1000 + round).unwrap(), 2048),
     })
 }
 

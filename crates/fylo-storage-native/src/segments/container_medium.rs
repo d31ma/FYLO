@@ -22,7 +22,8 @@
 //! then settles what a writer that stopped left in the collection.
 //!
 //! Records are a directory collection's frames with their bodies compressed
-//! ([`super::ContainerFrames`]); no dictionaries and no encryption yet.
+//! ([`super::ContainerFrames`]), with the collection's dictionary once it has
+//! one ([`dictionaries`]); no encryption yet.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -97,6 +98,9 @@ struct MediumState {
     scanned: BTreeMap<u64, u64>,
     /// This process's compacted copy, not yet adopted, as (extent, number).
     compaction: Option<(u64, u64)>,
+    /// zstd could not train a dictionary on the collection's records, so
+    /// this process stops trying.
+    untrainable: bool,
 }
 
 impl ContainerMedium {
@@ -352,6 +356,13 @@ impl Shared {
     /// map does not show is taken back, and snapshot runs the newest
     /// checkpoint slot does not name are released. A collection dropped
     /// since this medium opened is not found.
+    ///
+    /// New records are then written with the dictionary the newest
+    /// checkpoint names, and the superblock lists the codecs this writer
+    /// writes before it writes any (ADR 0016 section 2): a build that does
+    /// not know one refuses the file rather than misread its records.
+    /// Dictionaries no slot names are left alone: a record may name one,
+    /// and a compaction releases those none does.
     fn settle(&self, open: &mut Open) -> Result<(), NativeStorageError> {
         let (id, block) = (self.collection, self.block);
         if !open.collections().iter().any(|collection| {
@@ -394,6 +405,12 @@ impl Shared {
         ] {
             ContainerMedium::release_runs(open, (id, kind), kept.as_ref())
                 .map_err(ContainerMedium::error)?;
+        }
+        self.frames
+            .write_with(self.named_dictionary(open, checkpoint.as_ref()));
+        let features = self.frames.codec_features();
+        if open.superblock().incompat & features != features {
+            open.add_incompat_feature(features)?;
         }
         Ok(())
     }
@@ -818,7 +835,10 @@ impl SegmentMedium for ContainerMedium {
     ///
     /// The prefix index folds with it into an `index` run the same slot
     /// names, and every other index run of the collection is released. The
-    /// slot keeps the schemas run the previous one named.
+    /// slot keeps the schemas run and the dictionary the previous one
+    /// named, or names the collection's first dictionary when this
+    /// checkpoint trains it ([`dictionaries`]); records are written with
+    /// that only once the slot is recorded.
     fn replace_location_snapshot(&self, bytes: &[u8]) -> Result<(), NativeStorageError> {
         let (id, block) = (self.shared.collection, self.shared.block);
         let open = self.shared.writable()?;
@@ -838,8 +858,16 @@ impl SegmentMedium for ContainerMedium {
             previous.as_ref(),
             RecordPosition::published(&Self::slot_record(&slot)),
         )?;
+        let mut trained = self.dictionary_due(previous.as_ref())?;
         self.shared.writable()?.change_map(|open| {
             let checkpoint = previous.map_or(1, |previous| previous.checkpoint + 1);
+            let dictionary = match trained.as_mut() {
+                Some(trained) => {
+                    trained.id = Self::next_dictionary_id(open, id, previous.as_ref())?;
+                    Some(open.write_dictionary(id, trained).map_err(Self::error)?)
+                }
+                None => previous.and_then(|previous| previous.dictionary),
+            };
             let locations = open
                 .write_snapshot(id, LOCATIONS, checkpoint, bytes)
                 .map_err(Self::error)?;
@@ -864,7 +892,7 @@ impl SegmentMedium for ContainerMedium {
                     locations: Some(locations),
                     index,
                     schemas,
-                    dictionary: None,
+                    dictionary,
                 },
             )
             .map_err(Self::error)?;
@@ -873,7 +901,11 @@ impl SegmentMedium for ContainerMedium {
             }
             Self::release_runs(open, (id, INDEX), index.as_ref()).map_err(Self::error)?;
             Self::release_runs(open, (id, SCHEMAS), schemas.as_ref()).map_err(Self::error)
-        })
+        })?;
+        if trained.is_some() {
+            self.shared.frames.write_with(trained);
+        }
+        Ok(())
     }
 
     /// The `schemas` run the newest checkpoint slot names, or `None` when
@@ -912,6 +944,18 @@ impl SegmentMedium for ContainerMedium {
             return Ok(());
         }
         open.change_map(|open| open.add_read_only_feature(feature))
+    }
+
+    /// Train a newer dictionary when it stores the newest records at
+    /// least 10% smaller ([`dictionaries`]).
+    fn retrain_dictionary(&self) -> Result<bool, NativeStorageError> {
+        self.retrain()
+    }
+
+    /// Release the dictionaries neither the checkpoint slot nor a record
+    /// names.
+    fn release_unused_dictionaries(&self) -> Result<(), NativeStorageError> {
+        self.release_unused()
     }
 
     fn has_location_log(&self) -> bool {
@@ -1093,6 +1137,7 @@ impl SegmentHandle for ContainerSegment {
 }
 
 mod database;
+mod dictionaries;
 mod open;
 mod prefix_index;
 mod schemas;

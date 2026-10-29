@@ -31,14 +31,17 @@ impl<const N: usize> McdcCase<N> {
     }
 }
 
-/// `chars` characters of fixed text that does not compress: each is one of
-/// 64, picked by a pseudo-random sequence, so a record padded with it keeps
-/// six bits of every character through zstd or LZ4. Tests that fill `.fxdb`
-/// extents by size pad documents with it, since their records are compressed.
+/// `chars` characters of text that does not compress, drawn from `seed`:
+/// each is one of 64, picked by a pseudo-random sequence, so a record padded
+/// with it keeps six bits of every character through zstd or LZ4. Tests that
+/// fill `.fxdb` extents by size pad each document with its own seed, since
+/// their records are compressed, and a collection's dictionary learns text
+/// that its documents repeat.
 #[must_use]
-pub fn incompressible_text(chars: usize) -> String {
+pub fn incompressible_text(seed: u64, chars: usize) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-    let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+    // A xorshift state must not be zero.
+    let mut state: u64 = (0x9E37_79B9_7F4A_7C15 ^ seed.wrapping_mul(0xA24B_AED4_963E_E407)) | 1;
     (0..chars)
         .map(|_| {
             state ^= state << 13;

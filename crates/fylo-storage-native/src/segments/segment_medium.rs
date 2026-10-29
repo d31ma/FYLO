@@ -148,6 +148,21 @@ pub(crate) trait SegmentMedium: Debug + Send + Sync {
         Ok(())
     }
 
+    /// Before a compaction copies records, under the collection lock:
+    /// train a newer compression dictionary when it stores the newest
+    /// records enough smaller, so that the copy and every later record use
+    /// it. Returns whether new records now use another dictionary. A
+    /// medium that stores bodies as is has no dictionary.
+    fn retrain_dictionary(&self) -> Result<bool, NativeStorageError> {
+        Ok(false)
+    }
+
+    /// After a compaction removed the segments it replaced: release every
+    /// compression dictionary no record names any longer.
+    fn release_unused_dictionaries(&self) -> Result<(), NativeStorageError> {
+        Ok(())
+    }
+
     /// Whether location rows go to a location log. A medium without one
     /// (a `.fxdb` container) keeps them only in memory: a location table is
     /// its snapshot and the rows the records after the snapshot's position

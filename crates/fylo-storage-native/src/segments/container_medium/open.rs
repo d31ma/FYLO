@@ -319,6 +319,19 @@ impl Open {
         Ok(())
     }
 
+    /// Set incompatible feature bits in the superblock durably, through a
+    /// checkpoint that makes this process's seals durable too.
+    pub(crate) fn add_incompat_feature(&mut self, features: u32) -> Result<(), NativeStorageError> {
+        if self
+            .file
+            .add_incompat(features)
+            .map_err(ContainerMedium::error)?
+        {
+            self.seals.clear();
+        }
+        Ok(())
+    }
+
     /// Read the map and the directory again if a checkpoint moved them,
     /// rebuilding the segment tables and sealing again what this process
     /// sealed since its last checkpoint. Returns whether it read them.

@@ -17,6 +17,7 @@ use crate::{
     NativeStorageErrorCode, NativeWriteRoot, PutDocumentOptions, RootConfig,
 };
 
+mod dictionaries;
 mod processes;
 mod schemas;
 
@@ -159,7 +160,7 @@ fn put_into(
 ) -> Result<(), crate::NativeStorageError> {
     let body = json!({
         "name": format!("user{number}"),
-        "padding": fylo_test_support::incompressible_text(5472),
+        "padding": fylo_test_support::incompressible_text(u64::try_from(number).unwrap(), 5472),
     })
     .to_string();
     writer.put_document(

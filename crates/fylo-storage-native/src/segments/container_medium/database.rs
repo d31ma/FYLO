@@ -7,6 +7,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 
+use super::dictionaries::FileDictionaries;
 use super::{ContainerMedium, ContainerOpen, MediumState, Shared};
 use crate::ContainerCollection;
 use crate::segments::{ContainerFrames, MediumIdentity};
@@ -36,7 +37,13 @@ impl ContainerMedium {
             collection: collection.header.id,
             block: collection.block,
             capacity,
-            frames: Arc::new(ContainerFrames::new(collection.header.id, Vec::new(), 0)),
+            frames: Arc::new(ContainerFrames::with_source(
+                collection.header.id,
+                Arc::new(FileDictionaries {
+                    file: Arc::clone(file),
+                    collection: collection.header.id,
+                }),
+            )),
             state: Mutex::new(MediumState::default()),
             claim: Mutex::new(None),
         });
