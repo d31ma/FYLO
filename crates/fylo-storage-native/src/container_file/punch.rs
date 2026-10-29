@@ -7,7 +7,7 @@
 //! - Linux and Android: `fallocate(FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE)`
 //!   through `rustix`, which needs no `unsafe` here.
 //! - macOS and the other Apple targets: `fcntl(F_PUNCHHOLE)`. APFS supports
-//!   it; HFS+ and most network filesystems answer `ENOTSUP`.
+//!   it; HFS+ and most network filesystems answer `ENOTSUP`, exFAT `ENOTTY`.
 //! - Windows: the file is marked sparse with `FSCTL_SET_SPARSE`, then the
 //!   range is deallocated with `FSCTL_SET_ZERO_DATA`. Without the sparse mark
 //!   that call writes zeros and frees nothing, so a filesystem that refuses
@@ -33,7 +33,9 @@ pub(super) fn punch_hole(file: &File, offset: u64, length: u64) -> io::Result<bo
         length,
     ) {
         Ok(()) => Ok(true),
-        Err(rustix::io::Errno::OPNOTSUPP | rustix::io::Errno::NOSYS) => Ok(false),
+        Err(rustix::io::Errno::OPNOTSUPP | rustix::io::Errno::NOSYS | rustix::io::Errno::NOTTY) => {
+            Ok(false)
+        }
         Err(error) => Err(error.into()),
     }
 }
@@ -72,10 +74,13 @@ pub(super) fn punch_hole(file: &File, offset: u64, length: u64) -> io::Result<bo
         let error = io::Error::last_os_error();
         match error.raw_os_error() {
             Some(libc::EINTR) => {}
-            // The filesystem cannot punch (`ENOTSUP`, `EOPNOTSUPP`), or will
-            // not for this range on this volume (`EINVAL`, for a block size
-            // the extent is not a multiple of).
-            Some(libc::ENOTSUP | libc::EOPNOTSUPP | libc::EINVAL) => return Ok(false),
+            // The filesystem cannot punch (`ENOTSUP`, `EOPNOTSUPP`, or
+            // `ENOTTY` from the exFAT driver), or will not for this range on
+            // this volume (`EINVAL`, for a block size the extent is not a
+            // multiple of).
+            Some(libc::ENOTSUP | libc::EOPNOTSUPP | libc::ENOTTY | libc::EINVAL) => {
+                return Ok(false);
+            }
             _ => return Err(error),
         }
     }
