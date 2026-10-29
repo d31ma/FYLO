@@ -87,12 +87,12 @@ fn source(path: &Path) -> Vec<(u64, u64)> {
 
 #[test]
 fn a_sealed_image_keeps_every_extent_in_use_renumbered_and_no_free_one() {
-    let scratch = scratch("fxdb-sealing");
-    let path = scratch.0.join("source.fxdb");
+    let scratch = scratch("vdbx-sealing");
+    let path = scratch.0.join("source.vdbx");
     let segments = source(&path);
     let reader = ContainerFile::open_reader(&path).expect("open reader");
     assert!(!reader.allocator().free_extents().is_empty());
-    let out = scratch.0.join("sealed.fxdb");
+    let out = scratch.0.join("sealed.vdbx");
     let report = reader.write_sealed(&out, None).expect("seal");
     assert!(report.stored_bytes < report.image_bytes / 10, "{report:?}");
     assert!(reader.write_sealed(&out, None).is_err(), "an existing file");
@@ -144,10 +144,10 @@ fn a_sealed_image_keeps_every_extent_in_use_renumbered_and_no_free_one() {
 
 #[test]
 fn an_encrypted_sealed_image_opens_only_with_its_key() {
-    let scratch = scratch("fxdb-sealing-encrypted");
-    let path = scratch.0.join("source.fxdb");
+    let scratch = scratch("vdbx-sealing-encrypted");
+    let path = scratch.0.join("source.vdbx");
     source(&path);
-    let out = scratch.0.join("sealed.fxdb");
+    let out = scratch.0.join("sealed.vdbx");
     ContainerFile::open_reader(&path)
         .expect("open reader")
         .write_sealed(&out, Some(b"the sealing secret"))

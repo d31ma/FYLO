@@ -4854,16 +4854,16 @@ function createBrowserClient(options = {}) {
 }
 var fylo = createBrowserClient();
 var client_default = fylo;
-// src/browser/fxdb-names.mjs
-var WORKING_COPY_DIRECTORY = "fylo-fxdb";
+// src/browser/vdbx-names.mjs
+var WORKING_COPY_DIRECTORY = "fylo-vdbx";
 function isWorkingCopyName(name) {
-  return typeof name === "string" && name.length <= 200 && /^[A-Za-z0-9][A-Za-z0-9 ._()-]*\.fxdb$/.test(name) && !name.includes("..");
+  return typeof name === "string" && name.length <= 200 && /^[A-Za-z0-9][A-Za-z0-9 ._()-]*\.vdbx$/.test(name) && !name.includes("..");
 }
 
-// src/browser/fxdb-client.mjs
-var FXDB_MAGIC = Object.freeze([137, 70, 88, 68, 66, 13, 10, 26]);
-var FXDB_MEDIA_TYPE = "application/vnd.d31ma.fxdb";
-var PICKER_TYPES = [{ description: "FYLO database", accept: { [FXDB_MEDIA_TYPE]: [".fxdb"] } }];
+// src/browser/vdbx-client.mjs
+var VDBX_MAGIC = Object.freeze([137, 86, 68, 66, 88, 13, 10, 26]);
+var VDBX_MEDIA_TYPE = "application/vnd.d31ma.vdbx";
+var PICKER_TYPES = [{ description: "FYLO database", accept: { [VDBX_MEDIA_TYPE]: [".vdbx"] } }];
 
 class SingleFileDatabase {
   constructor(worker, info, call) {
@@ -4941,8 +4941,8 @@ function createCalls(worker, onProgress) {
     worker.postMessage({ ...message, id });
   });
 }
-function hasFxdbMagic(bytes) {
-  return FXDB_MAGIC.every((value, index) => bytes[index] === value);
+function hasVdbxMagic(bytes) {
+  return VDBX_MAGIC.every((value, index) => bytes[index] === value);
 }
 async function pickDatabaseFile() {
   const { showOpenFilePicker } = globalThis;
@@ -4968,8 +4968,8 @@ async function databaseFromDrop(transfer) {
   return handle?.kind === "file" ? { file, handle } : { file };
 }
 function workingCopyName(fileName, now = Date.now()) {
-  const base = String(fileName ?? "").replace(/\.fxdb$/i, "").replace(/[^A-Za-z0-9 ._()-]+/g, "-").replace(/\.{2,}/g, ".").replace(/^[^A-Za-z0-9]+/, "").slice(0, 120) || "database";
-  return `${base}-${now.toString(36)}.fxdb`;
+  const base = String(fileName ?? "").replace(/\.vdbx$/i, "").replace(/[^A-Za-z0-9 ._()-]+/g, "-").replace(/\.{2,}/g, ".").replace(/^[^A-Za-z0-9]+/, "").slice(0, 120) || "database";
+  return `${base}-${now.toString(36)}.vdbx`;
 }
 async function listWorkingCopies() {
   const directory = await workingCopyDirectory(false);
@@ -5005,7 +5005,7 @@ async function workingCopyDirectory(create) {
     throw error;
   }
 }
-async function saveDatabase(blob, { handle, suggestedName = "database.fxdb", ...options } = {}) {
+async function saveDatabase(blob, { handle, suggestedName = "database.vdbx", ...options } = {}) {
   if (handle && typeof handle.createWritable === "function" && await canWrite(handle)) {
     await writeThrough(handle, blob);
     return "written";
@@ -5120,38 +5120,38 @@ function coerceValue(value) {
   return value;
 }
 export {
-  BrowserCollectionFacade2 as BrowserCollectionFacade,
-  BrowserCore,
-  BrowserDirectCollection,
-  BrowserFyloClient,
-  CollectionNotFoundError,
-  FXDB_MEDIA_TYPE,
-  FsaFilesystem,
-  FyloBrowser,
-  FyloWorkerClient,
-  MemoryFilesystem,
-  OpfsFilesystem,
-  SingleFileDatabase,
-  TTID,
-  WasmIndexScannerFactory,
-  createBrowserClient,
-  createBrowserFylo,
-  createMemoryFilesystem,
-  createOpfsFilesystem,
-  createOverlayFilesystem,
-  createWasmIndexScannerFactory,
-  createWorkerClient,
-  databaseFromDrop,
-  client_default as default,
-  ensureRootPermission,
-  forgetRecentRoot,
-  hasFxdbMagic,
-  listRecentRoots,
-  listWorkingCopies,
-  pickDatabaseFile,
-  pickFyloRoot,
-  queryFromSearch,
-  removeWorkingCopy,
+  workingCopyName,
   saveDatabase,
-  workingCopyName
+  removeWorkingCopy,
+  queryFromSearch,
+  pickFyloRoot,
+  pickDatabaseFile,
+  listWorkingCopies,
+  listRecentRoots,
+  hasVdbxMagic,
+  forgetRecentRoot,
+  ensureRootPermission,
+  client_default as default,
+  databaseFromDrop,
+  createWorkerClient,
+  createWasmIndexScannerFactory,
+  createOverlayFilesystem,
+  createOpfsFilesystem,
+  createMemoryFilesystem,
+  createBrowserFylo,
+  createBrowserClient,
+  WasmIndexScannerFactory,
+  VDBX_MEDIA_TYPE,
+  TTID,
+  SingleFileDatabase,
+  OpfsFilesystem,
+  MemoryFilesystem,
+  FyloWorkerClient,
+  FyloBrowser,
+  FsaFilesystem,
+  CollectionNotFoundError,
+  BrowserFyloClient,
+  BrowserDirectCollection,
+  BrowserCore,
+  BrowserCollectionFacade2 as BrowserCollectionFacade
 };

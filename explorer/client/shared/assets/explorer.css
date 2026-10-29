@@ -2158,7 +2158,7 @@ html[w-theme='light'] .explorer-version-cur {
     }
 }
 
-/* --- Open database: one .fxdb file (ADR 0016) --- */
+/* --- Open database: one .vdbx file (ADR 0016) --- */
 
 .explorer-database-open {
     display: flex;

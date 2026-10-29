@@ -1,4 +1,4 @@
-//! A container collection's prefix index (`docs/fxdb-segment-backend.md`,
+//! A container collection's prefix index (`docs/vdbx-segment-backend.md`,
 //! "Root integration").
 //!
 //! The index snapshot is an `index` run the checkpoint slot names beside

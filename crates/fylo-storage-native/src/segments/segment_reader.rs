@@ -66,7 +66,7 @@ impl SegmentReader {
 
     /// A frame that does not decode, as a storage error. One this build
     /// cannot read, such as a record compressed with a codec it does not
-    /// know, is refused as a newer format (`EFXDB_VERSION`), never taken
+    /// know, is refused as a newer format (`EVDBX_VERSION`), never taken
     /// for damage or a torn tail. One whose compression dictionary is
     /// missing or damaged is refused as damage and says so; anything else
     /// is damage.
@@ -76,16 +76,16 @@ impl SegmentReader {
                 NativeStorageErrorCode::Unsupported,
                 format!(
                     "{what} uses a record codec or format this build cannot read \
-                     (EFXDB_VERSION)"
+                     (EVDBX_VERSION)"
                 ),
             ),
             LogFormatError::MissingDictionary => Self::corrupt(&format!(
                 "{what} names a compression dictionary that is missing or damaged \
-                 (EFXDB_CORRUPT); `fylo verify` reports which"
+                 (EVDBX_CORRUPT); `fylo verify` reports which"
             )),
             LogFormatError::Unauthenticated => Self::corrupt(&format!(
                 "{what} does not open with the database key: it was altered, or moved \
-                 from another collection or record (EFXDB_CORRUPT)"
+                 from another collection or record (EVDBX_CORRUPT)"
             )),
             _ => Self::corrupt(&format!("{what} is damaged: {error}")),
         }

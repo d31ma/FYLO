@@ -10,9 +10,9 @@ for (const [from, to = from] of [
     ['fylo.mjs', 'fylo-web.mjs'],
     ['shared.js'],
     ['dedicated.js'],
-    ['fxdb-worker.js'],
+    ['vdbx-worker.js'],
     ['fylo-index.wasm'],
-    // The whole engine, which Explorer runs over a single .fxdb file.
+    // The whole engine, which Explorer runs over a single .vdbx file.
     ['fylo-browser.wasm']
 ]) {
     const output = new URL(to, destination)

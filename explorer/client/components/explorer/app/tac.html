@@ -77,7 +77,7 @@
                 <p>
                     Fylo Explorer needs the File System Access API to read a real FYLO folder.
                     {unsupportedBrowser} does not provide it. Use a current desktop version of
-                    Chrome, Edge, or Brave instead, or open a single .fxdb database file below.
+                    Chrome, Edge, or Brave instead, or open a single .vdbx database file below.
                 </p>
             </logic>
             <logic :if="status === 'pick'">
@@ -166,7 +166,7 @@
             >
                 <h2 id="explorer-database-heading">Open a database file</h2>
                 <p>
-                    A .fxdb file holds a whole FYLO database. It opens read-only in any current
+                    A .vdbx file holds a whole FYLO database. It opens read-only in any current
                     browser, including Firefox and Safari. Drop one here or choose it.
                     <logic :if="canCopyDatabase">
                         To change it, edit a copy kept in this browser and save it back.
@@ -185,7 +185,7 @@
                         <logic :if="!canPickDatabase">Open database…</logic>
                         <input
                             type="file"
-                            accept=".fxdb,application/vnd.d31ma.fxdb"
+                            accept=".vdbx,application/vnd.d31ma.vdbx"
                             aria-label="Database file to open"
                             on:change="databaseInput(event)"
                         />
@@ -234,8 +234,8 @@
                     <dt>Format</dt>
                     <dd>
                         <logic :if="dbReport">FYLO database, {dbReport.format}</logic>
-                        <logic :if="!dbReport && dbMagic">.fxdb header, but unreadable</logic>
-                        <logic :if="!dbReport && !dbMagic">no .fxdb header found</logic>
+                        <logic :if="!dbReport && dbMagic">.vdbx header, but unreadable</logic>
+                        <logic :if="!dbReport && !dbMagic">no .vdbx header found</logic>
                     </dd>
                 </dl>
                 <logic :if="dbReport">

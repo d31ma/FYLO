@@ -1,4 +1,4 @@
-/// Why a structure of a `.fxdb` container could not be decoded (ADR 0016).
+/// Why a structure of a `.vdbx` container could not be decoded (ADR 0016).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ContainerFormatError {
     /// Fewer bytes than the structure needs.

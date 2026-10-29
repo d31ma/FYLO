@@ -979,7 +979,7 @@ impl Session {
                 "singleFileDatabase".into(),
                 json!({
                     "version": 1,
-                    "extension": "fxdb",
+                    "extension": "vdbx",
                     "operations": ["inspectDatabase", "verifyDatabase"]
                 }),
             ),
@@ -1152,7 +1152,7 @@ impl Session {
         Ok(root)
     }
 
-    /// Admit a `.fxdb` database root. A database is owned through its own
+    /// Admit a `.vdbx` database root. A database is owned through its own
     /// file (ADR 0016 section 7), so it takes no root lease: opening it
     /// checks it, and a missing one is created, as a missing directory root
     /// is: plain, unless `fylo.encryption.file` asks for an encrypted one
@@ -1163,7 +1163,7 @@ impl Session {
         if self.filesystem_profile != FilesystemProfile::Native {
             return Err(MachineError::new(
                 "ELAYOUTUNSUPPORTED",
-                "a .fxdb database needs the native filesystem profile",
+                "a .vdbx database needs the native filesystem profile",
             ));
         }
         if fylo_vfs::metadata(&root)
@@ -1474,7 +1474,7 @@ impl Session {
         }))
     }
 
-    /// The `.fxdb` file a request names: its `root`, or the session's.
+    /// The `.vdbx` file a request names: its `root`, or the session's.
     fn database_path(&self, request: &Value, operation: &str) -> Result<PathBuf, MachineError> {
         request
             .get("root")
@@ -1484,12 +1484,12 @@ impl Session {
             .ok_or_else(|| {
                 MachineError::new(
                     "EBADREQUEST",
-                    format!("{operation} requires a .fxdb path as root"),
+                    format!("{operation} requires a .vdbx path as root"),
                 )
             })
     }
 
-    /// Describe a `.fxdb` file from its superblock, map and directory,
+    /// Describe a `.vdbx` file from its superblock, map and directory,
     /// without reading a record or taking a lock (ADR 0016). An encrypted
     /// file is unlocked with the configured key to list its collections;
     /// without one it reports `locked` and lists none, and a wrong key
@@ -1506,7 +1506,7 @@ impl Session {
         serde_json::to_value(report).map_err(|error| serialization_error(&error))
     }
 
-    /// Check a `.fxdb` file's structures without its key, a lock or any
+    /// Check a `.vdbx` file's structures without its key, a lock or any
     /// change (ADR 0016 section 11). Damage is reported in the result, whose
     /// `ok` is false when any problem is an error; the frame fails only when
     /// the file cannot be opened or read.
@@ -2901,7 +2901,7 @@ fn assert_repository_lease(
 }
 
 fn active_worktree(repository_root: &std::path::Path) -> Result<PathBuf, MachineError> {
-    // A `.fxdb` database has no worktrees.
+    // A `.vdbx` database has no worktrees.
     if NativeRoot::names_database(repository_root) {
         return Ok(repository_root.to_path_buf());
     }
@@ -3996,14 +3996,14 @@ mod tests {
 
     #[cfg(not(target_family = "wasm"))]
     #[test]
-    fn inspect_database_describes_a_fxdb_file_without_a_root() {
+    fn inspect_database_describes_a_vdbx_file_without_a_root() {
         let dir = std::env::temp_dir().join(format!(
-            "fylo-machine-fxdb-{}-{}",
+            "fylo-machine-vdbx-{}-{}",
             std::process::id(),
             line!()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("app.fxdb");
+        let path = dir.join("app.vdbx");
         fylo_storage_native::ContainerFile::create(&path, 20).unwrap();
         {
             let mut container = fylo_storage_native::ContainerFile::open_unchecked(&path).unwrap();
@@ -4012,12 +4012,12 @@ mod tests {
         let request = json!({"op": "inspectDatabase", "root": path});
         let frames = run(&format!(
             "{request}\n{}\n",
-            json!({"op": "inspectDatabase", "root": dir.join("missing.fxdb")})
+            json!({"op": "inspectDatabase", "root": dir.join("missing.vdbx")})
         ));
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(frames[0]["ok"], json!(true), "{}", frames[0]);
         let result = &frames[0]["result"];
-        assert_eq!(result["format"], json!("fylo.fxdb"));
+        assert_eq!(result["format"], json!("fylo.vdbx"));
         assert_eq!(result["encrypted"], json!(false));
         assert_eq!(result["collections"][0]["name"], json!("users"));
         assert_eq!(frames[1]["ok"], json!(false));
@@ -4031,14 +4031,14 @@ mod tests {
 
     #[cfg(not(target_family = "wasm"))]
     #[test]
-    fn verify_database_checks_a_fxdb_file_without_a_root() {
+    fn verify_database_checks_a_vdbx_file_without_a_root() {
         let dir = std::env::temp_dir().join(format!(
-            "fylo-machine-fxdb-{}-{}",
+            "fylo-machine-vdbx-{}-{}",
             std::process::id(),
             line!()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("app.fxdb");
+        let path = dir.join("app.vdbx");
         fylo_storage_native::ContainerFile::create(&path, 20).unwrap();
         {
             let mut container = fylo_storage_native::ContainerFile::open_unchecked(&path).unwrap();
@@ -4052,7 +4052,7 @@ mod tests {
         std::fs::write(&path, bytes).unwrap();
         let frames = run(&format!(
             "{request}\n{}\n",
-            json!({"op": "verifyDatabase", "root": dir.join("missing.fxdb")})
+            json!({"op": "verifyDatabase", "root": dir.join("missing.vdbx")})
         ));
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(clean[0]["ok"], json!(true), "{}", clean[0]);

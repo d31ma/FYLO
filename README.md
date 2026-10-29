@@ -1470,8 +1470,8 @@ text.
 | `ESCHEMA`                                                              | A document does not match the head schema, or a schema is invalid          | Do not retry; fix the document or schema                         |
 | `ESCHEMACONFLICT`                                                      | A pushed schema label is already committed with different content          | Do not retry; give the changed schema a new version label        |
 | `ESCHEMAUNAVAILABLE`                                                   | This build cannot validate the collection's head schema version            | Do not retry; push the schema natively, or write natively        |
-| `EFXDB_NOT_FXDB` / `EFXDB_VERSION`                                     | The file is not a `.fxdb` database, or needs a newer FYLO                  | Do not retry; open it with a build that supports it              |
-| `EFXDB_CORRUPT`                                                        | A `.fxdb` structure failed its checks                                      | Do not retry; run `fylo verify <db.fxdb>`                        |
+| `EVDBX_NOT_VDBX` / `EVDBX_VERSION`                                     | The file is not a `.vdbx` database, or needs a newer FYLO                  | Do not retry; open it with a build that supports it              |
+| `EVDBX_CORRUPT`                                                        | A `.vdbx` structure failed its checks                                      | Do not retry; run `fylo verify <db.vdbx>`                        |
 | `ENATIVE_IO`                                                           | Native filesystem I/O failed, including disk pressure or xattr operations  | Treat a mutation as ambiguous; inspect the cause before retrying |
 | `EUNKNOWN`                                                             | An engine failure without a more specific classification                   | Treat conservatively; inspect `error.message` diagnostically     |
 

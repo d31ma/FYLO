@@ -1,7 +1,7 @@
-//! One `.fxdb` file open in this process (`docs/fxdb-segment-backend.md`,
+//! One `.vdbx` file open in this process (`docs/vdbx-segment-backend.md`,
 //! "Locks"), shared by every collection medium over it: the one collection
-//! of a hybrid collection directory's `segments.fxdb`, or every collection
-//! of a `.fxdb` database root.
+//! of a hybrid collection directory's `segments.vdbx`, or every collection
+//! of a `.vdbx` database root.
 //!
 //! The file opens to read and takes no lock. The first write reopens it to
 //! write through [`ContainerFile::open_writer`], which coordinates with
@@ -29,7 +29,7 @@ use crate::{ContainerCipher, ContainerError, ContainerFile, NativeStorageError};
 #[cfg(not(target_family = "wasm"))]
 use crate::{ContainerWriteAccess, ContainerWriteOptions};
 
-/// One `.fxdb` file this process has open. The registry keeps none alive:
+/// One `.vdbx` file this process has open. The registry keeps none alive:
 /// the file closes when the last medium and the last database handle on it
 /// drop, and is then opened afresh.
 #[derive(Debug)]
@@ -407,7 +407,7 @@ impl ContainerOpen {
 
     /// Open containers to write with `options` from now on, in this whole
     /// process: exclusive mode, the busy timeout and the lease timing. Only
-    /// tests choose yet; a `.fxdb` root will take them from its options.
+    /// tests choose yet; a `.vdbx` root will take them from its options.
     #[cfg(all(test, not(target_family = "wasm")))]
     pub(crate) fn set_write_options(options: ContainerWriteOptions) {
         *Self::configured_options() = options;

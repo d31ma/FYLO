@@ -1,7 +1,7 @@
 use crate::container_bytes::{all_zero, read_u32, write_u32};
 use crate::{ContainerFormatError, Crc32c};
 
-/// The header at the start of a `dictionary` extent's payload in a `.fxdb`
+/// The header at the start of a `dictionary` extent's payload in a `.vdbx`
 /// container (ADR 0016 sections 3 and 8). The stored dictionary follows it:
 /// a zstd dictionary, sealed in an encrypted file.
 ///
@@ -28,7 +28,7 @@ impl ContainerDictionaryHeader {
     /// Most bytes a stored dictionary may hold: far more than the 32 KiB a
     /// collection trains, and less than any extent's payload.
     pub const MAX_STORED_BYTES: u32 = 512 * 1024;
-    const MAGIC: [u8; 4] = *b"FXDC";
+    const MAGIC: [u8; 4] = *b"VDXC";
     const SEALED: u8 = 1;
     const CHECKED_BYTES: usize = Self::ENCODED_BYTES - 4;
 

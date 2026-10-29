@@ -1,5 +1,5 @@
 //! A container collection's compression dictionaries (ADR 0016 section 8,
-//! `docs/fxdb-segment-backend.md`, "Dictionaries").
+//! `docs/vdbx-segment-backend.md`, "Dictionaries").
 //!
 //! A collection writes without a dictionary until its records reach 1 MiB.
 //! The first checkpoint that finds them trains a 32 KiB zstd dictionary on

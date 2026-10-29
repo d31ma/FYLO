@@ -2,20 +2,20 @@
 // make an editable copy, and save it back (ADR 0016 section 10).
 //
 // Browsers give a page a picked file to read but not to write in place, so a
-// `.fxdb` opens read-only. "Edit a copy" streams it into the origin-private
+// `.vdbx` opens read-only. "Edit a copy" streams it into the origin-private
 // file system, where one synchronous access handle can write it, and "Save"
 // writes the copy back: over the original through File System Access where
 // the browser offers it, and as a download everywhere else.
 
-import { WORKING_COPY_DIRECTORY, isWorkingCopyName } from './fxdb-names.mjs'
+import { WORKING_COPY_DIRECTORY, isWorkingCopyName } from './vdbx-names.mjs'
 
 export { WORKING_COPY_DIRECTORY, isWorkingCopyName }
 
-/** The `.fxdb` magic: `\x89FXDB\r\n\x1a`, PNG's pattern. */
-export const FXDB_MAGIC = Object.freeze([0x89, 0x46, 0x58, 0x44, 0x42, 0x0d, 0x0a, 0x1a])
-export const FXDB_MEDIA_TYPE = 'application/vnd.d31ma.fxdb'
+/** The `.vdbx` magic: `\x89VDBX\r\n\x1a`, PNG's pattern. */
+export const VDBX_MAGIC = Object.freeze([0x89, 0x56, 0x44, 0x42, 0x58, 0x0d, 0x0a, 0x1a])
+export const VDBX_MEDIA_TYPE = 'application/vnd.d31ma.vdbx'
 
-const PICKER_TYPES = [{ description: 'FYLO database', accept: { [FXDB_MEDIA_TYPE]: ['.fxdb'] } }]
+const PICKER_TYPES = [{ description: 'FYLO database', accept: { [VDBX_MEDIA_TYPE]: ['.vdbx'] } }]
 
 /**
  * File System Access members the DOM typings leave out.
@@ -141,9 +141,9 @@ function createCalls(worker, onProgress) {
         })
 }
 
-/** Whether the first bytes of a file carry the `.fxdb` magic. @param {ArrayLike<number>} bytes */
-export function hasFxdbMagic(bytes) {
-    return FXDB_MAGIC.every((value, index) => bytes[index] === value)
+/** Whether the first bytes of a file carry the `.vdbx` magic. @param {ArrayLike<number>} bytes */
+export function hasVdbxMagic(bytes) {
+    return VDBX_MAGIC.every((value, index) => bytes[index] === value)
 }
 
 /**
@@ -202,12 +202,12 @@ export async function databaseFromDrop(transfer) {
 export function workingCopyName(fileName, now = Date.now()) {
     const base =
         String(fileName ?? '')
-            .replace(/\.fxdb$/i, '')
+            .replace(/\.vdbx$/i, '')
             .replace(/[^A-Za-z0-9 ._()-]+/g, '-')
             .replace(/\.{2,}/g, '.')
             .replace(/^[^A-Za-z0-9]+/, '')
             .slice(0, 120) || 'database'
-    return `${base}-${now.toString(36)}.fxdb`
+    return `${base}-${now.toString(36)}.vdbx`
 }
 
 /**
@@ -266,7 +266,7 @@ async function workingCopyDirectory(create) {
  */
 export async function saveDatabase(
     blob,
-    { handle, suggestedName = 'database.fxdb', ...options } = {}
+    { handle, suggestedName = 'database.vdbx', ...options } = {}
 ) {
     if (handle && typeof handle.createWritable === 'function' && (await canWrite(handle))) {
         await writeThrough(handle, blob)

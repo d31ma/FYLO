@@ -1,4 +1,4 @@
-//! Little-endian field access shared by the `.fxdb` container structures.
+//! Little-endian field access shared by the `.vdbx` container structures.
 //!
 //! Callers check lengths before reading, so these index directly; a short
 //! slice is a bug in the caller, not malformed input.

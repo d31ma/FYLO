@@ -1,10 +1,10 @@
-//! Which filesystem holds a `.fxdb` file, so the lease can decide whether
+//! Which filesystem holds a `.vdbx` file, so the lease can decide whether
 //! byte-range locks there are trusted (ADR 0016 section 7).
 
 use std::fs::File;
 use std::io;
 
-/// The filesystem a `.fxdb` file is on.
+/// The filesystem a `.vdbx` file is on.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FilesystemInfo {
     /// The name the OS reports: `ext4`, `apfs`, `NTFS`, `smbfs`, `nfs`,
@@ -30,7 +30,7 @@ impl FilesystemInfo {
     /// writer at a time in, and readers in freely.
     ///
     /// The list grows only with a passed row in
-    /// `docs/operations/fxdb-byte-range-lock-qualification.md`.
+    /// `docs/operations/vdbx-byte-range-lock-qualification.md`.
     pub fn byte_range_locks_qualified(&self) -> bool {
         QUALIFIED.iter().any(|&(os, name, remote)| {
             os == std::env::consts::OS && name == self.name && remote == self.remote

@@ -1,7 +1,7 @@
 use super::compaction_report::CompactionReport;
 use super::salvage_report::SalvageReport;
 
-/// What `fylo compact` did to a `.fxdb` database.
+/// What `fylo compact` did to a `.vdbx` database.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct DatabaseCompactionReport {
     /// Each collection's compaction, in directory order.
@@ -17,7 +17,7 @@ pub struct DatabaseCompactionReport {
     pub file_bytes_after: u64,
 }
 
-/// What `fylo salvage` recovered from a `.fxdb` database.
+/// What `fylo salvage` recovered from a `.vdbx` database.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct DatabaseSalvageReport {
     /// Each collection's salvage, in directory order.

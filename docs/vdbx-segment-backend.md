@@ -1,7 +1,7 @@
-# Running segment collections inside a `.fxdb` file
+# Running segment collections inside a `.vdbx` file
 
 Status: design for implementation, 2026-10-29. Applies ADR 0015 (segments)
-to ADR 0016 (the `.fxdb` container). Where this note and ADR 0016 differ, this
+to ADR 0016 (the `.vdbx` container). Where this note and ADR 0016 differ, this
 note records the simpler first implementation and ADR 0016 keeps the end
 state.
 
@@ -9,7 +9,7 @@ state.
 
 The segment code (`segments/` and `write/commit_log/segment_*.rs`) works on a
 collection directory: numbered `.seg` files, `state.slots`,
-`locations.wal` and `locations.snapshot`. A `.fxdb` collection keeps the same
+`locations.wal` and `locations.snapshot`. A `.vdbx` collection keeps the same
 records, the same commit protocol and the same recovery rules, but stores
 them in extents of one file. The plan is one seam with two
 implementations, so the commit, recovery, compaction and query code is
@@ -58,7 +58,7 @@ directions, so the commit code keeps using `SlotRecord`.
 ## Location deltas without `locations.wal`
 
 A directory collection writes each commit's location rows to
-`locations.wal`, and readers lay the log over the snapshot. In `.fxdb` the
+`locations.wal`, and readers lay the log over the snapshot. In `.vdbx` the
 rows are not written twice. The location table is:
 
 1. the snapshot named by the newest checkpoint slot, and
@@ -143,9 +143,9 @@ Seal records replace this when files that large are in use.
 
 ## Locks and write access
 
-**One open per file.** A process keeps one `ContainerOpen` per `.fxdb`
+**One open per file.** A process keeps one `ContainerOpen` per `.vdbx`
 file, shared by every medium over it: the one collection of a hybrid
-collection directory's `segments.fxdb` (`with_segment_container`), and every
+collection directory's `segments.vdbx` (`with_segment_container`), and every
 collection of a database root ("Root integration"). It also keeps one
 medium per collection (`ContainerMedium::attach`). Both registries hold
 them weakly: a medium closes when the last operation holding it ends, and
@@ -191,7 +191,7 @@ with `EBUSY` (`EROOTLOCKED`) after its busy timeout, while readers carry
 on. The writer checks its right (`assert_writable`) before every write
 through the medium and renews a lease from those same calls once a third of
 its takeover time has passed; one that lost its lease fails with
-`EFXDB_LEASE_LOST` (`EROOTLEASELOST`), and its open goes back to reading,
+`EVDBX_LEASE_LOST` (`EROOTLEASELOST`), and its open goes back to reading,
 so the next write opens the file and claims its collections afresh.
 
 **Claiming a collection.** A medium's first write claims its collection.
@@ -226,10 +226,10 @@ the map, and a checkpoint only when a stopped writer left something.
 
 ## Compaction and shrinking
 
-`fylo compact db.fxdb [--shrink]` (`NativeWriteRoot::compact_database`)
+`fylo compact db.vdbx [--shrink]` (`NativeWriteRoot::compact_database`)
 compacts every collection of the database, one after another, as ADR 0015
 section 7 compacts a collection directory's segments; `fylo compact
-<collection> --root db.fxdb` and the machine's `compactCollection` compact
+<collection> --root db.vdbx` and the machine's `compactCollection` compact
 one.
 
 **The compactor byte.** A second lock byte per collection,
@@ -288,7 +288,7 @@ that record, and the shrink's copies are sealed for their new checkpoint.
 A handle opened without the key is refused with `EKEY` before anything is
 locked or written.
 
-**Salvage.** `fylo salvage db.fxdb --out <root>`
+**Salvage.** `fylo salvage db.vdbx --out <root>`
 (`NativeWriteRoot::salvage_database`) writes every readable document and
 schema version of every collection as a new directory root in the file
 layout, as `fylo unpack` does, and changes nothing in the database. It
@@ -323,7 +323,7 @@ body compressed on its own. The length and CRC cover the stored bytes, so
   WASI reads no segments and carries neither library.
 - Compaction re-encodes each copied record, so LZ4 records come out as zstd.
 - A codec or flag this build does not know is refused as a newer format
-  (`ENATIVE_UNSUPPORTED` with `EFXDB_VERSION` in the message), never taken for
+  (`ENATIVE_UNSUPPORTED` with `EVDBX_VERSION` in the message), never taken for
   a torn tail: a scan that stops there fails rather than let recovery cut the
   segment.
 - A damaged frame still names its documents to salvage when its stored body
@@ -344,7 +344,7 @@ body compressed on its own. The length and CRC cover the stored bytes, so
   first 1 MiB of its documents in identifier order, but before it writes
   them, so the packed records use it from the start rather than wait for a
   compaction.
-- A `dictionary` extent holds a 32-byte header (`FXDC`, the id, whether the
+- A `dictionary` extent holds a 32-byte header (`VDXC`, the id, whether the
   bytes are sealed, their length and CRC-32C) and the dictionary, sealed in
   an encrypted file with `ContainerSealContext::Dictionary` for its
   collection and id. It never changes, so a checkpoint that keeps naming it
@@ -353,7 +353,7 @@ body compressed on its own. The length and CRC cover the stored bytes, so
   rewrites it, so a reader loads whichever dictionary a frame names from the
   collection's `dictionary` extents the first time it meets it. A frame
   naming a dictionary the file does not hold, or holds damaged, fails as
-  `EFXDB_CORRUPT` and is never taken for a torn tail: recovery refuses the
+  `EVDBX_CORRUPT` and is never taken for a torn tail: recovery refuses the
   collection rather than cut records off.
 - Compaction trains a candidate on the newest 1 MiB of records and keeps it
   only when it stores them at least 10% smaller than the current one. A new
@@ -378,7 +378,7 @@ the superblock's `INCOMPAT_CODEC_ZSTD` (natively) or `INCOMPAT_CODEC_LZ4`
 schema versions set theirs, and `fylo inspect` lists them under `codecs`.
 
 **Sealed records (landed).** ADR 0016 section 9. Encryption is opt-in per
-database and off by default: `fylo create db.fxdb --encrypt`, `fylo pack
+database and off by default: `fylo create db.vdbx --encrypt`, `fylo pack
 --encrypt`, or `fylo.encryption.file: true` in `application.json` creates an
 encrypted file, keyed by `fylo.encryption.key` (see
 [configuration](configuration.md#encrypted-databases)). Every other database
@@ -393,7 +393,7 @@ is plain, and its frames are as above.
 - The associated data is `ContainerSealContext::Record`: the collection's
   name and the record's LSN (one frame holds one whole record, so its entry
   is 0). A frame moved into another collection, or copied over another
-  record, does not open; it fails as `EFXDB_CORRUPT` and is never taken for
+  record, does not open; it fails as `EVDBX_CORRUPT` and is never taken for
   a torn tail. Replay also requires each record's LSN to follow the one
   before it, across incremental replays, and a point read checks the LSN its
   location names, so a valid older frame copied over a newer one is refused
@@ -424,7 +424,7 @@ is plain, and its frames are as above.
 3. **Container medium**: implement the table above over `ContainerFile`,
    then run the segment test suite against both media.
 4. **Frames**: codec byte, dictionaries, sealing.
-5. **Root integration**: a root path ending in `.fxdb` opens a container;
+5. **Root integration**: a root path ending in `.vdbx` opens a container;
    `fylo pack` and `fylo unpack` convert between a directory root and a
    file ("Packing and unpacking").
 
@@ -433,7 +433,7 @@ is plain, and its frames are as above.
 Step 5's first half: ADR 0016 section 11's rule that a root path naming an
 existing regular file is opened as a container, for document collections in
 the segment layout. `NativeRoot`, `NativeWriteRoot` and the engines take a
-`.fxdb` path wherever they take a root directory. Nothing is created beside
+`.vdbx` path wherever they take a root directory. Nothing is created beside
 the file except the lease that ADR 0016 section 7 allows.
 
 **Opening and creating.** `NativeRoot::open` on a regular file opens the
@@ -455,7 +455,7 @@ writer's map first, so the next open reads the file as a new process would;
 handles opened before keep the old open, and its right to write, until they
 drop. A database is created with `NativeRoot::create_database`
 (`ContainerFile::create`, 8 MiB extents). The CLI creates a missing
-directory root before it runs a command; a path ending in `.fxdb`, or naming
+directory root before it runs a command; a path ending in `.vdbx`, or naming
 a regular file, is never created as a directory (`NativeRoot::names_database`).
 
 **Collection catalog.** A collection is its directory block. The block's
@@ -508,14 +508,14 @@ operation that writes or needs the repository (`fylo status` reports
 version control as off), moving a collection between layouts or resharding
 it, and a root lease on a database path, so the embedded queue, which
 holds one, and `fylo exec --exclusive-root` refuse a database. The
-`EfsSidecarV1` profile and a separate worktree root have no `.fxdb` form.
+`EfsSidecarV1` profile and a separate worktree root have no `.vdbx` form.
 
 **The machine protocol and the CLI** admit a database root without a root
 lease: the database is owned through its own file (ADR 0016 section 7), so
 a session checks it by opening it, and creates it when it is missing, as it
 creates a missing directory root. Every document operation, SQL included,
 then runs as it does on a directory root, and `fylo <command> --root
-app.fxdb` works the same way.
+app.vdbx` works the same way.
 
 **Not yet** (they fail with `ENATIVE_UNSUPPORTED` or are left for later):
 setting a collection's validation mode (a rewrite of its block's static
@@ -531,7 +531,7 @@ ADR 0016 section 11, as `NativeWriteRoot::pack_database` and
 `fylo export`, they take an output path and so are not machine protocol
 operations.
 
-**`fylo pack <root> --out db.fxdb`** copies every document collection of
+**`fylo pack <root> --out db.vdbx`** copies every document collection of
 a directory root, in the file or the segment layout, into a new database.
 
 - It refuses with `ELAYOUTUNSUPPORTED`, naming the feature, a root that
@@ -571,7 +571,7 @@ a directory root, in the file or the segment layout, into a new database.
   pack to the same name removes. A failure the process survives removes it
   at once.
 
-**`fylo unpack db.fxdb --out <root>`** writes a new directory root in the
+**`fylo unpack db.vdbx --out <root>`** writes a new directory root in the
 file layout into an absent or empty `--out`. For each collection, under its
 lock: the catalog descriptor (the source's shard width and validation
 mode), the tree `fylo export` writes (`docs/`, `.deleted/`, `index/`, with
@@ -582,7 +582,7 @@ files are checked against the documents with the same oracle. An unpack that
 fails removes what it wrote; one that stops leaves a partial root, which a
 second unpack refuses until it is removed.
 
-**`fylo pack <root|db.fxdb> --out sealed.fxdb --sealed [--encrypt]`**
+**`fylo pack <root|db.vdbx> --out sealed.vdbx --sealed [--encrypt]`**
 writes a sealed file: a read-only image of the database, for distribution
 or backup (ADR 0016 sections 8 and 11). See "Sealed packs".
 
@@ -598,7 +598,7 @@ ADR 0016 sections 8 and 11, as `NativeWriteRoot::pack_sealed_database`,
 `container_file/sealing.rs` (writing) and `container_file/sealed_image.rs`
 (reading).
 
-- **Source.** A directory root, packed as above, or a live `.fxdb`
+- **Source.** A directory root, packed as above, or a live `.vdbx`
   database, so a sealed pack is also a consistent backup: each collection
   is locked and recovered as `fylo export` does, and its documents and
   schema versions are read through the engine. Either way the records go
@@ -612,7 +612,7 @@ ADR 0016 sections 8 and 11, as `NativeWriteRoot::pack_sealed_database`,
 - **Layout.** Superblocks A and B stay in the clear at 0 and 4 KiB and carry
   `INCOMPAT_SEALED` (with `INCOMPAT_ENCRYPTED`, its salt and key check, in
   an encrypted file). `ContainerSealedHeader` is at 8 KiB: the magic
-  `FXSEALED`, the image's length, the block count and where the block index
+  `VDXSEALD`, the image's length, the block count and where the block index
   is and its CRC-32C. Blocks start at 12 KiB. Each covers 64 KiB of the
   image and stores a codec byte and the block at zstd level 19, or the
   block as is when that is smaller; a block of zeros stores nothing. The
@@ -641,14 +641,14 @@ ADR 0016 sections 8 and 11, as `NativeWriteRoot::pack_sealed_database`,
 - **Verify.** `fylo verify` checks every block's CRC-32C without the key and,
   with it, that each opens and decompresses to its 64 KiB; a bad block is
   `sealedBlockDamaged` at the extent it falls in, and the rest of the check
-  then stops. A read of a damaged block fails with `EFXDB_CORRUPT`.
+  then stops. A read of a damaged block fails with `EVDBX_CORRUPT`.
 - **Not yet:** sealing a database in place (the database's exclusive lease
   byte, then the image written over it); `--out` is required. Sealing runs
   natively only: the browser reads a sealed file but cannot write one.
 
 ## Schema versions
 
-ADR 0017 section 3 in a `.fxdb` file. A schema version is a schema record
+ADR 0017 section 3 in a `.vdbx` file. A schema version is a schema record
 (kind 5) appended through the collection's commit path, the same code as in
 a collection directory (`commit_segment_schema`), and recovery replays it
 the same way.

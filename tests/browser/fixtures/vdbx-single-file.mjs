@@ -6,16 +6,16 @@
 
 import {
     SingleFileDatabase,
-    hasFxdbMagic,
+    hasVdbxMagic,
     listWorkingCopies,
     removeWorkingCopy,
     saveDatabase,
     workingCopyName
-} from '/src/browser/fxdb-client.mjs'
-import { STUB_SIZE, seededRandom, stubBytes } from './fxdb-stub.mjs'
+} from '/src/browser/vdbx-client.mjs'
+import { STUB_SIZE, seededRandom, stubBytes } from './vdbx-stub.mjs'
 
 const WORKER_URL = '/src/browser/fylo-single-file-worker.mjs'
-const STUB_URL = '/target/browser-fixtures/stub.fxdb'
+const STUB_URL = '/target/browser-fixtures/stub.vdbx'
 
 const output = document.querySelector('output')
 const scenario = new URLSearchParams(location.search).get('scenario') ?? 'file'
@@ -54,19 +54,19 @@ try {
     evidence.status = 'failed'
     evidence.reason = `${evidence.step}: ${error?.message ?? error}`
 }
-globalThis.__FYLO_FXDB_EVIDENCE__ = evidence
+globalThis.__FYLO_VDBX_EVIDENCE__ = evidence
 output.dataset.status = evidence.status
 output.textContent = evidence.status
 
 async function file() {
     const expected = stubBytes()
-    const picked = new File([expected], 'stub.fxdb', { lastModified: 1_700_000_000_000 })
+    const picked = new File([expected], 'stub.vdbx', { lastModified: 1_700_000_000_000 })
     evidence.step = 'open'
     const database = await SingleFileDatabase.open({ kind: 'file', file: picked }, open())
     try {
         evidence.info = database.info
         evidence.stat = await database.stat()
-        evidence.magic = hasFxdbMagic(await database.read(0, 8))
+        evidence.magic = hasVdbxMagic(await database.read(0, 8))
         evidence.step = 'random-reads'
         evidence.reads = await checkReads(database, expected, 200, 1)
         evidence.step = 'refusals'
@@ -90,7 +90,7 @@ async function url() {
     try {
         evidence.info = database.info
         evidence.stat = await database.stat()
-        evidence.magic = hasFxdbMagic(await database.read(0, 8))
+        evidence.magic = hasVdbxMagic(await database.read(0, 8))
         evidence.step = 'random-reads'
         evidence.reads = await checkReads(database, expected, 120, 2)
         evidence.refusals = { write: await refusal(database.write(0, new Uint8Array([1]))) }
@@ -100,7 +100,7 @@ async function url() {
     evidence.step = 'missing'
     evidence.missing = await refusal(
         SingleFileDatabase.open(
-            { kind: 'url', url: '/target/browser-fixtures/absent.fxdb' },
+            { kind: 'url', url: '/target/browser-fixtures/absent.vdbx' },
             open()
         )
     )
@@ -108,8 +108,8 @@ async function url() {
 
 async function opfs() {
     const original = stubBytes()
-    const picked = new File([original], 'stub.fxdb')
-    const name = workingCopyName('stub (copy).fxdb')
+    const picked = new File([original], 'stub.vdbx')
+    const name = workingCopyName('stub (copy).vdbx')
     evidence.workingCopy = name
     const progress = []
     evidence.step = 'edit-a-copy'
@@ -195,7 +195,7 @@ async function opfs() {
 
 async function download() {
     const expected = stubBytes(256 * 1024 + 3, 9)
-    const name = workingCopyName('download.fxdb')
+    const name = workingCopyName('download.vdbx')
     evidence.step = 'edit-a-copy'
     const database = await SingleFileDatabase.open(
         { kind: 'opfs', name, copyFrom: new Blob([expected]) },
@@ -212,7 +212,7 @@ async function download() {
         const picker = globalThis.showSaveFilePicker
         globalThis.showSaveFilePicker = undefined
         try {
-            evidence.saved = await saveDatabase(blob, { suggestedName: 'download.fxdb' })
+            evidence.saved = await saveDatabase(blob, { suggestedName: 'download.vdbx' })
         } finally {
             globalThis.showSaveFilePicker = picker
         }
@@ -223,17 +223,17 @@ async function download() {
 }
 
 /**
- * Inspect a real `.fxdb`, written by the `fxdb_fixture` example, through every
+ * Inspect a real `.vdbx`, written by the `vdbx_fixture` example, through every
  * host: picked file, ranged requests, and an OPFS working copy where there is
  * one. Each must hand the engine the same bytes, so each report must match.
  */
 async function inspect() {
-    const FIXTURE = '/target/browser-fixtures/fixture.fxdb'
+    const FIXTURE = '/target/browser-fixtures/fixture.vdbx'
     evidence.step = 'fetch-fixture'
     evidence.expected = await (await fetch('/target/browser-fixtures/fixture.json')).json()
-    const picked = new File([await (await fetch(FIXTURE)).arrayBuffer()], 'fixture.fxdb')
+    const picked = new File([await (await fetch(FIXTURE)).arrayBuffer()], 'fixture.vdbx')
     const sources = { file: { kind: 'file', file: picked }, url: { kind: 'url', url: FIXTURE } }
-    const copy = workingCopyName('fixture.fxdb')
+    const copy = workingCopyName('fixture.vdbx')
     if (typeof navigator.storage?.getDirectory === 'function') {
         sources.opfs = { kind: 'opfs', name: copy, copyFrom: picked }
     }
@@ -259,7 +259,7 @@ async function inspect() {
 
     evidence.step = 'inspect-stub'
     const stub = await SingleFileDatabase.open(
-        { kind: 'file', file: new File([stubBytes(64 * 1024)], 'stub.fxdb') },
+        { kind: 'file', file: new File([stubBytes(64 * 1024)], 'stub.vdbx') },
         open({ moduleUrl: '/dist-web/fylo-browser.wasm' })
     )
     try {
@@ -289,8 +289,8 @@ async function requests(database, frames) {
  * OPFS working copy of it and read the edit back after reopening. */
 async function documents() {
     evidence.step = 'fetch-database'
-    const bytes = await (await fetch('/target/browser-fixtures/documents.fxdb')).arrayBuffer()
-    const picked = new File([bytes], 'documents.fxdb')
+    const bytes = await (await fetch('/target/browser-fixtures/documents.vdbx')).arrayBuffer()
+    const picked = new File([bytes], 'documents.vdbx')
     evidence.step = 'read-picked'
     const reader = await SingleFileDatabase.open(
         { kind: 'file', file: picked },
@@ -306,7 +306,7 @@ async function documents() {
     } finally {
         await reader.close()
     }
-    const copy = workingCopyName('documents.fxdb')
+    const copy = workingCopyName('documents.vdbx')
     try {
         evidence.step = 'edit-opfs'
         const writer = await SingleFileDatabase.open(
@@ -342,7 +342,7 @@ async function documents() {
 }
 
 async function engine() {
-    const picked = new File([stubBytes(64 * 1024)], 'stub.fxdb')
+    const picked = new File([stubBytes(64 * 1024)], 'stub.vdbx')
     evidence.step = 'instantiate'
     const database = await SingleFileDatabase.open(
         { kind: 'file', file: picked },

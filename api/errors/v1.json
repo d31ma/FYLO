@@ -246,15 +246,15 @@
             "retryable": true
         },
         {
-            "code": "EFXDB_NOT_FXDB",
+            "code": "EVDBX_NOT_VDBX",
             "retryable": false
         },
         {
-            "code": "EFXDB_VERSION",
+            "code": "EVDBX_VERSION",
             "retryable": false
         },
         {
-            "code": "EFXDB_CORRUPT",
+            "code": "EVDBX_CORRUPT",
             "retryable": false
         },
         {

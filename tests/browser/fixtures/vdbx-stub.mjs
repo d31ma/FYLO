@@ -1,10 +1,10 @@
-// A deterministic stand-in for a `.fxdb` file until the format exists.
+// A deterministic stand-in for a `.vdbx` file until the format exists.
 //
 // The bytes come from a seeded xorshift, so the page and the spec can both
 // produce the file and agree on every byte without shipping a binary fixture.
-// The first eight bytes are the `.fxdb` magic, the way a real file starts.
+// The first eight bytes are the `.vdbx` magic, the way a real file starts.
 
-export const STUB_MAGIC = [0x89, 0x46, 0x58, 0x44, 0x42, 0x0d, 0x0a, 0x1a]
+export const STUB_MAGIC = [0x89, 0x56, 0x44, 0x42, 0x58, 0x0d, 0x0a, 0x1a]
 
 /** Odd on purpose: no read lines up with a power of two at the end. */
 export const STUB_SIZE = 3 * 1024 * 1024 + 4099

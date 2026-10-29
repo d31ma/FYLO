@@ -48,7 +48,7 @@ pub(crate) use table_cache::TableCache;
 pub(crate) use table_reach::TableReach;
 
 /// The medium of the segment collection in directory `collection`: its
-/// `.fxdb` container when the directory holds one, else `segments/`.
+/// `.vdbx` container when the directory holds one, else `segments/`.
 pub(crate) fn medium_of(
     collection: &std::path::Path,
 ) -> Result<std::sync::Arc<dyn SegmentMedium>, crate::NativeStorageError> {

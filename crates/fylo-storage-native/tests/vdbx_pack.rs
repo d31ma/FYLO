@@ -1,5 +1,5 @@
 //! `fylo pack` and `fylo unpack` (ADR 0016 section 11): a directory root,
-//! in the file or the segment layout, into a `.fxdb` database and back to
+//! in the file or the segment layout, into a `.vdbx` database and back to
 //! a directory root in the file layout, checked by ADR 0015's oracle; and
 //! `fylo pack --sealed`, into a read-only database recompressed in blocks,
 //! from a directory root or a live database.
@@ -25,7 +25,7 @@ struct Scratch(PathBuf);
 impl Scratch {
     fn new(label: &str) -> Self {
         let path = std::env::temp_dir().join(format!(
-            "fylo-fxdb-pack-{label}-{}-{}",
+            "fylo-vdbx-pack-{label}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -55,7 +55,7 @@ impl Scratch {
 
 impl Drop for Scratch {
     fn drop(&mut self) {
-        let _ = NativeRoot::close_database(self.0.join("db.fxdb"));
+        let _ = NativeRoot::close_database(self.0.join("db.vdbx"));
         let _ = fs::remove_dir_all(&self.0);
     }
 }
@@ -74,7 +74,7 @@ fn identifier(number: usize) -> String {
 }
 
 /// `chars` characters that neither compress nor repeat another document's,
-/// so documents fill `.fxdb` extents by their size.
+/// so documents fill `.vdbx` extents by their size.
 fn noise(seed: usize, chars: usize) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     let mut state =
@@ -244,7 +244,7 @@ fn a_file_layout_root_packs_and_unpacks_to_the_same_files() {
         .collect();
     let bodies = documents(&NativeRoot::open(&source).unwrap(), "items");
 
-    let out = scratch.0.join("db.fxdb");
+    let out = scratch.0.join("db.vdbx");
     let report = files.pack_database(&out, false).unwrap();
     let counts: Vec<_> = report
         .collections
@@ -253,7 +253,7 @@ fn a_file_layout_root_packs_and_unpacks_to_the_same_files() {
         .collect();
     assert_eq!(counts, [("items", 29, 1), ("notes", 3, 0)]);
     // Only the database is left beside the source: no staging file.
-    assert_eq!(scratch.names(), ["db.fxdb", "source"]);
+    assert_eq!(scratch.names(), ["db.vdbx", "source"]);
     let packed = NativeRoot::open(&out).unwrap();
     assert_eq!(
         packed.database_collection_names().unwrap(),
@@ -330,7 +330,7 @@ fn a_segment_root_unpacks_to_what_export_writes() {
     let expected = collection_tree(&exported);
     let bodies = documents(&NativeRoot::open(&source).unwrap(), "items");
 
-    let out = scratch.0.join("db.fxdb");
+    let out = scratch.0.join("db.vdbx");
     let report = segments.pack_database(&out, false).unwrap();
     assert_eq!(report.collections[0].documents, 348);
     assert_eq!(report.collections[0].deleted, 2);
@@ -353,7 +353,7 @@ fn a_segment_root_unpacks_to_what_export_writes() {
     assert!(census.live_bytes > 7 * 1024 * 1024, "{census:?}");
     // The documents reach a mebibyte, so the pack trained the collection's
     // compression dictionary before it wrote them.
-    require_packed_dictionary(&out, &report, &scratch.0.join("damaged.fxdb"));
+    require_packed_dictionary(&out, &report, &scratch.0.join("damaged.vdbx"));
     // The packed database takes writes like any other.
     put(&NativeWriteRoot::open(&out).unwrap(), "items", 500, 0);
 
@@ -457,7 +457,7 @@ fn a_pack_without_writes_after_it_unpacks_to_the_export_byte_for_byte() {
         .unwrap();
     let exported = scratch.0.join("exported");
     segments.export_collection("items", &exported).unwrap();
-    let out = scratch.0.join("db.fxdb");
+    let out = scratch.0.join("db.vdbx");
     segments.pack_database(&out, false).unwrap();
     let unpacked = scratch.0.join("unpacked");
     NativeWriteRoot::open(&out)
@@ -473,7 +473,7 @@ fn a_pack_without_writes_after_it_unpacks_to_the_export_byte_for_byte() {
 #[test]
 fn pack_refuses_what_a_database_does_not_hold() {
     let scratch = Scratch::new("refuse");
-    let out = scratch.0.join("db.fxdb");
+    let out = scratch.0.join("db.vdbx");
 
     let buckets = scratch.root("buckets");
     let files = writer(&buckets, CollectionLayout::Files);
@@ -524,7 +524,7 @@ fn pack_refuses_what_a_database_does_not_hold() {
     writer.pack_database(&out, false).unwrap();
     let database = NativeWriteRoot::open(&out).unwrap();
     let error = database
-        .pack_database(&scratch.0.join("again.fxdb"), false)
+        .pack_database(&scratch.0.join("again.vdbx"), false)
         .unwrap_err();
     assert_eq!(error.code(), NativeStorageErrorCode::Unsupported);
     let error = writer
@@ -548,11 +548,11 @@ fn a_stopped_packs_staging_file_is_removed_by_the_next_pack() {
         .unwrap();
     put(&files, "items", 1, 0);
     // What a pack that stopped after building its staging file leaves.
-    fs::write(scratch.0.join(".db.fxdb.pack-staging"), b"half a database").unwrap();
-    fs::write(scratch.0.join(".db.fxdb.pack-staging.lease.3"), b"{}").unwrap();
-    let out = scratch.0.join("db.fxdb");
+    fs::write(scratch.0.join(".db.vdbx.pack-staging"), b"half a database").unwrap();
+    fs::write(scratch.0.join(".db.vdbx.pack-staging.lease.3"), b"{}").unwrap();
+    let out = scratch.0.join("db.vdbx");
     files.pack_database(&out, false).unwrap();
-    assert_eq!(scratch.names(), ["db.fxdb", "source"]);
+    assert_eq!(scratch.names(), ["db.vdbx", "source"]);
     assert_eq!(
         documents(&NativeRoot::open(&out).unwrap(), "items").len(),
         1
@@ -566,9 +566,9 @@ fn pack_both(
     scratch: &Scratch,
     key: Option<&DatabaseKey>,
 ) -> (PathBuf, PathBuf, DatabasePackReport) {
-    let plain = scratch.0.join("plain.fxdb");
+    let plain = scratch.0.join("plain.vdbx");
     writer.pack_database(&plain, false).unwrap();
-    let sealed = scratch.0.join("sealed.fxdb");
+    let sealed = scratch.0.join("sealed.vdbx");
     let report = writer.pack_sealed_database(&sealed, false, key).unwrap();
     (plain, sealed, report)
 }
@@ -609,7 +609,7 @@ fn a_sealed_pack_unpacks_to_what_export_writes() {
     // Only the two databases are left beside the source: no staging file.
     assert_eq!(
         scratch.names(),
-        ["exported", "plain.fxdb", "sealed.fxdb", "source"]
+        ["exported", "plain.vdbx", "sealed.vdbx", "source"]
     );
     // Read-only, with no free extents, and much smaller than the plain
     // pack, whose extents keep their unused tails.
@@ -656,7 +656,7 @@ fn a_sealed_pack_unpacks_to_what_export_writes() {
 #[test]
 fn a_live_database_backs_up_to_a_sealed_pack() {
     let scratch = Scratch::new("backup");
-    let live = scratch.0.join("db.fxdb");
+    let live = scratch.0.join("db.vdbx");
     NativeRoot::create_database(&live).unwrap();
     let database = NativeWriteRoot::open(&live).unwrap();
     for collection in ["items", "notes"] {
@@ -675,11 +675,11 @@ fn a_live_database_backs_up_to_a_sealed_pack() {
 
     // A plain pack still takes only a directory root.
     let error = database
-        .pack_database(&scratch.0.join("copy.fxdb"), false)
+        .pack_database(&scratch.0.join("copy.vdbx"), false)
         .unwrap_err();
     assert_eq!(error.code(), NativeStorageErrorCode::Unsupported);
     assert!(error.to_string().contains("--sealed"), "{error}");
-    let backup = scratch.0.join("backup.fxdb");
+    let backup = scratch.0.join("backup.vdbx");
     let report = database.pack_sealed_database(&backup, false, None).unwrap();
     let counts: Vec<_> = report
         .collections
@@ -699,7 +699,7 @@ fn a_live_database_backs_up_to_a_sealed_pack() {
     assert_eq!(documents(&copy, "items"), before);
     assert_eq!(documents(&copy, "notes").len(), 1);
     // A sealed database packs again, read without a claim.
-    let again = scratch.0.join("again.fxdb");
+    let again = scratch.0.join("again.vdbx");
     NativeWriteRoot::open(&backup)
         .unwrap()
         .pack_sealed_database(&again, false, None)
@@ -769,7 +769,7 @@ fn an_encrypted_sealed_pack_round_trips_with_its_key() {
     );
 
     // An encrypted database is backed up only into an encrypted pack.
-    let encrypted = scratch.0.join("encrypted.fxdb");
+    let encrypted = scratch.0.join("encrypted.vdbx");
     files
         .pack_encrypted_database(&encrypted, false, &key)
         .unwrap();
@@ -778,11 +778,11 @@ fn an_encrypted_sealed_pack_round_trips_with_its_key() {
     )
     .unwrap();
     let error = live
-        .pack_sealed_database(&scratch.0.join("leak.fxdb"), false, None)
+        .pack_sealed_database(&scratch.0.join("leak.vdbx"), false, None)
         .unwrap_err();
     assert_eq!(error.code(), NativeStorageErrorCode::KeyRequired);
-    assert!(!scratch.0.join("leak.fxdb").exists());
-    let backup = scratch.0.join("backup.fxdb");
+    assert!(!scratch.0.join("leak.vdbx").exists());
+    let backup = scratch.0.join("backup.vdbx");
     live.pack_sealed_database(&backup, false, Some(&key))
         .unwrap();
     let reopened =
@@ -804,7 +804,7 @@ fn a_sealed_database_refuses_every_write() {
         .create_collection("items", CollectionKind::Document, None)
         .unwrap();
     put(&files, "items", 1, 0);
-    let sealed = scratch.0.join("sealed.fxdb");
+    let sealed = scratch.0.join("sealed.vdbx");
     files.pack_sealed_database(&sealed, false, None).unwrap();
     let original = fs::read(&sealed).unwrap();
 
@@ -833,7 +833,7 @@ fn a_sealed_database_refuses_every_write() {
     assert_eq!(error.code(), "EROFS");
     // Nothing was written, and no lease was taken beside it.
     assert_eq!(fs::read(&sealed).unwrap(), original);
-    assert_eq!(scratch.names(), ["sealed.fxdb", "source"]);
+    assert_eq!(scratch.names(), ["sealed.vdbx", "source"]);
     assert_eq!(
         documents(&NativeRoot::open(&sealed).unwrap(), "items").len(),
         1
@@ -852,7 +852,7 @@ fn verify_finds_a_damaged_sealed_block_and_reads_fail_cleanly() {
     for number in 0..10 {
         put(&files, "items", number, 100);
     }
-    let sealed = scratch.0.join("sealed.fxdb");
+    let sealed = scratch.0.join("sealed.vdbx");
     files.pack_sealed_database(&sealed, false, None).unwrap();
     // The first stored block of the collection's segment extent, from the
     // block index.
@@ -869,7 +869,7 @@ fn verify_finds_a_damaged_sealed_block_and_reads_fail_cleanly() {
     let block = blocks[usize::try_from(number).unwrap()];
     assert!(!block.is_hole());
     bytes[usize::try_from(block.offset).unwrap() + block.length as usize / 2] ^= 0x10;
-    let damaged = scratch.0.join("damaged.fxdb");
+    let damaged = scratch.0.join("damaged.vdbx");
     fs::write(&damaged, &bytes).unwrap();
 
     let verified = ContainerFile::open_reader(&damaged)

@@ -1,5 +1,5 @@
-//! How a `.fxdb` collection stores record bodies in their frames
-//! (ADR 0016 sections 4 and 8, `docs/fxdb-segment-backend.md`, "Encryption
+//! How a `.vdbx` collection stores record bodies in their frames
+//! (ADR 0016 sections 4 and 8, `docs/vdbx-segment-backend.md`, "Encryption
 //! and codecs").
 //!
 //! The frame is a directory segment's: sync marker, length, CRC-32C, body.
@@ -58,7 +58,7 @@ pub(crate) trait DictionarySource: Debug + Send + Sync {
     fn dictionary(&self, id: u32) -> Option<ContainerDictionary>;
 }
 
-/// The record bodies of one `.fxdb` collection.
+/// The record bodies of one `.vdbx` collection.
 ///
 /// It keeps one codec per dictionary its records name, zero naming none,
 /// created on first use, since each holds zstd contexts that make a small

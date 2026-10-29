@@ -19,7 +19,7 @@ use crate::{
 /// snapshot. A schema change is therefore ordered against every document
 /// commit around it and replayed by recovery.
 ///
-/// The collection may live in a `.fxdb` file, whose superblock first takes
+/// The collection may live in a `.vdbx` file, whose superblock first takes
 /// the read-only-compatible schemas feature, durably, so a build that
 /// predates schema records opens the file read-only.
 ///
@@ -58,7 +58,7 @@ impl NativeWriteRoot {
                 "segment collection is still writing after recovery",
             ));
         }
-        // A `.fxdb` file says it holds schema records before it does.
+        // A `.vdbx` file says it holds schema records before it does.
         medium.mark_schemas()?;
         let mut active = Self::open_active_segment(collection, &stored)?;
         let generation = stored.generation + 2;

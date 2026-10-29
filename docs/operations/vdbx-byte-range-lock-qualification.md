@@ -1,10 +1,10 @@
-# `.fxdb` byte-range lock qualification
+# `.vdbx` byte-range lock qualification
 
-ADR 0016 section 7 lets several local processes share one `.fxdb` file through
+ADR 0016 section 7 lets several local processes share one `.vdbx` file through
 OS byte-range locks, and only on a filesystem where the multi-process harness
 has passed. FYLO is embedded, like SQLite, so nothing here relies on a server
 process. On any other filesystem, including one that refuses byte-range locks
-(SMB without lock support, FAT, exFAT, some FUSE filesystems), a `.fxdb` still
+(SMB without lock support, FAT, exFAT, some FUSE filesystems), a `.vdbx` still
 works under the lock-free lease (`ContainerLease`): one writer at a time,
 readers never blocked. This page records the harness, how to run it, and which
 filesystems have passed.
@@ -69,7 +69,7 @@ Inside one process a registry decides, so the three behave the same:
   the file drops every lock the process holds on it, as SQLite also guards
   against.
 
-**Do all I/O on a locked `.fxdb` through `ByteRangeLockFile::file()`.** On
+**Do all I/O on a locked `.vdbx` through `ByteRangeLockFile::file()`.** On
 macOS, opening and closing the file by path anywhere else in the process
 releases its locks. The harness reports this case for each platform.
 
@@ -147,18 +147,18 @@ file, with `--sync` so each holder flushes its data before releasing, and
 `--start-at` so they start together:
 
 ```sh
-fylo-lock-harness prepare --file /Volumes/ATLAS/locktest.fxdb    # once
-fylo-lock-harness share --file /Volumes/ATLAS/locktest.fxdb --machines 2 --machine 0 \
+fylo-lock-harness prepare --file /Volumes/ATLAS/locktest.vdbx    # once
+fylo-lock-harness share --file /Volumes/ATLAS/locktest.vdbx --machines 2 --machine 0 \
     --start-at 1793000000 --sync --json 0.json                   # machine 0
 fylo-lock-harness share --file <same file> --machines 2 --machine 1 \
     --start-at 1793000000 --sync --json 1.json                   # machine 1
-fylo-lock-harness verify --file /Volumes/ATLAS/locktest.fxdb 0.json 1.json
+fylo-lock-harness verify --file /Volumes/ATLAS/locktest.vdbx 0.json 1.json
 ```
 
 `verify` sums every machine's entries and compares them with the counters in
 the file.
 
-On the local NFS 4.1 server, `bun run fxdb:locks:nfs` builds the Linux harness
+On the local NFS 4.1 server, `bun run vdbx:locks:nfs` builds the Linux harness
 in Docker, starts the same kernel nfsd as `bun run efs:local`, runs `qualify`
 from one client, and then `share` from two clients against one file. Pass
 `--cache-dir` to keep the build cache off the Docker disk image (a cache on a
@@ -181,16 +181,16 @@ flags without a `--`.
 | NTFS, Windows 11 26H2 (ARM64)      | Surface (Snapdragon X, 10 cores) | 2026-10-29 | passed | 1.6 ms | 34,244 exclusive entries, 0 overlaps; control caught 84,300; longest wait 6.0 s | no |
 | SMB 3.1.1 (`smbfs`, CITADEL ATLAS share), macOS | Mac Mini, two writer processes | 2026-10-29 | lease fallback | lease taken over 65 s after `kill -9` | the probe lock was refused, so the lock checks are skipped; writers 2 and 3 got `EBUSY` after 5.0 s while writer 1 held the lease; a reader ran 23,333 checked queries meanwhile with 0 failures | |
 
-On the ATLAS share, writing a `.fxdb` first needed two fixes, both on
+On the ATLAS share, writing a `.vdbx` first needed two fixes, both on
 develop: the lease file is flushed with `fsync`, because `smbfs` refuses
 `F_FULLFSYNC` (`0a65795`), and `fylo pack` falls back to a rename when the
 filesystem refuses hard links with any error (`9f666cd`). Numbers and the
 full sequence are in `docs/QUERY_RELEASE_QUALIFICATION.md`, "Single-file
-`.fxdb` databases on ATLAS".
+`.vdbx` databases on ATLAS".
 
 A filesystem joins `QUALIFIED` in
 `crates/fylo-storage-native/src/byte_range_lock/filesystem.rs`, the list of
-those where `.fxdb` byte-range locks are enabled, only with a passed row here.
+those where `.vdbx` byte-range locks are enabled, only with a passed row here.
 A filesystem whose probe fails is recorded as "lease fallback": it is
 supported, through the lock-free lease.
 
@@ -206,4 +206,4 @@ exports, but one earlier run saw a holder read a counter one behind the last
 holder's flushed write, which is what a client page cache that missed the
 other client's change looks like. Byte-range locks on NFS would also need
 every reader to revalidate its cache after each lock, which FYLO does not
-promise. On NFS a `.fxdb` uses the lock-free lease.
+promise. On NFS a `.vdbx` uses the lock-free lease.

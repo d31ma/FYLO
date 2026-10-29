@@ -16,8 +16,8 @@ impl Drop for Database {
 fn database(name: &str) -> (Database, PathBuf) {
     let dir = std::env::temp_dir().join(crate::write::unique_name(name));
     std::fs::create_dir_all(&dir).expect("create directory");
-    let path = dir.join("test.fxdb");
-    std::fs::write(&path, b"fxdb").expect("create database file");
+    let path = dir.join("test.vdbx");
+    std::fs::write(&path, b"vdbx").expect("create database file");
     (Database(dir), path)
 }
 
@@ -174,7 +174,7 @@ fn locks_beyond_the_end_leave_the_file_and_its_data_alone() {
         .expect("lock")
         .expect("free");
     write_at(file.file(), b"payload", 4);
-    assert_eq!(read_at(file.file(), 11, 0), b"fxdbpayload");
+    assert_eq!(read_at(file.file(), 11, 0), b"vdbxpayload");
     assert_eq!(file.file().metadata().expect("stat").len(), 11);
 }
 

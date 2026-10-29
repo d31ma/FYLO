@@ -78,7 +78,7 @@ fn other(context: ContainerSealContext) -> ContainerSealContext {
     }
 }
 
-// `.fxdb` encrypted units are untrusted on disk: opening arbitrary bytes must
+// `.vdbx` encrypted units are untrusted on disk: opening arbitrary bytes must
 // fail without panicking, and a sealed unit opens only under its own key and
 // context.
 fuzz_target!(|input: &[u8]| {

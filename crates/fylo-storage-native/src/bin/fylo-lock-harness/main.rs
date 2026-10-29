@@ -1,4 +1,4 @@
-//! Multi-process qualification harness for `.fxdb` byte-range locks
+//! Multi-process qualification harness for `.vdbx` byte-range locks
 //! (ADR 0016 section 7).
 //!
 //! ```text
@@ -6,7 +6,7 @@
 //!     [--seconds 10] [--writers 4] [--sync] [--label NAME] [--json FILE]
 //! ```
 //!
-//! creates a scratch `.fxdb`-sized file in DIR and runs, in order:
+//! creates a scratch `.vdbx`-sized file in DIR and runs, in order:
 //!
 //! 1. the lock bytes leave the file's length and data alone;
 //! 2. a conflict matrix: a child process holds a byte, the harness checks

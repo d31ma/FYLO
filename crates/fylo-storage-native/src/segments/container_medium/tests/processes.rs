@@ -12,10 +12,10 @@ use crate::{
     FilesystemInfo, NativeRoot, NativeStorageErrorCode,
 };
 
-const ROLE: &str = "FYLO_FXDB_CHILD_ROLE";
-const ROOT: &str = "FYLO_FXDB_CHILD_ROOT";
-const COLLECTION: &str = "FYLO_FXDB_CHILD_COLLECTION";
-const EXPECT: &str = "FYLO_FXDB_CHILD_EXPECT";
+const ROLE: &str = "FYLO_VDBX_CHILD_ROLE";
+const ROOT: &str = "FYLO_VDBX_CHILD_ROOT";
+const COLLECTION: &str = "FYLO_VDBX_CHILD_COLLECTION";
+const EXPECT: &str = "FYLO_VDBX_CHILD_EXPECT";
 const CHILD_TEST: &str = "segments::container_medium::tests::processes::a_child_process";
 const WAIT: Duration = Duration::from_mins(1);
 
@@ -159,7 +159,7 @@ fn wait_for(path: &Path) {
 
 #[test]
 fn a_second_writer_process_is_busy_under_the_lease_while_a_reader_reads() {
-    let fixture = Fixture::create("fxdb-medium-lease");
+    let fixture = Fixture::create("vdbx-medium-lease");
     let writer = fixture.writer();
     for number in 0..5 {
         put_into(&writer, "items", number).unwrap();
@@ -188,12 +188,12 @@ fn a_second_writer_process_is_busy_under_the_lease_while_a_reader_reads() {
 
 #[test]
 fn writer_processes_of_two_collections_commit_side_by_side_under_locks() {
-    let fixture = Fixture::create("fxdb-medium-locks");
+    let fixture = Fixture::create("vdbx-medium-locks");
     fixture
         .writer()
         .create_collection("others", CollectionKind::Document, None)
         .unwrap();
-    let file = std::fs::File::open(fixture.0.join(".collections/items/segments.fxdb")).unwrap();
+    let file = std::fs::File::open(fixture.0.join(".collections/items/segments.vdbx")).unwrap();
     let filesystem = FilesystemInfo::of(&file).unwrap();
     if !filesystem.byte_range_locks_qualified() {
         eprintln!("skipped: byte-range locks are not qualified on {filesystem:?}");

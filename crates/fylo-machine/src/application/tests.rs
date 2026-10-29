@@ -303,7 +303,7 @@ fn encryption_file_opts_into_encrypted_databases_with_the_key_alone() {
         ),
     )
     .unwrap();
-    let plain = fixture.load(r#"{"fylo":{"root":"db.fxdb"}}"#).unwrap();
+    let plain = fixture.load(r#"{"fylo":{"root":"db.vdbx"}}"#).unwrap();
     assert!(plain.database_key.is_none());
     assert!(!plain.encrypt_databases);
     assert!(plain.creation_key().is_none());

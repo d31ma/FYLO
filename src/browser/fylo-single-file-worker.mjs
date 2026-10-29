@@ -1,4 +1,4 @@
-// The Worker that owns one `.fxdb` database file in a browser (ADR 0016
+// The Worker that owns one `.vdbx` database file in a browser (ADR 0016
 // section 10).
 //
 // The sibling `fylo-wasm-worker.mjs` runs the engine over a folder, which
@@ -26,7 +26,7 @@
 // - `close` closes the file and releases the lock.
 
 import { OPEN_READ, OPEN_WRITE, createHostImports, exec } from './host-vfs.mjs'
-import { WORKING_COPY_DIRECTORY, isWorkingCopyName } from './fxdb-names.mjs'
+import { WORKING_COPY_DIRECTORY, isWorkingCopyName } from './vdbx-names.mjs'
 import {
     DEFAULT_DATABASE_PATH,
     createAccessHandleBackend,
@@ -130,7 +130,7 @@ async function instantiate(moduleUrl, target) {
 
 async function openWorkingCopy({ name, copyFrom }, path, progress) {
     if (!isWorkingCopyName(name)) throw new Error(`invalid working copy name: ${name}`)
-    await acquireLock(`fylo-fxdb:${name}`)
+    await acquireLock(`fylo-vdbx:${name}`)
     const root = await navigator.storage.getDirectory()
     const directory = await root.getDirectoryHandle(WORKING_COPY_DIRECTORY, { create: true })
     const file = await directory.getFileHandle(name, { create: Boolean(copyFrom) })
@@ -174,7 +174,7 @@ function snapshot() {
         }
         parts.push(chunk)
     }
-    return { blob: new Blob(parts, { type: 'application/vnd.d31ma.fxdb' }), size }
+    return { blob: new Blob(parts, { type: 'application/vnd.d31ma.vdbx' }), size }
 }
 
 function describe() {
@@ -244,7 +244,7 @@ async function acquireLock(name) {
  *
  * The table reads paths from and writes results into module memory, so these
  * calls exercise exactly the pointers, lengths and errno the engine's own
- * calls do. It is how the browser tests prove the backends before the `.fxdb`
+ * calls do. It is how the browser tests prove the backends before the `.vdbx`
  * engine ops exist, and how Explorer reads the header today.
  */
 function createProbe(target) {

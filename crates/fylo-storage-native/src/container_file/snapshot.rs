@@ -1,4 +1,4 @@
-//! Derived snapshots in a `.fxdb` container (ADR 0016 sections 3 and 5).
+//! Derived snapshots in a `.vdbx` container (ADR 0016 sections 3 and 5).
 //!
 //! A collection's location snapshot, prefix-index snapshot and schemas
 //! snapshot each live in a run of consecutive extents of kind `locations`,
@@ -151,7 +151,7 @@ impl ContainerFile {
     /// `ChecksumMismatch` when the bytes do not hash to the recorded
     /// SHA-256, `Cipher(Unauthenticated)` when the sealed bytes were sealed
     /// for another place, a header decoding error, or the read failure. All
-    /// of them report `EFXDB_CORRUPT`, and the caller rebuilds the snapshot.
+    /// of them report `EVDBX_CORRUPT`, and the caller rebuilds the snapshot.
     /// A locked encrypted file gives `Locked`.
     pub fn read_snapshot(
         &self,

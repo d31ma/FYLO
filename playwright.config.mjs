@@ -25,7 +25,7 @@ export default defineConfig({
             // No isolation, as a static host serves a page: the single-file
             // hosts must work without SharedArrayBuffer.
             command: 'node scripts/serve-isolated.mjs 4174 . --no-isolation',
-            url: 'http://127.0.0.1:4174/tests/browser/fixtures/fxdb-single-file.html',
+            url: 'http://127.0.0.1:4174/tests/browser/fixtures/vdbx-single-file.html',
             reuseExistingServer: true,
             timeout: 30_000
         }

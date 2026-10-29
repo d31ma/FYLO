@@ -180,9 +180,9 @@ fn administrative_command(command: &str, arguments: &[String]) -> Option<Result<
         .then(|| run_segment_command(command, arguments))
 }
 
-/// `fylo pack [<root>] --out <db.fxdb>` packs the root named by argument,
-/// by `--root` or by the configuration; `fylo unpack <db.fxdb> --out
-/// <directory>` and `fylo create <db.fxdb>` name their database by argument
+/// `fylo pack [<root>] --out <db.vdbx>` packs the root named by argument,
+/// by `--root` or by the configuration; `fylo unpack <db.vdbx> --out
+/// <directory>` and `fylo create <db.vdbx>` name their database by argument
 /// or by `--root`.
 fn run_pack_command(command: &str, arguments: &[String]) -> Result<String, String> {
     let application = machine_config(arguments)?;
@@ -192,7 +192,7 @@ fn run_pack_command(command: &str, arguments: &[String]) -> Result<String, Strin
         (None, "pack") => compat_root(arguments, &application)?,
         (None, _) => PathBuf::from(
             option(arguments, "--root")
-                .ok_or_else(|| format!("{command} needs the .fxdb database to {command}"))?,
+                .ok_or_else(|| format!("{command} needs the .vdbx database to {command}"))?,
         ),
     };
     let options = PackOptions {
@@ -230,9 +230,9 @@ fn run_segment_command(command: &str, arguments: &[String]) -> Result<String, St
     output
 }
 
-/// The `.fxdb` database that `fylo compact <db.fxdb>` or `fylo salvage
-/// <db.fxdb>` names, by argument or by `--root` with no collection (ADR
-/// 0016 section 11). `fylo compact <collection> --root <db.fxdb>` names
+/// The `.vdbx` database that `fylo compact <db.vdbx>` or `fylo salvage
+/// <db.vdbx>` names, by argument or by `--root` with no collection (ADR
+/// 0016 section 11). `fylo compact <collection> --root <db.vdbx>` names
 /// one collection of it instead.
 fn database_target(command: &str, arguments: &[String]) -> Option<PathBuf> {
     if !matches!(command, "compact" | "salvage") {
@@ -248,7 +248,7 @@ fn database_target(command: &str, arguments: &[String]) -> Option<PathBuf> {
         .filter(|path| {
             Path::new(path)
                 .extension()
-                .is_some_and(|extension| extension == "fxdb")
+                .is_some_and(|extension| extension == "vdbx")
         })
         .map(PathBuf::from)
 }
@@ -373,8 +373,8 @@ fn run_machine(arguments: &[String]) -> ExitCode {
     }
 }
 
-/// The `.fxdb` operation and file that `fylo inspect <db.fxdb>` or
-/// `fylo verify <db.fxdb>` names, by argument or by `--root` (ADR 0016
+/// The `.vdbx` operation and file that `fylo inspect <db.vdbx>` or
+/// `fylo verify <db.vdbx>` names, by argument or by `--root` (ADR 0016
 /// section 11). Any other command, or another path, is not one.
 fn database_command(arguments: &[String]) -> Option<(&'static str, PathBuf)> {
     let operation = match arguments.first().map(String::as_str) {
@@ -392,12 +392,12 @@ fn database_command(arguments: &[String]) -> Option<(&'static str, PathBuf)> {
         .filter(|path| {
             Path::new(path)
                 .extension()
-                .is_some_and(|extension| extension == "fxdb")
+                .is_some_and(|extension| extension == "vdbx")
         })
         .map(|path| (operation, PathBuf::from(path)))
 }
 
-/// Print a `.fxdb` file's inspect or verify report as JSON. A verify report
+/// Print a `.vdbx` file's inspect or verify report as JSON. A verify report
 /// with errors is printed and fails the command.
 fn run_database(arguments: &[String], operation: &str, path: &Path) -> ExitCode {
     // The request names the file; it is never admitted as a directory root.
@@ -638,7 +638,7 @@ fn run_compat_cli(arguments: &[String], application: &ApplicationConfig) -> Resu
     let command = values.first().map(String::as_str).unwrap_or_default();
     let root = compat_root(arguments, application)?;
     let profile = filesystem_profile(arguments)?;
-    // A root named `*.fxdb` is a database, not a directory to create; the
+    // A root named `*.vdbx` is a database, not a directory to create; the
     // machine protocol refuses it with ELAYOUTUNSUPPORTED for now.
     if profile == FilesystemProfile::Native && !NativeRoot::names_database(&root) {
         fs::create_dir_all(&root).map_err(|error| format!("cannot create FYLO root: {error}"))?;
@@ -1831,7 +1831,7 @@ fn retired_command(command: &str) -> String {
 }
 
 fn usage() -> String {
-    "Usage:\n  fylo checkout [-b] <branch> [--root <path>] [--json]\n  fylo branch [--root <path>] [--json]\n  fylo commit -m <message> [--root <path>] [--json]\n  fylo log [--root <path>] [--json]\n  fylo status [--root <path>] [--json]\n  fylo diff [<from>] [<to>] [--root <path>] [--json]\n  fylo restore-commit <commit-id> [--root <path>] [--force] [--json]\n  fylo merge <ref> [-m <message>] [--root <path>] [--json]\n  fylo version [--output json]\n  fylo \"<SQL>\"\n  fylo sql \"<SQL>\"\n  fylo exec --request <json|@path|-> [--root <path>]\n  fylo exec --loop [--root <path>] [--exclusive-root [--hot-set-bytes <n>]]\n  fylo inspect <collection> [--root <path>] [--json]\n  fylo inspect <db.fxdb>\n  fylo get <collection> <doc-id> [--root <path>] [--json]\n  fylo latest <collection> <doc-id> [--root <path>] [--json] [--id-only]\n  fylo rebuild <collection> [--root <path>] [--json]\n  fylo reshard <collection> --width <n> [--root <path>] [--json]\n  fylo verify <collection> [--root <path>] [--json]\n  fylo layout <collection> --to <files|segments> [--allow-engine-only-access] [--root <path>]\n  fylo compact <collection> [--root <path>]\n  fylo compact <db.fxdb> [--shrink]\n  fylo export <collection> --out <directory> [--root <path>]\n  fylo verify-segments <collection> [--root <path>]\n  fylo salvage <collection> --out <directory> [--root <path>]\n  fylo salvage <db.fxdb> --out <directory>\n  fylo verify <db.fxdb>\n  fylo create <db.fxdb> [--encrypt]\n  fylo pack [<root>] --out <db.fxdb> [--encrypt] [--allow-engine-only-access]\n  fylo pack <root|db.fxdb> --out <db.fxdb> --sealed [--encrypt] [--allow-engine-only-access]\n  fylo unpack <db.fxdb> --out <directory>\n  fylo deleted <collection> [--root <path>] [--json]\n  fylo restore <collection> <doc-id> [--root <path>] [--json]\n  fylo schema inspect <collection> [--schema-dir <path>] [--json]\n  fylo schema current <collection> [--schema-dir <path>] [--json]\n  fylo schema history <collection> [--schema-dir <path>] [--json]\n  fylo schema doctor <collection> [--schema-dir <path>] [--json]\n  fylo schema validate <collection> <json|@path|-> [--schema-dir <path>] [--json]\n  fylo schema materialize <collection> <json|@path|-> [--schema-dir <path>] [--json]\n  fylo schema migrate <collection> [--include-unversioned] [--schema-dir <path>] [--json]\n  fylo schema mode <collection> [off|warn|strict] [--json]\n  fylo schema check <collection> [--limit <n>] [--schema-dir <path>] [--json]\n  fylo schema push <collection> [--schema-dir <path>] [--json]\n  fylo schema pull <collection> --out <path> [--json]\n\nOptions:\n  --config <path> Load application.json (default: ./application.json)\n  --root <path>   Override fylo.root for this command\n  --schema-dir <path> Override fylo.schema for schema admin commands\n  --json          Emit machine-readable JSON output\n  --id-only       Return only the resolved document id for latest\n  -b              Create a new branch during checkout\n  -m, --message <v> Commit message\n  --force         Allow restore-commit to overwrite uncommitted changes\n  --include-unversioned Also migrate documents with no _v, as the oldest version\n  --request <v>   Machine request payload, @file path, or - for stdin\n  --exclusive-root Acquire an exclusive crash-safe root lease for exec --loop\n  --hot-set-bytes <n> Memory an --exclusive-root session keeps for warm reads; 0 turns it off (default 67108864)\n  --strict-schema Validate writes against the collection head schema (fylo.strict)\n  --shard-width <n> Shard width for collections created by this session (fylo.shard.width)\n  --width <n>     Destination shard width for reshard\n  --to <layout>   Destination layout for layout: files or segments\n  --shrink        Give the space compact frees in a .fxdb database back to the disk\n  --out <directory> Empty directory export and salvage write the per-document tree to, and unpack the root to\n  --out <db.fxdb> New .fxdb database pack writes; it must not exist\n  --allow-engine-only-access Let layout move, or pack copy, records owned by other users\n  --encrypt       Encrypt the database create or pack writes with fylo.encryption.key\n  --sealed        Pack a read-only database recompressed in 64 KiB blocks; it also copies a live .fxdb database\n  --limit <n>     Failing documents schema check lists (default 100)\n  --out <path>    Folder schema pull writes the fylo.schema layout to\n  --max-request-bytes <n> Maximum NDJSON request bytes, excluding LF\n  --max-response-bytes <n> Maximum NDJSON response bytes, excluding LF\n  --output <mode> Output mode for version: text or json\n  --version       Print the FYLO runtime version\n  --help          Show this message"
+    "Usage:\n  fylo checkout [-b] <branch> [--root <path>] [--json]\n  fylo branch [--root <path>] [--json]\n  fylo commit -m <message> [--root <path>] [--json]\n  fylo log [--root <path>] [--json]\n  fylo status [--root <path>] [--json]\n  fylo diff [<from>] [<to>] [--root <path>] [--json]\n  fylo restore-commit <commit-id> [--root <path>] [--force] [--json]\n  fylo merge <ref> [-m <message>] [--root <path>] [--json]\n  fylo version [--output json]\n  fylo \"<SQL>\"\n  fylo sql \"<SQL>\"\n  fylo exec --request <json|@path|-> [--root <path>]\n  fylo exec --loop [--root <path>] [--exclusive-root [--hot-set-bytes <n>]]\n  fylo inspect <collection> [--root <path>] [--json]\n  fylo inspect <db.vdbx>\n  fylo get <collection> <doc-id> [--root <path>] [--json]\n  fylo latest <collection> <doc-id> [--root <path>] [--json] [--id-only]\n  fylo rebuild <collection> [--root <path>] [--json]\n  fylo reshard <collection> --width <n> [--root <path>] [--json]\n  fylo verify <collection> [--root <path>] [--json]\n  fylo layout <collection> --to <files|segments> [--allow-engine-only-access] [--root <path>]\n  fylo compact <collection> [--root <path>]\n  fylo compact <db.vdbx> [--shrink]\n  fylo export <collection> --out <directory> [--root <path>]\n  fylo verify-segments <collection> [--root <path>]\n  fylo salvage <collection> --out <directory> [--root <path>]\n  fylo salvage <db.vdbx> --out <directory>\n  fylo verify <db.vdbx>\n  fylo create <db.vdbx> [--encrypt]\n  fylo pack [<root>] --out <db.vdbx> [--encrypt] [--allow-engine-only-access]\n  fylo pack <root|db.vdbx> --out <db.vdbx> --sealed [--encrypt] [--allow-engine-only-access]\n  fylo unpack <db.vdbx> --out <directory>\n  fylo deleted <collection> [--root <path>] [--json]\n  fylo restore <collection> <doc-id> [--root <path>] [--json]\n  fylo schema inspect <collection> [--schema-dir <path>] [--json]\n  fylo schema current <collection> [--schema-dir <path>] [--json]\n  fylo schema history <collection> [--schema-dir <path>] [--json]\n  fylo schema doctor <collection> [--schema-dir <path>] [--json]\n  fylo schema validate <collection> <json|@path|-> [--schema-dir <path>] [--json]\n  fylo schema materialize <collection> <json|@path|-> [--schema-dir <path>] [--json]\n  fylo schema migrate <collection> [--include-unversioned] [--schema-dir <path>] [--json]\n  fylo schema mode <collection> [off|warn|strict] [--json]\n  fylo schema check <collection> [--limit <n>] [--schema-dir <path>] [--json]\n  fylo schema push <collection> [--schema-dir <path>] [--json]\n  fylo schema pull <collection> --out <path> [--json]\n\nOptions:\n  --config <path> Load application.json (default: ./application.json)\n  --root <path>   Override fylo.root for this command\n  --schema-dir <path> Override fylo.schema for schema admin commands\n  --json          Emit machine-readable JSON output\n  --id-only       Return only the resolved document id for latest\n  -b              Create a new branch during checkout\n  -m, --message <v> Commit message\n  --force         Allow restore-commit to overwrite uncommitted changes\n  --include-unversioned Also migrate documents with no _v, as the oldest version\n  --request <v>   Machine request payload, @file path, or - for stdin\n  --exclusive-root Acquire an exclusive crash-safe root lease for exec --loop\n  --hot-set-bytes <n> Memory an --exclusive-root session keeps for warm reads; 0 turns it off (default 67108864)\n  --strict-schema Validate writes against the collection head schema (fylo.strict)\n  --shard-width <n> Shard width for collections created by this session (fylo.shard.width)\n  --width <n>     Destination shard width for reshard\n  --to <layout>   Destination layout for layout: files or segments\n  --shrink        Give the space compact frees in a .vdbx database back to the disk\n  --out <directory> Empty directory export and salvage write the per-document tree to, and unpack the root to\n  --out <db.vdbx> New .vdbx database pack writes; it must not exist\n  --allow-engine-only-access Let layout move, or pack copy, records owned by other users\n  --encrypt       Encrypt the database create or pack writes with fylo.encryption.key\n  --sealed        Pack a read-only database recompressed in 64 KiB blocks; it also copies a live .vdbx database\n  --limit <n>     Failing documents schema check lists (default 100)\n  --out <path>    Folder schema pull writes the fylo.schema layout to\n  --max-request-bytes <n> Maximum NDJSON request bytes, excluding LF\n  --max-response-bytes <n> Maximum NDJSON response bytes, excluding LF\n  --output <mode> Output mode for version: text or json\n  --version       Print the FYLO runtime version\n  --help          Show this message"
         .replace(
             "  --root <path>   Override fylo.root for this command",
             "  --root <path>   Override fylo.root for this command\n  --filesystem-profile <native|efs-sidecar-v1> Select metadata profile explicitly",
@@ -1884,24 +1884,24 @@ mod tests {
     }
 
     #[test]
-    fn inspect_and_verify_route_a_fxdb_path_to_the_database_operations() {
+    fn inspect_and_verify_route_a_vdbx_path_to_the_database_operations() {
         let arguments = |values: &[&str]| -> Vec<String> {
             values.iter().map(|value| (*value).to_owned()).collect()
         };
         assert_eq!(
-            database_command(&arguments(&["inspect", "db.fxdb"])),
-            Some(("inspectDatabase", PathBuf::from("db.fxdb")))
+            database_command(&arguments(&["inspect", "db.vdbx"])),
+            Some(("inspectDatabase", PathBuf::from("db.vdbx")))
         );
         assert_eq!(
-            database_command(&arguments(&["verify", "--root", "data/db.fxdb"])),
-            Some(("verifyDatabase", PathBuf::from("data/db.fxdb")))
+            database_command(&arguments(&["verify", "--root", "data/db.vdbx"])),
+            Some(("verifyDatabase", PathBuf::from("data/db.vdbx")))
         );
         assert_eq!(database_command(&arguments(&["verify", "users"])), None);
         assert_eq!(
-            database_command(&arguments(&["inspect", "users", "--root", "db.fxdb"])),
+            database_command(&arguments(&["inspect", "users", "--root", "db.vdbx"])),
             None
         );
-        assert_eq!(database_command(&arguments(&["get", "db.fxdb"])), None);
+        assert_eq!(database_command(&arguments(&["get", "db.vdbx"])), None);
     }
 
     #[test]
@@ -1910,27 +1910,27 @@ mod tests {
             values.iter().map(|value| (*value).to_owned()).collect()
         };
         assert_eq!(
-            database_target("compact", &arguments(&["compact", "db.fxdb", "--shrink"])),
-            Some(PathBuf::from("db.fxdb"))
+            database_target("compact", &arguments(&["compact", "db.vdbx", "--shrink"])),
+            Some(PathBuf::from("db.vdbx"))
         );
         assert_eq!(
             database_target(
                 "compact",
-                &arguments(&["compact", "--root", "data/db.fxdb"])
+                &arguments(&["compact", "--root", "data/db.vdbx"])
             ),
-            Some(PathBuf::from("data/db.fxdb"))
+            Some(PathBuf::from("data/db.vdbx"))
         );
         assert_eq!(
             database_target(
                 "salvage",
-                &arguments(&["salvage", "db.fxdb", "--out", "salvaged"])
+                &arguments(&["salvage", "db.vdbx", "--out", "salvaged"])
             ),
-            Some(PathBuf::from("db.fxdb"))
+            Some(PathBuf::from("db.vdbx"))
         );
         assert_eq!(
             database_target(
                 "compact",
-                &arguments(&["compact", "users", "--root", "db.fxdb"])
+                &arguments(&["compact", "users", "--root", "db.vdbx"])
             ),
             None
         );
@@ -1939,7 +1939,7 @@ mod tests {
             None
         );
         assert_eq!(
-            database_target("export", &arguments(&["export", "db.fxdb"])),
+            database_target("export", &arguments(&["export", "db.vdbx"])),
             None
         );
     }

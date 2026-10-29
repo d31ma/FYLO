@@ -3,7 +3,7 @@ use crate::container_bytes::{
 };
 use crate::{ContainerFormatError, Crc32c};
 
-/// The superblock of a `.fxdb` container (ADR 0016 section 3).
+/// The superblock of a `.vdbx` container (ADR 0016 section 3).
 ///
 /// Two copies sit at offsets 0 and [`Self::ENCODED_BYTES`]. A checkpoint
 /// writes the copy that does not hold the newest valid generation and flushes;
@@ -45,7 +45,7 @@ impl ContainerSuperblock {
     pub const VERSION: u16 = 1;
     /// PNG-style magic: a high bit, the name, then CR LF and EOF bytes, so a
     /// text-mode transfer or a 7-bit channel breaks it visibly.
-    pub const MAGIC: [u8; 8] = [0x89, b'F', b'X', b'D', b'B', b'\r', b'\n', 0x1A];
+    pub const MAGIC: [u8; 8] = [0x89, b'V', b'D', b'B', b'X', b'\r', b'\n', 0x1A];
     /// Smallest extent: 1 MiB.
     pub const MIN_EXTENT_SHIFT: u8 = 20;
     /// Largest extent: 64 MiB.

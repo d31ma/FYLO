@@ -21,7 +21,7 @@ impl Drop for Database {
 fn created(name: &str, encrypted: bool) -> (Database, PathBuf) {
     let dir = std::env::temp_dir().join(crate::write::unique_name(name));
     std::fs::create_dir_all(&dir).expect("create directory");
-    let path = dir.join("test.fxdb");
+    let path = dir.join("test.vdbx");
     if encrypted {
         ContainerFile::create_encrypted(&path, SHIFT, SECRET).expect("create container");
     } else {
@@ -42,7 +42,7 @@ fn dictionary(id: u32) -> ContainerDictionary {
 #[test]
 fn dictionaries_round_trip_and_are_found_by_id() {
     for encrypted in [false, true] {
-        let (_guard, path) = created("fxdb-dictionary-round-trip", encrypted);
+        let (_guard, path) = created("vdbx-dictionary-round-trip", encrypted);
         let mut container = ContainerFile::open_unchecked(&path).expect("open container");
         if encrypted {
             container.unlock(SECRET).expect("unlock");
@@ -98,7 +98,7 @@ fn dictionaries_round_trip_and_are_found_by_id() {
 
 #[test]
 fn a_damaged_or_misplaced_dictionary_is_refused() {
-    let (_guard, path) = created("fxdb-dictionary-damage", false);
+    let (_guard, path) = created("vdbx-dictionary-damage", false);
     let mut container = ContainerFile::open_unchecked(&path).expect("open container");
     let (extent, _, _) = container
         .write_dictionary(USERS, &dictionary(4))
@@ -112,7 +112,7 @@ fn a_damaged_or_misplaced_dictionary_is_refused() {
     std::fs::write(&path, &bytes).expect("damage");
     let reader = ContainerFile::open_reader(&path).expect("open reader");
     let error = reader.read_dictionary(USERS, extent).unwrap_err();
-    assert_eq!(error.code(), "EFXDB_CORRUPT", "{error}");
+    assert_eq!(error.code(), "EVDBX_CORRUPT", "{error}");
     // The header still names it, so it is listed, and found as damaged.
     assert_eq!(
         reader.dictionary_extents(USERS).expect("list"),
@@ -121,7 +121,7 @@ fn a_damaged_or_misplaced_dictionary_is_refused() {
     assert!(reader.find_dictionary(USERS, 4).is_err());
 
     // A sealed unit opened for another dictionary id fails to open.
-    let (_guard, path) = created("fxdb-dictionary-misplaced", true);
+    let (_guard, path) = created("vdbx-dictionary-misplaced", true);
     let mut container = ContainerFile::open_unchecked(&path).expect("open container");
     container.unlock(SECRET).expect("unlock");
     let sealed = container
@@ -150,12 +150,12 @@ fn a_damaged_or_misplaced_dictionary_is_refused() {
         )
         .expect("write sealed");
     let error = container.read_dictionary(USERS, extent).unwrap_err();
-    assert_eq!(error.code(), "EFXDB_CORRUPT", "{error}");
+    assert_eq!(error.code(), "EVDBX_CORRUPT", "{error}");
 }
 
 #[test]
 fn only_a_dictionary_extent_of_the_collection_is_released() {
-    let (_guard, path) = created("fxdb-dictionary-release", false);
+    let (_guard, path) = created("vdbx-dictionary-release", false);
     let mut container = ContainerFile::open_unchecked(&path).expect("open container");
     let (extent, _, _) = container
         .write_dictionary(USERS, &dictionary(1))

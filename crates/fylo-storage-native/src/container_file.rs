@@ -1,4 +1,4 @@
-//! A `.fxdb` container file: create, open and checkpoint (ADR 0016).
+//! A `.vdbx` container file: create, open and checkpoint (ADR 0016).
 //!
 //! This layer owns the file's fixed structures — the two superblock copies,
 //! the extent map and the collection directory — and hands out extents. It
@@ -74,7 +74,7 @@ impl std::fmt::Display for ContainerError {
             Self::DirectoryFull => formatter.write_str("container collection directory is full"),
             Self::ReadOnly => formatter.write_str("container may only be read"),
             Self::Sealed => formatter.write_str(
-                "the .fxdb database is sealed (fylo pack --sealed) and may only be read; \
+                "the .vdbx database is sealed (fylo pack --sealed) and may only be read; \
                  unpack it, or pack it again without --sealed, to write to it",
             ),
             Self::Busy => formatter.write_str("container is busy with other writers"),
@@ -94,23 +94,23 @@ impl ContainerError {
             Self::Io(error) if error.kind() == io::ErrorKind::NotFound => "ENATIVE_NOT_FOUND",
             Self::Io(error) if error.kind() == io::ErrorKind::PermissionDenied => "EACCES",
             Self::Io(_) => "ENATIVE_IO",
-            Self::Format(ContainerFormatError::BadMagic) => "EFXDB_NOT_FXDB",
+            Self::Format(ContainerFormatError::BadMagic) => "EVDBX_NOT_VDBX",
             Self::Format(
                 ContainerFormatError::UnsupportedVersion
                 | ContainerFormatError::IncompatibleFeature,
-            ) => "EFXDB_VERSION",
-            Self::Format(_) | Self::Allocator(_) => "EFXDB_CORRUPT",
-            Self::CollectionExists => "EFXDB_EXISTS",
-            Self::DirectoryFull => "EFXDB_FULL",
+            ) => "EVDBX_VERSION",
+            Self::Format(_) | Self::Allocator(_) => "EVDBX_CORRUPT",
+            Self::CollectionExists => "EVDBX_EXISTS",
+            Self::DirectoryFull => "EVDBX_FULL",
             Self::ReadOnly | Self::Sealed => "EROFS",
             Self::Busy => "EBUSY",
             Self::Locked | Self::Cipher(ContainerCipherError::WrongKey) => "EKEY",
-            Self::Cipher(ContainerCipherError::Unauthenticated) => "EFXDB_CORRUPT",
+            Self::Cipher(ContainerCipherError::Unauthenticated) => "EVDBX_CORRUPT",
             Self::Cipher(ContainerCipherError::Random) => "ENATIVE_IO",
             #[cfg(not(target_family = "wasm"))]
             Self::Lease(crate::ContainerLeaseError::Busy { .. }) => "EBUSY",
             #[cfg(not(target_family = "wasm"))]
-            Self::Lease(crate::ContainerLeaseError::Lost) => "EFXDB_LEASE_LOST",
+            Self::Lease(crate::ContainerLeaseError::Lost) => "EVDBX_LEASE_LOST",
             #[cfg(not(target_family = "wasm"))]
             Self::Lease(crate::ContainerLeaseError::Io(_)) => "ENATIVE_IO",
         }
@@ -161,7 +161,7 @@ pub struct ContainerCollection {
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContainerReport {
-    /// Always `fylo.fxdb`.
+    /// Always `fylo.vdbx`.
     pub format: &'static str,
     /// Superblock generation in force.
     pub generation: u64,
@@ -218,7 +218,7 @@ pub(crate) type Handle = crate::ByteRangeLockFile;
 #[cfg(target_family = "wasm")]
 pub(crate) type Handle = File;
 
-/// An open `.fxdb` container.
+/// An open `.vdbx` container.
 #[derive(Debug)]
 pub struct ContainerFile {
     handle: Handle,
@@ -1334,7 +1334,7 @@ impl ContainerFile {
             codecs.push("lz4");
         }
         Ok(ContainerReport {
-            format: "fylo.fxdb",
+            format: "fylo.vdbx",
             generation: superblock.generation,
             extent_bytes: self.extent_bytes(),
             extent_count: superblock.extent_count,

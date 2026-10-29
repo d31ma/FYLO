@@ -121,7 +121,7 @@ fn an_unknown_codec_is_refused_as_a_newer_format_never_as_damage() {
         );
         let error = SegmentReader::decode(&unknown, &frames).unwrap_err();
         assert_eq!(error.code(), NativeStorageErrorCode::Unsupported);
-        assert!(error.to_string().contains("EFXDB_VERSION"), "{error}");
+        assert!(error.to_string().contains("EVDBX_VERSION"), "{error}");
 
         // A scan stops there and says why, so recovery does not cut it off
         // as a torn tail.
@@ -207,7 +207,7 @@ fn a_sealed_frame_opens_only_in_its_collection_at_its_lsn_with_its_key() {
         );
         let error = SegmentReader::decode(framed, frames).unwrap_err();
         assert_eq!(error.code(), NativeStorageErrorCode::CorruptDocument);
-        assert!(error.to_string().contains("EFXDB_CORRUPT"), "{error}");
+        assert!(error.to_string().contains("EVDBX_CORRUPT"), "{error}");
     };
     // Moved into another collection of the same file.
     refused(&framed, &sealed(3, &key));
@@ -271,7 +271,7 @@ fn a_frame_that_does_not_open_stops_a_scan_without_being_a_torn_tail() {
 }
 
 /// A root whose segment collection `items` keeps its segments in a
-/// `.fxdb` container of 1 MiB extents.
+/// `.vdbx` container of 1 MiB extents.
 struct Fixture(PathBuf);
 
 impl Fixture {
@@ -377,7 +377,7 @@ fn patch(writer: &NativeWriteRoot, number: usize) {
 
 #[test]
 fn a_collection_written_natively_is_compressed_and_reads_back_after_a_reopen() {
-    let fixture = Fixture::create("fxdb-frames-native");
+    let fixture = Fixture::create("vdbx-frames-native");
     let writer = fixture.writer();
     for number in 0..20 {
         put(&writer, number);
@@ -406,7 +406,7 @@ fn a_collection_written_natively_is_compressed_and_reads_back_after_a_reopen() {
 
 #[test]
 fn lz4_records_read_natively_and_compaction_rewrites_them_as_zstd() {
-    let fixture = Fixture::create("fxdb-frames-lz4");
+    let fixture = Fixture::create("vdbx-frames-lz4");
     let writer = fixture.writer();
     let medium = fixture.container();
     medium.frames().write_lz4(true);

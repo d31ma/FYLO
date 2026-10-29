@@ -53,7 +53,7 @@ impl SegmentLayout {
         sync_directory(directory)
     }
 
-    /// Create the layout of a collection of a `.fxdb` database, or complete
+    /// Create the layout of a collection of a `.vdbx` database, or complete
     /// one a crash left without slots. Its medium keeps everything, the
     /// prefix index too, so nothing is created beside the file; `path`
     /// only names the collection.
@@ -69,7 +69,7 @@ impl SegmentLayout {
         medium.create_slots(&slot)
     }
 
-    /// Create the collection directory with a `.fxdb` container holding
+    /// Create the collection directory with a `.vdbx` container holding
     /// collection `name`, so the layout [`Self::create_empty`] then creates
     /// keeps its segments, slots and location snapshot in the container.
     pub(crate) fn create_container(

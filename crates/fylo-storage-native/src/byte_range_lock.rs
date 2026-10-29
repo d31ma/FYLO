@@ -1,6 +1,6 @@
-//! Byte-range locks on a `.fxdb` file (ADR 0016 section 7).
+//! Byte-range locks on a `.vdbx` file (ADR 0016 section 7).
 //!
-//! Local processes sharing one `.fxdb` coordinate through OS locks on single
+//! Local processes sharing one `.vdbx` coordinate through OS locks on single
 //! bytes in a range reserved far beyond any data offset, starting at 2⁶²: one
 //! byte for the database lease, one for extent allocation, and two bytes per
 //! collection, indexed by its directory block: its writer byte and its
@@ -16,7 +16,7 @@
 //! one handle, the registry counts holders per byte, and a duplicate descriptor
 //! is closed only once the process holds no lock on the file.
 //!
-//! Do I/O on a locked `.fxdb` through [`ByteRangeLockFile::file`]. On macOS,
+//! Do I/O on a locked `.vdbx` through [`ByteRangeLockFile::file`]. On macOS,
 //! opening and closing the file by path anywhere else in the process releases
 //! its locks.
 //!
@@ -55,7 +55,7 @@ const PROBE: u64 = LOCK_RANGE_START + 2;
 pub const MAX_POLL_INTERVAL: Duration = Duration::from_millis(1);
 const FIRST_POLL_INTERVAL: Duration = Duration::from_micros(20);
 
-/// One reserved lock byte in a `.fxdb` file.
+/// One reserved lock byte in a `.vdbx` file.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct LockByte(u64);
 
@@ -186,7 +186,7 @@ fn registry() -> MutexGuard<'static, Registry> {
         .unwrap_or_else(PoisonError::into_inner)
 }
 
-/// A `.fxdb` file opened for byte-range locking.
+/// A `.vdbx` file opened for byte-range locking.
 ///
 /// Every handle to one file in a process shares one OS handle, which
 /// [`Self::file`] lends for I/O. Clones share it too.

@@ -1,4 +1,4 @@
-//! Schema versions in a `.fxdb` file (ADR 0017 section 3): schema records
+//! Schema versions in a `.vdbx` file (ADR 0017 section 3): schema records
 //! in the collection's segments, the schemas snapshot as a `schemas` run
 //! the checkpoint slot names, and the superblock's read-only-compatible
 //! schemas feature. The crash tests spawn this test binary again with a
@@ -15,11 +15,11 @@ use crate::write::SegmentSchemas;
 use crate::{CollectionKind, ContainerFile, NativeRoot, NativeStorageErrorCode, NativeWriteRoot};
 
 const SCHEMAS: ContainerExtentKind = ContainerExtentKind::Schemas;
-const ROLE: &str = "FYLO_FXDB_SCHEMA_CHILD_ROLE";
-const DATABASE: &str = "FYLO_FXDB_SCHEMA_CHILD_DATABASE";
+const ROLE: &str = "FYLO_VDBX_SCHEMA_CHILD_ROLE";
+const DATABASE: &str = "FYLO_VDBX_SCHEMA_CHILD_DATABASE";
 const CHILD_TEST: &str = "segments::container_medium::tests::schemas::a_schema_child_process";
 
-/// A `.fxdb` database root holding the document collections `items` and
+/// A `.vdbx` database root holding the document collections `items` and
 /// `plain`.
 struct Database(PathBuf);
 
@@ -39,7 +39,7 @@ impl Database {
     }
 
     fn path(&self) -> PathBuf {
-        self.0.join("db.fxdb")
+        self.0.join("db.vdbx")
     }
 
     fn writer(&self) -> NativeWriteRoot {
@@ -165,7 +165,7 @@ fn child(role: &str, database: &Path, failpoint: &str, action: &str) -> bool {
 
 #[test]
 fn a_database_commits_schema_versions_and_reopens() {
-    let database = Database::create("fxdb-schemas-commit");
+    let database = Database::create("vdbx-schemas-commit");
     assert_eq!(database.head("items"), None);
     assert_eq!(database.read_only_compat(), 0);
     assert_eq!(database.medium().read_schemas_snapshot().unwrap(), None);
@@ -256,7 +256,7 @@ fn a_database_commits_schema_versions_and_reopens() {
 
 #[test]
 fn a_schemas_snapshot_is_replaced_and_restored() {
-    let database = Database::create("fxdb-schemas-replace");
+    let database = Database::create("vdbx-schemas-replace");
     database.commit(1).unwrap();
     let medium = database.medium();
     let at_one = medium.read_schemas_snapshot().unwrap().unwrap();
@@ -319,7 +319,7 @@ fn a_schemas_snapshot_is_replaced_and_restored() {
 
 #[test]
 fn a_damaged_schemas_run_is_rebuilt_from_the_records() {
-    let database = Database::create("fxdb-schemas-damaged");
+    let database = Database::create("vdbx-schemas-damaged");
     database.commit(1).unwrap();
     database.commit(2).unwrap();
     let run = database
@@ -350,7 +350,7 @@ fn a_damaged_schemas_run_is_rebuilt_from_the_records() {
 #[test]
 fn recovery_finishes_a_schema_commit_a_crash_stopped_after_its_record() {
     for failpoint in ["after-schema-record", "after-schemas-snapshot"] {
-        let database = Database::create("fxdb-schemas-crash");
+        let database = Database::create("vdbx-schemas-crash");
         database.commit(1).unwrap();
         let at_one = database.medium().read_schemas_snapshot().unwrap();
         database.reopen();
@@ -386,7 +386,7 @@ fn recovery_finishes_a_schema_commit_a_crash_stopped_after_its_record() {
 #[test]
 fn a_schema_commit_that_fails_in_place_rolls_back() {
     for failpoint in ["after-schema-record", "after-schemas-snapshot"] {
-        let database = Database::create("fxdb-schemas-rollback");
+        let database = Database::create("vdbx-schemas-rollback");
         database.commit(1).unwrap();
         let at_one = database.medium().read_schemas_snapshot().unwrap();
         database.reopen();
@@ -410,7 +410,7 @@ fn a_schema_commit_that_fails_in_place_rolls_back() {
 /// and moves the snapshot with them.
 #[test]
 fn compaction_moves_schema_records_and_the_snapshot_follows() {
-    let fixture = Fixture::create("fxdb-schemas-compact");
+    let fixture = Fixture::create("vdbx-schemas-compact");
     let writer = fixture.writer();
     writer
         .commit_schema_version("items", 1, version(1).as_bytes(), |_| Ok(()))

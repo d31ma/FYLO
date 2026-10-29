@@ -1,4 +1,4 @@
-//! Compaction, shrinking and salvage of a `.fxdb` database (ADR 0016
+//! Compaction, shrinking and salvage of a `.vdbx` database (ADR 0016
 //! sections 6 and 11): every document, schema version and dictionary
 //! survives, a reader in another process reads on, a writer process
 //! commits during the copy while a second compactor is refused, a shrink
@@ -25,8 +25,8 @@ use crate::{
     NativeRoot, NativeStorageError, NativeStorageErrorCode, NativeWriteRoot, PutDocumentOptions,
 };
 
-const ROLE: &str = "FYLO_FXDB_COMPACTION_CHILD_ROLE";
-const DATABASE: &str = "FYLO_FXDB_COMPACTION_CHILD_DATABASE";
+const ROLE: &str = "FYLO_VDBX_COMPACTION_CHILD_ROLE";
+const DATABASE: &str = "FYLO_VDBX_COMPACTION_CHILD_DATABASE";
 const CHILD_TEST: &str =
     "segments::container_medium::tests::database_compaction::a_compaction_child_process";
 const WAIT: Duration = Duration::from_mins(2);
@@ -119,7 +119,7 @@ fn put(
     )
 }
 
-/// A `.fxdb` database of 1 MiB extents holding `items`, with two schema
+/// A `.vdbx` database of 1 MiB extents holding `items`, with two schema
 /// versions, a dictionary, updates and deletes, and `others`.
 struct Database(PathBuf);
 
@@ -189,7 +189,7 @@ impl Database {
     }
 
     fn path(&self) -> PathBuf {
-        self.0.join("db.fxdb")
+        self.0.join("db.vdbx")
     }
 
     fn writer(&self) -> NativeWriteRoot {
@@ -422,7 +422,7 @@ fn passed(child: Child, role: &str) {
 
 #[test]
 fn compaction_and_a_shrink_keep_every_document_schema_version_and_dictionary() {
-    let database = Database::create("fxdb-compact-database");
+    let database = Database::create("vdbx-compact-database");
     let bytes = database.bytes();
 
     let report = database.writer().compact_database(false).unwrap();
@@ -471,7 +471,7 @@ fn compaction_and_a_shrink_keep_every_document_schema_version_and_dictionary() {
 
 #[test]
 fn a_reader_process_reads_every_document_while_the_database_compacts_and_shrinks() {
-    let database = Database::create("fxdb-compact-reader");
+    let database = Database::create("vdbx-compact-reader");
     let mut reader = spawn("read", &database.path(), &[]);
     let ready = database.0.join("read.ready");
     let deadline = Instant::now() + WAIT;
@@ -494,7 +494,7 @@ fn a_reader_process_reads_every_document_while_the_database_compacts_and_shrinks
 
 #[test]
 fn a_writer_process_commits_during_the_copy_and_a_second_compactor_is_refused() {
-    let database = Database::create("fxdb-compact-writers");
+    let database = Database::create("vdbx-compact-writers");
     if !locks_qualified(&database) {
         return;
     }
@@ -541,7 +541,7 @@ fn a_writer_process_commits_during_the_copy_and_a_second_compactor_is_refused() 
 
 #[test]
 fn a_shrink_holds_the_file_and_another_writer_process_is_busy() {
-    let database = Database::empty("fxdb-compact-exclusive");
+    let database = Database::empty("vdbx-compact-exclusive");
     if !locks_qualified(&database) {
         return;
     }
@@ -561,7 +561,7 @@ fn a_shrink_holds_the_file_and_another_writer_process_is_busy() {
 
 #[test]
 fn a_crash_at_each_compaction_and_shrink_failpoint_recovers() {
-    let prepared = Database::create("fxdb-compact-crash");
+    let prepared = Database::create("vdbx-compact-crash");
     // Compact once, so a shrink has free extents to move into and cut.
     prepared.compact_fully();
     prepared.reopen();
@@ -577,7 +577,7 @@ fn a_crash_at_each_compaction_and_shrink_failpoint_recovers() {
         .map(|number| (number, patched(number, 2)))
         .collect();
     for (role, failpoint) in cases {
-        let database = prepared.copy("fxdb-compact-crash-case");
+        let database = prepared.copy("vdbx-compact-crash-case");
         // Dead entries for the compaction to drop.
         let writer = database.writer();
         for number in 9000..9040 {
@@ -616,7 +616,7 @@ fn a_crash_at_each_compaction_and_shrink_failpoint_recovers() {
 
 #[test]
 fn a_database_salvages_to_a_directory_root_stepping_over_a_damaged_extent() {
-    let database = Database::create("fxdb-salvage-database");
+    let database = Database::create("vdbx-salvage-database");
     let out = database.0.join("salvaged");
     let report = database.writer().salvage_database(&out).unwrap();
     let names: Vec<&str> = report

@@ -1,5 +1,5 @@
-//! A `.fxdb` file opened as a FYLO root (ADR 0016 section 11,
-//! `docs/fxdb-segment-backend.md`, "Root integration"): every collection
+//! A `.vdbx` file opened as a FYLO root (ADR 0016 section 11,
+//! `docs/vdbx-segment-backend.md`, "Root integration"): every collection
 //! lives in the one file, and nothing is created beside it but the lease
 //! file a writer holds.
 
@@ -23,7 +23,7 @@ struct Fixture {
 impl Fixture {
     fn create(label: &str) -> Self {
         let directory = std::env::temp_dir().join(format!(
-            "fylo-fxdb-root-{label}-{}-{}",
+            "fylo-vdbx-root-{label}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -39,7 +39,7 @@ impl Fixture {
     }
 
     fn database(&self) -> PathBuf {
-        self.directory.join("db.fxdb")
+        self.directory.join("db.vdbx")
     }
 
     fn writer(&self) -> NativeWriteRoot {
@@ -62,13 +62,13 @@ impl Fixture {
             .unwrap()
             .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
-        assert!(names.contains(&"db.fxdb".to_owned()), "{names:?}");
+        assert!(names.contains(&"db.vdbx".to_owned()), "{names:?}");
         let others: Vec<&String> = names
             .iter()
-            .filter(|name| name.as_str() != "db.fxdb")
+            .filter(|name| name.as_str() != "db.vdbx")
             .collect();
         assert!(
-            others.len() <= 1 && others.iter().all(|name| name.starts_with("db.fxdb.lease.")),
+            others.len() <= 1 && others.iter().all(|name| name.starts_with("db.vdbx.lease.")),
             "unexpected entries beside the database: {names:?}"
         );
     }
@@ -293,7 +293,7 @@ fn a_database_left_by_a_stopped_writer_reads_and_writes_on() {
     }
     let stopped = fixture.directory.join("stopped");
     fs::create_dir(&stopped).unwrap();
-    let copy = stopped.join("copy.fxdb");
+    let copy = stopped.join("copy.vdbx");
     fs::copy(fixture.database(), &copy).unwrap();
     drop(writer);
 
@@ -439,9 +439,9 @@ fn a_database_refuses_what_it_does_not_hold() {
     assert_eq!(code_of(fixture.root().version_history(10)), unsupported);
     assert_eq!(code_of(NativeQueue::open(fixture.database())), unsupported);
     assert_eq!(code_of(RootLease::acquire(fixture.database())), unsupported);
-    // A missing root named `*.fxdb` is a database to create, never a
+    // A missing root named `*.vdbx` is a database to create, never a
     // directory a lease makes.
-    let missing = fixture.directory.join("missing.fxdb");
+    let missing = fixture.directory.join("missing.vdbx");
     assert_eq!(code_of(RootLease::acquire(&missing)), unsupported);
     assert!(!missing.exists());
     assert!(NativeRoot::names_database(&missing));
@@ -467,10 +467,10 @@ fn creating_over_an_existing_path_fails() {
     assert!(!NativeRoot::open(directory).unwrap().is_database());
 }
 
-const CHILD_ROLE: &str = "FYLO_FXDB_ROOT_CHILD_ROLE";
-const CHILD_DATABASE: &str = "FYLO_FXDB_ROOT_CHILD_DATABASE";
-const CHILD_COLLECTION: &str = "FYLO_FXDB_ROOT_CHILD_COLLECTION";
-const CHILD_FIRST: &str = "FYLO_FXDB_ROOT_CHILD_FIRST";
+const CHILD_ROLE: &str = "FYLO_VDBX_ROOT_CHILD_ROLE";
+const CHILD_DATABASE: &str = "FYLO_VDBX_ROOT_CHILD_DATABASE";
+const CHILD_COLLECTION: &str = "FYLO_VDBX_ROOT_CHILD_COLLECTION";
+const CHILD_FIRST: &str = "FYLO_VDBX_ROOT_CHILD_FIRST";
 const CHILD_TEST: &str = "a_child_process";
 /// Documents each writer process puts, of about 48 KiB each once
 /// compressed, so the 8 MiB extents of a database fill and every writer

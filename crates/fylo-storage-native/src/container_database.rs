@@ -1,5 +1,5 @@
-//! A `.fxdb` file opened as a FYLO root (ADR 0016 section 11,
-//! `docs/fxdb-segment-backend.md`, "Root integration").
+//! A `.vdbx` file opened as a FYLO root (ADR 0016 section 11,
+//! `docs/vdbx-segment-backend.md`, "Root integration").
 //!
 //! A root path that names a regular file is a database: one file holding
 //! every collection, each in the segment layout. A collection is its
@@ -38,7 +38,7 @@ use crate::{
     NativeStorageErrorCode,
 };
 
-/// A handle on one `.fxdb` database this process has open.
+/// A handle on one `.vdbx` database this process has open.
 #[derive(Debug)]
 pub(crate) struct ContainerDatabase {
     file: Arc<ContainerOpen>,
@@ -88,10 +88,10 @@ impl ContainerDatabase {
             // either.
             let short = matches!(&error, ContainerError::Io(error)
                 if error.kind() == std::io::ErrorKind::UnexpectedEof);
-            if short || error.code() == "EFXDB_NOT_FXDB" {
+            if short || error.code() == "EVDBX_NOT_VDBX" {
                 NativeStorageError::new(
                     NativeStorageErrorCode::WrongType,
-                    "FYLO root is neither a directory nor a .fxdb database",
+                    "FYLO root is neither a directory nor a .vdbx database",
                 )
             } else {
                 ContainerMedium::error(error)
@@ -182,7 +182,7 @@ impl ContainerDatabase {
         if self.locked {
             return Err(NativeStorageError::new(
                 NativeStorageErrorCode::KeyRequired,
-                "the .fxdb database is encrypted and was opened without its key \
+                "the .vdbx database is encrypted and was opened without its key \
                  (fylo.encryption.key)",
             ));
         }
@@ -192,7 +192,7 @@ impl ContainerDatabase {
     fn wrong_key() -> NativeStorageError {
         NativeStorageError::new(
             NativeStorageErrorCode::KeyRequired,
-            "the encryption key does not match this .fxdb database (fylo.encryption.key)",
+            "the encryption key does not match this .vdbx database (fylo.encryption.key)",
         )
     }
 
@@ -370,7 +370,7 @@ impl ContainerDatabase {
             .ok_or_else(|| {
                 NativeStorageError::new(
                     NativeStorageErrorCode::NotFound,
-                    "the collection was dropped from its .fxdb database",
+                    "the collection was dropped from its .vdbx database",
                 )
             })?;
         Ok(ContainerMedium::attach(&self.file, &collection))

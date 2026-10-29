@@ -5,9 +5,9 @@ import {
     createFileBackend,
     createRangeBackend
 } from '../../src/browser/single-file-vfs.mjs'
-import { hasFxdbMagic, isWorkingCopyName, workingCopyName } from '../../src/browser/fxdb-client.mjs'
+import { hasVdbxMagic, isWorkingCopyName, workingCopyName } from '../../src/browser/vdbx-client.mjs'
 
-const PATH = '/database.fxdb'
+const PATH = '/database.vdbx'
 /** FileReaderSync is Worker-only; Bun has Blob but no synchronous reader. */
 function readerOver(bytes) {
     return {
@@ -107,7 +107,7 @@ describe('single-file host backends', () => {
         expect(backend.stat(PATH)).toEqual({ kind: 1, len: 100, modifiedMs: 42 })
         expect(backend.stat('/')).toMatchObject({ kind: 2 })
         expect(backend.stat('/other')).toEqual({ kind: 0 })
-        expect(backend.readDir('/')).toEqual(['database.fxdb'])
+        expect(backend.readDir('/')).toEqual(['database.vdbx'])
         expect(() => backend.open('/other', 1)).toThrow(expect.objectContaining({ code: 'ENOENT' }))
         expect(() => backend.open('/../etc/passwd', 1)).toThrow(
             expect.objectContaining({ code: 'EACCES' })
@@ -172,7 +172,7 @@ describe('single-file host backends', () => {
     test('a hosted file reads by range and notices a replaced file', () => {
         const bytes = sample(300)
         const { Request, state } = rangeServer(bytes)
-        const backend = createRangeBackend('https://host.invalid/db.fxdb', {
+        const backend = createRangeBackend('https://host.invalid/db.vdbx', {
             XMLHttpRequest: Request
         })
         expect(backend.stat(PATH)).toMatchObject({ kind: 1, len: 300 })
@@ -190,26 +190,26 @@ describe('single-file host backends', () => {
     test('a server that ignores ranges is refused rather than downloaded per read', () => {
         const { Request } = rangeServer(sample(10), { ranges: false })
         expect(() =>
-            createRangeBackend('https://host.invalid/db.fxdb', { XMLHttpRequest: Request })
+            createRangeBackend('https://host.invalid/db.vdbx', { XMLHttpRequest: Request })
         ).toThrow(/byte-range/)
     })
 })
 
 describe('working copy names', () => {
-    test('are plain .fxdb file names derived from the picked file', () => {
-        expect(workingCopyName('orders.fxdb', 0)).toBe('orders-0.fxdb')
-        expect(workingCopyName('../../x/y.fxdb', 35)).toBe('x-y-z.fxdb')
-        expect(workingCopyName('', 1)).toBe('database-1.fxdb')
-        for (const name of ['orders.fxdb', 'a (copy)-1.fxdb']) {
+    test('are plain .vdbx file names derived from the picked file', () => {
+        expect(workingCopyName('orders.vdbx', 0)).toBe('orders-0.vdbx')
+        expect(workingCopyName('../../x/y.vdbx', 35)).toBe('x-y-z.vdbx')
+        expect(workingCopyName('', 1)).toBe('database-1.vdbx')
+        for (const name of ['orders.vdbx', 'a (copy)-1.vdbx']) {
             expect(isWorkingCopyName(name)).toBe(true)
         }
-        for (const name of ['.hidden.fxdb', 'a/b.fxdb', 'a..fxdb', 'orders.db', '']) {
+        for (const name of ['.hidden.vdbx', 'a/b.vdbx', 'a..vdbx', 'orders.db', '']) {
             expect(isWorkingCopyName(name)).toBe(false)
         }
     })
 
     test('the magic check reads the PNG-style header', () => {
-        expect(hasFxdbMagic([0x89, 0x46, 0x58, 0x44, 0x42, 0x0d, 0x0a, 0x1a, 0])).toBe(true)
-        expect(hasFxdbMagic([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])).toBe(false)
+        expect(hasVdbxMagic([0x89, 0x56, 0x44, 0x42, 0x58, 0x0d, 0x0a, 0x1a, 0])).toBe(true)
+        expect(hasVdbxMagic([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])).toBe(false)
     })
 })

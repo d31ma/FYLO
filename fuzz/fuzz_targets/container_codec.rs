@@ -45,7 +45,7 @@ thread_local! {
     ]);
 }
 
-// Every `.fxdb` record body decoder (ADR 0016) must reject arbitrary bytes
+// Every `.vdbx` record body decoder (ADR 0016) must reject arbitrary bytes
 // without panicking, never return more than the caller's limit, and decode
 // whatever its encoders produce back to the input.
 fuzz_target!(|input: &[u8]| {

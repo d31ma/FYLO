@@ -98,8 +98,8 @@ Reviewers consider:
 A popular crate is not automatically acceptable, and a small crate is not
 automatically safer.
 
-Reviews are recorded in `docs/security/`: `fxdb-codec-dependencies.md` covers
-`zstd` (with `zstd-safe` and `zstd-sys`), `ruzstd` and `lz4_flex` for `.fxdb`
+Reviews are recorded in `docs/security/`: `vdbx-codec-dependencies.md` covers
+`zstd` (with `zstd-safe` and `zstd-sys`), `ruzstd` and `lz4_flex` for `.vdbx`
 record codecs (ADR 0016 section 8).
 
 ## Current time-bounded exception

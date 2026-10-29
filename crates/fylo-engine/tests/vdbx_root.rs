@@ -1,4 +1,4 @@
-//! The engine over a `.fxdb` database root (ADR 0016 section 11): writes
+//! The engine over a `.vdbx` database root (ADR 0016 section 11): writes
 //! through `WriteEngine`, then reads, prefix-index queries and a reopen
 //! through `ReadOnlyEngine`, with nothing beside the file but its lease, and
 //! schema versions pushed into the file's registry (ADR 0017 section 3). An
@@ -27,15 +27,15 @@ impl Database {
             .unwrap()
             .as_nanos();
         let directory =
-            std::env::temp_dir().join(format!("fylo-engine-fxdb-{}-{nonce}", std::process::id()));
+            std::env::temp_dir().join(format!("fylo-engine-vdbx-{}-{nonce}", std::process::id()));
         fs::create_dir(&directory).unwrap();
         let directory = fs::canonicalize(directory).unwrap();
-        NativeRoot::create_database(directory.join("db.fxdb")).unwrap();
+        NativeRoot::create_database(directory.join("db.vdbx")).unwrap();
         Self(directory)
     }
 
     fn path(&self) -> PathBuf {
-        self.0.join("db.fxdb")
+        self.0.join("db.vdbx")
     }
 }
 
@@ -159,7 +159,7 @@ fn the_engine_writes_finds_and_reopens_a_database() {
     assert!(
         names
             .iter()
-            .all(|name| name == "db.fxdb" || name.starts_with("db.fxdb.lease.")),
+            .all(|name| name == "db.vdbx" || name.starts_with("db.vdbx.lease.")),
         "{names:?}"
     );
 }
@@ -302,7 +302,7 @@ fn the_engine_pushes_and_validates_schema_versions_in_a_database() {
 #[test]
 fn the_engine_reads_an_encrypted_database_only_with_its_key() {
     let database = Database::create();
-    let path = database.0.join("sealed.fxdb");
+    let path = database.0.join("sealed.vdbx");
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()

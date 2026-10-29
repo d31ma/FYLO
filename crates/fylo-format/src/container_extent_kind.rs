@@ -1,6 +1,6 @@
 use crate::ContainerFormatError;
 
-/// What an allocated extent of a `.fxdb` container holds (ADR 0016 section 3).
+/// What an allocated extent of a `.vdbx` container holds (ADR 0016 section 3).
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ContainerExtentKind {
     /// Collection blocks.

@@ -166,7 +166,7 @@ impl NativeWriteRoot {
     }
 
     fn close_log(root: &Path, name: &str) -> Result<(), NativeStorageError> {
-        // A `.fxdb` database keeps no write-ahead log beside its segments.
+        // A `.vdbx` database keeps no write-ahead log beside its segments.
         if fs::metadata(root).is_ok_and(|metadata| metadata.is_file()) {
             return Ok(());
         }

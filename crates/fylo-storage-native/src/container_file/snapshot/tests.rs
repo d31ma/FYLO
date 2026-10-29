@@ -26,7 +26,7 @@ impl Drop for Database {
 fn created(name: &str) -> (Database, PathBuf) {
     let dir = std::env::temp_dir().join(crate::write::unique_name(name));
     std::fs::create_dir_all(&dir).expect("create directory");
-    let path = dir.join("test.fxdb");
+    let path = dir.join("test.vdbx");
     ContainerFile::create(&path, SHIFT).expect("create container");
     (Database(dir), path)
 }
@@ -57,12 +57,12 @@ fn checkpoint_with(
 }
 
 fn corrupt(error: &ContainerError) -> bool {
-    error.code() == "EFXDB_CORRUPT"
+    error.code() == "EVDBX_CORRUPT"
 }
 
 #[test]
 fn snapshots_of_every_size_round_trip() {
-    let (_guard, path) = created("fxdb-snapshot-sizes");
+    let (_guard, path) = created("vdbx-snapshot-sizes");
     let mut container = ContainerFile::open_unchecked(&path).expect("open container");
     let capacity = usize::try_from(container.payload_capacity()).expect("capacity");
     let two_and_a_half_mib = 5 * usize::try_from(EXTENT_BYTES).expect("extent") / 2;
@@ -102,7 +102,7 @@ fn snapshots_of_every_size_round_trip() {
 
 #[test]
 fn a_snapshot_survives_a_checkpoint_and_reopening_to_read() {
-    let (_guard, path) = created("fxdb-snapshot-reopen");
+    let (_guard, path) = created("vdbx-snapshot-reopen");
     let locations = pattern(2 * usize::try_from(EXTENT_BYTES).expect("extent"));
     let index = b"users/1\nusers/2\n".to_vec();
     {
@@ -154,7 +154,7 @@ fn a_snapshot_survives_a_checkpoint_and_reopening_to_read() {
 
 #[test]
 fn a_tampered_snapshot_is_corrupt() {
-    let (_guard, path) = created("fxdb-snapshot-tampered");
+    let (_guard, path) = created("vdbx-snapshot-tampered");
     let bytes = pattern(3 * usize::try_from(EXTENT_BYTES).expect("extent") / 2);
     let snapshot = {
         let mut container = ContainerFile::open_unchecked(&path).expect("open container");
@@ -182,7 +182,7 @@ fn a_tampered_snapshot_is_corrupt() {
 
 #[test]
 fn a_snapshot_read_as_another_kind_or_collection_is_refused() {
-    let (_guard, path) = created("fxdb-snapshot-owner");
+    let (_guard, path) = created("vdbx-snapshot-owner");
     let mut container = ContainerFile::open_unchecked(&path).expect("open container");
     let snapshot = container
         .write_snapshot(USERS, LOCATIONS, CHECKPOINT, b"locations")
@@ -241,7 +241,7 @@ fn a_snapshot_read_as_another_kind_or_collection_is_refused() {
 
 #[test]
 fn a_snapshot_over_the_limit_is_refused_before_it_is_read() {
-    let (_guard, path) = created("fxdb-snapshot-limit");
+    let (_guard, path) = created("vdbx-snapshot-limit");
     let mut container = ContainerFile::open_unchecked(&path).expect("open container");
     let snapshot = container
         .write_snapshot(USERS, LOCATIONS, CHECKPOINT, &pattern(1000))
@@ -292,7 +292,7 @@ fn a_snapshot_over_the_limit_is_refused_before_it_is_read() {
 
 #[test]
 fn a_released_snapshot_is_reused_after_a_checkpoint() {
-    let (_guard, path) = created("fxdb-snapshot-release");
+    let (_guard, path) = created("vdbx-snapshot-release");
     let mut container = ContainerFile::open_unchecked(&path).expect("open container");
     let bytes = pattern(5 * usize::try_from(EXTENT_BYTES).expect("extent") / 2);
     let old = container
@@ -328,7 +328,7 @@ fn a_released_snapshot_is_reused_after_a_checkpoint() {
 
 #[test]
 fn releasing_never_frees_an_extent_outside_a_snapshot() {
-    let (_guard, path) = created("fxdb-snapshot-release-guard");
+    let (_guard, path) = created("vdbx-snapshot-release-guard");
     let mut container = ContainerFile::open_unchecked(&path).expect("open container");
     let snapshot = container
         .write_snapshot(USERS, LOCATIONS, CHECKPOINT, b"locations")
@@ -354,7 +354,7 @@ fn releasing_never_frees_an_extent_outside_a_snapshot() {
 
 #[test]
 fn a_reader_cannot_write_or_release_a_snapshot() {
-    let (_guard, path) = created("fxdb-snapshot-reader");
+    let (_guard, path) = created("vdbx-snapshot-reader");
     let snapshot = {
         let mut container = ContainerFile::open_unchecked(&path).expect("open container");
         let snapshot = container
@@ -382,7 +382,7 @@ fn a_reader_cannot_write_or_release_a_snapshot() {
 
 #[test]
 fn a_snapshot_the_map_does_not_cover_yet_is_refused_after_reopening() {
-    let (_guard, path) = created("fxdb-snapshot-uncheckpointed");
+    let (_guard, path) = created("vdbx-snapshot-uncheckpointed");
     let snapshot = {
         let mut container = ContainerFile::open_unchecked(&path).expect("open container");
         container
@@ -404,10 +404,10 @@ fn a_snapshot_the_map_does_not_cover_yet_is_refused_after_reopening() {
 
 #[test]
 fn an_encrypted_snapshot_is_sealed_for_its_place() {
-    let dir = std::env::temp_dir().join(crate::write::unique_name("fxdb-snapshot-sealed"));
+    let dir = std::env::temp_dir().join(crate::write::unique_name("vdbx-snapshot-sealed"));
     std::fs::create_dir_all(&dir).expect("create directory");
     let _guard = Database(dir.clone());
-    let path = dir.join("test.fxdb");
+    let path = dir.join("test.vdbx");
     ContainerFile::create_encrypted(&path, SHIFT, b"secret").unwrap();
     let mut container = ContainerFile::open_unchecked(&path).unwrap();
     assert!(matches!(
@@ -437,7 +437,7 @@ fn an_encrypted_snapshot_is_sealed_for_its_place() {
         let refused = container
             .read_snapshot(USERS, kind, checkpoint, &snapshot, u64::MAX)
             .unwrap_err();
-        assert_eq!(refused.code(), "EFXDB_CORRUPT");
+        assert_eq!(refused.code(), "EVDBX_CORRUPT");
     }
     let locked = ContainerFile::open_reader(&path).unwrap();
     assert!(matches!(

@@ -1,15 +1,15 @@
-# Dependency review: `.fxdb` record codecs
+# Dependency review: `.vdbx` record codecs
 
 ADR 0004 review for the three crates ADR 0016 section 8 adds. Samuel chose the
-codec split on 2026-10-29 from spike 4 (`fxdb/spike-4-codec.md` in the project
+codec split on 2026-10-29 from spike 4 (`vdbx/spike-4-codec.md` in the project
 files). All three are used only by `crates/fylo-storage-native/src/container_codec.rs`,
-which `segments/container_frames.rs` calls for every record frame of a `.fxdb`
+which `segments/container_frames.rs` calls for every record frame of a `.vdbx`
 collection. A directory collection's frames never reach them.
 
 | | `zstd` 0.14.3 | `ruzstd` 0.9.1 | `lz4_flex` 0.14.0 |
 | --- | --- | --- | --- |
 | Purpose | Native zstd frames (level 3 writes, level 19 sealed packs) and dictionary training | Browser decoding of native zstd frames | LZ4 frames the browser writes, read everywhere |
-| Targets | Native only (`cfg(not(target_family = "wasm"))`) | Browser only (`wasm32-unknown-unknown`); native tests only | Native and browser; not WASI, which reads no `.fxdb` segments |
+| Targets | Native only (`cfg(not(target_family = "wasm"))`) | Browser only (`wasm32-unknown-unknown`); native tests only | Native and browser; not WASI, which reads no `.vdbx` segments |
 | Features | `zdict_builder` only; defaults off (no legacy, no arrays, no multithread) | `std` only; defaults off (no `hash`, so no `twox-hash`) | `std`, `safe-encode`, `safe-decode`; defaults off |
 | License | BSD-3-Clause (crate and bundled libzstd 1.5.7) | MIT | MIT |
 | New transitive crates | `zstd-safe`, `zstd-sys`, `jobserver`, `pkg-config` (`cc` was already in the graph) | none | none |

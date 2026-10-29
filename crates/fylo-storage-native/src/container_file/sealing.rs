@@ -1,4 +1,4 @@
-//! Writing a sealed `.fxdb` file (ADR 0016 sections 8 and 11): `fylo pack
+//! Writing a sealed `.vdbx` file (ADR 0016 sections 8 and 11): `fylo pack
 //! --sealed`.
 //!
 //! The source is a plain, unsealed container that no one writes, such as the

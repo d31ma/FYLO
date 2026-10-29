@@ -3,7 +3,7 @@ use crate::container_bytes::{
 };
 use crate::{ContainerExtentKind, ContainerFormatError, Crc32c};
 
-/// The header that opens every allocated extent of a `.fxdb` container
+/// The header that opens every allocated extent of a `.vdbx` container
 /// (ADR 0016 section 3).
 ///
 /// The sequence number is never reused, so a reader holding a location into
@@ -29,7 +29,7 @@ impl ContainerExtentHeader {
     pub const PAYLOAD_OFFSET: u64 = 4096;
     /// Current version.
     pub const VERSION: u16 = 1;
-    const MAGIC: [u8; 8] = *b"FXEXTNT\0";
+    const MAGIC: [u8; 8] = *b"VDXEXTNT";
     const CHECKED_BYTES: usize = Self::ENCODED_BYTES - 4;
 
     /// Encode the header with its checksum.

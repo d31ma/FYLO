@@ -2,7 +2,7 @@ use crate::container_bytes::{all_zero, read_u16, read_u32, write_u16, write_u32}
 use crate::{ContainerFormatError, Crc32c};
 
 /// The static part of a collection's 4 KiB block in the collection directory
-/// of a `.fxdb` container (ADR 0016 section 3).
+/// of a `.vdbx` container (ADR 0016 section 3).
 ///
 /// It is written when the collection is created and only replaced, copy on
 /// write, by a directory change such as a rename or a drop. The checkpoint and
@@ -39,8 +39,8 @@ impl ContainerCollectionHeader {
     pub const VERSION: u16 = 1;
     /// Longest sealed body [`Self::encode_sealed`] accepts.
     pub const MAX_SEALED_BYTES: usize = Self::ENCODED_BYTES - Self::SEALED_OFFSET - 4;
-    const MAGIC: [u8; 8] = *b"FXCOLL\0\0";
-    const SEALED_MAGIC: [u8; 8] = *b"FXCOLLS\0";
+    const MAGIC: [u8; 8] = *b"VDXCOLL\0";
+    const SEALED_MAGIC: [u8; 8] = *b"VDXCOLLS";
     const SEALED_OFFSET: usize = 16;
     const BODY_FIXED_BYTES: usize = 11;
     const NAME_OFFSET: usize = 24;
@@ -270,7 +270,7 @@ mod tests {
             id: 4,
             name: "orders".to_owned(),
             dropped: false,
-            descriptor: br#"{"kind":"document","layout":"fxdb"}"#.to_vec(),
+            descriptor: br#"{"kind":"document","layout":"vdbx"}"#.to_vec(),
         }
     }
 

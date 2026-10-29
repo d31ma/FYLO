@@ -74,7 +74,7 @@ impl NativeWriteRoot {
         }
         self.root.assert_profile_owned()?;
         self.root
-            .refuse_in_database("a .fxdb database keeps every collection in segments")?;
+            .refuse_in_database("a .vdbx database keeps every collection in segments")?;
         let collection = self.root.collection(name)?;
         self.require_migratable(&collection)?;
         let _lock = self.lock_collection(&collection)?;
@@ -138,7 +138,7 @@ impl NativeWriteRoot {
         &self,
         collection: &NativeCollection,
     ) -> Result<bool, NativeStorageError> {
-        // A collection of a `.fxdb` database never migrates, and a build
+        // A collection of a `.vdbx` database never migrates, and a build
         // without directory segments has nothing to finish.
         if !NativeCollection::SEGMENTS_SUPPORTED || collection.database_block().is_some() {
             return Ok(false);

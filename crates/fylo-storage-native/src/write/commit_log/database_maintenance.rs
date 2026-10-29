@@ -11,8 +11,8 @@ use crate::container_allocator::ContainerTailExtent;
 use crate::container_database::ContainerDatabase;
 use crate::{NativeCollection, NativeStorageError, NativeStorageErrorCode};
 
-/// `fylo compact db.fxdb [--shrink]` and `fylo salvage db.fxdb --out
-/// <root>` (ADR 0016 sections 6 and 11, `docs/fxdb-segment-backend.md`,
+/// `fylo compact db.vdbx [--shrink]` and `fylo salvage db.vdbx --out
+/// <root>` (ADR 0016 sections 6 and 11, `docs/vdbx-segment-backend.md`,
 /// "Compaction and shrinking").
 ///
 /// Compaction runs collection by collection, each as a directory root's
@@ -28,7 +28,7 @@ impl NativeWriteRoot {
     /// it was before a shrink stops.
     const SHRINK_STALLS: usize = 3;
 
-    /// Compact every collection of this `.fxdb` database and, with
+    /// Compact every collection of this `.vdbx` database and, with
     /// `shrink`, give the space freed back to the disk.
     ///
     /// # Errors
@@ -47,7 +47,7 @@ impl NativeWriteRoot {
             return Err(SegmentCompactor::maintenance_unsupported());
         }
         self.root.assert_profile_owned()?;
-        let database = self.require_database("fylo compact <db.fxdb>")?;
+        let database = self.require_database("fylo compact <db.vdbx>")?;
         database.require_key()?;
         let mut report = DatabaseCompactionReport {
             file_bytes_before: database.file_bytes()?,
@@ -151,7 +151,7 @@ impl NativeWriteRoot {
         Ok(true)
     }
 
-    /// Write every readable document and schema version of this `.fxdb`
+    /// Write every readable document and schema version of this `.vdbx`
     /// database as a new directory root in the file layout at `out`, which
     /// must be absent or empty, stepping over damaged records by their
     /// sync markers and damaged segment extents by their headers. Runs no
@@ -173,7 +173,7 @@ impl NativeWriteRoot {
             return Err(SegmentCompactor::maintenance_unsupported());
         }
         self.root.assert_profile_owned()?;
-        let database = self.require_database("fylo salvage <db.fxdb>")?;
+        let database = self.require_database("fylo salvage <db.vdbx>")?;
         database.require_key()?;
         let salvaged = Self::writing(Self::empty_output(out)?);
         let mut report = DatabaseSalvageReport::default();
@@ -220,7 +220,7 @@ impl NativeWriteRoot {
         self.root.database().cloned().ok_or_else(|| {
             NativeStorageError::new(
                 NativeStorageErrorCode::Unsupported,
-                format!("{command} takes a .fxdb database, and this root is a directory"),
+                format!("{command} takes a .vdbx database, and this root is a directory"),
             )
         })
     }

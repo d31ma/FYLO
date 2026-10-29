@@ -22,8 +22,8 @@ use crate::{
 };
 
 const DICTIONARY: ContainerExtentKind = ContainerExtentKind::Dictionary;
-const ROLE: &str = "FYLO_FXDB_DICTIONARY_CHILD_ROLE";
-const ROOT: &str = "FYLO_FXDB_DICTIONARY_CHILD_ROOT";
+const ROLE: &str = "FYLO_VDBX_DICTIONARY_CHILD_ROLE";
+const ROOT: &str = "FYLO_VDBX_DICTIONARY_CHILD_ROOT";
 const CHILD_TEST: &str =
     "segments::container_medium::tests::dictionaries::a_dictionary_child_process";
 
@@ -213,7 +213,7 @@ impl Fixture {
 
 #[test]
 fn a_collection_trains_its_dictionary_once_its_records_reach_a_mebibyte() {
-    let fixture = Fixture::create("fxdb-dictionary-train");
+    let fixture = Fixture::create("vdbx-dictionary-train");
     let writer = fixture.writer();
     let container = fixture.container();
     let mut number = put_orders_until(&writer, &container, 0, DICTIONARY_TRAINING_BYTES / 2);
@@ -297,7 +297,7 @@ fn a_collection_trains_its_dictionary_once_its_records_reach_a_mebibyte() {
 
 #[test]
 fn lz4_records_use_the_dictionary_too_and_compaction_rewrites_them_as_zstd() {
-    let fixture = Fixture::create("fxdb-dictionary-lz4");
+    let fixture = Fixture::create("vdbx-dictionary-lz4");
     let writer = fixture.writer();
     let container = fixture.container();
     let mut number = put_orders_until(&writer, &container, 0, DICTIONARY_TRAINING_BYTES);
@@ -365,7 +365,7 @@ fn lz4_records_use_the_dictionary_too_and_compaction_rewrites_them_as_zstd() {
 
 #[test]
 fn a_record_whose_dictionary_is_missing_or_damaged_is_refused_clearly() {
-    let fixture = Fixture::create("fxdb-dictionary-damage");
+    let fixture = Fixture::create("vdbx-dictionary-damage");
     let writer = fixture.writer();
     let container = fixture.container();
     let mut number = put_orders_until(&writer, &container, 0, DICTIONARY_TRAINING_BYTES);
@@ -479,7 +479,7 @@ fn compact_fully(writer: &NativeWriteRoot) {
 
 #[test]
 fn compaction_retrains_and_releases_the_dictionary_no_record_names() {
-    let fixture = Fixture::create("fxdb-dictionary-retrain");
+    let fixture = Fixture::create("vdbx-dictionary-retrain");
     let (writer, orders) = shifted(&fixture);
     let (old_extent, _) = fixture.dictionaries()[0];
 
@@ -558,7 +558,7 @@ fn stopped(role: &str, root: &Path, failpoint: &str) {
 
 #[test]
 fn a_crash_after_the_training_checkpoint_recovers_with_the_dictionary() {
-    let fixture = Fixture::create("fxdb-dictionary-crash-train");
+    let fixture = Fixture::create("vdbx-dictionary-crash-train");
     let writer = fixture.writer();
     let container = fixture.container();
     let number = put_orders_until(&writer, &container, 0, DICTIONARY_TRAINING_BYTES);
@@ -585,7 +585,7 @@ fn a_crash_after_the_training_checkpoint_recovers_with_the_dictionary() {
 
 #[test]
 fn a_dictionary_a_crash_left_unnamed_is_skipped_and_released_by_compaction() {
-    let fixture = Fixture::create("fxdb-dictionary-crash-unnamed");
+    let fixture = Fixture::create("vdbx-dictionary-crash-unnamed");
     let writer = fixture.writer();
     let container = fixture.container();
     let collection = container.shared.collection;
@@ -640,7 +640,7 @@ fn a_dictionary_a_crash_left_unnamed_is_skipped_and_released_by_compaction() {
 #[test]
 fn a_crash_during_a_retraining_compaction_recovers_and_the_next_one_releases() {
     for failpoint in ["after-compaction-copy", "after-compaction-record"] {
-        let fixture = Fixture::create("fxdb-dictionary-crash-compact");
+        let fixture = Fixture::create("vdbx-dictionary-crash-compact");
         let (writer, orders) = shifted(&fixture);
         fixture.crash();
         stopped("compact", &fixture.0, failpoint);

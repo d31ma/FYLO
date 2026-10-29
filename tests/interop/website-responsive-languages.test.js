@@ -78,12 +78,12 @@ describe('website POSIX access guidance', () => {
         expect(docs).toContain('.as({ mode: 0o600 })')
     })
 
-    test('says encryption is opt-in and off by default, including for .fxdb', async () => {
+    test('says encryption is opt-in and off by default, including for .vdbx', async () => {
         const docs = await Bun.file(
             path.join(root, 'website/client/components/docs/content/tac.html')
         ).text()
         expect(docs).toContain('Encryption is opt-in and off by default')
-        expect(docs).toMatch(/<code>\.fxdb<\/code> database file is not encrypted/)
+        expect(docs).toMatch(/<code>\.vdbx<\/code> database file is not encrypted/)
     })
 })
 
@@ -148,9 +148,9 @@ describe('website child-scoped FYLO configuration', () => {
         expect(browserEntry).toContain('strip.querySelector(\'[aria-pressed="true"]\')')
         expect(faq.match(/aria-controls="faq-[^"]+-answer"/g)).toHaveLength(9)
         expect(faq.match(/role="region"/g)).toHaveLength(9)
-        // ADR 0016 section 9: wherever .fxdb is introduced, say encryption is off by default.
+        // ADR 0016 section 9: wherever .vdbx is introduced, say encryption is off by default.
         expect(faq).toContain('Can a whole database live in one file?')
-        expect(faq).toMatch(/A \.fxdb file is not encrypted\s+by default: encryption is opt-in/)
+        expect(faq).toMatch(/A \.vdbx file is not encrypted\s+by default: encryption is opt-in/)
         expect(clients).toContain('trusted bootstrap input')
         expect(operations).toContain('administrator-controlled bootstrap input')
         expect(operations).toMatch(/Never\s+derive them from a request/)

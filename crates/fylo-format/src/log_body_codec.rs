@@ -7,7 +7,7 @@ use crate::{LogFormatError, LogRecord};
 /// How a record's body is stored between its frame's length and CRC-32C
 /// and the next frame.
 ///
-/// A segment file stores the body as is ([`PlainBody`]). A `.fxdb` file
+/// A segment file stores the body as is ([`PlainBody`]). A `.vdbx` file
 /// stores a codec header and the compressed body (ADR 0016 section 4),
 /// which the storage layer implements. Either way the frame's length and
 /// checksum cover the stored bytes, so a scan finds damage without

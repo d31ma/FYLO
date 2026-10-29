@@ -19,7 +19,7 @@ use crate::{
     NativeStorageError, NativeStorageErrorCode, RootOpenOptions, path_exists_no_follow,
 };
 
-/// Converts between a directory root and a `.fxdb` database (ADR 0016
+/// Converts between a directory root and a `.vdbx` database (ADR 0016
 /// section 11).
 ///
 /// `pack` copies every document collection of a directory root, in the
@@ -38,7 +38,7 @@ use crate::{
 /// stored as is, then writes it as a sealed file: read-only, with no free
 /// extents, recompressed in 64 KiB blocks (ADR 0016 sections 8 and 11). The
 /// sealed file is checked against the source with the oracle again, read
-/// through its blocks, before it is given its name. It also takes a `.fxdb`
+/// through its blocks, before it is given its name. It also takes a `.vdbx`
 /// database as its source, a consistent copy of a live one: every
 /// collection's claim is held from the first read to the commit, so no
 /// writer in any process commits to it meanwhile.
@@ -50,7 +50,7 @@ impl NativeWriteRoot {
     const PACK_STAGING_SUFFIX: &'static str = ".pack-staging";
     const SEAL_STAGING_SUFFIX: &'static str = ".seal-staging";
 
-    /// Pack this directory root into a new `.fxdb` database at `out`, which
+    /// Pack this directory root into a new `.vdbx` database at `out`, which
     /// must not exist.
     ///
     /// `allow_engine_only_access` must be set to pack records that name
@@ -88,7 +88,7 @@ impl NativeWriteRoot {
         self.pack_with(out, allow_engine_only_access, (Some(key), false))
     }
 
-    /// Pack this root, a directory root or a `.fxdb` database, into a new
+    /// Pack this root, a directory root or a `.vdbx` database, into a new
     /// sealed database at `out`, which must not exist: read-only, with no
     /// free extents, and recompressed in 64 KiB blocks (ADR 0016 sections 8
     /// and 11). With `key` the blocks are sealed with it, and a database
@@ -122,7 +122,7 @@ impl NativeWriteRoot {
     ) -> Result<DatabasePackReport, NativeStorageError> {
         if !NativeCollection::SEGMENTS_SUPPORTED {
             return Err(Self::pack_unsupported(
-                "this build cannot write a .fxdb database",
+                "this build cannot write a .vdbx database",
             ));
         }
         self.root.assert_profile_owned()?;
@@ -130,7 +130,7 @@ impl NativeWriteRoot {
         match database {
             Some(_) if !sealed => {
                 return Err(Self::pack_unsupported(
-                    "fylo pack takes a directory root, and this root is already a .fxdb \
+                    "fylo pack takes a directory root, and this root is already a .vdbx \
                      database; fylo pack --sealed copies one",
                 ));
             }
@@ -139,7 +139,7 @@ impl NativeWriteRoot {
                 if database.is_encrypted() && key.is_none() {
                     return Err(NativeStorageError::new(
                         NativeStorageErrorCode::KeyRequired,
-                        "the .fxdb database is encrypted, so its sealed pack is encrypted too \
+                        "the .vdbx database is encrypted, so its sealed pack is encrypted too \
                          and needs the key (fylo.encryption.key)",
                     ));
                 }
@@ -224,7 +224,7 @@ impl NativeWriteRoot {
         _key: Option<&DatabaseKey>,
     ) -> Result<crate::ContainerSealedReport, NativeStorageError> {
         Err(Self::pack_unsupported(
-            "this build cannot write a sealed .fxdb database",
+            "this build cannot write a sealed .vdbx database",
         ))
     }
 
@@ -284,7 +284,7 @@ impl NativeWriteRoot {
         outcome.map(|()| blocks)
     }
 
-    /// Write this `.fxdb` database's collections as a new directory root in
+    /// Write this `.vdbx` database's collections as a new directory root in
     /// the file layout at `out`, which must be absent or empty. Only
     /// recovery writes the database, as before an export.
     ///
@@ -297,7 +297,7 @@ impl NativeWriteRoot {
         self.root.assert_profile_owned()?;
         let Some(names) = self.root.database_collection_names() else {
             return Err(Self::pack_unsupported(
-                "fylo unpack takes a .fxdb database, and this root is a directory",
+                "fylo unpack takes a .vdbx database, and this root is a directory",
             ));
         };
         // A locked database lists no collections; unpacking it would write
@@ -329,27 +329,27 @@ impl NativeWriteRoot {
         Ok(report)
     }
 
-    /// Refuse a root that uses what a `.fxdb` database does not hold yet
+    /// Refuse a root that uses what a `.vdbx` database does not hold yet
     /// (ADR 0016 section 1), naming it.
     fn require_packable(&self) -> Result<(), NativeStorageError> {
         if self.filesystem_profile() != FilesystemProfile::Native {
             return Err(NativeRoot::database_unsupported(
-                "cannot pack a root on the EFS sidecar profile, which has no .fxdb form",
+                "cannot pack a root on the EFS sidecar profile, which has no .vdbx form",
             ));
         }
         if path_exists_no_follow(&self.root.repository_root().join(".fylo-vcs"))? {
             return Err(NativeRoot::database_unsupported(
-                "cannot pack a root that uses document version control, which a .fxdb database does not hold",
+                "cannot pack a root that uses document version control, which a .vdbx database does not hold",
             ));
         }
         if Self::first_entry(&self.root.path().join(".fylo-queue"))?.is_some() {
             return Err(NativeRoot::database_unsupported(
-                "cannot pack a root that uses the embedded queue, which a .fxdb database does not hold",
+                "cannot pack a root that uses the embedded queue, which a .vdbx database does not hold",
             ));
         }
         if let Some(bucket) = Self::first_entry(&self.root.path().join(".buckets"))? {
             return Err(NativeRoot::database_unsupported(&format!(
-                "cannot pack a root that uses buckets (raw-file collections), which a .fxdb database does not hold: bucket \"{bucket}\""
+                "cannot pack a root that uses buckets (raw-file collections), which a .vdbx database does not hold: bucket \"{bucket}\""
             )));
         }
         Ok(())
@@ -814,7 +814,7 @@ mod tests {
         let directory = scratch("free");
         for debris in [false, true] {
             let staging = directory.join(".db.pack-staging");
-            let out = directory.join("db.fxdb");
+            let out = directory.join("db.vdbx");
             fs::write(&staging, b"database").unwrap();
             if debris {
                 // What a refused link on an SMB share leaves behind.
@@ -832,7 +832,7 @@ mod tests {
     fn without_hard_links_a_file_already_at_the_output_is_never_replaced() {
         let directory = scratch("taken");
         let staging = directory.join(".db.pack-staging");
-        let out = directory.join("db.fxdb");
+        let out = directory.join("db.vdbx");
         fs::write(&staging, b"database").unwrap();
         fs::write(&out, b"someone else's").unwrap();
         assert!(NativeWriteRoot::adopt_without_link(&staging, &out, refused).is_err());

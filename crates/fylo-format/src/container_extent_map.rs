@@ -48,7 +48,7 @@ impl ContainerExtentMapPage {
     pub const ENTRIES_PER_PAGE: usize = 126;
     /// Current version.
     pub const VERSION: u16 = 1;
-    const MAGIC: [u8; 8] = *b"FXMAP\0\0\0";
+    const MAGIC: [u8; 8] = *b"VDXMAP\0\0";
     const HEADER_BYTES: usize = 32;
     const ENTRY_BYTES: usize = 32;
     const CHECKED_BYTES: usize = Self::ENCODED_BYTES - 4;

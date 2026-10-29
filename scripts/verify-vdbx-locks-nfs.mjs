@@ -1,12 +1,12 @@
-// `.fxdb` byte-range lock qualification on a local NFS 4.1 server (ADR 0016
-// section 7, docs/operations/fxdb-byte-range-lock-qualification.md).
+// `.vdbx` byte-range lock qualification on a local NFS 4.1 server (ADR 0016
+// section 7, docs/operations/vdbx-byte-range-lock-qualification.md).
 //
 // The same kernel nfsd in a privileged container as `bun run efs:local`, with
 // two Linux clients mounting it. Client a runs the full single-client
 // harness; then both clients load one shared file at once, which is the
 // cross-client case a second machine would be.
 //
-//   bun scripts/verify-fxdb-locks-nfs.mjs [--cache-dir DIR] [--seconds 10]
+//   bun scripts/verify-vdbx-locks-nfs.mjs [--cache-dir DIR] [--seconds 10]
 //       [--export tmpfs|ext4] [--repeat 1]
 //
 // `--export ext4` serves a loop-mounted ext4 image instead of tmpfs, whose
@@ -34,7 +34,7 @@ const toolchain = (await readFile('rust-toolchain.toml', 'utf8')).match(
 )[1]
 // ponytail: pinned image; bump deliberately.
 const BASE = 'amazonlinux:2023'
-const NAME = 'fylo-fxdb-locks'
+const NAME = 'fylo-vdbx-locks'
 const network = NAME
 const harness = '/target/release/fylo-lock-harness'
 const local = '/opt/fylo/fylo-lock-harness'
@@ -109,7 +109,7 @@ try {
 }
 
 async function twoClients() {
-    const file = '/mnt/nfs/locks/shared.fxdb'
+    const file = '/mnt/nfs/locks/shared.vdbx'
     await docker(['exec', `${NAME}-a`, local, 'prepare', '--file', file])
     const startAt = String(Math.floor(Date.now() / 1000) + 5)
     await Promise.all(

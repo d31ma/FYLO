@@ -1,4 +1,4 @@
-//! Record body compression for `.fxdb` frames (ADR 0016 section 8).
+//! Record body compression for `.vdbx` frames (ADR 0016 section 8).
 //!
 //! Each body is compressed on its own, so a point read decompresses one
 //! document, usually against its collection's dictionary. Native writers use
@@ -11,7 +11,7 @@
 //! content size the body declares, refuses it above the caller's limit, and
 //! then refuses any body that does not produce exactly that many bytes.
 //!
-//! The WASI build reads no `.fxdb` segments, so it carries neither codec
+//! The WASI build reads no `.vdbx` segments, so it carries neither codec
 //! library: it stores bodies as is and refuses compressed ones as
 //! `Unsupported`.
 
@@ -397,7 +397,7 @@ pub fn train_dictionary<S: AsRef<[u8]>>(id: u32, samples: &[S]) -> Option<Contai
 }
 
 /// The content size a single zstd frame declares. A body must be exactly
-/// one frame that records its size, which every `.fxdb` writer does.
+/// one frame that records its size, which every `.vdbx` writer does.
 fn zstd_content_size(bytes: &[u8]) -> Result<usize, ContainerCodecError> {
     let corrupt = ContainerCodecError::Corrupt;
     if bytes.get(..4) != Some(&ZSTD_MAGIC[..]) {

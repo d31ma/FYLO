@@ -264,7 +264,7 @@ impl Report {
 
 fn qualify(options: &Options) -> io::Result<bool> {
     let dir = options.dir.as_deref().expect("--dir");
-    let path = dir.join(format!("lock-harness-{}.fxdb", std::process::id()));
+    let path = dir.join(format!("lock-harness-{}.vdbx", std::process::id()));
     std::fs::write(&path, vec![0; usize::try_from(FILE_BYTES).expect("small")])?;
     let mut report = Report {
         rows: Vec::new(),
@@ -354,7 +354,7 @@ fn beyond_the_end(file: &ByteRangeLockFile, report: &mut Report) -> io::Result<(
         file.try_lock(LockByte::collection_writer(u32::MAX), LockMode::Exclusive)?,
     ];
     let all = guards.iter().all(Option::is_some);
-    write_bytes(file.file(), b"fxdb", 0)?;
+    write_bytes(file.file(), b"vdbx", 0)?;
     let length = file.file().metadata()?.len();
     drop(guards);
     write_bytes(file.file(), &[0; 4], 0)?;
@@ -372,7 +372,7 @@ fn read_only_file(path: &Path, report: &mut Report) -> io::Result<()> {
     let mut name = path.as_os_str().to_owned();
     name.push(".read-only");
     let copy = PathBuf::from(name);
-    std::fs::write(&copy, b"fxdb")?;
+    std::fs::write(&copy, b"vdbx")?;
     let mut permissions = std::fs::metadata(&copy)?.permissions();
     permissions.set_readonly(true);
     std::fs::set_permissions(&copy, permissions.clone())?;
@@ -383,7 +383,7 @@ fn read_only_file(path: &Path, report: &mut Report) -> io::Result<()> {
             .is_some();
         let mut bytes = [0; 4];
         read_exact(reader.file(), &mut bytes)?;
-        let read = &bytes == b"fxdb";
+        let read = &bytes == b"vdbx";
         let writable_refused = ByteRangeLockFile::open(&copy).is_err();
         Ok((lease, read, writable_refused))
     })();

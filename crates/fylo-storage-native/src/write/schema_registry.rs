@@ -19,7 +19,7 @@
 //! commits, so it can lag the records after a crash but never lead them.
 //! Everything above storage reads both kinds through the same calls here.
 //!
-//! A `.fxdb` database keeps every collection's registry as schema records
+//! A `.vdbx` database keeps every collection's registry as schema records
 //! in the file, with the schemas snapshot as a `schemas` run, and its
 //! superblock's `READ_ONLY_COMPAT_SCHEMAS` bit as the fence. A collection's
 //! descriptor there is the static part of its directory block, which is not
@@ -106,7 +106,7 @@ impl NativeRoot {
     /// Returns an error for a linked or oversized record, or I/O.
     pub fn schema_import_record(&self) -> Result<Option<Vec<u8>>, NativeStorageError> {
         self.assert_profile_owned()?;
-        self.not_yet_in_database("recording a schema import in a .fxdb database")?;
+        self.not_yet_in_database("recording a schema import in a .vdbx database")?;
         let directory = self.schema_registry_directory();
         let record = directory.join(IMPORT_RECORD);
         if !path_exists_no_follow(&directory)? || !path_exists_no_follow(&record)? {
@@ -154,7 +154,7 @@ impl NativeRoot {
             return Ok(None);
         }
         // A collection directory keeps its segments in `segments/`, or in a
-        // `.fxdb` container beside them.
+        // `.vdbx` container beside them.
         let in_container = path_exists_no_follow(&collection.join(ContainerMedium::FILE_NAME))?;
         if !in_container && !path_exists_no_follow(&collection.join("segments"))? {
             return Ok(None);
@@ -215,7 +215,7 @@ impl NativeWriteRoot {
     /// version file is written durably, the generation state takes the
     /// registry fence, and last the descriptor's head moves to `ordinal`. A
     /// crash at any point before the descriptor change leaves the previous
-    /// head in force. A segment collection, in a directory root or a `.fxdb`
+    /// head in force. A segment collection, in a directory root or a `.vdbx`
     /// database, commits the version as a schema record instead
     /// (`commit_segment_schema`).
     ///
@@ -239,7 +239,7 @@ impl NativeWriteRoot {
         let collection = self.root.collection(collection_name)?;
         // A segment collection's head is its records', which the commit
         // reads under the lock; its descriptor may lag them, and in a
-        // `.fxdb` database names none.
+        // `.vdbx` database names none.
         if collection.uses_segments() {
             return self.commit_segment_schema(&collection, ordinal, version, verify);
         }
@@ -267,7 +267,7 @@ impl NativeWriteRoot {
     /// Returns an error for an unsafe path or an interrupted durable write.
     pub fn write_schema_import_record(&self, record: &[u8]) -> Result<(), NativeStorageError> {
         self.root
-            .not_yet_in_database("recording a schema import in a .fxdb database")?;
+            .not_yet_in_database("recording a schema import in a .vdbx database")?;
         self.root.assert_profile_owned()?;
         let directory = self.registry_directory_created()?;
         durable_replace(&directory.join(IMPORT_RECORD), record)
@@ -335,7 +335,7 @@ impl NativeWriteRoot {
     }
 
     /// Record `ordinal` as the descriptor's registry head. A collection of
-    /// a `.fxdb` database keeps its descriptor in its directory block's
+    /// a `.vdbx` database keeps its descriptor in its directory block's
     /// static part, which is not rewritten, so it records nothing: its
     /// records are the head.
     pub(super) fn write_schema_head(

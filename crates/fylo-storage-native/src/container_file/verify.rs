@@ -1,4 +1,4 @@
-//! `fylo verify` for a `.fxdb` container (ADR 0016 sections 3, 6, 9 and 11).
+//! `fylo verify` for a `.vdbx` container (ADR 0016 sections 3, 6, 9 and 11).
 //!
 //! Verification reads the file and changes nothing. It needs no key: the
 //! superblocks, extent headers, map and slots are in the clear, a sealed

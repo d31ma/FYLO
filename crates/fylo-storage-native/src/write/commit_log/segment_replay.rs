@@ -44,7 +44,7 @@ impl IndexDelta {
 }
 
 /// The location table's second source of rows: the records themselves, for
-/// a medium that keeps no location log (`docs/fxdb-segment-backend.md`,
+/// a medium that keeps no location log (`docs/vdbx-segment-backend.md`,
 /// "Location deltas without `locations.wal`").
 impl LocationTable {
     /// Lay over the table the rows that the records from `from` up to `to`

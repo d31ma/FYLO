@@ -1,4 +1,4 @@
-//! How a process writing a `.fxdb` file coordinates with the others
+//! How a process writing a `.vdbx` file coordinates with the others
 //! (ADR 0016 section 7).
 //!
 //! On a filesystem whose byte-range locks are qualified and work, every
@@ -22,7 +22,7 @@ use crate::{
     ContainerLeaseError, ContainerLeaseTiming, FilesystemInfo, LockByte, LockMode,
 };
 
-/// Options for opening a `.fxdb` file to write.
+/// Options for opening a `.vdbx` file to write.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ContainerWriteOptions {
     /// How long to wait for other writers before failing with `Busy`.

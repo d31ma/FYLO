@@ -8,7 +8,7 @@ use crate::{Crc32c, LogBodyCodec, LogFormatError, LogRecordKind, PlainBody};
 /// body: sequence number, kind, generation, manifest length, the manifest
 /// (canonical JSON chosen by the storage layer) and the concatenated blobs the
 /// manifest refers to. A [`LogBodyCodec`] may store the body transformed, as
-/// a `.fxdb` file compresses it; the length and checksum are then those of the
+/// a `.vdbx` file compresses it; the length and checksum are then those of the
 /// stored bytes.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LogRecord {

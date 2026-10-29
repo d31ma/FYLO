@@ -13,10 +13,10 @@ const {
 } = await import('../../explorer/client/components/explorer/app/tac.js')
 delete globalThis.onMount
 
-describe('Explorer .fxdb view', () => {
+describe('Explorer .vdbx view', () => {
     test('loads the database Worker and engine from its own asset folder', () => {
         expect(databaseWorkerUrl('abc123', 'https://fx.example')).toBe(
-            'https://fx.example/shared/assets/fxdb-worker.js?v=abc123'
+            'https://fx.example/shared/assets/vdbx-worker.js?v=abc123'
         )
         expect(databaseEngineUrl('', 'https://fx.example')).toBe(
             'https://fx.example/shared/assets/fylo-browser.wasm'
@@ -26,7 +26,7 @@ describe('Explorer .fxdb view', () => {
 
     test('turns the container report into collection and extent rows', () => {
         const rows = databaseReportRows({
-            format: 'fylo.fxdb',
+            format: 'fylo.vdbx',
             extents: {
                 free: 3,
                 released: 1,

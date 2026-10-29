@@ -1,5 +1,5 @@
 /// The prefix-index changes a run of records makes, as index log lines,
-/// for a medium that keeps no index log (`docs/fxdb-segment-backend.md`,
+/// for a medium that keeps no index log (`docs/vdbx-segment-backend.md`,
 /// "Root integration").
 ///
 /// A commit record lists the keys it removes and adds, so the index past a

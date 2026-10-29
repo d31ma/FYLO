@@ -3,7 +3,7 @@ use crate::container_bytes::{
 };
 use crate::{ContainerFormatError, Crc32c};
 
-/// The block layout of a sealed `.fxdb` file (ADR 0016 sections 8 and 11),
+/// The block layout of a sealed `.vdbx` file (ADR 0016 sections 8 and 11),
 /// at [`Self::OFFSET`], just past the two superblock copies.
 ///
 /// A sealed file is a read-only image of a container: the superblock
@@ -41,7 +41,7 @@ impl ContainerSealedHeader {
     /// Current version.
     pub const VERSION: u16 = 1;
     const BLOCK_SHIFT: u8 = 16;
-    const MAGIC: [u8; 8] = *b"FXSEALED";
+    const MAGIC: [u8; 8] = *b"VDXSEALD";
     const ENCRYPTED: u8 = 1;
     const CHECKED_BYTES: usize = Self::ENCODED_BYTES - 4;
 

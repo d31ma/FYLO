@@ -322,12 +322,12 @@ async function runScenario(label, binary, root) {
                 { record: false }
             )
 
-            // A .fxdb file is opened by path, never through the root; the
+            // A .vdbx file is opened by path, never through the root; the
             // released engine predates it. A missing file is refused.
             for (const op of ['inspectDatabase', 'verifyDatabase']) {
                 const refused = await request(
                     `${op}-missing`,
-                    { op, root: join(root, 'missing.fxdb') },
+                    { op, root: join(root, 'missing.vdbx') },
                     { record: false }
                 ).then(
                     () => null,
@@ -335,7 +335,7 @@ async function runScenario(label, binary, root) {
                 )
                 assert(
                     refused?.message.includes('ENATIVE_NOT_FOUND'),
-                    `${op} did not refuse a missing .fxdb: ${refused?.message}`
+                    `${op} did not refuse a missing .vdbx: ${refused?.message}`
                 )
             }
 
@@ -783,7 +783,7 @@ function normalizeHandshake(value) {
     delete normalized.capabilities?.schemaValidation
     // The hot set (ADR 0014) is newer than every released build.
     delete normalized.capabilities?.hotSet
-    // So is the single-file `.fxdb` database (ADR 0016).
+    // So is the single-file `.vdbx` database (ADR 0016).
     delete normalized.capabilities?.singleFileDatabase
     return normalized
 }

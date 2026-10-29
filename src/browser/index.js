@@ -17,15 +17,15 @@ export {
 export { FyloWorkerClient, createWorkerClient } from './worker/client.js'
 export {
     SingleFileDatabase,
-    FXDB_MEDIA_TYPE,
+    VDBX_MEDIA_TYPE,
     databaseFromDrop,
-    hasFxdbMagic,
+    hasVdbxMagic,
     listWorkingCopies,
     pickDatabaseFile,
     removeWorkingCopy,
     saveDatabase,
     workingCopyName
-} from './fxdb-client.mjs'
+} from './vdbx-client.mjs'
 export { WasmIndexScannerFactory, createWasmIndexScannerFactory } from './wasm/index-scanner.js'
 export { BrowserCore } from './core/engine.js'
 export { createMemoryFilesystem, MemoryFilesystem } from './core/memory-filesystem.js'

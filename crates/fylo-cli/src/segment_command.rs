@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 
 /// The segment layout's administrative commands (ADR 0015): `layout`,
 /// `compact`, `export`, `verify-segments` and `salvage`, and `compact` and
-/// `salvage` of a whole `.fxdb` database (ADR 0016 section 11).
+/// `salvage` of a whole `.vdbx` database (ADR 0016 section 11).
 ///
 /// They write outside the machine protocol on purpose: `export` and
 /// `salvage` take an output directory, which a remote `fylo serve` client
@@ -124,7 +124,7 @@ impl SegmentCommand {
         }))
     }
 
-    /// Run `compact` or `salvage` on a whole `.fxdb` database (ADR 0016
+    /// Run `compact` or `salvage` on a whole `.vdbx` database (ADR 0016
     /// section 11).
     pub fn run_database(
         command: &str,
@@ -218,6 +218,6 @@ pub struct SegmentOptions {
     pub to: Option<String>,
     pub out: Option<PathBuf>,
     pub allow_engine_only_access: bool,
-    /// `compact <db.fxdb> --shrink`: give the space freed back to the disk.
+    /// `compact <db.vdbx> --shrink`: give the space freed back to the disk.
     pub shrink: bool,
 }

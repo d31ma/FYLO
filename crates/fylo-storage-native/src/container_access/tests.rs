@@ -14,7 +14,7 @@ impl Drop for Database {
 fn created(name: &str) -> (Database, PathBuf) {
     let dir = std::env::temp_dir().join(crate::write::unique_name(name));
     std::fs::create_dir_all(&dir).expect("create directory");
-    let path = dir.join("app.fxdb");
+    let path = dir.join("app.vdbx");
     ContainerFile::create(&path, fylo_format::ContainerSuperblock::MIN_EXTENT_SHIFT)
         .expect("create container");
     (Database(dir), path)
@@ -45,7 +45,7 @@ fn qualified_here(path: &PathBuf) -> bool {
 
 #[test]
 fn writers_share_the_file_where_locks_are_qualified() {
-    let (_guard, path) = created("fxdb-access-shared");
+    let (_guard, path) = created("vdbx-access-shared");
     if !qualified_here(&path) {
         return;
     }
@@ -64,7 +64,7 @@ fn writers_share_the_file_where_locks_are_qualified() {
 
 #[test]
 fn an_exclusive_writer_keeps_every_other_writer_out() {
-    let (_guard, path) = created("fxdb-access-exclusive");
+    let (_guard, path) = created("vdbx-access-exclusive");
     let (_container, mut access) =
         ContainerFile::open_writer(&path, EXCLUSIVE).expect("exclusive writer");
     assert!(matches!(access, ContainerWriteAccess::Lease { .. }));
@@ -87,7 +87,7 @@ fn an_exclusive_writer_keeps_every_other_writer_out() {
 
 #[test]
 fn a_lease_left_by_a_crash_is_cleared_by_the_next_writer() {
-    let (_guard, path) = created("fxdb-access-crash");
+    let (_guard, path) = created("vdbx-access-crash");
     std::mem::forget(
         ContainerLease::acquire(&path, QUICK.lease_timing, Duration::ZERO).expect("lease"),
     );

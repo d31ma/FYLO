@@ -1,5 +1,5 @@
 //! A container collection's schemas snapshot (ADR 0017 section 3,
-//! `docs/fxdb-segment-backend.md`, "Schema versions").
+//! `docs/vdbx-segment-backend.md`, "Schema versions").
 //!
 //! The snapshot is a `schemas` run (extent kind 7) the checkpoint slot
 //! names beside the location and index runs. The schema records are the

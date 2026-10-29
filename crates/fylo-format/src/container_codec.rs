@@ -1,6 +1,6 @@
 use crate::ContainerFormatError;
 
-/// How a record body in a `.fxdb` frame is compressed: the frame header's
+/// How a record body in a `.vdbx` frame is compressed: the frame header's
 /// codec byte (ADR 0016 sections 4 and 8).
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ContainerCodec {

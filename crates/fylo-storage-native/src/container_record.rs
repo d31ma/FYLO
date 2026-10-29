@@ -1,7 +1,7 @@
-//! The stored body of a record frame in a `.fxdb` file (ADR 0016 section 4).
+//! The stored body of a record frame in a `.vdbx` file (ADR 0016 section 4).
 //!
 //! The frame around it is ADR 0015's: sync marker, length, CRC-32C, body.
-//! In a `.fxdb` file that body starts with one header byte: the codec in the
+//! In a `.vdbx` file that body starts with one header byte: the codec in the
 //! low four bits, then a flag for a dictionary id and a flag for a sealed
 //! body. A 4-byte dictionary id follows when a dictionary was used. The rest
 //! is the compressed record, and in an encrypted file it is sealed: the
@@ -75,8 +75,8 @@ impl ContainerRecordError {
         match self {
             Self::Locked | Self::Cipher(ContainerCipherError::WrongKey) => "EKEY",
             Self::Cipher(ContainerCipherError::Random) => "ENATIVE_IO",
-            Self::Unsupported | Self::Codec(ContainerCodecError::Unsupported) => "EFXDB_VERSION",
-            Self::Malformed | Self::NotSealed | Self::Codec(_) | Self::Cipher(_) => "EFXDB_CORRUPT",
+            Self::Unsupported | Self::Codec(ContainerCodecError::Unsupported) => "EVDBX_VERSION",
+            Self::Malformed | Self::NotSealed | Self::Codec(_) | Self::Cipher(_) => "EVDBX_CORRUPT",
         }
     }
 }

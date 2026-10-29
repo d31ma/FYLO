@@ -4,7 +4,7 @@
 - Date: **2026-10-29**
 - Owners: **FYLO maintainers**
 - Builds on: ADR 0013 (record format and commit protocol), ADR 0015
-  (append-only segments), ADR 0016 (single-file `.fxdb` databases), ADR 0008
+  (append-only segments), ADR 0016 (single-file `.vdbx` databases), ADR 0008
   (the portable WebAssembly engine) and ADR 0014 (the hot set).
 - Amends: the "Schema Versioning" section of `README.md`, the schema row of
   `docs/releases/artifact-matrix.md`, and `docs/cohesion/schema-rules.md`.
@@ -40,12 +40,12 @@ executed by the embedded Boa runtime. Reading the code on `develop` on
    an application sees whatever version each document was written at.
 3. **The schema lives outside the database.** Schemas are files under
    `fylo.schema`, beside the root rather than in it. Copying a root, packing a
-   `.fxdb` file or opening one in Explorer leaves the schema behind, a schema
+   `.vdbx` file or opening one in Explorer leaves the schema behind, a schema
    edited on disk applies to the next write with no record of the change, and
    nothing ties a schema change to the documents written under it.
 4. **The browser cannot validate.** Neither WebAssembly build links CHEX,
    because the `regex` crate's Unicode tables add about 390 KB to a module
-   whose budget is 1,792 KiB raw and 640 KiB gzipped. Explorer will edit `.fxdb`
+   whose budget is 1,792 KiB raw and 640 KiB gzipped. Explorer will edit `.vdbx`
    files in the browser (ADR 0016 section 10), so every browser edit would skip
    validation. Explorer's folder view runs the JavaScript engine, which has no
    validator at all.
@@ -59,7 +59,7 @@ executed by the embedded Boa runtime. Reading the code on `develop` on
    iterations, about 28 ms in release).
 6. **Upgraders cannot run everywhere.** An upgrader is arbitrary JavaScript.
    Boa is native-only, a fresh runtime is built for every step of every
-   document, and a `.fxdb` file that carried JavaScript into Explorer would run
+   document, and a `.vdbx` file that carried JavaScript into Explorer would run
    code from a file the user merely opened.
 
 The same test found three more defects:
@@ -128,7 +128,7 @@ MongoDB's split between what is checked and what happens on failure:
 | `warn`   | every write                | the write commits; the violation is counted and logged |
 | `strict` | every write                | the write fails with `ESCHEMA` and nothing is written |
 
-- A new `.fxdb` database, and any collection created with a schema, defaults
+- A new `.vdbx` database, and any collection created with a schema, defaults
   to `strict`.
 - An existing directory root keeps today's behavior: `fylo.strict: true`
   means `strict`, otherwise `off`. `fylo schema mode <collection> <mode>`
@@ -156,12 +156,12 @@ Each version holds:
 
 **Where it is stored.**
 
-- **`.fxdb` files and segment collections**: each version is a record of a new
+- **`.vdbx` files and segment collections**: each version is a record of a new
   kind, `5` schema, with manifest `fylo.schema-version.v1`, appended through
   the collection's commit path (ADR 0013 section 4, ADR 0015 section 6). A
   schema change is therefore atomic, ordered against the documents around it,
   and replayed by recovery. For a fast open, a checkpoint also writes a
-  derived **schemas snapshot**: extent kind `7` in `.fxdb`, named by a third
+  derived **schemas snapshot**: extent kind `7` in `.vdbx`, named by a third
   snapshot reference in the checkpoint slot, holding the registry, the
   compiled validators and the per-version document counts (section 6). The
   head is the newest schema record at or before the checkpoint LSN, plus
@@ -178,10 +178,10 @@ Each version holds:
   of section 6 have a reserved `counts` field. The descriptor's
   `"schemas": "registry"` and `schemaHead` are still written, after the
   record commits, and follow the records, which are authoritative.
-  In a `.fxdb` file the snapshot is the kind `7` run the checkpoint slot
+  In a `.vdbx` file the snapshot is the kind `7` run the checkpoint slot
   names, with the same contents, and a collection's descriptor names no
   head, since its directory block is not rewritten
-  (`docs/fxdb-segment-backend.md`, "Schema versions").
+  (`docs/vdbx-segment-backend.md`, "Schema versions").
 - **Directory roots on the file layout**: the registry is
   `<root>/.fylo-schemas/<collection>/<ordinal>.json`, one immutable file per
   version, and the head ordinal is in the catalog descriptor. Adding a version
@@ -195,7 +195,7 @@ Correction (2026-10-29): the collection's generation state is also written as
 a new `fylo.collection-generation` format version, which older binaries
 already refuse with `ENATIVE_CORRUPT_METADATA` (the second fence ADR 0015
 uses), so an older binary refuses the collection instead of writing
-unvalidated documents or stopping its log scan at an unknown record kind. A `.fxdb` file sets read-only-compatible feature bit
+unvalidated documents or stopping its log scan at an unknown record kind. A `.vdbx` file sets read-only-compatible feature bit
 `READ_ONLY_COMPAT_SCHEMAS` (bit 0), so a build that predates this ADR opens it
 read-only.
 
@@ -274,7 +274,7 @@ dozen leaves stores tens of kilobytes per version.
 cannot be compiled to a DFA. A version that uses one is marked
 `portable: false`: native builds validate it with `regex` as today, and the
 WebAssembly builds refuse writes to that collection (below). `fylo schema
-push` warns, and for a `.fxdb` database refuses such a version unless given
+push` warns, and for a `.vdbx` database refuses such a version unless given
 `--native-only`. Today's CHEX already rejects `\p{…}` classes, so nothing else
 changes. The browser cannot compile a new pattern, so schemas are authored and
 pushed natively; Explorer shows them but does not edit them.
@@ -336,7 +336,7 @@ builds never execute JavaScript from a database.
   compaction keeps an entry's LSN and bytes, so migration is never folded
   into compaction itself.
 
-`fylo pack` migrates eagerly by default, so a shipped `.fxdb` file has every
+`fylo pack` migrates eagerly by default, so a shipped `.vdbx` file has every
 document at its head and needs no upgrader to read; `--keep-versions` skips
 that.
 
@@ -388,7 +388,7 @@ Each step lands on `develop` on its own and is useful by itself.
    differential corpus.
 4. **Registry in the database**: schema records, the schemas snapshot, the
    fences, `push` and `pull`, and the one-time import from `fylo.schema`.
-   Needs ADR 0015 merged; `.fxdb` support follows ADR 0016's format core.
+   Needs ADR 0015 merged; `.vdbx` support follows ADR 0016's format core.
 5. **Declarative migrations**, lazy reads, convergence counts, `migrate`, and
    Boa context reuse.
 6. **Explorer**: validation errors shown on the field that failed, writes to a
@@ -401,7 +401,7 @@ Each step lands on `develop` on its own and is useful by itself.
 Benefits:
 
 - every write path validates, and so does the browser;
-- a database carries its schemas: a copied root, a `.fxdb` file in Explorer
+- a database carries its schemas: a copied root, a `.vdbx` file in Explorer
   and a restored backup all validate the same way;
 - a schema change is atomic with the data around it and recoverable;
 - every build reads every document in the head shape;
@@ -418,10 +418,10 @@ Costs:
 
 ## Alternatives considered
 
-- **Keep schemas in `fylo.schema` only.** Simplest, but a `.fxdb` file opened
+- **Keep schemas in `fylo.schema` only.** Simplest, but a `.vdbx` file opened
   anywhere else has no schema, and nothing records which schema a document was
   validated against.
-- **A source-of-truth schema extent in `.fxdb`.** Needs its own atomic publish
+- **A source-of-truth schema extent in `.vdbx`.** Needs its own atomic publish
   protocol beside the commit path (the format thread's objection). Committing
   versions as records reuses the one that exists.
 - **Validate in the browser with the host's `RegExp`.** Free in code size, but
@@ -466,6 +466,6 @@ Costs:
 - A lazy read, a write and an eager migration of the same document give
   byte-identical results.
 - Older-binary fences: a pre-ADR binary refuses a registry collection and
-  opens a `.fxdb` with the new bit read-only.
+  opens a `.vdbx` with the new bit read-only.
 - Performance: validation of the 5k fixture's documents adds under 20 µs per
   write at p99 natively, measured beside the write latency baselines.

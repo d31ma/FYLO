@@ -6,8 +6,8 @@ use fylo_storage_native::{
 };
 use serde_json::{Value, json};
 
-/// `fylo pack <root> --out <db.fxdb>`, `fylo unpack <db.fxdb> --out
-/// <directory>` and `fylo create <db.fxdb>` (ADR 0016 section 11).
+/// `fylo pack <root> --out <db.vdbx>`, `fylo unpack <db.vdbx> --out
+/// <directory>` and `fylo create <db.vdbx>` (ADR 0016 section 11).
 ///
 /// `--encrypt`, or `fylo.encryption.file` in the configuration, makes the
 /// database `create` or `pack` writes an encrypted one, sealed with
@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 ///
 /// `pack --sealed` writes a sealed database: read-only, with no free
 /// extents, recompressed in 64 KiB blocks (ADR 0016 sections 8 and 11). It
-/// also takes a `.fxdb` database as its source, a consistent copy of a
+/// also takes a `.vdbx` database as its source, a consistent copy of a
 /// live one for a backup; an encrypted source packs encrypted, with the
 /// same key.
 ///
@@ -38,7 +38,7 @@ impl PackCommand {
             return Self::create(source, application, options);
         }
         let out = options.out.as_deref().ok_or_else(|| match command {
-            "pack" => "pack needs --out <db.fxdb>".to_owned(),
+            "pack" => "pack needs --out <db.vdbx>".to_owned(),
             _ => "unpack needs --out <directory>".to_owned(),
         })?;
         if options.sealed && command != "pack" {
@@ -72,7 +72,7 @@ impl PackCommand {
         options: &PackOptions,
     ) -> Result<String, String> {
         if !NativeRoot::names_database(path) {
-            return Err("create needs a path that ends in .fxdb".into());
+            return Err("create needs a path that ends in .vdbx".into());
         }
         let key = Self::encryption_key(application, options)?;
         match key {
@@ -87,7 +87,7 @@ impl PackCommand {
         .map_err(|error| error.to_string())
     }
 
-    /// Whether `source` is an encrypted `.fxdb` database, whose sealed pack
+    /// Whether `source` is an encrypted `.vdbx` database, whose sealed pack
     /// is encrypted with its key.
     fn encrypted_database(source: &Path) -> bool {
         source.is_file() && ContainerFile::open_reader(source).is_ok_and(|file| file.is_encrypted())

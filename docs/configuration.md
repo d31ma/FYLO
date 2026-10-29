@@ -20,7 +20,7 @@ file beside that JSON file.
 
 The encryption key and cipher salt must be configured together, and must be
 secret references, not literal credentials. Omit both when encryption is not
-needed. An encrypted `.fxdb` database needs only the key (see
+needed. An encrypted `.vdbx` database needs only the key (see
 [encrypted databases](#encrypted-databases)). The resolved key must contain at least 32 UTF-8 bytes and the salt must
 be nonempty. Start with [application.example.json](../application.example.json)
 for a configuration that does not require any secrets or schemas.
@@ -79,9 +79,9 @@ tree without changing the collection, and `fylo verify-segments` and
 older than segments, move each segment collection back with
 `fylo layout <collection> --to files`; older releases refuse it.
 
-`fylo pack <root> --out app.fxdb` copies a whole directory root, in either
-layout, into a new single-file `.fxdb` database, after checking the copy
-against every document; `fylo unpack app.fxdb --out <directory>` writes a
+`fylo pack <root> --out app.vdbx` copies a whole directory root, in either
+layout, into a new single-file `.vdbx` database, after checking the copy
+against every document; `fylo unpack app.vdbx --out <directory>` writes a
 database back out as a directory root in the file layout, each collection
 as `fylo export` writes it. Pack refuses a root with buckets, version
 control or the embedded queue, which a database does not hold yet, and
@@ -89,13 +89,13 @@ never replaces an existing file (ADR 0016).
 
 ## Encrypted databases
 
-A `.fxdb` database is plain unless you ask for encryption: it is opt-in per
+A `.vdbx` database is plain unless you ask for encryption: it is opt-in per
 database and off by default. `fylo.encryption.file` asks for it:
 
 ```json
 {
     "fylo": {
-        "root": "./app.fxdb",
+        "root": "./app.vdbx",
         "encryption": { "key": "${FYLO_ENCRYPTION_KEY}", "file": true }
     }
 }
@@ -104,8 +104,8 @@ database and off by default. `fylo.encryption.file` asks for it:
 With `file` set, a database this configuration creates (by a session that
 finds none at `fylo.root`, by `fylo create`, or by `fylo pack`) seals its
 records, dictionaries, schema snapshots and directory with a key derived
-from `fylo.encryption.key` (ADR 0016 section 9). `fylo create app.fxdb
---encrypt` and `fylo pack <root> --out app.fxdb --encrypt` ask for it for
+from `fylo.encryption.key` (ADR 0016 section 9). `fylo create app.vdbx
+--encrypt` and `fylo pack <root> --out app.vdbx --encrypt` ask for it for
 one file and also need the key. `file` needs the key, but the key alone with
 `file` set needs no cipher salt: the salt pairs with the key only for
 `$encrypted` fields. Without `file`, the key and salt configure field
@@ -113,8 +113,8 @@ encryption as above, and the key also opens an encrypted database.
 
 An encrypted database opened without its key is locked: it lists no
 collections, and a read of a collection and every write fail with `EKEY`.
-A different key fails with `EKEY` too. `fylo verify app.fxdb` checks the
-file without the key, and `fylo inspect app.fxdb` reports `encrypted` and
+A different key fails with `EKEY` too. `fylo verify app.vdbx` checks the
+file without the key, and `fylo inspect app.vdbx` reports `encrypted` and
 `locked`. Losing the key loses the documents: there is no recovery.
 
 ## Discovery and precedence

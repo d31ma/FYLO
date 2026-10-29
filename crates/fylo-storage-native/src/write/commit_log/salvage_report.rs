@@ -8,7 +8,7 @@ pub struct SalvageReport {
     /// Documents whose newest version the location table names could not
     /// be read. An older version may have been recovered instead.
     ///
-    /// A collection without a location log (a `.fxdb` container) builds
+    /// A collection without a location log (a `.vdbx` container) builds
     /// its table from the records after its snapshot, and the table stops
     /// at the first it cannot read. Documents whose newest version lay in
     /// a damaged record there are named only when that record's manifest

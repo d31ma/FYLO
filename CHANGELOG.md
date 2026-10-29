@@ -4,8 +4,8 @@
 
 ### Added
 
-- **Encrypted `.fxdb` databases, opt-in and off by default (ADR 0016
-  section 9).** `fylo create app.fxdb --encrypt`, `fylo pack --encrypt`, or
+- **Encrypted `.vdbx` databases, opt-in and off by default (ADR 0016
+  section 9).** `fylo create app.vdbx --encrypt`, `fylo pack --encrypt`, or
   `fylo.encryption.file: true` in `application.json` creates a database
   whose record frames, directory, dictionaries and schema snapshots are
   sealed with AES-256-GCM under a key derived from `fylo.encryption.key`,
@@ -14,23 +14,23 @@
   without the key the database is locked: it lists no collections, and a
   read of one and every write fail with the new `EKEY` code, as does a wrong
   key. `fylo inspect` reports `encrypted` and `locked`; `fylo verify` works
-  without the key. `fylo create <db.fxdb>` makes an empty plain database.
+  without the key. `fylo create <db.vdbx>` makes an empty plain database.
 - **`fylo pack` and `fylo unpack` (ADR 0016 section 11).** `fylo pack <root>
-  --out app.fxdb` copies every document collection of a directory root, in
-  the file or the segment layout, into a new `.fxdb` database with its
+  --out app.vdbx` copies every document collection of a directory root, in
+  the file or the segment layout, into a new `.vdbx` database with its
   schema versions, shard widths and validation modes. It builds the file as
   `.<name>.pack-staging` beside `--out` while holding every collection's
   lock, checks it against the source with ADR 0015's oracle, flushes it and
   only then gives it its name, so a stop leaves no `--out`; the next pack
   removes the staging file. It refuses an existing `--out`, and a root with
   buckets, version control or the embedded queue with `ELAYOUTUNSUPPORTED`;
-  `fylo unpack app.fxdb --out <directory>`
+  `fylo unpack app.vdbx --out <directory>`
   writes a directory root in the file layout, each collection as
   `fylo export` writes it, with its descriptor and schema registry. Both
   bypass the machine protocol, as `export` does. New failpoint
   `after-pack-staging`.
-- **Sealed `.fxdb` packs (ADR 0016 sections 8 and 11).** `fylo pack
-  <root|db.fxdb> --out sealed.fxdb --sealed` writes a read-only image of a
+- **Sealed `.vdbx` packs (ADR 0016 sections 8 and 11).** `fylo pack
+  <root|db.vdbx> --out sealed.vdbx --sealed` writes a read-only image of a
   directory root or of a live database, so it also takes a consistent
   backup. Its free extents are dropped and the rest renumbered, and the
   image is stored in 64 KiB blocks compressed at zstd level 19 with an index,
@@ -40,14 +40,14 @@
   reports its `blocks`; every write fails with the new `EROFS` code
   (`ENATIVE_UNSUPPORTED` through the machine protocol). `fylo verify`
   reports a damaged block as `sealedBlockDamaged`, and a read of one fails
-  with `EFXDB_CORRUPT`.
+  with `EVDBX_CORRUPT`.
 - **In-memory hot set for exclusive embedded sessions.** A session that holds
   the root's exclusive lease (`fylo exec --loop --exclusive-root`, or the Rust
   `FrameSession`) keeps parsed documents, index snapshots, id lists and
   collection headers in memory, 64 MiB by default. `--hot-set-bytes <n>` sets
   the budget and `0` turns it off. Every handshake reports it as
   `capabilities.hotSet`: the budget and counters, or `false` (ADR 0014).
-- **Fylo Explorer opens a `.fxdb` database file in any current browser.** The
+- **Fylo Explorer opens a `.vdbx` database file in any current browser.** The
   start screen takes one by picker, file input or drag and drop, including in
   Firefox and Safari, and opens it read-only. "Edit a copy" streams it into the
   browser's private storage, and "Save" writes it back over the original where
@@ -158,7 +158,7 @@
 
 ### Fixed
 
-- **A read of a `.fxdb` database right after a crashed write no longer fails
+- **A read of a `.vdbx` database right after a crashed write no longer fails
   with `EENGINE_CONCURRENT_WRITE`.** A reader that finds a collection's slot
   `writing` tells a running writer from one that stopped by the lock bytes
   (ADR 0016 section 7): it finishes a stopped writer's write itself, as a
@@ -166,7 +166,7 @@
   file without waiting for or keeping out another writer, and otherwise
   reads the collection as it was last published. A running writer's write
   is left to it.
-- **A `.fxdb` checkpoint that fails in place rolls back before it returns.**
+- **A `.vdbx` checkpoint that fails in place rolls back before it returns.**
   On a full disk it left its fold published as `writing`, so `fylo recover`
   found work and readers reported a concurrent write until the next writer.
 

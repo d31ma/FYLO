@@ -6,7 +6,7 @@
 use std::process::Command;
 
 #[test]
-fn processes_contending_for_fxdb_lock_bytes_exclude_each_other() {
+fn processes_contending_for_vdbx_lock_bytes_exclude_each_other() {
     let dir = std::env::temp_dir().join(format!("fylo-lock-harness-test-{}", std::process::id()));
     std::fs::create_dir_all(&dir).expect("create directory");
     let output = Command::new(env!("CARGO_BIN_EXE_fylo-lock-harness"))

@@ -164,19 +164,19 @@ pub struct NativeRoot {
     profile: FilesystemProfile,
     lease: Option<RootLease>,
     descriptor: Option<profile_manifest::ProfileManifest>,
-    /// The `.fxdb` file this root is, when it is one.
+    /// The `.vdbx` file this root is, when it is one.
     database: Option<std::sync::Arc<container_database::ContainerDatabase>>,
 }
 
 impl NativeRoot {
-    /// Open and canonicalize an existing directory, or an existing `.fxdb`
+    /// Open and canonicalize an existing directory, or an existing `.vdbx`
     /// database: a root path that names a regular file is opened as one
     /// (ADR 0016 section 11).
     ///
     /// # Errors
     ///
     /// Returns an error when the root is absent, inaccessible, or neither a
-    /// directory nor a `.fxdb` database.
+    /// directory nor a `.vdbx` database.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, NativeStorageError> {
         Self::open_with_roots(path.as_ref(), path.as_ref())
     }
@@ -273,22 +273,22 @@ impl NativeRoot {
         })
     }
 
-    /// Open the `.fxdb` database at `canonical`. It is its own catalog and
-    /// repository root, and only the native profile has a `.fxdb` form.
+    /// Open the `.vdbx` database at `canonical`. It is its own catalog and
+    /// repository root, and only the native profile has a `.vdbx` form.
     fn open_database(
         canonical: PathBuf,
         options: RootOpenOptions,
     ) -> Result<Self, NativeStorageError> {
         if options.profile != FilesystemProfile::Native {
             return Err(Self::database_unsupported(
-                "the EFS sidecar profile has no .fxdb form",
+                "the EFS sidecar profile has no .vdbx form",
             ));
         }
         if let Some(repository) = options.repository.as_deref()
             && fs::canonicalize(repository).map_err(NativeStorageError::io)? != canonical
         {
             return Err(Self::database_unsupported(
-                "a .fxdb database has no separate worktree or repository root",
+                "a .vdbx database has no separate worktree or repository root",
             ));
         }
         if let Some(lease) = options.lease.as_ref() {
@@ -307,7 +307,7 @@ impl NativeRoot {
         })
     }
 
-    /// Create an empty `.fxdb` database at `path`, which must not exist.
+    /// Create an empty `.vdbx` database at `path`, which must not exist.
     ///
     /// # Errors
     ///
@@ -316,7 +316,7 @@ impl NativeRoot {
         container_database::ContainerDatabase::create(path.as_ref(), None)
     }
 
-    /// Create an empty, encrypted `.fxdb` database at `path`, which must not
+    /// Create an empty, encrypted `.vdbx` database at `path`, which must not
     /// exist (ADR 0016 section 9). Its records, collection directory,
     /// dictionaries and snapshots are sealed with a file key derived from
     /// `key` and a random salt; a root opens it with the same key
@@ -334,7 +334,7 @@ impl NativeRoot {
         container_database::ContainerDatabase::create(path.as_ref(), Some(key))
     }
 
-    /// Close this process's handle on the `.fxdb` database at `path`: give
+    /// Close this process's handle on the `.vdbx` database at `path`: give
     /// up its write access and forget what it read, so the next open reads
     /// the file afresh, as a new process would. Handles opened before keep
     /// working on what they read.
@@ -348,8 +348,8 @@ impl NativeRoot {
         Ok(())
     }
 
-    /// Whether `path` names a `.fxdb` database: a regular file, or a path
-    /// ending in `.fxdb` that names no directory. A host that creates a
+    /// Whether `path` names a `.vdbx` database: a regular file, or a path
+    /// ending in `.vdbx` that names no directory. A host that creates a
     /// missing root on first use creates a database for such a path
     /// ([`Self::create_database`]), never a directory.
     #[must_use]
@@ -359,17 +359,17 @@ impl NativeRoot {
             Ok(metadata) => metadata.is_file(),
             Err(_) => path
                 .extension()
-                .is_some_and(|extension| extension == "fxdb"),
+                .is_some_and(|extension| extension == "vdbx"),
         }
     }
 
-    /// Whether this root is a `.fxdb` database rather than a directory.
+    /// Whether this root is a `.vdbx` database rather than a directory.
     #[must_use]
     pub fn is_database(&self) -> bool {
         self.database().is_some()
     }
 
-    /// Whether this root is an encrypted `.fxdb` database, and whether it
+    /// Whether this root is an encrypted `.vdbx` database, and whether it
     /// was opened without its key, which leaves it locked: `None` for a
     /// directory root.
     #[must_use]
@@ -378,7 +378,7 @@ impl NativeRoot {
             .map(|database| (database.is_encrypted(), database.is_locked()))
     }
 
-    /// The live collections of a `.fxdb` database root, in the order they
+    /// The live collections of a `.vdbx` database root, in the order they
     /// were created; `None` for a directory root. A locked one lists none.
     #[must_use]
     pub fn database_collection_names(&self) -> Option<Vec<String>> {
@@ -391,7 +391,7 @@ impl NativeRoot {
         self.database.as_ref()
     }
 
-    /// What a `.fxdb` database answers for a feature it does not hold.
+    /// What a `.vdbx` database answers for a feature it does not hold.
     pub(crate) fn database_unsupported(feature: &str) -> NativeStorageError {
         NativeStorageError::new(
             NativeStorageErrorCode::LayoutUnsupported,
@@ -399,7 +399,7 @@ impl NativeRoot {
         )
     }
 
-    /// Refuse a feature a `.fxdb` database does not hold.
+    /// Refuse a feature a `.vdbx` database does not hold.
     pub(crate) fn refuse_in_database(&self, feature: &str) -> Result<(), NativeStorageError> {
         if self.is_database() {
             return Err(Self::database_unsupported(feature));
@@ -407,12 +407,12 @@ impl NativeRoot {
         Ok(())
     }
 
-    /// Refuse an operation a `.fxdb` database will hold but does not yet.
+    /// Refuse an operation a `.vdbx` database will hold but does not yet.
     pub(crate) fn not_yet_in_database(&self, operation: &str) -> Result<(), NativeStorageError> {
         if self.is_database() {
             return Err(NativeStorageError::new(
                 NativeStorageErrorCode::Unsupported,
-                format!("{operation} is not supported in a .fxdb database yet"),
+                format!("{operation} is not supported in a .vdbx database yet"),
             ));
         }
         Ok(())
@@ -561,7 +561,7 @@ impl NativeRoot {
         })
     }
 
-    /// Open the collection of a `.fxdb` database named `name`: its directory
+    /// Open the collection of a `.vdbx` database named `name`: its directory
     /// block, whose descriptor is the catalog's. It has no directory; its
     /// path only names it to in-process caches.
     fn database_collection(
@@ -687,7 +687,7 @@ impl NativeRoot {
     /// invalid identifiers, or an excessive limit.
     pub fn version_history(&self, limit: usize) -> Result<RepositoryHistory, NativeStorageError> {
         self.assert_profile_owned()?;
-        self.refuse_in_database("a .fxdb database has no version control")?;
+        self.refuse_in_database("a .vdbx database has no version control")?;
         if limit == 0 || limit > 1000 {
             return Err(NativeStorageError::new(
                 NativeStorageErrorCode::CorruptMetadata,
@@ -817,7 +817,7 @@ impl NativeRoot {
         limit: usize,
     ) -> Result<VersionVerification, NativeStorageError> {
         self.assert_profile_owned()?;
-        self.refuse_in_database("a .fxdb database has no version control")?;
+        self.refuse_in_database("a .vdbx database has no version control")?;
         if limit == 0 || limit > 1000 {
             return Err(NativeStorageError::new(
                 NativeStorageErrorCode::CorruptMetadata,
@@ -1688,7 +1688,7 @@ pub struct NativeCollection {
     previous_shard_widths: Vec<u32>,
     validation: Option<ValidationMode>,
     schema_head: Option<u32>,
-    /// The directory block of a collection in a `.fxdb` database.
+    /// The directory block of a collection in a `.vdbx` database.
     block: Option<u32>,
 }
 
@@ -1727,7 +1727,7 @@ impl NativeCollection {
     /// and the maintenance (migration, compaction, export, verification,
     /// salvage) that runs on segments. The WASI and browser builds do not
     /// (ADR 0015 section 1), so that code compiles away instead of growing
-    /// the engine they ship. A `.fxdb` database's collections are segments
+    /// the engine they ship. A `.vdbx` database's collections are segments
     /// in every build: the browser engine reads and edits them (ADR 0016).
     pub(crate) const SEGMENTS_SUPPORTED: bool = cfg!(not(target_family = "wasm"));
 
@@ -1747,7 +1747,7 @@ impl NativeCollection {
         segments::medium_of(&self.path)
     }
 
-    /// The directory block of a collection in a `.fxdb` database.
+    /// The directory block of a collection in a `.vdbx` database.
     pub(crate) const fn database_block(&self) -> Option<u32> {
         self.block
     }
@@ -2948,7 +2948,7 @@ pub enum NativeStorageErrorCode {
     ShardWidth,
     /// The preview does not support the requested collection/operation.
     Unsupported,
-    /// A `.fxdb` database does not hold this kind of collection or support
+    /// A `.vdbx` database does not hold this kind of collection or support
     /// this feature (ADR 0016 section 1).
     LayoutUnsupported,
     /// A queue topic, consumer group, message, or option was invalid.
@@ -2960,7 +2960,7 @@ pub enum NativeStorageErrorCode {
     /// A document did not match its collection's head schema, and the
     /// collection's validation mode is `strict`.
     SchemaViolation,
-    /// An encrypted `.fxdb` database was opened without its key, or with
+    /// An encrypted `.vdbx` database was opened without its key, or with
     /// another (ADR 0016 section 9).
     KeyRequired,
 }

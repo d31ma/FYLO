@@ -1,6 +1,6 @@
 //! Moving what a collection keeps beside its segments nearer the front of a
-//! `.fxdb` file, for `fylo compact --shrink` (ADR 0016 section 6,
-//! "Shrinking"; `docs/fxdb-segment-backend.md`, "Compaction and shrinking").
+//! `.vdbx` file, for `fylo compact --shrink` (ADR 0016 section 6,
+//! "Shrinking"; `docs/vdbx-segment-backend.md`, "Compaction and shrinking").
 //!
 //! Extents are taken lowest first, so a copy lands in the first free extent
 //! the map shows. A segment moves by compaction, which copies its live

@@ -14,9 +14,9 @@ pub struct ApplicationConfig {
     pub schema: Option<PathBuf>,
     pub credentials: Option<(String, String)>,
     /// The secret `fylo.encryption.key` names, which opens an encrypted
-    /// `.fxdb` database (ADR 0016 section 9).
+    /// `.vdbx` database (ADR 0016 section 9).
     pub database_key: Option<DatabaseKey>,
-    /// `fylo.encryption.file`: a `.fxdb` database this configuration
+    /// `fylo.encryption.file`: a `.vdbx` database this configuration
     /// creates is encrypted with [`Self::database_key`]. Off by default.
     pub encrypt_databases: bool,
     /// Memory a session holding the root's exclusive lease keeps for warm
@@ -28,7 +28,7 @@ impl ApplicationConfig {
     const DEFAULT_FILE: &'static str = "application.json";
 
     /// `options` with this configuration's database key, so an encrypted
-    /// `.fxdb` root opens unlocked. A directory root ignores it.
+    /// `.vdbx` root opens unlocked. A directory root ignores it.
     #[must_use]
     pub fn with_database_key(&self, options: RootOpenOptions) -> RootOpenOptions {
         match &self.database_key {
@@ -37,7 +37,7 @@ impl ApplicationConfig {
         }
     }
 
-    /// The key a `.fxdb` database this configuration creates is encrypted
+    /// The key a `.vdbx` database this configuration creates is encrypted
     /// with: `Some` only under `fylo.encryption.file`.
     #[must_use]
     pub fn creation_key(&self) -> Option<&DatabaseKey> {

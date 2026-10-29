@@ -183,7 +183,7 @@ fn patch(writer: &NativeWriteRoot, number: usize, round: usize) {
 
 #[test]
 fn a_full_extent_rotates_with_a_map_checkpoint() {
-    let fixture = Fixture::create("fxdb-medium-rotate");
+    let fixture = Fixture::create("vdbx-medium-rotate");
     let writer = fixture.writer();
     let container = fixture.container();
     let first = container.segment_numbers().unwrap()[0];
@@ -225,7 +225,7 @@ fn a_full_extent_rotates_with_a_map_checkpoint() {
 
 #[test]
 fn a_reopen_finds_the_active_extent_only_its_slot_names() {
-    let fixture = Fixture::create("fxdb-medium-crash");
+    let fixture = Fixture::create("vdbx-medium-crash");
     let writer = fixture.writer();
     for number in 0..20 {
         put(&writer, number);
@@ -277,7 +277,7 @@ fn a_reopen_finds_the_active_extent_only_its_slot_names() {
 
 #[test]
 fn a_compacted_extent_is_reused_after_a_checkpoint_and_old_readers_retry() {
-    let fixture = Fixture::create("fxdb-medium-compact");
+    let fixture = Fixture::create("vdbx-medium-compact");
     let writer = fixture.writer();
     for number in 0..250 {
         put(&writer, number);
@@ -335,7 +335,7 @@ fn a_compacted_extent_is_reused_after_a_checkpoint_and_old_readers_retry() {
 
 #[test]
 fn a_replaced_snapshot_and_the_replayed_records_give_the_table() {
-    let fixture = Fixture::create("fxdb-medium-snapshot");
+    let fixture = Fixture::create("vdbx-medium-snapshot");
     let writer = fixture.writer();
     for number in 0..200 {
         put(&writer, number);
@@ -417,7 +417,7 @@ fn a_replaced_snapshot_and_the_replayed_records_give_the_table() {
 
 #[test]
 fn finished_segments_are_sealed_in_the_durable_map() {
-    let fixture = Fixture::create("fxdb-medium-seal");
+    let fixture = Fixture::create("vdbx-medium-seal");
     let writer = fixture.writer();
     for number in 0..300 {
         put(&writer, number);
@@ -474,7 +474,7 @@ fn finished_segments_are_sealed_in_the_durable_map() {
 
 #[test]
 fn the_segment_table_follows_takes_releases_and_reopens() {
-    let fixture = Fixture::create("fxdb-medium-table");
+    let fixture = Fixture::create("vdbx-medium-table");
     let writer = fixture.writer();
     let container = fixture.container();
     for number in 0..250 {
@@ -510,7 +510,7 @@ fn the_segment_table_follows_takes_releases_and_reopens() {
 
 #[test]
 fn a_dropped_collection_recreated_in_one_process_gets_a_fresh_file() {
-    let fixture = Fixture::create("fxdb-medium-recreate");
+    let fixture = Fixture::create("vdbx-medium-recreate");
     let writer = fixture.writer();
     for number in 0..20 {
         put(&writer, number);
@@ -571,7 +571,7 @@ fn damage(fixture: &Fixture, needle: &[u8], at: usize) {
 /// salvage` run after a stop does.
 fn fresh_salvage(fixture: &Fixture) -> crate::SalvageReport {
     fixture.crash();
-    let out = std::env::temp_dir().join(crate::write::unique_name("fxdb-salvaged"));
+    let out = std::env::temp_dir().join(crate::write::unique_name("vdbx-salvaged"));
     let report = fixture.writer().salvage_collection("items", &out).unwrap();
     let _ = std::fs::remove_dir_all(out);
     report
@@ -579,7 +579,7 @@ fn fresh_salvage(fixture: &Fixture) -> crate::SalvageReport {
 
 #[test]
 fn a_fresh_salvage_names_the_documents_of_a_damaged_record_after_the_snapshot() {
-    let fixture = Fixture::create("fxdb-medium-salvage");
+    let fixture = Fixture::create("vdbx-medium-salvage");
     let writer = fixture.writer();
     for number in 0..10 {
         put(&writer, number);
@@ -612,7 +612,7 @@ fn a_fresh_salvage_names_the_documents_of_a_damaged_record_after_the_snapshot() 
 fn a_fresh_salvage_names_nothing_written_again_or_unreadable() {
     // A document written again after the damaged record is recovered from
     // its later version and is not lost.
-    let fixture = Fixture::create("fxdb-medium-salvage-again");
+    let fixture = Fixture::create("vdbx-medium-salvage-again");
     let writer = fixture.writer();
     for number in 0..10 {
         put(&writer, number);
@@ -625,7 +625,7 @@ fn a_fresh_salvage_names_nothing_written_again_or_unreadable() {
 
     // A damaged manifest names nothing: only the damaged range is
     // reported, where a location log would still name the document.
-    let fixture = Fixture::create("fxdb-medium-salvage-manifest");
+    let fixture = Fixture::create("vdbx-medium-salvage-manifest");
     let writer = fixture.writer();
     for number in 0..10 {
         put(&writer, number);

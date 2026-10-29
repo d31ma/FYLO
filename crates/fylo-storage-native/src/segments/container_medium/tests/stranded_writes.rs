@@ -1,4 +1,4 @@
-//! A write a `.fxdb` database's writer left unfinished, as its reader finds
+//! A write a `.vdbx` database's writer left unfinished, as its reader finds
 //! it (ADR 0016 section 7), and a checkpoint that fails in place. A reader
 //! finishes the write of a writer process that stopped, leaves that of a
 //! running one alone, and reads past one it cannot finish without becoming
@@ -21,9 +21,9 @@ use crate::{
     NativeWriteRoot, PutDocumentOptions,
 };
 
-const ROLE: &str = "FYLO_FXDB_STRANDED_CHILD_ROLE";
-const DATABASE: &str = "FYLO_FXDB_STRANDED_CHILD_DATABASE";
-const EXCLUSIVE: &str = "FYLO_FXDB_STRANDED_CHILD_EXCLUSIVE";
+const ROLE: &str = "FYLO_VDBX_STRANDED_CHILD_ROLE";
+const DATABASE: &str = "FYLO_VDBX_STRANDED_CHILD_DATABASE";
+const EXCLUSIVE: &str = "FYLO_VDBX_STRANDED_CHILD_EXCLUSIVE";
 const CHILD_TEST: &str =
     "segments::container_medium::tests::stranded_writes::a_stranded_write_child_process";
 const WAIT: Duration = Duration::from_mins(1);
@@ -154,7 +154,7 @@ fn block(path: &Path) -> u32 {
         .block
 }
 
-/// A `.fxdb` database of 1 MiB extents holding `items`, with documents
+/// A `.vdbx` database of 1 MiB extents holding `items`, with documents
 /// written, patched and deleted, so a compaction has dead entries to drop.
 struct Database(PathBuf);
 
@@ -187,7 +187,7 @@ impl Database {
     }
 
     fn path(&self) -> PathBuf {
-        self.0.join("db.fxdb")
+        self.0.join("db.vdbx")
     }
 
     /// Forget everything this process holds of the database, as a new
@@ -242,7 +242,7 @@ fn written() -> Vec<String> {
 
 #[test]
 fn a_reader_finishes_the_write_of_a_writer_process_that_stopped() {
-    let database = Database::create("fxdb-stranded-finish");
+    let database = Database::create("vdbx-stranded-finish");
     if !database.locks_qualified() {
         return;
     }
@@ -269,7 +269,7 @@ fn a_reader_finishes_the_write_of_a_writer_process_that_stopped() {
 
 #[test]
 fn a_reader_leaves_the_write_of_a_running_writer_process_alone() {
-    let database = Database::create("fxdb-stranded-running");
+    let database = Database::create("vdbx-stranded-running");
     if !database.locks_qualified() {
         return;
     }
@@ -309,7 +309,7 @@ fn a_reader_leaves_the_write_of_a_running_writer_process_alone() {
 
 #[test]
 fn a_reader_reads_past_a_write_left_under_the_lease() {
-    let database = Database::create("fxdb-stranded-lease");
+    let database = Database::create("vdbx-stranded-lease");
     crash(&database, true);
     assert!(
         ContainerLease::held_generation(&database.path())
@@ -338,7 +338,7 @@ fn a_reader_reads_past_a_write_left_under_the_lease() {
 
 #[test]
 fn a_checkpoint_that_fails_in_place_rolls_back_before_it_returns() {
-    let database = Database::create("fxdb-stranded-checkpoint");
+    let database = Database::create("vdbx-stranded-checkpoint");
     passed(
         spawn(
             "compact",

@@ -100,7 +100,7 @@ impl SegmentInspection {
     /// newest version a salvaged record holds, and every readable schema
     /// version by ordinal, with what was damaged and lost; nothing is
     /// written. A segment that cannot be read at all, as one whose extent
-    /// header in a `.fxdb` file no longer names it, is reported damaged
+    /// header in a `.vdbx` file no longer names it, is reported damaged
     /// whole and stepped over.
     pub(crate) fn salvage_documents(
         collection: &NativeCollection,

@@ -1,7 +1,7 @@
-//! Write a small `.fxdb` file for tests and demos: two collections with
+//! Write a small `.vdbx` file for tests and demos: two collections with
 //! published generations, one segment extent, and one checkpoint.
 //!
-//! `cargo run -p fylo-storage-native --example fxdb_fixture -- <out.fxdb>`
+//! `cargo run -p fylo-storage-native --example vdbx_fixture -- <out.vdbx>`
 //!
 //! The file holds no records yet; it exercises the container structures
 //! (superblock, map, directory) that `inspectDatabase` reports.
@@ -14,7 +14,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = PathBuf::from(
         std::env::args_os()
             .nth(1)
-            .ok_or("usage: fxdb_fixture <out.fxdb>")?,
+            .ok_or("usage: vdbx_fixture <out.vdbx>")?,
     );
     ContainerFile::create(&path, ContainerSuperblock::MIN_EXTENT_SHIFT)?;
     let mut container = ContainerFile::open_unchecked(&path)?;

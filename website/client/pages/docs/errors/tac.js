@@ -120,24 +120,24 @@ export default class {
             retry: 'Do not retry; push the schema with a native build, or write natively.'
         },
         {
-            code: 'EFXDB_NOT_FXDB',
-            meaning: 'The file is not a .fxdb database.',
+            code: 'EVDBX_NOT_VDBX',
+            meaning: 'The file is not a .vdbx database.',
             retry: 'Do not retry; check the path.'
         },
         {
-            code: 'EFXDB_VERSION',
-            meaning: 'The .fxdb file uses a format version or feature this build does not support.',
+            code: 'EVDBX_VERSION',
+            meaning: 'The .vdbx file uses a format version or feature this build does not support.',
             retry: 'Do not retry; open it with a newer FYLO.'
         },
         {
-            code: 'EFXDB_CORRUPT',
-            meaning: 'A .fxdb structure failed its checksum or consistency checks.',
+            code: 'EVDBX_CORRUPT',
+            meaning: 'A .vdbx structure failed its checksum or consistency checks.',
             retry: 'Do not retry; run fylo verify on the file.'
         },
         {
             code: 'EKEY',
             meaning:
-                'The .fxdb database is encrypted and was opened without its key, or with a different one.',
+                'The .vdbx database is encrypted and was opened without its key, or with a different one.',
             retry: 'Do not retry; configure fylo.encryption.key with the key the database was created with.'
         },
         {

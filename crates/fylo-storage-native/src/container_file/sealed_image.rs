@@ -1,4 +1,4 @@
-//! Reading a sealed `.fxdb` file (ADR 0016 sections 8 and 11).
+//! Reading a sealed `.vdbx` file (ADR 0016 sections 8 and 11).
 //!
 //! A sealed file is a read-only image of a container, cut into 64 KiB
 //! blocks that are compressed one at a time at zstd level 19 and, in an
@@ -183,7 +183,7 @@ impl SealedImage {
                 BlockDamage::Io(error) => error,
                 BlockDamage::Locked => io::Error::new(
                     io::ErrorKind::PermissionDenied,
-                    "the sealed .fxdb file is encrypted and needs its key",
+                    "the sealed .vdbx file is encrypted and needs its key",
                 ),
                 BlockDamage::Damaged(message) => io::Error::new(
                     io::ErrorKind::InvalidData,

@@ -46,7 +46,7 @@ impl RootOpenOptions {
         self
     }
 
-    /// Unlock an encrypted `.fxdb` database with `key` (ADR 0016 section 9).
+    /// Unlock an encrypted `.vdbx` database with `key` (ADR 0016 section 9).
     /// A directory root and a plain database ignore it. Without it an
     /// encrypted database opens locked: it lists no collections, and every
     /// read of one and every write fails with `EKEY`.
@@ -56,7 +56,7 @@ impl RootOpenOptions {
         self
     }
 
-    /// The key an encrypted `.fxdb` database is unlocked with, if any.
+    /// The key an encrypted `.vdbx` database is unlocked with, if any.
     #[must_use]
     pub fn database_key(&self) -> Option<&DatabaseKey> {
         self.database_key.as_ref()

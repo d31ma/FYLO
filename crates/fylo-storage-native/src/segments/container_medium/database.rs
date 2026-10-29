@@ -1,6 +1,6 @@
 //! The medium of one collection over a shared open: the one collection of
-//! a hybrid collection directory's file, or one of the many of a `.fxdb`
-//! database root (`docs/fxdb-segment-backend.md`, "Root integration").
+//! a hybrid collection directory's file, or one of the many of a `.vdbx`
+//! database root (`docs/vdbx-segment-backend.md`, "Root integration").
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;

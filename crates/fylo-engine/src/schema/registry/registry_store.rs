@@ -12,7 +12,7 @@ use fylo_storage_native::{
 /// records (kind 5) in its segments, read through the derived schemas
 /// snapshot, with the record authoritative over the descriptor. Storage
 /// answers both through the same calls, so nothing above this trait tells
-/// them apart. A `.fxdb` database keeps its versions as records too, with
+/// them apart. A `.vdbx` database keeps its versions as records too, with
 /// the snapshot as a run of extent kind 7, and storage answers for it
 /// through the same calls; only the one-time import record has no place
 /// there.

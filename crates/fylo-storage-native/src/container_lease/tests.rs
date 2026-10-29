@@ -15,7 +15,7 @@ impl Drop for Database {
 fn database(name: &str) -> (Database, PathBuf) {
     let dir = std::env::temp_dir().join(crate::write::unique_name(name));
     std::fs::create_dir_all(&dir).expect("create directory");
-    let path = dir.join("app.fxdb");
+    let path = dir.join("app.vdbx");
     (Database(dir), path)
 }
 
@@ -34,7 +34,7 @@ fn lease_files(database: &Path) -> Vec<String> {
                 .into_string()
                 .expect("utf-8")
         })
-        .filter(|name| name.starts_with("app.fxdb.lease."))
+        .filter(|name| name.starts_with("app.vdbx.lease."))
         .collect();
     names.sort();
     names
@@ -49,10 +49,10 @@ fn busy(result: Result<ContainerLease, ContainerLeaseError>) -> u64 {
 
 #[test]
 fn one_writer_holds_the_lease_and_release_hands_it_on_at_once() {
-    let (_guard, path) = database("fxdb-lease-basic");
+    let (_guard, path) = database("vdbx-lease-basic");
     let first = ContainerLease::acquire(&path, FAST, Duration::ZERO).expect("acquire");
     assert_eq!(first.generation(), 1);
-    assert_eq!(lease_files(&path), vec!["app.fxdb.lease.1"]);
+    assert_eq!(lease_files(&path), vec!["app.vdbx.lease.1"]);
     assert_eq!(
         busy(ContainerLease::acquire(
             &path,
@@ -68,7 +68,7 @@ fn one_writer_holds_the_lease_and_release_hands_it_on_at_once() {
     let second = ContainerLease::acquire(&path, FAST, Duration::ZERO).expect("acquire");
     assert!(started.elapsed() < FAST.takeover_after);
     assert_eq!(second.generation(), 2);
-    assert_eq!(lease_files(&path), vec!["app.fxdb.lease.2"]);
+    assert_eq!(lease_files(&path), vec!["app.vdbx.lease.2"]);
     drop(second);
     assert_eq!(
         ContainerLease::acquire(&path, FAST, Duration::ZERO)
@@ -80,12 +80,12 @@ fn one_writer_holds_the_lease_and_release_hands_it_on_at_once() {
 
 #[test]
 fn a_crashed_owner_is_taken_over_and_learns_it_lost() {
-    let (_guard, path) = database("fxdb-lease-takeover");
+    let (_guard, path) = database("vdbx-lease-takeover");
     let mut stalled = ContainerLease::acquire(&path, FAST, Duration::ZERO).expect("acquire");
     // Not renewed: after the takeover time, another writer takes it.
     let winner = ContainerLease::acquire(&path, FAST, Duration::from_secs(5)).expect("take over");
     assert_eq!(winner.generation(), 2);
-    assert_eq!(lease_files(&path), vec!["app.fxdb.lease.2"]);
+    assert_eq!(lease_files(&path), vec!["app.vdbx.lease.2"]);
     assert!(matches!(
         stalled.assert_owned(),
         Err(ContainerLeaseError::Lost)
@@ -98,7 +98,7 @@ fn a_crashed_owner_is_taken_over_and_learns_it_lost() {
 
 #[test]
 fn a_renewing_owner_is_never_taken_over() {
-    let (_guard, path) = database("fxdb-lease-renew");
+    let (_guard, path) = database("vdbx-lease-renew");
     let mut owner = ContainerLease::acquire(&path, FAST, Duration::ZERO).expect("acquire");
     let contender_path = path.clone();
     let contender = thread::spawn(move || {
@@ -115,7 +115,7 @@ fn a_renewing_owner_is_never_taken_over() {
 
 #[test]
 fn contenders_for_a_stale_lease_produce_exactly_one_winner() {
-    let (_guard, path) = database("fxdb-lease-race");
+    let (_guard, path) = database("vdbx-lease-race");
     std::mem::forget(ContainerLease::acquire(&path, FAST, Duration::ZERO).expect("acquire"));
     let contenders = 8;
     let barrier = Arc::new(Barrier::new(contenders));
@@ -151,9 +151,9 @@ fn contenders_for_a_stale_lease_produce_exactly_one_winner() {
 
 #[test]
 fn an_empty_lease_left_by_a_crash_during_creation_is_taken_over() {
-    let (_guard, path) = database("fxdb-lease-empty");
-    std::fs::write(path.with_file_name("app.fxdb.lease.4"), b"").expect("plant");
-    std::fs::write(path.with_file_name("app.fxdb.lease.x"), b"").expect("ignored");
+    let (_guard, path) = database("vdbx-lease-empty");
+    std::fs::write(path.with_file_name("app.vdbx.lease.4"), b"").expect("plant");
+    std::fs::write(path.with_file_name("app.vdbx.lease.x"), b"").expect("ignored");
     let lease = ContainerLease::acquire(&path, FAST, Duration::from_secs(5)).expect("take over");
     assert_eq!(lease.generation(), 5);
 }

@@ -153,8 +153,8 @@ pub struct NativeWriteRoot {
     root: NativeRoot,
     config: super::RootConfig,
     /// Whether a segment collection this writer creates keeps its segments
-    /// in a `.fxdb` container instead of `segments/`. Only tests set it,
-    /// through `with_segment_container`, until `.fxdb` roots exist.
+    /// in a `.vdbx` container instead of `segments/`. Only tests set it,
+    /// through `with_segment_container`, until `.vdbx` roots exist.
     segment_container: bool,
 }
 
@@ -168,7 +168,7 @@ impl NativeWriteRoot {
         Ok(Self::writing(NativeRoot::open(path)?))
     }
 
-    /// A writer over `root`. A `.fxdb` database root opens its file to
+    /// A writer over `root`. A `.vdbx` database root opens its file to
     /// write on the first write, as every container does.
     fn writing(root: NativeRoot) -> Self {
         Self {
@@ -334,8 +334,8 @@ impl NativeWriteRoot {
     }
 
     /// Keep the segments of every segment collection this writer creates in
-    /// a `.fxdb` container in the collection directory, with 1 MiB extents
-    /// (`docs/fxdb-segment-backend.md`, step 3). Test support only.
+    /// a `.vdbx` container in the collection directory, with 1 MiB extents
+    /// (`docs/vdbx-segment-backend.md`, step 3). Test support only.
     #[cfg(any(test, feature = "test-support"))]
     #[doc(hidden)]
     #[must_use]
@@ -491,7 +491,7 @@ impl NativeWriteRoot {
     }
 
     /// Finish the write a stopped writer left in collection `name` of the
-    /// `.fxdb` database `root`, for a reader that found it
+    /// `.vdbx` database `root`, for a reader that found it
     /// ([`super::NativeCollection::database_reader_generation`]): recover
     /// it as the next writer would. Returns whether there was work.
     #[cfg(not(target_family = "wasm"))]
@@ -1338,7 +1338,7 @@ impl NativeWriteRoot {
             ));
         }
         self.root.refuse_in_database(
-            "a .fxdb database collection keeps the shard width it was created with",
+            "a .vdbx database collection keeps the shard width it was created with",
         )?;
         let collection = self.root.collection(collection_name)?;
         let recorded = collection.shard_width();
@@ -1598,7 +1598,7 @@ impl NativeWriteRoot {
     ) -> Result<bool, NativeStorageError> {
         if self.root.is_database() && layout == Some(CollectionLayout::Files) {
             return Err(NativeRoot::database_unsupported(
-                "a .fxdb database keeps every collection in segments, not the file layout",
+                "a .vdbx database keeps every collection in segments, not the file layout",
             ));
         }
         if layout == Some(CollectionLayout::Segments) && kind != CollectionKind::Document {
@@ -1735,7 +1735,7 @@ impl NativeWriteRoot {
         Ok(existing.is_none())
     }
 
-    /// Create a collection of a `.fxdb` database: a directory block whose
+    /// Create a collection of a `.vdbx` database: a directory block whose
     /// descriptor names a document collection in segments, and the first
     /// segment and slot of its layout, all in the file. A collection whose
     /// block exists but whose slots do not is completed.
@@ -1747,19 +1747,19 @@ impl NativeWriteRoot {
     ) -> Result<bool, NativeStorageError> {
         if kind == CollectionKind::File {
             return Err(NativeRoot::database_unsupported(
-                "a .fxdb database holds no file collections or buckets",
+                "a .vdbx database holds no file collections or buckets",
             ));
         }
         if versioned == Some(true) {
             return Err(NativeRoot::database_unsupported(
-                "a .fxdb database has no version control",
+                "a .vdbx database has no version control",
             ));
         }
         let width = super::validated_shard_width(self.config.shard_width)?;
         self.add_database_collection(collection_name, Self::database_descriptor(width))
     }
 
-    /// The catalog descriptor of a new collection of a `.fxdb` database: a
+    /// The catalog descriptor of a new collection of a `.vdbx` database: a
     /// document collection in segments at shard width `width`.
     pub(crate) fn database_descriptor(width: u32) -> Map<String, Value> {
         let mut descriptor = Map::new();
@@ -1774,7 +1774,7 @@ impl NativeWriteRoot {
     }
 
     /// Add the collection `collection_name` with catalog descriptor
-    /// `descriptor` to this `.fxdb` database root, unless a live collection
+    /// `descriptor` to this `.vdbx` database root, unless a live collection
     /// has the name, and complete its layout. Returns whether it was added.
     pub(crate) fn add_database_collection(
         &self,
@@ -1784,7 +1784,7 @@ impl NativeWriteRoot {
         let database = self.root.database().ok_or_else(|| {
             NativeStorageError::new(
                 NativeStorageErrorCode::CorruptMetadata,
-                "a directory root has no .fxdb database",
+                "a directory root has no .vdbx database",
             )
         })?;
         let created = database.collection(collection_name).is_none()
@@ -2190,7 +2190,7 @@ impl NativeWriteRoot {
         collection: &super::NativeCollection,
     ) -> Result<bool, NativeStorageError> {
         self.root.assert_profile_owned()?;
-        // A collection of a `.fxdb` database writes only through its log,
+        // A collection of a `.vdbx` database writes only through its log,
         // which recovery has settled; it has no transaction journal.
         if collection.database_block().is_some() {
             return Ok(false);
@@ -3318,11 +3318,11 @@ struct LockRecord {
 enum CollectionWriteLock {
     /// A lock file in the collection's `locks/` directory.
     File { _held: LockFile },
-    /// The collection's writer byte in its `.fxdb` database.
+    /// The collection's writer byte in its `.vdbx` database.
     Database {
         _held: crate::container_database::ContainerWriterLock,
     },
-    /// The collection's compactor byte in its `.fxdb` database.
+    /// The collection's compactor byte in its `.vdbx` database.
     Compactor {
         _held: crate::container_database::ContainerCompactorLock,
     },
@@ -3338,7 +3338,7 @@ struct LockFile {
 
 impl CollectionWriteLock {
     /// The lock named `name` of `collection`: a file in its `locks/`
-    /// directory, or in a `.fxdb` database, the collection's writer byte,
+    /// directory, or in a `.vdbx` database, the collection's writer byte,
     /// which stands for every lock the collection's writer takes.
     fn acquire_for(
         root: &NativeRoot,
@@ -3355,7 +3355,7 @@ impl CollectionWriteLock {
     }
 
     /// The lock one compaction of `collection` holds from its preparation
-    /// to its adoption: `locks/compaction.lock`, or in a `.fxdb` database
+    /// to its adoption: `locks/compaction.lock`, or in a `.vdbx` database
     /// the collection's compactor byte.
     fn acquire_compaction(
         root: &NativeRoot,

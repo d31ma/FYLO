@@ -22,7 +22,7 @@ impl Drop for Database {
 fn database(name: &str) -> (Database, PathBuf) {
     let dir = std::env::temp_dir().join(crate::write::unique_name(name));
     std::fs::create_dir_all(&dir).expect("create directory");
-    let path = dir.join("test.fxdb");
+    let path = dir.join("test.vdbx");
     (Database(dir), path)
 }
 
@@ -65,7 +65,7 @@ fn file_length(path: &Path) -> u64 {
 
 #[test]
 fn a_new_container_opens_empty() {
-    let (_guard, path) = created("fxdb-new");
+    let (_guard, path) = created("vdbx-new");
     assert_eq!(file_length(&path), 3 * EXTENT_BYTES);
     let container = ContainerFile::open_unchecked(&path).expect("open container");
     let superblock = container.superblock();
@@ -88,12 +88,12 @@ fn a_new_container_opens_empty() {
 
 #[test]
 fn create_refuses_an_existing_file_and_a_bad_extent_shift() {
-    let (_guard, path) = created("fxdb-create-twice");
+    let (_guard, path) = created("vdbx-create-twice");
     assert!(matches!(
         ContainerFile::create(&path, SHIFT),
         Err(ContainerError::Io(error)) if error.kind() == ErrorKind::AlreadyExists
     ));
-    let (_other, fresh) = database("fxdb-bad-shift");
+    let (_other, fresh) = database("vdbx-bad-shift");
     for shift in [
         ContainerSuperblock::MIN_EXTENT_SHIFT - 1,
         ContainerSuperblock::MAX_EXTENT_SHIFT + 1,
@@ -108,7 +108,7 @@ fn create_refuses_an_existing_file_and_a_bad_extent_shift() {
 
 #[test]
 fn a_file_that_is_not_a_container_is_refused() {
-    let (_guard, path) = database("fxdb-garbage");
+    let (_guard, path) = database("vdbx-garbage");
     std::fs::write(&path, vec![0x5a_u8; 16 * 1024]).expect("write garbage");
     assert!(matches!(
         ContainerFile::open_unchecked(&path),
@@ -123,7 +123,7 @@ fn a_file_that_is_not_a_container_is_refused() {
 
 #[test]
 fn collections_and_their_slots_survive_reopening() {
-    let (_guard, path) = created("fxdb-collections");
+    let (_guard, path) = created("vdbx-collections");
     {
         let mut container = ContainerFile::open_unchecked(&path).expect("open container");
         let users = container
@@ -169,7 +169,7 @@ fn collections_and_their_slots_survive_reopening() {
 
 #[test]
 fn a_torn_generation_slot_falls_back_to_the_other() {
-    let (_guard, path) = created("fxdb-torn-slot");
+    let (_guard, path) = created("vdbx-torn-slot");
     let block = {
         let mut container = ContainerFile::open_unchecked(&path).expect("open container");
         let block = container.add_collection("users", b"").expect("add").block;
@@ -201,7 +201,7 @@ fn a_torn_generation_slot_falls_back_to_the_other() {
 
 #[test]
 fn payloads_stay_inside_their_extent() {
-    let (_guard, path) = created("fxdb-payload");
+    let (_guard, path) = created("vdbx-payload");
     let mut container = ContainerFile::open_unchecked(&path).expect("open container");
     let segment = container.allocate(SEGMENT, 1).expect("allocate");
     assert_eq!((segment.index, segment.grows_file), (3, true));
@@ -237,7 +237,7 @@ fn payloads_stay_inside_their_extent() {
 // damaged location overflowed the header offset.
 #[test]
 fn an_extent_beyond_any_file_is_refused_without_overflow() {
-    let (_guard, path) = created("fxdb-extent-overflow");
+    let (_guard, path) = created("vdbx-extent-overflow");
     let container = ContainerFile::open_reader(&path).expect("open container");
     for extent in [u64::MAX, (u64::MAX >> SHIFT) + 1] {
         assert!(matches!(
@@ -254,7 +254,7 @@ fn an_extent_beyond_any_file_is_refused_without_overflow() {
 
 #[test]
 fn a_checkpoint_persists_the_extent_map() {
-    let (_guard, path) = created("fxdb-checkpoint");
+    let (_guard, path) = created("vdbx-checkpoint");
     let (first, second) = {
         let mut container = ContainerFile::open_unchecked(&path).expect("open container");
         let first = container.allocate(SEGMENT, 1).expect("allocate");
@@ -292,7 +292,7 @@ fn a_checkpoint_persists_the_extent_map() {
 
 #[test]
 fn a_released_extent_is_reused_only_after_a_checkpoint() {
-    let (_guard, path) = created("fxdb-release");
+    let (_guard, path) = created("vdbx-release");
     let mut container = ContainerFile::open_unchecked(&path).expect("open container");
     let replaced = container.allocate(SEGMENT, 1).expect("allocate");
     container.seal(replaced.index, 0).expect("seal");
@@ -306,7 +306,7 @@ fn a_released_extent_is_reused_only_after_a_checkpoint() {
 
 #[test]
 fn a_torn_superblock_falls_back_to_the_older_copy() {
-    let (_guard, path) = created("fxdb-torn-superblock");
+    let (_guard, path) = created("vdbx-torn-superblock");
     {
         let mut container = ContainerFile::open_unchecked(&path).expect("open container");
         container.allocate(SEGMENT, 1).expect("allocate");
@@ -334,7 +334,7 @@ fn a_torn_superblock_falls_back_to_the_older_copy() {
 
 #[test]
 fn checkpoints_alternate_between_the_superblock_copies() {
-    let (_guard, path) = created("fxdb-alternate");
+    let (_guard, path) = created("vdbx-alternate");
     let mut container = ContainerFile::open_unchecked(&path).expect("open container");
     for expected in 2..=6 {
         container.checkpoint().expect("checkpoint");
@@ -371,7 +371,7 @@ fn released_tail(path: &Path) -> ContainerFile {
 
 #[test]
 fn shrinking_cuts_free_extents_off_the_end() {
-    let (_guard, path) = created("fxdb-shrink");
+    let (_guard, path) = created("vdbx-shrink");
     let mut container = released_tail(&path);
     // Extents 4 to 6 are free, but the new map sits at 7, after them.
     assert_eq!(container.allocator().free_extents(), vec![2, 4, 5, 6]);
@@ -397,7 +397,7 @@ fn shrinking_cuts_free_extents_off_the_end() {
 
 #[test]
 fn an_older_superblock_that_outlives_a_shrink_still_opens() {
-    let (_guard, path) = created("fxdb-shrink-fallback");
+    let (_guard, path) = created("vdbx-shrink-fallback");
     {
         let mut container = released_tail(&path);
         container.checkpoint().expect("checkpoint");
@@ -433,7 +433,7 @@ fn allocated_bytes(path: &Path) -> u64 {
 #[cfg(any(unix, windows))]
 #[test]
 fn punching_returns_free_extents_space_where_supported() {
-    let (_guard, path) = created("fxdb-punch");
+    let (_guard, path) = created("vdbx-punch");
     let container = released_tail(&path);
     let before = allocated_bytes(&path);
     let punched = container.punch_free_extents().expect("punch");
@@ -450,7 +450,7 @@ fn punching_returns_free_extents_space_where_supported() {
 
 #[test]
 fn the_report_says_plainly_that_encryption_is_off() {
-    let (_guard, path) = created("fxdb-report");
+    let (_guard, path) = created("vdbx-report");
     let mut container = released_tail(&path);
     let users = container.add_collection("users", b"").expect("add").block;
     container
@@ -477,7 +477,7 @@ fn the_report_says_plainly_that_encryption_is_off() {
 
 #[test]
 fn a_reader_reads_a_read_only_file_and_cannot_write() {
-    let (_guard, path) = created("fxdb-reader");
+    let (_guard, path) = created("vdbx-reader");
     {
         let mut container = ContainerFile::open_unchecked(&path).expect("open container");
         container.add_collection("users", b"").expect("add");
@@ -516,7 +516,7 @@ fn a_reader_reads_a_read_only_file_and_cannot_write() {
 
 #[test]
 fn a_reader_opens_a_file_a_writer_may_not() {
-    let (_guard, path) = created("fxdb-reader-ro-compat");
+    let (_guard, path) = created("vdbx-reader-ro-compat");
     let mut bytes = std::fs::read(&path).expect("read container");
     let size = ContainerSuperblock::ENCODED_BYTES;
     let mut superblock = ContainerSuperblock::decode(&bytes[..size]).expect("decode");
@@ -533,7 +533,7 @@ fn a_reader_opens_a_file_a_writer_may_not() {
 
 #[test]
 fn the_schemas_feature_is_set_durably_and_kept() {
-    let (_guard, path) = created("fxdb-schemas-feature");
+    let (_guard, path) = created("vdbx-schemas-feature");
     let schemas = ContainerSuperblock::READ_ONLY_COMPAT_SCHEMAS;
     {
         let mut writer = ContainerFile::open_unchecked(&path).expect("open");
@@ -571,7 +571,7 @@ fn encrypted(name: &str) -> (Database, PathBuf) {
 
 #[test]
 fn an_encrypted_file_lists_nothing_until_unlocked() {
-    let (_guard, path) = encrypted("fxdb-encrypted-locked");
+    let (_guard, path) = encrypted("vdbx-encrypted-locked");
     {
         let mut writer = ContainerFile::open_unchecked(&path).unwrap();
         assert!(writer.is_encrypted() && writer.is_locked());
@@ -609,7 +609,7 @@ fn an_encrypted_file_lists_nothing_until_unlocked() {
 
 #[test]
 fn an_encrypted_directory_hides_collection_names() {
-    let (_guard, path) = encrypted("fxdb-encrypted-names");
+    let (_guard, path) = encrypted("vdbx-encrypted-names");
     let mut writer = ContainerFile::open_unchecked(&path).unwrap();
     writer.unlock(SECRET).unwrap();
     writer
@@ -624,7 +624,7 @@ fn an_encrypted_directory_hides_collection_names() {
 
 #[test]
 fn a_sealed_collection_block_moved_to_another_block_is_refused() {
-    let (_guard, path) = encrypted("fxdb-encrypted-moved");
+    let (_guard, path) = encrypted("vdbx-encrypted-moved");
     let directory = {
         let mut writer = ContainerFile::open_unchecked(&path).unwrap();
         writer.unlock(SECRET).unwrap();
@@ -643,13 +643,13 @@ fn a_sealed_collection_block_moved_to_another_block_is_refused() {
 
     let mut reader = ContainerFile::open_reader(&path).unwrap();
     let refused = reader.unlock(SECRET).unwrap_err();
-    assert_eq!(refused.code(), "EFXDB_CORRUPT");
+    assert_eq!(refused.code(), "EVDBX_CORRUPT");
     assert!(reader.is_locked());
 }
 
 #[test]
 fn unlocking_a_plain_file_does_nothing() {
-    let (_guard, path) = created("fxdb-plain-unlock");
+    let (_guard, path) = created("vdbx-plain-unlock");
     let mut writer = ContainerFile::open_unchecked(&path).unwrap();
     assert!(!writer.is_encrypted() && !writer.is_locked());
     writer.unlock(b"anything").unwrap();
@@ -660,7 +660,7 @@ fn unlocking_a_plain_file_does_nothing() {
 
 #[test]
 fn a_reused_segment_extent_holds_none_of_its_former_bytes() {
-    let (_guard, path) = created("fxdb-reuse-clears");
+    let (_guard, path) = created("vdbx-reuse-clears");
     let mut container = ContainerFile::open_unchecked(&path).unwrap();
     let first = container.allocate(SEGMENT, 1).unwrap();
     container
@@ -692,7 +692,7 @@ fn a_reused_segment_extent_holds_none_of_its_former_bytes() {
 
 #[test]
 fn an_extent_only_a_slot_names_is_reclaimed_after_a_reopen() {
-    let (_guard, path) = created("fxdb-reclaim");
+    let (_guard, path) = created("vdbx-reclaim");
     let mut container = ContainerFile::open_unchecked(&path).unwrap();
     let block = container.add_collection("users", b"{}").unwrap().block;
     let active = container.allocate(SEGMENT, 1).unwrap();
@@ -728,7 +728,7 @@ fn an_extent_only_a_slot_names_is_reclaimed_after_a_reopen() {
 
 #[test]
 fn a_reader_refreshes_its_map_after_a_writer_checkpoints() {
-    let (_guard, path) = created("fxdb-refresh");
+    let (_guard, path) = created("vdbx-refresh");
     let mut writer = ContainerFile::open_unchecked(&path).unwrap();
     let block = writer.add_collection("users", b"{}").unwrap().block;
     let mut reader = ContainerFile::open_reader(&path).unwrap();
@@ -772,7 +772,7 @@ fn a_reader_refreshes_its_map_after_a_writer_checkpoints() {
 
 #[test]
 fn a_dropped_collection_keeps_its_block_and_gives_its_extents_back() {
-    let (_guard, path) = created("fxdb-drop");
+    let (_guard, path) = created("vdbx-drop");
     let (users, segment) = {
         let mut container = ContainerFile::open_unchecked(&path).unwrap();
         let users = container.add_collection("users", b"{}").unwrap().header.id;
@@ -805,7 +805,7 @@ fn a_dropped_collection_keeps_its_block_and_gives_its_extents_back() {
 
 #[test]
 fn a_writer_refreshes_to_the_map_another_writer_checkpointed() {
-    let (_guard, path) = created("fxdb-writers-refresh");
+    let (_guard, path) = created("vdbx-writers-refresh");
     let mut first = ContainerFile::open_unchecked(&path).unwrap();
     first.add_collection("users", b"{}").unwrap();
     let mut second = ContainerFile::open_unchecked(&path).unwrap();

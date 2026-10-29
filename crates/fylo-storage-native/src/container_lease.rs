@@ -1,9 +1,9 @@
-//! The single-writer lease for a `.fxdb` file on a filesystem whose
+//! The single-writer lease for a `.vdbx` file on a filesystem whose
 //! byte-range locks are unqualified or refused (ADR 0016 section 7).
 //!
 //! It needs nothing from the filesystem but exclusive create, unlink and a
 //! directory listing, which every filesystem FYLO targets provides. Leases are
-//! numbered files beside the database, `<name>.fxdb.lease.<generation>`, and
+//! numbered files beside the database, `<name>.vdbx.lease.<generation>`, and
 //! the highest generation is the owner. Taking over a crashed owner's lease
 //! is creating the next generation, which exclusive create grants to exactly
 //! one contender, so no two contenders can both win and no rename or delete
@@ -36,7 +36,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 const SUFFIX: &str = ".lease.";
-const FORMAT: &str = "fylo.fxdb-lease.v1";
+const FORMAT: &str = "fylo.vdbx-lease.v1";
 
 /// How long a lease may go unrenewed before another process takes it over.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

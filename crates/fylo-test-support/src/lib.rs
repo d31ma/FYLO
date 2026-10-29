@@ -34,7 +34,7 @@ impl<const N: usize> McdcCase<N> {
 /// `chars` characters of text that does not compress, drawn from `seed`:
 /// each is one of 64, picked by a pseudo-random sequence, so a record padded
 /// with it keeps six bits of every character through zstd or LZ4. Tests that
-/// fill `.fxdb` extents by size pad each document with its own seed, since
+/// fill `.vdbx` extents by size pad each document with its own seed, since
 /// their records are compressed, and a collection's dictionary learns text
 /// that its documents repeat.
 #[must_use]

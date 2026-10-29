@@ -1,4 +1,4 @@
-//! The operating-system calls behind `.fxdb` byte-range locks.
+//! The operating-system calls behind `.vdbx` byte-range locks.
 //!
 //! Each function locks or unlocks exactly one byte and never waits: waiting is
 //! the caller's loop, so a thread is never parked inside the kernel holding a

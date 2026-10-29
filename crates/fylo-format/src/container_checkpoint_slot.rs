@@ -2,7 +2,7 @@ use crate::container_bytes::{all_zero, read_u32, read_u64, write_u32, write_u64}
 use crate::{ContainerFormatError, Crc32c};
 
 /// Where a derived snapshot (a location table, prefix index or schema
-/// registry) lives in a `.fxdb` container: a run of consecutive extents.
+/// registry) lives in a `.vdbx` container: a run of consecutive extents.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ContainerSnapshotRef {
     /// First extent of the run.
@@ -15,7 +15,7 @@ pub struct ContainerSnapshotRef {
     pub sha256: [u8; 32],
 }
 
-/// One of a collection's two checkpoint slots in a `.fxdb` container
+/// One of a collection's two checkpoint slots in a `.vdbx` container
 /// (ADR 0016 section 3).
 ///
 /// A checkpoint writes the slot that does not hold the newest checkpoint and
@@ -50,7 +50,7 @@ pub struct ContainerCheckpointSlot {
 impl ContainerCheckpointSlot {
     /// Encoded size of one slot.
     pub const ENCODED_BYTES: usize = 256;
-    const MAGIC: [u8; 4] = *b"FXCP";
+    const MAGIC: [u8; 4] = *b"VDXP";
     const SNAPSHOT_BYTES: usize = 56;
     const LOCATIONS_OFFSET: usize = 44;
     const INDEX_OFFSET: usize = 100;

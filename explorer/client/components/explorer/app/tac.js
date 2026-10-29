@@ -49,12 +49,12 @@ export function engineAssetUrl(
     return sharedAssetUrl('/shared/assets/fylo-web.mjs', build, origin)
 }
 
-/** The Worker that holds one `.fxdb` file (ADR 0016). @param {unknown} build @param {string} [origin] */
+/** The Worker that holds one `.vdbx` file (ADR 0016). @param {unknown} build @param {string} [origin] */
 export function databaseWorkerUrl(
     build,
     origin = globalThis.location?.origin ?? 'https://fylo.invalid'
 ) {
-    return sharedAssetUrl('/shared/assets/fxdb-worker.js', build, origin)
+    return sharedAssetUrl('/shared/assets/vdbx-worker.js', build, origin)
 }
 
 /** The whole engine, run in that Worker over the file. @param {unknown} build @param {string} [origin] */
@@ -65,8 +65,8 @@ export function databaseEngineUrl(
     return sharedAssetUrl('/shared/assets/fylo-browser.wasm', build, origin)
 }
 
-/** The machine op that describes a `.fxdb` container without changing it. */
-export const FXDB_INSPECT_OP = 'inspectDatabase'
+/** The machine op that describes a `.vdbx` container without changing it. */
+export const VDBX_INSPECT_OP = 'inspectDatabase'
 
 /**
  * Turn the engine's container report into rows the view can loop over.
@@ -462,7 +462,7 @@ export default class {
     /** Browser name shown only when File System Access is unavailable. */
     unsupportedBrowser = 'This browser'
 
-    // --- A single `.fxdb` file (ADR 0016), opened in every browser ---
+    // --- A single `.vdbx` file (ADR 0016), opened in every browser ---
     /** Whether the native open picker exists; otherwise the file input opens it. */
     canPickDatabase = false
     /** Whether "Edit a copy" can work: OPFS plus its synchronous Worker handle. */
@@ -928,7 +928,7 @@ export default class {
         this.roots = this.roots.filter((root) => root.name !== recent.name)
     }
 
-    // --- Open database: one `.fxdb` file, read-only, in any browser ---
+    // --- Open database: one `.vdbx` file, read-only, in any browser ---
     //
     // The file runs in its own Worker over a synchronous backend, so this
     // needs neither File System Access nor a cross-origin isolated page. A
@@ -1109,12 +1109,12 @@ export default class {
     }
 
     async showDatabase(name, mode) {
-        const { hasFxdbMagic } = await this.lib()
+        const { hasVdbxMagic } = await this.lib()
         const { len } = await this._database.stat()
         this.dbName = name
         this.dbSize = len
         this.dbMode = mode
-        this.dbMagic = hasFxdbMagic(await this._database.read(0, 8))
+        this.dbMagic = hasVdbxMagic(await this._database.read(0, 8))
         this.dbMessage = ''
         await this.inspectDatabase()
         this.status = 'database'
@@ -1129,7 +1129,7 @@ export default class {
         this.dbReportError = ''
         if (!this._database) return
         try {
-            const request = { op: FXDB_INSPECT_OP, root: this._database.info.path }
+            const request = { op: VDBX_INSPECT_OP, root: this._database.info.path }
             const answer = await this._database.exec(`${JSON.stringify(request)}\n`)
             const frame = JSON.parse(answer.split('\n').find(Boolean) ?? '{}')
             if (!frame.ok) {

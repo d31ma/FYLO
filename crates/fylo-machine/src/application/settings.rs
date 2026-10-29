@@ -99,7 +99,7 @@ impl Settings {
     }
 
     /// `fylo.encryption`: `key`, a secret reference, and `file`, whether a
-    /// `.fxdb` database created with this configuration is encrypted with
+    /// `.vdbx` database created with this configuration is encrypted with
     /// it (ADR 0016 section 9). Encryption is opt-in: `file` is off unless
     /// set, and it needs the key.
     fn encryption(

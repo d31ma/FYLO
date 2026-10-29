@@ -1,4 +1,4 @@
-//! Opt-in encryption of a `.fxdb` file (ADR 0016 section 9). Off by default.
+//! Opt-in encryption of a `.vdbx` file (ADR 0016 section 9). Off by default.
 //!
 //! The file key is derived with HKDF-SHA256 from the configured secret and a
 //! random 32-byte salt kept in the superblock. A key-check value, derived
@@ -26,8 +26,8 @@ pub const SALT_BYTES: usize = 32;
 /// Bytes of the superblock's key-check value.
 pub const KEY_CHECK_BYTES: usize = 16;
 
-const FILE_KEY_INFO: &[u8] = b"fylo.fxdb.file-key.v1";
-const KEY_CHECK_INFO: &[u8] = b"fylo.fxdb.key-check.v1";
+const FILE_KEY_INFO: &[u8] = b"fylo.vdbx.file-key.v1";
+const KEY_CHECK_INFO: &[u8] = b"fylo.vdbx.key-check.v1";
 
 /// Why sealing or opening failed.
 #[derive(Debug, Eq, PartialEq)]
@@ -110,7 +110,7 @@ impl ContainerSealContext {
             Self::Block { number } => (5, 0, number, 0),
         };
         let mut bytes = [0_u8; 28];
-        bytes[..8].copy_from_slice(b"FXSEAL\0\x01");
+        bytes[..8].copy_from_slice(b"VDXSEAL\x01");
         bytes[8] = tag;
         bytes[12..16].copy_from_slice(&a.to_le_bytes());
         bytes[16..24].copy_from_slice(&b.to_le_bytes());
@@ -119,7 +119,7 @@ impl ContainerSealContext {
     }
 }
 
-/// The file key of an encrypted `.fxdb` file.
+/// The file key of an encrypted `.vdbx` file.
 pub struct ContainerCipher {
     cipher: Aes256Gcm,
     key_check: [u8; KEY_CHECK_BYTES],

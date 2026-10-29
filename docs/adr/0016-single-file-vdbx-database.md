@@ -1,4 +1,4 @@
-# ADR 0016: Single-file `.fxdb` databases
+# ADR 0016: Single-file `.vdbx` databases
 
 - Status: **Accepted** (Samuel, 2026-10-29; spike results are added as they
   arrive and may only settle the codec and the lock qualification list)
@@ -7,7 +7,7 @@
 - Builds on: ADR 0015 (append-only document segments), ADR 0013 (the record
   format and commit protocol), ADR 0014 (the hot set's log-end check) and
   ADR 0008 (the portable WebAssembly engine).
-- Amends: ADR 0008's browser storage, for databases held in a `.fxdb` file.
+- Amends: ADR 0008's browser storage, for databases held in a `.vdbx` file.
 - Design notes and options considered: "A single-file format for FYLO
   databases" (https://claude.ai/artifact/R83hiCJU8CFmXNi2mS4LDM).
 
@@ -45,7 +45,7 @@ handle.
 
 ## Decision
 
-A FYLO database can be a single **`.fxdb` file**: a header followed by
+A FYLO database can be a single **`.vdbx` file**: a header followed by
 fixed-size **extents**, each holding one of the files an ADR 0015 collection
 keeps today. Records inside are ADR 0015 records, compressed one at a time,
 and optionally encrypted. The same Rust code reads and writes it natively,
@@ -63,21 +63,25 @@ that uses them:
   more than one extent; a follow-up ADR;
 - document version control, for ADR 0015's reason;
 - the embedded queue (ADR 0009). The `EfsSidecarV1` profile (ADR 0010) has no
-  `.fxdb` form and needs none: a `.fxdb` file uses no extended attributes or
+  `.vdbx` form and needs none: a `.vdbx` file uses no extended attributes or
   hard links, which are what that profile works around;
 - transactions that span several collections. One file makes them possible
   (section 6), but they are a separate decision.
 
-A directory root stays fully supported. `.fxdb` is opt-in per database.
+A directory root stays fully supported. `.vdbx` is opt-in per database.
 
 ### 2. Name and identity
 
-- Extension **`.fxdb`** (Fylo Explorer database). `.fx` was rejected because
-  DirectX and HLSL effect files already use it.
-- Magic: the 8 bytes `89 46 58 44 42 0D 0A 1A` (`\x89FXDB\r\n\x1a`), PNG's
+- Extension **`.vdbx`**, a virtual database image, read the way `.vhdx` is
+  read for a virtual disk. `.fx` was rejected because DirectX and HLSL effect
+  files already use it.
+- 2026-10-29: renamed from .fxdb to .vdbx at the owner's request, to read as a
+  virtual disk image for databases (like .vhdx). .vdb was rejected because
+  OpenVDB, Teiid and antivirus definitions already use it.
+- Magic: the 8 bytes `89 56 44 42 58 0D 0A 1A` (`\x89VDBX\r\n\x1a`), PNG's
   pattern, so a file mangled by a text-mode transfer or truncated at a high
   bit fails the magic check instead of parsing.
-- Media type `application/vnd.d31ma.fxdb`; macOS type `com.d31ma.fxdb`.
+- Media type `application/vnd.d31ma.vdbx`; macOS type `com.d31ma.vdbx`.
 - The format version is a major number and three feature-flag sets, as in
   ext4: an unknown **incompatible** flag refuses the file, an unknown
   **read-only-compatible** flag opens it read-only, and an unknown
@@ -140,6 +144,23 @@ from the records that change it (section 6).
 
 A dictionary is part of the source of truth because the records compressed
 with it cannot be read without it. It is never freed while a record names it.
+
+**Magics.** Every fixed structure starts with its own magic, so a reader that
+lands on the wrong bytes fails a check instead of parsing them. The last row
+is not stored: it opens the associated data of every sealed unit (section 9).
+
+| Structure                                     | Magic (ASCII)      | Bytes |
+| --------------------------------------------- | ------------------ | ----- |
+| superblock                                    | `\x89VDBX\r\n\x1a` | 8     |
+| extent header                                 | `VDXEXTNT`         | 8     |
+| collection block, static part                 | `VDXCOLL\0`        | 8     |
+| collection block, sealed static part          | `VDXCOLLS`         | 8     |
+| checkpoint slot                               | `VDXP`             | 4     |
+| generation slot                               | `VDXG`             | 4     |
+| extent map copy                               | `VDXMAP\0\0`       | 8     |
+| dictionary header                             | `VDXC`             | 4     |
+| sealed image header (`fylo pack --sealed`)    | `VDXSEALD`         | 8     |
+| associated data of a sealed unit (not stored) | `VDXSEAL\x01`      | 8     |
 
 ### 4. Records
 
@@ -223,7 +244,7 @@ drifts toward the front of the file. Space is returned to the disk two ways:
 - **Embedded, like SQLite** (Samuel, 2026-10-29). There is no FYLO server
   and no `fylo serve`: every process that uses a database opens the file
   itself, as it would a `.db` or `.sqlite` file. A server that reads a
-  `.fxdb` file is just another such process, and FYLO runs one only in tests.
+  `.vdbx` file is just another such process, and FYLO runs one only in tests.
 - **Several local processes** coordinate with OS byte-range locks on a
   reserved range far beyond any data offset (2⁶² and up): one lock byte for
   the database lease, one for extent allocation, and one per collection
@@ -232,7 +253,7 @@ drifts toward the front of the file. Space is returned to the disk two ways:
   itself (`compact --shrink`, `pack --sealed` in place) takes it exclusive.
   Readers take no other lock; they read through the slots. `fcntl` open-file-description locks (`F_OFD_SETLK`)
   on Linux, `fcntl` on macOS, `LockFileEx` on Windows. These replace the lock
-  files and the `hard_link` path for `.fxdb` databases.
+  files and the `hard_link` path for `.vdbx` databases.
 - Byte-range locks are enabled on a filesystem only after the multi-process
   load harness passes on it. The qualification list starts with APFS and NTFS
   locally, the ATLAS SMB share, and the local NFS 4.1 server.
@@ -240,7 +261,7 @@ drifts toward the front of the file. Space is returned to the disk two ways:
   depend on EFS or any one filesystem). Where locks are unqualified, or the
   filesystem refuses them (`ENOLCK`, `EOPNOTSUPP`), one process at a time
   writes the database. It holds a numbered lease file beside it,
-  `<name>.fxdb.lease.<generation>`, made with exclusive create
+  `<name>.vdbx.lease.<generation>`, made with exclusive create
   (`O_CREAT | O_EXCL`, `CREATE_NEW`), which every filesystem FYLO targets
   honours; the highest generation owns the database. The owner rewrites its
   lease on a heartbeat. A contender that sees the lease unchanged for the
@@ -267,7 +288,7 @@ drifts toward the front of the file. Space is returned to the disk two ways:
   left. Unsupported: one host whose filesystem refuses every lock sharing a
   file with another host that writes through locks.
 
-**Filesystem requirements.** A `.fxdb` database needs only positional reads
+**Filesystem requirements.** A `.vdbx` database needs only positional reads
 and writes, resizing the file, flushing the file, and exclusive create for the
 fallback lease. It does not need atomic rename, directory flushes after
 creation, extended attributes, hard links, sparse files, hole punching or
@@ -302,7 +323,7 @@ byte names how it was compressed: `0` none, `1` zstd, `2` LZ4.
 On three 5,000-document test sets, zstd level 3 with a 32 KiB dictionary
 stored documents at 2.9x to 3.4x and LZ4 with a dictionary at 2.1x to 2.6x;
 every codec decoded a document in under 10 µs
-(`fxdb/spike-4-codec.md` in the project files).
+(`vdbx/spike-4-codec.md` in the project files).
 
 A **sealed** file (section 11) recompresses its extents in 64 KiB blocks for
 a better ratio; a point read then decompresses one block.
@@ -310,10 +331,10 @@ a better ratio; a point read then decompresses one block.
 ### 9. Encryption
 
 Encryption is **opt-in per database and off by default**. The documentation
-and the website say so plainly wherever `.fxdb` is introduced, and
+and the website say so plainly wherever `.vdbx` is introduced, and
 `fylo inspect` reports `encrypted: false` for a plain file.
 
-When enabled at creation (`fylo create db.fxdb --encrypt`, or
+When enabled at creation (`fylo create db.vdbx --encrypt`, or
 `encryption: { file: true }` in `application.json`):
 
 - the file key is derived with HKDF-SHA256, built on the existing `hmac` and
@@ -375,23 +396,23 @@ port it.
 
 ### 11. Packing, unpacking and operations
 
-- `fylo pack <root> --out db.fxdb` builds a `.fxdb` from a directory root (file
+- `fylo pack <root> --out db.vdbx` builds a `.vdbx` from a directory root (file
   or segment layout), with ADR 0015's staging, oracle and commit steps.
   `--sealed` produces a read-only, block-compressed file with no free extents.
-- `fylo unpack db.fxdb --out <root>` writes a directory root in the file
+- `fylo unpack db.vdbx --out <root>` writes a directory root in the file
   layout, byte-identical to ADR 0015's export.
-- `fylo compact db.fxdb [--shrink]`, `fylo verify db.fxdb`,
-  `fylo salvage db.fxdb --out <root>` (stepping over damage by sync marker and
-  extent header) and `fylo inspect db.fxdb` (extent counts by kind, free and
+- `fylo compact db.vdbx [--shrink]`, `fylo verify db.vdbx`,
+  `fylo salvage db.vdbx --out <root>` (stepping over damage by sync marker and
+  extent header) and `fylo inspect db.vdbx` (extent counts by kind, free and
   dead bytes, flags, encryption).
-- Every API that takes a root takes a `.fxdb` path. A root path that names an
+- Every API that takes a root takes a `.vdbx` path. A root path that names an
   existing regular file is opened as a container; one that names a directory,
-  or a path ending in `/`, is a directory root. `Fylo.open('orders.fxdb')`
+  or a path ending in `/`, is a directory root. `Fylo.open('orders.vdbx')`
   and every CLI command follow the same rule.
 
 ### 12. Compatibility
 
-An older binary given a `.fxdb` path finds a regular file where it expects a
+An older binary given a `.vdbx` path finds a regular file where it expects a
 root directory and fails before writing anything; the verification suite
 pins the exact error for the current release. A newer binary refuses an unknown
 incompatible flag with `EFORMATUNSUPPORTED`. Downgrading a database means
@@ -419,10 +440,10 @@ and released when the process closes any other read-write handle on the file;
 each operation costs a round trip, 8 to 25 ms median while the ATLAS
 benchmarks ran. FYLO does not use it. `F_PUNCHHOLE` also fails with `ENOTSUP`
 and frees nothing (on local APFS it freed exactly the punched 8 MiB), so a
-`.fxdb` on the share returns space only by tail truncation (`fylo compact
+`.vdbx` on the share returns space only by tail truncation (`fylo compact
 --shrink`). Still open: locks between two client machines on the share, and
 the local NFS 4.1 server. Scripts and the full report are in
-`fxdb-spikes/REPORT.md` on HAVEN.
+`vdbx-spikes/REPORT.md` on HAVEN.
 
 ## Consequences
 
@@ -461,10 +482,10 @@ Costs:
   filesystems, which is ATLAS and EFS.
 - **A band bundle, like a macOS sparse bundle.** The safest on network storage
   (a freed band is a deleted file), but it is a folder, not one file.
-- **One `.fxdb` per collection.** No consistent snapshot across collections
+- **One `.vdbx` per collection.** No consistent snapshot across collections
   for JOINs, an open per collection on a cold start, and no path to atomic
   multi-collection writes. An application that wants that isolation can still
-  use one `.fxdb` per collection.
+  use one `.vdbx` per collection.
 - **Whole-file compression (zip, gzip).** Needs extraction to read.
 
 ## Verification
@@ -473,7 +494,7 @@ Costs:
   header, map and frame parsers: truncation at every byte, bit flips, both
   superblocks damaged, a reused extent with a stale sequence number, unknown
   flags of each class.
-- The ADR 0015 conformance suites run against a `.fxdb` database as a third
+- The ADR 0015 conformance suites run against a `.vdbx` database as a third
   layout.
 - **Crash matrix:** new failpoints `after-extent-header`, `after-seal-record`,
   `after-superblock-write`, `after-map-write`, `after-shrink-relocate`,
@@ -481,14 +502,14 @@ Costs:
   `abort`, `enospc` and `edquot`.
 - **Reuse race:** readers holding locations while a compactor frees and a
   writer reuses the same extents, for 10 minutes, with every read checked.
-- **Pack oracle:** directory root → `.fxdb` → directory root on the 5k and 25k
+- **Pack oracle:** directory root → `.vdbx` → directory root on the 5k and 25k
   fixtures, identical by ADR 0015's oracle; and the same through `--sealed`.
 - **Encryption:** wrong key, swapped frames between collections, a replayed
   frame, and a flipped tag bit are each detected.
-- **Browser:** Playwright opens a packed `.fxdb` read-only from a file input,
+- **Browser:** Playwright opens a packed `.vdbx` read-only from a file input,
   edits an OPFS copy and saves it, with no cross-origin isolation; the
   WebAssembly size budget still passes; the artifact interchange script runs
-  the same NDJSON against `fylo` and `fylo.wasm` on a `.fxdb` database.
+  the same NDJSON against `fylo` and `fylo.wasm` on a `.vdbx` database.
 - **Multi-process:** the load harness with byte-range locks on each
   filesystem before it is qualified (section 7).
 - **Benchmarks:** point, selective, broad and range reads and durable writes

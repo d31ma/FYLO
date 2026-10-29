@@ -24,7 +24,7 @@ pub(crate) trait SegmentMedium: Debug + Send + Sync {
     fn max_segment_bytes(&self) -> u64;
 
     /// How record bodies are stored in this medium's frames. A directory
-    /// of segment files stores them as is; a `.fxdb` container stores a
+    /// of segment files stores them as is; a `.vdbx` container stores a
     /// codec header and the compressed body (ADR 0016 section 4). Every
     /// frame the segment code writes or reads here goes through it.
     fn frame_bodies(&self) -> Arc<dyn LogBodyCodec> {
@@ -155,7 +155,7 @@ pub(crate) trait SegmentMedium: Debug + Send + Sync {
 
     /// Record, before the first schema record is written, that the
     /// collection holds schema versions, where its storage has a format
-    /// flag for it: a `.fxdb` file sets `READ_ONLY_COMPAT_SCHEMAS` in its
+    /// flag for it: a `.vdbx` file sets `READ_ONLY_COMPAT_SCHEMAS` in its
     /// superblock (ADR 0017 section 3), so a build that predates schema
     /// records opens it read-only. A collection directory is fenced by its
     /// segment marker and descriptor instead, and does nothing here.
@@ -195,9 +195,9 @@ pub(crate) trait SegmentMedium: Debug + Send + Sync {
     fn write_uncompressed(&self) {}
 
     /// Whether location rows go to a location log. A medium without one
-    /// (a `.fxdb` container) keeps them only in memory: a location table is
+    /// (a `.vdbx` container) keeps them only in memory: a location table is
     /// its snapshot and the rows the records after the snapshot's position
-    /// derive (`docs/fxdb-segment-backend.md`), and every location log
+    /// derive (`docs/vdbx-segment-backend.md`), and every location log
     /// method does nothing or reports an empty log.
     fn has_location_log(&self) -> bool;
 
@@ -228,9 +228,9 @@ pub(crate) trait SegmentMedium: Debug + Send + Sync {
     fn owner(&self) -> Result<(u32, u32), NativeStorageError>;
 
     /// Whether the medium keeps the collection's prefix index itself, as a
-    /// `.fxdb` container does: a snapshot beside the location snapshot, and
+    /// `.vdbx` container does: a snapshot beside the location snapshot, and
     /// the keys past it replayed from the records' index deltas
-    /// (`docs/fxdb-segment-backend.md`, "Root integration"). A medium that
+    /// (`docs/vdbx-segment-backend.md`, "Root integration"). A medium that
     /// does not leaves the index to `index/` files in the collection
     /// directory, and never has the index methods below called.
     fn keeps_index(&self) -> bool {

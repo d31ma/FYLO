@@ -1,4 +1,4 @@
-//! An encrypted `.fxdb` database root (ADR 0016 section 9): records sealed
+//! An encrypted `.vdbx` database root (ADR 0016 section 9): records sealed
 //! with the file key and bound to their collection and LSN, the database
 //! locked without its key, a wrong key refused at open, dictionaries and
 //! snapshots sealed, and recovery after a crash. Every key is generated
@@ -18,9 +18,9 @@ use crate::{
     NativeStorageErrorCode, NativeWriteRoot, PutDocumentOptions, RootOpenOptions,
 };
 
-const ROLE: &str = "FYLO_FXDB_ENCRYPTION_CHILD_ROLE";
-const DATABASE: &str = "FYLO_FXDB_ENCRYPTION_CHILD_DATABASE";
-const KEY: &str = "FYLO_FXDB_ENCRYPTION_CHILD_KEY";
+const ROLE: &str = "FYLO_VDBX_ENCRYPTION_CHILD_ROLE";
+const DATABASE: &str = "FYLO_VDBX_ENCRYPTION_CHILD_DATABASE";
+const KEY: &str = "FYLO_VDBX_ENCRYPTION_CHILD_KEY";
 const CHILD_TEST: &str =
     "segments::container_medium::tests::encryption::an_encryption_child_process";
 /// Text in every document, which must never appear in an encrypted file.
@@ -33,7 +33,7 @@ fn generated_secret() -> String {
     crate::hex_bytes(&ContainerCipher::new_salt().unwrap())
 }
 
-/// A directory holding `db.fxdb`, encrypted with a generated key.
+/// A directory holding `db.vdbx`, encrypted with a generated key.
 struct Encrypted {
     directory: PathBuf,
     secret: String,
@@ -61,7 +61,7 @@ impl Encrypted {
     }
 
     fn path(&self) -> PathBuf {
-        self.directory.join("db.fxdb")
+        self.directory.join("db.vdbx")
     }
 
     fn key(&self) -> DatabaseKey {
@@ -216,7 +216,7 @@ fn write_orders(database: &Encrypted) {
 
 #[test]
 fn an_encrypted_database_round_trips_with_its_key_and_hides_its_documents() {
-    let database = Encrypted::create("fxdb-encrypted-round-trip");
+    let database = Encrypted::create("vdbx-encrypted-round-trip");
     write_orders(&database);
     let check = |root: &NativeRoot| {
         assert_eq!(root.database_encryption(), Some((true, false)));
@@ -241,7 +241,7 @@ fn an_encrypted_database_round_trips_with_its_key_and_hides_its_documents() {
     for text in [CANARY, LEDGER, "Halifax", "customer"] {
         assert!(!database.contains(text), "{text} is in the encrypted file");
     }
-    let plain = Encrypted::create_with("fxdb-encrypted-control", false);
+    let plain = Encrypted::create_with("vdbx-encrypted-control", false);
     write_orders(&plain);
     for text in [CANARY, LEDGER] {
         assert!(plain.contains(text), "{text} is not in the plain file");
@@ -265,7 +265,7 @@ fn an_encrypted_database_round_trips_with_its_key_and_hides_its_documents() {
 
 #[test]
 fn without_its_key_an_encrypted_database_is_locked_and_refuses_every_write() {
-    let database = Encrypted::create("fxdb-encrypted-locked");
+    let database = Encrypted::create("vdbx-encrypted-locked");
     write_orders(&database);
     // A handle with the key, open in this process, unlocks nothing for one
     // without it.
@@ -346,7 +346,7 @@ fn without_its_key_an_encrypted_database_is_locked_and_refuses_every_write() {
         NativeStorageErrorCode::KeyRequired
     );
     // A key given to a plain database is not needed, and changes nothing.
-    let plain = Encrypted::create_with("fxdb-encrypted-plain-key", false);
+    let plain = Encrypted::create_with("vdbx-encrypted-plain-key", false);
     let root = NativeRoot::open_profiled(plain.options()).unwrap();
     assert_eq!(root.database_encryption(), Some((false, false)));
 }
@@ -448,7 +448,7 @@ fn read_error(database: &Encrypted, collection: &str, number: usize) -> crate::N
 
 #[test]
 fn a_frame_moved_into_another_collection_is_refused() {
-    let database = swappable("fxdb-encrypted-swap");
+    let database = swappable("vdbx-encrypted-swap");
     let east = frame_at(&database, "east", lsn_of(&database, "east", 1));
     let west = frame_at(&database, "west", lsn_of(&database, "west", 1));
     // The same document, written the same way, in another collection.
@@ -459,7 +459,7 @@ fn a_frame_moved_into_another_collection_is_refused() {
         NativeStorageErrorCode::CorruptDocument,
         "{error}"
     );
-    assert!(error.to_string().contains("EFXDB_CORRUPT"), "{error}");
+    assert!(error.to_string().contains("EVDBX_CORRUPT"), "{error}");
     // The record it was copied from still reads where it belongs.
     assert_eq!(read(&database.root(), "west", 1), fixed("first"));
     // `fylo verify` checks frames by their checksum without the key, so a
@@ -473,7 +473,7 @@ fn a_frame_moved_into_another_collection_is_refused() {
 
 #[test]
 fn a_replayed_frame_is_refused_rather_than_read_as_another_record() {
-    let database = swappable("fxdb-encrypted-replay");
+    let database = swappable("vdbx-encrypted-replay");
     let first = frame_at(&database, "east", lsn_of(&database, "east", 1));
     let (number, later) = (2..=6)
         .map(|number| {
@@ -498,7 +498,7 @@ fn a_replayed_frame_is_refused_rather_than_read_as_another_record() {
 
 #[test]
 fn an_older_version_replayed_over_the_newest_is_never_served() {
-    let database = swappable("fxdb-encrypted-rollback");
+    let database = swappable("vdbx-encrypted-rollback");
     // Versions that differ in one character, until the newest record is as
     // long as an older one, which compression makes likely within a few.
     let padding = fylo_test_support::incompressible_text(7, 2048);
@@ -533,7 +533,7 @@ fn an_older_version_replayed_over_the_newest_is_never_served() {
 
 #[test]
 fn dictionaries_and_schema_snapshots_are_sealed_in_an_encrypted_database() {
-    let database = Encrypted::create("fxdb-encrypted-dictionary");
+    let database = Encrypted::create("vdbx-encrypted-dictionary");
     let writer = database.writer();
     writer
         .create_collection(LEDGER, CollectionKind::Document, None)
@@ -692,7 +692,7 @@ fn an_encrypted_database_recovers_after_a_crash() {
         ("write", "after-log-sync"),
         ("rebuild", "after-checkpoint-flush"),
     ] {
-        let database = Encrypted::create("fxdb-encrypted-crash");
+        let database = Encrypted::create("vdbx-encrypted-crash");
         write_orders(&database);
         database.reopen();
         stopped(role, &database, failpoint);
@@ -753,7 +753,7 @@ fn compacted_reads(database: &Encrypted) {
 
 #[test]
 fn an_encrypted_database_compacts_shrinks_and_salvages_only_with_its_key() {
-    let database = churned("fxdb-encrypted-compact");
+    let database = churned("vdbx-encrypted-compact");
     database.reopen();
 
     // Without the key, compaction, a shrink and a salvage are refused and
@@ -817,7 +817,7 @@ fn an_encrypted_database_compacts_shrinks_and_salvages_only_with_its_key() {
 #[test]
 fn an_encrypted_database_recovers_after_a_crash_in_compaction() {
     for failpoint in ["after-compaction-record", "after-shrink-relocate"] {
-        let database = churned("fxdb-encrypted-compact-crash");
+        let database = churned("vdbx-encrypted-compact-crash");
         database.reopen();
         stopped("compact", &database, failpoint);
         database.reopen();

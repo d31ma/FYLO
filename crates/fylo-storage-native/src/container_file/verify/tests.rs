@@ -20,7 +20,7 @@ impl Drop for Database {
 fn database(name: &str, secret: Option<&[u8]>) -> (Database, PathBuf) {
     let dir = std::env::temp_dir().join(crate::write::unique_name(name));
     std::fs::create_dir_all(&dir).expect("create directory");
-    let path = dir.join("test.fxdb");
+    let path = dir.join("test.vdbx");
     match secret {
         Some(secret) => ContainerFile::create_encrypted(&path, SHIFT, secret),
         None => ContainerFile::create(&path, SHIFT),
@@ -101,7 +101,7 @@ fn flip(path: &Path, offset: u64) {
 
 #[test]
 fn a_clean_plain_file_verifies() {
-    let (_guard, path) = populated("fxdb-verify-plain", None);
+    let (_guard, path) = populated("vdbx-verify-plain", None);
     let report = verified(&path);
     assert!(report.ok, "{report:?}");
     assert!(report.problems.is_empty(), "{report:?}");
@@ -118,7 +118,7 @@ fn a_clean_plain_file_verifies() {
 
 #[test]
 fn a_clean_encrypted_file_verifies_without_its_key() {
-    let (_guard, path) = populated("fxdb-verify-encrypted", Some(SECRET));
+    let (_guard, path) = populated("vdbx-verify-encrypted", Some(SECRET));
     let reader = ContainerFile::open_reader(&path).expect("open to read");
     assert!(reader.is_locked());
     let report = reader.verify().expect("verify");
@@ -131,7 +131,7 @@ fn a_clean_encrypted_file_verifies_without_its_key() {
 
 #[test]
 fn a_damaged_sealed_directory_block_is_found_without_the_key() {
-    let (_guard, path) = populated("fxdb-verify-sealed-block", Some(SECRET));
+    let (_guard, path) = populated("vdbx-verify-sealed-block", Some(SECRET));
     flip(&path, EXTENT_BYTES + PAYLOAD + 100);
     let report = verified(&path);
     assert!(!report.ok);
@@ -144,7 +144,7 @@ fn a_damaged_sealed_directory_block_is_found_without_the_key() {
 
 #[test]
 fn a_damaged_header_of_an_extent_in_use_is_an_error() {
-    let (_guard, path) = populated("fxdb-verify-header", None);
+    let (_guard, path) = populated("vdbx-verify-header", None);
     flip(&path, 3 * EXTENT_BYTES + 20);
     let report = verified(&path);
     assert!(!report.ok);
@@ -157,7 +157,7 @@ fn a_damaged_header_of_an_extent_in_use_is_an_error() {
 
 #[test]
 fn an_extent_of_a_collection_that_does_not_exist_is_an_error() {
-    let (_guard, path) = populated("fxdb-verify-owner", None);
+    let (_guard, path) = populated("vdbx-verify-owner", None);
     {
         let mut container = ContainerFile::open_unchecked(&path).expect("open container");
         container.allocate(SEGMENT, 9).expect("allocate");
@@ -173,7 +173,7 @@ fn an_extent_of_a_collection_that_does_not_exist_is_an_error() {
 
 #[test]
 fn a_flipped_snapshot_byte_fails_its_hash() {
-    let (_guard, path) = populated("fxdb-verify-snapshot", None);
+    let (_guard, path) = populated("vdbx-verify-snapshot", None);
     flip(&path, 4 * EXTENT_BYTES + PAYLOAD + 3000);
     let report = verified(&path);
     assert!(!report.ok);
@@ -186,7 +186,7 @@ fn a_flipped_snapshot_byte_fails_its_hash() {
 
 #[test]
 fn a_damaged_superblock_copy_out_of_force_is_only_a_warning() {
-    let (_guard, path) = populated("fxdb-verify-superblock", None);
+    let (_guard, path) = populated("vdbx-verify-superblock", None);
     // The checkpoint wrote copy B, so copy A is the older one.
     flip(&path, 200);
     let report = verified(&path);
@@ -199,7 +199,7 @@ fn a_damaged_superblock_copy_out_of_force_is_only_a_warning() {
 
 #[test]
 fn a_torn_checkpoint_slot_is_only_a_warning() {
-    let (_guard, path) = populated("fxdb-verify-torn-slot", None);
+    let (_guard, path) = populated("vdbx-verify-torn-slot", None);
     // Slot A holds the checkpoint; half of slot B was written.
     let slot_b = EXTENT_BYTES + PAYLOAD + 3456 + 256;
     write_at(&path, slot_b, &[0x5A; 100]);
@@ -213,7 +213,7 @@ fn a_torn_checkpoint_slot_is_only_a_warning() {
 
 #[test]
 fn a_truncated_file_is_an_error_unless_only_free_extents_are_cut() {
-    let (_guard, path) = database("fxdb-verify-truncated", None);
+    let (_guard, path) = database("vdbx-verify-truncated", None);
     {
         let mut container = ContainerFile::open_unchecked(&path).expect("open container");
         let id = container
@@ -254,7 +254,7 @@ fn a_truncated_file_is_an_error_unless_only_free_extents_are_cut() {
 
 #[test]
 fn an_extent_taken_after_the_checkpoint_is_counted_not_reported() {
-    let (_guard, path) = database("fxdb-verify-unmapped", None);
+    let (_guard, path) = database("vdbx-verify-unmapped", None);
     {
         let mut container = ContainerFile::open_unchecked(&path).expect("open container");
         let id = container

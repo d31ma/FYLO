@@ -9,7 +9,7 @@ cannot supply something.
 | Target | native triples | `wasm32-wasip1` | `wasm32-unknown-unknown` |
 | Storage | `std::fs` | `std::fs` over WASI preopens | host `HostVfs` table |
 | Driven by | a spawned process | any WASI runtime | an embedder that fills the table |
-| Release build (develop, 2026-10-10) | ~7.97 MiB (macOS arm64) | ~2.04 MiB | ~2.23 MiB, ~735 KiB gzip with the CHEX validator and `.fxdb` databases with their record codecs and dictionaries, built at `opt-level = "z"` (2026-10-29; 2.38 MiB / 800 KiB budget) |
+| Release build (develop, 2026-10-10) | ~7.97 MiB (macOS arm64) | ~2.04 MiB | ~2.23 MiB, ~735 KiB gzip with the CHEX validator and `.vdbx` databases with their record codecs and dictionaries, built at `opt-level = "z"` (2026-10-29; 2.38 MiB / 800 KiB budget) |
 | Verified by | crash matrix, soak, interchange | native/WASI interchange | `browser:engine:e2e` (Chromium, Firefox), host-table corpus |
 
 `fylo` and `fylo.wasm` are **interchangeable**. A shim spawns one or the other,

@@ -1,6 +1,6 @@
 // Host backends for a database held in one file (ADR 0016 section 10).
 //
-// A `.fxdb` engine needs six operations on a single file — open, stat,
+// A `.vdbx` engine needs six operations on a single file — open, stat,
 // read_at, write_at, truncate and flush — and every one of them can be served
 // synchronously inside a dedicated Worker without the `SharedArrayBuffer`
 // bridge a folder root needs:
@@ -18,7 +18,7 @@
 import { KIND_DIRECTORY, KIND_FILE, KIND_MISSING, OPEN_CREATE, OPEN_WRITE } from './host-vfs.mjs'
 
 /** Where the engine finds the database unless the caller names another path. */
-export const DEFAULT_DATABASE_PATH = '/database.fxdb'
+export const DEFAULT_DATABASE_PATH = '/database.vdbx'
 
 /**
  * Read-only backend over a `File` or `Blob`.

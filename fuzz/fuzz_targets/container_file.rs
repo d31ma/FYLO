@@ -27,7 +27,7 @@ const KINDS: [ContainerExtentKind; 7] = [
     ContainerExtentKind::Schemas,
 ];
 
-/// A file image as its non-zero 4 KiB blocks: every `.fxdb` structure lies
+/// A file image as its non-zero 4 KiB blocks: every `.vdbx` structure lies
 /// within one block, and the 1 MiB extents are mostly holes.
 #[derive(Clone)]
 struct Image {
@@ -58,7 +58,7 @@ struct Template {
 
 fn scratch(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
-        "fylo-fuzz-container-file-{}-{name}.fxdb",
+        "fylo-fuzz-container-file-{}-{name}.vdbx",
         std::process::id()
     ))
 }
@@ -410,7 +410,7 @@ fn exercise(container: &ContainerFile, probe: &[u8]) {
     let _ = container.expect_extent(extent, kind, 0, offset);
 }
 
-// A `.fxdb` file is untrusted input to whatever opens it, as a SQLite file
+// A `.vdbx` file is untrusted input to whatever opens it, as a SQLite file
 // is: opening and inspecting arbitrary or damaged bytes must fail cleanly,
 // without panicking, hanging, or allocating more than the file justifies.
 fuzz_target!(|input: &[u8]| {

@@ -26,7 +26,7 @@ use crate::{
 ///
 /// The copy runs without the collection lock, because sealed segments never
 /// change. It is started under the lock, while the segments are chosen, so
-/// writing it takes no claim on the collection: in a `.fxdb` database the
+/// writing it takes no claim on the collection: in a `.vdbx` database the
 /// collection's writers carry on while it runs. Each live entry keeps its
 /// sequence number, so the copy and the original are interchangeable, and
 /// the compaction commits by appending one compaction record to the active
@@ -69,7 +69,7 @@ impl SegmentCompactor {
     /// everything written so far can be compacted.
     ///
     /// With `only`, the compaction moves that one segment, live or not, as
-    /// `fylo compact --shrink` does to bring the last extents of a `.fxdb`
+    /// `fylo compact --shrink` does to bring the last extents of a `.vdbx`
     /// file nearer its front: the active segment is sealed only when it is
     /// that one, and no dictionary is trained. A segment no location names
     /// is removed without a copy.
@@ -414,7 +414,7 @@ impl SegmentCompactor {
 
     /// One live entry as a record of its own, keeping the sequence number
     /// and generation of the commit it came from. Its body is compressed
-    /// afresh, so a `.fxdb` collection's LZ4 records come out as zstd.
+    /// afresh, so a `.vdbx` collection's LZ4 records come out as zstd.
     fn copied_frame(
         row: &SegmentLocation,
         record: &LogRecord,
@@ -508,7 +508,7 @@ impl SegmentCompactor {
     pub(crate) fn require_segments(
         collection: &NativeCollection,
     ) -> Result<(), NativeStorageError> {
-        // Maintenance stays native: a browser build edits a `.fxdb`
+        // Maintenance stays native: a browser build edits a `.vdbx`
         // database's segments but leaves compacting, exporting, verifying
         // and salvaging them to the native engine, so their code compiles
         // away there.

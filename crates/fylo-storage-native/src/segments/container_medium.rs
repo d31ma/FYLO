@@ -1,5 +1,5 @@
-//! A segment collection kept in a `.fxdb` file
-//! (`docs/fxdb-segment-backend.md`, step 3 and "Root integration").
+//! A segment collection kept in a `.vdbx` file
+//! (`docs/vdbx-segment-backend.md`, step 3 and "Root integration").
 //!
 //! A collection's segments as `segment` extents, its generation slots, and
 //! its location, prefix-index and schemas snapshots as `locations`, `index`
@@ -7,10 +7,10 @@
 //! index log; a location table and the index replay the records after the
 //! snapshots' position.
 //!
-//! The file is either `segments.fxdb` in a collection directory, a hybrid
+//! The file is either `segments.vdbx` in a collection directory, a hybrid
 //! stepping stone toward ADR 0016 that holds that one collection while the
 //! collection lock files and the catalog descriptor stay in the directory,
-//! or a `.fxdb` database root that holds every collection. Both are one
+//! or a `.vdbx` database root that holds every collection. Both are one
 //! [`ContainerOpen`] per file in a process, shared by every medium over it
 //! ([`open`]), and one medium per collection ([`ContainerMedium::attach`]).
 //!
@@ -56,7 +56,7 @@ const LOCATIONS: ContainerExtentKind = ContainerExtentKind::Locations;
 const INDEX: ContainerExtentKind = ContainerExtentKind::Index;
 
 /// A segment collection whose segments, slots and snapshots live in a
-/// `.fxdb` file.
+/// `.vdbx` file.
 ///
 /// A segment's number is the sequence number of the extent that holds it,
 /// which is never reused: a location into an extent that was released and
@@ -138,7 +138,7 @@ impl MediumState {
 impl ContainerMedium {
     /// The file in a collection directory that makes it a container
     /// collection.
-    pub(crate) const FILE_NAME: &'static str = "segments.fxdb";
+    pub(crate) const FILE_NAME: &'static str = "segments.vdbx";
 
     /// The medium of the collection in `directory`, or `None` when the
     /// directory holds no container.
@@ -214,7 +214,7 @@ impl ContainerMedium {
     pub(crate) fn descriptor(mut fields: serde_json::Map<String, serde_json::Value>) -> Vec<u8> {
         fields.insert(
             "created".into(),
-            crate::write::unique_name("fxdb-collection").into(),
+            crate::write::unique_name("vdbx-collection").into(),
         );
         serde_json::Value::Object(fields).to_string().into_bytes()
     }
@@ -441,7 +441,7 @@ impl Shared {
         }) {
             return Err(NativeStorageError::new(
                 NativeStorageErrorCode::NotFound,
-                "the collection was dropped from its .fxdb file",
+                "the collection was dropped from its .vdbx file",
             ));
         }
         if let Some(slot) = open
@@ -730,7 +730,7 @@ impl SegmentMedium for ContainerMedium {
     /// The map is checkpointed once the extent holds its opening bytes,
     /// before any slot names it, so every segment a slot can name is in the
     /// durable map, and so is the seal of the segment just finished
-    /// (`docs/fxdb-segment-backend.md`, "Taking a new extent"). A process
+    /// (`docs/vdbx-segment-backend.md`, "Taking a new extent"). A process
     /// that stops before the checkpoint leaves an extent no slot names,
     /// which the durable map shows free.
     fn create_segment(

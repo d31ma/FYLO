@@ -40,7 +40,7 @@ base64 = "0.22.1"
 getrandom = "0.4.3"
 hmac = "0.13.0"
 libc = { version = "0.2.189", default-features = false }
-# `.fxdb` LZ4 frames (ADR 0016 section 8): pure Rust, so the browser writes
+# `.vdbx` LZ4 frames (ADR 0016 section 8): pure Rust, so the browser writes
 # them; the safe encoder and decoder keep `unsafe` out.
 lz4_flex = { version = "0.14.0", default-features = false, features = ["std", "safe-encode", "safe-decode"] }
 pbkdf2 = { version = "0.13.0", features = ["hmac"] }
@@ -54,7 +54,7 @@ regex = { version = "1.13.1", default-features = false, features = ["std", "unic
 # `fylo-chex`'s `compile` feature adds the parser and the DFA builder natively.
 regex-automata = { version = "0.4.18", default-features = false, features = ["alloc", "dfa-search"] }
 reqwest = { version = "0.13.2", default-features = false, features = ["blocking", "rustls-no-provider"] }
-# `.fxdb` zstd frames in the browser (ADR 0016 section 8): pure Rust, decode
+# `.vdbx` zstd frames in the browser (ADR 0016 section 8): pure Rust, decode
 # only.
 ruzstd = { version = "0.9.1", default-features = false, features = ["std"] }
 rustix = { version = "1.1.4", default-features = false, features = ["fs"] }
@@ -67,7 +67,7 @@ sha2 = "0.11.0"
 windows-sys = { version = "0.61.2", default-features = false }
 xattr = "1.6.1"
 zeroize = "1.8.2"
-# `.fxdb` zstd frames natively (ADR 0016 section 8): the C library, for its
+# `.vdbx` zstd frames natively (ADR 0016 section 8): the C library, for its
 # ratio and its dictionary trainer. Never built for WebAssembly.
 zstd = { version = "0.14.3", default-features = false, features = ["zdict_builder"] }
 

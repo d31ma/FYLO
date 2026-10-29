@@ -6,18 +6,18 @@ import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
-import { STUB_SIZE, stubBytes } from '../fixtures/fxdb-stub.mjs'
+import { STUB_SIZE, stubBytes } from '../fixtures/vdbx-stub.mjs'
 
 const PLAIN_ORIGIN = 'http://127.0.0.1:4174'
 
 test.beforeAll(async () => {
     test.setTimeout(600_000)
-    const path = 'target/browser-fixtures/stub.fxdb'
+    const path = 'target/browser-fixtures/stub.vdbx'
     await mkdir(dirname(path), { recursive: true })
     await writeFile(path, stubBytes())
     // A real container, and the report the native engine gives for it. The
     // example refuses to overwrite, so a previous run's file goes first.
-    await rm('target/browser-fixtures/fixture.fxdb', { force: true })
+    await rm('target/browser-fixtures/fixture.vdbx', { force: true })
     const report = execFileSync(
         'cargo',
         [
@@ -27,15 +27,15 @@ test.beforeAll(async () => {
             '-p',
             'fylo-storage-native',
             '--example',
-            'fxdb_fixture',
+            'vdbx_fixture',
             '--',
-            'target/browser-fixtures/fixture.fxdb'
+            'target/browser-fixtures/fixture.vdbx'
         ],
         { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] }
     )
     await writeFile('target/browser-fixtures/fixture.json', report)
     // A database with documents, written through the native CLI.
-    await rm('target/browser-fixtures/documents.fxdb', { force: true })
+    await rm('target/browser-fixtures/documents.vdbx', { force: true })
     const requests = [
         { op: 'createCollection', collection: 'users' },
         ...['ada', 'bo', 'cy', 'di'].map((name, index) => ({
@@ -58,7 +58,7 @@ test.beforeAll(async () => {
             'exec',
             '--loop',
             '--root',
-            'target/browser-fixtures/documents.fxdb'
+            'target/browser-fixtures/documents.vdbx'
         ],
         {
             input: requests.map((request) => JSON.stringify(request)).join('\n') + '\n',
@@ -69,7 +69,7 @@ test.beforeAll(async () => {
 
 async function run(page, testInfo, scenario) {
     await page.goto(
-        `${PLAIN_ORIGIN}/tests/browser/fixtures/fxdb-single-file.html?scenario=${scenario}`,
+        `${PLAIN_ORIGIN}/tests/browser/fixtures/vdbx-single-file.html?scenario=${scenario}`,
         {
             waitUntil: 'domcontentloaded'
         }
@@ -77,11 +77,11 @@ async function run(page, testInfo, scenario) {
     await expect(
         page.locator('[data-status="passed"], [data-status="failed"], [data-status="unsupported"]')
     ).toBeVisible()
-    const evidence = await page.evaluate(() => globalThis.__FYLO_FXDB_EVIDENCE__)
-    const path = testInfo.outputPath(`fxdb-${scenario}-evidence.json`)
+    const evidence = await page.evaluate(() => globalThis.__FYLO_VDBX_EVIDENCE__)
+    const path = testInfo.outputPath(`vdbx-${scenario}-evidence.json`)
     await mkdir(dirname(path), { recursive: true })
     await writeFile(path, `${JSON.stringify(evidence, null, 2)}\n`)
-    await testInfo.attach(`fxdb-${scenario}`, { path, contentType: 'application/json' })
+    await testInfo.attach(`vdbx-${scenario}`, { path, contentType: 'application/json' })
     expect(evidence.environment.crossOriginIsolated).toBe(false)
     test.skip(evidence.status === 'unsupported', evidence.reason)
     expect(evidence.status, evidence.reason).toBe('passed')
@@ -147,7 +147,7 @@ test('saves a working copy as a download where it cannot write back', async ({
     const evidence = await run(page, testInfo, 'download')
     expect(evidence.saved).toBe('downloaded')
     const file = await downloaded
-    expect(file.suggestedFilename()).toBe('download.fxdb')
+    expect(file.suggestedFilename()).toBe('download.vdbx')
     const bytes = await readFile(await file.path())
     expect(bytes.length).toBe(evidence.size)
     expect(createHash('sha256').update(bytes).digest('hex')).toBe(evidence.digest)
@@ -160,7 +160,7 @@ test('runs fylo-browser.wasm over a single file without isolation', async ({ pag
     expect(evidence.frames[0]?.result?.buildTarget).toBe('browser-wasm32')
 })
 
-test('inspects a real .fxdb through every single-file host', async ({ page }, testInfo) => {
+test('inspects a real .vdbx through every single-file host', async ({ page }, testInfo) => {
     const evidence = await run(page, testInfo, 'inspect')
     const labels = Object.keys(evidence.reports)
     expect(labels).toEqual(expect.arrayContaining(['file', 'url']))
@@ -174,7 +174,7 @@ test('inspects a real .fxdb through every single-file host', async ({ page }, te
     expect(evidence.stubFrame.ok).toBe(false)
 })
 
-test('reads and edits the documents of a real .fxdb database', async ({ page }, testInfo) => {
+test('reads and edits the documents of a real .vdbx database', async ({ page }, testInfo) => {
     const evidence = await run(page, testInfo, 'documents')
     expect(evidence.red).toEqual(['ada', 'cy'])
     expect(evidence.reread).toBe('browser')

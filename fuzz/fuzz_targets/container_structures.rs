@@ -6,7 +6,7 @@ use fylo_format::{
 };
 use libfuzzer_sys::fuzz_target;
 
-// Every `.fxdb` structure decoder (ADR 0016) must reject arbitrary bytes
+// Every `.vdbx` structure decoder (ADR 0016) must reject arbitrary bytes
 // without panicking, and whatever it accepts must re-encode to bytes that
 // decode to the same value.
 fuzz_target!(|input: &[u8]| {

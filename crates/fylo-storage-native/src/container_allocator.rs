@@ -1,4 +1,4 @@
-//! Extent allocation for `.fxdb` containers (ADR 0016 section 6).
+//! Extent allocation for `.vdbx` containers (ADR 0016 section 6).
 //!
 //! This is the in-memory model of the extent map: which extents are free,
 //! which hold what, and which were released since the last checkpoint. It does
@@ -101,7 +101,7 @@ pub enum ContainerAllocatorError {
     InconsistentMap,
 }
 
-/// The in-memory extent map of one `.fxdb` container.
+/// The in-memory extent map of one `.vdbx` container.
 #[derive(Clone, Debug)]
 pub struct ContainerExtentAllocator {
     slots: Vec<Slot>,

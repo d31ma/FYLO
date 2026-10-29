@@ -95,7 +95,7 @@ fn an_encrypted_body_is_sealed_after_compression_and_bound_to_its_record() {
         moved,
         ContainerRecordError::Cipher(ContainerCipherError::Unauthenticated)
     ));
-    assert_eq!(moved.code(), "EFXDB_CORRUPT");
+    assert_eq!(moved.code(), "EVDBX_CORRUPT");
     let locked = parsed.decode(&mut codec, None, HERE, LIMIT).unwrap_err();
     assert_eq!(locked.code(), "EKEY");
 }
@@ -143,6 +143,6 @@ fn an_unknown_codec_or_flag_is_a_newer_format_not_damage() {
             matches!(error, ContainerRecordError::Unsupported),
             "{stored:?}"
         );
-        assert_eq!(error.code(), "EFXDB_VERSION");
+        assert_eq!(error.code(), "EVDBX_VERSION");
     }
 }

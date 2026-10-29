@@ -695,18 +695,18 @@ migration in both directions.
 
 Logs, scripts and raw JSON are in `/Volumes/FORGE/Logs/FYLO/fylo-segments/`.
 
-## Single-file `.fxdb` databases on ATLAS, 2026-10-29
+## Single-file `.vdbx` databases on ATLAS, 2026-10-29
 
 ADR 0016 spikes 1 and 2: the segment-layout fixtures above, built locally
 with the same generator (two collections of 5,000 or 25,000 documents),
-packed into one `.fxdb` each and read on the raw ATLAS SMB share. Apple M4,
+packed into one `.vdbx` each and read on the raw ATLAS SMB share. Apple M4,
 16 GiB, macOS 27.2, Rust 1.97.1, release build of develop `512879d`, with
 a harness of `readcheck`'s queries plus a range scan and puts. Other builds
 kept the one-minute load at 5 to 8. Every run checked the identifier and
 body oracles for the selective, broad and range results.
 
 **Two defects found and fixed.** Develop at `16d52b8` could not write a
-`.fxdb` on the share at all. The lease file was flushed with
+`.vdbx` on the share at all. The lease file was flushed with
 `File::sync_data`, which is `F_FULLFSYNC` on Apple platforms, and macOS
 `smbfs` refuses that with `ENOTSUP`; it now uses a plain `fsync`
 (`0a65795`). `fylo pack` then still failed at the end, because it names
@@ -717,22 +717,22 @@ taken at `512879d`, which has the first fix, on databases packed locally and
 copied to the share. At `9f666cd`, `fylo pack` straight onto the share
 succeeded in 9.7 s (5k) and 24.4 s (25k), and `fylo verify` passed on both.
 The pack still leaves its staging file's lease, marked free, behind as
-`.<name>.fxdb.pack-staging.lease.1`.
+`.<name>.vdbx.pack-staging.lease.1`.
 
-**Size.** A `.fxdb` holds whole 8 MiB extents, and each collection's
+**Size.** A `.vdbx` holds whole 8 MiB extents, and each collection's
 segments, dictionary, location table and index snapshot take at least one
 extent each, so a small database is mostly free extent space.
 
-| Fixture | Directory root (allocated / file bytes / files) | `.fxdb` file | Allocated on the server |
+| Fixture | Directory root (allocated / file bytes / files) | `.vdbx` file | Allocated on the server |
 | ------- | ----------------------------------------------- | -----------: | ----------------------: |
 | 5k      | 46.9 MiB / 17.5 MiB / 10,010                    |       96 MiB |                  96 MiB |
 | 25k     | 234.7 MiB / 87.5 MiB / 50,010                   |      144 MiB |                 128 MiB |
 
-**Warm reads.** Each `.fxdb` column is the median p50 of three fresh
+**Warm reads.** Each `.vdbx` column is the median p50 of three fresh
 processes (30 samples at 5k and 10 at 25k, broad and range capped at 10).
 The segment column is the raw-share segment result above.
 
-| Query (ms, p50)                         | Segments, raw share | `.fxdb`, raw share | `.fxdb`, local APFS |
+| Query (ms, p50)                         | Segments, raw share | `.vdbx`, raw share | `.vdbx`, local APFS |
 | --------------------------------------- | ------------------: | -----------------: | ------------------: |
 | 5k selective, 50 rows                   |                0.78 |               0.59 |                0.53 |
 | 5k selective, parsed cache evicted      |               22.87 |              29.00 |               22.30 |

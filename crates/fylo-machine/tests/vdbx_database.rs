@@ -1,4 +1,4 @@
-//! A `.fxdb` database root over the machine protocol (ADR 0016 section 11):
+//! A `.vdbx` database root over the machine protocol (ADR 0016 section 11):
 //! a session admits it without a root lease, creates it on first use, and
 //! writes, reads and queries its document collections like a directory
 //! root's. Features a database does not hold are refused by name.
@@ -24,7 +24,7 @@ impl Fixture {
             .unwrap()
             .as_nanos();
         let directory = std::env::temp_dir().join(format!(
-            "fylo-machine-fxdb-{}-{stamp}-{}",
+            "fylo-machine-vdbx-{}-{stamp}-{}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed),
         ));
@@ -33,7 +33,7 @@ impl Fixture {
     }
 
     fn database(&self) -> PathBuf {
-        self.0.join("app.fxdb")
+        self.0.join("app.vdbx")
     }
 
     /// Answer `requests` in one session, each naming the database as its

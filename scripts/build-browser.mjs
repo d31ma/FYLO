@@ -38,13 +38,13 @@ if (!engineOnly) {
         '--outfile',
         './dist-web/dedicated.js'
     ])
-    // The single-file `.fxdb` Worker (ADR 0016): no SharedArrayBuffer bridge.
+    // The single-file `.vdbx` Worker (ADR 0016): no SharedArrayBuffer bridge.
     await run('bun', [
         'build',
         './src/browser/fylo-single-file-worker.mjs',
         '--target=browser',
         '--outfile',
-        './dist-web/fxdb-worker.js'
+        './dist-web/vdbx-worker.js'
     ])
 }
 
@@ -98,7 +98,7 @@ if (engineOnly) {
     console.log('Built dist-web/fylo-browser.wasm')
 } else {
     console.log(
-        `Built dist-web/fylo.mjs, shared.js, dedicated.js, fxdb-worker.js${
+        `Built dist-web/fylo.mjs, shared.js, dedicated.js, vdbx-worker.js${
             withWasm ? `, ${WASM_ARTIFACTS.map(([, published]) => published).join(', ')}` : ''
         }`
     )

@@ -1,6 +1,6 @@
 //! The segment collection suite, run over both media: a collection
-//! directory's `segments/` and a `.fxdb` container in the collection
-//! directory (`docs/fxdb-segment-backend.md`).
+//! directory's `segments/` and a `.vdbx` container in the collection
+//! directory (`docs/vdbx-segment-backend.md`).
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -117,7 +117,7 @@ impl Fixture {
     }
 
     fn container(&self) -> ContainerFile {
-        ContainerFile::open_unchecked(&self.root.join(".collections/items/segments.fxdb")).unwrap()
+        ContainerFile::open_unchecked(&self.root.join(".collections/items/segments.vdbx")).unwrap()
     }
 
     fn bodies(&self) -> BTreeMap<String, Value> {
@@ -207,7 +207,7 @@ impl Fixture {
                     .unwrap()
                     .unwrap();
                 Segment::Extent {
-                    container: self.root.join(".collections/items/segments.fxdb"),
+                    container: self.root.join(".collections/items/segments.vdbx"),
                     extent: slot.active_extent,
                     sequence: slot.active_sequence,
                     length: slot.committed_length,
@@ -338,7 +338,7 @@ fn a_new_collection_uses_segments_and_no_document_files(medium: Medium) {
             assert!(
                 fixture
                     .root
-                    .join(".collections/items/segments.fxdb")
+                    .join(".collections/items/segments.vdbx")
                     .is_file()
             );
             assert!(!fixture.segments().exists());

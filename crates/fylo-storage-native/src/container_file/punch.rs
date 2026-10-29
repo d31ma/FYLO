@@ -1,4 +1,4 @@
-//! Hole punching of free `.fxdb` extents (ADR 0016 section 6).
+//! Hole punching of free `.vdbx` extents (ADR 0016 section 6).
 //!
 //! Each function deallocates one byte range of a file while keeping the
 //! file's length, and returns `false` rather than an error when the platform

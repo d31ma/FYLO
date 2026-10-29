@@ -8,7 +8,7 @@ repository.workspace = true
 publish = false
 
 [dependencies]
-# Opt-in `.fxdb` encryption (ADR 0016 section 9); already in the graph
+# Opt-in `.vdbx` encryption (ADR 0016 section 9); already in the graph
 # through fylo-engine's `$encrypted` fields.
 aes-gcm.workspace = true
 base64.workspace = true
@@ -25,32 +25,32 @@ zeroize.workspace = true
 # Inode identity has no meaning on a host filesystem, which has no links.
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 same-file.workspace = true
-# `.fxdb` zstd frames natively; the C library is too large for the browser.
+# `.vdbx` zstd frames natively; the C library is too large for the browser.
 zstd.workspace = true
 
-# `.fxdb` LZ4 frames: written by the browser, read everywhere. The WASI
-# build reads no `.fxdb` segments, so it carries no codec.
+# `.vdbx` LZ4 frames: written by the browser, read everywhere. The WASI
+# build reads no `.vdbx` segments, so it carries no codec.
 [target.'cfg(any(not(target_family = "wasm"), target_os = "unknown"))'.dependencies]
 lz4_flex.workspace = true
 
-# `.fxdb` zstd frames in the browser, decode only.
+# `.vdbx` zstd frames in the browser, decode only.
 [target.'cfg(all(target_family = "wasm", target_os = "unknown"))'.dependencies]
 ruzstd.workspace = true
 
 [target.'cfg(unix)'.dependencies]
-# `fcntl` byte-range locks for `.fxdb` files (ADR 0016 section 7). Already in
+# `fcntl` byte-range locks for `.vdbx` files (ADR 0016 section 7). Already in
 # the graph through `errno`, `getrandom` and others; the `struct flock` layout
 # and the `F_OFD_*` commands differ per target, so they come from here rather
 # than hand-written declarations. Also `F_PUNCHHOLE` and `fpunchhole_t` for
 # hole punching of free extents on macOS.
 libc = { workspace = true }
-# The filesystem type (`fstatfs`) a `.fxdb` file is on, which decides whether
+# The filesystem type (`fstatfs`) a `.vdbx` file is on, which decides whether
 # its byte-range locks are trusted, and `fallocate` hole punching of free
 # extents on Linux.
 rustix.workspace = true
 xattr.workspace = true
 
-# `LockFileEx` byte-range locks and file identity for `.fxdb` files (ADR 0016
+# `LockFileEx` byte-range locks and file identity for `.vdbx` files (ADR 0016
 # section 7). Already in the graph through `errno`, `rustix` and `tokio`.
 [target.'cfg(windows)'.dependencies]
 # `FSCTL_SET_SPARSE` and `FSCTL_SET_ZERO_DATA` hole punching of free extents.
@@ -58,7 +58,7 @@ windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage
 
 [features]
 # Hooks tests use, such as a writer that keeps segment collections in a
-# `.fxdb` container before `.fxdb` roots exist.
+# `.vdbx` container before `.vdbx` roots exist.
 test-support = []
 
 [dev-dependencies]
@@ -68,7 +68,7 @@ fylo-test-support = { version = "0.1.0", path = "../fylo-test-support" }
 # The integration tests run the segment suite over both media.
 fylo-storage-native = { path = ".", features = ["test-support"] }
 
-# `.fxdb` byte-range locks call `fcntl` and `LockFileEx`, and hole punching
+# `.vdbx` byte-range locks call `fcntl` and `LockFileEx`, and hole punching
 # calls `fcntl(F_PUNCHHOLE)` and `DeviceIoControl`, which no safe signature in
 # the graph expresses. ADR 0004 confines that to `byte_range_lock/os.rs` and
 # `container_file/punch.rs`; `deny` rather than `forbid` is what lets those

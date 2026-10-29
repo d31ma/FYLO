@@ -1,7 +1,7 @@
 use crate::container_bytes::{all_zero, read_u32, read_u64, write_u32, write_u64};
 use crate::{ContainerFormatError, Crc32c};
 
-/// One of a collection's two generation slots in a `.fxdb` container
+/// One of a collection's two generation slots in a `.vdbx` container
 /// (ADR 0016 section 3; ADR 0015 section 6).
 ///
 /// A publication overwrites, in place and without a flush, the slot that does
@@ -33,7 +33,7 @@ pub struct ContainerGenerationSlot {
 impl ContainerGenerationSlot {
     /// Encoded size of one slot.
     pub const ENCODED_BYTES: usize = 64;
-    const MAGIC: [u8; 4] = *b"FXGS";
+    const MAGIC: [u8; 4] = *b"VDXG";
     const CHECKED_BYTES: usize = Self::ENCODED_BYTES - 4;
 
     /// Encode the slot with its checksum.

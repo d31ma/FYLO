@@ -278,12 +278,12 @@ async function verifyNativeCrashScenarios() {
     await segmentSeed.close()
     const onSegments = (scenario) => ({ ...scenario, template: () => segmentTemplate })
 
-    // A `.fxdb` database (ADR 0016) is a fourth: the segment template packed
-    // into `db.fxdb`, then patched twice so its compaction has dead versions
+    // A `.vdbx` database (ADR 0016) is a fourth: the segment template packed
+    // into `db.vdbx`, then patched twice so its compaction has dead versions
     // to drop and its shrink extents to move. Its scenarios name the file.
     const databaseTemplate = join(workspace, 'database-template')
     await mkdir(databaseTemplate, { recursive: true })
-    const templateDatabase = join(databaseTemplate, 'db.fxdb')
+    const templateDatabase = join(databaseTemplate, 'db.vdbx')
     const packed = await run(binary, ['pack', '--root', segmentTemplate, '--out', templateDatabase])
     assert(packed.exitCode === 0, `packing the database template failed: ${packed.stderr}`)
     for (const score of [43, 44]) {
@@ -635,21 +635,21 @@ async function verifyNativeCrashScenarios() {
             // ADR 0016 section 6: each collection of the database compacts
             // as a directory root's does, under its compactor byte.
             name: 'compact-database',
-            args: (root) => ['compact', '--root', join(root, 'db.fxdb')]
+            args: (root) => ['compact', '--root', join(root, 'db.vdbx')]
         }),
         onDatabase({
             // A shrink moves the last extents in use into free ones nearer
             // the front, cuts the free tail off and punches holes; a stop
             // anywhere leaves a file the next opener reads as before.
             name: 'compact-database-shrink',
-            args: (root) => ['compact', '--root', join(root, 'db.fxdb'), '--shrink']
+            args: (root) => ['compact', '--root', join(root, 'db.vdbx'), '--shrink']
         }),
         onSegments({
             // ADR 0016 section 11: a pack builds a staging file beside its
             // output and only reads the source, so every interruption must
             // leave the source as it was and no output.
             name: 'pack-segments',
-            args: (root) => ['pack', '--root', root, '--out', join(root, 'packed.fxdb')]
+            args: (root) => ['pack', '--root', root, '--out', join(root, 'packed.vdbx')]
         }),
         onSegments({
             name: 'migrate-out-of-segments',
@@ -1120,9 +1120,9 @@ async function assertSchemaRegistry(binary, root, failpoint, scenario, action, l
 async function assertRecoverable(binary, root, failpoint, scenario, action) {
     const label = `${failpoint}/${scenario.name}/${action}`
     const recoveryCollection = scenario.name.endsWith('-file') ? fileCollection : collection
-    // A database scenario's root is the `.fxdb` file in the cloned
+    // A database scenario's root is the `.vdbx` file in the cloned
     // directory, which a client opens without a root lease.
-    const rootOf = (directory) => (scenario.database ? join(directory, 'db.fxdb') : directory)
+    const rootOf = (directory) => (scenario.database ? join(directory, 'db.vdbx') : directory)
     const clientOptions = { binary: machineBinary, exclusiveRoot: !scenario.database }
 
     if (action === 'abort') {

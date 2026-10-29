@@ -1,4 +1,4 @@
-//! The secret an encrypted `.fxdb` database's file key is derived from
+//! The secret an encrypted `.vdbx` database's file key is derived from
 //! (ADR 0016 section 9).
 
 use std::fmt;
@@ -7,7 +7,7 @@ use std::sync::Arc;
 use zeroize::Zeroizing;
 
 /// The secret named by `fylo.encryption.key`, for opening an encrypted
-/// `.fxdb` database or creating one ([`crate::NativeRoot::create_encrypted_database`]).
+/// `.vdbx` database or creating one ([`crate::NativeRoot::create_encrypted_database`]).
 ///
 /// The file key is derived from it and the salt in the file's superblock,
 /// so the same secret opens every database created with it. It is wiped

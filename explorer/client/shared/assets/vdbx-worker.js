@@ -169,14 +169,14 @@ function exec(instance, ndjson, trace = () => {}) {
   return new TextDecoder().decode(response);
 }
 
-// src/browser/fxdb-names.mjs
-var WORKING_COPY_DIRECTORY = "fylo-fxdb";
+// src/browser/vdbx-names.mjs
+var WORKING_COPY_DIRECTORY = "fylo-vdbx";
 function isWorkingCopyName(name) {
-  return typeof name === "string" && name.length <= 200 && /^[A-Za-z0-9][A-Za-z0-9 ._()-]*\.fxdb$/.test(name) && !name.includes("..");
+  return typeof name === "string" && name.length <= 200 && /^[A-Za-z0-9][A-Za-z0-9 ._()-]*\.vdbx$/.test(name) && !name.includes("..");
 }
 
 // src/browser/single-file-vfs.mjs
-var DEFAULT_DATABASE_PATH = "/database.fxdb";
+var DEFAULT_DATABASE_PATH = "/database.vdbx";
 function createFileBackend(file, { path = DEFAULT_DATABASE_PATH, reader } = {}) {
   const sync = reader ?? createReaderSync();
   const modifiedMs = file.lastModified ?? 0;
@@ -480,7 +480,7 @@ async function instantiate(moduleUrl, target) {
 async function openWorkingCopy({ name, copyFrom }, path, progress) {
   if (!isWorkingCopyName(name))
     throw new Error(`invalid working copy name: ${name}`);
-  await acquireLock(`fylo-fxdb:${name}`);
+  await acquireLock(`fylo-vdbx:${name}`);
   const root = await navigator.storage.getDirectory();
   const directory = await root.getDirectoryHandle(WORKING_COPY_DIRECTORY, { create: true });
   const file = await directory.getFileHandle(name, { create: Boolean(copyFrom) });
@@ -489,8 +489,8 @@ async function openWorkingCopy({ name, copyFrom }, path, progress) {
     await streamInto(accessHandle, copyFrom, progress);
   backend = createAccessHandleBackend(accessHandle, { path });
 }
-async function streamInto(handle, blob, progress) {
-  handle.truncate(0);
+async function streamInto(handle2, blob, progress) {
+  handle2.truncate(0);
   const total = blob.size;
   let copied = 0;
   const reader = blob.stream().getReader();
@@ -500,14 +500,14 @@ async function streamInto(handle, blob, progress) {
       break;
     let written = 0;
     while (written < value.length) {
-      written += handle.write(value.subarray(written), { at: copied + written });
+      written += handle2.write(value.subarray(written), { at: copied + written });
     }
     copied += value.length;
     progress({ copied, total });
   }
   if (copied !== total)
     throw new Error(`copied ${copied} of ${total} bytes`);
-  handle.flush();
+  handle2.flush();
 }
 function snapshot() {
   const file = opened();
@@ -526,7 +526,7 @@ function snapshot() {
     }
     parts.push(chunk);
   }
-  return { blob: new Blob(parts, { type: "application/vnd.d31ma.fxdb" }), size };
+  return { blob: new Blob(parts, { type: "application/vnd.d31ma.vdbx" }), size };
 }
 function describe() {
   const { kind, len, modifiedMs } = opened().call({ call: "stat" });
@@ -606,10 +606,10 @@ function createProbe(target) {
     check(table.open(PATH, encoded.length, flags, SCRATCH), "open");
     return view().getBigUint64(SCRATCH, true);
   };
-  const handle = openHandle(target.writable ? OPEN_READ | OPEN_WRITE : OPEN_READ);
+  const handle2 = openHandle(target.writable ? OPEN_READ | OPEN_WRITE : OPEN_READ);
   return {
     backend: target,
-    handle: Number(handle),
+    handle: Number(handle2),
     call(request) {
       switch (request.call) {
         case "stat": {
@@ -623,7 +623,7 @@ function createProbe(target) {
         }
         case "read": {
           room(request.length);
-          check(table.read_at(handle, BigInt(request.offset), DATA, request.length, SCRATCH), "read_at");
+          check(table.read_at(handle2, BigInt(request.offset), DATA, request.length, SCRATCH), "read_at");
           const read = view().getUint32(SCRATCH, true);
           return { read, bytes: bytes().slice(DATA, DATA + read) };
         }
@@ -631,14 +631,14 @@ function createProbe(target) {
           const from = new Uint8Array(request.bytes);
           room(from.length);
           bytes().set(from, DATA);
-          check(table.write_at(handle, BigInt(request.offset), DATA, from.length, SCRATCH), "write_at");
+          check(table.write_at(handle2, BigInt(request.offset), DATA, from.length, SCRATCH), "write_at");
           return { written: view().getUint32(SCRATCH, true) };
         }
         case "truncate":
-          check(table.truncate(handle, BigInt(request.length)), "truncate");
+          check(table.truncate(handle2, BigInt(request.length)), "truncate");
           return { length: request.length };
         case "flush":
-          check(table.flush(handle), "flush");
+          check(table.flush(handle2), "flush");
           return { flushed: true };
         case "openWrite":
           table.close(openHandle(OPEN_READ | OPEN_WRITE));
@@ -648,7 +648,7 @@ function createProbe(target) {
       }
     },
     close() {
-      table.close(handle);
+      table.close(handle2);
     }
   };
 }

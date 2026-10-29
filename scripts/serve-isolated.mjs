@@ -7,7 +7,7 @@
 //
 // `--no-isolation` leaves the headers off, as GitHub Pages and most static
 // hosts do, for the single-file hosts that must work without them. Byte
-// ranges are served either way, so a hosted `.fxdb` can be read in place.
+// ranges are served either way, so a hosted `.vdbx` can be read in place.
 //
 // Usage: node scripts/serve-isolated.mjs [port] [root] [--no-isolation]
 
@@ -28,7 +28,7 @@ const TYPES = {
     '.js': 'text/javascript; charset=utf-8',
     '.json': 'application/json; charset=utf-8',
     '.wasm': 'application/wasm',
-    '.fxdb': 'application/vnd.d31ma.fxdb'
+    '.vdbx': 'application/vnd.d31ma.vdbx'
 }
 
 createServer((request, response) => {

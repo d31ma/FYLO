@@ -109,7 +109,7 @@ Costs and limits:
   it.
 - Sessions that share a root (no exclusive lease) get nothing from the hot
   set. Keeping it there needs a cheap per-read check that the collection has
-  not moved, like SQLite's file change counter; the single-file `.fxdb`
+  not moved, like SQLite's file change counter; the single-file `.vdbx`
   format (ADR 0016) is the natural place for one.
 - Memory: up to the budget, plus transient copies for the reads in flight.
 

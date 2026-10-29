@@ -1,4 +1,4 @@
-//! Compression dictionaries in a `.fxdb` container (ADR 0016 sections 3
+//! Compression dictionaries in a `.vdbx` container (ADR 0016 sections 3
 //! and 8).
 //!
 //! A dictionary lives in one `dictionary` extent its collection owns: a

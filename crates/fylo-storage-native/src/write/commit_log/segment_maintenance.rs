@@ -59,7 +59,7 @@ impl NativeWriteRoot {
     ///
     /// The compaction lock is held throughout, so one compaction of the
     /// collection runs at a time; the collection lock only while the
-    /// segments are chosen and while the copy is adopted. In a `.fxdb`
+    /// segments are chosen and while the copy is adopted. In a `.vdbx`
     /// database the first is the collection's compactor byte and the
     /// second its writer byte, so a writer in another process waits for
     /// neither the copy nor the time between.
