@@ -104,31 +104,21 @@ function digest(engine, root, path) {
 }
 
 /**
- * Open a session, starting over when its bridge Worker never reports ready.
- *
- * Firefox occasionally parks a freshly started Worker's first OPFS call
- * forever when another Worker of the origin was terminated moments before; a
- * second Worker started right after is unaffected. That is start-up, not
- * durability, so it is retried here and recorded as an annotation. The stuck
- * Worker never created an engine Worker, so it holds no root lock.
+ * Open a session, recording when the harness had to replace a bridge Worker
+ * that never reported ready (a Firefox start-up fault, see `startBridge` in
+ * the harness page).
  */
 async function openSession(engine, root) {
-    for (let attempt = 1; attempt <= 3; attempt++) {
-        const session = await engine.page.evaluate(
-            ([root, ms]) =>
-                Promise.race([
-                    globalThis.fylo.open(root),
-                    new Promise((resolve) => setTimeout(() => resolve(null), ms))
-                ]),
-            [root, 20_000]
-        )
-        if (session !== null) return session
+    const before = await engine.page.evaluate(() => globalThis.fylo.bridgeRestarts())
+    const session = await engine.open(root)
+    const restarts = (await engine.page.evaluate(() => globalThis.fylo.bridgeRestarts())) - before
+    if (restarts > 0) {
         test.info().annotations.push({
             type: 'bridge-start-retry',
-            description: `${root}: bridge Worker not ready after 20 s (attempt ${attempt})`
+            description: `${root}: bridge Worker replaced ${restarts} time(s)`
         })
     }
-    throw new Error(`the bridge Worker for ${root} never became ready`)
+    return session
 }
 
 function locks(engine) {

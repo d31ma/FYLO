@@ -3668,7 +3668,13 @@ fn unreadable_lock_record(path: &Path) -> Result<LockRecord, NativeStorageError>
     };
     let metadata = fs::symlink_metadata(path).map_err(NativeStorageError::io)?;
     let written = commit_log::modified_ms(&metadata)?;
-    if unix_millis()?.saturating_sub(written) < LOCK_TTL_MILLIS {
+    // A browser module writes its records one host call at a time, so a tab
+    // closed or a Worker killed between the create and the write leaves one
+    // unreadable without any power loss. No live session can own it: this
+    // module writes a record in full before it reads one, and the root's Web
+    // Lock keeps every other session out.
+    let browser = cfg!(all(target_arch = "wasm32", target_os = "unknown"));
+    if !browser && unix_millis()?.saturating_sub(written) < LOCK_TTL_MILLIS {
         return Err(unreadable());
     }
     Ok(LockRecord {

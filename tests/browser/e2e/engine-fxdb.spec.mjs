@@ -38,13 +38,13 @@ const STATUSES = ['open', 'paid', 'shipped', 'returned']
 const SYNC_MARKER = 0x015259f5
 const CODECS = ['none', 'zstd', 'lz4']
 
-/** Paths of this project's fixtures, on disk and as the page fetches them. */
-function fixturePaths(project) {
-    const directory = join(FIXTURES, project)
+/** Paths of this worker's fixtures, on disk and as the page fetches them. */
+function fixturePaths(worker) {
+    const directory = join(FIXTURES, worker)
     return {
         directory,
         disk: (name) => join(directory, name),
-        url: (name) => `/${FIXTURES}/${project}/${name}`
+        url: (name) => `/${FIXTURES}/${worker}/${name}`
     }
 }
 
@@ -372,7 +372,7 @@ let fixture
 
 test.beforeAll(async ({}, workerInfo) => {
     test.setTimeout(600_000)
-    const paths = fixturePaths(workerInfo.project.name)
+    const paths = fixturePaths(`${workerInfo.project.name}-${workerInfo.workerIndex}`)
     rmSync(paths.directory, { recursive: true, force: true })
     mkdirSync(paths.directory, { recursive: true })
 
@@ -430,7 +430,8 @@ test.beforeAll(async ({}, workerInfo) => {
 test('reads a native database, dictionaries and all, exactly as native does', async ({
     page
 }, testInfo) => {
-    test.setTimeout(600_000)
+    // Firefox takes minutes for these reads on a loaded machine.
+    test.setTimeout(1_200_000)
     const harness = await FxdbPage.open(page)
     // Ranged requests are slower per open, so they get fewer point reads.
     const reads = {
@@ -456,8 +457,9 @@ test('reads a native database, dictionaries and all, exactly as native does', as
         try {
             expect(opened.info.writable).toBe(false)
             const started = Date.now()
-            const browser = await harness.exec(opened.id, reads[kind])
+            const browser = await harness.exec(opened.id, reads[kind], 540_000)
             evidence[kind] = { ms: Date.now() - started, frames: browser.length }
+            console.log(`fxdb reads over ${kind}: ${evidence[kind].ms} ms`)
             expectOk(browser, `browser reads (${kind})`)
             expectSameFrames(browser, native[kind], `reads over ${kind}`)
         } finally {
@@ -900,6 +902,7 @@ test('a Worker killed mid-batch leaves a working copy native verifies', async ({
         url: paths.url('native.fxdb')
     })
     const copy = opened.name
+    let reopened
     try {
         // Time a few writes, then kill the Worker about a third of the way
         // through a batch that would take several times as long.
@@ -924,7 +927,6 @@ test('a Worker killed mid-batch leaves a working copy native verifies', async ({
         evidence.killedAfterMs = delay
 
         // The Web Lock goes with the Worker; reopening may race its release.
-        let reopened
         for (let attempt = 0; attempt < 50; attempt++) {
             reopened = await harness.tryOpen({ kind: 'opfs', name: copy })
             if (reopened.code !== 'EBUSY') break
@@ -988,6 +990,9 @@ test('a Worker killed mid-batch leaves a working copy native verifies', async ({
             ])
         )
     } finally {
+        // A failure above can leave the reopened session holding the copy;
+        // close it so the cleanup does not hide that failure behind its own.
+        if (reopened?.id !== undefined) await harness.close(reopened.id).catch(() => {})
         await harness.removeCopy(copy)
         await attach(testInfo, 'fxdb-crash', evidence)
     }

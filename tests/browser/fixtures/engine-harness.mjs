@@ -100,18 +100,46 @@ class Session {
     }
 }
 
+/** How long a bridge Worker may take to open its root before it is replaced. */
+const BRIDGE_START_MS = 20_000
+/** Bridge Workers that never became ready and were replaced, for the specs. */
+let bridgeRestarts = 0
+
+/**
+ * A bridge Worker that has opened `root` over `buffer`.
+ *
+ * Firefox occasionally starts a Worker whose first OPFS call never settles,
+ * moments after another Worker of the origin was terminated (about one start
+ * in fifty under load). That is a browser start-up fault, not the engine's,
+ * so a bridge that is not ready in time is terminated and started again.
+ */
+async function startBridge(root, buffer) {
+    for (let attempt = 1; ; attempt++) {
+        const bridge = new Worker('/src/browser/opfs-bridge-worker.mjs', { type: 'module' })
+        const ready = await new Promise((settle, failed) => {
+            const timer = setTimeout(() => settle(false), BRIDGE_START_MS)
+            bridge.onmessage = (event) => {
+                clearTimeout(timer)
+                if (event.data?.bridgeError) failed(new Error(`bridge: ${event.data.bridgeError}`))
+                else settle(true)
+            }
+            bridge.onerror = (event) => {
+                clearTimeout(timer)
+                failed(new Error(event.message ?? 'bridge worker failed'))
+            }
+            bridge.postMessage({ buffer, root })
+        })
+        if (ready) return bridge
+        bridge.terminate()
+        bridgeRestarts++
+        if (attempt === 3) throw new Error(`the bridge Worker for ${root} never became ready`)
+    }
+}
+
 async function open(root) {
     if (!root.startsWith('/')) throw new Error(`a root is an absolute OPFS path: ${root}`)
     const buffer = createBridgeBuffer()
-    const bridge = new Worker('/src/browser/opfs-bridge-worker.mjs', { type: 'module' })
-    await new Promise((ready, failed) => {
-        bridge.onmessage = (event) => {
-            if (event.data?.bridgeError) failed(new Error(`bridge: ${event.data.bridgeError}`))
-            else ready(undefined)
-        }
-        bridge.onerror = (event) => failed(new Error(event.message ?? 'bridge worker failed'))
-        bridge.postMessage({ buffer, root })
-    })
+    const bridge = await startBridge(root, buffer)
     const engine = new Worker('/src/browser/fylo-wasm-worker.mjs', { type: 'module' })
     const session = new Session(root, bridge, engine)
     session.buffer = buffer
@@ -176,6 +204,11 @@ globalThis.fylo = {
     },
 
     open,
+
+    /** Bridge Workers replaced because they never became ready. */
+    bridgeRestarts() {
+        return bridgeRestarts
+    },
 
     /** Run one batch and wait for every frame. */
     exec(id, requests) {

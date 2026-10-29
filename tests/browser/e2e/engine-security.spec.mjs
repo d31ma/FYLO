@@ -27,7 +27,9 @@ import { isDeepStrictEqual } from 'node:util'
 import { gunzipSync, gzipSync } from 'node:zlib'
 
 const PLAIN_ORIGIN = 'http://127.0.0.1:4174'
-const FIXTURES = 'target/browser-fixtures/engine-security'
+const FIXTURE_ROOT = 'target/browser-fixtures/engine-security'
+/** This worker's fixture directory, so parallel workers never share a file. */
+let FIXTURES = FIXTURE_ROOT
 const KEY = 'e2e-security-key-at-least-thirty-two-bytes'
 const SALT = 'e2e-security-salt'
 const CIPHERTEXT = /v2\.[A-Za-z0-9_-]{16,}/
@@ -201,7 +203,8 @@ function expectSameOutcomes(browser, native, label) {
 let registryFixture
 let folderFixture
 
-test.beforeAll(() => {
+test.beforeAll(({}, workerInfo) => {
+    FIXTURES = join(FIXTURE_ROOT, `${workerInfo.project.name}-${workerInfo.workerIndex}`)
     registryFixture = encryptedRoot('registry', { registry: true })
     folderFixture = encryptedRoot('folder', { registry: false })
 })

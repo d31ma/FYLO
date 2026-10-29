@@ -188,11 +188,22 @@ globalThis.fxdb = {
         return sha256(new Uint8Array(await (await blobOf(source)).arrayBuffer()))
     },
 
+    /**
+     * Remove a working copy. A Worker terminated mid-batch can hold the
+     * copy's sync access handle for a moment after it is gone (Firefox
+     * refuses the removal with NoModificationAllowedError meanwhile), so a
+     * held copy is retried for up to ten seconds.
+     */
     async removeCopy(name) {
-        try {
-            await removeWorkingCopy(name)
-        } catch (error) {
-            if (error?.name !== 'NotFoundError') throw error
+        for (let waited = 0; ; waited += 250) {
+            try {
+                await removeWorkingCopy(name)
+                return
+            } catch (error) {
+                if (error?.name === 'NotFoundError') return
+                if (error?.name !== 'NoModificationAllowedError' || waited >= 10_000) throw error
+            }
+            await new Promise((resolve) => setTimeout(resolve, 250))
         }
     },
 
