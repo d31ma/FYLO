@@ -527,7 +527,9 @@ fn an_encrypted_file_lists_nothing_until_unlocked() {
         assert!(matches!(refused, ContainerError::Locked));
         assert_eq!(refused.code(), "EKEY");
         writer.unlock(SECRET).unwrap();
-        writer.add_collection("users", b"{\"kind\":\"document\"}").unwrap();
+        writer
+            .add_collection("users", b"{\"kind\":\"document\"}")
+            .unwrap();
         writer.add_collection("orders", b"{}").unwrap();
     }
     let mut reader = ContainerFile::open_reader(&path).unwrap();
@@ -546,7 +548,10 @@ fn an_encrypted_file_lists_nothing_until_unlocked() {
         .map(|collection| collection.header.name.as_str())
         .collect();
     assert_eq!(names, ["users", "orders"]);
-    assert_eq!(reader.collections()[0].header.descriptor, b"{\"kind\":\"document\"}");
+    assert_eq!(
+        reader.collections()[0].header.descriptor,
+        b"{\"kind\":\"document\"}"
+    );
     assert!(!reader.report().unwrap().locked);
 }
 

@@ -13,6 +13,7 @@ const EXTENT_BYTES: u64 = 1 << SHIFT;
 const LOCATIONS: ContainerExtentKind = ContainerExtentKind::Locations;
 const INDEX: ContainerExtentKind = ContainerExtentKind::Index;
 const USERS: u32 = 1;
+const CHECKPOINT: u64 = 1;
 
 struct Database(PathBuf);
 
@@ -73,7 +74,7 @@ fn snapshots_of_every_size_round_trip() {
     ] {
         let bytes = pattern(length);
         let snapshot = container
-            .write_snapshot(USERS, LOCATIONS, &bytes)
+            .write_snapshot(USERS, LOCATIONS, CHECKPOINT, &bytes)
             .expect("write snapshot");
         assert_eq!(snapshot.extent_count, extents, "{length} bytes");
         assert_eq!(snapshot.length, length as u64);
@@ -85,7 +86,7 @@ fn snapshots_of_every_size_round_trip() {
             assert_eq!(header.index, extent);
         }
         let read = container
-            .read_snapshot(USERS, LOCATIONS, &snapshot, length as u64)
+            .read_snapshot(USERS, LOCATIONS, CHECKPOINT, &snapshot, length as u64)
             .expect("read snapshot");
         assert_eq!(read, bytes, "{length} bytes");
     }
@@ -109,10 +110,10 @@ fn a_snapshot_survives_a_checkpoint_and_reopening_to_read() {
         let (block, id) = (users.block, users.header.id);
         assert_eq!(id, USERS);
         let locations_ref = container
-            .write_snapshot(id, LOCATIONS, &locations)
+            .write_snapshot(id, LOCATIONS, CHECKPOINT, &locations)
             .expect("write locations");
         let index_ref = container
-            .write_snapshot(id, INDEX, &index)
+            .write_snapshot(id, INDEX, CHECKPOINT, &index)
             .expect("write index");
         container
             .record_checkpoint(block, checkpoint_with(locations_ref, index_ref))
@@ -126,13 +127,13 @@ fn a_snapshot_survives_a_checkpoint_and_reopening_to_read() {
     assert_eq!(locations_ref.extent_count, 3);
     assert_eq!(
         reader
-            .read_snapshot(USERS, LOCATIONS, &locations_ref, u64::MAX)
+            .read_snapshot(USERS, LOCATIONS, CHECKPOINT, &locations_ref, u64::MAX)
             .expect("read locations"),
         locations
     );
     assert_eq!(
         reader
-            .read_snapshot(USERS, INDEX, &index_ref, 1024)
+            .read_snapshot(USERS, INDEX, CHECKPOINT, &index_ref, 1024)
             .expect("read index"),
         index
     );
@@ -157,7 +158,7 @@ fn a_tampered_snapshot_is_corrupt() {
     let snapshot = {
         let mut container = ContainerFile::open_unchecked(&path).expect("open container");
         let snapshot = container
-            .write_snapshot(USERS, LOCATIONS, &bytes)
+            .write_snapshot(USERS, LOCATIONS, CHECKPOINT, &bytes)
             .expect("write snapshot");
         container.checkpoint().expect("checkpoint");
         snapshot
@@ -169,7 +170,7 @@ fn a_tampered_snapshot_is_corrupt() {
     std::fs::write(&path, &file).expect("tamper");
     let container = ContainerFile::open_reader(&path).expect("open to read");
     let error = container
-        .read_snapshot(USERS, LOCATIONS, &snapshot, u64::MAX)
+        .read_snapshot(USERS, LOCATIONS, CHECKPOINT, &snapshot, u64::MAX)
         .expect_err("tampered");
     assert!(matches!(
         error,
@@ -183,11 +184,11 @@ fn a_snapshot_read_as_another_kind_or_collection_is_refused() {
     let (_guard, path) = created("fxdb-snapshot-owner");
     let mut container = ContainerFile::open_unchecked(&path).expect("open container");
     let snapshot = container
-        .write_snapshot(USERS, LOCATIONS, b"locations")
+        .write_snapshot(USERS, LOCATIONS, CHECKPOINT, b"locations")
         .expect("write snapshot");
     for (owner, kind) in [(USERS, INDEX), (USERS + 1, LOCATIONS)] {
         let error = container
-            .read_snapshot(owner, kind, &snapshot, u64::MAX)
+            .read_snapshot(owner, kind, CHECKPOINT, &snapshot, u64::MAX)
             .expect_err("someone else's snapshot");
         assert!(matches!(
             error,
@@ -202,11 +203,11 @@ fn a_snapshot_read_as_another_kind_or_collection_is_refused() {
         ContainerExtentKind::Map,
     ] {
         assert!(matches!(
-            container.write_snapshot(USERS, kind, b"x"),
+            container.write_snapshot(USERS, kind, CHECKPOINT, b"x"),
             Err(ContainerError::Format(ContainerFormatError::InvalidField))
         ));
         assert!(matches!(
-            container.read_snapshot(USERS, kind, &snapshot, u64::MAX),
+            container.read_snapshot(USERS, kind, CHECKPOINT, &snapshot, u64::MAX),
             Err(ContainerError::Format(ContainerFormatError::InvalidField))
         ));
     }
@@ -216,7 +217,7 @@ fn a_snapshot_read_as_another_kind_or_collection_is_refused() {
         ..snapshot
     };
     assert!(matches!(
-        container.read_snapshot(USERS, LOCATIONS, &directory, u64::MAX),
+        container.read_snapshot(USERS, LOCATIONS, CHECKPOINT, &directory, u64::MAX),
         Err(ContainerError::Format(ContainerFormatError::InvalidField))
     ));
     for first_extent in [0, snapshot.first_extent + 1, u64::MAX] {
@@ -225,7 +226,7 @@ fn a_snapshot_read_as_another_kind_or_collection_is_refused() {
             ..snapshot
         };
         assert!(matches!(
-            container.read_snapshot(USERS, LOCATIONS, &outside, u64::MAX),
+            container.read_snapshot(USERS, LOCATIONS, CHECKPOINT, &outside, u64::MAX),
             Err(ContainerError::Allocator(
                 ContainerAllocatorError::OutOfRange
             ))
@@ -238,14 +239,14 @@ fn a_snapshot_over_the_limit_is_refused_before_it_is_read() {
     let (_guard, path) = created("fxdb-snapshot-limit");
     let mut container = ContainerFile::open_unchecked(&path).expect("open container");
     let snapshot = container
-        .write_snapshot(USERS, LOCATIONS, &pattern(1000))
+        .write_snapshot(USERS, LOCATIONS, CHECKPOINT, &pattern(1000))
         .expect("write snapshot");
     assert!(matches!(
-        container.read_snapshot(USERS, LOCATIONS, &snapshot, 999),
+        container.read_snapshot(USERS, LOCATIONS, CHECKPOINT, &snapshot, 999),
         Err(ContainerError::Format(ContainerFormatError::Oversized))
     ));
     container
-        .read_snapshot(USERS, LOCATIONS, &snapshot, 1000)
+        .read_snapshot(USERS, LOCATIONS, CHECKPOINT, &snapshot, 1000)
         .expect("at the limit");
     // Neither length is ever allocated: one is over the limit, the other
     // more than its run can hold.
@@ -254,7 +255,7 @@ fn a_snapshot_over_the_limit_is_refused_before_it_is_read() {
         ..snapshot
     };
     let error = container
-        .read_snapshot(USERS, LOCATIONS, &huge, 1 << 20)
+        .read_snapshot(USERS, LOCATIONS, CHECKPOINT, &huge, 1 << 20)
         .expect_err("over the limit");
     assert!(matches!(
         error,
@@ -266,11 +267,11 @@ fn a_snapshot_over_the_limit_is_refused_before_it_is_read() {
         ..snapshot
     };
     assert!(matches!(
-        container.read_snapshot(USERS, LOCATIONS, &huge, u64::MAX),
+        container.read_snapshot(USERS, LOCATIONS, CHECKPOINT, &huge, u64::MAX),
         Err(ContainerError::Format(ContainerFormatError::InvalidField))
     ));
     assert!(matches!(
-        container.read_snapshot(USERS, LOCATIONS, &overlong, u64::MAX),
+        container.read_snapshot(USERS, LOCATIONS, CHECKPOINT, &overlong, u64::MAX),
         Err(ContainerError::Format(ContainerFormatError::InvalidField))
     ));
     let no_extents = ContainerSnapshotRef {
@@ -279,7 +280,7 @@ fn a_snapshot_over_the_limit_is_refused_before_it_is_read() {
         ..snapshot
     };
     assert!(matches!(
-        container.read_snapshot(USERS, LOCATIONS, &no_extents, u64::MAX),
+        container.read_snapshot(USERS, LOCATIONS, CHECKPOINT, &no_extents, u64::MAX),
         Err(ContainerError::Format(ContainerFormatError::InvalidField))
     ));
 }
@@ -290,7 +291,7 @@ fn a_released_snapshot_is_reused_after_a_checkpoint() {
     let mut container = ContainerFile::open_unchecked(&path).expect("open container");
     let bytes = pattern(5 * usize::try_from(EXTENT_BYTES).expect("extent") / 2);
     let old = container
-        .write_snapshot(USERS, LOCATIONS, &bytes)
+        .write_snapshot(USERS, LOCATIONS, CHECKPOINT, &bytes)
         .expect("write snapshot");
     assert_eq!((old.first_extent, old.extent_count), (3, 3));
     container.release_snapshot(&old).expect("release");
@@ -302,19 +303,19 @@ fn a_released_snapshot_is_reused_after_a_checkpoint() {
     ));
     // Not reusable before the checkpoint.
     let held = container
-        .write_snapshot(USERS, INDEX, b"index")
+        .write_snapshot(USERS, INDEX, CHECKPOINT, b"index")
         .expect("write index");
     assert_eq!(held.first_extent, 6);
     container.checkpoint().expect("checkpoint");
     // Extent 2 held the old map, 3 to 5 the snapshot; the new map took 7.
     assert_eq!(container.allocator().free_extents(), vec![2, 3, 4, 5]);
     let new = container
-        .write_snapshot(USERS, LOCATIONS, &bytes)
+        .write_snapshot(USERS, LOCATIONS, CHECKPOINT, &bytes)
         .expect("write again");
     assert_eq!((new.first_extent, new.extent_count), (2, 3));
     assert_eq!(
         container
-            .read_snapshot(USERS, LOCATIONS, &new, u64::MAX)
+            .read_snapshot(USERS, LOCATIONS, CHECKPOINT, &new, u64::MAX)
             .expect("read again"),
         bytes
     );
@@ -325,7 +326,7 @@ fn releasing_never_frees_an_extent_outside_a_snapshot() {
     let (_guard, path) = created("fxdb-snapshot-release-guard");
     let mut container = ContainerFile::open_unchecked(&path).expect("open container");
     let snapshot = container
-        .write_snapshot(USERS, LOCATIONS, b"locations")
+        .write_snapshot(USERS, LOCATIONS, CHECKPOINT, b"locations")
         .expect("write snapshot");
     let segment = container
         .allocate(ContainerExtentKind::Segment, USERS)
@@ -342,7 +343,7 @@ fn releasing_never_frees_an_extent_outside_a_snapshot() {
     ));
     assert_eq!(container.report().expect("report").extents.released, 0);
     container
-        .read_snapshot(USERS, LOCATIONS, &snapshot, u64::MAX)
+        .read_snapshot(USERS, LOCATIONS, CHECKPOINT, &snapshot, u64::MAX)
         .expect("still readable");
 }
 
@@ -352,14 +353,14 @@ fn a_reader_cannot_write_or_release_a_snapshot() {
     let snapshot = {
         let mut container = ContainerFile::open_unchecked(&path).expect("open container");
         let snapshot = container
-            .write_snapshot(USERS, INDEX, b"index")
+            .write_snapshot(USERS, INDEX, CHECKPOINT, b"index")
             .expect("write snapshot");
         container.checkpoint().expect("checkpoint");
         snapshot
     };
     let mut reader = ContainerFile::open_reader(&path).expect("open to read");
     assert!(matches!(
-        reader.write_snapshot(USERS, INDEX, b"index"),
+        reader.write_snapshot(USERS, INDEX, CHECKPOINT, b"index"),
         Err(ContainerError::ReadOnly)
     ));
     assert!(matches!(
@@ -368,7 +369,7 @@ fn a_reader_cannot_write_or_release_a_snapshot() {
     ));
     assert_eq!(
         reader
-            .read_snapshot(USERS, INDEX, &snapshot, 5)
+            .read_snapshot(USERS, INDEX, CHECKPOINT, &snapshot, 5)
             .expect("read"),
         b"index"
     );
@@ -380,18 +381,62 @@ fn a_snapshot_the_map_does_not_cover_yet_is_refused_after_reopening() {
     let snapshot = {
         let mut container = ContainerFile::open_unchecked(&path).expect("open container");
         container
-            .write_snapshot(USERS, LOCATIONS, b"locations")
+            .write_snapshot(USERS, LOCATIONS, CHECKPOINT, b"locations")
             .expect("write snapshot")
     };
     // Without a map checkpoint the reopened file does not reach the run;
     // the caller rebuilds the snapshot from the segments.
     let reader = ContainerFile::open_reader(&path).expect("open to read");
     let error = reader
-        .read_snapshot(USERS, LOCATIONS, &snapshot, u64::MAX)
+        .read_snapshot(USERS, LOCATIONS, CHECKPOINT, &snapshot, u64::MAX)
         .expect_err("outside the checkpointed map");
     assert!(matches!(
         error,
         ContainerError::Allocator(ContainerAllocatorError::OutOfRange)
     ));
     assert!(corrupt(&error));
+}
+
+#[test]
+fn an_encrypted_snapshot_is_sealed_for_its_place() {
+    let dir = std::env::temp_dir().join(crate::write::unique_name("fxdb-snapshot-sealed"));
+    std::fs::create_dir_all(&dir).expect("create directory");
+    let _guard = Database(dir.clone());
+    let path = dir.join("test.fxdb");
+    ContainerFile::create_encrypted(&path, SHIFT, b"secret").unwrap();
+    let mut container = ContainerFile::open_unchecked(&path).unwrap();
+    assert!(matches!(
+        container.write_snapshot(USERS, LOCATIONS, CHECKPOINT, b"x"),
+        Err(ContainerError::Locked)
+    ));
+    container.unlock(b"secret").unwrap();
+    let bytes = b"user-location-table".repeat(100);
+    let snapshot = container
+        .write_snapshot(USERS, LOCATIONS, CHECKPOINT, &bytes)
+        .unwrap();
+    // The stored bytes are sealed: a nonce and tag around the ciphertext.
+    assert_eq!(snapshot.length, bytes.len() as u64 + 28);
+    let file = std::fs::read(&path).unwrap();
+    assert!(
+        !file
+            .windows(19)
+            .any(|window| window == b"user-location-table")
+    );
+    assert_eq!(
+        container
+            .read_snapshot(USERS, LOCATIONS, CHECKPOINT, &snapshot, u64::MAX)
+            .unwrap(),
+        bytes
+    );
+    for (kind, checkpoint) in [(INDEX, CHECKPOINT), (LOCATIONS, CHECKPOINT + 1)] {
+        let refused = container
+            .read_snapshot(USERS, kind, checkpoint, &snapshot, u64::MAX)
+            .unwrap_err();
+        assert_eq!(refused.code(), "EFXDB_CORRUPT");
+    }
+    let locked = ContainerFile::open_reader(&path).unwrap();
+    assert!(matches!(
+        locked.read_snapshot(USERS, LOCATIONS, CHECKPOINT, &snapshot, u64::MAX),
+        Err(ContainerError::Locked)
+    ));
 }

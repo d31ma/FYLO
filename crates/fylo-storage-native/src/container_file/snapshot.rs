@@ -6,6 +6,10 @@
 //! first extent, the run's length, the snapshot's length and its SHA-256.
 //! The bytes fill the payloads in order, each extent full but the last.
 //!
+//! In an encrypted file the snapshot is sealed for its collection, kind and
+//! the checkpoint that wrote it, and the reference's length and hash are
+//! those of the sealed bytes, so `fylo verify` checks them without the key.
+//!
 //! A snapshot is derived, never a source of truth: a reader that finds the
 //! run damaged, reused or of the wrong length rebuilds it by replaying the
 //! collection's segments, so every check here fails closed rather than
@@ -17,13 +21,15 @@ use fylo_format::{
 use sha2::{Digest, Sha256};
 
 use super::{ContainerError, ContainerFile, read_exact_at, write_extent_header};
+use crate::ContainerSealContext;
 use crate::container_allocator::{ContainerAllocatorError, ContainerExtentAllocation};
 
 impl ContainerFile {
     /// Write a collection's derived snapshot into a fresh run of consecutive
     /// extents, flush it, and return the reference its checkpoint slot
     /// records. An empty snapshot still takes one extent, so the reference
-    /// always names a run.
+    /// always names a run. `checkpoint` is the number of the checkpoint
+    /// slot that will name it; an encrypted file seals the snapshot for it.
     ///
     /// The previous snapshot is left alone. The caller records the returned
     /// reference with [`Self::record_checkpoint`], then gives the previous
@@ -35,16 +41,30 @@ impl ContainerFile {
     ///
     /// Returns `ReadOnly` for a reader, `InvalidField` for a kind other than
     /// `Locations` or `Index`, `Oversized` for a snapshot longer than the
-    /// format can name, or the write, resize or flush failure. On a failure
+    /// format can name, `Cipher(Random)` when no nonce can be drawn, or the
+    /// write, resize or flush failure. On a failure
     /// the run is released, so it is reused after the next checkpoint.
     pub fn write_snapshot(
         &mut self,
         collection: u32,
         kind: ContainerExtentKind,
+        checkpoint: u64,
         bytes: &[u8],
     ) -> Result<ContainerSnapshotRef, ContainerError> {
         self.require_writable()?;
         require_snapshot_kind(kind)?;
+        let sealed = match self.cipher() {
+            Some(cipher) => Some(cipher.seal(
+                ContainerSealContext::Snapshot {
+                    collection,
+                    checkpoint,
+                    kind,
+                },
+                bytes,
+            )?),
+            None => None,
+        };
+        let bytes = sealed.as_deref().unwrap_or(bytes);
         let capacity = self.payload_capacity();
         let length = bytes.len() as u64;
         let extents = length.div_ceil(capacity).max(1);
@@ -108,7 +128,10 @@ impl ContainerFile {
     }
 
     /// Read a collection's derived snapshot and check it against its
-    /// reference. Works on readers.
+    /// reference, opening it with the key of an encrypted file. Works on
+    /// readers. `checkpoint` is the number of the slot that names it, and
+    /// `max_bytes` bounds the stored bytes, which in an encrypted file are
+    /// the snapshot plus 28.
     ///
     /// The reference is checked before anything is allocated: its length
     /// against `max_bytes` and against what the run can hold, and the run
@@ -124,16 +147,22 @@ impl ContainerFile {
     /// the run cannot hold or an extent that holds something else,
     /// `Allocator(OutOfRange)` for a run outside the file,
     /// `ChecksumMismatch` when the bytes do not hash to the recorded
-    /// SHA-256, a header decoding error, or the read failure. All of them
-    /// report `EFXDB_CORRUPT`, and the caller rebuilds the snapshot.
+    /// SHA-256, `Cipher(Unauthenticated)` when the sealed bytes were sealed
+    /// for another place, a header decoding error, or the read failure. All
+    /// of them report `EFXDB_CORRUPT`, and the caller rebuilds the snapshot.
+    /// A locked encrypted file gives `Locked`.
     pub fn read_snapshot(
         &self,
         collection: u32,
         kind: ContainerExtentKind,
+        checkpoint: u64,
         snapshot: &ContainerSnapshotRef,
         max_bytes: u64,
     ) -> Result<Vec<u8>, ContainerError> {
         require_snapshot_kind(kind)?;
+        if self.is_locked() {
+            return Err(ContainerError::Locked);
+        }
         if snapshot.length > max_bytes {
             return Err(ContainerFormatError::Oversized.into());
         }
@@ -160,7 +189,17 @@ impl ContainerFile {
         if <[u8; 32]>::from(Sha256::digest(&bytes)) != snapshot.sha256 {
             return Err(ContainerFormatError::ChecksumMismatch.into());
         }
-        Ok(bytes)
+        match self.cipher() {
+            Some(cipher) => Ok(cipher.open(
+                ContainerSealContext::Snapshot {
+                    collection,
+                    checkpoint,
+                    kind,
+                },
+                &bytes,
+            )?),
+            None => Ok(bytes),
+        }
     }
 
     /// Release every extent of a snapshot's run, once a newer checkpoint
