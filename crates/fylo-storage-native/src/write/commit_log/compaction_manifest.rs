@@ -1,7 +1,10 @@
 use serde::{Deserialize, Serialize};
 
+use fylo_format::LogRecordKind;
+
 use super::log_segment::LogSegment;
 use super::segment_rebuild::SegmentRebuild;
+use super::segment_recovery::SchemaCopies;
 use crate::segments::{LocationTable, SegmentLocation, SegmentPaths};
 use crate::{NativeStorageError, NativeStorageErrorCode};
 
@@ -36,13 +39,14 @@ impl CompactionManifest {
     }
 
     /// Location rows that move each document whose newest entry the
-    /// compacted segment copied to that copy. A copy whose document was
-    /// written again after the copy was taken is dead on arrival.
-    pub(crate) fn adopted_rows(
+    /// compacted segment copied to that copy, and where it holds each schema
+    /// record. A copy whose document was written again after the copy was
+    /// taken is dead on arrival.
+    pub(crate) fn adopted(
         paths: &SegmentPaths,
         table: &LocationTable,
         segment: u64,
-    ) -> Result<Vec<SegmentLocation>, NativeStorageError> {
+    ) -> Result<(Vec<SegmentLocation>, SchemaCopies), NativeStorageError> {
         let scan = LogSegment::scan(&paths.segment(segment))?.ok_or_else(|| {
             NativeStorageError::new(
                 NativeStorageErrorCode::CorruptDocument,
@@ -51,7 +55,12 @@ impl CompactionManifest {
         })?;
         let lengths = SegmentRebuild::frame_lengths(&scan);
         let mut rows = Vec::new();
+        let mut schemas = SchemaCopies::new();
         for ((offset, record), length) in scan.records.iter().zip(lengths) {
+            if record.kind == LogRecordKind::Schema {
+                schemas.insert(record.lsn, (segment, *offset, length));
+                continue;
+            }
             for row in SegmentRebuild::rows_of(segment, (*offset, length), record)? {
                 if table
                     .get(&row.id)
@@ -61,6 +70,6 @@ impl CompactionManifest {
                 }
             }
         }
-        Ok(rows)
+        Ok((rows, schemas))
     }
 }

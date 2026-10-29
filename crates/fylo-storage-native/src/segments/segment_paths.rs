@@ -44,6 +44,11 @@ impl SegmentPaths {
         self.directory.join("locations.wal")
     }
 
+    /// The derived schemas snapshot (ADR 0017 section 3).
+    pub(crate) fn schemas_snapshot(&self) -> PathBuf {
+        self.directory.join("schemas.snapshot")
+    }
+
     /// The numbers of every segment file present, in ascending order.
     pub(crate) fn segment_numbers(&self) -> Result<Vec<u64>, NativeStorageError> {
         let mut numbers = Vec::new();

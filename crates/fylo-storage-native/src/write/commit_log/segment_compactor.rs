@@ -13,7 +13,8 @@ use super::compaction_report::CompactionReport;
 use super::log_segment::LogSegment;
 use super::segment_checkpoint::SegmentCheckpoint;
 use super::segment_plan::SegmentPlan;
-use super::segment_recovery::SegmentRecovery;
+use super::segment_recovery::{SchemaCopies, SegmentRecovery};
+use super::segment_schemas::{SchemaVersionEntry, SegmentSchemas};
 use crate::segments::{
     SegmentCommitManifest, SegmentDocument, SegmentLocation, SegmentPaths, SegmentReader,
     SegmentStore,
@@ -27,9 +28,15 @@ use crate::{GenerationState, NativeCollection, NativeStorageError, NativeStorage
 /// change. Each live entry keeps its sequence number, so the copy and the
 /// original are interchangeable, and the compaction commits by appending one
 /// compaction record to the active segment under the lock.
+///
+/// Schema records (ADR 0017 section 3) are not documents, but they are live
+/// for as long as the registry lists them: each one in a chosen segment is
+/// copied too, with its sequence number, and the schemas snapshot is pointed
+/// at the copy when the compaction is adopted.
 pub(crate) struct SegmentCompactor {
     candidates: Vec<u64>,
     rows: Vec<SegmentLocation>,
+    schemas: Vec<SchemaVersionEntry>,
     bytes_before: u64,
 }
 
@@ -62,7 +69,8 @@ impl SegmentCompactor {
         Self::remove_temporaries(&paths)?;
         SegmentRecovery::remove_unreferenced(&paths, active.sequence())?;
         let store = SegmentStore::open_for_writer(&collection.path)?;
-        Self::choose(&paths, &store, active.sequence())
+        let schemas = SegmentSchemas::load(&paths, collection.schema_head())?;
+        Self::choose(&paths, (&store, &schemas), active.sequence())
     }
 
     /// Copy every live entry of the chosen segments, in identifier order,
@@ -82,7 +90,13 @@ impl SegmentCompactor {
         let header = LogSegmentHeader {
             kind: LogSegmentKind::CompactedDocuments,
             sequence: 0,
-            first_lsn: self.rows.iter().map(|row| row.lsn).min().unwrap_or(1),
+            first_lsn: self
+                .rows
+                .iter()
+                .map(|row| row.lsn)
+                .chain(self.schemas.iter().map(|entry| entry.lsn))
+                .min()
+                .unwrap_or(1),
         };
         let mut options = OpenOptions::new();
         options.write(true).create(true).truncate(true);
@@ -90,6 +104,10 @@ impl SegmentCompactor {
         let mut file = options.open(&path).map_err(NativeStorageError::io)?;
         file.write_all(&header.encode())
             .map_err(NativeStorageError::io)?;
+        for entry in &self.schemas {
+            let frame = Self::copied_schema(&reader, entry)?;
+            file.write_all(&frame).map_err(NativeStorageError::io)?;
+        }
         let mut records: BTreeMap<(u64, u64), LogRecord> = BTreeMap::new();
         for row in &self.rows {
             let key = (row.segment, row.offset);
@@ -134,19 +152,21 @@ impl SegmentCompactor {
             return Err(error);
         }
         let store = SegmentStore::open_for_writer(&collection.path)?;
-        let rows = CompactionManifest::adopted_rows(&paths, store.table(), number)?;
+        let (rows, copies) = CompactionManifest::adopted(&paths, store.table(), number)?;
         let previous: Vec<SegmentLocation> = rows
             .iter()
             .filter_map(|row| store.table().get(&row.id).cloned())
             .collect();
+        let previous_schemas = SegmentSchemas::snapshot_bytes(&paths)?;
         let applied = failpoint("after-compaction-record")
-            .and_then(|()| SegmentPlan::append_locations(&collection.path, &rows));
+            .and_then(|()| SegmentPlan::append_locations(&collection.path, &rows))
+            .and_then(|()| Self::relocate_schemas(collection, &paths, &copies));
         if let Err(error) = applied {
             Self::roll_back(
                 collection,
                 &mut active,
                 (lsn, generation),
-                (&previous, &adopted),
+                (&previous, previous_schemas.as_deref(), &adopted),
             )?;
             return Err(error);
         }
@@ -170,9 +190,14 @@ impl SegmentCompactor {
         collection: &NativeCollection,
         active: &mut LogSegment,
         (lsn, generation): (u64, u64),
-        (previous, adopted): (&[SegmentLocation], &std::path::Path),
+        (previous, previous_schemas, adopted): (
+            &[SegmentLocation],
+            Option<&[u8]>,
+            &std::path::Path,
+        ),
     ) -> Result<(), NativeStorageError> {
         SegmentPlan::append_locations(&collection.path, previous)?;
+        SegmentSchemas::restore(&SegmentPaths::of(&collection.path), previous_schemas)?;
         let manifest =
             serde_json::to_vec(&AbortManifest::new(lsn)).map_err(|error| json_error(&error))?;
         let record = LogRecord {
@@ -214,15 +239,22 @@ impl SegmentCompactor {
 
     fn choose(
         paths: &SegmentPaths,
-        store: &SegmentStore,
+        (store, schemas): (&SegmentStore, &SegmentSchemas),
         active: u64,
     ) -> Result<Option<Self>, NativeStorageError> {
         let rows = store.table().rows();
         let mut live: BTreeMap<u64, BTreeMap<u64, u32>> = BTreeMap::new();
-        for row in &rows {
-            live.entry(row.segment)
-                .or_default()
-                .insert(row.offset, row.length);
+        let records = rows
+            .iter()
+            .map(|row| (row.segment, row.offset, row.length))
+            .chain(
+                schemas
+                    .entries()
+                    .iter()
+                    .map(|entry| (entry.segment, entry.offset, entry.length)),
+            );
+        for (segment, offset, length) in records {
+            live.entry(segment).or_default().insert(offset, length);
         }
         let mut candidates = Vec::new();
         let mut bytes_before = 0;
@@ -250,9 +282,16 @@ impl SegmentCompactor {
             .filter(|row| chosen.contains(&row.segment))
             .cloned()
             .collect();
+        let schemas = schemas
+            .entries()
+            .iter()
+            .filter(|entry| chosen.contains(&entry.segment))
+            .cloned()
+            .collect();
         Ok(Some(Self {
             candidates: chosen.into_iter().collect(),
             rows,
+            schemas,
             bytes_before,
         }))
     }
@@ -283,6 +322,37 @@ impl SegmentCompactor {
             blobs: document.body,
         };
         LogSegment::frame(LogSegmentKind::CompactedDocuments, &copied)
+    }
+
+    /// A schema record as it is, framed for the compacted segment.
+    fn copied_schema(
+        reader: &SegmentReader,
+        entry: &SchemaVersionEntry,
+    ) -> Result<Vec<u8>, NativeStorageError> {
+        let frame = reader.span(entry.segment, entry.offset, entry.length as usize)?;
+        let record = SegmentReader::decode(&frame)?;
+        if record.kind != LogRecordKind::Schema || record.lsn != entry.lsn {
+            return Err(SegmentSchemas::corrupt(&format!(
+                "schema version {} is not at its recorded location",
+                entry.ordinal
+            )));
+        }
+        LogSegment::frame(LogSegmentKind::CompactedDocuments, &record)
+    }
+
+    /// Point the schemas snapshot at the copies the adopted segment holds.
+    fn relocate_schemas(
+        collection: &NativeCollection,
+        paths: &SegmentPaths,
+        copies: &SchemaCopies,
+    ) -> Result<(), NativeStorageError> {
+        if copies.is_empty() {
+            return Ok(());
+        }
+        SegmentSchemas::load(paths, collection.schema_head())?
+            .relocated(copies)
+            .write_if_changed(paths)
+            .map(|_| ())
     }
 
     fn append_record(

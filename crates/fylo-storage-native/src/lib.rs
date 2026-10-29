@@ -392,15 +392,19 @@ impl NativeRoot {
     /// Ordinal of a collection's schema registry head, or `None` while its
     /// schemas are read from `fylo.schema` (ADR 0017 section 3).
     ///
-    /// Reads only the catalog descriptor, so it answers for a collection
-    /// whose directory does not exist yet.
+    /// On the file layout it reads only the catalog descriptor, so it answers
+    /// for a collection whose directory does not exist yet. A segment collection's head is its
+    /// newest schema record, read through its schemas snapshot; its
+    /// descriptor follows the records and is not trusted on its own.
     ///
     /// # Errors
     ///
-    /// Returns an error for an invalid name or a corrupt descriptor.
+    /// Returns an error for an invalid name, a corrupt descriptor, or a
+    /// segment collection whose schema records cannot be read.
     pub fn schema_registry_head(&self, name: &str) -> Result<Option<u32>, NativeStorageError> {
-        self.assert_profile_owned()?;
-        validate_collection_name(name)?;
+        if let Some(schemas) = self.segment_schemas(name)? {
+            return Ok(schemas.head());
+        }
         self.collection_descriptor(name)?
             .map_or(Ok(None), |descriptor| descriptor.schema_head())
     }

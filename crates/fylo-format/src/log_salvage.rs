@@ -123,6 +123,50 @@ mod tests {
         }
     }
 
+    /// Frame `record` as a document segment frame, then rewrite its kind
+    /// byte to `code` with a checksum that still holds.
+    fn reframed(record: &LogRecord, code: u8) -> Vec<u8> {
+        let mut frame = LogSegmentKind::Documents.frame(record).unwrap();
+        let body = LogSegmentKind::MARKER_BYTES + LogRecord::FRAME_BYTES;
+        frame[body + 8] = code;
+        let checksum = crate::Crc32c::checksum(&frame[body..]);
+        frame[body - 4..body].copy_from_slice(&checksum.to_le_bytes());
+        frame
+    }
+
+    #[test]
+    fn a_schema_record_is_read_and_an_unknown_kind_is_damage() {
+        let (mut bytes, _) = segment(LogSegmentKind::Documents, 1);
+        let schema = LogRecord {
+            lsn: 2,
+            kind: LogRecordKind::Schema,
+            generation: 2,
+            manifest: br#"{"format":"fylo.schema-version.v1"}"#.to_vec(),
+            blobs: b"{}".to_vec(),
+        };
+        let schema_start = bytes.len();
+        bytes.extend(reframed(&schema, 5));
+        let unknown_start = bytes.len();
+        bytes.extend(reframed(
+            &LogRecord {
+                lsn: 3,
+                ..schema.clone()
+            },
+            6,
+        ));
+        let salvage = LogSalvage::segment(&bytes).unwrap();
+        assert_eq!(salvage.records.len(), 2);
+        assert_eq!(salvage.records[1], (schema_start as u64, schema));
+        assert_eq!(
+            salvage.damaged,
+            vec![(unknown_start as u64, bytes.len() as u64)]
+        );
+        let scan = crate::LogScan::segment(&bytes).unwrap();
+        assert_eq!(scan.records.len(), 2);
+        assert_eq!(scan.valid_length, unknown_start as u64);
+        assert_eq!(scan.stopped, Some(LogFormatError::InvalidField));
+    }
+
     #[test]
     fn a_write_ahead_log_cannot_be_salvaged() {
         let (bytes, _) = segment(LogSegmentKind::WriteAheadLog, 1);

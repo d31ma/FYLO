@@ -34,8 +34,10 @@ fn run(arguments: &[String]) -> Result<String, String> {
     let command = arguments.first().map(String::as_str).ok_or_else(usage)?;
     if command == "failpoints" {
         // The crash matrix enumerates this rather than keeping its own list.
-        return serde_json::to_string(&json!({ "failpoints": fylo_storage_native::FAILPOINTS }))
-            .map_err(|error| error.to_string());
+        return serde_json::to_string(
+            &json!({ "failpoints": fylo_storage_native::FAILPOINTS.as_slice() }),
+        )
+        .map_err(|error| error.to_string());
     }
     let root = required_option(arguments, "--root")?;
     let writer = NativeWriteRoot::open(root).map_err(|error| error.to_string())?;

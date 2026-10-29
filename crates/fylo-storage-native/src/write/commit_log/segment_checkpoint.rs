@@ -5,6 +5,7 @@ use fylo_format::{LogRecord, LogRecordKind};
 use super::super::{GenerationRecord, durable_replace_owner_only, failpoint, json_error};
 use super::log_checkpoint::LogCheckpoint;
 use super::log_segment::LogSegment;
+use super::segment_schemas::SegmentSchemas;
 use crate::segments::{
     GenerationSlots, LocationTable, SegmentCheckpointManifest, SegmentPaths, SegmentStore,
     SlotRecord, TableCache,
@@ -16,7 +17,8 @@ use crate::{GenerationState, NativeCollection, NativeStorageError, NativeStorage
 ///
 /// It runs under the collection lock with the active segment open. The
 /// documents themselves are already durable in their segments, so only the
-/// location log, the index log and their snapshots are flushed. When the
+/// location log, the index log and their snapshots are flushed, and the
+/// checkpoint record names the schemas snapshot it found. When the
 /// active segment has grown large it is sealed and the next one opens with
 /// the checkpoint record.
 pub(crate) struct SegmentCheckpoint;
@@ -77,6 +79,9 @@ impl SegmentCheckpoint {
         }
         Self::flush_logs(collection, &paths)?;
         LogCheckpoint::compact_index(collection)?;
+        // A schema commit leaves the snapshot current, so this writes only
+        // when it is missing or no longer matches the records.
+        SegmentSchemas::load(&paths, collection.schema_head())?.write_if_changed(&paths)?;
         failpoint("after-checkpoint-flush")?;
         let manifest = Self::manifest(&collection.path)?;
         let mut segment = Self::record(&paths, segment, &manifest, (generation, seal))?;
@@ -200,6 +205,7 @@ impl SegmentCheckpoint {
             locations_snapshot_sha256: Self::digest(&paths.locations_snapshot())?,
             keys_wal_length: SegmentStore::file_length(&index.join("keys.wal"))?,
             snapshot_sha256: Self::digest(&index.join("keys.snapshot"))?,
+            schemas_snapshot_sha256: SegmentSchemas::digest(&paths)?,
         })
     }
 

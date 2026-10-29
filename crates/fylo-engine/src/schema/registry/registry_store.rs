@@ -6,11 +6,15 @@ use fylo_storage_native::{
 
 /// Where a database keeps its schema registry (ADR 0017 section 3).
 ///
-/// A directory root on the file layout keeps one file per version and the
-/// head in the collection descriptor ([`DirectoryRegistryStore`]). A `.fxdb`
-/// file or a segment collection will keep each version as a record of kind 5
-/// and a schemas snapshot (extent kind 7) once ADR 0015's segments land; that
-/// store implements this trait and nothing above it changes.
+/// A directory root keeps it per collection ([`DirectoryRegistryStore`]): a
+/// collection on the file layout as one file per version with the head in
+/// the collection descriptor, and a segment collection (ADR 0015) as schema
+/// records (kind 5) in its segments, read through the derived schemas
+/// snapshot, with the record authoritative over the descriptor. Storage
+/// answers both through the same calls, so nothing above this trait tells
+/// them apart. A `.fxdb` file will keep its versions as records too, with
+/// the snapshot as extent kind 7, behind another implementation of this
+/// trait.
 pub(crate) trait SchemaRegistryStore {
     /// Identity of the database, which keys the process-wide version cache.
     fn location(&self) -> &Path;
@@ -38,7 +42,9 @@ pub(crate) trait SchemaRegistryStore {
 }
 
 /// The registry of a directory root: `<root>/.fylo-schemas/<collection>/
-/// <ordinal>.json`, with the head in the catalog descriptor.
+/// <ordinal>.json`, with the head in the catalog descriptor, for a
+/// collection on the file layout, and the collection's schema records for a
+/// segment collection.
 pub(crate) struct DirectoryRegistryStore {
     root: NativeRoot,
     writer: Option<NativeWriteRoot>,

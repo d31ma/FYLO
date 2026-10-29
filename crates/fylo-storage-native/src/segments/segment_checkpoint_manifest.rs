@@ -12,6 +12,11 @@ pub(crate) struct SegmentCheckpointManifest {
     pub(crate) locations_snapshot_sha256: String,
     pub(crate) keys_wal_length: u64,
     pub(crate) snapshot_sha256: String,
+    /// Digest of the schemas snapshot (ADR 0017 section 3), absent when the
+    /// collection has none. A checkpoint written before schemas snapshots
+    /// existed has no such field, which reads as no snapshot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) schemas_snapshot_sha256: Option<String>,
 }
 
 impl SegmentCheckpointManifest {

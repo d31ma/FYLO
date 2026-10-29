@@ -10,16 +10,26 @@
 //! descriptor, the way `reshard` changes it, under the collection lock. A file
 //! above the head is therefore one a crash left before its descriptor change:
 //! it was never committed, nothing reads it, and the next push replaces it.
+//!
+//! A segment collection (ADR 0015) keeps its registry in the collection
+//! instead: each version is a schema record (kind 5) in its segments and the
+//! derived schemas snapshot lists them (`commit_log::SegmentSchemas`). The
+//! records are authoritative; the descriptor still carries
+//! `"schemas": "registry"` and `schemaHead`, written after each record
+//! commits, so it can lag the records after a crash but never lead them.
+//! Everything above storage reads both kinds through the same calls here.
 
 use fylo_vfs as fs;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
+use super::commit_log::SegmentSchemas;
 use super::{
     GenerationRecord, NativeWriteRoot, durable_replace, failpoint, json_error, read_bounded_json,
     remove_dir_durable, sync_parent, write_generation,
 };
+use crate::segments::SegmentPaths;
 use crate::{
     CollectionKind, MAX_DESCRIPTOR_BYTES, NativeCollection, NativeRoot, NativeStorageError,
     NativeStorageErrorCode, path_exists_no_follow, validate_collection_name,
@@ -55,12 +65,21 @@ impl NativeRoot {
         collection: &str,
         ordinal: u32,
     ) -> Result<Vec<u8>, NativeStorageError> {
-        let head = self.schema_registry_head(collection)?.unwrap_or(0);
-        if ordinal == 0 || ordinal > head {
-            return Err(NativeStorageError::new(
+        let not_committed = || {
+            NativeStorageError::new(
                 NativeStorageErrorCode::NotFound,
                 format!("schema version {ordinal} of collection {collection} is not committed"),
-            ));
+            )
+        };
+        if let Some(schemas) = self.segment_schemas(collection)? {
+            return schemas
+                .version(ordinal)
+                .map(<[u8]>::to_vec)
+                .ok_or_else(not_committed);
+        }
+        let head = self.schema_registry_head(collection)?.unwrap_or(0);
+        if ordinal == 0 || ordinal > head {
+            return Err(not_committed());
         }
         let directory = self.schema_registry_directory();
         Self::require_registry_directory(&directory)?;
@@ -87,6 +106,35 @@ impl NativeRoot {
         }
         Self::require_registry_directory(&directory)?;
         Self::read_registry_file(&record, MAX_DESCRIPTOR_BYTES).map(Some)
+    }
+
+    /// The registry of a segment collection, read from its schema records
+    /// through the schemas snapshot, or `None` for a collection on the file
+    /// layout or one whose directory does not exist yet.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid name, a corrupt descriptor, or a
+    /// registry whose records cannot be read.
+    pub(crate) fn segment_schemas(
+        &self,
+        name: &str,
+    ) -> Result<Option<std::sync::Arc<SegmentSchemas>>, NativeStorageError> {
+        self.assert_profile_owned()?;
+        validate_collection_name(name)?;
+        let Some(descriptor) = self.collection_descriptor(name)? else {
+            return Ok(None);
+        };
+        if descriptor.layout != crate::CollectionLayout::Segments {
+            return Ok(None);
+        }
+        let collection = self.canonical.join(".collections").join(name);
+        let paths = SegmentPaths::of(&collection);
+        if !path_exists_no_follow(paths.directory())? {
+            return Ok(None);
+        }
+        self.verify_path(&collection, crate::ExpectedType::Directory)?;
+        SegmentSchemas::for_reader(&paths, descriptor.schema_head()?).map(Some)
     }
 
     fn schema_registry_directory(&self) -> PathBuf {
@@ -165,6 +213,9 @@ impl NativeWriteRoot {
                 ),
             ));
         }
+        if collection.uses_segments() {
+            return self.commit_segment_schema(&collection, ordinal, version, verify);
+        }
         verify(&collection)?;
         let path = self.schema_version_path(collection_name, ordinal)?;
         durable_replace(&path, version)?;
@@ -197,7 +248,7 @@ impl NativeWriteRoot {
         Ok(())
     }
 
-    fn schema_version_path(
+    pub(super) fn schema_version_path(
         &self,
         collection_name: &str,
         ordinal: u32,
@@ -242,7 +293,8 @@ impl NativeWriteRoot {
         )
     }
 
-    fn write_schema_head(
+    /// Record `ordinal` as the descriptor's registry head.
+    pub(super) fn write_schema_head(
         &self,
         collection: &NativeCollection,
         ordinal: u32,

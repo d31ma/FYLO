@@ -12,6 +12,7 @@ use super::document_image::DocumentImage;
 use super::log_segment::LogSegment;
 use super::segment_checkpoint::SegmentCheckpoint;
 use super::segment_layout::SegmentLayout;
+use super::segment_schemas::{SchemaVersionEntry, SchemaVersionManifest, SegmentSchemas};
 use crate::segments::{
     GenerationSlots, LocationState, LocationTable, SegmentBody, SegmentCommitManifest,
     SegmentEntry, SegmentLocation, SegmentPaths, SlotRecord,
@@ -21,21 +22,38 @@ use crate::{LogPosition, NativeRoot, NativeStorageError, NativeStorageErrorCode}
 /// Builds a complete segment layout from document images, for a migration
 /// from the file layout (ADR 0015 section 9).
 ///
-/// Each document becomes one commit record, in identifier order, so the
-/// result reads like a freshly compacted collection. The derived files are
-/// written directly and a closing checkpoint record describes them.
+/// Each schema version of the source's registry becomes one schema record,
+/// in ordinal order, then each document one commit record, in identifier
+/// order, so the result reads like a freshly compacted collection. The
+/// derived files are written directly and a closing checkpoint record
+/// describes them.
 pub(crate) struct SegmentImport;
 
 impl SegmentImport {
     pub(crate) fn build(
         root: &NativeRoot,
         directory: &Path,
-        images: &[DocumentImage],
+        (images, versions): (&[DocumentImage], &[Vec<u8>]),
         generation: u64,
     ) -> Result<(), NativeStorageError> {
         SegmentLayout::create_empty(root, directory, generation)?;
         let paths = SegmentPaths::of(directory);
         let mut segment = Self::open_first(&paths)?;
+        let mut schemas = SegmentSchemas::empty();
+        for (index, version) in versions.iter().enumerate() {
+            let ordinal = u32::try_from(index + 1).map_err(|_| {
+                NativeStorageError::new(
+                    NativeStorageErrorCode::FileTooLarge,
+                    "schema registry has too many versions",
+                )
+            })?;
+            schemas = schemas.with(Self::append_schema(
+                &mut segment,
+                (ordinal, version),
+                generation,
+            )?)?;
+        }
+        schemas.write(&paths)?;
         let mut rows = Vec::with_capacity(images.len());
         let mut keys = BTreeSet::new();
         let mut ordered: Vec<&DocumentImage> = images.iter().collect();
@@ -123,6 +141,34 @@ impl SegmentImport {
         };
         segment.append(&encoded, 1)?;
         Ok(location)
+    }
+
+    fn append_schema(
+        segment: &mut LogSegment,
+        (ordinal, version): (u32, &[u8]),
+        generation: u64,
+    ) -> Result<SchemaVersionEntry, NativeStorageError> {
+        let record = LogRecord {
+            lsn: segment.next_lsn(),
+            kind: LogRecordKind::Schema,
+            generation,
+            manifest: serde_json::to_vec(&SchemaVersionManifest::new(ordinal, version))
+                .map_err(|error| json_error(&error))?,
+            blobs: version.to_vec(),
+        };
+        let encoded = segment.encode(&record)?;
+        let placed = (
+            segment.sequence(),
+            segment.length(),
+            u32::try_from(encoded.len()).map_err(|_| {
+                NativeStorageError::new(
+                    NativeStorageErrorCode::FileTooLarge,
+                    "schema record is too large",
+                )
+            })?,
+        );
+        segment.append(&encoded, 1)?;
+        SegmentSchemas::entry_of(placed, &record)
     }
 
     pub(crate) fn encoded_attributes(
