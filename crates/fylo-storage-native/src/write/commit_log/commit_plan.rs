@@ -1,7 +1,10 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use super::super::{CapturedAttribute, json_error, portable_path};
+use fylo_vfs as fs;
+
+use super::super::schema_counts::SchemaCountDelta;
+use super::super::{CapturedAttribute, json_error, portable_path, safe_relative_path};
 use super::blob_reference::BlobReference;
 use super::commit_manifest::CommitManifest;
 use super::commit_step::CommitStep;
@@ -163,6 +166,71 @@ impl CommitPlan {
         &self.steps
     }
 
+    /// How this plan, once applied, changed the stored `_v` of live
+    /// documents (ADR 0017 section 6): a body it writes arrives with its
+    /// blob and leaves with its pre-image, and a document it moves into or
+    /// out of the live tree is read where the move left it.
+    fn live_version_delta(
+        &self,
+        collection: &NativeCollection,
+    ) -> Result<SchemaCountDelta, NativeStorageError> {
+        let mut delta = SchemaCountDelta::default();
+        let mut written: BTreeMap<PathBuf, &[u8]> = BTreeMap::new();
+        for step in &self.steps {
+            match step {
+                CommitStep::Update(update) => {
+                    let relative = safe_relative_path(&update.path)?;
+                    let Some(blob) = update.blob.as_ref() else {
+                        continue;
+                    };
+                    if SchemaCountDelta::is_live_document(&relative) {
+                        written.insert(collection.path.join(relative), self.blob(blob)?);
+                    }
+                }
+                CommitStep::Move(rename) => {
+                    let from =
+                        SchemaCountDelta::is_live_document(&safe_relative_path(&rename.from)?);
+                    let to = safe_relative_path(&rename.to)?;
+                    if from == SchemaCountDelta::is_live_document(&to) {
+                        continue;
+                    }
+                    let moved =
+                        fs::read(collection.path.join(&to)).map_err(NativeStorageError::io)?;
+                    if from {
+                        delta.remove(&moved)?;
+                    } else {
+                        delta.add(&moved)?;
+                    }
+                }
+            }
+        }
+        for (path, after) in written {
+            let before = self
+                .pre_images
+                .iter()
+                .find(|(captured, _)| *captured == path)
+                .and_then(|(_, image)| image.as_ref());
+            if let Some(before) = before {
+                delta.remove(&before.bytes)?;
+            }
+            delta.add(after)?;
+        }
+        Ok(delta)
+    }
+
+    fn blob(&self, blob: &BlobReference) -> Result<&[u8], NativeStorageError> {
+        usize::try_from(blob.offset)
+            .ok()
+            .zip(usize::try_from(blob.length).ok())
+            .and_then(|(offset, length)| self.blobs.get(offset..offset.checked_add(length)?))
+            .ok_or_else(|| {
+                NativeStorageError::new(
+                    NativeStorageErrorCode::CorruptMetadata,
+                    "commit blob lies outside its plan",
+                )
+            })
+    }
+
     /// The canonical JSON manifest this plan commits.
     pub(crate) fn manifest(&self) -> Result<Vec<u8>, NativeStorageError> {
         let manifest = CommitManifest {
@@ -220,6 +288,13 @@ impl CommitPlan {
 }
 
 impl LoggedPlan for CommitPlan {
+    fn schema_count_delta(
+        &self,
+        collection: &NativeCollection,
+    ) -> Result<SchemaCountDelta, NativeStorageError> {
+        self.live_version_delta(collection)
+    }
+
     fn touched(&self) -> &BTreeSet<PathBuf> {
         &self.touched
     }

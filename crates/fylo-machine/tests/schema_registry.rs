@@ -495,15 +495,25 @@ fn documents_decrypt_and_migrate_at_their_own_registry_version() {
         schema: false,
         ..Options::default()
     });
+    // A read returns the head shape, decrypted at v1 and migrated in
+    // memory; the stored document stays at v1 until it is migrated.
     let document = get(&bare, ID);
-    assert_eq!(document[ID]["_v"], "v1", "{document}");
-    assert_eq!(document[ID]["ssn"], "42", "{document}");
+    assert_eq!(
+        document[ID],
+        json!({"_v":"v2","name":"Ada","ssn":"42"}),
+        "{document}"
+    );
+    assert_eq!(fixture.stored(ID)["_v"], "v1");
+    assert!(fixture.stored(ID).get("fullName").is_some());
     let migrated = success(&bare, &json!({"op":"schemaMigrate","collection":PEOPLE}));
     assert_eq!(migrated["migrated"], 1, "{migrated}");
+    assert_eq!(fixture.stored(ID)["_v"], "v2");
     let document = get(&bare, ID);
-    assert_eq!(document[ID]["_v"], "v2", "{document}");
-    assert_eq!(document[ID]["name"], "Ada", "{document}");
-    assert_eq!(document[ID]["ssn"], "42", "{document}");
+    assert_eq!(
+        document[ID],
+        json!({"_v":"v2","name":"Ada","ssn":"42"}),
+        "{document}"
+    );
 }
 
 #[test]

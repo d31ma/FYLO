@@ -993,10 +993,35 @@ Behavior:
   and stamps `_v`: `putData`, `batchPutData`, `importBulkData`, `patchDoc`,
   `patchDocs`, and SQL `INSERT` and `UPDATE`. A patch is validated as the
   merged document, not as the fields it sends
-- Reads return each document as stored, at the version it was written.
-  `schemaMaterialize` (`fylo schema materialize`) migrates one document to the
-  head shape in memory; read-time migration is planned in ADR 0017
-- `schemaMaterialize` treats a document missing `_v` as the oldest version
+- Every read returns documents in the head shape (ADR 0017 section 5):
+  `getDoc`, `findDocs`, joins, SQL `SELECT`, deleted-document reads and the
+  hot set. A document stored below the head is decrypted at the version it was
+  written at and migrated in memory by the JSON steps of each later version;
+  its stored bytes do not change until something writes it. Queries and SQL
+  `UPDATE` and `DELETE` match the migrated document, so a query on a renamed
+  field gives the same answer before and after `fylo schema migrate`. While a
+  collection has documents below the head, a query that uses a field a
+  migration writes or renames reads every document instead of the index;
+  queries on other fields keep it
+- A write that patches an old document (`patchDoc`, `patchDocs`, SQL
+  `UPDATE`) migrates it to the head first, so the stored document moves to the
+  head shape
+- A document missing `_v` is read, materialized and counted as the oldest
+  version; one whose `_v` the schema does not list fails the read with
+  `ESCHEMA`
+- `fylo schema inspect <collection>` (`schemaInspect`) reports the
+  collection's validation mode, its head, how many live documents are stored
+  at each version (`versions[].documents`, plus `unversioned` and
+  `unknownVersions`) and `converged`: whether every document is at the head.
+  Once it has converged, a read costs one comparison of `_v`. For a registry
+  collection the writer keeps the count in
+  `<root>/.fylo-schemas/<collection>/counts.json` (one file per branch
+  worktree), stamped with the collection's generation, and recounts by scan
+  whenever a crash, a recovery or another process leaves it stale. A
+  collection whose versions come only from the `fylo.schema` folder is counted
+  by scan when asked
+- `schemaMaterialize` (`fylo schema materialize`) migrates one given document
+  to the head shape in memory
 - `fylo schema migrate <collection>` (`schemaMigrate`) rewrites every document
   below the head version at the head, validating and encrypting each as a
   write would, and is safe to run again. Documents without `_v` are skipped

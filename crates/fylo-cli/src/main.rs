@@ -1067,14 +1067,7 @@ fn render_schema(action: &str, result: &Value) -> Result<String, String> {
             result["atHead"],
             result["unversioned"]
         )),
-        "inspect" => Ok(format!(
-            "Schema {}\nSchema dir: {}\nVersioned: {}\nCurrent: {}\nVersions: {}",
-            result["collection"].as_str().unwrap_or_default(),
-            result["schemaDir"].as_str().unwrap_or_default(),
-            yes_no(result["versioned"].as_bool().unwrap_or(false)),
-            result["current"].as_str().unwrap_or("none"),
-            result["versions"].as_array().map_or(0, Vec::len)
-        )),
+        "inspect" => Ok(render_schema_inspect(result)),
         "history" => pretty(&result["versions"]),
         "mode" => Ok(format!(
             "Schema validation for {}: {}{}",
@@ -1100,6 +1093,63 @@ fn render_schema(action: &str, result: &Value) -> Result<String, String> {
         )),
         _ => pretty(result),
     }
+}
+
+/// `fylo schema inspect`: the collection's versions and, for a collection
+/// with documents to count, how many are stored at each version and whether
+/// every one is at the head (ADR 0017 section 6).
+fn render_schema_inspect(result: &Value) -> String {
+    let mut lines = vec![
+        format!(
+            "Schema {}",
+            result["collection"].as_str().unwrap_or_default()
+        ),
+        format!(
+            "Schema dir: {}",
+            result["schemaDir"].as_str().unwrap_or_default()
+        ),
+        format!(
+            "Versioned: {}",
+            yes_no(result["versioned"].as_bool().unwrap_or(false))
+        ),
+        format!("Current: {}", result["current"].as_str().unwrap_or("none")),
+    ];
+    if let Some(mode) = result["validation"].as_str() {
+        lines.push(format!("Validation: {mode}"));
+    }
+    let versions = result["versions"].as_array();
+    lines.push(format!("Versions: {}", versions.map_or(0, Vec::len)));
+    if !result["converged"].is_boolean() {
+        return lines.join("\n");
+    }
+    for version in versions.into_iter().flatten() {
+        lines.push(format!(
+            "  {}{}: {} document(s)",
+            version["version"].as_str().unwrap_or_default(),
+            if version["current"].as_bool().unwrap_or(false) {
+                " (head)"
+            } else {
+                ""
+            },
+            version["documents"]
+        ));
+    }
+    for (label, documents) in result["unknownVersions"].as_object().into_iter().flatten() {
+        lines.push(format!(
+            "  {label} (not in the schema): {documents} document(s)"
+        ));
+    }
+    if result["unversioned"].as_u64().unwrap_or(0) > 0 {
+        lines.push(format!(
+            "Without _v, counted at the oldest version: {}",
+            result["unversioned"]
+        ));
+    }
+    lines.push(format!(
+        "Converged: {}",
+        yes_no(result["converged"].as_bool().unwrap_or(false))
+    ));
+    lines.join("\n")
 }
 
 fn render_schema_check(result: &Value) -> String {

@@ -6,6 +6,7 @@ use std::sync::{Arc, MutexGuard};
 use fylo_format::{LogRecord, LogRecordKind};
 use fylo_vfs::{self as fs, OpenOptions};
 
+use super::super::schema_counts::SchemaCountDelta;
 use super::super::{
     CollectionWriteLock, GenerationRecord, NativeWriteRoot, ensure_directory, json_error,
     sibling_scratch,
@@ -98,7 +99,11 @@ impl NativeWriteRoot {
             Ok(()) => self.apply_or_abort(collection, &queue, &placed, &plan),
             Err(error) => Err(error),
         };
-        let finished = Self::finish_member(collection, &queue, &plan);
+        // The plan's files are this member's until it finishes, so what it
+        // applied is still there to read.
+        let delta = (outcome.is_ok() && collection.tracks_schema_versions())
+            .then(|| plan.schema_count_delta(collection));
+        let finished = Self::finish_member(collection, &queue, &plan, delta);
         outcome.and(finished).map(|()| value)
     }
 
@@ -216,6 +221,8 @@ impl NativeWriteRoot {
             failure: None,
             stranded: false,
             fence: SchemaFence::new(collection.generation_fenced(&stored)),
+            schema_counts: Self::schema_counts_before_commit(collection, stored.generation),
+            schema_delta: super::super::schema_counts::SchemaCountDelta::default(),
         })
     }
 
@@ -521,12 +528,18 @@ impl NativeWriteRoot {
         collection: &NativeCollection,
         queue: &Arc<CommitQueue>,
         plan: &P,
+        delta: Option<Result<SchemaCountDelta, NativeStorageError>>,
     ) -> Result<(), NativeStorageError> {
         let mut state = queue.lock();
         let busy = state
             .busy
             .as_mut()
             .expect("member keeps the busy period open");
+        match delta {
+            Some(Ok(delta)) => busy.schema_delta.merge(&delta),
+            Some(Err(_)) => busy.schema_counts = None,
+            None => {}
+        }
         for path in plan.touched() {
             busy.pending.remove(path);
         }
@@ -566,6 +579,13 @@ impl NativeWriteRoot {
         let generation = busy.generation + 2;
         if collection.uses_segments() {
             return Self::end_segment_busy(collection, &mut busy, published.is_some());
+        }
+        // Still under the collection lock, which `busy` holds.
+        if busy.published_writing
+            && !busy.stranded
+            && let Some(counts) = busy.schema_counts.take()
+        {
+            Self::schema_counts_after_commit(collection, counts, &busy.schema_delta, generation);
         }
         drop(busy);
         let Some(position) = published else {

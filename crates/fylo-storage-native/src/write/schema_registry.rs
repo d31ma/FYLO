@@ -89,7 +89,7 @@ impl NativeRoot {
         Self::read_registry_file(&record, MAX_DESCRIPTOR_BYTES).map(Some)
     }
 
-    fn schema_registry_directory(&self) -> PathBuf {
+    pub(crate) fn schema_registry_directory(&self) -> PathBuf {
         self.catalog_root.join(REGISTRY_DIRECTORY)
     }
 

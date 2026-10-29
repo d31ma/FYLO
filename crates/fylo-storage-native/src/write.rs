@@ -39,6 +39,7 @@ const DEFAULT_ACCESS_MODE: u32 = 0o600;
 
 mod commit_log;
 mod document_codec;
+pub(crate) mod schema_counts;
 pub(crate) mod schema_registry;
 pub use commit_log::{CompactionReport, LayoutMigrationReport, SalvageReport, SegmentVerification};
 pub(crate) mod version;
@@ -974,7 +975,7 @@ impl NativeWriteRoot {
         match plan.operation {
             SqlOperation::Insert => self.execute_sql_insert(&plan, insert_access, codec),
             SqlOperation::Update => self.execute_sql_update(&plan, actor, codec),
-            SqlOperation::Delete => self.execute_sql_delete(&plan, actor),
+            SqlOperation::Delete => self.execute_sql_delete(&plan, actor, codec),
             _ => Err(NativeStorageError::new(
                 NativeStorageErrorCode::InvalidQuery,
                 "native SQL mutation accepts only INSERT, UPDATE, or DELETE",
@@ -1996,10 +1997,9 @@ impl NativeWriteRoot {
         policy.restart();
         let _lock = self.lock_collection(collection)?;
         self.recover_locked(collection)?;
-        let mut documents = matching_documents(collection, query, actor)?;
+        let mut documents = matching_documents(collection, query, actor, policy)?;
         for document in &mut documents {
-            let mut fields =
-                policy.decode(&collection.name, std::mem::take(&mut document.fields))?;
+            let mut fields = document.decoded_fields(&collection.name, policy)?;
             merge_top_level(&mut fields, changes);
             document.encoded = policy.encode(&collection.name, fields.clone())?;
             document.fields = fields;
@@ -2019,16 +2019,17 @@ impl NativeWriteRoot {
         &self,
         plan: &fylo_query::SqlPlan,
         actor: Option<&WriteActor>,
+        codec: &dyn DocumentCodec,
     ) -> Result<SqlMutationResult, NativeStorageError> {
         let query = StructuredQuery::from_value(&plan.ast, QueryLimits::default())
             .map_err(|error| query_error(&error))?;
         let collection = self.document_collection(&plan.collection, "SQL DELETE")?;
         if self.uses_log(&collection) {
-            return self.sql_delete_logged(&collection, &query, actor);
+            return self.sql_delete_logged(&collection, &query, actor, codec);
         }
         let _lock = self.lock_collection(&collection)?;
         self.recover_locked(&collection)?;
-        let documents = matching_documents(&collection, &query, actor)?;
+        let documents = matching_documents(&collection, &query, actor, codec)?;
         self.write_sql_deletes(&collection, &documents)?;
         Ok(SqlMutationResult {
             kind: SqlMutationResultKind::Delete,
@@ -2325,18 +2326,44 @@ struct SqlDocument {
     identifier: String,
     path: PathBuf,
     fields: Map<String, Value>,
+    /// Whether `fields` already went through the codec's `decode`.
+    decoded: bool,
     encoded: Vec<u8>,
 }
 
+impl SqlDocument {
+    /// The fields an `UPDATE` merges its assignments into.
+    fn decoded_fields(
+        &mut self,
+        collection: &str,
+        codec: &dyn DocumentCodec,
+    ) -> Result<Map<String, Value>, NativeStorageError> {
+        let fields = std::mem::take(&mut self.fields);
+        if self.decoded {
+            return Ok(fields);
+        }
+        codec.decode(collection, fields)
+    }
+}
+
+/// The live documents a SQL `UPDATE` or `DELETE` statement's `WHERE`
+/// matches. Where `codec` says decoding changes what a query sees (a
+/// declared encrypted field, or a document below the head schema version),
+/// each body is matched as a read returns it.
 fn matching_documents(
     collection: &super::NativeCollection,
     query: &StructuredQuery,
     actor: Option<&WriteActor>,
+    codec: &dyn DocumentCodec,
 ) -> Result<Vec<SqlDocument>, NativeStorageError> {
     let mut matches = Vec::new();
+    let decoded = codec.decodes_for_query(collection.name())?;
     for identifier in collection.document_ids()? {
         let stored = collection.read_document(&identifier)?;
-        let fields = parse_document_fields(&stored.bytes)?;
+        let mut fields = parse_document_fields(&stored.bytes)?;
+        if decoded {
+            fields = codec.decode(collection.name(), fields)?;
+        }
         let timestamps = TtidTimestamps::decode(&identifier).map_err(|error| {
             NativeStorageError::new(
                 NativeStorageErrorCode::InvalidDocumentId,
@@ -2351,6 +2378,7 @@ fn matching_documents(
             identifier,
             path: stored.path,
             fields,
+            decoded,
             encoded: Vec::new(),
         });
         if query
@@ -2907,6 +2935,9 @@ struct Transaction<'a> {
     captures: Vec<Capture>,
     captured: BTreeSet<PathBuf>,
     finished: bool,
+    /// The collection's schema version count before this transaction, kept
+    /// current by its commit (ADR 0017 section 6).
+    schema_counts: Option<schema_counts::SchemaVersionCounts>,
 }
 
 impl<'a> Transaction<'a> {
@@ -2945,6 +2976,10 @@ impl<'a> Transaction<'a> {
             event_offset,
             captures: Vec::new(),
         };
+        // Counted while the generation is still stable, so a count rebuilt
+        // here is stamped with the generation it describes.
+        let schema_counts =
+            NativeWriteRoot::schema_counts_before_commit(collection, generation.generation);
         write_json_durable(&root.join("transaction.json"), &manifest)?;
         write_generation(
             writer,
@@ -2959,6 +2994,7 @@ impl<'a> Transaction<'a> {
             captures: Vec::new(),
             captured: BTreeSet::new(),
             finished: false,
+            schema_counts,
         };
         // The manifest and the writing generation are already durable, so a
         // failure here owns them. Returning the error alone would leave a live
@@ -3129,14 +3165,51 @@ impl<'a> Transaction<'a> {
         self.manifest.phase = TransactionPhase::Committed;
         write_json_durable(&self.root.join("transaction.json"), &self.manifest)?;
         failpoint("after-commit-marker")?;
+        // Read the before-images while the journal still holds them.
+        let counted = self
+            .schema_counts
+            .take()
+            .and_then(|counts| Some((counts, self.schema_count_delta().ok()?)));
+        let generation = self.manifest.generation_before.saturating_add(2);
         write_generation(
             self.writer,
             self.collection,
-            &GenerationRecord::stable(self.manifest.generation_before.saturating_add(2)),
+            &GenerationRecord::stable(generation),
         )?;
         self.finished = true;
+        if let Some((counts, delta)) = counted {
+            NativeWriteRoot::schema_counts_after_commit(
+                self.collection,
+                counts,
+                &delta,
+                generation,
+            );
+        }
         remove_dir_durable(&self.root)?;
         Ok(())
+    }
+
+    /// How this transaction changed the stored `_v` of live documents: each
+    /// captured live document body leaves with its before-image and arrives
+    /// with the file as it is now.
+    fn schema_count_delta(&self) -> Result<schema_counts::SchemaCountDelta, NativeStorageError> {
+        let mut delta = schema_counts::SchemaCountDelta::default();
+        for capture in &self.captures {
+            let relative = safe_relative_path(&capture.path)?;
+            if !schema_counts::SchemaCountDelta::is_live_document(&relative) {
+                continue;
+            }
+            if let Some(backup) = capture.backup.as_deref().filter(|_| capture.present) {
+                let before = fs::read(self.root.join(safe_relative_path(backup)?))
+                    .map_err(NativeStorageError::io)?;
+                delta.remove(&before)?;
+            }
+            let current = self.collection.path.join(&relative);
+            if path_exists_no_follow(&current)? {
+                delta.add(&fs::read(&current).map_err(NativeStorageError::io)?)?;
+            }
+        }
+        Ok(delta)
     }
 
     fn rollback(&mut self) -> Result<(), NativeStorageError> {

@@ -264,11 +264,16 @@ fn an_old_document_decrypts_with_the_list_of_the_version_it_was_written_at() {
     let fixture = seeded(true);
     fixture.add_v2(true);
     let runtime = fixture.runtime(true, true);
+    // Decrypted with v1's list, then migrated in memory to v2.
     let read = success(
         &runtime,
         &json!({"op":"getDoc","collection":PEOPLE,"id":ADA}),
     );
-    assert_eq!(read[ADA]["fullName"], "Ada Lovelace", "{read}");
+    assert_eq!(
+        read[ADA],
+        json!({"name":"Ada Lovelace","slug":"ada-lovelace","active":true,"_v":"v2"}),
+        "{read}"
+    );
     assert_eq!(migrate(&runtime, true), counts(3, 3, 0, 0));
     let read = success(
         &runtime,

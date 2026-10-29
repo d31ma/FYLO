@@ -60,6 +60,11 @@ impl DocumentPath {
         object.remove(last)
     }
 
+    /// The top-level field this path is in.
+    pub(super) fn top(&self) -> &str {
+        self.segments.first().map_or("", String::as_str)
+    }
+
     pub(super) fn display(&self) -> String {
         self.segments.join("/")
     }

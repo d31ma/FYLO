@@ -172,6 +172,33 @@ impl MigrationStep {
         }
     }
 
+    /// The top-level field this step may write or remove.
+    pub(super) fn written_field(&self) -> &str {
+        match self {
+            Self::Rename(_, to) | Self::Copy(_, to) => to.top(),
+            Self::Default(path, _)
+            | Self::Set(path, _)
+            | Self::Remove(path)
+            | Self::Convert(path, _)
+            | Self::Map { path, .. }
+            | Self::Wrap(path)
+            | Self::Lower(path)
+            | Self::Upper(path)
+            | Self::Trim(path)
+            | Self::Replace { path, .. }
+            | Self::Template(path, _)
+            | Self::Slugify(path, _) => path.top(),
+        }
+    }
+
+    /// The top-level field a rename takes its value out of, which it removes.
+    pub(super) fn vacated_field(&self) -> Option<&str> {
+        match self {
+            Self::Rename(from, _) => Some(from.top()),
+            _ => None,
+        }
+    }
+
     /// Apply the step. A step whose field is missing changes nothing; a field
     /// of the wrong type fails the migration.
     pub(super) fn apply(&self, document: &mut Map<String, Value>) -> Result<(), String> {

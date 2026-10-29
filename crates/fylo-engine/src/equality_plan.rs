@@ -20,6 +20,11 @@ impl EqualityPlan {
         Ok(union.into_iter().collect())
     }
 
+    /// The top-level fields the plan reads from the index.
+    pub(super) fn fields(&self) -> impl Iterator<Item = &str> {
+        self.operations.iter().flat_map(EqualityOperation::names)
+    }
+
     fn operations(query: &StructuredQuery, encrypted: &[String]) -> Option<Vec<EqualityOperation>> {
         query
             .operations()

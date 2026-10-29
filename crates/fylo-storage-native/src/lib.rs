@@ -92,6 +92,7 @@ pub use queue::{
 pub use root_open_options::RootOpenOptions;
 pub use validation_mode::ValidationMode;
 pub use write::FAILPOINTS;
+pub use write::schema_counts::SchemaVersionCounts;
 pub use write::schema_registry::{MAX_SCHEMA_VERSION_BYTES, utc_timestamp};
 pub use write::version::RepositoryStatus;
 pub use write::{CompactionReport, LayoutMigrationReport, SalvageReport, SegmentVerification};
