@@ -399,16 +399,18 @@ fn lsn_of(database: &Encrypted, collection: &str, number: usize) -> u64 {
 }
 
 fn copy_frame(database: &Encrypted, from: (u64, usize), to: (u64, usize)) {
-    use std::os::unix::fs::FileExt;
+    use std::io::{Read, Seek, SeekFrom, Write};
     assert_eq!(from.1, to.1, "the frames must be the same length");
-    let file = std::fs::OpenOptions::new()
+    let mut file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .open(database.path())
         .unwrap();
     let mut frame = vec![0_u8; from.1];
-    file.read_exact_at(&mut frame, from.0).unwrap();
-    file.write_all_at(&frame, to.0).unwrap();
+    file.seek(SeekFrom::Start(from.0)).unwrap();
+    file.read_exact(&mut frame).unwrap();
+    file.seek(SeekFrom::Start(to.0)).unwrap();
+    file.write_all(&frame).unwrap();
     file.sync_all().unwrap();
 }
 
