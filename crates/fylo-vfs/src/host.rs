@@ -13,6 +13,7 @@
 use std::io::{self, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// ABI version the engine expects from a host table.
@@ -446,7 +447,9 @@ impl OpenOptions {
 #[derive(Debug)]
 pub struct File {
     handle: u64,
-    position: u64,
+    // Atomic rather than plain so `&File` can read, write and seek, as
+    // `std::fs::File` can; the engine relies on that shape.
+    position: AtomicU64,
     append: bool,
     // A host addresses metadata by path, not by handle, so the file keeps the
     // path it was opened with rather than adding a thirteenth ABI slot.
@@ -463,9 +466,9 @@ impl File {
         // The host contract forbids retaining either pointer.
         let code = unsafe { (host.open)(bytes.as_ptr(), bytes.len(), flags, &raw mut handle) };
         check(code)?;
-        let mut file = Self {
+        let file = Self {
             handle,
-            position: 0,
+            position: AtomicU64::new(0),
             append: flags & HOST_OPEN_APPEND != 0,
             path: path.to_path_buf(),
         };
@@ -501,7 +504,7 @@ impl File {
     /// # Errors
     ///
     /// Returns the host's failure.
-    pub fn set_len(&mut self, len: u64) -> io::Result<()> {
+    pub fn set_len(&self, len: u64) -> io::Result<()> {
         let host = host()?;
         // SAFETY: `handle` came from this table's `open` and has not been closed.
         check(unsafe { (host.truncate)(self.handle, len) })
@@ -575,7 +578,7 @@ impl File {
     /// Returns the host's failure.
     pub fn try_clone(&self) -> io::Result<Self> {
         let mut clone = Self::open_with(&self.path, HOST_OPEN_READ)?;
-        clone.position = self.position;
+        clone.position = AtomicU64::new(self.position.load(Ordering::Relaxed));
         Ok(clone)
     }
 }
@@ -590,47 +593,52 @@ impl Drop for File {
     }
 }
 
-impl Read for File {
+impl Read for &File {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         let host = host()?;
+        let position = self.position.load(Ordering::Relaxed);
         let mut read = 0_usize;
         // SAFETY: `buffer` is a live, writable slice of the stated length, and
         // `read` is a live local. Neither pointer outlives the call.
         let code = unsafe {
             (host.read_at)(
                 self.handle,
-                self.position,
+                position,
                 buffer.as_mut_ptr(),
                 buffer.len(),
                 &raw mut read,
             )
         };
         check(code)?;
-        self.position = self.position.saturating_add(read as u64);
+        self.position
+            .store(position.saturating_add(read as u64), Ordering::Relaxed);
         Ok(read)
     }
 }
 
-impl Write for File {
+impl Write for &File {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
         let host = host()?;
-        if self.append {
-            self.position = self.metadata()?.len();
-        }
+        let position = if self.append {
+            self.metadata()?.len()
+        } else {
+            self.position.load(Ordering::Relaxed)
+        };
         let mut written = 0_usize;
         // SAFETY: `buffer` is a live slice of the stated length and `written` a
         // live local; the host may not retain either.
         let code = unsafe {
             (host.write_at)(
                 self.handle,
-                self.position,
+                position,
                 buffer.as_ptr(),
                 buffer.len(),
                 &raw mut written,
             )
         };
         check(code)?;
-        self.position = self.position.saturating_add(written as u64);
+        self.position
+            .store(position.saturating_add(written as u64), Ordering::Relaxed);
         Ok(written)
     }
 
@@ -639,14 +647,38 @@ impl Write for File {
     }
 }
 
-impl Seek for File {
+impl Seek for &File {
     fn seek(&mut self, from: SeekFrom) -> io::Result<u64> {
-        self.position = match from {
+        let current = self.position.load(Ordering::Relaxed);
+        let position = match from {
             SeekFrom::Start(offset) => offset,
-            SeekFrom::Current(delta) => self.position.saturating_add_signed(delta),
+            SeekFrom::Current(delta) => current.saturating_add_signed(delta),
             SeekFrom::End(delta) => self.metadata()?.len().saturating_add_signed(delta),
         };
-        Ok(self.position)
+        self.position.store(position, Ordering::Relaxed);
+        Ok(position)
+    }
+}
+
+impl Read for File {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        (&*self).read(buffer)
+    }
+}
+
+impl Write for File {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        (&*self).write(buffer)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        (&*self).flush()
+    }
+}
+
+impl Seek for File {
+    fn seek(&mut self, from: SeekFrom) -> io::Result<u64> {
+        (&*self).seek(from)
     }
 }
 
