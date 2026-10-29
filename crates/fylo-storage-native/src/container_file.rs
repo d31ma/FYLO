@@ -19,6 +19,9 @@ use crate::container_allocator::{
     ContainerAllocatorError, ContainerExtentAllocation, ContainerExtentAllocator,
 };
 
+mod punch;
+use punch::punch_hole;
+
 /// Why a container operation failed.
 #[derive(Debug)]
 pub enum ContainerError {
@@ -847,31 +850,6 @@ fn placeholder_superblock() -> ContainerSuperblock {
         key_salt: [0; 32],
         key_check: [0; 16],
     }
-}
-
-/// Deallocate a range, keeping the file's length. `false` when the
-/// filesystem or platform cannot.
-#[cfg(any(target_os = "linux", target_os = "android"))]
-fn punch_hole(file: &File, offset: u64, length: u64) -> io::Result<bool> {
-    use rustix::fs::FallocateFlags;
-    match rustix::fs::fallocate(
-        file,
-        FallocateFlags::PUNCH_HOLE | FallocateFlags::KEEP_SIZE,
-        offset,
-        length,
-    ) {
-        Ok(()) => Ok(true),
-        Err(rustix::io::Errno::OPNOTSUPP | rustix::io::Errno::NOSYS) => Ok(false),
-        Err(error) => Err(error.into()),
-    }
-}
-
-// macOS `F_PUNCHHOLE` and Windows `FSCTL_SET_ZERO_DATA` need an `unsafe`
-// call that ADR 0004 has not reviewed yet; until then the space is kept and
-// `shrink_free_tail` returns it.
-#[cfg(not(any(target_os = "linux", target_os = "android")))]
-fn punch_hole(_file: &File, _offset: u64, _length: u64) -> io::Result<bool> {
-    Ok(false)
 }
 
 fn write_extent_header(

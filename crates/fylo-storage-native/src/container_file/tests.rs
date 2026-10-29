@@ -397,15 +397,26 @@ fn an_older_superblock_that_outlives_a_shrink_still_opens() {
     assert_eq!(file_length(&path), 8 * EXTENT_BYTES);
 }
 
-#[cfg(target_os = "linux")]
+/// The bytes the file has allocated on disk, which a punched hole frees.
+#[cfg(unix)]
+fn allocated_bytes(path: &Path) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(path).expect("stat").blocks() * 512
+}
+
+#[cfg(windows)]
+fn allocated_bytes(path: &Path) -> u64 {
+    super::punch::allocated_bytes(path).expect("allocated size")
+}
+
+#[cfg(any(unix, windows))]
 #[test]
 fn punching_returns_free_extents_space_where_supported() {
-    use std::os::unix::fs::MetadataExt;
     let (_guard, path) = created("fxdb-punch");
     let container = released_tail(&path);
-    let before = std::fs::metadata(&path).expect("stat").blocks();
+    let before = allocated_bytes(&path);
     let punched = container.punch_free_extents().expect("punch");
-    let after = std::fs::metadata(&path).expect("stat").blocks();
+    let after = allocated_bytes(&path);
     assert_eq!(file_length(&path), 8 * EXTENT_BYTES);
     if punched > 0 {
         assert_eq!(punched, 4);
