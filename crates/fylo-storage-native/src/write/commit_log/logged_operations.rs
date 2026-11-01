@@ -8,10 +8,10 @@ use fylo_query::{IndexLookupValue, StructuredQuery, index_entries_for_document};
 use serde_json::{Map, Value};
 
 use super::super::{
-    CapturedAttribute, DocumentCodec, DocumentPolicy, NativeWriteRoot, SqlMutationResult,
-    SqlMutationResultKind, WriteAccess, WriteActor, capture_attributes, deleted_document_path,
-    json_error, matching_documents, merge_top_level, next_meta_updated_at, record_target,
-    require_write_access,
+    CapturedAttribute, DocumentCodec, DocumentPolicy, DocumentWrite, NativeWriteRoot,
+    SqlMutationResult, SqlMutationResultKind, WriteAccess, WriteActor, capture_attributes,
+    deleted_document_path, json_error, matching_documents, merge_top_level, next_meta_updated_at,
+    record_target, require_write_access,
 };
 use super::commit_plan::{CommitPlan, Ownership};
 use super::logged_writer::Planned;
@@ -64,6 +64,71 @@ impl NativeWriteRoot {
             let mut plan = CommitPlan::new("put-document");
             plan.create(collection, &target, (canonical, attributes), ownership)?;
             plan.index_delta(&BTreeSet::new(), &after);
+            Ok((Some(plan), ()))
+        })
+    }
+
+    /// Plan every write of a batch into one commit, with each body already
+    /// in canonical form (`bodies[i]` for `writes[i]`, `None` for a delete).
+    pub(crate) fn commit_document_writes_logged(
+        &self,
+        collection: &NativeCollection,
+        writes: &[DocumentWrite],
+        bodies: &[Option<Vec<u8>>],
+        access: WriteAccess,
+    ) -> Result<(), NativeStorageError> {
+        self.commit_logged(collection, || {
+            let mut plan = CommitPlan::new("write-documents");
+            for (write, body) in writes.iter().zip(bodies) {
+                let identifier = write.identifier();
+                match (write, body) {
+                    (DocumentWrite::Put { .. }, Some(canonical)) => {
+                        let target = collection
+                            .path
+                            .join("docs")
+                            .join(crate::shard_of(identifier, collection.shard_width()))
+                            .join(format!("{identifier}.json"));
+                        if path_exists_no_follow(&target)? {
+                            return Err(NativeStorageError::new(
+                                NativeStorageErrorCode::CorruptMetadata,
+                                "document identifier already exists",
+                            ));
+                        }
+                        self.verify_parent(&target)?;
+                        let (attributes, ownership) =
+                            self.initial_attributes(&target, &BTreeMap::new(), access)?;
+                        plan.create(collection, &target, (canonical, attributes), ownership)?;
+                        plan.index_delta(
+                            &BTreeSet::new(),
+                            &Self::document_keys(identifier, canonical)?,
+                        );
+                    }
+                    (DocumentWrite::Replace { .. }, Some(canonical)) => {
+                        let stored = collection.read_document(identifier)?;
+                        let before = Self::document_keys(identifier, &stored.bytes)?;
+                        let image = RecordImage::contents(stored.bytes, stored.modified_millis);
+                        plan.overwrite(collection, &stored.path, image, canonical)?;
+                        plan.index_delta(&before, &Self::document_keys(identifier, canonical)?);
+                    }
+                    (DocumentWrite::Delete { .. }, None) => {
+                        let stored = collection.read_document(identifier)?;
+                        let target = deleted_document_path(collection, identifier);
+                        Self::require_no_tombstone(&target)?;
+                        plan.rename(collection, &stored.path, &target)?;
+                        plan.index_delta(
+                            &Self::document_keys(identifier, &stored.bytes)?,
+                            &BTreeSet::new(),
+                        );
+                    }
+                    _ => {
+                        return Err(NativeStorageError::new(
+                            NativeStorageErrorCode::CorruptDocument,
+                            "a batch write is missing its body",
+                        ));
+                    }
+                }
+                Self::require_within_budget(&plan)?;
+            }
             Ok((Some(plan), ()))
         })
     }

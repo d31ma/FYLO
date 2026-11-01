@@ -15,6 +15,11 @@ members = [
     "src/browser/wasm",
     "xtask",
 ]
+# Turso's engine, patched with its `fylo` feature (ADR 0019): the `fylo`
+# crate's `sql` feature builds it, but it is third-party source, so FYLO's
+# lints and tests do not run on it. `scripts/vendor-turso-core.sh` rebuilds it
+# from the crates.io release and `vendor/turso_core-0.8.3-fylo.patch`.
+exclude = ["vendor/turso_core"]
 default-members = [
     "crates/fylo-chex",
     "crates/fylo-format",

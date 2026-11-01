@@ -42,6 +42,7 @@ const DEFAULT_ACCESS_MODE: u32 = 0o600;
 
 mod commit_log;
 mod document_codec;
+mod document_write;
 pub(crate) mod schema_counts;
 pub(crate) mod schema_registry;
 pub(crate) use commit_log::SegmentSchemas;
@@ -56,6 +57,7 @@ pub(crate) mod version;
 
 use document_codec::DocumentPolicy;
 pub use document_codec::{DocumentCodec, PlainDocumentCodec, schema_violations};
+pub use document_write::DocumentWrite;
 
 static UNIQUE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static TTID_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -716,6 +718,76 @@ impl NativeWriteRoot {
         let outcome = policy
             .encode(collection_name, fields)
             .and_then(|encoded| self.put_document(collection_name, identifier, &encoded, options));
+        policy.finish(outcome)
+    }
+
+    /// Commit several document writes to one collection as one write-ahead
+    /// log record (ADR 0013): after a crash, recovery applies all of them or
+    /// none. Each body is built through `codec` under the collection's
+    /// validation mode, exactly as a single put or replace builds it.
+    ///
+    /// Each identifier may appear once. A batch needs the files layout on the
+    /// native profile, where every document mutation is logged.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid identifier or document, a repeated
+    /// identifier, a put over a live document, a replace or delete of a
+    /// missing one, a body the schema rejects in `strict` mode, a batch too
+    /// large for one log record, the segments layout or a non-native profile
+    /// (`Unsupported`), or any durable write failure. Nothing is written when
+    /// it fails.
+    pub fn commit_document_writes_with(
+        &self,
+        collection_name: &str,
+        writes: &[DocumentWrite],
+        codec: &dyn DocumentCodec,
+    ) -> Result<(), NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        let mut seen = BTreeSet::new();
+        for write in writes {
+            match write {
+                DocumentWrite::Put { identifier, .. } => {
+                    super::validate_canonical_ttid(identifier)?;
+                }
+                _ => validate_ttid_shape(write.identifier())?,
+            }
+            if !seen.insert(write.identifier()) {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::InvalidDocumentId,
+                    format!(
+                        "a batch changes document {} more than once",
+                        write.identifier()
+                    ),
+                ));
+            }
+        }
+        let collection = self.document_collection(collection_name, "commit_document_writes")?;
+        if !self.uses_log(&collection) || collection.uses_segments() {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::Unsupported,
+                "a batch of document writes needs the files layout on the native profile",
+            ));
+        }
+        if writes.is_empty() {
+            return Ok(());
+        }
+        let access = self.validate_access(WriteAccess::default())?;
+        let policy = self.policy(&collection, codec);
+        let outcome = (|| {
+            let mut bodies = Vec::with_capacity(writes.len());
+            for write in writes {
+                bodies.push(match write {
+                    DocumentWrite::Put { fields, .. } | DocumentWrite::Replace { fields, .. } => {
+                        Some(canonical_body(
+                            &policy.encode(collection_name, fields.clone())?,
+                        )?)
+                    }
+                    DocumentWrite::Delete { .. } => None,
+                });
+            }
+            self.commit_document_writes_logged(&collection, writes, &bodies, access)
+        })();
         policy.finish(outcome)
     }
 
@@ -5070,7 +5142,14 @@ pub(crate) fn unique_name(prefix: &str) -> String {
     format!("{prefix}-{}-{nanos:x}-{sequence:x}", super::process_id())
 }
 
-pub(crate) fn unix_millis() -> Result<u64, NativeStorageError> {
+/// FYLO's wall clock in Unix milliseconds: `std` natively, the host's clock
+/// in a browser build.
+///
+/// # Errors
+///
+/// Returns an error when the clock predates the Unix epoch, exceeds the
+/// supported range, or (in a browser build) no host clock is installed.
+pub fn unix_millis() -> Result<u64, NativeStorageError> {
     // `SystemTime::now` panics rather than fails on a target with no clock, so
     // the host supplies one there. Every other target keeps `std`.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -5595,6 +5674,29 @@ fn json_error(error: &serde_json::Error) -> NativeStorageError {
         NativeStorageErrorCode::CorruptMetadata,
         format!("cannot encode native transaction metadata: {error}"),
     )
+}
+
+/// A document body in canonical form, within the native size limit.
+fn canonical_body(encoded: &[u8]) -> Result<Vec<u8>, NativeStorageError> {
+    let document = Document::parse(encoded, DocumentLimits::default()).map_err(|error| {
+        NativeStorageError::new(
+            NativeStorageErrorCode::CorruptDocument,
+            format!("document is invalid: {error}"),
+        )
+    })?;
+    let canonical = document.encode().map_err(|error| {
+        NativeStorageError::new(
+            NativeStorageErrorCode::CorruptDocument,
+            format!("document cannot be encoded: {error}"),
+        )
+    })?;
+    if canonical.len() as u64 > MAX_DOCUMENT_BYTES {
+        return Err(NativeStorageError::new(
+            NativeStorageErrorCode::FileTooLarge,
+            "document exceeds the native write limit",
+        ));
+    }
+    Ok(canonical)
 }
 
 #[cfg(test)]

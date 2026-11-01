@@ -106,10 +106,10 @@ pub use write::{
     SegmentVerification,
 };
 pub use write::{
-    DocumentCodec, NativeWriteRoot, PlainDocumentCodec, PutDocumentOptions, PutRawFileOptions,
-    WriteAccess, WriteActor, schema_violations,
+    DocumentCodec, DocumentWrite, NativeWriteRoot, PlainDocumentCodec, PutDocumentOptions,
+    PutRawFileOptions, WriteAccess, WriteActor, schema_violations,
 };
-pub use write::{SqlMutationResult, SqlMutationResultKind};
+pub use write::{SqlMutationResult, SqlMutationResultKind, unix_millis};
 
 /// Maximum collection descriptor bytes.
 pub const MAX_DESCRIPTOR_BYTES: u64 = 64 * 1024;

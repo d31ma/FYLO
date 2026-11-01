@@ -24,12 +24,15 @@
 //! the engine it needs under that lease, so calls may come from any thread.
 //! Every write is durable before its call returns.
 //!
-//! Phase 1 scope: directory roots on their main worktree, document
-//! collections, and the queue. There is no SQL yet.
+//! Scope: directory roots on their main worktree, document collections and
+//! the queue. The `sql` feature adds [`Root::sql`]: Turso SQL over the same
+//! root, with collections as tables.
 
 mod collection;
 mod error;
 mod queue;
+#[cfg(feature = "sql")]
+mod sql;
 
 use std::path::{Path, PathBuf};
 
@@ -44,6 +47,8 @@ pub use error::Error;
 pub use fylo_engine::{CollectionInspection, EngineConfig};
 pub use fylo_storage_native::{QueueAckResult, QueueDelivery, QueueNackResult, QueuePublishResult};
 pub use queue::{ClaimOptions, PublishOptions, Queue};
+#[cfg(feature = "sql")]
+pub use sql::{Sql, SqlOptions, SqlRows, SqlValue, TURSO_PIN};
 
 /// How [`Root::open`] opens a root.
 #[derive(Clone, Copy, Debug, Default)]

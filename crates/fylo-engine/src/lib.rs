@@ -28,9 +28,9 @@ use fylo_query::{
     SqlPlan, StructuredQuery, index_entries_for_document,
 };
 use fylo_storage_native::{
-    AccessDescriptor, CollectionKind, CollectionLayout, DocumentCodec, GenerationState,
-    GenerationStatus, IndexVerification, NativeAccess, NativeCollection, NativeRoot,
-    NativeStorageError, NativeStorageErrorCode, NativeWriteRoot, PutDocumentOptions,
+    AccessDescriptor, CollectionKind, CollectionLayout, DocumentCodec, DocumentWrite,
+    GenerationState, GenerationStatus, IndexVerification, NativeAccess, NativeCollection,
+    NativeRoot, NativeStorageError, NativeStorageErrorCode, NativeWriteRoot, PutDocumentOptions,
     RepositoryHistory, RootConfig, RootOpenOptions, SqlMutationResult, StoredBytes, StoredRawFile,
     ValidationMode, VersionVerification, WriteAccess, WriteActor,
 };
@@ -298,6 +298,28 @@ impl WriteEngine {
             PutDocumentOptions { metadata, access },
             &codec,
         );
+        codec.finish(outcome)
+    }
+
+    /// Commit several writes to one collection as one log record, building
+    /// each body exactly as a put or a replace does: schema-declared fields
+    /// are encrypted and validated first. Recovery applies all of them or
+    /// none.
+    ///
+    /// # Errors
+    ///
+    /// As `NativeWriteRoot::commit_document_writes_with`, plus missing
+    /// encryption credentials.
+    pub fn commit_document_writes(
+        &self,
+        collection: &str,
+        writes: &[DocumentWrite],
+    ) -> Result<(), EngineError> {
+        self.record_encrypted_fields(collection)?;
+        let codec = EngineDocumentCodec::new(self);
+        let outcome = self
+            .writer
+            .commit_document_writes_with(collection, writes, &codec);
         codec.finish(outcome)
     }
 
@@ -1992,6 +2014,35 @@ impl ReadOnlyEngine {
             .map_err(EngineError::query)?;
         let records = self.find_with_access(&plan.collection, &query, actor)?;
         Ok(shape_select_results(records, &plan.ast))
+    }
+
+    /// Top-level field names the collection's head schema declares, in
+    /// schema order, with the optional-field `?` removed; `None` for a
+    /// collection without a schema in the root's registry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a corrupt registry.
+    pub fn head_schema_fields(&self, collection: &str) -> Result<Option<Vec<String>>, EngineError> {
+        let Some(head) = self
+            .registry
+            .head(collection)
+            .map_err(EngineError::schema)?
+        else {
+            return Ok(None);
+        };
+        let fields = head
+            .record
+            .chex
+            .as_object()
+            .map_or_else(Vec::new, |schema| {
+                schema
+                    .keys()
+                    .filter(|name| !name.starts_with('$'))
+                    .map(|name| name.trim_end_matches('?').to_owned())
+                    .collect()
+            });
+        Ok(Some(fields))
     }
 
     /// Inspect one collection without changing any files.

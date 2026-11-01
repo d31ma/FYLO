@@ -76,20 +76,38 @@ through one long-lived `fylo exec --loop` subprocess (TACHYON ADR 0032).
 ### 3. One SQL mapping for both layers (`api/sql/v1`)
 
 - A FYLO root opened through Turso gets an in-memory SQL catalog with one
-  table per collection: `id` (the TTID), `doc` (JSON), one column per
-  head-schema field, and hidden `meta`, `created_at` and `updated_at`. No SQL
-  engine file is ever written; documents stay the truth.
-- Equality, `IN`, ranges, prefix, suffix and infix `LIKE`, `ORDER BY id` and
-  `doc MATCH '<query JSON>'` push down to FYLO's indexes.
-- `INSERT`, `UPDATE` and `DELETE` map to put, patch and delete, with every
-  check a typed call runs. Errors are the SDK's own SQL error, prefixed with
-  FYLO's code (`EARRAYOFOBJECTS: …`).
+  table per document collection: `id` (the TTID), `doc` (JSON text), one
+  column per head-schema field, and hidden `meta`, `created_at` and
+  `updated_at`. No SQL engine file is ever written; documents stay the truth.
+  The catalog runs on FYLO's own `IO` (memory only, FYLO's clock).
+- The tables are Turso **internal virtual tables**, a safe Rust interface,
+  not the `turso_ext` C extension interface, which FYLO's `unsafe_code =
+  "forbid"` keeps out. Turso 0.8.3 makes internal tables read-only, so FYLO's
+  patch makes them writable (section 4).
+- `=` on `id` and on field columns, and numeric ranges on field columns, push
+  down to FYLO; the engine still rechecks every pushed condition, so pushdown
+  can only narrow what FYLO reads. Turso 0.8.3 passes no `LIKE`, `IN` or
+  `MATCH` constraint to a virtual table, so those wait for more planner
+  patching, and FYLO's native engine plans only equality from its indexes, so
+  a pushed range still scans.
+- `INSERT`, `UPDATE` and `DELETE` map to puts, replaces and deletes, with
+  every check a typed call runs. Errors are the SDK's own SQL error carrying
+  FYLO's code (`… EARRAYOFOBJECTS: …`); the Rust API returns that code.
 - Turso's bound parameters (`?`, `?NNN`, `:name`, `$name`) replace FYLO's
   literal-only dialect.
-- Writes in `BEGIN … COMMIT` are buffered per collection and committed as one
-  ADR 0013 group commit. A second collection in one transaction fails with the
-  new code `EFYLO_TXN_SCOPE` until ADR 0016 section 6 lands.
-- `fylo_version()` and the `fylo_queue_*` functions expose the rest.
+- Every statement's writes, and every `BEGIN … COMMIT`'s, are buffered and
+  committed as one ADR 0013 log record (the new
+  `NativeWriteRoot::commit_document_writes_with`), so a statement or a
+  transaction lands whole or not at all. Scans in a transaction read its own
+  writes. A second collection in one transaction fails with the new code
+  `EFYLO_TXN_SCOPE` until ADR 0016 section 6 lands. A failing statement inside
+  a transaction discards the transaction's buffered writes. Batches need the
+  files layout; the segments layout refuses them for now.
+- Turso 0.8.3 registers scalar functions only through the C interface, so the
+  version and the queue are tables: `fylo_info`, `fylo_queue_publish`,
+  `fylo_queue_claim` (a `SELECT` with `topic` and `group_name`),
+  `fylo_queue_ack` and `fylo_queue_nack`. Queue writes take effect when their
+  statement runs, not at `COMMIT`.
 
 ### 4. The Turso pin
 
@@ -98,6 +116,27 @@ through one long-lived `fylo exec --loop` subprocess (TACHYON ADR 0032).
   `fylo link` enforces it for every other SDK.
 - Moving the pin rebases FYLO's small `turso_core` patch and rebuilds every
   binding artifact.
+- The patch lives in the repository as `vendor/turso_core-<version>-fylo.patch`
+  next to the patched source in `vendor/turso_core` (Cargo builds a patched
+  crate only from source). `scripts/vendor-turso-core.sh [--check]` rebuilds
+  or checks the tree from the crates.io release, whose SHA-256 it verifies.
+  The workspace excludes the vendored crate, so FYLO's lints and tests do not
+  run on it.
+- At 0.8.3 the patch is 6 files, +147/−32 lines, all behind a `fylo`
+  feature except the manifest's dependency lines:
+  - internal virtual tables become writable, with begin, commit and rollback,
+    and join the connection's virtual-table transactions;
+  - `COMMIT` and `ROLLBACK` commit and roll back virtual tables (upstream
+    never calls them from an explicit transaction);
+  - a failed statement, or one reset while running, rolls its virtual-table
+    writes back (upstream leaves them buffered for the next commit);
+  - a multi-row `INSERT … VALUES` into a virtual table writes every row
+    (upstream writes only the last);
+  - `regex` and `regex-syntax` use CHEX's feature set, because Cargo unifies
+    features: Turso's default `regex` features changed CHEX's validation
+    dialect for the whole build.
+- `turso_core` 0.8.3 needs its `fs` and `uuid` features to build; FYLO leaves
+  encryption, SIMD and full-text search off.
 
 ### 5. The no-listener rule, restated
 
@@ -137,7 +176,12 @@ through one long-lived `fylo exec --loop` subprocess (TACHYON ADR 0032).
 - `api/sql/v1` replaces FYLO's SQL contract, and `api/errors/v1.json` gains
   `EFYLO_TXN_SCOPE`.
 - ADR 0004 is amended for `turso_core` (pre-1.0, MIT) and for shipping
-  third-party binding builds.
+  third-party binding builds. At 0.8.3 the `sql` feature adds or bumps 149
+  packages, all under permissive licenses: MIT or Apache-2.0 for most,
+  Unicode-3.0 (the `icu` family), BSD-2/3-Clause, ISC, Zlib, BSL-1.0 and
+  Unlicense alternatives; `cfg_block` declares no SPDX expression, only a
+  license file. `turso_core`, `turso_ext`, `turso_parser` and `turso_macros`
+  are MIT. It adds no advisory to `cargo deny`.
 - README, `clients/README.md` and `CONTEXT.md` are rewritten around Turso
   SDKs, `fylo link` and the crate.
 
@@ -158,6 +202,20 @@ through one long-lived `fylo exec --loop` subprocess (TACHYON ADR 0032).
 - Phase 2: `turso_core` patched at the pin with read-only tables and pushdown,
   then writes, transactions and the queue functions, plus a crash matrix
   (kill mid-statement and mid-`COMMIT`, then recover).
+  - Done 2026-11-01 on branch `feat/fylo-sql-core` (crate feature `sql`).
+    Pushdown returns exactly what a full scan returns on 14 query shapes,
+    joins included. In a release build over 5,000 documents, `id =` takes
+    0.28 ms against a 261 ms full scan, `name =` 0.53 ms, `price =` (100
+    rows) 5.5 ms, and `group = AND price >` 36.5 ms; a numeric range is not
+    faster (263 ms), for the reason in section 3.
+  - The crash matrix interrupts an autocommit `UPDATE` of many rows and a
+    `BEGIN`/`INSERT`/`UPDATE`/`DELETE`/`COMMIT` at every write-ahead-log
+    transition (before and after the append, before and after the sync, and
+    during apply), by losing the process (`abort`) and by an in-process
+    `ENOSPC`. In all 24 cases the reopened collection holds exactly the state
+    before or after, never a mix; every commit whose record was appended
+    survives; every `ENOSPC` leaves the state before; and the index equals an
+    independent rebuild from the documents.
 - Phase 3: binding artifacts and `fylo link` for JS and Go first, with a
   conformance suite running each stock Turso SDK at the pinned version against
   FYLO's build; then Python, Java and .NET; macOS, Linux and Windows; and a
