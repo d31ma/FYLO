@@ -38,6 +38,7 @@ ADR.
 | [0016](0016-single-file-vdbx-database.md)                   | Accepted | Single-file `.vdbx` databases               |
 | [0017](0017-schemas-in-the-database.md)                     | Accepted | Schemas in the database, validated at the commit |
 | [0018](0018-json-only-schema-migrations.md)                 | Accepted | JSON-only schema migrations                 |
+| [0019](0019-fylo-through-tursos-engine.md)                  | Proposed | FYLO through Turso's engine: the `fylo` crate and `fylo link` |
 
 ## When another ADR is required
 

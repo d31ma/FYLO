@@ -300,6 +300,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "fylo"
+version = "0.1.0"
+dependencies = [
+ "fylo-engine",
+ "fylo-query",
+ "fylo-storage-native",
+ "fylo-vfs",
+ "serde_json",
+]
+
+[[package]]
 name = "fylo-browser-index"
 version = "0.1.0"
 dependencies = [

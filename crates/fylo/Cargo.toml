@@ -1,0 +1,19 @@
+[package]
+name = "fylo"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "FYLO in-process: open a root and use its documents, collections and queues from Rust"
+publish = false
+
+[dependencies]
+fylo-engine = { version = "0.1.0", path = "../fylo-engine" }
+fylo-query = { version = "0.1.0", path = "../fylo-query" }
+fylo-storage-native = { version = "0.1.0", path = "../fylo-storage-native" }
+fylo-vfs = { version = "0.1.0", path = "../fylo-vfs" }
+serde_json.workspace = true
+
+[lints]
+workspace = true
