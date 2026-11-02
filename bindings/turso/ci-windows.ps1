@@ -16,6 +16,9 @@ param(
     [string] $NodeX64 = ''
 )
 $ErrorActionPreference = 'Continue'
+# The VM's toolchain PATH (Rust, MSVC, Node, Go, Git), when its CI set one up.
+$ciEnv = Join-Path $env:USERPROFILE 'tachyon-ci\ci-env.ps1'
+if (Test-Path $ciEnv) { . $ciEnv }
 $bash = 'C:\Program Files\Git\bin\bash.exe'
 $overall = 0
 function Step($name) { Write-Output "=== $name $(Get-Date -Format HH:mm:ss)" }
