@@ -386,10 +386,24 @@ SHA-1) or NuGet.
 | Platform | Python | Java | .NET |
 |---|---|---|---|
 | macOS arm64 | pass | pass | pass |
-@@SDK-ROWS@@
+| Linux arm64 (glibc) | pass | pass | pass |
+| Linux x64 (emulated) | built only | built only | not built (the SDK kit) |
+| Windows arm64 | no pyturso wheel | pass (auto, hardlink, copy) | pass (auto, hardlink, copy) |
+| Windows x64 (emulated) | no pyturso wheel | built only | not built (the SDK kit) |
 
-- macOS arm64 artifacts: `_turso.abi3.so` 23.5 MiB (67 s warm through
-  maturin), `lib_turso_java.dylib` 16.1 MiB (52 s warm).
+- Artifacts: `_turso.abi3.so` 23.5 MiB on macOS arm64, 26.3 MiB on Linux
+  arm64 and 28.2 MiB on Linux x64 (maturin's build is not stripped); the JNI
+  library 16.1 MiB on macOS, 17.8 / 19.4 MiB on Linux arm64 / x64, and
+  12.8 / 14.8 MiB on Windows arm64 / x64. Cold builds in Colima, sharing
+  the Mac with another coordinator's job (5 of 10 cores): the JNI library
+  518 s and the Python extension 199 s on arm64; in the VM 186 s (arm64)
+  and 229 s (x64).
+- x64 is tested for JS and Go only: the emulated Linux container has no
+  Python, JDK or .NET, and the Windows VM's JDK and .NET are ARM64, which
+  cannot load an x64 library. The x64 Java and Python artifacts were built
+  and not run; .NET uses the SDK kit, which the Go runs exercised.
+- Logs: `/Volumes/ANVIL/Logs/FYLO/fylo-link-platforms/` (`mac-final-7.log`,
+  `linux-4.log`, `windows-5.log`).
 - A failing statement inside a transaction already ends it, so a later
   `ROLLBACK` reports "no transaction is active"; the Python, Java and .NET
   checks accept that and verify the transaction's write is gone (Go's
