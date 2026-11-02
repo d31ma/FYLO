@@ -77,7 +77,7 @@ through one long-lived `fylo exec --loop` subprocess (TACHYON ADR 0032).
 
   | SDK | Placement | Label |
   |---|---|---|
-  | .NET | `EnableExtensions()` plus `LoadExtension(path)` | Supported |
+  | .NET | the SDK kit as `turso_sdk_kit`, loaded by one `NativeLibrary.SetDllImportResolver` line in the app | Semi-supported |
   | Rust | the `fylo` crate | Supported |
   | Go | `InitLibrary(... "system")`, plus a library on the search path | Semi-supported |
   | Java / Kotlin | a library on `java.library.path` | Semi-supported |
@@ -93,6 +93,25 @@ through one long-lived `fylo exec --loop` subprocess (TACHYON ADR 0032).
   `LD_LIBRARY_PATH` / `PATH`. It never writes a package file or a lockfile,
   refuses a file or symlink it did not place, and `--undo` removes only its
   own links.
+- Python (pyturso in the project's `.venv` or `venv`, else `$VIRTUAL_ENV`):
+  `fylo link` writes `fylo_turso.pth` in that `site-packages`, an import
+  hook that loads FYLO's `_turso.abi3.so` for `turso._turso`; the artifact
+  path is JSON-quoted into it. A pyturso reinstall keeps the hook; a `.pth`
+  without FYLO's marker line is never touched. pyturso 0.8.3 ships no
+  Windows wheel, so there is no Windows build.
+- Java (`tech.turso:turso` in `build.gradle(.kts)` or `pom.xml`): the JNI
+  library (`lib_turso_java.<ext>`, `_turso_java.dll`) in the project
+  directory. The driver tries `System.loadLibrary("_turso_java")` before its
+  own copy, so the app runs with `-Djava.library.path=<project>`; without it
+  the driver silently falls back to stock Turso.
+- .NET (`Turso.Data.Sqlite.Provider`, `Turso.Data.Common` or
+  `Turso.EntityFrameworkCore.Sqlite` in a `.csproj`): Turso's own .NET
+  packages ship the SDK kit renamed `turso_sdk_kit`, so `fylo link` places
+  FYLO's SDK-kit build under that name in the project directory and prints
+  the one line the app adds before its first Turso call:
+  `NativeLibrary.SetDllImportResolver(Assembly.Load("Turso.Raw"), …)`.
+  `LoadExtension` was not used: it needs a `turso_ext` entry point, and the
+  build output's native folder is rewritten by every `dotnet build`.
 - Where symlinks are not allowed (Windows outside Developer Mode),
   `--method auto` falls back to a hard link on the same volume, then to a copy
   checked by SHA-256; `--method symlink|hardlink|copy` forces one. A hard
@@ -106,10 +125,12 @@ through one long-lived `fylo exec --loop` subprocess (TACHYON ADR 0032).
   the file name and passes the result to `dlopen`; with the variable unset
   (or `.`) it finds the library in the working directory but passes a bare
   file name, which glibc's `dlopen` looks up only on the system paths.
-  `fylo link` prints the exact `export LD_LIBRARY_PATH=…` line and the
-  in-app alternative, `os.Setenv("LD_LIBRARY_PATH", dir)` before
-  `InitLibrary` (tursogo reads the variable itself at that moment, not the
-  dynamic loader at start-up). Rejected: an rpath in the app (tursogo's
+  `fylo link` recommends `os.Setenv("LD_LIBRARY_PATH", dir)` before
+  `InitLibrary` (tursogo reads the variable itself at that moment), and
+  prints the `export LD_LIBRARY_PATH=…` line as the alternative. The in-app
+  form is preferred: the dynamic loader reads an exported `LD_LIBRARY_PATH`
+  for every library the process loads, so a file in the project directory
+  could stand in for a system library. Rejected: an rpath in the app (tursogo's
   bare-name `dlopen` comes through purego, so the app's `RUNPATH` is not the
   caller's, and it would need custom linker flags in every app), and a copy
   on the default search path (`/usr/local/lib` plus `ldconfig`: root, and one
@@ -285,10 +306,8 @@ through one long-lived `fylo exec --loop` subprocess (TACHYON ADR 0032).
     suite passes again. A version mismatch is refused with the install
     command; `--undo` leaves nothing behind.
   - Linux and Windows: see "Platforms" below.
-  - Still to do: Python (the `.pth` hook), Java (a library on
-    `java.library.path`, JNI), .NET (`LoadExtension` would need a `turso_ext`
-    entry point, so a replaced `turso_sdk_kit` library is likelier), musl
-    builds for tursogo, and a security review.
+  - Python, Java and .NET: see "More SDKs" below. Still to do: musl builds
+    for tursogo, artifact signing, and x64 runs of Python, Java and .NET.
 
 ### Platforms (2026-11-01, branch `feat/fylo-link-platforms`)
 
@@ -352,6 +371,78 @@ Build times are cold for the target, with sccache.
   link after "A required privilege is not held by the client. (os error
   1314)", `--check` verified it by SHA-256, and `--undo` removed it, for
   both the JS addon and the Go library.
+
+### More SDKs (2026-11-02, branch `feat/fylo-link-platforms`)
+
+Python, Java and .NET join JS and Go. The binding patch adds `bindings/java`
+(the hook installed before both JNI opens) and `bindings/python` (through
+the already patched SDK kit) to the workspace; `build.sh` builds the JNI
+library with cargo and the Python extension with maturin 1.16.0. .NET needs
+no build of its own. Each SDK's conformance program
+(`conformance/{python,java,dotnet}`) runs the checks the Go one does, with
+the stock package from PyPI, Maven Central (jar checked against Maven's
+SHA-1) or NuGet.
+
+| Platform | Python | Java | .NET |
+|---|---|---|---|
+| macOS arm64 | pass | pass | pass |
+@@SDK-ROWS@@
+
+- macOS arm64 artifacts: `_turso.abi3.so` 23.5 MiB (67 s warm through
+  maturin), `lib_turso_java.dylib` 16.1 MiB (52 s warm).
+- A failing statement inside a transaction already ends it, so a later
+  `ROLLBACK` reports "no transaction is active"; the Python, Java and .NET
+  checks accept that and verify the transaction's write is gone (Go's
+  `Rollback` error was always ignored).
+- Found while building: the macOS dylibs stripped of debug info by cargo
+  (`strip = "debuginfo"`) would not load ("mis-aligned LINKEDIT string
+  pool"), and Node's loader then fell back to the stock platform package
+  without a word. `build.sh` no longer strips on macOS (19.4 vs 20 MB).
+- The `.pth` line runs inside `site`'s function scope, so the hook imports
+  `importlib.util` inside its lambda rather than relying on the line's own
+  import.
+
+### Security review (2026-11-02)
+
+Scope: supply chain of the artifacts, what `fylo link` writes and trusts,
+and the FFI surface.
+
+- **Code a linked app loads is whatever sits in the artifacts directory.**
+  Every placement is a symlink to it, or a copy or hard link of it, or (for
+  Python) a `.pth` naming it. Fixed: `build.sh` pins each artifact's SHA-256
+  in `fylo-link.json`, and `fylo link` and `--check` refuse an artifact that
+  no longer matches, so a library swapped after the build is caught for
+  symlinks too, not only for copies. On Unix `fylo link` refuses an
+  artifacts directory, manifest or artifact that other users can write
+  (group-writable is allowed: Ubuntu's default umask makes it common).
+  Windows ACLs are not checked. The pin sits next to the artifacts, so it
+  catches accidents and other users, not an attacker who can rewrite both;
+  that needs signed releases (open).
+- **`LD_LIBRARY_PATH` widens the loader's search.** Fixed by recommending
+  the in-app `os.Setenv` form (see section 2).
+- **The `.pth` hook runs at every interpreter start in that environment.**
+  It imports nothing at start-up beyond `sys`, matches only
+  `turso._turso`, and its artifact path is JSON-quoted, so a path cannot
+  inject code. A `.pth` without FYLO's marker is never touched.
+- **Ownership records** (`<file>.fylo-link`, `fylo_turso.pth`) are plain
+  files; forging one only lets `--undo` remove a file whose hash equals the
+  recorded one, and never a file it did not match.
+- **Supply chain.** The Turso checkout is pinned by commit, the binding
+  build now runs `--locked` against FYLO's `bindings/turso/Cargo.lock`, and
+  maturin is pinned to 1.16.0. `cargo deny` over the binding workspace with
+  Java and Python added found one more advisory, RUSTSEC-2026-0190
+  (`anyhow` 1.0.98, pulled in by pyturso's binding; also in stock Turso's
+  lock); FYLO's binding lock moves it to 1.0.104. What remains are the same
+  8 advisories as phase 3, all in stock Turso 0.8.3's lock; bans, licenses
+  and sources pass.
+  The conformance suites install pyturso and the .NET packages by version
+  without hash pinning; they are tests, not shipped.
+- **FFI.** FYLO's crates stay `unsafe`-free; the `unsafe` code is Turso's own
+  binding layers (napi, JNI, pyo3, the SDK kit's C API) at the pinned tag,
+  plus FYLO's two-line hook call in each. No FYLO code crosses the FFI
+  boundary except through `turso_core`'s safe virtual-table interface.
+- Java 25 warns that `System.loadLibrary` is a restricted method; a future
+  JDK needs `--enable-native-access=ALL-UNNAMED` for the stock driver too.
 
 ## Alternatives rejected
 
