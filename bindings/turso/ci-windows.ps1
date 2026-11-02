@@ -31,13 +31,17 @@ function Restore-Environment {
     foreach ($name in $saved.Keys) { Set-Item "env:$name" $saved[$name] }
 }
 # ci-env.ps1 set up MSVC for arm64. An x64 target needs vcvarsall's
-# arm64_amd64 environment. Either way, name MSVC's link.exe for cargo: Git
-# Bash puts its own /usr/bin/link (coreutils) first on PATH.
+# arm64_amd64 environment (the ARM64-hosted x64 tools), or else its x64 one,
+# whose x64-hosted tools run under Windows on ARM's x64 emulation. Either
+# way, name MSVC's link.exe for cargo: Git Bash puts its own /usr/bin/link
+# (coreutils) first on PATH.
 function Use-Msvc($target) {
     Restore-Environment
     if ($target -like 'x86_64-*') {
         $vc = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat'
-        cmd /c "`"$vc`" arm64_amd64 >nul && set" | ForEach-Object { if ($_ -match '^([^=]+)=(.*)$') { Set-Item -Path "env:$($matches[1])" -Value $matches[2] } }
+        $arch = if (Test-Path "$env:VCToolsInstallDir\bin\HostARM64\x64\link.exe") { 'arm64_amd64' } else { 'x64' }
+        Write-Output "vcvarsall $arch for $target"
+        cmd /c "`"$vc`" $arch >nul && set" | ForEach-Object { if ($_ -match '^([^=]+)=(.*)$') { Set-Item -Path "env:$($matches[1])" -Value $matches[2] } }
         Remove-Item Env:Platform -ErrorAction SilentlyContinue
     }
     $link = (Get-Command link.exe -ErrorAction SilentlyContinue | Where-Object { $_.Source -like '*Microsoft Visual Studio*' } | Select-Object -First 1).Source
