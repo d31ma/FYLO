@@ -16,6 +16,8 @@ param(
     [string] $NodeX64 = ''
 )
 $ErrorActionPreference = 'Continue'
+# powershell -File passes "a,b" as one string.
+$Targets = @($Targets | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
 # The VM's toolchain PATH (Rust, MSVC, Node, Go, Git), when its CI set one up.
 $ciEnv = Join-Path $env:USERPROFILE 'tachyon-ci\ci-env.ps1'
 if (Test-Path $ciEnv) { . $ciEnv }
@@ -51,6 +53,13 @@ cargo build -p fylo-cli --bin fylo-rust --locked
 if ($LASTEXITCODE -ne 0) { $overall = 1 }
 Pop-Location
 $cli = Join-Path $Work 'fylo-target\debug\fylo-rust.exe'
+
+Step 'link unit tests'
+Push-Location $fylo
+cargo test -p fylo-cli --bin fylo-rust --locked link_command
+if ($LASTEXITCODE -ne 0) { $overall = 1 }
+Write-Output "=== link unit tests rc=$LASTEXITCODE"
+Pop-Location
 
 foreach ($target in $Targets) {
     $out = Join-Path $Work "out-$target"
