@@ -25,6 +25,25 @@ $bash = 'C:\Program Files\Git\bin\bash.exe'
 $overall = 0
 function Step($name) { Write-Output "=== $name $(Get-Date -Format HH:mm:ss)" }
 function Native($path) { $path -replace '\\', '/' }
+$saved = @{}; Get-ChildItem env: | ForEach-Object { $saved[$_.Name] = $_.Value }
+function Restore-Environment {
+    Get-ChildItem env: | Where-Object { -not $saved.ContainsKey($_.Name) } | ForEach-Object { Remove-Item "env:$($_.Name)" }
+    foreach ($name in $saved.Keys) { Set-Item "env:$name" $saved[$name] }
+}
+# ci-env.ps1 set up MSVC for arm64. An x64 target needs vcvarsall's
+# arm64_amd64 environment. Either way, name MSVC's link.exe for cargo: Git
+# Bash puts its own /usr/bin/link (coreutils) first on PATH.
+function Use-Msvc($target) {
+    Restore-Environment
+    if ($target -like 'x86_64-*') {
+        $vc = 'C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat'
+        cmd /c "`"$vc`" arm64_amd64 >nul && set" | ForEach-Object { if ($_ -match '^([^=]+)=(.*)$') { Set-Item -Path "env:$($matches[1])" -Value $matches[2] } }
+        Remove-Item Env:Platform -ErrorAction SilentlyContinue
+    }
+    $link = (Get-Command link.exe -ErrorAction SilentlyContinue | Where-Object { $_.Source -like '*Microsoft Visual Studio*' } | Select-Object -First 1).Source
+    Write-Output "msvc linker for ${target}: $link"
+    Set-Item "env:CARGO_TARGET_$(($target -replace '-', '_').ToUpper())_LINKER" $link
+}
 
 Step 'clone'
 New-Item -ItemType Directory -Force $Work | Out-Null
@@ -40,12 +59,14 @@ Write-Output "fylo $(git -C $fylo rev-parse --short HEAD)"
 $env:CARGO_TARGET_DIR = Join-Path $Work 'target'
 foreach ($target in $Targets) {
     Step "bindings $target"
+    Use-Msvc $target
     $started = Get-Date
     & $bash -lc "'$(Native $fylo)/bindings/turso/build.sh' '$(Native $Work)/bindings' '$(Native $Work)/out-$target' $target"
     if ($LASTEXITCODE -ne 0) { $overall = 1 }
     Write-Output "=== bindings $target rc=$LASTEXITCODE seconds=$([int]((Get-Date) - $started).TotalSeconds)"
 }
 
+Restore-Environment
 Step 'fylo-cli'
 Push-Location $fylo
 $env:CARGO_TARGET_DIR = Join-Path $Work 'fylo-target'

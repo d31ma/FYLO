@@ -87,11 +87,12 @@ through one long-lived `fylo exec --loop` subprocess (TACHYON ADR 0032).
 - `fylo link` finds the FYLO builds through `--artifacts`,
   `$FYLO_LINK_ARTIFACTS`, or `../lib/fylo-link` beside the `fylo`
   executable; `fylo-link.json` there names the Turso version and platform.
-  It places only symlinks: `turso.<triple>.node` beside the JS SDK's
+  It places a symlink where it can: `turso.<triple>.node` beside the JS SDK's
   `index.js`, and `libturso_sync_sdk_kit.<ext>` in a Go project's directory,
   which `LoadStrategy: "system"` searches after `DYLD_LIBRARY_PATH` /
-  `LD_LIBRARY_PATH`. It never writes a package file or a lockfile, refuses a
-  file or symlink it did not place, and `--undo` removes only its own links.
+  `LD_LIBRARY_PATH` / `PATH`. It never writes a package file or a lockfile,
+  refuses a file or symlink it did not place, and `--undo` removes only its
+  own links.
 - Where symlinks are not allowed (Windows outside Developer Mode),
   `--method auto` falls back to a hard link on the same volume, then to a copy
   checked by SHA-256; `--method symlink|hardlink|copy` forces one. A hard
@@ -100,10 +101,19 @@ through one long-lived `fylo exec --loop` subprocess (TACHYON ADR 0032).
   only a file whose hash is unchanged, and a file without a record is never
   touched. Windows cannot replace or remove a library a running process has
   loaded; `fylo link` says so when that is why it failed.
-- On Linux, tursogo's `"system"` search needs `LD_LIBRARY_PATH`: with it
-  unset, the search finds the library in the working directory but hands
-  `dlopen` a bare file name, which Linux does not look up there. `fylo link`
-  prints the exact `LD_LIBRARY_PATH` to use.
+- On Linux, tursogo's `"system"` search needs the project directory as an
+  absolute entry first on `LD_LIBRARY_PATH`. tursogo joins each entry with
+  the file name and passes the result to `dlopen`; with the variable unset
+  (or `.`) it finds the library in the working directory but passes a bare
+  file name, which glibc's `dlopen` looks up only on the system paths.
+  `fylo link` prints the exact `export LD_LIBRARY_PATH=…` line and the
+  in-app alternative, `os.Setenv("LD_LIBRARY_PATH", dir)` before
+  `InitLibrary` (tursogo reads the variable itself at that moment, not the
+  dynamic loader at start-up). Rejected: an rpath in the app (tursogo's
+  bare-name `dlopen` comes through purego, so the app's `RUNPATH` is not the
+  caller's, and it would need custom linker flags in every app), and a copy
+  on the default search path (`/usr/local/lib` plus `ldconfig`: root, and one
+  machine-wide library for every project).
 - `fylo version --output json` reports `tursoLink`: the pinned Turso version
   and the artifacts built for it.
 
@@ -282,7 +292,30 @@ through one long-lived `fylo exec --loop` subprocess (TACHYON ADR 0032).
 
 ### Platforms (2026-11-01, branch `feat/fylo-link-platforms`)
 
-@@PLATFORMS@@
+Built by `bindings/turso/ci-linux.sh` in a container on Colima's Linux VM
+(Ubuntu 24.04, glibc, aarch64): aarch64 natively, x86_64 with Ubuntu's
+`x86_64-linux-gnu` cross toolchain. Sizes are stripped of debug info; build
+times are warm (a cold build took 105-110 s for the addon and 87-88 s for the
+SDK kit per target).
+
+| Platform | Artifact | Size | Build | Ran | Conformance |
+|---|---|---|---|---|---|
+| linux-arm64-gnu | `turso.linux-arm64-gnu.node` | 22.3 MiB | 54 s | native | pass (auto, copy) |
+| linux-arm64-gnu | `libturso_sync_sdk_kit.so` | 20.0 MiB | 61 s | native | pass (auto, copy) |
+| linux-x64-gnu | `turso.linux-x64-gnu.node` | 24.1 MiB | 64 s | amd64 container, emulated | pass (auto, copy) |
+| linux-x64-gnu | `libturso_sync_sdk_kit.so` | 22.1 MiB | 76 s | amd64 container, emulated | pass (auto, copy) |
+
+- The x64 artifacts ran: an `ubuntu:24.04` amd64 container on the arm64 VM,
+  with an x64 Node (`npm ci` and the `postinstall` link included) and an x64
+  Go app. The Go toolchain itself crashes under that emulation ("found bad
+  pointer in Go heap"), so the app is cross-compiled on arm64
+  (`CGO_ENABLED=0 GOARCH=amd64`; tursogo loads through purego, without cgo)
+  and only run emulated.
+- Go on Linux needs the absolute `LD_LIBRARY_PATH` described in section 2;
+  the suite also checks that without it tursogo cannot load the link.
+- The `fylo link` unit tests pass on Linux arm64.
+
+@@WINDOWS@@
 
 ## Alternatives rejected
 
