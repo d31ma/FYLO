@@ -183,7 +183,9 @@ impl LinkCommand {
 
     fn detect(project: &Path, artifacts: &Artifacts) -> Result<Vec<Sdk>, String> {
         let mut sdks = Vec::new();
-        let package = project.join("node_modules").join(Self::JS_PACKAGE);
+        let package = Self::JS_PACKAGE
+            .split('/')
+            .fold(project.join("node_modules"), |path, part| path.join(part));
         if let Some(installed) = Self::npm_version(&package.join("package.json"))? {
             let wanted = artifacts.turso.clone();
             let postinstall = Self::npm_postinstall(&project.join("package.json"));
