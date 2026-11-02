@@ -315,7 +315,43 @@ SDK kit per target).
   the suite also checks that without it tursogo cannot load the link.
 - The `fylo link` unit tests pass on Linux arm64.
 
-@@WINDOWS@@
+Built by `bindings/turso/ci-windows.ps1` in `windows-vm` (Windows 11 Pro on
+ARM64, MSVC 14.44, Rust 1.97.1), in a clone inside the VM. aarch64 uses the
+ARM64-hosted MSVC tools. The VM has no ARM64-hosted x64 tools, so x86_64
+uses vcvarsall's `x64` environment, whose x64-hosted compiler and linker
+run under Windows on ARM's x64 emulation; nothing was installed for it.
+Build times are cold for the target, with sccache.
+
+| Platform | Artifact | Size | Build | Ran | Conformance |
+|---|---|---|---|---|---|
+| win32-arm64-msvc | `turso.win32-arm64-msvc.node` | 14.8 MiB | 198 s | native | pass (auto, hardlink, copy) |
+| win32-arm64-msvc | `turso_sync_sdk_kit.dll` | 13.5 MiB | 152 s | native | pass (auto, hardlink, copy) |
+| win32-x64-msvc | `turso.win32-x64-msvc.node` | 17.5 MiB | 214 s | x64 emulation | pass (auto, hardlink, copy) |
+| win32-x64-msvc | `turso_sync_sdk_kit.dll` | 16.1 MiB | 155 s | x64 emulation | pass (auto, hardlink, copy) |
+
+- The x64 artifacts ran: an x64 Node 24.22.2 (with `npm ci` and the
+  `postinstall` link) and a `GOARCH=amd64` Go app, both under emulation.
+- tursogo's Windows search is `PATH`, then the working directory, joined
+  into an absolute path, so the library in the project directory loads
+  with no environment change.
+- Git Bash puts its own `/usr/bin/link` ahead of MSVC's `link.exe`, so the
+  script names MSVC's linker per target (`CARGO_TARGET_<T>_LINKER`).
+- A real bug found here: `fylo link` writes a symlink's target in its
+  canonical `\\?\C:\…` form, and Windows can hand it back in another
+  form, so `fylo link` and `--check` did not recognise their own link. They
+  now compare the resolved paths (unit test
+  `a_symlink_to_the_artifact_written_another_way_is_recognized`).
+- The `fylo link` unit tests pass on Windows, including the fallback paths
+  (no symlink right, then a hard link; across volumes, a copy; a stale copy
+  reported by `--check`; a hand-edited copy left by `--undo`).
+- The VM's SSH session is elevated, so `--method auto` made real symlinks
+  there; `--method hardlink` and `--method copy` ran for real on NTFS.
+- Without the symlink right, for real: `fylo link` run under a basic-user
+  token (`runas /trustlevel:0x20000`, which does not hold
+  `SeCreateSymbolicLinkPrivilege`; Developer Mode off) fell back to a hard
+  link after "A required privilege is not held by the client. (os error
+  1314)", `--check` verified it by SHA-256, and `--undo` removed it, for
+  both the JS addon and the Go library.
 
 ## Alternatives rejected
 
