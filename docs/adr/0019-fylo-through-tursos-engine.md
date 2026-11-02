@@ -92,8 +92,18 @@ through one long-lived `fylo exec --loop` subprocess (TACHYON ADR 0032).
   which `LoadStrategy: "system"` searches after `DYLD_LIBRARY_PATH` /
   `LD_LIBRARY_PATH`. It never writes a package file or a lockfile, refuses a
   file or symlink it did not place, and `--undo` removes only its own links.
-- On Windows, where symlinks need Developer Mode, `fylo link` will fall back
-  to a hard link or a copy, and `--check` will compare hashes (not built yet).
+- Where symlinks are not allowed (Windows outside Developer Mode),
+  `--method auto` falls back to a hard link on the same volume, then to a copy
+  checked by SHA-256; `--method symlink|hardlink|copy` forces one. A hard
+  link or a copy gets a `<file>.fylo-link` record (artifact path, SHA-256,
+  method): `--check` verifies the hash against the artifact, `--undo` removes
+  only a file whose hash is unchanged, and a file without a record is never
+  touched. Windows cannot replace or remove a library a running process has
+  loaded; `fylo link` says so when that is why it failed.
+- On Linux, tursogo's `"system"` search needs `LD_LIBRARY_PATH`: with it
+  unset, the search finds the library in the working directory but hands
+  `dlopen` a bare file name, which Linux does not look up there. `fylo link`
+  prints the exact `LD_LIBRARY_PATH` to use.
 - `fylo version --output json` reports `tursoLink`: the pinned Turso version
   and the artifacts built for it.
 
@@ -264,11 +274,15 @@ through one long-lived `fylo exec --loop` subprocess (TACHYON ADR 0032).
     removes the JS link; a `postinstall` of `fylo link` restores it, and the
     suite passes again. A version mismatch is refused with the install
     command; `--undo` leaves nothing behind.
-  - Still to do: Linux (x64 and arm64, glibc; musl for tursogo), Windows
-    (x64; the symlink fallback), Python (the `.pth` hook), Java (a library on
+  - Linux and Windows: see "Platforms" below.
+  - Still to do: Python (the `.pth` hook), Java (a library on
     `java.library.path`, JNI), .NET (`LoadExtension` would need a `turso_ext`
-    entry point, so a replaced `turso_sdk_kit` library is likelier), and a
-    security review.
+    entry point, so a replaced `turso_sdk_kit` library is likelier), musl
+    builds for tursogo, and a security review.
+
+### Platforms (2026-11-01, branch `feat/fylo-link-platforms`)
+
+@@PLATFORMS@@
 
 ## Alternatives rejected
 
