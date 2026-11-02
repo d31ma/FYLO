@@ -46,6 +46,11 @@ for target in "$@"; do
     (cd "$work/fylo" && CARGO_TARGET_DIR=$work/fylo-target RUSTUP_TOOLCHAIN=1.97.1 cargo build -p fylo-cli --bin fylo-rust --locked --target "$target") || overall=1
 done
 
+# The x86_64 Go conformance app, compiled here so the emulated run only runs it.
+if [ -d "$work/out-x86_64-unknown-linux-gnu" ]; then
+    step "go app x86_64"
+    (cd "$work/fylo/bindings/turso/conformance/go" && GOARCH=amd64 go build -o "$work/go-conformance-x86_64" .) || overall=1
+fi
 native=$(uname -m)-unknown-linux-gnu
 for method in auto copy; do
     step "conformance $native $method"

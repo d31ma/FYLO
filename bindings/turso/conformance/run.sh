@@ -69,13 +69,21 @@ if [ "$only" != js ]; then
     step "go: setup"
     cd "$here/go"
     "$fylo" link --undo --artifacts "$art" > /dev/null 2>&1
-    if ! go build -o "$work/go-conformance$exe" .; then echo "FAIL go: build"; overall=1; step "done overall=$overall"; exit 1; fi
+    # A prebuilt app (FYLO_GO_CONFORMANCE_BIN) lets an emulated platform skip
+    # compiling it under emulation.
+    if [ -n "${FYLO_GO_CONFORMANCE_BIN:-}" ]; then
+        cp "$FYLO_GO_CONFORMANCE_BIN" "$work/go-conformance$exe"
+    elif ! go build -o "$work/go-conformance$exe" .; then
+        echo "FAIL go: build"; overall=1; step "done overall=$overall"; exit 1
+    fi
+    # tursogo's "system" search needs LD_LIBRARY_PATH on Linux (fylo link says so).
+    golib=(env "LD_LIBRARY_PATH=$here/go${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}")
     "$here/make-root.sh" "$fylo" "$work/go-root"
     root=$(native "$work/go-root")
-    expect fail "go: without the link, the system strategy finds no library" "$work/go-conformance$exe" "$root" "$(native "$work/go-plain-0.db")"
+    expect fail "go: without the link, the system strategy finds no library" "${golib[@]}" "$work/go-conformance$exe" "$root" "$(native "$work/go-plain-0.db")"
     expect ok "go: fylo link $method" "$fylo" link $method --artifacts "$art"
     expect ok "go: fylo link --check" "$fylo" link --check --artifacts "$art"
-    expect ok "go: conformance" "$work/go-conformance$exe" "$root" "$(native "$work/go-plain-1.db")"
+    expect ok "go: conformance" "${golib[@]}" "$work/go-conformance$exe" "$root" "$(native "$work/go-plain-1.db")"
     expect ok "go: fylo link --undo" "$fylo" link --undo --artifacts "$art"
     expect fail "go: --check after --undo" "$fylo" link --check --artifacts "$art"
 fi

@@ -51,6 +51,8 @@ sed "s|@FYLO@|$fylo_native|g" "$here/turso-$VERSION-bindings.patch" | git -C "$c
 cp "$here/Cargo.lock" "$checkout/Cargo.lock" 2>/dev/null || true
 
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$work/target}"
+# Ship the libraries without debug info, as the SDKs' own packages do.
+export CARGO_PROFILE_RELEASE_STRIP="${CARGO_PROFILE_RELEASE_STRIP:-debuginfo}"
 # FYLO's crates need its toolchain; Turso's rust-toolchain.toml names 1.88.
 export RUSTUP_TOOLCHAIN="${RUSTUP_TOOLCHAIN:-$(sed -n 's/^channel = "\(.*\)"/\1/p' "$fylo/rust-toolchain.toml")}"
 target=${3:-$(rustc -vV | sed -n 's/^host: //p')}

@@ -219,10 +219,10 @@ impl LinkCommand {
                 wanted,
                 placement: project.join(library),
                 artifact: artifacts.directory.join(library),
-                advice: vec![format!(
-                    "  call turso.InitLibrary(turso_libs.LoadTursoLibraryConfig{{LoadStrategy: \"system\"}}) (package turso.tech/database/tursogo) before opening, and run from the project directory (or put it on {})",
-                    artifacts.library_path_variable()
-                )],
+                advice: vec![
+                    "  call turso.InitLibrary(turso_libs.LoadTursoLibraryConfig{LoadStrategy: \"system\"}) (package turso.tech/database/tursogo) before opening".to_owned(),
+                    artifacts.search_advice(project),
+                ],
             });
         }
         Ok(sdks)
@@ -329,13 +329,20 @@ impl Artifacts {
         }
     }
 
-    fn library_path_variable(&self) -> &'static str {
-        if self.triple.starts_with("win32") {
-            "PATH"
-        } else if self.triple.starts_with("darwin") {
-            "DYLD_LIBRARY_PATH"
+    /// Where tursogo's "system" search finds the library. On Linux it must be
+    /// `LD_LIBRARY_PATH`: with the variable unset, tursogo finds the library
+    /// in the working directory but hands `dlopen` a bare name, which Linux
+    /// does not look up there.
+    fn search_advice(&self, project: &Path) -> String {
+        if self.triple.starts_with("linux") {
+            format!(
+                "  and run with LD_LIBRARY_PATH={} (tursogo's search needs it on Linux)",
+                project.display()
+            )
+        } else if self.triple.starts_with("win32") {
+            "  and run from the project directory (or put it on PATH)".to_owned()
         } else {
-            "LD_LIBRARY_PATH"
+            "  and run from the project directory (or put it on DYLD_LIBRARY_PATH)".to_owned()
         }
     }
 
@@ -889,7 +896,7 @@ mod tests {
             .unwrap();
         assert!(linked.contains("(copy, after: symlink failed"), "{linked}");
         assert!(linked.contains("hardlink failed"), "{linked}");
-        assert!(linked.contains(" PATH)"), "{linked}");
+        assert!(linked.contains("put it on PATH"), "{linked}");
         assert_eq!(fs::read_to_string(fixture.dylib()).unwrap(), "library");
         assert!(fixture.dylib().ends_with("turso_sync_sdk_kit.dll"));
         fixture.run(Some("--check")).unwrap();
