@@ -27,7 +27,7 @@ for method in auto copy; do
     suite=$work/conformance-$target-$method
     rm -rf "$suite" && cp -R "$work/fylo/bindings/turso/conformance" "$suite"
     FYLO_GO_CONFORMANCE_BIN=$work/go-conformance-x86_64 \
-        "$suite/run.sh" "$work/fylo-target/$target/debug/fylo-rust" "$work/out-$target" all --method "$method"
+        "$suite/run.sh" "$work/fylo-target/$target/debug/fylo-rust" "$work/out-$target" js,go --method "$method"
     rc=$?; [ $rc -ne 0 ] && overall=1
     echo "=== conformance $target $method rc=$rc"
 done

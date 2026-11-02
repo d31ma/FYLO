@@ -11,7 +11,7 @@ set -u
 bundle=$1 branch=$2 work=$3
 shift 3
 if [ -f /opt/tachyon/ci-env.sh ]; then . /opt/tachyon/ci-env.sh; fi
-export GOPATH=$work/go GOMODCACHE=$work/go/pkg/mod GOCACHE=$work/go/cache npm_config_cache=$work/npm
+export GOPATH=$work/go GOMODCACHE=$work/go/pkg/mod GOCACHE=$work/go/cache npm_config_cache=$work/npm UV_CACHE_DIR=$work/uv NUGET_PACKAGES=$work/nuget
 step() { echo "=== $1 $(date +%T)"; }
 overall=0
 mkdir -p "$work"

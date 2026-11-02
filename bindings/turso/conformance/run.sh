@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# fylo link conformance: JS (@tursodatabase/database 0.8.3) and Go (tursogo
-# v0.8.3), each against a fresh FYLO root, on macOS, Linux or Windows (Git
-# Bash). Run it from a copy of this folder outside the repository: it
-# installs node_modules, builds the Go app and places links there.
-# Usage: run.sh <fylo-binary> <artifacts-dir> [js|go|all] [--method <m>]
+# fylo link conformance: JS (@tursodatabase/database 0.8.3), Go (tursogo
+# v0.8.3), Python (pyturso 0.8.3), Java (tech.turso:turso 0.8.3) and .NET
+# (Turso.Data.Sqlite.Provider 0.8.3), each against a fresh FYLO root, on
+# macOS, Linux or Windows (Git Bash). Run it from a copy of this folder
+# outside the repository: it installs packages, builds the apps and places
+# links there. An SDK whose toolchain is missing is reported as SKIP.
+# Usage: run.sh <fylo-binary> <artifacts-dir> [all | a comma list of js,go,python,java,dotnet] [--method <m>]
 set -u
 here=$(cd "$(dirname "$0")" && pwd)
 fylo=$1
@@ -11,7 +13,13 @@ artifacts=$2
 only=${3:-all}
 method=
 if [ "${4:-}" = "--method" ]; then method="--method $5"; fi
-case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) exe=.exe ;; *) exe= ;; esac
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) exe=.exe sdk_kit=turso_sdk_kit.dll venv_python=Scripts/python.exe ;;
+    Darwin) exe= sdk_kit=libturso_sdk_kit.dylib venv_python=bin/python ;;
+    *) exe= sdk_kit=libturso_sdk_kit.so venv_python=bin/python ;;
+esac
+want() { case ",$only," in *,all,*|*",$1,"*) return 0 ;; *) return 1 ;; esac; }
+have() { command -v "$1" > /dev/null || { echo "SKIP $2: $1 not found"; return 1; }; }
 native() { if command -v cygpath > /dev/null; then cygpath -w "$1"; else printf '%s' "$1"; fi; }
 work=$here/work
 rm -rf "$work" && mkdir -p "$work/bin"
@@ -35,7 +43,7 @@ set_scripts() { # set_scripts <json or "">
     node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json'));if(process.argv[1]){p.scripts=JSON.parse(process.argv[1])}else{delete p.scripts}fs.writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')" "$1"
 }
 
-if [ "$only" != go ]; then
+if want js; then
     step "js: setup"
     cd "$here/js"
     set_scripts ""
@@ -65,7 +73,7 @@ if [ "$only" != go ]; then
     set_scripts ""
 fi
 
-if [ "$only" != js ]; then
+if want go; then
     step "go: setup"
     cd "$here/go"
     "$fylo" link --undo --artifacts "$art" > /dev/null 2>&1
@@ -89,6 +97,63 @@ if [ "$only" != js ]; then
     expect ok "go: conformance" "${golib[@]}" "$work/go-conformance$exe" "$root" "$(native "$work/go-plain-1.db")"
     expect ok "go: fylo link --undo" "$fylo" link --undo --artifacts "$art"
     expect fail "go: --check after --undo" "$fylo" link --check --artifacts "$art"
+fi
+
+if want python && [ -z "$exe" ] && have uv python; then
+    step "python: setup"
+    cd "$here/python"
+    rm -rf .venv
+    uv venv -q --python 3.14 .venv && uv pip install -q --python .venv pyturso==0.8.3
+    python=$here/python/.venv/$venv_python
+    "$fylo" link --undo --artifacts "$art" > /dev/null 2>&1
+    "$here/make-root.sh" "$fylo" "$work/python-root"
+    root=$(native "$work/python-root")
+    expect fail "python: the stock package cannot open a FYLO root" "$python" conformance.py "$root" "$(native "$work/python-plain-0.db")"
+    expect ok "python: fylo link" "$fylo" link $method --artifacts "$art"
+    expect ok "python: fylo link --check" "$fylo" link --check --artifacts "$art"
+    expect ok "python: conformance" "$python" conformance.py "$root" "$(native "$work/python-plain-1.db")"
+    expect ok "python: pyturso reinstalled" uv pip install -q --python .venv --reinstall pyturso==0.8.3
+    expect ok "python: the hook survives the reinstall" "$fylo" link --check --artifacts "$art"
+    expect ok "python: fylo link --undo" "$fylo" link --undo --artifacts "$art"
+    expect fail "python: --check after --undo" "$fylo" link --check --artifacts "$art"
+    expect fail "python: after --undo the stock package is back" "$python" conformance.py "$root" "$(native "$work/python-plain-2.db")"
+fi
+
+if want java && have java java && have curl java; then
+    step "java: setup"
+    cd "$here/java"
+    jar=$work/turso-0.8.3.jar
+    maven=https://repo1.maven.org/maven2/tech/turso/turso/0.8.3/turso-0.8.3.jar
+    curl -fsSL -o "$jar" "$maven" && [ "$(curl -fsSL "$maven.sha1" | cut -c1-40)" = "$( (sha1sum "$jar" 2> /dev/null || shasum -a 1 "$jar") | cut -c1-40)" ] \
+        || { echo "FAIL java: the driver jar does not match Maven Central's SHA-1"; overall=1; }
+    "$fylo" link --undo --artifacts "$art" > /dev/null 2>&1
+    "$here/make-root.sh" "$fylo" "$work/java-root"
+    root=$(native "$work/java-root")
+    java_run=(java -cp "$(native "$jar")" "-Djava.library.path=$(native "$here/java")" Conformance.java)
+    expect fail "java: without the link the driver's own library cannot open a FYLO root" "${java_run[@]}" "$root" "$(native "$work/java-plain-0.db")"
+    expect ok "java: fylo link $method" "$fylo" link $method --artifacts "$art"
+    expect ok "java: fylo link --check" "$fylo" link --check --artifacts "$art"
+    expect ok "java: conformance" "${java_run[@]}" "$root" "$(native "$work/java-plain-1.db")"
+    expect ok "java: fylo link --undo" "$fylo" link --undo --artifacts "$art"
+    expect fail "java: --check after --undo" "$fylo" link --check --artifacts "$art"
+fi
+
+if want dotnet && have dotnet dotnet; then
+    step "dotnet: setup"
+    cd "$here/dotnet"
+    app=$work/dotnet-app
+    dotnet build -c Release -o "$(native "$app")" -v quiet -nologo > "$work/dotnet-build.log" 2>&1 \
+        || { echo "FAIL dotnet: build (see $work/dotnet-build.log)"; overall=1; }
+    "$fylo" link --undo --artifacts "$art" > /dev/null 2>&1
+    "$here/make-root.sh" "$fylo" "$work/dotnet-root"
+    root=$(native "$work/dotnet-root")
+    dotnet_run=(dotnet "$(native "$app/Conformance.dll")")
+    expect fail "dotnet: the stock library cannot open a FYLO root" "${dotnet_run[@]}" "$root" "$(native "$work/dotnet-plain-0.db")" stock
+    expect ok "dotnet: fylo link $method" "$fylo" link $method --artifacts "$art"
+    expect ok "dotnet: fylo link --check" "$fylo" link --check --artifacts "$art"
+    expect ok "dotnet: conformance" "${dotnet_run[@]}" "$root" "$(native "$work/dotnet-plain-1.db")" "$(native "$here/dotnet/$sdk_kit")"
+    expect ok "dotnet: fylo link --undo" "$fylo" link --undo --artifacts "$art"
+    expect fail "dotnet: --check after --undo" "$fylo" link --check --artifacts "$art"
 fi
 
 step "done overall=$overall"

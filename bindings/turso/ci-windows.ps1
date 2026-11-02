@@ -102,7 +102,9 @@ foreach ($target in $Targets) {
         $suite = Join-Path $Work "conformance-$target-$method"
         Remove-Item -Recurse -Force $suite -ErrorAction SilentlyContinue
         Copy-Item -Recurse (Join-Path $fylo 'bindings\turso\conformance') $suite
-        & $bash -lc "'$(Native $suite)/run.sh' '$(Native $cli)' '$(Native $out)' all --method $method"
+        # Java and .NET in the VM are ARM64, so x64 artifacts run JS and Go only.
+        $sdks = if ($target -like 'x86_64-*') { 'js,go' } else { 'all' }
+        & $bash -lc "'$(Native $suite)/run.sh' '$(Native $cli)' '$(Native $out)' $sdks --method $method"
         if ($LASTEXITCODE -ne 0) { $overall = 1 }
         Write-Output "=== conformance $target $method rc=$LASTEXITCODE"
     }

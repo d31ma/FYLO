@@ -25,6 +25,16 @@ use sha2::{Digest, Sha256};
 /// - `tursogo`: the SDK-kit library in the project directory, which
 ///   `InitLibrary` with `LoadStrategy: "system"` searches after
 ///   `DYLD_LIBRARY_PATH`, `LD_LIBRARY_PATH` or `PATH`.
+/// - `pyturso` (in the project's `.venv` or `venv`, else `$VIRTUAL_ENV`): a
+///   `fylo_turso.pth` import hook in its `site-packages`, which loads FYLO's
+///   `_turso.abi3.so` for `turso._turso`. A reinstall of pyturso keeps it.
+/// - `tech.turso:turso` (named in `build.gradle(.kts)` or `pom.xml`): the JNI
+///   library in the project directory, which the driver loads from
+///   `java.library.path` before its own copy.
+/// - .NET (`Turso.Data.Sqlite.Provider`, `Turso.Data.Common` or
+///   `Turso.EntityFrameworkCore.Sqlite` in a `.csproj`): the SDK-kit library
+///   in the project directory as `turso_sdk_kit`, which the app loads with
+///   `NativeLibrary.SetDllImportResolver` (`fylo link` prints the line).
 ///
 /// Each placement is a symlink when the platform allows one. Without the
 /// right to create symlinks (Windows outside Developer Mode) `--method auto`
@@ -32,6 +42,11 @@ use sha2::{Digest, Sha256};
 /// SHA-256. A hard link or a copy has a `<file>.fylo-link` record beside it
 /// naming its artifact and hash, which is how `--check` verifies it and how
 /// `--undo` knows it placed it.
+///
+/// `fylo-link.json` pins each artifact's SHA-256. `fylo link` and `--check`
+/// refuse an artifact that no longer matches it, and on Unix an artifacts
+/// directory, manifest or artifact other users can write: whoever can write
+/// there decides what code every linked app loads.
 ///
 /// `--check` verifies each placement, its hash, and the SDK's version;
 /// `--undo` removes only what `fylo link` placed and nobody changed since.
@@ -43,6 +58,8 @@ struct Artifacts {
     directory: PathBuf,
     turso: String,
     triple: String,
+    /// The SHA-256 of each artifact, by file name, as the build recorded it.
+    sha256: serde_json::Map<String, Value>,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -79,6 +96,8 @@ struct Record {
 /// What is at a placement now.
 enum Current {
     Missing,
+    /// FYLO's import hook; `true` when it names this artifact.
+    Hook(bool),
     OwnedSymlink(PathBuf),
     ForeignSymlink(PathBuf),
     OwnedFile(Record),
@@ -94,11 +113,22 @@ struct Sdk {
     placement: PathBuf,
     artifact: PathBuf,
     advice: Vec<String>,
+    /// The text of an import-hook placement, written rather than linked.
+    hook: Option<String>,
 }
 
 impl LinkCommand {
     const JS_PACKAGE: &'static str = "@tursodatabase/database";
     const GO_MODULE: &'static str = "turso.tech/database/tursogo";
+    const PYTHON_DISTRIBUTION: &'static str = "pyturso";
+    const PYTHON_HOOK: &'static str = "fylo_turso.pth";
+    const PYTHON_HOOK_MARKER: &'static str = "# fylo link (ADR 0019)";
+    const JAVA_PACKAGE: &'static str = "tech.turso:turso";
+    const DOTNET_PACKAGES: [&'static str; 3] = [
+        "Turso.Data.Sqlite.Provider",
+        "Turso.Data.Common",
+        "Turso.EntityFrameworkCore.Sqlite",
+    ];
     const MANIFEST: &'static str = "fylo-link.json";
     const RECORD_SUFFIX: &'static str = "fylo-link";
 
@@ -159,6 +189,12 @@ impl LinkCommand {
         let mut report = Vec::new();
         let mut problems = Vec::new();
         for sdk in &sdks {
+            if mode != Mode::Undo
+                && let Some(problem) = artifacts.problem(&sdk.artifact)
+            {
+                problems.push(format!("{}: {problem}", sdk.name));
+                continue;
+            }
             match mode {
                 Mode::Link => sdk.link(placer, &mut report, &mut problems),
                 Mode::Check => sdk.check(&mut report, &mut problems),
@@ -209,6 +245,7 @@ impl LinkCommand {
                     .directory
                     .join(format!("turso.{}.node", artifacts.triple)),
                 advice,
+                hook: None,
             });
         }
         if let Some(installed) = Self::go_version(&project.join("go.mod"))? {
@@ -225,9 +262,207 @@ impl LinkCommand {
                     "  call turso.InitLibrary(turso_libs.LoadTursoLibraryConfig{LoadStrategy: \"system\"}) (package turso.tech/database/tursogo) before opening".to_owned(),
                     artifacts.search_advice(project),
                 ],
+                hook: None,
             });
         }
+        sdks.extend(Self::detect_python(project, artifacts)?);
+        sdks.extend(Self::detect_java(project, artifacts)?);
+        sdks.extend(Self::detect_dotnet(project, artifacts)?);
         Ok(sdks)
+    }
+
+    /// pyturso in the project's virtual environment: the `.pth` hook that
+    /// maps `turso._turso` to FYLO's extension module.
+    fn detect_python(project: &Path, artifacts: &Artifacts) -> Result<Option<Sdk>, String> {
+        let Some((site_packages, installed)) = Self::python_install(project) else {
+            return Ok(None);
+        };
+        let wanted = artifacts.turso.clone();
+        let artifact = artifacts.directory.join(Artifacts::PYTHON_EXTENSION);
+        let literal = serde_json::to_string(&artifact.display().to_string())
+            .map_err(|error| format!("cannot quote {}: {error}", artifact.display()))?;
+        Ok(Some(Sdk {
+            name: Self::PYTHON_DISTRIBUTION,
+            install: format!(
+                "pip install {0}=={wanted}  (or: uv pip install {0}=={wanted})",
+                Self::PYTHON_DISTRIBUTION
+            ),
+            installed,
+            wanted,
+            placement: site_packages.join(Self::PYTHON_HOOK),
+            hook: Some(format!(
+                "{}: turso._turso loads FYLO's build of it.\nimport sys; sys.meta_path.insert(0, type(\"FyloTurso\", (), {{\"find_spec\": staticmethod(lambda name, path=None, target=None: __import__(\"importlib.util\").util.spec_from_file_location(name, {literal}) if name == \"turso._turso\" else None)}})())\n",
+                Self::PYTHON_HOOK_MARKER
+            )),
+            artifact,
+            advice: vec![
+                "  every interpreter of this environment loads FYLO's turso._turso; fylo link --undo removes the hook".to_owned(),
+            ],
+        }))
+    }
+
+    /// The first virtual environment with pyturso installed: its
+    /// `site-packages` and pyturso's version.
+    fn python_install(project: &Path) -> Option<(PathBuf, String)> {
+        let environments = [
+            Some(project.join(".venv")),
+            Some(project.join("venv")),
+            std::env::var_os("VIRTUAL_ENV").map(PathBuf::from),
+        ];
+        environments
+            .into_iter()
+            .flatten()
+            .flat_map(|environment| Self::site_packages(&environment))
+            .find_map(|site_packages| {
+                Self::python_version(&site_packages).map(|version| (site_packages, version))
+            })
+    }
+
+    /// `Lib/site-packages` (Windows) and `lib/python3.*/site-packages`.
+    fn site_packages(environment: &Path) -> Vec<PathBuf> {
+        let mut found = vec![environment.join("Lib").join("site-packages")];
+        if let Ok(entries) = fs::read_dir(environment.join("lib")) {
+            found.extend(
+                entries
+                    .flatten()
+                    .filter(|entry| entry.file_name().to_string_lossy().starts_with("python"))
+                    .map(|entry| entry.path().join("site-packages")),
+            );
+        }
+        found.into_iter().filter(|path| path.is_dir()).collect()
+    }
+
+    /// pyturso's version from its `pyturso-<version>.dist-info` directory.
+    fn python_version(site_packages: &Path) -> Option<String> {
+        let prefix = format!("{}-", Self::PYTHON_DISTRIBUTION);
+        fs::read_dir(site_packages)
+            .ok()?
+            .flatten()
+            .find_map(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .strip_prefix(&prefix)
+                    .and_then(|rest| rest.strip_suffix(".dist-info"))
+                    .map(ToOwned::to_owned)
+            })
+    }
+
+    /// `tech.turso:turso` named by the Gradle or Maven build: the JNI library
+    /// in the project directory, for `java.library.path`.
+    fn detect_java(project: &Path, artifacts: &Artifacts) -> Result<Option<Sdk>, String> {
+        let Some(installed) = Self::java_version(project)? else {
+            return Ok(None);
+        };
+        let library = artifacts.java_library();
+        let directory = std::path::absolute(project).unwrap_or_else(|_| project.to_owned());
+        Ok(Some(Sdk {
+            name: Self::JAVA_PACKAGE,
+            install: format!(
+                "depend on {}:{} in build.gradle(.kts) or pom.xml",
+                Self::JAVA_PACKAGE,
+                artifacts.turso
+            ),
+            installed,
+            wanted: artifacts.turso.clone(),
+            placement: project.join(library),
+            artifact: artifacts.directory.join(library),
+            advice: vec![format!(
+                "  run java with -Djava.library.path={}: the driver loads _turso_java from java.library.path before its own copy, and falls back to stock Turso without it",
+                directory.display()
+            )],
+            hook: None,
+        }))
+    }
+
+    /// The `tech.turso:turso` version in `build.gradle.kts`, `build.gradle`
+    /// or `pom.xml`.
+    fn java_version(project: &Path) -> Result<Option<String>, String> {
+        for file in ["build.gradle.kts", "build.gradle"] {
+            let Ok(text) = fs::read_to_string(project.join(file)) else {
+                continue;
+            };
+            let coordinate = format!("{}:", Self::JAVA_PACKAGE);
+            if let Some(start) = text.find(&coordinate) {
+                let version: String = text[start + coordinate.len()..]
+                    .chars()
+                    .take_while(|character| !matches!(character, '"' | '\'' | ')' | ' ' | '\n'))
+                    .collect();
+                return Self::named_version(&project.join(file), version);
+            }
+        }
+        let Ok(pom) = fs::read_to_string(project.join("pom.xml")) else {
+            return Ok(None);
+        };
+        let dependency = pom.split("<dependency>").find(|block| {
+            block.contains("<groupId>tech.turso</groupId>")
+                && block.contains("<artifactId>turso</artifactId>")
+        });
+        let Some(dependency) = dependency else {
+            return Ok(None);
+        };
+        let version = Self::between(dependency, "<version>", "</version>").unwrap_or_default();
+        Self::named_version(&project.join("pom.xml"), version.trim().to_owned())
+    }
+
+    fn named_version(manifest: &Path, version: String) -> Result<Option<String>, String> {
+        if version.is_empty() {
+            return Err(format!(
+                "{} names {} without a version",
+                manifest.display(),
+                Self::JAVA_PACKAGE
+            ));
+        }
+        Ok(Some(version))
+    }
+
+    fn between<'a>(text: &'a str, start: &str, end: &str) -> Option<&'a str> {
+        let rest = &text[text.find(start)? + start.len()..];
+        Some(&rest[..rest.find(end)?])
+    }
+
+    /// A Turso .NET package in a `.csproj` in the project directory: the
+    /// SDK-kit library as `turso_sdk_kit` there, for the app's resolver.
+    fn detect_dotnet(project: &Path, artifacts: &Artifacts) -> Result<Option<Sdk>, String> {
+        let Some((package, installed)) = Self::dotnet_package(project) else {
+            return Ok(None);
+        };
+        let placement = project.join(artifacts.dotnet_library());
+        let absolute = std::path::absolute(&placement).unwrap_or_else(|_| placement.clone());
+        let literal = serde_json::to_string(&absolute.display().to_string())
+            .map_err(|error| format!("cannot quote {}: {error}", absolute.display()))?;
+        Ok(Some(Sdk {
+            name: package,
+            install: format!("dotnet add package {package} --version {}", artifacts.turso),
+            installed,
+            wanted: artifacts.turso.clone(),
+            artifact: artifacts.directory.join(artifacts.go_library()),
+            placement,
+            advice: vec![format!(
+                "  before the first Turso call: NativeLibrary.SetDllImportResolver(Assembly.Load(\"Turso.Raw\"), (name, _, _) => name == \"turso_sdk_kit\" ? NativeLibrary.Load({literal}) : IntPtr.Zero);  (System.Reflection, System.Runtime.InteropServices)"
+            )],
+            hook: None,
+        }))
+    }
+
+    /// The first Turso package a `.csproj` in the project references, and
+    /// its version.
+    fn dotnet_package(project: &Path) -> Option<(&'static str, String)> {
+        let projects = fs::read_dir(project).ok()?.flatten().filter(|entry| {
+            entry
+                .path()
+                .extension()
+                .is_some_and(|extension| extension == "csproj")
+        });
+        projects
+            .filter_map(|entry| fs::read_to_string(entry.path()).ok())
+            .find_map(|text| {
+                Self::DOTNET_PACKAGES.into_iter().find_map(|package| {
+                    let element = Self::between(&text, &format!("Include=\"{package}\""), ">")?;
+                    let version = Self::between(element, "Version=\"", "\"")?;
+                    Some((package, version.to_owned()))
+                })
+            })
     }
 
     fn npm_version(manifest: &Path) -> Result<Option<String>, String> {
@@ -305,6 +540,13 @@ impl Artifacts {
                 directory.display()
             )
         })?;
+        if Self::writable_by_others(&directory) || Self::writable_by_others(&manifest_path) {
+            return Err(format!(
+                "{} or its {} is writable by other users; fylo link refuses to link from it",
+                directory.display(),
+                LinkCommand::MANIFEST
+            ));
+        }
         let manifest: Value = serde_json::from_str(&text)
             .map_err(|error| format!("{} is not valid JSON: {error}", manifest_path.display()))?;
         let field = |name: &str| {
@@ -317,7 +559,71 @@ impl Artifacts {
             directory: fs::canonicalize(&directory).unwrap_or(directory),
             turso: field("turso")?,
             triple: field("triple")?,
+            sha256: manifest["sha256"].as_object().cloned().unwrap_or_default(),
         })
+    }
+
+    /// Why `artifact` must not be linked: other users can write it, the
+    /// manifest pins no hash for it, or it no longer has that hash. A missing
+    /// artifact is reported where it is used.
+    fn problem(&self, artifact: &Path) -> Option<String> {
+        let name = artifact.file_name()?.to_string_lossy().into_owned();
+        if Self::writable_by_others(artifact) {
+            return Some(format!(
+                "{} is writable by other users; fylo link refuses to link it",
+                artifact.display()
+            ));
+        }
+        let Some(pinned) = self.sha256.get(&name).and_then(Value::as_str) else {
+            return Some(format!(
+                "{} pins no SHA-256 for {name}; rebuild the artifacts",
+                LinkCommand::MANIFEST
+            ));
+        };
+        match LinkCommand::sha256(artifact) {
+            Ok(actual) if actual != pinned => Some(format!(
+                "{} does not match the SHA-256 {} pins: it changed after the build",
+                artifact.display(),
+                LinkCommand::MANIFEST
+            )),
+            _ => None,
+        }
+    }
+
+    #[cfg(unix)]
+    fn writable_by_others(path: &Path) -> bool {
+        use std::os::unix::fs::PermissionsExt;
+        fs::metadata(path).is_ok_and(|metadata| metadata.permissions().mode() & 0o002 != 0)
+    }
+
+    #[cfg(not(unix))]
+    fn writable_by_others(_path: &Path) -> bool {
+        false
+    }
+
+    const PYTHON_EXTENSION: &'static str = "_turso.abi3.so";
+
+    /// The JNI library `System.loadLibrary("_turso_java")` looks for.
+    fn java_library(&self) -> &'static str {
+        if self.triple.starts_with("win32") {
+            "_turso_java.dll"
+        } else if self.triple.starts_with("darwin") {
+            "lib_turso_java.dylib"
+        } else {
+            "lib_turso_java.so"
+        }
+    }
+
+    /// The name .NET's `DllImport("turso_sdk_kit")` loads; the library is the
+    /// SDK kit tursogo uses, as Turso's own .NET packages ship it.
+    fn dotnet_library(&self) -> &'static str {
+        if self.triple.starts_with("win32") {
+            "turso_sdk_kit.dll"
+        } else if self.triple.starts_with("darwin") {
+            "libturso_sdk_kit.dylib"
+        } else {
+            "libturso_sdk_kit.so"
+        }
     }
 
     /// The SDK-kit library tursogo loads on this artifact's platform.
@@ -342,7 +648,7 @@ impl Artifacts {
         if self.triple.starts_with("linux") {
             let directory = std::path::absolute(project).unwrap_or_else(|_| project.to_owned());
             format!(
-                "  and run with LD_LIBRARY_PATH={0} first (export LD_LIBRARY_PATH={0}${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}), or call os.Setenv(\"LD_LIBRARY_PATH\", {0:?}) before InitLibrary: on Linux tursogo finds the library only through an absolute LD_LIBRARY_PATH entry",
+                "  and call os.Setenv(\"LD_LIBRARY_PATH\", {0:?}) before InitLibrary, or run with LD_LIBRARY_PATH={0} first (export LD_LIBRARY_PATH={0}${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}): on Linux tursogo finds the library only through an absolute LD_LIBRARY_PATH entry. Prefer os.Setenv: the dynamic loader reads an exported LD_LIBRARY_PATH for every library the process loads, so a file in the project directory could stand in for a system library",
                 directory.display()
             )
         } else if self.triple.starts_with("win32") {
@@ -436,6 +742,9 @@ impl Sdk {
         let Ok(metadata) = fs::symlink_metadata(&self.placement) else {
             return Current::Missing;
         };
+        if let Some(hook) = &self.hook {
+            return Self::hook_state(&self.placement, hook);
+        }
         if metadata.file_type().is_symlink() {
             let target = fs::read_link(&self.placement).unwrap_or_default();
             let target = if target.is_absolute() {
@@ -452,6 +761,15 @@ impl Sdk {
             };
         }
         Record::read(&self.placement).map_or(Current::ForeignFile, Current::OwnedFile)
+    }
+
+    /// An import-hook placement: FYLO's when it starts with the marker.
+    fn hook_state(placement: &Path, hook: &str) -> Current {
+        match fs::read_to_string(placement) {
+            Ok(text) if text == hook => Current::Hook(true),
+            Ok(text) if text.starts_with(LinkCommand::PYTHON_HOOK_MARKER) => Current::Hook(false),
+            _ => Current::ForeignFile,
+        }
     }
 
     /// Whether a symlink's target is this SDK's artifact. The same path can
@@ -505,6 +823,7 @@ impl Sdk {
             return;
         }
         let up_to_date = match self.current() {
+            Current::Hook(current) => current,
             Current::OwnedSymlink(target) => self.is_artifact(&target),
             Current::OwnedFile(record) => {
                 record.artifact == self.artifact && self.matches_artifact()
@@ -539,6 +858,10 @@ impl Sdk {
             ));
             return;
         }
+        if let Some(hook) = &self.hook {
+            self.write_hook(hook, report, problems);
+            return;
+        }
         let mut failures = Vec::new();
         for method in placer.methods {
             match self.place(*method, placer) {
@@ -569,6 +892,25 @@ impl Sdk {
         ));
     }
 
+    fn write_hook(&self, hook: &str, report: &mut Vec<String>, problems: &mut Vec<String>) {
+        match fs::write(&self.placement, hook) {
+            Ok(()) => {
+                report.push(format!(
+                    "{}: linked {} -> {} (import hook)",
+                    self.name,
+                    self.placement.display(),
+                    self.artifact.display()
+                ));
+                report.extend(self.advice.iter().cloned());
+            }
+            Err(error) => problems.push(format!(
+                "{}: cannot write {}: {error}",
+                self.name,
+                self.placement.display()
+            )),
+        }
+    }
+
     fn place(&self, method: Method, placer: Placer) -> io::Result<()> {
         match method {
             Method::Symlink => return (placer.symlink)(&self.artifact, &self.placement),
@@ -597,6 +939,20 @@ impl Sdk {
             problems.push(problem);
         }
         match self.current() {
+            Current::Hook(true) if self.artifact.is_file() => {
+                report.push(format!(
+                    "{}: linked (import hook), version {}",
+                    self.name, self.installed
+                ));
+            }
+            Current::Hook(_) => {
+                problems.push(format!(
+                    "{}: {} does not load {}; run fylo link",
+                    self.name,
+                    self.placement.display(),
+                    self.artifact.display()
+                ));
+            }
             Current::OwnedSymlink(target) if self.is_artifact(&target) && target.is_file() => {
                 report.push(format!(
                     "{}: linked (symlink), version {}",
@@ -650,7 +1006,7 @@ impl Sdk {
 
     fn undo(&self, report: &mut Vec<String>, problems: &mut Vec<String>) {
         let removable = match self.current() {
-            Current::OwnedSymlink(_) => true,
+            Current::Hook(_) | Current::OwnedSymlink(_) => true,
             Current::OwnedFile(record) => {
                 let unchanged = LinkCommand::sha256(&self.placement)
                     .is_ok_and(|placed| placed == record.sha256)
@@ -727,11 +1083,6 @@ mod tests {
             let project = base.join("project");
             fs::create_dir_all(&artifacts).unwrap();
             fs::create_dir_all(&project).unwrap();
-            fs::write(
-                artifacts.join("fylo-link.json"),
-                format!(r#"{{"turso":"0.8.3","triple":"{triple}"}}"#),
-            )
-            .unwrap();
             let fixture = Self {
                 base,
                 artifacts,
@@ -740,6 +1091,9 @@ mod tests {
             };
             fs::write(fixture.artifact_node(), "node").unwrap();
             fs::write(fixture.artifacts.join(fixture.library()), "library").unwrap();
+            fs::write(fixture.artifacts.join("_turso.abi3.so"), "python").unwrap();
+            fs::write(fixture.artifacts.join("lib_turso_java.dylib"), "java").unwrap();
+            fixture.pin();
             if let Some(version) = js {
                 let package = fixture.project.join("node_modules/@tursodatabase/database");
                 fs::create_dir_all(&package).unwrap();
@@ -759,6 +1113,21 @@ mod tests {
                 .unwrap();
             }
             fixture
+        }
+
+        /// Write `fylo-link.json` with the SHA-256 of every artifact, as
+        /// `build.sh` does.
+        fn pin(&self) {
+            let mut pinned = serde_json::Map::new();
+            for entry in fs::read_dir(&self.artifacts).unwrap().flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if name != "fylo-link.json" {
+                    pinned.insert(name, LinkCommand::sha256(&entry.path()).unwrap().into());
+                }
+            }
+            let manifest =
+                serde_json::json!({"turso": "0.8.3", "triple": self.triple, "sha256": pinned});
+            fs::write(self.artifacts.join("fylo-link.json"), manifest.to_string()).unwrap();
         }
 
         fn new(js: Option<&str>, go: Option<&str>) -> Self {
@@ -917,6 +1286,7 @@ mod tests {
         assert!(fixture.dylib().ends_with("turso_sync_sdk_kit.dll"));
         fixture.run(Some("--check")).unwrap();
         fs::write(fixture.artifact_node(), "rebuilt node").unwrap();
+        fixture.pin();
         let stale = fixture.run(Some("--check")).unwrap_err();
         assert!(stale.contains("no longer hashes"), "{stale}");
         fixture
@@ -1024,6 +1394,173 @@ mod tests {
         );
         assert!(fixture.dylib().ends_with("libturso_sync_sdk_kit.so"));
         fixture.run(Some("--undo")).unwrap();
+    }
+
+    fn site_packages(fixture: &Fixture, version: &str) -> PathBuf {
+        let site_packages = fixture.project.join(".venv/lib/python3.14/site-packages");
+        fs::create_dir_all(site_packages.join(format!("pyturso-{version}.dist-info"))).unwrap();
+        site_packages
+    }
+
+    #[test]
+    fn pyturso_gets_an_import_hook_that_check_verifies_and_undo_removes() {
+        let fixture = Fixture::new(None, None);
+        let hook = site_packages(&fixture, "0.8.3").join("fylo_turso.pth");
+        let linked = fixture.run(None).unwrap();
+        assert!(linked.contains("pyturso: linked"), "{linked}");
+        assert!(linked.contains("(import hook)"), "{linked}");
+        let text = fs::read_to_string(&hook).unwrap();
+        assert!(text.starts_with("# fylo link (ADR 0019)"), "{text}");
+        assert!(text.contains("\nimport sys; "), "{text}");
+        assert!(text.contains("\"turso._turso\""), "{text}");
+        assert!(
+            text.contains(&format!(
+                "{:?}",
+                fs::canonicalize(&fixture.artifacts)
+                    .unwrap()
+                    .join("_turso.abi3.so")
+                    .display()
+                    .to_string()
+            )),
+            "{text}"
+        );
+        assert!(fixture.run(None).unwrap().contains("already linked"));
+        let checked = fixture.run(Some("--check")).unwrap();
+        assert!(
+            checked.contains("linked (import hook), version 0.8.3"),
+            "{checked}"
+        );
+        fixture.run(Some("--undo")).unwrap();
+        assert!(!hook.exists());
+        assert!(fixture.run(Some("--check")).is_err());
+    }
+
+    #[test]
+    fn a_pth_file_fylo_did_not_write_is_refused_and_a_stale_hook_is_replaced() {
+        let fixture = Fixture::new(None, None);
+        let hook = site_packages(&fixture, "0.8.3").join("fylo_turso.pth");
+        fs::write(&hook, "import something_else\n").unwrap();
+        let refused = fixture.run(None).unwrap_err();
+        assert!(refused.contains("FYLO did not place"), "{refused}");
+        fs::write(&hook, "# fylo link (ADR 0019): an older build\n").unwrap();
+        let stale = fixture.run(Some("--check")).unwrap_err();
+        assert!(stale.contains("does not load"), "{stale}");
+        fixture.run(None).unwrap();
+        fixture.run(Some("--check")).unwrap();
+    }
+
+    #[test]
+    fn a_pyturso_version_mismatch_is_refused_with_the_install_command() {
+        let fixture = Fixture::new(None, None);
+        site_packages(&fixture, "0.8.2");
+        let refused = fixture.run(None).unwrap_err();
+        assert!(refused.contains("pip install pyturso==0.8.3"), "{refused}");
+    }
+
+    #[test]
+    fn the_java_driver_from_gradle_gets_its_jni_library_in_the_project() {
+        let fixture = Fixture::new(None, None);
+        fs::write(
+            fixture.project.join("build.gradle.kts"),
+            "dependencies {\n    implementation(\"tech.turso:turso:0.8.3\")\n}\n",
+        )
+        .unwrap();
+        let linked = fixture.run(None).unwrap();
+        assert!(linked.contains("tech.turso:turso: linked"), "{linked}");
+        assert!(
+            linked.contains(&format!(
+                "-Djava.library.path={}",
+                fixture.project.display()
+            )),
+            "{linked}"
+        );
+        assert!(is_symlink(&fixture.project.join("lib_turso_java.dylib")));
+        fixture.run(Some("--check")).unwrap();
+        fixture.run(Some("--undo")).unwrap();
+        assert!(!fixture.project.join("lib_turso_java.dylib").exists());
+    }
+
+    #[test]
+    fn the_java_driver_version_is_read_from_a_pom() {
+        let fixture = Fixture::new(None, None);
+        fs::write(
+            fixture.project.join("pom.xml"),
+            "<project><dependencies><dependency><groupId>org.slf4j</groupId><artifactId>slf4j-api</artifactId><version>2.0.17</version></dependency>\n<dependency>\n  <groupId>tech.turso</groupId>\n  <artifactId>turso</artifactId>\n  <version> 0.8.2 </version>\n</dependency></dependencies></project>\n",
+        )
+        .unwrap();
+        let refused = fixture.run(None).unwrap_err();
+        assert!(refused.contains("version 0.8.2 is installed"), "{refused}");
+        assert!(refused.contains("tech.turso:turso:0.8.3"), "{refused}");
+    }
+
+    #[test]
+    fn a_dotnet_project_gets_the_sdk_kit_as_turso_sdk_kit_and_the_resolver_line() {
+        let fixture = Fixture::new(None, None);
+        fs::write(
+            fixture.project.join("App.csproj"),
+            "<Project Sdk=\"Microsoft.NET.Sdk\"><ItemGroup>\n  <PackageReference Include=\"Turso.Data.Sqlite.Provider\" Version=\"0.8.3\" />\n</ItemGroup></Project>\n",
+        )
+        .unwrap();
+        let linked = fixture.run(None).unwrap();
+        assert!(
+            linked.contains("Turso.Data.Sqlite.Provider: linked"),
+            "{linked}"
+        );
+        assert!(
+            linked.contains("SetDllImportResolver(Assembly.Load(\"Turso.Raw\")"),
+            "{linked}"
+        );
+        let placement = fixture.project.join("libturso_sdk_kit.dylib");
+        assert_eq!(fs::read_to_string(&placement).unwrap(), "library");
+        assert!(
+            linked.contains(&format!(
+                "NativeLibrary.Load({:?})",
+                placement.display().to_string()
+            )),
+            "{linked}"
+        );
+        fixture.run(Some("--undo")).unwrap();
+        assert!(!placement.exists());
+    }
+
+    #[test]
+    fn an_artifact_changed_after_the_build_is_refused_by_link_and_check() {
+        let fixture = Fixture::new(Some("0.8.3"), None);
+        fixture.run(None).unwrap();
+        fs::write(fixture.artifact_node(), "swapped").unwrap();
+        let checked = fixture.run(Some("--check")).unwrap_err();
+        assert!(checked.contains("changed after the build"), "{checked}");
+        fixture.run(Some("--undo")).unwrap();
+        let refused = fixture.run(None).unwrap_err();
+        assert!(refused.contains("changed after the build"), "{refused}");
+        assert!(!fixture.node().exists());
+    }
+
+    #[test]
+    fn an_artifact_without_a_pinned_hash_is_refused() {
+        let fixture = Fixture::new(Some("0.8.3"), None);
+        fs::write(
+            fixture.artifacts.join("fylo-link.json"),
+            r#"{"turso":"0.8.3","triple":"darwin-arm64"}"#,
+        )
+        .unwrap();
+        let refused = fixture.run(None).unwrap_err();
+        assert!(refused.contains("pins no SHA-256"), "{refused}");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn artifacts_other_users_can_write_are_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = Fixture::new(Some("0.8.3"), None);
+        fs::set_permissions(fixture.artifact_node(), fs::Permissions::from_mode(0o666)).unwrap();
+        let refused = fixture.run(None).unwrap_err();
+        assert!(refused.contains("writable by other users"), "{refused}");
+        fs::set_permissions(fixture.artifact_node(), fs::Permissions::from_mode(0o644)).unwrap();
+        fs::set_permissions(&fixture.artifacts, fs::Permissions::from_mode(0o777)).unwrap();
+        let refused = fixture.run(None).unwrap_err();
+        assert!(refused.contains("writable by other users"), "{refused}");
+        fs::set_permissions(&fixture.artifacts, fs::Permissions::from_mode(0o755)).unwrap();
     }
 
     #[test]
