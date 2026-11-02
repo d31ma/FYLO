@@ -5,6 +5,8 @@
 - Owners: **FYLO maintainers**
 - Amends: ADR 0004 (unsafe code and dependencies). Follows ADR 0019
   (proposed), "FYLO through Turso's engine".
+- Background: the design note
+  ["Using Turso SDKs with FYLO"](../turso-sdk-integration.md).
 
 ## Context
 

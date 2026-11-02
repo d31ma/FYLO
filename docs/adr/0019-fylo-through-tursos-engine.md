@@ -5,9 +5,10 @@
 - Owners: **FYLO maintainers**
 - Amends: ADR 0004 (dependency policy: `turso_core`, and third-party binding
   builds). ADR 0007 stands; ADR 0012 stays withdrawn.
-- Source: the design note "Using Turso SDKs with FYLO" (revision 5,
-  2026-11-01), its section 11, and the answers the user approved in its
-  section 10.
+- Source: the design note
+  ["Using Turso SDKs with FYLO"](../turso-sdk-integration.md) (revision 5,
+  2026-11-01; the committed copy is revision 6), its section 11, and the
+  answers the user approved in its section 10.
 
 ## Context
 
