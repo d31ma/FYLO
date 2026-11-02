@@ -452,6 +452,16 @@ impl Sdk {
         Record::read(&self.placement).map_or(Current::ForeignFile, Current::OwnedFile)
     }
 
+    /// Whether a symlink's target is this SDK's artifact. The same path can
+    /// come back in another form (on Windows `\\?\C:\…` for `C:\…`), so
+    /// both sides are compared resolved.
+    fn is_artifact(&self, target: &Path) -> bool {
+        target == self.artifact
+            || fs::canonicalize(target).is_ok_and(|resolved| {
+                fs::canonicalize(&self.artifact).is_ok_and(|built| resolved == built)
+            })
+    }
+
     /// Whether the placement is this SDK's artifact, byte for byte.
     fn matches_artifact(&self) -> bool {
         match (
@@ -493,7 +503,7 @@ impl Sdk {
             return;
         }
         let up_to_date = match self.current() {
-            Current::OwnedSymlink(target) => target == self.artifact,
+            Current::OwnedSymlink(target) => self.is_artifact(&target),
             Current::OwnedFile(record) => {
                 record.artifact == self.artifact && self.matches_artifact()
             }
@@ -585,7 +595,7 @@ impl Sdk {
             problems.push(problem);
         }
         match self.current() {
-            Current::OwnedSymlink(target) if target == self.artifact && target.is_file() => {
+            Current::OwnedSymlink(target) if self.is_artifact(&target) && target.is_file() => {
                 report.push(format!(
                     "{}: linked (symlink), version {}",
                     self.name, self.installed
@@ -979,6 +989,22 @@ mod tests {
             fs::read_to_string(fixture.node()).unwrap(),
             "someone else's addon"
         );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_symlink_to_the_artifact_written_another_way_is_recognized() {
+        let fixture = Fixture::new(Some("0.8.3"), None);
+        let roundabout = fixture
+            .artifacts
+            .join("..")
+            .join("artifacts")
+            .join("turso.darwin-arm64.node");
+        std::os::unix::fs::symlink(&roundabout, fixture.node()).unwrap();
+        assert!(fixture.run(None).unwrap().contains("already linked"));
+        fixture.run(Some("--check")).unwrap();
+        fixture.run(Some("--undo")).unwrap();
+        assert!(!is_symlink(&fixture.node()));
     }
 
     #[test]
