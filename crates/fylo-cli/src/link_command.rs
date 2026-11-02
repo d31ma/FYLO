@@ -330,14 +330,18 @@ impl Artifacts {
     }
 
     /// Where tursogo's "system" search finds the library. On Linux it must be
-    /// `LD_LIBRARY_PATH`: with the variable unset, tursogo finds the library
-    /// in the working directory but hands `dlopen` a bare name, which Linux
-    /// does not look up there.
+    /// an absolute directory first on `LD_LIBRARY_PATH`: tursogo joins each
+    /// entry with the file name and hands the result to `dlopen`, so with the
+    /// variable unset (or `.`) it finds the library in the working directory
+    /// but passes a bare name, which Linux does not look up there. tursogo
+    /// reads the variable itself when `InitLibrary` runs, so the app may also
+    /// set it with `os.Setenv` first.
     fn search_advice(&self, project: &Path) -> String {
         if self.triple.starts_with("linux") {
+            let directory = std::path::absolute(project).unwrap_or_else(|_| project.to_owned());
             format!(
-                "  and run with LD_LIBRARY_PATH={} (tursogo's search needs it on Linux)",
-                project.display()
+                "  and run with LD_LIBRARY_PATH={0} first (export LD_LIBRARY_PATH={0}${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}), or call os.Setenv(\"LD_LIBRARY_PATH\", {0:?}) before InitLibrary: on Linux tursogo finds the library only through an absolute LD_LIBRARY_PATH entry",
+                directory.display()
             )
         } else if self.triple.starts_with("win32") {
             "  and run from the project directory (or put it on PATH)".to_owned()
@@ -975,6 +979,23 @@ mod tests {
             fs::read_to_string(fixture.node()).unwrap(),
             "someone else's addon"
         );
+    }
+
+    #[test]
+    fn on_linux_go_is_told_the_absolute_ld_library_path() {
+        let fixture = Fixture::on("linux-arm64-gnu", None, Some("v0.8.3"));
+        let linked = fixture.run(None).unwrap();
+        let directory = fixture.project.display().to_string();
+        assert!(
+            linked.contains(&format!("LD_LIBRARY_PATH={directory} first")),
+            "{linked}"
+        );
+        assert!(
+            linked.contains(&format!("os.Setenv(\"LD_LIBRARY_PATH\", {directory:?})")),
+            "{linked}"
+        );
+        assert!(fixture.dylib().ends_with("libturso_sync_sdk_kit.so"));
+        fixture.run(Some("--undo")).unwrap();
     }
 
     #[test]

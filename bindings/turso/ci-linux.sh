@@ -49,9 +49,11 @@ done
 # The x86_64 Go conformance app, compiled here so the emulated run only runs it.
 if [ -d "$work/out-x86_64-unknown-linux-gnu" ]; then
     step "go app x86_64"
-    (cd "$work/fylo/bindings/turso/conformance/go" && GOARCH=amd64 go build -o "$work/go-conformance-x86_64" .) || overall=1
+    (cd "$work/fylo/bindings/turso/conformance/go" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "$work/go-conformance-x86_64" .) || overall=1
 fi
 native=$(uname -m)-unknown-linux-gnu
+step "link unit tests $native"
+(cd "$work/fylo" && CARGO_TARGET_DIR=$work/fylo-target RUSTUP_TOOLCHAIN=1.97.1 cargo test -p fylo-cli --bin fylo-rust --locked --target "$native" link_command) || overall=1
 for method in auto copy; do
     step "conformance $native $method"
     suite=$work/conformance-$native-$method

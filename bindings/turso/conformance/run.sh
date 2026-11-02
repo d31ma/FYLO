@@ -83,6 +83,9 @@ if [ "$only" != js ]; then
     expect fail "go: without the link, the system strategy finds no library" "${golib[@]}" "$work/go-conformance$exe" "$root" "$(native "$work/go-plain-0.db")"
     expect ok "go: fylo link $method" "$fylo" link $method --artifacts "$art"
     expect ok "go: fylo link --check" "$fylo" link --check --artifacts "$art"
+    if [ "$(uname -s)" = Linux ]; then
+        expect fail "go: on Linux, without LD_LIBRARY_PATH tursogo cannot load the link" env -u LD_LIBRARY_PATH "$work/go-conformance$exe" "$root" "$(native "$work/go-plain-unset.db")"
+    fi
     expect ok "go: conformance" "${golib[@]}" "$work/go-conformance$exe" "$root" "$(native "$work/go-plain-1.db")"
     expect ok "go: fylo link --undo" "$fylo" link --undo --artifacts "$art"
     expect fail "go: --check after --undo" "$fylo" link --check --artifacts "$art"
