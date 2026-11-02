@@ -44,6 +44,8 @@ pub mod vector;
 
 #[cfg(feature = "cli_only")]
 pub(crate) mod btree_dump;
+#[cfg(feature = "fylo")]
+pub mod fylo_hook;
 pub(crate) mod sync;
 pub(crate) mod thread;
 

@@ -1719,10 +1719,16 @@ pub fn op_vupdate(
     } else {
         virtual_table.update(&argv)
     };
+    // FYLO: a virtual-table row counts in changes(), as a table row does.
+    #[cfg(feature = "fylo")]
+    if result.is_ok() {
+        state.record_statement_change();
+    }
     match result {
         Ok(Some(new_rowid)) => {
             state.record_rows_written(1);
-            if *conflict_action == 5 {
+            // FYLO: an insert sets last_insert_rowid(), as SQLite's xUpdate does.
+            if *conflict_action == 5 || cfg!(feature = "fylo") {
                 // ResolveType::Replace
                 program.connection.update_last_rowid(new_rowid);
             }

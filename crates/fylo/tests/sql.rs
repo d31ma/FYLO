@@ -526,3 +526,61 @@ fn pushdown_timings() {
         println!("| {label} | {rows} | {with:.2} | {without:.2} |");
     }
 }
+
+#[test]
+fn a_turso_open_of_a_fylo_root_sees_its_collections_and_other_paths_open_as_upstream() {
+    let parent = std::env::temp_dir().join(format!("fylo-sql-hook-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&parent);
+    let root = parent.join("root");
+    fs::create_dir_all(&root).unwrap();
+    NativeWriteRoot::open(&root)
+        .unwrap()
+        .create_collection("notes", CollectionKind::Document, None)
+        .unwrap();
+    let opened = Arc::new(Root::open(&root, OpenOptions::default()).unwrap());
+    opened
+        .collection("notes")
+        .put(fields(&json!({"text": "hello"})))
+        .unwrap();
+    Arc::into_inner(opened).unwrap().close().unwrap();
+    assert!(fylo::is_fylo_root(&root));
+    assert!(!fylo::is_fylo_root(&parent.join("plain.db")));
+    fylo::install_turso_open_hook();
+    let open = |path: &std::path::Path| {
+        let io: Arc<dyn turso_core::IO> = Arc::new(turso_core::PlatformIO::new().unwrap());
+        turso_core::Database::open_file(
+            io,
+            path.to_str().unwrap(),
+            Arc::new(turso_core::SqliteDialect),
+        )
+        .unwrap()
+    };
+    let fylo_database = open(&root);
+    let rows = fylo_database
+        .connect()
+        .unwrap()
+        .prepare("SELECT json_extract(doc, '$.text') FROM notes")
+        .unwrap()
+        .run_collect_rows()
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    let plain = open(&parent.join("plain.db"));
+    let connection = plain.connect().unwrap();
+    connection.execute("CREATE TABLE t (x INTEGER)").unwrap();
+    connection.execute("INSERT INTO t VALUES (1), (2)").unwrap();
+    let counted = connection
+        .prepare("SELECT count(*) FROM t")
+        .unwrap()
+        .run_collect_rows()
+        .unwrap();
+    assert!(matches!(
+        counted[0][0],
+        turso_core::Value::Numeric(turso_core::Numeric::Integer(2))
+    ));
+    assert!(
+        parent.join("plain.db").is_file(),
+        "a plain path is a SQLite file"
+    );
+    drop((connection, plain, fylo_database));
+    let _ = fs::remove_dir_all(&parent);
+}

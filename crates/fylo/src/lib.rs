@@ -48,7 +48,9 @@ pub use fylo_engine::{CollectionInspection, EngineConfig};
 pub use fylo_storage_native::{QueueAckResult, QueueDelivery, QueueNackResult, QueuePublishResult};
 pub use queue::{ClaimOptions, PublishOptions, Queue};
 #[cfg(feature = "sql")]
-pub use sql::{Sql, SqlOptions, SqlRows, SqlValue, TURSO_PIN};
+pub use sql::{
+    Sql, SqlOptions, SqlRows, SqlValue, TURSO_PIN, install_turso_open_hook, is_fylo_root,
+};
 
 /// How [`Root::open`] opens a root.
 #[derive(Clone, Copy, Debug, Default)]

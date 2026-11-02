@@ -1214,6 +1214,11 @@ impl Database {
     /// Drives the IO loop internally. When `OpenOptions::storage` is unset,
     /// opens the file at `path` (consulting the process-wide registry first).
     pub fn open(io: Arc<dyn IO>, path: &str, mut options: OpenOptions) -> Result<Arc<Database>> {
+        // FYLO: a path the embedder's hook claims opens as its database.
+        #[cfg(feature = "fylo")]
+        if let Some(opened) = crate::fylo_hook::open_hooked(path) {
+            return opened;
+        }
         // Reject before resolving default storage: a registry hit there would
         // otherwise return the cached default-WAL instance and silently ignore
         // the custom wal_path before open_async runs its own check.

@@ -39,6 +39,7 @@ ADR.
 | [0017](0017-schemas-in-the-database.md)                     | Accepted | Schemas in the database, validated at the commit |
 | [0018](0018-json-only-schema-migrations.md)                 | Accepted | JSON-only schema migrations                 |
 | [0019](0019-fylo-through-tursos-engine.md)                  | Proposed | FYLO through Turso's engine: the `fylo` crate and `fylo link` |
+| [0020](0020-turso-engine-and-binding-builds.md)             | Proposed | Turso's engine and binding builds under the unsafe and dependency policy |
 
 ## When another ADR is required
 

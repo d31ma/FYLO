@@ -24,6 +24,60 @@ diff -ruN a/turso_core/Cargo.toml b/turso_core/Cargo.toml
  default-features = false
  
  [dependencies.roaring]
+diff -ruN a/turso_core/database.rs b/turso_core/database.rs
+--- a/turso_core/database.rs
++++ b/turso_core/database.rs
+@@ -1214,6 +1214,11 @@
+     /// Drives the IO loop internally. When `OpenOptions::storage` is unset,
+     /// opens the file at `path` (consulting the process-wide registry first).
+     pub fn open(io: Arc<dyn IO>, path: &str, mut options: OpenOptions) -> Result<Arc<Database>> {
++        // FYLO: a path the embedder's hook claims opens as its database.
++        #[cfg(feature = "fylo")]
++        if let Some(opened) = crate::fylo_hook::open_hooked(path) {
++            return opened;
++        }
+         // Reject before resolving default storage: a registry hit there would
+         // otherwise return the cached default-WAL instance and silently ignore
+         // the custom wal_path before open_async runs its own check.
+diff -ruN a/turso_core/fylo_hook.rs b/turso_core/fylo_hook.rs
+--- a/turso_core/fylo_hook.rs
++++ b/turso_core/fylo_hook.rs
+@@ -0,0 +1,23 @@
++//! FYLO: let the embedder claim a database path, so a binding built with
++//! FYLO opens a FYLO root as its database instead of a file. With no hook
++//! installed, or a path the hook declines, opening behaves as upstream.
++
++use crate::sync::Arc;
++use crate::{Database, Result};
++use std::sync::OnceLock;
++
++/// Returns `None` for a path it does not claim.
++pub type OpenHook = fn(&str) -> Option<Result<Arc<Database>>>;
++
++static OPEN_HOOK: OnceLock<OpenHook> = OnceLock::new();
++
++/// Install the hook once; later calls keep the first hook.
++pub fn install_open_hook(hook: OpenHook) {
++    let _ = OPEN_HOOK.set(hook);
++}
++
++/// The database the hook opens for `path`, or `None` when no hook is
++/// installed or the hook declines the path.
++pub fn open_hooked(path: &str) -> Option<Result<Arc<Database>>> {
++    OPEN_HOOK.get()?(path)
++}
+diff -ruN a/turso_core/lib.rs b/turso_core/lib.rs
+--- a/turso_core/lib.rs
++++ b/turso_core/lib.rs
+@@ -44,6 +44,8 @@
+ 
+ #[cfg(feature = "cli_only")]
+ pub(crate) mod btree_dump;
++#[cfg(feature = "fylo")]
++pub mod fylo_hook;
+ pub(crate) mod sync;
+ pub(crate) mod thread;
+ 
 diff -ruN a/turso_core/statement.rs b/turso_core/statement.rs
 --- a/turso_core/statement.rs
 +++ b/turso_core/statement.rs
@@ -97,7 +151,25 @@ diff -ruN a/turso_core/translate/insert.rs b/turso_core/translate/insert.rs
 diff -ruN a/turso_core/vdbe/execute.rs b/turso_core/vdbe/execute.rs
 --- a/turso_core/vdbe/execute.rs
 +++ b/turso_core/vdbe/execute.rs
-@@ -1810,12 +1810,9 @@
+@@ -1719,10 +1719,16 @@
+     } else {
+         virtual_table.update(&argv)
+     };
++    // FYLO: a virtual-table row counts in changes(), as a table row does.
++    #[cfg(feature = "fylo")]
++    if result.is_ok() {
++        state.record_statement_change();
++    }
+     match result {
+         Ok(Some(new_rowid)) => {
+             state.record_rows_written(1);
+-            if *conflict_action == 5 {
++            // FYLO: an insert sets last_insert_rowid(), as SQLite's xUpdate does.
++            if *conflict_action == 5 || cfg!(feature = "fylo") {
+                 // ResolveType::Replace
+                 program.connection.update_last_rowid(new_rowid);
+             }
+@@ -1810,12 +1816,9 @@
      let mut states = program.connection.vtab_txn_states.write();
      if states.insert(vtab_id) {
          // Only begin a new transaction if one is not already active for this virtual table module
@@ -112,7 +184,7 @@ diff -ruN a/turso_core/vdbe/execute.rs b/turso_core/vdbe/execute.rs
      }
      state.pc += 1;
      Ok(InsnFunctionStepResult::Step)
-@@ -4001,18 +3998,38 @@
+@@ -4001,18 +4004,38 @@
  }
  
  /// Call xCommit on all virtual tables that participated in the current transaction.
@@ -157,7 +229,7 @@ diff -ruN a/turso_core/vdbe/execute.rs b/turso_core/vdbe/execute.rs
      }
      Ok(())
  }
-@@ -4234,18 +4251,14 @@
+@@ -4234,18 +4257,14 @@
  }
  
  /// Rollback all virtual tables that are part of the current transaction.
@@ -179,7 +251,7 @@ diff -ruN a/turso_core/vdbe/execute.rs b/turso_core/vdbe/execute.rs
      }
      Ok(())
  }
-@@ -5318,6 +5331,9 @@
+@@ -5318,6 +5337,9 @@
  
          match tx_op {
              TxOp::Rollback => {
@@ -189,7 +261,7 @@ diff -ruN a/turso_core/vdbe/execute.rs b/turso_core/vdbe/execute.rs
                  if let Some(mv_store) = mv_store.as_ref() {
                      if let Some(tx_id) = conn.get_mv_tx_id() {
                          mv_store.rollback_tx(tx_id, pager.clone(), &conn, MAIN_DB_ID);
-@@ -5349,6 +5365,10 @@
+@@ -5349,6 +5371,10 @@
                  }
                  // Pre-check deferred FKs; leave tx open and do NOT clear violations
                  check_deferred_fk_on_commit(&conn)?;

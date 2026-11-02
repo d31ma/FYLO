@@ -50,10 +50,26 @@ through one long-lived `fylo exec --loop` subprocess (TACHYON ADR 0032).
 ### 2. `fylo link` puts FYLO's engine inside Turso's SDKs
 
 - FYLO's release pipeline patches `turso_core` at the pinned tag with a
-  `fylo` feature that registers FYLO's tables when the opened path is a FYLO
-  root, then builds each Turso binding's native library with it (about 18
-  artifacts per release), signed and with provenance, keeping Turso's MIT
-  notice.
+  `fylo` feature, then builds each Turso binding's native library with it
+  (about 18 artifacts per release), signed and with provenance, keeping
+  Turso's MIT notice.
+- The patch's open hook (`turso_core::fylo_hook`) is one function pointer,
+  checked first in `Database::open`. A binding built with FYLO installs
+  `fylo::install_turso_open_hook()` before it opens a database. The hook
+  claims only an existing directory with FYLO collections (`.collections`),
+  opens that root, takes its lease until the database closes, and returns an
+  in-memory database with every collection as a table; any other path, and
+  every path in a build without the hook, opens exactly as stock Turso.
+  `.vdbx` files are not claimed yet, because the `fylo` crate does not open
+  them.
+- Bindings are built in a separate workspace, Turso's repository at the
+  pinned tag, by `bindings/turso/build.sh`, with
+  `bindings/turso/turso-<version>-bindings.patch`: the workspace reduced to
+  the binding crates, its `turso_core` replaced by FYLO's vendored one, and
+  two safe calls (the JavaScript binding before
+  `Database::open_file_with_flags`; Turso's SDK kit before it opens the file
+  itself). ADR 0020 sets the `unsafe` and dependency policy for that
+  workspace.
 - `fylo link [--check | --undo]` detects the installed Turso SDKs, refuses a
   version other than the pinned one (printing the exact install command), and
   places FYLO's build without editing a package file. Each placement carries a
@@ -68,8 +84,16 @@ through one long-lived `fylo exec --loop` subprocess (TACHYON ADR 0032).
   | JS / TS | a symlinked `.node` next to the loader, restored by `postinstall` | Hack |
   | Python | a `.pth` import hook | Hack |
 
-- On Windows, where symlinks need Developer Mode, `fylo link` falls back to a
-  hard link or a copy, and `--check` compares hashes.
+- `fylo link` finds the FYLO builds through `--artifacts`,
+  `$FYLO_LINK_ARTIFACTS`, or `../lib/fylo-link` beside the `fylo`
+  executable; `fylo-link.json` there names the Turso version and platform.
+  It places only symlinks: `turso.<triple>.node` beside the JS SDK's
+  `index.js`, and `libturso_sync_sdk_kit.<ext>` in a Go project's directory,
+  which `LoadStrategy: "system"` searches after `DYLD_LIBRARY_PATH` /
+  `LD_LIBRARY_PATH`. It never writes a package file or a lockfile, refuses a
+  file or symlink it did not place, and `--undo` removes only its own links.
+- On Windows, where symlinks need Developer Mode, `fylo link` will fall back
+  to a hard link or a copy, and `--check` will compare hashes (not built yet).
 - `fylo version --output json` reports `tursoLink`: the pinned Turso version
   and the artifacts built for it.
 
@@ -176,7 +200,9 @@ through one long-lived `fylo exec --loop` subprocess (TACHYON ADR 0032).
 - `api/sql/v1` replaces FYLO's SQL contract, and `api/errors/v1.json` gains
   `EFYLO_TXN_SCOPE`.
 - ADR 0004 is amended for `turso_core` (pre-1.0, MIT) and for shipping
-  third-party binding builds. At 0.8.3 the `sql` feature adds or bumps 149
+  third-party binding builds: ADR 0020 (proposed) keeps FYLO's crates
+  `unsafe`-free and confines Turso's upstream `unsafe` to the vendored engine
+  and the separate binding workspace. At 0.8.3 the `sql` feature adds or bumps 149
   packages, all under permissive licenses: MIT or Apache-2.0 for most,
   Unicode-3.0 (the `icu` family), BSD-2/3-Clause, ISC, Zlib, BSL-1.0 and
   Unlicense alternatives; `cfg_block` declares no SPDX expression, only a
@@ -220,6 +246,29 @@ through one long-lived `fylo exec --loop` subprocess (TACHYON ADR 0032).
   conformance suite running each stock Turso SDK at the pinned version against
   FYLO's build; then Python, Java and .NET; macOS, Linux and Windows; and a
   security review of the supply chain, link permissions and FFI.
+  - Done 2026-11-01 for macOS arm64, JS and Go, on branch `feat/fylo-link`.
+    The patch grew by the open hook and two SQLite behaviours a
+    virtual-table write was missing (`changes()` and `last_insert_rowid()`):
+    9 files, +184/−33 lines. The binding patch is 5 files, +27/−86.
+  - Artifacts, built cold on the ANVIL SSD with sccache warm: the JS addon
+    `turso.darwin-arm64.node` 20 MB in 159 s (stock 16.7 MB), and tursogo's
+    `libturso_sync_sdk_kit.dylib` 18 MB in 95 s (stock 15.8 MB).
+  - Conformance (`bindings/turso/conformance/run.sh`), with
+    `@tursodatabase/database` 0.8.3 from npm and `tursogo` v0.8.3 from the Go
+    proxy, unmodified: before `fylo link` the stock SDK cannot open a FYLO
+    root ("is a directory"); after it, both SDKs read collections as tables,
+    get pushdown results equal to full scans, insert, update and delete
+    through FYLO with correct change counts, commit and roll back a
+    transaction, hit `EFYLO_TXN_SCOPE`, see FYLO's error codes, use the queue
+    tables, and still open a plain database path as stock Turso. `npm ci`
+    removes the JS link; a `postinstall` of `fylo link` restores it, and the
+    suite passes again. A version mismatch is refused with the install
+    command; `--undo` leaves nothing behind.
+  - Still to do: Linux (x64 and arm64, glibc; musl for tursogo), Windows
+    (x64; the symlink fallback), Python (the `.pth` hook), Java (a library on
+    `java.library.path`, JNI), .NET (`LoadExtension` would need a `turso_ext`
+    entry point, so a replaced `turso_sdk_kit` library is likelier), and a
+    security review.
 
 ## Alternatives rejected
 

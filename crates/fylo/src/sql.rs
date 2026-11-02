@@ -73,6 +73,13 @@ pub struct Sql {
     shared: Arc<Shared>,
 }
 
+/// An in-memory Turso database with a root's tables registered.
+struct Catalog {
+    database: Arc<Database>,
+    tables: Vec<String>,
+    shared: Arc<Shared>,
+}
+
 /// What every table of one connection shares: the root, the pushdown
 /// switch, and the one collection the open transaction writes.
 #[derive(Debug)]
@@ -131,6 +138,23 @@ impl Root {
     /// Fails when the root's collections cannot be listed or a collection's
     /// schema registry is corrupt.
     pub fn sql_with(self: &Arc<Self>, options: SqlOptions) -> Result<Sql, Error> {
+        let catalog = self.turso_database(options)?;
+        let connection = catalog
+            .database
+            .connect()
+            .map_err(|error| sql_error(&error))?;
+        Ok(Sql {
+            connection,
+            database: catalog.database,
+            tables: catalog.tables,
+            shared: catalog.shared,
+        })
+    }
+
+    /// The in-memory Turso database with this root's tables registered: what
+    /// a connection opens, and what a Turso binding built with FYLO receives
+    /// from [`install_turso_open_hook`].
+    fn turso_database(self: &Arc<Self>, options: SqlOptions) -> Result<Catalog, Error> {
         let shared = Arc::new(Shared {
             root: Arc::clone(self),
             pushdown: options.pushdown,
@@ -157,9 +181,7 @@ impl Root {
         for command in Command::ALL {
             register(&database, CommandTable::new(Arc::clone(&shared), command))?;
         }
-        let connection = database.connect().map_err(|error| sql_error(&error))?;
-        Ok(Sql {
-            connection,
+        Ok(Catalog {
             database,
             tables,
             shared,
@@ -190,6 +212,38 @@ impl Root {
         names.sort();
         Ok(names)
     }
+}
+
+/// Whether `path` is a FYLO root that a Turso binding should open as its
+/// database: an existing directory with FYLO collections. Anything else
+/// opens as Turso always does.
+#[must_use]
+pub fn is_fylo_root(path: &std::path::Path) -> bool {
+    fylo_vfs::metadata(path).is_ok_and(|metadata| metadata.is_dir())
+        && fylo_vfs::metadata(path.join(".collections")).is_ok_and(|metadata| metadata.is_dir())
+}
+
+/// Layer 2 (`fylo link`, ADR 0019 section 2): make the Turso engine this
+/// process links open a FYLO root as its database. A Turso binding built
+/// with FYLO calls this before it opens a database; after it, a path that
+/// [`is_fylo_root`] accepts opens the root (taking its lease until the
+/// database closes) with every collection as a table, and any other path
+/// opens exactly as in stock Turso.
+pub fn install_turso_open_hook() {
+    turso_core::fylo_hook::install_open_hook(open_for_turso);
+}
+
+fn open_for_turso(path: &str) -> Option<turso_core::Result<Arc<Database>>> {
+    let path = std::path::Path::new(path);
+    if !is_fylo_root(path) {
+        return None;
+    }
+    let opened = Root::open(path, crate::OpenOptions::default())
+        .map(Arc::new)
+        .and_then(|root| root.turso_database(SqlOptions::default()))
+        .map(|catalog| catalog.database)
+        .map_err(|error| LimboError::ExtensionError(error.to_string()));
+    Some(opened)
 }
 
 fn register<T: turso_core::InternalVirtualTable + 'static>(
