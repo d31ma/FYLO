@@ -18,6 +18,8 @@ fylo-machine = { version = "0.1.0", path = "../fylo-machine" }
 fylo-query = { version = "0.1.0", path = "../fylo-query" }
 fylo-storage-native = { version = "0.1.0", path = "../fylo-storage-native" }
 serde_json.workspace = true
+# `fylo link` verifies hard links and copies by SHA-256.
+sha2.workspace = true
 
 [lints]
 workspace = true

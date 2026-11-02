@@ -659,6 +659,7 @@ dependencies = [
  "fylo-query",
  "fylo-storage-native",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]
