@@ -447,9 +447,10 @@ in phase 7.
     - A grant does not rotate the key; a rekey of the whole database
       writes a new file under a new one anyway.
 
-- **Audit: the signed policy chain (option A, recommended to the user;
-  the record of grants, revocations, rekeys and policy changes this phase
-  was asked for).** Every such change already writes a policy version,
+- **Audit: the signed policy chain (option A, decided by the user,
+  2026-11-07).** The record of grants, revocations, rekeys and policy
+  changes this phase was asked for. The user chose it over option B, a
+  separate append-only audit extent. Every such change already writes a policy version,
   signed by the admin who made it and chained to the one before, in the
   access slots, whose A/B write is crash-safe. Each version from phase 7
   on carries `change` (`grant`, `revoke`, `rekey`, `rekeyCollection`;
@@ -461,13 +462,15 @@ in phase 7.
   `create`, and a version written before changes were recorded is
   `unrecorded`. It writes nothing. A catalog-key rotation is part of its
   revocation and has no version of its own.
-    - **Not recorded, and why.** Design section 5.6 also lists every open,
-      operations FYLO refused, and `ESIGNATURE` findings. Recording those
-      would need a write on every open, also by identities that may only
-      read, and a separate append-only extent (a new extent kind, sealed
-      under the catalog key and resealed by its rotation); it is left for a
-      later phase, and the access slots' size limit (256 KiB) bounds how
-      many versions the chain holds meanwhile. The `at` time is the
+    - **Deferred by the user's decision: logging opens and refusals.**
+      Design section 5.6 also lists every open, operations FYLO refused,
+      and `ESIGNATURE` findings. Recording those would need a write on
+      every open, also by identities that may only read, and a separate
+      append-only extent (a new extent kind, sealed under the catalog key
+      and resealed by its rotation). The user deferred it to a later
+      phase; until then the audit records access changes only, and the
+      access slots' size limit (256 KiB) bounds how many versions the
+      chain holds. The `at` time is the
       signer's claim, not a trusted timestamp.
 
 ### 8. Phases
