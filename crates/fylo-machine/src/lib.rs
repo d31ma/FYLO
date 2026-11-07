@@ -1163,11 +1163,11 @@ impl Session {
 
     /// Admit a `.vdbx` database root. A database is owned through its own
     /// file (ADR 0016 section 7), so it takes no root lease: opening it
-    /// checks it, and a missing one is created, as a missing directory root
-    /// is: plain, unless `fylo.encryption.file` asks for an encrypted one
-    /// (ADR 0016 section 9). An encrypted database opens with the
-    /// configured key, and without one it is locked: it lists no
-    /// collections and refuses reads of one and every write with `EKEY`.
+    /// checks it, and a missing one is created protected with the configured
+    /// identity, or refused with `ENOIDENTITY` (ADR 0021, decision P5-1).
+    /// An encrypted database opens with the configured key, and without one
+    /// it is locked: it lists no collections and refuses reads of one and
+    /// every write with `EKEY`.
     fn admit_database(&self, root: PathBuf) -> Result<PathBuf, MachineError> {
         if self.filesystem_profile != FilesystemProfile::Native {
             return Err(MachineError::new(
@@ -1178,11 +1178,7 @@ impl Session {
         if fylo_vfs::metadata(&root)
             .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
         {
-            match self.config.creation_key() {
-                Some(key) => NativeRoot::create_encrypted_database(&root, key),
-                None => NativeRoot::create_database(&root),
-            }
-            .map_err(|error| storage_error(&error))?;
+            self.create_missing_database(&root)?;
         }
         NativeRoot::open_profiled(
             self.config
@@ -1190,6 +1186,38 @@ impl Session {
         )
         .map_err(|error| storage_error(&error))?;
         Ok(root)
+    }
+
+    /// Create the missing database `root` names: protected, with the
+    /// configured identity as its admin and trust anchor (ADR 0021,
+    /// decision P5-1). Without an identity nothing is created, and the
+    /// request fails with `ENOIDENTITY`.
+    #[cfg(not(target_family = "wasm"))]
+    fn create_missing_database(&self, root: &Path) -> Result<(), MachineError> {
+        let identity = self
+            .config
+            .identity
+            .as_ref()
+            .ok_or_else(Self::no_identity)?;
+        NativeRoot::create_protected_database(root, identity.identity())
+            .map_err(|error| storage_error(&error))
+    }
+
+    /// The browser build has no identities (ADR 0021, decision P5-3), so it
+    /// creates no database through the machine protocol.
+    #[cfg(target_family = "wasm")]
+    #[allow(clippy::unused_self)]
+    fn create_missing_database(&self, _root: &Path) -> Result<(), MachineError> {
+        Err(Self::no_identity())
+    }
+
+    fn no_identity() -> MachineError {
+        MachineError::new(
+            "ENOIDENTITY",
+            "the .vdbx database does not exist, and a new one is protected: name its admin \
+             identity (fylo.identity, FYLO_IDENTITY or --identity), or create it with \
+             fylo create --unprotected",
+        )
     }
 
     fn root_options(

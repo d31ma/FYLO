@@ -25,6 +25,12 @@ impl CollectionRecovery {
         let mut recovery = Self {
             names: BTreeMap::new(),
         };
+        if let Some(names) = root.database_collection_names() {
+            recovery
+                .names
+                .extend(names.into_iter().map(|name| (name, true)));
+            return recovery.recover_all(writer);
+        }
         recovery.add_data_directories(root.path())?;
         let catalog = root
             .catalog_root()

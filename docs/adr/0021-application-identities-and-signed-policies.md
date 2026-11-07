@@ -211,8 +211,24 @@ What a protected `.vdbx` file holds, in addition to ADR 0016:
   conditions (`notBefore`, `notAfter`) are not in `fylo.policy/1` yet.
 - **Creation.** `fylo create <db.vdbx> --admin <reference>`;
   `fylo create` without `--admin` needs `--unprotected` (Q2). The machine
-  protocol still creates a missing database unprotected until its entry
-  points change in phase 5 (decision P5-1, section 5).
+  protocol creates a missing database protected, with the configured
+  identity as its admin, and refuses with `ENOIDENTITY` when none is
+  configured (decision P5-1, phase 5).
+- **Entry points (phase 5).** The `fylo` crate opens `.vdbx` databases
+  (no directory lease; the file coordinates its writers) and takes
+  `OpenOptions::with_identity(identity, trust)`; a database holds no queue
+  (`ELAYOUTUNSUPPORTED`). `fylo::LinkIdentity` reads `FYLO_IDENTITY` and
+  `FYLO_TRUST_ANCHOR`, or `fylo.identity` and `fylo.trustAnchor` from the
+  `application.json` beside the database, for `fylo link`'s open hook (Q9).
+  The hook still opens directory roots only: SQL over a `.vdbx` database,
+  protected or not, is not built yet, and `Root::sql` refuses one with
+  `ELAYOUTUNSUPPORTED`.
+- **`cng:` (phase 5, decision P5-2).** A key persisted under its name in the
+  Microsoft Software Key Storage Provider (DPAPI-protected, per user),
+  imported from PKCS#8 with an export policy so FYLO signs in software;
+  `crates/fylo-identity/src/cng_key_store.rs` is that crate's one `unsafe`
+  module (`docs/security/unsafe-inventory.md`). Checked for the Windows
+  target; it runs only on the `windows-vm` lane.
 
 ### 5. Decisions for phase 5 (the user, 2026-11-07)
 

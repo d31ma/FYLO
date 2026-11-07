@@ -122,9 +122,7 @@ impl KeyReference {
 
     #[cfg(windows)]
     fn cng_store(name: &str) -> Box<dyn KeyStore> {
-        Box::new(UnsupportedKeyStore::new(format!(
-            "cng:{name} is not implemented in this build yet (ADR 0021); use file:<path> meanwhile"
-        )))
+        Box::new(crate::cng_key_store::CngKeyStore::new(name.to_owned()))
     }
 
     #[cfg(not(windows))]

@@ -123,6 +123,8 @@ fn verify_prints_the_report_and_fails_on_damage() {
 #[test]
 fn commands_and_sql_run_against_a_database_root() {
     let fixture = Fixture::new("root");
+    let created = fixture.run(&["create", "app.vdbx", "--unprotected"]);
+    assert!(created.status.success(), "{created:?}");
     let create = fixture.run(&[
         "exec",
         "--request",

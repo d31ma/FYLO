@@ -4,6 +4,15 @@
 
 ### Added
 
+- **Entry points for protected databases (ADR 0021, phase 5).** The `fylo`
+  crate opens `.vdbx` databases and takes `OpenOptions::with_identity`
+  (Yon); `fylo::LinkIdentity` gives `fylo link`'s open hook the identity
+  from `FYLO_IDENTITY`/`FYLO_TRUST_ANCHOR` or the `application.json` beside
+  the database. **Breaking:** the machine protocol creates a missing
+  `.vdbx` protected with the configured identity as admin, and refuses with
+  `ENOIDENTITY` without one (it no longer creates plain or shared-key
+  databases; use `fylo create --unprotected`). SQL over a `.vdbx` database
+  is refused with `ELAYOUTUNSUPPORTED` until its layer is built.
 - **Signed records in protected databases (ADR 0021, phase 4).** Every
   record frame of a protected `.vdbx` (commits, aborts, checkpoints,
   compactions, schema versions) carries an ECDSA P-256 signature by the

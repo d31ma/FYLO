@@ -717,6 +717,7 @@ name = "fylo"
 version = "0.1.0"
 dependencies = [
  "fylo-engine",
+ "fylo-identity",
  "fylo-query",
  "fylo-storage-native",
  "fylo-vfs",
@@ -794,6 +795,7 @@ dependencies = [
  "rustix",
  "security-framework",
  "sha2",
+ "windows-sys 0.61.2",
  "zeroize",
 ]
 

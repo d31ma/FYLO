@@ -38,7 +38,10 @@ crate for `fylo identity create` and `fylo identity show`.
 `p256`'s `ecdsa` feature signs and verifies policy versions (ECDSA P-256,
 SHA-256, RFC 6979 nonces).
 
-`cng:` (Windows) is defined but
+`cng:` (Windows, phase 5) uses the workspace's `windows-sys` 0.61.2 with
+`Win32_Foundation`, `Win32_Security` and `Win32_Security_Cryptography`, in
+`fylo-identity` only and only on Windows; it adds no crate to the graph.
+Before phase 5, `cng:` was defined but
 not implemented: the CNG API is `unsafe` FFI, so it needs either a reviewed
 safe wrapper crate or an ADR 0004 exception, which is a decision for that
 phase.

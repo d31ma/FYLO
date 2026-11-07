@@ -6,6 +6,8 @@
 //! or `webcrypto:`) and never by the key itself.
 
 mod base32;
+#[cfg(windows)]
+mod cng_key_store;
 #[cfg(target_os = "linux")]
 mod credential_key_store;
 mod file_key_store;

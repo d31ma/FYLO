@@ -257,7 +257,20 @@ A flag wins over the environment, which wins over `application.json`. These
 two variables are read directly, as `fylo link`'s hook needs them (ADR 0021,
 Q9). A protected database opened without an anchor fails with `EPOLICY` and
 names the anchor to pin. A new database is protected by default: `fylo
-create` needs `--admin <reference>` or `--unprotected`.
+create` needs `--admin <reference>` or `--unprotected`, and the machine
+protocol (`fylo exec`) creates a missing `.vdbx` protected with the
+configured identity as admin, or refuses with `ENOIDENTITY` without one.
+
+In Rust, the `fylo` crate takes the same identity:
+
+```rust
+let identity = fylo::Identity::from_reference("keychain:com.example.app")?;
+let anchor = fylo::IdentityId::parse("fid1:p256:...")?;
+let root = fylo::Root::open(
+    "app.vdbx",
+    fylo::OpenOptions::default().with_identity(identity, fylo::AccessTrust::Pinned(anchor)),
+)?;
+```
 
 ## Browser and mobile clients
 

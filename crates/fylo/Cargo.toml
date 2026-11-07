@@ -14,6 +14,8 @@ sql = ["dep:parking_lot", "dep:turso_core", "dep:turso_ext"]
 
 [dependencies]
 fylo-engine = { version = "0.1.0", path = "../fylo-engine" }
+# The application identity a protected `.vdbx` database opens with (ADR 0021).
+fylo-identity = { version = "0.1.0", path = "../fylo-identity" }
 fylo-query = { version = "0.1.0", path = "../fylo-query" }
 fylo-storage-native = { version = "0.1.0", path = "../fylo-storage-native" }
 fylo-vfs = { version = "0.1.0", path = "../fylo-vfs" }

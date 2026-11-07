@@ -136,8 +136,16 @@ impl Root {
     /// # Errors
     ///
     /// Fails when the root's collections cannot be listed or a collection's
-    /// schema registry is corrupt.
+    /// schema registry is corrupt, and with `ELAYOUTUNSUPPORTED` for a
+    /// `.vdbx` database, whose SQL layer is not built yet.
     pub fn sql_with(self: &Arc<Self>, options: SqlOptions) -> Result<Sql, Error> {
+        if fylo_storage_native::NativeRoot::names_database(self.path()) {
+            return Err(Error::new(
+                "ELAYOUTUNSUPPORTED",
+                "SQL runs over directory roots only in this release; a .vdbx database is read \
+                 and written through its collections",
+            ));
+        }
         let catalog = self.turso_database(options)?;
         let connection = catalog
             .database
@@ -215,8 +223,10 @@ impl Root {
 }
 
 /// Whether `path` is a FYLO root that a Turso binding should open as its
-/// database: an existing directory with FYLO collections. Anything else
-/// opens as Turso always does.
+/// database: an existing directory with FYLO collections. Anything else,
+/// a `.vdbx` database included until its SQL layer is built, opens as Turso
+/// always does. The hook takes the identity a protected database needs from
+/// [`crate::LinkIdentity`], ready for that layer.
 #[must_use]
 pub fn is_fylo_root(path: &std::path::Path) -> bool {
     fylo_vfs::metadata(path).is_ok_and(|metadata| metadata.is_dir())
@@ -238,7 +248,8 @@ fn open_for_turso(path: &str) -> Option<turso_core::Result<Arc<Database>>> {
     if !is_fylo_root(path) {
         return None;
     }
-    let opened = Root::open(path, crate::OpenOptions::default())
+    let opened = crate::LinkIdentity::open_options(path)
+        .and_then(|options| Root::open(path, options))
         .map(Arc::new)
         .and_then(|root| root.turso_database(SqlOptions::default()))
         .map(|catalog| catalog.database)

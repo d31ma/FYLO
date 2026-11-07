@@ -111,6 +111,7 @@ fn id(number: usize) -> String {
 #[test]
 fn a_session_creates_writes_and_queries_a_database() {
     let fixture = Fixture::new();
+    NativeRoot::create_database(fixture.database()).unwrap();
     let mut requests = vec![json!({ "op": "createCollection", "collection": "users" })];
     for number in 0..6 {
         let team = ["red", "blue"][number % 2];
@@ -154,6 +155,7 @@ fn a_session_creates_writes_and_queries_a_database() {
 #[test]
 fn a_database_refuses_what_it_does_not_hold() {
     let fixture = Fixture::new();
+    NativeRoot::create_database(fixture.database()).unwrap();
     let replies = fixture.session(&[
         json!({ "op": "createCollection", "collection": "blobs", "kind": "file" }),
         json!({ "op": "queuePublish", "queue": "jobs", "payload": {} }),
@@ -187,6 +189,8 @@ fn an_encrypted_database_opens_with_its_key_and_is_locked_without_it() {
     let fixture = Fixture::new();
     let secret = generated_secret();
     let creator = keyed(&secret, true);
+    NativeRoot::create_encrypted_database(fixture.database(), &DatabaseKey::new(secret.as_bytes()))
+        .unwrap();
     let results = fixture
         .session_with(
             Some(&creator),
@@ -268,8 +272,9 @@ fn an_encrypted_database_opens_with_its_key_and_is_locked_without_it() {
 }
 
 #[test]
-fn a_key_without_encryption_file_creates_a_plain_database() {
+fn a_key_opens_a_plain_database_plain() {
     let fixture = Fixture::new();
+    NativeRoot::create_database(fixture.database()).unwrap();
     let application = keyed(&generated_secret(), false);
     let replies = fixture.session_with(
         Some(&application),
@@ -288,4 +293,51 @@ fn a_key_without_encryption_file_creates_a_plain_database() {
     NativeRoot::close_database(fixture.database()).unwrap();
     let plain = fixture.results(&[json!({ "op": "inspectDatabase" })]);
     assert_eq!(plain[0]["collections"][0]["name"], json!("users"));
+}
+
+#[test]
+fn a_missing_database_is_refused_without_an_identity() {
+    let fixture = Fixture::new();
+    let replies = fixture.session(&[json!({ "op": "createCollection", "collection": "users" })]);
+    assert_eq!(
+        replies[0]["error"]["code"],
+        json!("ENOIDENTITY"),
+        "{}",
+        replies[0]
+    );
+    assert!(!fixture.database().exists());
+}
+
+#[test]
+fn a_missing_database_is_created_protected_with_the_identity() {
+    let fixture = Fixture::new();
+    let key = fixture.0.join("admin.pem");
+    let admin = fylo_identity::Identity::create(&fylo_identity::KeyReference::File(key)).unwrap();
+    let application = ApplicationConfig {
+        identity: Some(fylo_storage_native::DatabaseIdentity::new(
+            admin,
+            fylo_storage_native::AccessTrust::FirstUse,
+        )),
+        ..ApplicationConfig::default()
+    };
+    let replies = fixture.session_with(
+        Some(&application),
+        &[
+            json!({ "op": "createCollection", "collection": "users" }),
+            json!({ "op": "inspectDatabase" }),
+        ],
+    );
+    assert_eq!(replies[0]["ok"], json!(true), "{}", replies[0]);
+    assert_eq!(
+        replies[1]["result"]["protected"],
+        json!(true),
+        "{}",
+        replies[1]
+    );
+    assert_eq!(
+        replies[1]["result"]["locked"],
+        json!(false),
+        "{}",
+        replies[1]
+    );
 }
