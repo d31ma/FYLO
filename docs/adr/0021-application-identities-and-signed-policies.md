@@ -447,6 +447,29 @@ in phase 7.
     - A grant does not rotate the key; a rekey of the whole database
       writes a new file under a new one anyway.
 
+- **Audit: the signed policy chain (option A, recommended to the user;
+  the record of grants, revocations, rekeys and policy changes this phase
+  was asked for).** Every such change already writes a policy version,
+  signed by the admin who made it and chained to the one before, in the
+  access slots, whose A/B write is crash-safe. Each version from phase 7
+  on carries `change` (`grant`, `revoke`, `rekey`, `rekeyCollection`;
+  with the rule or collection, and `at`, milliseconds since the Unix epoch
+  by the signer's clock), covered by the signature. `fylo access audit
+  <db.vdbx>`, run as any identity the policy names, lists every version
+  oldest first with the admin whose signature it carries, its change, and
+  the rules it added and removed against the version before; version 1 is
+  `create`, and a version written before changes were recorded is
+  `unrecorded`. It writes nothing. A catalog-key rotation is part of its
+  revocation and has no version of its own.
+    - **Not recorded, and why.** Design section 5.6 also lists every open,
+      operations FYLO refused, and `ESIGNATURE` findings. Recording those
+      would need a write on every open, also by identities that may only
+      read, and a separate append-only extent (a new extent kind, sealed
+      under the catalog key and resealed by its rotation); it is left for a
+      later phase, and the access slots' size limit (256 KiB) bounds how
+      many versions the chain holds meanwhile. The `at` time is the
+      signer's claim, not a trusted timestamp.
+
 ### 8. Phases
 
 The study's section 9 is the plan. Phase 2 (identities and key stores) needs

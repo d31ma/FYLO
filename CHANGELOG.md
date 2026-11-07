@@ -4,6 +4,12 @@
 
 ### Added
 
+- **`fylo access audit <db.vdbx>` (ADR 0021 section 7, phase 7).** Lists
+  every policy version of a protected database, oldest first: the admin
+  whose signature it carries, what it changed (`create`, `grant`,
+  `revoke`, `rekey`, `rekeyCollection`), the rule or collection, when (by
+  the signer's clock), and the rules it added and removed. Any identity
+  the policy names may run it; it writes nothing.
 - **A revocation rotates a protected database's catalog key (ADR 0021
   section 7, phase 7).** `fylo access revoke` now gives the catalog key,
   which seals collection names and the policy, a new value wrapped only

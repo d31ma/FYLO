@@ -20,6 +20,7 @@ pub(crate) struct AccessPolicyChain {
     bytes: Vec<u8>,
     anchor: IdentityId,
     versions: Vec<AccessPolicy>,
+    signers: Vec<IdentityId>,
 }
 
 impl AccessPolicyChain {
@@ -92,6 +93,11 @@ impl AccessPolicyChain {
         &self.versions
     }
 
+    /// The admin whose signature each version carries, oldest first.
+    pub(crate) fn signers(&self) -> &[IdentityId] {
+        &self.signers
+    }
+
     pub(crate) fn anchor(&self) -> &IdentityId {
         &self.anchor
     }
@@ -115,6 +121,7 @@ impl AccessPolicyChain {
         )?;
         Ok(AccessPolicyChain {
             versions: vec![policy.clone()],
+            signers: vec![anchor.clone()],
             policy,
             bytes,
             anchor,
@@ -129,18 +136,21 @@ impl AccessPolicyChain {
     ) -> Result<AccessPolicyChain, DatabaseAccessError> {
         let (policy, bytes) = Self::open_version(envelope, catalog, self.policy.version + 1)?;
         Self::require_previous(&policy, Some(&self.digest()))?;
-        Self::signer(
+        let signer = Self::signer(
             envelope,
             &self.policy.admin_keys(),
             &binding.policy_message(&bytes),
         )?;
         let mut versions = self.versions;
         versions.push(policy.clone());
+        let mut signers = self.signers;
+        signers.push(signer);
         Ok(AccessPolicyChain {
             policy,
             bytes,
             anchor: self.anchor,
             versions,
+            signers,
         })
     }
 

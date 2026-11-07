@@ -20,6 +20,10 @@ use serde_json::{Value, json};
 /// The other three run as the configured identity:
 /// - `list` prints what the identity may do, the trust anchor that created
 ///   the database, and the newest policy;
+/// - `audit` lists every policy version, oldest first: the admin who signed
+///   it, what it changed (a grant, a revocation, a rekey) and when, and the
+///   rules it added and removed (ADR 0021 section 7). It writes nothing,
+///   and any identity the policy names may run it;
 /// - `grant --grantee <name> --key <fpk1:...> --actions <read,write,admin>`
 ///   with `--collection <name>`, `--all-collections` or `--database` adds a
 ///   rule (`--rule <id>`, default `<grantee>-<resource>`) as the next policy
@@ -31,9 +35,9 @@ use serde_json::{Value, json};
 pub struct AccessCommand;
 
 impl AccessCommand {
-    const COMMANDS: [&'static str; 4] = ["report", "list", "grant", "revoke"];
+    const COMMANDS: [&'static str; 5] = ["report", "list", "grant", "revoke", "audit"];
 
-    const USAGE: &'static str = "Usage:\n  fylo access report <root|db.vdbx>\n  fylo access list <db.vdbx>\n  fylo access grant <db.vdbx> --grantee <name> --key <fpk1:...> --actions <read|write|admin>[,...] (--collection <name> | --all-collections | --database) [--rule <id>] [--label <text>]\n  fylo access revoke <db.vdbx> --rule <id>\nEach runs as --identity <reference> with --trust-anchor <fid1:...> or --trust-on-first-use.";
+    const USAGE: &'static str = "Usage:\n  fylo access report <root|db.vdbx>\n  fylo access list <db.vdbx>\n  fylo access audit <db.vdbx>\n  fylo access grant <db.vdbx> --grantee <name> --key <fpk1:...> --actions <read|write|admin>[,...] (--collection <name> | --all-collections | --database) [--rule <id>] [--label <text>]\n  fylo access revoke <db.vdbx> --rule <id>\nEach runs as --identity <reference> with --trust-anchor <fid1:...> or --trust-on-first-use.";
 
     /// Run `fylo access` with all its arguments and its positional
     /// arguments after `access`.
@@ -53,6 +57,7 @@ impl AccessCommand {
         let rendered = match command {
             "report" => Self::report(options)?,
             "list" => Self::list(options, path)?,
+            "audit" => Self::audit(options, path)?,
             "grant" => {
                 Self::policy(&Self::writer(options)?.grant_access(&Self::request(arguments)?))?
             }
@@ -76,6 +81,16 @@ impl AccessCommand {
         let root = NativeRoot::open_profiled(options).map_err(|error| error.to_string())?;
         let access = Self::access(&root, path)?;
         Ok(Self::render(&access))
+    }
+
+    fn audit(options: RootOpenOptions, path: &Path) -> Result<Value, String> {
+        let root = NativeRoot::open_profiled(options).map_err(|error| error.to_string())?;
+        let access = Self::access(&root, path)?;
+        Ok(json!({
+            "database": path.display().to_string(),
+            "trustAnchor": access.anchor().as_str(),
+            "entries": access.audit(),
+        }))
     }
 
     fn report(options: RootOpenOptions) -> Result<Value, String> {

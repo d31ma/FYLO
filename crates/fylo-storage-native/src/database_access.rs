@@ -43,6 +43,8 @@ struct AccessState {
     policy: AccessPolicy,
     policy_digest: String,
     versions: Vec<AccessPolicy>,
+    /// The admin whose signature each version carries, oldest first.
+    version_signers: Vec<IdentityId>,
     signers: BTreeMap<[u8; 32], PublicIdentity>,
     names: BTreeMap<u32, String>,
     grants: AccessGrants,
@@ -161,6 +163,7 @@ impl DatabaseAccess {
                 policy_digest: chain.digest(),
                 policy: chain.policy().clone(),
                 versions: chain.versions().to_vec(),
+                version_signers: chain.signers().to_vec(),
                 signers: Self::signers(chain.versions()),
                 document,
                 names: BTreeMap::new(),
@@ -213,6 +216,24 @@ impl DatabaseAccess {
         self.read().grants.clone()
     }
 
+    /// Every policy version, oldest first, as `fylo access audit` lists it:
+    /// its signer, its change and the rules it added and removed.
+    #[must_use]
+    pub fn audit(&self) -> Vec<crate::AccessAuditEntry> {
+        let state = self.read();
+        let mut entries = Vec::with_capacity(state.versions.len());
+        let mut before: Option<&AccessPolicy> = None;
+        for (policy, signer) in state.versions.iter().zip(&state.version_signers) {
+            entries.push(crate::AccessAuditEntry::of(
+                policy,
+                signer.to_string(),
+                before,
+            ));
+            before = Some(policy);
+        }
+        entries
+    }
+
     /// The access slot generation this state was read from.
     pub(crate) fn generation(&self) -> u64 {
         self.read().generation
@@ -253,6 +274,7 @@ impl DatabaseAccess {
         state.policy_digest = chain.digest();
         state.policy = chain.policy().clone();
         state.versions = chain.versions().to_vec();
+        state.version_signers = chain.signers().to_vec();
         state.signers = Self::signers(chain.versions());
         state.document = document;
         state.keys = keys;
@@ -888,6 +910,7 @@ impl DatabaseAccess {
         }
         if let Some((policy, digest)) = change.policy {
             state.versions.push(policy.clone());
+            state.version_signers.push(self.identity.id().clone());
             state.signers = Self::signers(&state.versions);
             state.policy = policy;
             state.policy_digest = digest;
@@ -1155,6 +1178,7 @@ mod tests {
             },
             policy: versions.last().unwrap().clone(),
             policy_digest: String::new(),
+            version_signers: Vec::new(),
             signers: DatabaseAccess::signers(&versions),
             versions,
             names: BTreeMap::from([(LEDGER, "ledger".to_owned())]),

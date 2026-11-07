@@ -19,6 +19,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 mod access_action;
+mod access_audit_entry;
 mod access_binding;
 mod access_document;
 mod access_grant_request;
@@ -78,6 +79,7 @@ use legacy_access_warning::LegacyAccessWarning;
 use spelling_cache::SpellingCache;
 
 pub use access_action::AccessAction;
+pub use access_audit_entry::AccessAuditEntry;
 pub use access_document::AccessDocument;
 pub use access_grant_request::AccessGrantRequest;
 pub use access_grants::AccessGrants;

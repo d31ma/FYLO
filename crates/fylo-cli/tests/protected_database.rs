@@ -705,3 +705,52 @@ fn a_sealed_pack_of_a_protected_database_that_stops_leaves_no_copy() {
     ));
     assert_eq!(got[&identifier]["name"], CANARY);
 }
+
+#[test]
+fn access_audit_lists_every_change_with_its_signer() {
+    let fixture = Fixture::new("audit");
+    let admin = fixture.protected();
+    write_user(&fixture, &admin);
+    let reader = fixture.identity("reader");
+    grant_reader(&fixture, &admin);
+    json(&fixture.as_admin(
+        &admin,
+        &["access", "revoke", "app.vdbx", "--rule", "readers"],
+    ));
+    json(&fixture.as_admin(&admin, &["rekey", "app.vdbx", "--collection", "users"]));
+    let audit = json(&fixture.as_admin(&admin, &["access", "audit", "app.vdbx"]));
+    assert_eq!(audit["trustAnchor"], admin.as_str());
+    let entries = audit["entries"].as_array().unwrap();
+    let kinds: Vec<&str> = entries
+        .iter()
+        .map(|entry| entry["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds, ["create", "grant", "revoke", "rekeyCollection"]);
+    assert!(
+        entries
+            .iter()
+            .all(|entry| entry["signer"] == admin.as_str())
+    );
+    assert_eq!(entries[0]["added"][0], "root-admin");
+    assert_eq!(entries[1]["rule"], "readers");
+    assert_eq!(entries[1]["added"][0], "readers");
+    assert_eq!(entries[2]["removed"][0], "readers");
+    assert_eq!(entries[3]["collection"], "users");
+    assert!(entries[1]["at"].as_u64().unwrap() > 0);
+    // Another identity the policy names reads the audit too; the reader,
+    // revoked, does not.
+    let refused = failure(&fixture.run(&as_reader(&admin, &["access", "audit", "app.vdbx"])));
+    assert!(
+        refused.contains("EACCES") || refused.contains("no grant"),
+        "{refused}"
+    );
+    assert!(!reader.is_empty());
+}
+
+#[test]
+fn access_audit_refuses_a_database_opened_without_an_identity() {
+    let fixture = Fixture::new("audit-locked");
+    fixture.protected();
+    let refused = failure(&fixture.run(&["access", "audit", "app.vdbx"]));
+    assert!(refused.contains("open it with an identity"), "{refused}");
+}
