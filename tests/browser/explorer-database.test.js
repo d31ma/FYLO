@@ -6,6 +6,7 @@ globalThis.onMount = () => {}
 const {
     default: WebsiteExplorer,
     collectionHasSchema,
+    databaseAccessNote,
     databaseEngineUrl,
     databaseReportRows,
     databaseWorkerUrl,
@@ -52,6 +53,24 @@ describe('Explorer .vdbx view', () => {
         const rows = databaseReportRows({ extents: { free: 0, released: 0, byKind: {} } })
         expect(rows.collections).toEqual([])
         expect(rows.extents.map((row) => row.kind)).toEqual(['free', 'released'])
+    })
+})
+
+describe('Explorer locked view (ADR 0021)', () => {
+    test('a protected database opened without an identity is shown locked', () => {
+        const note = databaseAccessNote({ protected: true, encrypted: true, locked: true })
+        expect(note).toContain('Protected by application identities')
+        expect(note).toContain('locked')
+    })
+
+    test('an encrypted database opened without its key is shown locked', () => {
+        const note = databaseAccessNote({ protected: false, encrypted: true, locked: true })
+        expect(note).toContain('Encrypted with a database key')
+    })
+
+    test('a database Explorer can read has no note', () => {
+        expect(databaseAccessNote({ protected: false, encrypted: false, locked: false })).toBe('')
+        expect(databaseAccessNote(null)).toBe('')
     })
 })
 

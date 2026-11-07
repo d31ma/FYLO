@@ -229,6 +229,17 @@ What a protected `.vdbx` file holds, in addition to ADR 0016:
   `crates/fylo-identity/src/cng_key_store.rs` is that crate's one `unsafe`
   module (`docs/security/unsafe-inventory.md`). Checked for the Windows
   target; it runs only on the `windows-vm` lane.
+- **Browser and Explorer (phase 5, decision P5-3).** The browser build
+  keeps P-256, ECDSA and HPKE out of `fylo-browser.wasm` and opens a
+  protected file locked; it creates no database through the machine
+  protocol. Explorer shows such a file as protected and locked, with a note
+  that its collections and documents stay sealed. A `webcrypto:` identity
+  is not built yet: WebCrypto is asynchronous, while the engine signs and
+  checks each record synchronously inside a frame codec. The proposed way
+  (a decision for the user) is a crypto bridge Worker over a
+  `SharedArrayBuffer`, the pattern the OPFS bridge already uses, so the
+  engine blocks on `Atomics.wait` while the bridge calls WebCrypto with the
+  origin's non-extractable key.
 
 ### 5. Decisions for phase 5 (the user, 2026-11-07)
 

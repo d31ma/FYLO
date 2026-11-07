@@ -73,6 +73,22 @@ export const VDBX_INSPECT_OP = 'inspectDatabase'
  *
  * @param {any} report the `result` of a successful inspect frame
  */
+/**
+ * Why Explorer shows a `.vdbx` file's collections and documents sealed, or
+ * '' when it can read them. A protected database (ADR 0021) opens only
+ * with an application identity, which Explorer does not hold yet, so it is
+ * locked here; an encrypted one opened without its key is locked too.
+ * @param {{ protected?: boolean, encrypted?: boolean, locked?: boolean } | null} report
+ * @returns {string}
+ */
+export function databaseAccessNote(report) {
+    if (!report?.locked) return ''
+    if (report.protected) {
+        return 'Protected by application identities (ADR 0021). Explorer opens it without an identity, so it is locked: collection names and documents stay sealed.'
+    }
+    return 'Encrypted with a database key. Explorer opened it without the key, so it is locked: collection names and documents stay sealed.'
+}
+
 export function databaseReportRows(report) {
     const extents = report?.extents ?? {}
     const kinds = Object.entries(extents.byKind ?? {}).map(([kind, census]) => ({
@@ -1141,6 +1157,10 @@ export default class {
         } catch (err) {
             this.dbReportError = String(err?.message ?? err)
         }
+    }
+
+    databaseAccessNote(report) {
+        return databaseAccessNote(report)
     }
 
     databaseFlag(value) {

@@ -2194,6 +2194,16 @@ html[w-theme='light'] .explorer-version-cur {
     margin: 0;
 }
 
+.explorer-database-locked {
+    max-width: 40rem;
+    margin: 0;
+    padding: 0.5rem 0.75rem;
+    border-left: 3px solid var(--w-primary, currentColor);
+    background: rgba(127, 127, 127, 0.08);
+    line-height: 1.5;
+    text-align: left;
+}
+
 .explorer-database-report {
     display: flex;
     flex-direction: column;

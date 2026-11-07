@@ -250,11 +250,20 @@
                             </dd>
                             <dt>Encrypted</dt>
                             <dd>{databaseFlag(dbReport.encrypted)}</dd>
+                            <dt>Protected</dt>
+                            <dd>{databaseFlag(dbReport.protected)}</dd>
+                            <dt>Locked</dt>
+                            <dd>{databaseFlag(dbReport.locked)}</dd>
                             <dt>Sealed</dt>
                             <dd>{databaseFlag(dbReport.sealed)}</dd>
                             <dt>Codecs</dt>
                             <dd>{dbReport.codecs.join(', ') || 'none'}</dd>
                         </dl>
+                        <logic :if="databaseAccessNote(dbReport)">
+                            <p class="explorer-database-locked" role="note">
+                                {databaseAccessNote(dbReport)}
+                            </p>
+                        </logic>
                         <h3>Collections</h3>
                         <logic :if="dbRows.collections.length === 0">
                             <p>This database has no collections yet.</p>

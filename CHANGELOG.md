@@ -12,7 +12,9 @@
   `.vdbx` protected with the configured identity as admin, and refuses with
   `ENOIDENTITY` without one (it no longer creates plain or shared-key
   databases; use `fylo create --unprotected`). SQL over a `.vdbx` database
-  is refused with `ELAYOUTUNSUPPORTED` until its layer is built.
+  is refused with `ELAYOUTUNSUPPORTED` until its layer is built. `cng:`
+  stores Windows identities in CNG's software key storage provider (DPAPI).
+  Explorer shows a protected `.vdbx` as protected and locked.
 - **Signed records in protected databases (ADR 0021, phase 4).** Every
   record frame of a protected `.vdbx` (commits, aborts, checkpoints,
   compactions, schema versions) carries an ECDSA P-256 signature by the
