@@ -46,6 +46,14 @@ if (!engineOnly) {
         '--outfile',
         './dist-web/vdbx-worker.js'
     ])
+    // The crypto bridge Worker a protected `.vdbx` opens through (ADR 0021).
+    await run('bun', [
+        'build',
+        './src/browser/fylo-identity-worker.mjs',
+        '--target=browser',
+        '--outfile',
+        './dist-web/identity-worker.js'
+    ])
 }
 
 // The index kernel accelerates queries beside the JavaScript core; the browser
@@ -98,7 +106,7 @@ if (engineOnly) {
     console.log('Built dist-web/fylo-browser.wasm')
 } else {
     console.log(
-        `Built dist-web/fylo.mjs, shared.js, dedicated.js, vdbx-worker.js${
+        `Built dist-web/fylo.mjs, shared.js, dedicated.js, vdbx-worker.js, identity-worker.js${
             withWasm ? `, ${WASM_ARTIFACTS.map(([, published]) => published).join(', ')}` : ''
         }`
     )

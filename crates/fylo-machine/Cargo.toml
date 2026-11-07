@@ -10,6 +10,8 @@ publish = false
 [dependencies]
 fylo-engine = { version = "0.1.0", path = "../fylo-engine" }
 fylo-format = { version = "0.1.0", path = "../fylo-format" }
+# The identity a protected `.vdbx` database opens with (ADR 0021).
+fylo-identity = { version = "0.1.0", path = "../fylo-identity" }
 fylo-query = { version = "0.1.0", path = "../fylo-query" }
 fylo-storage-native = { version = "0.1.0", path = "../fylo-storage-native" }
 fylo-vfs = { version = "0.1.0", path = "../fylo-vfs" }
@@ -19,9 +21,6 @@ serde_json.workspace = true
 
 # A browser build uses the host's fetch, so it carries no TLS client.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-# The identity a protected `.vdbx` database opens with (ADR 0021); native
-# only, as in fylo-storage-native.
-fylo-identity = { version = "0.1.0", path = "../fylo-identity" }
 reqwest.workspace = true
 rustls.workspace = true
 

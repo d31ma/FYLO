@@ -31,6 +31,7 @@ const PICKER_TYPES = [{ description: 'FYLO database', accept: { [VDBX_MEDIA_TYPE
  * }} WritableFileHandle
  * @typedef {{ kind: 'file', file: Blob } | { kind: 'opfs', name: string, copyFrom?: Blob } | { kind: 'url', url: string }} DatabaseSource
  * @typedef {{ copied: number, total: number }} CopyProgress
+ * @typedef {{ name: string, workerUrl: string, trustAnchor?: string, trustOnFirstUse?: boolean }} DatabaseIdentity
  * @typedef {(message: Record<string, unknown>) => Promise<any>} WorkerCall
  */
 
@@ -49,13 +50,13 @@ export class SingleFileDatabase {
 
     /**
      * @param {DatabaseSource} source
-     * @param {{ workerUrl: string | URL, moduleUrl?: string, path?: string, onProgress?: (progress: CopyProgress) => void }} options
+     * @param {{ workerUrl: string | URL, moduleUrl?: string, path?: string, identity?: DatabaseIdentity, onProgress?: (progress: CopyProgress) => void }} options
      */
-    static async open(source, { workerUrl, moduleUrl, path, onProgress }) {
+    static async open(source, { workerUrl, moduleUrl, path, identity, onProgress }) {
         const worker = new Worker(workerUrl, { type: 'module' })
         const calls = createCalls(worker, onProgress)
         try {
-            const info = await calls({ op: 'open', source, path, moduleUrl })
+            const info = await calls({ op: 'open', source, path, moduleUrl, identity })
             return new SingleFileDatabase(worker, info, calls)
         } catch (error) {
             worker.terminate()

@@ -262,7 +262,6 @@ impl ContainerFrames {
 
     /// `stored` signed by the identity this protected file was opened with;
     /// as it is in any other file.
-    #[cfg(not(target_family = "wasm"))]
     fn signed(&self, lsn: u64, stored: Vec<u8>) -> Vec<u8> {
         match self.cipher.as_ref().and_then(|cipher| cipher.access()) {
             Some(access) => access.sign_frame(self.collection, lsn, stored),
@@ -270,26 +269,13 @@ impl ContainerFrames {
         }
     }
 
-    #[cfg(target_family = "wasm")]
-    #[allow(clippy::unused_self)]
-    fn signed(&self, _lsn: u64, stored: Vec<u8>) -> Vec<u8> {
-        stored
-    }
-
     /// The stored bytes before a protected file's signature trailer, once
     /// the signature checks out; any other file's as they are.
-    #[cfg(not(target_family = "wasm"))]
     fn verified<'a>(&self, stored: &'a [u8]) -> Result<&'a [u8], LogFormatError> {
         match self.cipher.as_ref().and_then(|cipher| cipher.access()) {
             Some(access) => access.verify_frame(self.collection, stored),
             None => Ok(stored),
         }
-    }
-
-    #[cfg(target_family = "wasm")]
-    #[allow(clippy::unnecessary_wraps, clippy::unused_self)]
-    fn verified<'a>(&self, stored: &'a [u8]) -> Result<&'a [u8], LogFormatError> {
-        Ok(stored)
     }
 
     /// A stored body's failure as a scan sees it. What this build cannot

@@ -13,6 +13,9 @@ publish = false
 aes-gcm.workspace = true
 base64.workspace = true
 fylo-format = { version = "0.1.0", path = "../fylo-format" }
+# Application identities of protected `.vdbx` databases (ADR 0021). In the
+# browser it carries no P-256 or HPKE code: WebCrypto does that (P5-5).
+fylo-identity = { version = "0.1.0", path = "../fylo-identity" }
 fylo-query = { version = "0.1.0", path = "../fylo-query" }
 fylo-vfs = { version = "0.1.0", path = "../fylo-vfs" }
 getrandom.workspace = true
@@ -24,10 +27,6 @@ zeroize.workspace = true
 
 # Inode identity has no meaning on a host filesystem, which has no links.
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-# Application identities of protected `.vdbx` databases (ADR 0021). Native
-# only: P-256, ECDSA and HPKE would add about 190 KB to the browser engine,
-# whose identities are WebCrypto keys (ADR 0021, phase 5).
-fylo-identity = { version = "0.1.0", path = "../fylo-identity" }
 same-file.workspace = true
 # `.vdbx` zstd frames natively; the C library is too large for the browser.
 zstd.workspace = true

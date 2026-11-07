@@ -25,13 +25,22 @@ impl CollectionKeys {
 
     pub(crate) fn add(&mut self, epoch: u32, key: &[u8; 32]) {
         self.epochs.retain(|held| held.epoch != epoch);
-        self.epochs.push(CollectionEpoch {
-            epoch,
-            key: Zeroizing::new(*key),
-            cipher: Arc::new(Aes256Gcm::new(key.into())),
-        });
+        let newest_first = self.position_of(epoch);
+        self.epochs.insert(
+            newest_first,
+            CollectionEpoch {
+                epoch,
+                key: Zeroizing::new(*key),
+                cipher: Arc::new(Aes256Gcm::new(key.into())),
+            },
+        );
+    }
+
+    fn position_of(&self, epoch: u32) -> usize {
         self.epochs
-            .sort_by_key(|held| std::cmp::Reverse(held.epoch));
+            .iter()
+            .position(|held| held.epoch < epoch)
+            .unwrap_or(self.epochs.len())
     }
 
     pub(crate) fn newest(&self) -> Option<Arc<Aes256Gcm>> {

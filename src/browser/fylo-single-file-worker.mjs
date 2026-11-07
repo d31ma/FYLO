@@ -17,15 +17,26 @@
 //
 // Protocol: post `{ id, op, ... }`, receive `{ id, result }` or `{ id, error }`,
 // plus `{ id, progress }` while a copy streams. Ops:
-// - `open { source, path?, moduleUrl? }` opens the file, then instantiates
-//   `fylo-browser.wasm` over it when `moduleUrl` is given;
+// - `open { source, path?, moduleUrl?, identity? }` opens the file, then
+//   instantiates `fylo-browser.wasm` over it when `moduleUrl` is given.
+//   `identity: { name, workerUrl, trustAnchor?, trustOnFirstUse? }` opens a
+//   protected database as the origin's `webcrypto:<name>` identity (ADR
+//   0021): `workerUrl` is the crypto bridge Worker
+//   (`dist-web/identity-worker.js`), which answers the engine's synchronous
+//   signing and unwrapping through a `SharedArrayBuffer`, so this one option
+//   needs a cross-origin isolated page;
 // - `exec { ndjson }` runs one engine batch;
 // - `host { call, ... }` calls one `fylo_host` import directly (stat, read,
 //   write, truncate, flush), through the same table the engine uses;
 // - `snapshot` flushes and returns the whole file as a `Blob`, for Save;
 // - `close` closes the file and releases the lock.
 
-import { OPEN_READ, OPEN_WRITE, createHostImports, exec } from './host-vfs.mjs'
+import { OPEN_READ, OPEN_WRITE, configure, createHostImports, exec } from './host-vfs.mjs'
+import {
+    createIdentityBridgeBackend,
+    createIdentityBridgeBuffer,
+    describeIdentity
+} from './identity-bridge.mjs'
 import { WORKING_COPY_DIRECTORY, isWorkingCopyName } from './vdbx-names.mjs'
 import {
     DEFAULT_DATABASE_PATH,
@@ -48,6 +59,10 @@ let instance
 let probe
 /** @type {string | undefined} */
 let lastHostError
+/** @type {Worker | undefined} */
+let identityWorker
+/** @type {string | null} */
+let identityId = null
 
 // Calls are answered in order: an `open` still streaming a copy must finish
 // before an `exec` behind it touches the file.
@@ -93,7 +108,7 @@ async function dispatch(message) {
     }
 }
 
-async function open({ id, source, path = DEFAULT_DATABASE_PATH, moduleUrl }) {
+async function open({ id, source, path = DEFAULT_DATABASE_PATH, moduleUrl, identity }) {
     if (backend) throw new Error('this Worker already has a database open')
     lastHostError = undefined
     try {
@@ -107,7 +122,7 @@ async function open({ id, source, path = DEFAULT_DATABASE_PATH, moduleUrl }) {
             throw new Error(`unknown database source: ${source?.kind}`)
         }
         probe = createProbe(backend)
-        if (moduleUrl) instance = await instantiate(moduleUrl, backend)
+        if (moduleUrl) instance = await instantiate(moduleUrl, backend, identity)
         return describe()
     } catch (error) {
         close()
@@ -115,17 +130,54 @@ async function open({ id, source, path = DEFAULT_DATABASE_PATH, moduleUrl }) {
     }
 }
 
-async function instantiate(moduleUrl, target) {
+async function instantiate(moduleUrl, target, identity) {
     let created
     const imports = createHostImports({
         memory: () => created.exports.memory,
         backend: target,
+        identity: identity ? await startIdentityBridge(identity) : undefined,
         onError: (message) => {
             lastHostError = message
         }
     })
     created = (await WebAssembly.instantiateStreaming(fetch(moduleUrl), imports)).instance
+    if (identity) {
+        configure(created, {
+            identity: `webcrypto:${identity.name}`,
+            trustAnchor: identity.trustAnchor,
+            trustOnFirstUse: identity.trustOnFirstUse === true
+        })
+    }
     return created
+}
+
+/**
+ * Start the crypto bridge Worker for `identity.name` and return the
+ * synchronous identity the host table answers the engine with.
+ */
+async function startIdentityBridge({ name, workerUrl }) {
+    if (typeof SharedArrayBuffer !== 'function' || globalThis.crossOriginIsolated !== true) {
+        throw Object.assign(
+            new Error(
+                'opening a database as a webcrypto: identity needs a cross-origin isolated ' +
+                    'page (COOP: same-origin, COEP: require-corp)'
+            ),
+            { code: 'ENOISOLATION' }
+        )
+    }
+    const buffer = createIdentityBridgeBuffer()
+    identityWorker = new Worker(workerUrl, { type: 'module' })
+    const ready = await new Promise((resolve) => {
+        identityWorker.onmessage = (event) => resolve(event.data ?? {})
+        identityWorker.onerror = (event) =>
+            resolve({ error: event.message || 'the crypto bridge Worker failed to start' })
+        identityWorker.postMessage({ buffer, name })
+    })
+    if (!ready.ready) {
+        throw Object.assign(new Error(ready.error), { code: ready.code ?? 'EIDENTITY' })
+    }
+    identityId = (await describeIdentity(ready.publicKey)).id
+    return createIdentityBridgeBackend(buffer)
 }
 
 async function openWorkingCopy({ name, copyFrom }, path, progress) {
@@ -186,6 +238,7 @@ function describe() {
         size: len,
         modifiedMs,
         engine: Boolean(instance),
+        identity: identityId,
         crossOriginIsolated: globalThis.crossOriginIsolated === true
     }
 }
@@ -200,6 +253,9 @@ function close() {
     probe = undefined
     instance = undefined
     backend = undefined
+    identityWorker?.terminate()
+    identityWorker = undefined
+    identityId = null
     try {
         accessHandle?.close()
     } finally {

@@ -59,9 +59,12 @@ export function nativeRoot(label) {
  * Run `requests` through the native engine against `root` in one process.
  *
  * Each request gets `root` unless it names one, matching what the harness
- * page does for the browser.
+ * page does for the browser. A missing `*.vdbx` fixture is created
+ * unprotected first: the machine protocol creates only protected databases
+ * (ADR 0021, decision P5-1), and these fixtures test storage, not access.
  */
 export function nativeExec(root, requests, { env } = {}) {
+    createMissingDatabase(root)
     const outcome = spawnSync(nativeBinary(), ['exec', '--loop', '--root', root], {
         input: `${requests.map((request) => JSON.stringify({ root, ...request })).join('\n')}\n`,
         encoding: 'utf8',
@@ -79,6 +82,14 @@ export function nativeExec(root, requests, { env } = {}) {
         )
     }
     return frames
+}
+
+/** `fylo create <path> --unprotected` when `path` names a missing `.vdbx`. */
+function createMissingDatabase(path) {
+    if (!path.endsWith('.vdbx') || existsSync(path)) return
+    execFileSync(nativeBinary(), ['create', path, '--unprotected'], {
+        stdio: ['ignore', 'ignore', 'inherit']
+    })
 }
 
 /** A unique OPFS root path for one test. */

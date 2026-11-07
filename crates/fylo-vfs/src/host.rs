@@ -20,7 +20,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 ///
 /// A host compiled against an older layout would otherwise be read as the
 /// current one, which is a silent memory error rather than a version mismatch.
-pub const HOST_ABI_VERSION: u32 = 1;
+pub const HOST_ABI_VERSION: u32 = 2;
 
 /// Entry kind reported by [`HostVfs::stat`].
 pub const HOST_KIND_MISSING: u32 = 0;
@@ -122,6 +122,33 @@ pub struct HostVfs {
     /// Reports the byte length the listing needs. A caller whose buffer was too
     /// small retries with that length, so the host never truncates silently.
     pub read_dir: unsafe extern "C" fn(*const u8, usize, *mut u8, usize, *mut usize) -> i32,
+    /// Write the 65-byte SEC1 uncompressed public key of the application
+    /// identity the host opens protected databases with (ADR 0021, decision
+    /// P5-5). A host with no identity returns a negative `errno`.
+    pub identity_public: unsafe extern "C" fn(*mut u8) -> i32,
+    /// Sign a message with the identity's key: ECDSA P-256 with SHA-256,
+    /// 64 bytes `r` then `s`, written to the output.
+    pub identity_sign: unsafe extern "C" fn(*const u8, usize, *mut u8) -> i32,
+    /// Check an ECDSA P-256 signature (64 bytes) over a message against a
+    /// 65-byte SEC1 public key: `0` when it verifies, `1` when it does not.
+    pub identity_verify: unsafe extern "C" fn(*const u8, *const u8, usize, *const u8) -> i32,
+    /// Open a key wrapped for the identity (RFC 9180 base mode,
+    /// DHKEM(P-256, HKDF-SHA256), HKDF-SHA256, AES-256-GCM): `info`, then the
+    /// 65-byte encapsulated key and ciphertext; writes the 32-byte key.
+    pub identity_unwrap: unsafe extern "C" fn(*const u8, usize, *const u8, usize, *mut u8) -> i32,
+    /// Wrap a secret for a 65-byte SEC1 public key, the way `identity_unwrap`
+    /// opens it. Reports the bytes the wrap needs; a caller whose buffer was
+    /// too small retries with that length.
+    pub identity_wrap: unsafe extern "C" fn(
+        *const u8,
+        *const u8,
+        usize,
+        *const u8,
+        usize,
+        *mut u8,
+        usize,
+        *mut usize,
+    ) -> i32,
 }
 
 // SAFETY: every field is a bare function pointer or a `u32`. Neither carries
@@ -250,6 +277,133 @@ pub fn host_random(destination: &mut [u8]) -> Result<(), &'static str> {
     } else {
         Err("host random source failed")
     }
+}
+
+/// The 65-byte SEC1 public key of the host's application identity.
+///
+/// # Errors
+///
+/// Returns an error when no host is installed or it holds no identity.
+pub fn host_identity_public() -> Result<[u8; 65], &'static str> {
+    let host = HOST.get().ok_or("no host is installed")?;
+    let mut public = [0_u8; 65];
+    // SAFETY: `public` is a live, writable 65-byte buffer for the call; the
+    // host may not retain the pointer.
+    let code = unsafe { (host.identity_public)(public.as_mut_ptr()) };
+    host_status(code, "the host holds no application identity")?;
+    Ok(public)
+}
+
+/// Sign `message` with the host's application identity.
+///
+/// # Errors
+///
+/// Returns an error when no host is installed or signing fails.
+pub fn host_identity_sign(message: &[u8]) -> Result<[u8; 64], &'static str> {
+    let host = HOST.get().ok_or("no host is installed")?;
+    let mut signature = [0_u8; 64];
+    // SAFETY: `message` is a live slice of the stated length and `signature`
+    // a live, writable 64-byte buffer; the host retains neither.
+    let code =
+        unsafe { (host.identity_sign)(message.as_ptr(), message.len(), signature.as_mut_ptr()) };
+    host_status(code, "the host could not sign with its identity")?;
+    Ok(signature)
+}
+
+/// Whether `signature` over `message` verifies with `public`.
+///
+/// # Errors
+///
+/// Returns an error when no host is installed or the host fails to check.
+pub fn host_identity_verify(
+    public: &[u8; 65],
+    message: &[u8],
+    signature: &[u8; 64],
+) -> Result<bool, &'static str> {
+    let host = HOST.get().ok_or("no host is installed")?;
+    // SAFETY: every pointer addresses a live slice of the length passed or of
+    // its fixed array length; the host only reads them and retains none.
+    let code = unsafe {
+        (host.identity_verify)(
+            public.as_ptr(),
+            message.as_ptr(),
+            message.len(),
+            signature.as_ptr(),
+        )
+    };
+    match code {
+        0 => Ok(true),
+        1 => Ok(false),
+        _ => Err("the host could not check a signature"),
+    }
+}
+
+/// Open a key wrapped for the host's identity under `info`.
+///
+/// # Errors
+///
+/// Returns an error when no host is installed or the wrap does not open.
+pub fn host_identity_unwrap(info: &[u8], wrapped: &[u8]) -> Result<[u8; 32], &'static str> {
+    let host = HOST.get().ok_or("no host is installed")?;
+    let mut key = [0_u8; 32];
+    // SAFETY: `info` and `wrapped` are live slices of the lengths passed and
+    // `key` a live, writable 32-byte buffer; the host retains none.
+    let code = unsafe {
+        (host.identity_unwrap)(
+            info.as_ptr(),
+            info.len(),
+            wrapped.as_ptr(),
+            wrapped.len(),
+            key.as_mut_ptr(),
+        )
+    };
+    host_status(
+        code,
+        "the wrapped key does not open with the host's identity",
+    )?;
+    Ok(key)
+}
+
+/// Wrap `secret` for `public` under `info`.
+///
+/// # Errors
+///
+/// Returns an error when no host is installed or wrapping fails.
+pub fn host_identity_wrap(
+    public: &[u8; 65],
+    info: &[u8],
+    secret: &[u8],
+) -> Result<Vec<u8>, &'static str> {
+    let host = HOST.get().ok_or("no host is installed")?;
+    let mut buffer = vec![0_u8; 65 + secret.len() + 16];
+    loop {
+        let mut needed = 0_usize;
+        // SAFETY: every input pointer addresses a live slice of the length
+        // passed; `buffer` is live and writable for its whole length and
+        // `needed` for one `usize`; the host retains none of them.
+        let code = unsafe {
+            (host.identity_wrap)(
+                public.as_ptr(),
+                info.as_ptr(),
+                info.len(),
+                secret.as_ptr(),
+                secret.len(),
+                buffer.as_mut_ptr(),
+                buffer.len(),
+                &raw mut needed,
+            )
+        };
+        host_status(code, "the host could not wrap a key")?;
+        if needed <= buffer.len() {
+            buffer.truncate(needed);
+            return Ok(buffer);
+        }
+        buffer.resize(needed, 0);
+    }
+}
+
+fn host_status(code: i32, message: &'static str) -> Result<(), &'static str> {
+    if code == 0 { Ok(()) } else { Err(message) }
 }
 
 fn host() -> io::Result<&'static HostVfs> {

@@ -18,7 +18,6 @@ use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use zeroize::Zeroizing;
 
-#[cfg(not(target_family = "wasm"))]
 use crate::DatabaseAccess;
 
 /// Bytes of the nonce at the start of a sealed unit.
@@ -140,7 +139,6 @@ impl ContainerSealContext {
 pub struct ContainerCipher {
     cipher: Arc<Aes256Gcm>,
     key_check: [u8; KEY_CHECK_BYTES],
-    #[cfg(not(target_family = "wasm"))]
     access: Option<Arc<DatabaseAccess>>,
 }
 
@@ -175,7 +173,6 @@ impl ContainerCipher {
         Self {
             cipher: Arc::new(Aes256Gcm::new((&*key).into())),
             key_check,
-            #[cfg(not(target_family = "wasm"))]
             access: None,
         }
     }
@@ -190,12 +187,10 @@ impl ContainerCipher {
         Self {
             cipher: Arc::new(Aes256Gcm::new(key.into())),
             key_check,
-            #[cfg(not(target_family = "wasm"))]
             access: None,
         }
     }
 
-    #[cfg(not(target_family = "wasm"))]
     /// A protected file's cipher: `self` is its catalog key, and `access`
     /// holds the collection keys.
     #[must_use]
@@ -204,7 +199,6 @@ impl ContainerCipher {
         self
     }
 
-    #[cfg(not(target_family = "wasm"))]
     /// The access state of a protected file, or `None` for another file.
     #[must_use]
     pub fn access(&self) -> Option<&Arc<DatabaseAccess>> {
@@ -314,7 +308,6 @@ impl ContainerCipher {
         }
     }
 
-    #[cfg(not(target_family = "wasm"))]
     fn sealing_key(
         &self,
         context: ContainerSealContext,
@@ -325,7 +318,6 @@ impl ContainerCipher {
         }
     }
 
-    #[cfg(not(target_family = "wasm"))]
     /// Every epoch's key of the unit's collection in a protected file;
     /// `None` where the file key opens it.
     fn collection_keys(
@@ -337,27 +329,8 @@ impl ContainerCipher {
             _ => Ok(None),
         }
     }
-
-    #[cfg(target_family = "wasm")]
-    #[allow(clippy::unnecessary_wraps)]
-    fn sealing_key(
-        &self,
-        _context: ContainerSealContext,
-    ) -> Result<Arc<Aes256Gcm>, ContainerCipherError> {
-        Ok(Arc::clone(&self.cipher))
-    }
-
-    #[cfg(target_family = "wasm")]
-    #[allow(clippy::unnecessary_wraps, clippy::unused_self)]
-    fn collection_keys(
-        &self,
-        _context: ContainerSealContext,
-    ) -> Result<Option<Vec<Arc<Aes256Gcm>>>, ContainerCipherError> {
-        Ok(None)
-    }
 }
 
-#[cfg(not(target_family = "wasm"))]
 impl ContainerSealContext {
     /// The collection whose key seals this unit in a protected file; `None`
     /// for the units the catalog key seals.

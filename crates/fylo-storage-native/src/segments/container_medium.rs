@@ -241,6 +241,7 @@ impl ContainerMedium {
     /// A container failure as a storage error. Other writers keeping the
     /// file (`EBUSY`), a lost lease and the other failures that are no
     /// damage keep their container code in the message.
+    #[inline(never)]
     pub(crate) fn error(error: ContainerError) -> NativeStorageError {
         let error = match error {
             ContainerError::Io(error) => return NativeStorageError::io(error),
@@ -261,7 +262,6 @@ impl ContainerMedium {
             ContainerError::Cipher(crate::ContainerCipherError::NoGrant) => {
                 NativeStorageErrorCode::PermissionDenied
             }
-            #[cfg(not(target_family = "wasm"))]
             ContainerError::Access(access) => Self::access_code(access),
             _ => NativeStorageErrorCode::CorruptMetadata,
         };
@@ -275,7 +275,6 @@ impl ContainerMedium {
         }
     }
 
-    #[cfg(not(target_family = "wasm"))]
     /// The root error code of a protected file's refusal.
     fn access_code(error: &crate::DatabaseAccessError) -> NativeStorageErrorCode {
         match error {

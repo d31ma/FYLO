@@ -141,8 +141,7 @@ impl AccessPolicyChain {
                     "policy version {version} does not open with the catalog key"
                 ))
             })?;
-        let policy: AccessPolicy =
-            serde_json::from_slice(&bytes).map_err(|error| Self::refused(&error.to_string()))?;
+        let policy = AccessPolicy::from_json(&bytes).map_err(|error| Self::refused(&error))?;
         Self::require_header(&policy, version)?;
         Ok((policy, bytes))
     }

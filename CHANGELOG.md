@@ -4,6 +4,18 @@
 
 ### Added
 
+- **Protected databases in the browser (ADR 0021, decision P5-5).** A page
+  makes a `webcrypto:<name>` identity with `createWebCryptoIdentity` (two
+  non-extractable `CryptoKey`s in the origin's IndexedDB) and gets its
+  `fpk1:` key and `fid1:` identifier from `describeIdentity`. Opening a
+  `.vdbx` with `identity: { name, workerUrl, trustAnchor }` reads and
+  writes it as that identity: the single-file Worker signs records and
+  opens collection keys through a crypto bridge Worker
+  (`dist-web/identity-worker.js`) running WebCrypto, which needs a
+  cross-origin isolated page. **Breaking for custom hosts:** the host table
+  and module ABI are version 2, with five identity imports and a
+  `fylo_configure` export. The browser engine's raw size budget rose from
+  2,432 KiB to 2,448 KiB; its gzip budget is unchanged.
 - **Entry points for protected databases (ADR 0021, phase 5).** The `fylo`
   crate opens `.vdbx` databases and takes `OpenOptions::with_identity`
   (Yon); `fylo::LinkIdentity` gives `fylo link`'s open hook the identity

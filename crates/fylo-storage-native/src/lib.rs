@@ -18,36 +18,23 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-#[cfg(not(target_family = "wasm"))]
 mod access_action;
-#[cfg(not(target_family = "wasm"))]
 mod access_binding;
-#[cfg(not(target_family = "wasm"))]
 mod access_document;
-#[cfg(not(target_family = "wasm"))]
 mod access_grant_request;
-#[cfg(not(target_family = "wasm"))]
 mod access_grants;
-#[cfg(not(target_family = "wasm"))]
+mod access_json;
 mod access_key_wrap;
-#[cfg(not(target_family = "wasm"))]
 mod access_policy;
-#[cfg(not(target_family = "wasm"))]
 mod access_policy_chain;
-#[cfg(not(target_family = "wasm"))]
 mod access_policy_envelope;
-#[cfg(not(target_family = "wasm"))]
 mod access_policy_identity;
-#[cfg(not(target_family = "wasm"))]
 mod access_rule;
-#[cfg(not(target_family = "wasm"))]
 mod access_signature;
-#[cfg(not(target_family = "wasm"))]
 mod access_trust;
 mod beneath_open;
 #[cfg(not(target_family = "wasm"))]
 mod byte_range_lock;
-#[cfg(not(target_family = "wasm"))]
 mod collection_keys;
 mod collection_layout;
 #[cfg(not(target_family = "wasm"))]
@@ -60,14 +47,9 @@ mod container_file;
 #[cfg(not(target_family = "wasm"))]
 mod container_lease;
 mod container_record;
-#[cfg(not(target_family = "wasm"))]
 mod database_access;
-#[cfg(not(target_family = "wasm"))]
 mod database_access_error;
-#[cfg(not(target_family = "wasm"))]
 mod database_identity;
-#[cfg(target_family = "wasm")]
-mod database_identity_browser;
 mod database_key;
 mod durability;
 mod filesystem_profile;
@@ -89,27 +71,16 @@ mod write;
 use beneath_open::BeneathOpen;
 use spelling_cache::SpellingCache;
 
-#[cfg(not(target_family = "wasm"))]
 pub use access_action::AccessAction;
-#[cfg(not(target_family = "wasm"))]
 pub use access_document::AccessDocument;
-#[cfg(not(target_family = "wasm"))]
 pub use access_grant_request::AccessGrantRequest;
-#[cfg(not(target_family = "wasm"))]
 pub use access_grants::AccessGrants;
-#[cfg(not(target_family = "wasm"))]
 pub use access_key_wrap::AccessKeyWrap;
-#[cfg(not(target_family = "wasm"))]
 pub use access_policy::AccessPolicy;
-#[cfg(not(target_family = "wasm"))]
 pub use access_policy_envelope::AccessPolicyEnvelope;
-#[cfg(not(target_family = "wasm"))]
 pub use access_policy_identity::AccessPolicyIdentity;
-#[cfg(not(target_family = "wasm"))]
 pub use access_rule::AccessRule;
-#[cfg(not(target_family = "wasm"))]
 pub use access_signature::AccessSignature;
-#[cfg(not(target_family = "wasm"))]
 pub use access_trust::AccessTrust;
 #[cfg(not(target_family = "wasm"))]
 pub use byte_range_lock::{
@@ -141,14 +112,9 @@ pub use container_file::{
 #[cfg(not(target_family = "wasm"))]
 pub use container_lease::{ContainerLease, ContainerLeaseError, ContainerLeaseTiming};
 pub use container_record::{ContainerRecordError, ContainerStoredBody};
-#[cfg(not(target_family = "wasm"))]
 pub use database_access::DatabaseAccess;
-#[cfg(not(target_family = "wasm"))]
 pub use database_access_error::DatabaseAccessError;
-#[cfg(not(target_family = "wasm"))]
 pub use database_identity::DatabaseIdentity;
-#[cfg(target_family = "wasm")]
-pub use database_identity_browser::DatabaseIdentity;
 pub use database_key::DatabaseKey;
 pub use durability::Durability;
 pub use filesystem_profile::FilesystemProfile;
@@ -407,7 +373,6 @@ impl NativeRoot {
         container_database::ContainerDatabase::create(path.as_ref(), Some(key))
     }
 
-    #[cfg(not(target_family = "wasm"))]
     /// Create an empty, protected `.vdbx` database at `path`, which must not
     /// exist (ADR 0021). It is encrypted with a random catalog key and a key
     /// per collection, wrapped for application identities under a signed
@@ -469,7 +434,6 @@ impl NativeRoot {
             .map(|database| (database.is_encrypted(), database.is_locked()))
     }
 
-    #[cfg(not(target_family = "wasm"))]
     /// Whether this root is a protected `.vdbx` database (ADR 0021), and
     /// the access this process opened it with: `None` for a directory root
     /// or a database that is not protected, `Some(None)` for a protected one

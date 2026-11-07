@@ -1203,8 +1203,9 @@ impl Session {
             .map_err(|error| storage_error(&error))
     }
 
-    /// The browser build has no identities (ADR 0021, decision P5-3), so it
-    /// creates no database through the machine protocol.
+    /// The browser makes a database with Explorer or natively, never through
+    /// the machine protocol, which keeps the policy-writing code out of the
+    /// browser engine's size budget.
     #[cfg(target_family = "wasm")]
     #[allow(clippy::unused_self)]
     fn create_missing_database(&self, _root: &Path) -> Result<(), MachineError> {
@@ -1546,7 +1547,6 @@ impl Session {
 
     /// Unlock `container` to report on it: a protected file with the
     /// configured identity, another encrypted file with the configured key.
-    #[cfg(not(target_family = "wasm"))]
     fn unlock_for_report(
         &self,
         container: &mut fylo_storage_native::ContainerFile,
@@ -1557,18 +1557,6 @@ impl Session {
             }
             (_, Some(key)) if !container.is_protected() => container.unlock_with_key(key),
             _ => Ok(()),
-        }
-    }
-
-    /// The browser build unlocks with the configured key only.
-    #[cfg(target_family = "wasm")]
-    fn unlock_for_report(
-        &self,
-        container: &mut fylo_storage_native::ContainerFile,
-    ) -> Result<(), fylo_storage_native::ContainerError> {
-        match &self.config.database_key {
-            Some(key) => container.unlock_with_key(key),
-            None => Ok(()),
         }
     }
 

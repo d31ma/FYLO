@@ -58,7 +58,6 @@ impl RootOpenOptions {
         self
     }
 
-    #[cfg(not(target_family = "wasm"))]
     /// Open a protected `.vdbx` database as `identity` (ADR 0021). A
     /// directory root and a database that is not protected ignore it.
     /// Without it a protected database opens locked: it lists no

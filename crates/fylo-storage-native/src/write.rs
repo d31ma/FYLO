@@ -36,7 +36,6 @@ const LOCK_TTL_MILLIS: u64 = 5 * 60 * 1000;
 #[cfg(unix)]
 const DEFAULT_ACCESS_MODE: u32 = 0o600;
 
-#[cfg(not(target_family = "wasm"))]
 mod access_admin;
 mod commit_log;
 mod document_codec;

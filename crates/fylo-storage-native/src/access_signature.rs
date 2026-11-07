@@ -1,9 +1,8 @@
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 /// A signature over one policy version, by the key `key` names
 /// (`fid1:p256:...`), base64.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct AccessSignature {
     /// The signer's identifier.
     pub key: String,

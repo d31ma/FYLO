@@ -10,10 +10,18 @@ publish = false
 
 [dependencies]
 base64.workspace = true
-hpke.workspace = true
-p256.workspace = true
 sha2.workspace = true
 zeroize.workspace = true
+
+# Native identities sign, check and wrap in software. The browser's
+# (`webcrypto:`, decision P5-5) reach WebCrypto through the host table, so
+# neither crate grows the browser engine.
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+hpke.workspace = true
+p256.workspace = true
+
+[target.'cfg(target_family = "wasm")'.dependencies]
+fylo-vfs = { version = "0.1.0", path = "../fylo-vfs" }
 
 [target.'cfg(unix)'.dependencies]
 rustix = { workspace = true, features = ["process"] }

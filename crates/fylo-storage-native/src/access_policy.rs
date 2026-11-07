@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use fylo_identity::{IdentityId, PublicIdentity};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::{
     AccessAction, AccessGrantRequest, AccessPolicyIdentity, AccessRule, DatabaseAccessError,
@@ -10,8 +10,7 @@ use crate::{
 /// A protected database's policy (ADR 0021): allow rules only, so nothing
 /// is allowed without a rule. Each change is a new version that names the
 /// one before by hash and is signed by an admin of it.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct AccessPolicy {
     /// Always [`AccessPolicy::FORMAT`].
     pub format: String,
@@ -33,6 +32,78 @@ pub struct AccessPolicy {
 }
 
 impl AccessPolicy {
+    const KEYS: [&'static str; 6] = [
+        "format",
+        "version",
+        "previous",
+        "identities",
+        "rules",
+        "boundaries",
+    ];
+
+    /// A policy version from its JSON bytes.
+    ///
+    /// # Errors
+    /// The first field that is missing, of the wrong type, or unknown.
+    pub fn from_json(bytes: &[u8]) -> Result<AccessPolicy, String> {
+        use crate::access_json::AccessJson;
+        let value: serde_json::Value =
+            serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
+        let map = AccessJson::object(&value, "the policy")?;
+        AccessJson::known_keys(map, &Self::KEYS, "the policy")?;
+        let identities = Self::identities_from(AccessJson::object(
+            map.get("identities").unwrap_or(&serde_json::Value::Null),
+            "identities",
+        )?)?;
+        let rules = AccessJson::array(map, "rules")?
+            .iter()
+            .map(AccessRule::from_value)
+            .collect::<Result<_, _>>()?;
+        Ok(AccessPolicy {
+            format: AccessJson::string(map, "format")?,
+            version: AccessJson::number(map, "version")?,
+            previous: AccessJson::optional_string(map, "previous")?,
+            identities,
+            rules,
+            boundaries: Self::boundaries_from(map.get("boundaries"))?,
+        })
+    }
+
+    fn identities_from(
+        map: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<BTreeMap<String, AccessPolicyIdentity>, String> {
+        let mut identities = BTreeMap::new();
+        for (name, identity) in map {
+            identities.insert(name.clone(), AccessPolicyIdentity::from_value(identity)?);
+        }
+        Ok(identities)
+    }
+
+    fn boundaries_from(value: Option<&serde_json::Value>) -> Result<BTreeMap<u32, u64>, String> {
+        let mut boundaries = BTreeMap::new();
+        let Some(value) = value else {
+            return Ok(boundaries);
+        };
+        for (collection, lsn) in crate::access_json::AccessJson::object(value, "boundaries")? {
+            boundaries.insert(
+                Self::boundary_collection(collection)?,
+                Self::boundary_lsn(lsn)?,
+            );
+        }
+        Ok(boundaries)
+    }
+
+    fn boundary_collection(collection: &str) -> Result<u32, String> {
+        collection
+            .parse::<u32>()
+            .map_err(|_| format!("{collection:?} is not a collection id"))
+    }
+
+    fn boundary_lsn(lsn: &serde_json::Value) -> Result<u64, String> {
+        lsn.as_u64()
+            .ok_or_else(|| "a boundary must be a whole number".to_owned())
+    }
+
     /// The policy format this build reads and writes.
     pub const FORMAT: &'static str = "fylo.policy/1";
     /// The policy name of the identity a database is created with.
@@ -75,21 +146,21 @@ impl AccessPolicy {
     /// the catalog key.
     #[must_use]
     pub fn granted_keys(&self) -> Vec<PublicIdentity> {
-        self.keys_of_rules(|_| true)
+        self.keys_of_rules(&|_| true)
     }
 
     /// The public keys of every identity with an admin rule on the
     /// database.
     #[must_use]
     pub fn admin_keys(&self) -> Vec<PublicIdentity> {
-        self.keys_of_rules(|rule| rule.allows_on_database(AccessAction::Admin))
+        self.keys_of_rules(&|rule| rule.allows_on_database(AccessAction::Admin))
     }
 
     /// The public keys of every identity a rule covering the collection
     /// `name` names: everyone who gets its key.
     #[must_use]
     pub fn collection_keys(&self, name: &str) -> Vec<PublicIdentity> {
-        self.keys_of_rules(|rule| rule.strongest_on_collection(name).is_some())
+        self.keys_of_rules(&|rule| rule.strongest_on_collection(name).is_some())
     }
 
     /// The rules that name an identity holding the key `id`.
@@ -211,7 +282,7 @@ impl AccessPolicy {
             .collect()
     }
 
-    fn keys_of_rules(&self, selected: impl Fn(&AccessRule) -> bool) -> Vec<PublicIdentity> {
+    fn keys_of_rules(&self, selected: &dyn Fn(&AccessRule) -> bool) -> Vec<PublicIdentity> {
         let mut keys: Vec<PublicIdentity> = self
             .rules
             .iter()
@@ -219,7 +290,7 @@ impl AccessPolicy {
             .filter_map(|rule| self.identities.get(&rule.identity))
             .flat_map(Self::parsed_keys)
             .collect();
-        keys.sort_by(|left, right| left.id().cmp(right.id()));
+        keys.sort_unstable_by(|left, right| left.id().cmp(right.id()));
         keys.dedup_by(|left, right| left.id() == right.id());
         keys
     }

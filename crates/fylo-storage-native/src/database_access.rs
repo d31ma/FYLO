@@ -92,6 +92,7 @@ impl DatabaseAccess {
     /// catalog key, check it against the superblock's key-check value,
     /// check the policy chain and its anchor, and unwrap the collection
     /// keys granted. Returns the file's cipher.
+    #[inline(never)]
     pub(crate) fn open(
         slot: &ContainerAccessSlot,
         database: [u8; 32],
@@ -169,16 +170,18 @@ impl DatabaseAccess {
 
     /// Learn the directory's collections, and what this identity may do
     /// with each. Until a collection is bound, nothing may be written to it.
+    #[inline(never)]
     pub(crate) fn bind_directory(&self, collections: &[(u32, String)]) {
         let mut state = self.write();
         let names: Vec<&str> = collections.iter().map(|(_, name)| name.as_str()).collect();
         state.grants = AccessGrants::resolve(&state.policy, self.identity.id(), &names);
-        state.names = collections.iter().cloned().collect();
+        state.names = Self::names_by_id(collections);
     }
 
     /// Take in a newer access slot another process wrote: the policy that
     /// follows from it, and any collection key wrapped for this identity
     /// since.
+    #[inline(never)]
     pub(crate) fn reload(&self, slot: &ContainerAccessSlot) -> Result<(), DatabaseAccessError> {
         let document = Self::parse(&slot.body)?;
         let catalog = ContainerCipher::from_key(&self.catalog_key);
@@ -222,6 +225,7 @@ impl DatabaseAccess {
     /// of the policy, the signature verifies, and that key could write the
     /// collection at the record's LSN. Returns the stored bytes before the
     /// trailer. A frame checked once in this process is not checked again.
+    #[inline(never)]
     pub(crate) fn verify_frame<'a>(
         &self,
         collection: u32,
@@ -319,13 +323,33 @@ impl DatabaseAccess {
     }
 
     fn signers(versions: &[AccessPolicy]) -> BTreeMap<[u8; 32], PublicIdentity> {
-        versions
+        let mut signers = BTreeMap::new();
+        let keys = versions
             .iter()
             .flat_map(|policy| policy.identities.values())
             .flat_map(|identity| identity.keys.iter())
-            .filter_map(|key| PublicIdentity::parse(key).ok())
-            .map(|key| (key.fingerprint(), key))
-            .collect()
+            .filter_map(|key| PublicIdentity::parse(key).ok());
+        for key in keys {
+            signers.insert(key.fingerprint(), key);
+        }
+        signers
+    }
+
+    fn boundaries(covered: &[u32], next_lsns: &BTreeMap<u32, u64>) -> BTreeMap<u32, u64> {
+        let mut boundaries = BTreeMap::new();
+        for collection in covered {
+            let next = next_lsns.get(collection).copied().unwrap_or(0);
+            boundaries.insert(*collection, next);
+        }
+        boundaries
+    }
+
+    fn names_by_id(collections: &[(u32, String)]) -> BTreeMap<u32, String> {
+        let mut names = BTreeMap::new();
+        for (id, name) in collections {
+            names.insert(*id, name.clone());
+        }
+        names
     }
 
     /// Refuse unless this identity is an admin of the database.
@@ -435,10 +459,7 @@ impl DatabaseAccess {
             .filter(|(_, name)| removed.strongest_on_collection(name).is_some())
             .map(|(collection, _)| *collection)
             .collect();
-        policy.boundaries = covered
-            .iter()
-            .map(|collection| (*collection, next_lsns.get(collection).copied().unwrap_or(0)))
-            .collect();
+        policy.boundaries = Self::boundaries(&covered, next_lsns);
         self.prepare_policy(&state, policy, &covered)
     }
 
@@ -565,7 +586,7 @@ impl DatabaseAccess {
     }
 
     fn parse(body: &[u8]) -> Result<AccessDocument, DatabaseAccessError> {
-        let document: AccessDocument = serde_json::from_slice(body).map_err(|error| {
+        let document = AccessDocument::from_json(body).map_err(|error| {
             DatabaseAccessError::Damaged(format!("the access document is damaged: {error}"))
         })?;
         Some(document)

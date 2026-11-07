@@ -10,21 +10,39 @@ mod base32;
 mod cng_key_store;
 #[cfg(target_os = "linux")]
 mod credential_key_store;
+#[cfg(not(target_family = "wasm"))]
 mod file_key_store;
+#[cfg(not(target_family = "wasm"))]
 mod identity;
 mod identity_error;
 mod identity_id;
 mod key_reference;
+#[cfg(not(target_family = "wasm"))]
 mod key_store;
+#[cfg(not(target_family = "wasm"))]
 mod key_wrap;
 #[cfg(target_os = "macos")]
 mod keychain_key_store;
+#[cfg(not(target_family = "wasm"))]
 mod private_key_pem;
+#[cfg(not(target_family = "wasm"))]
 mod public_identity;
+#[cfg(not(target_family = "wasm"))]
 mod unsupported_key_store;
 
+#[cfg(target_family = "wasm")]
+mod identity_browser;
+#[cfg(target_family = "wasm")]
+mod public_identity_browser;
+
+#[cfg(not(target_family = "wasm"))]
 pub use identity::Identity;
+#[cfg(target_family = "wasm")]
+pub use identity_browser::Identity;
 pub use identity_error::IdentityError;
 pub use identity_id::IdentityId;
 pub use key_reference::KeyReference;
+#[cfg(not(target_family = "wasm"))]
 pub use public_identity::PublicIdentity;
+#[cfg(target_family = "wasm")]
+pub use public_identity_browser::PublicIdentity;

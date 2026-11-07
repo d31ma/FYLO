@@ -790,6 +790,7 @@ name = "fylo-identity"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "fylo-vfs",
  "hpke",
  "p256",
  "rustix",
@@ -873,6 +874,7 @@ dependencies = [
  "fylo-machine",
  "fylo-vfs",
  "getrandom 0.4.3",
+ "serde_json",
 ]
 
 [[package]]

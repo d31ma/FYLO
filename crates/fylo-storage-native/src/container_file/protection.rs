@@ -73,6 +73,7 @@ impl ContainerFile {
     /// # Errors
     ///
     /// The same as [`Self::unlock_with_identity`].
+    #[inline(never)]
     pub fn open_access(
         &self,
         identity: &DatabaseIdentity,
@@ -92,6 +93,7 @@ impl ContainerFile {
     /// # Errors
     ///
     /// `Access(Damaged)` when neither copy is valid, or the read failure.
+    #[inline(never)]
     pub fn read_access_slot(&self) -> Result<(ContainerAccessSlot, bool), ContainerError> {
         let slot_bytes = ContainerAccessSlot::SLOT_BYTES;
         let mut copies = vec![0_u8; 2 * slot_bytes];
@@ -117,6 +119,7 @@ impl ContainerFile {
     }
 
     /// Tell the access state which collections the directory holds.
+    #[inline(never)]
     pub(super) fn bind_access(&self) {
         if let Some(access) = self.database_access() {
             let live: Vec<(u32, String)> = self
@@ -131,6 +134,7 @@ impl ContainerFile {
 
     /// Take in an access slot another process wrote since this open read
     /// one.
+    #[inline(never)]
     pub(super) fn reload_access(&self) -> Result<(), ContainerError> {
         let Some(access) = self.database_access() else {
             return Ok(());
@@ -144,6 +148,7 @@ impl ContainerFile {
 
     /// Make and wrap the keys of the new collection `id`, and write them to
     /// the access slots before the collection's block names it.
+    #[inline(never)]
     pub(super) fn add_collection_keys(
         &mut self,
         id: u32,

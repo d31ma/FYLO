@@ -18,8 +18,16 @@ import {
     removeWorkingCopy,
     workingCopyName
 } from '/src/browser/vdbx-client.mjs'
+import {
+    createWebCryptoIdentity,
+    describeIdentity,
+    hpkeUnwrap,
+    hpkeWrap,
+    loadWebCryptoIdentity
+} from '/src/browser/identity-bridge.mjs'
 
 const WORKER_URL = '/dist-web/vdbx-worker.js'
+const IDENTITY_WORKER_URL = '/dist-web/identity-worker.js'
 const MODULE_URL = '/dist-web/fylo-browser.wasm'
 
 /** @type {Map<number, { database: SingleFileDatabase, name?: string, kind: string }>} */
@@ -72,7 +80,10 @@ async function open(source) {
         }
         const database = await SingleFileDatabase.open(opened, {
             workerUrl: WORKER_URL,
-            moduleUrl: MODULE_URL
+            moduleUrl: MODULE_URL,
+            identity: source.identity
+                ? { ...source.identity, workerUrl: IDENTITY_WORKER_URL }
+                : undefined
         })
         const id = nextSession++
         sessions.set(id, { database, name, kind: source.kind })
@@ -133,6 +144,34 @@ globalThis.vdbx = {
     },
 
     open,
+
+    /** Make the origin's `webcrypto:<name>` identity; its text forms come back. */
+    async createIdentity(name) {
+        try {
+            return await describeIdentity(await createWebCryptoIdentity(name))
+        } catch (error) {
+            return failure(error)
+        }
+    },
+
+    /** Whether the origin's `webcrypto:<name>` keys are non-extractable CryptoKeys. */
+    async identityKeys(name) {
+        const identity = await loadWebCryptoIdentity(name)
+        return {
+            sign: { type: identity.sign.type, extractable: identity.sign.extractable },
+            derive: { type: identity.derive.type, extractable: identity.derive.extractable }
+        }
+    },
+
+    /** Wrap and unwrap a secret with the page's own HPKE, for `name`'s key. */
+    async hpkeRoundTrip(name, secretBase64, infoBase64) {
+        const identity = await loadWebCryptoIdentity(name)
+        const secret = fromBase64(secretBase64)
+        const info = fromBase64(infoBase64)
+        const wrapped = await hpkeWrap(identity.publicKey, info, secret)
+        const opened = await hpkeUnwrap(identity.derive, identity.publicKey, info, wrapped)
+        return toBase64(opened)
+    },
 
     exec(id, requests, timeoutMs = 300_000) {
         return run(id, requests, timeoutMs)

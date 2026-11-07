@@ -1,9 +1,8 @@
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 /// A database key wrapped for one identity key (HPKE, RFC 9180): the
 /// catalog key, or one epoch of a collection's key.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct AccessKeyWrap {
     /// The identifier of the key it is wrapped for.
     pub recipient: String,

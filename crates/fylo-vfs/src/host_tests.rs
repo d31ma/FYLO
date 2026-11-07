@@ -14,7 +14,9 @@ use std::sync::Mutex;
 use super::host::{
     File, HOST_ABI_VERSION, HOST_KIND_DIRECTORY, HOST_KIND_FILE, HOST_KIND_MISSING,
     HOST_OPEN_CREATE, HOST_OPEN_EXCLUSIVE, HOST_OPEN_WRITE, HostStat, HostVfs, OpenOptions,
-    create_dir_all, install_host, read, read_dir, remove_file, rename, symlink_metadata, write,
+    create_dir_all, host_identity_public, host_identity_sign, host_identity_unwrap,
+    host_identity_verify, host_identity_wrap, install_host, read, read_dir, remove_file, rename,
+    symlink_metadata, write,
 };
 
 static HANDLES: Mutex<Option<BTreeMap<u64, std::fs::File>>> = Mutex::new(None);
@@ -338,7 +340,67 @@ fn install() {
         read_attrs: host_read_attrs,
         write_attrs: host_write_attrs,
         log: host_log,
+        identity_public: no_identity_public,
+        identity_sign: no_identity_sign,
+        identity_verify: no_identity_verify,
+        identity_unwrap: no_identity_unwrap,
+        identity_wrap: no_identity_wrap,
     });
+}
+
+/// The reference host holds no application identity: every crypto call
+/// fails with `ENOSYS`, as a host without one must.
+const NO_IDENTITY: i32 = -38;
+
+unsafe extern "C" fn no_identity_public(_out: *mut u8) -> i32 {
+    NO_IDENTITY
+}
+
+unsafe extern "C" fn no_identity_sign(_message: *const u8, _len: usize, _out: *mut u8) -> i32 {
+    NO_IDENTITY
+}
+
+unsafe extern "C" fn no_identity_verify(
+    _public: *const u8,
+    _message: *const u8,
+    _len: usize,
+    _signature: *const u8,
+) -> i32 {
+    NO_IDENTITY
+}
+
+unsafe extern "C" fn no_identity_unwrap(
+    _info: *const u8,
+    _info_len: usize,
+    _wrapped: *const u8,
+    _wrapped_len: usize,
+    _out: *mut u8,
+) -> i32 {
+    NO_IDENTITY
+}
+
+#[allow(clippy::too_many_arguments)]
+unsafe extern "C" fn no_identity_wrap(
+    _public: *const u8,
+    _info: *const u8,
+    _info_len: usize,
+    _secret: *const u8,
+    _secret_len: usize,
+    _out: *mut u8,
+    _capacity: usize,
+    _needed: *mut usize,
+) -> i32 {
+    NO_IDENTITY
+}
+
+#[test]
+fn a_host_without_an_identity_refuses_every_crypto_call() {
+    install();
+    assert!(host_identity_public().is_err());
+    assert!(host_identity_sign(b"message").is_err());
+    assert!(host_identity_verify(&[4; 65], b"message", &[0; 64]).is_err());
+    assert!(host_identity_unwrap(b"info", &[0; 97]).is_err());
+    assert!(host_identity_wrap(&[4; 65], b"info", &[0; 32]).is_err());
 }
 
 fn scratch(name: &str) -> PathBuf {

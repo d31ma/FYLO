@@ -27,10 +27,7 @@ mod dictionary;
 pub(crate) mod fault;
 #[cfg(test)]
 use fault::ContainerFault;
-#[cfg(not(target_family = "wasm"))]
 mod protection;
-#[cfg(target_family = "wasm")]
-mod protection_browser;
 mod punch;
 use punch::punch_hole;
 mod sealed_image;
@@ -72,11 +69,11 @@ pub enum ContainerError {
     #[cfg(not(target_family = "wasm"))]
     Lease(crate::ContainerLeaseError),
     /// A protected file refused the identity or the action (ADR 0021).
-    #[cfg(not(target_family = "wasm"))]
     Access(crate::DatabaseAccessError),
 }
 
 impl std::fmt::Display for ContainerError {
+    #[inline(never)]
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Io(error) => write!(formatter, "container I/O failed: {error}"),
@@ -92,7 +89,6 @@ impl std::fmt::Display for ContainerError {
             Self::Busy => formatter.write_str("container is busy with other writers"),
             Self::Locked => formatter.write_str("container is encrypted and needs its key"),
             Self::Cipher(error) => write!(formatter, "container encryption: {error}"),
-            #[cfg(not(target_family = "wasm"))]
             Self::Access(error) => write!(formatter, "{error}"),
             #[cfg(not(target_family = "wasm"))]
             Self::Lease(error) => write!(formatter, "container lease: {error}"),
@@ -103,6 +99,7 @@ impl std::fmt::Display for ContainerError {
 impl ContainerError {
     /// The stable error code machine clients see.
     #[must_use]
+    #[inline(never)]
     pub fn code(&self) -> &'static str {
         match self {
             Self::Io(error) if error.kind() == io::ErrorKind::NotFound => "ENATIVE_NOT_FOUND",
@@ -122,7 +119,6 @@ impl ContainerError {
             Self::Cipher(ContainerCipherError::Unauthenticated) => "EVDBX_CORRUPT",
             Self::Cipher(ContainerCipherError::Random) => "ENATIVE_IO",
             Self::Cipher(ContainerCipherError::NoGrant) => "EACCES",
-            #[cfg(not(target_family = "wasm"))]
             Self::Access(error) => error.code(),
             #[cfg(not(target_family = "wasm"))]
             Self::Lease(crate::ContainerLeaseError::Busy { .. }) => "EBUSY",

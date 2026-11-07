@@ -1,7 +1,9 @@
 use std::fmt;
 use std::str::FromStr;
 
+#[cfg(not(target_family = "wasm"))]
 use p256::PublicKey;
+#[cfg(not(target_family = "wasm"))]
 use p256::elliptic_curve::sec1::ToSec1Point;
 use sha2::{Digest, Sha256};
 
@@ -20,9 +22,15 @@ impl IdentityId {
 
     /// The identifier of `public_key`.
     #[must_use]
+    #[cfg(not(target_family = "wasm"))]
     pub fn from_public_key(public_key: &PublicKey) -> IdentityId {
-        let point = public_key.to_sec1_point(false);
-        let digest = Sha256::digest(point.as_bytes());
+        Self::from_sec1(public_key.to_sec1_point(false).as_bytes())
+    }
+
+    /// The identifier of a public key in SEC1 uncompressed form.
+    #[must_use]
+    pub fn from_sec1(point: &[u8]) -> IdentityId {
+        let digest = Sha256::digest(point);
         IdentityId(format!("{}{}", Self::PREFIX, Base32::encode(&digest)))
     }
 

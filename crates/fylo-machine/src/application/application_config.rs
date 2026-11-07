@@ -1,8 +1,6 @@
 use std::path::{Path, PathBuf};
 
-#[cfg(not(target_family = "wasm"))]
 use fylo_identity::{Identity, IdentityId};
-#[cfg(not(target_family = "wasm"))]
 use fylo_storage_native::AccessTrust;
 use fylo_storage_native::{DatabaseIdentity, DatabaseKey, RootOpenOptions};
 
@@ -62,7 +60,6 @@ impl ApplicationConfig {
     /// # Errors
     /// Fails for a key reference that does not open, an anchor that is not
     /// an identifier, or both an anchor and trust on first use.
-    #[cfg(not(target_family = "wasm"))]
     pub fn open_identity(&mut self) -> Result<(), String> {
         self.identity = self
             .identity_reference
@@ -83,27 +80,12 @@ impl ApplicationConfig {
         }
     }
 
-    /// The browser build has no application identities (ADR 0021, phase
-    /// 5): naming one is an error there.
-    ///
-    /// # Errors
-    /// Fails when an identity is named.
-    #[cfg(target_family = "wasm")]
-    pub fn open_identity(&mut self) -> Result<(), String> {
-        match self.identity_reference {
-            Some(_) => Err("application identities are not available in the browser build".into()),
-            None => Ok(()),
-        }
-    }
-
-    #[cfg(not(target_family = "wasm"))]
     fn opened_identity(&self, reference: &str) -> Result<DatabaseIdentity, String> {
         let identity = Identity::from_reference(reference).map_err(|error| error.to_string())?;
         let trust = Self::trust(self.trust_anchor.as_deref(), self.trust_on_first_use)?;
         Ok(DatabaseIdentity::new(identity, trust))
     }
 
-    #[cfg(not(target_family = "wasm"))]
     fn trust(anchor: Option<&str>, first_use: bool) -> Result<AccessTrust, String> {
         match (anchor, first_use) {
             (Some(_), true) => {
@@ -124,18 +106,11 @@ impl ApplicationConfig {
         }
     }
 
-    #[cfg(not(target_family = "wasm"))]
     fn with_identity(&self, options: RootOpenOptions) -> RootOpenOptions {
         match &self.identity {
             Some(identity) => options.with_identity(identity.clone()),
             None => options,
         }
-    }
-
-    #[cfg(target_family = "wasm")]
-    #[allow(clippy::unused_self)]
-    fn with_identity(&self, options: RootOpenOptions) -> RootOpenOptions {
-        options
     }
 
     /// The key a `.vdbx` database this configuration creates is encrypted

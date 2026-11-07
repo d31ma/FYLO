@@ -39,13 +39,13 @@ caller cannot skip: the operating system's secret store and cryptography
 - The private key never enters a database. A process names it by a **key
   reference**:
 
-| Reference | Private key | Platforms |
-| --- | --- | --- |
-| `file:<path>` | PKCS#8 PEM file, mode `0400` or `0600`, owned by the process's user. FYLO refuses a file any other user can read or write | Everywhere; development and CI |
-| `keychain:<label>` | A macOS keychain item; `FYLO_KEYCHAIN` names a keychain file to use instead of the default keychain | macOS |
-| `cng:<name>` | A Windows CNG key, DPAPI-protected | Windows |
-| `creds:<name>` | A `systemd-creds` credential handed to one unit | Linux services |
-| `webcrypto:<name>` | A non-extractable `CryptoKey` in the origin's IndexedDB | Browser |
+| Reference          | Private key                                                                                                               | Platforms                      |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------- | ------------------------------ |
+| `file:<path>`      | PKCS#8 PEM file, mode `0400` or `0600`, owned by the process's user. FYLO refuses a file any other user can read or write | Everywhere; development and CI |
+| `keychain:<label>` | A macOS keychain item; `FYLO_KEYCHAIN` names a keychain file to use instead of the default keychain                       | macOS                          |
+| `cng:<name>`       | A Windows CNG key, DPAPI-protected                                                                                        | Windows                        |
+| `creds:<name>`     | A `systemd-creds` credential handed to one unit                                                                           | Linux services                 |
+| `webcrypto:<name>` | A non-extractable `CryptoKey` in the origin's IndexedDB                                                                   | Browser                        |
 
 A reference to a store the platform does not have fails with
 `EIDENTITY_UNSUPPORTED`. `fylo identity create --store <reference>` makes a
@@ -69,19 +69,19 @@ recommendation, were proposed as the most conservative option consistent with
 deny by default and **decided** by the user on 2026-11-07 exactly as
 proposed. The ADR itself stays Proposed until phase 3 starts.
 
-| | Question | Proposed decision | Reason |
-| --- | --- | --- | --- |
-| Q1 | Per application only? | **Yes.** POSTIX (per-record `uid`/`gid`/`mode`, `.as()`, `--uid`, `--groups`, the machine `access` field) is removed in the breaking release; end-user rules stay in the application | A per-record rule is only a claim FYLO's own code checks, which the caller can skip |
-| Q2 | Protected by default? | **Yes.** A new `.vdbx` is protected unless created with `--unprotected`; directory roots stay as an unprotected layout for development and tooling. **Decided** (the user, 2026-11-07) | Deny by default; a directory root leaks indexed values through file names (study 2.5) and cannot be protected |
-| Q3 | Key storage per platform | **Accepted for version 1, documented:** same-user malware on Linux desktops and unpackaged Windows apps can take a software key. Servers are told to run each application under its own OS user (`creds:` on Linux). The option D helper is not built. **Decided** (the user, 2026-11-07) | The study's threat model (section 6) shows no in-process design does better there; option D brings back a privileged subprocess |
-| Q4 | Write implies read? | **Yes** | A writer must read the collection's directory and index to append and maintain indexes |
-| Q5 | Admin implies read and write? | **Yes** | Granting `read` to a new identity means wrapping a key the admin must hold |
-| Q6 | Revocation | **Forward-only by default** (a new key epoch); `fylo rekey --collection` rewrites old frames on request | Rewriting at once would make a revoke as slow as a full pack on a large collection |
-| Q7 | Trust anchor | **Pinning required.** An open of a protected database without a pinned anchor fails with `EPOLICY`, unless the caller opts in to trust on first use, which warns. **Decided** (the user, 2026-11-07) | Without a pin, whoever can write the file can replace the database with one carrying their own anchor |
-| Q8 | Hardware keys | **Later** (phase 8); version 1 uses software keys in the OS secret stores | Hardware keys take milliseconds per operation and differ per platform |
-| Q9 | `fylo link` | **Yes:** `fylo.identity` and `fylo.trustAnchor` in `application.json`, or `FYLO_IDENTITY` and `FYLO_TRUST_ANCHOR` | Turso's `Database::open` carries only a path |
-| Q10 | The browser | **Yes:** the origin is the boundary, plus an optional `webcrypto:` identity for files moved between origins | OPFS is already private to the origin |
-| Q11 | Buckets and the queue | **They wait in protected databases:** a protected `.vdbx` refuses them until `.vdbx` holds them; they stay available in unprotected roots. **Decided** (the user, 2026-11-07) | Shipping them unprotected beside protected collections would be an allow by default |
+|     | Question                      | Proposed decision                                                                                                                                                                                                                                                                         | Reason                                                                                                                          |
+| --- | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| Q1  | Per application only?         | **Yes.** POSTIX (per-record `uid`/`gid`/`mode`, `.as()`, `--uid`, `--groups`, the machine `access` field) is removed in the breaking release; end-user rules stay in the application                                                                                                      | A per-record rule is only a claim FYLO's own code checks, which the caller can skip                                             |
+| Q2  | Protected by default?         | **Yes.** A new `.vdbx` is protected unless created with `--unprotected`; directory roots stay as an unprotected layout for development and tooling. **Decided** (the user, 2026-11-07)                                                                                                    | Deny by default; a directory root leaks indexed values through file names (study 2.5) and cannot be protected                   |
+| Q3  | Key storage per platform      | **Accepted for version 1, documented:** same-user malware on Linux desktops and unpackaged Windows apps can take a software key. Servers are told to run each application under its own OS user (`creds:` on Linux). The option D helper is not built. **Decided** (the user, 2026-11-07) | The study's threat model (section 6) shows no in-process design does better there; option D brings back a privileged subprocess |
+| Q4  | Write implies read?           | **Yes**                                                                                                                                                                                                                                                                                   | A writer must read the collection's directory and index to append and maintain indexes                                          |
+| Q5  | Admin implies read and write? | **Yes**                                                                                                                                                                                                                                                                                   | Granting `read` to a new identity means wrapping a key the admin must hold                                                      |
+| Q6  | Revocation                    | **Forward-only by default** (a new key epoch); `fylo rekey --collection` rewrites old frames on request                                                                                                                                                                                   | Rewriting at once would make a revoke as slow as a full pack on a large collection                                              |
+| Q7  | Trust anchor                  | **Pinning required.** An open of a protected database without a pinned anchor fails with `EPOLICY`, unless the caller opts in to trust on first use, which warns. **Decided** (the user, 2026-11-07)                                                                                      | Without a pin, whoever can write the file can replace the database with one carrying their own anchor                           |
+| Q8  | Hardware keys                 | **Later** (phase 8); version 1 uses software keys in the OS secret stores                                                                                                                                                                                                                 | Hardware keys take milliseconds per operation and differ per platform                                                           |
+| Q9  | `fylo link`                   | **Yes:** `fylo.identity` and `fylo.trustAnchor` in `application.json`, or `FYLO_IDENTITY` and `FYLO_TRUST_ANCHOR`                                                                                                                                                                         | Turso's `Database::open` carries only a path                                                                                    |
+| Q10 | The browser                   | **Yes:** the origin is the boundary, plus an optional `webcrypto:` identity for files moved between origins                                                                                                                                                                               | OPFS is already private to the origin                                                                                           |
+| Q11 | Buckets and the queue         | **They wait in protected databases:** a protected `.vdbx` refuses them until `.vdbx` holds them; they stay available in unprotected roots. **Decided** (the user, 2026-11-07)                                                                                                             | Shipping them unprotected beside protected collections would be an allow by default                                             |
 
 ### 4. Protected files (phase 3)
 
@@ -229,32 +229,57 @@ What a protected `.vdbx` file holds, in addition to ADR 0016:
   `crates/fylo-identity/src/cng_key_store.rs` is that crate's one `unsafe`
   module (`docs/security/unsafe-inventory.md`). Checked for the Windows
   target; it runs only on the `windows-vm` lane.
-- **Browser and Explorer (phase 5, decision P5-3).** The browser build
-  keeps P-256, ECDSA and HPKE out of `fylo-browser.wasm` and opens a
-  protected file locked; it creates no database through the machine
-  protocol. Explorer shows such a file as protected and locked, with a note
-  that its collections and documents stay sealed. A `webcrypto:` identity
-  is not built yet: WebCrypto is asynchronous, while the engine signs and
-  checks each record synchronously inside a frame codec. The proposed way
-  (a decision for the user) is a crypto bridge Worker over a
-  `SharedArrayBuffer`, the pattern the OPFS bridge already uses, so the
-  engine blocks on `Atomics.wait` while the bridge calls WebCrypto with the
-  origin's non-extractable key. The user chose that way (P5-5).
+- **Browser and Explorer (phase 5, decisions P5-3 and P5-5).** The
+  browser build keeps P-256, ECDSA and HPKE out of `fylo-browser.wasm`. A
+  `webcrypto:<name>` identity is one P-256 key pair kept in the origin's
+  IndexedDB as two non-extractable `CryptoKey`s (ECDSA to sign, ECDH to
+  open wraps), made by `createWebCryptoIdentity`; `describeIdentity` gives
+  its `fpk1:` public key, which an admin grants, and its `fid1:`
+  identifier. WebCrypto is asynchronous, while the engine signs and checks
+  each record synchronously inside its frame codec, so the host table
+  carries five identity calls (public key, sign, verify, unwrap, wrap; host
+  ABI 2) and the single-file Worker answers them through a crypto bridge
+  Worker (`dist-web/identity-worker.js`): the engine blocks on
+  `Atomics.wait` over a `SharedArrayBuffer` while the bridge runs WebCrypto,
+  the pattern of the OPFS bridge. HPKE (RFC 9180 base mode, DHKEM P-256,
+  HKDF-SHA256, AES-256-GCM) is written in JavaScript over WebCrypto and
+  opens native wraps, as native opens its wraps. The page passes
+  `identity: { name, workerUrl, trustAnchor }` when it opens a database,
+  and the module takes it through `fylo_configure` (module ABI 2). The
+  browser gets full read and write, and an admin identity can create
+  collections; opening as an identity needs a cross-origin isolated page
+  (`ENOISOLATION` otherwise). Without an identity a protected file opens
+  locked (`ENOIDENTITY`), and the browser still creates no database through
+  the machine protocol. Explorer shows such a file as protected and
+  locked, with a note that its collections and documents stay sealed.
+- **The browser engine's size (phase 5).** The access code in
+  `fylo-browser.wasm` (policy, grants, signed records, key epochs, and the
+  identity paths `fylo_configure` makes reachable) measured about 125 KB.
+  Half the overshoot first blamed on `Session::dispatch_once` was a
+  measuring error: mangled names carry per-build crate hashes, and with
+  them stripped that function did not grow. The growth was the access code
+  itself plus about 30 KB of sort and `BTreeMap` copies per element type,
+  which building maps by insertion, `sort_unstable` and one
+  `&dyn Fn` filter removed. What remains is the identity wiring, so the raw
+  budget in `scripts/verify-browser-wasm-budgets.mjs` rose from 2,432 KiB
+  to 2,448 KiB (2,498,895 bytes at the change); the gzip budget (800 KiB)
+  did not change, and the module is 804,949 bytes gzipped. The user had
+  agreed to about 20 KB if the module was still over after one more cut.
 
 ### 5. Decisions for phase 5 (the user, 2026-11-07)
 
 Each was decided as recommended. Phase 5 starts when the user says so.
 
-| | Question | Decision | Reason |
-| --- | --- | --- | --- |
-| P5-1 | What does the machine protocol do with a missing `.vdbx`? | Create it **protected**, with the configured identity as its admin and trust anchor; with no identity configured, refuse with `ENOIDENTITY` | Deny by default (Q2): a database no one is named for is not created open |
-| P5-2 | How does `cng:` reach Windows' key APIs? | An **exception to ADR 0004's no-`unsafe` rule** for one small, reviewed FYLO module over Microsoft's `windows-sys` bindings, recorded in `docs/security/unsafe-inventory.md`; the rest of FYLO stays `unsafe`-free | CNG is a C API with no safe binding of its own; one owned, reviewed module is easier to audit than a third-party wrapper |
-| P5-3 | How does the browser hold a `webcrypto:` identity? | The **browser's own WebCrypto**, called from FYLO's JavaScript adapter (non-extractable P-256 keys in the origin's IndexedDB); the Wasm engine keeps no P-256, ECDSA or HPKE code | Putting the Rust crypto in `fylo-browser.wasm` adds about 190 KB and breaks its size budget (section 4) |
-| P5-4 | Session certificates | **Wait for phase 8** (hardware keys) | With software keys they cost the same per signature and need storage (section 4, "Signed records") |
-| P5-5 | How does the browser engine sign and check records with a `webcrypto:` identity? | A **crypto bridge Worker** calls WebCrypto with the origin's non-extractable key, and the engine waits on a `SharedArrayBuffer` with `Atomics.wait`, as the OPFS bridge does; the browser gets full read and write, and the engine stays within its size budget | WebCrypto is asynchronous, and the engine signs and checks each record synchronously |
-| P5-6 | SQL over `.vdbx` | **Built before phase 6**, protected and unprotected, so Turso-SDK apps reached through `fylo link` open protected databases | `fylo link` is how most applications reach FYLO (ADR 0019) |
-| P5-7 | Run `cng:` on Windows | **Yes**, on the `windows-vm` lane under the shared VM lock, then stop the VMs | It is the only way to run the one `unsafe` module |
-| P5-8 | Phase 6: `fylo pack --protect` and per-record access descriptors | **Refuse** unless `--drop-record-access` or `--keep-record-access-as-metadata` is given | A silent drop would lose access rules the old root enforced |
+|      | Question                                                                         | Decision                                                                                                                                                                                                                                                        | Reason                                                                                                                   |
+| ---- | -------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| P5-1 | What does the machine protocol do with a missing `.vdbx`?                        | Create it **protected**, with the configured identity as its admin and trust anchor; with no identity configured, refuse with `ENOIDENTITY`                                                                                                                     | Deny by default (Q2): a database no one is named for is not created open                                                 |
+| P5-2 | How does `cng:` reach Windows' key APIs?                                         | An **exception to ADR 0004's no-`unsafe` rule** for one small, reviewed FYLO module over Microsoft's `windows-sys` bindings, recorded in `docs/security/unsafe-inventory.md`; the rest of FYLO stays `unsafe`-free                                              | CNG is a C API with no safe binding of its own; one owned, reviewed module is easier to audit than a third-party wrapper |
+| P5-3 | How does the browser hold a `webcrypto:` identity?                               | The **browser's own WebCrypto**, called from FYLO's JavaScript adapter (non-extractable P-256 keys in the origin's IndexedDB); the Wasm engine keeps no P-256, ECDSA or HPKE code                                                                               | Putting the Rust crypto in `fylo-browser.wasm` adds about 190 KB and breaks its size budget (section 4)                  |
+| P5-4 | Session certificates                                                             | **Wait for phase 8** (hardware keys)                                                                                                                                                                                                                            | With software keys they cost the same per signature and need storage (section 4, "Signed records")                       |
+| P5-5 | How does the browser engine sign and check records with a `webcrypto:` identity? | A **crypto bridge Worker** calls WebCrypto with the origin's non-extractable key, and the engine waits on a `SharedArrayBuffer` with `Atomics.wait`, as the OPFS bridge does; the browser gets full read and write, and the engine stays within its size budget | WebCrypto is asynchronous, and the engine signs and checks each record synchronously                                     |
+| P5-6 | SQL over `.vdbx`                                                                 | **Built before phase 6**, protected and unprotected, so Turso-SDK apps reached through `fylo link` open protected databases                                                                                                                                     | `fylo link` is how most applications reach FYLO (ADR 0019)                                                               |
+| P5-7 | Run `cng:` on Windows                                                            | **Yes**, on the `windows-vm` lane under the shared VM lock, then stop the VMs                                                                                                                                                                                   | It is the only way to run the one `unsafe` module                                                                        |
+| P5-8 | Phase 6: `fylo pack --protect` and per-record access descriptors                 | **Refuse** unless `--drop-record-access` or `--keep-record-access-as-metadata` is given                                                                                                                                                                         | A silent drop would lose access rules the old root enforced                                                              |
 
 Also settled: POSTIX (`.as()`, `--uid`, `--groups`, the per-request
 `access` field) goes in the same breaking release (Q1); `fylo rekey`,

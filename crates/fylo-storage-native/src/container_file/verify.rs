@@ -710,7 +710,6 @@ impl ContainerFile {
     /// In a protected file opened with an identity (ADR 0021), report a
     /// frame that is not signed by an identity that could write its
     /// collection there. Without an identity the signatures are not checked.
-    #[cfg(not(target_family = "wasm"))]
     fn verify_signature(&self, owner: u32, extent: u64, stored: &[u8], findings: &mut Findings) {
         let Some(access) = self.database_access() else {
             return;
@@ -725,17 +724,6 @@ impl ContainerFile {
                 ),
             );
         }
-    }
-
-    #[cfg(target_family = "wasm")]
-    #[allow(clippy::unused_self)]
-    fn verify_signature(
-        &self,
-        _owner: u32,
-        _extent: u64,
-        _stored: &[u8],
-        _findings: &mut Findings,
-    ) {
     }
 
     /// SHA-256 of `length` payload bytes laid across consecutive extents

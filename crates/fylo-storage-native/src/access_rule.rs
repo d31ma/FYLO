@@ -1,11 +1,10 @@
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::AccessAction;
 
 /// One allow rule of a policy: `identity` may take `actions` on
 /// `resources` (`database`, `collection:*` or `collection:<name>`).
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct AccessRule {
     /// The rule's name, which `fylo access revoke` takes.
     pub id: String,
@@ -18,6 +17,23 @@ pub struct AccessRule {
 }
 
 impl AccessRule {
+    /// A rule from the policy's JSON.
+    pub(crate) fn from_value(value: &serde_json::Value) -> Result<AccessRule, String> {
+        use crate::access_json::AccessJson;
+        let map = AccessJson::object(value, "a rule")?;
+        AccessJson::known_keys(map, &["id", "identity", "actions", "resources"], "a rule")?;
+        let actions = AccessJson::strings(map, "actions")?
+            .iter()
+            .map(|action| AccessAction::from_name(action))
+            .collect::<Result<_, _>>()?;
+        Ok(AccessRule {
+            id: AccessJson::string(map, "id")?,
+            identity: AccessJson::string(map, "identity")?,
+            actions,
+            resources: AccessJson::strings(map, "resources")?,
+        })
+    }
+
     const DATABASE: &'static str = "database";
     const EVERY_COLLECTION: &'static str = "collection:*";
     const COLLECTION_PREFIX: &'static str = "collection:";

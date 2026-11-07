@@ -44,6 +44,25 @@ test.beforeAll(async () => {
             data: { name, team: index % 2 === 0 ? 'red' : 'blue' }
         }))
     ]
+    // The machine protocol creates only protected databases (ADR 0021,
+    // decision P5-1), so the fixture is created unprotected first.
+    execFileSync(
+        'cargo',
+        [
+            'run',
+            '--quiet',
+            '--locked',
+            '-p',
+            'fylo-cli',
+            '--bin',
+            'fylo-rust',
+            '--',
+            'create',
+            'target/browser-fixtures/documents.vdbx',
+            '--unprotected'
+        ],
+        { stdio: ['ignore', 'ignore', 'inherit'] }
+    )
     execFileSync(
         'cargo',
         [

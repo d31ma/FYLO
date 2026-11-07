@@ -128,10 +128,10 @@ impl ContainerDatabase {
         }))
     }
 
-    #[cfg(not(target_family = "wasm"))]
     /// Unlock a protected database as `identity`; without one it stays
     /// locked. Returns whether it is locked. One process opens a database as
     /// one identity: a second identity is refused.
+    #[inline(never)]
     fn unlock_protected(
         open: &mut ContainerOpenFile,
         identity: Option<&DatabaseIdentity>,
@@ -147,7 +147,6 @@ impl ContainerDatabase {
         Ok(false)
     }
 
-    #[cfg(not(target_family = "wasm"))]
     fn require_same_identity(
         held: &fylo_identity::IdentityId,
         identity: &DatabaseIdentity,
@@ -163,17 +162,6 @@ impl ContainerDatabase {
         ))
     }
 
-    /// The browser build has no identities (ADR 0021, phase 5): a protected
-    /// database stays locked.
-    #[cfg(target_family = "wasm")]
-    #[allow(clippy::unnecessary_wraps)]
-    fn unlock_protected(
-        _open: &mut ContainerOpenFile,
-        _identity: Option<&DatabaseIdentity>,
-    ) -> Result<bool, NativeStorageError> {
-        Ok(true)
-    }
-
     /// Create an empty database at `path`, which must not exist, and make
     /// its name durable. With `key` it is encrypted (ADR 0016 section 9);
     /// without, plain. What this process kept of a file of the same name,
@@ -187,7 +175,6 @@ impl ContainerDatabase {
         Self::settle_created(path)
     }
 
-    #[cfg(not(target_family = "wasm"))]
     /// Create an empty protected database at `path`, which must not exist,
     /// with `admin` as its admin and trust anchor (ADR 0021), and make its
     /// name durable.
@@ -252,7 +239,6 @@ impl ContainerDatabase {
         self.protected
     }
 
-    #[cfg(not(target_family = "wasm"))]
     /// Change a protected database's access document under the allocation
     /// lock: `prepare` makes the change from the newest state, which is
     /// written to the access slots, flushed, taken in, and checkpointed, so
@@ -278,7 +264,6 @@ impl ContainerDatabase {
 
     /// The access this handle opened a protected database with; `None` for
     /// one opened without an identity, or another database.
-    #[cfg(not(target_family = "wasm"))]
     pub(crate) fn access(&self) -> Option<Arc<crate::DatabaseAccess>> {
         if self.locked {
             return None;
@@ -469,7 +454,6 @@ impl ContainerDatabase {
 
     /// The names a protected database's identity has a grant on: an admin
     /// sees every collection, another identity only those a rule covers.
-    #[cfg(not(target_family = "wasm"))]
     fn granted_names(open: &ContainerOpenFile, names: Vec<String>) -> Vec<String> {
         let Some(grants) = open.database_access().map(|access| access.grants()) else {
             return names;
@@ -478,11 +462,6 @@ impl ContainerDatabase {
             .into_iter()
             .filter(|name| grants.is_admin() || grants.on_collection(name).is_some())
             .collect()
-    }
-
-    #[cfg(target_family = "wasm")]
-    fn granted_names(_open: &ContainerOpenFile, names: Vec<String>) -> Vec<String> {
-        names
     }
 
     /// Add a collection with catalog descriptor `descriptor`, and

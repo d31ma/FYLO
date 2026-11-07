@@ -2,9 +2,12 @@ use std::fmt;
 use std::path::PathBuf;
 use std::str::FromStr;
 
+#[cfg(not(target_family = "wasm"))]
 use crate::file_key_store::FileKeyStore;
 use crate::identity_error::IdentityError;
+#[cfg(not(target_family = "wasm"))]
 use crate::key_store::KeyStore;
+#[cfg(not(target_family = "wasm"))]
 use crate::unsupported_key_store::UnsupportedKeyStore;
 
 /// Where an identity's private key lives, named without the key itself.
@@ -39,6 +42,7 @@ impl KeyReference {
         Self::from_parts(store, name)
     }
 
+    #[cfg(not(target_family = "wasm"))]
     pub(crate) fn store(&self) -> Box<dyn KeyStore> {
         match self {
             Self::File(path) => Box::new(FileKeyStore::new(path.clone())),
@@ -92,6 +96,7 @@ impl KeyReference {
         ))
     }
 
+    #[cfg(not(target_family = "wasm"))]
     #[cfg(target_os = "macos")]
     fn keychain_store(label: &str) -> Box<dyn KeyStore> {
         Box::new(crate::keychain_key_store::KeychainKeyStore::new(
@@ -99,6 +104,7 @@ impl KeyReference {
         ))
     }
 
+    #[cfg(not(target_family = "wasm"))]
     #[cfg(not(target_os = "macos"))]
     fn keychain_store(label: &str) -> Box<dyn KeyStore> {
         Box::new(UnsupportedKeyStore::new(format!(
@@ -106,6 +112,7 @@ impl KeyReference {
         )))
     }
 
+    #[cfg(not(target_family = "wasm"))]
     #[cfg(target_os = "linux")]
     fn credential_store(name: &str) -> Box<dyn KeyStore> {
         Box::new(crate::credential_key_store::CredentialKeyStore::new(
@@ -113,6 +120,7 @@ impl KeyReference {
         ))
     }
 
+    #[cfg(not(target_family = "wasm"))]
     #[cfg(not(target_os = "linux"))]
     fn credential_store(name: &str) -> Box<dyn KeyStore> {
         Box::new(UnsupportedKeyStore::new(format!(
@@ -120,11 +128,13 @@ impl KeyReference {
         )))
     }
 
+    #[cfg(not(target_family = "wasm"))]
     #[cfg(windows)]
     fn cng_store(name: &str) -> Box<dyn KeyStore> {
         Box::new(crate::cng_key_store::CngKeyStore::new(name.to_owned()))
     }
 
+    #[cfg(not(target_family = "wasm"))]
     #[cfg(not(windows))]
     fn cng_store(name: &str) -> Box<dyn KeyStore> {
         Box::new(UnsupportedKeyStore::new(format!(

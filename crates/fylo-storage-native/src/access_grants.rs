@@ -20,13 +20,29 @@ impl AccessGrants {
         let admin = rules
             .iter()
             .any(|rule| rule.allows_on_database(AccessAction::Admin));
-        let collections = names
-            .iter()
-            .filter_map(|name| {
-                Self::strongest(&rules, name).map(|action| ((*name).to_owned(), action))
-            })
-            .collect();
+        let collections = Self::strongest_by_name(&rules, names);
         AccessGrants { admin, collections }
+    }
+
+    fn strongest_by_name(
+        rules: &[&crate::AccessRule],
+        names: &[&str],
+    ) -> BTreeMap<String, AccessAction> {
+        let mut collections = BTreeMap::new();
+        for name in names {
+            Self::insert_strongest(&mut collections, rules, name);
+        }
+        collections
+    }
+
+    fn insert_strongest(
+        collections: &mut BTreeMap<String, AccessAction>,
+        rules: &[&crate::AccessRule],
+        name: &str,
+    ) {
+        if let Some(action) = Self::strongest(rules, name) {
+            collections.insert(name.to_owned(), action);
+        }
     }
 
     /// Whether any rule names the identity.

@@ -12,12 +12,14 @@ use std::io::Cursor;
 
 use std::cell::RefCell;
 
-use fylo_machine::{ApplicationConfig, FrameLimits, FrameSession, RootConfig};
+use fylo_machine::{ApplicationConfig, FrameLimits, FrameSession};
 use fylo_vfs::{HOST_ABI_VERSION, HostStat, HostVfs, install_host};
+
+use crate::browser_settings::BrowserSettings;
 
 /// ABI this module implements. A host that does not recognize it must refuse
 /// to load the module rather than guess at the layout.
-pub const MODULE_ABI_VERSION: u32 = 1;
+pub const MODULE_ABI_VERSION: u32 = 2;
 
 // The host supplies the filesystem. Names match `HostVfs` field for field, so
 // a mismatch is a link error at instantiation rather than a wrong call later.
@@ -58,6 +60,31 @@ unsafe extern "C" {
     ) -> i32;
     fn write_attrs(path: *const u8, path_len: usize, manifest: *const u8, len: usize) -> i32;
     fn log(message: *const u8, len: usize);
+    fn identity_public(out: *mut u8) -> i32;
+    fn identity_sign(message: *const u8, len: usize, out: *mut u8) -> i32;
+    fn identity_verify(
+        public: *const u8,
+        message: *const u8,
+        len: usize,
+        signature: *const u8,
+    ) -> i32;
+    fn identity_unwrap(
+        info: *const u8,
+        info_len: usize,
+        wrapped: *const u8,
+        wrapped_len: usize,
+        out: *mut u8,
+    ) -> i32;
+    fn identity_wrap(
+        public: *const u8,
+        info: *const u8,
+        info_len: usize,
+        secret: *const u8,
+        secret_len: usize,
+        out: *mut u8,
+        capacity: usize,
+        needed: *mut usize,
+    ) -> i32;
 }
 
 /// Route `getrandom` to the host table.
@@ -164,7 +191,38 @@ pub extern "C" fn fylo_exec(request: *const u8, len: usize) -> u64 {
     pack(output)
 }
 
+/// Set the engine's settings (see [`BrowserSettings`]) for the batches
+/// after this one, and end the current session so the next batch opens its
+/// root with them.
+///
+/// Returns zero when the settings were accepted. Otherwise the settings stay
+/// as they were and the return addresses why, as UTF-8 text packed like
+/// [`fylo_exec`]'s response, which the host must release with [`fylo_free`].
+#[unsafe(no_mangle)]
+pub extern "C" fn fylo_configure(request: *const u8, len: usize) -> u64 {
+    if install().is_err() {
+        return pack(b"host filesystem table was rejected".to_vec());
+    }
+    let input = if request.is_null() || len == 0 {
+        Vec::new()
+    } else {
+        // SAFETY: the host wrote `len` bytes into a buffer from `fylo_alloc`
+        // and does not mutate it for the duration of this call.
+        unsafe { std::slice::from_raw_parts(request, len) }.to_vec()
+    };
+    match BrowserSettings::parse(&input) {
+        Ok(config) => {
+            CONFIG.with(|cell| *cell.borrow_mut() = config);
+            SESSION.with(|cell| *cell.borrow_mut() = None);
+            0
+        }
+        Err(message) => pack(message.into_bytes()),
+    }
+}
+
 thread_local! {
+    /// The settings [`fylo_configure`] last accepted.
+    static CONFIG: RefCell<ApplicationConfig> = RefCell::new(BrowserSettings::plain());
     /// The module's one machine session. It outlives each `fylo_exec` call so
     /// that a query cursor handed out in one batch still pages in the next,
     /// which is the `persistent-process` scope the handshake advertises.
@@ -174,13 +232,8 @@ thread_local! {
 /// A browser has no environment, so the knobs are explicit. Frame limits are
 /// the published defaults; the host bounds its own buffers.
 fn open_session() -> FrameSession {
-    FrameSession::embedded(
-        ApplicationConfig {
-            storage: RootConfig::default(),
-            ..ApplicationConfig::default()
-        },
-        FrameLimits::default(),
-    )
+    let config = CONFIG.with(|cell| cell.borrow().clone());
+    FrameSession::embedded(config, FrameLimits::default())
 }
 
 /// Hand a buffer to the host as a packed pointer and length.
@@ -226,6 +279,11 @@ fn install() -> Result<(), &'static str> {
         read_attrs,
         write_attrs,
         log,
+        identity_public,
+        identity_sign,
+        identity_verify,
+        identity_unwrap,
+        identity_wrap,
     }) {
         Ok(()) => Ok(()),
         Err(_) if fylo_vfs::host_installed() => Ok(()),
