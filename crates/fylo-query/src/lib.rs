@@ -11,13 +11,17 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 mod index;
+mod index_key_range;
 mod join;
+mod numeric_range;
 mod sql;
 
 pub use index::{
     IndexLookupValue, equality_candidate_prefixes, equality_prefix, index_entries_for_document,
 };
+pub use index_key_range::IndexKeyRange;
 pub use join::{JoinComparator, JoinMode, JoinSpec, value_by_path};
+pub use numeric_range::NumericRange;
 pub use sql::{AccessPath, SqlOperation, SqlPlan, prepare_sql};
 
 /// Current portable query contract.
@@ -242,9 +246,41 @@ impl IndexSnapshot {
         Ok(output)
     }
 
+    /// Document identifiers of every key in `range`, each once, in key order.
+    ///
+    /// # Errors
+    ///
+    /// Returns a stable [`QueryError`] when the match count exceeds its limit.
+    pub fn scan_range(
+        &self,
+        range: &IndexKeyRange,
+        limits: QueryLimits,
+    ) -> Result<Vec<Vec<u8>>, QueryError> {
+        let cursor = find_first_key_at_or_after(&self.bytes, range.start());
+        let keys = KeyFilter {
+            keep_going: &|key| range.is_before_end(key),
+            include: &|_| true,
+        };
+        self.collect_identifiers(cursor, &keys, limits)
+    }
+
     fn scan_one(&self, query: &ScanQuery, limits: QueryLimits) -> Result<Vec<Vec<u8>>, QueryError> {
         let prefix = query.prefix.as_bytes();
-        let mut cursor = find_first_key_at_or_after(&self.bytes, prefix);
+        let cursor = find_first_key_at_or_after(&self.bytes, prefix);
+        let keys = KeyFilter {
+            keep_going: &|key| key.starts_with(prefix),
+            include: &|key| include_key_in_range(key, query.range.as_ref()),
+        };
+        self.collect_identifiers(cursor, &keys, limits)
+    }
+
+    /// Identifiers of the included keys from `cursor` on, until a key ends the run.
+    fn collect_identifiers(
+        &self,
+        mut cursor: usize,
+        keys: &KeyFilter<'_>,
+        limits: QueryLimits,
+    ) -> Result<Vec<Vec<u8>>, QueryError> {
         let mut matches = Vec::new();
         let mut seen = HashSet::new();
         while cursor < self.bytes.len() {
@@ -254,10 +290,10 @@ impl IndexSnapshot {
                 .unwrap_or(self.bytes.len() - cursor);
             let end = cursor + relative_end;
             let key = &self.bytes[cursor..end];
-            if !key.starts_with(prefix) {
+            if !(keys.keep_going)(key) {
                 break;
             }
-            if include_key_in_range(key, query.range.as_ref())
+            if (keys.include)(key)
                 && let Some(separator) = key.iter().rposition(|byte| *byte == b'/')
             {
                 let id = key[separator + 1..].to_vec();
@@ -275,6 +311,12 @@ impl IndexSnapshot {
         }
         Ok(matches)
     }
+}
+
+/// Which keys of a sorted run a scan reads, and which of those it returns.
+struct KeyFilter<'a> {
+    keep_going: &'a dyn Fn(&[u8]) -> bool,
+    include: &'a dyn Fn(&[u8]) -> bool,
 }
 
 /// Parse the WebAssembly/FFI JSON query representation with bounded terms.

@@ -1,19 +1,28 @@
 use std::collections::BTreeSet;
 use std::string::FromUtf8Error;
 
-use fylo_query::{IndexSnapshot, QueryLimits, ScanQuery, equality_candidate_prefixes};
+use fylo_query::{
+    IndexKeyRange, IndexSnapshot, NumericRange, QueryLimits, equality_candidate_prefixes,
+};
 use serde_json::{Map, Value};
 
 use crate::encryption::is_encrypted_field;
 use crate::{EngineError, EngineErrorCode};
 
-pub(super) struct EqualityOperation {
-    fields: Vec<Vec<String>>,
+/// One `$ops` entry's candidates: for each field the index can answer, the
+/// union of its key ranges, intersected across those fields.
+///
+/// `$eq` reads the field's equality keys and every numeric key its value
+/// coerces to. `$gt`, `$gte`, `$lt` and `$lte` read one run of the field's
+/// sortable numeric keys. Other operators, and fields the index cannot
+/// answer, are left to the predicate.
+pub(super) struct IndexOperation {
+    fields: Vec<Vec<IndexKeyRange>>,
     /// The top-level field of every path the index is asked about.
     names: Vec<String>,
 }
 
-impl EqualityOperation {
+impl IndexOperation {
     pub(super) fn new(operation: &Map<String, Value>, encrypted: &[String]) -> Option<Self> {
         let fields = Self::fields(operation, encrypted);
         let names = operation
@@ -33,24 +42,49 @@ impl EqualityOperation {
         self.names.iter().map(String::as_str)
     }
 
+    /// Every key range the operation reads.
+    pub(super) fn key_ranges(&self) -> impl Iterator<Item = &IndexKeyRange> {
+        self.fields.iter().flatten()
+    }
+
     pub(super) fn scan(&self, snapshot: &IndexSnapshot) -> Result<BTreeSet<String>, EngineError> {
         let candidates = self.intersect_fields(snapshot)?;
         Ok(candidates.unwrap_or_default())
     }
 
-    fn fields(operation: &Map<String, Value>, encrypted: &[String]) -> Vec<Vec<String>> {
+    fn fields(operation: &Map<String, Value>, encrypted: &[String]) -> Vec<Vec<IndexKeyRange>> {
         let mut fields = Vec::new();
         for (field, operand) in operation {
-            fields.extend(Self::prefixes(field, operand, encrypted));
+            fields.extend(Self::field_ranges(field, operand, encrypted));
         }
         fields
     }
 
-    fn prefixes(field: &str, operand: &Value, encrypted: &[String]) -> Option<Vec<String>> {
+    fn field_ranges(
+        field: &str,
+        operand: &Value,
+        encrypted: &[String],
+    ) -> Option<Vec<IndexKeyRange>> {
         let path = Self::normalize_path(field);
         Self::require_plaintext(&path, encrypted)?;
-        let expected = operand.as_object()?.get("$eq")?;
-        equality_candidate_prefixes(&path, expected)
+        let operators = operand.as_object()?;
+        Self::equality_ranges(&path, operators).or_else(|| Self::numeric_ranges(&path, operators))
+    }
+
+    fn equality_ranges(path: &str, operators: &Map<String, Value>) -> Option<Vec<IndexKeyRange>> {
+        let expected = operators.get("$eq")?;
+        let prefixes = equality_candidate_prefixes(path, expected)?;
+        Some(
+            prefixes
+                .iter()
+                .map(|prefix| IndexKeyRange::prefix(prefix))
+                .collect(),
+        )
+    }
+
+    fn numeric_ranges(path: &str, operators: &Map<String, Value>) -> Option<Vec<IndexKeyRange>> {
+        let range = NumericRange::from_operators(operators)?;
+        Some(vec![range.key_range(path)])
     }
 
     fn normalize_path(field: &str) -> String {
@@ -68,7 +102,7 @@ impl EqualityOperation {
         Some(())
     }
 
-    fn nonempty(fields: Vec<Vec<String>>) -> Option<Self> {
+    fn nonempty(fields: Vec<Vec<IndexKeyRange>>) -> Option<Self> {
         if fields.is_empty() {
             return None;
         }
@@ -102,28 +136,22 @@ impl EqualityOperation {
 
     fn scan_field(
         snapshot: &IndexSnapshot,
-        prefixes: &[String],
+        ranges: &[IndexKeyRange],
     ) -> Result<BTreeSet<String>, EngineError> {
         let mut matched = BTreeSet::new();
-        for prefix in prefixes {
-            Self::scan_prefix(snapshot, prefix, &mut matched)?;
+        for range in ranges {
+            Self::scan_range(snapshot, range, &mut matched)?;
         }
         Ok(matched)
     }
 
-    fn scan_prefix(
+    fn scan_range(
         snapshot: &IndexSnapshot,
-        prefix: &str,
+        range: &IndexKeyRange,
         matched: &mut BTreeSet<String>,
     ) -> Result<(), EngineError> {
         let identifiers = snapshot
-            .scan(
-                &[ScanQuery {
-                    prefix: prefix.to_owned(),
-                    range: None,
-                }],
-                QueryLimits::default(),
-            )
+            .scan_range(range, QueryLimits::default())
             .map_err(EngineError::query)?;
         Self::insert_identifiers(matched, identifiers)
     }

@@ -369,3 +369,181 @@ fn rejects_corrupt_snapshot_before_replaying_repairing_wal() {
     );
     assert!(Arc::ptr_eq(&initial, &cache.load(inputs(bytes)).unwrap()));
 }
+
+struct GeneratedIndex {
+    snapshot: Vec<u8>,
+    log: Vec<u8>,
+}
+
+impl GeneratedIndex {
+    const FIELDS: u64 = 5;
+    const VALUES: u64 = 400;
+    const SNAPSHOT_KEYS: usize = 3000;
+    const LOG_LINES: usize = 900;
+    const EMPTY_LINE_EVERY: usize = 97;
+
+    fn new() -> Self {
+        let mut seed = 7_u64;
+        let mut keys = std::collections::BTreeSet::new();
+        while keys.len() < Self::SNAPSHOT_KEYS {
+            keys.insert(Self::key(&mut seed));
+        }
+        let mut snapshot = Vec::new();
+        for (position, key) in keys.iter().enumerate() {
+            if position % Self::EMPTY_LINE_EVERY == 0 {
+                snapshot.push(b'\n');
+            }
+            snapshot.extend_from_slice(key.as_bytes());
+            snapshot.push(b'\n');
+        }
+        snapshot.pop();
+        let existing: Vec<&String> = keys.iter().collect();
+        let mut log = Vec::new();
+        for line in 0..Self::LOG_LINES {
+            let index = Self::next(&mut seed, existing.len() as u64);
+            let removed = existing[usize::try_from(index).unwrap()];
+            let entry = match line % 3 {
+                0 => format!("-\t{removed}\n"),
+                1 => format!("+\t{}\n", Self::key(&mut seed)),
+                _ => format!("+\t{removed}\n"),
+            };
+            log.extend_from_slice(entry.as_bytes());
+        }
+        log.extend_from_slice(b"+\tf2/eq/00150/torn");
+        Self { snapshot, log }
+    }
+
+    fn next(seed: &mut u64, below: u64) -> u64 {
+        *seed = seed
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (*seed >> 33) % below
+    }
+
+    fn key(seed: &mut u64) -> String {
+        let field = Self::next(seed, Self::FIELDS);
+        let value = Self::next(seed, Self::VALUES);
+        let id = Self::next(seed, 1_000_000);
+        format!("f{field}/eq/{value:05}/4V{id:06}")
+    }
+
+    fn ranges() -> Vec<fylo_query::IndexKeyRange> {
+        use fylo_query::IndexKeyRange;
+        vec![
+            IndexKeyRange::prefix("f2/eq/00150/"),
+            IndexKeyRange::prefix("f0/eq/00000/"),
+            IndexKeyRange::prefix("f4/eq/00399/"),
+            IndexKeyRange::prefix("f1/"),
+            IndexKeyRange::prefix("f3/eq/001"),
+            IndexKeyRange::prefix(""),
+            IndexKeyRange::prefix("a"),
+            IndexKeyRange::prefix("zzz"),
+            IndexKeyRange::new(b"f2/eq/00100".to_vec(), b"f2/eq/00200".to_vec()),
+            IndexKeyRange::new(b"f2/eq/00200".to_vec(), b"f2/eq/00100".to_vec()),
+            IndexKeyRange::new(b"f0".to_vec(), Vec::new()),
+        ]
+    }
+}
+
+fn keys_in(snapshot: &[u8], ranges: &[fylo_query::IndexKeyRange]) -> Vec<Vec<u8>> {
+    snapshot
+        .split(|byte| *byte == b'\n')
+        .filter(|key| ranges.iter().any(|range| range.contains(key)))
+        .map(<[u8]>::to_vec)
+        .collect()
+}
+
+fn lines(snapshot: &[u8]) -> Vec<Vec<u8>> {
+    keys_in(snapshot, &[fylo_query::IndexKeyRange::prefix("")])
+        .into_iter()
+        .filter(|key| !key.is_empty())
+        .collect()
+}
+
+#[test]
+fn ranges_read_exactly_the_keys_the_full_index_holds_in_them() {
+    let fixture = IndexCacheFixture::new();
+    let collection = fixture.collection();
+    let generated = GeneratedIndex::new();
+    fixture.write(IndexCacheFixture::SNAPSHOT_FILE, &generated.snapshot);
+    fixture.write(IndexCacheFixture::LOG_FILE, &generated.log);
+    let full = collection.index_snapshot().unwrap();
+    let ranges = GeneratedIndex::ranges();
+    for range in &ranges {
+        let read = collection
+            .index_snapshot_in_ranges(std::slice::from_ref(range))
+            .unwrap();
+        let expected = keys_in(full.as_bytes(), std::slice::from_ref(range));
+        assert_eq!(
+            lines(read.as_bytes()),
+            lines(&expected.join(&b'\n')),
+            "{range:?}"
+        );
+    }
+    let several = &ranges[..4];
+    assert_eq!(
+        lines(
+            collection
+                .index_snapshot_in_ranges(several)
+                .unwrap()
+                .as_bytes()
+        ),
+        lines(&keys_in(full.as_bytes(), several).join(&b'\n'))
+    );
+}
+
+#[test]
+fn ranges_apply_the_log_without_a_snapshot_run() {
+    let fixture = IndexCacheFixture::new();
+    let collection = fixture.collection();
+    fixture.write(
+        IndexCacheFixture::SNAPSHOT_FILE,
+        IndexCacheFixture::SECOND_RECORD,
+    );
+    fixture.write(
+        IndexCacheFixture::LOG_FILE,
+        b"-\tname/eq/Bob/4VRNF52JPCO\n+\tname/eq/Eve/4VRNF52JPCO\n+\tname/eq/Ada/torn",
+    );
+    let names = [fylo_query::IndexKeyRange::prefix("name/eq/")];
+    assert_eq!(
+        collection
+            .index_snapshot_in_ranges(&names)
+            .unwrap()
+            .as_bytes(),
+        IndexCacheFixture::THIRD_RECORD
+    );
+    fs::remove_file(fixture.index(IndexCacheFixture::LOG_FILE)).unwrap();
+    assert_eq!(
+        collection
+            .index_snapshot_in_ranges(&names)
+            .unwrap()
+            .as_bytes(),
+        IndexCacheFixture::SECOND_RECORD
+    );
+}
+
+#[test]
+fn ranges_report_an_overlong_key_they_read() {
+    let fixture = IndexCacheFixture::new();
+    let collection = fixture.collection();
+    let mut snapshot = b"a/eq/1/id\nb/eq/".to_vec();
+    snapshot.extend(std::iter::repeat_n(b'x', 9000));
+    snapshot.extend_from_slice(b"/id\nc/eq/1/id\n");
+    fixture.write(IndexCacheFixture::SNAPSHOT_FILE, &snapshot);
+    let error = collection
+        .index_snapshot_in_ranges(&[fylo_query::IndexKeyRange::prefix("b/")])
+        .unwrap_err();
+    assert_eq!(error.code(), NativeStorageErrorCode::CorruptIndex);
+}
+
+#[test]
+fn ranges_report_a_missing_snapshot() {
+    let fixture = IndexCacheFixture::new();
+    let collection = fixture.collection();
+    fs::remove_file(fixture.index(IndexCacheFixture::SNAPSHOT_FILE)).unwrap();
+    assert!(
+        collection
+            .index_snapshot_in_ranges(&[fylo_query::IndexKeyRange::prefix("a/")])
+            .is_err()
+    );
+}

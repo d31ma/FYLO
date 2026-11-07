@@ -44,9 +44,15 @@ are parsed without retention. Concurrent readers can retain their own shared
 views, and parsing/read buffers are additional transient memory. This is not a
 64 MiB cap on total process memory.
 
-The existing owned `index_snapshot()` API remains available. Native query planning
-and explicit index scanning use a shared immutable snapshot to avoid cloning its
-bytes. No document bodies, authorization decisions, or query results are cached.
+The existing owned `index_snapshot()` API remains available. Explicit index
+scanning uses a shared immutable snapshot to avoid cloning its bytes. Native
+query planning does not load the whole index: `index_snapshot_in_ranges()`
+binary-searches `keys.snapshot` for the key ranges the plan reads (equality
+prefixes and runs of sortable numeric keys) and applies only the WAL lines in
+those ranges. It validates the keys it reads; `verify_index` checks the whole
+index. Before this, a collection whose index outgrew the 64 MiB admission
+budget below re-merged the whole index on every query (about 600 ms at 10,000
+medium or 50,000 small documents); now it reads the needed runs and the WAL. No document bodies, authorization decisions, or query results are cached.
 An authorization change is therefore checked on the next document read, even
 when the index bytes remain unchanged.
 
@@ -91,7 +97,8 @@ Raw measurements and harness changes remain ignored under
 crate has its own lockfile; its dependency resolution is separate from the main
 workspace's tested dependency graph.
 
-BM25, SIMD/compressed query execution, LIKE promotion, and broad range planning
-remain experimental. A future generation-only fast path needs an incarnation and
+Numeric range planning (`$gt`, `$gte`, `$lt`, `$lte` over the `n` keys) is
+supported by the native engine; BM25, SIMD/compressed query execution, and LIKE
+promotion remain experimental. A future generation-only fast path needs an incarnation and
 publication protocol covering every writer, rebuild, branch/root replacement,
 restore, and recovery operation, plus a policy for out-of-band filesystem edits.

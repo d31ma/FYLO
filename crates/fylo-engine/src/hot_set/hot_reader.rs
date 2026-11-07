@@ -8,7 +8,7 @@ use super::collection_key::CollectionKey;
 use super::document_source::DocumentSource;
 use super::resident_collection::ResidentCollection;
 use super::resident_document::ResidentDocument;
-use crate::equality_plan::EqualityPlan;
+use crate::index_plan::IndexPlan;
 use crate::{AccessContext, EngineError, ReadDocument, ReadOnlyEngine};
 
 /// Answers reads of one collection from a [`HotSet`], reading storage only
@@ -170,7 +170,7 @@ impl<'a> HotReader<'a> {
         }
     }
 
-    /// The index narrows the candidates when the query has a safe equality
+    /// The index narrows the candidates when the query has a safe equality or range
     /// plan, and the index is right for its fields in the head shape;
     /// otherwise every live document is a candidate.
     fn candidates(
@@ -178,7 +178,7 @@ impl<'a> HotReader<'a> {
         header: &ResidentCollection,
         query: &StructuredQuery,
     ) -> Result<Arc<Vec<String>>, EngineError> {
-        let plan = EqualityPlan::new(query, header.encrypted_fields()).filter(|plan| {
+        let plan = IndexPlan::new(query, header.encrypted_fields()).filter(|plan| {
             header
                 .migration_guard()
                 .is_none_or(|guard| guard.allows(plan))

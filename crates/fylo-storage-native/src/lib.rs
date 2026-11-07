@@ -2671,38 +2671,82 @@ impl NativeCollection {
         log_limit: u64,
     ) -> Result<std::sync::Arc<IndexSnapshot>, NativeStorageError> {
         if self.index_in_medium()? {
-            let medium = self.segment_medium()?;
-            let to = medium
-                .read_slot()?
-                .map_or(segments::RecordPosition::START, |slot| {
-                    segments::RecordPosition::published(&slot)
-                });
-            let (snapshot, log) = medium.read_index(to)?;
+            let (snapshot, log) = self.medium_index()?;
             return cache.load(index_cache::IndexInputs {
                 snapshot,
                 log: Some(log),
             });
         }
-        let index = self.path.join("index");
-        let snapshot_path = index.join("keys.snapshot");
         let snapshot_bytes = self.root.read_file(
-            &snapshot_path,
+            &self.index_snapshot_path(),
             QueryLimits::default().max_snapshot_bytes as u64,
         )?;
-        let wal_path = index.join("keys.wal");
-        let wal_bytes = if path_exists_no_follow(&wal_path)? {
-            Some(
-                self.root
-                    .read_file(&wal_path, log_limit)
-                    .map_err(index_log_limit::IndexLogLimit::explain_refusal)?,
-            )
-        } else {
-            None
-        };
         cache.load(index_cache::IndexInputs {
             snapshot: snapshot_bytes,
-            log: wal_bytes,
+            log: self.index_log(log_limit)?,
         })
+    }
+
+    /// Read only the prefix-index keys in `ranges`, with the complete WAL
+    /// overlay applied to them.
+    ///
+    /// The result equals [`Self::index_snapshot`] with every key outside the
+    /// ranges removed. A collection's own index snapshot file is searched in
+    /// place, so only the parts holding those keys are read and the cost
+    /// follows the size of the ranges and the WAL, not of the index. The
+    /// keys read are validated; the rest of the snapshot is not, which is
+    /// what `verify_index` is for.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for unsafe paths, oversized files, I/O failures, or a
+    /// malformed run of keys in a range.
+    pub fn index_snapshot_in_ranges(
+        &self,
+        ranges: &[fylo_query::IndexKeyRange],
+    ) -> Result<IndexSnapshot, NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        let reader = index_cache::IndexRangeReader::new(ranges);
+        if self.index_in_medium()? {
+            let (snapshot, log) = self.medium_index()?;
+            let length = snapshot.len() as u64;
+            return reader.read((std::io::Cursor::new(snapshot), length), &log);
+        }
+        let (snapshot, metadata) = self.root.open_file(
+            &self.index_snapshot_path(),
+            QueryLimits::default().max_snapshot_bytes as u64,
+        )?;
+        let log = self.index_log(MAX_INDEX_WAL_BYTES)?.unwrap_or_default();
+        reader.read((snapshot, metadata.len()), &log)
+    }
+
+    fn medium_index(&self) -> Result<(Vec<u8>, Vec<u8>), NativeStorageError> {
+        let medium = self.segment_medium()?;
+        let to = medium
+            .read_slot()?
+            .map_or(segments::RecordPosition::START, |slot| {
+                segments::RecordPosition::published(&slot)
+            });
+        medium.read_index(to)
+    }
+
+    fn index_snapshot_path(&self) -> PathBuf {
+        self.path.join("index").join("keys.snapshot")
+    }
+
+    fn index_log(&self, log_limit: u64) -> Result<Option<Vec<u8>>, NativeStorageError> {
+        let wal_path = self.path.join("index").join("keys.wal");
+        if !path_exists_no_follow(&wal_path)? {
+            return Ok(None);
+        }
+        self.read_index_log(&wal_path, log_limit)
+            .map(Some)
+            .map_err(index_log_limit::IndexLogLimit::explain_refusal)
+    }
+
+    fn read_index_log(&self, path: &Path, log_limit: u64) -> Result<Vec<u8>, NativeStorageError> {
+        let (mut file, metadata) = self.root.open_file(path, log_limit)?;
+        read_sized(&mut file, metadata.len(), log_limit)
     }
 
     /// Verify that every merged snapshot/WAL key is structurally valid and

@@ -20,7 +20,7 @@ use fylo_storage_native::{GenerationStatus, NativeCollection, SchemaVersionCount
 use serde_json::{Map, Value};
 
 use crate::encryption::reject_undeclared_ciphertext;
-use crate::equality_plan::EqualityPlan;
+use crate::index_plan::IndexPlan;
 use crate::schema::VersionChain;
 use crate::{EngineError, ReadOnlyEngine};
 
@@ -41,7 +41,7 @@ pub(crate) struct MigrationGuard {
 impl MigrationGuard {
     /// Whether every field `plan` reads from the index means the same in
     /// stored and migrated documents.
-    pub(crate) fn allows(&self, plan: &EqualityPlan) -> bool {
+    pub(crate) fn allows(&self, plan: &IndexPlan) -> bool {
         plan.fields().all(|field| !self.fields.contains(field))
     }
 }
@@ -229,9 +229,9 @@ mod tests {
 
     use super::*;
 
-    fn plan(query: &Value) -> EqualityPlan {
+    fn plan(query: &Value) -> IndexPlan {
         let query = StructuredQuery::from_value(query, QueryLimits::default()).unwrap();
-        EqualityPlan::new(&query, &[]).unwrap()
+        IndexPlan::new(&query, &[]).unwrap()
     }
 
     fn counts(versions: &[(&str, u64)], unversioned: u64) -> SchemaVersionCounts {

@@ -164,6 +164,53 @@ fn the_engine_writes_finds_and_reopens_a_database() {
     );
 }
 
+#[test]
+fn the_engine_answers_range_queries_from_a_database_index() {
+    let database = Database::create();
+    NativeWriteRoot::open(database.path())
+        .unwrap()
+        .create_collection("users", CollectionKind::Document, None)
+        .unwrap();
+    let engine = WriteEngine::open(database.path()).unwrap();
+    for number in 0..12 {
+        let user = json!({ "name": format!("user{number:02}"), "rank": number });
+        engine
+            .put_document(
+                "users",
+                &identifier(number),
+                fields(&user),
+                WriteAccess::default(),
+            )
+            .unwrap();
+    }
+    engine
+        .patch_document(
+            "users",
+            &identifier(2),
+            fields(&json!({ "name": "user02", "rank": 9.5 })),
+            None,
+        )
+        .unwrap();
+    let middle = json!({"$ops":[{"rank":{"$gte":8,"$lt":10}}]});
+    let reader = ReadOnlyEngine::open(database.path()).unwrap();
+    assert_eq!(
+        find(&reader, "users", &middle),
+        ["user02", "user08", "user09"]
+    );
+    drop((engine, reader));
+    NativeRoot::close_database(database.path()).unwrap();
+
+    let reader = ReadOnlyEngine::open(database.path()).unwrap();
+    assert_eq!(
+        find(&reader, "users", &middle),
+        ["user02", "user08", "user09"]
+    );
+    assert_eq!(
+        find(&reader, "users", &json!({"$ops":[{"rank":{"$lt":-1}}]})),
+        Vec::<String>::new()
+    );
+}
+
 /// Write version `label` of `collection` into the `fylo.schema` folder at
 /// `folder`, with the manifest listing `versions` and, for a version after
 /// the first, the migration from the one before.

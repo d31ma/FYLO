@@ -197,7 +197,7 @@ fn index_key(field_path: &str, kind: &str, value: &str, document_id: &str) -> St
     )
 }
 
-fn encode_field_path(path: &str) -> String {
+pub(crate) fn encode_field_path(path: &str) -> String {
     path.split('/')
         .map(encode_uri_component)
         .collect::<Vec<_>>()
@@ -274,7 +274,7 @@ pub(crate) fn javascript_number(value: &str) -> Option<f64> {
     value.parse().ok()
 }
 
-fn sortable_float64(value: f64) -> String {
+pub(crate) fn sortable_float64(value: f64) -> String {
     let bits = value.to_bits();
     let sortable = if bits & SIGN_MASK == 0 {
         bits ^ SIGN_MASK

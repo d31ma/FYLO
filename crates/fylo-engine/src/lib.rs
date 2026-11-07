@@ -5,9 +5,9 @@
 //! stable collection generation around every logical read.
 
 mod encryption;
-mod equality_operation;
-mod equality_plan;
 mod hot_set;
+mod index_operation;
+mod index_plan;
 mod lazy_migration;
 mod schema;
 mod schema_admin;
@@ -1578,13 +1578,13 @@ impl ReadOnlyEngine {
         self.find_with_access(collection, query, None)
     }
 
-    fn plan_equality_candidates(
+    fn plan_index_candidates(
         &self,
         collection: &NativeCollection,
         query: &StructuredQuery,
     ) -> Result<Option<Vec<String>>, EngineError> {
         let encrypted_fields = self.encrypted_fields(collection.name())?;
-        let Some(plan) = equality_plan::EqualityPlan::new(query, &encrypted_fields) else {
+        let Some(plan) = index_plan::IndexPlan::new(query, &encrypted_fields) else {
             return Ok(None);
         };
         // An index built from documents below the head can be wrong for the
@@ -1594,8 +1594,10 @@ impl ReadOnlyEngine {
         {
             return Ok(None);
         }
+        // Only the key ranges the plan reads are loaded, however large the
+        // index is.
         let snapshot = collection
-            .shared_index_snapshot()
+            .index_snapshot_in_ranges(&plan.key_ranges())
             .map_err(EngineError::storage)?;
         plan.scan(&snapshot).map(Some)
     }
@@ -1733,7 +1735,7 @@ impl ReadOnlyEngine {
             ));
         }
         Self::read_stable(&collection, || {
-            let identifiers = match self.plan_equality_candidates(&collection, query)? {
+            let identifiers = match self.plan_index_candidates(&collection, query)? {
                 Some(candidates) => candidates,
                 None => collection.raw_file_ids().map_err(EngineError::storage)?,
             };
@@ -1843,7 +1845,7 @@ impl ReadOnlyEngine {
             // planned query narrows which documents are read and the predicate
             // is still applied to each one. The index can only over-match — an
             // array is indexed per element — never under-match.
-            let planned = self.plan_equality_candidates(&collection, query)?;
+            let planned = self.plan_index_candidates(&collection, query)?;
             let identifiers = match planned {
                 Some(candidates) => candidates,
                 None => collection.document_ids().map_err(EngineError::storage)?,

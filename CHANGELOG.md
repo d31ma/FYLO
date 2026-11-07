@@ -250,6 +250,22 @@
 
 ### Fixed
 
+- **Native range queries use the index, and large indexes are no longer
+  reloaded per query.** `$gt`, `$gte`, `$lt` and `$lte` on an indexed field
+  read one run of the field's sortable `n` keys, then only those documents,
+  as the README's query strategy says (before, they read every document). A
+  planned query now reads only the index key ranges it needs from
+  `keys.snapshot`, plus the WAL lines in them, instead of merging the whole
+  index once it outgrew the 64 MiB cache. Measured on the Parquet
+  comparison's data (p50): a 1% range query 574 ms → 10 ms at 10,000 small
+  documents and 3.05 s → 48 ms at 50,000; an equality query 593 ms → 19 ms
+  at 10,000 medium and 596 ms → 25 ms at 50,000 small. New
+  `NativeCollection::index_snapshot_in_ranges`, `IndexSnapshot::scan_range`,
+  `IndexKeyRange` and `NumericRange`. Like `$eq` before it, a range query now
+  trusts the index: an index missing a field's `n` keys (hand-written, or
+  stale) hides those documents until `fylo rebuild` or `verify_index` repairs
+  or reports it.
+
 - **A large collection no longer breaks when its index log passes 64 MiB.**
   `keys.wal` was compacted only once it outgrew `keys.snapshot`, so once the
   snapshot passed 64 MiB the log could grow past the 64 MiB that readers

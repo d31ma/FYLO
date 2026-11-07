@@ -40,7 +40,7 @@ impl TestRoot {
         .unwrap();
         fs::write(
             path.join(".collections/users/index/keys.snapshot"),
-            b"name/eq/Ada/4VRNF52JPCO\n",
+            b"name/eq/Ada/4VRNF52JPCO\nscore/eq/42/4VRNF52JPCO\nscore/n/c045000000000000/4VRNF52JPCO\nscore/nr/3fbaffffffffffff/4VRNF52JPCO\n",
         )
         .unwrap();
         Self(path)
