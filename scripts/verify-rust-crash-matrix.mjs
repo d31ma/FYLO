@@ -398,36 +398,8 @@ async function verifyNativeCrashScenarios() {
                 '{"reviewer":"crash"}'
             ]
         },
-        {
-            name: 'set-access',
-            args: (root) => [
-                'set-access',
-                '--root',
-                root,
-                '--collection',
-                collection,
-                '--id',
-                identifier,
-                '--mode',
-                '640'
-            ]
-        },
         // Raw-file collections stay on the transaction journal (ADR 0010), so
-        // their access, delete and restore transitions are exercised here.
-        {
-            name: 'set-access-file',
-            args: (root) => [
-                'set-access',
-                '--root',
-                root,
-                '--collection',
-                fileCollection,
-                '--id',
-                fileIdentifier,
-                '--mode',
-                '640'
-            ]
-        },
+        // their delete and restore transitions are exercised here.
         {
             name: 'delete-file',
             args: (root) => [
@@ -582,20 +554,6 @@ async function verifyNativeCrashScenarios() {
                 identifier,
                 '--record',
                 '{"reviewer":"crash"}'
-            ]
-        }),
-        onSegments({
-            name: 'set-access-segments',
-            args: (root) => [
-                'set-access',
-                '--root',
-                root,
-                '--collection',
-                collection,
-                '--id',
-                identifier,
-                '--mode',
-                '640'
             ]
         }),
         onSegments({
@@ -757,15 +715,11 @@ async function verifyNativeCrashScenarios() {
         'before-file-write': 'extended attributes',
         'after-file-rename': 'extended attributes',
         'after-file-sync': 'extended attributes',
-        'after-chown': 'POSIX ownership',
-        'after-chmod': 'POSIX ownership',
-        'after-access-marker': 'POSIX ownership',
         'after-record-payload-rename': 'EFS metadata profile',
         'after-record-sidecar-rename': 'EFS metadata profile'
     }
     const available = {
         'extended attributes': extendedAttributes,
-        'POSIX ownership': platform() !== 'win32',
         'EFS metadata profile': false
     }
     if (!extendedAttributes) {
@@ -875,10 +829,7 @@ async function verifyEfsCompactionInterruptions() {
     await mkdir(source)
     const walBefore = await efsDatabase(source, async (database) => {
         const walBytes = await seedNearCompaction(source, (request) =>
-            requestRequired(
-                database,
-                request.op === 'putData' ? { ...request, access: { mode: 0o640 } } : request
-            )
+            requestRequired(database, request)
         )
         return walBytes()
     })
@@ -886,8 +837,7 @@ async function verifyEfsCompactionInterruptions() {
         op: 'putData',
         collection,
         id: COMPACTION_ID,
-        data: wideDocument('crossing'),
-        access: { mode: 0o640 }
+        data: wideDocument('crossing')
     }
     let interrupted = 0
     for (const failpoint of COMPACTION_POINTS) {
@@ -1096,13 +1046,7 @@ function pushSchemaArguments(root) {
 // descriptor agree.
 async function assertSchemaRegistry(binary, root, failpoint, scenario, action, label) {
     const recordPoints = ['after-schema-record', 'after-schemas-snapshot']
-    const reported = await run(binary, [
-        'schema-head',
-        '--root',
-        root,
-        '--collection',
-        collection
-    ])
+    const reported = await run(binary, ['schema-head', '--root', root, '--collection', collection])
     assert(reported.exitCode === 0, `${label}: the schema head is unreadable: ${reported.stderr}`)
     const head = JSON.parse(reported.stdout).result ?? 0
     assert(head === 0 || head === 1, `${label}: schema head ${head} is neither the old nor the new`)
@@ -1116,7 +1060,10 @@ async function assertSchemaRegistry(binary, root, failpoint, scenario, action, l
         return
     }
     const snapshot = JSON.parse(
-        await readFile(join(root, '.collections', collection, 'segments', 'schemas.snapshot'), 'utf8')
+        await readFile(
+            join(root, '.collections', collection, 'segments', 'schemas.snapshot'),
+            'utf8'
+        )
     )
     assert(
         snapshot.versions.length === head,
@@ -1509,11 +1456,6 @@ async function verifyEfsCrashScenarios(preview, workspace) {
     assert(platform() !== 'win32', 'EFS profile qualification needs POSIX metadata')
     const source = join(workspace, 'efs-template')
     await mkdir(source)
-    // Records carry owner-only access descriptors, so mutating one needs the
-    // owner. That is the filesystem's owner, not this process: an EFS access
-    // point maps every client to its own POSIX identity.
-    const { uid, gid } = await stat(source)
-    const owner = { uid, groups: [gid] }
     const input = join(workspace, 'efs-input.bin')
     await writeFile(input, new Uint8Array([1, 2, 3, 4]))
     await efsDatabase(source, async (database) => {
@@ -1533,23 +1475,20 @@ async function verifyEfsCrashScenarios(preview, workspace) {
                 collection,
                 id,
                 data: { name, score: 42 },
-                meta: { reviewer: 'seed', typed: { nested: [1, true] } },
-                access: { mode: 0o640 }
+                meta: { reviewer: 'seed', typed: { nested: [1, true] } }
             })
         }
         await requestRequired(database, {
             op: 'delDoc',
             collection,
-            id: deletedIdentifier,
-            access: owner
+            id: deletedIdentifier
         })
         await requestRequired(database, {
             op: 'putData',
             collection: fileCollection,
             id: fileIdentifier,
             file: { path: input, key: '/seed.bin' },
-            meta: { source: 'seed' },
-            access: { mode: 0o640 }
+            meta: { source: 'seed' }
         })
         await requestRequired(database, { op: 'commit', message: 'EFS crash seed' })
     })
@@ -1567,8 +1506,7 @@ async function verifyEfsCrashScenarios(preview, workspace) {
                 collection,
                 id: '4VRNF52JPD0',
                 data: { name: 'Hopper', score: 7 },
-                meta: { reviewer: 'created' },
-                access: { mode: 0o640 }
+                meta: { reviewer: 'created' }
             }
         },
         {
@@ -1578,8 +1516,7 @@ async function verifyEfsCrashScenarios(preview, workspace) {
                 collection: fileCollection,
                 id: crashFileIdentifier,
                 file: { path: input, key: '/crash.bin' },
-                meta: { source: 'created' },
-                access: { mode: 0o640 }
+                meta: { source: 'created' }
             }
         },
         {
@@ -1588,8 +1525,7 @@ async function verifyEfsCrashScenarios(preview, workspace) {
                 op: 'patchDoc',
                 collection,
                 id: identifier,
-                newDoc: { score: 99 },
-                access: owner
+                newDoc: { score: 99 }
             }
         },
         {
@@ -1598,8 +1534,7 @@ async function verifyEfsCrashScenarios(preview, workspace) {
                 op: 'setMeta',
                 collection,
                 id: identifier,
-                meta: { reviewer: 'after', typed: null, added: [1, true] },
-                access: owner
+                meta: { reviewer: 'after', typed: null, added: [1, true] }
             }
         },
         {
@@ -1608,8 +1543,7 @@ async function verifyEfsCrashScenarios(preview, workspace) {
             request: {
                 op: 'delDoc',
                 collection,
-                id: identifier,
-                access: owner
+                id: identifier
             }
         },
         {
@@ -1618,8 +1552,7 @@ async function verifyEfsCrashScenarios(preview, workspace) {
             request: {
                 op: 'delDoc',
                 collection: fileCollection,
-                id: fileIdentifier,
-                access: owner
+                id: fileIdentifier
             }
         },
         {
@@ -1628,8 +1561,7 @@ async function verifyEfsCrashScenarios(preview, workspace) {
             request: {
                 op: 'restoreDoc',
                 collection,
-                id: deletedIdentifier,
-                access: owner
+                id: deletedIdentifier
             }
         },
         {
@@ -1637,8 +1569,7 @@ async function verifyEfsCrashScenarios(preview, workspace) {
             pairMove: true,
             request: {
                 op: 'executeSQL',
-                sql: "DELETE FROM records WHERE name = 'Grace'",
-                access: owner
+                sql: "DELETE FROM records WHERE name = 'Grace'"
             }
         },
         {
@@ -1656,8 +1587,7 @@ async function verifyEfsCrashScenarios(preview, workspace) {
                 op: 'setMeta',
                 collection,
                 id: identifier,
-                meta: { reviewer: 'pending commit' },
-                access: owner
+                meta: { reviewer: 'pending commit' }
             },
             request: { op: 'commit', message: 'EFS interrupted commit' }
         }

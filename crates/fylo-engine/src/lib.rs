@@ -28,11 +28,11 @@ use fylo_query::{
     SqlPlan, StructuredQuery, index_entries_for_document,
 };
 use fylo_storage_native::{
-    AccessDescriptor, CollectionKind, CollectionLayout, DocumentCodec, DocumentWrite,
-    GenerationState, GenerationStatus, IndexVerification, NativeAccess, NativeCollection,
-    NativeRoot, NativeStorageError, NativeStorageErrorCode, NativeWriteRoot, PutDocumentOptions,
-    RepositoryHistory, RootConfig, RootOpenOptions, SqlMutationResult, StoredBytes, StoredRawFile,
-    ValidationMode, VersionVerification, WriteAccess, WriteActor,
+    CollectionKind, CollectionLayout, DocumentCodec, DocumentWrite, GenerationState,
+    GenerationStatus, IndexVerification, NativeCollection, NativeRoot, NativeStorageError,
+    NativeStorageErrorCode, NativeWriteRoot, PutDocumentOptions, RepositoryHistory, RootConfig,
+    RootOpenOptions, SqlMutationResult, StoredBytes, StoredRawFile, ValidationMode,
+    VersionVerification,
 };
 use hot_set::HotReader;
 pub use hot_set::{HotSet, HotSetStatistics};
@@ -270,9 +270,8 @@ impl WriteEngine {
         collection: &str,
         identifier: &str,
         fields: Map<String, Value>,
-        access: WriteAccess,
     ) -> Result<(), EngineError> {
-        self.put_document_with_metadata(collection, identifier, fields, BTreeMap::new(), access)
+        self.put_document_with_metadata(collection, identifier, fields, BTreeMap::new())
     }
 
     /// Create one document with developer metadata in the same transaction.
@@ -287,7 +286,6 @@ impl WriteEngine {
         identifier: &str,
         fields: Map<String, Value>,
         metadata: BTreeMap<String, Value>,
-        access: WriteAccess,
     ) -> Result<(), EngineError> {
         self.record_encrypted_fields(collection)?;
         let codec = EngineDocumentCodec::new(self);
@@ -295,7 +293,7 @@ impl WriteEngine {
             collection,
             identifier,
             fields,
-            PutDocumentOptions { metadata, access },
+            PutDocumentOptions { metadata },
             &codec,
         );
         codec.finish(outcome)
@@ -328,20 +326,18 @@ impl WriteEngine {
     /// # Errors
     ///
     /// Returns an error for an invalid document, missing encryption
-    /// credentials, a denied write, or any durable write failure.
+    /// credentials, or any durable write failure.
     pub fn patch_document(
         &self,
         collection: &str,
         identifier: &str,
         fields: Map<String, Value>,
-        actor: Option<&AccessContext>,
     ) -> Result<(), EngineError> {
         self.record_encrypted_fields(collection)?;
         let codec = EngineDocumentCodec::new(self);
-        let actor = actor.map(write_actor);
-        let outcome =
-            self.writer
-                .patch_document_with(collection, identifier, fields, actor.as_ref(), &codec);
+        let outcome = self
+            .writer
+            .patch_document_with(collection, identifier, fields, &codec);
         codec.finish(outcome)
     }
 
@@ -350,26 +346,20 @@ impl WriteEngine {
     ///
     /// # Errors
     ///
-    /// Returns an error for a missing document, a denied write, a stored
-    /// field that does not decrypt, a merged document the schema rejects, or
-    /// any durable write failure.
+    /// Returns an error for a missing document, a stored field that does not
+    /// decrypt, a merged document the schema rejects, or any durable write
+    /// failure.
     pub fn patch_document_fields(
         &self,
         collection: &str,
         identifier: &str,
         changes: &Map<String, Value>,
-        actor: Option<&AccessContext>,
     ) -> Result<(), EngineError> {
         self.record_encrypted_fields(collection)?;
         let codec = EngineDocumentCodec::new(self);
-        let actor = actor.map(write_actor);
-        let outcome = self.writer.patch_document_fields_with(
-            collection,
-            identifier,
-            changes,
-            actor.as_ref(),
-            &codec,
-        );
+        let outcome = self
+            .writer
+            .patch_document_fields_with(collection, identifier, changes, &codec);
         codec.finish(outcome)
     }
 
@@ -378,20 +368,11 @@ impl WriteEngine {
     ///
     /// # Errors
     ///
-    /// Returns an error for malformed SQL, a denied record, a row the schema
-    /// rejects, a stored field that does not decrypt, or any durable write
-    /// failure.
-    pub fn execute_sql_mutation(
-        &self,
-        sql: &str,
-        actor: Option<&AccessContext>,
-        insert_access: WriteAccess,
-    ) -> Result<SqlMutationResult, EngineError> {
+    /// Returns an error for malformed SQL, a row the schema rejects, a
+    /// stored field that does not decrypt, or any durable write failure.
+    pub fn execute_sql_mutation(&self, sql: &str) -> Result<SqlMutationResult, EngineError> {
         let codec = EngineDocumentCodec::new(self);
-        let actor = actor.map(write_actor);
-        let outcome =
-            self.writer
-                .execute_sql_mutation_with(sql, actor.as_ref(), insert_access, &codec);
+        let outcome = self.writer.execute_sql_mutation_with(sql, &codec);
         // The statement names its collection, so the record follows the
         // rows it encoded rather than leading them.
         let encoded = codec.encoded.take();
@@ -441,20 +422,15 @@ impl WriteEngine {
     /// # Errors
     ///
     /// Returns an error when no schema root is configured, the document is
-    /// missing or denied, a migration fails, or the head schema rejects the
-    /// migrated document.
-    pub fn migrate_document(
-        &self,
-        collection: &str,
-        identifier: &str,
-        actor: Option<&AccessContext>,
-    ) -> Result<(), EngineError> {
+    /// missing, a migration fails, or the head schema rejects the migrated
+    /// document.
+    pub fn migrate_document(&self, collection: &str, identifier: &str) -> Result<(), EngineError> {
         if self.registry_head(collection)?.is_none() {
             self.schema_tools()?;
         }
         // Every pre-image is migrated to the head as it is decoded, so an
         // empty patch is the migration.
-        self.patch_document_fields(collection, identifier, &Map::new(), actor)
+        self.patch_document_fields(collection, identifier, &Map::new())
     }
 
     /// `collection`'s version chain as this engine sees it now: a write
@@ -894,40 +870,6 @@ impl DocumentCodec for EngineDocumentCodec<'_> {
     }
 }
 
-fn write_actor(actor: &AccessContext) -> WriteActor {
-    WriteActor::new(actor.uid, actor.groups.iter().copied())
-}
-
-/// Trusted actor identity supplied by a client or application boundary.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AccessContext {
-    uid: u32,
-    groups: BTreeSet<u32>,
-}
-
-impl AccessContext {
-    /// Construct an actor from a UID and trusted supplementary GIDs.
-    #[must_use]
-    pub fn new(uid: u32, groups: impl IntoIterator<Item = u32>) -> Self {
-        Self {
-            uid,
-            groups: groups.into_iter().collect(),
-        }
-    }
-
-    /// Trusted actor UID.
-    #[must_use]
-    pub const fn uid(&self) -> u32 {
-        self.uid
-    }
-
-    /// Trusted supplementary group IDs.
-    #[must_use]
-    pub const fn groups(&self) -> &BTreeSet<u32> {
-        &self.groups
-    }
-}
-
 impl ReadOnlyEngine {
     const SEGMENT_READ_BATCH: usize = 256;
 
@@ -1105,32 +1047,9 @@ impl ReadOnlyEngine {
     /// Returns a stable error for unsafe storage, corrupt documents, invalid
     /// identifiers, or concurrent write generations.
     pub fn get(&self, collection: &str, identifier: &str) -> Result<ReadDocument, EngineError> {
-        self.get_with_access(collection, identifier, None)
-    }
-
-    /// Read one document as a trusted actor.
-    ///
-    /// # Errors
-    ///
-    /// Returns `EACCES` when the document's portable descriptor denies reads.
-    pub fn get_as(
-        &self,
-        collection: &str,
-        identifier: &str,
-        actor: &AccessContext,
-    ) -> Result<ReadDocument, EngineError> {
-        self.get_with_access(collection, identifier, Some(actor))
-    }
-
-    fn get_with_access(
-        &self,
-        collection: &str,
-        identifier: &str,
-        actor: Option<&AccessContext>,
-    ) -> Result<ReadDocument, EngineError> {
         match &self.hot_set {
-            Some(hot_set) => HotReader::new(self, hot_set, collection).get(identifier, actor),
-            None => self.get_from_storage(collection, identifier, actor),
+            Some(hot_set) => HotReader::new(self, hot_set, collection).get(identifier),
+            None => self.get_from_storage(collection, identifier),
         }
     }
 
@@ -1138,12 +1057,9 @@ impl ReadOnlyEngine {
         &self,
         collection: &str,
         identifier: &str,
-        actor: Option<&AccessContext>,
     ) -> Result<ReadDocument, EngineError> {
         let collection = self.open_collection(collection)?;
-        Self::read_stable(&collection, || {
-            self.read_document_with_access(&collection, identifier, actor)
-        })
+        Self::read_stable(&collection, || self.read_document(&collection, identifier))
     }
 
     /// Whether a collection holds JSON documents or raw files.
@@ -1190,16 +1106,14 @@ impl ReadOnlyEngine {
         })
     }
 
-    fn read_document_with_access(
+    fn read_document(
         &self,
         collection: &NativeCollection,
         identifier: &str,
-        actor: Option<&AccessContext>,
     ) -> Result<ReadDocument, EngineError> {
         let stored = collection
             .read_document(identifier)
             .map_err(EngineError::storage)?;
-        require_read_access(stored.access, actor)?;
         self.build_record(collection.name(), identifier, &stored)
     }
 
@@ -1210,33 +1124,9 @@ impl ReadOnlyEngine {
     ///
     /// # Errors
     ///
-    /// Returns an error for a missing record, corrupt metadata, an unsafe
-    /// path, or denied access.
+    /// Returns an error for a missing record, corrupt metadata, or an unsafe
+    /// path.
     pub fn metadata(&self, collection: &str, identifier: &str) -> Result<Value, EngineError> {
-        self.metadata_with_access(collection, identifier, None)
-    }
-
-    /// Canonical plus developer metadata checked as one trusted actor.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same failures as [`Self::metadata`], including `EACCES`
-    /// when the actor has no read bit through owner, group, or other.
-    pub fn metadata_as(
-        &self,
-        collection: &str,
-        identifier: &str,
-        actor: &AccessContext,
-    ) -> Result<Value, EngineError> {
-        self.metadata_with_access(collection, identifier, Some(actor))
-    }
-
-    fn metadata_with_access(
-        &self,
-        collection: &str,
-        identifier: &str,
-        actor: Option<&AccessContext>,
-    ) -> Result<Value, EngineError> {
         let handle = self
             .root
             .collection(collection)
@@ -1246,7 +1136,6 @@ impl ReadOnlyEngine {
                 let stored = handle
                     .read_raw_file(identifier)
                     .map_err(EngineError::storage)?;
-                require_read_access(stored.access_descriptor, actor)?;
                 let file = build_read_file(identifier, stored)?;
                 let mut merged = file.metadata.merge_with_custom(&file.custom_metadata);
                 let descriptor = serde_json::to_value(&file.file).map_err(|error| {
@@ -1259,7 +1148,7 @@ impl ReadOnlyEngine {
                 }
                 return Ok(Value::Object(merged));
             }
-            let record = self.read_document_with_access(&handle, identifier, actor)?;
+            let record = self.read_document(&handle, identifier)?;
             let custom: Map<String, Value> = handle
                 .read_custom_metadata(identifier)
                 .map_err(EngineError::storage)?
@@ -1269,36 +1158,13 @@ impl ReadOnlyEngine {
         })
     }
 
-    /// Read one unwrapped raw file with canonical, custom, and native metadata.
+    /// Read one unwrapped raw file with canonical and custom metadata.
     ///
     /// # Errors
     ///
     /// Returns a stable error for unsafe storage, missing/corrupt xattrs,
     /// invalid identifiers, oversized files, or concurrent write generations.
     pub fn get_file(&self, collection: &str, identifier: &str) -> Result<ReadFile, EngineError> {
-        self.get_file_with_access(collection, identifier, None)
-    }
-
-    /// Read one raw file as a trusted actor.
-    ///
-    /// # Errors
-    ///
-    /// Returns `EACCES` when the file's portable descriptor denies reads.
-    pub fn get_file_as(
-        &self,
-        collection: &str,
-        identifier: &str,
-        actor: &AccessContext,
-    ) -> Result<ReadFile, EngineError> {
-        self.get_file_with_access(collection, identifier, Some(actor))
-    }
-
-    fn get_file_with_access(
-        &self,
-        collection: &str,
-        identifier: &str,
-        actor: Option<&AccessContext>,
-    ) -> Result<ReadFile, EngineError> {
         let collection = self
             .root
             .collection(collection)
@@ -1307,7 +1173,6 @@ impl ReadOnlyEngine {
             let stored = collection
                 .read_raw_file(identifier)
                 .map_err(EngineError::storage)?;
-            require_read_access(stored.access_descriptor, actor)?;
             build_read_file(identifier, stored)
         })
     }
@@ -1323,29 +1188,6 @@ impl ReadOnlyEngine {
         collection: &str,
         identifier: &str,
     ) -> Result<ReadDeletedDocument, EngineError> {
-        self.get_deleted_with_access(collection, identifier, None)
-    }
-
-    /// Read one retained deleted document as a trusted actor.
-    ///
-    /// # Errors
-    ///
-    /// Returns `EACCES` when the retained descriptor denies reads.
-    pub fn get_deleted_as(
-        &self,
-        collection: &str,
-        identifier: &str,
-        actor: &AccessContext,
-    ) -> Result<ReadDeletedDocument, EngineError> {
-        self.get_deleted_with_access(collection, identifier, Some(actor))
-    }
-
-    fn get_deleted_with_access(
-        &self,
-        collection: &str,
-        identifier: &str,
-        actor: Option<&AccessContext>,
-    ) -> Result<ReadDeletedDocument, EngineError> {
         let collection = self
             .root
             .collection(collection)
@@ -1354,7 +1196,6 @@ impl ReadOnlyEngine {
             let stored = collection
                 .read_deleted_document(identifier)
                 .map_err(EngineError::storage)?;
-            require_read_access(stored.access, actor)?;
             let document = self.decode_document(
                 collection.name(),
                 Document::parse(&stored.bytes, DocumentLimits::default())
@@ -1381,29 +1222,6 @@ impl ReadOnlyEngine {
         collection: &str,
         identifier: &str,
     ) -> Result<ReadDeletedFile, EngineError> {
-        self.get_deleted_file_with_access(collection, identifier, None)
-    }
-
-    /// Read one retained deleted raw file as a trusted actor.
-    ///
-    /// # Errors
-    ///
-    /// Returns `EACCES` when the retained descriptor denies reads.
-    pub fn get_deleted_file_as(
-        &self,
-        collection: &str,
-        identifier: &str,
-        actor: &AccessContext,
-    ) -> Result<ReadDeletedFile, EngineError> {
-        self.get_deleted_file_with_access(collection, identifier, Some(actor))
-    }
-
-    fn get_deleted_file_with_access(
-        &self,
-        collection: &str,
-        identifier: &str,
-        actor: Option<&AccessContext>,
-    ) -> Result<ReadDeletedFile, EngineError> {
         let collection = self
             .root
             .collection(collection)
@@ -1412,7 +1230,6 @@ impl ReadOnlyEngine {
             let stored = collection
                 .read_deleted_raw_file(identifier)
                 .map_err(EngineError::storage)?;
-            require_read_access(stored.access_descriptor, actor)?;
             let deleted_at = stored.modified_millis;
             Ok(ReadDeletedFile {
                 deleted_at,
@@ -1575,7 +1392,10 @@ impl ReadOnlyEngine {
         collection: &str,
         query: &StructuredQuery,
     ) -> Result<Vec<ReadDocument>, EngineError> {
-        self.find_with_access(collection, query, None)
+        match &self.hot_set {
+            Some(hot_set) => HotReader::new(self, hot_set, collection).find(query),
+            None => self.find_from_storage(collection, query),
+        }
     }
 
     fn plan_index_candidates(
@@ -1621,15 +1441,11 @@ impl ReadOnlyEngine {
     /// # Errors
     ///
     /// Returns a stable error for unsafe/corrupt storage or an invalid join.
-    pub fn join(
-        &self,
-        join: &JoinSpec,
-        actor: Option<&AccessContext>,
-    ) -> Result<JoinResult, EngineError> {
+    pub fn join(&self, join: &JoinSpec) -> Result<JoinResult, EngineError> {
         let empty = StructuredQuery::from_value(&json!({}), QueryLimits::default())
             .map_err(EngineError::query)?;
-        let left = self.find_with_access(join.left_collection(), &empty, actor)?;
-        let right = self.find_with_access(join.right_collection(), &empty, actor)?;
+        let left = self.find(join.left_collection(), &empty)?;
+        let right = self.find(join.right_collection(), &empty)?;
 
         let mut rows: Vec<JoinedRow> = Vec::new();
         'outer: for left_row in &left {
@@ -1695,23 +1511,6 @@ impl ReadOnlyEngine {
         ))
     }
 
-    /// Execute a structured query as a trusted actor.
-    ///
-    /// Protected rows that deny reads are omitted, matching the JavaScript
-    /// collection cursor.
-    ///
-    /// # Errors
-    ///
-    /// Returns a stable error for unsafe/corrupt storage or invalid queries.
-    pub fn find_as(
-        &self,
-        collection: &str,
-        query: &StructuredQuery,
-        actor: &AccessContext,
-    ) -> Result<Vec<ReadDocument>, EngineError> {
-        self.find_with_access(collection, query, Some(actor))
-    }
-
     /// Execute a structured query over live raw-file manifests.
     ///
     /// # Errors
@@ -1722,7 +1521,6 @@ impl ReadOnlyEngine {
         &self,
         collection: &str,
         query: &StructuredQuery,
-        actor: Option<&AccessContext>,
     ) -> Result<Vec<RawFileQueryRow>, EngineError> {
         let collection = self
             .root
@@ -1744,9 +1542,6 @@ impl ReadOnlyEngine {
                 let stored = collection
                     .read_raw_file(&identifier)
                     .map_err(EngineError::storage)?;
-                if !read_access_allowed(stored.access_descriptor, actor) {
-                    continue;
-                }
                 let updated_at = stored.modified_millis;
                 let fields = raw_file_index_fields(&identifier, stored)?;
                 let created_at = TtidTimestamps::decode(&identifier)
@@ -1777,7 +1572,6 @@ impl ReadOnlyEngine {
         &self,
         collection: &str,
         query: &StructuredQuery,
-        actor: Option<&AccessContext>,
     ) -> Result<Vec<RawFileQueryRow>, EngineError> {
         let collection = self
             .root
@@ -1798,9 +1592,6 @@ impl ReadOnlyEngine {
                 let stored = collection
                     .read_deleted_raw_file(&identifier)
                     .map_err(EngineError::storage)?;
-                if !read_access_allowed(stored.access_descriptor, actor) {
-                    continue;
-                }
                 let deleted_at = stored.modified_millis;
                 let fields = raw_file_index_fields(&identifier, stored)?;
                 let created_at = TtidTimestamps::decode(&identifier)
@@ -1821,23 +1612,10 @@ impl ReadOnlyEngine {
         })
     }
 
-    fn find_with_access(
-        &self,
-        collection: &str,
-        query: &StructuredQuery,
-        actor: Option<&AccessContext>,
-    ) -> Result<Vec<ReadDocument>, EngineError> {
-        match &self.hot_set {
-            Some(hot_set) => HotReader::new(self, hot_set, collection).find(query, actor),
-            None => self.find_from_storage(collection, query, actor),
-        }
-    }
-
     fn find_from_storage(
         &self,
         collection: &str,
         query: &StructuredQuery,
-        actor: Option<&AccessContext>,
     ) -> Result<Vec<ReadDocument>, EngineError> {
         let collection = self.open_collection(collection)?;
         Self::read_stable(&collection, || {
@@ -1857,7 +1635,7 @@ impl ReadOnlyEngine {
                     .map_err(EngineError::storage)?;
                 for (identifier, stored) in batch.iter().zip(stored_batch) {
                     if let Some(record) =
-                        self.query_record(&collection, query, actor, (identifier, stored))?
+                        self.query_record(&collection, query, (identifier, stored))?
                     {
                         records.push(record);
                     }
@@ -1884,18 +1662,14 @@ impl ReadOnlyEngine {
         }
     }
 
-    /// The query result for one stored document, or `None` when the actor
-    /// may not read it or the predicate does not match.
+    /// The query result for one stored document, or `None` when the
+    /// predicate does not match.
     fn query_record(
         &self,
         collection: &NativeCollection,
         query: &StructuredQuery,
-        actor: Option<&AccessContext>,
         (identifier, stored): (&str, StoredBytes),
     ) -> Result<Option<ReadDocument>, EngineError> {
-        if !read_access_allowed(stored.access, actor) {
-            return Ok(None);
-        }
         let record = self.build_record(collection.name(), identifier, &stored)?;
         if !query.matches(
             record.document.fields(),
@@ -1919,7 +1693,6 @@ impl ReadOnlyEngine {
         &self,
         collection: &str,
         query: &StructuredQuery,
-        actor: Option<&AccessContext>,
     ) -> Result<Vec<ReadDeletedDocument>, EngineError> {
         let collection = self
             .root
@@ -1934,9 +1707,6 @@ impl ReadOnlyEngine {
                 let stored = collection
                     .read_deleted_document(&identifier)
                     .map_err(EngineError::storage)?;
-                if !read_access_allowed(stored.access, actor) {
-                    continue;
-                }
                 let document = self.decode_document(
                     collection.name(),
                     Document::parse(&stored.bytes, DocumentLimits::default())
@@ -1979,27 +1749,6 @@ impl ReadOnlyEngine {
     /// Returns a stable error for non-SELECT plans, joins, malformed query
     /// ASTs, unsafe storage, or unstable collection generations.
     pub fn select_sql(&self, plan: &SqlPlan) -> Result<Value, EngineError> {
-        self.select_sql_with_access(plan, None)
-    }
-
-    /// Execute a read-only SQL plan as a trusted actor.
-    ///
-    /// # Errors
-    ///
-    /// Returns a stable error for invalid plans, storage, or access failures.
-    pub fn select_sql_as(
-        &self,
-        plan: &SqlPlan,
-        actor: &AccessContext,
-    ) -> Result<Value, EngineError> {
-        self.select_sql_with_access(plan, Some(actor))
-    }
-
-    fn select_sql_with_access(
-        &self,
-        plan: &SqlPlan,
-        actor: Option<&AccessContext>,
-    ) -> Result<Value, EngineError> {
         if plan.operation != SqlOperation::Select {
             return Err(EngineError::new(
                 EngineErrorCode::Query,
@@ -2014,7 +1763,7 @@ impl ReadOnlyEngine {
         }
         let query = StructuredQuery::from_value(&plan.ast, QueryLimits::default())
             .map_err(EngineError::query)?;
-        let records = self.find_with_access(&plan.collection, &query, actor)?;
+        let records = self.find(&plan.collection, &query)?;
         Ok(shape_select_results(records, &plan.ast))
     }
 
@@ -2141,13 +1890,6 @@ impl ReadOnlyEngine {
         )
     }
 
-    fn access_denied() -> EngineError {
-        EngineError::new(
-            EngineErrorCode::Access,
-            "portable FYLO access descriptor denied the read",
-        )
-    }
-
     fn read_attempt_generation(
         collection: &NativeCollection,
     ) -> Result<Option<GenerationState>, EngineError> {
@@ -2171,44 +1913,6 @@ impl ReadOnlyEngine {
         Document::try_from_value(Value::Object(fields), DocumentLimits::default())
             .map_err(EngineError::format)
     }
-}
-
-fn require_read_access(
-    descriptor: Option<AccessDescriptor>,
-    actor: Option<&AccessContext>,
-) -> Result<(), EngineError> {
-    if read_access_allowed(descriptor, actor) {
-        Ok(())
-    } else {
-        Err(ReadOnlyEngine::access_denied())
-    }
-}
-
-fn read_access_allowed(
-    descriptor: Option<AccessDescriptor>,
-    actor: Option<&AccessContext>,
-) -> bool {
-    read_access_conditions(descriptor, actor)
-        .into_iter()
-        .any(|condition| condition)
-}
-
-fn read_access_conditions(
-    descriptor: Option<AccessDescriptor>,
-    actor: Option<&AccessContext>,
-) -> [bool; 4] {
-    let Some(descriptor) = descriptor else {
-        return [true, false, false, false];
-    };
-    let owner = actor.is_some_and(|actor| actor.uid == descriptor.uid);
-    let group = !owner && actor.is_some_and(|actor| actor.groups.contains(&descriptor.gid));
-    let other = !owner && !group;
-    [
-        false,
-        owner && ((descriptor.mode >> 6) & 0o4 != 0),
-        group && ((descriptor.mode >> 3) & 0o4 != 0),
-        other && (descriptor.mode & 0o4 != 0),
-    ]
 }
 
 fn stable_generation_observed(
@@ -2241,7 +1945,6 @@ fn build_read_file(identifier: &str, stored: StoredRawFile) -> Result<ReadFile, 
         },
         metadata,
         custom_metadata: stored.custom_metadata.into_iter().collect(),
-        access: stored.access,
         bytes: stored.bytes,
     })
 }
@@ -2435,8 +2138,6 @@ pub struct ReadFile {
     pub file: RawFileManifest,
     /// Developer-defined xattr/ADS metadata.
     pub custom_metadata: Map<String, Value>,
-    /// Native owner, group, and permission mode.
-    pub access: NativeAccess,
     /// Unwrapped file bytes. Protocol adapters must choose a bounded encoding.
     #[serde(skip_serializing)]
     pub bytes: Vec<u8>,
@@ -2525,7 +2226,7 @@ pub enum EngineErrorCode {
     ConcurrentWrite,
     /// Encrypted data could not be safely decoded.
     Encryption,
-    /// Portable UID/GID/mode policy denied the operation.
+    /// The identity the root was opened with may not do the operation.
     Access,
     /// The native engine cannot honour a documented contract on this input.
     Unsupported,
@@ -2688,64 +2389,6 @@ impl std::error::Error for EngineError {
 mod mcdc_tests {
     use super::*;
     use fylo_test_support::{McdcCase, assert_unique_cause_mcdc};
-
-    fn access_case(
-        name: &'static str,
-        descriptor: Option<AccessDescriptor>,
-        actor: Option<&AccessContext>,
-    ) -> McdcCase<4> {
-        McdcCase::new(
-            name,
-            read_access_conditions(descriptor, actor),
-            read_access_allowed(descriptor, actor),
-        )
-    }
-
-    #[test]
-    fn mcdc_engine_read_access_policy() {
-        let protected = AccessDescriptor {
-            version: 1,
-            uid: 1_001,
-            gid: 2_001,
-            mode: 0,
-        };
-        let owner = AccessContext::new(1_001, [2_001]);
-        let group_member = AccessContext::new(1_002, [2_001]);
-        let outsider = AccessContext::new(1_003, []);
-        let cases = [
-            access_case("deny_baseline", Some(protected), Some(&outsider)),
-            access_case("unprotected", None, Some(&outsider)),
-            access_case(
-                "owner_read",
-                Some(AccessDescriptor {
-                    mode: 0o400,
-                    ..protected
-                }),
-                Some(&owner),
-            ),
-            access_case(
-                "group_read",
-                Some(AccessDescriptor {
-                    mode: 0o040,
-                    ..protected
-                }),
-                Some(&group_member),
-            ),
-            access_case(
-                "other_read",
-                Some(AccessDescriptor {
-                    mode: 0o004,
-                    ..protected
-                }),
-                Some(&outsider),
-            ),
-        ];
-        assert_unique_cause_mcdc(
-            "engine.read_access_policy",
-            ["unprotected", "owner_read", "group_read", "other_read"],
-            &cases,
-        );
-    }
 
     fn stable_case(
         name: &'static str,

@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use fylo_engine::{HotSet, ReadDocument, ReadOnlyEngine, WriteEngine};
 use fylo_query::{QueryLimits, StructuredQuery};
-use fylo_storage_native::{CollectionKind, NativeWriteRoot, WriteAccess};
+use fylo_storage_native::{CollectionKind, NativeWriteRoot};
 use serde_json::{Map, Value, json};
 
 struct Fixture(PathBuf);
@@ -47,18 +47,14 @@ impl Fixture {
     }
 
     fn put(&self, number: usize, value: &Value) {
-        self.put_with_access(number, value, WriteAccess::default());
-    }
-
-    fn put_with_access(&self, number: usize, value: &Value, access: WriteAccess) {
         self.writer()
-            .put_document("records", &Self::id(number), Self::fields(value), access)
+            .put_document("records", &Self::id(number), Self::fields(value))
             .unwrap();
     }
 
     fn patch(&self, number: usize, value: &Value) {
         self.writer()
-            .patch_document("records", &Self::id(number), Self::fields(value), None)
+            .patch_document("records", &Self::id(number), Self::fields(value))
             .unwrap();
     }
 
@@ -242,42 +238,4 @@ fn file_collections_report_their_kind_and_read_from_storage() {
     let hot_error = hot.get("blobs", &id).unwrap_err();
     assert_eq!(hot_error.code(), cold_error.code());
     assert!(hot.collection_kind("missing").is_err());
-}
-
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-#[test]
-fn every_read_checks_its_own_actor() {
-    use std::os::unix::fs::MetadataExt;
-
-    use fylo_engine::{AccessContext, EngineErrorCode};
-
-    let fixture = Fixture::new();
-    let metadata = fs::metadata(&fixture.0).unwrap();
-    let private = WriteAccess {
-        uid: Some(metadata.uid()),
-        gid: Some(metadata.gid()),
-        mode: Some(0o600),
-    };
-    fixture.put_with_access(0, &json!({"group": 1}), private);
-    fixture.put(1, &json!({"group": 1}));
-    let owner = AccessContext::new(metadata.uid(), [metadata.gid()]);
-    let stranger = AccessContext::new(metadata.uid() + 1, [metadata.gid() + 1]);
-    let hot_set = Arc::new(HotSet::new(HotSet::DEFAULT_BUDGET_BYTES));
-    let hot = fixture.hot(&hot_set);
-    let id = Fixture::id(0);
-    let denied = hot.get_as("records", &id, &stranger).unwrap_err();
-    assert_eq!(denied.code(), EngineErrorCode::Access);
-    assert_eq!(
-        hot_set.statistics().documents,
-        0,
-        "a denied read is not parsed"
-    );
-    hot.get_as("records", &id, &owner).unwrap();
-    let denied = hot.get_as("records", &id, &stranger).unwrap_err();
-    assert_eq!(denied.code(), EngineErrorCode::Access);
-    let by_group = query(&json!({"$ops": [{"group": {"$eq": 1}}]}));
-    assert_eq!(hot.find_as("records", &by_group, &owner).unwrap().len(), 2);
-    let visible = hot.find_as("records", &by_group, &stranger).unwrap();
-    assert_eq!(visible.len(), 1);
-    assert_eq!(visible[0].metadata.id, Fixture::id(1));
 }

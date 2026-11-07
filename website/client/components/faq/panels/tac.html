@@ -208,30 +208,29 @@
                     by default: encryption is opt-in.
                 </div>
             </div>
-            <div class="w-expand" data-faq="groups">
+            <div class="w-expand" data-faq="identities">
                 <button
-                    id="faq-groups-trigger"
+                    id="faq-identities-trigger"
                     type="button"
                     class="w-expand-header"
-                    on:click="toggle('groups')"
+                    on:click="toggle('identities')"
                     aria-expanded="false"
-                    aria-controls="faq-groups-answer"
+                    aria-controls="faq-identities-answer"
                 >
-                    <span class="w-expand-title">Can multiple users share a document or file?</span
+                    <span class="w-expand-title">How do I control who can read or write data?</span
                     ><span class="w-expand-chevron" aria-hidden="true">⌄</span>
                 </button>
                 <div
-                    id="faq-groups-answer"
+                    id="faq-identities-answer"
                     class="w-expand-body"
                     role="region"
-                    aria-labelledby="faq-groups-trigger"
+                    aria-labelledby="faq-identities-trigger"
                 >
-                    Yes. Write it with .as(&#123; gid: editorsGid, mode: 0o660 &#125;), then
-                    authenticated group members read, update, or delete with .as(&#123; uid:
-                    memberUid &#125;). FYLO resolves membership from the host POSIX group database.
-                    Binary-backed applications can also supply request-scoped virtual groups from
-                    authenticated server state; never accept those claims from an end-user payload.
-                    Group write permission is required — 0o600 remains owner-only.
+                    Grant access to application identities on a protected .vdbx database. Create a
+                    key with fylo identity create, create the database with fylo create app.vdbx
+                    --admin, then give each identity read, write, or admin with fylo access grant.
+                    Each process opens the database as one identity with --identity and pins the
+                    admin with --trust-anchor. Per-record access was removed.
                 </div>
             </div>
         </div>

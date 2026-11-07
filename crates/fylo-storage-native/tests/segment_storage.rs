@@ -366,11 +366,9 @@ fn patch_delete_and_restore_follow_the_file_layout_contract(medium: Medium) {
     put(&writer, 1);
     put(&writer, 2);
     writer
-        .patch_document("items", &identifier(1), br#"{"name":"renamed"}"#, None)
+        .patch_document("items", &identifier(1), br#"{"name":"renamed"}"#)
         .unwrap();
-    writer
-        .delete_document("items", &identifier(2), None)
-        .unwrap();
+    writer.delete_document("items", &identifier(2)).unwrap();
     let collection = fixture.collection();
     assert_eq!(collection.document_ids().unwrap(), vec![identifier(1)]);
     assert_eq!(
@@ -379,9 +377,7 @@ fn patch_delete_and_restore_follow_the_file_layout_contract(medium: Medium) {
     );
     assert_eq!(fixture.bodies()[&identifier(1)]["name"], "renamed");
     assert!(collection.read_document(&identifier(2)).is_err());
-    writer
-        .restore_document("items", &identifier(2), None)
-        .unwrap();
+    writer.restore_document("items", &identifier(2)).unwrap();
     assert_eq!(fixture.bodies().len(), 2);
     let duplicate = writer.put_document(
         "items",
@@ -428,9 +424,7 @@ fn recovery_rebuilds_lost_location_files_from_segments(medium: Medium) {
     for number in 0..10 {
         put(&writer, number);
     }
-    writer
-        .delete_document("items", &identifier(4), None)
-        .unwrap();
+    writer.delete_document("items", &identifier(4)).unwrap();
     let before = fixture.bodies();
     fixture.lose_locations(b"garbage-garbage");
     fixture.mark_writing();
@@ -527,13 +521,11 @@ fn compaction_keeps_every_document_and_reclaims_dead_versions(medium: Medium) {
         for number in 0..40 {
             let patch = json!({ "round": round }).to_string();
             writer
-                .patch_document("items", &identifier(number), patch.as_bytes(), None)
+                .patch_document("items", &identifier(number), patch.as_bytes())
                 .unwrap();
         }
     }
-    writer
-        .delete_document("items", &identifier(7), None)
-        .unwrap();
+    writer.delete_document("items", &identifier(7)).unwrap();
     let before = fixture.bodies();
     let deleted = fixture.collection().deleted_document_ids().unwrap();
     let report = writer.compact_collection("items").unwrap();
@@ -560,7 +552,7 @@ fn a_rebuild_after_compaction_matches_the_location_table(medium: Medium) {
         put(&writer, number);
     }
     writer
-        .patch_document("items", &identifier(2), br#"{"name":"patched"}"#, None)
+        .patch_document("items", &identifier(2), br#"{"name":"patched"}"#)
         .unwrap();
     writer.compact_collection("items").unwrap();
     let before = fixture.bodies();
@@ -650,17 +642,15 @@ fn migration_round_trips_a_file_collection_exactly() {
     let mut metadata = Map::new();
     metadata.insert("team".into(), json!("blue"));
     files
-        .set_record_metadata("items", &identifier(5), &metadata, None)
+        .set_record_metadata("items", &identifier(5), &metadata)
         .unwrap();
-    files
-        .delete_document("items", &identifier(9), None)
-        .unwrap();
+    files.delete_document("items", &identifier(9)).unwrap();
     NativeWriteRoot::close_logs_under(files.path()).unwrap();
     let original = file_tree(&fixture.root);
     let bodies = fixture.bodies();
 
     let report = files
-        .migrate_layout("items", CollectionLayout::Segments, false)
+        .migrate_layout("items", CollectionLayout::Segments)
         .unwrap();
     assert_eq!((report.documents, report.deleted), (29, 1));
     assert_eq!(fixture.collection().layout(), CollectionLayout::Segments);
@@ -675,18 +665,12 @@ fn migration_round_trips_a_file_collection_exactly() {
     assert!(fixture.root.join(".collections/items/docs").is_file());
     fixture.index_matches_rebuild();
     put(&files, 50);
-    files
-        .delete_document("items", &identifier(50), None)
-        .unwrap();
-    files
-        .restore_document("items", &identifier(50), None)
-        .unwrap();
-    files
-        .delete_document("items", &identifier(50), None)
-        .unwrap();
+    files.delete_document("items", &identifier(50)).unwrap();
+    files.restore_document("items", &identifier(50)).unwrap();
+    files.delete_document("items", &identifier(50)).unwrap();
 
     files
-        .migrate_layout("items", CollectionLayout::Files, false)
+        .migrate_layout("items", CollectionLayout::Files)
         .unwrap();
     assert_eq!(fixture.collection().layout(), CollectionLayout::Files);
     let mut round_trip = file_tree(&fixture.root);
@@ -723,9 +707,7 @@ fn export_writes_one_file_per_document(medium: Medium) {
     for number in 0..12 {
         put(&writer, number);
     }
-    writer
-        .delete_document("items", &identifier(3), None)
-        .unwrap();
+    writer.delete_document("items", &identifier(3)).unwrap();
     let out = scratch("export");
     let report = writer.export_collection("items", &out).unwrap();
     assert_eq!((report.documents, report.deleted), (11, 1));

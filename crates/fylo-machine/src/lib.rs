@@ -7,6 +7,7 @@
 mod application;
 mod frame_access;
 mod frame_session;
+mod handshake_identity;
 mod invocation_options;
 mod invocation_runtime;
 mod request_frame;
@@ -18,6 +19,7 @@ pub use invocation_options::InvocationOptions;
 pub use invocation_runtime::InvocationRuntime;
 pub use request_frame::RequestFrame;
 
+use handshake_identity::HandshakeIdentity;
 use std::io::{BufRead, Read, Write};
 #[cfg(not(target_arch = "wasm32"))]
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
@@ -29,14 +31,14 @@ use std::time::Duration;
 use std::time::Instant;
 
 use base64::Engine as _;
-use fylo_engine::{AccessContext, EngineError, HotSet, ReadOnlyEngine, WriteEngine};
+use fylo_engine::{EngineError, HotSet, ReadOnlyEngine, WriteEngine};
 use fylo_format::Document;
 use fylo_query::{JoinSpec, QueryLimits, SqlOperation, StructuredQuery, prepare_sql};
 use fylo_storage_native::{
     CollectionKind, CollectionLayout, FilesystemProfile, NativeQueue, NativeRoot,
     NativeStorageError, NativeStorageErrorCode, NativeWriteRoot, PutRawFileOptions,
     QueueClaimOptions, QueuePublishOptions, RootLease, RootOpenOptions, SqlMutationResultKind,
-    ValidationMode, WriteAccess, WriteActor,
+    ValidationMode,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -74,25 +76,6 @@ const BUILD_KIND: &str = match option_env!("FYLO_BUILD_KIND") {
 const BUILD_TARGET: Option<&str> = option_env!("FYLO_BUILD_TARGET");
 /// The CHEX release whose validator `fylo-chex` vendors.
 const CHEX_VERSION: &str = "26.32.02";
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-const MACHINE_ACCESS_OPERATIONS: &[&str] = &[
-    "executeSQL",
-    "getDoc",
-    "getLatest",
-    "getMeta",
-    "setMeta",
-    "findDocs",
-    "findDeletedDocs",
-    "restoreDoc",
-    "joinDocs",
-    "putData",
-    "batchPutData",
-    "patchDoc",
-    "patchDocs",
-    "delDoc",
-    "delDocs",
-    "importBulkData",
-];
 const DOCUMENT_BUCKET_OPERATIONS: &[&str] = &[
     "createCollection",
     "dropCollection",
@@ -891,6 +874,7 @@ impl Session {
     }
 
     fn dispatch_once(&self, request: &Value) -> Result<Value, MachineError> {
+        refuse_access_field(request)?;
         let Some(operation) = request.get("op").and_then(Value::as_str) else {
             return Err(MachineError::new(
                 "EBADREQUEST",
@@ -970,7 +954,7 @@ impl Session {
     }
 
     fn handshake_capabilities(&self) -> serde_json::Map<String, Value> {
-        let capabilities = serde_json::Map::from_iter([
+        serde_json::Map::from_iter([
             ("handshake".into(), Value::Bool(true)),
             (
                 "exclusiveRoot".into(),
@@ -1032,24 +1016,7 @@ impl Session {
                 },
             ),
             ("hotSet".into(), self.hot_set_capability()),
-        ]);
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        let capabilities = {
-            let mut capabilities = capabilities;
-            capabilities.insert(
-                "machineAccess".into(),
-                json!({
-                    "version": 1,
-                    "operations": MACHINE_ACCESS_OPERATIONS,
-                    "writeDescriptorFields": ["uid", "gid", "mode"],
-                    "actorFields": ["uid", "groups"],
-                    "directDenial": "EACCES",
-                    "queryDenial": "omit"
-                }),
-            );
-            capabilities
-        };
-        capabilities
+        ])
     }
 
     /// The hot set's budget and counters, or `false` when it is off.
@@ -1089,6 +1056,7 @@ impl Session {
                 "malformedFrame": "error-and-resume-at-next-LF"
             },
             "capabilities": capabilities,
+            "identity": HandshakeIdentity::report(&self.config, self.default_root.as_deref()),
             "storage": {
                 "filesystemProfile": self.filesystem_profile.as_str(),
                 "rootLock": {
@@ -1315,16 +1283,11 @@ impl Session {
         let engine = self.engine(request)?;
         let collection = require_string(request, "collection")?;
         let identifier = require_string(request, "id")?;
-        let actor = actor(request)?;
         let kind = engine
             .collection_kind(collection)
             .map_err(|error| engine_error(&error))?;
         if kind == CollectionKind::File {
-            let file = match actor.as_ref() {
-                Some(actor) => engine.get_file_as(collection, identifier, actor),
-                None => engine.get_file(collection, identifier),
-            };
-            let file = match file {
+            let file = match engine.get_file(collection, identifier) {
                 Ok(file) => file,
                 Err(error) if error.storage_code() == Some(NativeStorageErrorCode::NotFound) => {
                     return Ok(json!({}));
@@ -1341,11 +1304,7 @@ impl Session {
             }
             return Ok(json!({ identifier: manifest }));
         }
-        let record = match actor.as_ref() {
-            Some(actor) => engine.get_as(collection, identifier, actor),
-            None => engine.get(collection, identifier),
-        };
-        let record = match record {
+        let record = match engine.get(collection, identifier) {
             Ok(record) => record,
             Err(error) if error.storage_code() == Some(NativeStorageErrorCode::NotFound) => {
                 return Ok(json!({}));
@@ -1372,7 +1331,6 @@ impl Session {
         let engine = self.engine(request)?;
         let collection = require_string(request, "collection")?;
         let identifier = require_string(request, "id")?;
-        let actor = actor(request)?;
         if engine
             .collection_kind(collection)
             .map_err(|error| engine_error(&error))?
@@ -1383,11 +1341,7 @@ impl Session {
                 "getFileData requires a file collection",
             ));
         }
-        let file = match actor.as_ref() {
-            Some(actor) => engine.get_file_as(collection, identifier, actor),
-            None => engine.get_file(collection, identifier),
-        };
-        let file = match file {
+        let file = match engine.get_file(collection, identifier) {
             Ok(file) => file,
             Err(error) if error.storage_code() == Some(NativeStorageErrorCode::NotFound) => {
                 return Ok(json!({}));
@@ -1437,25 +1391,22 @@ impl Session {
         let engine = self.engine(request)?;
         let collection = require_string(request, "collection")?;
         let query = structured_query(request)?;
-        let actor = actor(request)?;
         if engine
             .collection_kind(collection)
             .map_err(|error| engine_error(&error))?
             == CollectionKind::File
         {
             let pairs = engine
-                .find_files(collection, &query, actor.as_ref())
+                .find_files(collection, &query)
                 .map_err(|error| engine_error(&error))?
                 .into_iter()
                 .map(|(identifier, fields)| (identifier, Value::Object(fields)))
                 .collect();
             return self.shape_query_result(request, pairs);
         }
-        let rows = match actor.as_ref() {
-            Some(actor) => engine.find_as(collection, &query, actor),
-            None => engine.find(collection, &query),
-        }
-        .map_err(|error| engine_error(&error))?;
+        let rows = engine
+            .find(collection, &query)
+            .map_err(|error| engine_error(&error))?;
         let mut pairs = Vec::with_capacity(rows.len());
         for record in rows {
             let identifier = record.metadata.id.clone();
@@ -1609,12 +1560,9 @@ impl Session {
         let engine = self.engine(request)?;
         let collection = require_string(request, "collection")?;
         let identifier = require_string(request, "id")?;
-        let actor = actor(request)?;
-        match actor.as_ref() {
-            Some(actor) => engine.metadata_as(collection, identifier, actor),
-            None => engine.metadata(collection, identifier),
-        }
-        .map_err(|error| engine_error(&error))
+        engine
+            .metadata(collection, identifier)
+            .map_err(|error| engine_error(&error))
     }
 
     fn writer(&self, request: &Value) -> Result<NativeWriteRoot, MachineError> {
@@ -1688,18 +1636,14 @@ impl Session {
         let plan = prepare_sql(statement, QueryLimits::default())
             .map_err(|error| MachineError::new("EQUERY_INVALID", error.to_string()))?;
         if plan.operation == SqlOperation::Select {
-            let engine = self.engine(request)?;
-            let actor = actor(request)?;
-            return match actor.as_ref() {
-                Some(actor) => engine.select_sql_as(&plan, actor),
-                None => engine.select_sql(&plan),
-            }
-            .map_err(|error| engine_error(&error));
+            return self
+                .engine(request)?
+                .select_sql(&plan)
+                .map_err(|error| engine_error(&error));
         }
-        let actor = actor(request)?;
         let mutation = self
             .write_engine(request)?
-            .execute_sql_mutation(statement, actor.as_ref(), access(request)?)
+            .execute_sql_mutation(statement)
             .map_err(|error| engine_error(&error))?;
         match mutation.kind {
             SqlMutationResultKind::Insert => mutation
@@ -1726,10 +1670,7 @@ impl Session {
         let join = JoinSpec::from_value(join, QueryLimits::default())
             .map_err(|error| MachineError::new("EBADREQUEST", error.to_string()))?;
         let engine = self.engine(request)?;
-        let actor = actor(request)?;
-        let result = engine
-            .join(&join, actor.as_ref())
-            .map_err(|error| engine_error(&error))?;
+        let result = engine.join(&join).map_err(|error| engine_error(&error))?;
         serde_json::to_value(result).map_err(|error| serialization_error(&error))
     }
 
@@ -1818,13 +1759,9 @@ impl Session {
                 "machine request field \"layout\" must be \"files\" or \"segments\"",
             )
         })?;
-        let allow = request
-            .get("allowEngineOnlyAccess")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
         let report = self
             .writer(request)?
-            .migrate_layout(collection, layout, allow)
+            .migrate_layout(collection, layout)
             .map_err(|error| storage_error(&error))?;
         Ok(json!({
             "collection": report.collection,
@@ -1904,7 +1841,6 @@ impl Session {
                 &identifier,
                 Document::copy_fields(data),
                 metadata,
-                access(request)?,
             )
             .map_err(|error| engine_error(&error))?;
         Ok(Value::String(identifier))
@@ -1981,7 +1917,6 @@ impl Session {
                     key,
                     extension,
                     metadata,
-                    access: access(request)?,
                 },
             )
             .map_err(|error| storage_error(&error))?;
@@ -1997,9 +1932,8 @@ impl Session {
                 "machine request field \"newDoc\" must be an object",
             ));
         };
-        let actor = actor(request)?;
         self.write_engine(request)?
-            .patch_document_fields(collection, identifier, changes, actor.as_ref())
+            .patch_document_fields(collection, identifier, changes)
             .map_err(|error| engine_error(&error))?;
         Ok(Value::String(identifier.to_owned()))
     }
@@ -2007,9 +1941,8 @@ impl Session {
     fn delete_document(&self, request: &Value) -> Result<Value, MachineError> {
         let collection = require_string(request, "collection")?;
         let identifier = require_string(request, "id")?;
-        let actor = write_actor(request)?;
         self.writer(request)?
-            .delete_document(collection, identifier, actor.as_ref())
+            .delete_document(collection, identifier)
             .map_err(|error| storage_error(&error))?;
         Ok(json!({ "deleted": true }))
     }
@@ -2023,9 +1956,8 @@ impl Session {
                 "machine request field \"meta\" must be an object",
             ));
         };
-        let actor = write_actor(request)?;
         self.writer(request)?
-            .set_record_metadata(collection, identifier, record, actor.as_ref())
+            .set_record_metadata(collection, identifier, record)
             .map_err(|error| storage_error(&error))?;
         self.get_metadata(request)
     }
@@ -2082,14 +2014,13 @@ impl Session {
         let engine = self.engine(request)?;
         let collection = require_string(request, "collection")?;
         let query = structured_query(request)?;
-        let actor = actor(request)?;
         if engine
             .collection_kind(collection)
             .map_err(|error| engine_error(&error))?
             == CollectionKind::File
         {
             let pairs = engine
-                .find_deleted_files(collection, &query, actor.as_ref())
+                .find_deleted_files(collection, &query)
                 .map_err(|error| engine_error(&error))?
                 .into_iter()
                 .map(|(identifier, fields)| (identifier, Value::Object(fields)))
@@ -2097,7 +2028,7 @@ impl Session {
             return self.shape_query_result(request, pairs);
         }
         let rows = engine
-            .find_deleted(collection, &query, actor.as_ref())
+            .find_deleted(collection, &query)
             .map_err(|error| engine_error(&error))?;
         let mut pairs = Vec::with_capacity(rows.len());
         for record in rows {
@@ -2221,9 +2152,8 @@ impl Session {
     fn restore_document(&self, request: &Value) -> Result<Value, MachineError> {
         let collection = require_string(request, "collection")?;
         let identifier = require_string(request, "id")?;
-        let actor = write_actor(request)?;
         self.writer(request)?
-            .restore_document(collection, identifier, actor.as_ref())
+            .restore_document(collection, identifier)
             .map_err(|error| storage_error(&error))?;
         Ok(json!({ "restored": true, "id": identifier }))
     }
@@ -2241,7 +2171,6 @@ impl Session {
         };
         let engine = self.write_engine(request)?;
         let writer = self.writer(request)?;
-        let access = access(request)?;
         let mut identifiers = Vec::with_capacity(batch.len());
         for entry in batch {
             let Some(fields) = entry.as_object() else {
@@ -2254,12 +2183,7 @@ impl Session {
                 .allocate_identifier()
                 .map_err(|error| storage_error(&error))?;
             engine
-                .put_document(
-                    collection,
-                    &identifier,
-                    Document::copy_fields(fields),
-                    access,
-                )
+                .put_document(collection, &identifier, Document::copy_fields(fields))
                 .map_err(|error| engine_error(&error))?;
             identifiers.push(Value::String(identifier));
         }
@@ -2282,14 +2206,13 @@ impl Session {
         let documents = parse_import_documents(&body)?;
         let engine = self.write_engine(request)?;
         let writer = self.writer(request)?;
-        let access = access(request)?;
         let count = options.limit.unwrap_or(usize::MAX).min(documents.len());
         for fields in documents.into_iter().take(count) {
             let identifier = writer
                 .allocate_identifier()
                 .map_err(|error| storage_error(&error))?;
             engine
-                .put_document(collection, &identifier, fields, access)
+                .put_document(collection, &identifier, fields)
                 .map_err(|error| engine_error(&error))?;
         }
         Ok(Value::from(count))
@@ -2472,10 +2395,9 @@ impl Session {
         };
         let matched = self.matching_identifiers(request, collection, update)?;
         let engine = self.write_engine(request)?;
-        let actor = actor(request)?;
         for identifier in &matched {
             engine
-                .patch_document_fields(collection, identifier, changes, actor.as_ref())
+                .patch_document_fields(collection, identifier, changes)
                 .map_err(|error| engine_error(&error))?;
         }
         Ok(Value::from(matched.len()))
@@ -2491,10 +2413,9 @@ impl Session {
         };
         let matched = self.matching_identifiers(request, collection, filter)?;
         let writer = self.writer(request)?;
-        let actor = write_actor(request)?;
         for identifier in &matched {
             writer
-                .delete_document(collection, identifier, actor.as_ref())
+                .delete_document(collection, identifier)
                 .map_err(|error| storage_error(&error))?;
         }
         Ok(Value::from(matched.len()))
@@ -2515,22 +2436,19 @@ impl Session {
         let query = StructuredQuery::from_value(&query, QueryLimits::default())
             .map_err(|error| MachineError::new("EQUERY_INVALID", error.to_string()))?;
         let engine = self.engine(request)?;
-        let actor = actor(request)?;
         if engine
             .collection_kind(collection)
             .map_err(|error| engine_error(&error))?
             == CollectionKind::File
         {
             return engine
-                .find_files(collection, &query, actor.as_ref())
+                .find_files(collection, &query)
                 .map(|rows| rows.into_iter().map(|(identifier, _)| identifier).collect())
                 .map_err(|error| engine_error(&error));
         }
-        let rows = match actor.as_ref() {
-            Some(actor) => engine.find_as(collection, &query, actor),
-            None => engine.find(collection, &query),
-        }
-        .map_err(|error| engine_error(&error))?;
+        let rows = engine
+            .find(collection, &query)
+            .map_err(|error| engine_error(&error))?;
         Ok(rows.into_iter().map(|row| row.metadata.id).collect())
     }
 
@@ -2765,15 +2683,13 @@ impl Session {
         };
         let query = StructuredQuery::from_value(&json!({}), QueryLimits::default())
             .map_err(|error| MachineError::new("EQUERY_INVALID", error.to_string()))?;
-        let actor = actor(request)?;
         // Reads return the head shape (ADR 0017 section 5), so the documents
         // still to rewrite are found as they are stored.
-        let reader = self.engine(request)?.as_stored();
-        let rows = match actor.as_ref() {
-            Some(actor) => reader.find_as(collection, &query, actor),
-            None => reader.find(collection, &query),
-        }
-        .map_err(|error| engine_error(&error))?;
+        let rows = self
+            .engine(request)?
+            .as_stored()
+            .find(collection, &query)
+            .map_err(|error| engine_error(&error))?;
         let (mut migrated, mut at_head, mut unversioned) = (0_usize, 0_usize, 0_usize);
         for row in &rows {
             match row.document.fields().get("_v").and_then(Value::as_str) {
@@ -2781,7 +2697,7 @@ impl Session {
                 None if !include_unversioned => unversioned += 1,
                 _ => {
                     engine
-                        .migrate_document(collection, &row.metadata.id, actor.as_ref())
+                        .migrate_document(collection, &row.metadata.id)
                         .map_err(|error| {
                             let failure = engine_error(&error);
                             MachineError::new(
@@ -2810,13 +2726,8 @@ impl Session {
     fn schema_push(&self, request: &Value) -> Result<Value, MachineError> {
         let collection = require_string(request, "collection")?;
         self.require_main_worktree(request)?;
-        let actor = request
-            .get("access")
-            .and_then(|access| access.get("uid"))
-            .and_then(Value::as_u64)
-            .map(|uid| format!("uid {uid}"));
         self.write_engine(request)?
-            .schema_push(collection, None, actor.as_deref())
+            .schema_push(collection, None, None)
             .map_err(|error| engine_error(&error))
     }
 
@@ -3686,7 +3597,7 @@ fn import_size_error(max_bytes: usize) -> MachineError {
     )
 }
 
-/// Cursor identity: the same op, collection, query, and actor must resume the
+/// Cursor identity: the same op, collection, and query must resume the
 /// same snapshot, and anything else must be rejected rather than silently
 /// paged against the wrong result set.
 /// One page's worth of rows, plus the first row that could not fit.
@@ -3804,7 +3715,6 @@ fn cursor_scope(request: &Value) -> String {
         "op": request.get("op"),
         "collection": request.get("collection"),
         "query": request.get("query"),
-        "access": request.get("access"),
     });
     serde_json::to_string(&parts).unwrap_or_default()
 }
@@ -3913,62 +3823,20 @@ fn optional_u64(request: &Value, field: &str) -> Result<Option<u64>, MachineErro
     }
 }
 
-fn actor(request: &Value) -> Result<Option<AccessContext>, MachineError> {
-    let Some(access) = request.get("access").and_then(Value::as_object) else {
-        return Ok(None);
-    };
-    let Some(uid) = access.get("uid").and_then(Value::as_u64) else {
-        return Ok(None);
-    };
-    let uid = u32::try_from(uid)
-        .map_err(|_| MachineError::new("EBADREQUEST", "machine access uid is out of range"))?;
-    let groups = access
-        .get("groups")
-        .and_then(Value::as_array)
-        .map(|groups| {
-            groups
-                .iter()
-                .filter_map(Value::as_u64)
-                .filter_map(|group| u32::try_from(group).ok())
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    Ok(Some(AccessContext::new(uid, groups)))
+fn refuse_access_field(request: &Value) -> Result<(), MachineError> {
+    if request.get("access").is_some() {
+        return Err(MachineError::new(
+            "EBADREQUEST",
+            "machine request field \"access\" was removed with POSTIX (ADR 0021); a protected \
+             .vdbx database opened with an identity replaces it \
+             (docs/migrating-to-protected-databases.md)",
+        ));
+    }
+    Ok(())
 }
 
 fn storage_error(error: &NativeStorageError) -> MachineError {
     MachineError::new(error.code().as_str(), error.to_string())
-}
-
-fn write_actor(request: &Value) -> Result<Option<WriteActor>, MachineError> {
-    Ok(actor(request)?.map(|actor| WriteActor::new(actor.uid(), actor.groups().iter().copied())))
-}
-
-/// Owner, group, and mode are honoured on creation only, matching the
-/// published `put`/`INSERT` contract.
-fn access(request: &Value) -> Result<WriteAccess, MachineError> {
-    let Some(fields) = request.get("access").and_then(Value::as_object) else {
-        return Ok(WriteAccess::default());
-    };
-    let read = |name: &str| -> Result<Option<u32>, MachineError> {
-        fields
-            .get(name)
-            .and_then(Value::as_u64)
-            .map(|value| {
-                u32::try_from(value).map_err(|_| {
-                    MachineError::new(
-                        "EBADREQUEST",
-                        format!("machine access {name} is out of range"),
-                    )
-                })
-            })
-            .transpose()
-    };
-    Ok(WriteAccess {
-        uid: read("uid")?,
-        gid: read("gid")?,
-        mode: read("mode")?,
-    })
 }
 
 fn optional_string(value: &Value, name: &str) -> Option<String> {
@@ -4161,7 +4029,7 @@ mod tests {
     }
 
     #[test]
-    fn handshake_versions_machine_access_and_document_bucket_capabilities() {
+    fn handshake_versions_document_bucket_and_queue_capabilities() {
         let frame = &run("{\"op\":\"handshake\"}\n")[0];
         let capabilities = &frame["result"]["capabilities"];
 
@@ -4183,23 +4051,33 @@ mod tests {
             capabilities["serverlessQueue"]["delivery"],
             json!("at-least-once")
         );
+    }
 
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        {
-            assert_eq!(capabilities["machineAccess"]["version"], json!(1));
-            assert_eq!(
-                capabilities["machineAccess"]["operations"],
-                json!(MACHINE_ACCESS_OPERATIONS)
-            );
-            assert_eq!(
-                capabilities["machineAccess"]["directDenial"],
-                json!("EACCES")
-            );
-            assert_eq!(capabilities["machineAccess"]["queryDenial"], json!("omit"));
-        }
+    #[test]
+    fn handshake_has_no_machine_access_capability() {
+        let frame = &run("{\"op\":\"handshake\"}\n")[0];
 
-        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-        assert!(capabilities.get("machineAccess").is_none());
+        assert!(
+            frame["result"]["capabilities"]
+                .get("machineAccess")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_request_with_an_access_field_is_refused() {
+        let frame = &run(
+            "{\"op\":\"getDoc\",\"collection\":\"users\",\"id\":\"4VRNF52JPCO\",\"access\":{\"uid\":1000}}\n",
+        )[0];
+
+        assert_eq!(frame["ok"], json!(false));
+        assert_eq!(frame["error"]["code"], json!("EBADREQUEST"));
+        assert!(
+            frame["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("removed with POSTIX (ADR 0021)")
+        );
     }
 
     #[test]

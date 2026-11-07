@@ -160,8 +160,7 @@ async function seed(root) {
             collection: 'records',
             id,
             data: { name: 'Ada', score: 42 },
-            meta: { reviewer: 'before', nested: [1, true] },
-            access: { mode: 0o640 }
+            meta: { reviewer: 'before', nested: [1, true] }
         })
         const input = path.join(os.tmpdir(), path.basename(root) + '-input.bin')
         roots.push(input)
@@ -171,8 +170,7 @@ async function seed(root) {
             collection: 'assets',
             id: rawId,
             file: { path: input, key: '/seed.bin' },
-            meta: { source: 'seed' },
-            access: { mode: 0o640 }
+            meta: { source: 'seed' }
         })
     } finally {
         await database.close()
@@ -195,17 +193,15 @@ describe.skipIf(!required || process.platform === 'win32')(
             expect(before.manifestMode).toBe(0o600)
             expect(before.manifestUid).toBe(before.uid)
             expect(before.manifestGid).toBe(before.gid)
-            const owner = { uid: before.uid, groups: [before.gid] }
             const database = new ProfileLoop(root)
             try {
                 await database.result({ op: 'handshake' })
                 const rawBefore = await database.result({
                     op: 'getMeta',
                     collection: 'assets',
-                    id: rawId,
-                    access: owner
+                    id: rawId
                 })
-                await database.result({ op: 'delDoc', collection: 'records', id, access: owner })
+                await database.result({ op: 'delDoc', collection: 'records', id })
                 expect(await stat(beforePath).catch(() => null)).toBeNull()
                 expect(await stat(beforePath + '.fylo-attrs').catch(() => null)).toBeNull()
                 const retained = (await filesUnder(root)).find(
@@ -216,42 +212,36 @@ describe.skipIf(!required || process.platform === 'win32')(
                 await database.result({
                     op: 'restoreDoc',
                     collection: 'records',
-                    id,
-                    access: owner
+                    id
                 })
                 expect(await stat(retained + '.fylo-attrs').catch(() => null)).toBeNull()
                 expect(await pairSnapshot(await recordPath(root, id))).toEqual(before)
                 await database.result({
                     op: 'executeSQL',
-                    sql: "DELETE FROM records WHERE name = 'Ada'",
-                    access: owner
+                    sql: "DELETE FROM records WHERE name = 'Ada'"
                 })
                 await database.result({
                     op: 'restoreDoc',
                     collection: 'records',
-                    id,
-                    access: owner
+                    id
                 })
                 await database.result({ op: 'reshardCollection', collection: 'records', width: 3 })
                 expect(await pairSnapshot(await recordPath(root, id))).toEqual(before)
                 await database.result({
                     op: 'delDoc',
                     collection: 'assets',
-                    id: rawId,
-                    access: owner
+                    id: rawId
                 })
                 await database.result({
                     op: 'restoreDoc',
                     collection: 'assets',
-                    id: rawId,
-                    access: owner
+                    id: rawId
                 })
                 await database.result({ op: 'reshardCollection', collection: 'assets', width: 3 })
                 const rawAfter = await database.result({
                     op: 'getMeta',
                     collection: 'assets',
-                    id: rawId,
-                    access: owner
+                    id: rawId
                 })
                 expect(rawAfter).toEqual(rawBefore)
                 const inspection = await database.result({
@@ -271,8 +261,7 @@ describe.skipIf(!required || process.platform === 'win32')(
                         await reopened.result({
                             op: 'getDoc',
                             collection: 'records',
-                            id,
-                            access: owner
+                            id
                         })
                     ).toEqual({ [id]: { name: 'Ada', score: 42 } })
                     expect(await pairSnapshot(await recordPath(root, id))).toEqual(before)
@@ -282,12 +271,11 @@ describe.skipIf(!required || process.platform === 'win32')(
             }
         })
 
-        test('metadata updates keep payload time and deny access without metadata leakage', async () => {
+        test('metadata updates keep payload time and file mode', async () => {
             const root = await freshRoot()
             await seed(root)
             const payload = await recordPath(root, id)
             const before = await pairSnapshot(payload)
-            const owner = { uid: before.uid, groups: [before.gid] }
             const database = new ProfileLoop(root)
             try {
                 await database.result({ op: 'handshake' })
@@ -295,8 +283,7 @@ describe.skipIf(!required || process.platform === 'win32')(
                     op: 'setMeta',
                     collection: 'records',
                     id,
-                    meta: { reviewer: 'after', nested: null },
-                    access: owner
+                    meta: { reviewer: 'after', nested: null }
                 })
                 expect(first.reviewer).toBe('after')
                 expect(first.nested).toBeUndefined()
@@ -305,49 +292,11 @@ describe.skipIf(!required || process.platform === 'win32')(
                 expect(after.mtimeMs).toBe(before.mtimeMs)
                 expect(after.mode).toBe(before.mode)
                 expect(after.manifestMode).toBe(0o600)
-                const anonymous = await database.request({
-                    op: 'setMeta',
-                    collection: 'records',
-                    id,
-                    meta: { reviewer: 'anonymous' }
-                })
-                expect(anonymous).toMatchObject({ ok: false, error: { code: 'EACCES' } })
                 expect(
                     await database.result({
                         op: 'getMeta',
                         collection: 'records',
-                        id,
-                        access: owner
-                    })
-                ).toEqual(first)
-                const foreign = (before.uid + 1) >>> 0
-                for (const op of ['getDoc', 'getMeta']) {
-                    expect(await database.request({ op, collection: 'records', id })).toMatchObject(
-                        { ok: false, error: { code: 'EACCES' } }
-                    )
-                    expect(
-                        await database.request({
-                            op,
-                            collection: 'records',
-                            id,
-                            access: { uid: foreign, groups: [] }
-                        })
-                    ).toMatchObject({ ok: false, error: { code: 'EACCES' } })
-                }
-                const denied = await database.request({
-                    op: 'putData',
-                    collection: 'records',
-                    id: '4VRNF52JPCQ',
-                    data: { name: 'foreign' },
-                    access: { uid: foreign, mode: 0o600 }
-                })
-                expect(denied.ok).toBe(false)
-                expect(
-                    await database.result({
-                        op: 'getMeta',
-                        collection: 'records',
-                        id,
-                        access: owner
+                        id
                     })
                 ).toEqual(first)
             } finally {
@@ -359,15 +308,13 @@ describe.skipIf(!required || process.platform === 'win32')(
             const root = await freshRoot()
             await seed(root)
             const before = await pairSnapshot(await recordPath(root, id))
-            const owner = { uid: before.uid, groups: [before.gid] }
             const database = new ProfileLoop(root)
             try {
                 await database.result({ op: 'handshake' })
                 const original = await database.result({
                     op: 'getMeta',
                     collection: 'records',
-                    id,
-                    access: owner
+                    id
                 })
                 const first = await database.result({
                     op: 'commit',
@@ -392,8 +339,7 @@ describe.skipIf(!required || process.platform === 'win32')(
                     op: 'setMeta',
                     collection: 'records',
                     id,
-                    meta: { reviewer: 'branch' },
-                    access: owner
+                    meta: { reviewer: 'branch' }
                 })
                 const changed = await database.result({
                     op: 'commit',
@@ -404,8 +350,7 @@ describe.skipIf(!required || process.platform === 'win32')(
                 const restoredMetadata = await database.result({
                     op: 'getMeta',
                     collection: 'records',
-                    id,
-                    access: owner
+                    id
                 })
                 const {
                     updatedAt: originalTime,
@@ -446,7 +391,6 @@ describe.skipIf(!required || process.platform === 'win32')(
             const root = await freshRoot()
             await seed(root)
             const before = await pairSnapshot(await recordPath(root, id))
-            const owner = { uid: before.uid, groups: [before.gid] }
             const restored = await freshRoot()
             await cp(root, restored, { recursive: true, preserveTimestamps: true })
             const database = new ProfileLoop(restored)
@@ -456,8 +400,7 @@ describe.skipIf(!required || process.platform === 'win32')(
                     await database.result({
                         op: 'getDoc',
                         collection: 'records',
-                        id,
-                        access: owner
+                        id
                     })
                 ).toEqual({ [id]: { name: 'Ada', score: 42 } })
                 expect(await pairSnapshot(await recordPath(restored, id))).toEqual(before)

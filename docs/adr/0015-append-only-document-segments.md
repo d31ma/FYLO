@@ -311,6 +311,11 @@ migration. No data moves, because segments are not sharded.
 
 ### 10. Access control (POSTIX)
 
+**Superseded by ADR 0021 (phase 6).** POSTIX was removed: descriptors an
+earlier release stored in segment records are kept as opaque attributes,
+ignored on read, and migrated by `fylo pack --protect`. The text below
+records the original decision.
+
 The access descriptor travels inline and the engine evaluates it on every read,
 write and query row, exactly as it does today, including for virtual
 identities over the machine protocol.

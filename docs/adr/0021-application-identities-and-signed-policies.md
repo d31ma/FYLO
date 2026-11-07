@@ -292,7 +292,39 @@ Also settled: POSTIX (`.as()`, `--uid`, `--groups`, the per-request
 `fylo pack --sealed` and catalog-key rotation for protected databases stay
 in phase 7.
 
-### 6. Phases
+### 6. Migration and the removal of POSTIX (phase 6)
+
+- **`fylo access report <root|db.vdbx>`** reads every record and writes
+  nothing. It lists, per collection, the POSTIX descriptors the records
+  carry (grouped by `uid`, `gid` and `mode`), the live and deleted
+  documents and the `$encrypted` fields; for the root, its encryption
+  (`none`, `shared-key`, `protected`), what `fylo pack` refuses, what a
+  move changes and the command to run.
+- **`fylo pack --protect --admin <reference>`** copies a directory root, or
+  a plain or shared-key database opened with its key, into a new protected
+  database, through the staging file, the document oracle and the adopt
+  step plain packs use, and checks the staging file as `fylo verify` does
+  with the admin's identity (structures and signatures) before naming it.
+  `--grants <file.json>` adds grants inside the same pack. Records with a
+  descriptor are refused (`EPOLICY`) unless `--drop-record-access` or
+  `--keep-record-access-as-metadata` is given (P5-8); a source with no
+  descriptor needs neither, since nothing would be dropped. Kept
+  descriptors become the metadata field `legacyAccess`, unchanged and
+  unenforced. Record file modes, the descriptors' projection, are dropped.
+  A protected source is refused (its rewrite is phase 7's `fylo rekey`).
+- **POSTIX is removed** (Q1). Old descriptors stay on their records as
+  opaque attributes: reads ignore them and print a one-time warning per
+  process, and layout migrations and plain packs copy them, so no data is
+  lost before a migration. A machine request that still carries `access`
+  is refused with `EBADREQUEST`, and the removed CLI flags fail, rather
+  than be ignored, so an application that relied on per-record rules
+  finds out instead of losing them silently.
+- **The handshake reports the identity** (`identity`: its `id`,
+  `publicKey`, trust setting and, for a protected root, its grants or the
+  code the database refused it with); it opens the root read-only and takes
+  no write lease.
+
+### 7. Phases
 
 The study's section 9 is the plan. Phase 2 (identities and key stores) needs
 none of the answers above and lands first. Phase 3 (protected reads) and later

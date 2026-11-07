@@ -173,12 +173,12 @@ impl Database {
         }
         for number in 0..DOCUMENTS {
             writer
-                .patch_document("items", &identifier(number), br#"{"patched":true}"#, None)
+                .patch_document("items", &identifier(number), br#"{"patched":true}"#)
                 .unwrap();
         }
         for number in DOCUMENTS..DOCUMENTS + 2 {
             writer
-                .delete_document("items", &identifier(number), None)
+                .delete_document("items", &identifier(number))
                 .unwrap();
         }
         drop(writer);

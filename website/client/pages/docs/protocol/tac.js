@@ -61,12 +61,4 @@ export default class {
 })
 
 await consume()`
-
-    accessCode = `{
-    "op": "patchDoc",
-    "collection": "messages",
-    "id": "4UUB32VGUDW",
-    "data": { "title": "reviewed" },
-    "access": { "uid": 1002, "groups": [4001] }
-}`
 }

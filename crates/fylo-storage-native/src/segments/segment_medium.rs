@@ -223,10 +223,6 @@ pub(crate) trait SegmentMedium: Debug + Send + Sync {
     /// Flush the location log, if there is one.
     fn sync_location_log(&self) -> Result<(), NativeStorageError>;
 
-    /// The owner and group a file this collection's writer creates gets.
-    #[cfg(unix)]
-    fn owner(&self) -> Result<(u32, u32), NativeStorageError>;
-
     /// Whether the medium keeps the collection's prefix index itself, as a
     /// `.vdbx` container does: a snapshot beside the location snapshot, and
     /// the keys past it replayed from the records' index deltas

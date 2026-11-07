@@ -106,7 +106,6 @@ impl Case {
                         .as_object()
                         .unwrap()
                         .clone(),
-                    fylo_storage_native::WriteAccess::default(),
                 )
                 .unwrap();
         }

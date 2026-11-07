@@ -379,7 +379,6 @@ fn compaction_keeps_schema_records() {
                     "items",
                     &identifier(number),
                     json!({ "round": round }).to_string().as_bytes(),
-                    None,
                 )
                 .unwrap();
         }
@@ -479,7 +478,7 @@ fn layout_migration_carries_the_registry_both_ways() {
     NativeWriteRoot::close_logs_under(&fixture.0).unwrap();
 
     files
-        .migrate_layout("items", CollectionLayout::Segments, false)
+        .migrate_layout("items", CollectionLayout::Segments)
         .unwrap();
     assert_eq!(fixture.head(), Some(2));
     assert_eq!(fixture.snapshot()["versions"].as_array().unwrap().len(), 2);
@@ -497,7 +496,7 @@ fn layout_migration_carries_the_registry_both_ways() {
     );
 
     files
-        .migrate_layout("items", CollectionLayout::Files, false)
+        .migrate_layout("items", CollectionLayout::Files)
         .unwrap();
     assert_eq!(fixture.head(), Some(3));
     assert_eq!(

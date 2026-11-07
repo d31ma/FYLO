@@ -14,7 +14,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use fylo_engine::{AccessContext, ReadOnlyEngine};
+use fylo_engine::ReadOnlyEngine;
 use fylo_format::TtidTimestamps;
 use fylo_machine::{ApplicationConfig, FrameLimits, serve_application, serve_profiled};
 use fylo_query::{QueryLimits, ScanQuery, StructuredQuery, prepare_sql};
@@ -53,6 +53,9 @@ fn main() -> ExitCode {
     {
         println!("{}", usage());
         return ExitCode::SUCCESS;
+    }
+    if let Err(error) = refuse_removed_access_flags(&arguments) {
+        return print_outcome(Err(error));
     }
     if arguments.first().is_some_and(|command| command == "exec") {
         return run_machine(&arguments);
@@ -120,11 +123,7 @@ fn run(arguments: &[String]) -> Result<String, String> {
         "get" => {
             let collection = required_option(arguments, "--collection")?;
             let identifier = required_option(arguments, "--id")?;
-            let actor = access_context(arguments)?;
-            let record = match actor.as_ref() {
-                Some(actor) => engine.get_as(collection, identifier, actor),
-                None => engine.get(collection, identifier),
-            };
+            let record = engine.get(collection, identifier);
             serde_json::to_string_pretty(&record.map_err(|error| error.to_string())?)
                 .map_err(|error| error.to_string())
         }
@@ -132,11 +131,7 @@ fn run(arguments: &[String]) -> Result<String, String> {
         "get-deleted" => {
             let collection = required_option(arguments, "--collection")?;
             let identifier = required_option(arguments, "--id")?;
-            let actor = access_context(arguments)?;
-            let record = match actor.as_ref() {
-                Some(actor) => engine.get_deleted_as(collection, identifier, actor),
-                None => engine.get_deleted(collection, identifier),
-            };
+            let record = engine.get_deleted(collection, identifier);
             serde_json::to_string_pretty(&record.map_err(|error| error.to_string())?)
                 .map_err(|error| error.to_string())
         }
@@ -170,11 +165,7 @@ fn run(arguments: &[String]) -> Result<String, String> {
             let encoded = required_option(arguments, "--query")?;
             let query = StructuredQuery::parse(encoded.as_bytes(), QueryLimits::default())
                 .map_err(|error| error.to_string())?;
-            let actor = access_context(arguments)?;
-            let records = match actor.as_ref() {
-                Some(actor) => engine.find_as(collection, &query, actor),
-                None => engine.find(collection, &query),
-            };
+            let records = engine.find(collection, &query);
             serde_json::to_string_pretty(&records.map_err(|error| error.to_string())?)
                 .map_err(|error| error.to_string())
         }
@@ -182,11 +173,7 @@ fn run(arguments: &[String]) -> Result<String, String> {
             let statement = required_option(arguments, "--statement")?;
             let plan = prepare_sql(statement, QueryLimits::default())
                 .map_err(|error| error.to_string())?;
-            let actor = access_context(arguments)?;
-            let result = match actor.as_ref() {
-                Some(actor) => engine.select_sql_as(&plan, actor),
-                None => engine.select_sql(&plan),
-            };
+            let result = engine.select_sql(&plan);
             serde_json::to_string_pretty(&result.map_err(|error| error.to_string())?)
                 .map_err(|error| error.to_string())
         }
@@ -228,9 +215,6 @@ fn run_pack_command(command: &str, arguments: &[String]) -> Result<String, Strin
         out: option(arguments, "--out").map(PathBuf::from),
         sealed: arguments.iter().any(|argument| argument == "--sealed"),
         encrypt: arguments.iter().any(|argument| argument == "--encrypt"),
-        allow_engine_only_access: arguments
-            .iter()
-            .any(|argument| argument == "--allow-engine-only-access"),
         rekey_to: rekey_to(arguments)?,
         admin: option(arguments, "--admin").map(ToOwned::to_owned),
         unprotected: arguments.iter().any(|argument| argument == "--unprotected"),
@@ -286,9 +270,6 @@ fn run_segment_command(command: &str, arguments: &[String]) -> Result<String, St
     let options = SegmentOptions {
         to: option(arguments, "--to").map(ToOwned::to_owned),
         out: option(arguments, "--out").map(PathBuf::from),
-        allow_engine_only_access: arguments
-            .iter()
-            .any(|argument| argument == "--allow-engine-only-access"),
         shrink: arguments.iter().any(|argument| argument == "--shrink"),
     };
     let output = if let Some(database) = database_target(command, arguments) {
@@ -1716,8 +1697,6 @@ fn positionals(arguments: &[String]) -> Vec<String> {
         "--query",
         "--queries",
         "--statement",
-        "--uid",
-        "--groups",
         "--limit",
         "--out",
         "--new-key",
@@ -1849,12 +1828,9 @@ fn open_engine(
 fn get_file_output(engine: &ReadOnlyEngine, arguments: &[String]) -> Result<String, String> {
     let collection = required_option(arguments, "--collection")?;
     let identifier = required_option(arguments, "--id")?;
-    let actor = access_context(arguments)?;
-    let file = match actor.as_ref() {
-        Some(actor) => engine.get_file_as(collection, identifier, actor),
-        None => engine.get_file(collection, identifier),
-    }
-    .map_err(|error| error.to_string())?;
+    let file = engine
+        .get_file(collection, identifier)
+        .map_err(|error| error.to_string())?;
     let mut output = serde_json::to_value(&file).map_err(|error| error.to_string())?;
     output
         .as_object_mut()
@@ -1869,12 +1845,9 @@ fn get_deleted_file_output(
 ) -> Result<String, String> {
     let collection = required_option(arguments, "--collection")?;
     let identifier = required_option(arguments, "--id")?;
-    let actor = access_context(arguments)?;
-    let file = match actor.as_ref() {
-        Some(actor) => engine.get_deleted_file_as(collection, identifier, actor),
-        None => engine.get_deleted_file(collection, identifier),
-    }
-    .map_err(|error| error.to_string())?;
+    let file = engine
+        .get_deleted_file(collection, identifier)
+        .map_err(|error| error.to_string())?;
     let mut output = serde_json::to_value(&file).map_err(|error| error.to_string())?;
     output
         .as_object_mut()
@@ -1894,30 +1867,19 @@ fn required_option<'a>(arguments: &'a [String], name: &str) -> Result<&'a str, S
         .ok_or_else(|| format!("missing value for {name}\n{}", usage()))
 }
 
-fn access_context(arguments: &[String]) -> Result<Option<AccessContext>, String> {
-    if !arguments.iter().any(|argument| argument == "--uid") {
-        if arguments.iter().any(|argument| argument == "--groups") {
-            return Err("--groups requires --uid".into());
-        }
-        return Ok(None);
+fn refuse_removed_access_flags(arguments: &[String]) -> Result<(), String> {
+    const REMOVED: [&str; 3] = ["--uid", "--groups", "--allow-engine-only-access"];
+    match arguments
+        .iter()
+        .find(|argument| REMOVED.contains(&argument.as_str()))
+    {
+        Some(flag) => Err(format!(
+            "{flag} was removed with POSTIX access control (ADR 0021); a protected .vdbx \
+             database opened with an identity replaces it \
+             (docs/migrating-to-protected-databases.md)"
+        )),
+        None => Ok(()),
     }
-    let uid = required_option(arguments, "--uid")?
-        .parse::<u32>()
-        .map_err(|error| format!("invalid --uid: {error}"))?;
-    let groups = if arguments.iter().any(|argument| argument == "--groups") {
-        required_option(arguments, "--groups")?
-            .split(',')
-            .filter(|value| !value.is_empty())
-            .map(|value| {
-                value
-                    .parse::<u32>()
-                    .map_err(|error| format!("invalid --groups: {error}"))
-            })
-            .collect::<Result<Vec<_>, _>>()?
-    } else {
-        Vec::new()
-    };
-    Ok(Some(AccessContext::new(uid, groups)))
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -1946,7 +1908,7 @@ fn retired_command(command: &str) -> String {
 }
 
 fn usage() -> String {
-    "Usage:\n  fylo checkout [-b] <branch> [--root <path>] [--json]\n  fylo branch [--root <path>] [--json]\n  fylo commit -m <message> [--root <path>] [--json]\n  fylo log [--root <path>] [--json]\n  fylo status [--root <path>] [--json]\n  fylo diff [<from>] [<to>] [--root <path>] [--json]\n  fylo restore-commit <commit-id> [--root <path>] [--force] [--json]\n  fylo merge <ref> [-m <message>] [--root <path>] [--json]\n  fylo version [--output json]\n  fylo \"<SQL>\"\n  fylo sql \"<SQL>\"\n  fylo exec --request <json|@path|-> [--root <path>]\n  fylo exec --loop [--root <path>] [--exclusive-root [--hot-set-bytes <n>]]\n  fylo inspect <collection> [--root <path>] [--json]\n  fylo inspect <db.vdbx>\n  fylo get <collection> <doc-id> [--root <path>] [--json]\n  fylo latest <collection> <doc-id> [--root <path>] [--json] [--id-only]\n  fylo rebuild <collection> [--root <path>] [--json]\n  fylo reshard <collection> --width <n> [--root <path>] [--json]\n  fylo verify <collection> [--root <path>] [--json]\n  fylo layout <collection> --to <files|segments> [--allow-engine-only-access] [--root <path>]\n  fylo compact <collection> [--root <path>]\n  fylo compact <db.vdbx> [--shrink]\n  fylo export <collection> --out <directory> [--root <path>]\n  fylo verify-segments <collection> [--root <path>]\n  fylo salvage <collection> --out <directory> [--root <path>]\n  fylo salvage <db.vdbx> --out <directory>\n  fylo verify <db.vdbx>\n  fylo create <db.vdbx> --admin <reference>\n  fylo create <db.vdbx> --unprotected [--encrypt]\n  fylo access report <root|db.vdbx>\n  fylo access list <db.vdbx> --identity <reference> [--trust-anchor <fid1:...> | --trust-on-first-use]\n  fylo access grant <db.vdbx> --grantee <name> --key <fpk1:...> --actions <read,write,admin> (--collection <name> | --all-collections | --database) [--rule <id>] [--label <text>]\n  fylo access revoke <db.vdbx> --rule <id>\n  fylo pack [<root>] --out <db.vdbx> [--encrypt] [--allow-engine-only-access]\n  fylo pack <root|db.vdbx> --out <db.vdbx> --sealed [--encrypt] [--allow-engine-only-access]\n  fylo pack [<root>|<db.vdbx>] --out <db.vdbx> --protect --admin <reference> [--drop-record-access | --keep-record-access-as-metadata] [--grants <file.json>]\n  fylo unpack <db.vdbx> --out <directory>\n  fylo rekey <db.vdbx> --new-key '${NAME}' [--encrypt]\n  fylo rekey <db.vdbx> --decrypt\n  fylo deleted <collection> [--root <path>] [--json]\n  fylo restore <collection> <doc-id> [--root <path>] [--json]\n  fylo schema inspect <collection> [--schema-dir <path>] [--json]\n  fylo schema current <collection> [--schema-dir <path>] [--json]\n  fylo schema history <collection> [--schema-dir <path>] [--json]\n  fylo schema doctor <collection> [--schema-dir <path>] [--json]\n  fylo schema validate <collection> <json|@path|-> [--schema-dir <path>] [--json]\n  fylo schema materialize <collection> <json|@path|-> [--schema-dir <path>] [--json]\n  fylo schema migrate <collection> [--include-unversioned] [--schema-dir <path>] [--json]\n  fylo schema mode <collection> [off|warn|strict] [--json]\n  fylo schema check <collection> [--limit <n>] [--schema-dir <path>] [--json]\n  fylo schema push <collection> [--schema-dir <path>] [--json]\n  fylo schema pull <collection> --out <path> [--json]\n  fylo link [--check | --undo] [--project <dir>] [--artifacts <dir>]\n  fylo identity create --store <reference> [--json]\n  fylo identity show <reference> [--json]\n\nOptions:\n  --config <path> Load application.json (default: ./application.json)\n  --root <path>   Override fylo.root for this command\n  --schema-dir <path> Override fylo.schema for schema admin commands\n  --json          Emit machine-readable JSON output\n  --id-only       Return only the resolved document id for latest\n  -b              Create a new branch during checkout\n  -m, --message <v> Commit message\n  --force         Allow restore-commit to overwrite uncommitted changes\n  --include-unversioned Also migrate documents with no _v, as the oldest version\n  --request <v>   Machine request payload, @file path, or - for stdin\n  --exclusive-root Acquire an exclusive crash-safe root lease for exec --loop\n  --hot-set-bytes <n> Memory an --exclusive-root session keeps for warm reads; 0 turns it off (default 67108864)\n  --strict-schema Validate writes against the collection head schema (fylo.strict)\n  --shard-width <n> Shard width for collections created by this session (fylo.shard.width)\n  --width <n>     Destination shard width for reshard\n  --to <layout>   Destination layout for layout: files or segments\n  --shrink        Give the space compact frees in a .vdbx database back to the disk\n  --out <directory> Empty directory export and salvage write the per-document tree to, and unpack the root to\n  --out <db.vdbx> New .vdbx database pack writes; it must not exist\n  --allow-engine-only-access Let layout move, or pack copy, records owned by other users\n  --encrypt       Encrypt the database create or pack writes with fylo.encryption.key, or with rekey a plain one with --new-key\n  --sealed        Pack a read-only database recompressed in 64 KiB blocks; it also copies a live .vdbx database\n  --new-key '${NAME}' Secret reference (environment or .env, as fylo.encryption.key) rekey encrypts the database with; with --encrypt it encrypts a plain one\n  --decrypt       Rewrite an encrypted database plain with rekey\n  --limit <n>     Failing documents schema check lists (default 100)\n  --out <path>    Folder schema pull writes the fylo.schema layout to\n  --max-request-bytes <n> Maximum NDJSON request bytes, excluding LF\n  --max-response-bytes <n> Maximum NDJSON response bytes, excluding LF\n  --output <mode> Output mode for version: text or json\n  --project <dir> Project fylo link links (default: the current directory)\n  --artifacts <dir> FYLO-built Turso libraries fylo link places (default: $FYLO_LINK_ARTIFACTS, then ../lib/fylo-link beside fylo)\n  --check         Verify fylo link's links and the SDK versions\n  --undo          Remove only the links fylo link placed\n  --admin <reference> Admin and trust anchor of the protected database create makes (ADR 0021)\n  --protect       Pack into a protected database whose admin and trust anchor --admin names (ADR 0021)\n  --drop-record-access Let pack --protect drop records' POSTIX access descriptors\n  --keep-record-access-as-metadata Let pack --protect keep each descriptor as the metadata field legacyAccess, unenforced\n  --grants <file.json> Grants pack --protect adds: {\"grants\": [{\"grantee\", \"key\", \"actions\", \"collection\" | \"allCollections\" | \"database\"}]}\n  --unprotected   Let create make a database with no identities; new databases are protected by default\n  --identity <reference> Application identity a protected database opens with (fylo.identity, FYLO_IDENTITY)\n  --trust-anchor <fid1:...> Admin a protected database must have been created by (fylo.trustAnchor, FYLO_TRUST_ANCHOR)\n  --trust-on-first-use Trust a protected database's creator, whoever it is, with a warning\n  --store <reference> Key store fylo identity create writes a new key to: file:<path>, keychain:<label>, cng:<name>, creds:<name> or webcrypto:<name>\n  --version       Print the FYLO runtime version\n  --help          Show this message"
+    "Usage:\n  fylo checkout [-b] <branch> [--root <path>] [--json]\n  fylo branch [--root <path>] [--json]\n  fylo commit -m <message> [--root <path>] [--json]\n  fylo log [--root <path>] [--json]\n  fylo status [--root <path>] [--json]\n  fylo diff [<from>] [<to>] [--root <path>] [--json]\n  fylo restore-commit <commit-id> [--root <path>] [--force] [--json]\n  fylo merge <ref> [-m <message>] [--root <path>] [--json]\n  fylo version [--output json]\n  fylo \"<SQL>\"\n  fylo sql \"<SQL>\"\n  fylo exec --request <json|@path|-> [--root <path>]\n  fylo exec --loop [--root <path>] [--exclusive-root [--hot-set-bytes <n>]]\n  fylo inspect <collection> [--root <path>] [--json]\n  fylo inspect <db.vdbx>\n  fylo get <collection> <doc-id> [--root <path>] [--json]\n  fylo latest <collection> <doc-id> [--root <path>] [--json] [--id-only]\n  fylo rebuild <collection> [--root <path>] [--json]\n  fylo reshard <collection> --width <n> [--root <path>] [--json]\n  fylo verify <collection> [--root <path>] [--json]\n  fylo layout <collection> --to <files|segments> [--root <path>]\n  fylo compact <collection> [--root <path>]\n  fylo compact <db.vdbx> [--shrink]\n  fylo export <collection> --out <directory> [--root <path>]\n  fylo verify-segments <collection> [--root <path>]\n  fylo salvage <collection> --out <directory> [--root <path>]\n  fylo salvage <db.vdbx> --out <directory>\n  fylo verify <db.vdbx>\n  fylo create <db.vdbx> --admin <reference>\n  fylo create <db.vdbx> --unprotected [--encrypt]\n  fylo access report <root|db.vdbx>\n  fylo access list <db.vdbx> --identity <reference> [--trust-anchor <fid1:...> | --trust-on-first-use]\n  fylo access grant <db.vdbx> --grantee <name> --key <fpk1:...> --actions <read,write,admin> (--collection <name> | --all-collections | --database) [--rule <id>] [--label <text>]\n  fylo access revoke <db.vdbx> --rule <id>\n  fylo pack [<root>] --out <db.vdbx> [--encrypt]\n  fylo pack <root|db.vdbx> --out <db.vdbx> --sealed [--encrypt]\n  fylo pack [<root>|<db.vdbx>] --out <db.vdbx> --protect --admin <reference> [--drop-record-access | --keep-record-access-as-metadata] [--grants <file.json>]\n  fylo unpack <db.vdbx> --out <directory>\n  fylo rekey <db.vdbx> --new-key '${NAME}' [--encrypt]\n  fylo rekey <db.vdbx> --decrypt\n  fylo deleted <collection> [--root <path>] [--json]\n  fylo restore <collection> <doc-id> [--root <path>] [--json]\n  fylo schema inspect <collection> [--schema-dir <path>] [--json]\n  fylo schema current <collection> [--schema-dir <path>] [--json]\n  fylo schema history <collection> [--schema-dir <path>] [--json]\n  fylo schema doctor <collection> [--schema-dir <path>] [--json]\n  fylo schema validate <collection> <json|@path|-> [--schema-dir <path>] [--json]\n  fylo schema materialize <collection> <json|@path|-> [--schema-dir <path>] [--json]\n  fylo schema migrate <collection> [--include-unversioned] [--schema-dir <path>] [--json]\n  fylo schema mode <collection> [off|warn|strict] [--json]\n  fylo schema check <collection> [--limit <n>] [--schema-dir <path>] [--json]\n  fylo schema push <collection> [--schema-dir <path>] [--json]\n  fylo schema pull <collection> --out <path> [--json]\n  fylo link [--check | --undo] [--project <dir>] [--artifacts <dir>]\n  fylo identity create --store <reference> [--json]\n  fylo identity show <reference> [--json]\n\nOptions:\n  --config <path> Load application.json (default: ./application.json)\n  --root <path>   Override fylo.root for this command\n  --schema-dir <path> Override fylo.schema for schema admin commands\n  --json          Emit machine-readable JSON output\n  --id-only       Return only the resolved document id for latest\n  -b              Create a new branch during checkout\n  -m, --message <v> Commit message\n  --force         Allow restore-commit to overwrite uncommitted changes\n  --include-unversioned Also migrate documents with no _v, as the oldest version\n  --request <v>   Machine request payload, @file path, or - for stdin\n  --exclusive-root Acquire an exclusive crash-safe root lease for exec --loop\n  --hot-set-bytes <n> Memory an --exclusive-root session keeps for warm reads; 0 turns it off (default 67108864)\n  --strict-schema Validate writes against the collection head schema (fylo.strict)\n  --shard-width <n> Shard width for collections created by this session (fylo.shard.width)\n  --width <n>     Destination shard width for reshard\n  --to <layout>   Destination layout for layout: files or segments\n  --shrink        Give the space compact frees in a .vdbx database back to the disk\n  --out <directory> Empty directory export and salvage write the per-document tree to, and unpack the root to\n  --out <db.vdbx> New .vdbx database pack writes; it must not exist\n  --encrypt       Encrypt the database create or pack writes with fylo.encryption.key, or with rekey a plain one with --new-key\n  --sealed        Pack a read-only database recompressed in 64 KiB blocks; it also copies a live .vdbx database\n  --new-key '${NAME}' Secret reference (environment or .env, as fylo.encryption.key) rekey encrypts the database with; with --encrypt it encrypts a plain one\n  --decrypt       Rewrite an encrypted database plain with rekey\n  --limit <n>     Failing documents schema check lists (default 100)\n  --out <path>    Folder schema pull writes the fylo.schema layout to\n  --max-request-bytes <n> Maximum NDJSON request bytes, excluding LF\n  --max-response-bytes <n> Maximum NDJSON response bytes, excluding LF\n  --output <mode> Output mode for version: text or json\n  --project <dir> Project fylo link links (default: the current directory)\n  --artifacts <dir> FYLO-built Turso libraries fylo link places (default: $FYLO_LINK_ARTIFACTS, then ../lib/fylo-link beside fylo)\n  --check         Verify fylo link's links and the SDK versions\n  --undo          Remove only the links fylo link placed\n  --admin <reference> Admin and trust anchor of the protected database create makes (ADR 0021)\n  --protect       Pack into a protected database whose admin and trust anchor --admin names (ADR 0021)\n  --drop-record-access Let pack --protect drop records' POSTIX access descriptors\n  --keep-record-access-as-metadata Let pack --protect keep each descriptor as the metadata field legacyAccess, unenforced\n  --grants <file.json> Grants pack --protect adds: {\"grants\": [{\"grantee\", \"key\", \"actions\", \"collection\" | \"allCollections\" | \"database\"}]}\n  --unprotected   Let create make a database with no identities; new databases are protected by default\n  --identity <reference> Application identity a protected database opens with (fylo.identity, FYLO_IDENTITY)\n  --trust-anchor <fid1:...> Admin a protected database must have been created by (fylo.trustAnchor, FYLO_TRUST_ANCHOR)\n  --trust-on-first-use Trust a protected database's creator, whoever it is, with a warning\n  --store <reference> Key store fylo identity create writes a new key to: file:<path>, keychain:<label>, cng:<name>, creds:<name> or webcrypto:<name>\n  --version       Print the FYLO runtime version\n  --help          Show this message"
         .replace(
             "  --root <path>   Override fylo.root for this command",
             "  --root <path>   Override fylo.root for this command\n  --filesystem-profile <native|efs-sidecar-v1> Select metadata profile explicitly",

@@ -1,6 +1,6 @@
 use fylo_engine::{EngineErrorCode, WriteEngine};
 use fylo_query::{QueryLimits, StructuredQuery};
-use fylo_storage_native::{NativeStorageErrorCode, WriteAccess};
+use fylo_storage_native::NativeStorageErrorCode;
 use serde_json::{Map, Value};
 
 use crate::{Error, Root};
@@ -48,12 +48,7 @@ impl<'root> Collection<'root> {
     pub fn put(&self, document: Document) -> Result<String, Error> {
         let writer = self.root.writer()?;
         let identifier = writer.allocate_identifier()?;
-        WriteEngine::from_writer(writer).put_document(
-            self.name,
-            &identifier,
-            document,
-            WriteAccess::default(),
-        )?;
+        WriteEngine::from_writer(writer).put_document(self.name, &identifier, document)?;
         Ok(identifier)
     }
 
@@ -66,7 +61,7 @@ impl<'root> Collection<'root> {
     pub fn patch(&self, id: &str, changes: &Map<String, Value>) -> Result<(), Error> {
         self.root
             .write_engine()?
-            .patch_document_fields(self.name, id, changes, None)
+            .patch_document_fields(self.name, id, changes)
             .map_err(Error::from)
     }
 
@@ -115,7 +110,7 @@ impl<'root> Collection<'root> {
     pub fn delete(&self, id: &str) -> Result<(), Error> {
         self.root
             .writer()?
-            .delete_document(self.name, id, None)
+            .delete_document(self.name, id)
             .map_err(Error::from)
     }
 

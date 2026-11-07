@@ -50,7 +50,7 @@ impl SegmentCommand {
             .ok_or("layout needs --to files|segments")?;
         let layout = CollectionLayout::parse(target).map_err(|error| error.to_string())?;
         let report = writer
-            .migrate_layout(collection, layout, options.allow_engine_only_access)
+            .migrate_layout(collection, layout)
             .map_err(|error| error.to_string())?;
         Ok(json!({
             "collection": report.collection,
@@ -217,7 +217,6 @@ impl SegmentCommand {
 pub struct SegmentOptions {
     pub to: Option<String>,
     pub out: Option<PathBuf>,
-    pub allow_engine_only_access: bool,
     /// `compact <db.vdbx> --shrink`: give the space freed back to the disk.
     pub shrink: bool,
 }

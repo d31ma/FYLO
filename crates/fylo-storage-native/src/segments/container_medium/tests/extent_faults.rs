@@ -137,7 +137,7 @@ impl Database {
             .cloned()
             .collect();
         for id in kept {
-            writer.delete_document("items", &id, None).unwrap();
+            writer.delete_document("items", &id).unwrap();
             self.items.remove(&id);
         }
     }

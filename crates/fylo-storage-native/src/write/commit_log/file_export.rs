@@ -35,7 +35,7 @@ impl FileExport {
         for image in images {
             let relative = Self::relative_path(image, shard_width);
             applier.apply(
-                &CommitStep::Update(Self::step(image, &relative)?),
+                &CommitStep::Update(Self::step(image, &relative)),
                 &image.body,
             )?;
             written.push(directory.join(&relative));
@@ -60,9 +60,8 @@ impl FileExport {
         )
     }
 
-    fn step(image: &DocumentImage, relative: &str) -> Result<UpdateStep, NativeStorageError> {
-        let access = crate::decode_access_descriptor(&image.attributes)?;
-        Ok(UpdateStep {
+    fn step(image: &DocumentImage, relative: &str) -> UpdateStep {
+        UpdateStep {
             path: relative.to_owned(),
             create: true,
             blob: Some(BlobReference {
@@ -77,10 +76,10 @@ impl FileExport {
                     .collect(),
             ),
             mode: image.mode,
-            uid: access.map(|descriptor| descriptor.uid),
-            gid: access.map(|descriptor| descriptor.gid),
+            uid: None,
+            gid: None,
             modified_ms: image.modified_ms,
-        })
+        }
     }
 
     fn write_index(directory: &Path, keys: BTreeSet<String>) -> Result<(), NativeStorageError> {

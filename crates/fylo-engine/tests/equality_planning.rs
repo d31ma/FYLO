@@ -186,44 +186,6 @@ fn sql_equality_includes_coercion_matches() {
     );
 }
 
-#[cfg(unix)]
-#[test]
-fn repeated_planned_reads_recheck_revoked_access() {
-    use fylo_engine::AccessContext;
-    let fixture = Fixture::new();
-    let engine = ReadOnlyEngine::open(&fixture.0).unwrap();
-    let query = StructuredQuery::from_value(
-        &json!({"$ops":[{"value":{"$eq":1}}]}),
-        QueryLimits::default(),
-    )
-    .unwrap();
-    let actor = AccessContext::new(1000, []);
-    let id = "4VRNF52J005";
-    let path = fixture
-        .0
-        .join(format!(".collections/users/docs/4V/{id}.json"));
-    assert!(
-        engine
-            .find_as("users", &query, &actor)
-            .unwrap()
-            .iter()
-            .any(|row| row.metadata.id == id)
-    );
-    xattr::set(
-        &path,
-        "user.fylo.access",
-        br#"{"version":1,"uid":2000,"gid":2000,"mode":256}"#,
-    )
-    .unwrap();
-    assert!(
-        !engine
-            .find_as("users", &query, &actor)
-            .unwrap()
-            .iter()
-            .any(|row| row.metadata.id == id)
-    );
-}
-
 #[test]
 fn repeated_reads_follow_native_put_patch_delete_and_restore() {
     use fylo_storage_native::{NativeWriteRoot, PutDocumentOptions};
@@ -248,16 +210,12 @@ fn repeated_reads_follow_native_put_patch_delete_and_restore() {
         .unwrap();
     assert_eq!(count(), original + 1);
     writer
-        .patch_document("users", id, br#"{"value":2}"#, None)
+        .patch_document("users", id, br#"{"value":2}"#)
         .unwrap();
     assert_eq!(count(), original);
-    writer
-        .delete_document("users", "4VRNF52J005", None)
-        .unwrap();
+    writer.delete_document("users", "4VRNF52J005").unwrap();
     assert_eq!(count(), original - 1);
-    writer
-        .restore_document("users", "4VRNF52J005", None)
-        .unwrap();
+    writer.restore_document("users", "4VRNF52J005").unwrap();
     assert_eq!(count(), original);
 }
 
@@ -285,7 +243,6 @@ fn raw_file_metadata_equality_preserves_coercion_and_missing_values() {
                     key: format!("/{id}.txt"),
                     extension: ".txt".into(),
                     metadata,
-                    ..PutRawFileOptions::default()
                 },
             )
             .unwrap();
@@ -297,7 +254,7 @@ fn raw_file_metadata_equality_preserves_coercion_and_missing_values() {
             QueryLimits::default(),
         )
         .unwrap();
-        let rows = engine.find_files("assets", &query, None).unwrap();
+        let rows = engine.find_files("assets", &query).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].0, expected);
     }

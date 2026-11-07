@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use fylo_engine::{ReadOnlyEngine, WriteEngine};
 use fylo_query::{IndexLookupValue, QueryLimits, StructuredQuery, index_entries_for_document};
-use fylo_storage_native::{CollectionKind, NativeWriteRoot, WriteAccess};
+use fylo_storage_native::{CollectionKind, NativeWriteRoot};
 use serde_json::{Map, Value, json};
 
 struct Fixture(PathBuf);
@@ -94,12 +94,7 @@ impl Fixture {
     fn put(&self, number: usize, value: &Value) {
         WriteEngine::open(&self.0)
             .unwrap()
-            .put_document(
-                Self::COLLECTION,
-                &Self::id(number),
-                Self::fields(value),
-                WriteAccess::default(),
-            )
+            .put_document(Self::COLLECTION, &Self::id(number), Self::fields(value))
             .unwrap();
     }
 
@@ -262,20 +257,16 @@ fn range_queries_follow_puts_patches_and_deletes() {
     fixture.assert_parity(&query);
     let writer = NativeWriteRoot::open(&fixture.0).unwrap();
     writer
-        .patch_document("users", &Fixture::id(3), br#"{"value":"15"}"#, None)
+        .patch_document("users", &Fixture::id(3), br#"{"value":"15"}"#)
         .unwrap();
     writer
-        .patch_document("users", &Fixture::id(12), br#"{"value":[]}"#, None)
+        .patch_document("users", &Fixture::id(12), br#"{"value":[]}"#)
         .unwrap();
-    writer
-        .delete_document("users", &Fixture::id(14), None)
-        .unwrap();
+    writer.delete_document("users", &Fixture::id(14)).unwrap();
     fixture.put(40, &json!(19.5));
     fixture.assert_parity(&query);
     assert_eq!(fixture.find(&query).len(), 10);
-    writer
-        .restore_document("users", &Fixture::id(14), None)
-        .unwrap();
+    writer.restore_document("users", &Fixture::id(14)).unwrap();
     fixture.assert_parity(&query);
     assert_eq!(fixture.find(&query).len(), 11);
 }

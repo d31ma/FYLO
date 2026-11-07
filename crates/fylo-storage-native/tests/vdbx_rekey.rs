@@ -171,8 +171,8 @@ fn seed(path: &Path, key: Option<&DatabaseKey>) {
         put(&wide, "wide", number, 0);
     }
     match key {
-        Some(key) => files.pack_encrypted_database(path, false, key),
-        None => files.pack_database(path, false),
+        Some(key) => files.pack_encrypted_database(path, key),
+        None => files.pack_database(path),
     }
     .unwrap();
     drop((files, wide));
@@ -197,16 +197,14 @@ fn seed(path: &Path, key: Option<&DatabaseKey>) {
     let mut metadata = Map::new();
     metadata.insert("team".into(), json!("blue"));
     database
-        .set_record_metadata("items", &identifier(5), &metadata, None)
+        .set_record_metadata("items", &identifier(5), &metadata)
         .unwrap();
     for number in [3, 7] {
         database
-            .delete_document("items", &identifier(number), None)
+            .delete_document("items", &identifier(number))
             .unwrap();
     }
-    database
-        .restore_document("items", &identifier(7), None)
-        .unwrap();
+    database.restore_document("items", &identifier(7)).unwrap();
     // A checkpoint folds the records into snapshots, as a live database's
     // would be; the rekey copies the documents either way.
     database.rebuild_collection("items").unwrap();
@@ -549,7 +547,7 @@ fn a_sealed_database_is_resealed_under_the_new_key() {
     seed(&live, Some(&old));
     let path = scratch.database();
     writer(&live, Some(&old))
-        .pack_sealed_database(&path, false, Some(&old))
+        .pack_sealed_database(&path, Some(&old))
         .unwrap();
     let _ = NativeRoot::close_database(&live);
     fs::remove_file(&live).unwrap();

@@ -9,6 +9,8 @@ use serde_json::Value;
 
 const BINARY: &str = env!("CARGO_BIN_EXE_fylo-rust");
 const ACCESS_XATTR: &str = "user.fylo.access";
+const LEGACY_ACCESS_WARNING: &str =
+    "fylo: warning: this root holds records with POSTIX access descriptors";
 
 struct Fixture(PathBuf);
 
@@ -184,6 +186,49 @@ fn report_lists_the_access_descriptors_of_a_directory_root() {
         "{changes}"
     );
     assert!(changes.contains("plain text"), "{changes}");
+}
+
+#[test]
+fn get_reads_a_record_with_a_descriptor_and_warns_once() {
+    let fixture = Fixture::new("legacy-get");
+    let ids = fixture.seeded("data", &["ada", "grace"]);
+    fixture.describe("data", &ids[0], 0o000);
+    fixture.describe("data", &ids[1], 0o000);
+
+    let got = fixture.run(&["get", "users", &ids[0], "--root", "data", "--json"]);
+
+    assert_eq!(json(&got)[&ids[0]]["name"], "ada");
+    assert_eq!(stderr(&got).matches(LEGACY_ACCESS_WARNING).count(), 1);
+}
+
+#[test]
+fn sql_select_reads_every_record_with_a_descriptor_and_warns_once() {
+    let fixture = Fixture::new("legacy-select");
+    let ids = fixture.seeded("data", &["ada", "grace"]);
+    fixture.describe("data", &ids[0], 0o000);
+    fixture.describe("data", &ids[1], 0o000);
+
+    let selected = fixture.run(&["sql", "SELECT name FROM users", "--root", "data"]);
+
+    assert!(selected.status.success(), "{selected:?}");
+    let rows = String::from_utf8_lossy(&selected.stdout).into_owned();
+    assert!(rows.contains("ada"), "{rows}");
+    assert!(rows.contains("grace"), "{rows}");
+    assert_eq!(stderr(&selected).matches(LEGACY_ACCESS_WARNING).count(), 1);
+}
+
+#[test]
+fn the_uid_flag_is_refused() {
+    let fixture = Fixture::new("uid-refused");
+    let ids = fixture.seeded("data", &["ada"]);
+
+    let refused = fixture.run(&["get", "users", &ids[0], "--root", "data", "--uid", "1000"]);
+
+    assert!(!refused.status.success(), "{refused:?}");
+    assert!(
+        stderr(&refused).contains("--uid was removed with POSTIX access control (ADR 0021)"),
+        "{refused:?}"
+    );
 }
 
 #[test]
@@ -492,14 +537,7 @@ fn pack_protect_takes_a_shared_key_database_with_its_key() {
     let secret = "protect-secret-0123456789abcdef-0123456789";
     let shared = fixture.run_keyed(
         secret,
-        &[
-            "pack",
-            "data",
-            "--out",
-            "shared.vdbx",
-            "--encrypt",
-            "--allow-engine-only-access",
-        ],
+        &["pack", "data", "--out", "shared.vdbx", "--encrypt"],
     );
     assert!(shared.status.success(), "{shared:?}");
 
@@ -564,4 +602,63 @@ fn a_pack_protect_stopped_after_staging_leaves_the_source_whole() {
     json(&fixture.protect("data", &["--drop-record-access"]));
     assert_eq!(fixture.entries(), ["app.vdbx"]);
     assert_eq!(fixture.name_of(&admin, &ids[0]), "ada");
+}
+
+fn handshake(fixture: &Fixture, identity: Option<(&str, &str)>) -> Value {
+    let mut arguments = vec![
+        "exec",
+        "--request",
+        r#"{"op":"handshake"}"#,
+        "--root",
+        "app.vdbx",
+    ];
+    let reference;
+    if let Some((name, anchor)) = identity {
+        reference = format!("file:{name}.pem");
+        arguments.extend(["--identity", &reference, "--trust-anchor", anchor]);
+    }
+    json(&fixture.run(&arguments))["result"]["identity"].clone()
+}
+
+#[test]
+fn the_handshake_reports_no_identity_without_one() {
+    let fixture = Fixture::new("handshake-none");
+    let (_, _) = fixture.legacy_root();
+    json(&fixture.protect("data", &["--drop-record-access"]));
+    assert_eq!(handshake(&fixture, None), Value::Null);
+}
+
+#[test]
+fn the_handshake_reports_the_identity_and_its_grants() {
+    let fixture = Fixture::new("handshake-grants");
+    let (_, admin) = fixture.legacy_root();
+    fixture.identity("reader");
+    let grants = format!(
+        r#"{{"grants":[{{"grantee":"reader","key":"{}","actions":["read"],"collection":"users"}}]}}"#,
+        fixture.public_key("reader")
+    );
+    fs::write(fixture.0.join("grants.json"), grants).unwrap();
+    json(&fixture.protect("data", &["--drop-record-access", "--grants", "grants.json"]));
+
+    let as_admin = handshake(&fixture, Some(("admin", &admin)));
+    assert_eq!(as_admin["id"], admin.as_str());
+    assert_eq!(as_admin["trust"], "pinned");
+    assert_eq!(as_admin["trustAnchor"], admin.as_str());
+    assert!(as_admin["publicKey"].as_str().unwrap().starts_with("fpk1:"));
+    assert_eq!(as_admin["database"]["admin"], true);
+    assert_eq!(as_admin["database"]["trustAnchor"], admin.as_str());
+
+    let as_reader = handshake(&fixture, Some(("reader", &admin)));
+    assert_eq!(as_reader["database"]["admin"], false);
+    assert_eq!(as_reader["database"]["grants"]["users"], "read");
+}
+
+#[test]
+fn the_handshake_reports_why_the_database_refuses_an_identity() {
+    let fixture = Fixture::new("handshake-refused");
+    let (_, admin) = fixture.legacy_root();
+    json(&fixture.protect("data", &["--drop-record-access"]));
+    fixture.identity("stranger");
+    let refused = handshake(&fixture, Some(("stranger", &admin)));
+    assert_eq!(refused["database"]["error"]["code"], "EACCES");
 }

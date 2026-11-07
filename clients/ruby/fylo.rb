@@ -218,14 +218,14 @@ class Fylo
     op("joinDocs", "join" => join)
   end
 
-  def execute_sql(sql, access = nil)
-    op("executeSQL", "sql" => sql, "access" => access)
+  def execute_sql(sql)
+    op("executeSQL", "sql" => sql)
   end
 
   # Run raw SQL, built with native interpolation: db.sql("... #{x}").
   # Values are inlined verbatim — escape/validate untrusted input yourself.
-  def sql(query, access = nil)
-    execute_sql(query, access)
+  def sql(query)
+    execute_sql(query)
   end
 
   def import_bulk_data(collection, url)

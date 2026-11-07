@@ -309,20 +309,18 @@ namespace Fylo
             Op($"{{\"op\":\"findDocs\",\"collection\":{J(collection)},\"query\":{J(query)},\"page\":{J(page)}}}");
         public JsonElement FindDeletedDocsPage(string collection, object query, object page) =>
             Op($"{{\"op\":\"findDeletedDocs\",\"collection\":{J(collection)},\"query\":{J(query)},\"page\":{J(page)}}}");
-        public JsonElement ExecuteSQL(string sql, object access = null) =>
-            Op(access == null
-                ? $"{{\"op\":\"executeSQL\",\"sql\":{J(sql)}}}"
-                : $"{{\"op\":\"executeSQL\",\"sql\":{J(sql)},\"access\":{J(access)}}}");
+        public JsonElement ExecuteSQL(string sql) =>
+            Op($"{{\"op\":\"executeSQL\",\"sql\":{J(sql)}}}");
 
         // Interpolated-string SQL — interpolated values are escaped, so
         //   db.Sql($"SELECT * FROM users WHERE name = {name}")
         // is injection-safe.
-        public JsonElement Sql(FormattableString query, object access = null)
+        public JsonElement Sql(FormattableString query)
         {
             object[] args = query.GetArguments();
             var escaped = new object[args.Length];
             for (int i = 0; i < args.Length; i++) escaped[i] = SqlValue(args[i]);
-            return ExecuteSQL(string.Format(query.Format, escaped), access);
+            return ExecuteSQL(string.Format(query.Format, escaped));
         }
 
         private static string SqlValue(object value)

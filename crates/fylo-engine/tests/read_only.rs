@@ -4,7 +4,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[cfg(unix)]
-use fylo_engine::AccessContext;
 use fylo_engine::{EngineErrorCode, ReadOnlyEngine};
 use fylo_query::ScanQuery;
 #[cfg(unix)]
@@ -120,7 +119,7 @@ fn fails_closed_on_ciphertext_without_a_schema_root() {
 
 #[cfg(unix)]
 #[test]
-fn enforces_portable_access_descriptors_for_get_and_find() {
+fn reads_a_record_whose_access_descriptor_is_no_longer_enforced() {
     let fixture = TestRoot::create();
     let path = fixture
         .0
@@ -128,57 +127,24 @@ fn enforces_portable_access_descriptors_for_get_and_find() {
     xattr::set(
         &path,
         "user.fylo.access",
-        br#"{"version":1,"uid":1000,"gid":100,"mode":416}"#,
+        br#"{"version":1,"uid":1000,"gid":100,"mode":0}"#,
     )
     .unwrap();
     let engine = ReadOnlyEngine::open(&fixture.0).unwrap();
     assert_eq!(
-        engine.get("users", "4VRNF52JPCO").unwrap_err().code(),
-        EngineErrorCode::Access
-    );
-    assert!(
-        engine
-            .get_as(
-                "users",
-                "4VRNF52JPCO",
-                &AccessContext::new(1000, std::iter::empty())
-            )
-            .is_ok()
-    );
-    assert!(
-        engine
-            .get_as("users", "4VRNF52JPCO", &AccessContext::new(2000, [100]))
-            .is_ok()
+        engine.get("users", "4VRNF52JPCO").unwrap().metadata.id,
+        "4VRNF52JPCO"
     );
     assert_eq!(
-        engine
-            .get_as("users", "4VRNF52JPCO", &AccessContext::new(2000, [200]))
-            .unwrap_err()
-            .code(),
-        EngineErrorCode::Access
-    );
-    assert_eq!(
-        engine.metadata("users", "4VRNF52JPCO").unwrap_err().code(),
-        EngineErrorCode::Access
-    );
-    assert!(
-        engine
-            .metadata_as("users", "4VRNF52JPCO", &AccessContext::new(2000, [100]))
-            .is_ok()
+        engine.metadata("users", "4VRNF52JPCO").unwrap()["id"],
+        "4VRNF52JPCO"
     );
     let query = StructuredQuery::parse(
         br#"{"$ops":[{"score":{"$gte":40}}]}"#,
         QueryLimits::default(),
     )
     .unwrap();
-    assert!(engine.find("users", &query).unwrap().is_empty());
-    assert_eq!(
-        engine
-            .find_as("users", &query, &AccessContext::new(2000, [100]))
-            .unwrap()
-            .len(),
-        1
-    );
+    assert_eq!(engine.find("users", &query).unwrap().len(), 1);
 }
 
 fn snapshot_tree(root: &std::path::Path) -> Vec<(PathBuf, u64)> {

@@ -870,9 +870,7 @@ impl NativeWriteRoot {
                     &bytes,
                     &attributes,
                 )?;
-                let mode = profiled_metadata_access(&stage_root, &attributes)?
-                    .map_or(0o600, |access| access.mode);
-                durable_replace_with_mode(&target, &bytes, mode)?;
+                durable_replace_with_mode(&target, &bytes, super::DEFAULT_ACCESS_MODE)?;
                 crate::sidecar_attributes::SidecarAttributes::initialize(&stage_root, &target)?;
                 crate::sidecar_attributes::SidecarAttributes::replace(
                     &stage_root,
@@ -1251,7 +1249,6 @@ impl NativeWriteRoot {
         let bytes = crate::read_bounded((&mut file).take(MAX_BLOB_BYTES + 1), MAX_BLOB_BYTES)?;
         attributes.verify(&self.root, &file, path)?;
         attributes.verify_contents(&self.root, path, &bytes)?;
-        profiled_metadata_access(&self.root, &attributes)?;
         if path.starts_with(self.path().join(".buckets"))
             && crate::cached_checksum(
                 attributes.get(crate::CHECKSUM_XATTR),
@@ -1336,28 +1333,6 @@ fn decode_profiled_metadata_blob(
         ));
     }
     Ok(attributes)
-}
-
-fn profiled_metadata_access(
-    root: &crate::NativeRoot,
-    attributes: &BTreeMap<String, Vec<u8>>,
-) -> Result<Option<crate::AccessDescriptor>, NativeStorageError> {
-    let access = crate::decode_access_descriptor(attributes)?;
-    if let Some(access) = access {
-        if access.mode & 0o400 == 0 {
-            return Err(NativeStorageError::new(
-                NativeStorageErrorCode::Unsupported,
-                "EFS history modes must retain owner-read capability",
-            ));
-        }
-        if root.efs_identity() != Some((access.uid, access.gid)) {
-            return Err(NativeStorageError::new(
-                NativeStorageErrorCode::Unsupported,
-                "version metadata projects another EFS owner",
-            ));
-        }
-    }
-    Ok(access)
 }
 
 /// Reproduces `xattrBlobForFile`: every `user.fylo.*` attribute except the

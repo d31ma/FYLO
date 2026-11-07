@@ -37,8 +37,12 @@ Canonical fields win collisions:
 - `createdAt`;
 - `updatedAt`;
 - `mtime`;
-- raw-file descriptors;
-- supported native `uid`, `gid`, and `mode`.
+- raw-file descriptors.
+
+Records that an earlier release wrote with a POSTIX access descriptor
+(`user.fylo.access`: `uid`, `gid`, `mode`) keep it as an opaque attribute that
+nothing enforces or returns; `fylo pack --protect` drops it or keeps it as the
+metadata field `legacyAccess` (ADR 0021, phase 6).
 
 ## Compatibility
 

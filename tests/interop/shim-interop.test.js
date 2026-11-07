@@ -291,7 +291,7 @@ describe('client shim interop via fylo exec --loop', () => {
         await requireCommand('python3')
         const root = await tempRoot('fylo-python-shim-')
         const script = `
-import asyncio, json, os, sys
+import asyncio, json, sys
 sys.path.insert(0, ${JSON.stringify(path.join(shimRoot, 'python'))})
 from fylo import Fylo
 
@@ -335,11 +335,9 @@ with Fylo(${JSON.stringify(root)}, binary=${JSON.stringify(binaryPath)}) as db:
     assert initial_meta['source'] == 'python' and initial_meta['reviewed'] is False, initial_meta
     assert initial_meta['id'] == doc_id and initial_meta['createdAt'] > 0, initial_meta
     assert 'source' not in meta and meta['reviewed'] is False, meta
-    access = {'uid': os.getuid(), 'mode': 0o600}
-    sql_id = db.sql("INSERT INTO users (name, score, scope) VALUES ('SQL Ada', 91, 'private-sql')", access)
-    assert db.sql("SELECT * FROM users WHERE scope = 'private-sql'") == {}
-    owner_rows = db.sql("SELECT * FROM users WHERE scope = 'private-sql'", {'uid': os.getuid()})
-    assert owner_rows[sql_id]['name'] == 'SQL Ada', owner_rows
+    sql_id = db.sql("INSERT INTO users (name, score, scope) VALUES ('SQL Ada', 91, 'sql')")
+    sql_rows = db.sql("SELECT * FROM users WHERE scope = 'sql'")
+    assert sql_rows[sql_id]['name'] == 'SQL Ada', sql_rows
     print(json.dumps({'ok': True, 'id': doc_id, 'doc': doc, 'found': found, 'meta': meta}))
 `
         const result = await run(['python3', '-c', script])
@@ -421,16 +419,13 @@ try {
   const meta = await db.getMeta('users', id)
   if (initialMeta.source !== 'node' || initialMeta.reviewed !== false) throw new Error('bad initial metadata')
   if ('source' in meta || meta.reviewed !== false) throw new Error('bad updated metadata')
-  const uid = process.getuid()
-  const sqlId = await db.sql\`INSERT INTO users (name, score, scope) VALUES (\${'SQL Ada'}, \${91}, \${'private-sql'})\`.as({ uid, mode: 0o600 })
-  const anonymousRows = await db.sql\`SELECT * FROM users WHERE scope = \${'private-sql'}\`
-  if (sqlId in anonymousRows) throw new Error('anonymous SQL leaked protected row')
-  const ownerRows = await db.sql\`SELECT * FROM users WHERE scope = \${'private-sql'}\`.as({ uid })
-  if (ownerRows[sqlId]?.name !== 'SQL Ada') throw new Error('owner SQL could not read row')
-  const updated = await db.sql\`UPDATE users SET score = \${92} WHERE scope = \${'private-sql'}\`.as({ uid })
-  if (updated !== 1) throw new Error('owner SQL could not update row')
-  const deleted = await db.sql\`DELETE FROM users WHERE scope = \${'private-sql'}\`.as({ uid })
-  if (deleted !== 1) throw new Error('owner SQL could not delete row')
+  const sqlId = await db.sql\`INSERT INTO users (name, score, scope) VALUES (\${'SQL Ada'}, \${91}, \${'sql'})\`
+  const sqlRows = await db.sql\`SELECT * FROM users WHERE scope = \${'sql'}\`
+  if (sqlRows[sqlId]?.name !== 'SQL Ada') throw new Error('SQL could not read row')
+  const updated = await db.sql\`UPDATE users SET score = \${92} WHERE scope = \${'sql'}\`
+  if (updated !== 1) throw new Error('SQL could not update row')
+  const deleted = await db.sql\`DELETE FROM users WHERE scope = \${'sql'}\`
+  if (deleted !== 1) throw new Error('SQL could not delete row')
   console.log(JSON.stringify({ ok: true, id, doc, found, meta }))
 } finally {
   await db.close()
@@ -661,79 +656,6 @@ try {
         expect(JSON.parse(reopened.stdout)).toEqual({ ok: true })
     })
 
-    test.skipIf(process.platform === 'win32' || !process.getuid)(
-        'Node shim applies trusted virtual-group access to documents and raw files (#68)',
-        async () => {
-            await requireCommand('node')
-            const root = await tempRoot('fylo-node-access-')
-            const source = path.join(root, 'tenant-attachment.txt')
-            await writeFile(source, 'private attachment')
-            const script = `
-import { Fylo } from ${JSON.stringify(path.join(shimRoot, 'node', 'fylo.mjs'))}
-const db = new Fylo(${JSON.stringify(root)}, { binary: ${JSON.stringify(binaryPath)} })
-const gid = process.getgid()
-const memberUid = process.getuid() + 10001
-const member = { uid: memberUid, groups: [gid] }
-const outsider = { uid: memberUid + 1, groups: [] }
-try {
-  await db.createCollection('messages')
-  await db.createCollection('attachments', 'file')
-
-  const id = await db.putData('messages', { tenant: 'domain-a', title: 'draft' }).as({ gid, mode: 0o660 })
-  const found = await db.findDocs('messages', { tenant: 'domain-a' }).as(member)
-  if (found[id]?.title !== 'draft') throw new Error('trusted group could not query document')
-  const hidden = await db.findDocs('messages', { tenant: 'domain-a' }).as({ uid: memberUid, groups: [] })
-  if (id in hidden) throw new Error('virtual group membership leaked between requests')
-
-  await db.patchDoc('messages', id, { title: 'updated' }).as(member)
-  await db.setMeta('messages', id, { source: 'node-access' }).as(member)
-  const meta = await db.getMeta('messages', id).as(member)
-  if (meta.source !== 'node-access') throw new Error('trusted group could not access metadata')
-
-  let denied = false
-  try {
-    await db.getDoc('messages', id).as(outsider)
-  } catch (error) {
-    denied = error.code === 'EACCES'
-  }
-  if (!denied) throw new Error('outsider document read did not fail with EACCES')
-
-  await db.delDoc('messages', id).as(member)
-  const deleted = await db.findDeletedDocs('messages').as(member)
-  if (!deleted[id]) throw new Error('trusted group could not query deleted document')
-  await db.restoreDoc('messages', id).as(member)
-
-  const fileId = await db.putFile(
-    'attachments',
-    { path: ${JSON.stringify(source)}, key: '/domain-a/attachment.txt' },
-    { maxBytes: 64 }
-  ).as({ gid, mode: 0o660 })
-  const file = await db.getDoc('attachments', fileId).as(member)
-  if (file[fileId]?.key !== '/domain-a/attachment.txt') {
-    throw new Error('trusted group could not read raw-file manifest')
-  }
-  const files = await db.findDocs('attachments', { key: '/domain-a/attachment.txt' }).as(member)
-  if (!files[fileId]) throw new Error('trusted group could not query raw-file bucket')
-
-  denied = false
-  try {
-    await db.delDoc('attachments', fileId).as(outsider)
-  } catch (error) {
-    denied = error.code === 'EACCES'
-  }
-  if (!denied) throw new Error('outsider raw-file delete did not fail with EACCES')
-  await db.delDoc('attachments', fileId).as(member)
-  console.log(JSON.stringify({ ok: true }))
-} finally {
-  await db.close()
-}
-`
-            const result = await run(['node', '--input-type=module', '-e', script])
-            expectSuccess('node virtual-group access interop', result)
-            expect(JSON.parse(result.stdout).ok).toBe(true)
-        }
-    )
-
     test('Node shim keeps the compiled loop alive after a raw-file path put (#65)', async () => {
         await requireCommand('node')
         const root = await tempRoot('fylo-node-raw-loop-')
@@ -794,11 +716,9 @@ begin
   end
   summary = consume.call
   raise 'queue consumer wrapper did not ack' unless handled == [2] && summary['acknowledged'] == 1
-  access = { 'uid' => Process.uid, 'mode' => 0o600 }
-  sql_id = db.sql("INSERT INTO users (name, score, scope) VALUES ('SQL Ada', 91, 'private-sql')", access)
-  raise 'anonymous SQL leaked protected row' unless db.sql("SELECT * FROM users WHERE scope = 'private-sql'").empty?
-  owner_rows = db.sql("SELECT * FROM users WHERE scope = 'private-sql'", { 'uid' => Process.uid })
-  raise 'owner SQL could not read row' unless owner_rows[sql_id]['name'] == 'SQL Ada'
+  sql_id = db.sql("INSERT INTO users (name, score, scope) VALUES ('SQL Ada', 91, 'sql')")
+  sql_rows = db.sql("SELECT * FROM users WHERE scope = 'sql'")
+  raise 'SQL could not read row' unless sql_rows[sql_id]['name'] == 'SQL Ada'
   puts JSON.generate({ ok: true, id: id, doc: doc, found: found, meta: meta })
 ensure
   db.close

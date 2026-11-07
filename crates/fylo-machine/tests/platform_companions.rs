@@ -121,7 +121,7 @@ fn invocations_work_on_a_root_among_companions() {
     assert_eq!(found(&fixture), [identifier(1), identifier(2)]);
 
     fixture.success(&json!({
-        "op":"migrateLayout","collection":NOTES,"layout":"segments","allowEngineOnlyAccess":true
+        "op":"migrateLayout","collection":NOTES,"layout":"segments"
     }));
     plant(&fixture.root);
     fixture.success(&json!({"op":"compactCollection","collection":NOTES}));

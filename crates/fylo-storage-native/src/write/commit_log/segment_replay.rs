@@ -373,16 +373,16 @@ mod tests {
         for number in numbers.clone().step_by(2) {
             let patch = json!({ "patched": number }).to_string();
             writer
-                .patch_document("items", &identifier(number), patch.as_bytes(), None)
+                .patch_document("items", &identifier(number), patch.as_bytes())
                 .unwrap();
         }
         for number in numbers.clone().step_by(3) {
             writer
-                .delete_document("items", &identifier(number), None)
+                .delete_document("items", &identifier(number))
                 .unwrap();
         }
         writer
-            .restore_document("items", &identifier(numbers.start), None)
+            .restore_document("items", &identifier(numbers.start))
             .unwrap();
     }
 
@@ -453,7 +453,7 @@ mod tests {
         for number in (1..20).filter(|number| number % 3 != 0) {
             let patch = json!({ "again": number }).to_string();
             writer
-                .patch_document("items", &identifier(number), patch.as_bytes(), None)
+                .patch_document("items", &identifier(number), patch.as_bytes())
                 .unwrap();
         }
         fixture.seal();

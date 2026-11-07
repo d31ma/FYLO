@@ -28,7 +28,7 @@
 - [Querying](#querying)
 - [Schema Versioning](#schema-versioning)
 - [Encryption](#encryption)
-- [POSTIX Access Control](#postix-access-control-uid-gid-and-mode)
+- [Access Control](#access-control-application-identities)
 - [Serverless Queue](#serverless-queue)
 - [Remote Access](#remote-access)
 - [CLI & Machine Interface](#cli--machine-interface)
@@ -796,98 +796,66 @@ The CLI accepts the same syntax:
 fylo sql "EXPLAIN SELECT * FROM posts WHERE published = true" --root /mnt/fylo
 ```
 
-### POSTIX access control (UID, GID, and mode)
+### Access control: application identities
 
-POSTIX replaces the former row-level security API with filesystem-native,
-per-record access control. A document/file `put` or SQL `INSERT` can bind a
-developer-supplied POSIX UID, GID, both, or only a mode. Any omitted identity
-retains the new file's native owner/group; omitting `mode` uses `0o600`.
+FYLO grants access per **application identity**, on **protected `.vdbx`
+databases**, and denies by default
+([ADR 0021](docs/adr/0021-application-identities-and-signed-policies.md)).
+An identity is a P-256 key pair one application holds. A protected database
+is encrypted with a key per collection, and each key is wrapped only for the
+identities a signed policy grants it, so the rules hold for any process that
+reads the file, on every platform and in the browser.
 
-```js
-const id = await db.documents.put({ title: 'private' }).as({ uid: 1001, mode: 0o600 })
-const teamId = await db.documents.put({ title: 'team draft' }).as({ gid: editorsGid, mode: 0o660 })
-const managedId = await db.documents
-    .put({ title: 'managed' })
-    .as({ uid: 1001, gid: editorsGid, mode: 0o660 })
-const nativeOwnerId = await db.documents.put({ title: 'native owner' }).as({ mode: 0o600 })
+```bash
+# One key per application; the database's admin gets its own.
+fylo identity create --store file:admin.pem
+fylo identity create --store keychain:myapp-web
+fylo identity show keychain:myapp-web --json   # id (fid1:...) and publicKey (fpk1:...)
 
-await db.documents.get(id).as({ uid: 1001 })
-await db.documents.patch(id, { title: 'updated' }).as({ uid: 1001 })
-await db.documents.delete(id).as({ uid: 1001 })
+# A new database is protected unless created with --unprotected.
+fylo create app.vdbx --admin file:admin.pem
 
-// A trusted membership resolver proves that 1002 belongs to editorsGid.
-await db.documents.patch(teamId, { title: 'reviewed' }).as({ uid: 1002 })
-await db.documents.delete(teamId).as({ uid: 1002 })
+# The admin grants read, write (includes read) or admin on a collection,
+# every collection, or the database.
+fylo access grant app.vdbx --grantee web --key fpk1:p256:... \
+    --actions read --collection users \
+    --identity file:admin.pem --trust-anchor fid1:...
+fylo access revoke app.vdbx --rule web-collection:users \
+    --identity file:admin.pem --trust-anchor fid1:...
+fylo access list app.vdbx --identity keychain:myapp-web --trust-anchor fid1:...
 ```
 
-SQL uses the same execution context without embedding credentials in the SQL
-text:
+- **Opening.** A process opens a protected database as one identity:
+  `fylo.identity` and `fylo.trustAnchor` in `application.json`,
+  `FYLO_IDENTITY` and `FYLO_TRUST_ANCHOR`, or `--identity` and
+  `--trust-anchor`. The trust anchor is the `fid1:` identifier of the admin
+  that created the database; an open without one fails with `EPOLICY`
+  unless the caller opts in to `--trust-on-first-use`, which warns.
+- **Denials.** Without an identity the database is locked (`ENOIDENTITY`).
+  An identity with no grant on a collection gets `EACCES`; a record not
+  signed by an identity that could write it is `ESIGNATURE`.
+- **Writes are signed.** Every record carries its writer's ECDSA signature,
+  which readers check, so a process that only holds a read key cannot add
+  records others accept.
+- **Revocation** writes the next policy version and starts a new key epoch
+  for the collections the rule covered; records written before stay readable
+  to an identity that kept the old key until a rekey rewrites them.
+- **Every entry point** takes the identity: the CLI, `fylo exec --loop`
+  (its handshake reports the identity and its grants), the `fylo` crate
+  (`OpenOptions::with_identity`), `fylo link` for Turso SDKs, SQL over
+  `.vdbx`, and the browser (`identity: { name, workerUrl, trustAnchor }`
+  with a `webcrypto:` key).
+- **Directory roots** stay an unprotected layout for development and
+  tooling: anyone who can read the folder reads every record and every
+  indexed value.
 
-```js
-const sqlId = await db.sql`
-    INSERT INTO documents (title) VALUES (${'team draft'})
-`.as({ gid: editorsGid, mode: 0o660 })
-
-await db.sql`UPDATE documents SET title = ${'updated'} WHERE title = ${'team draft'}`.as({
-    uid: 1002
-})
-```
-
-Fylo applies `chown` and `chmod` to the record and stores a portable access
-descriptor in `user.fylo.access`. It evaluates mode classes with normal POSIX
-precedence: owner bits for the owner UID, otherwise group bits for a member of
-the record GID, otherwise other bits. Membership does not fall through to
-`other` when the selected owner/group bits deny an operation. Group members can
-modify and delete only when the group write bit is set, so use `0o660` rather
-than `0o600` for a group-readable and group-writable record.
-
-The binary supports application-authenticated virtual identities over its
-local NDJSON boundary. Every document and raw-file
-CRUD/query request accepts `access`; the shipped Node client exposes it through
-the same fluent syntax:
-
-```js
-const teamId = await db.messages.put({ title: 'team draft' }).as({ gid: editorsGid, mode: 0o660 })
-
-const actor = {
-    uid: authenticatedUser.uid,
-    groups: await identityProvider.groupIdsFor(authenticatedUser.uid)
-}
-await db.messages.patch(teamId, { title: 'reviewed' }).as(actor)
-await db.attachments
-    .putFile({ path: sourcePath, key: '/mail/attachment.pdf' })
-    .as({ gid: editorsGid, mode: 0o660 })
-```
-
-`access.groups` is a trusted, request-scoped supplementary-GID assertion for
-machine mode only. The cached binary clears it after each request and falls
-back to the host POSIX group resolver when it is omitted. Treat stdin as a
-privileged application boundary: derive both `uid` and `groups` from
-authenticated server state and never copy either from an end-user payload. A
-record written without `.as()` or machine `access` has no descriptor and
-remains open to reads and writes.
-
-The UID is still an authorization claim supplied by your application—Fylo does
-not authenticate it. Validate the caller before passing a UID. The Fylo
-process must also have permission to call `chown`; otherwise the put fails
-atomically. Denied direct operations throw `FyloPermissionError` with
-`code === 'EACCES'`, while queries and SQL omit unreadable records.
-
-This API is available only when the native binary and its binary-backed shims
-run on a POSIX host such as macOS or Linux. It is not a Windows authorization
-boundary, even though Windows supports FYLO's local crash recovery. Browser,
-Explorer, and WebView-based mobile clients (Swift/Kotlin/Flutter) cannot call
-`chown`/`chmod`, so they do not expose `.as()` as an equivalent security
-boundary; those clients must remain behind an authenticated native POSIX
-gateway when POSTIX enforcement is required.
-
-Canonical metadata includes `uid`, `gid`, and `mode` for protected records:
-
-```js
-const { uid, gid, mode, createdAt, updatedAt, mtime } = await db.documents
-    .getMeta(id)
-    .as({ uid: 1001 })
-```
+End-user rules (which person may see which record) stay in your
+application. Per-record POSTIX access (`uid`, `gid`, `mode`, `.as()`,
+`--uid`, `--groups` and the machine `access` field) was removed in this
+release. Roots that carry such descriptors still open, with the descriptors
+ignored and a one-time warning; `fylo access report <root>` lists them and
+`fylo pack --protect` moves the root into a protected database. See
+[Migrating to protected databases](docs/migrating-to-protected-databases.md).
 
 ### Query Strategy
 
@@ -1392,12 +1360,10 @@ Capability records are versioned contracts. `documentBuckets.version === 1`
 advertises raw-file collections (`kind: "file"`), their supported machine
 operations, path/URL ingestion, `getFileData`'s base64 and path outputs, and
 full-content SHA-256 verification.
-`machineAccess.version === 1` advertises the operations that enforce trusted
-POSTIX access, the accepted descriptor and actor fields, and the `EACCES` /
-query-omission denial semantics. `machineAccess` is present only in macOS and
-Linux builds; its absence means the runtime does not provide that authorization
-boundary. Consumers should reject a missing or unknown capability version
-before touching a production root.
+The handshake's top-level `identity` reports the application identity the
+session opens protected databases with, and, when its root is one, the grants
+that identity holds there (`null` without an identity; see
+[api/machine/v1](api/machine/v1/README.md)).
 `serverlessQueue.version === 1` advertises the embedded filesystem queue,
 including its operation names, delivery model, message/claim limits, consumer
 groups, visibility leases, delayed delivery, idempotent publication, and
@@ -1405,12 +1371,8 @@ group-specific dead letters.
 
 Supported operations: `handshake`, `executeSQL`, `createCollection`, `dropCollection`, `inspectCollection`, `rebuildCollection`, `reshardCollection`, `verifyCollection`, `getDoc`, `getFileData`, `getLatest`, `getMeta`, `setMeta`, `findDocs`, `findDeletedDocs`, `restoreDoc`, `joinDocs`, `putData`, `batchPutData`, `patchDoc`, `patchDocs`, `delDoc`, `delDocs`, `importBulkData`, `checkout`, `branch`, `commit`, `log`, `status`, `diff`, `restoreCommit`, `merge`, `schemaInspect`, `schemaCurrent`, `schemaHistory`, `schemaDoctor`, `schemaValidate`, `schemaMaterialize`, `queuePublish`, `queueClaim`, `queueAck`, `queueNack`, `queueExtend`, `queueStats`, `queueDeadLetters`.
 
-Document and raw-file CRUD/query operations accept an optional `access`
-object. Puts accept `{ uid?, gid?, mode? }`; reads, metadata, queries, updates,
-deletes, and restores accept `{ uid }`. A trusted binary-backed application
-may additionally include `groups: number[]` with `uid` for virtual POSIX
-membership. Denied direct operations return `error.code: "EACCES"`; collection
-queries omit unreadable records.
+Requests name no caller: a request that carries the removed `access` object
+is refused with `EBADREQUEST`. Access comes from the session's identity.
 
 #### Bounded NDJSON frames
 
@@ -1444,7 +1406,7 @@ Responses never silently cross the advertised maximum. `findDocs` and
 The result is `{ items, nextCursor, page: { count, limit } }`. The first request
 materializes an immutable, process-scoped snapshot ordered by TTID binary text, so
 concurrent mutations cannot duplicate or skip entries. Cursors are scoped to
-the operation, collection, query, and access identity; they expire after 15
+the operation, collection and query; they expire after 15
 minutes and become invalid when the loop exits. On `EINVALIDCURSOR` or child
 restart, discard partial state and restart from page one. Snapshot state is
 private to the native process, cleaned on completion/expiry/shutdown, and capped
@@ -1470,7 +1432,7 @@ text.
 | `EUNSUPPORTEDOP`                                                       | The operation is unknown to this runtime                                   | Do not retry; check the handshake capabilities                   |
 | `EINVALIDDOCID`                                                        | The supplied document ID is not a valid TTID                               | Do not retry; fix the ID                                         |
 | `EARRAYOFOBJECTS`                                                      | The document contains an array of objects, which the data model rejects    | Do not retry; restructure per the document-model rule below      |
-| `EACCES`                                                               | The access context is not permitted to perform the operation               | Do not retry with the same identity                              |
+| `EACCES`                                                               | The identity has no grant for the operation on a protected database        | Do not retry with the same identity                              |
 | `EQUEUE_INVALID`                                                       | A queue name, identity, option, or idempotency reuse is invalid            | Do not retry without correcting the request                      |
 | `EQUEUE_RECEIPT`                                                       | A queue receipt is incorrect, expired, or already superseded               | Do not acknowledge as that worker                                |
 | `EQUEUE_LIMIT`                                                         | A queue message, claim, delay, attempt, state, or read limit was exceeded  | Reduce the requested resource                                    |

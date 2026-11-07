@@ -310,26 +310,6 @@ export class Fylo {
         return this.ready
     }
 
-    /**
-     * Defer an operation by one microtask so a same-expression `.as(...)` call
-     * can attach trusted UID/GID/mode and virtual-group context first.
-     */
-    _accessOp(op, fields) {
-        let access
-        let started = false
-        const operation = Promise.resolve().then(() => {
-            started = true
-            return this._op(op, { ...fields, access })
-        })
-        return Object.assign(operation, {
-            as(input) {
-                if (started) throw new Error('as() must be called before the operation starts')
-                access = input
-                return operation
-            }
-        })
-    }
-
     // --- Collections ---
     createCollection(collection, kind = 'document', options = {}) {
         return this._op('createCollection', { collection, kind, layout: options.layout })
@@ -464,60 +444,60 @@ export class Fylo {
 
     // --- Documents ---
     putData(collection, data, meta) {
-        return this._accessOp('putData', { collection, data, meta })
+        return this._op('putData', { collection, data, meta })
     }
     batchPutData(collection, batch) {
-        return this._accessOp('batchPutData', { collection, batch })
+        return this._op('batchPutData', { collection, batch })
     }
     putFile(collection, file, fileOptions, meta) {
-        return this._accessOp('putData', { collection, file, fileOptions, meta })
+        return this._op('putData', { collection, file, fileOptions, meta })
     }
     getDoc(collection, id) {
-        return this._accessOp('getDoc', { collection, id })
+        return this._op('getDoc', { collection, id })
     }
     getMeta(collection, id) {
-        return this._accessOp('getMeta', { collection, id })
+        return this._op('getMeta', { collection, id })
     }
     setMeta(collection, id, meta) {
-        return this._accessOp('setMeta', { collection, id, meta })
+        return this._op('setMeta', { collection, id, meta })
     }
     getLatest(collection, id, onlyId = false) {
-        return this._accessOp('getLatest', { collection, id, onlyId })
+        return this._op('getLatest', { collection, id, onlyId })
     }
     patchDoc(collection, id, newDoc, oldDoc) {
-        return this._accessOp('patchDoc', { collection, id, newDoc, oldDoc })
+        return this._op('patchDoc', { collection, id, newDoc, oldDoc })
     }
     patchDocs(collection, update) {
-        return this._accessOp('patchDocs', { collection, update })
+        return this._op('patchDocs', { collection, update })
     }
     delDoc(collection, id) {
-        return this._accessOp('delDoc', { collection, id })
+        return this._op('delDoc', { collection, id })
     }
     delDocs(collection, criteria) {
-        return this._accessOp('delDocs', { collection, delete: criteria })
+        return this._op('delDocs', { collection, delete: criteria })
     }
     restoreDoc(collection, id) {
-        return this._accessOp('restoreDoc', { collection, id })
+        return this._op('restoreDoc', { collection, id })
     }
 
     // --- Query ---
     findDocs(collection, query) {
-        return this._accessOp('findDocs', { collection, query })
+        return this._op('findDocs', { collection, query })
     }
     findDeletedDocs(collection, query = {}) {
-        return this._accessOp('findDeletedDocs', { collection, query })
+        return this._op('findDeletedDocs', { collection, query })
     }
     findDocsPage(collection, query, page = {}) {
-        return this._accessOp('findDocs', { collection, query, page })
+        return this._op('findDocs', { collection, query, page })
     }
     findDeletedDocsPage(collection, query = {}, page = {}) {
-        return this._accessOp('findDeletedDocs', { collection, query, page })
+        return this._op('findDeletedDocs', { collection, query, page })
     }
     joinDocs(join) {
-        return this._accessOp('joinDocs', { join })
+        return this._op('joinDocs', { join })
     }
-    executeSQL(sql, access) {
-        return this._op('executeSQL', { sql, access })
+    executeSQL(sql) {
+        return this._op('executeSQL', { sql })
     }
     /**
      * Tagged-template SQL — interpolated values are escaped, so
@@ -530,19 +510,7 @@ export class Fylo {
         for (let i = 0; i < values.length; i++) {
             statement += Fylo._sqlValue(values[i]) + strings[i + 1]
         }
-        let access
-        let started = false
-        const operation = Promise.resolve().then(() => {
-            started = true
-            return this.executeSQL(statement, access)
-        })
-        return Object.assign(operation, {
-            as(input) {
-                if (started) throw new Error('as() must be called before SQL execution starts')
-                access = input
-                return operation
-            }
-        })
+        return this.executeSQL(statement)
     }
     /** Escape one scalar into a SQL literal. */
     static _sqlValue(value) {

@@ -106,9 +106,9 @@
         <h2>Where the guarantees hold</h2>
         <p>
             Crash recovery is release-gated on local macOS and Linux filesystems and on native x64
-            Windows over NTFS. POSTIX access control requires a POSIX host — it is not a Windows
-            authorization boundary, and browser, Explorer, and WebView clients cannot enforce it at
-            all. The exclusive root lease is a kernel lock and is unsupported on network, clustered,
+            Windows over NTFS. Access grants on a protected <code>.vdbx</code> database are
+            enforced with per-collection keys and signed writes, not with host file permissions.
+            The exclusive root lease is a kernel lock and is unsupported on network, clustered,
             and object-backed filesystems.
         </p>
     </div>

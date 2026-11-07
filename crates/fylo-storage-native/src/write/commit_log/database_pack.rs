@@ -55,10 +55,6 @@ impl NativeWriteRoot {
     /// Pack this directory root into a new `.vdbx` database at `out`, which
     /// must not exist.
     ///
-    /// `allow_engine_only_access` must be set to pack records that name
-    /// another owner, whose access descriptors a database enforces in FYLO
-    /// only, as a segment collection does (ADR 0015 section 10).
-    ///
     /// # Errors
     ///
     /// Returns `ELAYOUTUNSUPPORTED` for a root that uses buckets, version
@@ -67,12 +63,8 @@ impl NativeWriteRoot {
     /// an error for a copy that fails verification, lock contention or an
     /// I/O failure. Only recovery writes the source, as before an export,
     /// and a failed pack leaves no `out`.
-    pub fn pack_database(
-        &self,
-        out: &Path,
-        allow_engine_only_access: bool,
-    ) -> Result<DatabasePackReport, NativeStorageError> {
-        self.pack_with(out, allow_engine_only_access, (None, false))
+    pub fn pack_database(&self, out: &Path) -> Result<DatabasePackReport, NativeStorageError> {
+        self.pack_with(out, (None, false))
     }
 
     /// [`Self::pack_database`], into a database encrypted with `key`
@@ -84,10 +76,9 @@ impl NativeWriteRoot {
     pub fn pack_encrypted_database(
         &self,
         out: &Path,
-        allow_engine_only_access: bool,
         key: &DatabaseKey,
     ) -> Result<DatabasePackReport, NativeStorageError> {
-        self.pack_with(out, allow_engine_only_access, (Some(key), false))
+        self.pack_with(out, (Some(key), false))
     }
 
     /// Pack this root, a directory root or a `.vdbx` database, into a new
@@ -110,16 +101,14 @@ impl NativeWriteRoot {
     pub fn pack_sealed_database(
         &self,
         out: &Path,
-        allow_engine_only_access: bool,
         key: Option<&DatabaseKey>,
     ) -> Result<DatabasePackReport, NativeStorageError> {
-        self.pack_with(out, allow_engine_only_access, (key, true))
+        self.pack_with(out, (key, true))
     }
 
     fn pack_with(
         &self,
         out: &Path,
-        allow_engine_only_access: bool,
         (key, sealed): (Option<&DatabaseKey>, bool),
     ) -> Result<DatabasePackReport, NativeStorageError> {
         if !NativeCollection::SEGMENTS_SUPPORTED {
@@ -155,8 +144,7 @@ impl NativeWriteRoot {
         let out = &Self::pack_output(out);
         Self::require_new_output(out)?;
         let collections = self.packed_collections(&names)?;
-        let (report, built) =
-            self.stage_pack(&collections.1, out, (allow_engine_only_access, key, sealed))?;
+        let (report, built) = self.stage_pack(&collections.1, out, (key, sealed))?;
         Self::adopt_staging(&built, out)?;
         drop(collections);
         Ok(report)
@@ -194,7 +182,7 @@ impl NativeWriteRoot {
         &self,
         collections: &[NativeCollection],
         out: &Path,
-        (allow_engine_only_access, key, sealed): (bool, Option<&DatabaseKey>, bool),
+        (key, sealed): (Option<&DatabaseKey>, bool),
     ) -> Result<(DatabasePackReport, PathBuf), NativeStorageError> {
         let staging = Self::pack_staging(out, Self::PACK_STAGING_SUFFIX)?;
         let sealing = Self::pack_staging(out, Self::SEAL_STAGING_SUFFIX)?;
@@ -204,7 +192,7 @@ impl NativeWriteRoot {
             .build_pack(
                 collections,
                 &staging,
-                (allow_engine_only_access, if sealed { None } else { key }),
+                if sealed { None } else { key },
                 sealed,
             )
             .and_then(|report| {
@@ -453,7 +441,7 @@ impl NativeWriteRoot {
         &self,
         collections: &[NativeCollection],
         staging: &Path,
-        (allow_engine_only_access, key): (bool, Option<&DatabaseKey>),
+        key: Option<&DatabaseKey>,
         sealed: bool,
     ) -> Result<DatabasePackReport, NativeStorageError> {
         let mut options = RootOpenOptions::new(staging);
@@ -467,11 +455,9 @@ impl NativeWriteRoot {
         let outcome = Self::open_profiled(options).and_then(|packed| {
             let mut report = DatabasePackReport::default();
             for collection in collections {
-                report.collections.push(self.pack_collection(
-                    &packed,
-                    collection,
-                    (allow_engine_only_access, sealed),
-                )?);
+                report
+                    .collections
+                    .push(self.pack_collection(&packed, collection, sealed)?);
             }
             Ok(report)
         });
@@ -486,14 +472,9 @@ impl NativeWriteRoot {
         &self,
         packed: &Self,
         source: &NativeCollection,
-        (allow_engine_only_access, sealed): (bool, bool),
+        sealed: bool,
     ) -> Result<PackedCollection, NativeStorageError> {
         let images = DocumentImage::read_collection(source)?;
-        // A database's records have their access enforced in FYLO only
-        // already, so copying them into another changes nothing.
-        if !allow_engine_only_access && !self.root.is_database() {
-            Self::require_owner_only_access(source, &images)?;
-        }
         self.copy_collection(packed, source, &images, sealed)
     }
 

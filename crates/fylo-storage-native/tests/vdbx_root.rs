@@ -208,11 +208,9 @@ fn a_database_keeps_two_collections_in_one_file_across_a_reopen() {
         put(&writer, "orders", number);
     }
     writer
-        .patch_document("users", &identifier(1), br#"{"name":"renamed"}"#, None)
+        .patch_document("users", &identifier(1), br#"{"name":"renamed"}"#)
         .unwrap();
-    writer
-        .delete_document("users", &identifier(2), None)
-        .unwrap();
+    writer.delete_document("users", &identifier(2)).unwrap();
 
     let root = fixture.root();
     assert!(root.is_database());
@@ -430,7 +428,7 @@ fn a_database_refuses_what_it_does_not_hold() {
         unsupported
     );
     assert_eq!(
-        code_of(writer.migrate_layout("users", CollectionLayout::Files, false)),
+        code_of(writer.migrate_layout("users", CollectionLayout::Files)),
         unsupported
     );
     assert_eq!(code_of(writer.reshard_collection("users", 3)), unsupported);

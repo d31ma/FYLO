@@ -51,11 +51,6 @@ impl NativeWriteRoot {
 
     /// Move collection `name` to `layout`.
     ///
-    /// `allow_engine_only_access` must be set to move a collection whose
-    /// records name another owner to segments, where FYLO enforces their
-    /// access descriptors but no longer gives each record its own operating
-    /// system owner (ADR 0015 section 10).
-    ///
     /// # Errors
     ///
     /// Returns an error for a file collection, a non-native profile, a root
@@ -65,7 +60,6 @@ impl NativeWriteRoot {
         &self,
         name: &str,
         layout: CollectionLayout,
-        allow_engine_only_access: bool,
     ) -> Result<LayoutMigrationReport, NativeStorageError> {
         if !NativeCollection::SEGMENTS_SUPPORTED {
             return Err(Self::unsupported(
@@ -85,9 +79,6 @@ impl NativeWriteRoot {
         let report = LayoutMigrationReport::of(name, layout, &images);
         if collection.layout() == layout {
             return Ok(report);
-        }
-        if layout == CollectionLayout::Segments && !allow_engine_only_access {
-            Self::require_owner_only_access(&collection, &images)?;
         }
         let generation = collection.stored_generation()?.generation;
         let target = generation + 2 - generation % 2 + 2;
@@ -174,29 +165,6 @@ impl NativeWriteRoot {
             return Err(Self::unsupported(
                 "collections of a root with version control keep the file layout for now",
             ));
-        }
-        Ok(())
-    }
-
-    /// Refuse records whose descriptor names an owner other than the root's,
-    /// whose operating system ownership a segment collection cannot keep.
-    pub(super) fn require_owner_only_access(
-        collection: &NativeCollection,
-        images: &[DocumentImage],
-    ) -> Result<(), NativeStorageError> {
-        let owner = Self::directory_owner(&collection.path)?;
-        for image in images {
-            let foreign = crate::decode_access_descriptor(&image.attributes)?
-                .is_some_and(|descriptor| Some((descriptor.uid, descriptor.gid)) != owner);
-            if foreign {
-                return Err(NativeStorageError::new(
-                    NativeStorageErrorCode::PermissionDenied,
-                    format!(
-                        "record {} names another owner; segments enforce its access in FYLO only, so pass --allow-engine-only-access to migrate",
-                        image.id
-                    ),
-                ));
-            }
         }
         Ok(())
     }
@@ -525,20 +493,6 @@ impl NativeWriteRoot {
 
     fn marker_path(collection: &NativeCollection) -> Result<PathBuf, NativeStorageError> {
         Ok(LogCheckpoint::state_path(collection)?.with_file_name(Self::MARKER_FILE))
-    }
-
-    #[cfg(unix)]
-    fn directory_owner(path: &Path) -> Result<Option<(u32, u32)>, NativeStorageError> {
-        use std::os::unix::fs::MetadataExt;
-        let metadata = fylo_vfs::symlink_metadata(path).map_err(NativeStorageError::io)?;
-        Ok(Some((metadata.uid(), metadata.gid())))
-    }
-
-    // The signature mirrors the Unix implementation.
-    #[allow(clippy::unnecessary_wraps)]
-    #[cfg(not(unix))]
-    fn directory_owner(_path: &Path) -> Result<Option<(u32, u32)>, NativeStorageError> {
-        Ok(None)
     }
 
     fn unsupported(message: &str) -> NativeStorageError {

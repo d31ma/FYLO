@@ -199,7 +199,7 @@ fn a_file_layout_root_works_among_companions() {
     for number in 0..6 {
         put(&files, number);
     }
-    files.delete_document(ITEMS, &identifier(5), None).unwrap();
+    files.delete_document(ITEMS, &identifier(5)).unwrap();
     assert!(plant(&root) > 20);
 
     // Open and read.
@@ -209,8 +209,8 @@ fn a_file_layout_root_works_among_companions() {
     // Write, delete and restore.
     let files = writer(&root, CollectionLayout::Files);
     put(&files, 6);
-    files.delete_document(ITEMS, &identifier(1), None).unwrap();
-    files.restore_document(ITEMS, &identifier(5), None).unwrap();
+    files.delete_document(ITEMS, &identifier(1)).unwrap();
+    files.restore_document(ITEMS, &identifier(5)).unwrap();
     plant(&root);
     assert_eq!(bodies(&root), expected(&[0, 2, 3, 4, 5, 6]));
     assert_eq!(deleted(&root), [identifier(1)]);
@@ -246,14 +246,12 @@ fn a_file_layout_root_works_among_companions() {
     plant(&root);
     let segments = writer(&root, CollectionLayout::Segments);
     segments
-        .migrate_layout(ITEMS, CollectionLayout::Segments, true)
+        .migrate_layout(ITEMS, CollectionLayout::Segments)
         .unwrap();
     plant(&root);
     assert_eq!(bodies(&root), expected(&[0, 2, 3, 4, 5, 6]));
     put(&segments, 7);
-    segments
-        .delete_document(ITEMS, &identifier(0), None)
-        .unwrap();
+    segments.delete_document(ITEMS, &identifier(0)).unwrap();
     segments.compact_collection(ITEMS).unwrap();
     plant(&root);
     assert_eq!(bodies(&root), expected(&[2, 3, 4, 5, 6, 7]));
@@ -273,7 +271,7 @@ fn a_file_layout_root_works_among_companions() {
 
     // And back to files, then drop: the collection takes its companions.
     segments
-        .migrate_layout(ITEMS, CollectionLayout::Files, true)
+        .migrate_layout(ITEMS, CollectionLayout::Files)
         .unwrap();
     plant(&root);
     assert_eq!(bodies(&root), expected(&[2, 3, 4, 5, 6, 7]));
@@ -318,9 +316,7 @@ fn a_file_collection_and_a_queue_work_among_companions() {
             )
             .unwrap();
     }
-    files
-        .delete_document("assets", &identifier(2), None)
-        .unwrap();
+    files.delete_document("assets", &identifier(2)).unwrap();
     plant(&root);
     let assets = NativeRoot::open(&root)
         .unwrap()
@@ -379,7 +375,7 @@ fn version_control_works_among_companions() {
     let first = files.commit_if_dirty("three").unwrap().unwrap();
     plant(&root);
     put(&files, 3);
-    files.delete_document(ITEMS, &identifier(0), None).unwrap();
+    files.delete_document(ITEMS, &identifier(0)).unwrap();
     files
         .commit_if_dirty("one more, one less")
         .unwrap()
@@ -456,9 +452,9 @@ fn crash_child() {
     let (writer, _lease) = profiled_writer(&root, efs);
     match operation.as_str() {
         "patch" => writer
-            .patch_document(ITEMS, &identifier(1), br#"{"name":"patched"}"#, None)
+            .patch_document(ITEMS, &identifier(1), br#"{"name":"patched"}"#)
             .unwrap(),
-        "delete" => writer.delete_document(ITEMS, &identifier(2), None).unwrap(),
+        "delete" => writer.delete_document(ITEMS, &identifier(2)).unwrap(),
         "put" => put(&writer, 9),
         other => panic!("unknown child operation {other}"),
     }
@@ -563,7 +559,7 @@ fn a_database_beside_companions_opens_writes_packs_and_unpacks() {
         for number in 0..4 {
             put(&writer, number);
         }
-        writer.delete_document(ITEMS, &identifier(3), None).unwrap();
+        writer.delete_document(ITEMS, &identifier(3)).unwrap();
     }
     NativeRoot::close_database(&database).unwrap();
     assert_eq!(bodies(&database), expected(&[0, 1, 2]));
@@ -585,7 +581,7 @@ fn a_database_beside_companions_opens_writes_packs_and_unpacks() {
     let packed = scratch.0.join("packed.vdbx");
     fs::write(scratch.0.join("._packed.vdbx"), APPLE_DOUBLE).unwrap();
     writer(&unpacked, CollectionLayout::Files)
-        .pack_database(&packed, true)
+        .pack_database(&packed)
         .unwrap();
     assert_eq!(bodies(&packed), expected(&[0, 1, 2, 4]));
     let beside = names(&scratch.0);

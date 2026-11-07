@@ -4,6 +4,11 @@
 
 ### Added
 
+- **The machine handshake reports the session's identity (ADR 0021, phase
+  6).** Top-level `identity` is `null` without one, otherwise its `id`,
+  `publicKey` and how the trust anchor is set, and, when the session's root
+  is a protected `.vdbx`, what the identity may do there (`admin`, `grants`
+  per collection) or the code the database refused it with.
 - **`fylo access report <root|db.vdbx>` (ADR 0021, phase 6).** Lists what
   a directory root or a `.vdbx` database uses today and what a move into a
   protected database changes: per collection its layout, live and deleted
@@ -422,6 +427,24 @@
 
 ### Removed
 
+- **Breaking: POSTIX, per-record access control, is removed (ADR 0021,
+  decision Q1).** Access is granted per application identity on protected
+  `.vdbx` databases instead, and denied by default. Gone: the per-record
+  `uid`, `gid` and `mode` descriptors and their `chown`/`chmod` projection
+  onto record files; `.as()` in every client and shim (and the Rust shim's
+  `sql_as` and `sql_access`, and the `access` argument of each client's
+  `executeSQL`/`sql`); the CLI's `--uid` and `--groups`; the machine
+  protocol's per-request `access` object and `capabilities.machineAccess`;
+  the `uid`, `gid` and `mode` in canonical metadata; `EACCES` for records
+  a descriptor denied (it remains for identities without a grant); and
+  `--allow-engine-only-access` of `fylo layout` and `fylo pack`. A machine
+  request that still carries `access`, and the removed CLI flags, fail
+  instead of being ignored (`EBADREQUEST` for the request). Records an
+  earlier release wrote with a descriptor are read in full with the
+  descriptor ignored, and the first such read in a process prints a
+  one-time warning to stderr. `fylo access report` lists them and
+  `fylo pack --protect` migrates the root; see
+  `docs/migrating-to-protected-databases.md`.
 - The `fylo.chex.binary` setting. A configuration that still sets `fylo.chex`
   fails with a message asking you to remove it.
 - **`fylo serve` and `Fylo.connect` were removed before release.** FYLO is an

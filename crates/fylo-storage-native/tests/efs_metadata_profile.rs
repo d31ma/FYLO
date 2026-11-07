@@ -13,7 +13,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use fylo_storage_native::{
     CollectionKind, FilesystemProfile, NativeRoot, NativeStorageErrorCode, NativeWriteRoot,
-    PutDocumentOptions, PutRawFileOptions, RootLease, RootOpenOptions, WriteAccess, WriteActor,
+    PutDocumentOptions, PutRawFileOptions, RootLease, RootOpenOptions,
 };
 use serde_json::{Value, json};
 
@@ -65,11 +65,6 @@ impl Fixture {
         NativeWriteRoot::open_profiled(self.options()).unwrap()
     }
 
-    fn actor(&self) -> WriteActor {
-        let owner = fs::metadata(&self.root).unwrap();
-        WriteActor::new(owner.uid(), [owner.gid()])
-    }
-
     fn reader(&self) -> NativeRoot {
         NativeRoot::open_profiled(self.options()).unwrap()
     }
@@ -92,10 +87,6 @@ impl Fixture {
                         ("reviewer".into(), json!("before")),
                         ("typed".into(), json!({"accepted": true, "count": 2})),
                     ]),
-                    access: WriteAccess {
-                        mode: Some(0o640),
-                        ..WriteAccess::default()
-                    },
                 },
             )
             .unwrap();
@@ -108,10 +99,6 @@ impl Fixture {
                     key: "/seed.bin".into(),
                     extension: ".bin".into(),
                     metadata: BTreeMap::from([("source".into(), json!("seed"))]),
-                    access: WriteAccess {
-                        mode: Some(0o640),
-                        ..WriteAccess::default()
-                    },
                 },
             )
             .unwrap();
@@ -156,10 +143,6 @@ fn identical_document_payloads_cannot_exchange_record_manifests() {
             &first.bytes,
             PutDocumentOptions {
                 metadata: BTreeMap::from([("reviewer".into(), json!("different-record"))]),
-                access: WriteAccess {
-                    mode: Some(0o600),
-                    ..WriteAccess::default()
-                },
             },
         )
         .unwrap();
@@ -194,10 +177,6 @@ fn the_same_document_id_in_another_collection_cannot_supply_its_manifest() {
             &first.bytes,
             PutDocumentOptions {
                 metadata: BTreeMap::from([("reviewer".into(), json!("different-collection"))]),
-                access: WriteAccess {
-                    mode: Some(0o600),
-                    ..WriteAccess::default()
-                },
             },
         )
         .unwrap();
@@ -246,10 +225,6 @@ fn identical_raw_payloads_with_equal_times_cannot_exchange_manifests() {
                 key: "/other-record.bin".into(),
                 extension: ".bin".into(),
                 metadata: BTreeMap::from([("source".into(), json!("different-record"))]),
-                access: WriteAccess {
-                    mode: Some(0o600),
-                    ..WriteAccess::default()
-                },
             },
         )
         .unwrap();
@@ -307,8 +282,7 @@ fn an_unbound_efs_manifest_cannot_be_adopted_or_laundered_by_metadata_writes() {
                 ID,
                 json!({"reviewer":"cannot repair identity"})
                     .as_object()
-                    .unwrap(),
-                Some(&fixture.actor())
+                    .unwrap()
             )
             .is_err()
     );
@@ -498,12 +472,7 @@ fn every_binding_field_and_encoding_must_match_before_metadata_exposure() {
         );
         assert!(
             writer
-                .replace_record_metadata(
-                    "records",
-                    ID,
-                    json!({}).as_object().unwrap(),
-                    Some(&fixture.actor())
-                )
+                .replace_record_metadata("records", ID, json!({}).as_object().unwrap())
                 .is_err()
         );
         assert_eq!(snapshot(&fixture.root), before);
@@ -518,33 +487,19 @@ fn payload_updates_refresh_binding_and_user_attribute_removal_retains_it() {
     let path = records.read_document(ID).unwrap().path;
     let before = attributes(&path)["user.fylo.record-identity"].clone();
     writer
-        .patch_document(
-            "records",
-            ID,
-            br#"{"name":"after","score":43}"#,
-            Some(&fixture.actor()),
-        )
+        .patch_document("records", ID, br#"{"name":"after","score":43}"#)
         .unwrap();
     let after = records.read_document(ID).unwrap();
     assert_ne!(attributes(&after.path)["user.fylo.record-identity"], before);
     let patched = attributes(&after.path)["user.fylo.record-identity"].clone();
     writer
-        .patch_document_fields(
-            "records",
-            ID,
-            json!({"score": 44}).as_object().unwrap(),
-            Some(&fixture.actor()),
-        )
+        .patch_document_fields("records", ID, json!({"score": 44}).as_object().unwrap())
         .unwrap();
     let field_patched = attributes(&after.path)["user.fylo.record-identity"].clone();
     assert_ne!(field_patched, patched);
     assert_eq!(
         writer
-            .execute_sql_mutation(
-                "UPDATE records SET score = 45 WHERE score = 44",
-                Some(&fixture.actor()),
-                WriteAccess::default()
-            )
+            .execute_sql_mutation("UPDATE records SET score = 45 WHERE score = 44")
             .unwrap()
             .affected,
         1
@@ -554,12 +509,7 @@ fn payload_updates_refresh_binding_and_user_attribute_removal_retains_it() {
         field_patched
     );
     writer
-        .replace_record_metadata(
-            "records",
-            ID,
-            json!({}).as_object().unwrap(),
-            Some(&fixture.actor()),
-        )
+        .replace_record_metadata("records", ID, json!({}).as_object().unwrap())
         .unwrap();
     assert!(records.read_custom_metadata(ID).unwrap().is_empty());
     assert!(attributes(&after.path).contains_key("user.fylo.record-identity"));
@@ -648,7 +598,6 @@ fn custom_metadata_limits_and_binding_name_collisions_remain_user_scoped() {
             })
             .as_object()
             .unwrap(),
-            Some(&fixture.actor()),
         )
         .unwrap();
     assert_eq!(
@@ -666,8 +615,7 @@ fn custom_metadata_limits_and_binding_name_collisions_remain_user_scoped() {
                     "too_large": "x".repeat(60 * 1024 - 1)
                 })
                 .as_object()
-                .unwrap(),
-                Some(&fixture.actor())
+                .unwrap()
             )
             .unwrap_err()
             .code(),
@@ -833,10 +781,8 @@ fn document_and_raw_metadata_are_mandatory_private_manifests() {
         records.read_custom_metadata(ID).unwrap()["reviewer"],
         "before"
     );
-    assert_eq!(document.access.unwrap().mode, 0o640);
     assert_private_sidecar(&document.path);
     let manifest = attributes(&document.path);
-    assert!(manifest.contains_key("user.fylo.access"));
     assert!(manifest.contains_key("user.fylo.meta.reviewer"));
 
     let assets = fixture.reader().collection("assets").unwrap();
@@ -844,17 +790,15 @@ fn document_and_raw_metadata_are_mandatory_private_manifests() {
     assert_eq!(raw.key, "/seed.bin");
     assert_eq!(raw.bytes, [0, 1, 2, 255]);
     assert_eq!(raw.custom_metadata["source"], "seed");
-    assert_eq!(raw.access_descriptor.unwrap().mode, 0o640);
     assert_eq!(assets.raw_file_ids().unwrap(), [RAW_ID]);
     assert_private_sidecar(&raw.path);
     assert!(attributes(&raw.path).contains_key("user.fylo.key"));
 }
 
 #[test]
-fn metadata_replacement_and_removal_preserve_payload_time_and_access() {
+fn metadata_replacement_and_removal_preserve_payload_and_time() {
     let fixture = Fixture::empty();
     let writer = fixture.seed();
-    let actor = fixture.actor();
     let records = fixture.reader().collection("records").unwrap();
     let before = records.read_document(ID).unwrap();
     let before_bytes = fs::read(&before.path).unwrap();
@@ -865,7 +809,6 @@ fn metadata_replacement_and_removal_preserve_payload_time_and_access() {
             json!({"reviewer": null, "nested": [1, true, "x"]})
                 .as_object()
                 .unwrap(),
-            Some(&actor),
         )
         .unwrap();
     let metadata = records.read_custom_metadata(ID).unwrap();
@@ -873,7 +816,7 @@ fn metadata_replacement_and_removal_preserve_payload_time_and_access() {
     assert_eq!(metadata["nested"], json!([1, true, "x"]));
     let first_stamp = attributes(&before.path)["user.fylo.meta-updated-at"].clone();
     writer
-        .replace_record_metadata("records", ID, json!({}).as_object().unwrap(), Some(&actor))
+        .replace_record_metadata("records", ID, json!({}).as_object().unwrap())
         .unwrap();
     assert!(records.read_custom_metadata(ID).unwrap().is_empty());
     assert!(
@@ -883,7 +826,6 @@ fn metadata_replacement_and_removal_preserve_payload_time_and_access() {
     let after = records.read_document(ID).unwrap();
     assert_eq!(after.bytes, before_bytes);
     assert_eq!(after.modified_millis, before.modified_millis);
-    assert_eq!(after.access, before.access);
     let stamp = attributes(&before.path)["user.fylo.meta-updated-at"].clone();
     assert!(
         BASE64.decode(stamp).unwrap() > BASE64.decode(first_stamp).unwrap(),
@@ -896,34 +838,24 @@ fn metadata_replacement_and_removal_preserve_payload_time_and_access() {
 fn delete_restore_sql_delete_and_reshard_move_entire_pairs() {
     let fixture = Fixture::empty();
     let writer = fixture.seed();
-    let actor = fixture.actor();
     let records = fixture.reader().collection("records").unwrap();
     let before = records.read_document(ID).unwrap();
     let manifest = fs::read(sidecar(&before.path)).unwrap();
-    writer.delete_document("records", ID, Some(&actor)).unwrap();
+    writer.delete_document("records", ID).unwrap();
     assert!(!before.path.exists());
     assert!(!sidecar(&before.path).exists());
     let deleted = records.read_deleted_document(ID).unwrap();
     assert_eq!(fs::read(sidecar(&deleted.path)).unwrap(), manifest);
-    assert_eq!(deleted.access, before.access);
-    writer
-        .restore_document("records", ID, Some(&actor))
-        .unwrap();
+    writer.restore_document("records", ID).unwrap();
     assert!(!deleted.path.exists());
     assert!(!sidecar(&deleted.path).exists());
     assert_eq!(fs::read(sidecar(&before.path)).unwrap(), manifest);
     writer
-        .execute_sql_mutation(
-            "DELETE FROM records WHERE name = 'Ada'",
-            Some(&actor),
-            WriteAccess::default(),
-        )
+        .execute_sql_mutation("DELETE FROM records WHERE name = 'Ada'")
         .unwrap();
     let deleted = records.read_deleted_document(ID).unwrap();
     assert_eq!(fs::read(sidecar(&deleted.path)).unwrap(), manifest);
-    writer
-        .restore_document("records", ID, Some(&actor))
-        .unwrap();
+    writer.restore_document("records", ID).unwrap();
     assert_eq!(writer.reshard_collection("records", 3).unwrap(), 1);
     let moved = fixture
         .reader()
@@ -936,7 +868,6 @@ fn delete_restore_sql_delete_and_reshard_move_entire_pairs() {
     assert!(!sidecar(&before.path).exists());
     assert_eq!(fs::read(sidecar(&moved.path)).unwrap(), manifest);
     assert_eq!(moved.modified_millis, before.modified_millis);
-    assert_eq!(moved.access, before.access);
     assert_eq!(
         fixture
             .reader()
@@ -949,15 +880,11 @@ fn delete_restore_sql_delete_and_reshard_move_entire_pairs() {
 
     let assets = fixture.reader().collection("assets").unwrap();
     let raw_before = assets.read_raw_file(RAW_ID).unwrap();
-    writer
-        .delete_document("assets", RAW_ID, Some(&actor))
-        .unwrap();
+    writer.delete_document("assets", RAW_ID).unwrap();
     let raw_deleted = assets.read_deleted_raw_file(RAW_ID).unwrap();
     assert_eq!(raw_deleted.key, raw_before.key);
     assert_eq!(raw_deleted.custom_metadata, raw_before.custom_metadata);
-    writer
-        .restore_document("assets", RAW_ID, Some(&actor))
-        .unwrap();
+    writer.restore_document("assets", RAW_ID).unwrap();
     assert_eq!(writer.reshard_collection("assets", 3).unwrap(), 1);
     let raw_after = fixture
         .reader()
@@ -967,7 +894,6 @@ fn delete_restore_sql_delete_and_reshard_move_entire_pairs() {
         .unwrap();
     assert_eq!(raw_after.key, raw_before.key);
     assert_eq!(raw_after.checksum_sha256, raw_before.checksum_sha256);
-    assert_eq!(raw_after.access_descriptor, raw_before.access_descriptor);
     assert_eq!(raw_after.modified_millis, raw_before.modified_millis);
 }
 
@@ -1026,159 +952,11 @@ fn orphan_destination_manifest_rejects_pair_move_without_losing_source() {
     let destination = records.path().join(".deleted").join(relative);
     fs::create_dir_all(destination.parent().unwrap()).unwrap();
     fs::write(sidecar(&destination), b"{}").unwrap();
-    assert!(writer.delete_document("records", ID, None).is_err());
+    assert!(writer.delete_document("records", ID).is_err());
     assert_eq!(records.read_document(ID).unwrap().bytes, before.bytes);
     assert_eq!(fs::read(sidecar(&before.path)).unwrap(), original);
     assert_eq!(fs::read(sidecar(&destination)).unwrap(), b"{}");
     assert!(!destination.exists());
-}
-
-#[test]
-fn cross_owner_projection_and_denied_actor_do_not_mutate_either_member() {
-    let fixture = Fixture::empty();
-    let writer = fixture.seed();
-    let records = fixture.reader().collection("records").unwrap();
-    let before = records.read_document(ID).unwrap();
-    let manifest = fs::read(sidecar(&before.path)).unwrap();
-    let native = fs::metadata(&before.path).unwrap();
-    let foreign_uid = native.uid().wrapping_add(1).max(1);
-    assert!(
-        writer
-            .set_record_access(
-                "records",
-                ID,
-                WriteAccess {
-                    uid: Some(foreign_uid),
-                    ..WriteAccess::default()
-                },
-                None
-            )
-            .is_err()
-    );
-    let unrelated_group = native.gid().wrapping_add(1).max(1);
-    assert!(
-        writer
-            .set_record_access(
-                "records",
-                ID,
-                WriteAccess {
-                    gid: Some(unrelated_group),
-                    ..WriteAccess::default()
-                },
-                None
-            )
-            .is_err()
-    );
-    let anonymous = writer
-        .set_record_metadata(
-            "records",
-            ID,
-            json!({"reviewer": "anonymous"}).as_object().unwrap(),
-            None,
-        )
-        .unwrap_err();
-    assert_eq!(anonymous.code(), NativeStorageErrorCode::PermissionDenied);
-    let denied = WriteActor::new(foreign_uid, []);
-    let error = writer
-        .set_record_metadata(
-            "records",
-            ID,
-            json!({"reviewer": "denied"}).as_object().unwrap(),
-            Some(&denied),
-        )
-        .unwrap_err();
-    assert_eq!(error.code(), NativeStorageErrorCode::PermissionDenied);
-    assert_eq!(records.read_document(ID).unwrap().bytes, before.bytes);
-    assert_eq!(fs::read(sidecar(&before.path)).unwrap(), manifest);
-    assert_eq!(fs::metadata(&before.path).unwrap().uid(), native.uid());
-    assert_eq!(fs::metadata(&before.path).unwrap().gid(), native.gid());
-    assert_eq!(fs::metadata(&before.path).unwrap().mode(), native.mode());
-    assert_eq!(
-        records.read_document(ID).unwrap().modified_millis,
-        before.modified_millis
-    );
-    assert!(!writer.recover_collection("records").unwrap());
-}
-
-#[test]
-fn unsupported_owner_unreadable_modes_are_rejected_before_record_mutation() {
-    fn snapshot(root: &Path) -> BTreeMap<PathBuf, (Vec<u8>, u32, u32, u32, SystemTime)> {
-        fn visit(
-            root: &Path,
-            path: &Path,
-            entries: &mut BTreeMap<PathBuf, (Vec<u8>, u32, u32, u32, SystemTime)>,
-        ) {
-            let metadata = fs::symlink_metadata(path).unwrap();
-            entries.insert(
-                path.strip_prefix(root).unwrap().to_path_buf(),
-                (
-                    if metadata.is_file() {
-                        fs::read(path).unwrap()
-                    } else {
-                        Vec::new()
-                    },
-                    metadata.mode(),
-                    metadata.uid(),
-                    metadata.gid(),
-                    metadata.modified().unwrap(),
-                ),
-            );
-            if metadata.is_dir() {
-                for entry in fs::read_dir(path).unwrap() {
-                    visit(root, &entry.unwrap().path(), entries);
-                }
-            }
-        }
-        let mut entries = BTreeMap::new();
-        visit(root, root, &mut entries);
-        entries
-    }
-
-    let fixture = Fixture::empty();
-    let writer = fixture.seed();
-    let before = snapshot(&fixture.root);
-    let owner = fixture.parent.join(".root.fylo-root-owner.lock.json");
-    let owner_before = fs::read(&owner).unwrap();
-    for mode in [0o000, 0o200, 0o030] {
-        let access = WriteAccess {
-            mode: Some(mode),
-            ..WriteAccess::default()
-        };
-        let error = writer
-            .set_record_access("records", ID, access, None)
-            .unwrap_err();
-        assert_eq!(error.code(), NativeStorageErrorCode::Unsupported);
-        assert_eq!(snapshot(&fixture.root), before);
-        let error = writer
-            .put_document(
-                "records",
-                RAW_ID,
-                br#"{"name":"refused"}"#,
-                PutDocumentOptions {
-                    access,
-                    ..PutDocumentOptions::default()
-                },
-            )
-            .unwrap_err();
-        assert_eq!(error.code(), NativeStorageErrorCode::Unsupported);
-        assert_eq!(snapshot(&fixture.root), before);
-        let error = writer
-            .put_raw_file(
-                "assets",
-                "4VRNF52JPCR",
-                b"refused",
-                &PutRawFileOptions {
-                    key: "/refused.bin".into(),
-                    extension: ".bin".into(),
-                    access,
-                    ..PutRawFileOptions::default()
-                },
-            )
-            .unwrap_err();
-        assert_eq!(error.code(), NativeStorageErrorCode::Unsupported);
-        assert_eq!(snapshot(&fixture.root), before);
-        assert_eq!(fs::read(&owner).unwrap(), owner_before);
-    }
 }
 
 #[test]
@@ -1201,8 +979,7 @@ fn a_lost_root_owner_cannot_continue_writing_or_recovering() {
             .set_record_metadata(
                 "records",
                 ID,
-                json!({"reviewer": "lost"}).as_object().unwrap(),
-                None
+                json!({"reviewer": "lost"}).as_object().unwrap()
             )
             .unwrap_err()
             .code(),
@@ -1220,7 +997,6 @@ fn a_lost_root_owner_cannot_continue_writing_or_recovering() {
 fn profiled_repository_materialization_and_restore_keep_metadata_history() {
     let fixture = Fixture::empty();
     let writer = fixture.seed();
-    let actor = fixture.actor();
     let before = fixture
         .reader()
         .collection("records")
@@ -1245,7 +1021,6 @@ fn profiled_repository_materialization_and_restore_keep_metadata_history() {
     let copied = records.read_document(ID).unwrap();
     assert_eq!(copied.bytes, before.bytes);
     assert_eq!(copied.modified_millis, before.modified_millis);
-    assert_eq!(copied.access, before.access);
     assert_eq!(attributes(&copied.path), attrs);
     assert_private_sidecar(&copied.path);
     let branch_writer = NativeWriteRoot::open_profiled(options()).unwrap();
@@ -1254,7 +1029,6 @@ fn profiled_repository_materialization_and_restore_keep_metadata_history() {
             "records",
             ID,
             json!({"reviewer": "branch"}).as_object().unwrap(),
-            Some(&actor),
         )
         .unwrap();
     let second = branch_writer
@@ -1269,7 +1043,6 @@ fn profiled_repository_materialization_and_restore_keep_metadata_history() {
     assert_eq!(restored.bytes, before.bytes);
     // Existing version-2 objects archive attributes, not historical payload
     // mtime; restoration retains Native materialization-time semantics.
-    assert_eq!(restored.access, before.access);
     assert_eq!(attributes(&restored.path), attrs);
     assert_eq!(
         records.read_custom_metadata(ID).unwrap()["reviewer"],
@@ -1304,8 +1077,7 @@ fn an_open_root_refuses_removed_or_changed_profile_descriptors() {
                 .set_record_metadata(
                     "records",
                     ID,
-                    json!({"reviewer": "must refuse"}).as_object().unwrap(),
-                    None
+                    json!({"reviewer": "must refuse"}).as_object().unwrap()
                 )
                 .is_err()
         );

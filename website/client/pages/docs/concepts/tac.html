@@ -155,16 +155,18 @@
     </div>
 
     <div class="doc-section">
-        <h2>Access descriptor</h2>
+        <h2>Access control</h2>
         <p>
-            POSTIX is FYLO's per-record access control, and it is filesystem-native rather than a
-            parallel permission table. A write can bind a POSIX UID, GID, and mode to the record;
-            FYLO applies <code>chown</code>/<code>chmod</code> and stores a portable descriptor in
-            <code>user.fylo.access</code>.
+            FYLO has no per-record access. Access is granted to application identities on a
+            protected <code>.vdbx</code> database: an admin identity grants <code>read</code>,
+            <code>write</code>, or <code>admin</code>, and each process opens the database as one
+            identity.
         </p>
         <p>
-            The UID is an authorization claim your application supplies — FYLO does not authenticate
-            it. See <a href="/docs/security">Encryption & access</a>.
+            Records from an older root may still carry a <code>user.fylo.access</code> descriptor.
+            Reads ignore it, and <code>fylo pack --protect</code> drops it or keeps it as the
+            metadata field <code>legacyAccess</code>. See
+            <a href="/docs/security">Encryption & access</a>.
         </p>
     </div>
 

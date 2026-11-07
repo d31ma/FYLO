@@ -25,7 +25,7 @@ export default class {
         },
         {
             code: 'EACCES',
-            meaning: 'The access context is not permitted to perform the operation.',
+            meaning: 'The application identity has no grant for the operation.',
             retry: 'Do not retry with the same identity.'
         },
         {

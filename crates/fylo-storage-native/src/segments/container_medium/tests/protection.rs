@@ -328,7 +328,7 @@ fn a_sealed_pack_refuses_a_protected_database() {
     let out = database.directory.join("copy.vdbx");
     let error = database
         .writer()
-        .pack_sealed_database(&out, false, None)
+        .pack_sealed_database(&out, None)
         .unwrap_err();
     assert_eq!(error.code(), NativeStorageErrorCode::Unsupported);
     assert!(!out.exists());
@@ -681,7 +681,7 @@ fn compaction_signs_the_records_it_rewrites() {
     write_ledger(&database);
     let writer = database.writer();
     put(&writer, LEDGER, SECOND);
-    writer.delete_document(LEDGER, SECOND, None).unwrap();
+    writer.delete_document(LEDGER, SECOND).unwrap();
     writer.compact_collection(LEDGER).unwrap();
     drop(writer);
     database.reopen();

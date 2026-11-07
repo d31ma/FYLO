@@ -3,20 +3,6 @@
     "$id": "https://fylo.del.ma/api/machine/v1/schema.json",
     "title": "FYLO machine protocol v1",
     "$defs": {
-        "access": {
-            "type": "object",
-            "properties": {
-                "uid": { "type": "integer", "minimum": 0 },
-                "gid": { "type": "integer", "minimum": 0 },
-                "mode": { "type": "integer", "minimum": 0, "maximum": 4095 },
-                "groups": {
-                    "type": "array",
-                    "items": { "type": "integer", "minimum": 0 },
-                    "uniqueItems": true
-                }
-            },
-            "additionalProperties": false
-        },
         "request": {
             "type": "object",
             "required": ["op"],
@@ -127,7 +113,6 @@
                 "id": { "type": "string" },
                 "onlyId": { "type": "boolean" },
                 "sql": { "type": "string" },
-                "access": { "$ref": "#/$defs/access" },
                 "query": { "type": "object" },
                 "page": {
                     "type": "object",

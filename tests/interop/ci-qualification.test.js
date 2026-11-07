@@ -87,11 +87,11 @@ describe('Rust CI qualification contract', () => {
 
         expect(manifest.criterion).toBe('unique-cause-mcdc')
         expect(manifest.scope).toContain('not whole-core')
-        expect(manifest.decisions).toHaveLength(6)
+        expect(manifest.decisions).toHaveLength(5)
         expect(
             manifest.decisions.reduce((sum, decision) => sum + decision.conditions.length, 0)
-        ).toBe(27)
-        expect(new Set(manifest.decisions.map(({ id }) => id)).size).toBe(6)
+        ).toBe(23)
+        expect(new Set(manifest.decisions.map(({ id }) => id)).size).toBe(5)
         expect(verifier).toContain('another condition changed in the independence pair')
         expect(verifier).toContain('compiled MC/DC proof tests')
         expect(verifier).toContain('emitted MC/DC proof files')

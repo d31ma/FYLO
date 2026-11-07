@@ -9,7 +9,7 @@ use super::document_source::DocumentSource;
 use super::resident_collection::ResidentCollection;
 use super::resident_document::ResidentDocument;
 use crate::index_plan::IndexPlan;
-use crate::{AccessContext, EngineError, ReadDocument, ReadOnlyEngine};
+use crate::{EngineError, ReadDocument, ReadOnlyEngine};
 
 /// Answers reads of one collection from a [`HotSet`], reading storage only
 /// for what is not resident.
@@ -26,8 +26,8 @@ pub(crate) struct HotReader<'a> {
 }
 
 /// A resident read that may come back with `None`, meaning the hot set was
-/// behind storage, and an inner `None` meaning the actor may not read it.
-type ResidentRead = Option<Option<Arc<ResidentDocument>>>;
+/// behind storage.
+type ResidentRead = Option<Arc<ResidentDocument>>;
 
 /// A header, and the collection it was just read from when it was not
 /// resident, so the rest of the read does not open it again.
@@ -47,22 +47,14 @@ impl<'a> HotReader<'a> {
         Ok(self.header()?.0.kind())
     }
 
-    pub(crate) fn get(
-        &self,
-        identifier: &str,
-        actor: Option<&AccessContext>,
-    ) -> Result<ReadDocument, EngineError> {
-        let resident = self.resident_get(identifier, actor)?;
-        self.answer_get(resident, identifier, actor)
+    pub(crate) fn get(&self, identifier: &str) -> Result<ReadDocument, EngineError> {
+        let resident = self.resident_get(identifier)?;
+        self.answer_get(resident, identifier)
     }
 
-    pub(crate) fn find(
-        &self,
-        query: &StructuredQuery,
-        actor: Option<&AccessContext>,
-    ) -> Result<Vec<ReadDocument>, EngineError> {
-        let resident = self.resident_find(query, actor)?;
-        self.answer_find(resident, query, actor)
+    pub(crate) fn find(&self, query: &StructuredQuery) -> Result<Vec<ReadDocument>, EngineError> {
+        let resident = self.resident_find(query)?;
+        self.answer_find(resident, query)
     }
 
     pub(crate) const fn engine(&self) -> &ReadOnlyEngine {
@@ -111,17 +103,13 @@ impl<'a> HotReader<'a> {
         Ok((header, Some(collection)))
     }
 
-    fn resident_get(
-        &self,
-        identifier: &str,
-        actor: Option<&AccessContext>,
-    ) -> Result<ResidentRead, EngineError> {
+    fn resident_get(&self, identifier: &str) -> Result<ResidentRead, EngineError> {
         let (header, collection) = self.header()?;
         if !header.is_document_collection() {
             return Ok(None);
         }
         let mut source = DocumentSource::new(self, header, collection);
-        let document = source.document(identifier, actor)?;
+        let document = source.document(identifier)?;
         Ok(source.finish()?.then_some(document))
     }
 
@@ -129,22 +117,18 @@ impl<'a> HotReader<'a> {
         &self,
         resident: ResidentRead,
         identifier: &str,
-        actor: Option<&AccessContext>,
     ) -> Result<ReadDocument, EngineError> {
-        let Some(document) = resident else {
-            return self
+        match resident {
+            Some(document) => Ok(document.record().clone()),
+            None => self
                 .engine
-                .get_from_storage(self.key.collection(), identifier, actor);
-        };
-        document
-            .map(|document| document.record().clone())
-            .ok_or_else(ReadOnlyEngine::access_denied)
+                .get_from_storage(self.key.collection(), identifier),
+        }
     }
 
     fn resident_find(
         &self,
         query: &StructuredQuery,
-        actor: Option<&AccessContext>,
     ) -> Result<Option<Vec<ReadDocument>>, EngineError> {
         let (header, collection) = self.header()?;
         if !header.is_document_collection() {
@@ -152,7 +136,7 @@ impl<'a> HotReader<'a> {
         }
         let mut source = DocumentSource::new(self, Arc::clone(&header), collection);
         let candidates = Self::candidates(&mut source, &header, query)?;
-        let rows = Self::matching_rows(&mut source, &candidates, query, actor)?;
+        let rows = Self::matching_rows(&mut source, &candidates, query)?;
         Ok(source.finish()?.then_some(rows))
     }
 
@@ -160,13 +144,10 @@ impl<'a> HotReader<'a> {
         &self,
         resident: Option<Vec<ReadDocument>>,
         query: &StructuredQuery,
-        actor: Option<&AccessContext>,
     ) -> Result<Vec<ReadDocument>, EngineError> {
         match resident {
             Some(rows) => Ok(rows),
-            None => self
-                .engine
-                .find_from_storage(self.key.collection(), query, actor),
+            None => self.engine.find_from_storage(self.key.collection(), query),
         }
     }
 
@@ -197,12 +178,11 @@ impl<'a> HotReader<'a> {
         source: &mut DocumentSource<'_>,
         candidates: &[String],
         query: &StructuredQuery,
-        actor: Option<&AccessContext>,
     ) -> Result<Vec<ReadDocument>, EngineError> {
         let mut rows = Vec::new();
         let mut remaining = candidates.iter();
         while let Some(identifier) = Self::next_candidate(&mut remaining, query, rows.len()) {
-            rows.extend(Self::matching_row(source, identifier, query, actor)?);
+            rows.extend(Self::matching_row(source, identifier, query)?);
         }
         Ok(rows)
     }
@@ -225,10 +205,9 @@ impl<'a> HotReader<'a> {
         source: &mut DocumentSource<'_>,
         identifier: &str,
         query: &StructuredQuery,
-        actor: Option<&AccessContext>,
     ) -> Result<Option<ReadDocument>, EngineError> {
-        let document = source.document(identifier, actor)?;
-        Ok(document.and_then(|document| Self::matched(&document, query)))
+        let document = source.document(identifier)?;
+        Ok(Self::matched(&document, query))
     }
 
     fn matched(document: &ResidentDocument, query: &StructuredQuery) -> Option<ReadDocument> {

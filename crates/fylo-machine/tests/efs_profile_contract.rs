@@ -449,7 +449,6 @@ fn additive_native_session_preserves_the_existing_handshake_and_frame_contract()
     }
     for key in [
         "exclusiveRoot",
-        "machineAccess",
         "documentBuckets",
         "queryPagination",
         "serverlessQueue",

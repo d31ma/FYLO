@@ -6,7 +6,7 @@ use fylo_storage_native::NativeCollection;
 use super::hot_reader::HotReader;
 use super::resident_collection::ResidentCollection;
 use super::resident_document::ResidentDocument;
-use crate::{AccessContext, EngineError, ReadOnlyEngine};
+use crate::{EngineError, ReadOnlyEngine};
 
 /// The parts one read needs, from the hot set when resident and from storage
 /// otherwise.
@@ -43,15 +43,20 @@ impl<'a> DocumentSource<'a> {
         }
     }
 
-    /// One document the actor may read, or `None` when its descriptor denies
-    /// the actor. A denied document is not parsed, as without a hot set.
+    /// One document, from the hot set when resident and from storage
+    /// otherwise.
     pub(crate) fn document(
         &mut self,
         identifier: &str,
-        actor: Option<&AccessContext>,
-    ) -> Result<Option<Arc<ResidentDocument>>, EngineError> {
-        let document = self.resident_or_stored(identifier, actor)?;
-        Ok(document.filter(|document| crate::read_access_allowed(document.access(), actor)))
+    ) -> Result<Arc<ResidentDocument>, EngineError> {
+        let resident =
+            self.reader
+                .hot_set()
+                .document(self.reader.key(), self.generation(), identifier);
+        match resident {
+            Some(document) => Ok(document),
+            None => self.stored_document(identifier),
+        }
     }
 
     pub(crate) fn snapshot(&mut self) -> Result<Arc<IndexSnapshot>, EngineError> {
@@ -90,41 +95,19 @@ impl<'a> DocumentSource<'a> {
         self.header.generation()
     }
 
-    fn resident_or_stored(
-        &mut self,
-        identifier: &str,
-        actor: Option<&AccessContext>,
-    ) -> Result<Option<Arc<ResidentDocument>>, EngineError> {
-        let resident =
-            self.reader
-                .hot_set()
-                .document(self.reader.key(), self.generation(), identifier);
-        match resident {
-            Some(document) => Ok(Some(document)),
-            None => self.stored_document(identifier, actor),
-        }
-    }
-
-    fn stored_document(
-        &mut self,
-        identifier: &str,
-        actor: Option<&AccessContext>,
-    ) -> Result<Option<Arc<ResidentDocument>>, EngineError> {
+    fn stored_document(&mut self, identifier: &str) -> Result<Arc<ResidentDocument>, EngineError> {
         let stored = self
             .collection()?
             .read_document(identifier)
             .map_err(EngineError::storage)?;
-        if !crate::read_access_allowed(stored.access, actor) {
-            return Ok(None);
-        }
         let record = self.reader.engine().build_record(
             self.reader.key().collection(),
             identifier,
             &stored,
         )?;
-        let document = Arc::new(ResidentDocument::new(record, stored.access));
+        let document = Arc::new(ResidentDocument::new(record));
         self.documents.push(Arc::clone(&document));
-        Ok(Some(document))
+        Ok(document)
     }
 
     fn stored_snapshot(&mut self) -> Result<Arc<IndexSnapshot>, EngineError> {

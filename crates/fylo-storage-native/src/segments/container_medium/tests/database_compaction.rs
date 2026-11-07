@@ -100,7 +100,6 @@ fn patch(writer: &NativeWriteRoot, number: usize, round: usize) {
             "items",
             &identifier(number),
             patched(number, round).to_string().as_bytes(),
-            None,
         )
         .unwrap();
 }
@@ -154,7 +153,7 @@ impl Database {
         }
         for number in DELETED.chain(BULK) {
             writer
-                .delete_document("items", &identifier(number), None)
+                .delete_document("items", &identifier(number))
                 .unwrap();
         }
         for number in 0..OTHERS {

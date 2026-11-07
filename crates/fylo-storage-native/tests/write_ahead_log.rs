@@ -217,16 +217,11 @@ fn patch_delete_and_restore_round_trip_through_the_log() {
     put(&writer, 6);
     let id = identifier(6);
     writer
-        .patch_document_fields(
-            "items",
-            &id,
-            json!({"group": 99}).as_object().unwrap(),
-            None,
-        )
+        .patch_document_fields("items", &id, json!({"group": 99}).as_object().unwrap())
         .unwrap();
-    writer.delete_document("items", &id, None).unwrap();
+    writer.delete_document("items", &id).unwrap();
     assert!(!fixture.live(&id));
-    writer.restore_document("items", &id, None).unwrap();
+    writer.restore_document("items", &id).unwrap();
     let stored = NativeRoot::open(&fixture.0)
         .unwrap()
         .collection("items")

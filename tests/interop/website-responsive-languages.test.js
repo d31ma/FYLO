@@ -60,22 +60,29 @@ describe('website template companion state', () => {
     })
 })
 
-describe('website POSIX access guidance', () => {
-    test('explains UID, GID, mode-only writes, and trusted group resolution', async () => {
+describe('website application identity guidance', () => {
+    test('explains identities, grants, and trust anchors instead of per-record access', async () => {
         const [features, faq, docs] = await Promise.all([
             Bun.file(path.join(root, 'website/client/components/features/grid/tac.html')).text(),
             Bun.file(path.join(root, 'website/client/components/faq/panels/tac.html')).text(),
             Bun.file(path.join(root, 'website/client/components/docs/content/tac.js')).text()
         ])
 
-        expect(features).toMatch(/POSIX\s+UID\/GID\/mode enforcement/)
-        expect(features).toContain('Encryption & POSIX access')
-        expect(faq).toContain('gid: editorsGid, mode: 0o660')
-        expect(faq).toContain('Group write permission')
-        expect(faq).toContain('request-scoped virtual groups')
-        expect(docs).toContain('groups: [editorsGid]')
-        expect(docs).toContain('.as({ uid: 1001, gid: editorsGid, mode: 0o660 })')
-        expect(docs).toContain('.as({ mode: 0o600 })')
+        expect(features).toContain('Encryption & application identities')
+        expect(features).toMatch(/signed grants for application\s+identities on protected \.vdbx/)
+        expect(faq).toContain('How do I control who can read or write data?')
+        expect(faq).toMatch(/fylo identity create/)
+        expect(faq).toMatch(/fylo access grant/)
+        expect(faq).toContain('--trust-anchor')
+        expect(faq).toContain('Per-record access was removed.')
+        expect(docs).toContain('fylo identity create --store file:app.pem')
+        expect(docs).toContain('fylo create app.vdbx --admin file:admin.pem')
+        expect(docs).toContain(
+            'fylo access grant app.vdbx --grantee web --key fpk1:... --actions read --collection users'
+        )
+        expect(docs).toContain('--identity file:app.pem --trust-anchor fid1:...')
+        expect(docs).not.toContain('.as(')
+        expect(docs).not.toContain('POSTIX')
     })
 
     test('says encryption is opt-in and off by default, including for .vdbx', async () => {
@@ -139,7 +146,7 @@ describe('website child-scoped FYLO configuration', () => {
         expect(features).toContain('independently configured roots can share one application')
         expect(faq).toContain('Can one application run multiple FYLO configurations?')
         expect(faq).toContain('without mutating the host environment')
-        expect(features).toContain('Encryption & POSIX access')
+        expect(features).toContain('Encryption & application identities')
         expect(sampleMarkup).toContain('role="group" aria-label="Language"')
         expect(sampleMarkup).not.toContain('role="tab"')
         expect(sampleMarkup).not.toContain('role="tablist"')

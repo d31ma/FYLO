@@ -56,6 +56,7 @@ mod filesystem_profile;
 mod index_cache;
 mod index_limit;
 mod lease;
+mod legacy_access_warning;
 mod log_position;
 mod platform_companion;
 mod profile_manifest;
@@ -69,6 +70,7 @@ mod validation_mode;
 mod write;
 
 use beneath_open::BeneathOpen;
+use legacy_access_warning::LegacyAccessWarning;
 use spelling_cache::SpellingCache;
 
 pub use access_action::AccessAction;
@@ -140,7 +142,7 @@ pub use write::{
 };
 pub use write::{
     DocumentCodec, DocumentWrite, NativeWriteRoot, PlainDocumentCodec, PutDocumentOptions,
-    PutRawFileOptions, WriteAccess, WriteActor, schema_violations,
+    PutRawFileOptions, schema_violations,
 };
 pub use write::{SqlMutationResult, SqlMutationResultKind, unix_millis};
 
@@ -539,6 +541,7 @@ impl NativeRoot {
         Ok(())
     }
 
+    #[cfg(unix)]
     pub(crate) fn efs_identity(&self) -> Option<(u32, u32)> {
         self.descriptor.as_ref().map(|value| (value.uid, value.gid))
     }
@@ -2287,14 +2290,14 @@ impl NativeCollection {
             validate_ttid_shape(identifier)?;
         }
         let store = self.segment_store()?;
-        store
+        Ok(store
             .documents(identifiers, segments::LocationState::Live)?
             .into_iter()
             .map(|document| {
                 let path = store.medium().segment_path(document.location.segment);
                 document.into_stored(path)
             })
-            .collect()
+            .collect())
     }
 
     fn read_segment_document(
@@ -2305,7 +2308,7 @@ impl NativeCollection {
         let store = self.segment_store()?;
         let document = store.document(identifier, state)?;
         let path = store.medium().segment_path(document.location.segment);
-        document.into_stored(path)
+        Ok(document.into_stored(path))
     }
 
     /// Read one live record's developer metadata (`user.fylo.meta.*` xattrs).
@@ -2375,10 +2378,10 @@ impl NativeCollection {
         let bytes = read_sized(&mut file, metadata.len(), MAX_DOCUMENT_BYTES)?;
         attributes.verify(&self.root, &file, &path)?;
         attributes.verify_contents(&self.root, &path, &bytes)?;
+        LegacyAccessWarning::notice(&attributes);
         Ok(StoredBytes {
             bytes,
             modified_millis: modified_millis(&metadata)?,
-            access: decode_access_descriptor(&attributes)?,
             path,
         })
     }
@@ -2430,8 +2433,8 @@ impl NativeCollection {
         Ok((path, opened))
     }
 
-    /// Read one raw file with its durable object key, custom metadata,
-    /// checksum, and native ownership/mode metadata.
+    /// Read one raw file with its durable object key, custom metadata and
+    /// checksum.
     ///
     /// Native Unix data and xattrs use the same verified open file. The EFS
     /// profile retains separate verified payload and manifest handles; trusted
@@ -2491,7 +2494,7 @@ impl NativeCollection {
         let key = required_utf8_attribute(&attributes, KEY_XATTR, identifier)?;
         validate_raw_key(&key)?;
         let custom_metadata = decode_custom_metadata(&attributes)?;
-        let access_descriptor = decode_access_descriptor(&attributes)?;
+        LegacyAccessWarning::notice(&attributes);
         let bytes = read_bounded(
             (&mut file).take(MAX_RAW_FILE_BYTES.saturating_add(1)),
             MAX_RAW_FILE_BYTES,
@@ -2523,9 +2526,7 @@ impl NativeCollection {
             content_type: raw_file_content_type(&extension).to_owned(),
             checksum_sha256,
             custom_metadata,
-            access_descriptor,
             modified_millis,
-            access: native_access(&metadata),
             path,
         })
     }
@@ -2798,8 +2799,6 @@ pub struct StoredBytes {
     pub bytes: Vec<u8>,
     /// Filesystem modification time in whole Unix milliseconds.
     pub modified_millis: u64,
-    /// Optional portable FYLO access descriptor.
-    pub access: Option<AccessDescriptor>,
     /// Verified native path.
     pub path: PathBuf,
 }
@@ -2819,32 +2818,17 @@ pub struct StoredRawFile {
     pub checksum_sha256: String,
     /// Developer-defined JSON metadata.
     pub custom_metadata: BTreeMap<String, Value>,
-    /// Optional portable FYLO access descriptor.
-    pub access_descriptor: Option<AccessDescriptor>,
     /// Filesystem modification time in whole Unix milliseconds.
     pub modified_millis: u64,
-    /// Native owner, group, and mode where the platform exposes them.
-    pub access: NativeAccess,
     /// Verified native path.
     pub path: PathBuf,
 }
 
-/// Native file access metadata.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct NativeAccess {
-    /// POSIX owner ID when available.
-    pub uid: Option<u32>,
-    /// POSIX group ID when available.
-    pub gid: Option<u32>,
-    /// POSIX permission and special bits when available.
-    pub mode: Option<u32>,
-}
-
-/// Portable FYLO access descriptor stored in `user.fylo.access`.
+/// POSTIX access descriptor an old record keeps in `user.fylo.access`,
+/// read only by `fylo access report` and `fylo pack --protect` (ADR 0021).
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct AccessDescriptor {
+pub(crate) struct AccessDescriptor {
     /// Descriptor format version.
     pub version: u8,
     /// Owning user ID.
@@ -3096,7 +3080,7 @@ pub enum NativeStorageErrorCode {
     NotFound,
     /// Another writer owns the collection or recovery is required.
     ConcurrentWrite,
-    /// A portable access descriptor denied the operation.
+    /// The identity this root was opened with may not do the operation.
     PermissionDenied,
     /// Another live process owns this root.
     RootLocked,
@@ -3667,25 +3651,6 @@ fn raw_file_content_type(extension: &str) -> &'static str {
         ".xml" => "application/xml",
         ".zip" => "application/zip",
         _ => "application/octet-stream",
-    }
-}
-
-#[cfg(unix)]
-fn native_access(metadata: &Metadata) -> NativeAccess {
-    use std::os::unix::fs::MetadataExt;
-    NativeAccess {
-        uid: Some(metadata.uid()),
-        gid: Some(metadata.gid()),
-        mode: Some(metadata.mode() & 0o7777),
-    }
-}
-
-#[cfg(not(unix))]
-fn native_access(_metadata: &Metadata) -> NativeAccess {
-    NativeAccess {
-        uid: None,
-        gid: None,
-        mode: None,
     }
 }
 
@@ -4615,7 +4580,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn reads_raw_bytes_custom_metadata_and_native_access() {
+    fn reads_a_raw_file_whose_record_keeps_an_access_descriptor() {
         let fixture = TestRoot::create();
         let expected_path = fixture.create_raw_file();
         let collection = NativeRoot::open(&fixture.0)
@@ -4636,16 +4601,6 @@ mod tests {
         assert_eq!(
             stored.custom_metadata.get("reviewed"),
             Some(&Value::Bool(true))
-        );
-        assert_eq!(stored.access.mode, Some(0o640));
-        assert_eq!(
-            stored.access_descriptor,
-            Some(AccessDescriptor {
-                version: 1,
-                uid: 1000,
-                gid: 100,
-                mode: 0o640,
-            })
         );
         assert_eq!(stored.checksum_sha256.len(), 64);
     }

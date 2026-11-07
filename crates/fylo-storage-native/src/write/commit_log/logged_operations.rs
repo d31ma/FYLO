@@ -9,9 +9,8 @@ use serde_json::{Map, Value};
 
 use super::super::{
     CapturedAttribute, DocumentCodec, DocumentPolicy, DocumentWrite, NativeWriteRoot,
-    SqlMutationResult, SqlMutationResultKind, WriteAccess, WriteActor, capture_attributes,
-    deleted_document_path, json_error, matching_documents, merge_top_level, next_meta_updated_at,
-    record_target, require_write_access,
+    SqlMutationResult, SqlMutationResultKind, capture_attributes, deleted_document_path,
+    json_error, matching_documents, merge_top_level, next_meta_updated_at, record_target,
 };
 use super::commit_plan::{CommitPlan, Ownership};
 use super::logged_writer::Planned;
@@ -29,22 +28,16 @@ impl NativeWriteRoot {
     /// Largest blob area a plan may build before falling back to the journal.
     const LOG_BLOB_BUDGET: usize = LogRecord::MAX_BODY_BYTES - 1024 * 1024;
     const OVER_BUDGET: &'static str = "mutation exceeds the write-ahead log record limit";
-    pub(crate) const DEFAULT_ACCESS_MODE: u32 = 0o600;
 
     pub(crate) fn put_document_logged(
         &self,
         collection: &NativeCollection,
         identifier: &str,
         canonical: &[u8],
-        (metadata, access): (&BTreeMap<String, Value>, WriteAccess),
+        metadata: &BTreeMap<String, Value>,
     ) -> Result<(), NativeStorageError> {
         if collection.uses_segments() {
-            return self.put_document_segmented(
-                collection,
-                identifier,
-                canonical,
-                (metadata, access),
-            );
+            return self.put_document_segmented(collection, identifier, canonical, metadata);
         }
         let after = Self::document_keys(identifier, canonical)?;
         self.commit_logged(collection, || {
@@ -60,9 +53,14 @@ impl NativeWriteRoot {
                 ));
             }
             self.verify_parent(&target)?;
-            let (attributes, ownership) = self.initial_attributes(&target, metadata, access)?;
+            let attributes = Self::initial_attributes(metadata)?;
             let mut plan = CommitPlan::new("put-document");
-            plan.create(collection, &target, (canonical, attributes), ownership)?;
+            plan.create(
+                collection,
+                &target,
+                (canonical, attributes),
+                Ownership::default(),
+            )?;
             plan.index_delta(&BTreeSet::new(), &after);
             Ok((Some(plan), ()))
         })
@@ -76,12 +74,11 @@ impl NativeWriteRoot {
         collection: &NativeCollection,
         writes: &[DocumentWrite],
         bodies: &[Option<Vec<u8>>],
-        access: WriteAccess,
     ) -> Result<(), NativeStorageError> {
         if collection.uses_segments() {
-            return self.commit_document_writes_segmented(collection, writes, bodies, access);
+            return self.commit_document_writes_segmented(collection, writes, bodies);
         }
-        self.commit_document_writes_logged(collection, writes, bodies, access)
+        self.commit_document_writes_logged(collection, writes, bodies)
     }
 
     pub(crate) fn commit_document_writes_logged(
@@ -89,7 +86,6 @@ impl NativeWriteRoot {
         collection: &NativeCollection,
         writes: &[DocumentWrite],
         bodies: &[Option<Vec<u8>>],
-        access: WriteAccess,
     ) -> Result<(), NativeStorageError> {
         self.commit_logged(collection, || {
             let mut plan = CommitPlan::new("write-documents");
@@ -109,9 +105,13 @@ impl NativeWriteRoot {
                             ));
                         }
                         self.verify_parent(&target)?;
-                        let (attributes, ownership) =
-                            self.initial_attributes(&target, &BTreeMap::new(), access)?;
-                        plan.create(collection, &target, (canonical, attributes), ownership)?;
+                        let attributes = Self::initial_attributes(&BTreeMap::new())?;
+                        plan.create(
+                            collection,
+                            &target,
+                            (canonical, attributes),
+                            Ownership::default(),
+                        )?;
                         plan.index_delta(
                             &BTreeSet::new(),
                             &Self::document_keys(identifier, canonical)?,
@@ -151,15 +151,13 @@ impl NativeWriteRoot {
         &self,
         collection: &NativeCollection,
         identifier: &str,
-        actor: Option<&WriteActor>,
         mut patch: impl FnMut(&[u8]) -> Result<Vec<u8>, NativeStorageError>,
     ) -> Result<(), NativeStorageError> {
         if collection.uses_segments() {
-            return self.patch_document_segmented(collection, identifier, actor, patch);
+            return self.patch_document_segmented(collection, identifier, patch);
         }
         self.commit_logged(collection, || {
             let stored = collection.read_document(identifier)?;
-            require_write_access(stored.access, actor)?;
             let canonical = patch(&stored.bytes)?;
             let before = Self::document_keys(identifier, &stored.bytes)?;
             let after = Self::document_keys(identifier, &canonical)?;
@@ -175,14 +173,12 @@ impl NativeWriteRoot {
         &self,
         collection: &NativeCollection,
         identifier: &str,
-        actor: Option<&WriteActor>,
     ) -> Result<(), NativeStorageError> {
         if collection.uses_segments() {
-            return self.delete_document_segmented(collection, identifier, actor);
+            return self.delete_document_segmented(collection, identifier);
         }
         self.commit_logged(collection, || {
             let stored = collection.read_document(identifier)?;
-            require_write_access(stored.access, actor)?;
             let target = deleted_document_path(collection, identifier);
             Self::require_no_tombstone(&target)?;
             let mut plan = CommitPlan::new("delete-document");
@@ -199,15 +195,13 @@ impl NativeWriteRoot {
         &self,
         collection: &NativeCollection,
         identifier: &str,
-        actor: Option<&WriteActor>,
     ) -> Result<(), NativeStorageError> {
         if collection.uses_segments() {
-            return self.restore_document_segmented(collection, identifier, actor);
+            return self.restore_document_segmented(collection, identifier);
         }
         self.commit_logged(collection, || {
             Self::require_no_live_record(collection, identifier)?;
             let deleted = collection.read_deleted_document(identifier)?;
-            require_write_access(deleted.access, actor)?;
             let target = collection
                 .path
                 .join("docs")
@@ -228,19 +222,12 @@ impl NativeWriteRoot {
         collection: &NativeCollection,
         identifier: &str,
         (record, replace): (&Map<String, Value>, bool),
-        actor: Option<&WriteActor>,
     ) -> Result<(), NativeStorageError> {
         if collection.uses_segments() {
-            return self.write_record_metadata_segmented(
-                collection,
-                identifier,
-                (record, replace),
-                actor,
-            );
+            return self.write_record_metadata_segmented(collection, identifier, (record, replace));
         }
         self.commit_logged(collection, || {
-            let (target, access) = record_target(collection, identifier)?;
-            require_write_access(access, actor)?;
+            let target = record_target(collection, identifier)?;
             let mut record = record.clone();
             if replace {
                 for name in collection.read_custom_metadata(identifier)?.keys() {
@@ -267,54 +254,18 @@ impl NativeWriteRoot {
         })
     }
 
-    pub(crate) fn set_record_access_logged(
-        &self,
-        collection: &NativeCollection,
-        identifier: &str,
-        access: WriteAccess,
-        actor: Option<&WriteActor>,
-    ) -> Result<(), NativeStorageError> {
-        if collection.uses_segments() {
-            return self.set_record_access_segmented(collection, identifier, access, actor);
-        }
-        self.commit_logged(collection, || {
-            let (target, descriptor) = record_target(collection, identifier)?;
-            require_write_access(descriptor, actor)?;
-            let (uid, gid) = Self::file_owner(&target)?;
-            let ownership = Ownership {
-                mode: Some(access.mode.unwrap_or(Self::DEFAULT_ACCESS_MODE)),
-                uid: Some(access.uid.unwrap_or(uid)),
-                gid: Some(access.gid.unwrap_or(gid)),
-            };
-            let mut attributes = Self::attribute_map(capture_attributes(&target)?);
-            attributes.insert(
-                crate::ACCESS_XATTR.into(),
-                Self::access_attribute(ownership)?,
-            );
-            let mut plan = CommitPlan::new("set-access");
-            plan.set_attributes(
-                collection,
-                &target,
-                Self::attribute_list(attributes),
-                ownership,
-            )?;
-            Ok((Some(plan), ()))
-        })
-    }
-
     pub(crate) fn sql_update_logged(
         &self,
         collection: &NativeCollection,
         (query, changes): (&StructuredQuery, &Map<String, Value>),
-        actor: Option<&WriteActor>,
         policy: &DocumentPolicy<'_>,
     ) -> Result<SqlMutationResult, NativeStorageError> {
         if collection.uses_segments() {
-            return self.sql_update_segmented(collection, (query, changes), actor, policy);
+            return self.sql_update_segmented(collection, (query, changes), policy);
         }
         self.commit_logged(collection, || {
             policy.restart();
-            let documents = matching_documents(collection, query, actor, policy)?;
+            let documents = matching_documents(collection, query, policy)?;
             let mut plan = CommitPlan::new("update-many");
             let mut identifiers = Vec::with_capacity(documents.len());
             for mut document in documents {
@@ -344,14 +295,13 @@ impl NativeWriteRoot {
         &self,
         collection: &NativeCollection,
         query: &StructuredQuery,
-        actor: Option<&WriteActor>,
         codec: &dyn DocumentCodec,
     ) -> Result<SqlMutationResult, NativeStorageError> {
         if collection.uses_segments() {
-            return self.sql_delete_segmented(collection, query, actor, codec);
+            return self.sql_delete_segmented(collection, query, codec);
         }
         self.commit_logged(collection, || {
-            let documents = matching_documents(collection, query, actor, codec)?;
+            let documents = matching_documents(collection, query, codec)?;
             let mut plan = CommitPlan::new("delete-many");
             let mut identifiers = Vec::with_capacity(documents.len());
             for document in documents {
@@ -435,76 +385,13 @@ impl NativeWriteRoot {
     }
 
     fn initial_attributes(
-        &self,
-        target: &Path,
         metadata: &BTreeMap<String, Value>,
-        access: WriteAccess,
-    ) -> Result<(Vec<CapturedAttribute>, Ownership), NativeStorageError> {
+    ) -> Result<Vec<CapturedAttribute>, NativeStorageError> {
         let mut attributes = BTreeMap::new();
         for (name, value) in metadata {
             Self::set_metadata_attribute(&mut attributes, name, value)?;
         }
-        if access.is_empty() {
-            return Ok((Self::attribute_list(attributes), Ownership::default()));
-        }
-        let (uid, gid) = match (access.uid, access.gid) {
-            (Some(uid), Some(gid)) => (uid, gid),
-            _ => self.creator_identity(target)?,
-        };
-        let ownership = Ownership {
-            mode: Some(access.mode.unwrap_or(Self::DEFAULT_ACCESS_MODE)),
-            uid: Some(access.uid.unwrap_or(uid)),
-            gid: Some(access.gid.unwrap_or(gid)),
-        };
-        attributes.insert(
-            crate::ACCESS_XATTR.into(),
-            Self::access_attribute(ownership)?,
-        );
-        Ok((Self::attribute_list(attributes), ownership))
-    }
-
-    /// The owner and group a file this process creates beside `target` gets,
-    /// which is what the journal path records when a put names neither.
-    fn creator_identity(&self, target: &Path) -> Result<(u32, u32), NativeStorageError> {
-        let parent = target.parent().ok_or_else(|| {
-            NativeStorageError::new(NativeStorageErrorCode::UnsafePath, "target has no parent")
-        })?;
-        super::super::ensure_directory(&self.root, parent)?;
-        let probe = super::super::sibling_scratch(target);
-        fylo_vfs::OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&probe)
-            .map_err(NativeStorageError::io)?;
-        let owner = Self::file_owner(&probe);
-        fylo_vfs::remove_file(&probe).map_err(NativeStorageError::io)?;
-        owner
-    }
-
-    #[cfg(unix)]
-    fn file_owner(path: &Path) -> Result<(u32, u32), NativeStorageError> {
-        use std::os::unix::fs::MetadataExt;
-        let metadata = fylo_vfs::symlink_metadata(path).map_err(NativeStorageError::io)?;
-        Ok((metadata.uid(), metadata.gid()))
-    }
-
-    #[cfg(not(unix))]
-    fn file_owner(_path: &Path) -> Result<(u32, u32), NativeStorageError> {
-        Err(NativeStorageError::new(
-            NativeStorageErrorCode::Unsupported,
-            "UID/GID/mode access control is available only on POSIX platforms",
-        ))
-    }
-
-    pub(crate) fn access_attribute(ownership: Ownership) -> Result<String, NativeStorageError> {
-        let descriptor = crate::AccessDescriptor {
-            version: 1,
-            uid: ownership.uid.unwrap_or_default(),
-            gid: ownership.gid.unwrap_or_default(),
-            mode: ownership.mode.unwrap_or(Self::DEFAULT_ACCESS_MODE),
-        };
-        let encoded = serde_json::to_vec(&descriptor).map_err(|error| json_error(&error))?;
-        Ok(BASE64.encode(encoded))
+        Ok(Self::attribute_list(attributes))
     }
 
     pub(crate) fn set_metadata_attribute(

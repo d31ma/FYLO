@@ -34,7 +34,7 @@ export default class {
         {
             href: '/docs/security',
             title: 'Encryption & access',
-            text: 'AES-GCM field encryption with blind indexes and POSTIX per-record UID/GID/mode.'
+            text: 'AES-GCM field encryption with blind indexes and access grants for application identities.'
         },
         {
             href: '/docs/versioning',

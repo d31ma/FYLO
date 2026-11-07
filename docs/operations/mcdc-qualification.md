@@ -21,15 +21,14 @@ condition pair in JavaScript. It writes the retained aggregate evidence to
 
 | Safety boundary      | Qualified decision                                             | Conditions |
 | -------------------- | -------------------------------------------------------------- | ---------: |
-| Authorization        | Public, owner, group, and other read paths                     |          4 |
 | Concurrency          | Stable state and unchanged generation after a read             |          2 |
 | Network import       | Supported private and special-use IPv4 classes                 |          7 |
 | Queue recovery       | Stored-message format, identity, topic, and timestamp ordering |          4 |
 | Queue leasing        | Receipt validity and attempt bounds                            |          4 |
 | Transaction recovery | Manifest format, identity, operation, and capture invariants   |          6 |
 
-The gate currently proves 27 independently effective conditions across six
-decisions using 33 evaluated cases. The matrices execute the production
+The gate currently proves 23 independently effective conditions across five
+decisions using 28 evaluated cases. The matrices execute the production
 predicates and emit their actual condition vectors; they do not test a copied
 boolean expression.
 
@@ -51,7 +50,7 @@ rather than relabeling region coverage as MC/DC.
 
 | Capability                      | SQLite published position                     | Fylo position after this gate                            |
 | ------------------------------- | --------------------------------------------- | -------------------------------------------------------- |
-| MC/DC scope                     | 100% of the core SQLite library               | Six registered safety-critical decisions                 |
+| MC/DC scope                     | 100% of the core SQLite library               | Five registered safety-critical decisions                |
 | Criterion                       | Condition outcomes plus independent influence | Unique-cause independent influence                       |
 | Evidence                        | TH3 plus coverage-build instrumentation       | Public manifest, Rust matrices, and retained JSON report |
 | Whole-core claim                | Yes                                           | No                                                       |

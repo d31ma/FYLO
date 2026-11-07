@@ -204,11 +204,9 @@ fn write_orders(database: &Encrypted) {
     }
     put(&writer, "notes", 1, &json!({ "text": CANARY }));
     writer
-        .patch_document(LEDGER, &identifier(3), br#"{"city":"Moose Jaw"}"#, None)
+        .patch_document(LEDGER, &identifier(3), br#"{"city":"Moose Jaw"}"#)
         .unwrap();
-    writer
-        .delete_document(LEDGER, &identifier(4), None)
-        .unwrap();
+    writer.delete_document(LEDGER, &identifier(4)).unwrap();
     // A checkpoint seals the location and index snapshots too.
     writer.rebuild_collection(LEDGER).unwrap();
     put(&writer, LEDGER, 40, &order(40));
@@ -316,9 +314,7 @@ fn without_its_key_an_encrypted_database_is_locked_and_refuses_every_write() {
         ("drop", writer.drop_collection("notes")),
         (
             "delete",
-            writer
-                .delete_document(LEDGER, &identifier(1), None)
-                .map(drop),
+            writer.delete_document(LEDGER, &identifier(1)).map(drop),
         ),
     ];
     for (write, outcome) in refusals {
@@ -510,7 +506,7 @@ fn an_older_version_replayed_over_the_newest_is_never_served() {
             let patch = json!({ "padding": format!("{round:02}{}", &padding[2..]) });
             database
                 .writer()
-                .patch_document("west", &identifier(1), patch.to_string().as_bytes(), None)
+                .patch_document("west", &identifier(1), patch.to_string().as_bytes())
                 .unwrap();
             let newest = frame_at(&database, "west", lsn_of(&database, "west", 1));
             let older = versions
@@ -725,9 +721,7 @@ fn churned(label: &str) -> Encrypted {
         put(&writer, LEDGER, number, &large_order(number));
     }
     for number in 41..200 {
-        writer
-            .delete_document(LEDGER, &identifier(number), None)
-            .unwrap();
+        writer.delete_document(LEDGER, &identifier(number)).unwrap();
     }
     database
 }

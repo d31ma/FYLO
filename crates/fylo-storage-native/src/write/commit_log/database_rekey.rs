@@ -99,7 +99,7 @@ impl NativeWriteRoot {
             // A database's records have their access enforced in FYLO only
             // already, so copying them changes nothing.
             let (report, built) = Self::renewing(&database, writer.is_some(), || {
-                self.stage_pack(&collections.1, &path, (true, key, sealed))
+                self.stage_pack(&collections.1, &path, (key, sealed))
             })?;
             Self::replace_database(&database, writer, (&built, &path))?;
             drop(collections);

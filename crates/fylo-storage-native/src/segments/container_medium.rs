@@ -1162,15 +1162,6 @@ impl SegmentMedium for ContainerMedium {
         Ok(())
     }
 
-    /// The container file's owner.
-    #[cfg(unix)]
-    fn owner(&self) -> Result<(u32, u32), NativeStorageError> {
-        use std::os::unix::fs::MetadataExt;
-        let metadata =
-            fylo_vfs::symlink_metadata(self.shared.file.path()).map_err(NativeStorageError::io)?;
-        Ok((metadata.uid(), metadata.gid()))
-    }
-
     /// The index snapshot is a run the checkpoint slot names, and the keys
     /// past it are replayed from the records.
     fn keeps_index(&self) -> bool {

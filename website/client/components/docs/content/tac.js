@@ -640,30 +640,26 @@ export default class {
 
     securityCode() {
         return [
-            '# Encryption is declared in the schema; record access is bound at write time.',
+            '# Encryption is declared in the schema; access is granted per application identity.',
             '',
             '# 1. Encrypt fields: list them in the collection schema.',
             '#    <fylo.schema>/users/history/v1.schema.json',
             '{ "$encrypted": ["email", "ssn"], "name": "^.+$", "email": "^.+@.+$" }',
             '',
-            '# 2. POSTIX: bind a POSIX UID, GID, and mode to a record:',
-            '# Native binary and binary-backed shims on macOS/Linux POSIX hosts only.',
-            '# Windows, Browser, Explorer, and WebView/mobile clients require an authenticated native POSIX gateway.',
-            "const db = new Fylo('/mnt/fylo')",
+            '# 2. Create identities and a protected database.',
+            'fylo identity create --store file:admin.pem',
+            'fylo identity create --store file:app.pem',
+            'fylo create app.vdbx --admin file:admin.pem   # prints the trust anchor, fid1:...',
+            'fylo identity show file:app.pem --json        # prints the public key, fpk1:...',
             '',
-            "const id = await db.users.put({ name: 'Ada' }).as({ uid: 1001, mode: 0o600 })",
-            "const managedId = await db.users.put({ name: 'Lin' }).as({ uid: 1001, gid: editorsGid, mode: 0o660 })",
-            "const nativeId = await db.users.put({ name: 'Ken' }).as({ mode: 0o600 })",
-            'await db.users.get(id).as({ uid: 1001 })',
-            "await db.sql`UPDATE users SET active = true WHERE name = ${'Ada'}`.as({ uid: 1001 })",
-            "const teamId = await db.users.put({ name: 'Grace' }).as({ gid: editorsGid, mode: 0o660 })",
-            'await db.users.patch(teamId, { active: true }).as({ uid: memberUid })',
-            '# Binary Node shim: trusted application state may supply virtual groups per request.',
-            'await db.users.patch(teamId, { active: true }).as({ uid: memberUid, groups: [editorsGid] })',
-            '# put/INSERT accept UID, GID, both, or mode alone; omitted mode defaults to 0o600.',
-            '# Never forward uid/groups from an end-user payload; the local NDJSON boundary is privileged.',
-            '# Owner, group, then other mode bits apply.',
-            '# Records written without .as() remain open.'
+            '# 3. Grant the application identity read access to one collection.',
+            'fylo access grant app.vdbx --grantee web --key fpk1:... --actions read --collection users \\',
+            '    --identity file:admin.pem --trust-anchor fid1:...',
+            '',
+            '# 4. Open the database as that identity, pinned to the admin that created it.',
+            'fylo exec --loop --root app.vdbx --identity file:app.pem --trust-anchor fid1:...',
+            '# Shims read fylo.identity and fylo.trustAnchor from application.json,',
+            '# or FYLO_IDENTITY and FYLO_TRUST_ANCHOR from the environment.'
         ].join('\n')
     }
 

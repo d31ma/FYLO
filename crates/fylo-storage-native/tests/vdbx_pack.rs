@@ -224,11 +224,9 @@ fn a_file_layout_root_packs_and_unpacks_to_the_same_files() {
     let mut metadata = Map::new();
     metadata.insert("team".into(), json!("blue"));
     files
-        .set_record_metadata("items", &identifier(5), &metadata, None)
+        .set_record_metadata("items", &identifier(5), &metadata)
         .unwrap();
-    files
-        .delete_document("items", &identifier(9), None)
-        .unwrap();
+    files.delete_document("items", &identifier(9)).unwrap();
     files
         .set_validation_mode("notes", ValidationMode::Warn)
         .unwrap();
@@ -245,7 +243,7 @@ fn a_file_layout_root_packs_and_unpacks_to_the_same_files() {
     let bodies = documents(&NativeRoot::open(&source).unwrap(), "items");
 
     let out = scratch.0.join("db.vdbx");
-    let report = files.pack_database(&out, false).unwrap();
+    let report = files.pack_database(&out).unwrap();
     let counts: Vec<_> = report
         .collections
         .iter()
@@ -319,19 +317,17 @@ fn a_segment_root_unpacks_to_what_export_writes() {
     }
     for number in [3, 7, 11] {
         segments
-            .delete_document("items", &identifier(number), None)
+            .delete_document("items", &identifier(number))
             .unwrap();
     }
-    segments
-        .restore_document("items", &identifier(7), None)
-        .unwrap();
+    segments.restore_document("items", &identifier(7)).unwrap();
     let exported = scratch.0.join("exported");
     segments.export_collection("items", &exported).unwrap();
     let expected = collection_tree(&exported);
     let bodies = documents(&NativeRoot::open(&source).unwrap(), "items");
 
     let out = scratch.0.join("db.vdbx");
-    let report = segments.pack_database(&out, false).unwrap();
+    let report = segments.pack_database(&out).unwrap();
     assert_eq!(report.collections[0].documents, 348);
     assert_eq!(report.collections[0].deleted, 2);
     assert_eq!(report.collections[0].schema_versions, 2);
@@ -452,13 +448,11 @@ fn a_pack_without_writes_after_it_unpacks_to_the_export_byte_for_byte() {
     for number in 0..40 {
         put(&segments, "items", number, 100);
     }
-    segments
-        .delete_document("items", &identifier(4), None)
-        .unwrap();
+    segments.delete_document("items", &identifier(4)).unwrap();
     let exported = scratch.0.join("exported");
     segments.export_collection("items", &exported).unwrap();
     let out = scratch.0.join("db.vdbx");
-    segments.pack_database(&out, false).unwrap();
+    segments.pack_database(&out).unwrap();
     let unpacked = scratch.0.join("unpacked");
     NativeWriteRoot::open(&out)
         .unwrap()
@@ -483,7 +477,7 @@ fn pack_refuses_what_a_database_does_not_hold() {
     files
         .create_collection("assets", CollectionKind::File, None)
         .unwrap();
-    let error = files.pack_database(&out, false).unwrap_err();
+    let error = files.pack_database(&out).unwrap_err();
     assert_eq!(error.code(), NativeStorageErrorCode::LayoutUnsupported);
     assert!(error.to_string().contains("buckets"), "{error}");
     assert!(error.to_string().contains("\"assets\""), "{error}");
@@ -491,7 +485,7 @@ fn pack_refuses_what_a_database_does_not_hold() {
     let versioned = scratch.root("versioned");
     fs::create_dir_all(versioned.join(".fylo-vcs")).unwrap();
     let error = writer(&versioned, CollectionLayout::Files)
-        .pack_database(&out, false)
+        .pack_database(&out)
         .unwrap_err();
     assert_eq!(error.code(), NativeStorageErrorCode::LayoutUnsupported);
     assert!(error.to_string().contains("version control"), "{error}");
@@ -499,7 +493,7 @@ fn pack_refuses_what_a_database_does_not_hold() {
     let queued = scratch.root("queued");
     fs::create_dir_all(queued.join(".fylo-queue/v1")).unwrap();
     let error = writer(&queued, CollectionLayout::Files)
-        .pack_database(&out, false)
+        .pack_database(&out)
         .unwrap_err();
     assert_eq!(error.code(), NativeStorageErrorCode::LayoutUnsupported);
     assert!(error.to_string().contains("embedded queue"), "{error}");
@@ -515,16 +509,16 @@ fn pack_refuses_what_a_database_does_not_hold() {
         .unwrap();
     put(&writer, "items", 1, 0);
     fs::write(&out, b"keep me").unwrap();
-    let error = writer.pack_database(&out, false).unwrap_err();
+    let error = writer.pack_database(&out).unwrap_err();
     assert_eq!(error.code(), NativeStorageErrorCode::Unsupported);
     assert_eq!(fs::read(&out).unwrap(), b"keep me");
     fs::remove_file(&out).unwrap();
 
     // Pack takes a directory root, and unpack a database.
-    writer.pack_database(&out, false).unwrap();
+    writer.pack_database(&out).unwrap();
     let database = NativeWriteRoot::open(&out).unwrap();
     let error = database
-        .pack_database(&scratch.0.join("again.vdbx"), false)
+        .pack_database(&scratch.0.join("again.vdbx"))
         .unwrap_err();
     assert_eq!(error.code(), NativeStorageErrorCode::Unsupported);
     let error = writer
@@ -551,7 +545,7 @@ fn a_stopped_packs_staging_file_is_removed_by_the_next_pack() {
     fs::write(scratch.0.join(".db.vdbx.pack-staging"), b"half a database").unwrap();
     fs::write(scratch.0.join(".db.vdbx.pack-staging.lease.3"), b"{}").unwrap();
     let out = scratch.0.join("db.vdbx");
-    files.pack_database(&out, false).unwrap();
+    files.pack_database(&out).unwrap();
     assert_eq!(scratch.names(), ["db.vdbx", "source"]);
     assert_eq!(
         documents(&NativeRoot::open(&out).unwrap(), "items").len(),
@@ -567,9 +561,9 @@ fn pack_both(
     key: Option<&DatabaseKey>,
 ) -> (PathBuf, PathBuf, DatabasePackReport) {
     let plain = scratch.0.join("plain.vdbx");
-    writer.pack_database(&plain, false).unwrap();
+    writer.pack_database(&plain).unwrap();
     let sealed = scratch.0.join("sealed.vdbx");
-    let report = writer.pack_sealed_database(&sealed, false, key).unwrap();
+    let report = writer.pack_sealed_database(&sealed, key).unwrap();
     (plain, sealed, report)
 }
 
@@ -591,7 +585,7 @@ fn a_sealed_pack_unpacks_to_what_export_writes() {
     }
     for number in [3, 7] {
         segments
-            .delete_document("items", &identifier(number), None)
+            .delete_document("items", &identifier(number))
             .unwrap();
     }
     let exported = scratch.0.join("exported");
@@ -668,19 +662,17 @@ fn a_live_database_backs_up_to_a_sealed_pack() {
         put(&database, "items", number, 50);
     }
     put(&database, "notes", 1, 0);
-    database
-        .delete_document("items", &identifier(4), None)
-        .unwrap();
+    database.delete_document("items", &identifier(4)).unwrap();
     let before = documents(&NativeRoot::open(&live).unwrap(), "items");
 
     // A plain pack still takes only a directory root.
     let error = database
-        .pack_database(&scratch.0.join("copy.vdbx"), false)
+        .pack_database(&scratch.0.join("copy.vdbx"))
         .unwrap_err();
     assert_eq!(error.code(), NativeStorageErrorCode::Unsupported);
     assert!(error.to_string().contains("--sealed"), "{error}");
     let backup = scratch.0.join("backup.vdbx");
-    let report = database.pack_sealed_database(&backup, false, None).unwrap();
+    let report = database.pack_sealed_database(&backup, None).unwrap();
     let counts: Vec<_> = report
         .collections
         .iter()
@@ -702,7 +694,7 @@ fn a_live_database_backs_up_to_a_sealed_pack() {
     let again = scratch.0.join("again.vdbx");
     NativeWriteRoot::open(&backup)
         .unwrap()
-        .pack_sealed_database(&again, false, None)
+        .pack_sealed_database(&again, None)
         .unwrap();
     assert_eq!(
         documents(&NativeRoot::open(&again).unwrap(), "items"),
@@ -770,21 +762,18 @@ fn an_encrypted_sealed_pack_round_trips_with_its_key() {
 
     // An encrypted database is backed up only into an encrypted pack.
     let encrypted = scratch.0.join("encrypted.vdbx");
-    files
-        .pack_encrypted_database(&encrypted, false, &key)
-        .unwrap();
+    files.pack_encrypted_database(&encrypted, &key).unwrap();
     let live = NativeWriteRoot::open_profiled(
         RootOpenOptions::new(&encrypted).with_database_key(key.clone()),
     )
     .unwrap();
     let error = live
-        .pack_sealed_database(&scratch.0.join("leak.vdbx"), false, None)
+        .pack_sealed_database(&scratch.0.join("leak.vdbx"), None)
         .unwrap_err();
     assert_eq!(error.code(), NativeStorageErrorCode::KeyRequired);
     assert!(!scratch.0.join("leak.vdbx").exists());
     let backup = scratch.0.join("backup.vdbx");
-    live.pack_sealed_database(&backup, false, Some(&key))
-        .unwrap();
+    live.pack_sealed_database(&backup, Some(&key)).unwrap();
     let reopened =
         NativeRoot::open_profiled(RootOpenOptions::new(&backup).with_database_key(key.clone()))
             .unwrap();
@@ -805,7 +794,7 @@ fn a_sealed_database_refuses_every_write() {
         .unwrap();
     put(&files, "items", 1, 0);
     let sealed = scratch.0.join("sealed.vdbx");
-    files.pack_sealed_database(&sealed, false, None).unwrap();
+    files.pack_sealed_database(&sealed, None).unwrap();
     let original = fs::read(&sealed).unwrap();
 
     let database = NativeWriteRoot::open(&sealed).unwrap();
@@ -816,7 +805,7 @@ fn a_sealed_database_refuses_every_write() {
             b"{\"name\":\"new\"}",
             PutDocumentOptions::default(),
         ),
-        database.delete_document("items", &identifier(1), None),
+        database.delete_document("items", &identifier(1)),
         database
             .create_collection("more", CollectionKind::Document, None)
             .map(|_created| ()),
@@ -853,7 +842,7 @@ fn verify_finds_a_damaged_sealed_block_and_reads_fail_cleanly() {
         put(&files, "items", number, 100);
     }
     let sealed = scratch.0.join("sealed.vdbx");
-    files.pack_sealed_database(&sealed, false, None).unwrap();
+    files.pack_sealed_database(&sealed, None).unwrap();
     // The first stored block of the collection's segment extent, from the
     // block index.
     let file = ContainerFile::open_reader(&sealed).unwrap();

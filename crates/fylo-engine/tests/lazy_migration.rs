@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use fylo_engine::{HotSet, ReadOnlyEngine, WriteEngine};
 use fylo_query::{JoinSpec, QueryLimits, StructuredQuery, prepare_sql};
-use fylo_storage_native::{CollectionKind, NativeRoot, NativeWriteRoot, WriteAccess};
+use fylo_storage_native::{CollectionKind, NativeRoot, NativeWriteRoot};
 use serde_json::{Map, Value, json};
 
 const PEOPLE: &str = "people";
@@ -124,12 +124,7 @@ impl Fixture {
 
     fn put(&self, collection: &str, identifier: &str, data: &Value) {
         self.writer()
-            .put_document(
-                collection,
-                identifier,
-                data.as_object().unwrap().clone(),
-                WriteAccess::default(),
-            )
+            .put_document(collection, identifier, data.as_object().unwrap().clone())
             .unwrap();
     }
 
@@ -220,7 +215,7 @@ fn every_read_path_returns_the_head_shape_and_leaves_storage_alone() {
         QueryLimits::default(),
     )
     .unwrap();
-    let joined = serde_json::to_value(reader.join(&join, None).unwrap()).unwrap();
+    let joined = serde_json::to_value(reader.join(&join).unwrap()).unwrap();
     assert_eq!(
         joined,
         json!({ format!("{ADA}, {ALAN}"): {"name":"Ada Lovelace","country":"UK"} })
@@ -228,11 +223,11 @@ fn every_read_path_returns_the_head_shape_and_leaves_storage_alone() {
 
     fixture
         .writer()
-        .patch_document_fields(PEOPLE, GRACE, &Map::new(), None)
+        .patch_document_fields(PEOPLE, GRACE, &Map::new())
         .unwrap();
     NativeWriteRoot::open(&fixture.root)
         .unwrap()
-        .delete_document(PEOPLE, ADA, None)
+        .delete_document(PEOPLE, ADA)
         .unwrap();
     let deleted = reader.get_deleted(PEOPLE, ADA).unwrap();
     assert_eq!(deleted.document.fields()["name"], "Ada Lovelace");
@@ -300,7 +295,7 @@ fn a_query_on_a_renamed_field_answers_the_same_before_and_after_migration() {
     check("before migration");
     let writer = fixture.writer();
     for identifier in [ADA, GRACE] {
-        writer.migrate_document(PEOPLE, identifier, None).unwrap();
+        writer.migrate_document(PEOPLE, identifier).unwrap();
     }
     hot_set.clear();
     assert_eq!(fixture.stored(ADA)["name"], "Ada Lovelace");
@@ -330,12 +325,7 @@ fn encrypted_fields_decrypt_at_the_written_version_and_then_migrate() {
     // at the head with the head's encryption list.
     fixture
         .writer()
-        .patch_document_fields(
-            PEOPLE,
-            ADA,
-            json!({"city":"Paris"}).as_object().unwrap(),
-            None,
-        )
+        .patch_document_fields(PEOPLE, ADA, json!({"city":"Paris"}).as_object().unwrap())
         .unwrap();
     let patched = fixture.stored(ADA);
     assert_eq!(patched["_v"], "v2");
@@ -351,10 +341,7 @@ fn encrypted_fields_decrypt_at_the_written_version_and_then_migrate() {
     );
     // A lazy read and an eager migration give the same document.
     let lazy = reader.get(PEOPLE, GRACE).unwrap();
-    fixture
-        .writer()
-        .migrate_document(PEOPLE, GRACE, None)
-        .unwrap();
+    fixture.writer().migrate_document(PEOPLE, GRACE).unwrap();
     assert_eq!(
         fixture.reader().get(PEOPLE, GRACE).unwrap().document,
         lazy.document
@@ -373,13 +360,13 @@ fn inspect_reports_documents_per_version_until_the_collection_converges() {
     assert_eq!(report["versions"][0]["documents"], 2, "{report}");
     assert_eq!(report["versions"][1]["documents"], 0, "{report}");
 
-    writer.migrate_document(PEOPLE, ADA, None).unwrap();
+    writer.migrate_document(PEOPLE, ADA).unwrap();
     let report = writer.schema_inspect(PEOPLE).unwrap();
     assert_eq!(report["versions"][0]["documents"], 1, "{report}");
     assert_eq!(report["versions"][1]["documents"], 1, "{report}");
     assert_eq!(report["converged"], false, "{report}");
 
-    writer.migrate_document(PEOPLE, GRACE, None).unwrap();
+    writer.migrate_document(PEOPLE, GRACE).unwrap();
     let report = writer.schema_inspect(PEOPLE).unwrap();
     assert_eq!(report["versions"][0]["documents"], 0, "{report}");
     assert_eq!(report["versions"][1]["documents"], 2, "{report}");

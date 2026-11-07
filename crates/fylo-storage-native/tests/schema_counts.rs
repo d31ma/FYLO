@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use fylo_storage_native::{
     CollectionKind, FilesystemProfile, NativeCollection, NativeRoot, NativeWriteRoot,
-    PutDocumentOptions, RootLease, RootOpenOptions, SchemaVersionCounts, WriteAccess,
+    PutDocumentOptions, RootLease, RootOpenOptions, SchemaVersionCounts,
 };
 use serde_json::{Map, Value, json};
 
@@ -209,50 +209,38 @@ fn every_write_keeps_the_count(efs: bool) {
     assert_eq!(fixture.scanned(), counts(&[("v1", 2), ("v2", 1)], 1));
 
     writer
-        .patch_document(ITEMS, &id(1), &body(Some("v2"), 1), None)
+        .patch_document(ITEMS, &id(1), &body(Some("v2"), 1))
         .unwrap();
     fixture.assert_kept("patch");
     writer
-        .patch_document_fields(ITEMS, &id(3), &changes(&json!({"_v":"v2"})), None)
+        .patch_document_fields(ITEMS, &id(3), &changes(&json!({"_v":"v2"})))
         .unwrap();
     fixture.assert_kept("patch fields");
     writer
-        .patch_document_fields(ITEMS, &id(4), &changes(&json!({"bucket":9})), None)
+        .patch_document_fields(ITEMS, &id(4), &changes(&json!({"bucket":9})))
         .unwrap();
     fixture.assert_kept("patch of another field");
     writer
-        .set_record_metadata(ITEMS, &id(4), &changes(&json!({"note":"kept"})), None)
+        .set_record_metadata(ITEMS, &id(4), &changes(&json!({"note":"kept"})))
         .unwrap();
     fixture.assert_kept("metadata");
-    writer.delete_document(ITEMS, &id(2), None).unwrap();
+    writer.delete_document(ITEMS, &id(2)).unwrap();
     fixture.assert_kept("delete");
     assert_eq!(fixture.scanned(), counts(&[("v2", 3)], 0));
-    writer.restore_document(ITEMS, &id(2), None).unwrap();
+    writer.restore_document(ITEMS, &id(2)).unwrap();
     fixture.assert_kept("restore");
 
     let insert = writer
-        .execute_sql_mutation(
-            "INSERT INTO items (number, _v) VALUES (9, 'v1')",
-            None,
-            WriteAccess::default(),
-        )
+        .execute_sql_mutation("INSERT INTO items (number, _v) VALUES (9, 'v1')")
         .unwrap();
     assert_eq!(insert.affected, 1);
     fixture.assert_kept("SQL INSERT");
     writer
-        .execute_sql_mutation(
-            "UPDATE items SET _v = 'v2' WHERE bucket = 2",
-            None,
-            WriteAccess::default(),
-        )
+        .execute_sql_mutation("UPDATE items SET _v = 'v2' WHERE bucket = 2")
         .unwrap();
     fixture.assert_kept("SQL UPDATE");
     writer
-        .execute_sql_mutation(
-            "DELETE FROM items WHERE _v = 'v1'",
-            None,
-            WriteAccess::default(),
-        )
+        .execute_sql_mutation("DELETE FROM items WHERE _v = 'v1'")
         .unwrap();
     fixture.assert_kept("SQL DELETE");
     assert_eq!(fixture.scanned(), counts(&[("v2", 4)], 0));
@@ -360,9 +348,9 @@ fn crash_child() {
     let writer = fixture.writer();
     match operation.as_str() {
         "patch" => writer
-            .patch_document(ITEMS, &id(1), &body(Some("v2"), 1), None)
+            .patch_document(ITEMS, &id(1), &body(Some("v2"), 1))
             .unwrap(),
-        "delete" => writer.delete_document(ITEMS, &id(2), None).unwrap(),
+        "delete" => writer.delete_document(ITEMS, &id(2)).unwrap(),
         other => panic!("unknown child operation {other}"),
     }
     // Not reached: the failpoint aborts the process.
@@ -427,7 +415,7 @@ fn restore_checkout_and_merge_leave_each_worktree_counted() {
     put(&writer, 2, Some("v1"));
     let first = writer.commit_if_dirty("two at v1").unwrap().unwrap();
     writer
-        .patch_document(ITEMS, &id(1), &body(Some("v2"), 1), None)
+        .patch_document(ITEMS, &id(1), &body(Some("v2"), 1))
         .unwrap();
     put(&writer, 3, None);
     writer

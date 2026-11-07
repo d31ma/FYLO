@@ -188,7 +188,7 @@ fn seeded(encrypted: bool) -> Fixture {
     legacy.as_object_mut().unwrap().remove("_v");
     NativeWriteRoot::open(&fixture.root)
         .unwrap()
-        .patch_document(PEOPLE, LEGACY, &serde_json::to_vec(&legacy).unwrap(), None)
+        .patch_document(PEOPLE, LEGACY, &serde_json::to_vec(&legacy).unwrap())
         .unwrap();
     let strict = fixture.runtime(true, encrypted);
     put(

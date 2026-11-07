@@ -289,16 +289,16 @@ class Fylo
     {
         return $this->op('joinDocs', ['join' => $join]);
     }
-    public function executeSQL(string $sql, ?array $access = null)
+    public function executeSQL(string $sql)
     {
-        return $this->op('executeSQL', ['sql' => $sql, 'access' => $access]);
+        return $this->op('executeSQL', ['sql' => $sql]);
     }
 
     // Run raw SQL, built with native interpolation: $db->sql("... $x").
     // Values are inlined verbatim — escape/validate untrusted input yourself.
-    public function sql(string $query, ?array $access = null)
+    public function sql(string $query)
     {
-        return $this->executeSQL($query, $access);
+        return $this->executeSQL($query);
     }
     public function importBulkData(string $collection, string $url)
     {

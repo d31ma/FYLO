@@ -155,7 +155,6 @@ fn concurrent_queries_and_rebuilds_preserve_coherent_rows_and_settled_freshness(
                         "records",
                         Fixture::ID,
                         &serde_json::to_vec(&json!({"score":score,"mirror":score})).unwrap(),
-                        None,
                     )
                     .unwrap();
                 if step % 3 == 0 {
@@ -202,18 +201,14 @@ fn warm_queries_follow_drop_recreate_rebuild_delete_and_restore() {
     let writer = fixture.writer();
     writer.rebuild_collection("records").unwrap();
     Fixture::assert_score(&engine, 1);
-    writer
-        .delete_document("records", Fixture::ID, None)
-        .unwrap();
+    writer.delete_document("records", Fixture::ID).unwrap();
     assert!(
         engine
             .find("records", &Fixture::query(1))
             .unwrap()
             .is_empty()
     );
-    writer
-        .restore_document("records", Fixture::ID, None)
-        .unwrap();
+    writer.restore_document("records", Fixture::ID).unwrap();
     Fixture::assert_score(&engine, 1);
 }
 

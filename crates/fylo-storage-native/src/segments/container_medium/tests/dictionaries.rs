@@ -345,7 +345,7 @@ fn lz4_records_use_the_dictionary_too_and_compaction_rewrites_them_as_zstd() {
 
     for number in 0..lz4_from {
         writer
-            .delete_document("items", &identifier(number), None)
+            .delete_document("items", &identifier(number))
             .unwrap();
     }
     let report = writer.compact_collection("items").unwrap();
@@ -455,7 +455,7 @@ fn shifted(fixture: &Fixture) -> (NativeWriteRoot, usize) {
     }
     for number in 0..orders {
         writer
-            .delete_document("items", &identifier(number), None)
+            .delete_document("items", &identifier(number))
             .unwrap();
     }
     (writer, orders)
@@ -625,9 +625,7 @@ fn a_dictionary_a_crash_left_unnamed_is_skipped_and_released_by_compaction() {
         put(&writer, next, &order(next));
     }
     for gone in 0..number / 2 {
-        writer
-            .delete_document("items", &identifier(gone), None)
-            .unwrap();
+        writer.delete_document("items", &identifier(gone)).unwrap();
     }
     compact_fully(&writer);
     let held: Vec<u32> = fixture.dictionaries().iter().map(|(_, id)| *id).collect();

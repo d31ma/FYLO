@@ -80,8 +80,6 @@ const EXPECTED_DIVERGENCE = new Set([
     'result.capabilities.exclusiveRoot',
     // No TLS stack in the module: the host fetches and supplies bytes.
     'result.capabilities.documentBuckets.putInputs',
-    // POSIX uid/gid/mode needs syscalls WASI does not have.
-    'result.capabilities.machineAccess',
     // Both validate with CHEX, but the Wasm build has no regex compiler: it
     // validates only with the compiled validators in the schema registry.
     'result.capabilities.schemaValidation.compiledOnly'

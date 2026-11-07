@@ -36,10 +36,8 @@
             Capability records are versioned contracts.
             <code>documentBuckets.version === 1</code>
             identifies raw-file collection support and lists the operations, input forms, and
-            integrity level implemented by this runtime. On macOS and Linux,
-            <code>machineAccess.version === 1</code> lists the operations and denial semantics
-            covered by trusted POSTIX access. Its absence means the build does not provide that
-            authorization boundary. <code>serverlessQueue.version === 1</code> identifies the
+            integrity level implemented by this runtime.
+            <code>serverlessQueue.version === 1</code> identifies the
             embedded filesystem queue and publishes its delivery model and limits. Reject a missing
             or unknown capability version before touching a production root.
         </p>
@@ -148,18 +146,15 @@
     </div>
 
     <div class="doc-section">
-        <h2>Access context</h2>
+        <h2>Access control</h2>
         <p>
-            Document and raw-file CRUD and query operations accept an optional
-            <code>access</code> object. Puts accept a UID, GID, and mode; reads, metadata, queries,
-            updates, deletes, and restores accept a UID. A trusted binary-backed application may
-            additionally include <code>groups</code> for virtual POSIX membership.
-        </p>
-        <pre class="code-block"><code>{accessCode}</code></pre>
-        <p>
-            Denied direct operations return <code>EACCES</code>; collection queries omit unreadable
-            records instead of failing. See <a href="/docs/security">Encryption & access</a> for the
-            trust boundary this assumes.
+            Requests carry no caller identity. The <code>fylo</code> process opens a protected
+            <code>.vdbx</code> database as one application identity, set with
+            <code>--identity</code> and pinned with <code>--trust-anchor</code>, and every request
+            on that loop runs with that identity's grants. A request that carries an
+            <code>access</code> field is refused with <code>EBADREQUEST</code>. An operation the
+            identity has no grant for returns <code>EACCES</code>. See
+            <a href="/docs/security">Encryption & access</a> for identities and grants.
         </p>
     </div>
 

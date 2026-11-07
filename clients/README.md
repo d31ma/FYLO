@@ -270,100 +270,19 @@ string, so values are inlined verbatim: **escape or validate untrusted input
 yourself**, or keep to app-generated SQL. On the mobile clients, `sql` runs
 against the local on-device store.
 
-### POSIX access context
+### Access control
 
-Machine document and raw-file CRUD/query operations accept an
-application-authenticated POSIX access context. Fylo does not authenticate
-these claims. Puts may use UID, GID, both, or mode alone. Omitted identities
-retain the new file's native owner/group, and an omitted mode defaults to
-`0o600`. Reads, metadata calls, queries, updates, deletes, and restores accept
-UID but not GID or mode.
+Per-record access was removed. No shim sends a `uid`, `gid`, `groups`, or
+`mode` with a request, and the binary refuses a request that carries an
+`access` field with `EBADREQUEST`.
 
-The Node shim exposes chainable `.as(...)` on every applicable method:
-
-```js
-const id = await db.messages
-    .put({ tenant: 'domain-a', subject: 'Hello' })
-    .as({ gid: domainGid, mode: 0o660 })
-
-const actor = {
-    uid: authenticatedUser.uid,
-    groups: await memberships.groupIdsFor(authenticatedUser.uid)
-}
-await db.messages.get(id).as(actor)
-await db.messages.patch(id, { subject: 'Updated' }).as(actor)
-await db.messages.delete(id).as(actor)
-
-const attachmentId = await db.attachments
-    .putFile(
-        { path: '/srv/uploads/message.pdf', key: '/domain-a/message.pdf' },
-        { maxBytes: 10_000_000 }
-    )
-    .as({ gid: domainGid, mode: 0o660 })
-```
-
-`access.groups` is available only on the local machine-protocol boundary and
-must be derived from trusted application state. Never forward a UID or group
-list from an end-user request. The binary scopes the list to that one request;
-an omitted list uses the host POSIX group resolver, and an empty list grants no
-group memberships. Raw `request(...)` callers use the same JSON shape:
-
-```json
-{
-    "op": "patchDoc",
-    "collection": "messages",
-    "id": "01...",
-    "newDoc": { "subject": "Updated" },
-    "access": { "uid": 1001, "groups": [2001] }
-}
-```
-
-SQL uses the same context. `gid` and `mode` are accepted only for `INSERT`;
-omit them from `SELECT`, `UPDATE`, and `DELETE`.
-
-| Language | Protected SQL call                                                                   |
-| -------- | ------------------------------------------------------------------------------------ |
-| Node/TS  | ``await db.sql`INSERT INTO users (name) VALUES (${name})`.as({ uid, mode: 0o600 })`` |
-| Python   | `db.sql(query, {"uid": uid, "mode": 0o600})`                                         |
-| Ruby     | `db.sql(query, { "uid" => uid, "mode" => 0o600 })`                                   |
-| PHP      | `$db->sql($query, ['uid' => $uid, 'mode' => 0600])`                                  |
-| Go       | `db.Sql(query, map[string]any{"uid": uid, "mode": 0o600})`                           |
-| Rust     | `db.sql_as(query, uid, Some(0o600))`                                                 |
-| Java     | `db.sql(query, Map.of("uid", uid, "mode", 384))`                                     |
-| C#       | `db.Sql($"INSERT ...", new { uid, mode = 384 })`                                     |
-| Dart     | `db.sql(query, uid: uid, mode: 384)`                                                 |
-
-A group-owned insert uses group write bits:
-
-| Language | GID-only SQL INSERT                                               |
-| -------- | ----------------------------------------------------------------- |
-| Node/TS  | ``await db.sql`INSERT ...`.as({ gid: editorsGid, mode: 0o660 })`` |
-| Python   | `db.sql(query, {"gid": editors_gid, "mode": 0o660})`              |
-| Ruby     | `db.sql(query, { "gid" => editors_gid, "mode" => 0o660 })`        |
-| PHP      | `$db->sql($query, ['gid' => $editorsGid, 'mode' => 0660])`        |
-| Go       | `db.Sql(query, map[string]any{"gid": editorsGid, "mode": 0o660})` |
-| Rust     | `db.sql_access(query, None, Some(editors_gid), Some(0o660))`      |
-| Java     | `db.sql(query, Map.of("gid", editorsGid, "mode", 432))`           |
-| C#       | `db.Sql($"INSERT ...", new { gid = editorsGid, mode = 432 })`     |
-| Dart     | `db.sql(query, gid: editorsGid, mode: 432)`                       |
-
-The machine payload is the same for every shim:
-
-```json
-{
-    "op": "executeSQL",
-    "sql": "INSERT INTO users (name) VALUES ('Ada')",
-    "access": { "gid": 2001, "mode": 432 }
-}
-```
-
-`SELECT` returns only rows readable by that UID. `UPDATE` and `DELETE` use the
-same UID for both candidate visibility and write authorization. Group
-membership comes from request-scoped trusted `groups` when supplied by the
-application, otherwise from the host POSIX group database. This is a
-native-POSIX feature on macOS/Linux hosts. It is not enforced by the Windows
-binary, browser, Explorer, or mobile local-only clients because those surfaces
-cannot provide the required `chown`/`chmod` boundary.
+Access is now granted per application identity on a protected `.vdbx`
+database. The shim's `fylo` process opens the database as one identity. Set the
+identity with `fylo.identity` in `application.json` or with `FYLO_IDENTITY`,
+and pin the expected signer with `fylo.trustAnchor` or `FYLO_TRUST_ANCHOR`. An
+administrator grants each identity `read`, `write`, or `admin` with
+`fylo access grant`. To move an existing root, see
+[Migrating to protected databases](../docs/migrating-to-protected-databases.md).
 
 ## How the shims work
 

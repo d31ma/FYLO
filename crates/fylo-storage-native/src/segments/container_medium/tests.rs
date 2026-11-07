@@ -181,7 +181,7 @@ fn put_into(
 fn patch(writer: &NativeWriteRoot, number: usize, round: usize) {
     let patch = json!({ "round": round }).to_string();
     writer
-        .patch_document("items", &identifier(number), patch.as_bytes(), None)
+        .patch_document("items", &identifier(number), patch.as_bytes())
         .unwrap();
 }
 
@@ -362,7 +362,7 @@ fn a_replaced_snapshot_and_the_replayed_records_give_the_table() {
     }
     for number in (0..230).step_by(11) {
         writer
-            .delete_document("items", &identifier(number), None)
+            .delete_document("items", &identifier(number))
             .unwrap();
     }
 

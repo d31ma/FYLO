@@ -370,7 +370,6 @@ fn patch(writer: &NativeWriteRoot, number: usize) {
             "items",
             &identifier(number),
             padded(number, 1).to_string().as_bytes(),
-            None,
         )
         .unwrap();
 }

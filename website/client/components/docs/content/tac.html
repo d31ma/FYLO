@@ -146,20 +146,19 @@
                 <article class="docs-panel">
                     <h2>Security</h2>
                     <p>
-                        FYLO does not authenticate — your app verifies identity, FYLO enforces
-                        policy. Encryption is opt-in and off by default. Fields listed in a schema's
+                        FYLO does not authenticate end users — your app verifies them, and FYLO
+                        enforces the grants of the application identity it runs as.
+                        Encryption is opt-in and off by default. Fields listed in a schema's
                         <code>$encrypted</code> array are stored with AES-GCM; equality lookups use
                         HMAC blind indexes. A <code>.vdbx</code> database file is not encrypted
-                        unless encryption is turned on for it. POSTIX binds a POSIX UID, GID, and
-                        mode to each protected record on disk. Group membership is resolved by the
-                        trusted application or host POSIX group database. In-process callers provide
-                        only their UID; trusted binary-backed applications may attach request-scoped
-                        virtual groups on the local machine boundary. A shared writable record needs
-                        group write permission, typically <code>0o660</code>;
-                        <code>0o600</code> remains owner-only. The native binary and binary-backed
-                        shims enforce it on macOS/Linux POSIX hosts. Windows, Browser, Explorer, and
-                        WebView/mobile clients do not provide POSTIX and must use an authenticated
-                        native POSIX gateway.
+                        unless encryption is turned on for it. A protected <code>.vdbx</code>
+                        database keeps signed grants: its admin identity gives other application
+                        identities <code>read</code>, <code>write</code>, or <code>admin</code> with
+                        <code>fylo access grant</code>. A process opens the database as one identity
+                        with <code>--identity</code> and pins the admin that created it with
+                        <code>--trust-anchor</code>. Per-record UID, GID, and mode access was
+                        removed; move an existing root with <code>fylo access report</code> and
+                        <code>fylo pack --protect</code>.
                     </p>
                     <pre class="code-block"><code>{securityCode()}</code></pre>
                 </article>

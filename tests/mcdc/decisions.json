@@ -4,15 +4,6 @@
     "scope": "Registered safety-critical Rust decisions; this is not whole-core MC/DC coverage.",
     "decisions": [
         {
-            "id": "engine.read_access_policy",
-            "package": "fylo-engine",
-            "source": "crates/fylo-engine/src/lib.rs",
-            "sourceMarker": "fn read_access_conditions(",
-            "test": "mcdc_tests::mcdc_engine_read_access_policy",
-            "safety": "Portable UID/GID/mode reads must fail closed while preserving public records.",
-            "conditions": ["unprotected", "owner_read", "group_read", "other_read"]
-        },
-        {
             "id": "engine.stable_generation_observation",
             "package": "fylo-engine",
             "source": "crates/fylo-engine/src/lib.rs",

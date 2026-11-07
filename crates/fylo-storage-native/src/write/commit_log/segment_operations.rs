@@ -8,10 +8,9 @@ use serde_json::{Map, Value};
 
 use super::super::document_codec::{DocumentCodec, DocumentPolicy};
 use super::super::{
-    DocumentWrite, NativeWriteRoot, SqlMutationResult, SqlMutationResultKind, WriteAccess,
-    WriteActor, merge_top_level, now_millis, parse_document_fields, require_write_access,
+    DocumentWrite, NativeWriteRoot, SqlMutationResult, SqlMutationResultKind, merge_top_level,
+    now_millis, parse_document_fields,
 };
-use super::commit_plan::Ownership;
 use super::logged_writer::Planned;
 use super::segment_plan::SegmentPlan;
 use crate::segments::{LocationState, SegmentDocument, SegmentEntry, SegmentStore};
@@ -35,7 +34,7 @@ impl NativeWriteRoot {
         collection: &NativeCollection,
         identifier: &str,
         canonical: &[u8],
-        (metadata, access): (&BTreeMap<String, Value>, WriteAccess),
+        metadata: &BTreeMap<String, Value>,
     ) -> Result<(), NativeStorageError> {
         let after = Self::document_keys(identifier, canonical)?;
         self.commit_logged(collection, || {
@@ -47,15 +46,13 @@ impl NativeWriteRoot {
                     "document identifier already exists",
                 ));
             }
-            let (attributes, mode) =
-                Self::segment_initial_attributes(collection, metadata, access)?;
             let entry = SegmentEntry {
                 id: identifier.to_owned(),
                 state: LocationState::Live,
                 body: None,
-                attributes,
+                attributes: Self::segment_initial_attributes(metadata)?,
                 modified_ms: now_millis()?,
-                mode,
+                mode: None,
             };
             let mut plan = SegmentPlan::new("put-document");
             plan.push(&collection.path, (entry, Some(canonical)), None)?;
@@ -71,14 +68,13 @@ impl NativeWriteRoot {
         collection: &NativeCollection,
         writes: &[DocumentWrite],
         bodies: &[Option<Vec<u8>>],
-        access: WriteAccess,
     ) -> Result<(), NativeStorageError> {
         self.commit_logged(collection, || {
             let store = SegmentStore::open_for_writer(collection.segment_medium()?)?;
             let mut plan = SegmentPlan::new("write-documents");
             for (write, body) in writes.iter().zip(bodies) {
                 let change = (write, body.as_deref());
-                Self::push_document_write(&mut plan, collection, &store, change, access)?;
+                Self::push_document_write(&mut plan, collection, &store, change)?;
             }
             Ok((Some(plan), ()))
         })
@@ -89,12 +85,11 @@ impl NativeWriteRoot {
         collection: &NativeCollection,
         store: &SegmentStore,
         (write, body): (&DocumentWrite, Option<&[u8]>),
-        access: WriteAccess,
     ) -> Result<(), NativeStorageError> {
         let identifier = write.identifier();
         match (write, body) {
             (DocumentWrite::Put { .. }, Some(canonical)) => {
-                Self::push_new_document(plan, collection, store, (identifier, canonical), access)
+                Self::push_new_document(plan, collection, store, (identifier, canonical))
             }
             (DocumentWrite::Replace { .. }, Some(canonical)) => {
                 Self::push_replaced_document(plan, collection, store, (identifier, canonical))
@@ -119,7 +114,6 @@ impl NativeWriteRoot {
         collection: &NativeCollection,
         store: &SegmentStore,
         (identifier, canonical): (&str, &[u8]),
-        access: WriteAccess,
     ) -> Result<(), NativeStorageError> {
         if store.table().get(identifier).is_some() {
             return Err(NativeStorageError::new(
@@ -127,15 +121,13 @@ impl NativeWriteRoot {
                 "document identifier already exists",
             ));
         }
-        let (attributes, mode) =
-            Self::segment_initial_attributes(collection, &BTreeMap::new(), access)?;
         let entry = SegmentEntry {
             id: identifier.to_owned(),
             state: LocationState::Live,
             body: None,
-            attributes,
+            attributes: Self::segment_initial_attributes(&BTreeMap::new())?,
             modified_ms: now_millis()?,
-            mode,
+            mode: None,
         };
         plan.index_delta(
             &BTreeSet::new(),
@@ -168,12 +160,10 @@ impl NativeWriteRoot {
         &self,
         collection: &NativeCollection,
         identifier: &str,
-        actor: Option<&WriteActor>,
         mut patch: impl FnMut(&[u8]) -> Result<Vec<u8>, NativeStorageError>,
     ) -> Result<(), NativeStorageError> {
         self.commit_logged(collection, || {
             let stored = Self::live_document(collection, identifier)?;
-            require_write_access(stored.access()?, actor)?;
             let canonical = patch(&stored.body)?;
             let mut plan = SegmentPlan::new("patch-document");
             plan.index_delta(
@@ -195,11 +185,9 @@ impl NativeWriteRoot {
         &self,
         collection: &NativeCollection,
         identifier: &str,
-        actor: Option<&WriteActor>,
     ) -> Result<(), NativeStorageError> {
         self.commit_logged(collection, || {
             let stored = Self::live_document(collection, identifier)?;
-            require_write_access(stored.access()?, actor)?;
             let mut plan = SegmentPlan::new("delete-document");
             plan.index_delta(
                 &Self::document_keys(identifier, &stored.body)?,
@@ -214,7 +202,6 @@ impl NativeWriteRoot {
         &self,
         collection: &NativeCollection,
         identifier: &str,
-        actor: Option<&WriteActor>,
     ) -> Result<(), NativeStorageError> {
         self.commit_logged(collection, || {
             let store = SegmentStore::open_for_writer(collection.segment_medium()?)?;
@@ -225,7 +212,6 @@ impl NativeWriteRoot {
                 ));
             }
             let deleted = store.document(identifier, LocationState::Deleted)?;
-            require_write_access(deleted.access()?, actor)?;
             let mut plan = SegmentPlan::new("restore-document");
             plan.index_delta(
                 &BTreeSet::new(),
@@ -241,11 +227,9 @@ impl NativeWriteRoot {
         collection: &NativeCollection,
         identifier: &str,
         (record, replace): (&Map<String, Value>, bool),
-        actor: Option<&WriteActor>,
     ) -> Result<(), NativeStorageError> {
         self.commit_logged(collection, || {
             let stored = Self::live_document(collection, identifier)?;
-            require_write_access(stored.access()?, actor)?;
             let mut record = record.clone();
             if replace {
                 for name in crate::decode_custom_metadata(&stored.attributes()?)?.keys() {
@@ -271,57 +255,17 @@ impl NativeWriteRoot {
         })
     }
 
-    pub(crate) fn set_record_access_segmented(
-        &self,
-        collection: &NativeCollection,
-        identifier: &str,
-        access: WriteAccess,
-        actor: Option<&WriteActor>,
-    ) -> Result<(), NativeStorageError> {
-        Self::require_posix_access()?;
-        self.commit_logged(collection, || {
-            let stored = Self::live_document(collection, identifier)?;
-            let descriptor = stored.access()?;
-            require_write_access(descriptor, actor)?;
-            let (uid, gid) = match descriptor {
-                Some(descriptor) => (descriptor.uid, descriptor.gid),
-                None => Self::segment_owner(collection)?,
-            };
-            let ownership = Ownership {
-                mode: Some(access.mode.unwrap_or(Self::DEFAULT_ACCESS_MODE)),
-                uid: Some(access.uid.unwrap_or(uid)),
-                gid: Some(access.gid.unwrap_or(gid)),
-            };
-            let mut entry = stored.entry.clone();
-            entry.attributes.insert(
-                crate::ACCESS_XATTR.into(),
-                Self::access_attribute(ownership)?,
-            );
-            entry.mode = ownership.mode;
-            let mut plan = SegmentPlan::new("set-access");
-            plan.push(
-                &collection.path,
-                (entry, Some(&stored.body)),
-                Some(stored.location),
-            )?;
-            Ok((Some(plan), ()))
-        })
-    }
-
     pub(crate) fn sql_update_segmented(
         &self,
         collection: &NativeCollection,
         (query, changes): (&StructuredQuery, &Map<String, Value>),
-        actor: Option<&WriteActor>,
         policy: &DocumentPolicy<'_>,
     ) -> Result<SqlMutationResult, NativeStorageError> {
         self.commit_logged(collection, || {
             policy.restart();
             let mut plan = SegmentPlan::new("update-many");
             let mut identifiers = Vec::new();
-            for (stored, fields, decoded) in
-                Self::segment_matches(collection, query, actor, policy)?
-            {
+            for (stored, fields, decoded) in Self::segment_matches(collection, query, policy)? {
                 // Decrypted and validated, then encrypted again, as the file
                 // layout's update does: merging into the stored form would
                 // write a declared field in the clear, or keep ciphertext a
@@ -358,13 +302,12 @@ impl NativeWriteRoot {
         &self,
         collection: &NativeCollection,
         query: &StructuredQuery,
-        actor: Option<&WriteActor>,
         codec: &dyn DocumentCodec,
     ) -> Result<SqlMutationResult, NativeStorageError> {
         self.commit_logged(collection, || {
             let mut plan = SegmentPlan::new("delete-many");
             let mut identifiers = Vec::new();
-            for (stored, _, _) in Self::segment_matches(collection, query, actor, codec)? {
+            for (stored, _, _) in Self::segment_matches(collection, query, codec)? {
                 plan.index_delta(
                     &Self::document_keys(&stored.entry.id, &stored.body)?,
                     &BTreeSet::new(),
@@ -406,13 +349,11 @@ impl NativeWriteRoot {
     }
 
     /// Live documents matching `query`, in identifier order, each with its
-    /// parsed fields. Any match the actor may not change fails the whole
-    /// mutation, as the file layout does. Where `codec` says decoding changes
-    /// what a query sees, the query runs against decoded fields.
+    /// parsed fields. Where `codec` says decoding changes what a query sees,
+    /// the query runs against decoded fields.
     fn segment_matches(
         collection: &NativeCollection,
         query: &StructuredQuery,
-        actor: Option<&WriteActor>,
         codec: &dyn DocumentCodec,
     ) -> Result<SegmentMatches, NativeStorageError> {
         let decoded = codec.decodes_for_query(collection.name())?;
@@ -431,7 +372,7 @@ impl NativeWriteRoot {
                         Ok(fields)
                     }
                 };
-                if let Some(fields) = Self::segment_match(&stored, query, actor, decode)? {
+                if let Some(fields) = Self::segment_match(&stored, query, decode)? {
                     matches.push((stored, fields, decoded));
                 }
                 if limit.is_some_and(|limit| matches.len() >= limit) {
@@ -445,7 +386,6 @@ impl NativeWriteRoot {
     fn segment_match(
         stored: &SegmentDocument,
         query: &StructuredQuery,
-        actor: Option<&WriteActor>,
         decode: impl FnOnce(Map<String, Value>) -> Result<Map<String, Value>, NativeStorageError>,
     ) -> Result<Option<Map<String, Value>>, NativeStorageError> {
         let fields = decode(parse_document_fields(&stored.body)?)?;
@@ -458,7 +398,6 @@ impl NativeWriteRoot {
         if !query.matches(&fields, timestamps.created_at, stored.entry.modified_ms) {
             return Ok(None);
         }
-        require_write_access(stored.access()?, actor)?;
         Ok(Some(fields))
     }
 
@@ -479,29 +418,13 @@ impl NativeWriteRoot {
     }
 
     fn segment_initial_attributes(
-        collection: &NativeCollection,
         metadata: &BTreeMap<String, Value>,
-        access: WriteAccess,
-    ) -> Result<(BTreeMap<String, String>, Option<u32>), NativeStorageError> {
+    ) -> Result<BTreeMap<String, String>, NativeStorageError> {
         let mut attributes = BTreeMap::new();
         for (name, value) in metadata {
             Self::set_metadata_attribute(&mut attributes, name, value)?;
         }
-        if access.is_empty() {
-            return Ok((attributes, None));
-        }
-        Self::require_posix_access()?;
-        let (uid, gid) = Self::segment_owner(collection)?;
-        let ownership = Ownership {
-            mode: Some(access.mode.unwrap_or(Self::DEFAULT_ACCESS_MODE)),
-            uid: Some(access.uid.unwrap_or(uid)),
-            gid: Some(access.gid.unwrap_or(gid)),
-        };
-        attributes.insert(
-            crate::ACCESS_XATTR.into(),
-            Self::access_attribute(ownership)?,
-        );
-        Ok((attributes, ownership.mode))
+        Ok(attributes)
     }
 
     fn next_segment_meta_updated_at(stored: &SegmentDocument) -> Result<u64, NativeStorageError> {
@@ -512,38 +435,5 @@ impl NativeWriteRoot {
             .and_then(|value| value.parse::<u64>().ok())
             .unwrap_or(0);
         Ok(now_millis()?.max(previous.saturating_add(1)))
-    }
-
-    /// The owner and group a record of this collection is filed under when
-    /// a write names neither: the owner a file this root's writer creates
-    /// gets.
-    #[cfg(unix)]
-    fn segment_owner(collection: &NativeCollection) -> Result<(u32, u32), NativeStorageError> {
-        collection.segment_medium()?.owner()
-    }
-
-    #[cfg(not(unix))]
-    fn segment_owner(_collection: &NativeCollection) -> Result<(u32, u32), NativeStorageError> {
-        Err(Self::posix_only())
-    }
-
-    // The signature mirrors the platforms without POSIX identities.
-    #[allow(clippy::unnecessary_wraps)]
-    #[cfg(unix)]
-    fn require_posix_access() -> Result<(), NativeStorageError> {
-        Ok(())
-    }
-
-    #[cfg(not(unix))]
-    fn require_posix_access() -> Result<(), NativeStorageError> {
-        Err(Self::posix_only())
-    }
-
-    #[cfg(not(unix))]
-    fn posix_only() -> NativeStorageError {
-        NativeStorageError::new(
-            NativeStorageErrorCode::Unsupported,
-            "UID/GID/mode access control is available only on POSIX platforms",
-        )
     }
 }

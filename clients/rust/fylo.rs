@@ -470,54 +470,11 @@ impl Fylo {
     pub fn execute_sql(&mut self, sql: &str) -> std::io::Result<String> {
         self.checked(format!(r#"{{"op":"executeSQL","sql":"{}"}}"#, esc(sql)))
     }
-    pub fn execute_sql_as(
-        &mut self,
-        sql: &str,
-        uid: u32,
-        mode: Option<u32>,
-    ) -> std::io::Result<String> {
-        self.execute_sql_access(sql, Some(uid), None, mode)
-    }
-    pub fn execute_sql_access(
-        &mut self,
-        sql: &str,
-        uid: Option<u32>,
-        gid: Option<u32>,
-        mode: Option<u32>,
-    ) -> std::io::Result<String> {
-        let mut fields = Vec::new();
-        if let Some(value) = uid {
-            fields.push(format!(r#""uid":{}"#, value));
-        }
-        if let Some(value) = gid {
-            fields.push(format!(r#""gid":{}"#, value));
-        }
-        if let Some(value) = mode {
-            fields.push(format!(r#""mode":{}"#, value));
-        }
-        self.checked(format!(
-            r#"{{"op":"executeSQL","sql":"{}","access":{{{}}}}}"#,
-            esc(sql),
-            fields.join(",")
-        ))
-    }
 
     /// Run raw SQL, built with `format!`. Values are inlined verbatim —
     /// escape/validate untrusted input yourself.
     pub fn sql(&mut self, query: &str) -> std::io::Result<String> {
         self.execute_sql(query)
-    }
-    pub fn sql_as(&mut self, query: &str, uid: u32, mode: Option<u32>) -> std::io::Result<String> {
-        self.execute_sql_as(query, uid, mode)
-    }
-    pub fn sql_access(
-        &mut self,
-        query: &str,
-        uid: Option<u32>,
-        gid: Option<u32>,
-        mode: Option<u32>,
-    ) -> std::io::Result<String> {
-        self.execute_sql_access(query, uid, gid, mode)
     }
 
     /// Collection-scoped facade with short method names, so

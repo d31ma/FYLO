@@ -33,7 +33,6 @@ const GENERATION_FORMAT: &str = "fylo.collection-generation.v1";
 const MAX_TRANSACTION_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_CAPTURE_BYTES: u64 = 8 * 1024 * 1024;
 const LOCK_TTL_MILLIS: u64 = 5 * 60 * 1000;
-#[cfg(unix)]
 const DEFAULT_ACCESS_MODE: u32 = 0o600;
 
 mod access_admin;
@@ -59,40 +58,11 @@ pub use document_write::DocumentWrite;
 static UNIQUE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static TTID_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-/// Optional UID/GID/mode projection supplied only while creating a record.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct WriteAccess {
-    /// Preferred owner UID.
-    pub uid: Option<u32>,
-    /// Preferred group GID.
-    pub gid: Option<u32>,
-    /// POSIX-compatible permission mode.
-    pub mode: Option<u32>,
-}
-
-impl WriteAccess {
-    fn validate(self) -> Result<Self, NativeStorageError> {
-        if self.mode.is_some_and(|mode| mode > 0o777) {
-            return Err(NativeStorageError::new(
-                NativeStorageErrorCode::CorruptMetadata,
-                "write mode must be between 0o000 and 0o777",
-            ));
-        }
-        Ok(self)
-    }
-
-    const fn is_empty(self) -> bool {
-        self.uid.is_none() && self.gid.is_none() && self.mode.is_none()
-    }
-}
-
 /// Options for a create-only native document put.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct PutDocumentOptions {
     /// Developer-defined typed metadata written in the create transaction.
     pub metadata: std::collections::BTreeMap<String, serde_json::Value>,
-    /// Optional owner/group/mode projection.
-    pub access: WriteAccess,
 }
 
 /// Options for a create-only native raw-file put.
@@ -104,26 +74,6 @@ pub struct PutRawFileOptions {
     pub extension: String,
     /// Developer-defined typed metadata.
     pub metadata: std::collections::BTreeMap<String, serde_json::Value>,
-    /// Optional owner/group/mode projection.
-    pub access: WriteAccess,
-}
-
-/// Trusted actor identity used to authorize a mutation.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WriteActor {
-    uid: u32,
-    groups: BTreeSet<u32>,
-}
-
-impl WriteActor {
-    /// Construct an actor from a developer-supplied UID and trusted group list.
-    #[must_use]
-    pub fn new(uid: u32, groups: impl IntoIterator<Item = u32>) -> Self {
-        Self {
-            uid,
-            groups: groups.into_iter().collect(),
-        }
-    }
 }
 
 /// Observable result of one native SQL mutation.
@@ -280,18 +230,13 @@ impl NativeWriteRoot {
         failpoint("after-metadata-write")
     }
 
-    fn publish_payload(
-        &self,
-        path: &Path,
-        bytes: &[u8],
-        access: WriteAccess,
-    ) -> Result<(), NativeStorageError> {
+    fn publish_payload(&self, path: &Path, bytes: &[u8]) -> Result<(), NativeStorageError> {
         self.root.assert_profile_owned()?;
-        if self.filesystem_profile() == super::FilesystemProfile::EfsSidecarV1 {
-            durable_replace_with_mode(path, bytes, access.mode.unwrap_or(0o600))
-        } else {
-            durable_replace(path, bytes)
+        if self.filesystem_profile() != super::FilesystemProfile::EfsSidecarV1 {
+            return durable_replace(path, bytes);
         }
+        durable_replace_with_mode(path, bytes, DEFAULT_ACCESS_MODE)?;
+        verify_profiled_payload(&self.root, path)
     }
 
     fn require_pair_destination_absent(&self, target: &Path) -> Result<(), NativeStorageError> {
@@ -305,28 +250,6 @@ impl NativeWriteRoot {
             ));
         }
         Ok(())
-    }
-
-    fn validate_access(&self, access: WriteAccess) -> Result<WriteAccess, NativeStorageError> {
-        self.root.assert_profile_owned()?;
-        let access = access.validate()?;
-        if let Some((uid, gid)) = self.root.efs_identity() {
-            if access.mode.is_some_and(|mode| mode & 0o400 == 0) {
-                return Err(NativeStorageError::new(
-                    NativeStorageErrorCode::Unsupported,
-                    "EFS record modes must retain owner-read capability",
-                ));
-            }
-            if access.uid.is_some_and(|value| value != uid)
-                || access.gid.is_some_and(|value| value != gid)
-            {
-                return Err(NativeStorageError::new(
-                    NativeStorageErrorCode::Unsupported,
-                    "EFS profile rejects cross-owner UID/GID projection",
-                ));
-            }
-        }
-        Ok(access)
     }
 
     /// Apply host-supplied runtime knobs to this writer.
@@ -590,8 +513,7 @@ impl NativeWriteRoot {
     /// # Errors
     ///
     /// Returns an error for an invalid document, duplicate identifier,
-    /// permission projection failure, unsafe path, lock contention, or
-    /// interrupted durable operation.
+    /// unsafe path, lock contention, or interrupted durable operation.
     pub fn put_document(
         &self,
         collection_name: &str,
@@ -619,9 +541,8 @@ impl NativeWriteRoot {
                 "document exceeds the native write limit",
             ));
         }
-        let PutDocumentOptions { metadata, access } = options;
+        let PutDocumentOptions { metadata } = options;
         validate_custom_metadata(&metadata)?;
-        let access = self.validate_access(access)?;
         let collection = self.writable_collection(collection_name)?;
         if collection.kind != CollectionKind::Document {
             return Err(NativeStorageError::new(
@@ -630,12 +551,7 @@ impl NativeWriteRoot {
             ));
         }
         if self.uses_log(&collection) {
-            return self.put_document_logged(
-                &collection,
-                identifier,
-                &canonical,
-                (&metadata, access),
-            );
+            return self.put_document_logged(&collection, identifier, &canonical, &metadata);
         }
         let _lock = self.lock_collection(&collection)?;
         self.recover_locked(&collection)?;
@@ -661,13 +577,12 @@ impl NativeWriteRoot {
                 )
             })?;
             ensure_directory(&self.root, parent)?;
-            self.publish_payload(&target, &canonical, access)?;
+            self.publish_payload(&target, &canonical)?;
             if self.filesystem_profile() == super::FilesystemProfile::EfsSidecarV1 {
                 failpoint("after-record-payload-rename")?;
             }
             super::record_attributes::RecordAttributes::initialize(&self.root, &target)?;
             self.write_custom_metadata_attributes(&target, &metadata)?;
-            apply_profiled_access(&self.root, &target, access)?;
             if self.filesystem_profile() == super::FilesystemProfile::EfsSidecarV1 {
                 failpoint("after-record-sidecar-rename")?;
             }
@@ -770,7 +685,6 @@ impl NativeWriteRoot {
         if writes.is_empty() {
             return Ok(());
         }
-        let access = self.validate_access(WriteAccess::default())?;
         let policy = self.policy(&collection, codec);
         let outcome = (|| {
             let mut bodies = Vec::with_capacity(writes.len());
@@ -784,7 +698,7 @@ impl NativeWriteRoot {
                     DocumentWrite::Delete { .. } => None,
                 });
             }
-            self.commit_document_writes_to(&collection, writes, &bodies, access)
+            self.commit_document_writes_to(&collection, writes, &bodies)
         })();
         policy.finish(outcome)
     }
@@ -794,8 +708,8 @@ impl NativeWriteRoot {
     /// # Errors
     ///
     /// Returns an error for invalid identifiers, extension/key/metadata
-    /// bounds, duplicate records, unsafe paths, lock contention, permission
-    /// projection failure, or interrupted durable operation.
+    /// bounds, duplicate records, unsafe paths, lock contention, or
+    /// interrupted durable operation.
     pub fn put_raw_file(
         &self,
         collection_name: &str,
@@ -814,7 +728,6 @@ impl NativeWriteRoot {
         super::validate_raw_extension(&format!("{identifier}{}", options.extension), identifier)?;
         super::validate_raw_key(&options.key)?;
         validate_custom_metadata(&options.metadata)?;
-        let access = self.validate_access(options.access)?;
         let collection = self.writable_collection(collection_name)?;
         if collection.kind != CollectionKind::File {
             return Err(NativeStorageError::new(
@@ -846,7 +759,7 @@ impl NativeWriteRoot {
                 )
             })?;
             ensure_directory(&self.root, parent)?;
-            self.publish_payload(&target, bytes, access)?;
+            self.publish_payload(&target, bytes)?;
             if self.filesystem_profile() == super::FilesystemProfile::EfsSidecarV1 {
                 failpoint("after-record-payload-rename")?;
             }
@@ -864,7 +777,6 @@ impl NativeWriteRoot {
             // mtime the next reader cannot match, permanently invalidating the
             // checksum cache and making index rebuilds non-deterministic. POSIX
             // xattr writes leave mtime alone, so the order is harmless there.
-            apply_profiled_access(&self.root, &target, access)?;
             let metadata = fs::metadata(&target).map_err(NativeStorageError::io)?;
             let checksum = super::sha256_hex(bytes);
             let stamp = format!(
@@ -938,19 +850,18 @@ impl NativeWriteRoot {
         )
     }
 
-    /// Replace one existing document body while preserving its TTID and access
+    /// Replace one existing document body while preserving its TTID and
     /// metadata.
     ///
     /// # Errors
     ///
-    /// Returns an error for a missing or malformed document, denied write,
-    /// unsafe path, lock contention, or interrupted durable operation.
+    /// Returns an error for a missing or malformed document, unsafe path,
+    /// lock contention, or interrupted durable operation.
     pub fn patch_document(
         &self,
         collection_name: &str,
         identifier: &str,
         encoded: &[u8],
-        actor: Option<&WriteActor>,
     ) -> Result<(), NativeStorageError> {
         self.root.assert_profile_owned()?;
         validate_ttid_shape(identifier)?;
@@ -974,14 +885,11 @@ impl NativeWriteRoot {
             ));
         }
         if self.uses_log(&collection) {
-            return self
-                .patch_document_logged(&collection, identifier, actor, |_| Ok(canonical.clone()));
+            return self.patch_document_logged(&collection, identifier, |_| Ok(canonical.clone()));
         }
         let _lock = self.lock_collection(&collection)?;
         self.recover_locked(&collection)?;
-        let stored = collection.read_document(identifier)?;
-        require_write_access(stored.access, actor)?;
-        let target = stored.path;
+        let target = collection.read_document(identifier)?.path;
         let before = record_index_keys(&collection, identifier)?;
         let mut transaction = Transaction::begin(self, &collection, "patch-document")?;
         let outcome = (|| {
@@ -1020,7 +928,6 @@ impl NativeWriteRoot {
         collection_name: &str,
         identifier: &str,
         fields: Map<String, Value>,
-        actor: Option<&WriteActor>,
         codec: &dyn DocumentCodec,
     ) -> Result<(), NativeStorageError> {
         self.root.assert_profile_owned()?;
@@ -1028,7 +935,7 @@ impl NativeWriteRoot {
         let policy = self.policy(&collection, codec);
         let outcome = policy
             .encode(collection_name, fields)
-            .and_then(|encoded| self.patch_document(collection_name, identifier, &encoded, actor));
+            .and_then(|encoded| self.patch_document(collection_name, identifier, &encoded));
         policy.finish(outcome)
     }
 
@@ -1040,22 +947,14 @@ impl NativeWriteRoot {
     /// # Errors
     ///
     /// Returns an error for a non-object patch, malformed resulting document,
-    /// denied write, unsafe path, lock contention, or interrupted durable
-    /// operation.
+    /// unsafe path, lock contention, or interrupted durable operation.
     pub fn patch_document_fields(
         &self,
         collection_name: &str,
         identifier: &str,
         changes: &Map<String, Value>,
-        actor: Option<&WriteActor>,
     ) -> Result<(), NativeStorageError> {
-        self.patch_document_fields_with(
-            collection_name,
-            identifier,
-            changes,
-            actor,
-            &PlainDocumentCodec,
-        )
+        self.patch_document_fields_with(collection_name, identifier, changes, &PlainDocumentCodec)
     }
 
     /// [`Self::patch_document_fields`], decoding the stored body and encoding
@@ -1070,7 +969,6 @@ impl NativeWriteRoot {
         collection_name: &str,
         identifier: &str,
         changes: &Map<String, Value>,
-        actor: Option<&WriteActor>,
         codec: &dyn DocumentCodec,
     ) -> Result<(), NativeStorageError> {
         self.root.assert_profile_owned()?;
@@ -1084,13 +982,12 @@ impl NativeWriteRoot {
             policy.encode(collection_name, document)
         };
         let outcome = if self.uses_log(&collection) {
-            self.patch_document_logged(&collection, identifier, actor, patch)
+            self.patch_document_logged(&collection, identifier, patch)
         } else {
             (|| {
                 let _lock = self.lock_collection(&collection)?;
                 self.recover_locked(&collection)?;
                 let stored = collection.read_document(identifier)?;
-                require_write_access(stored.access, actor)?;
                 let canonical = patch(&stored.bytes)?;
                 self.patch_document_locked(&collection, identifier, &stored.path, &canonical)
             })()
@@ -1100,23 +997,16 @@ impl NativeWriteRoot {
 
     /// Execute a bounded `INSERT`, `UPDATE`, or `DELETE` SQL statement.
     ///
-    /// `insert_access` is used only by `INSERT`. `actor` is used only to
-    /// authorize `UPDATE` and `DELETE`. An `INSERT` receives a monotonic TTID
-    /// generated by this process and retries if that identifier already
-    /// exists.
+    /// An `INSERT` receives a monotonic TTID generated by this process and
+    /// retries if that identifier already exists.
     ///
     /// # Errors
     ///
-    /// Returns an error for malformed SQL, non-mutation operations, denied
-    /// records, invalid resulting documents, unsafe paths, lock contention,
-    /// or interrupted durable operation.
-    pub fn execute_sql_mutation(
-        &self,
-        sql: &str,
-        actor: Option<&WriteActor>,
-        insert_access: WriteAccess,
-    ) -> Result<SqlMutationResult, NativeStorageError> {
-        self.execute_sql_mutation_with(sql, actor, insert_access, &PlainDocumentCodec)
+    /// Returns an error for malformed SQL, non-mutation operations, invalid
+    /// resulting documents, unsafe paths, lock contention, or interrupted
+    /// durable operation.
+    pub fn execute_sql_mutation(&self, sql: &str) -> Result<SqlMutationResult, NativeStorageError> {
+        self.execute_sql_mutation_with(sql, &PlainDocumentCodec)
     }
 
     /// [`Self::execute_sql_mutation`], with `INSERT` rows and `UPDATE`
@@ -1129,8 +1019,6 @@ impl NativeWriteRoot {
     pub fn execute_sql_mutation_with(
         &self,
         sql: &str,
-        actor: Option<&WriteActor>,
-        insert_access: WriteAccess,
         codec: &dyn DocumentCodec,
     ) -> Result<SqlMutationResult, NativeStorageError> {
         self.root.assert_profile_owned()?;
@@ -1142,9 +1030,9 @@ impl NativeWriteRoot {
             ));
         }
         match plan.operation {
-            SqlOperation::Insert => self.execute_sql_insert(&plan, insert_access, codec),
-            SqlOperation::Update => self.execute_sql_update(&plan, actor, codec),
-            SqlOperation::Delete => self.execute_sql_delete(&plan, actor, codec),
+            SqlOperation::Insert => self.execute_sql_insert(&plan, codec),
+            SqlOperation::Update => self.execute_sql_update(&plan, codec),
+            SqlOperation::Delete => self.execute_sql_delete(&plan, codec),
             _ => Err(NativeStorageError::new(
                 NativeStorageErrorCode::InvalidQuery,
                 "native SQL mutation accepts only INSERT, UPDATE, or DELETE",
@@ -1162,17 +1050,16 @@ impl NativeWriteRoot {
     /// # Errors
     ///
     /// Returns an error for an invalid identifier, invalid metadata name or
-    /// value, missing record, denied write, unsafe path, lock contention, or
-    /// interrupted durable operation.
+    /// value, missing record, unsafe path, lock contention, or interrupted
+    /// durable operation.
     pub fn set_record_metadata(
         &self,
         collection_name: &str,
         identifier: &str,
         record: &Map<String, Value>,
-        actor: Option<&WriteActor>,
     ) -> Result<(), NativeStorageError> {
         self.root.assert_profile_owned()?;
-        self.write_record_metadata(collection_name, identifier, record, actor, false)
+        self.write_record_metadata(collection_name, identifier, record, false)
     }
 
     /// Replace a record's developer metadata with `record` exactly.
@@ -1189,10 +1076,9 @@ impl NativeWriteRoot {
         collection_name: &str,
         identifier: &str,
         record: &Map<String, Value>,
-        actor: Option<&WriteActor>,
     ) -> Result<(), NativeStorageError> {
         self.root.assert_profile_owned()?;
-        self.write_record_metadata(collection_name, identifier, record, actor, true)
+        self.write_record_metadata(collection_name, identifier, record, true)
     }
 
     fn write_record_metadata(
@@ -1200,24 +1086,17 @@ impl NativeWriteRoot {
         collection_name: &str,
         identifier: &str,
         record: &Map<String, Value>,
-        actor: Option<&WriteActor>,
         replace: bool,
     ) -> Result<(), NativeStorageError> {
         validate_ttid_shape(identifier)?;
         validate_custom_metadata(&record.clone().into_iter().collect())?;
         let collection = self.writable_collection(collection_name)?;
         if self.uses_log(&collection) {
-            return self.write_record_metadata_logged(
-                &collection,
-                identifier,
-                (record, replace),
-                actor,
-            );
+            return self.write_record_metadata_logged(&collection, identifier, (record, replace));
         }
         let _lock = self.lock_collection(&collection)?;
         self.recover_locked(&collection)?;
-        let (target, access) = record_target(&collection, identifier)?;
-        require_write_access(access, actor)?;
+        let target = record_target(&collection, identifier)?;
         let mut record = record.clone();
         if replace {
             for name in collection.read_custom_metadata(identifier)?.keys() {
@@ -1263,69 +1142,27 @@ impl NativeWriteRoot {
         finish_transaction(transaction, outcome, "metadata")
     }
 
-    /// Project UID, GID, and mode onto one existing document or raw file.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an invalid identifier, an empty projection, a
-    /// missing record, a denied write, an unsafe path, lock contention, a
-    /// non-POSIX platform, or an interrupted durable operation.
-    pub fn set_record_access(
-        &self,
-        collection_name: &str,
-        identifier: &str,
-        access: WriteAccess,
-        actor: Option<&WriteActor>,
-    ) -> Result<(), NativeStorageError> {
-        self.root.assert_profile_owned()?;
-        validate_ttid_shape(identifier)?;
-        if access.is_empty() {
-            return Err(NativeStorageError::new(
-                NativeStorageErrorCode::Unsupported,
-                "set_record_access requires at least one of uid, gid, or mode",
-            ));
-        }
-        let access = self.validate_access(access)?;
-        let collection = self.writable_collection(collection_name)?;
-        if self.uses_log(&collection) && (cfg!(unix) || collection.uses_segments()) {
-            return self.set_record_access_logged(&collection, identifier, access, actor);
-        }
-        let _lock = self.lock_collection(&collection)?;
-        self.recover_locked(&collection)?;
-        let (target, descriptor) = record_target(&collection, identifier)?;
-        require_write_access(descriptor, actor)?;
-        let mut transaction = Transaction::begin(self, &collection, "set-access")?;
-        let outcome = (|| {
-            transaction.capture(&target)?;
-            apply_profiled_access(&self.root, &target, self.validate_access(access)?)?;
-            transaction.commit()
-        })();
-        finish_transaction(transaction, outcome, "access")
-    }
-
     /// Soft-delete one existing document or raw file into the retained
     /// tombstone tree.
     ///
     /// # Errors
     ///
-    /// Returns an error for a missing document, denied write, conflicting
-    /// tombstone, unsafe path, lock contention, or interrupted durable move.
+    /// Returns an error for a missing document, conflicting tombstone,
+    /// unsafe path, lock contention, or interrupted durable move.
     pub fn delete_document(
         &self,
         collection_name: &str,
         identifier: &str,
-        actor: Option<&WriteActor>,
     ) -> Result<(), NativeStorageError> {
         self.root.assert_profile_owned()?;
         validate_ttid_shape(identifier)?;
         let collection = self.writable_collection(collection_name)?;
         if self.uses_log(&collection) {
-            return self.delete_document_logged(&collection, identifier, actor);
+            return self.delete_document_logged(&collection, identifier);
         }
         let _lock = self.lock_collection(&collection)?;
         self.recover_locked(&collection)?;
-        let (source, access) = record_target(&collection, identifier)?;
-        require_write_access(access, actor)?;
+        let source = record_target(&collection, identifier)?;
         let filename = source.file_name().ok_or_else(|| {
             NativeStorageError::new(NativeStorageErrorCode::UnsafePath, "record has no filename")
         })?;
@@ -1376,25 +1213,24 @@ impl NativeWriteRoot {
 
     /// Restore one retained document or raw-file tombstone into the live tree.
     ///
-    /// The record keeps its TTID and its portable access descriptor, matching
-    /// the JavaScript `restore(id)` contract.
+    /// The record keeps its TTID and its attributes, matching the JavaScript
+    /// `restore(id)` contract.
     ///
     /// # Errors
     ///
     /// Returns an error when the identifier is invalid, a live record already
-    /// occupies it, no tombstone exists, the actor is denied, the path is
-    /// unsafe, the lock is held, or a durable operation is interrupted.
+    /// occupies it, no tombstone exists, the path is unsafe, the lock is
+    /// held, or a durable operation is interrupted.
     pub fn restore_document(
         &self,
         collection_name: &str,
         identifier: &str,
-        actor: Option<&WriteActor>,
     ) -> Result<(), NativeStorageError> {
         self.root.assert_profile_owned()?;
         validate_ttid_shape(identifier)?;
         let collection = self.writable_collection(collection_name)?;
         if self.uses_log(&collection) {
-            return self.restore_document_logged(&collection, identifier, actor);
+            return self.restore_document_logged(&collection, identifier);
         }
         let _lock = self.lock_collection(&collection)?;
         self.recover_locked(&collection)?;
@@ -1408,17 +1244,10 @@ impl NativeWriteRoot {
             Err(error) if error.code() == NativeStorageErrorCode::NotFound => {}
             Err(error) => return Err(error),
         }
-        let (source, access) = match collection.kind {
-            CollectionKind::Document => {
-                let deleted = collection.read_deleted_document(identifier)?;
-                (deleted.path, deleted.access)
-            }
-            CollectionKind::File => {
-                let deleted = collection.read_deleted_raw_file(identifier)?;
-                (deleted.path, deleted.access_descriptor)
-            }
+        let source = match collection.kind {
+            CollectionKind::Document => collection.read_deleted_document(identifier)?.path,
+            CollectionKind::File => collection.read_deleted_raw_file(identifier)?.path,
         };
-        require_write_access(access, actor)?;
         let filename = source.file_name().ok_or_else(|| {
             NativeStorageError::new(
                 NativeStorageErrorCode::UnsafePath,
@@ -2118,7 +1947,6 @@ impl NativeWriteRoot {
     fn execute_sql_insert(
         &self,
         plan: &fylo_query::SqlPlan,
-        access: WriteAccess,
         codec: &dyn DocumentCodec,
     ) -> Result<SqlMutationResult, NativeStorageError> {
         let values = required_object(&plan.ast, "$values", "SQL INSERT values")?;
@@ -2126,14 +1954,13 @@ impl NativeWriteRoot {
         let policy = self.policy(&collection, codec);
         let outcome = policy
             .encode(&plan.collection, values.clone())
-            .and_then(|encoded| self.insert_sql_row(plan, access, &encoded));
+            .and_then(|encoded| self.insert_sql_row(plan, &encoded));
         policy.finish(outcome)
     }
 
     fn insert_sql_row(
         &self,
         plan: &fylo_query::SqlPlan,
-        access: WriteAccess,
         encoded: &[u8],
     ) -> Result<SqlMutationResult, NativeStorageError> {
         for _ in 0..16 {
@@ -2142,10 +1969,7 @@ impl NativeWriteRoot {
                 &plan.collection,
                 &identifier,
                 encoded,
-                PutDocumentOptions {
-                    access,
-                    ..PutDocumentOptions::default()
-                },
+                PutDocumentOptions::default(),
             ) {
                 Ok(()) => {
                     return Ok(SqlMutationResult {
@@ -2169,7 +1993,6 @@ impl NativeWriteRoot {
     fn execute_sql_update(
         &self,
         plan: &fylo_query::SqlPlan,
-        actor: Option<&WriteActor>,
         codec: &dyn DocumentCodec,
     ) -> Result<SqlMutationResult, NativeStorageError> {
         let changes = required_object(&plan.ast, "$set", "SQL UPDATE assignments")?;
@@ -2182,7 +2005,7 @@ impl NativeWriteRoot {
             .map_err(|error| query_error(&error))?;
         let collection = self.document_collection(&plan.collection, "SQL UPDATE")?;
         let policy = self.policy(&collection, codec);
-        let outcome = self.update_sql_rows(&collection, (&query, changes), actor, &policy);
+        let outcome = self.update_sql_rows(&collection, (&query, changes), &policy);
         policy.finish(outcome)
     }
 
@@ -2190,11 +2013,10 @@ impl NativeWriteRoot {
         &self,
         collection: &super::NativeCollection,
         (query, changes): (&StructuredQuery, &Map<String, Value>),
-        actor: Option<&WriteActor>,
         policy: &DocumentPolicy<'_>,
     ) -> Result<SqlMutationResult, NativeStorageError> {
         if self.uses_log(collection) {
-            match self.sql_update_logged(collection, (query, changes), actor, policy) {
+            match self.sql_update_logged(collection, (query, changes), policy) {
                 Err(error) if Self::exceeds_log_budget(&error) => {}
                 outcome => return outcome,
             }
@@ -2202,7 +2024,7 @@ impl NativeWriteRoot {
         policy.restart();
         let _lock = self.lock_collection(collection)?;
         self.recover_locked(collection)?;
-        let mut documents = matching_documents(collection, query, actor, policy)?;
+        let mut documents = matching_documents(collection, query, policy)?;
         for document in &mut documents {
             let mut fields = document.decoded_fields(&collection.name, policy)?;
             merge_top_level(&mut fields, changes);
@@ -2223,18 +2045,17 @@ impl NativeWriteRoot {
     fn execute_sql_delete(
         &self,
         plan: &fylo_query::SqlPlan,
-        actor: Option<&WriteActor>,
         codec: &dyn DocumentCodec,
     ) -> Result<SqlMutationResult, NativeStorageError> {
         let query = StructuredQuery::from_value(&plan.ast, QueryLimits::default())
             .map_err(|error| query_error(&error))?;
         let collection = self.document_collection(&plan.collection, "SQL DELETE")?;
         if self.uses_log(&collection) {
-            return self.sql_delete_logged(&collection, &query, actor, codec);
+            return self.sql_delete_logged(&collection, &query, codec);
         }
         let _lock = self.lock_collection(&collection)?;
         self.recover_locked(&collection)?;
-        let documents = matching_documents(&collection, &query, actor, codec)?;
+        let documents = matching_documents(&collection, &query, codec)?;
         self.write_sql_deletes(&collection, &documents)?;
         Ok(SqlMutationResult {
             kind: SqlMutationResultKind::Delete,
@@ -2574,7 +2395,6 @@ impl SqlDocument {
 fn matching_documents(
     collection: &super::NativeCollection,
     query: &StructuredQuery,
-    actor: Option<&WriteActor>,
     codec: &dyn DocumentCodec,
 ) -> Result<Vec<SqlDocument>, NativeStorageError> {
     let mut matches = Vec::new();
@@ -2594,7 +2414,6 @@ fn matching_documents(
         if !query.matches(&fields, timestamps.created_at, stored.modified_millis) {
             continue;
         }
-        require_write_access(stored.access, actor)?;
         matches.push(SqlDocument {
             identifier,
             path: stored.path,
@@ -2615,16 +2434,10 @@ fn matching_documents(
 fn record_target(
     collection: &super::NativeCollection,
     identifier: &str,
-) -> Result<(PathBuf, Option<super::AccessDescriptor>), NativeStorageError> {
+) -> Result<PathBuf, NativeStorageError> {
     match collection.kind {
-        CollectionKind::Document => {
-            let stored = collection.read_document(identifier)?;
-            Ok((stored.path, stored.access))
-        }
-        CollectionKind::File => {
-            let stored = collection.read_raw_file(identifier)?;
-            Ok((stored.path, stored.access_descriptor))
-        }
+        CollectionKind::Document => Ok(collection.read_document(identifier)?.path),
+        CollectionKind::File => Ok(collection.read_raw_file(identifier)?.path),
     }
 }
 
@@ -4513,28 +4326,6 @@ fn validate_custom_metadata(
     Ok(())
 }
 
-fn require_write_access(
-    descriptor: Option<super::AccessDescriptor>,
-    actor: Option<&WriteActor>,
-) -> Result<(), NativeStorageError> {
-    let Some(descriptor) = descriptor else {
-        return Ok(());
-    };
-    let bits = match actor {
-        Some(actor) if actor.uid == descriptor.uid => (descriptor.mode >> 6) & 0o7,
-        Some(actor) if actor.groups.contains(&descriptor.gid) => (descriptor.mode >> 3) & 0o7,
-        _ => descriptor.mode & 0o7,
-    };
-    if bits & 0o2 != 0 {
-        Ok(())
-    } else {
-        Err(NativeStorageError::new(
-            NativeStorageErrorCode::PermissionDenied,
-            "portable FYLO access descriptor denied the mutation",
-        ))
-    }
-}
-
 #[cfg(unix)]
 pub(crate) fn remove_fylo_attribute(path: &Path, name: &str) -> Result<(), NativeStorageError> {
     use xattr::FileExt;
@@ -5473,114 +5264,6 @@ fn restore_attributes(
     }
 }
 
-fn apply_profiled_access(
-    root: &NativeRoot,
-    path: &Path,
-    access: WriteAccess,
-) -> Result<(), NativeStorageError> {
-    if root.filesystem_profile() == super::FilesystemProfile::Native {
-        return apply_access(path, access);
-    }
-    root.assert_profile_owned()?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::{MetadataExt, PermissionsExt, chown};
-        let (file, metadata) = root.open_file(path, super::MAX_RAW_FILE_BYTES)?;
-        super::sidecar_attributes::SidecarAttributes::verify_owner(root, &metadata, false)?;
-        let (uid, gid) = root.efs_identity().ok_or_else(|| {
-            NativeStorageError::new(
-                NativeStorageErrorCode::CorruptMetadata,
-                "EFS descriptor is absent",
-            )
-        })?;
-        if access.uid.is_some_and(|value| value != uid)
-            || access.gid.is_some_and(|value| value != gid)
-        {
-            return Err(NativeStorageError::new(
-                NativeStorageErrorCode::Unsupported,
-                "EFS UID/GID projection is immutable",
-            ));
-        }
-        if access.is_empty() {
-            return Ok(());
-        }
-        let mode = access.mode.unwrap_or(DEFAULT_ACCESS_MODE);
-        let descriptor = super::AccessDescriptor {
-            version: 1,
-            uid,
-            gid,
-            mode,
-        };
-        let encoded = serde_json::to_vec(&descriptor).map_err(|error| json_error(&error))?;
-        super::record_attributes::RecordAttributes::write(
-            root,
-            path,
-            super::ACCESS_XATTR,
-            &encoded,
-        )?;
-        failpoint("after-access-marker")?;
-        chown(path, Some(metadata.uid()), Some(metadata.gid())).map_err(NativeStorageError::io)?;
-        failpoint("after-chown")?;
-        file.set_permissions(fs::Permissions::from_mode(mode))
-            .map_err(NativeStorageError::io)?;
-        failpoint("after-chmod")?;
-        crate::sync_handle(&file).map_err(NativeStorageError::io)?;
-        root.verify_open_file_identity(path, &file)?;
-        root.assert_profile_owned()
-    }
-    #[cfg(not(unix))]
-    Err(NativeStorageError::new(
-        NativeStorageErrorCode::Unsupported,
-        "EFS mode projection requires POSIX files",
-    ))
-}
-
-#[cfg(unix)]
-fn apply_access(path: &Path, access: WriteAccess) -> Result<(), NativeStorageError> {
-    use std::os::unix::fs::{MetadataExt, PermissionsExt, chown};
-    use xattr::FileExt;
-
-    if access.is_empty() {
-        return Ok(());
-    }
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(path)
-        .map_err(NativeStorageError::io)?;
-    let metadata = file.metadata().map_err(NativeStorageError::io)?;
-    let uid = access.uid.unwrap_or(metadata.uid());
-    let gid = access.gid.unwrap_or(metadata.gid());
-    let mode = access.mode.unwrap_or(DEFAULT_ACCESS_MODE);
-    let descriptor = super::AccessDescriptor {
-        version: 1,
-        uid,
-        gid,
-        mode,
-    };
-    let encoded = serde_json::to_vec(&descriptor).map_err(|error| json_error(&error))?;
-    file.set_xattr(super::ACCESS_XATTR, &encoded)
-        .map_err(NativeStorageError::io)?;
-    failpoint("after-access-marker")?;
-    chown(path, Some(uid), Some(gid)).map_err(NativeStorageError::io)?;
-    failpoint("after-chown")?;
-    fs::set_permissions(path, fs::Permissions::from_mode(mode)).map_err(NativeStorageError::io)?;
-    failpoint("after-chmod")?;
-    crate::sync_handle(&file).map_err(NativeStorageError::io)
-}
-
-#[cfg(not(unix))]
-fn apply_access(_path: &Path, access: WriteAccess) -> Result<(), NativeStorageError> {
-    if access.is_empty() {
-        Ok(())
-    } else {
-        Err(NativeStorageError::new(
-            NativeStorageErrorCode::Unsupported,
-            "UID/GID/mode access control is available only on POSIX platforms",
-        ))
-    }
-}
-
 #[cfg(unix)]
 fn set_mode(path: &Path, mode: u32) -> Result<(), NativeStorageError> {
     use std::os::unix::fs::PermissionsExt;
@@ -5599,16 +5282,13 @@ fn set_mode(_path: &Path, _mode: u32) -> Result<(), NativeStorageError> {
 /// The list is the contract the crash matrix enumerates, so a new failpoint
 /// must be declared here to be injectable — which is also what stops it from
 /// being added without coverage.
-pub const FAILPOINTS: [&str; 37] = [
+pub const FAILPOINTS: [&str; 34] = [
     "before-file-write",
     "after-file-rename",
     "after-file-sync",
     "after-capture",
     "after-state-writing",
     "after-metadata-write",
-    "after-access-marker",
-    "after-chown",
-    "after-chmod",
     "after-delete-rename",
     "after-restore-rename",
     "after-reshard-rename",
@@ -5725,6 +5405,25 @@ fn canonical_body(encoded: &[u8]) -> Result<Vec<u8>, NativeStorageError> {
         ));
     }
     Ok(canonical)
+}
+
+/// Check a payload the EFS sidecar profile just published: it belongs to
+/// the root's recorded owner and is the file the root opened.
+#[cfg(unix)]
+fn verify_profiled_payload(root: &NativeRoot, path: &Path) -> Result<(), NativeStorageError> {
+    let (file, metadata) = root.open_file(path, super::MAX_RAW_FILE_BYTES)?;
+    super::sidecar_attributes::SidecarAttributes::verify_owner(root, &metadata, false)?;
+    root.verify_open_file_identity(path, &file)?;
+    root.assert_profile_owned()
+}
+
+/// The EFS sidecar profile keeps its owner in POSIX file metadata.
+#[cfg(not(unix))]
+fn verify_profiled_payload(_root: &NativeRoot, _path: &Path) -> Result<(), NativeStorageError> {
+    Err(NativeStorageError::new(
+        NativeStorageErrorCode::Unsupported,
+        "the EFS sidecar profile requires POSIX files",
+    ))
 }
 
 #[cfg(test)]
@@ -5903,12 +5602,7 @@ mod tests {
             )
             .unwrap();
         writer
-            .patch_document(
-                "users",
-                "4VRNF52JPCO",
-                br#"{"name":"Grace","score":50}"#,
-                None,
-            )
+            .patch_document("users", "4VRNF52JPCO", br#"{"name":"Grace","score":50}"#)
             .unwrap();
         let collection = writer.root.collection("users").unwrap();
         assert_eq!(
@@ -5920,9 +5614,7 @@ mod tests {
                 .unwrap()
                 .contains("name/eq/Grace/4VRNF52JPCO")
         );
-        writer
-            .delete_document("users", "4VRNF52JPCO", None)
-            .unwrap();
+        writer.delete_document("users", "4VRNF52JPCO").unwrap();
         assert!(collection.document_ids().unwrap().is_empty());
         assert_eq!(
             collection
@@ -5952,7 +5644,6 @@ mod tests {
                 "users",
                 "4VRNF52JPCO",
                 &serde_json::from_value(json!({"score": 50})).unwrap(),
-                None,
             )
             .unwrap();
         assert_eq!(
@@ -5972,11 +5663,7 @@ mod tests {
         let fixture = TestRoot::create();
         let writer = NativeWriteRoot::open(&fixture.0).unwrap();
         let inserted = writer
-            .execute_sql_mutation(
-                "INSERT INTO users (name, score) VALUES ('Ada', 42)",
-                None,
-                WriteAccess::default(),
-            )
+            .execute_sql_mutation("INSERT INTO users (name, score) VALUES ('Ada', 42)")
             .unwrap();
         assert_eq!(inserted.kind, SqlMutationResultKind::Insert);
         assert_eq!(inserted.affected, 1);
@@ -5991,11 +5678,7 @@ mod tests {
             )
             .unwrap();
         let updated = writer
-            .execute_sql_mutation(
-                "UPDATE users SET score = 50 WHERE score = 42",
-                None,
-                WriteAccess::default(),
-            )
+            .execute_sql_mutation("UPDATE users SET score = 50 WHERE score = 42")
             .unwrap();
         assert_eq!(updated.kind, SqlMutationResultKind::Update);
         assert_eq!(updated.affected, 2);
@@ -6013,11 +5696,7 @@ mod tests {
         }
 
         let deleted = writer
-            .execute_sql_mutation(
-                "DELETE FROM users WHERE score = 50",
-                None,
-                WriteAccess::default(),
-            )
+            .execute_sql_mutation("DELETE FROM users WHERE score = 50")
             .unwrap();
         assert_eq!(deleted.kind, SqlMutationResultKind::Delete);
         assert_eq!(deleted.affected, 2);
@@ -6047,7 +5726,6 @@ mod tests {
                         "absent": null
                     }))
                     .unwrap(),
-                    ..PutDocumentOptions::default()
                 },
             )
             .unwrap();
@@ -6084,7 +5762,6 @@ mod tests {
                 "users",
                 "4VRNF52JPCO",
                 &serde_json::from_value(json!({"team": "storage", "draft": true})).unwrap(),
-                None,
             )
             .unwrap();
         let first = read_meta_stamp(&writer, "4VRNF52JPCO");
@@ -6093,7 +5770,6 @@ mod tests {
                 "users",
                 "4VRNF52JPCO",
                 &serde_json::from_value(json!({"draft": Value::Null})).unwrap(),
-                None,
             )
             .unwrap();
         // Removing an already-absent xattr is idempotent on every supported
@@ -6103,7 +5779,6 @@ mod tests {
                 "users",
                 "4VRNF52JPCO",
                 &serde_json::from_value(json!({"draft": Value::Null})).unwrap(),
-                None,
             )
             .unwrap();
         let target = writer
@@ -6199,7 +5874,6 @@ mod tests {
                 "users",
                 "4VRNF52JPCO",
                 &serde_json::from_value(json!({"team": "storage", "draft": true})).unwrap(),
-                None,
             )
             .unwrap();
 
@@ -6209,7 +5883,6 @@ mod tests {
                 "users",
                 "4VRNF52JPCO",
                 &serde_json::from_value(json!({"team": "platform"})).unwrap(),
-                None,
             )
             .unwrap();
         let merged = writer
@@ -6225,7 +5898,6 @@ mod tests {
                 "users",
                 "4VRNF52JPCO",
                 &serde_json::from_value(json!({"team": "platform"})).unwrap(),
-                None,
             )
             .unwrap();
         let replaced = writer
@@ -6236,101 +5908,6 @@ mod tests {
             .unwrap();
         assert_eq!(replaced.get("team"), Some(&json!("platform")));
         assert!(!replaced.contains_key("draft"));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn access_projection_applies_mode_and_then_denies_a_foreign_actor() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let fixture = TestRoot::create();
-        let writer = NativeWriteRoot::open(&fixture.0).unwrap();
-        writer
-            .put_document(
-                "users",
-                "4VRNF52JPCO",
-                br#"{"name":"Ada"}"#,
-                PutDocumentOptions::default(),
-            )
-            .unwrap();
-        writer
-            .set_record_access(
-                "users",
-                "4VRNF52JPCO",
-                WriteAccess {
-                    uid: None,
-                    gid: None,
-                    mode: Some(0o640),
-                },
-                None,
-            )
-            .unwrap();
-        let target = writer
-            .root
-            .collection("users")
-            .unwrap()
-            .read_document("4VRNF52JPCO")
-            .unwrap()
-            .path;
-        assert_eq!(
-            fs::metadata(&target).unwrap().permissions().mode() & 0o777,
-            0o640
-        );
-        let foreign = WriteActor::new(u32::MAX, []);
-        let denied = writer
-            .set_record_metadata(
-                "users",
-                "4VRNF52JPCO",
-                &serde_json::from_value(json!({"team": "storage"})).unwrap(),
-                Some(&foreign),
-            )
-            .unwrap_err();
-        assert_eq!(denied.code(), NativeStorageErrorCode::PermissionDenied);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn group_membership_authorizes_a_protected_document_mutation() {
-        use std::os::unix::fs::MetadataExt;
-
-        let fixture = TestRoot::create();
-        let gid = fs::metadata(&fixture.0).unwrap().gid();
-        let writer = NativeWriteRoot::open(&fixture.0).unwrap();
-        writer
-            .put_document(
-                "users",
-                "4VRNF52JPCO",
-                br#"{"name":"Ada"}"#,
-                PutDocumentOptions {
-                    access: WriteAccess {
-                        uid: None,
-                        gid: Some(gid),
-                        mode: Some(0o660),
-                    },
-                    ..PutDocumentOptions::default()
-                },
-            )
-            .unwrap();
-        assert_eq!(
-            writer
-                .patch_document(
-                    "users",
-                    "4VRNF52JPCO",
-                    br#"{"name":"Denied"}"#,
-                    Some(&WriteActor::new(u32::MAX - 1, std::iter::empty())),
-                )
-                .unwrap_err()
-                .code(),
-            NativeStorageErrorCode::PermissionDenied
-        );
-        writer
-            .patch_document(
-                "users",
-                "4VRNF52JPCO",
-                br#"{"name":"Editor"}"#,
-                Some(&WriteActor::new(u32::MAX - 1, [gid])),
-            )
-            .unwrap();
     }
 
     #[test]
@@ -6359,7 +5936,6 @@ mod tests {
                     metadata: [("reviewed".into(), Value::Bool(true))]
                         .into_iter()
                         .collect(),
-                    access: WriteAccess::default(),
                 },
             )
             .unwrap();
@@ -6404,14 +5980,13 @@ mod tests {
                 .unwrap();
         }
         writer
-            .patch_document("users", &identifiers[0], br#"{"name":"Grace"}"#, None)
+            .patch_document("users", &identifiers[0], br#"{"name":"Grace"}"#)
             .unwrap();
         writer
             .patch_document_fields(
                 "users",
                 &identifiers[1],
                 &json!({ "extra": "merged" }).as_object().unwrap().clone(),
-                None,
             )
             .unwrap();
         writer
@@ -6419,18 +5994,11 @@ mod tests {
                 "users",
                 &identifiers[2],
                 &json!({ "reviewed": true }).as_object().unwrap().clone(),
-                None,
             )
             .unwrap();
-        writer
-            .delete_document("users", &identifiers[3], None)
-            .unwrap();
-        writer
-            .delete_document("users", &identifiers[4], None)
-            .unwrap();
-        writer
-            .restore_document("users", &identifiers[4], None)
-            .unwrap();
+        writer.delete_document("users", &identifiers[3]).unwrap();
+        writer.delete_document("users", &identifiers[4]).unwrap();
+        writer.restore_document("users", &identifiers[4]).unwrap();
 
         let collection = writer.root.collection("users").unwrap();
         // The WAL must actually be carrying entries, or this asserts nothing.
@@ -6844,11 +6412,9 @@ mod tests {
         );
 
         writer
-            .patch_document("users", "4VRNF52J000", br#"{"name":"row-2"}"#, None)
+            .patch_document("users", "4VRNF52J000", br#"{"name":"row-2"}"#)
             .unwrap();
-        writer
-            .delete_document("users", "4VRNF52J001", None)
-            .unwrap();
+        writer.delete_document("users", "4VRNF52J001").unwrap();
 
         let refused = put_named(&writer, "4VRNF52J002", "new").unwrap_err();
         assert_eq!(refused.code(), NativeStorageErrorCode::IndexFull);
@@ -6918,7 +6484,6 @@ mod tests {
                     key: "/fixtures/sample.bin".into(),
                     extension: ".bin".into(),
                     metadata: std::collections::BTreeMap::new(),
-                    access: WriteAccess::default(),
                 },
             )
             .unwrap_err();
@@ -7024,12 +6589,7 @@ mod tests {
         // Both rows end up with `bad`, so both count, once each, whichever
         // path the update commits through.
         writer
-            .execute_sql_mutation_with(
-                "UPDATE users SET bad = 1",
-                None,
-                WriteAccess::default(),
-                &RejectsBad,
-            )
+            .execute_sql_mutation_with("UPDATE users SET bad = 1", &RejectsBad)
             .unwrap();
         assert_eq!(violations(), 3);
 
@@ -7041,7 +6601,6 @@ mod tests {
                 "users",
                 "4VRNF52JPCP",
                 &fields(&json!({"bad":2})),
-                None,
                 &RejectsBad,
             )
             .unwrap();

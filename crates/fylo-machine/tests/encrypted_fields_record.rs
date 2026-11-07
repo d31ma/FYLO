@@ -248,7 +248,7 @@ fn packed_database(fixture: &Fixture) -> PathBuf {
     let database = fixture.database();
     NativeWriteRoot::open(&root)
         .unwrap()
-        .pack_database(&database, true)
+        .pack_database(&database)
         .unwrap();
     database
 }
@@ -392,7 +392,7 @@ fn a_dropped_collection_takes_its_record_with_it() {
     let database = fixture.parent.join("dropped.vdbx");
     NativeWriteRoot::open(&directory)
         .unwrap()
-        .pack_database(&database, true)
+        .pack_database(&database)
         .unwrap();
     for root in [directory, database] {
         fixture.succeed(

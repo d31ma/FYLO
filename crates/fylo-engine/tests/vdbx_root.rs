@@ -14,7 +14,7 @@ use fylo_format::ContainerSuperblock;
 use fylo_query::{QueryLimits, StructuredQuery};
 use fylo_storage_native::{
     CollectionKind, ContainerFile, DatabaseKey, NativeRoot, NativeStorageErrorCode,
-    NativeWriteRoot, RootConfig, RootOpenOptions, WriteAccess,
+    NativeWriteRoot, RootConfig, RootOpenOptions,
 };
 use serde_json::{Map, Value, json};
 
@@ -80,12 +80,7 @@ fn the_engine_writes_finds_and_reopens_a_database() {
         let team = ["red", "blue", "green"][number % 3];
         let user = json!({ "name": format!("user{number}"), "team": team });
         engine
-            .put_document(
-                "users",
-                &identifier(number),
-                fields(&user),
-                WriteAccess::default(),
-            )
+            .put_document("users", &identifier(number), fields(&user))
             .unwrap();
     }
     engine
@@ -93,7 +88,6 @@ fn the_engine_writes_finds_and_reopens_a_database() {
             "orders",
             &identifier(100),
             fields(&json!({ "name": "order100", "user": identifier(1) })),
-            WriteAccess::default(),
         )
         .unwrap();
     engine
@@ -101,7 +95,6 @@ fn the_engine_writes_finds_and_reopens_a_database() {
             "users",
             &identifier(0),
             fields(&json!({ "name": "user0", "team": "blue" })),
-            None,
         )
         .unwrap();
 
@@ -175,12 +168,7 @@ fn the_engine_answers_range_queries_from_a_database_index() {
     for number in 0..12 {
         let user = json!({ "name": format!("user{number:02}"), "rank": number });
         engine
-            .put_document(
-                "users",
-                &identifier(number),
-                fields(&user),
-                WriteAccess::default(),
-            )
+            .put_document("users", &identifier(number), fields(&user))
             .unwrap();
     }
     engine
@@ -188,7 +176,6 @@ fn the_engine_answers_range_queries_from_a_database_index() {
             "users",
             &identifier(2),
             fields(&json!({ "name": "user02", "rank": 9.5 })),
-            None,
         )
         .unwrap();
     let middle = json!({"$ops":[{"rank":{"$gte":8,"$lt":10}}]});
@@ -267,12 +254,7 @@ fn the_engine_pushes_and_validates_schema_versions_in_a_database() {
         }
     };
     let put = |engine: &WriteEngine, number: usize, body: Value| {
-        engine.put_document(
-            "users",
-            &identifier(number),
-            fields(&body),
-            WriteAccess::default(),
-        )
+        engine.put_document("users", &identifier(number), fields(&body))
     };
 
     author(
@@ -370,7 +352,6 @@ fn the_engine_reads_an_encrypted_database_only_with_its_key() {
                 "users",
                 &identifier(number),
                 fields(&json!({ "name": format!("ECHIDNA{number}"), "team": team })),
-                WriteAccess::default(),
             )
             .unwrap();
     }
@@ -395,12 +376,7 @@ fn the_engine_reads_an_encrypted_database_only_with_its_key() {
     );
     let writer = WriteEngine::open(&path).unwrap();
     let refused = writer
-        .put_document(
-            "users",
-            &identifier(9),
-            fields(&json!({ "name": "late" })),
-            WriteAccess::default(),
-        )
+        .put_document("users", &identifier(9), fields(&json!({ "name": "late" })))
         .unwrap_err();
     assert_eq!(
         refused.storage_code(),

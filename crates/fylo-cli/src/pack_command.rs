@@ -89,11 +89,10 @@ impl PackCommand {
         if options.sealed && key.is_none() && Self::encrypted_database(source) {
             key = application.database_key.as_ref();
         }
-        let allow = options.allow_engine_only_access;
         let report = match (command, key) {
-            ("pack", key) if options.sealed => writer.pack_sealed_database(out, allow, key),
-            ("pack", Some(key)) => writer.pack_encrypted_database(out, allow, key),
-            ("pack", None) => writer.pack_database(out, allow),
+            ("pack", key) if options.sealed => writer.pack_sealed_database(out, key),
+            ("pack", Some(key)) => writer.pack_encrypted_database(out, key),
+            ("pack", None) => writer.pack_database(out),
             _ => writer.unpack_database(out),
         }
         .map_err(|error| error.to_string())?;
@@ -346,7 +345,6 @@ pub struct PackOptions {
     pub out: Option<PathBuf>,
     pub sealed: bool,
     pub encrypt: bool,
-    pub allow_engine_only_access: bool,
     /// `create --admin <reference>`: the admin of a protected database.
     pub admin: Option<String>,
     /// `create --unprotected`: a database with no identities.

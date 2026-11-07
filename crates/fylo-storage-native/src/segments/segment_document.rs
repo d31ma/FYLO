@@ -5,7 +5,8 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use fylo_format::LogRecord;
 
 use super::{LocationState, SegmentCommitManifest, SegmentEntry, SegmentLocation};
-use crate::{AccessDescriptor, NativeStorageError, NativeStorageErrorCode};
+use crate::legacy_access_warning::LegacyAccessWarning;
+use crate::{NativeStorageError, NativeStorageErrorCode};
 
 /// One document as its newest segment entry holds it.
 #[derive(Clone, Debug)]
@@ -53,20 +54,13 @@ impl SegmentDocument {
     }
 
     /// The document as the collection API returns it.
-    pub(crate) fn into_stored(
-        self,
-        segment: std::path::PathBuf,
-    ) -> Result<crate::StoredBytes, NativeStorageError> {
-        Ok(crate::StoredBytes {
-            access: self.access()?,
+    pub(crate) fn into_stored(self, segment: std::path::PathBuf) -> crate::StoredBytes {
+        LegacyAccessWarning::notice(&self.entry.attributes);
+        crate::StoredBytes {
             modified_millis: self.entry.modified_ms,
             bytes: self.body,
             path: segment,
-        })
-    }
-
-    pub(crate) fn access(&self) -> Result<Option<AccessDescriptor>, NativeStorageError> {
-        crate::decode_access_descriptor(&self.attributes()?)
+        }
     }
 
     pub(crate) fn decode_attributes(

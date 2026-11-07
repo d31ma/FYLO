@@ -63,9 +63,7 @@ impl Rekeyed {
             put(&writer, "ledger", number);
         }
         put(&writer, "notes", 1);
-        writer
-            .delete_document("ledger", &identifier(4), None)
-            .unwrap();
+        writer.delete_document("ledger", &identifier(4)).unwrap();
         drop(writer);
         database.reopen();
         database

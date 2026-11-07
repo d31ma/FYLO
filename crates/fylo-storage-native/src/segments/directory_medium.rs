@@ -332,14 +332,6 @@ impl SegmentMedium for DirectoryMedium {
             .map_err(NativeStorageError::io)?;
         crate::sync_handle(&file).map_err(NativeStorageError::io)
     }
-
-    #[cfg(unix)]
-    fn owner(&self) -> Result<(u32, u32), NativeStorageError> {
-        use std::os::unix::fs::MetadataExt;
-        let metadata =
-            fs::symlink_metadata(self.paths.directory()).map_err(NativeStorageError::io)?;
-        Ok((metadata.uid(), metadata.gid()))
-    }
 }
 
 /// One open segment file, or a file collection's write-ahead log file.
