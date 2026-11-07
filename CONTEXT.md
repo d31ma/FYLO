@@ -16,8 +16,8 @@ truth.
 - **Document ID**: a TTID whose lifecycle segments encode creation, update, and
   deletion time.
 - **Document body**: one JSON object stored in a sharded `.json` file.
-- **Canonical metadata**: identity, timestamps, raw-file descriptors, and
-  access fields derived from storage and protected system state.
+- **Canonical metadata**: identity, timestamps and raw-file descriptors,
+  derived from storage and protected system state.
 - **Developer metadata**: typed custom values stored as xattrs or the qualified
   Windows ADS equivalent.
 - **Prefix index**: zero-payload sorted keys plus WAL; document values are not
@@ -48,6 +48,10 @@ truth.
   made in its place is refused.
 - **Key epoch**: one generation of a collection's key; revocation starts a
   new one.
+- **Legacy access descriptor**: the POSTIX `uid`, `gid` and `mode` an
+  earlier release stored on a record (`user.fylo.access`). It is ignored
+  and never written; `fylo pack --protect` drops it or keeps it as the
+  metadata field `legacyAccess`.
 - **S3 client**: any compatible object-storage client used for additive
   backup/restore; it does not replace the authoritative local root.
 
@@ -58,7 +62,7 @@ truth.
 - Acknowledged writes satisfy the documented durability model.
 - Recovery is bounded, idempotent, and never guesses past corruption.
 - Canonical metadata overrides colliding custom metadata.
-- UID/GID/mode and encryption checks fail closed when configured.
+- Identity, policy, signature and encryption checks fail closed.
 - Paths below a trusted root reject symlinks, reparse points, traversal, and
   type confusion.
 - Public machine, storage, backup, and Wasm contracts are independently
