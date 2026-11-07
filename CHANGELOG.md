@@ -25,7 +25,8 @@
   `ENOIDENTITY` without one (it no longer creates plain or shared-key
   databases; use `fylo create --unprotected`). SQL over a `.vdbx` database
   is refused with `ELAYOUTUNSUPPORTED` until its layer is built. `cng:`
-  stores Windows identities in CNG's software key storage provider (DPAPI).
+  stores Windows identities in CNG's software key storage provider (DPAPI),
+  per user, and like every store refuses to replace a key it already holds.
   Explorer shows a protected `.vdbx` as protected and locked.
 - **Signed records in protected databases (ADR 0021, phase 4).** Every
   record frame of a protected `.vdbx` (commits, aborts, checkpoints,

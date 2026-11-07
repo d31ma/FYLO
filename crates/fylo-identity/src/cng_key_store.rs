@@ -173,6 +173,23 @@ impl CngKeyStore {
         Ok(der)
     }
 
+    /// The Microsoft Software Key Storage Provider replaces a named key on
+    /// import instead of failing with `NTE_EXISTS`, so `save` looks first.
+    fn refuse_existing(&self, provider: &CngHandle) -> Result<(), IdentityError> {
+        match self.open(provider) {
+            Ok(_) => Err(self.already_exists()),
+            Err(IdentityError::NotFound(_)) => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn already_exists(&self) -> IdentityError {
+        IdentityError::AlreadyExists(format!(
+            "{} already has a key; FYLO never replaces a key",
+            self.reference()
+        ))
+    }
+
     fn length(bytes: usize) -> Result<u32, IdentityError> {
         u32::try_from(bytes)
             .map_err(|_| IdentityError::InvalidKey("the key is too large for CNG".into()))
@@ -185,10 +202,7 @@ impl CngKeyStore {
                 "{} has no key",
                 self.reference()
             ))),
-            NTE_EXISTS => Err(IdentityError::AlreadyExists(format!(
-                "{} already has a key; FYLO never replaces a key",
-                self.reference()
-            ))),
+            NTE_EXISTS => Err(self.already_exists()),
             _ => Err(IdentityError::Store(format!(
                 "{}: CNG failed with {status:#010x}",
                 self.reference()
@@ -203,6 +217,7 @@ impl KeyStore for CngKeyStore {
             IdentityError::InvalidKey(format!("cannot encode the key: {error}"))
         })?;
         let provider = self.provider()?;
+        self.refuse_existing(&provider)?;
         let key = self.import(&provider, document.as_bytes())?;
         self.allow_export(&key)?;
         self.finalize(&key)

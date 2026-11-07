@@ -412,3 +412,119 @@ mod macos {
         assert!(cng.starts_with("EIDENTITY_UNSUPPORTED:"), "{cng}");
     }
 }
+
+#[cfg(windows)]
+mod windows {
+    use std::process::{Command, Output};
+
+    use super::{BINARY, assert_identifier, failure, stdout};
+
+    const PROVIDER: &str =
+        "[System.Security.Cryptography.CngProvider]::MicrosoftSoftwareKeyStorageProvider";
+
+    /// A `cng:` key name unique to this run, deleted from the user's key
+    /// store afterwards, so no test leaves a key behind.
+    struct CngKey {
+        name: String,
+    }
+
+    impl CngKey {
+        fn new(name: &str) -> Self {
+            Self {
+                name: format!("fylo-test-{name}-{}", std::process::id()),
+            }
+        }
+
+        fn reference(&self) -> String {
+            format!("cng:{}", self.name)
+        }
+
+        fn exists(&self, options: &str) -> String {
+            powershell(&format!(
+                "[System.Security.Cryptography.CngKey]::Exists('{}', {PROVIDER}, {options})",
+                self.name
+            ))
+        }
+    }
+
+    impl Drop for CngKey {
+        fn drop(&mut self) {
+            powershell(&format!(
+                "if ([System.Security.Cryptography.CngKey]::Exists('{0}', {PROVIDER})) {{ [System.Security.Cryptography.CngKey]::Open('{0}', {PROVIDER}).Delete() }}",
+                self.name
+            ));
+        }
+    }
+
+    fn run(arguments: &[&str]) -> Output {
+        Command::new(BINARY)
+            .arg("identity")
+            .args(arguments)
+            .output()
+            .unwrap()
+    }
+
+    fn powershell(script: &str) -> String {
+        let output = Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                &format!("Add-Type -AssemblyName System.Core; {script}"),
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "powershell: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    }
+
+    #[test]
+    fn create_stores_a_key_in_cng_and_show_reads_it() {
+        let key = CngKey::new("round-trip");
+        let created = stdout(&run(&["create", "--store", &key.reference()]));
+        assert_identifier(&created);
+        assert_eq!(stdout(&run(&["show", &key.reference()])), created);
+    }
+
+    #[test]
+    fn the_key_is_the_users_own_software_key() {
+        let key = CngKey::new("per-user");
+        stdout(&run(&["create", "--store", &key.reference()]));
+        assert_eq!(
+            key.exists("[System.Security.Cryptography.CngKeyOpenOptions]::UserKey"),
+            "True"
+        );
+        assert_eq!(
+            key.exists("[System.Security.Cryptography.CngKeyOpenOptions]::MachineKey"),
+            "False"
+        );
+    }
+
+    #[test]
+    fn create_never_replaces_a_cng_key() {
+        let key = CngKey::new("exists");
+        let created = stdout(&run(&["create", "--store", &key.reference()]));
+        let error = failure(&run(&["create", "--store", &key.reference()]));
+        assert!(error.starts_with("EIDENTITY_EXISTS:"), "{error}");
+        assert_eq!(stdout(&run(&["show", &key.reference()])), created);
+    }
+
+    #[test]
+    fn show_reports_a_missing_cng_key() {
+        let key = CngKey::new("missing");
+        let error = failure(&run(&["show", &key.reference()]));
+        assert!(error.starts_with("EIDENTITY_NOT_FOUND:"), "{error}");
+    }
+
+    #[test]
+    fn macos_and_linux_stores_are_refused_on_windows() {
+        let keychain = failure(&run(&["create", "--store", "keychain:yon"]));
+        let creds = failure(&run(&["create", "--store", "creds:yon"]));
+        assert!(keychain.starts_with("EIDENTITY_UNSUPPORTED:"), "{keychain}");
+        assert!(creds.starts_with("EIDENTITY_UNSUPPORTED:"), "{creds}");
+    }
+}
