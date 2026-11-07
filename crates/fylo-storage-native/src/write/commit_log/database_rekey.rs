@@ -76,7 +76,10 @@ impl NativeWriteRoot {
         self.root.assert_profile_owned()?;
         let database = self.require_database("fylo rekey <db.vdbx>")?;
         if database.is_protected() {
-            return Err(Self::protected_unsupported("fylo rekey"));
+            return Err(Self::pack_unsupported(
+                "a protected database has no shared key to rotate; fylo rekey rewrites it under \
+                 fresh keys with the admin's identity (rekey_protected_database)",
+            ));
         }
         database.require_key()?;
         Self::require_rekeyable(&database, rekey)?;
@@ -145,7 +148,11 @@ impl NativeWriteRoot {
     /// another writer take the lease over. A lease lost all the same is
     /// found before the commit ([`Self::replace_database`]).
     #[cfg(not(target_family = "wasm"))]
-    fn renewing<T>(database: &ContainerDatabase, holding: bool, work: impl FnOnce() -> T) -> T {
+    pub(super) fn renewing<T>(
+        database: &ContainerDatabase,
+        holding: bool,
+        work: impl FnOnce() -> T,
+    ) -> T {
         use std::sync::atomic::{AtomicBool, Ordering};
         if !holding {
             return work();
@@ -167,7 +174,11 @@ impl NativeWriteRoot {
     }
 
     #[cfg(target_family = "wasm")]
-    fn renewing<T>(_database: &ContainerDatabase, _holding: bool, work: impl FnOnce() -> T) -> T {
+    pub(super) fn renewing<T>(
+        _database: &ContainerDatabase,
+        _holding: bool,
+        work: impl FnOnce() -> T,
+    ) -> T {
         work()
     }
 
@@ -181,7 +192,7 @@ impl NativeWriteRoot {
     /// database as writer `writer` must still be its own, so no other
     /// writer can have written the old file; a sealed database has none.
     /// After it, this process's open of the old file never writes again.
-    fn replace_database(
+    pub(super) fn replace_database(
         database: &ContainerDatabase,
         writer: Option<u64>,
         (built, path): (&Path, &Path),

@@ -429,3 +429,157 @@ fn verify_with_the_identity_checks_every_signature() {
     let report = json(&fixture.as_admin(&admin, &["verify", "app.vdbx"]));
     assert_eq!(report["ok"], true, "{report}");
 }
+
+fn grant_reader(fixture: &Fixture, admin: &str) {
+    let key = public_key(fixture, "reader");
+    json(&fixture.as_admin(
+        admin,
+        &[
+            "access",
+            "grant",
+            "app.vdbx",
+            "--grantee",
+            "reader",
+            "--key",
+            &key,
+            "--actions",
+            "read",
+            "--collection",
+            "users",
+            "--rule",
+            "readers",
+        ],
+    ));
+}
+
+#[test]
+fn rekey_with_the_admin_identity_rewrites_the_database_under_fresh_keys() {
+    let fixture = Fixture::new("rekey-protected");
+    let admin = fixture.protected();
+    let identifier = write_user(&fixture, &admin);
+    fixture.identity("reader");
+    grant_reader(&fixture, &admin);
+    let before = fs::read(fixture.0.join("app.vdbx")).unwrap();
+    let rekeyed = json(&fixture.as_admin(&admin, &["rekey", "app.vdbx"]));
+    assert_eq!(rekeyed["protected"], true);
+    assert_eq!(rekeyed["rekeyed"], "database");
+    assert_eq!(rekeyed["collections"][0]["documents"], 1);
+    let listed = json(&fixture.as_admin(&admin, &["access", "list", "app.vdbx"]));
+    assert_eq!(listed["policy"]["version"], 3);
+    assert_eq!(listed["policy"]["change"]["kind"], "rekey");
+    assert_eq!(listed["trustAnchor"], admin.as_str());
+    let got = json(&fixture.run(&as_reader(
+        &admin,
+        &["get", "users", &identifier, "--root", "app.vdbx", "--json"],
+    )));
+    assert_eq!(got[&identifier]["name"], CANARY);
+    let report = json(&fixture.as_admin(&admin, &["verify", "app.vdbx"]));
+    assert_eq!(report["ok"], true, "{report}");
+    let after = fs::read(fixture.0.join("app.vdbx")).unwrap();
+    assert!(!contains(&after, CANARY));
+    // The catalog key is new, so the superblock's key-check value is too.
+    assert_ne!(before[..4096], after[..4096]);
+}
+
+#[test]
+fn a_revoked_reader_that_kept_its_old_keys_reads_nothing_after_a_collection_rekey() {
+    let fixture = Fixture::new("rekey-revoked");
+    let admin = fixture.protected();
+    let identifier = write_user(&fixture, &admin);
+    fixture.identity("reader");
+    grant_reader(&fixture, &admin);
+    let kept = fs::read(fixture.0.join("app.vdbx")).unwrap();
+    json(&fixture.as_admin(
+        &admin,
+        &["access", "revoke", "app.vdbx", "--rule", "readers"],
+    ));
+    let rekeyed = json(&fixture.as_admin(&admin, &["rekey", "app.vdbx", "--collection", "users"]));
+    assert_eq!(rekeyed["rekeyed"], "collection");
+    // The reader puts back the access slots it kept, with the wraps of the
+    // catalog key (unchanged by a collection rekey) and of the old epoch.
+    let mut spliced = fs::read(fixture.0.join("app.vdbx")).unwrap();
+    let magic = b"VDXACCS\0";
+    let find = |bytes: &[u8]| {
+        bytes
+            .windows(magic.len())
+            .position(|window| window == magic)
+            .unwrap()
+    };
+    let (old, new) = (find(&kept), find(&spliced));
+    assert_eq!(old, new);
+    let slots = 512 * 1024;
+    spliced[new..new + slots].copy_from_slice(&kept[old..old + slots]);
+    fs::write(fixture.0.join("app.vdbx"), &spliced).unwrap();
+    let listed = json(&fixture.run(&as_reader(&admin, &["access", "list", "app.vdbx"])));
+    assert_eq!(listed["grants"]["users"], "read");
+    let read = fixture.run(&as_reader(
+        &admin,
+        &["get", "users", &identifier, "--root", "app.vdbx", "--json"],
+    ));
+    assert!(!read.status.success());
+    assert!(!contains(&read.stdout, CANARY));
+}
+
+#[test]
+fn a_rekey_that_stops_before_the_rename_leaves_the_database_as_it_was() {
+    let fixture = Fixture::new("rekey-stopped");
+    let admin = fixture.protected();
+    let identifier = write_user(&fixture, &admin);
+    let stopped = Command::new(BINARY)
+        .current_dir(&fixture.0)
+        .args([
+            "rekey",
+            "app.vdbx",
+            "--identity",
+            "file:admin.pem",
+            "--trust-anchor",
+            &admin,
+        ])
+        .env_remove("FYLO_IDENTITY")
+        .env_remove("FYLO_TRUST_ANCHOR")
+        .env("FYLO_RUST_FAILPOINT", "after-pack-staging")
+        .env("FYLO_RUST_FAILPOINT_ACTION", "abort")
+        .output()
+        .unwrap();
+    assert!(!stopped.status.success(), "{stopped:?}");
+    let listed = json(&fixture.as_admin(&admin, &["access", "list", "app.vdbx"]));
+    assert_eq!(listed["policy"]["version"], 1);
+    let got = json(&fixture.as_admin(
+        &admin,
+        &["get", "users", &identifier, "--root", "app.vdbx", "--json"],
+    ));
+    assert_eq!(got[&identifier]["name"], CANARY);
+
+    json(&fixture.as_admin(&admin, &["rekey", "app.vdbx"]));
+    let staging: Vec<String> = fs::read_dir(&fixture.0)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name.contains("staging"))
+        .collect();
+    assert!(staging.is_empty(), "{staging:?}");
+    let got = json(&fixture.as_admin(
+        &admin,
+        &["get", "users", &identifier, "--root", "app.vdbx", "--json"],
+    ));
+    assert_eq!(got[&identifier]["name"], CANARY);
+}
+
+#[test]
+fn rekey_of_a_protected_database_takes_no_shared_key() {
+    let fixture = Fixture::new("rekey-shared");
+    let admin = fixture.protected();
+    let refused = failure(&fixture.run_with(
+        &[
+            "rekey",
+            "app.vdbx",
+            "--new-key",
+            "${NEW_KEY}",
+            "--identity",
+            "file:admin.pem",
+            "--trust-anchor",
+            &admin,
+        ],
+        &[("NEW_KEY", "a-new-key-of-at-least-thirty-two-bytes")],
+    ));
+    assert!(refused.contains("--new-key"), "{refused}");
+}

@@ -23,6 +23,11 @@ impl AccessBinding {
         AccessBinding { database }
     }
 
+    /// The database id this binds to.
+    pub(crate) fn database(self) -> [u8; 32] {
+        self.database
+    }
+
     pub(crate) fn catalog_info(self) -> Vec<u8> {
         self.wrap_info(Self::CATALOG_SCOPE, 0, 0)
     }

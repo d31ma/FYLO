@@ -187,6 +187,18 @@ impl ContainerDatabase {
         Self::settle_created(path)
     }
 
+    /// Create the new file of a protected `fylo rekey` at `path`, which must
+    /// not exist, from `plan` (ADR 0021 section 7), and make its name
+    /// durable.
+    pub(crate) fn create_rekeyed(
+        path: &Path,
+        plan: &crate::database_access::RekeyPlan,
+    ) -> Result<(), NativeStorageError> {
+        ContainerFile::create_rekeyed(path, Self::EXTENT_SHIFT, plan)
+            .map_err(ContainerMedium::error)?;
+        Self::settle_created(path)
+    }
+
     /// Forget what this process kept of a file of the same name, and make
     /// the new file's name durable.
     fn settle_created(path: &Path) -> Result<(), NativeStorageError> {

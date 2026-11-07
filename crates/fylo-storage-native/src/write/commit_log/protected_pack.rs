@@ -141,7 +141,7 @@ impl NativeWriteRoot {
 
     /// Check the staging file as `fylo verify` does with the admin's
     /// identity: its structures and every record's signature.
-    fn verify_protected(
+    pub(super) fn verify_protected(
         staging: &Path,
         admin: &DatabaseIdentity,
     ) -> Result<(), NativeStorageError> {
@@ -163,7 +163,7 @@ impl NativeWriteRoot {
 
     /// Remove a staging file a failed build left. A staging file is never
     /// read; one this cannot remove is removed by the next pack.
-    fn abandon_staging(staging: &Path) {
+    pub(super) fn abandon_staging(staging: &Path) {
         let _ = Self::remove_staging(staging);
     }
 }

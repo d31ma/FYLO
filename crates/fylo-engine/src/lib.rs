@@ -5,6 +5,7 @@
 //! stable collection generation around every logical read.
 
 mod encryption;
+mod field_rekey;
 mod hot_set;
 mod index_operation;
 mod index_plan;
@@ -20,6 +21,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use encryption::{EncryptionReader, is_encrypted_field, reject_undeclared_ciphertext};
+pub use field_rekey::FieldRekey;
 use fylo_format::{
     CanonicalMetadata, Document, DocumentLimits, FormatError, FormatErrorCode, TtidTimestamps,
 };
@@ -124,6 +126,17 @@ impl WriteEngine {
             .unwrap_or_else(|| EncryptionReader::unconfigured(registry.clone()))
             .with_credentials(Some(credentials), None)
             .map_err(EngineError::encryption)
+    }
+
+    /// What a protected `fylo rekey` of this engine's database uses to
+    /// write `$encrypted` values again under new keys (ADR 0021 section 7).
+    #[must_use]
+    pub fn field_rekey(&self) -> FieldRekey {
+        FieldRekey::new(
+            self.encryption
+                .clone()
+                .unwrap_or_else(|| EncryptionReader::unconfigured(self.registry.clone())),
+        )
     }
 
     /// Apply host-supplied runtime knobs to this engine and its writer.

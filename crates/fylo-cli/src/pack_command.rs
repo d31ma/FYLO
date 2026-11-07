@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use fylo_engine::WriteEngine;
 use fylo_identity::Identity;
 use fylo_machine::ApplicationConfig;
 use fylo_storage_native::{
@@ -251,6 +252,19 @@ impl PackCommand {
                 "rekey rewrites the database in place and takes no --out or --sealed".into(),
             );
         }
+        let writer = NativeWriteRoot::open_profiled(
+            application.with_database_access(RootOpenOptions::new(path)),
+        )
+        .map_err(|error| error.to_string())?
+        .with_config(application.storage);
+        if writer.native_root().database_access().is_some() {
+            return Self::rekey_protected(path, (writer, application), options);
+        }
+        if options.collection.is_some() {
+            return Err(
+                "rekey --collection rewrites one collection of a protected database".into(),
+            );
+        }
         let rekey = match (&options.rekey_to, options.encrypt) {
             (Some(RekeyTo::Plain), true) => {
                 return Err("rekey takes --encrypt or --decrypt, not both".into());
@@ -271,11 +285,6 @@ impl PackCommand {
             (Some(RekeyTo::Key(key)), false) => DatabaseRekey::Rotate(key),
             (Some(RekeyTo::Plain), false) => DatabaseRekey::Decrypt,
         };
-        let writer = NativeWriteRoot::open_profiled(
-            application.with_database_access(RootOpenOptions::new(path)),
-        )
-        .map_err(|error| error.to_string())?
-        .with_config(application.storage);
         let report = writer
             .rekey_database(rekey)
             .map_err(|error| error.to_string())?;
@@ -287,6 +296,42 @@ impl PackCommand {
         if let Some(sealed) = &report.sealed {
             rendered["sealed"] = json!(sealed);
         }
+        serde_json::to_string_pretty(&rendered).map_err(|error| error.to_string())
+    }
+
+    /// `rekey` of a protected database, opened with an admin identity
+    /// (ADR 0021 section 7): every key new, or with `--collection` that
+    /// collection's. The engine writes `$encrypted` values again under the
+    /// new field keys, reading them with the old ones and, when it is
+    /// configured, `fylo.encryption.key`.
+    fn rekey_protected(
+        path: &Path,
+        (writer, application): (NativeWriteRoot, &ApplicationConfig),
+        options: &PackOptions,
+    ) -> Result<String, String> {
+        if options.rekey_to.is_some() || options.encrypt {
+            return Err(
+                "a protected database is rekeyed with the admin's identity; it takes no \
+                        --new-key, --encrypt or --decrypt"
+                    .into(),
+            );
+        }
+        let mut engine = WriteEngine::from_writer(writer.clone());
+        if let Some((secret, salt)) = &application.credentials {
+            engine = engine
+                .with_encryption_credentials(secret, salt)
+                .map_err(|error| error.to_string())?;
+        }
+        let report = writer
+            .rekey_protected_database(options.collection.as_deref(), &engine.field_rekey())
+            .map_err(|error| error.to_string())?;
+        let rendered = json!({
+            "database": path.display().to_string(),
+            "protected": true,
+            "rekeyed": options.collection.as_deref().map_or("database", |_| "collection"),
+            "collection": options.collection,
+            "collections": Self::collections(&report),
+        });
         serde_json::to_string_pretty(&rendered).map_err(|error| error.to_string())
     }
 
@@ -357,6 +402,9 @@ pub struct PackOptions {
     pub record_access: RecordAccessMigration,
     /// `--grants <file.json>`: the grants `pack --protect` adds.
     pub grants: Option<PathBuf>,
+    /// `rekey --collection <name>`: rekey one collection of a protected
+    /// database.
+    pub collection: Option<String>,
 }
 
 /// What `rekey` rewrites a database with.

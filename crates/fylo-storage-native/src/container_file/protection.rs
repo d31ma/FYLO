@@ -42,6 +42,29 @@ impl ContainerFile {
         )
     }
 
+    /// Create the new file of a protected `fylo rekey` at `path`, which must
+    /// not exist: the source's database id, `plan`'s catalog key and access
+    /// slot, and no collections yet.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`Self::create`].
+    pub(crate) fn create_rekeyed(
+        path: &Path,
+        extent_shift: u8,
+        plan: &crate::database_access::RekeyPlan,
+    ) -> Result<(), ContainerError> {
+        let key_check = ContainerCipher::from_key(&plan.catalog_key).key_check();
+        let incompat =
+            ContainerSuperblock::INCOMPAT_ENCRYPTED | ContainerSuperblock::INCOMPAT_PROTECTED;
+        Self::create_raw(
+            path,
+            extent_shift,
+            (incompat, plan.database, key_check),
+            Some(&plan.slot),
+        )
+    }
+
     /// The access state of a protected file this open unlocked; `None`
     /// otherwise.
     #[must_use]

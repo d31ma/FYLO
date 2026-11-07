@@ -4,6 +4,19 @@
 
 ### Added
 
+- **`fylo rekey` of a protected database (ADR 0021 section 7, phase 7).**
+  As an admin, `fylo rekey <db.vdbx> --identity <reference>` rewrites the
+  database under a new catalog key and new collection keys, and `fylo
+  rekey <db.vdbx> --collection <name>` gives that collection alone a new
+  key epoch, so an identity that was revoked and kept its old keys reads
+  none of the old data. Both write a new file (same database id and
+  policy chain, then a signed `rekey` policy version), checked as `fylo
+  verify` checks it, and rename it over the database; a rekey that stops
+  leaves the database as it was. `$encrypted` values of a rekeyed
+  collection are written again under its new field key, which also moves
+  values written under `fylo.encryption.key` to the collection's key.
+  Policy versions now carry a signed `change` record (`grant`, `revoke`,
+  `rekey`, `rekeyCollection`) with the signer's time.
 - **Per-collection keys for `$encrypted` fields in protected databases
   (ADR 0021 section 7, phase 7).** A protected `.vdbx` database encrypts a
   collection's `$encrypted` fields with keys derived (HKDF-SHA256) from

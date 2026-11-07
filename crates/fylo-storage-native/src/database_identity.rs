@@ -23,6 +23,11 @@ impl DatabaseIdentity {
         }
     }
 
+    /// Open protected databases as an identity already held.
+    pub(crate) fn shared(identity: Arc<Identity>, trust: AccessTrust) -> DatabaseIdentity {
+        DatabaseIdentity { identity, trust }
+    }
+
     /// The identity.
     #[must_use]
     pub fn identity(&self) -> &Arc<Identity> {

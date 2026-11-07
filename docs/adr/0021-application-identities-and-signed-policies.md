@@ -354,6 +354,50 @@ in phase 7.
       (`ENOIDENTITY` for a locked database, `EACCES` without a key of the
       collection), and `DatabaseAccess::field_keys` derives them.
 
+- **`fylo rekey` of a protected database.** Run by an admin (its
+  identity, `--identity`), `fylo rekey <db.vdbx>` gives the catalog key
+  and every collection key new values, and `fylo rekey <db.vdbx>
+  --collection <name>` only that collection's key, at the epoch after its
+  newest, so a revoked identity that kept an old key reads none of the
+  old data either. `--new-key`, `--encrypt` and `--decrypt` stay for
+  shared-key databases.
+    - **A new file, not a rewrite in place.** Rewriting the collection's
+      units in place would free extents that still hold the old
+      ciphertext, readable with the key the revoked identity kept, until
+      something reuses them. So both forms write a staging file beside the
+      database, as the shared-key rekey does, check it as `fylo verify`
+      does with the admin's identity (structures and every signature),
+      flush it, and rename it over the database: the rename is the commit
+      point, a stop before it leaves the database as it was and a staging
+      file the next pack or rekey removes, and running the rekey again does
+      all of it again. The database is held exclusively throughout.
+    - **What the new file holds.** The same database id, so the policy
+      chain's signatures still verify; every policy version, sealed under
+      the new catalog key (the signatures cover a version's bytes, not
+      its seal, and carry over); then a version with the same rules,
+      `change.kind` `rekey` or `rekeyCollection`, signed by the admin; and
+      the catalog key wrapped for everyone the policy names. Each
+      collection is copied with its documents, deleted documents and
+      schema versions, every record signed again by the admin and sealed
+      under the collection's newest epoch. A collection whose key is new
+      has that one epoch; the others carry every epoch over.
+    - **Signatures after a rekey.** Collection ids and LSNs change in the
+      new file, so the boundaries of earlier versions no longer name the
+      right records. A reader therefore checks a record's signer against
+      the newest rekey version and the versions after it only, besides the
+      boundary rule; every record the rekey wrote is the admin's.
+    - **`$encrypted` values.** A collection whose key is new drops its old
+      epochs, so the engine writes each `$encrypted` value of its records
+      again under the new field key (`DocumentRekey`, which the CLI gives
+      `rekey_protected_database`): read with the old field keys and, when
+      configured, `fylo.encryption.key`, written with the new one, and
+      checked to read back the same. That is also the migration of values
+      a protected database wrote under the shared key: `fylo rekey
+      --collection <name>` with `fylo.encryption.key` configured moves
+      them to the collection's key.
+    - A sealed protected database is never rekeyed: rekey its source and
+      pack it again.
+
 ### 8. Phases
 
 The study's section 9 is the plan. Phase 2 (identities and key stores) needs

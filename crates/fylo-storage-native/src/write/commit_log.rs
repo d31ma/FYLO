@@ -31,6 +31,7 @@ mod move_step;
 mod pack_blockers;
 mod placed_record;
 mod protected_pack;
+mod protected_rekey;
 mod record_access_group;
 mod record_access_migration;
 mod record_image;

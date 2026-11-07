@@ -14,7 +14,8 @@ use crate::access_policy_chain::AccessPolicyChain;
 use crate::collection_keys::CollectionKeys;
 use crate::{
     AccessAction, AccessDocument, AccessGrantRequest, AccessGrants, AccessKeyWrap, AccessPolicy,
-    AccessTrust, ContainerCipher, ContainerCipherError, DatabaseAccessError, DatabaseIdentity,
+    AccessPolicyChange, AccessPolicyEnvelope, AccessTrust, ContainerCipher, ContainerCipherError,
+    DatabaseAccessError, DatabaseIdentity,
 };
 
 /// The access state of a protected `.vdbx` database as one identity opened
@@ -30,6 +31,9 @@ pub struct DatabaseAccess {
     fingerprint: [u8; 32],
     state: RwLock<AccessState>,
     verified: Mutex<HashSet<[u8; 32]>>,
+    /// The keys a rekey's new file gives its collections as it creates
+    /// them, by name ([`Self::inherit`]); empty otherwise.
+    inherited: Mutex<BTreeMap<String, CollectionKeys>>,
 }
 
 struct AccessState {
@@ -46,6 +50,21 @@ struct AccessState {
 
 /// A collection's id, an epoch, and that epoch's key.
 type EpochKey = (u32, u32, Zeroizing<[u8; 32]>);
+
+/// What a protected `fylo rekey` writes its new file with (ADR 0021
+/// section 7): the same database id, a catalog key, the access slot of the
+/// new file (every policy version sealed under that key, then a `rekey`
+/// version signed by the admin, and the catalog key wrapped for everyone the
+/// policy names), and the keys each collection takes in it, by name.
+pub(crate) struct RekeyPlan {
+    pub(crate) database: [u8; 32],
+    pub(crate) catalog_key: Zeroizing<[u8; 32]>,
+    pub(crate) slot: ContainerAccessSlot,
+    pub(crate) keys: BTreeMap<String, CollectionKeys>,
+    /// The collections whose key is new, whose records' `$encrypted`
+    /// values must be written again under it.
+    pub(crate) rotated: Vec<String>,
+}
 
 /// A change of the access document made in memory, to write to the access
 /// slots before it takes effect ([`DatabaseAccess::commit`]): new keys,
@@ -115,6 +134,7 @@ impl DatabaseAccess {
             trusted_on_first_use,
             fingerprint: identity.identity().public().fingerprint(),
             verified: Mutex::new(HashSet::new()),
+            inherited: Mutex::new(BTreeMap::new()),
             state: RwLock::new(AccessState {
                 generation: slot.generation,
                 policy_digest: chain.digest(),
@@ -141,6 +161,15 @@ impl DatabaseAccess {
     #[must_use]
     pub fn anchor(&self) -> &IdentityId {
         &self.anchor
+    }
+
+    /// This identity, with this database's anchor pinned: how a file that
+    /// carries this database's policy chain is opened as it.
+    pub(crate) fn pinned_identity(&self) -> DatabaseIdentity {
+        DatabaseIdentity::shared(
+            Arc::clone(&self.identity),
+            AccessTrust::Pinned(self.anchor.clone()),
+        )
     }
 
     /// Whether the anchor was trusted without being pinned
@@ -292,7 +321,7 @@ impl DatabaseAccess {
         let Some(name) = state.names.get(&collection) else {
             return false;
         };
-        let start = state
+        let boundary = state
             .versions
             .iter()
             .rposition(|policy| {
@@ -302,9 +331,25 @@ impl DatabaseAccess {
                     .is_some_and(|boundary| *boundary <= lsn)
             })
             .unwrap_or(0);
+        let start = boundary.max(Self::newest_rewrite(&state.versions));
         state.versions[start..]
             .iter()
             .any(|policy| policy.may_write(id, name))
+    }
+
+    /// The newest version a rekey wrote. A rekey signs every record of the
+    /// file it writes again, so what versions before it allowed no longer
+    /// counts, and their boundaries name the old file's collection ids.
+    fn newest_rewrite(versions: &[AccessPolicy]) -> usize {
+        versions
+            .iter()
+            .rposition(|policy| {
+                policy
+                    .change
+                    .as_ref()
+                    .is_some_and(crate::AccessPolicyChange::rewrote_records)
+            })
+            .unwrap_or(0)
     }
 
     fn was_verified(&self, seen: &[u8; 32]) -> bool {
@@ -426,24 +471,168 @@ impl DatabaseAccess {
         name: &str,
     ) -> Result<AccessChange, DatabaseAccessError> {
         self.require_admin()?;
-        let key = AccessBinding::random_key()?;
+        let keys = self.keys_of_new_collection(name)?;
         let state = self.read();
-        let info = self.binding.collection_info(id, Self::FIRST_EPOCH);
-        let wraps = Self::wraps_for(
-            &state.policy.collection_keys(name),
-            &info,
-            &key,
-            Some((id, Self::FIRST_EPOCH)),
-        )?;
+        let recipients = state.policy.collection_keys(name);
+        let mut wraps = Vec::new();
+        for (epoch, key) in keys.keys() {
+            let info = self.binding.collection_info(id, epoch);
+            wraps.extend(Self::wraps_for(
+                &recipients,
+                &info,
+                &key,
+                Some((id, epoch)),
+            )?);
+        }
         let mut document = state.document.clone();
         document.keyring.retain(|wrap| wrap.collection != Some(id));
         document.keyring.extend(wraps);
         Ok(AccessChange {
             slot: Self::slot(state.generation + 1, &document)?,
-            keys: vec![(id, Self::FIRST_EPOCH, key)],
+            keys: keys
+                .keys()
+                .into_iter()
+                .map(|(epoch, key)| (id, epoch, key))
+                .collect(),
             collection: Some((id, name.to_owned())),
             policy: None,
         })
+    }
+
+    /// The keys a new collection named `name` takes: those a rekey handed
+    /// down for it ([`Self::inherit`]), or a fresh key at the first epoch.
+    fn keys_of_new_collection(&self, name: &str) -> Result<CollectionKeys, DatabaseAccessError> {
+        let inherited = self
+            .inherited
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(name)
+            .cloned();
+        if let Some(keys) = inherited {
+            return Ok(keys);
+        }
+        let mut keys = CollectionKeys::new();
+        keys.add(Self::FIRST_EPOCH, &*AccessBinding::random_key()?);
+        Ok(keys)
+    }
+
+    /// Give each collection named in `keys` those keys when this file
+    /// creates it: the new file of a protected `fylo rekey`.
+    pub(crate) fn inherit(&self, keys: BTreeMap<String, CollectionKeys>) {
+        *self
+            .inherited
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = keys;
+    }
+
+    /// Plan a protected `fylo rekey` (ADR 0021 section 7). With
+    /// `collection`, only that collection's key is new, at the epoch after
+    /// its newest, and the catalog key and every other collection's epochs
+    /// carry over; without, the catalog key and every collection key are
+    /// new. Either way the policy chain carries over, sealed under the
+    /// catalog key, and a `rekey` version signed by this admin follows it.
+    pub(crate) fn plan_rekey(
+        &self,
+        collection: Option<&str>,
+    ) -> Result<RekeyPlan, DatabaseAccessError> {
+        self.require_admin()?;
+        let state = self.read();
+        if let Some(name) = collection {
+            Self::require_collection(&state, name)?;
+        }
+        let catalog_key = match collection {
+            Some(_) => self.catalog_key.clone(),
+            None => AccessBinding::random_key()?,
+        };
+        let catalog = ContainerCipher::from_key(&catalog_key);
+        let mut policies = self.resealed_policies(&state, &catalog)?;
+        let change = match collection {
+            Some(name) => {
+                AccessPolicyChange::now(AccessPolicyChange::REKEY_COLLECTION).with_collection(name)
+            }
+            None => AccessPolicyChange::now(AccessPolicyChange::REKEY),
+        };
+        let policy = state.policy.recording(state.policy_digest.clone(), change);
+        policies.push(AccessPolicyChain::seal(
+            &policy,
+            &catalog,
+            self.binding,
+            &self.identity,
+        )?);
+        let keyring = Self::wraps_for(
+            &policy.granted_keys(),
+            &self.binding.catalog_info(),
+            &catalog_key,
+            None,
+        )?;
+        let (keys, rotated) = self.rekeyed_collections(&state, collection)?;
+        let document = AccessDocument {
+            format: AccessDocument::FORMAT.to_owned(),
+            policies,
+            keyring,
+        };
+        Ok(RekeyPlan {
+            database: self.binding.database(),
+            catalog_key,
+            slot: Self::slot(1, &document)?,
+            keys,
+            rotated,
+        })
+    }
+
+    fn require_collection(state: &AccessState, name: &str) -> Result<(), DatabaseAccessError> {
+        Some(name)
+            .filter(|name| state.names.values().any(|held| held == name))
+            .map(|_| ())
+            .ok_or_else(|| {
+                DatabaseAccessError::Policy(format!("the database has no collection {name:?}"))
+            })
+    }
+
+    /// Every policy version, sealed under `catalog`.
+    fn resealed_policies(
+        &self,
+        state: &AccessState,
+        catalog: &ContainerCipher,
+    ) -> Result<Vec<AccessPolicyEnvelope>, DatabaseAccessError> {
+        let current = ContainerCipher::from_key(&self.catalog_key);
+        let mut policies = Vec::with_capacity(state.document.policies.len() + 1);
+        for (version, envelope) in (1_u64..).zip(&state.document.policies) {
+            policies.push(AccessPolicyChain::reseal(
+                envelope,
+                version,
+                (&current, catalog),
+            )?);
+        }
+        Ok(policies)
+    }
+
+    /// The keys each live collection takes in a rekey's new file: a fresh
+    /// key, at the epoch after its newest, for each rotated one, which
+    /// `collection` names or which are all when it is `None`; the epochs it
+    /// has for the others. Also the names rotated.
+    fn rekeyed_collections(
+        &self,
+        state: &AccessState,
+        collection: Option<&str>,
+    ) -> Result<(BTreeMap<String, CollectionKeys>, Vec<String>), DatabaseAccessError> {
+        let mut keys = BTreeMap::new();
+        let mut rotated = Vec::new();
+        for (id, name) in &state.names {
+            let held = state
+                .keys
+                .get(id)
+                .ok_or_else(|| self.denied(&format!("holds no key of collection {name:?}")))?;
+            if collection.is_some_and(|only| only != name) {
+                keys.insert(name.clone(), held.clone());
+                continue;
+            }
+            let mut fresh = CollectionKeys::new();
+            fresh.add(held.next_epoch(), &*AccessBinding::random_key()?);
+            keys.insert(name.clone(), fresh);
+            rotated.push(name.clone());
+        }
+        Ok((keys, rotated))
     }
 
     /// Prepare policy version n+1 with `request`'s rule added, signed by
@@ -887,6 +1076,21 @@ mod tests {
             11,
             writer.id()
         ));
+    }
+
+    #[test]
+    fn a_writer_a_rekey_does_not_grant_signs_validly_nowhere_after_it() {
+        let keys = Keys::new("access-could-write-rekey");
+        let (admin, writer) = (keys.identity("admin"), keys.identity("writer"));
+        let mut versions = revoked(&admin, &writer);
+        let rekeyed = versions[2].recording(
+            "v3".into(),
+            crate::AccessPolicyChange::now(crate::AccessPolicyChange::REKEY),
+        );
+        versions.push(rekeyed);
+        let state = state(versions);
+        assert!(!DatabaseAccess::could_write(&state, LEDGER, 5, writer.id()));
+        assert!(DatabaseAccess::could_write(&state, LEDGER, 5, admin.id()));
     }
 
     #[test]

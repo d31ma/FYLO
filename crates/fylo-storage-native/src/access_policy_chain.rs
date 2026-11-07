@@ -65,6 +65,24 @@ impl AccessPolicyChain {
         })
     }
 
+    /// `envelope`, policy version `version`, sealed under `to` instead of
+    /// `from`. Its signatures cover the policy's bytes, not the seal, so
+    /// they carry over unchanged.
+    pub(crate) fn reseal(
+        envelope: &AccessPolicyEnvelope,
+        version: u64,
+        (from, to): (&ContainerCipher, &ContainerCipher),
+    ) -> Result<AccessPolicyEnvelope, DatabaseAccessError> {
+        let (_, bytes) = Self::open_version(envelope, from, version)?;
+        let sealed = to
+            .seal(ContainerSealContext::Policy { version }, &bytes)
+            .map_err(|error| DatabaseAccessError::Damaged(error.to_string()))?;
+        Ok(AccessPolicyEnvelope {
+            sealed: STANDARD.encode(sealed),
+            signatures: envelope.signatures.clone(),
+        })
+    }
+
     pub(crate) fn policy(&self) -> &AccessPolicy {
         &self.policy
     }

@@ -488,6 +488,17 @@ impl NativeWriteRoot {
         images: &[DocumentImage],
         sealed: bool,
     ) -> Result<PackedCollection, NativeStorageError> {
+        let versions = self.add_packed_collection(packed, source)?;
+        Self::fill_packed_collection(packed, source.name(), (images, &versions), sealed)
+    }
+
+    /// Add `source`'s collection to the database `packed` with its
+    /// descriptor, and return its schema registry's versions.
+    pub(super) fn add_packed_collection(
+        &self,
+        packed: &Self,
+        source: &NativeCollection,
+    ) -> Result<Vec<Vec<u8>>, NativeStorageError> {
         let versions = self.registry_versions(source)?;
         let mut descriptor = Self::database_descriptor(source.shard_width());
         if let Some(mode) = source.validation() {
@@ -497,13 +508,25 @@ impl NativeWriteRoot {
             descriptor.insert("encrypted".into(), Value::from(fields));
         }
         packed.add_database_collection(source.name(), descriptor)?;
-        let collection = packed.root.collection(source.name())?;
+        Ok(versions)
+    }
+
+    /// Write `images` and the schema `versions` into the collection `name`
+    /// [`Self::add_packed_collection`] added to `packed`, uncompressed for a
+    /// sealed pack, and check the copy against them.
+    pub(super) fn fill_packed_collection(
+        packed: &Self,
+        name: &str,
+        (images, versions): (&[DocumentImage], &[Vec<u8>]),
+        sealed: bool,
+    ) -> Result<PackedCollection, NativeStorageError> {
+        let collection = packed.root.collection(name)?;
         let _lock = packed.lock_collection(&collection)?;
-        Self::import_records(&collection, (images, &versions), sealed)?;
+        Self::import_records(&collection, (images, versions), sealed)?;
         let medium = collection.segment_medium()?;
-        Self::require_registry(&*medium, &versions)?;
+        Self::require_registry(&*medium, versions)?;
         DocumentImage::require_same(images, &DocumentImage::read_segments(medium)?)?;
-        Ok(PackedCollection::of(source.name(), images, versions.len()))
+        Ok(PackedCollection::of(name, images, versions.len()))
     }
 
     /// Append the schema versions in ordinal order, then each document as

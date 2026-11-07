@@ -4,7 +4,8 @@ use fylo_identity::{IdentityId, PublicIdentity};
 use serde::Serialize;
 
 use crate::{
-    AccessAction, AccessGrantRequest, AccessPolicyIdentity, AccessRule, DatabaseAccessError,
+    AccessAction, AccessGrantRequest, AccessPolicyChange, AccessPolicyIdentity, AccessRule,
+    DatabaseAccessError,
 };
 
 /// A protected database's policy (ADR 0021): allow rules only, so nothing
@@ -29,16 +30,20 @@ pub struct AccessPolicy {
     /// one.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub boundaries: BTreeMap<u32, u64>,
+    /// What this version changed, and when (ADR 0021 section 7).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub change: Option<AccessPolicyChange>,
 }
 
 impl AccessPolicy {
-    const KEYS: [&'static str; 6] = [
+    const KEYS: [&'static str; 7] = [
         "format",
         "version",
         "previous",
         "identities",
         "rules",
         "boundaries",
+        "change",
     ];
 
     /// A policy version from its JSON bytes.
@@ -66,6 +71,10 @@ impl AccessPolicy {
             identities,
             rules,
             boundaries: Self::boundaries_from(map.get("boundaries"))?,
+            change: map
+                .get("change")
+                .map(AccessPolicyChange::from_value)
+                .transpose()?,
         })
     }
 
@@ -130,6 +139,7 @@ impl AccessPolicy {
                 resources: vec![AccessRule::database_resource()],
             }],
             boundaries: BTreeMap::new(),
+            change: None,
         }
     }
 
@@ -199,6 +209,8 @@ impl AccessPolicy {
         identity.keys.sort();
         identity.keys.dedup();
         next.rules.push(request.rule.clone());
+        next.change =
+            Some(AccessPolicyChange::now(AccessPolicyChange::GRANT).with_rule(&request.rule.id));
         Ok(next)
     }
 
@@ -222,7 +234,17 @@ impl AccessPolicy {
         let removed = next.rules.remove(position);
         next.drop_unnamed_identities();
         next.require_admin()?;
+        next.change = Some(AccessPolicyChange::now(AccessPolicyChange::REVOKE).with_rule(id));
         Ok((next, removed))
+    }
+
+    /// The next version, with the same rules, recording `change`.
+    #[must_use]
+    pub fn recording(&self, previous: String, change: AccessPolicyChange) -> AccessPolicy {
+        AccessPolicy {
+            change: Some(change),
+            ..self.next(previous)
+        }
     }
 
     fn next(&self, previous: String) -> AccessPolicy {
@@ -230,6 +252,7 @@ impl AccessPolicy {
             version: self.version + 1,
             previous: Some(previous),
             boundaries: BTreeMap::new(),
+            change: None,
             ..self.clone()
         }
     }

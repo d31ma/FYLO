@@ -5,14 +5,15 @@
 
 use std::fs;
 use std::io::Cursor;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use fylo_engine::WriteEngine;
 use fylo_identity::{Identity, KeyReference};
 use fylo_machine::{ApplicationConfig, FrameLimits, serve_application};
 use fylo_storage_native::{
     AccessAction, AccessGrantRequest, AccessRule, AccessTrust, DatabaseIdentity, NativeRoot,
-    NativeWriteRoot, RootOpenOptions,
+    NativeWriteRoot, RecordAccessMigration, RootOpenOptions,
 };
 use serde_json::{Value, json};
 
@@ -22,6 +23,7 @@ const PII: &str = "pii";
 const CY: &str = "4VRNF52JPCO";
 const BO: &str = "4VRNF52JPCP";
 const KEY: &str = "fixture-key-at-least-thirty-two-bytes";
+const SALT: &str = "fixture-salt";
 
 struct Fixture {
     parent: PathBuf,
@@ -64,17 +66,27 @@ impl Fixture {
     /// key or without it, then close the database so the next session may
     /// open it as another identity.
     fn session(&self, who: &str, keyed: bool, requests: &[Value]) -> Vec<Value> {
+        self.session_at(&self.database(), Some(who), keyed, requests)
+    }
+
+    fn session_at(
+        &self,
+        root: &Path,
+        who: Option<&str>,
+        keyed: bool,
+        requests: &[Value],
+    ) -> Vec<Value> {
         let application = ApplicationConfig {
             schema: None,
-            credentials: keyed.then(|| (KEY.into(), "fixture-salt".into())),
-            identity: Some(self.identity(who)),
+            credentials: keyed.then(|| (KEY.into(), SALT.into())),
+            identity: who.map(|who| self.identity(who)),
             hot_set_bytes: None,
             ..ApplicationConfig::default()
         };
         let mut input = String::new();
         for request in requests {
             let mut request = request.clone();
-            request["root"] = json!(self.database());
+            request["root"] = json!(root);
             input.push_str(&request.to_string());
             input.push('\n');
         }
@@ -89,7 +101,12 @@ impl Fixture {
             false,
         )
         .unwrap();
-        NativeRoot::close_database(self.database()).unwrap();
+        if root
+            .extension()
+            .is_some_and(|extension| extension == "vdbx")
+        {
+            NativeRoot::close_database(root).unwrap();
+        }
         String::from_utf8(output)
             .unwrap()
             .lines()
@@ -97,8 +114,19 @@ impl Fixture {
             .collect()
     }
 
-    fn succeed(&self, who: &str, keyed: bool, requests: &[Value]) -> Vec<Value> {
+    fn codes(&self, who: &str, keyed: bool, requests: &[Value]) -> Vec<String> {
         self.session(who, keyed, requests)
+            .into_iter()
+            .map(|reply| reply["error"]["code"].as_str().unwrap_or("ok").to_owned())
+            .collect()
+    }
+
+    fn succeed(&self, who: &str, keyed: bool, requests: &[Value]) -> Vec<Value> {
+        Self::results(self.session(who, keyed, requests), requests)
+    }
+
+    fn results(replies: Vec<Value>, requests: &[Value]) -> Vec<Value> {
+        replies
             .into_iter()
             .zip(requests)
             .map(|(reply, request)| {
@@ -250,4 +278,109 @@ fn a_database_that_is_not_protected_has_no_field_keys() {
             .unwrap()
             .is_none()
     );
+}
+
+/// Rekey the database as the admin: `collection` alone or every key, with
+/// the shared field key for values written under it, when `keyed`.
+fn rekey(fixture: &Fixture, collection: Option<&str>, keyed: bool) {
+    let writer = fixture.writer("admin");
+    let mut engine = WriteEngine::from_writer(writer.clone());
+    if keyed {
+        engine = engine.with_encryption_credentials(KEY, SALT).unwrap();
+    }
+    writer
+        .rekey_protected_database(collection, &engine.field_rekey())
+        .unwrap();
+    drop(writer);
+    let _ = NativeRoot::close_database(fixture.database());
+}
+
+#[test]
+fn a_rekey_moves_values_written_under_the_shared_key_to_the_collection_key() {
+    let fixture = Fixture::new();
+    let root = fixture.parent.join("root");
+    fs::create_dir_all(&root).unwrap();
+    let create = [json!({"op":"createCollection","collection":PII})];
+    Fixture::results(fixture.session_at(&root, None, true, &create), &create);
+    NativeWriteRoot::open(&root)
+        .unwrap()
+        .record_encrypted_fields(PII, &["ssn".to_owned()])
+        .unwrap();
+    let write = [put(CY, "Cy", "4444")];
+    Fixture::results(fixture.session_at(&root, None, true, &write), &write);
+    NativeWriteRoot::open(&root)
+        .unwrap()
+        .pack_protected_database(
+            &fixture.database(),
+            &fixture.identity("admin"),
+            (RecordAccessMigration::Refuse, &[]),
+        )
+        .unwrap();
+    // The values packed in are under the shared key until a rekey.
+    assert_eq!(
+        fixture.succeed("admin", true, &[get(CY)])[0][CY]["ssn"],
+        "4444"
+    );
+    assert_eq!(
+        fixture.codes("admin", false, &[get(CY)]),
+        ["EENGINE_ENCRYPTION"]
+    );
+    let before = fixture.stored_ssn(CY);
+    rekey(&fixture, Some(PII), true);
+    assert_eq!(
+        fixture.succeed("admin", false, &[get(CY)])[0][CY]["ssn"],
+        "4444"
+    );
+    let after = fixture.stored_ssn(CY);
+    assert!(is_ciphertext(&after));
+    assert_ne!(before, after);
+}
+
+#[test]
+fn a_rekey_of_the_database_keeps_every_granted_identity_reading() {
+    let fixture = Fixture::new();
+    fixture.create();
+    fixture.succeed("admin", false, &[put(CY, "Cy", "4444")]);
+    fixture.grant("readers", AccessAction::Read);
+    let epoch = fixture.open("admin").field_keys(PII).unwrap().unwrap();
+    NativeRoot::close_database(fixture.database()).unwrap();
+    rekey(&fixture, None, false);
+    let keys = fixture.open("admin").field_keys(PII).unwrap().unwrap();
+    NativeRoot::close_database(fixture.database()).unwrap();
+    assert_eq!(keys.all().len(), 1);
+    assert_eq!(
+        keys.newest().unwrap().epoch(),
+        epoch.newest().unwrap().epoch() + 1
+    );
+    assert_eq!(
+        fixture.succeed("reader", false, &[get(CY)])[0][CY]["ssn"],
+        "4444"
+    );
+    let replies = fixture.succeed("admin", false, &[put(BO, "Bo", "9999"), get(BO)]);
+    assert_eq!(replies[1][BO]["ssn"], "9999");
+}
+
+#[test]
+fn only_an_admin_rekeys() {
+    let fixture = Fixture::new();
+    fixture.create();
+    fixture.grant("writers", AccessAction::Write);
+    let writer = fixture.writer("reader");
+    let engine = WriteEngine::from_writer(writer.clone());
+    let refused = writer
+        .rekey_protected_database(Some(PII), &engine.field_rekey())
+        .unwrap_err();
+    assert_eq!(refused.code().as_str(), "EACCES");
+}
+
+#[test]
+fn a_rekey_of_a_collection_the_database_lacks_is_refused() {
+    let fixture = Fixture::new();
+    fixture.create();
+    let writer = fixture.writer("admin");
+    let engine = WriteEngine::from_writer(writer.clone());
+    let refused = writer
+        .rekey_protected_database(Some("ledger"), &engine.field_rekey())
+        .unwrap_err();
+    assert_eq!(refused.code().as_str(), "EPOLICY");
 }

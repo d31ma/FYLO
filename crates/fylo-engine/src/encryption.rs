@@ -327,6 +327,72 @@ impl EncryptionReader {
         self.encoding_key(collection).is_ok()
     }
 
+    /// `body`, a stored document of `collection`, with its `$encrypted`
+    /// values read with the keys they were written with and written again
+    /// with `target`'s newest field key, for a protected `fylo rekey`
+    /// (ADR 0021 section 7). The list is the one of the version the
+    /// document was written at, as reads use. A document holding no
+    /// ciphertext comes back unchanged, and the rewritten one must read
+    /// back, with `target` alone, as the old one does.
+    pub(crate) fn rekey_document(
+        &self,
+        collection: &str,
+        body: &[u8],
+        target: &fylo_storage_native::FieldKeys,
+    ) -> Result<Vec<u8>, String> {
+        let fields = fylo_format::Document::parse(body, fylo_format::DocumentLimits::default())
+            .map_err(|error| error.to_string())?
+            .into_fields();
+        if !fields.values().any(contains_ciphertext) {
+            return Ok(body.to_vec());
+        }
+        let plain = self.decode_document(collection, fields)?;
+        let version = plain.get("_v").and_then(Value::as_str).map(str::to_owned);
+        let encrypted = self
+            .declared_fields_at(collection, version.as_deref())?
+            .unwrap_or_default();
+        let key = target
+            .newest()
+            .map(|key| Zeroizing::new(*key.encryption()))
+            .ok_or_else(|| format!("collection {collection} has no new field key"))?;
+        let sealed = Self::sealed_with(plain.clone(), &encrypted, &key)?;
+        Self::require_reads_back(&sealed, &plain, (&encrypted, &key))?;
+        fylo_format::Document::try_from_value(
+            Value::Object(sealed),
+            fylo_format::DocumentLimits::default(),
+        )
+        .and_then(|document| document.encode())
+        .map_err(|error| error.to_string())
+    }
+
+    fn sealed_with(
+        mut fields: Map<String, Value>,
+        encrypted: &[String],
+        key: &SecretKey,
+    ) -> Result<Map<String, Value>, String> {
+        for (field, value) in &mut fields {
+            let path = field.clone();
+            encode_value(value, &path, encrypted, key)?;
+        }
+        Ok(fields)
+    }
+
+    fn require_reads_back(
+        sealed: &Map<String, Value>,
+        plain: &Map<String, Value>,
+        (encrypted, key): (&[String], &SecretKey),
+    ) -> Result<(), String> {
+        let mut read = sealed.clone();
+        let keys = [key.clone()];
+        for (field, value) in &mut read {
+            decode_value(value, field, encrypted, &keys)?;
+        }
+        if &read == plain {
+            return Ok(());
+        }
+        Err("the rewritten document does not read back as the old one".into())
+    }
+
     /// The HMAC key of `collection`'s blind-index tokens, chosen as
     /// [`Self::encoding_key`] chooses.
     fn index_key(&self, collection: &str) -> Result<SecretKey, String> {
