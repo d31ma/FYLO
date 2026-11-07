@@ -29,15 +29,20 @@ use serde_json::{Value, json};
 ///   rule (`--rule <id>`, default `<grantee>-<resource>`) as the next policy
 ///   version, and wraps the keys it covers for the grantee;
 /// - `revoke --rule <id>` removes a rule as the next policy version, and
-///   starts a new key epoch for every collection it covered.
+///   starts a new key epoch for every collection it covered;
+/// - `settle` finishes a catalog-key rotation a revocation left pending
+///   (ADR 0021 section 7): it reseals the directory under the current
+///   catalog key, drops the previous key, and records a signed `settle`
+///   version. With nothing pending it says so and writes nothing; it is
+///   safe to run again after a stop.
 ///
-/// `grant` and `revoke` need an admin identity.
+/// `grant`, `revoke` and `settle` need an admin identity.
 pub struct AccessCommand;
 
 impl AccessCommand {
-    const COMMANDS: [&'static str; 5] = ["report", "list", "grant", "revoke", "audit"];
+    const COMMANDS: [&'static str; 6] = ["report", "list", "grant", "revoke", "audit", "settle"];
 
-    const USAGE: &'static str = "Usage:\n  fylo access report <root|db.vdbx>\n  fylo access list <db.vdbx>\n  fylo access audit <db.vdbx>\n  fylo access grant <db.vdbx> --grantee <name> --key <fpk1:...> --actions <read|write|admin>[,...] (--collection <name> | --all-collections | --database) [--rule <id>] [--label <text>]\n  fylo access revoke <db.vdbx> --rule <id>\nEach runs as --identity <reference> with --trust-anchor <fid1:...> or --trust-on-first-use.";
+    const USAGE: &'static str = "Usage:\n  fylo access report <root|db.vdbx>\n  fylo access list <db.vdbx>\n  fylo access audit <db.vdbx>\n  fylo access grant <db.vdbx> --grantee <name> --key <fpk1:...> --actions <read|write|admin>[,...] (--collection <name> | --all-collections | --database) [--rule <id>] [--label <text>]\n  fylo access revoke <db.vdbx> --rule <id>\n  fylo access settle <db.vdbx>\nEach runs as --identity <reference> with --trust-anchor <fid1:...> or --trust-on-first-use.";
 
     /// Run `fylo access` with all its arguments and its positional
     /// arguments after `access`.
@@ -58,6 +63,7 @@ impl AccessCommand {
             "report" => Self::report(options)?,
             "list" => Self::list(options, path)?,
             "audit" => Self::audit(options, path)?,
+            "settle" => Self::settle(&Self::writer(options)?.settle_access(), path)?,
             "grant" => {
                 Self::policy(&Self::writer(options)?.grant_access(&Self::request(arguments)?))?
             }
@@ -91,6 +97,31 @@ impl AccessCommand {
             "trustAnchor": access.anchor().as_str(),
             "entries": access.audit(),
         }))
+    }
+
+    fn settle(
+        outcome: &Result<Option<u64>, fylo_storage_native::NativeStorageError>,
+        path: &Path,
+    ) -> Result<Value, String> {
+        let since = outcome.as_ref().map_err(ToString::to_string)?;
+        Ok(json!({
+            "database": path.display().to_string(),
+            "settled": since.is_some(),
+            "pendingSince": since,
+            "message": Self::settle_message(*since),
+        }))
+    }
+
+    fn settle_message(since: Option<u64>) -> String {
+        since.map_or_else(
+            || "no catalog rotation is pending: nothing was written".to_owned(),
+            |version| {
+                format!(
+                    "settled the catalog rotation pending since policy version {version}: the \
+                     directory is sealed under the current catalog key only"
+                )
+            },
+        )
     }
 
     fn report(options: RootOpenOptions) -> Result<Value, String> {

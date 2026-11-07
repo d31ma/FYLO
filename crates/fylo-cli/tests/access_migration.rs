@@ -647,6 +647,10 @@ fn the_handshake_reports_the_identity_and_its_grants() {
     assert!(as_admin["publicKey"].as_str().unwrap().starts_with("fpk1:"));
     assert_eq!(as_admin["database"]["admin"], true);
     assert_eq!(as_admin["database"]["trustAnchor"], admin.as_str());
+    assert_eq!(
+        as_admin["database"]["catalogRotationPendingSince"],
+        Value::Null
+    );
 
     let as_reader = handshake(&fixture, Some(("reader", &admin)));
     assert_eq!(as_reader["database"]["admin"], false);

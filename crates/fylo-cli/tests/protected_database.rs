@@ -754,3 +754,63 @@ fn access_audit_refuses_a_database_opened_without_an_identity() {
     let refused = failure(&fixture.run(&["access", "audit", "app.vdbx"]));
     assert!(refused.contains("open it with an identity"), "{refused}");
 }
+
+#[test]
+fn access_settle_with_nothing_pending_says_so_and_writes_nothing() {
+    let fixture = Fixture::new("settle-nothing");
+    let admin = fixture.protected();
+    write_user(&fixture, &admin);
+    fixture.identity("reader");
+    grant_reader(&fixture, &admin);
+    json(&fixture.as_admin(
+        &admin,
+        &["access", "revoke", "app.vdbx", "--rule", "readers"],
+    ));
+    let before = fs::read(fixture.0.join("app.vdbx")).unwrap();
+    let settled = json(&fixture.as_admin(&admin, &["access", "settle", "app.vdbx"]));
+    assert_eq!(settled["settled"], false);
+    assert_eq!(settled["pendingSince"], Value::Null);
+    assert!(
+        settled["message"]
+            .as_str()
+            .unwrap()
+            .contains("no catalog rotation is pending")
+    );
+    assert_eq!(fs::read(fixture.0.join("app.vdbx")).unwrap(), before);
+    let audit = json(&fixture.as_admin(&admin, &["access", "audit", "app.vdbx"]));
+    let kinds: Vec<&str> = audit["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|entry| entry["kind"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds, ["create", "grant", "revoke"]);
+}
+
+#[test]
+fn access_settle_by_an_identity_that_is_not_an_admin_is_refused() {
+    let fixture = Fixture::new("settle-reader");
+    let admin = fixture.protected();
+    write_user(&fixture, &admin);
+    fixture.identity("reader");
+    grant_reader(&fixture, &admin);
+    let refused = failure(&fixture.run(&as_reader(&admin, &["access", "settle", "app.vdbx"])));
+    assert!(refused.contains("EACCES"), "{refused}");
+}
+
+#[test]
+fn access_report_and_verify_say_nothing_of_a_settled_rotation() {
+    let fixture = Fixture::new("settle-report");
+    let admin = fixture.protected();
+    write_user(&fixture, &admin);
+    fixture.identity("reader");
+    grant_reader(&fixture, &admin);
+    json(&fixture.as_admin(
+        &admin,
+        &["access", "revoke", "app.vdbx", "--rule", "readers"],
+    ));
+    let report = json(&fixture.as_admin(&admin, &["access", "report", "app.vdbx"]));
+    assert!(report.get("catalogRotation").is_none(), "{report}");
+    let verified = json(&fixture.as_admin(&admin, &["verify", "app.vdbx"]));
+    assert_eq!(verified["problems"], Value::Array(Vec::new()));
+}

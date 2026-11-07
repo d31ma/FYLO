@@ -158,8 +158,11 @@ configured, otherwise an object with
   `firstUse` or `unpinned`;
 - `database`: `null` unless the session's root is a protected `.vdbx`
   database, otherwise what this identity may do there: `trustAnchor` (the
-  admin that created it), `trustedOnFirstUse`, `admin`, and `grants`, each
-  collection the identity may use mapped to `read`, `write` or `admin`. When
+  admin that created it), `trustedOnFirstUse`, `admin`, `grants`, each
+  collection the identity may use mapped to `read`, `write` or `admin`, and
+  `catalogRotationPendingSince`: `null`, or the policy version of a
+  revocation whose catalog-key rotation stopped before it finished, which
+  an admin settles with `fylo access settle` or its next write. When
   the database refuses the identity, `database` holds only `error`, with the
   stable `code` (`EACCES`, `EPOLICY`, `ESIGNATURE`) and a `message`.
 

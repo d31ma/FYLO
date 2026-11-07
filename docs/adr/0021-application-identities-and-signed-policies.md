@@ -442,6 +442,40 @@ in phase 7.
       collection) finishes the reseal first. Until it does, the revoked
       identity can still open blocks that are under the old key, so the
       rotation runs to the end within the same `fylo access revoke`.
+    - **A stopped rotation is settled at once, and reported (gap closed,
+      the user's decision, 2026-11-07).** Phase 7 left a stopped rotation
+      pending until the next access or directory change, with nothing to
+      tell the admin. Now:
+        - `fylo access settle <db.vdbx>`, as an admin, finishes it: under
+          the allocation lock it takes in the newest access slot, reseals
+          every directory block under the current key, and writes the
+          access document without `previous` in one slot write, which also
+          carries a `settle` policy version signed by the admin (the
+          `change` kinds gain `settle`). Every step is the reseal or the
+          slot write above, so a stop anywhere leaves the rotation pending
+          and readable, and running it again finishes it; with nothing
+          pending it says so and writes nothing. The name follows the
+          one-verb `fylo access` commands (`grant`, `revoke`, `audit`),
+          and "settled" is the state the reseal leaves, as section 7 calls
+          it.
+        - An admin's first write (taking a collection's writer lock) on a
+          database it opened with a rotation pending settles it the same
+          way first, before the write takes its lock. It adds no failure
+          mode a write did not have: the reseal and slot write are writes
+          to the same file under the allocation lock, which writes already
+          take, and when the `settle` version would not fit in the 256 KiB
+          access slot the rotation is finished without it, since dropping
+          the old key matters more than its record. Another identity's
+          write leaves the rotation for an admin: it may not sign a policy
+          version. A new collection still finishes it first, signed when
+          its creator is an admin.
+        - `fylo access report` names the pending rotation
+          (`catalogRotation`: `pendingSince`, the newest revocation's
+          version, a message and the `fylo access settle` command), `fylo
+          verify` warns `catalogRotationPending` (a warning: the file is
+          sound), also without an identity since `previous` is visible in
+          the access document, and the `exec --loop` handshake's
+          `identity.database` carries `catalogRotationPendingSince`.
     - A process that had the file open takes the new key in at its next
       refresh of the access slots, as it takes in new collection keys.
     - A grant does not rotate the key; a rekey of the whole database
@@ -453,7 +487,8 @@ in phase 7.
   separate append-only audit extent. Every such change already writes a policy version,
   signed by the admin who made it and chained to the one before, in the
   access slots, whose A/B write is crash-safe. Each version from phase 7
-  on carries `change` (`grant`, `revoke`, `rekey`, `rekeyCollection`;
+  on carries `change` (`grant`, `revoke`, `rekey`, `rekeyCollection`,
+  `settle`;
   with the rule or collection, and `at`, milliseconds since the Unix epoch
   by the signer's clock), covered by the signature. `fylo access audit
   <db.vdbx>`, run as any identity the policy names, lists every version
@@ -461,7 +496,8 @@ in phase 7.
   the rules it added and removed against the version before; version 1 is
   `create`, and a version written before changes were recorded is
   `unrecorded`. It writes nothing. A catalog-key rotation is part of its
-  revocation and has no version of its own.
+  revocation and has no version of its own, unless it stopped and was
+  settled later, which writes a `settle` version.
     - **Deferred by the user's decision: logging opens and refusals.**
       Design section 5.6 also lists every open, operations FYLO refused,
       and `ESIGNATURE` findings. Recording those would need a write on

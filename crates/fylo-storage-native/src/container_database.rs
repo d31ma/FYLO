@@ -265,15 +265,52 @@ impl ContainerDatabase {
             -> Result<crate::database_access::AccessChange, crate::DatabaseAccessError>,
     ) -> Result<crate::AccessPolicy, NativeStorageError> {
         self.require_key()?;
+        let record = self.access().is_some_and(|access| access.is_admin());
         self.file.change_map(|open| {
-            open.settle_catalog().map_err(ContainerMedium::error)?;
+            open.settle_catalog(record)
+                .map_err(ContainerMedium::error)?;
             let policy = open
                 .change_access(prepare)
                 .map_err(ContainerMedium::error)?;
-            open.settle_catalog().map_err(ContainerMedium::error)?;
+            open.settle_catalog(false).map_err(ContainerMedium::error)?;
             open.checkpoint()?;
             Ok(policy)
         })
+    }
+
+    /// Finish a catalog-key rotation a revocation left pending, as this
+    /// handle's admin identity, under the allocation lock: the directory
+    /// is resealed under the current catalog key and the access document
+    /// drops the previous one, with a signed `settle` policy version
+    /// (ADR 0021 section 7). Returns the policy version the rotation
+    /// started at, or `None` when none was pending, and then writes
+    /// nothing. Safe to run again after a stop at any point.
+    pub(crate) fn settle_access(&self) -> Result<Option<u64>, NativeStorageError> {
+        self.require_key()?;
+        self.require_admin()?;
+        self.file.change_map(|open| {
+            let settled = open.settle_catalog(true).map_err(ContainerMedium::error)?;
+            settled.map_or(Ok(()), |_| open.checkpoint())?;
+            Ok(settled)
+        })
+    }
+
+    fn require_admin(&self) -> Result<(), NativeStorageError> {
+        self.access()
+            .map_or(Ok(()), |access| access.require_admin())
+            .map_err(|error| ContainerMedium::error(ContainerError::Access(error)))
+    }
+
+    /// Before an admin's write, finish a rotation this open found pending
+    /// ([`Self::settle_access`]); anyone else's write leaves it.
+    fn settle_for_admin(&self) -> Result<(), NativeStorageError> {
+        let pending = self
+            .access()
+            .is_some_and(|access| access.is_admin() && access.rotation_pending());
+        if !pending {
+            return Ok(());
+        }
+        self.settle_access().map(|_| ())
     }
 
     /// A revocation stopped after its commit point, before the directory is
@@ -334,6 +371,7 @@ impl ContainerDatabase {
         block: u32,
     ) -> Result<ContainerWriterLock, NativeStorageError> {
         self.require_key()?;
+        self.settle_for_admin()?;
         let medium = self.medium(block)?;
         medium.begin_write()?;
         Ok(ContainerWriterLock { medium })

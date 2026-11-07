@@ -180,7 +180,7 @@ impl ContainerFile {
         let Some(access) = self.database_access().cloned() else {
             return Ok(());
         };
-        self.settle_catalog()?;
+        self.settle_catalog(access.is_admin())?;
         let change = access
             .prepare_collection(id, name)
             .map_err(ContainerError::Access)?;
@@ -217,22 +217,37 @@ impl ContainerFile {
     }
 
     /// Finish a catalog-key rotation a revocation started (ADR 0021
-    /// section 7): seal every directory block under the current catalog
-    /// key, then write the access document without the previous key. A
-    /// stop at any point leaves every block under one of the two keys the
-    /// document still holds, and the next change of the access document,
-    /// or of the directory, finishes it.
+    /// section 7), from the newest access slot: seal every directory block
+    /// under the current catalog key, then write the access document
+    /// without the previous key, with a signed `settle` version when
+    /// `record` (see [`DatabaseAccess::prepare_settled`]). A stop at any
+    /// point leaves every block under one of the two keys the document
+    /// still holds, and running it again finishes it. Returns the policy
+    /// version the rotation started at, or `None` when none was pending,
+    /// and then writes nothing.
     ///
     /// # Errors
     ///
-    /// The write failure.
-    pub(crate) fn settle_catalog(&mut self) -> Result<(), ContainerError> {
+    /// The refusal to take in a newer access slot, or the write failure.
+    pub(crate) fn settle_catalog(&mut self, record: bool) -> Result<Option<u64>, ContainerError> {
+        self.reload_access()?;
         let Some(access) = self.database_access().cloned() else {
-            return Ok(());
+            return Ok(None);
         };
-        if !access.rotation_pending() {
-            return Ok(());
-        }
+        let Some(since) = access.catalog_rotation_pending() else {
+            return Ok(None);
+        };
+        self.reseal_directory()?;
+        let change = access
+            .prepare_settled(record)
+            .map_err(ContainerError::Access)?;
+        self.write_access_slot(&change.slot)?;
+        access.commit(change).map_err(ContainerError::Access)?;
+        Ok(Some(since))
+    }
+
+    /// Seal every directory block again under the current catalog key.
+    fn reseal_directory(&mut self) -> Result<(), ContainerError> {
         let blocks: Vec<(u32, fylo_format::ContainerCollectionHeader)> = self
             .collections
             .iter()
@@ -241,9 +256,24 @@ impl ContainerFile {
         for (block, header) in blocks {
             self.rewrite_header(block, header)?;
         }
-        let change = access.prepare_settled().map_err(ContainerError::Access)?;
-        self.write_access_slot(&change.slot)?;
-        access.commit(change).map_err(ContainerError::Access)
+        Ok(())
+    }
+
+    /// Whether the newest access slot holds a previous catalog key, so a
+    /// rotation is pending: read without any key, since the document names
+    /// the field in the clear.
+    ///
+    /// # Errors
+    ///
+    /// The read failure, or a damaged access document.
+    pub(crate) fn catalog_rotation_in_slot(&self) -> Result<bool, ContainerError> {
+        let (slot, _) = self.read_access_slot()?;
+        let document = crate::AccessDocument::from_json(&slot.body).map_err(|error| {
+            ContainerError::Access(DatabaseAccessError::Damaged(format!(
+                "the access document is damaged: {error}"
+            )))
+        })?;
+        Ok(document.previous.is_some())
     }
 
     /// Each live collection's next LSN, from its generation slot as the
@@ -285,6 +315,8 @@ impl ContainerFile {
     ) -> Result<(), ContainerError> {
         let (_, newest_in_a) = self.read_access_slot()?;
         let bytes = slot.encode()?;
+        #[cfg(test)]
+        super::fault::check(super::ContainerFault::AccessSlot)?;
         self.write_payload(
             self.superblock.directory_extent,
             self.access_payload_offset(!newest_in_a),

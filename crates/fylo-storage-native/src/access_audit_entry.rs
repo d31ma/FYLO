@@ -12,7 +12,7 @@ pub struct AccessAuditEntry {
     /// The `fid1:` identifier of the admin whose signature it carries.
     pub signer: String,
     /// `create` for version 1, the change's kind (`grant`, `revoke`,
-    /// `rekey`, `rekeyCollection`), or `unrecorded` for a version written
+    /// `rekey`, `rekeyCollection`, `settle`), or `unrecorded` for a version written
     /// before changes were recorded.
     pub kind: String,
     /// The rule a grant added or a revocation removed.

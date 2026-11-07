@@ -1,6 +1,6 @@
-//! `fylo access grant` and `fylo access revoke` (ADR 0021): an admin of a
+//! `fylo access grant`, `revoke` and `settle` (ADR 0021): an admin of a
 //! protected `.vdbx` database writes the next policy version and the
-//! keyring it calls for.
+//! keyring it calls for, or finishes a pending catalog-key rotation.
 
 use crate::{
     AccessGrantRequest, AccessPolicy, NativeStorageError, NativeStorageErrorCode, NativeWriteRoot,
@@ -37,6 +37,21 @@ impl NativeWriteRoot {
     pub fn revoke_access(&self, id: &str) -> Result<AccessPolicy, NativeStorageError> {
         self.protected_database()?
             .change_access(|access, next_lsns| access.prepare_revoke(id, next_lsns))
+    }
+
+    /// Finish a catalog-key rotation a revocation left pending, as this
+    /// root's admin identity (ADR 0021 section 7): the directory is
+    /// resealed under the current catalog key, the access document drops
+    /// the previous key, and a `settle` policy version signed by the admin
+    /// records it. Returns the policy version the rotation started at, or
+    /// `None` when none was pending, and then nothing is written. Safe to
+    /// run again after a stop at any point.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::grant_access`].
+    pub fn settle_access(&self) -> Result<Option<u64>, NativeStorageError> {
+        self.protected_database()?.settle_access()
     }
 
     fn protected_database(

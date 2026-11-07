@@ -2,7 +2,7 @@ use serde::Serialize;
 
 /// What changed in a policy version, and when, as the admin who signed the
 /// version states it (ADR 0021 section 7): the audit record of grants,
-/// revocations, rekeys and catalog-key rotations. Version 1 has none.
+/// revocations, rekeys, catalog-key rotations and their settling. Version 1 has none.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct AccessPolicyChange {
     /// One of the kinds below, such as [`Self::GRANT`].
@@ -26,6 +26,9 @@ impl AccessPolicyChange {
     pub const REKEY: &'static str = "rekey";
     /// `fylo rekey --collection` rewrote one collection under a new key.
     pub const REKEY_COLLECTION: &'static str = "rekeyCollection";
+    /// `fylo access settle`, or an admin's first write, finished a
+    /// catalog-key rotation a revocation left pending.
+    pub const SETTLE: &'static str = "settle";
     const KEYS: [&'static str; 4] = ["kind", "rule", "collection", "at"];
 
     /// A change of `kind` made now.

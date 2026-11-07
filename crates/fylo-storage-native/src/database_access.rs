@@ -488,11 +488,55 @@ impl DatabaseAccess {
         self.read().catalog.opening()
     }
 
+    /// The policy version a pending catalog-key rotation started at: the
+    /// newest revocation, or the newest version when none is recorded.
+    /// `None` when no rotation is pending (ADR 0021 section 7).
+    #[must_use]
+    pub fn catalog_rotation_pending(&self) -> Option<u64> {
+        let state = self.read();
+        state
+            .catalog
+            .rotation_pending()
+            .then(|| Self::rotation_version(&state.versions))
+    }
+
+    fn rotation_version(versions: &[AccessPolicy]) -> u64 {
+        versions
+            .iter()
+            .rev()
+            .find(|policy| Self::is_revocation(policy))
+            .or(versions.last())
+            .map_or(0, |policy| policy.version)
+    }
+
+    fn is_revocation(policy: &AccessPolicy) -> bool {
+        policy
+            .change
+            .as_ref()
+            .is_some_and(|change| change.kind == AccessPolicyChange::REVOKE)
+    }
+
     /// Prepare the access document without the previous catalog key, once
-    /// every directory block is sealed under the current one.
-    pub(crate) fn prepare_settled(&self) -> Result<AccessChange, DatabaseAccessError> {
+    /// every directory block is sealed under the current one. With
+    /// `record`, which only an admin passes, the document also gets a
+    /// `settle` policy version signed by this identity, so `fylo access
+    /// audit` lists who finished the rotation; when that version would not
+    /// fit in the access slot, the rotation is finished without it, since
+    /// dropping the previous key matters more than its record.
+    pub(crate) fn prepare_settled(
+        &self,
+        record: bool,
+    ) -> Result<AccessChange, DatabaseAccessError> {
         let state = self.read();
         let catalog = state.catalog.settled();
+        let recorded = self.recorded_settle(&state, &catalog, record)?;
+        recorded.map_or_else(|| Self::unrecorded_settle(&state, catalog), Ok)
+    }
+
+    fn unrecorded_settle(
+        state: &AccessState,
+        catalog: CatalogKeys,
+    ) -> Result<AccessChange, DatabaseAccessError> {
         let (previous, original) = catalog.document_fields()?;
         let document = AccessDocument {
             previous,
@@ -506,6 +550,62 @@ impl DatabaseAccess {
             collection: None,
             policy: None,
         })
+    }
+
+    /// The settled document with a signed `settle` version, or `None`
+    /// without `record`, for an identity the newest policy no longer makes
+    /// an admin (its signature would not verify), or when it does not fit
+    /// in the access slot.
+    fn recorded_settle(
+        &self,
+        state: &AccessState,
+        catalog: &CatalogKeys,
+        record: bool,
+    ) -> Result<Option<AccessChange>, DatabaseAccessError> {
+        if !(record && state.grants.is_admin()) {
+            return Ok(None);
+        }
+        let policy = state.policy.recording(
+            state.policy_digest.clone(),
+            AccessPolicyChange::now(AccessPolicyChange::SETTLE),
+        );
+        let sealing = ContainerCipher::from_key(catalog.current());
+        let envelope = AccessPolicyChain::seal(&policy, &sealing, self.binding, &self.identity)?;
+        let bytes = serde_json::to_vec(&policy)
+            .map_err(|error| DatabaseAccessError::Damaged(error.to_string()))?;
+        let mut policies = state.document.policies.clone();
+        policies.push(envelope);
+        let (previous, original) = catalog.document_fields()?;
+        let document = AccessDocument {
+            policies,
+            previous,
+            original,
+            ..state.document.clone()
+        };
+        let slot = Self::fitting_slot(state.generation + 1, &document)?;
+        Ok(slot.map(|slot| AccessChange {
+            slot,
+            catalog: Some(catalog.clone()),
+            keys: Vec::new(),
+            collection: None,
+            policy: Some((policy, AccessPolicyChain::digest_of(&bytes))),
+        }))
+    }
+
+    /// The slot holding `document`, or `None` when it is too large for one.
+    fn fitting_slot(
+        generation: u64,
+        document: &AccessDocument,
+    ) -> Result<Option<ContainerAccessSlot>, DatabaseAccessError> {
+        let body = serde_json::to_vec(document)
+            .map_err(|error| DatabaseAccessError::Damaged(error.to_string()))?;
+        Ok((body.len() <= ContainerAccessSlot::MAX_BODY_BYTES)
+            .then_some(ContainerAccessSlot { generation, body }))
+    }
+
+    /// Whether this identity is an admin of the database.
+    pub(crate) fn is_admin(&self) -> bool {
+        self.read().grants.is_admin()
     }
 
     fn require_same_original(

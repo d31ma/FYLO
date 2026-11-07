@@ -77,8 +77,10 @@ pub struct ContainerProblem {
     /// `tornSlot`, `slotDamaged`, `snapshotOutOfRange`,
     /// `snapshotExtentMismatch`, `snapshotNotInMap`,
     /// `snapshotHashMismatch`, `dictionaryDamaged`, `dictionaryMismatch`,
-    /// `dictionaryMissing`, `dictionaryUnused`, in a protected file opened
-    /// with an identity `badSignature`, or, in a sealed file,
+    /// `dictionaryMissing`, `dictionaryUnused`, in a protected file
+    /// `accessSlotDamaged` and the warning `catalogRotationPending`, in a
+    /// protected file opened with an identity `badSignature`, or, in a
+    /// sealed file,
     /// `sealedBlockDamaged`, whose extent is the one of the image the
     /// block holds part of.
     pub code: &'static str,
@@ -193,6 +195,7 @@ impl ContainerFile {
         self.verify_extents(file_bytes, &mut findings)?;
         self.verify_directory(file_bytes, &mut findings)?;
         self.verify_frame_dictionaries(file_bytes, &mut findings)?;
+        self.verify_catalog_rotation(&mut findings)?;
         Ok(findings.report())
     }
 
@@ -705,6 +708,39 @@ impl ContainerFile {
             }
         }
         Ok(())
+    }
+
+    /// In a protected file (ADR 0021 section 7), warn of a catalog-key
+    /// rotation a revocation left pending: until `fylo access settle`
+    /// finishes it, directory blocks under the old catalog key stay
+    /// readable by the identity it revoked. Read without any key; with an
+    /// identity the warning names the policy version it started at.
+    fn verify_catalog_rotation(&self, findings: &mut Findings) -> Result<(), ContainerError> {
+        if !self.is_protected() {
+            return Ok(());
+        }
+        match self.catalog_rotation_in_slot() {
+            Ok(pending) => self.warn_of_rotation(pending, findings),
+            Err(ContainerError::Access(error)) => {
+                findings.error("accessSlotDamaged", None, error.to_string());
+            }
+            Err(error) => return Err(error),
+        }
+        Ok(())
+    }
+
+    fn warn_of_rotation(&self, pending: bool, findings: &mut Findings) {
+        if !pending {
+            return;
+        }
+        let since = self
+            .database_access()
+            .and_then(|access| access.catalog_rotation_pending());
+        findings.warning(
+            "catalogRotationPending",
+            None,
+            crate::CatalogRotationNotice::message(since),
+        );
     }
 
     /// In a protected file opened with an identity (ADR 0021), report a

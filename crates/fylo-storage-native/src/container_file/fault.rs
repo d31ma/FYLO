@@ -22,6 +22,10 @@ pub(crate) enum ContainerFault {
     Superblock,
     /// Flushing that superblock copy, which is written by then.
     Flush,
+    /// Writing a collection's directory block again in place.
+    DirectoryBlock,
+    /// Writing an access slot of a protected file.
+    AccessSlot,
 }
 
 thread_local! {

@@ -823,6 +823,7 @@ fylo access grant app.vdbx --grantee web --key fpk1:p256:... \
 fylo access revoke app.vdbx --rule web-collection:users \
     --identity file:admin.pem --trust-anchor fid1:...
 fylo access list app.vdbx --identity keychain:myapp-web --trust-anchor fid1:...
+fylo access settle app.vdbx --identity file:admin.pem --trust-anchor fid1:...
 ```
 
 - **Opening.** A process opens a protected database as one identity:
@@ -839,7 +840,12 @@ fylo access list app.vdbx --identity keychain:myapp-web --trust-anchor fid1:...
   records others accept.
 - **Revocation** writes the next policy version and starts a new key epoch
   for the collections the rule covered; records written before stay readable
-  to an identity that kept the old key until a rekey rewrites them.
+  to an identity that kept the old key until a rekey rewrites them. It also
+  rotates the catalog key, which seals collection names and the policy. If
+  a revocation stops part way, `fylo access report` and `fylo verify` say
+  a catalog rotation is pending, and `fylo access settle app.vdbx` (as an
+  admin) finishes it; an admin's next write also does. `fylo access audit`
+  lists every signed policy change, settles included.
 - **Every entry point** takes the identity: the CLI, `fylo exec --loop`
   (its handshake reports the identity and its grants), the `fylo` crate
   (`OpenOptions::with_identity`), `fylo link` for Turso SDKs, SQL over

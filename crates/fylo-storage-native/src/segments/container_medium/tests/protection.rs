@@ -889,3 +889,301 @@ fn a_rotation_stopped_before_the_reseal_reads_and_the_next_change_finishes_it() 
     let root = NativeRoot::open_profiled(database.as_identity(&other)).unwrap();
     assert_eq!(read(&root), order());
 }
+
+/// Grant `reader` read on every collection, revoke it with the rotation
+/// stopped after its commit point, and return the file as it was before
+/// the revocation, which the reader may have kept.
+fn revoke_reader_unsettled(database: &Protected, reader: &Identity) -> Vec<u8> {
+    database.grant("reader", reader, &[AccessAction::Read], &["collection:*"]);
+    database.reopen();
+    let kept = std::fs::read(database.path()).unwrap();
+    let root = database.root();
+    root.database()
+        .unwrap()
+        .revoke_unsettled("reader-rule")
+        .unwrap();
+    drop(root);
+    database.reopen();
+    kept
+}
+
+/// Write three collections, so a settle reseals three directory blocks.
+fn write_three_collections(database: &Protected) {
+    write_ledger(database);
+    let writer = database.writer();
+    for name in ["wombat-orders", "wombat-notes"] {
+        writer
+            .create_collection(name, CollectionKind::Document, None)
+            .unwrap();
+    }
+}
+
+/// The policy version a revocation after create and one grant writes.
+const REVOCATION_VERSION: u64 = 3;
+
+fn rotation_pending(database: &Protected) -> Option<u64> {
+    database.reopen();
+    database
+        .root()
+        .database_access()
+        .flatten()
+        .unwrap()
+        .catalog_rotation_pending()
+}
+
+fn last_audit_kind(database: &Protected) -> String {
+    database.reopen();
+    let audit = database.root().database_access().flatten().unwrap().audit();
+    audit.last().unwrap().kind.clone()
+}
+
+/// The collection names `identity` reads after putting back the access
+/// slots of `kept` into a copy of the file as it is now.
+fn names_with_kept_slots(database: &Protected, kept: &[u8], identity: &Identity) -> Vec<String> {
+    database.reopen();
+    let now = std::fs::read(database.path()).unwrap();
+    let mut spliced = now.clone();
+    let (at, slots) = access_slots(kept);
+    spliced[at..at + slots.len()].copy_from_slice(&slots);
+    std::fs::write(database.path(), &spliced).unwrap();
+    let opened = NativeRoot::open_profiled(database.as_identity(identity));
+    let names = opened
+        .as_ref()
+        .ok()
+        .and_then(NativeRoot::database_collection_names)
+        .unwrap_or_default();
+    drop(opened);
+    database.reopen();
+    std::fs::write(database.path(), &now).unwrap();
+    names
+}
+
+/// Make the settle meet `fault` once `passes` of its writes have passed,
+/// as a crash there leaves the file, then check the rotation is still
+/// pending, the admin reads everything, and a settle finishes it.
+fn settle_stopped_at(fault: crate::container_file::fault::ContainerFault, passes: usize) {
+    let database = Protected::create("vdbx-protected-settle-stopped");
+    write_three_collections(&database);
+    let reader = database.identity("reader");
+    revoke_reader_unsettled(&database, &reader);
+    let writer = database.writer();
+    crate::container_file::fault::arm_after(fault, passes);
+    assert!(writer.settle_access().is_err());
+    assert!(!crate::container_file::fault::pending());
+    drop(writer);
+    assert_eq!(rotation_pending(&database), Some(REVOCATION_VERSION));
+    database.reopen();
+    let root = database.root();
+    assert_eq!(root.database_collection_names().unwrap().len(), 3);
+    assert_eq!(read(&root), order());
+    drop(root);
+    database.reopen();
+    assert_eq!(
+        database.writer().settle_access().unwrap(),
+        Some(REVOCATION_VERSION)
+    );
+    assert_eq!(rotation_pending(&database), None);
+    assert_eq!(read(&database.root()), order());
+}
+
+#[test]
+fn a_settle_stopped_before_the_first_directory_block_finishes_on_the_next_settle() {
+    settle_stopped_at(
+        crate::container_file::fault::ContainerFault::DirectoryBlock,
+        0,
+    );
+}
+
+#[test]
+fn a_settle_stopped_between_directory_blocks_finishes_on_the_next_settle() {
+    settle_stopped_at(
+        crate::container_file::fault::ContainerFault::DirectoryBlock,
+        1,
+    );
+}
+
+#[test]
+fn a_settle_stopped_before_the_last_directory_block_finishes_on_the_next_settle() {
+    settle_stopped_at(
+        crate::container_file::fault::ContainerFault::DirectoryBlock,
+        2,
+    );
+}
+
+#[test]
+fn a_settle_stopped_before_the_access_slot_finishes_on_the_next_settle() {
+    settle_stopped_at(crate::container_file::fault::ContainerFault::AccessSlot, 0);
+}
+
+#[test]
+fn settle_finishes_a_stopped_rotation_and_records_a_signed_version() {
+    let database = Protected::create("vdbx-protected-settle");
+    write_ledger(&database);
+    let reader = database.identity("reader");
+    revoke_reader_unsettled(&database, &reader);
+    assert_eq!(rotation_pending(&database), Some(REVOCATION_VERSION));
+    database.reopen();
+    assert_eq!(
+        database.writer().settle_access().unwrap(),
+        Some(REVOCATION_VERSION)
+    );
+    assert_eq!(rotation_pending(&database), None);
+    assert_eq!(last_audit_kind(&database), "settle");
+    database.reopen();
+    let audit = database.root().database_access().flatten().unwrap().audit();
+    assert_eq!(audit.last().unwrap().signer, database.admin.id().as_str());
+    assert_eq!(audit.last().unwrap().version, REVOCATION_VERSION + 1);
+}
+
+#[test]
+fn a_second_settle_finds_nothing_pending_and_writes_nothing() {
+    let database = Protected::create("vdbx-protected-settle-again");
+    write_ledger(&database);
+    let reader = database.identity("reader");
+    revoke_reader_unsettled(&database, &reader);
+    database.writer().settle_access().unwrap();
+    database.reopen();
+    let before = std::fs::read(database.path()).unwrap();
+    assert_eq!(database.writer().settle_access().unwrap(), None);
+    database.reopen();
+    assert_eq!(std::fs::read(database.path()).unwrap(), before);
+}
+
+#[test]
+fn only_an_admin_settles() {
+    let database = Protected::create("vdbx-protected-settle-admin");
+    write_ledger(&database);
+    let writer_identity = database.identity("writer");
+    database.grant(
+        "writer",
+        &writer_identity,
+        &[AccessAction::Write],
+        &["collection:*"],
+    );
+    let reader = database.identity("reader");
+    revoke_reader_unsettled(&database, &reader);
+    let writer = NativeWriteRoot::open_profiled(database.as_identity(&writer_identity)).unwrap();
+    assert_eq!(
+        writer.settle_access().unwrap_err().code(),
+        NativeStorageErrorCode::PermissionDenied
+    );
+    drop(writer);
+    assert_eq!(rotation_pending(&database), Some(REVOCATION_VERSION + 1));
+}
+
+#[test]
+fn a_revoked_reader_reads_old_key_blocks_until_the_rotation_is_settled() {
+    let database = Protected::create("vdbx-protected-settle-revoked");
+    write_ledger(&database);
+    let reader = database.identity("reader");
+    let kept = revoke_reader_unsettled(&database, &reader);
+    assert_eq!(
+        names_with_kept_slots(&database, &kept, &reader),
+        vec![LEDGER.to_owned()]
+    );
+    database.reopen();
+    database.writer().settle_access().unwrap();
+    assert!(names_with_kept_slots(&database, &kept, &reader).is_empty());
+}
+
+#[test]
+fn an_admin_write_settles_a_pending_rotation() {
+    let database = Protected::create("vdbx-protected-settle-write");
+    write_ledger(&database);
+    let reader = database.identity("reader");
+    revoke_reader_unsettled(&database, &reader);
+    put(&database.writer(), LEDGER, SECOND);
+    assert_eq!(rotation_pending(&database), None);
+    assert_eq!(last_audit_kind(&database), "settle");
+}
+
+#[test]
+fn another_identity_s_write_leaves_a_pending_rotation() {
+    let database = Protected::create("vdbx-protected-settle-writer");
+    write_ledger(&database);
+    let writer_identity = database.identity("writer");
+    database.grant(
+        "writer",
+        &writer_identity,
+        &[AccessAction::Write],
+        &["collection:*"],
+    );
+    let reader = database.identity("reader");
+    revoke_reader_unsettled(&database, &reader);
+    let writer = NativeWriteRoot::open_profiled(database.as_identity(&writer_identity)).unwrap();
+    put(&writer, LEDGER, SECOND);
+    drop(writer);
+    assert_eq!(rotation_pending(&database), Some(REVOCATION_VERSION + 1));
+}
+
+fn locked_file(database: &Protected) -> crate::ContainerFile {
+    database.reopen();
+    crate::ContainerFile::open_reader(&database.path()).unwrap()
+}
+
+fn unlocked_file(database: &Protected) -> crate::ContainerFile {
+    let mut file = locked_file(database);
+    let identity = DatabaseIdentity::new(
+        Identity::open(database.admin.reference()).unwrap(),
+        AccessTrust::Pinned(database.admin.id().clone()),
+    );
+    file.unlock_with_identity(&identity).unwrap();
+    file
+}
+
+/// The codes of what verify finds, which must leave the file `ok`.
+fn problem_codes(file: &crate::ContainerFile) -> Vec<&'static str> {
+    let report = file.verify().unwrap();
+    assert!(report.ok, "{:?}", report.problems);
+    report.problems.iter().map(|problem| problem.code).collect()
+}
+
+#[test]
+fn verify_warns_of_a_pending_rotation_with_the_identity() {
+    let database = Protected::create("vdbx-protected-settle-verify");
+    write_ledger(&database);
+    let reader = database.identity("reader");
+    revoke_reader_unsettled(&database, &reader);
+    assert_eq!(
+        problem_codes(&unlocked_file(&database)),
+        vec!["catalogRotationPending"]
+    );
+}
+
+#[test]
+fn verify_warns_of_a_pending_rotation_without_an_identity() {
+    let database = Protected::create("vdbx-protected-settle-verify-locked");
+    write_ledger(&database);
+    let reader = database.identity("reader");
+    revoke_reader_unsettled(&database, &reader);
+    assert_eq!(
+        problem_codes(&locked_file(&database)),
+        vec!["catalogRotationPending"]
+    );
+}
+
+#[test]
+fn verify_is_quiet_once_the_rotation_is_settled() {
+    let database = Protected::create("vdbx-protected-settle-verify-done");
+    write_ledger(&database);
+    let reader = database.identity("reader");
+    revoke_reader_unsettled(&database, &reader);
+    database.writer().settle_access().unwrap();
+    assert!(problem_codes(&unlocked_file(&database)).is_empty());
+}
+
+#[test]
+fn the_access_report_names_a_pending_rotation_and_the_command() {
+    let database = Protected::create("vdbx-protected-settle-report");
+    write_ledger(&database);
+    let reader = database.identity("reader");
+    revoke_reader_unsettled(&database, &reader);
+    let report = crate::RootAccessReport::of(&database.root()).unwrap();
+    let notice = report.catalog_rotation.unwrap();
+    assert_eq!(notice.pending_since, REVOCATION_VERSION);
+    assert!(notice.message.contains("since policy version 3"));
+    assert_eq!(
+        notice.command,
+        format!("fylo access settle {}", database.path().display())
+    );
+}

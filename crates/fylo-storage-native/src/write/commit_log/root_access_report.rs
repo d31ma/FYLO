@@ -32,6 +32,11 @@ pub struct RootAccessReport {
     /// The command that moves this root into a protected database, or
     /// `None` when it is one already.
     pub command: Option<String>,
+    /// In a protected database opened with an identity, a catalog-key
+    /// rotation a revocation left pending, with the command that finishes
+    /// it (ADR 0021 section 7); left out when none is.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub catalog_rotation: Option<crate::CatalogRotationNotice>,
 }
 
 impl RootAccessReport {
@@ -63,9 +68,17 @@ impl RootAccessReport {
             records_with_access,
             changes: Self::changes(root, (encryption, records_with_access), &collections),
             command: Self::command(root, (encryption, records_with_access)),
+            catalog_rotation: Self::catalog_rotation(root),
             collections,
             blockers,
         })
+    }
+
+    fn catalog_rotation(root: &NativeRoot) -> Option<crate::CatalogRotationNotice> {
+        root.database_access()
+            .flatten()
+            .and_then(|access| access.catalog_rotation_pending())
+            .map(|version| crate::CatalogRotationNotice::of(root.path(), version))
     }
 
     fn kind(root: &NativeRoot) -> &'static str {

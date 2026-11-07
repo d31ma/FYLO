@@ -9,7 +9,8 @@ use crate::ApplicationConfig;
 
 /// The handshake's `identity`: the application identity a session opens
 /// protected databases with, and what it may do in the session's root when
-/// that is a protected `.vdbx` database (ADR 0021, phase 6).
+/// that is a protected `.vdbx` database (ADR 0021, phase 6), and the
+/// policy version a pending catalog-key rotation started at (section 7).
 pub(crate) struct HandshakeIdentity;
 
 impl HandshakeIdentity {
@@ -81,6 +82,7 @@ impl HandshakeIdentity {
             "trustedOnFirstUse": access.trusted_on_first_use(),
             "admin": grants.is_admin(),
             "grants": grants.collections(),
+            "catalogRotationPendingSince": access.catalog_rotation_pending(),
         })
     }
 

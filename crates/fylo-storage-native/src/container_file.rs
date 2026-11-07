@@ -1158,6 +1158,8 @@ impl ContainerFile {
             )?)?,
             None => header.encode()?,
         };
+        #[cfg(test)]
+        fault::check(ContainerFault::DirectoryBlock)?;
         self.write_payload(
             self.superblock.directory_extent,
             u64::from(block) * BLOCK_BYTES,

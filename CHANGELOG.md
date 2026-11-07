@@ -4,6 +4,18 @@
 
 ### Added
 
+- **`fylo access settle <db.vdbx>` (ADR 0021 section 7).** Finishes a
+  catalog-key rotation a stopped `fylo access revoke` left pending: it
+  reseals the directory under the current catalog key, drops the previous
+  key, and records a `settle` policy version signed by the admin, which
+  `fylo access audit` lists. It is crash-safe, safe to run again, admin
+  only, and with nothing pending says so and writes nothing. Until it runs,
+  directory blocks under the old key stay readable by the revoked
+  identity; an admin's first write now settles the rotation the same way.
+  `fylo access report` shows `catalogRotation` (pending since which policy
+  version, and the command), `fylo verify` warns `catalogRotationPending`
+  (also without an identity), and the `exec --loop` handshake's
+  `identity.database` carries `catalogRotationPendingSince`.
 - **`fylo access audit <db.vdbx>` (ADR 0021 section 7, phase 7).** Lists
   every policy version of a protected database, oldest first: the admin
   whose signature it carries, what it changed (`create`, `grant`,

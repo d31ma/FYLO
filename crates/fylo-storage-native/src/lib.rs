@@ -38,6 +38,7 @@ mod beneath_open;
 #[cfg(not(target_family = "wasm"))]
 mod byte_range_lock;
 mod catalog_keys;
+mod catalog_rotation_notice;
 mod collection_keys;
 mod collection_layout;
 #[cfg(not(target_family = "wasm"))]
@@ -96,6 +97,7 @@ pub use byte_range_lock::{
     ByteLockGuard, ByteRangeLockFile, COLLECTION_COMPACTOR_START, COLLECTION_WRITER_START,
     FilesystemInfo, LOCK_RANGE_START, LockByte, LockMode, MAX_POLL_INTERVAL,
 };
+pub use catalog_rotation_notice::CatalogRotationNotice;
 pub use collection_layout::CollectionLayout;
 #[cfg(not(target_family = "wasm"))]
 pub use container_access::{ContainerWriteAccess, ContainerWriteOptions};
