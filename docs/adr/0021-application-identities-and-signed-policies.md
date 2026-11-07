@@ -63,23 +63,25 @@ without an identity, or without a grant, is locked.
 
 ### 3. Answers to the study's questions
 
-Each answer is the proposed decision. Answers marked **needs the user's
-confirmation** are ones where the study gave no clear recommendation, so the
-most conservative option consistent with deny by default was chosen.
+The user asked to build the study's recommendations, so each answer is the
+decision for this work. Q2, Q3, Q7 and Q11, where the study gave no clear
+recommendation, were proposed as the most conservative option consistent with
+deny by default and **decided** by the user on 2026-11-07 exactly as
+proposed. The ADR itself stays Proposed until phase 3 starts.
 
 | | Question | Proposed decision | Reason |
 | --- | --- | --- | --- |
 | Q1 | Per application only? | **Yes.** POSTIX (per-record `uid`/`gid`/`mode`, `.as()`, `--uid`, `--groups`, the machine `access` field) is removed in the breaking release; end-user rules stay in the application | A per-record rule is only a claim FYLO's own code checks, which the caller can skip |
-| Q2 | Protected by default? | **Yes.** A new `.vdbx` is protected unless created with `--unprotected`; directory roots stay as an unprotected layout for development and tooling. **Needs the user's confirmation** | Deny by default; a directory root leaks indexed values through file names (study 2.5) and cannot be protected |
-| Q3 | Key storage per platform | **Accepted for version 1, documented:** same-user malware on Linux desktops and unpackaged Windows apps can take a software key. Servers are told to run each application under its own OS user (`creds:` on Linux). The option D helper is not built. **Needs the user's confirmation** | The study's threat model (section 6) shows no in-process design does better there; option D brings back a privileged subprocess |
+| Q2 | Protected by default? | **Yes.** A new `.vdbx` is protected unless created with `--unprotected`; directory roots stay as an unprotected layout for development and tooling. **Decided** (the user, 2026-11-07) | Deny by default; a directory root leaks indexed values through file names (study 2.5) and cannot be protected |
+| Q3 | Key storage per platform | **Accepted for version 1, documented:** same-user malware on Linux desktops and unpackaged Windows apps can take a software key. Servers are told to run each application under its own OS user (`creds:` on Linux). The option D helper is not built. **Decided** (the user, 2026-11-07) | The study's threat model (section 6) shows no in-process design does better there; option D brings back a privileged subprocess |
 | Q4 | Write implies read? | **Yes** | A writer must read the collection's directory and index to append and maintain indexes |
 | Q5 | Admin implies read and write? | **Yes** | Granting `read` to a new identity means wrapping a key the admin must hold |
 | Q6 | Revocation | **Forward-only by default** (a new key epoch); `fylo rekey --collection` rewrites old frames on request | Rewriting at once would make a revoke as slow as a full pack on a large collection |
-| Q7 | Trust anchor | **Pinning required.** An open of a protected database without a pinned anchor fails with `EPOLICY`, unless the caller opts in to trust on first use, which warns. **Needs the user's confirmation** | Without a pin, whoever can write the file can replace the database with one carrying their own anchor |
+| Q7 | Trust anchor | **Pinning required.** An open of a protected database without a pinned anchor fails with `EPOLICY`, unless the caller opts in to trust on first use, which warns. **Decided** (the user, 2026-11-07) | Without a pin, whoever can write the file can replace the database with one carrying their own anchor |
 | Q8 | Hardware keys | **Later** (phase 8); version 1 uses software keys in the OS secret stores | Hardware keys take milliseconds per operation and differ per platform |
 | Q9 | `fylo link` | **Yes:** `fylo.identity` and `fylo.trustAnchor` in `application.json`, or `FYLO_IDENTITY` and `FYLO_TRUST_ANCHOR` | Turso's `Database::open` carries only a path |
 | Q10 | The browser | **Yes:** the origin is the boundary, plus an optional `webcrypto:` identity for files moved between origins | OPFS is already private to the origin |
-| Q11 | Buckets and the queue | **They wait in protected databases:** a protected `.vdbx` refuses them until `.vdbx` holds them; they stay available in unprotected roots. **Needs the user's confirmation** | Shipping them unprotected beside protected collections would be an allow by default |
+| Q11 | Buckets and the queue | **They wait in protected databases:** a protected `.vdbx` refuses them until `.vdbx` holds them; they stay available in unprotected roots. **Decided** (the user, 2026-11-07) | Shipping them unprotected beside protected collections would be an allow by default |
 
 ### 4. Phases
 
