@@ -31,10 +31,10 @@ use std::sync::Arc;
 use fylo_format::ContainerSuperblock;
 
 use crate::container_allocator::ContainerTailExtent;
-use crate::segments::{ContainerMedium, ContainerOpen, SlotWriter, TableCache};
+use crate::segments::{ContainerMedium, ContainerOpen, ContainerOpenFile, SlotWriter, TableCache};
 use crate::{
-    ContainerCipher, ContainerCollection, ContainerError, ContainerFile, DatabaseKey,
-    GenerationState, GenerationStatus, NativeCollection, NativeStorageError,
+    ContainerCipher, ContainerCollection, ContainerError, ContainerFile, DatabaseIdentity,
+    DatabaseKey, GenerationState, GenerationStatus, NativeCollection, NativeStorageError,
     NativeStorageErrorCode,
 };
 
@@ -43,8 +43,10 @@ use crate::{
 pub(crate) struct ContainerDatabase {
     file: Arc<ContainerOpen>,
     /// Whether the file is encrypted and this handle was opened without
-    /// its key.
+    /// its key, or protected and opened without an identity.
     locked: bool,
+    /// Whether the file is protected by application identities (ADR 0021).
+    protected: bool,
 }
 
 /// This process's claim on one collection, held while it is written: the
@@ -82,6 +84,7 @@ impl ContainerDatabase {
     pub(crate) fn open(
         path: &Path,
         key: Option<&DatabaseKey>,
+        identity: Option<&DatabaseIdentity>,
     ) -> Result<Arc<Self>, NativeStorageError> {
         let file = ContainerOpen::open(path).map_err(|error| {
             // A file too short for the two superblock copies is no database
@@ -101,6 +104,7 @@ impl ContainerDatabase {
             let mut open = file.lock();
             match key {
                 _ if !open.is_encrypted() => false,
+                _ if open.is_protected() => Self::unlock_protected(&mut open, identity)?,
                 None => true,
                 Some(key) => {
                     let superblock = open.superblock();
@@ -116,7 +120,58 @@ impl ContainerDatabase {
                 }
             }
         };
-        Ok(Arc::new(Self { file, locked }))
+        let protected = file.lock().is_protected();
+        Ok(Arc::new(Self {
+            file,
+            locked,
+            protected,
+        }))
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    /// Unlock a protected database as `identity`; without one it stays
+    /// locked. Returns whether it is locked. One process opens a database as
+    /// one identity: a second identity is refused.
+    fn unlock_protected(
+        open: &mut ContainerOpenFile,
+        identity: Option<&DatabaseIdentity>,
+    ) -> Result<bool, NativeStorageError> {
+        let Some(identity) = identity else {
+            return Ok(true);
+        };
+        if let Some(access) = open.database_access() {
+            return Self::require_same_identity(access.identity(), identity);
+        }
+        let cipher = open.open_access(identity).map_err(ContainerMedium::error)?;
+        open.unlock(&cipher).map_err(ContainerMedium::error)?;
+        Ok(false)
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn require_same_identity(
+        held: &fylo_identity::IdentityId,
+        identity: &DatabaseIdentity,
+    ) -> Result<bool, NativeStorageError> {
+        if held == identity.identity().id() {
+            return Ok(false);
+        }
+        Err(NativeStorageError::new(
+            NativeStorageErrorCode::PermissionDenied,
+            format!(
+                "this process opened the .vdbx database as {held}; one process opens it as one identity"
+            ),
+        ))
+    }
+
+    /// The browser build has no identities (ADR 0021, phase 5): a protected
+    /// database stays locked.
+    #[cfg(target_family = "wasm")]
+    #[allow(clippy::unnecessary_wraps)]
+    fn unlock_protected(
+        _open: &mut ContainerOpenFile,
+        _identity: Option<&DatabaseIdentity>,
+    ) -> Result<bool, NativeStorageError> {
+        Ok(true)
     }
 
     /// Create an empty database at `path`, which must not exist, and make
@@ -129,6 +184,25 @@ impl ContainerDatabase {
             None => ContainerFile::create(path, Self::EXTENT_SHIFT),
         }
         .map_err(ContainerMedium::error)?;
+        Self::settle_created(path)
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    /// Create an empty protected database at `path`, which must not exist,
+    /// with `admin` as its admin and trust anchor (ADR 0021), and make its
+    /// name durable.
+    pub(crate) fn create_protected(
+        path: &Path,
+        admin: &fylo_identity::Identity,
+    ) -> Result<(), NativeStorageError> {
+        ContainerFile::create_protected(path, Self::EXTENT_SHIFT, admin)
+            .map_err(ContainerMedium::error)?;
+        Self::settle_created(path)
+    }
+
+    /// Forget what this process kept of a file of the same name, and make
+    /// the new file's name durable.
+    fn settle_created(path: &Path) -> Result<(), NativeStorageError> {
         if let Ok(canonical) = fylo_vfs::canonicalize(path) {
             Self::close(&canonical);
         }
@@ -173,6 +247,21 @@ impl ContainerDatabase {
         self.file.lock().is_sealed()
     }
 
+    /// Whether the database is protected by application identities.
+    pub(crate) const fn is_protected(&self) -> bool {
+        self.protected
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    /// The access this handle opened a protected database with; `None` for
+    /// one opened without an identity, or another database.
+    pub(crate) fn access(&self) -> Option<Arc<crate::DatabaseAccess>> {
+        if self.locked {
+            return None;
+        }
+        self.file.lock().database_access().cloned()
+    }
+
     /// Whether the database is encrypted and this handle has no key for it.
     pub(crate) const fn is_locked(&self) -> bool {
         self.locked
@@ -181,6 +270,12 @@ impl ContainerDatabase {
     /// Refuse what a handle without the key may not do: read a collection,
     /// or write.
     pub(crate) fn require_key(&self) -> Result<(), NativeStorageError> {
+        if self.locked && self.protected {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::NoIdentity,
+                "the .vdbx database is protected: open it with an identity (--identity, fylo.identity or FYLO_IDENTITY)",
+            ));
+        }
         if self.locked {
             return Err(NativeStorageError::new(
                 NativeStorageErrorCode::KeyRequired,
@@ -339,11 +434,31 @@ impl ContainerDatabase {
         let mut open = self.file.lock();
         // A failure keeps the directory this open read.
         let _ = open.refresh();
-        open.collections()
+        let names = open
+            .collections()
             .iter()
             .filter(|collection| !collection.header.dropped)
             .map(|collection| collection.header.name.clone())
+            .collect();
+        Self::granted_names(&open, names)
+    }
+
+    /// The names a protected database's identity has a grant on: an admin
+    /// sees every collection, another identity only those a rule covers.
+    #[cfg(not(target_family = "wasm"))]
+    fn granted_names(open: &ContainerOpenFile, names: Vec<String>) -> Vec<String> {
+        let Some(grants) = open.database_access().map(|access| access.grants()) else {
+            return names;
+        };
+        names
+            .into_iter()
+            .filter(|name| grants.is_admin() || grants.on_collection(name).is_some())
             .collect()
+    }
+
+    #[cfg(target_family = "wasm")]
+    fn granted_names(_open: &ContainerOpenFile, names: Vec<String>) -> Vec<String> {
+        names
     }
 
     /// Add a collection with catalog descriptor `descriptor`, and

@@ -37,6 +37,17 @@ truth.
 - **Key reference**: where an identity's private key lives, named without the
   key: `file:<path>`, `keychain:<label>`, `cng:<name>`, `creds:<name>` or
   `webcrypto:<name>`.
+- **Protected database** (ADR 0021): an encrypted `.vdbx` file whose keys
+  are wrapped for application identities under a signed policy; nothing is
+  readable or writable without a grant.
+- **Policy**: a protected database's allow rules (`read`, `write`, `admin`
+  on `database`, `collection:*` or `collection:<name>`), versioned, each
+  version signed by an admin of the one before.
+- **Trust anchor**: the identity that created a protected database and
+  signed its first policy; an application pins it so a file another admin
+  made in its place is refused.
+- **Key epoch**: one generation of a collection's key; revocation starts a
+  new one.
 - **S3 client**: any compatible object-storage client used for additive
   backup/restore; it does not replace the authoritative local root.
 

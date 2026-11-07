@@ -9,6 +9,7 @@
 //! Bodies are compressed before they are sealed.
 
 use std::fmt;
+use std::sync::Arc;
 
 use aes_gcm::Aes256Gcm;
 use aes_gcm::aead::{Aead, KeyInit, Payload};
@@ -16,6 +17,9 @@ use fylo_format::ContainerExtentKind;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use zeroize::Zeroizing;
+
+#[cfg(not(target_family = "wasm"))]
+use crate::DatabaseAccess;
 
 /// Bytes of the nonce at the start of a sealed unit.
 pub const NONCE_BYTES: usize = 12;
@@ -38,6 +42,9 @@ pub enum ContainerCipherError {
     Unauthenticated,
     /// The system could not supply random bytes.
     Random,
+    /// The identity a protected file was opened with has no key for this
+    /// collection, or may not write what it asked to seal (`EACCES`).
+    NoGrant,
 }
 
 impl fmt::Display for ContainerCipherError {
@@ -46,6 +53,7 @@ impl fmt::Display for ContainerCipherError {
             Self::WrongKey => "the encryption key does not match this database",
             Self::Unauthenticated => "an encrypted unit is damaged or misplaced",
             Self::Random => "no random bytes for an encryption nonce",
+            Self::NoGrant => "this identity has no grant for that collection or action",
         })
     }
 }
@@ -90,6 +98,11 @@ pub enum ContainerSealContext {
         /// The block number: its offset in the image over the block size.
         number: u64,
     },
+    /// A policy version of a protected file (ADR 0021).
+    Policy {
+        /// The policy version.
+        version: u64,
+    },
 }
 
 impl ContainerSealContext {
@@ -108,6 +121,7 @@ impl ContainerSealContext {
                 kind,
             } => (4, collection, checkpoint, u32::from(kind.code())),
             Self::Block { number } => (5, 0, number, 0),
+            Self::Policy { version } => (6, 0, version, 0),
         };
         let mut bytes = [0_u8; 28];
         bytes[..8].copy_from_slice(b"VDXSEAL\x01");
@@ -119,10 +133,15 @@ impl ContainerSealContext {
     }
 }
 
-/// The file key of an encrypted `.vdbx` file.
+/// The file key of an encrypted `.vdbx` file. In a protected file
+/// (ADR 0021) it is the catalog key, which seals the directory and the
+/// policy, and the collection keys the opening identity was granted seal
+/// that collection's records, dictionaries and snapshots.
 pub struct ContainerCipher {
-    cipher: Aes256Gcm,
+    cipher: Arc<Aes256Gcm>,
     key_check: [u8; KEY_CHECK_BYTES],
+    #[cfg(not(target_family = "wasm"))]
+    access: Option<Arc<DatabaseAccess>>,
 }
 
 impl fmt::Debug for ContainerCipher {
@@ -154,9 +173,42 @@ impl ContainerCipher {
         let mut key_check = [0_u8; KEY_CHECK_BYTES];
         key_check.copy_from_slice(&check[..KEY_CHECK_BYTES]);
         Self {
-            cipher: Aes256Gcm::new((&*key).into()),
+            cipher: Arc::new(Aes256Gcm::new((&*key).into())),
             key_check,
+            #[cfg(not(target_family = "wasm"))]
+            access: None,
         }
+    }
+
+    /// A cipher for a random 32-byte key, such as a protected file's
+    /// catalog key, with its key-check value.
+    #[must_use]
+    pub fn from_key(key: &[u8; 32]) -> Self {
+        let check = hmac_sha256(key, &[KEY_CHECK_INFO, &[1]]);
+        let mut key_check = [0_u8; KEY_CHECK_BYTES];
+        key_check.copy_from_slice(&check[..KEY_CHECK_BYTES]);
+        Self {
+            cipher: Arc::new(Aes256Gcm::new(key.into())),
+            key_check,
+            #[cfg(not(target_family = "wasm"))]
+            access: None,
+        }
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    /// A protected file's cipher: `self` is its catalog key, and `access`
+    /// holds the collection keys.
+    #[must_use]
+    pub(crate) fn with_access(mut self, access: Arc<DatabaseAccess>) -> Self {
+        self.access = Some(access);
+        self
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    /// The access state of a protected file, or `None` for another file.
+    #[must_use]
+    pub fn access(&self) -> Option<&Arc<DatabaseAccess>> {
+        self.access.as_ref()
     }
 
     /// Derive the file key and check it against the superblock's value.
@@ -211,8 +263,8 @@ impl ContainerCipher {
         let mut nonce = [0_u8; NONCE_BYTES];
         getrandom::fill(&mut nonce).map_err(|_| ContainerCipherError::Random)?;
         let aad = context.associated_data();
-        let ciphertext = self
-            .cipher
+        let key = self.sealing_key(context)?;
+        let ciphertext = key
             .encrypt(
                 (&nonce).into(),
                 Payload {
@@ -246,15 +298,76 @@ impl ContainerCipher {
             .try_into()
             .map_err(|_| ContainerCipherError::Unauthenticated)?;
         let aad = context.associated_data();
-        self.cipher
-            .decrypt(
-                nonce.into(),
-                Payload {
-                    msg: ciphertext,
-                    aad: &aad,
-                },
-            )
-            .map_err(|_| ContainerCipherError::Unauthenticated)
+        let payload = || Payload {
+            msg: ciphertext,
+            aad: &aad,
+        };
+        match self.collection_keys(context)? {
+            Some(keys) => keys
+                .iter()
+                .find_map(|key| key.decrypt(nonce.into(), payload()).ok())
+                .ok_or(ContainerCipherError::Unauthenticated),
+            None => self
+                .cipher
+                .decrypt(nonce.into(), payload())
+                .map_err(|_| ContainerCipherError::Unauthenticated),
+        }
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn sealing_key(
+        &self,
+        context: ContainerSealContext,
+    ) -> Result<Arc<Aes256Gcm>, ContainerCipherError> {
+        match (&self.access, context.collection()) {
+            (Some(access), Some(collection)) => access.sealing_key(collection),
+            _ => Ok(Arc::clone(&self.cipher)),
+        }
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    /// Every epoch's key of the unit's collection in a protected file;
+    /// `None` where the file key opens it.
+    fn collection_keys(
+        &self,
+        context: ContainerSealContext,
+    ) -> Result<Option<Vec<Arc<Aes256Gcm>>>, ContainerCipherError> {
+        match (&self.access, context.collection()) {
+            (Some(access), Some(collection)) => access.opening_keys(collection).map(Some),
+            _ => Ok(None),
+        }
+    }
+
+    #[cfg(target_family = "wasm")]
+    #[allow(clippy::unnecessary_wraps)]
+    fn sealing_key(
+        &self,
+        _context: ContainerSealContext,
+    ) -> Result<Arc<Aes256Gcm>, ContainerCipherError> {
+        Ok(Arc::clone(&self.cipher))
+    }
+
+    #[cfg(target_family = "wasm")]
+    #[allow(clippy::unnecessary_wraps, clippy::unused_self)]
+    fn collection_keys(
+        &self,
+        _context: ContainerSealContext,
+    ) -> Result<Option<Vec<Arc<Aes256Gcm>>>, ContainerCipherError> {
+        Ok(None)
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl ContainerSealContext {
+    /// The collection whose key seals this unit in a protected file; `None`
+    /// for the units the catalog key seals.
+    fn collection(self) -> Option<u32> {
+        match self {
+            Self::Record { collection, .. }
+            | Self::Dictionary { collection, .. }
+            | Self::Snapshot { collection, .. } => Some(collection),
+            Self::Directory { .. } | Self::Block { .. } | Self::Policy { .. } => None,
+        }
     }
 }
 

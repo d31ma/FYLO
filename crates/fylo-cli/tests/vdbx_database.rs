@@ -351,12 +351,15 @@ fn create_encrypt_makes_a_database_only_its_key_opens() {
     let fixture = Fixture::new("encrypt");
     let secret = generated_secret("encrypt");
     // --encrypt needs the key.
-    let keyless = fixture.run(&["create", "app.vdbx", "--encrypt"]);
+    let keyless = fixture.run(&["create", "app.vdbx", "--unprotected", "--encrypt"]);
     assert!(!keyless.status.success(), "{keyless:?}");
     assert!(String::from_utf8_lossy(&keyless.stderr).contains("EKEY"));
     assert!(!fixture.0.join("app.vdbx").exists());
 
-    let create = fixture.run_keyed(&secret, &["create", "app.vdbx", "--encrypt"]);
+    let create = fixture.run_keyed(
+        &secret,
+        &["create", "app.vdbx", "--unprotected", "--encrypt"],
+    );
     assert!(create.status.success(), "{create:?}");
     assert_eq!(json(&create)["encrypted"], true);
     let again = fixture.run_keyed(&secret, &["create", "app.vdbx"]);
@@ -447,16 +450,26 @@ fn pack_encrypt_seals_a_root_and_unpack_needs_its_key() {
 }
 
 #[test]
-fn create_makes_a_plain_database_by_default() {
+fn create_needs_an_admin_or_unprotected() {
+    let fixture = Fixture::new("create-protected-default");
+    let refused = fixture.run(&["create", "app.vdbx"]);
+    assert!(!refused.status.success(), "{refused:?}");
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("--unprotected"));
+    assert!(!fixture.0.join("app.vdbx").exists());
+}
+
+#[test]
+fn create_unprotected_makes_a_plain_database() {
     let fixture = Fixture::new("create-plain");
-    let create = fixture.run(&["create", "app.vdbx"]);
+    let create = fixture.run(&["create", "app.vdbx", "--unprotected"]);
     assert!(create.status.success(), "{create:?}");
+    assert_eq!(json(&create)["protected"], false);
     assert_eq!(json(&create)["encrypted"], false);
     assert_eq!(
         json(&fixture.run(&["inspect", "app.vdbx"]))["encrypted"],
         false
     );
-    let directory = fixture.run(&["create", "data"]);
+    let directory = fixture.run(&["create", "data", "--unprotected"]);
     assert!(!directory.status.success(), "{directory:?}");
 }
 
@@ -464,7 +477,10 @@ fn create_makes_a_plain_database_by_default() {
 fn compact_shrinks_and_salvage_writes_out_a_database() {
     let fixture = Fixture::new("compact");
     let secret = generated_secret("compact");
-    let create = fixture.run_keyed(&secret, &["create", "app.vdbx", "--encrypt"]);
+    let create = fixture.run_keyed(
+        &secret,
+        &["create", "app.vdbx", "--unprotected", "--encrypt"],
+    );
     assert!(create.status.success(), "{create:?}");
     let collection = fixture.run_keyed(
         &secret,

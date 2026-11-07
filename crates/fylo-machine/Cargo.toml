@@ -19,6 +19,9 @@ serde_json.workspace = true
 
 # A browser build uses the host's fetch, so it carries no TLS client.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The identity a protected `.vdbx` database opens with (ADR 0021); native
+# only, as in fylo-storage-native.
+fylo-identity = { version = "0.1.0", path = "../fylo-identity" }
 reqwest.workspace = true
 rustls.workspace = true
 

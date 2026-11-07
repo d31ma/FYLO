@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use crate::{DatabaseKey, FilesystemProfile, RootLease};
+use crate::{DatabaseIdentity, DatabaseKey, FilesystemProfile, RootLease};
 
 /// Additive root admission options, separate from the existing `RootConfig`.
 #[derive(Clone, Debug)]
@@ -10,6 +10,7 @@ pub struct RootOpenOptions {
     pub(crate) profile: FilesystemProfile,
     pub(crate) lease: Option<RootLease>,
     pub(crate) database_key: Option<DatabaseKey>,
+    pub(crate) identity: Option<DatabaseIdentity>,
 }
 
 impl RootOpenOptions {
@@ -22,6 +23,7 @@ impl RootOpenOptions {
             profile: FilesystemProfile::Native,
             lease: None,
             database_key: None,
+            identity: None,
         }
     }
 
@@ -54,6 +56,24 @@ impl RootOpenOptions {
     pub fn with_database_key(mut self, key: DatabaseKey) -> Self {
         self.database_key = Some(key);
         self
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    /// Open a protected `.vdbx` database as `identity` (ADR 0021). A
+    /// directory root and a database that is not protected ignore it.
+    /// Without it a protected database opens locked: it lists no
+    /// collections, and every read of one and every write fails with
+    /// `ENOIDENTITY`.
+    #[must_use]
+    pub fn with_identity(mut self, identity: DatabaseIdentity) -> Self {
+        self.identity = Some(identity);
+        self
+    }
+
+    /// The identity a protected `.vdbx` database is opened with, if any.
+    #[must_use]
+    pub fn identity(&self) -> Option<&DatabaseIdentity> {
+        self.identity.as_ref()
     }
 
     /// The key an encrypted `.vdbx` database is unlocked with, if any.

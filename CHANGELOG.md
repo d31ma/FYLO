@@ -4,6 +4,26 @@
 
 ### Added
 
+- **Protected `.vdbx` databases (ADR 0021, phase 3).** `fylo create
+  app.vdbx --admin <key reference>` makes a database whose keys are
+  released only to application identities a signed policy grants: a random
+  catalog key (directory and policy) and a key per collection, wrapped for
+  each identity with HPKE (RFC 9180, P-256). Policy version 1 makes the
+  creator its admin and **trust anchor**; an open must pin the anchor
+  (`--trust-anchor`, `fylo.trustAnchor`, `FYLO_TRUST_ANCHOR`) or ask for
+  trust on first use (`--trust-on-first-use`, which warns), or it fails with
+  `EPOLICY`. The identity comes from `--identity`, `fylo.identity` or
+  `FYLO_IDENTITY`. Without one a protected database is locked
+  (`ENOIDENTITY`); an identity with no grant gets `EACCES`.
+  `fylo access list <db.vdbx>` prints the identity's grants, the anchor and
+  the policy; `fylo inspect` reports `protected`. **Breaking:** `fylo
+  create` without `--admin` now needs `--unprotected` (Q2). Grants to other
+  identities, revocation and signed writes follow in later phases;
+  `fylo pack --sealed` and `fylo rekey` refuse a protected database for now,
+  and the browser build opens one locked. New dependency `hpke` 0.15 and
+  `p256`'s `ecdsa` feature, native only (reviewed in
+  `docs/security/access-identity-dependencies.md`). `fylo identity show
+  --json` adds the `publicKey` (`fpk1:p256:...`) a policy lists.
 - **Application identities and `fylo identity` (ADR 0021, proposed, phase
   2).** An identity is a P-256 key pair whose static identifier is
   `fid1:p256:<base32 SHA-256 of the public key>`. `fylo identity create

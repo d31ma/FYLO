@@ -48,6 +48,7 @@ impl IdentityCommand {
         if json {
             return json!({
                 "id": identity.id().as_str(),
+                "publicKey": identity.public().to_string(),
                 "reference": identity.reference().to_string(),
             })
             .to_string();

@@ -1,4 +1,5 @@
 mod canonical_metadata;
+mod container_access_slot;
 mod container_bytes;
 mod container_checkpoint_slot;
 mod container_codec;
@@ -28,6 +29,7 @@ mod log_segment_kind;
 mod ttid_timestamps;
 
 pub use canonical_metadata::CanonicalMetadata;
+pub use container_access_slot::ContainerAccessSlot;
 pub use container_checkpoint_slot::{ContainerCheckpointSlot, ContainerSnapshotRef};
 pub use container_codec::ContainerCodec;
 pub use container_collection_header::ContainerCollectionHeader;

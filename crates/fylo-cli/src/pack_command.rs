@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use fylo_identity::Identity;
 use fylo_machine::ApplicationConfig;
 use fylo_storage_native::{
     ContainerFile, DatabaseKey, DatabasePackReport, DatabaseRekey, NativeRoot, NativeWriteRoot,
@@ -10,6 +11,12 @@ use serde_json::{Value, json};
 /// `fylo pack <root> --out <db.vdbx>`, `fylo unpack <db.vdbx> --out
 /// <directory>` and `fylo create <db.vdbx>` (ADR 0016 section 11), and
 /// `fylo rekey <db.vdbx>` (ADR 0016 section 9).
+///
+/// `create --admin <reference>` makes a protected database (ADR 0021): its
+/// keys are wrapped for application identities under a signed policy, and
+/// the identity the reference names is its admin and trust anchor. A new
+/// database is protected by default, so `create` without `--admin` needs
+/// `--unprotected`.
 ///
 /// `--encrypt`, or `fylo.encryption.file` in the configuration, makes the
 /// database `create` or `pack` writes an encrypted one, sealed with
@@ -61,7 +68,7 @@ impl PackCommand {
         }
         let mut key = Self::encryption_key(application, options)?;
         let writer = NativeWriteRoot::open_profiled(
-            application.with_database_key(RootOpenOptions::new(source)),
+            application.with_database_access(RootOpenOptions::new(source)),
         )
         .map_err(|error| error.to_string())?
         .with_config(application.storage);
@@ -89,6 +96,10 @@ impl PackCommand {
         if !NativeRoot::names_database(path) {
             return Err("create needs a path that ends in .vdbx".into());
         }
+        if let Some(admin) = &options.admin {
+            return Self::create_protected(path, admin, options);
+        }
+        Self::require_unprotected(options)?;
         let key = Self::encryption_key(application, options)?;
         match key {
             Some(key) => NativeRoot::create_encrypted_database(path, key),
@@ -98,8 +109,38 @@ impl PackCommand {
         serde_json::to_string_pretty(&json!({
             "database": path.display().to_string(),
             "encrypted": key.is_some(),
+            "protected": false,
         }))
         .map_err(|error| error.to_string())
+    }
+
+    /// `create --admin <reference>`: a protected database whose admin and
+    /// trust anchor is the identity `admin` names.
+    fn create_protected(path: &Path, admin: &str, options: &PackOptions) -> Result<String, String> {
+        if options.unprotected || options.encrypt {
+            return Err(
+                "create --admin makes a protected database and takes neither --unprotected nor --encrypt"
+                    .into(),
+            );
+        }
+        let admin = Identity::from_reference(admin).map_err(|error| error.to_string())?;
+        NativeRoot::create_protected_database(path, &admin).map_err(|error| error.to_string())?;
+        serde_json::to_string_pretty(&json!({
+            "database": path.display().to_string(),
+            "encrypted": true,
+            "protected": true,
+            "trustAnchor": admin.id().as_str(),
+        }))
+        .map_err(|error| error.to_string())
+    }
+
+    /// A new database is protected unless `--unprotected` says otherwise
+    /// (ADR 0021, Q2).
+    fn require_unprotected(options: &PackOptions) -> Result<(), String> {
+        if options.unprotected {
+            return Ok(());
+        }
+        Err("EPOLICY: a new .vdbx database is protected by default (ADR 0021): name its admin with --admin <key reference>, or pass --unprotected for a database any process that reads the file can open".into())
     }
 
     /// Rewrite the database at `path` under `--new-key`, or encrypt or
@@ -135,7 +176,7 @@ impl PackCommand {
             (Some(RekeyTo::Plain), false) => DatabaseRekey::Decrypt,
         };
         let writer = NativeWriteRoot::open_profiled(
-            application.with_database_key(RootOpenOptions::new(path)),
+            application.with_database_access(RootOpenOptions::new(path)),
         )
         .map_err(|error| error.to_string())?
         .with_config(application.storage);
@@ -203,11 +244,16 @@ impl PackCommand {
 
 /// The flags `pack`, `unpack`, `create` and `rekey` read.
 #[derive(Debug, Default)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct PackOptions {
     pub out: Option<PathBuf>,
     pub sealed: bool,
     pub encrypt: bool,
     pub allow_engine_only_access: bool,
+    /// `create --admin <reference>`: the admin of a protected database.
+    pub admin: Option<String>,
+    /// `create --unprotected`: a database with no identities.
+    pub unprotected: bool,
     /// `rekey --new-key` or `rekey --decrypt`.
     pub rekey_to: Option<RekeyTo>,
 }

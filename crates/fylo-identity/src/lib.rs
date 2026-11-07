@@ -14,12 +14,15 @@ mod identity_error;
 mod identity_id;
 mod key_reference;
 mod key_store;
+mod key_wrap;
 #[cfg(target_os = "macos")]
 mod keychain_key_store;
 mod private_key_pem;
+mod public_identity;
 mod unsupported_key_store;
 
 pub use identity::Identity;
 pub use identity_error::IdentityError;
 pub use identity_id::IdentityId;
 pub use key_reference::KeyReference;
+pub use public_identity::PublicIdentity;

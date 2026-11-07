@@ -9,6 +9,8 @@ description = "FYLO application identities: P-256 key pairs named by key referen
 publish = false
 
 [dependencies]
+base64.workspace = true
+hpke.workspace = true
 p256.workspace = true
 sha2.workspace = true
 zeroize.workspace = true

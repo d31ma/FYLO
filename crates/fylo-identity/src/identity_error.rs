@@ -20,6 +20,10 @@ pub enum IdentityError {
     Unsupported(String),
     /// The key store failed.
     Store(String),
+    /// A signature does not verify with the identity it names.
+    BadSignature(String),
+    /// A wrapped key does not open with this identity for this purpose.
+    Unwrap(String),
 }
 
 impl IdentityError {
@@ -39,6 +43,8 @@ impl IdentityError {
             Self::InvalidKey(_) => "EIDENTITY_KEY",
             Self::Unsupported(_) => "EIDENTITY_UNSUPPORTED",
             Self::Store(_) => "EIDENTITY_STORE",
+            Self::BadSignature(_) => "EIDENTITY_SIGNATURE",
+            Self::Unwrap(_) => "EIDENTITY_UNWRAP",
         }
     }
 
@@ -51,7 +57,9 @@ impl IdentityError {
             | Self::ExposedKeyFile(message)
             | Self::InvalidKey(message)
             | Self::Unsupported(message)
-            | Self::Store(message) => message,
+            | Self::Store(message)
+            | Self::BadSignature(message)
+            | Self::Unwrap(message) => message,
         }
     }
 }

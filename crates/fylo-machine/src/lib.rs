@@ -1184,8 +1184,11 @@ impl Session {
             }
             .map_err(|error| storage_error(&error))?;
         }
-        NativeRoot::open_profiled(self.config.with_database_key(RootOpenOptions::new(&root)))
-            .map_err(|error| storage_error(&error))?;
+        NativeRoot::open_profiled(
+            self.config
+                .with_database_access(RootOpenOptions::new(&root)),
+        )
+        .map_err(|error| storage_error(&error))?;
         Ok(root)
     }
 
@@ -1195,7 +1198,7 @@ impl Session {
         repository_root: PathBuf,
     ) -> Result<RootOpenOptions, MachineError> {
         if NativeRoot::names_database(&repository_root) {
-            return Ok(self.config.with_database_key(
+            return Ok(self.config.with_database_access(
                 RootOpenOptions::new(root).with_profile(self.filesystem_profile),
             ));
         }
@@ -1506,13 +1509,39 @@ impl Session {
     fn inspect_database(&self, path: &Path) -> Result<Value, MachineError> {
         let report = fylo_storage_native::ContainerFile::open_reader(path)
             .and_then(|mut container| {
-                if let Some(key) = &self.config.database_key {
-                    container.unlock_with_key(key)?;
-                }
+                self.unlock_for_report(&mut container)?;
                 container.report()
             })
             .map_err(|error| MachineError::new(error.code(), error.to_string()))?;
         serde_json::to_value(report).map_err(|error| serialization_error(&error))
+    }
+
+    /// Unlock `container` to report on it: a protected file with the
+    /// configured identity, another encrypted file with the configured key.
+    #[cfg(not(target_family = "wasm"))]
+    fn unlock_for_report(
+        &self,
+        container: &mut fylo_storage_native::ContainerFile,
+    ) -> Result<(), fylo_storage_native::ContainerError> {
+        match (&self.config.identity, &self.config.database_key) {
+            (Some(identity), _) if container.is_protected() => {
+                container.unlock_with_identity(identity)
+            }
+            (_, Some(key)) if !container.is_protected() => container.unlock_with_key(key),
+            _ => Ok(()),
+        }
+    }
+
+    /// The browser build unlocks with the configured key only.
+    #[cfg(target_family = "wasm")]
+    fn unlock_for_report(
+        &self,
+        container: &mut fylo_storage_native::ContainerFile,
+    ) -> Result<(), fylo_storage_native::ContainerError> {
+        match &self.config.database_key {
+            Some(key) => container.unlock_with_key(key),
+            None => Ok(()),
+        }
     }
 
     /// Check a `.vdbx` file's structures without its key, a lock or any

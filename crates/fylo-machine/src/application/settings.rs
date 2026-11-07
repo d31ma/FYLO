@@ -26,11 +26,13 @@ impl Settings {
     const FILE_KEY: &'static str = "file";
     const AUTO_PUSH_KEY: &'static str = "autoPush";
     const LAYOUT_KEY: &'static str = "layout";
+    const IDENTITY_KEY: &'static str = "identity";
+    const TRUST_ANCHOR_KEY: &'static str = "trustAnchor";
     const MINIMUM_SHARD_WIDTH: u64 = 1;
     const MAXIMUM_SHARD_WIDTH: u64 = 4;
     const MINIMUM_KEY_BYTES: usize = 32;
     const PATH_ERROR: &'static str = "must be a nonempty path without NUL";
-    const KEYS: [&'static str; 9] = [
+    const KEYS: [&'static str; 11] = [
         Self::ROOT_KEY,
         Self::STRICT_KEY,
         Self::SCHEMA_KEY,
@@ -40,6 +42,8 @@ impl Settings {
         Self::CHEX_KEY,
         Self::DURABILITY_KEY,
         Self::LAYOUT_KEY,
+        Self::IDENTITY_KEY,
+        Self::TRUST_ANCHOR_KEY,
     ];
     const CREDENTIAL_ERROR: &'static str = "fylo.encryption.key and fylo.cipher.salt require paired secret references; key must contain at least 32 UTF-8 bytes and salt must not be empty";
 
@@ -81,6 +85,8 @@ impl Settings {
             (secret, salt) => Self::credentials(secret, salt)?,
         };
         Self::reject_removed_chex(settings)?;
+        let identity_reference = Self::text(settings.get(Self::IDENTITY_KEY), "fylo.identity")?;
+        let trust_anchor = Self::text(settings.get(Self::TRUST_ANCHOR_KEY), "fylo.trustAnchor")?;
         Ok(ApplicationConfig {
             root,
             storage: RootConfig {
@@ -95,7 +101,25 @@ impl Settings {
             database_key,
             encrypt_databases,
             hot_set_bytes: None,
+            identity_reference,
+            trust_anchor,
+            trust_on_first_use: false,
+            identity: None,
         })
+    }
+
+    /// A nonempty string setting, such as `fylo.identity`; a key reference
+    /// or identifier, never a secret.
+    fn text(value: Option<&Value>, name: &str) -> Result<Option<String>, String> {
+        value
+            .map(|value| {
+                value
+                    .as_str()
+                    .filter(|text| !text.is_empty())
+                    .map(str::to_owned)
+                    .ok_or_else(|| format!("{name} must be a nonempty string"))
+            })
+            .transpose()
     }
 
     /// `fylo.encryption`: `key`, a secret reference, and `file`, whether a

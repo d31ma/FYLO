@@ -304,6 +304,22 @@
         {
             "code": "EIDENTITY_STORE",
             "retryable": false
+        },
+        {
+            "code": "ENOIDENTITY",
+            "retryable": false
+        },
+        {
+            "code": "EPOLICY",
+            "retryable": false
+        },
+        {
+            "code": "EIDENTITY_SIGNATURE",
+            "retryable": false
+        },
+        {
+            "code": "EIDENTITY_UNWRAP",
+            "retryable": false
         }
     ]
 }

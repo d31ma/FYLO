@@ -1,11 +1,16 @@
 use std::fmt;
 
+use p256::ecdsa::signature::Signer as _;
+use p256::ecdsa::{Signature, SigningKey};
 use p256::elliptic_curve::Generate;
 use p256::{PublicKey, SecretKey};
+use zeroize::Zeroizing;
 
 use crate::identity_error::IdentityError;
 use crate::identity_id::IdentityId;
 use crate::key_reference::KeyReference;
+use crate::key_wrap::KeyWrap;
+use crate::public_identity::PublicIdentity;
 
 /// An application identity: a P-256 private key held in a key store, named
 /// by its [`KeyReference`] and identified by its [`IdentityId`].
@@ -67,6 +72,33 @@ impl Identity {
         self.secret_key.public_key()
     }
 
+    /// The public half, which policies list and wrap keys for.
+    #[must_use]
+    pub fn public(&self) -> PublicIdentity {
+        PublicIdentity::from_public_key(self.public_key())
+    }
+
+    /// Sign `message` with ECDSA P-256 and SHA-256: 64 bytes, `r` then `s`.
+    #[must_use]
+    pub fn sign(&self, message: &[u8]) -> Vec<u8> {
+        let signature: Signature = SigningKey::from(&self.secret_key).sign(message);
+        signature.to_bytes().to_vec()
+    }
+
+    /// Open a key wrapped for this identity and the purpose `info`
+    /// ([`PublicIdentity::wrap`]).
+    ///
+    /// # Errors
+    /// [`IdentityError::Unwrap`] for a wrap made for another identity or
+    /// purpose, or a damaged one.
+    pub fn unwrap_key(
+        &self,
+        info: &[u8],
+        wrapped: &[u8],
+    ) -> Result<Zeroizing<Vec<u8>>, IdentityError> {
+        KeyWrap::open(&self.secret_key, info, wrapped)
+    }
+
     fn from_secret_key(reference: KeyReference, secret_key: SecretKey) -> Identity {
         let id = IdentityId::from_public_key(&secret_key.public_key());
         Identity {
@@ -90,5 +122,79 @@ impl fmt::Debug for Identity {
             .field("reference", &self.reference)
             .field("id", &self.id)
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::Identity;
+    use crate::key_reference::KeyReference;
+
+    struct TemporaryKey(PathBuf);
+
+    impl TemporaryKey {
+        fn new(name: &str) -> Self {
+            let path = std::env::temp_dir()
+                .join(format!("fylo-identity-{name}-{}.pem", std::process::id()));
+            let _ = std::fs::remove_file(&path);
+            Self(path)
+        }
+
+        fn identity(&self) -> Identity {
+            Identity::create(&KeyReference::File(self.0.clone())).unwrap()
+        }
+    }
+
+    impl Drop for TemporaryKey {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    #[test]
+    fn its_public_half_verifies_its_signature() {
+        let key = TemporaryKey::new("sign");
+        let identity = key.identity();
+        let signature = identity.sign(b"policy version 1");
+        assert_eq!(signature.len(), 64);
+        identity
+            .public()
+            .verify(b"policy version 1", &signature)
+            .unwrap();
+    }
+
+    #[test]
+    fn a_signature_does_not_verify_another_message() {
+        let key = TemporaryKey::new("sign-other");
+        let identity = key.identity();
+        let signature = identity.sign(b"policy version 1");
+        let error = identity
+            .public()
+            .verify(b"policy version 2", &signature)
+            .unwrap_err();
+        assert_eq!(error.code(), "EIDENTITY_SIGNATURE");
+    }
+
+    #[test]
+    fn it_unwraps_a_key_wrapped_for_its_public_half() {
+        let key = TemporaryKey::new("wrap");
+        let identity = key.identity();
+        let wrapped = identity.public().wrap(b"catalog", &[7; 32]).unwrap();
+        assert_eq!(
+            identity
+                .unwrap_key(b"catalog", &wrapped)
+                .unwrap()
+                .as_slice(),
+            &[7; 32]
+        );
+    }
+
+    #[test]
+    fn the_public_half_has_the_same_identifier() {
+        let key = TemporaryKey::new("public-id");
+        let identity = key.identity();
+        assert_eq!(identity.public().id(), identity.id());
     }
 }

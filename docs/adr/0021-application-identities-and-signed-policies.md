@@ -83,7 +83,68 @@ proposed. The ADR itself stays Proposed until phase 3 starts.
 | Q10 | The browser | **Yes:** the origin is the boundary, plus an optional `webcrypto:` identity for files moved between origins | OPFS is already private to the origin |
 | Q11 | Buckets and the queue | **They wait in protected databases:** a protected `.vdbx` refuses them until `.vdbx` holds them; they stay available in unprotected roots. **Decided** (the user, 2026-11-07) | Shipping them unprotected beside protected collections would be an allow by default |
 
-### 4. Phases
+### 4. Protected files (phase 3)
+
+What a protected `.vdbx` file holds, in addition to ADR 0016:
+
+- **Superblock.** Incompatible feature bit 4, `INCOMPAT_PROTECTED`, always
+  with `INCOMPAT_ENCRYPTED` and never with `INCOMPAT_SEALED`; a build that
+  predates it refuses the file. The 32-byte key-salt field holds a random
+  **database id** instead of a salt, and the key-check field holds the
+  catalog key's check value, so a catalog key from another file is refused.
+- **Access slots.** The last 512 KiB of the directory extent's payload hold
+  two copies, A and B, of the **access document**: `VDXACCS\0`, a
+  generation, a length, a CRC-32C, then the document. A change writes the
+  copy that does not hold the newest valid generation and flushes it, so a
+  stop leaves the old document or the new one whole (the superblock rule).
+  The directory therefore holds 383 collections at 2 MiB extents and 127 at
+  1 MiB. A document is at most 256 KiB less 24 bytes; a change that would
+  pass that fails with `EPOLICY`.
+- **Access document** (`fylo.access/1`, JSON): every policy version, oldest
+  first, and the keyring.
+    - Each policy version (`fylo.policy/1`) is sealed with the catalog key
+      (AES-256-GCM, a new seal context bound to its version number) and
+      signed with ECDSA P-256 over `fylo.policy/1\0`, the database id and its
+      bytes.
+    - Version 1 is signed by an identity it makes admin of the database; that
+      signer is the **trust anchor**. Each later version names the one before
+      by SHA-256 and is signed by an admin of the one before. A chain that
+      breaks anywhere is refused with `EPOLICY`.
+    - A policy names identities by public key (`fpk1:p256:` and the
+      base64url SEC1 point), since a wrap and a signature check need the
+      key, not only its fingerprint. `fylo identity show --json` prints it.
+    - The keyring holds HPKE wraps (section 2) of the catalog key, for every
+      identity a rule names, and of each collection key, per collection and
+      epoch, for every identity a rule covering that collection names. The
+      HPKE `info` binds a wrap to the database id, the key's scope, the
+      collection and the epoch.
+- **Keys.** The catalog key seals the directory and the policy. A collection
+  key seals that collection's records, dictionaries and snapshots; a unit is
+  opened with the newest epoch's key first, then older ones. A collection
+  created by an admin gets a fresh key, wrapped and flushed to the access
+  slots before its directory block names it.
+- **Opening.** An open with an identity unwraps the catalog key, checks it,
+  checks the policy chain and the anchor (pinned, trusted on first use, or
+  refused when neither is given), and unwraps its collection keys. Without an
+  identity the file is locked (`ENOIDENTITY`). An identity with no wrap gets
+  `EACCES`. One process opens a database as one identity; a second is
+  refused.
+- **Grants in phase 3.** An admin may add and drop collections; changing a
+  collection's descriptor needs `write` on it; sealing any unit of a
+  collection needs `write` on it. Until signed writes (phase 4), the write
+  checks are FYLO's own code: a process that holds a collection key could
+  seal a frame without them.
+- **Not yet.** `fylo pack --sealed` and `fylo rekey` refuse a protected
+  database (phases 6 and 7). The browser build has no identities (phase 5)
+  and opens a protected file locked; P-256, ECDSA and HPKE stay out of
+  `fylo-browser.wasm`, which they would grow by about 190 KB. Policy
+  conditions (`notBefore`, `notAfter`) are not in `fylo.policy/1` yet.
+- **Creation.** `fylo create <db.vdbx> --admin <reference>`;
+  `fylo create` without `--admin` needs `--unprotected` (Q2). The machine
+  protocol still creates a missing database unprotected until its entry
+  points change (phase 5).
+
+### 5. Phases
 
 The study's section 9 is the plan. Phase 2 (identities and key stores) needs
 none of the answers above and lands first. Phase 3 (protected reads) and later

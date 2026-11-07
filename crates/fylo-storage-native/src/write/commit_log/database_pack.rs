@@ -128,6 +128,9 @@ impl NativeWriteRoot {
         }
         self.root.assert_profile_owned()?;
         let database = self.root.database();
+        if database.is_some_and(|database| database.is_protected()) {
+            return Err(Self::protected_unsupported("fylo pack --sealed"));
+        }
         match database {
             Some(_) if !sealed => {
                 return Err(Self::pack_unsupported(
@@ -790,6 +793,15 @@ impl NativeWriteRoot {
             }
         }
         Ok(())
+    }
+
+    /// A protected database (ADR 0021) is packed, sealed and rekeyed with
+    /// its identities once the migration phases land; until then those
+    /// commands refuse it rather than write it under a single shared key.
+    pub(super) fn protected_unsupported(command: &str) -> NativeStorageError {
+        Self::pack_unsupported(&format!(
+            "{command} does not take a protected .vdbx database yet (ADR 0021, phases 6 and 7)"
+        ))
     }
 
     pub(super) fn pack_unsupported(message: &str) -> NativeStorageError {

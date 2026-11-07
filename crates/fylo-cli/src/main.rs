@@ -1,5 +1,6 @@
 //! FYLO Rust preview CLI.
 
+mod access_command;
 mod identity_command;
 mod link_command;
 mod pack_command;
@@ -21,6 +22,7 @@ use fylo_storage_native::{
 };
 use serde_json::{Map, Value, json};
 
+use access_command::AccessCommand;
 use identity_command::IdentityCommand;
 use link_command::LinkCommand;
 use pack_command::{PackCommand, PackOptions, RekeyTo};
@@ -52,6 +54,13 @@ fn main() -> ExitCode {
     }
     if arguments.first().is_some_and(|command| command == "exec") {
         return run_machine(&arguments);
+    }
+    if arguments.first().is_some_and(|command| command == "access") {
+        let positionals = positionals(&arguments);
+        return print_outcome(
+            machine_config(&arguments)
+                .and_then(|config| AccessCommand::run(&positionals[1..], &config)),
+        );
     }
     if arguments.first().is_some_and(|command| command == "link") {
         return print_outcome(LinkCommand::run(&arguments[1..]));
@@ -221,6 +230,8 @@ fn run_pack_command(command: &str, arguments: &[String]) -> Result<String, Strin
             .iter()
             .any(|argument| argument == "--allow-engine-only-access"),
         rekey_to: rekey_to(arguments)?,
+        admin: option(arguments, "--admin").map(ToOwned::to_owned),
+        unprotected: arguments.iter().any(|argument| argument == "--unprotected"),
     };
     let output = PackCommand::run(command, (&source, &application), &options);
     NativeWriteRoot::close_logs().map_err(|error| error.to_string())?;
@@ -594,7 +605,40 @@ fn machine_config(arguments: &[String]) -> Result<ApplicationConfig, String> {
     if let Some(bytes) = optional_usize(arguments, "--hot-set-bytes")? {
         config.hot_set_bytes = Some(bytes);
     }
+    apply_identity_options(arguments, &mut config)?;
     Ok(config)
+}
+
+/// `--identity <reference>`, `--trust-anchor <fid1:...>` and
+/// `--trust-on-first-use` over the configuration's identity (ADR 0021).
+/// Trust on first use warns: whoever can write the file decides who its
+/// admin is.
+fn apply_identity_options(
+    arguments: &[String],
+    config: &mut ApplicationConfig,
+) -> Result<(), String> {
+    let identity = option(arguments, "--identity");
+    let anchor = option(arguments, "--trust-anchor");
+    let first_use = arguments
+        .iter()
+        .any(|argument| argument == "--trust-on-first-use");
+    if identity.is_none() && anchor.is_none() && !first_use {
+        return Ok(());
+    }
+    if let Some(identity) = identity {
+        config.identity_reference = Some(identity.to_owned());
+    }
+    if let Some(anchor) = anchor {
+        config.trust_anchor = Some(anchor.to_owned());
+    }
+    if first_use {
+        config.trust_anchor = None;
+        config.trust_on_first_use = true;
+        eprintln!(
+            "warning: --trust-on-first-use trusts whichever admin created the database; pin it with --trust-anchor (fylo access list shows it)"
+        );
+    }
+    config.open_identity()
 }
 
 fn filesystem_profile(arguments: &[String]) -> Result<FilesystemProfile, String> {
@@ -1653,6 +1697,9 @@ fn positionals(arguments: &[String]) -> Vec<String> {
         "--limit",
         "--out",
         "--new-key",
+        "--identity",
+        "--trust-anchor",
+        "--admin",
     ];
     let mut values = Vec::new();
     let mut index = 0;
@@ -1748,7 +1795,7 @@ fn open_engine(
     profile: FilesystemProfile,
 ) -> Result<ReadOnlyEngine, String> {
     let mut options =
-        application.with_database_key(RootOpenOptions::new(root).with_profile(profile));
+        application.with_database_access(RootOpenOptions::new(root).with_profile(profile));
     if profile == FilesystemProfile::EfsSidecarV1 {
         let lease =
             RootLease::acquire_with_profile(root, profile).map_err(|error| error.to_string())?;
@@ -1869,7 +1916,7 @@ fn retired_command(command: &str) -> String {
 }
 
 fn usage() -> String {
-    "Usage:\n  fylo checkout [-b] <branch> [--root <path>] [--json]\n  fylo branch [--root <path>] [--json]\n  fylo commit -m <message> [--root <path>] [--json]\n  fylo log [--root <path>] [--json]\n  fylo status [--root <path>] [--json]\n  fylo diff [<from>] [<to>] [--root <path>] [--json]\n  fylo restore-commit <commit-id> [--root <path>] [--force] [--json]\n  fylo merge <ref> [-m <message>] [--root <path>] [--json]\n  fylo version [--output json]\n  fylo \"<SQL>\"\n  fylo sql \"<SQL>\"\n  fylo exec --request <json|@path|-> [--root <path>]\n  fylo exec --loop [--root <path>] [--exclusive-root [--hot-set-bytes <n>]]\n  fylo inspect <collection> [--root <path>] [--json]\n  fylo inspect <db.vdbx>\n  fylo get <collection> <doc-id> [--root <path>] [--json]\n  fylo latest <collection> <doc-id> [--root <path>] [--json] [--id-only]\n  fylo rebuild <collection> [--root <path>] [--json]\n  fylo reshard <collection> --width <n> [--root <path>] [--json]\n  fylo verify <collection> [--root <path>] [--json]\n  fylo layout <collection> --to <files|segments> [--allow-engine-only-access] [--root <path>]\n  fylo compact <collection> [--root <path>]\n  fylo compact <db.vdbx> [--shrink]\n  fylo export <collection> --out <directory> [--root <path>]\n  fylo verify-segments <collection> [--root <path>]\n  fylo salvage <collection> --out <directory> [--root <path>]\n  fylo salvage <db.vdbx> --out <directory>\n  fylo verify <db.vdbx>\n  fylo create <db.vdbx> [--encrypt]\n  fylo pack [<root>] --out <db.vdbx> [--encrypt] [--allow-engine-only-access]\n  fylo pack <root|db.vdbx> --out <db.vdbx> --sealed [--encrypt] [--allow-engine-only-access]\n  fylo unpack <db.vdbx> --out <directory>\n  fylo rekey <db.vdbx> --new-key '${NAME}' [--encrypt]\n  fylo rekey <db.vdbx> --decrypt\n  fylo deleted <collection> [--root <path>] [--json]\n  fylo restore <collection> <doc-id> [--root <path>] [--json]\n  fylo schema inspect <collection> [--schema-dir <path>] [--json]\n  fylo schema current <collection> [--schema-dir <path>] [--json]\n  fylo schema history <collection> [--schema-dir <path>] [--json]\n  fylo schema doctor <collection> [--schema-dir <path>] [--json]\n  fylo schema validate <collection> <json|@path|-> [--schema-dir <path>] [--json]\n  fylo schema materialize <collection> <json|@path|-> [--schema-dir <path>] [--json]\n  fylo schema migrate <collection> [--include-unversioned] [--schema-dir <path>] [--json]\n  fylo schema mode <collection> [off|warn|strict] [--json]\n  fylo schema check <collection> [--limit <n>] [--schema-dir <path>] [--json]\n  fylo schema push <collection> [--schema-dir <path>] [--json]\n  fylo schema pull <collection> --out <path> [--json]\n  fylo link [--check | --undo] [--project <dir>] [--artifacts <dir>]\n  fylo identity create --store <reference> [--json]\n  fylo identity show <reference> [--json]\n\nOptions:\n  --config <path> Load application.json (default: ./application.json)\n  --root <path>   Override fylo.root for this command\n  --schema-dir <path> Override fylo.schema for schema admin commands\n  --json          Emit machine-readable JSON output\n  --id-only       Return only the resolved document id for latest\n  -b              Create a new branch during checkout\n  -m, --message <v> Commit message\n  --force         Allow restore-commit to overwrite uncommitted changes\n  --include-unversioned Also migrate documents with no _v, as the oldest version\n  --request <v>   Machine request payload, @file path, or - for stdin\n  --exclusive-root Acquire an exclusive crash-safe root lease for exec --loop\n  --hot-set-bytes <n> Memory an --exclusive-root session keeps for warm reads; 0 turns it off (default 67108864)\n  --strict-schema Validate writes against the collection head schema (fylo.strict)\n  --shard-width <n> Shard width for collections created by this session (fylo.shard.width)\n  --width <n>     Destination shard width for reshard\n  --to <layout>   Destination layout for layout: files or segments\n  --shrink        Give the space compact frees in a .vdbx database back to the disk\n  --out <directory> Empty directory export and salvage write the per-document tree to, and unpack the root to\n  --out <db.vdbx> New .vdbx database pack writes; it must not exist\n  --allow-engine-only-access Let layout move, or pack copy, records owned by other users\n  --encrypt       Encrypt the database create or pack writes with fylo.encryption.key, or with rekey a plain one with --new-key\n  --sealed        Pack a read-only database recompressed in 64 KiB blocks; it also copies a live .vdbx database\n  --new-key '${NAME}' Secret reference (environment or .env, as fylo.encryption.key) rekey encrypts the database with; with --encrypt it encrypts a plain one\n  --decrypt       Rewrite an encrypted database plain with rekey\n  --limit <n>     Failing documents schema check lists (default 100)\n  --out <path>    Folder schema pull writes the fylo.schema layout to\n  --max-request-bytes <n> Maximum NDJSON request bytes, excluding LF\n  --max-response-bytes <n> Maximum NDJSON response bytes, excluding LF\n  --output <mode> Output mode for version: text or json\n  --project <dir> Project fylo link links (default: the current directory)\n  --artifacts <dir> FYLO-built Turso libraries fylo link places (default: $FYLO_LINK_ARTIFACTS, then ../lib/fylo-link beside fylo)\n  --check         Verify fylo link's links and the SDK versions\n  --undo          Remove only the links fylo link placed\n  --store <reference> Key store fylo identity create writes a new key to: file:<path>, keychain:<label>, cng:<name>, creds:<name> or webcrypto:<name>\n  --version       Print the FYLO runtime version\n  --help          Show this message"
+    "Usage:\n  fylo checkout [-b] <branch> [--root <path>] [--json]\n  fylo branch [--root <path>] [--json]\n  fylo commit -m <message> [--root <path>] [--json]\n  fylo log [--root <path>] [--json]\n  fylo status [--root <path>] [--json]\n  fylo diff [<from>] [<to>] [--root <path>] [--json]\n  fylo restore-commit <commit-id> [--root <path>] [--force] [--json]\n  fylo merge <ref> [-m <message>] [--root <path>] [--json]\n  fylo version [--output json]\n  fylo \"<SQL>\"\n  fylo sql \"<SQL>\"\n  fylo exec --request <json|@path|-> [--root <path>]\n  fylo exec --loop [--root <path>] [--exclusive-root [--hot-set-bytes <n>]]\n  fylo inspect <collection> [--root <path>] [--json]\n  fylo inspect <db.vdbx>\n  fylo get <collection> <doc-id> [--root <path>] [--json]\n  fylo latest <collection> <doc-id> [--root <path>] [--json] [--id-only]\n  fylo rebuild <collection> [--root <path>] [--json]\n  fylo reshard <collection> --width <n> [--root <path>] [--json]\n  fylo verify <collection> [--root <path>] [--json]\n  fylo layout <collection> --to <files|segments> [--allow-engine-only-access] [--root <path>]\n  fylo compact <collection> [--root <path>]\n  fylo compact <db.vdbx> [--shrink]\n  fylo export <collection> --out <directory> [--root <path>]\n  fylo verify-segments <collection> [--root <path>]\n  fylo salvage <collection> --out <directory> [--root <path>]\n  fylo salvage <db.vdbx> --out <directory>\n  fylo verify <db.vdbx>\n  fylo create <db.vdbx> --admin <reference>\n  fylo create <db.vdbx> --unprotected [--encrypt]\n  fylo access list <db.vdbx> --identity <reference> [--trust-anchor <fid1:...> | --trust-on-first-use]\n  fylo pack [<root>] --out <db.vdbx> [--encrypt] [--allow-engine-only-access]\n  fylo pack <root|db.vdbx> --out <db.vdbx> --sealed [--encrypt] [--allow-engine-only-access]\n  fylo unpack <db.vdbx> --out <directory>\n  fylo rekey <db.vdbx> --new-key '${NAME}' [--encrypt]\n  fylo rekey <db.vdbx> --decrypt\n  fylo deleted <collection> [--root <path>] [--json]\n  fylo restore <collection> <doc-id> [--root <path>] [--json]\n  fylo schema inspect <collection> [--schema-dir <path>] [--json]\n  fylo schema current <collection> [--schema-dir <path>] [--json]\n  fylo schema history <collection> [--schema-dir <path>] [--json]\n  fylo schema doctor <collection> [--schema-dir <path>] [--json]\n  fylo schema validate <collection> <json|@path|-> [--schema-dir <path>] [--json]\n  fylo schema materialize <collection> <json|@path|-> [--schema-dir <path>] [--json]\n  fylo schema migrate <collection> [--include-unversioned] [--schema-dir <path>] [--json]\n  fylo schema mode <collection> [off|warn|strict] [--json]\n  fylo schema check <collection> [--limit <n>] [--schema-dir <path>] [--json]\n  fylo schema push <collection> [--schema-dir <path>] [--json]\n  fylo schema pull <collection> --out <path> [--json]\n  fylo link [--check | --undo] [--project <dir>] [--artifacts <dir>]\n  fylo identity create --store <reference> [--json]\n  fylo identity show <reference> [--json]\n\nOptions:\n  --config <path> Load application.json (default: ./application.json)\n  --root <path>   Override fylo.root for this command\n  --schema-dir <path> Override fylo.schema for schema admin commands\n  --json          Emit machine-readable JSON output\n  --id-only       Return only the resolved document id for latest\n  -b              Create a new branch during checkout\n  -m, --message <v> Commit message\n  --force         Allow restore-commit to overwrite uncommitted changes\n  --include-unversioned Also migrate documents with no _v, as the oldest version\n  --request <v>   Machine request payload, @file path, or - for stdin\n  --exclusive-root Acquire an exclusive crash-safe root lease for exec --loop\n  --hot-set-bytes <n> Memory an --exclusive-root session keeps for warm reads; 0 turns it off (default 67108864)\n  --strict-schema Validate writes against the collection head schema (fylo.strict)\n  --shard-width <n> Shard width for collections created by this session (fylo.shard.width)\n  --width <n>     Destination shard width for reshard\n  --to <layout>   Destination layout for layout: files or segments\n  --shrink        Give the space compact frees in a .vdbx database back to the disk\n  --out <directory> Empty directory export and salvage write the per-document tree to, and unpack the root to\n  --out <db.vdbx> New .vdbx database pack writes; it must not exist\n  --allow-engine-only-access Let layout move, or pack copy, records owned by other users\n  --encrypt       Encrypt the database create or pack writes with fylo.encryption.key, or with rekey a plain one with --new-key\n  --sealed        Pack a read-only database recompressed in 64 KiB blocks; it also copies a live .vdbx database\n  --new-key '${NAME}' Secret reference (environment or .env, as fylo.encryption.key) rekey encrypts the database with; with --encrypt it encrypts a plain one\n  --decrypt       Rewrite an encrypted database plain with rekey\n  --limit <n>     Failing documents schema check lists (default 100)\n  --out <path>    Folder schema pull writes the fylo.schema layout to\n  --max-request-bytes <n> Maximum NDJSON request bytes, excluding LF\n  --max-response-bytes <n> Maximum NDJSON response bytes, excluding LF\n  --output <mode> Output mode for version: text or json\n  --project <dir> Project fylo link links (default: the current directory)\n  --artifacts <dir> FYLO-built Turso libraries fylo link places (default: $FYLO_LINK_ARTIFACTS, then ../lib/fylo-link beside fylo)\n  --check         Verify fylo link's links and the SDK versions\n  --undo          Remove only the links fylo link placed\n  --admin <reference> Admin and trust anchor of the protected database create makes (ADR 0021)\n  --unprotected   Let create make a database with no identities; new databases are protected by default\n  --identity <reference> Application identity a protected database opens with (fylo.identity, FYLO_IDENTITY)\n  --trust-anchor <fid1:...> Admin a protected database must have been created by (fylo.trustAnchor, FYLO_TRUST_ANCHOR)\n  --trust-on-first-use Trust a protected database's creator, whoever it is, with a warning\n  --store <reference> Key store fylo identity create writes a new key to: file:<path>, keychain:<label>, cng:<name>, creds:<name> or webcrypto:<name>\n  --version       Print the FYLO runtime version\n  --help          Show this message"
         .replace(
             "  --root <path>   Override fylo.root for this command",
             "  --root <path>   Override fylo.root for this command\n  --filesystem-profile <native|efs-sidecar-v1> Select metadata profile explicitly",

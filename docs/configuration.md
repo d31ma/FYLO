@@ -225,6 +225,35 @@ fylo identity show keychain:com.example.app
 `FYLO_KEYCHAIN` is read by the keychain store itself, like the installer
 variables above, and is not engine configuration.
 
+### Protected databases (phase 3)
+
+```bash
+fylo create app.vdbx --admin keychain:com.example.admin   # prints the trustAnchor
+fylo access list app.vdbx --identity keychain:com.example.admin --trust-anchor fid1:p256:...
+```
+
+```json
+{
+    "fylo": {
+        "root": "./app.vdbx",
+        "identity": "keychain:com.example.app",
+        "trustAnchor": "fid1:p256:..."
+    }
+}
+```
+
+| Setting | Environment | Flag | Meaning |
+| --- | --- | --- | --- |
+| `fylo.identity` | `FYLO_IDENTITY` | `--identity <reference>` | The identity a protected database opens with |
+| `fylo.trustAnchor` | `FYLO_TRUST_ANCHOR` | `--trust-anchor <fid1:...>` | The admin that must have created it |
+| | | `--trust-on-first-use` | Trust whoever created it, with a warning |
+
+A flag wins over the environment, which wins over `application.json`. These
+two variables are read directly, as `fylo link`'s hook needs them (ADR 0021,
+Q9). A protected database opened without an anchor fails with `EPOLICY` and
+names the anchor to pin. A new database is protected by default: `fylo
+create` needs `--admin <reference>` or `--unprotected`.
+
 ## Browser and mobile clients
 
 Browser and mobile clients do not spawn the native CLI or implicitly read local

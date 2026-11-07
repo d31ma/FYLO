@@ -89,6 +89,12 @@ fn create_and_show_report_json() {
     let shown: Value =
         serde_json::from_str(&stdout(&fixture.run(&["show", "file:yon.pem", "--json"]))).unwrap();
     assert_eq!(created["reference"], "file:yon.pem");
+    assert!(
+        created["publicKey"]
+            .as_str()
+            .unwrap()
+            .starts_with("fpk1:p256:")
+    );
     assert_eq!(shown, created);
 }
 

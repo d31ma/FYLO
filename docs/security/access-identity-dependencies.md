@@ -19,8 +19,26 @@ crate for `fylo identity create` and `fylo identity show`.
 | Maintenance | RustCrypto `elliptic-curves`, active; the de facto pure-Rust P-256 | kornelski, active; used by `native-tls` and `rustls-platform-verifier` |
 | Removal path | `ring` or `aws-lc-rs` offer P-256 too, but need a C or assembly build and no PKCS#8 PEM writer for EC keys; `p256` is the RustCrypto line FYLO already uses for AES-GCM and HMAC | Shell out to `/usr/bin/security`, which would put the key on a command line; or drop `keychain:` for `file:` |
 
-Not yet added: `hpke` (RFC 9180 key wrapping) waits for phase 3, so it is
-reviewed when protected databases need it. `cng:` (Windows) is defined but
+## Phase 3: `hpke` 0.15.1, and `p256`'s `ecdsa` feature
+
+| | `hpke` 0.15.1 |
+| --- | --- |
+| Purpose | Wrapping a protected database's catalog and collection keys for each identity: RFC 9180 base mode, DHKEM(P-256, HKDF-SHA256), HKDF-SHA256, AES-256-GCM, single shot |
+| Owning crate | `fylo-identity` (`KeyWrap`), used by `fylo-storage-native` natively |
+| Targets | Native only: `fylo-storage-native` and `fylo-machine` take `fylo-identity` outside WebAssembly, so `fylo-browser.wasm` does not grow (measured: +190,624 bytes with it, +1,002 without) |
+| Features | `aes`, `alloc`, `getrandom`, `nistp`; defaults off, so no X25519, ChaCha20-Poly1305 or ML-KEM. `nistp` also builds `p384` and `p521`, which FYLO never calls; the linker drops them |
+| License | MIT OR Apache-2.0 |
+| New transitive crates | `hkdf` 0.13, `p384`, `p521`, `fiat-crypto` (for `p521`), `rfc6979` (deterministic ECDSA nonces, from `p256`'s `ecdsa`), `zeroize_derive`. Same `p256` 0.14, `aes-gcm` 0.11, `sha2` 0.11, `rand_core` 0.10 and `getrandom` 0.4 as the rest of the graph |
+| Unsafe and native code | Pure Rust |
+| Secrets | Key bytes to wrap and the recipient's private scalar, copied into `Zeroizing` buffers |
+| Untrusted input | Wraps from the access document: the 65-byte encapsulated key is parsed as a P-256 point, and the AEAD refuses anything else |
+| Maintenance | rozbb/rust-hpke, active; the reference Rust HPKE, with RFC 9180 known-answer tests |
+| Removal path | RFC 9180 base mode on `p256`'s ECDH, `hkdf` and `aes-gcm` directly, about 150 lines plus the RFC's test vectors |
+
+`p256`'s `ecdsa` feature signs and verifies policy versions (ECDSA P-256,
+SHA-256, RFC 6979 nonces).
+
+`cng:` (Windows) is defined but
 not implemented: the CNG API is `unsafe` FFI, so it needs either a reviewed
 safe wrapper crate or an ADR 0004 exception, which is a decision for that
 phase.

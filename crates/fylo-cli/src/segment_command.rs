@@ -25,7 +25,7 @@ impl SegmentCommand {
         options: &SegmentOptions,
     ) -> Result<String, String> {
         let writer = NativeWriteRoot::open_profiled(
-            application.with_database_key(RootOpenOptions::new(root)),
+            application.with_database_access(RootOpenOptions::new(root)),
         )
         .map_err(|error| error.to_string())?
         .with_config(application.storage);
@@ -132,7 +132,7 @@ impl SegmentCommand {
         options: &SegmentOptions,
     ) -> Result<String, String> {
         let writer = NativeWriteRoot::open_profiled(
-            application.with_database_key(RootOpenOptions::new(database)),
+            application.with_database_access(RootOpenOptions::new(database)),
         )
         .map_err(|error| error.to_string())?
         .with_config(application.storage);

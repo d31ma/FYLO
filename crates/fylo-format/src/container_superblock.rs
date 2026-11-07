@@ -63,10 +63,16 @@ impl ContainerSuperblock {
     pub const INCOMPAT_CODEC_ZSTD: u32 = 1 << 2;
     /// Some frames are LZ4-compressed.
     pub const INCOMPAT_CODEC_LZ4: u32 = 1 << 3;
+    /// The file is protected (ADR 0021): its keys are wrapped for
+    /// application identities under a signed policy, held in the access
+    /// slots at the end of the directory extent. Always set with
+    /// `INCOMPAT_ENCRYPTED`, never with `INCOMPAT_SEALED`.
+    pub const INCOMPAT_PROTECTED: u32 = 1 << 4;
     const KNOWN_INCOMPAT: u32 = Self::INCOMPAT_ENCRYPTED
         | Self::INCOMPAT_SEALED
         | Self::INCOMPAT_CODEC_ZSTD
-        | Self::INCOMPAT_CODEC_LZ4;
+        | Self::INCOMPAT_CODEC_LZ4
+        | Self::INCOMPAT_PROTECTED;
     /// Collections carry schema-version records and a schemas snapshot
     /// (ADR 0017). Set before the first schema record is written, so a
     /// build that predates them opens the file read-only rather than write
@@ -95,6 +101,12 @@ impl ContainerSuperblock {
     #[must_use]
     pub const fn is_encrypted(&self) -> bool {
         self.incompat & Self::INCOMPAT_ENCRYPTED != 0
+    }
+
+    /// Whether the file is protected by application identities (ADR 0021).
+    #[must_use]
+    pub const fn is_protected(&self) -> bool {
+        self.incompat & Self::INCOMPAT_PROTECTED != 0
     }
 
     /// Whether the file is a sealed, read-only pack.
@@ -179,8 +191,10 @@ impl ContainerSuperblock {
             && all_zero(&bytes[25..32])
             && all_zero(&bytes[76..80])
             && all_zero(&bytes[128..Self::CHECKED_BYTES]);
-        let encryption_consistent = superblock.is_encrypted()
-            || (all_zero(&superblock.key_salt) && all_zero(&superblock.key_check));
+        let encryption_consistent = (superblock.is_encrypted()
+            || (all_zero(&superblock.key_salt) && all_zero(&superblock.key_check)))
+            && (!superblock.is_protected()
+                || (superblock.is_encrypted() && !superblock.is_sealed()));
         let extents_consistent = (Self::MIN_EXTENT_SHIFT..=Self::MAX_EXTENT_SHIFT)
             .contains(&superblock.extent_shift)
             && superblock.directory_extent >= 1

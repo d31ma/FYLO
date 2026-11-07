@@ -1,6 +1,10 @@
 use std::path::{Path, PathBuf};
 
-use fylo_storage_native::{DatabaseKey, RootOpenOptions};
+#[cfg(not(target_family = "wasm"))]
+use fylo_identity::{Identity, IdentityId};
+#[cfg(not(target_family = "wasm"))]
+use fylo_storage_native::AccessTrust;
+use fylo_storage_native::{DatabaseIdentity, DatabaseKey, RootOpenOptions};
 
 use crate::{RootConfig, StrictValue};
 
@@ -22,19 +26,116 @@ pub struct ApplicationConfig {
     /// Memory a session holding the root's exclusive lease keeps for warm
     /// reads (ADR 0014). `None` is the default budget; zero turns it off.
     pub hot_set_bytes: Option<usize>,
+    /// `fylo.identity`, or `FYLO_IDENTITY`: the key reference of the
+    /// application identity a protected `.vdbx` database opens with
+    /// (ADR 0021).
+    pub identity_reference: Option<String>,
+    /// `fylo.trustAnchor`, or `FYLO_TRUST_ANCHOR`: the identifier of the
+    /// admin a protected database must have been created by.
+    pub trust_anchor: Option<String>,
+    /// Trust a protected database's creator, whoever it is, instead of a
+    /// pinned anchor (`--trust-on-first-use`). Off by default.
+    pub trust_on_first_use: bool,
+    /// The identity [`Self::open_identity`] opened from the settings above.
+    pub identity: Option<DatabaseIdentity>,
 }
 
 impl ApplicationConfig {
     const DEFAULT_FILE: &'static str = "application.json";
 
-    /// `options` with this configuration's database key, so an encrypted
-    /// `.vdbx` root opens unlocked. A directory root ignores it.
+    const IDENTITY_VARIABLE: &'static str = "FYLO_IDENTITY";
+    const TRUST_ANCHOR_VARIABLE: &'static str = "FYLO_TRUST_ANCHOR";
+
+    /// `options` with this configuration's database key and identity, so
+    /// an encrypted `.vdbx` root opens unlocked and a protected one opens
+    /// as the identity. A directory root ignores both.
     #[must_use]
-    pub fn with_database_key(&self, options: RootOpenOptions) -> RootOpenOptions {
+    pub fn with_database_access(&self, options: RootOpenOptions) -> RootOpenOptions {
+        let options = self.with_key(options);
+        self.with_identity(options)
+    }
+
+    /// Open the identity [`Self::identity_reference`] names, trusted as
+    /// [`Self::trust_anchor`] or [`Self::trust_on_first_use`] say; no
+    /// identity when none is named.
+    ///
+    /// # Errors
+    /// Fails for a key reference that does not open, an anchor that is not
+    /// an identifier, or both an anchor and trust on first use.
+    #[cfg(not(target_family = "wasm"))]
+    pub fn open_identity(&mut self) -> Result<(), String> {
+        self.identity = self
+            .identity_reference
+            .as_deref()
+            .map(|reference| self.opened_identity(reference))
+            .transpose()?;
+        Ok(())
+    }
+
+    /// Take `FYLO_IDENTITY` and `FYLO_TRUST_ANCHOR` from the environment
+    /// over the configuration file's settings.
+    pub fn apply_identity_environment(&mut self) {
+        if let Ok(reference) = std::env::var(Self::IDENTITY_VARIABLE) {
+            self.identity_reference = Some(reference);
+        }
+        if let Ok(anchor) = std::env::var(Self::TRUST_ANCHOR_VARIABLE) {
+            self.trust_anchor = Some(anchor);
+        }
+    }
+
+    /// The browser build has no application identities (ADR 0021, phase
+    /// 5): naming one is an error there.
+    ///
+    /// # Errors
+    /// Fails when an identity is named.
+    #[cfg(target_family = "wasm")]
+    pub fn open_identity(&mut self) -> Result<(), String> {
+        match self.identity_reference {
+            Some(_) => Err("application identities are not available in the browser build".into()),
+            None => Ok(()),
+        }
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn opened_identity(&self, reference: &str) -> Result<DatabaseIdentity, String> {
+        let identity = Identity::from_reference(reference).map_err(|error| error.to_string())?;
+        let trust = Self::trust(self.trust_anchor.as_deref(), self.trust_on_first_use)?;
+        Ok(DatabaseIdentity::new(identity, trust))
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn trust(anchor: Option<&str>, first_use: bool) -> Result<AccessTrust, String> {
+        match (anchor, first_use) {
+            (Some(_), true) => {
+                Err("a pinned trust anchor and --trust-on-first-use exclude each other".into())
+            }
+            (Some(anchor), false) => IdentityId::parse(anchor)
+                .map(AccessTrust::Pinned)
+                .map_err(|error| error.to_string()),
+            (None, true) => Ok(AccessTrust::FirstUse),
+            (None, false) => Ok(AccessTrust::Unpinned),
+        }
+    }
+
+    fn with_key(&self, options: RootOpenOptions) -> RootOpenOptions {
         match &self.database_key {
             Some(key) => options.with_database_key(key.clone()),
             None => options,
         }
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn with_identity(&self, options: RootOpenOptions) -> RootOpenOptions {
+        match &self.identity {
+            Some(identity) => options.with_identity(identity.clone()),
+            None => options,
+        }
+    }
+
+    #[cfg(target_family = "wasm")]
+    #[allow(clippy::unused_self)]
+    fn with_identity(&self, options: RootOpenOptions) -> RootOpenOptions {
+        options
     }
 
     /// The key a `.vdbx` database this configuration creates is encrypted
@@ -55,7 +156,10 @@ impl ApplicationConfig {
             .as_deref()
             .map(|source| Self::parse(source, &file))
             .transpose()?;
-        Ok(config.unwrap_or_default())
+        let mut config = config.unwrap_or_default();
+        config.apply_identity_environment();
+        config.open_identity()?;
+        Ok(config)
     }
 
     /// The database key the secret reference `reference` names, resolved

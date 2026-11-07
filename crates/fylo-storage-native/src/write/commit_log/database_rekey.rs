@@ -75,6 +75,9 @@ impl NativeWriteRoot {
         }
         self.root.assert_profile_owned()?;
         let database = self.require_database("fylo rekey <db.vdbx>")?;
+        if database.is_protected() {
+            return Err(Self::protected_unsupported("fylo rekey"));
+        }
         database.require_key()?;
         Self::require_rekeyable(&database, rekey)?;
         let key = match rekey {

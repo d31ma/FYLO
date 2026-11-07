@@ -48,7 +48,7 @@ use crate::{
     NativeStorageErrorCode,
 };
 use open::Open;
-pub(crate) use open::{ContainerOpen, SlotWriter};
+pub(crate) use open::{ContainerOpen, Open as ContainerOpenFile, SlotWriter};
 use schemas::SCHEMAS;
 
 const SEGMENT: ContainerExtentKind = ContainerExtentKind::Segment;
@@ -258,6 +258,11 @@ impl ContainerMedium {
             | ContainerError::Cipher(crate::ContainerCipherError::WrongKey) => {
                 NativeStorageErrorCode::KeyRequired
             }
+            ContainerError::Cipher(crate::ContainerCipherError::NoGrant) => {
+                NativeStorageErrorCode::PermissionDenied
+            }
+            #[cfg(not(target_family = "wasm"))]
+            ContainerError::Access(access) => Self::access_code(access),
             _ => NativeStorageErrorCode::CorruptMetadata,
         };
         if code == NativeStorageErrorCode::CorruptMetadata {
@@ -267,6 +272,19 @@ impl ContainerMedium {
                 code,
                 format!("segment container: {error} ({})", error.code()),
             )
+        }
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    /// The root error code of a protected file's refusal.
+    fn access_code(error: &crate::DatabaseAccessError) -> NativeStorageErrorCode {
+        match error {
+            crate::DatabaseAccessError::NoIdentity => NativeStorageErrorCode::NoIdentity,
+            crate::DatabaseAccessError::Policy(_) => NativeStorageErrorCode::Policy,
+            crate::DatabaseAccessError::Denied(_) | crate::DatabaseAccessError::Identity(_) => {
+                NativeStorageErrorCode::PermissionDenied
+            }
+            crate::DatabaseAccessError::Damaged(_) => NativeStorageErrorCode::CorruptMetadata,
         }
     }
 

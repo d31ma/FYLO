@@ -48,14 +48,17 @@ aes-gcm = "0.11.0"
 base64 = "0.22.1"
 getrandom = "0.4.3"
 hmac = "0.13.0"
+# Key wrapping for application identities (ADR 0021): RFC 9180 base mode,
+# DHKEM(P-256, HKDF-SHA256), HKDF-SHA256, AES-256-GCM. Same RustCrypto
+# generation as `p256`, `aes-gcm`, `sha2`; `nistp` also builds P-384 and P-521.
+hpke = { version = "0.15.1", default-features = false, features = ["aes", "alloc", "getrandom", "nistp"] }
 libc = { version = "0.2.189", default-features = false }
 # `.vdbx` LZ4 frames (ADR 0016 section 8): pure Rust, so the browser writes
 # them; the safe encoder and decoder keep `unsafe` out.
 lz4_flex = { version = "0.14.0", default-features = false, features = ["std", "safe-encode", "safe-decode"] }
-# Application identities (ADR 0021): P-256 keys, PKCS#8 PEM key files, and
-# SEC1 public keys for the `fid1:p256:` fingerprint. ECDSA and ECDH stay off
-# until signed writes and key wrapping use them.
-p256 = { version = "0.14.0", default-features = false, features = ["arithmetic", "pem", "std"] }
+# Application identities (ADR 0021): P-256 keys, PKCS#8 PEM key files, SEC1
+# public keys for the `fid1:p256:` fingerprint, and ECDSA for signed policies.
+p256 = { version = "0.14.0", default-features = false, features = ["arithmetic", "ecdsa", "pem", "std"] }
 pbkdf2 = { version = "0.13.0", features = ["hmac"] }
 # CHEX's regex dialect: the same feature set the upstream binary shipped, so a
 # schema matches exactly as it did. `perf` stays off (literal prefilters that
