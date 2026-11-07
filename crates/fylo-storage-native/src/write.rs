@@ -46,7 +46,7 @@ pub(crate) use commit_log::SegmentSchemas;
 pub use commit_log::{
     CollectionAccessReport, CompactionReport, DatabaseCompactionReport, DatabasePackReport,
     DatabaseRekey, DatabaseSalvageReport, LayoutMigrationReport, PackedCollection,
-    RecordAccessGroup, RootAccessReport, SalvageReport, SegmentVerification,
+    RecordAccessGroup, RecordAccessMigration, RootAccessReport, SalvageReport, SegmentVerification,
 };
 #[cfg(test)]
 pub(crate) use commit_log::{CopiedHook, SegmentCompactor};

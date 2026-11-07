@@ -3,9 +3,12 @@ use std::path::{Path, PathBuf};
 use fylo_identity::Identity;
 use fylo_machine::ApplicationConfig;
 use fylo_storage_native::{
-    ContainerFile, DatabaseKey, DatabasePackReport, DatabaseRekey, NativeRoot, NativeWriteRoot,
+    AccessGrantRequest, AccessTrust, ContainerFile, DatabaseIdentity, DatabaseKey,
+    DatabasePackReport, DatabaseRekey, NativeRoot, NativeWriteRoot, RecordAccessMigration,
     RootOpenOptions,
 };
+
+use crate::grants_file::GrantsFile;
 use serde_json::{Value, json};
 
 /// `fylo pack <root> --out <db.vdbx>`, `fylo unpack <db.vdbx> --out
@@ -27,6 +30,13 @@ use serde_json::{Value, json};
 /// also takes a `.vdbx` database as its source, a consistent copy of a
 /// live one for a backup; an encrypted source packs encrypted, with the
 /// same key.
+///
+/// `pack --protect --admin <reference>` packs a directory root, or a plain
+/// or shared-key database, into a new protected database (ADR 0021, phase
+/// 6). Its records' POSTIX access descriptors are refused unless
+/// `--drop-record-access` or `--keep-record-access-as-metadata` says what
+/// to do with them, and `--grants <file.json>` adds grants in the same
+/// pack.
 ///
 /// `rekey --new-key '${NAME}'` rewrites an encrypted database, opened with
 /// `fylo.encryption.key`, under the secret the reference names, resolved
@@ -50,6 +60,10 @@ impl PackCommand {
         (source, application): (&Path, &ApplicationConfig),
         options: &PackOptions,
     ) -> Result<String, String> {
+        if options.protect {
+            return Self::protect(command, (source, application), options);
+        }
+        Self::require_no_record_access(options)?;
         if command == "rekey" {
             return Self::rekey(source, application, options);
         }
@@ -85,6 +99,89 @@ impl PackCommand {
         .map_err(|error| error.to_string())?;
         serde_json::to_string_pretty(&Self::render(source, out, &report))
             .map_err(|error| error.to_string())
+    }
+
+    /// `pack --protect`: copy `source` into a new protected database whose
+    /// admin and trust anchor is the identity `--admin` names, with the
+    /// grants `--grants` lists (ADR 0021, phase 6).
+    fn protect(
+        command: &str,
+        (source, application): (&Path, &ApplicationConfig),
+        options: &PackOptions,
+    ) -> Result<String, String> {
+        Self::require_protect_options(command, options)?;
+        let out = options
+            .out
+            .as_deref()
+            .ok_or_else(|| "pack --protect needs --out <db.vdbx>".to_owned())?;
+        let admin = Self::admin_identity(options.admin.as_deref())?;
+        let grants = Self::grants(options.grants.as_deref())?;
+        let writer = NativeWriteRoot::open_profiled(
+            application.with_database_access(RootOpenOptions::new(source)),
+        )
+        .map_err(|error| error.to_string())?
+        .with_config(application.storage);
+        let report = writer
+            .pack_protected_database(out, &admin, (options.record_access, &grants))
+            .map_err(|error| error.to_string())?;
+        let mut rendered = Self::render(source, out, &report);
+        rendered["protected"] = json!(true);
+        rendered["trustAnchor"] = json!(admin.identity().id().as_str());
+        rendered["recordAccess"] = json!(Self::record_access_name(options.record_access));
+        rendered["grants"] = json!(grants.len());
+        serde_json::to_string_pretty(&rendered).map_err(|error| error.to_string())
+    }
+
+    fn require_protect_options(command: &str, options: &PackOptions) -> Result<(), String> {
+        let refused = command != "pack"
+            || options.sealed
+            || options.encrypt
+            || options.unprotected
+            || options.rekey_to.is_some();
+        if refused {
+            return Err(
+                "--protect is an option of pack, and takes none of --sealed, --encrypt, \
+                 --unprotected, --new-key and --decrypt"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+
+    /// `--drop-record-access` and `--keep-record-access-as-metadata` belong
+    /// to `pack --protect`.
+    fn require_no_record_access(options: &PackOptions) -> Result<(), String> {
+        if options.record_access == RecordAccessMigration::Refuse && options.grants.is_none() {
+            return Ok(());
+        }
+        Err(
+            "--drop-record-access, --keep-record-access-as-metadata and --grants are options of \
+             pack --protect"
+                .into(),
+        )
+    }
+
+    /// The identity `--admin` names, pinned as the new database's trust
+    /// anchor.
+    fn admin_identity(reference: Option<&str>) -> Result<DatabaseIdentity, String> {
+        let reference = reference.ok_or_else(|| {
+            "pack --protect needs --admin <key reference>, the new database's admin".to_owned()
+        })?;
+        let admin = Identity::from_reference(reference).map_err(|error| error.to_string())?;
+        let anchor = AccessTrust::Pinned(admin.id().clone());
+        Ok(DatabaseIdentity::new(admin, anchor))
+    }
+
+    fn grants(path: Option<&Path>) -> Result<Vec<AccessGrantRequest>, String> {
+        path.map_or_else(|| Ok(Vec::new()), GrantsFile::read)
+    }
+
+    fn record_access_name(record_access: RecordAccessMigration) -> &'static str {
+        match record_access {
+            RecordAccessMigration::Refuse => "none",
+            RecordAccessMigration::Drop => "dropped",
+            RecordAccessMigration::KeepAsMetadata => "keptAsMetadata",
+        }
     }
 
     /// Create an empty database at `path`, which must not exist.
@@ -256,6 +353,12 @@ pub struct PackOptions {
     pub unprotected: bool,
     /// `rekey --new-key` or `rekey --decrypt`.
     pub rekey_to: Option<RekeyTo>,
+    /// `pack --protect`: pack into a protected database (ADR 0021).
+    pub protect: bool,
+    /// `--drop-record-access` or `--keep-record-access-as-metadata`.
+    pub record_access: RecordAccessMigration,
+    /// `--grants <file.json>`: the grants `pack --protect` adds.
+    pub grants: Option<PathBuf>,
 }
 
 /// What `rekey` rewrites a database with.

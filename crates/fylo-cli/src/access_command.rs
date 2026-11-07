@@ -118,13 +118,13 @@ impl AccessCommand {
         })
     }
 
-    fn keys(text: &str) -> Result<Vec<PublicIdentity>, String> {
+    pub(crate) fn keys(text: &str) -> Result<Vec<PublicIdentity>, String> {
         text.split(',')
             .map(|key| PublicIdentity::parse(key.trim()).map_err(|error| error.to_string()))
             .collect()
     }
 
-    fn actions(text: &str) -> Result<Vec<AccessAction>, String> {
+    pub(crate) fn actions(text: &str) -> Result<Vec<AccessAction>, String> {
         text.split(',')
             .map(|action| Self::action(action.trim()))
             .collect()

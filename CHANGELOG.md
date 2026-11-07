@@ -14,6 +14,20 @@
   and the `fylo pack --protect` command to run. It reads every record and
   writes nothing; a shared-key or protected database is reported locked
   unless opened with its key or an identity.
+- **`fylo pack --protect` (ADR 0021, phase 6).** `fylo pack <root|db.vdbx>
+  --out <db.vdbx> --protect --admin <reference>` copies a directory root,
+  or a plain or shared-key `.vdbx` database (opened with its key), into a
+  new protected database whose admin and trust anchor is that identity:
+  documents, deleted documents and schema versions, with each collection's
+  indexes folded again from its records and every record signed by the
+  admin. `--grants <file.json>` adds grants in the same pack. Records that
+  carry POSTIX access descriptors are refused (`EPOLICY`) unless
+  `--drop-record-access` drops them or `--keep-record-access-as-metadata`
+  keeps each, unenforced, as the metadata field `legacyAccess` (decision
+  P5-8). The copy is built as a staging file, checked against the source
+  record by record and as `fylo verify` checks it with the admin's
+  identity, flushed, and only then named; the source is not written, and
+  a pack that stops leaves no output.
 - **SQL over `.vdbx` databases (ADR 0021, decision P5-6).** `Root::sql`
   opens a `.vdbx` database, plain or protected, with its document
   collections as tables, read and written as the identity the root was

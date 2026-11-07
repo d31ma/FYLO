@@ -136,7 +136,7 @@ pub use write::version::RepositoryStatus;
 pub use write::{
     CollectionAccessReport, CompactionReport, DatabaseCompactionReport, DatabasePackReport,
     DatabaseRekey, DatabaseSalvageReport, LayoutMigrationReport, PackedCollection,
-    RecordAccessGroup, RootAccessReport, SalvageReport, SegmentVerification,
+    RecordAccessGroup, RecordAccessMigration, RootAccessReport, SalvageReport, SegmentVerification,
 };
 pub use write::{
     DocumentCodec, DocumentWrite, NativeWriteRoot, PlainDocumentCodec, PutDocumentOptions,

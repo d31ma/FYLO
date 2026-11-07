@@ -30,7 +30,9 @@ mod logged_writer;
 mod move_step;
 mod pack_blockers;
 mod placed_record;
+mod protected_pack;
 mod record_access_group;
+mod record_access_migration;
 mod record_image;
 mod root_access_report;
 mod salvage_report;
@@ -62,6 +64,7 @@ pub(crate) use index_growth::IndexGrowth;
 pub use layout_migration_report::LayoutMigrationReport;
 pub(crate) use log_checkpoint::LogCheckpoint;
 pub use record_access_group::RecordAccessGroup;
+pub use record_access_migration::RecordAccessMigration;
 pub use root_access_report::RootAccessReport;
 pub use salvage_report::SalvageReport;
 #[cfg(test)]

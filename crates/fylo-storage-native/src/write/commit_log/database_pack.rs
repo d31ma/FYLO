@@ -49,7 +49,7 @@ use crate::{
 /// file layout: for each, the tree `fylo export` writes, its catalog
 /// descriptor and its schema registry.
 impl NativeWriteRoot {
-    const PACK_STAGING_SUFFIX: &'static str = ".pack-staging";
+    pub(super) const PACK_STAGING_SUFFIX: &'static str = ".pack-staging";
     const SEAL_STAGING_SUFFIX: &'static str = ".seal-staging";
 
     /// Pack this directory root into a new `.vdbx` database at `out`, which
@@ -151,19 +151,8 @@ impl NativeWriteRoot {
             }
             None => self.require_packable()?,
         }
-        let names = match self.root.database_collection_names() {
-            Some(mut names) => {
-                names.sort();
-                names
-            }
-            None => Self::packed_collection_names(&self.root)?,
-        };
-        // A bare file name lives in the working directory, which the commit
-        // flushes.
-        let out = &match out.parent() {
-            Some(parent) if parent.as_os_str().is_empty() => Path::new(".").join(out),
-            _ => out.to_owned(),
-        };
+        let names = self.pack_names()?;
+        let out = &Self::pack_output(out);
         Self::require_new_output(out)?;
         let collections = self.packed_collections(&names)?;
         let (report, built) =
@@ -171,6 +160,27 @@ impl NativeWriteRoot {
         Self::adopt_staging(&built, out)?;
         drop(collections);
         Ok(report)
+    }
+
+    /// The collections a pack copies, by name: a database's live ones, or
+    /// a directory root's.
+    pub(super) fn pack_names(&self) -> Result<Vec<String>, NativeStorageError> {
+        match self.root.database_collection_names() {
+            Some(mut names) => {
+                names.sort();
+                Ok(names)
+            }
+            None => Self::packed_collection_names(&self.root),
+        }
+    }
+
+    /// The path a pack writes: a bare file name lives in the working
+    /// directory, which the commit flushes.
+    pub(super) fn pack_output(out: &Path) -> PathBuf {
+        match out.parent() {
+            Some(parent) if parent.as_os_str().is_empty() => Path::new(".").join(out),
+            _ => out.to_owned(),
+        }
     }
 
     /// Build the database `out` is to hold from `collections`, the source,
@@ -353,7 +363,7 @@ impl NativeWriteRoot {
 
     /// Refuse a root that uses what a `.vdbx` database does not hold yet
     /// (ADR 0016 section 1), naming it.
-    fn require_packable(&self) -> Result<(), NativeStorageError> {
+    pub(super) fn require_packable(&self) -> Result<(), NativeStorageError> {
         match PackBlockers::of(&self.root)?.into_iter().next() {
             Some(blocker) => Err(NativeRoot::database_unsupported(&blocker)),
             None => Ok(()),
@@ -390,7 +400,7 @@ impl NativeWriteRoot {
         Ok(names)
     }
 
-    fn require_new_output(out: &Path) -> Result<(), NativeStorageError> {
+    pub(super) fn require_new_output(out: &Path) -> Result<(), NativeStorageError> {
         if path_exists_no_follow(out)? {
             return Err(Self::pack_unsupported(&format!(
                 "output {} already exists; fylo pack never replaces a file",
@@ -402,7 +412,7 @@ impl NativeWriteRoot {
 
     /// The staging file of a pack to `out` with `suffix`: a hidden sibling,
     /// so the rename that commits it stays in one directory.
-    fn pack_staging(out: &Path, suffix: &str) -> Result<PathBuf, NativeStorageError> {
+    pub(super) fn pack_staging(out: &Path, suffix: &str) -> Result<PathBuf, NativeStorageError> {
         let name = out.file_name().ok_or_else(|| {
             NativeStorageError::new(
                 NativeStorageErrorCode::UnsafePath,
@@ -484,6 +494,19 @@ impl NativeWriteRoot {
         if !allow_engine_only_access && !self.root.is_database() {
             Self::require_owner_only_access(source, &images)?;
         }
+        self.copy_collection(packed, source, &images, sealed)
+    }
+
+    /// Add `source`'s collection to the database `packed` with its
+    /// descriptor and schema registry, write `images` into it, uncompressed
+    /// for a sealed pack, and check the copy against them.
+    pub(super) fn copy_collection(
+        &self,
+        packed: &Self,
+        source: &NativeCollection,
+        images: &[DocumentImage],
+        sealed: bool,
+    ) -> Result<PackedCollection, NativeStorageError> {
         let versions = self.registry_versions(source)?;
         let mut descriptor = Self::database_descriptor(source.shard_width());
         if let Some(mode) = source.validation() {
@@ -495,11 +518,11 @@ impl NativeWriteRoot {
         packed.add_database_collection(source.name(), descriptor)?;
         let collection = packed.root.collection(source.name())?;
         let _lock = packed.lock_collection(&collection)?;
-        Self::import_records(&collection, (&images, &versions), sealed)?;
+        Self::import_records(&collection, (images, &versions), sealed)?;
         let medium = collection.segment_medium()?;
         Self::require_registry(&*medium, &versions)?;
-        DocumentImage::require_same(&images, &DocumentImage::read_segments(medium)?)?;
-        Ok(PackedCollection::of(source.name(), &images, versions.len()))
+        DocumentImage::require_same(images, &DocumentImage::read_segments(medium)?)?;
+        Ok(PackedCollection::of(source.name(), images, versions.len()))
     }
 
     /// Append the schema versions in ordinal order, then each document as
@@ -611,7 +634,7 @@ impl NativeWriteRoot {
     }
 
     /// Flush the finished staging file through the drive cache.
-    fn flush_staging(staging: &Path) -> Result<(), NativeStorageError> {
+    pub(super) fn flush_staging(staging: &Path) -> Result<(), NativeStorageError> {
         let file = fylo_vfs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -624,7 +647,7 @@ impl NativeWriteRoot {
     /// appeared at `out` meanwhile: a link where the filesystem has them,
     /// which fails on an existing name, and otherwise a rename after a
     /// check.
-    fn adopt_staging(staging: &Path, out: &Path) -> Result<(), NativeStorageError> {
+    pub(super) fn adopt_staging(staging: &Path, out: &Path) -> Result<(), NativeStorageError> {
         let exists = || {
             Self::pack_unsupported(&format!(
                 "output {} appeared while the pack ran; fylo pack never replaces a file",
@@ -772,7 +795,7 @@ impl NativeWriteRoot {
     /// commands refuse it rather than write it under a single shared key.
     pub(super) fn protected_unsupported(command: &str) -> NativeStorageError {
         Self::pack_unsupported(&format!(
-            "{command} does not take a protected .vdbx database yet (ADR 0021, phases 6 and 7)"
+            "{command} does not take a protected .vdbx database yet (ADR 0021, phase 7)"
         ))
     }
 

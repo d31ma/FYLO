@@ -277,3 +277,291 @@ fn report_needs_a_root() {
     assert!(!output.status.success());
     assert!(stderr(&output).contains("fylo access report <root|db.vdbx>"));
 }
+
+impl Fixture {
+    fn public_key(&self, name: &str) -> String {
+        let reference = format!("file:{name}.pem");
+        let shown = json(&self.run(&["identity", "show", &reference, "--json"]));
+        shown["publicKey"].as_str().unwrap().to_owned()
+    }
+
+    /// Run `arguments` as the identity in `<name>.pem`, pinning `anchor`.
+    fn run_as(&self, name: &str, anchor: &str, arguments: &[&str]) -> Output {
+        let reference = format!("file:{name}.pem");
+        let mut all = arguments.to_vec();
+        all.extend(["--identity", &reference, "--trust-anchor", anchor]);
+        self.run(&all)
+    }
+
+    /// A root `data` with three users, the first two carrying descriptors,
+    /// and an admin identity; returns the identifiers and the admin's.
+    fn legacy_root(&self) -> (Vec<String>, String) {
+        let ids = self.seeded("data", &["ada", "grace", "edsger"]);
+        self.describe("data", &ids[0], 0o640);
+        self.describe("data", &ids[1], 0o600);
+        (ids, self.identity("admin"))
+    }
+
+    fn protect(&self, source: &str, flags: &[&str]) -> Output {
+        let mut all = vec![
+            "pack",
+            source,
+            "--out",
+            "app.vdbx",
+            "--protect",
+            "--admin",
+            "file:admin.pem",
+        ];
+        all.extend(flags);
+        self.run(&all)
+    }
+
+    fn name_of(&self, admin: &str, identifier: &str) -> Value {
+        let got = self.run_as(
+            "admin",
+            admin,
+            &["get", "users", identifier, "--root", "app.vdbx", "--json"],
+        );
+        json(&got)[identifier]["name"].clone()
+    }
+
+    fn metadata(&self, admin: &str, identifier: &str) -> Value {
+        let request = format!(r#"{{"op":"getMeta","collection":"users","id":"{identifier}"}}"#);
+        let got = self.run_as(
+            "admin",
+            admin,
+            &["exec", "--request", &request, "--root", "app.vdbx"],
+        );
+        json(&got)
+    }
+
+    fn entries(&self) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(&self.0)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains("vdbx"))
+            .collect();
+        names.sort();
+        names
+    }
+}
+
+fn descriptor_of(fixture: &Fixture, identifier: &str) -> Option<Vec<u8>> {
+    let file = record_file(&fixture.0.join("data/.collections/users"), identifier);
+    xattr::get(file, ACCESS_XATTR).unwrap()
+}
+
+#[test]
+fn pack_protect_refuses_records_with_access_without_a_flag() {
+    let fixture = Fixture::new("protect-refuse");
+    let (ids, _) = fixture.legacy_root();
+    let refused = fixture.protect("data", &[]);
+    assert!(!refused.status.success(), "{refused:?}");
+    let error = stderr(&refused);
+    assert!(error.contains("EPOLICY"), "{error}");
+    assert!(error.contains("--drop-record-access"), "{error}");
+    assert!(error.contains(&ids[0]), "{error}");
+    assert_eq!(fixture.entries(), Vec::<String>::new());
+}
+
+#[test]
+fn pack_protect_drops_descriptors_and_signs_a_verified_copy() {
+    let fixture = Fixture::new("protect-drop");
+    let (ids, admin) = fixture.legacy_root();
+    let deleted = fixture.run(&[
+        "sql",
+        "DELETE FROM users WHERE name = 'edsger'",
+        "--root",
+        "data",
+    ]);
+    assert!(deleted.status.success(), "{deleted:?}");
+    let before = descriptor_of(&fixture, &ids[0]);
+
+    let packed = json(&fixture.protect("data", &["--drop-record-access"]));
+    assert_eq!(packed["protected"], true);
+    assert_eq!(packed["trustAnchor"], admin.as_str());
+    assert_eq!(packed["recordAccess"], "dropped");
+    assert_eq!(packed["collections"][0]["documents"], 2);
+    assert_eq!(packed["collections"][0]["deleted"], 1);
+
+    let verified = fixture.run_as("admin", &admin, &["verify", "app.vdbx"]);
+    assert!(verified.status.success(), "{verified:?}");
+    assert_eq!(fixture.name_of(&admin, &ids[0]), "ada");
+    assert_eq!(fixture.name_of(&admin, &ids[1]), "grace");
+    let report = json(&fixture.run_as("admin", &admin, &["access", "report", "app.vdbx"]));
+    assert_eq!(report["encryption"], "protected");
+    assert_eq!(report["recordsWithAccess"], 0);
+    assert_eq!(report["collections"][0]["documents"], 2);
+    assert_eq!(report["collections"][0]["deleted"], 1);
+    assert_eq!(descriptor_of(&fixture, &ids[0]), before);
+}
+
+#[test]
+fn pack_protect_opens_only_with_an_identity() {
+    let fixture = Fixture::new("protect-locked");
+    let (ids, _) = fixture.legacy_root();
+    json(&fixture.protect("data", &["--drop-record-access"]));
+    let locked = fixture.run(&["get", "users", &ids[0], "--root", "app.vdbx", "--json"]);
+    assert!(!locked.status.success(), "{locked:?}");
+    assert!(stderr(&locked).contains("ENOIDENTITY"), "{locked:?}");
+}
+
+#[test]
+fn pack_protect_can_keep_descriptors_as_metadata() {
+    let fixture = Fixture::new("protect-keep");
+    let (ids, admin) = fixture.legacy_root();
+    let packed = json(&fixture.protect("data", &["--keep-record-access-as-metadata"]));
+    assert_eq!(packed["recordAccess"], "keptAsMetadata");
+
+    let kept = fixture.metadata(&admin, &ids[0]);
+    assert!(kept.to_string().contains("legacyAccess"), "{kept}");
+    assert!(kept.to_string().contains("416"), "{kept}");
+    let none = fixture.metadata(&admin, &ids[2]);
+    assert!(!none.to_string().contains("legacyAccess"), "{none}");
+}
+
+#[test]
+fn pack_protect_takes_one_record_access_flag() {
+    let fixture = Fixture::new("protect-both");
+    fixture.legacy_root();
+    let both = fixture.protect(
+        "data",
+        &["--drop-record-access", "--keep-record-access-as-metadata"],
+    );
+    assert!(stderr(&both).contains("not both"), "{both:?}");
+    let without = fixture.run(&[
+        "pack",
+        "data",
+        "--out",
+        "plain.vdbx",
+        "--drop-record-access",
+    ]);
+    assert!(
+        stderr(&without).contains("options of pack --protect"),
+        "{without:?}"
+    );
+    let sealed = fixture.protect("data", &["--drop-record-access", "--sealed"]);
+    assert!(
+        stderr(&sealed).contains("--protect is an option of pack"),
+        "{sealed:?}"
+    );
+}
+
+#[test]
+fn pack_protect_adds_the_grants_file() {
+    let fixture = Fixture::new("protect-grants");
+    let (ids, admin) = fixture.legacy_root();
+    fixture.identity("reader");
+    let grants = format!(
+        r#"{{"grants":[{{"grantee":"reader","key":"{}","actions":["read"],"collection":"users"}}]}}"#,
+        fixture.public_key("reader")
+    );
+    fs::write(fixture.0.join("grants.json"), grants).unwrap();
+    let packed =
+        json(&fixture.protect("data", &["--drop-record-access", "--grants", "grants.json"]));
+    assert_eq!(packed["grants"], 1);
+
+    let got = fixture.run_as(
+        "reader",
+        &admin,
+        &["get", "users", &ids[1], "--root", "app.vdbx", "--json"],
+    );
+    assert_eq!(json(&got)[&ids[1]]["name"], "grace");
+    let listed = json(&fixture.run_as("reader", &admin, &["access", "list", "app.vdbx"]));
+    assert_eq!(listed["grants"]["users"], "read");
+}
+
+#[test]
+fn pack_protect_refuses_a_malformed_grants_file() {
+    let fixture = Fixture::new("protect-bad-grants");
+    fixture.legacy_root();
+    fs::write(
+        fixture.0.join("grants.json"),
+        r#"{"grants":[{"grantee":"x","key":"fpk1:p256:AA","actions":["read"]}]}"#,
+    )
+    .unwrap();
+    let refused = fixture.protect("data", &["--drop-record-access", "--grants", "grants.json"]);
+    assert!(stderr(&refused).contains("exactly one of"), "{refused:?}");
+    assert_eq!(fixture.entries(), Vec::<String>::new());
+}
+
+#[test]
+fn pack_protect_takes_a_shared_key_database_with_its_key() {
+    let fixture = Fixture::new("protect-shared-key");
+    let (ids, admin) = fixture.legacy_root();
+    let secret = "protect-secret-0123456789abcdef-0123456789";
+    let shared = fixture.run_keyed(
+        secret,
+        &[
+            "pack",
+            "data",
+            "--out",
+            "shared.vdbx",
+            "--encrypt",
+            "--allow-engine-only-access",
+        ],
+    );
+    assert!(shared.status.success(), "{shared:?}");
+
+    let locked = fixture.protect("shared.vdbx", &["--drop-record-access"]);
+    assert!(stderr(&locked).contains("EKEY"), "{locked:?}");
+    let packed = fixture.run_keyed(
+        secret,
+        &[
+            "pack",
+            "shared.vdbx",
+            "--out",
+            "app.vdbx",
+            "--protect",
+            "--admin",
+            "file:admin.pem",
+            "--drop-record-access",
+        ],
+    );
+    assert_eq!(json(&packed)["collections"][0]["documents"], 3);
+    assert_eq!(fixture.name_of(&admin, &ids[1]), "grace");
+}
+
+#[test]
+fn pack_protect_refuses_a_protected_source() {
+    let fixture = Fixture::new("protect-protected");
+    fixture.identity("admin");
+    let created = fixture.run(&["create", "source.vdbx", "--admin", "file:admin.pem"]);
+    assert!(created.status.success(), "{created:?}");
+    let refused = fixture.protect("source.vdbx", &[]);
+    assert!(
+        stderr(&refused).contains("protected database already"),
+        "{refused:?}"
+    );
+}
+
+#[test]
+fn a_pack_protect_stopped_after_staging_leaves_the_source_whole() {
+    let fixture = Fixture::new("protect-crash");
+    let (ids, admin) = fixture.legacy_root();
+    let stopped = Command::new(BINARY)
+        .current_dir(&fixture.0)
+        .args([
+            "pack",
+            "data",
+            "--out",
+            "app.vdbx",
+            "--protect",
+            "--admin",
+            "file:admin.pem",
+            "--drop-record-access",
+        ])
+        .env("FYLO_RUST_FAILPOINT", "after-pack-staging")
+        .env("FYLO_RUST_FAILPOINT_ACTION", "abort")
+        .output()
+        .unwrap();
+    assert!(!stopped.status.success(), "{stopped:?}");
+    assert!(!fixture.0.join("app.vdbx").exists());
+    let source = json(&fixture.run(&["access", "report", "data"]));
+    assert_eq!(source["collections"][0]["documents"], 3);
+    assert_eq!(source["recordsWithAccess"], 2);
+
+    json(&fixture.protect("data", &["--drop-record-access"]));
+    assert_eq!(fixture.entries(), ["app.vdbx"]);
+    assert_eq!(fixture.name_of(&admin, &ids[0]), "ada");
+}
