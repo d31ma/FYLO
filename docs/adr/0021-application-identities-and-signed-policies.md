@@ -212,9 +212,20 @@ What a protected `.vdbx` file holds, in addition to ADR 0016:
 - **Creation.** `fylo create <db.vdbx> --admin <reference>`;
   `fylo create` without `--admin` needs `--unprotected` (Q2). The machine
   protocol still creates a missing database unprotected until its entry
-  points change (phase 5).
+  points change in phase 5 (decision P5-1, section 5).
 
-### 5. Phases
+### 5. Decisions for phase 5 (the user, 2026-11-07)
+
+Each was decided as recommended. Phase 5 starts when the user says so.
+
+| | Question | Decision | Reason |
+| --- | --- | --- | --- |
+| P5-1 | What does the machine protocol do with a missing `.vdbx`? | Create it **protected**, with the configured identity as its admin and trust anchor; with no identity configured, refuse with `ENOIDENTITY` | Deny by default (Q2): a database no one is named for is not created open |
+| P5-2 | How does `cng:` reach Windows' key APIs? | An **exception to ADR 0004's no-`unsafe` rule** for one small, reviewed FYLO module over Microsoft's `windows-sys` bindings, recorded in `docs/security/unsafe-inventory.md`; the rest of FYLO stays `unsafe`-free | CNG is a C API with no safe binding of its own; one owned, reviewed module is easier to audit than a third-party wrapper |
+| P5-3 | How does the browser hold a `webcrypto:` identity? | The **browser's own WebCrypto**, called from FYLO's JavaScript adapter (non-extractable P-256 keys in the origin's IndexedDB); the Wasm engine keeps no P-256, ECDSA or HPKE code | Putting the Rust crypto in `fylo-browser.wasm` adds about 190 KB and breaks its size budget (section 4) |
+| P5-4 | Session certificates | **Wait for phase 8** (hardware keys) | With software keys they cost the same per signature and need storage (section 4, "Signed records") |
+
+### 6. Phases
 
 The study's section 9 is the plan. Phase 2 (identities and key stores) needs
 none of the answers above and lands first. Phase 3 (protected reads) and later
