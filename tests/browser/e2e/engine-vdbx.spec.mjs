@@ -32,6 +32,12 @@ const TEAMS = ['red', 'blue', 'green', 'gold']
 const CITIES = ['Lagos', 'Lima', 'Oslo', 'Pune', 'Kyiv', 'Quito', 'Hanoi', 'Perth', 'Turin']
 const STATUSES = ['open', 'paid', 'shipped', 'returned']
 
+// The crash batch: 3,000 writes in chunks of 25, the Worker killed when it
+// answers the 20th, so 500 writes are acknowledged and 2,500 still queued.
+const CRASH_CHUNK = 25
+const CRASH_CHUNKS = 120
+const CRASH_KILL_AFTER = 20
+
 // A `.vdbx` record frame: sync marker, length, CRC-32C, then the stored body,
 // whose first byte holds the codec in its low four bits and 0x10 when a
 // dictionary id follows (segments/container_frames.rs, container_record.rs).
@@ -326,15 +332,12 @@ class VdbxPage {
         return answer.frames
     }
 
-    start(id, requests) {
+    /** Run `chunks` as one batch and kill the Worker once `killAfter` of them are answered. */
+    killMidBatch(id, chunks, killAfter) {
         return this.page.evaluate(
-            ([id, requests]) => globalThis.vdbx.start(id, requests),
-            [id, requests]
+            ([id, chunks, killAfter]) => globalThis.vdbx.killMidBatch(id, chunks, killAfter),
+            [id, chunks, killAfter]
         )
-    }
-
-    kill(id) {
-        return this.page.evaluate((id) => globalThis.vdbx.kill(id), id)
     }
 
     close(id) {
@@ -894,13 +897,15 @@ test('a Worker killed mid-batch leaves a working copy native verifies', async ({
     const { paths } = fixture
     const evidence = {}
     const warm = mintIds(40)
-    const batch = mintIds(3000)
-    const writes = batch.map((id, index) => ({
-        op: 'putData',
-        collection: 'users',
-        id,
-        data: { ...user(300_000 + index), writer: 'crash' }
-    }))
+    const batch = mintIds(CRASH_CHUNKS * CRASH_CHUNK)
+    const chunks = Array.from({ length: CRASH_CHUNKS }, (_, chunk) =>
+        batch.slice(chunk * CRASH_CHUNK, (chunk + 1) * CRASH_CHUNK).map((id, offset) => ({
+            op: 'putData',
+            collection: 'users',
+            id,
+            data: { ...user(300_000 + chunk * CRASH_CHUNK + offset), writer: 'crash' }
+        }))
+    )
     const opened = await harness.open({
         kind: 'copy',
         label: 'crash.vdbx',
@@ -909,9 +914,6 @@ test('a Worker killed mid-batch leaves a working copy native verifies', async ({
     const copy = opened.name
     let reopened
     try {
-        // Time a few writes, then kill the Worker about a third of the way
-        // through a batch that would take several times as long.
-        const started = Date.now()
         expectOk(
             await harness.exec(
                 opened.id,
@@ -923,13 +925,16 @@ test('a Worker killed mid-batch leaves a working copy native verifies', async ({
                 }))
             )
         )
-        const perWrite = (Date.now() - started) / warm.length
-        const delay = Math.max(50, Math.round((perWrite * batch.length) / 3))
-        await harness.start(opened.id, writes)
-        await page.waitForTimeout(delay)
-        await harness.kill(opened.id)
-        evidence.perWriteMs = perWrite
-        evidence.killedAfterMs = delay
+        // The kill comes when the Worker answers chunk CRASH_KILL_AFTER, not
+        // after a guessed delay, so however fast the engine writes, the rest
+        // of the batch is still queued when the Worker goes.
+        const killed = await harness.killMidBatch(opened.id, chunks, CRASH_KILL_AFTER)
+        expect(killed.error, `the batch failed before the kill: ${killed.error}`).toBeUndefined()
+        expectOk(killed.frames, 'writes answered before the kill')
+        const acknowledged = killed.frames.length
+        expect(acknowledged).toBe(CRASH_KILL_AFTER * CRASH_CHUNK)
+        evidence.acknowledged = acknowledged
+        evidence.queuedChunks = killed.queued
 
         // The Web Lock goes with the Worker; reopening may race its release.
         for (let attempt = 0; attempt < 50; attempt++) {
@@ -965,10 +970,18 @@ test('a Worker killed mid-batch leaves a working copy native verifies', async ({
         const survived = batch.filter((id) => present.has(id)).length
         evidence.survived = survived
         // Each putData commits on its own, in order: what survived is exactly
-        // the first writes of the batch, and the kill came before the end.
+        // the first writes of the batch, every write answered before the kill
+        // among them, and the kill came before the end. Should the Worker
+        // ever outrun the kill and finish, the last check says so.
         expect(batch.slice(0, survived).every((id) => present.has(id))).toBe(true)
         expect(batch.slice(survived).some((id) => present.has(id))).toBe(false)
-        expect(survived, 'the Worker was killed mid-batch').toBeLessThan(batch.length)
+        expect(survived, 'every write answered before the kill survived').toBeGreaterThanOrEqual(
+            acknowledged
+        )
+        expect(
+            survived,
+            `the Worker was killed mid-batch, with ${killed.queued} of ${CRASH_CHUNKS} chunks still queued`
+        ).toBeLessThan(batch.length)
         expect(warm.every((id) => present.has(id))).toBe(true)
 
         // The copy keeps working, and native agrees with what it holds.

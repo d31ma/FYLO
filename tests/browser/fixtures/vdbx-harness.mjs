@@ -32,10 +32,7 @@ const MODULE_URL = '/dist-web/fylo-browser.wasm'
 
 /** @type {Map<number, { database: SingleFileDatabase, name?: string, kind: string }>} */
 const sessions = new Map()
-/** @type {Map<number, { done: boolean, value?: unknown, promise: Promise<unknown> }>} */
-const tickets = new Map()
 let nextSession = 1
-let nextTicket = 1
 
 function session(id) {
     const found = sessions.get(id)
@@ -93,22 +90,28 @@ async function open(source) {
     }
 }
 
-/** Run one batch; each request gets the database's path as its root. */
-async function run(id, requests, timeoutMs) {
-    const { database } = session(id)
-    const ndjson =
+/** A batch as NDJSON; each request gets the database's path as its root. */
+function ndjsonOf(database, requests) {
+    return (
         requests
             .map((request) => JSON.stringify({ root: database.info.path, ...request }))
             .join('\n') + '\n'
+    )
+}
+
+function framesOf(text) {
+    return text
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line))
+}
+
+/** Run one batch. */
+async function run(id, requests, timeoutMs) {
+    const { database } = session(id)
     const started = performance.now()
-    const answer = database.exec(ndjson).then(
-        (text) => ({
-            frames: text
-                .split('\n')
-                .filter(Boolean)
-                .map((line) => JSON.parse(line)),
-            ms: performance.now() - started
-        }),
+    const answer = database.exec(ndjsonOf(database, requests)).then(
+        (text) => ({ frames: framesOf(text), ms: performance.now() - started }),
         (error) => failure(error)
     )
     // A wasm trap ends up as an error above; a hang is the one outcome that
@@ -177,31 +180,33 @@ globalThis.vdbx = {
         return run(id, requests, timeoutMs)
     },
 
-    /** Start a batch without waiting for it; `wait` looks at it later. */
-    start(id, requests, timeoutMs = 300_000) {
-        const ticket = nextTicket++
-        const entry = { done: false, value: undefined, promise: undefined }
-        entry.promise = run(id, requests, timeoutMs).then((value) => {
-            entry.done = true
-            entry.value = value
-            return value
-        })
-        tickets.set(ticket, entry)
-        return ticket
-    },
-
-    async wait(ticket, ms = 60_000) {
-        const entry = tickets.get(ticket)
-        if (!entry) throw new Error(`no ticket ${ticket}`)
-        const timeout = new Promise((resolve) => setTimeout(() => resolve({ timedOut: true }), ms))
-        return Promise.race([entry.promise, timeout])
-    },
-
-    /** End a session the way a crash does: no close, no flush, the Worker gone. */
-    kill(id) {
+    /**
+     * Queue `chunks` as one batch of execs and kill the Worker the way a
+     * crash does (no close, no flush) the moment the answer to chunk
+     * `killAfter` arrives, with every later chunk still queued behind it. The Worker answers chunks one at a time, in order, so
+     * the kill lands after exactly `killAfter` answered chunks and while the
+     * rest of the batch is still running. It happens here, in the task that
+     * delivers that answer, so no round trip to the test gives the Worker
+     * time to run on to the end. Comes back with the frames answered before
+     * the kill, or `{ error, code }` when a chunk failed first.
+     */
+    killMidBatch(id, chunks, killAfter) {
         const { database } = session(id)
-        database.worker.terminate()
-        sessions.delete(id)
+        const answered = []
+        return new Promise((resolve) => {
+            chunks.forEach((requests, index) => {
+                database.exec(ndjsonOf(database, requests)).then(
+                    (text) => {
+                        answered.push(...framesOf(text))
+                        if (index + 1 !== killAfter) return
+                        database.worker.terminate()
+                        sessions.delete(id)
+                        resolve({ frames: answered, queued: chunks.length - killAfter })
+                    },
+                    (error) => resolve(failure(error))
+                )
+            })
+        })
     },
 
     async close(id) {
