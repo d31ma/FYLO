@@ -239,7 +239,7 @@ What a protected `.vdbx` file holds, in addition to ADR 0016:
   (a decision for the user) is a crypto bridge Worker over a
   `SharedArrayBuffer`, the pattern the OPFS bridge already uses, so the
   engine blocks on `Atomics.wait` while the bridge calls WebCrypto with the
-  origin's non-extractable key.
+  origin's non-extractable key. The user chose that way (P5-5).
 
 ### 5. Decisions for phase 5 (the user, 2026-11-07)
 
@@ -251,6 +251,15 @@ Each was decided as recommended. Phase 5 starts when the user says so.
 | P5-2 | How does `cng:` reach Windows' key APIs? | An **exception to ADR 0004's no-`unsafe` rule** for one small, reviewed FYLO module over Microsoft's `windows-sys` bindings, recorded in `docs/security/unsafe-inventory.md`; the rest of FYLO stays `unsafe`-free | CNG is a C API with no safe binding of its own; one owned, reviewed module is easier to audit than a third-party wrapper |
 | P5-3 | How does the browser hold a `webcrypto:` identity? | The **browser's own WebCrypto**, called from FYLO's JavaScript adapter (non-extractable P-256 keys in the origin's IndexedDB); the Wasm engine keeps no P-256, ECDSA or HPKE code | Putting the Rust crypto in `fylo-browser.wasm` adds about 190 KB and breaks its size budget (section 4) |
 | P5-4 | Session certificates | **Wait for phase 8** (hardware keys) | With software keys they cost the same per signature and need storage (section 4, "Signed records") |
+| P5-5 | How does the browser engine sign and check records with a `webcrypto:` identity? | A **crypto bridge Worker** calls WebCrypto with the origin's non-extractable key, and the engine waits on a `SharedArrayBuffer` with `Atomics.wait`, as the OPFS bridge does; the browser gets full read and write, and the engine stays within its size budget | WebCrypto is asynchronous, and the engine signs and checks each record synchronously |
+| P5-6 | SQL over `.vdbx` | **Built before phase 6**, protected and unprotected, so Turso-SDK apps reached through `fylo link` open protected databases | `fylo link` is how most applications reach FYLO (ADR 0019) |
+| P5-7 | Run `cng:` on Windows | **Yes**, on the `windows-vm` lane under the shared VM lock, then stop the VMs | It is the only way to run the one `unsafe` module |
+| P5-8 | Phase 6: `fylo pack --protect` and per-record access descriptors | **Refuse** unless `--drop-record-access` or `--keep-record-access-as-metadata` is given | A silent drop would lose access rules the old root enforced |
+
+Also settled: POSTIX (`.as()`, `--uid`, `--groups`, the per-request
+`access` field) goes in the same breaking release (Q1); `fylo rekey`,
+`fylo pack --sealed` and catalog-key rotation for protected databases stay
+in phase 7.
 
 ### 6. Phases
 
