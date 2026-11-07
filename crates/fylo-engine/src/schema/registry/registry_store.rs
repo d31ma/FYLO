@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use fylo_storage_native::{
-    NativeRoot, NativeStorageError, NativeStorageErrorCode, NativeWriteRoot,
+    FieldKeys, NativeRoot, NativeStorageError, NativeStorageErrorCode, NativeWriteRoot,
 };
 
 /// Where a database keeps its schema registry (ADR 0017 section 3).
@@ -53,6 +53,10 @@ pub(crate) trait SchemaRegistryStore {
         collection: &str,
         fields: &[String],
     ) -> Result<bool, NativeStorageError>;
+
+    /// A collection's `$encrypted` field keys in a protected database, or
+    /// `None` where fields use `fylo.encryption.key` (ADR 0021 section 7).
+    fn field_keys(&self, collection: &str) -> Result<Option<FieldKeys>, NativeStorageError>;
 }
 
 /// The registry of a directory root: `<root>/.fylo-schemas/<collection>/
@@ -81,6 +85,10 @@ impl DirectoryRegistryStore {
 impl SchemaRegistryStore for DirectoryRegistryStore {
     fn location(&self) -> &Path {
         self.root.catalog_root()
+    }
+
+    fn field_keys(&self, collection: &str) -> Result<Option<FieldKeys>, NativeStorageError> {
+        self.root.field_keys(collection)
     }
 
     fn head(&self, collection: &str) -> Result<Option<u32>, NativeStorageError> {

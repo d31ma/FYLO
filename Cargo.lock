@@ -842,6 +842,7 @@ dependencies = [
  "fylo-test-support",
  "fylo-vfs",
  "getrandom 0.4.3",
+ "hkdf",
  "hmac",
  "libc",
  "lz4_flex",

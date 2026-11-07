@@ -276,7 +276,7 @@ impl ContainerMedium {
     }
 
     /// The root error code of a protected file's refusal.
-    fn access_code(error: &crate::DatabaseAccessError) -> NativeStorageErrorCode {
+    pub(crate) fn access_code(error: &crate::DatabaseAccessError) -> NativeStorageErrorCode {
         match error {
             crate::DatabaseAccessError::NoIdentity => NativeStorageErrorCode::NoIdentity,
             crate::DatabaseAccessError::Policy(_) => NativeStorageErrorCode::Policy,

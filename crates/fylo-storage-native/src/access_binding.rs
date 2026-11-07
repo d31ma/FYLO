@@ -1,6 +1,8 @@
+use hkdf::Hkdf;
+use sha2::Sha256;
 use zeroize::Zeroizing;
 
-use crate::DatabaseAccessError;
+use crate::{DatabaseAccessError, FieldKey};
 
 /// Binds wraps and signatures to one database, by the random id its
 /// creation stored in the superblock, so none can be moved into another.
@@ -13,6 +15,7 @@ impl AccessBinding {
     const WRAP_LABEL: &'static [u8] = b"fylo.vdbx.key/1\0";
     const POLICY_LABEL: &'static [u8] = b"fylo.policy/1\0";
     const FRAME_LABEL: &'static [u8] = b"fylo.frame/1\0";
+    const FIELD_LABEL: &'static [u8] = b"fylo.field/1\0";
     const CATALOG_SCOPE: u8 = 1;
     const COLLECTION_SCOPE: u8 = 2;
 
@@ -44,6 +47,28 @@ impl AccessBinding {
 
     pub(crate) fn policy_message(self, policy: &[u8]) -> Vec<u8> {
         [Self::POLICY_LABEL, &self.database, policy].concat()
+    }
+
+    /// The `$encrypted` field key of `collection` at `epoch`: 64 bytes of
+    /// HKDF-SHA256 from that epoch's collection key, salted with this
+    /// database's id, so it changes whenever the collection key does.
+    pub(crate) fn field_key(
+        self,
+        collection: u32,
+        epoch: u32,
+        key: &[u8; 32],
+    ) -> Result<FieldKey, DatabaseAccessError> {
+        let info = [
+            Self::FIELD_LABEL,
+            &collection.to_le_bytes(),
+            &epoch.to_le_bytes(),
+        ]
+        .concat();
+        let mut material = Zeroizing::new([0_u8; 64]);
+        Hkdf::<Sha256>::new(Some(&self.database), key)
+            .expand(&info, material.as_mut())
+            .map_err(|_| DatabaseAccessError::Damaged("a field key could not be derived".into()))?;
+        Ok(FieldKey::new(epoch, &material))
     }
 
     pub(crate) fn random_key() -> Result<Zeroizing<[u8; 32]>, DatabaseAccessError> {

@@ -324,7 +324,37 @@ in phase 7.
   code the database refused it with); it opens the root read-only and takes
   no write lease.
 
-### 7. Phases
+### 7. Revocation, rekey and audit (phase 7)
+
+- **`$encrypted` fields use per-collection keys (decided by the user,
+  2026-11-07).** In a protected database a collection's `$encrypted`
+  field values are encrypted with a key derived from that collection's
+  key, never with the shared `fylo.encryption.key`, which stays for
+  unprotected roots only. Each collection key epoch derives one field key:
+  64 bytes of HKDF-SHA256 with the epoch's collection key as input, the
+  database id as salt and `fylo.field/1\0`, the collection id and the
+  epoch as info; the first 32 bytes are the AES-256-GCM key of values
+  (the same `v2.` envelope as before) and the last 32 the HMAC-SHA256 key
+  of blind-index tokens. So only identities granted the collection read
+  its fields, and a revocation's new epoch gives new values a new field
+  key.
+    - A value is written with the newest epoch's key and read with each
+      epoch's key the identity holds, newest first, then with
+      `fylo.encryption.key`'s when one is configured: AES-GCM refuses a
+      value under any other key, so trying each is safe. That last step
+      reads values written before this change, when a protected database
+      still used the shared key; `fylo rekey` rewrites them under the
+      collection's key, which is the migration path.
+    - Indexes follow the key without a separate step. The prefix index
+      of an `$encrypted` field is built from the stored values, which are
+      ciphertext under a random nonce, so it holds nothing to rotate; a
+      rewrite of the values rebuilds it. The blind-index tokens
+      `fylo verify` expects are keyed with the newest epoch's field key.
+    - `NativeRoot::field_keys` gives the engine a collection's field keys
+      (`ENOIDENTITY` for a locked database, `EACCES` without a key of the
+      collection), and `DatabaseAccess::field_keys` derives them.
+
+### 8. Phases
 
 The study's section 9 is the plan. Phase 2 (identities and key stores) needs
 none of the answers above and lands first. Phase 3 (protected reads) and later

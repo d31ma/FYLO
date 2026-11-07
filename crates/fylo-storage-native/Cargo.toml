@@ -19,6 +19,7 @@ fylo-identity = { version = "0.1.0", path = "../fylo-identity" }
 fylo-query = { version = "0.1.0", path = "../fylo-query" }
 fylo-vfs = { version = "0.1.0", path = "../fylo-vfs" }
 getrandom.workspace = true
+hkdf.workspace = true
 hmac.workspace = true
 serde.workspace = true
 serde_json.workspace = true

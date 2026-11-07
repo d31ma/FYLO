@@ -1331,7 +1331,7 @@ impl ReadOnlyEngine {
                                 "encrypted index field has no schema/key context".to_owned()
                             })?;
                             encryption
-                                .blind_index(value)
+                                .blind_index(collection.name(), value)
                                 .map(IndexLookupValue::encrypted)
                         } else {
                             Ok(IndexLookupValue::plain(value))

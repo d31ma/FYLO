@@ -52,6 +52,7 @@ mod database_access_error;
 mod database_identity;
 mod database_key;
 mod durability;
+mod field_keys;
 mod filesystem_profile;
 mod index_cache;
 mod index_limit;
@@ -119,6 +120,7 @@ pub use database_access_error::DatabaseAccessError;
 pub use database_identity::DatabaseIdentity;
 pub use database_key::DatabaseKey;
 pub use durability::Durability;
+pub use field_keys::{FieldKey, FieldKeys};
 pub use filesystem_profile::FilesystemProfile;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub use fylo_vfs::host_now_unix_ms;
@@ -445,6 +447,31 @@ impl NativeRoot {
         self.database()
             .filter(|database| database.is_protected())
             .map(|database| database.access())
+    }
+
+    /// The `$encrypted` field keys of `collection` in a protected `.vdbx`
+    /// database (ADR 0021 section 7), newest epoch first; `None` for a
+    /// directory root or a database that is not protected, whose fields use
+    /// `fylo.encryption.key`.
+    ///
+    /// # Errors
+    ///
+    /// `ENOIDENTITY` for a protected database opened without an identity,
+    /// and `EACCES` when the identity holds no key of the collection.
+    pub fn field_keys(&self, collection: &str) -> Result<Option<FieldKeys>, NativeStorageError> {
+        let Some(access) = self.database_access() else {
+            return Ok(None);
+        };
+        access
+            .ok_or(DatabaseAccessError::NoIdentity)
+            .and_then(|access| access.field_keys(collection))
+            .map(Some)
+            .map_err(|error| {
+                NativeStorageError::new(
+                    segments::ContainerMedium::access_code(&error),
+                    format!("{error} ({})", error.code()),
+                )
+            })
     }
 
     /// The live collections of a `.vdbx` database root, in the order they

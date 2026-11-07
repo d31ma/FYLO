@@ -48,6 +48,9 @@ aes-gcm = "0.11.0"
 base64 = "0.22.1"
 getrandom = "0.4.3"
 hmac = "0.13.0"
+# `$encrypted` field keys of protected databases (ADR 0021 phase 7): HKDF-SHA256
+# from each collection key. Already in the graph under `hpke`.
+hkdf = "0.13.0"
 # Key wrapping for application identities (ADR 0021): RFC 9180 base mode,
 # DHKEM(P-256, HKDF-SHA256), HKDF-SHA256, AES-256-GCM. Same RustCrypto
 # generation as `p256`, `aes-gcm`, `sha2`; `nistp` also builds P-384 and P-521.

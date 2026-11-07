@@ -352,6 +352,30 @@ impl DatabaseAccess {
         names
     }
 
+    /// The `$encrypted` field keys of the collection named `name`, newest
+    /// epoch first: one per collection key epoch this identity holds
+    /// (ADR 0021 section 7).
+    ///
+    /// # Errors
+    ///
+    /// `EACCES` when this identity holds no key of that collection, or the
+    /// directory has no collection by that name.
+    pub fn field_keys(&self, name: &str) -> Result<crate::FieldKeys, DatabaseAccessError> {
+        let state = self.read();
+        let (collection, keys) = state
+            .names
+            .iter()
+            .find(|(_, held)| held.as_str() == name)
+            .and_then(|(collection, _)| state.keys.get(collection).map(|keys| (*collection, keys)))
+            .ok_or_else(|| self.denied("holds no key of that collection"))?;
+        let derived = keys
+            .keys()
+            .iter()
+            .map(|(epoch, key)| self.binding.field_key(collection, *epoch, key))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(crate::FieldKeys::new(derived))
+    }
+
     /// Refuse unless this identity is an admin of the database.
     pub(crate) fn require_admin(&self) -> Result<(), DatabaseAccessError> {
         Some(self.read().grants.is_admin())

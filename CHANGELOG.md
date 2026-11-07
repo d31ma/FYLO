@@ -4,6 +4,15 @@
 
 ### Added
 
+- **Per-collection keys for `$encrypted` fields in protected databases
+  (ADR 0021 section 7, phase 7).** A protected `.vdbx` database encrypts a
+  collection's `$encrypted` fields with keys derived (HKDF-SHA256) from
+  that collection's key, one per key epoch, and never with
+  `fylo.encryption.key`, which now applies to unprotected roots only. An
+  identity granted a collection reads its fields with no shared secret
+  configured; one without the collection cannot. Values a protected
+  database wrote under the shared key before still read when it is
+  configured, until `fylo rekey` rewrites them.
 - **The machine handshake reports the session's identity (ADR 0021, phase
   6).** Top-level `identity` is `null` without one, otherwise its `id`,
   `publicKey` and how the trust anchor is set, and, when the session's root

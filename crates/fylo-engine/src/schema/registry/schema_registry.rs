@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use fylo_format::Document;
-use fylo_storage_native::{NativeRoot, NativeStorageError, NativeWriteRoot};
+use fylo_storage_native::{FieldKeys, NativeRoot, NativeStorageError, NativeWriteRoot};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
@@ -199,6 +199,14 @@ impl SchemaRegistry {
     pub(crate) fn encrypted_record(&self, collection: &str) -> Result<Option<Vec<String>>, String> {
         self.store
             .encrypted_record(collection)
+            .map_err(|error| error.to_string())
+    }
+
+    /// The collection's `$encrypted` field keys in a protected database, or
+    /// `None` where fields use `fylo.encryption.key`.
+    pub(crate) fn field_keys(&self, collection: &str) -> Result<Option<FieldKeys>, String> {
+        self.store
+            .field_keys(collection)
             .map_err(|error| error.to_string())
     }
 

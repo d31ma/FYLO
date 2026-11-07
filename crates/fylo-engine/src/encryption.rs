@@ -128,13 +128,9 @@ impl EncryptionReader {
             }
             return Ok(fields);
         }
-        let key = self.key.as_ref().ok_or_else(|| {
-            format!(
-                "cannot decrypt collection {collection}: fylo.encryption.key and fylo.cipher.salt are required"
-            )
-        })?;
+        let keys = self.decoding_keys(collection)?;
         for (field, value) in &mut fields {
-            decode_value(value, field, &encrypted, key).map_err(|reason| {
+            decode_value(value, field, &encrypted, &keys).map_err(|reason| {
                 format!("cannot decrypt encrypted field in collection {collection}: {reason}")
             })?;
         }
@@ -155,14 +151,10 @@ impl EncryptionReader {
         if encrypted.is_empty() {
             return Ok(fields);
         }
-        let key = self.key.as_ref().ok_or_else(|| {
-            format!(
-                "cannot encrypt collection {collection}: fylo.encryption.key and fylo.cipher.salt are required"
-            )
-        })?;
+        let key = self.encoding_key(collection)?;
         for (field, value) in &mut fields {
             let path = field.clone();
-            encode_value(value, &path, &encrypted, key).map_err(|reason| {
+            encode_value(value, &path, &encrypted, &key).map_err(|reason| {
                 format!("cannot encrypt declared field in collection {collection}: {reason}")
             })?;
         }
@@ -268,7 +260,7 @@ impl EncryptionReader {
     /// not have written the fields it lists, and a collection with a schema
     /// registry keeps its lists in the database already.
     pub(crate) fn record_folder_declaration(&self, collection: &str) -> Result<(), EngineError> {
-        if self.key.is_none()
+        if !self.holds_key(collection)
             || self
                 .registry
                 .head(collection)
@@ -292,10 +284,64 @@ impl EncryptionReader {
             .map_err(EngineError::storage)
     }
 
-    pub(crate) fn blind_index(&self, value: &str) -> Result<String, String> {
-        let key = self.hmac_key.as_ref().ok_or_else(|| {
-            "fylo.encryption.key and fylo.cipher.salt are required for blind indexes".to_owned()
-        })?;
+    /// The key `collection`'s values are written with: in a protected
+    /// database the newest epoch's field key, which is derived from the
+    /// collection key (ADR 0021 section 7), and never `fylo.encryption.key`;
+    /// elsewhere the key `fylo.encryption.key` derives.
+    fn encoding_key(&self, collection: &str) -> Result<SecretKey, String> {
+        let Some(keys) = self.registry.field_keys(collection)? else {
+            return self.key.clone().ok_or_else(|| {
+                format!(
+                    "cannot encrypt collection {collection}: fylo.encryption.key and fylo.cipher.salt are required"
+                )
+            });
+        };
+        keys.newest()
+            .map(|key| Zeroizing::new(*key.encryption()))
+            .ok_or_else(|| format!("cannot encrypt collection {collection}: it has no field key"))
+    }
+
+    /// The keys `collection`'s values are read with, in order: in a
+    /// protected database each epoch's field key, newest first, then
+    /// `fylo.encryption.key`'s when it is configured, for values written
+    /// before the database moved to per-collection field keys (`fylo rekey`
+    /// rewrites them).
+    fn decoding_keys(&self, collection: &str) -> Result<Vec<SecretKey>, String> {
+        let protected = self.registry.field_keys(collection)?;
+        let mut keys: Vec<SecretKey> = protected
+            .iter()
+            .flat_map(fylo_storage_native::FieldKeys::all)
+            .map(|key| Zeroizing::new(*key.encryption()))
+            .collect();
+        keys.extend(self.key.clone());
+        if keys.is_empty() {
+            return Err(format!(
+                "cannot decrypt collection {collection}: fylo.encryption.key and fylo.cipher.salt are required"
+            ));
+        }
+        Ok(keys)
+    }
+
+    /// Whether this reader can encrypt `collection`'s fields.
+    fn holds_key(&self, collection: &str) -> bool {
+        self.encoding_key(collection).is_ok()
+    }
+
+    /// The HMAC key of `collection`'s blind-index tokens, chosen as
+    /// [`Self::encoding_key`] chooses.
+    fn index_key(&self, collection: &str) -> Result<SecretKey, String> {
+        let Some(keys) = self.registry.field_keys(collection)? else {
+            return self.hmac_key.clone().ok_or_else(|| {
+                "fylo.encryption.key and fylo.cipher.salt are required for blind indexes".to_owned()
+            });
+        };
+        keys.newest()
+            .map(|key| Zeroizing::new(*key.index()))
+            .ok_or_else(|| format!("collection {collection} has no field key for blind indexes"))
+    }
+
+    pub(crate) fn blind_index(&self, collection: &str, value: &str) -> Result<String, String> {
+        let key = self.index_key(collection)?;
         let mut hmac = <Hmac<Sha256> as hmac::KeyInit>::new_from_slice(key.as_slice())
             .map_err(|_| "invalid HMAC-SHA256 key".to_owned())?;
         hmac.update(value.as_bytes());
@@ -431,21 +477,21 @@ fn decode_value(
     value: &mut Value,
     field: &str,
     encrypted: &[String],
-    key: &[u8; 32],
+    keys: &[SecretKey],
 ) -> Result<(), String> {
     match value {
         Value::Object(fields) => {
             for (child, value) in fields {
-                decode_value(value, &format!("{field}/{child}"), encrypted, key)?;
+                decode_value(value, &format!("{field}/{child}"), encrypted, keys)?;
             }
         }
         Value::Array(values) => {
             for value in values {
-                decode_value(value, field, encrypted, key)?;
+                decode_value(value, field, encrypted, keys)?;
             }
         }
         Value::String(ciphertext) if is_encrypted_field(field, encrypted) => {
-            *value = decode_stored_value(&decrypt(ciphertext, key)?);
+            *value = decode_stored_value(&decrypt_with_any(ciphertext, keys)?);
         }
         _ => {}
     }
@@ -554,6 +600,19 @@ pub(crate) fn encode_base64_url(bytes: &[u8]) -> String {
         }
     }
     output
+}
+
+/// Decrypt with the first of `keys` that authenticates the value. AES-GCM
+/// refuses a value under any other key, so trying each is safe.
+fn decrypt_with_any(encoded: &str, keys: &[SecretKey]) -> Result<String, String> {
+    let mut failure = "no key to decrypt with".to_owned();
+    for key in keys {
+        match decrypt(encoded, key) {
+            Ok(plaintext) => return Ok(plaintext),
+            Err(reason) => failure = reason,
+        }
+    }
+    Err(failure)
 }
 
 fn decrypt(encoded: &str, key: &[u8; 32]) -> Result<String, String> {
