@@ -253,8 +253,31 @@ impl ContainerDatabase {
     }
 
     #[cfg(not(target_family = "wasm"))]
+    /// Change a protected database's access document under the allocation
+    /// lock: `prepare` makes the change from the newest state, which is
+    /// written to the access slots, flushed, taken in, and checkpointed, so
+    /// writers in other processes read it at their next refresh. Returns the
+    /// policy after it.
+    pub(crate) fn change_access(
+        &self,
+        prepare: impl FnOnce(
+            &crate::DatabaseAccess,
+        )
+            -> Result<crate::database_access::AccessChange, crate::DatabaseAccessError>,
+    ) -> Result<crate::AccessPolicy, NativeStorageError> {
+        self.require_key()?;
+        self.file.change_map(|open| {
+            let policy = open
+                .change_access(prepare)
+                .map_err(ContainerMedium::error)?;
+            open.checkpoint()?;
+            Ok(policy)
+        })
+    }
+
     /// The access this handle opened a protected database with; `None` for
     /// one opened without an identity, or another database.
+    #[cfg(not(target_family = "wasm"))]
     pub(crate) fn access(&self) -> Option<Arc<crate::DatabaseAccess>> {
         if self.locked {
             return None;

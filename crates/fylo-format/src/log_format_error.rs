@@ -25,6 +25,10 @@ pub enum LogFormatError {
     /// was altered, or belongs to another collection or record. Its
     /// checksum matched, so it is no torn write.
     Unauthenticated,
+    /// A whole frame belongs to a collection of a protected database whose
+    /// key the opening identity was not granted, or the identity may not
+    /// write it (ADR 0021). Never damage, and never a torn tail.
+    Denied,
 }
 
 impl LogFormatError {
@@ -36,7 +40,10 @@ impl LogFormatError {
     pub const fn is_unreadable(self) -> bool {
         matches!(
             self,
-            Self::UnsupportedVersion | Self::MissingDictionary | Self::Unauthenticated
+            Self::UnsupportedVersion
+                | Self::MissingDictionary
+                | Self::Unauthenticated
+                | Self::Denied
         )
     }
 }
@@ -57,6 +64,7 @@ impl std::fmt::Display for LogFormatError {
             Self::Unauthenticated => {
                 "log record is sealed for another place, or was altered after sealing"
             }
+            Self::Denied => "log record belongs to a collection this identity has no grant for",
         };
         formatter.write_str(message)
     }

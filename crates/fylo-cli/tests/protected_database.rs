@@ -279,3 +279,144 @@ fn create_admin_takes_no_unprotected() {
     ]));
     assert!(error.contains("takes neither"), "{error}");
 }
+
+fn public_key(fixture: &Fixture, name: &str) -> String {
+    let shown = json(&fixture.run(&["identity", "show", &format!("file:{name}.pem"), "--json"]));
+    shown["publicKey"].as_str().unwrap().to_owned()
+}
+
+fn as_reader<'a>(admin: &'a str, arguments: &[&'a str]) -> Vec<&'a str> {
+    let mut all = arguments.to_vec();
+    all.extend(["--identity", "file:reader.pem", "--trust-anchor", admin]);
+    all
+}
+
+#[test]
+fn grant_lets_a_reader_read_one_collection_and_revoke_takes_it_back() {
+    let fixture = Fixture::new("grant-revoke");
+    let admin = fixture.protected();
+    let identifier = write_user(&fixture, &admin);
+    let reader = fixture.identity("reader");
+    let key = public_key(&fixture, "reader");
+    let granted = json(&fixture.as_admin(
+        &admin,
+        &[
+            "access",
+            "grant",
+            "app.vdbx",
+            "--grantee",
+            "reader",
+            "--key",
+            &key,
+            "--actions",
+            "read",
+            "--collection",
+            "users",
+        ],
+    ));
+    assert_eq!(granted["policy"]["version"], 2);
+    assert_eq!(
+        granted["policy"]["rules"][1]["id"],
+        "reader-collection:users"
+    );
+
+    let listed = json(&fixture.run(&as_reader(&admin, &["access", "list", "app.vdbx"])));
+    assert_eq!(listed["identity"], reader.as_str());
+    assert_eq!(listed["admin"], false);
+    assert_eq!(listed["grants"]["users"], "read");
+    let got = json(&fixture.run(&as_reader(
+        &admin,
+        &["get", "users", &identifier, "--root", "app.vdbx", "--json"],
+    )));
+    assert_eq!(got[&identifier]["name"], CANARY);
+    let insert = failure(&fixture.run(&as_reader(
+        &admin,
+        &[
+            "sql",
+            "INSERT INTO users (name) VALUES ('x')",
+            "--root",
+            "app.vdbx",
+        ],
+    )));
+    assert!(insert.contains("EACCES"), "{insert}");
+
+    let revoked = json(&fixture.as_admin(
+        &admin,
+        &[
+            "access",
+            "revoke",
+            "app.vdbx",
+            "--rule",
+            "reader-collection:users",
+        ],
+    ));
+    assert_eq!(revoked["policy"]["version"], 3);
+    let refused = failure(&fixture.run(&as_reader(&admin, &["access", "list", "app.vdbx"])));
+    assert!(refused.contains("no grant"), "{refused}");
+}
+
+#[test]
+fn a_grant_by_an_identity_that_is_not_an_admin_is_refused() {
+    let fixture = Fixture::new("grant-not-admin");
+    let admin = fixture.protected();
+    fixture.identity("reader");
+    let key = public_key(&fixture, "reader");
+    stdout(&fixture.as_admin(
+        &admin,
+        &[
+            "access",
+            "grant",
+            "app.vdbx",
+            "--grantee",
+            "reader",
+            "--key",
+            &key,
+            "--actions",
+            "read",
+            "--all-collections",
+        ],
+    ));
+    let refused = failure(&fixture.run(&as_reader(
+        &admin,
+        &[
+            "access",
+            "grant",
+            "app.vdbx",
+            "--grantee",
+            "reader",
+            "--key",
+            &key,
+            "--actions",
+            "admin",
+            "--database",
+            "--rule",
+            "escalate",
+        ],
+    )));
+    assert!(refused.contains("is not an admin"), "{refused}");
+}
+
+#[test]
+fn grant_needs_exactly_one_resource() {
+    let fixture = Fixture::new("grant-resource");
+    let admin = fixture.protected();
+    fixture.identity("reader");
+    let key = public_key(&fixture, "reader");
+    let refused = failure(&fixture.as_admin(
+        &admin,
+        &[
+            "access",
+            "grant",
+            "app.vdbx",
+            "--grantee",
+            "reader",
+            "--key",
+            &key,
+            "--actions",
+            "read",
+            "--database",
+            "--all-collections",
+        ],
+    ));
+    assert!(refused.contains("exactly one"), "{refused}");
+}

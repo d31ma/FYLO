@@ -334,6 +334,9 @@ impl LogSegment {
         bodies: &dyn LogBodyCodec,
     ) -> Result<Vec<u8>, NativeStorageError> {
         kind.frame_with(record, bodies).map_err(|error| {
+            if error == fylo_format::LogFormatError::Denied {
+                return crate::segments::SegmentReader::denied("the record");
+            }
             NativeStorageError::new(
                 NativeStorageErrorCode::FileTooLarge,
                 format!("write-ahead log record cannot be encoded: {error}"),

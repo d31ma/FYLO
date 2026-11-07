@@ -40,6 +40,8 @@ const INDEX_WAL_COMPACT_BYTES: u64 = 64 * 1024;
 #[cfg(unix)]
 const DEFAULT_ACCESS_MODE: u32 = 0o600;
 
+#[cfg(not(target_family = "wasm"))]
+mod access_admin;
 mod commit_log;
 mod document_codec;
 mod document_write;

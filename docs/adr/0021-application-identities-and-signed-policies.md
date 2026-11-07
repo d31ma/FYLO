@@ -134,6 +134,25 @@ What a protected `.vdbx` file holds, in addition to ADR 0016:
   collection needs `write` on it. Until signed writes (phase 4), the write
   checks are FYLO's own code: a process that holds a collection key could
   seal a frame without them.
+- **Grants and revocation.** `fylo access grant` and `fylo access revoke`,
+  run as an admin, write the next policy version, signed by that admin, and
+  rebuild the keyring from it: the catalog key for every identity a rule
+  names, and every epoch of each live collection's key for every identity a
+  rule covering that collection names. So a grant wraps the keys the new
+  rule covers, and a revocation drops the revoked identity's wraps.
+    - A revocation starts a new key epoch for every collection the removed
+      rule covered; new units seal with it. Units sealed before stay under
+      the old epoch, readable by an identity that kept the old key, until a
+      rekey rewrites them (Q6). The catalog key is not rotated: an identity
+      that kept it can still read collection names and the policy until a
+      rekey (phase 7).
+    - A policy keeps at least one admin; a rule id is used once; resources
+      are `database`, `collection:*` and `collection:<name>`.
+    - The change is written under the allocation lock and checkpointed. A
+      writer in another process takes it in at its next refresh; until then
+      it may seal units with the epoch it holds.
+    - A frame of a collection the identity has no key for stops a scan as
+      unreadable, never as a torn tail, and reads fail with `EACCES`.
 - **Not yet.** `fylo pack --sealed` and `fylo rekey` refuse a protected
   database (phases 6 and 7). The browser build has no identities (phase 5)
   and opens a protected file locked; P-256, ECDSA and HPKE stay out of

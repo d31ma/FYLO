@@ -280,6 +280,9 @@ impl ContainerFrames {
             ContainerRecordError::Codec(ContainerCodecError::Oversized) => {
                 LogFormatError::Oversized
             }
+            ContainerRecordError::Cipher(crate::ContainerCipherError::NoGrant) => {
+                LogFormatError::Denied
+            }
             _ => LogFormatError::InvalidField,
         }
     }

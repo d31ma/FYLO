@@ -1,36 +1,155 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use fylo_identity::PublicIdentity;
 use fylo_machine::ApplicationConfig;
-use fylo_storage_native::{DatabaseAccess, NativeRoot, RootOpenOptions};
+use fylo_storage_native::{
+    AccessAction, AccessGrantRequest, AccessPolicy, AccessRule, DatabaseAccess, NativeRoot,
+    NativeWriteRoot, RootOpenOptions,
+};
 use serde_json::{Value, json};
 
-/// `fylo access list <db.vdbx>` (ADR 0021): open a protected database with
-/// the configured identity and print what it may do there, the trust anchor
-/// that created the database, and the newest policy.
+/// `fylo access list|grant|revoke <db.vdbx>` (ADR 0021), run as the
+/// configured identity:
+/// - `list` prints what the identity may do, the trust anchor that created
+///   the database, and the newest policy;
+/// - `grant --grantee <name> --key <fpk1:...> --actions <read,write,admin>`
+///   with `--collection <name>`, `--all-collections` or `--database` adds a
+///   rule (`--rule <id>`, default `<grantee>-<resource>`) as the next policy
+///   version, and wraps the keys it covers for the grantee;
+/// - `revoke --rule <id>` removes a rule as the next policy version, and
+///   starts a new key epoch for every collection it covered.
+///
+/// `grant` and `revoke` need an admin identity.
 pub struct AccessCommand;
 
 impl AccessCommand {
-    const USAGE: &'static str = "Usage:\n  fylo access list <db.vdbx> --identity <reference> [--trust-anchor <fid1:...> | --trust-on-first-use]";
+    const USAGE: &'static str = "Usage:\n  fylo access list <db.vdbx>\n  fylo access grant <db.vdbx> --grantee <name> --key <fpk1:...> --actions <read|write|admin>[,...] (--collection <name> | --all-collections | --database) [--rule <id>] [--label <text>]\n  fylo access revoke <db.vdbx> --rule <id>\nEach runs as --identity <reference> with --trust-anchor <fid1:...> or --trust-on-first-use.";
 
-    /// Run `fylo access` with its positional arguments after `access`.
+    /// Run `fylo access` with all its arguments and its positional
+    /// arguments after `access`.
     ///
     /// # Errors
     /// The usage text for unknown arguments, `ENOIDENTITY` without an
-    /// identity, the open's refusal, or a database that is not protected.
-    pub fn run(positionals: &[String], application: &ApplicationConfig) -> Result<String, String> {
-        let path = Self::database(positionals)?;
+    /// identity, the open's refusal, `EACCES` for a change by an identity
+    /// that is not an admin, `EPOLICY` for a refused rule, or a database
+    /// that is not protected.
+    pub fn run(
+        arguments: &[String],
+        positionals: &[String],
+        application: &ApplicationConfig,
+    ) -> Result<String, String> {
+        let (command, path) = Self::command(positionals)?;
         let options = application.with_database_access(RootOpenOptions::new(path));
-        let root = NativeRoot::open_profiled(options).map_err(|error| error.to_string())?;
-        let access = Self::access(&root, path)?;
-        serde_json::to_string_pretty(&Self::render(&access)).map_err(|error| error.to_string())
+        let rendered = match command {
+            "list" => Self::list(options, path)?,
+            "grant" => {
+                Self::policy(&Self::writer(options)?.grant_access(&Self::request(arguments)?))?
+            }
+            _ => Self::policy(
+                &Self::writer(options)?.revoke_access(Self::required(arguments, "--rule")?),
+            )?,
+        };
+        serde_json::to_string_pretty(&rendered).map_err(|error| error.to_string())
     }
 
-    fn database(positionals: &[String]) -> Result<&Path, String> {
+    fn command(positionals: &[String]) -> Result<(&str, &Path), String> {
         match positionals {
-            [command, path] if command == "list" => Ok(Path::new(path)),
+            [command, path] if ["list", "grant", "revoke"].contains(&command.as_str()) => {
+                Ok((command.as_str(), Path::new(path)))
+            }
             _ => Err(Self::USAGE.to_owned()),
         }
+    }
+
+    fn list(options: RootOpenOptions, path: &Path) -> Result<Value, String> {
+        let root = NativeRoot::open_profiled(options).map_err(|error| error.to_string())?;
+        let access = Self::access(&root, path)?;
+        Ok(Self::render(&access))
+    }
+
+    fn writer(options: RootOpenOptions) -> Result<NativeWriteRoot, String> {
+        NativeWriteRoot::open_profiled(options).map_err(|error| error.to_string())
+    }
+
+    fn policy(
+        outcome: &Result<AccessPolicy, fylo_storage_native::NativeStorageError>,
+    ) -> Result<Value, String> {
+        match outcome {
+            Ok(policy) => Ok(json!({ "policy": policy })),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
+    fn request(arguments: &[String]) -> Result<AccessGrantRequest, String> {
+        let grantee = Self::required(arguments, "--grantee")?;
+        let keys = Self::keys(Self::required(arguments, "--key")?)?;
+        let actions = Self::actions(Self::required(arguments, "--actions")?)?;
+        let resources = Self::resources(arguments)?;
+        let id = crate::option(arguments, "--rule").map_or_else(
+            || format!("{grantee}-{}", resources.join(",")),
+            ToOwned::to_owned,
+        );
+        Ok(AccessGrantRequest {
+            keys,
+            label: crate::option(arguments, "--label").map(ToOwned::to_owned),
+            rule: AccessRule {
+                id,
+                identity: grantee.to_owned(),
+                actions,
+                resources,
+            },
+        })
+    }
+
+    fn keys(text: &str) -> Result<Vec<PublicIdentity>, String> {
+        text.split(',')
+            .map(|key| PublicIdentity::parse(key.trim()).map_err(|error| error.to_string()))
+            .collect()
+    }
+
+    fn actions(text: &str) -> Result<Vec<AccessAction>, String> {
+        text.split(',')
+            .map(|action| Self::action(action.trim()))
+            .collect()
+    }
+
+    fn action(text: &str) -> Result<AccessAction, String> {
+        match text {
+            "read" => Ok(AccessAction::Read),
+            "write" => Ok(AccessAction::Write),
+            "admin" => Ok(AccessAction::Admin),
+            _ => Err(format!(
+                "{text:?} is not an action: use read, write or admin"
+            )),
+        }
+    }
+
+    fn resources(arguments: &[String]) -> Result<Vec<String>, String> {
+        let collection =
+            crate::option(arguments, "--collection").map(AccessRule::collection_resource);
+        let every = Self::flag(arguments, "--all-collections")
+            .then(|| AccessRule::collection_resource("*"));
+        let database = Self::flag(arguments, "--database").then(AccessRule::database_resource);
+        let resources: Vec<String> = [collection, every, database]
+            .into_iter()
+            .flatten()
+            .collect();
+        match resources.len() {
+            1 => Ok(resources),
+            _ => Err(
+                "grant takes exactly one of --collection <name>, --all-collections and --database"
+                    .into(),
+            ),
+        }
+    }
+
+    fn flag(arguments: &[String], name: &str) -> bool {
+        arguments.iter().any(|argument| argument == name)
+    }
+
+    fn required<'a>(arguments: &'a [String], name: &str) -> Result<&'a str, String> {
+        crate::option(arguments, name).ok_or_else(|| format!("{name} is required\n{}", Self::USAGE))
     }
 
     fn access(root: &NativeRoot, path: &Path) -> Result<Arc<DatabaseAccess>, String> {

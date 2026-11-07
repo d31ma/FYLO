@@ -34,6 +34,15 @@ impl AccessRule {
         format!("{}{name}", Self::COLLECTION_PREFIX)
     }
 
+    /// Whether `resource` is one this policy format knows.
+    #[must_use]
+    pub fn is_resource(resource: &str) -> bool {
+        resource == Self::DATABASE
+            || resource
+                .strip_prefix(Self::COLLECTION_PREFIX)
+                .is_some_and(|name| !name.is_empty())
+    }
+
     /// Whether the rule allows `action` on the whole database.
     #[must_use]
     pub fn allows_on_database(&self, action: AccessAction) -> bool {

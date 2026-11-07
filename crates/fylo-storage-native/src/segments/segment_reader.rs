@@ -83,6 +83,7 @@ impl SegmentReader {
                 "{what} names a compression dictionary that is missing or damaged \
                  (EVDBX_CORRUPT); `fylo verify` reports which"
             )),
+            LogFormatError::Denied => Self::denied(what),
             LogFormatError::Unauthenticated => Self::corrupt(&format!(
                 "{what} does not open with the database key: it was altered, or moved \
                  from another collection or record (EVDBX_CORRUPT)"
@@ -99,6 +100,15 @@ impl SegmentReader {
         let handle = self.medium.read_handle(segment)?;
         handles.insert(segment, Arc::clone(&handle));
         Ok(handle)
+    }
+
+    /// `what` belongs to a collection of a protected database whose key
+    /// this identity was not granted, or may not write (ADR 0021).
+    pub(crate) fn denied(what: &str) -> NativeStorageError {
+        NativeStorageError::new(
+            NativeStorageErrorCode::PermissionDenied,
+            format!("{what} belongs to a collection this identity has no grant for (EACCES)"),
+        )
     }
 
     fn corrupt(message: &str) -> NativeStorageError {

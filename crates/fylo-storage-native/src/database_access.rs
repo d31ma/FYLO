@@ -12,8 +12,8 @@ use crate::access_binding::AccessBinding;
 use crate::access_policy_chain::AccessPolicyChain;
 use crate::collection_keys::CollectionKeys;
 use crate::{
-    AccessAction, AccessDocument, AccessGrants, AccessKeyWrap, AccessPolicy, AccessTrust,
-    ContainerCipher, ContainerCipherError, DatabaseAccessError, DatabaseIdentity,
+    AccessAction, AccessDocument, AccessGrantRequest, AccessGrants, AccessKeyWrap, AccessPolicy,
+    AccessTrust, ContainerCipher, ContainerCipherError, DatabaseAccessError, DatabaseIdentity,
 };
 
 /// The access state of a protected `.vdbx` database as one identity opened
@@ -39,11 +39,17 @@ struct AccessState {
     keys: BTreeMap<u32, CollectionKeys>,
 }
 
-/// A keyring change made in memory, to write to the access slots before
-/// it takes effect ([`DatabaseAccess::commit`]).
+/// A collection's id, an epoch, and that epoch's key.
+type EpochKey = (u32, u32, Zeroizing<[u8; 32]>);
+
+/// A change of the access document made in memory, to write to the access
+/// slots before it takes effect ([`DatabaseAccess::commit`]): new keys,
+/// a newly named collection, and a new policy version.
 pub(crate) struct AccessChange {
     pub(crate) slot: ContainerAccessSlot,
-    collection: Option<(u32, String, Zeroizing<[u8; 32]>)>,
+    keys: Vec<EpochKey>,
+    collection: Option<(u32, String)>,
+    policy: Option<(AccessPolicy, String)>,
 }
 
 impl DatabaseAccess {
@@ -238,8 +244,125 @@ impl DatabaseAccess {
         document.keyring.extend(wraps);
         Ok(AccessChange {
             slot: Self::slot(state.generation + 1, &document)?,
-            collection: Some((id, name.to_owned(), key)),
+            keys: vec![(id, Self::FIRST_EPOCH, key)],
+            collection: Some((id, name.to_owned())),
+            policy: None,
         })
+    }
+
+    /// Prepare policy version n+1 with `request`'s rule added, signed by
+    /// this admin, and the keyring rebuilt for it: the new identity's keys
+    /// get the catalog key and every key of each collection the rule covers.
+    pub(crate) fn prepare_grant(
+        &self,
+        request: &AccessGrantRequest,
+    ) -> Result<AccessChange, DatabaseAccessError> {
+        self.require_admin()?;
+        let state = self.read();
+        let policy = state
+            .policy
+            .with_grant(request, state.policy_digest.clone())?;
+        self.prepare_policy(&state, policy, &[])
+    }
+
+    /// Prepare policy version n+1 without the rule `id`, signed by this
+    /// admin. Every collection the rule covered starts a new key epoch, and
+    /// the keyring is rebuilt, so an identity the rule granted gets no key
+    /// for what is written from now on. What was written before stays
+    /// sealed with the old epoch until `fylo rekey` rewrites it.
+    pub(crate) fn prepare_revoke(&self, id: &str) -> Result<AccessChange, DatabaseAccessError> {
+        self.require_admin()?;
+        let state = self.read();
+        let (policy, removed) = state.policy.without_rule(id, state.policy_digest.clone())?;
+        let covered: Vec<u32> = state
+            .names
+            .iter()
+            .filter(|(_, name)| removed.strongest_on_collection(name).is_some())
+            .map(|(collection, _)| *collection)
+            .collect();
+        self.prepare_policy(&state, policy, &covered)
+    }
+
+    fn prepare_policy(
+        &self,
+        state: &AccessState,
+        policy: AccessPolicy,
+        new_epochs: &[u32],
+    ) -> Result<AccessChange, DatabaseAccessError> {
+        let catalog = ContainerCipher::from_key(&self.catalog_key);
+        let envelope = AccessPolicyChain::seal(&policy, &catalog, self.binding, &self.identity)?;
+        let bytes = serde_json::to_vec(&policy)
+            .map_err(|error| DatabaseAccessError::Damaged(error.to_string()))?;
+        let fresh = Self::fresh_epochs(&state.keys, new_epochs)?;
+        let mut keys = state.keys.clone();
+        for (collection, epoch, key) in &fresh {
+            keys.entry(*collection)
+                .or_insert_with(CollectionKeys::new)
+                .add(*epoch, key);
+        }
+        let keyring = self.rebuild_keyring(&policy, &state.names, &keys)?;
+        let mut policies = state.document.policies.clone();
+        policies.push(envelope);
+        let document = AccessDocument {
+            format: AccessDocument::FORMAT.to_owned(),
+            policies,
+            keyring,
+        };
+        Ok(AccessChange {
+            slot: Self::slot(state.generation + 1, &document)?,
+            keys: fresh,
+            collection: None,
+            policy: Some((policy, AccessPolicyChain::digest_of(&bytes))),
+        })
+    }
+
+    fn fresh_epochs(
+        keys: &BTreeMap<u32, CollectionKeys>,
+        collections: &[u32],
+    ) -> Result<Vec<EpochKey>, DatabaseAccessError> {
+        collections
+            .iter()
+            .map(|collection| {
+                let epoch = keys
+                    .get(collection)
+                    .map_or(Self::FIRST_EPOCH, CollectionKeys::next_epoch);
+                AccessBinding::random_key().map(|key| (*collection, epoch, key))
+            })
+            .collect()
+    }
+
+    /// Every wrap `policy` calls for: the catalog key for each identity a
+    /// rule names, and each epoch of each live collection's key for each
+    /// identity a rule covering it names.
+    fn rebuild_keyring(
+        &self,
+        policy: &AccessPolicy,
+        names: &BTreeMap<u32, String>,
+        keys: &BTreeMap<u32, CollectionKeys>,
+    ) -> Result<Vec<AccessKeyWrap>, DatabaseAccessError> {
+        let mut keyring = Self::wraps_for(
+            &policy.granted_keys(),
+            &self.binding.catalog_info(),
+            &self.catalog_key,
+            None,
+        )?;
+        for (collection, name) in names {
+            let recipients = policy.collection_keys(name);
+            let held = keys
+                .get(collection)
+                .map(CollectionKeys::keys)
+                .unwrap_or_default();
+            for (epoch, key) in held {
+                let info = self.binding.collection_info(*collection, epoch);
+                keyring.extend(Self::wraps_for(
+                    &recipients,
+                    &info,
+                    &key,
+                    Some((*collection, epoch)),
+                )?);
+            }
+        }
+        Ok(keyring)
     }
 
     /// Take a change in once its slot is written and flushed.
@@ -248,17 +371,23 @@ impl DatabaseAccess {
         let mut state = self.write();
         state.generation = change.slot.generation;
         state.document = document;
-        if let Some((id, name, key)) = change.collection {
+        for (collection, epoch, key) in &change.keys {
             state
                 .keys
-                .entry(id)
+                .entry(*collection)
                 .or_insert_with(CollectionKeys::new)
-                .add(Self::FIRST_EPOCH, &key);
-            state.names.insert(id, name);
-            let names: Vec<String> = state.names.values().cloned().collect();
-            let names: Vec<&str> = names.iter().map(String::as_str).collect();
-            state.grants = AccessGrants::resolve(&state.policy, self.identity.id(), &names);
+                .add(*epoch, key);
         }
+        if let Some((id, name)) = change.collection {
+            state.names.insert(id, name);
+        }
+        if let Some((policy, digest)) = change.policy {
+            state.policy = policy;
+            state.policy_digest = digest;
+        }
+        let names: Vec<String> = state.names.values().cloned().collect();
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        state.grants = AccessGrants::resolve(&state.policy, self.identity.id(), &names);
         Ok(())
     }
 

@@ -75,6 +75,7 @@ impl ContainerRecordError {
         match self {
             Self::Locked | Self::Cipher(ContainerCipherError::WrongKey) => "EKEY",
             Self::Cipher(ContainerCipherError::Random) => "ENATIVE_IO",
+            Self::Cipher(ContainerCipherError::NoGrant) => "EACCES",
             Self::Unsupported | Self::Codec(ContainerCodecError::Unsupported) => "EVDBX_VERSION",
             Self::Malformed | Self::NotSealed | Self::Codec(_) | Self::Cipher(_) => "EVDBX_CORRUPT",
         }

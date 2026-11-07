@@ -25,6 +25,8 @@ mod access_binding;
 #[cfg(not(target_family = "wasm"))]
 mod access_document;
 #[cfg(not(target_family = "wasm"))]
+mod access_grant_request;
+#[cfg(not(target_family = "wasm"))]
 mod access_grants;
 #[cfg(not(target_family = "wasm"))]
 mod access_key_wrap;
@@ -90,6 +92,8 @@ use spelling_cache::SpellingCache;
 pub use access_action::AccessAction;
 #[cfg(not(target_family = "wasm"))]
 pub use access_document::AccessDocument;
+#[cfg(not(target_family = "wasm"))]
+pub use access_grant_request::AccessGrantRequest;
 #[cfg(not(target_family = "wasm"))]
 pub use access_grants::AccessGrants;
 #[cfg(not(target_family = "wasm"))]

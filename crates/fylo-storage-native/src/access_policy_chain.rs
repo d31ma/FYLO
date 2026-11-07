@@ -189,7 +189,7 @@ impl AccessPolicyChain {
             .map(|admin| admin.id().clone())
     }
 
-    fn digest_of(bytes: &[u8]) -> String {
+    pub(crate) fn digest_of(bytes: &[u8]) -> String {
         let digest = Sha256::digest(bytes);
         let hex = digest.iter().fold(String::new(), |mut text, byte| {
             let _ = write!(text, "{byte:02x}");
@@ -204,5 +204,101 @@ impl AccessPolicyChain {
 
     fn damaged(error: &dyn std::fmt::Display) -> DatabaseAccessError {
         DatabaseAccessError::Damaged(format!("the database policy is damaged: {error}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use fylo_identity::{Identity, KeyReference};
+
+    use super::AccessPolicyChain;
+    use crate::access_binding::AccessBinding;
+    use crate::{AccessAction, AccessGrantRequest, AccessPolicy, AccessRule, ContainerCipher};
+
+    struct Keys(std::path::PathBuf);
+
+    impl Keys {
+        fn new(label: &str) -> Self {
+            let directory = std::env::temp_dir().join(crate::write::unique_name(label));
+            std::fs::create_dir(&directory).unwrap();
+            Self(directory)
+        }
+
+        fn identity(&self, name: &str) -> Identity {
+            Identity::create(&KeyReference::File(self.0.join(format!("{name}.pem")))).unwrap()
+        }
+    }
+
+    impl Drop for Keys {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn admin_grant(identity: &Identity) -> AccessGrantRequest {
+        AccessGrantRequest {
+            keys: vec![identity.public()],
+            label: None,
+            rule: AccessRule {
+                id: "forged".into(),
+                identity: "forger".into(),
+                actions: vec![AccessAction::Admin],
+                resources: vec!["database".into()],
+            },
+        }
+    }
+
+    #[test]
+    fn a_version_signed_by_a_non_admin_is_refused() {
+        let keys = Keys::new("policy-chain-forged");
+        let admin = keys.identity("admin");
+        let reader = keys.identity("reader");
+        let catalog = ContainerCipher::from_key(&[3; 32]);
+        let binding = AccessBinding::new([5; 32]);
+        let first = AccessPolicy::first(&admin.public());
+        let digest = AccessPolicyChain::digest_of(&serde_json::to_vec(&first).unwrap());
+        let forged = first.with_grant(&admin_grant(&reader), digest).unwrap();
+        let envelopes = vec![
+            AccessPolicyChain::seal(&first, &catalog, binding, &admin).unwrap(),
+            AccessPolicyChain::seal(&forged, &catalog, binding, &reader).unwrap(),
+        ];
+        let error = AccessPolicyChain::verify(&envelopes, &catalog, binding)
+            .err()
+            .unwrap();
+        assert_eq!(error.code(), "EPOLICY");
+    }
+
+    #[test]
+    fn a_chain_of_admin_signed_versions_verifies() {
+        let keys = Keys::new("policy-chain-valid");
+        let admin = keys.identity("admin");
+        let reader = keys.identity("reader");
+        let catalog = ContainerCipher::from_key(&[3; 32]);
+        let binding = AccessBinding::new([5; 32]);
+        let first = AccessPolicy::first(&admin.public());
+        let digest = AccessPolicyChain::digest_of(&serde_json::to_vec(&first).unwrap());
+        let second = first.with_grant(&admin_grant(&reader), digest).unwrap();
+        let envelopes = vec![
+            AccessPolicyChain::seal(&first, &catalog, binding, &admin).unwrap(),
+            AccessPolicyChain::seal(&second, &catalog, binding, &admin).unwrap(),
+        ];
+        let chain = AccessPolicyChain::verify(&envelopes, &catalog, binding).unwrap();
+        assert_eq!(chain.policy().version, 2);
+        assert_eq!(chain.anchor(), admin.id());
+    }
+
+    #[test]
+    fn a_version_from_another_database_is_refused() {
+        let keys = Keys::new("policy-chain-other-database");
+        let admin = keys.identity("admin");
+        let catalog = ContainerCipher::from_key(&[3; 32]);
+        let first = AccessPolicy::first(&admin.public());
+        let envelopes = vec![
+            AccessPolicyChain::seal(&first, &catalog, AccessBinding::new([5; 32]), &admin).unwrap(),
+        ];
+        let error = AccessPolicyChain::verify(&envelopes, &catalog, AccessBinding::new([6; 32]))
+            .err()
+            .unwrap();
+        assert_eq!(error.code(), "EPOLICY");
     }
 }

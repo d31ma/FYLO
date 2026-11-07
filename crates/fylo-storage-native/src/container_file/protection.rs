@@ -158,6 +158,32 @@ impl ContainerFile {
         access.commit(change).map_err(ContainerError::Access)
     }
 
+    /// Make a change of the access document with `prepare`, from the newest
+    /// state another process may have written, write it to the access
+    /// slots, flush, and take it in. Returns the policy after it.
+    ///
+    /// # Errors
+    ///
+    /// `Access(NoIdentity)` for a file this open did not unlock with an
+    /// identity, `prepare`'s refusal, or the write failure.
+    pub(crate) fn change_access(
+        &mut self,
+        prepare: impl FnOnce(
+            &DatabaseAccess,
+        )
+            -> Result<crate::database_access::AccessChange, DatabaseAccessError>,
+    ) -> Result<crate::AccessPolicy, ContainerError> {
+        self.reload_access()?;
+        let access = self
+            .database_access()
+            .cloned()
+            .ok_or(ContainerError::Access(DatabaseAccessError::NoIdentity))?;
+        let change = prepare(&access).map_err(ContainerError::Access)?;
+        self.write_access_slot(&change.slot)?;
+        access.commit(change).map_err(ContainerError::Access)?;
+        Ok(access.policy())
+    }
+
     /// Refuse unless the file is not protected or this identity is an admin.
     pub(super) fn require_admin(&self) -> Result<(), ContainerError> {
         self.database_access()

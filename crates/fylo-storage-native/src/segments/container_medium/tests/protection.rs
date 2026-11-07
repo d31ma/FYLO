@@ -10,8 +10,9 @@ use fylo_identity::{Identity, KeyReference};
 use serde_json::{Value, json};
 
 use crate::{
-    AccessTrust, CollectionKind, DatabaseIdentity, DatabaseKey, DatabaseRekey, NativeRoot,
-    NativeStorageErrorCode, NativeWriteRoot, PutDocumentOptions, RootOpenOptions,
+    AccessAction, AccessGrantRequest, AccessPolicy, AccessRule, AccessTrust, CollectionKind,
+    DatabaseIdentity, DatabaseKey, DatabaseRekey, NativeRoot, NativeStorageErrorCode,
+    NativeWriteRoot, PutDocumentOptions, RootOpenOptions,
 };
 
 /// Text in every document, which must never appear in a protected file.
@@ -58,6 +59,28 @@ impl Protected {
         NativeWriteRoot::open_profiled(self.as_admin()).unwrap()
     }
 
+    /// Open as `identity`, trusting the admin as the anchor, after this
+    /// process forgets the database: one process opens it as one identity.
+    fn as_identity(&self, identity: &Identity) -> RootOpenOptions {
+        self.reopen();
+        self.options(identity, AccessTrust::Pinned(self.admin.id().clone()))
+    }
+
+    /// Grant `identity`, named `name`, `actions` on `resources` as the
+    /// admin.
+    fn grant(
+        &self,
+        name: &str,
+        identity: &Identity,
+        actions: &[AccessAction],
+        resources: &[&str],
+    ) -> AccessPolicy {
+        self.reopen();
+        self.writer()
+            .grant_access(&request(name, identity, actions, resources))
+            .unwrap()
+    }
+
     fn root(&self) -> NativeRoot {
         NativeRoot::open_profiled(self.as_admin()).unwrap()
     }
@@ -90,6 +113,38 @@ impl Drop for Protected {
 
 fn identity_in(directory: &std::path::Path, name: &str) -> Identity {
     Identity::create(&KeyReference::File(directory.join(format!("{name}.pem")))).unwrap()
+}
+
+fn request(
+    name: &str,
+    identity: &Identity,
+    actions: &[AccessAction],
+    resources: &[&str],
+) -> AccessGrantRequest {
+    AccessGrantRequest {
+        keys: vec![identity.public()],
+        label: None,
+        rule: AccessRule {
+            id: format!("{name}-rule"),
+            identity: name.to_owned(),
+            actions: actions.to_vec(),
+            resources: resources
+                .iter()
+                .map(|resource| (*resource).to_owned())
+                .collect(),
+        },
+    }
+}
+
+fn put(writer: &NativeWriteRoot, collection: &str, id: &str) {
+    writer
+        .put_document(
+            collection,
+            id,
+            order().to_string().as_bytes(),
+            PutDocumentOptions::default(),
+        )
+        .unwrap();
 }
 
 fn order() -> Value {
@@ -277,4 +332,220 @@ fn a_sealed_pack_refuses_a_protected_database() {
         .unwrap_err();
     assert_eq!(error.code(), NativeStorageErrorCode::Unsupported);
     assert!(!out.exists());
+}
+
+const SECRETS: &str = "secrets";
+const SECOND: &str = "4VRNF560002";
+
+fn write_ledger_and_secrets(database: &Protected) {
+    write_ledger(database);
+    let writer = database.writer();
+    writer
+        .create_collection(SECRETS, CollectionKind::Document, None)
+        .unwrap();
+    put(&writer, SECRETS, DOCUMENT);
+}
+
+#[test]
+fn a_reader_reads_the_collection_it_is_granted_and_nothing_else() {
+    let database = Protected::create("vdbx-protected-reader");
+    write_ledger_and_secrets(&database);
+    let reader = database.identity("reader");
+    let policy = database.grant(
+        "reader",
+        &reader,
+        &[AccessAction::Read],
+        &["collection:wombat-ledger"],
+    );
+    assert_eq!(policy.version, 2);
+    let root = NativeRoot::open_profiled(database.as_identity(&reader)).unwrap();
+    assert_eq!(
+        root.database_collection_names().unwrap(),
+        vec![LEDGER.to_owned()]
+    );
+    assert_eq!(read(&root), order());
+    let secrets = root
+        .collection(SECRETS)
+        .map(|collection| collection.read_document(DOCUMENT));
+    assert!(!matches!(secrets, Ok(Ok(_))));
+}
+
+#[test]
+fn a_reader_may_not_write() {
+    let database = Protected::create("vdbx-protected-reader-write");
+    write_ledger(&database);
+    let reader = database.identity("reader");
+    database.grant(
+        "reader",
+        &reader,
+        &[AccessAction::Read],
+        &["collection:wombat-ledger"],
+    );
+    let writer = NativeWriteRoot::open_profiled(database.as_identity(&reader)).unwrap();
+    let error = writer
+        .put_document(
+            LEDGER,
+            SECOND,
+            order().to_string().as_bytes(),
+            PutDocumentOptions::default(),
+        )
+        .unwrap_err();
+    assert_eq!(error.code(), NativeStorageErrorCode::PermissionDenied);
+}
+
+#[test]
+fn a_writer_writes_the_collection_it_is_granted() {
+    let database = Protected::create("vdbx-protected-writer");
+    write_ledger_and_secrets(&database);
+    let writer_identity = database.identity("writer");
+    database.grant(
+        "writer",
+        &writer_identity,
+        &[AccessAction::Write],
+        &["collection:wombat-ledger"],
+    );
+    let writer = NativeWriteRoot::open_profiled(database.as_identity(&writer_identity)).unwrap();
+    put(&writer, LEDGER, SECOND);
+    drop(writer);
+    let root = NativeRoot::open_profiled(database.as_identity(&database.admin)).unwrap();
+    let ids = root.collection(LEDGER).unwrap().document_ids().unwrap();
+    assert_eq!(ids.len(), 2);
+}
+
+#[test]
+fn a_grant_on_every_collection_covers_one_created_later() {
+    let database = Protected::create("vdbx-protected-every");
+    let reader = database.identity("reader");
+    database.grant("reader", &reader, &[AccessAction::Read], &["collection:*"]);
+    database.reopen();
+    write_ledger(&database);
+    let root = NativeRoot::open_profiled(database.as_identity(&reader)).unwrap();
+    assert_eq!(read(&root), order());
+}
+
+#[test]
+fn only_an_admin_grants() {
+    let database = Protected::create("vdbx-protected-not-admin");
+    write_ledger(&database);
+    let reader = database.identity("reader");
+    database.grant("reader", &reader, &[AccessAction::Read], &["collection:*"]);
+    let other = database.identity("other");
+    let writer = NativeWriteRoot::open_profiled(database.as_identity(&reader)).unwrap();
+    let error = writer
+        .grant_access(&request(
+            "other",
+            &other,
+            &[AccessAction::Read],
+            &["database"],
+        ))
+        .unwrap_err();
+    assert_eq!(error.code(), NativeStorageErrorCode::PermissionDenied);
+}
+
+#[test]
+fn a_second_admin_grants_and_its_version_is_checked() {
+    let database = Protected::create("vdbx-protected-second-admin");
+    write_ledger(&database);
+    let second = database.identity("second");
+    database.grant("second", &second, &[AccessAction::Admin], &["database"]);
+    let reader = database.identity("reader");
+    let writer = NativeWriteRoot::open_profiled(database.as_identity(&second)).unwrap();
+    let policy = writer
+        .grant_access(&request(
+            "reader",
+            &reader,
+            &[AccessAction::Read],
+            &["collection:*"],
+        ))
+        .unwrap();
+    assert_eq!(policy.version, 3);
+    drop(writer);
+    let root = NativeRoot::open_profiled(database.as_identity(&reader)).unwrap();
+    assert_eq!(read(&root), order());
+}
+
+#[test]
+fn a_revoked_identity_is_refused() {
+    let database = Protected::create("vdbx-protected-revoked");
+    write_ledger(&database);
+    let reader = database.identity("reader");
+    database.grant("reader", &reader, &[AccessAction::Read], &["collection:*"]);
+    database.reopen();
+    let policy = database.writer().revoke_access("reader-rule").unwrap();
+    assert_eq!(policy.version, 3);
+    assert!(!policy.identities.contains_key("reader"));
+    let options = database.as_identity(&reader);
+    assert_eq!(
+        database.open_code(options),
+        NativeStorageErrorCode::PermissionDenied
+    );
+}
+
+#[test]
+fn after_a_revocation_old_and_new_documents_both_read() {
+    let database = Protected::create("vdbx-protected-epochs");
+    write_ledger(&database);
+    let reader = database.identity("reader");
+    database.grant(
+        "reader",
+        &reader,
+        &[AccessAction::Read],
+        &["collection:wombat-ledger"],
+    );
+    database.reopen();
+    let writer = database.writer();
+    writer.revoke_access("reader-rule").unwrap();
+    put(&writer, LEDGER, SECOND);
+    drop(writer);
+    database.reopen();
+    let root = database.root();
+    let ledger = root.collection(LEDGER).unwrap();
+    assert_eq!(ledger.document_ids().unwrap().len(), 2);
+    assert_eq!(read(&root), order());
+    let second = ledger.read_document(SECOND).unwrap().bytes;
+    assert_eq!(serde_json::from_slice::<Value>(&second).unwrap(), order());
+}
+
+#[test]
+fn revoking_the_last_admin_is_refused() {
+    let database = Protected::create("vdbx-protected-last-admin");
+    let error = database
+        .writer()
+        .revoke_access(AccessPolicy::CREATOR_RULE)
+        .unwrap_err();
+    assert_eq!(error.code(), NativeStorageErrorCode::Policy);
+}
+
+#[test]
+fn a_rule_id_in_use_is_refused() {
+    let database = Protected::create("vdbx-protected-rule-taken");
+    let reader = database.identity("reader");
+    database.grant("reader", &reader, &[AccessAction::Read], &["collection:*"]);
+    database.reopen();
+    let error = database
+        .writer()
+        .grant_access(&request(
+            "reader",
+            &reader,
+            &[AccessAction::Write],
+            &["collection:*"],
+        ))
+        .unwrap_err();
+    assert_eq!(error.code(), NativeStorageErrorCode::Policy);
+}
+
+#[test]
+fn an_unknown_resource_is_refused() {
+    let database = Protected::create("vdbx-protected-bad-resource");
+    let reader = database.identity("reader");
+    let error = database
+        .writer()
+        .grant_access(&request(
+            "reader",
+            &reader,
+            &[AccessAction::Read],
+            &["table:orders"],
+        ))
+        .unwrap_err();
+    assert_eq!(error.code(), NativeStorageErrorCode::Policy);
 }

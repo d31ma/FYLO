@@ -16,9 +16,16 @@
   `FYLO_IDENTITY`. Without one a protected database is locked
   (`ENOIDENTITY`); an identity with no grant gets `EACCES`.
   `fylo access list <db.vdbx>` prints the identity's grants, the anchor and
-  the policy; `fylo inspect` reports `protected`. **Breaking:** `fylo
-  create` without `--admin` now needs `--unprotected` (Q2). Grants to other
-  identities, revocation and signed writes follow in later phases;
+  the policy; `fylo inspect` reports `protected`. An admin runs `fylo access
+  grant <db.vdbx> --grantee <name> --key <fpk1:...> --actions read|write|admin
+  (--collection <name> | --all-collections | --database)` and `fylo access
+  revoke <db.vdbx> --rule <id>`: each writes the next signed policy version
+  and rebuilds the keyring for it. A revocation starts a new key epoch for
+  the collections the rule covered; older data stays readable to whoever
+  kept the old key until a rekey. A `read` grant refuses writes with
+  `EACCES` (FYLO's own check until signed writes). **Breaking:** `fylo
+  create` without `--admin` now needs `--unprotected` (Q2). Signed writes
+  follow in a later phase;
   `fylo pack --sealed` and `fylo rekey` refuse a protected database for now,
   and the browser build opens one locked. New dependency `hpke` 0.15 and
   `p256`'s `ecdsa` feature, native only (reviewed in
