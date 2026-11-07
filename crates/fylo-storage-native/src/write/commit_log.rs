@@ -3,6 +3,7 @@
 mod abort_manifest;
 mod blob_reference;
 mod checkpoint_manifest;
+mod collection_access_report;
 mod collection_guard;
 mod commit_manifest;
 mod commit_plan;
@@ -27,8 +28,11 @@ mod logged_operations;
 mod logged_plan;
 mod logged_writer;
 mod move_step;
+mod pack_blockers;
 mod placed_record;
+mod record_access_group;
 mod record_image;
+mod root_access_report;
 mod salvage_report;
 mod segment_checkpoint;
 mod segment_compactor;
@@ -47,6 +51,7 @@ mod segment_verification;
 mod step_applier;
 mod update_step;
 
+pub use collection_access_report::CollectionAccessReport;
 pub(crate) use collection_guard::CollectionGuard;
 pub(crate) use commit_queue::CommitQueue;
 pub use compaction_report::CompactionReport;
@@ -56,6 +61,8 @@ pub use database_rekey::DatabaseRekey;
 pub(crate) use index_growth::IndexGrowth;
 pub use layout_migration_report::LayoutMigrationReport;
 pub(crate) use log_checkpoint::LogCheckpoint;
+pub use record_access_group::RecordAccessGroup;
+pub use root_access_report::RootAccessReport;
 pub use salvage_report::SalvageReport;
 #[cfg(test)]
 pub(crate) use segment_compactor::{CopiedHook, SegmentCompactor};

@@ -4,6 +4,16 @@
 
 ### Added
 
+- **`fylo access report <root|db.vdbx>` (ADR 0021, phase 6).** Lists what
+  a directory root or a `.vdbx` database uses today and what a move into a
+  protected database changes: per collection its layout, live and deleted
+  documents, the POSTIX access descriptors its records carry (grouped by
+  `uid`, `gid` and `mode`) and its `$encrypted` fields; the root's
+  encryption (`none`, `shared-key` or `protected`); what `fylo pack` would
+  refuse (buckets, the queue, version control, the EFS sidecar profile);
+  and the `fylo pack --protect` command to run. It reads every record and
+  writes nothing; a shared-key or protected database is reported locked
+  unless opened with its key or an identity.
 - **SQL over `.vdbx` databases (ADR 0021, decision P5-6).** `Root::sql`
   opens a `.vdbx` database, plain or protected, with its document
   collections as tables, read and written as the identity the root was

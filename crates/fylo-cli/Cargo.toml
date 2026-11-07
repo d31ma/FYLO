@@ -24,3 +24,8 @@ sha2.workspace = true
 
 [lints]
 workspace = true
+
+# The migration tests seed a root an earlier release wrote, whose record
+# files carry POSTIX access descriptors in the `user.fylo.access` xattr.
+[target.'cfg(unix)'.dev-dependencies]
+xattr.workspace = true

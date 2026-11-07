@@ -11,13 +11,14 @@ use super::database_pack_report::{DatabasePackReport, PackedCollection};
 use super::document_image::DocumentImage;
 use super::file_export::FileExport;
 use super::log_segment::LogSegment;
+use super::pack_blockers::PackBlockers;
 use super::segment_checkpoint::SegmentCheckpoint;
 use super::segment_import::SegmentImport;
 use crate::platform_companion::{read_dir_without_companions, remove_companion};
 use crate::segments::LocationState;
 use crate::{
-    DICTIONARY_TRAINING_BYTES, DatabaseKey, FilesystemProfile, NativeCollection, NativeRoot,
-    NativeStorageError, NativeStorageErrorCode, RootOpenOptions, path_exists_no_follow,
+    DICTIONARY_TRAINING_BYTES, DatabaseKey, NativeCollection, NativeRoot, NativeStorageError,
+    NativeStorageErrorCode, RootOpenOptions, path_exists_no_follow,
 };
 
 /// Converts between a directory root and a `.vdbx` database (ADR 0016
@@ -155,7 +156,7 @@ impl NativeWriteRoot {
                 names.sort();
                 names
             }
-            None => self.packed_collection_names()?,
+            None => Self::packed_collection_names(&self.root)?,
         };
         // A bare file name lives in the working directory, which the commit
         // flushes.
@@ -353,47 +354,18 @@ impl NativeWriteRoot {
     /// Refuse a root that uses what a `.vdbx` database does not hold yet
     /// (ADR 0016 section 1), naming it.
     fn require_packable(&self) -> Result<(), NativeStorageError> {
-        if self.filesystem_profile() != FilesystemProfile::Native {
-            return Err(NativeRoot::database_unsupported(
-                "cannot pack a root on the EFS sidecar profile, which has no .vdbx form",
-            ));
+        match PackBlockers::of(&self.root)?.into_iter().next() {
+            Some(blocker) => Err(NativeRoot::database_unsupported(&blocker)),
+            None => Ok(()),
         }
-        if path_exists_no_follow(&self.root.repository_root().join(".fylo-vcs"))? {
-            return Err(NativeRoot::database_unsupported(
-                "cannot pack a root that uses document version control, which a .vdbx database does not hold",
-            ));
-        }
-        if Self::first_entry(&self.root.path().join(".fylo-queue"))?.is_some() {
-            return Err(NativeRoot::database_unsupported(
-                "cannot pack a root that uses the embedded queue, which a .vdbx database does not hold",
-            ));
-        }
-        if let Some(bucket) = Self::first_entry(&self.root.path().join(".buckets"))? {
-            return Err(NativeRoot::database_unsupported(&format!(
-                "cannot pack a root that uses buckets (raw-file collections), which a .vdbx database does not hold: bucket \"{bucket}\""
-            )));
-        }
-        Ok(())
     }
 
-    /// The name of one entry of `directory`, or `None` when it is absent or
-    /// empty.
-    fn first_entry(directory: &Path) -> Result<Option<String>, NativeStorageError> {
-        if !path_exists_no_follow(directory)? {
-            return Ok(None);
-        }
-        let mut entries = read_dir_without_companions(directory).map_err(NativeStorageError::io)?;
-        entries
-            .next()
-            .transpose()
-            .map(|entry| entry.map(|entry| entry.file_name().to_string_lossy().into_owned()))
-            .map_err(NativeStorageError::io)
-    }
-
-    /// The document collections of this directory root, by name. A
+    /// The document collections of the directory root `root`, by name. A
     /// collection exists when its directory does.
-    fn packed_collection_names(&self) -> Result<Vec<String>, NativeStorageError> {
-        let directory = self.root.path().join(".collections");
+    pub(super) fn packed_collection_names(
+        root: &NativeRoot,
+    ) -> Result<Vec<String>, NativeStorageError> {
+        let directory = root.path().join(".collections");
         if !path_exists_no_follow(&directory)? {
             return Ok(Vec::new());
         }

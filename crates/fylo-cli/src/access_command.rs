@@ -5,12 +5,19 @@ use fylo_identity::PublicIdentity;
 use fylo_machine::ApplicationConfig;
 use fylo_storage_native::{
     AccessAction, AccessGrantRequest, AccessPolicy, AccessRule, DatabaseAccess, NativeRoot,
-    NativeWriteRoot, RootOpenOptions,
+    NativeWriteRoot, RootAccessReport, RootOpenOptions,
 };
 use serde_json::{Value, json};
 
-/// `fylo access list|grant|revoke <db.vdbx>` (ADR 0021), run as the
-/// configured identity:
+/// `fylo access report <root|db.vdbx>` and `fylo access list|grant|revoke
+/// <db.vdbx>` (ADR 0021):
+/// - `report` lists what a directory root or a database uses today (the
+///   POSTIX access descriptors its records carry, its encryption) and what
+///   `fylo pack --protect` would change; it reads every record and writes
+///   nothing, and opens the root with the configured key and identity, if
+///   any.
+///
+/// The other three run as the configured identity:
 /// - `list` prints what the identity may do, the trust anchor that created
 ///   the database, and the newest policy;
 /// - `grant --grantee <name> --key <fpk1:...> --actions <read,write,admin>`
@@ -24,7 +31,9 @@ use serde_json::{Value, json};
 pub struct AccessCommand;
 
 impl AccessCommand {
-    const USAGE: &'static str = "Usage:\n  fylo access list <db.vdbx>\n  fylo access grant <db.vdbx> --grantee <name> --key <fpk1:...> --actions <read|write|admin>[,...] (--collection <name> | --all-collections | --database) [--rule <id>] [--label <text>]\n  fylo access revoke <db.vdbx> --rule <id>\nEach runs as --identity <reference> with --trust-anchor <fid1:...> or --trust-on-first-use.";
+    const COMMANDS: [&'static str; 4] = ["report", "list", "grant", "revoke"];
+
+    const USAGE: &'static str = "Usage:\n  fylo access report <root|db.vdbx>\n  fylo access list <db.vdbx>\n  fylo access grant <db.vdbx> --grantee <name> --key <fpk1:...> --actions <read|write|admin>[,...] (--collection <name> | --all-collections | --database) [--rule <id>] [--label <text>]\n  fylo access revoke <db.vdbx> --rule <id>\nEach runs as --identity <reference> with --trust-anchor <fid1:...> or --trust-on-first-use.";
 
     /// Run `fylo access` with all its arguments and its positional
     /// arguments after `access`.
@@ -42,6 +51,7 @@ impl AccessCommand {
         let (command, path) = Self::command(positionals)?;
         let options = application.with_database_access(RootOpenOptions::new(path));
         let rendered = match command {
+            "report" => Self::report(options)?,
             "list" => Self::list(options, path)?,
             "grant" => {
                 Self::policy(&Self::writer(options)?.grant_access(&Self::request(arguments)?))?
@@ -55,7 +65,7 @@ impl AccessCommand {
 
     fn command(positionals: &[String]) -> Result<(&str, &Path), String> {
         match positionals {
-            [command, path] if ["list", "grant", "revoke"].contains(&command.as_str()) => {
+            [command, path] if Self::COMMANDS.contains(&command.as_str()) => {
                 Ok((command.as_str(), Path::new(path)))
             }
             _ => Err(Self::USAGE.to_owned()),
@@ -66,6 +76,12 @@ impl AccessCommand {
         let root = NativeRoot::open_profiled(options).map_err(|error| error.to_string())?;
         let access = Self::access(&root, path)?;
         Ok(Self::render(&access))
+    }
+
+    fn report(options: RootOpenOptions) -> Result<Value, String> {
+        let root = NativeRoot::open_profiled(options).map_err(|error| error.to_string())?;
+        let report = RootAccessReport::of(&root).map_err(|error| error.to_string())?;
+        serde_json::to_value(report).map_err(|error| error.to_string())
     }
 
     fn writer(options: RootOpenOptions) -> Result<NativeWriteRoot, String> {

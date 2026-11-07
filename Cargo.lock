@@ -755,6 +755,7 @@ dependencies = [
  "fylo-storage-native",
  "serde_json",
  "sha2",
+ "xattr",
 ]
 
 [[package]]

@@ -134,9 +134,9 @@ pub use write::schema_counts::SchemaVersionCounts;
 pub use write::schema_registry::{MAX_SCHEMA_VERSION_BYTES, utc_timestamp};
 pub use write::version::RepositoryStatus;
 pub use write::{
-    CompactionReport, DatabaseCompactionReport, DatabasePackReport, DatabaseRekey,
-    DatabaseSalvageReport, LayoutMigrationReport, PackedCollection, SalvageReport,
-    SegmentVerification,
+    CollectionAccessReport, CompactionReport, DatabaseCompactionReport, DatabasePackReport,
+    DatabaseRekey, DatabaseSalvageReport, LayoutMigrationReport, PackedCollection,
+    RecordAccessGroup, RootAccessReport, SalvageReport, SegmentVerification,
 };
 pub use write::{
     DocumentCodec, DocumentWrite, NativeWriteRoot, PlainDocumentCodec, PutDocumentOptions,
