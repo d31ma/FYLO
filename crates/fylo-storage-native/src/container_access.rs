@@ -55,7 +55,7 @@ pub enum ContainerWriteAccess {
     /// The lock-free lease: this process is the only writer.
     Lease {
         /// The lease file.
-        lease: ContainerLease,
+        lease: Box<ContainerLease>,
         /// The lease byte held exclusive, where the filesystem grants locks.
         lease_byte: Option<ByteLockGuard>,
     },
@@ -195,7 +195,10 @@ impl ContainerFile {
             // Writer and allocation bytes are then decided in this process
             // alone, so its threads still exclude each other.
             handle.set_process_local(true);
-            ContainerWriteAccess::Lease { lease, lease_byte }
+            ContainerWriteAccess::Lease {
+                lease: Box::new(lease),
+                lease_byte,
+            }
         };
         Ok((Self::from_handle(handle, true)?, access))
     }
