@@ -262,6 +262,7 @@ impl ContainerDatabase {
         &self,
         prepare: impl FnOnce(
             &crate::DatabaseAccess,
+            &std::collections::BTreeMap<u32, u64>,
         )
             -> Result<crate::database_access::AccessChange, crate::DatabaseAccessError>,
     ) -> Result<crate::AccessPolicy, NativeStorageError> {

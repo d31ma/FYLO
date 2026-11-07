@@ -51,7 +51,23 @@ impl SegmentStore {
         };
         let table =
             TableCache::shared().table_beyond(&*medium, slot.table_epoch, (cached, written))?;
+        Self::require_signed(&table)?;
         Ok(Self::with(medium, table))
+    }
+
+    /// Refuse to write after a record of a protected database that is not
+    /// signed by an identity that could write it (ADR 0021): readers stop
+    /// there, so what a writer added past it would never be read.
+    fn require_signed(table: &LocationTable) -> Result<(), NativeStorageError> {
+        match table.damage() {
+            Some(_) => Err(NativeStorageError::new(
+                crate::NativeStorageErrorCode::Signature,
+                "the collection's log holds a record not signed by an identity that could write \
+                 it (ESIGNATURE); it reads as it stood before that record, and takes no writes \
+                 until it is repaired",
+            )),
+            None => Ok(()),
+        }
     }
 
     fn with(medium: Arc<dyn SegmentMedium>, table: Arc<LocationTable>) -> Self {

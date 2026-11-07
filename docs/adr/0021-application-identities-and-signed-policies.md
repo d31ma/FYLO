@@ -131,9 +131,8 @@ What a protected `.vdbx` file holds, in addition to ADR 0016:
   refused.
 - **Grants in phase 3.** An admin may add and drop collections; changing a
   collection's descriptor needs `write` on it; sealing any unit of a
-  collection needs `write` on it. Until signed writes (phase 4), the write
-  checks are FYLO's own code: a process that holds a collection key could
-  seal a frame without them.
+  collection needs `write` on it. Phase 4 backs the write grant with a
+  signature on every record.
 - **Grants and revocation.** `fylo access grant` and `fylo access revoke`,
   run as an admin, write the next policy version, signed by that admin, and
   rebuild the keyring from it: the catalog key for every identity a rule
@@ -153,6 +152,58 @@ What a protected `.vdbx` file holds, in addition to ADR 0016:
       it may seal units with the epoch it holds.
     - A frame of a collection the identity has no key for stops a scan as
       unreadable, never as a torn tail, and reads fail with `EACCES`.
+- **Signed records (phase 4).** Every record frame of a protected file
+  (commits, aborts, checkpoints, compactions and schema versions) is signed
+  by the identity that wrote it.
+    - The stored body's header byte gets flag `0x40`, and a 97-byte trailer
+      follows the stored bytes: a signer kind (1, an identity key), the
+      signer's fingerprint (the 32 bytes its `fid1:` identifier encodes) and
+      an ECDSA P-256 signature over `fylo.frame/1\0`, the database id, the
+      collection id, the record's LSN and the SHA-256 of the stored bytes
+      before the trailer. The frame's length and CRC cover the trailer.
+    - A checkpoint is signed as the `Checkpoint` record it appends, whose
+      manifest names the snapshots' SHA-256; the checkpoint slot itself has
+      no room for a signature.
+    - A reader accepts a frame when its signer is a key some policy version
+      names, the signature verifies, and that key could write the
+      collection at that LSN: under the newest version whose revocation
+      boundary for the collection is at or before the LSN, or a later one.
+      A revocation records, in the version it writes, each covered
+      collection's next LSN as that boundary (`boundaries`), so a revoked
+      writer's earlier records stay valid and its later ones do not.
+    - A frame that fails is `ESIGNATURE`. It is never cut as a torn tail. A
+      reader reads the collection as it stood before the first such record;
+      a writer refuses to write past it, since readers would stop before
+      what it added. `fylo verify <db.vdbx>` run with an identity checks
+      every frame's signature (`badSignature`); without one it checks only
+      the structures, as before.
+    - Compaction and checkpoints sign what they write, so a compactor needs
+      `write` on the collection.
+    - A process remembers the frames it verified (and signed), so a record
+      is checked once per process. Measured on this Mac (Apple M4, release,
+      software keys): ECDSA P-256 sign 93 µs and verify 94 µs at p50; a
+      durable put 202 µs protected against 106 µs plain and 107 µs
+      encrypted with a shared key; an open and list of a 400-document
+      collection 542 µs protected against 58 µs plain, the difference being
+      the one-time key unwraps and policy-chain check.
+    - **Session certificates wait for hardware keys (phase 8).** With
+      software keys, which version 1 uses (Q8), a session key costs the same
+      per signature as the identity key, and a certificate needs storage the
+      access slots would fill. The signer-kind byte leaves room for them; a
+      build that predates a new kind refuses its frames.
+    - **Not covered:** rollback (a whole older copy of the file), and a
+      location or index snapshot rewritten by a process that holds the
+      collection key while the checkpoint record names the old digests:
+      writers' recovery compares them, readers trust the slot.
+- **The catalog key is not rotated on revocation** (phase 3's gap, kept).
+  Rotating it means re-sealing every directory block and policy version and
+  changing the superblock's key-check value, three writes a crash can
+  separate; doing it crash-safe needs either a second catalog key readers
+  try during the change or the whole-file rewrite of `fylo rekey`. What it
+  protects is collection names and the policy text, from an identity that
+  kept the old key; the records stay under collection keys whose epochs do
+  rotate. It waits for the protected `fylo rekey` (phase 7), which rewrites
+  the file under fresh keys anyway.
 - **Not yet.** `fylo pack --sealed` and `fylo rekey` refuse a protected
   database (phases 6 and 7). The browser build has no identities (phase 5)
   and opens a protected file locked; P-256, ECDSA and HPKE stay out of

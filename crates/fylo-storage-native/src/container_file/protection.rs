@@ -2,6 +2,7 @@
 //! directory extent, the unlock with an application identity, and the
 //! checks that directory changes make against its grants.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -170,6 +171,7 @@ impl ContainerFile {
         &mut self,
         prepare: impl FnOnce(
             &DatabaseAccess,
+            &BTreeMap<u32, u64>,
         )
             -> Result<crate::database_access::AccessChange, DatabaseAccessError>,
     ) -> Result<crate::AccessPolicy, ContainerError> {
@@ -178,10 +180,27 @@ impl ContainerFile {
             .database_access()
             .cloned()
             .ok_or(ContainerError::Access(DatabaseAccessError::NoIdentity))?;
-        let change = prepare(&access).map_err(ContainerError::Access)?;
+        let next_lsns = self.next_lsns()?;
+        let change = prepare(&access, &next_lsns).map_err(ContainerError::Access)?;
         self.write_access_slot(&change.slot)?;
         access.commit(change).map_err(ContainerError::Access)?;
         Ok(access.policy())
+    }
+
+    /// Each live collection's next LSN, from its generation slot as the
+    /// file holds it now; a collection that has published none is left out.
+    fn next_lsns(&self) -> Result<BTreeMap<u32, u64>, ContainerError> {
+        let mut next = BTreeMap::new();
+        for collection in self
+            .collections
+            .iter()
+            .filter(|collection| !collection.header.dropped)
+        {
+            if let Some(slot) = self.read_generation(collection.block)? {
+                next.insert(collection.header.id, slot.next_lsn);
+            }
+        }
+        Ok(next)
     }
 
     /// Refuse unless the file is not protected or this identity is an admin.

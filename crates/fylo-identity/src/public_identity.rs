@@ -48,6 +48,14 @@ impl PublicIdentity {
         &self.id
     }
 
+    /// The SHA-256 of the SEC1 uncompressed public key: the bytes the
+    /// identifier is the base32 of.
+    #[must_use]
+    pub fn fingerprint(&self) -> [u8; 32] {
+        use sha2::{Digest as _, Sha256};
+        Sha256::digest(self.public_key.to_sec1_point(false).as_bytes()).into()
+    }
+
     /// The P-256 public key.
     #[must_use]
     pub fn public_key(&self) -> &PublicKey {

@@ -49,6 +49,10 @@ const STORED_OVERHEAD: usize = 1 + 4 + NONCE_BYTES + TAG_BYTES;
 /// Bytes of the LSN that opens every record body.
 const LSN_BYTES: usize = 8;
 
+/// Bytes of the signature trailer every frame of a protected file carries
+/// (ADR 0021): signer kind, fingerprint, ECDSA P-256 signature.
+const SIGNATURE_BYTES: usize = 1 + 32 + 64;
+
 /// Where a collection's dictionaries are kept, for one a record names that
 /// this process has not loaded: another process trained it since, or this
 /// process has only just opened the file.
@@ -256,6 +260,38 @@ impl ContainerFrames {
         }
     }
 
+    /// `stored` signed by the identity this protected file was opened with;
+    /// as it is in any other file.
+    #[cfg(not(target_family = "wasm"))]
+    fn signed(&self, lsn: u64, stored: Vec<u8>) -> Vec<u8> {
+        match self.cipher.as_ref().and_then(|cipher| cipher.access()) {
+            Some(access) => access.sign_frame(self.collection, lsn, stored),
+            None => stored,
+        }
+    }
+
+    #[cfg(target_family = "wasm")]
+    #[allow(clippy::unused_self)]
+    fn signed(&self, _lsn: u64, stored: Vec<u8>) -> Vec<u8> {
+        stored
+    }
+
+    /// The stored bytes before a protected file's signature trailer, once
+    /// the signature checks out; any other file's as they are.
+    #[cfg(not(target_family = "wasm"))]
+    fn verified<'a>(&self, stored: &'a [u8]) -> Result<&'a [u8], LogFormatError> {
+        match self.cipher.as_ref().and_then(|cipher| cipher.access()) {
+            Some(access) => access.verify_frame(self.collection, stored),
+            None => Ok(stored),
+        }
+    }
+
+    #[cfg(target_family = "wasm")]
+    #[allow(clippy::unnecessary_wraps, clippy::unused_self)]
+    fn verified<'a>(&self, stored: &'a [u8]) -> Result<&'a [u8], LogFormatError> {
+        Ok(stored)
+    }
+
     /// A stored body's failure as a scan sees it. What this build cannot
     /// read is `UnsupportedVersion`, never damage: a sealed body in a file
     /// opened without a key included. A body that does not open with the
@@ -304,13 +340,16 @@ impl LogBodyCodec for ContainerFrames {
             let (lsn, rest) = body
                 .split_first_chunk::<LSN_BYTES>()
                 .ok_or(ContainerRecordError::Malformed)?;
-            let context = self.context(u64::from_le_bytes(*lsn));
-            ContainerStoredBody::encode(codec, Some(cipher), context, rest, lz4)
+            let lsn = u64::from_le_bytes(*lsn);
+            let stored =
+                ContainerStoredBody::encode(codec, Some(cipher), self.context(lsn), rest, lz4)?;
+            Ok(self.signed(lsn, stored))
         })
         .map_err(|error| Self::format_error(&error))
     }
 
     fn load<'a>(&self, stored: &'a [u8]) -> Result<Cow<'a, [u8]>, LogFormatError> {
+        let stored = self.verified(stored)?;
         let parsed =
             ContainerStoredBody::parse(stored).map_err(|error| Self::format_error(&error))?;
         if self.cipher.is_none()
@@ -335,7 +374,7 @@ impl LogBodyCodec for ContainerFrames {
     }
 
     fn stored_bytes(&self) -> RangeInclusive<usize> {
-        1..=LogRecord::MAX_BODY_BYTES + STORED_OVERHEAD
+        1..=LogRecord::MAX_BODY_BYTES + STORED_OVERHEAD + SIGNATURE_BYTES
     }
 
     /// The stored bytes the length names, or all that follow when it

@@ -1556,7 +1556,9 @@ impl Session {
     fn verify_database(&self, path: &Path) -> Result<Value, MachineError> {
         let report = fylo_storage_native::ContainerFile::open_reader(path)
             .and_then(|mut container| {
-                if container.is_sealed()
+                if container.is_protected() {
+                    self.unlock_for_report(&mut container)?;
+                } else if container.is_sealed()
                     && let Some(key) = &self.config.database_key
                 {
                     container.unlock_with_key(key)?;

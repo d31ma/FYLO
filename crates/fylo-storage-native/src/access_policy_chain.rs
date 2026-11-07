@@ -19,6 +19,7 @@ pub(crate) struct AccessPolicyChain {
     policy: AccessPolicy,
     bytes: Vec<u8>,
     anchor: IdentityId,
+    versions: Vec<AccessPolicy>,
 }
 
 impl AccessPolicyChain {
@@ -68,6 +69,11 @@ impl AccessPolicyChain {
         &self.policy
     }
 
+    /// Every version, oldest first.
+    pub(crate) fn versions(&self) -> &[AccessPolicy] {
+        &self.versions
+    }
+
     pub(crate) fn anchor(&self) -> &IdentityId {
         &self.anchor
     }
@@ -90,6 +96,7 @@ impl AccessPolicyChain {
             &binding.policy_message(&bytes),
         )?;
         Ok(AccessPolicyChain {
+            versions: vec![policy.clone()],
             policy,
             bytes,
             anchor,
@@ -109,10 +116,13 @@ impl AccessPolicyChain {
             &self.policy.admin_keys(),
             &binding.policy_message(&bytes),
         )?;
+        let mut versions = self.versions;
+        versions.push(policy.clone());
         Ok(AccessPolicyChain {
             policy,
             bytes,
             anchor: self.anchor,
+            versions,
         })
     }
 

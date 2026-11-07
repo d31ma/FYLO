@@ -111,7 +111,7 @@ fn an_unknown_codec_is_refused_as_a_newer_format_never_as_damage() {
     let frames = ContainerFrames::new(2, Vec::new(), 0);
     let large = record(document(3).repeat(3).as_bytes());
     let mut stored = frame(&frames, &large)[HEADER..].to_vec();
-    for header in [0x03, 0x0F, 0x41] {
+    for header in [0x03, 0x0F, 0x81] {
         stored[0] = header;
         let unknown = frame_of(&stored);
         assert_eq!(

@@ -474,6 +474,7 @@ fn a_revoked_identity_is_refused() {
     let policy = database.writer().revoke_access("reader-rule").unwrap();
     assert_eq!(policy.version, 3);
     assert!(!policy.identities.contains_key("reader"));
+    assert_eq!(policy.boundaries.len(), 1);
     let options = database.as_identity(&reader);
     assert_eq!(
         database.open_code(options),
@@ -548,4 +549,259 @@ fn an_unknown_resource_is_refused() {
         ))
         .unwrap_err();
     assert_eq!(error.code(), NativeStorageErrorCode::Policy);
+}
+
+/// Rewrite every record frame the admin signed in the file: `mutate`
+/// changes its stored bytes in place, and the frame's checksum is written
+/// again, so the frame reads as whole and only its signature is wrong.
+/// Returns how many frames it rewrote.
+fn rewrite_signed_frames(database: &Protected, mutate: impl Fn(&mut [u8])) -> usize {
+    rewrite_frames(database, &[], mutate)
+}
+
+/// As [`rewrite_signed_frames`], for the signed frames whose last bytes
+/// differ from `before`, the file as it was: the frames written since.
+fn rewrite_frames(database: &Protected, before: &[u8], mutate: impl Fn(&mut [u8])) -> usize {
+    database.reopen();
+    let fingerprint = database.admin.public().fingerprint();
+    let mut bytes = std::fs::read(database.path()).unwrap();
+    let ends: Vec<usize> = bytes
+        .windows(fingerprint.len())
+        .enumerate()
+        .filter(|(_, window)| *window == fingerprint)
+        .map(|(at, _)| at + fingerprint.len() + 64)
+        .filter(|end| before.get(end - 64..*end) != bytes.get(end - 64..*end))
+        .collect();
+    let mut rewritten = 0;
+    for end in ends {
+        let Some(start) = (end.saturating_sub(1 << 20)..end.saturating_sub(8))
+            .rev()
+            .find(|start| frame_ends_at(&bytes, *start, end))
+        else {
+            continue;
+        };
+        mutate(&mut bytes[start + 8..end]);
+        let checksum = fylo_format::Crc32c::checksum(&bytes[start + 8..end]);
+        bytes[start + 4..start + 8].copy_from_slice(&checksum.to_le_bytes());
+        rewritten += 1;
+    }
+    std::fs::write(database.path(), bytes).unwrap();
+    rewritten
+}
+
+fn frame_ends_at(bytes: &[u8], start: usize, end: usize) -> bool {
+    let length = u32::from_le_bytes(bytes[start..start + 4].try_into().unwrap());
+    let checksum = u32::from_le_bytes(bytes[start + 4..start + 8].try_into().unwrap());
+    usize::try_from(length).is_ok_and(|length| start + 8 + length == end)
+        && fylo_format::Crc32c::checksum(&bytes[start + 8..end]) == checksum
+}
+
+fn read_code(database: &Protected) -> NativeStorageErrorCode {
+    database.reopen();
+    let root = database.root();
+    root.collection(LEDGER)
+        .and_then(|ledger| ledger.read_document(DOCUMENT).map(|_| ()))
+        .unwrap_err()
+        .code()
+}
+
+#[test]
+fn every_record_of_a_protected_database_is_signed() {
+    let database = Protected::create("vdbx-protected-signed");
+    write_ledger(&database);
+    assert!(rewrite_signed_frames(&database, |_| ()) >= 2);
+    database.reopen();
+    assert_eq!(read(&database.root()), order());
+}
+
+#[test]
+fn a_record_whose_signature_was_changed_is_refused() {
+    let database = Protected::create("vdbx-protected-forged");
+    write_ledger(&database);
+    let last = |stored: &mut [u8]| {
+        let at = stored.len() - 1;
+        stored[at] ^= 0x01;
+    };
+    assert!(rewrite_signed_frames(&database, last) >= 2);
+    assert_eq!(read_code(&database), NativeStorageErrorCode::Signature);
+}
+
+#[test]
+fn a_record_stripped_of_its_signed_flag_is_refused() {
+    let database = Protected::create("vdbx-protected-unsigned");
+    write_ledger(&database);
+    let unsigned = |stored: &mut [u8]| stored[0] &= !crate::container_record::SIGNED;
+    assert!(rewrite_signed_frames(&database, unsigned) >= 2);
+    assert_eq!(read_code(&database), NativeStorageErrorCode::Signature);
+}
+
+#[test]
+fn verify_with_the_identity_reports_a_bad_signature() {
+    let database = Protected::create("vdbx-protected-verify");
+    write_ledger(&database);
+    let last = |stored: &mut [u8]| {
+        let at = stored.len() - 1;
+        stored[at] ^= 0x01;
+    };
+    rewrite_signed_frames(&database, last);
+    let mut file = crate::ContainerFile::open_reader(&database.path()).unwrap();
+    let identity = DatabaseIdentity::new(
+        Identity::open(database.admin.reference()).unwrap(),
+        AccessTrust::Pinned(database.admin.id().clone()),
+    );
+    file.unlock_with_identity(&identity).unwrap();
+    let report = file.verify().unwrap();
+    assert!(!report.ok);
+    assert!(
+        report
+            .problems
+            .iter()
+            .any(|problem| problem.code == "badSignature")
+    );
+}
+
+#[test]
+fn verify_with_the_identity_passes_a_signed_database() {
+    let database = Protected::create("vdbx-protected-verify-ok");
+    write_ledger(&database);
+    database.reopen();
+    let mut file = crate::ContainerFile::open_reader(&database.path()).unwrap();
+    let identity = DatabaseIdentity::new(
+        Identity::open(database.admin.reference()).unwrap(),
+        AccessTrust::Pinned(database.admin.id().clone()),
+    );
+    file.unlock_with_identity(&identity).unwrap();
+    let report = file.verify().unwrap();
+    assert!(report.ok, "{:?}", report.problems);
+}
+
+#[test]
+fn compaction_signs_the_records_it_rewrites() {
+    let database = Protected::create("vdbx-protected-compaction");
+    write_ledger(&database);
+    let writer = database.writer();
+    put(&writer, LEDGER, SECOND);
+    writer.delete_document(LEDGER, SECOND, None).unwrap();
+    writer.compact_collection(LEDGER).unwrap();
+    drop(writer);
+    database.reopen();
+    assert_eq!(read(&database.root()), order());
+    let mut file = crate::ContainerFile::open_reader(&database.path()).unwrap();
+    let identity = DatabaseIdentity::new(
+        Identity::open(database.admin.reference()).unwrap(),
+        AccessTrust::Pinned(database.admin.id().clone()),
+    );
+    file.unlock_with_identity(&identity).unwrap();
+    assert!(file.verify().unwrap().ok);
+}
+
+#[test]
+fn records_before_a_bad_signature_read_and_writes_past_it_are_refused() {
+    let database = Protected::create("vdbx-protected-fallback");
+    write_ledger(&database);
+    database.reopen();
+    let before = std::fs::read(database.path()).unwrap();
+    put(&database.writer(), LEDGER, SECOND);
+    let flip = |stored: &mut [u8]| {
+        let at = stored.len() - 1;
+        stored[at] ^= 0x01;
+    };
+    assert!(rewrite_frames(&database, &before, flip) >= 1);
+    database.reopen();
+    let root = database.root();
+    assert_eq!(read(&root), order());
+    let ids = root.collection(LEDGER).unwrap().document_ids().unwrap();
+    assert_eq!(ids, vec![DOCUMENT.to_owned()]);
+    drop(root);
+    database.reopen();
+    let writer = NativeWriteRoot::open_profiled(database.as_admin()).unwrap();
+    let third = order().to_string();
+    let refused = writer
+        .put_document(
+            LEDGER,
+            "4VRNF560003",
+            third.as_bytes(),
+            PutDocumentOptions::default(),
+        )
+        .unwrap_err();
+    assert_eq!(refused.code(), NativeStorageErrorCode::Signature);
+}
+
+/// Per-commit and open costs of a protected database against a plain and a
+/// key-encrypted one (ADR 0021, phase 4). Run in release with
+/// `--run-ignored only --no-capture`; it prints, it asserts nothing about
+/// speed.
+#[test]
+#[ignore = "a measurement, run by hand in release"]
+fn measure_protected_costs() {
+    const PUTS: usize = 400;
+    const OPENS: usize = 40;
+    let identity = Protected::create("vdbx-cost-sign").identity("signer");
+    let message = [7_u8; 120];
+    let signed = time_each(1000, || {
+        std::hint::black_box(identity.sign(&message));
+    });
+    let signature = identity.sign(&message);
+    let public = identity.public();
+    let verified = time_each(1000, || public.verify(&message, &signature).unwrap());
+    println!("ecdsa p256 sign: {}", summary(&signed));
+    println!("ecdsa p256 verify: {}", summary(&verified));
+    for mode in ["plain", "encrypted", "protected"] {
+        let database = Protected::create(&format!("vdbx-cost-{mode}"));
+        let options = cost_options(&database, mode);
+        let writer = NativeWriteRoot::open_profiled(options.clone()).unwrap();
+        writer
+            .create_collection(LEDGER, CollectionKind::Document, None)
+            .unwrap();
+        let mut number = 0;
+        let puts = time_each(PUTS, || {
+            number += 1;
+            let id = format!("4VRNF5{:05}", 10_000 + number);
+            put(&writer, LEDGER, &id);
+        });
+        drop(writer);
+        let opens = time_each(OPENS, || {
+            database.reopen();
+            let root = NativeRoot::open_profiled(options.clone()).unwrap();
+            root.collection(LEDGER).unwrap().document_ids().unwrap();
+        });
+        println!("{mode} durable put: {}", summary(&puts));
+        println!("{mode} open and list {PUTS} documents: {}", summary(&opens));
+    }
+}
+
+fn cost_options(database: &Protected, mode: &str) -> RootOpenOptions {
+    let path = database.directory.join(format!("{mode}.vdbx"));
+    let key = DatabaseKey::new(vec![b'k'; 32]);
+    match mode {
+        "plain" => NativeRoot::create_database(&path).unwrap(),
+        "encrypted" => NativeRoot::create_encrypted_database(&path, &key).unwrap(),
+        _ => NativeRoot::create_protected_database(&path, &database.admin).unwrap(),
+    }
+    let options = RootOpenOptions::new(&path);
+    match mode {
+        "plain" => options,
+        "encrypted" => options.with_database_key(key),
+        _ => options.with_identity(DatabaseIdentity::new(
+            Identity::open(database.admin.reference()).unwrap(),
+            AccessTrust::Pinned(database.admin.id().clone()),
+        )),
+    }
+}
+
+fn time_each(count: usize, mut work: impl FnMut()) -> Vec<std::time::Duration> {
+    (0..count)
+        .map(|_| {
+            let started = std::time::Instant::now();
+            work();
+            started.elapsed()
+        })
+        .collect()
+}
+
+fn summary(times: &[std::time::Duration]) -> String {
+    let mut sorted = times.to_vec();
+    sorted.sort();
+    let at = |percent: usize| sorted[(sorted.len() - 1) * percent / 100];
+    format!("p50 {:?}, p95 {:?}, n {}", at(50), at(95), sorted.len())
 }

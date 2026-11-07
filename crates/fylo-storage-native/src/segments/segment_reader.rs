@@ -84,6 +84,13 @@ impl SegmentReader {
                  (EVDBX_CORRUPT); `fylo verify` reports which"
             )),
             LogFormatError::Denied => Self::denied(what),
+            LogFormatError::BadSignature => NativeStorageError::new(
+                NativeStorageErrorCode::Signature,
+                format!(
+                    "{what} is not signed by an identity that could write its collection \
+                     (ESIGNATURE)"
+                ),
+            ),
             LogFormatError::Unauthenticated => Self::corrupt(&format!(
                 "{what} does not open with the database key: it was altered, or moved \
                  from another collection or record (EVDBX_CORRUPT)"

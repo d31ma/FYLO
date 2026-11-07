@@ -26,7 +26,10 @@ use crate::{
 const CODEC_MASK: u8 = 0x0F;
 const HAS_DICTIONARY: u8 = 0x10;
 const SEALED: u8 = 0x20;
-const KNOWN_FLAGS: u8 = CODEC_MASK | HAS_DICTIONARY | SEALED;
+/// A protected file's frame: a signature trailer follows the stored bytes
+/// (ADR 0021). The frame's reader takes it off before it parses the rest.
+pub(crate) const SIGNED: u8 = 0x40;
+const KNOWN_FLAGS: u8 = CODEC_MASK | HAS_DICTIONARY | SEALED | SIGNED;
 const DICTIONARY_ID_BYTES: usize = 4;
 const LSN_BYTES: usize = 8;
 

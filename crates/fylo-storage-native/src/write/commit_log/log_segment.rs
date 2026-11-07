@@ -337,6 +337,9 @@ impl LogSegment {
             if error == fylo_format::LogFormatError::Denied {
                 return crate::segments::SegmentReader::denied("the record");
             }
+            if error == fylo_format::LogFormatError::BadSignature {
+                return crate::segments::SegmentReader::frame_error(error, "the record");
+            }
             NativeStorageError::new(
                 NativeStorageErrorCode::FileTooLarge,
                 format!("write-ahead log record cannot be encoded: {error}"),

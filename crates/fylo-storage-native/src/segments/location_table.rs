@@ -31,7 +31,25 @@ pub(crate) struct LocationTable {
 impl LocationTable {
     /// Load the snapshot and lay over it the rows up to `reach`: the log's
     /// first bytes, or the records from the snapshot's position.
+    ///
+    /// In a protected database (ADR 0021) a record that is not signed by an
+    /// identity that could write it ends the replay instead of failing the
+    /// load: the table is the collection as it stood before that record,
+    /// which readers read. Writers never get there, since recovery refuses
+    /// the record with `ESIGNATURE`, and `fylo verify` reports it.
     pub(crate) fn load(
+        medium: &dyn SegmentMedium,
+        reach: TableReach,
+    ) -> Result<Self, NativeStorageError> {
+        match Self::load_whole(medium, reach) {
+            Err(error) if error.code() == crate::NativeStorageErrorCode::Signature => {
+                Self::load_salvaging(medium, reach)
+            }
+            loaded => loaded,
+        }
+    }
+
+    fn load_whole(
         medium: &dyn SegmentMedium,
         reach: TableReach,
     ) -> Result<Self, NativeStorageError> {
@@ -101,6 +119,29 @@ impl LocationTable {
         self.damage.get_or_insert(at);
     }
 
+    /// [`Self::replay`], except that in a protected database a record that
+    /// is not signed by an identity that could write it ends the replay,
+    /// marking the table damaged there, as [`Self::load`] does. A table
+    /// already damaged takes no more rows.
+    fn replay_signed(
+        &mut self,
+        medium: &dyn SegmentMedium,
+        range: (
+            crate::segments::RecordPosition,
+            crate::segments::RecordPosition,
+        ),
+    ) -> Result<(), NativeStorageError> {
+        if self.damage.is_some() {
+            return Ok(());
+        }
+        match self.replay(medium, range) {
+            Err(error) if error.code() == crate::NativeStorageErrorCode::Signature => {
+                self.replay_salvaging(medium, range)
+            }
+            replayed => replayed,
+        }
+    }
+
     /// Apply the rows between the reach already applied and `reach`: the
     /// log's rows up to that length, or the rows the records up to that
     /// position derive. A reach not past the applied one changes nothing.
@@ -117,7 +158,7 @@ impl LocationTable {
                 }
             }
             (TableReach::Records(applied), TableReach::Records(position)) if applied < position => {
-                self.replay(medium, (applied, position))?;
+                self.replay_signed(medium, (applied, position))?;
             }
             _ => return Ok(()),
         }

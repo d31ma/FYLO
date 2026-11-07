@@ -420,3 +420,12 @@ fn grant_needs_exactly_one_resource() {
     ));
     assert!(refused.contains("exactly one"), "{refused}");
 }
+
+#[test]
+fn verify_with_the_identity_checks_every_signature() {
+    let fixture = Fixture::new("verify-signed");
+    let admin = fixture.protected();
+    write_user(&fixture, &admin);
+    let report = json(&fixture.as_admin(&admin, &["verify", "app.vdbx"]));
+    assert_eq!(report["ok"], true, "{report}");
+}

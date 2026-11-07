@@ -3098,6 +3098,9 @@ pub enum NativeStorageErrorCode {
     /// A protected `.vdbx` database was opened without an identity
     /// (ADR 0021).
     NoIdentity,
+    /// A record of a protected `.vdbx` database is not signed by an
+    /// identity that could write its collection there (ADR 0021).
+    Signature,
     /// A protected `.vdbx` database's policy is missing, unsigned, or not
     /// signed by the pinned trust anchor, or no anchor was pinned
     /// (ADR 0021).
@@ -3134,6 +3137,7 @@ impl NativeStorageErrorCode {
             Self::KeyRequired => "EKEY",
             Self::NoIdentity => "ENOIDENTITY",
             Self::Policy => "EPOLICY",
+            Self::Signature => "ESIGNATURE",
         }
     }
 }

@@ -12,6 +12,7 @@ pub(crate) struct AccessBinding {
 impl AccessBinding {
     const WRAP_LABEL: &'static [u8] = b"fylo.vdbx.key/1\0";
     const POLICY_LABEL: &'static [u8] = b"fylo.policy/1\0";
+    const FRAME_LABEL: &'static [u8] = b"fylo.frame/1\0";
     const CATALOG_SCOPE: u8 = 1;
     const COLLECTION_SCOPE: u8 = 2;
 
@@ -25,6 +26,20 @@ impl AccessBinding {
 
     pub(crate) fn collection_info(self, collection: u32, epoch: u32) -> Vec<u8> {
         self.wrap_info(Self::COLLECTION_SCOPE, collection, epoch)
+    }
+
+    /// What a record frame's signature covers: this database, the
+    /// collection, the record's LSN and the SHA-256 of the frame's stored
+    /// bytes before the signature.
+    pub(crate) fn frame_message(self, collection: u32, lsn: u64, digest: &[u8; 32]) -> Vec<u8> {
+        [
+            Self::FRAME_LABEL,
+            &self.database,
+            &collection.to_le_bytes(),
+            &lsn.to_le_bytes(),
+            digest,
+        ]
+        .concat()
     }
 
     pub(crate) fn policy_message(self, policy: &[u8]) -> Vec<u8> {

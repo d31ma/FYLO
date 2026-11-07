@@ -4,6 +4,18 @@
 
 ### Added
 
+- **Signed records in protected databases (ADR 0021, phase 4).** Every
+  record frame of a protected `.vdbx` (commits, aborts, checkpoints,
+  compactions, schema versions) carries an ECDSA P-256 signature by the
+  identity that wrote it, over the database, collection, LSN and stored
+  bytes. Readers check that the signer could write the collection at that
+  point of its log, using the revocation boundaries a revoke now records in
+  its policy version. A frame that fails is `ESIGNATURE`: readers read the
+  collection as it stood before it, writers refuse to write past it, and
+  `fylo verify <db.vdbx>` run with an identity reports it (`badSignature`).
+  Measured: a durable put 202 µs protected against 106 µs plain; an open
+  542 µs against 58 µs. Session certificates and catalog-key rotation are
+  deferred (ADR 0021 section 4).
 - **Protected `.vdbx` databases (ADR 0021, phase 3).** `fylo create
   app.vdbx --admin <key reference>` makes a database whose keys are
   released only to application identities a signed policy grants: a random

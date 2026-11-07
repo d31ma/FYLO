@@ -1,11 +1,12 @@
-use std::collections::BTreeMap;
-use std::sync::{Arc, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::collections::{BTreeMap, HashSet};
+use std::sync::{Arc, Mutex, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use aes_gcm::Aes256Gcm;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
-use fylo_format::ContainerAccessSlot;
+use fylo_format::{ContainerAccessSlot, LogFormatError};
 use fylo_identity::{Identity, IdentityId, PublicIdentity};
+use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
 
 use crate::access_binding::AccessBinding;
@@ -26,7 +27,9 @@ pub struct DatabaseAccess {
     catalog_key: Zeroizing<[u8; 32]>,
     anchor: IdentityId,
     trusted_on_first_use: bool,
+    fingerprint: [u8; 32],
     state: RwLock<AccessState>,
+    verified: Mutex<HashSet<[u8; 32]>>,
 }
 
 struct AccessState {
@@ -34,6 +37,8 @@ struct AccessState {
     document: AccessDocument,
     policy: AccessPolicy,
     policy_digest: String,
+    versions: Vec<AccessPolicy>,
+    signers: BTreeMap<[u8; 32], PublicIdentity>,
     names: BTreeMap<u32, String>,
     grants: AccessGrants,
     keys: BTreeMap<u32, CollectionKeys>,
@@ -54,6 +59,14 @@ pub(crate) struct AccessChange {
 
 impl DatabaseAccess {
     const FIRST_EPOCH: u32 = 1;
+    /// The signer kind of a frame signed with an identity key. A later
+    /// kind (a session certificate for hardware keys, phase 8) is refused
+    /// by this build.
+    const IDENTITY_SIGNER: u8 = 1;
+    /// Kind, fingerprint and signature.
+    pub(crate) const TRAILER_BYTES: usize = 1 + 32 + 64;
+    /// Frames whose signature this process remembers having checked.
+    const VERIFIED_CAPACITY: usize = 1 << 20;
 
     /// The access slot of a new protected database: policy version 1 makes
     /// `admin` its admin and anchor, and the catalog key is wrapped for it.
@@ -99,10 +112,14 @@ impl DatabaseAccess {
             catalog_key,
             anchor: chain.anchor().clone(),
             trusted_on_first_use,
+            fingerprint: identity.identity().public().fingerprint(),
+            verified: Mutex::new(HashSet::new()),
             state: RwLock::new(AccessState {
                 generation: slot.generation,
                 policy_digest: chain.digest(),
                 policy: chain.policy().clone(),
+                versions: chain.versions().to_vec(),
+                signers: Self::signers(chain.versions()),
                 document,
                 names: BTreeMap::new(),
                 grants: AccessGrants::default(),
@@ -175,9 +192,140 @@ impl DatabaseAccess {
         state.generation = slot.generation;
         state.policy_digest = chain.digest();
         state.policy = chain.policy().clone();
+        state.versions = chain.versions().to_vec();
+        state.signers = Self::signers(chain.versions());
         state.document = document;
         state.keys = keys;
         Ok(())
+    }
+
+    /// Sign a protected file's record frame, `stored` holding its stored
+    /// bytes: set the signed flag in its header byte, and append the
+    /// trailer (signer kind, the signer's fingerprint, an ECDSA P-256
+    /// signature over the database, the collection, the LSN and the SHA-256
+    /// of the stored bytes).
+    pub(crate) fn sign_frame(&self, collection: u32, lsn: u64, mut stored: Vec<u8>) -> Vec<u8> {
+        if let Some(header) = stored.first_mut() {
+            *header |= crate::container_record::SIGNED;
+        }
+        let digest: [u8; 32] = Sha256::digest(&stored).into();
+        let message = self.binding.frame_message(collection, lsn, &digest);
+        let signature = self.identity.sign(&message);
+        self.remember_verified(Sha256::digest(&message).into());
+        stored.push(Self::IDENTITY_SIGNER);
+        stored.extend_from_slice(&self.fingerprint);
+        stored.extend_from_slice(&signature);
+        stored
+    }
+
+    /// Check a signed record frame of `collection`: its trailer names a key
+    /// of the policy, the signature verifies, and that key could write the
+    /// collection at the record's LSN. Returns the stored bytes before the
+    /// trailer. A frame checked once in this process is not checked again.
+    pub(crate) fn verify_frame<'a>(
+        &self,
+        collection: u32,
+        stored: &'a [u8],
+    ) -> Result<&'a [u8], LogFormatError> {
+        let (prefix, trailer) = Self::split_signed(stored)?;
+        let lsn = crate::ContainerStoredBody::parse(prefix)
+            .map_err(|_| LogFormatError::BadSignature)?
+            .lsn;
+        let digest: [u8; 32] = Sha256::digest(prefix).into();
+        let message = self.binding.frame_message(collection, lsn, &digest);
+        let seen: [u8; 32] = Sha256::digest(&message).into();
+        if self.was_verified(&seen) {
+            return Ok(prefix);
+        }
+        self.check_trailer(collection, lsn, &message, trailer)?;
+        self.remember_verified(seen);
+        Ok(prefix)
+    }
+
+    fn split_signed(stored: &[u8]) -> Result<(&[u8], &[u8]), LogFormatError> {
+        stored
+            .len()
+            .checked_sub(Self::TRAILER_BYTES)
+            .map(|at| stored.split_at(at))
+            .filter(|(prefix, _)| {
+                prefix
+                    .first()
+                    .is_some_and(|header| header & crate::container_record::SIGNED != 0)
+            })
+            .ok_or(LogFormatError::BadSignature)
+    }
+
+    fn check_trailer(
+        &self,
+        collection: u32,
+        lsn: u64,
+        message: &[u8],
+        trailer: &[u8],
+    ) -> Result<(), LogFormatError> {
+        let (kind, rest) = trailer.split_first().ok_or(LogFormatError::BadSignature)?;
+        let (fingerprint, signature) = rest
+            .split_first_chunk::<32>()
+            .filter(|_| *kind == Self::IDENTITY_SIGNER)
+            .ok_or(LogFormatError::BadSignature)?;
+        let state = self.read();
+        let signer = state
+            .signers
+            .get(fingerprint)
+            .ok_or(LogFormatError::BadSignature)?;
+        signer
+            .verify(message, signature)
+            .map_err(|_| LogFormatError::BadSignature)?;
+        Some(Self::could_write(&state, collection, lsn, signer.id()))
+            .filter(|allowed| *allowed)
+            .map(|_| ())
+            .ok_or(LogFormatError::BadSignature)
+    }
+
+    /// Whether the key `id` could write the collection at `lsn`: under the
+    /// newest version whose revocation boundary for it is at or before
+    /// `lsn`, or a later version.
+    fn could_write(state: &AccessState, collection: u32, lsn: u64, id: &IdentityId) -> bool {
+        let Some(name) = state.names.get(&collection) else {
+            return false;
+        };
+        let start = state
+            .versions
+            .iter()
+            .rposition(|policy| {
+                policy
+                    .boundaries
+                    .get(&collection)
+                    .is_some_and(|boundary| *boundary <= lsn)
+            })
+            .unwrap_or(0);
+        state.versions[start..]
+            .iter()
+            .any(|policy| policy.may_write(id, name))
+    }
+
+    fn was_verified(&self, seen: &[u8; 32]) -> bool {
+        self.verified
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(seen)
+    }
+
+    fn remember_verified(&self, seen: [u8; 32]) {
+        let mut verified = self.verified.lock().unwrap_or_else(PoisonError::into_inner);
+        if verified.len() >= Self::VERIFIED_CAPACITY {
+            verified.clear();
+        }
+        verified.insert(seen);
+    }
+
+    fn signers(versions: &[AccessPolicy]) -> BTreeMap<[u8; 32], PublicIdentity> {
+        versions
+            .iter()
+            .flat_map(|policy| policy.identities.values())
+            .flat_map(|identity| identity.keys.iter())
+            .filter_map(|key| PublicIdentity::parse(key).ok())
+            .map(|key| (key.fingerprint(), key))
+            .collect()
     }
 
     /// Refuse unless this identity is an admin of the database.
@@ -269,16 +417,27 @@ impl DatabaseAccess {
     /// admin. Every collection the rule covered starts a new key epoch, and
     /// the keyring is rebuilt, so an identity the rule granted gets no key
     /// for what is written from now on. What was written before stays
-    /// sealed with the old epoch until `fylo rekey` rewrites it.
-    pub(crate) fn prepare_revoke(&self, id: &str) -> Result<AccessChange, DatabaseAccessError> {
+    /// sealed with the old epoch until `fylo rekey` rewrites it. The version
+    /// records each covered collection's next LSN, from `next_lsns`, as the
+    /// boundary past which a record must be signed by an identity that can
+    /// still write it.
+    pub(crate) fn prepare_revoke(
+        &self,
+        id: &str,
+        next_lsns: &BTreeMap<u32, u64>,
+    ) -> Result<AccessChange, DatabaseAccessError> {
         self.require_admin()?;
         let state = self.read();
-        let (policy, removed) = state.policy.without_rule(id, state.policy_digest.clone())?;
+        let (mut policy, removed) = state.policy.without_rule(id, state.policy_digest.clone())?;
         let covered: Vec<u32> = state
             .names
             .iter()
             .filter(|(_, name)| removed.strongest_on_collection(name).is_some())
             .map(|(collection, _)| *collection)
+            .collect();
+        policy.boundaries = covered
+            .iter()
+            .map(|collection| (*collection, next_lsns.get(collection).copied().unwrap_or(0)))
             .collect();
         self.prepare_policy(&state, policy, &covered)
     }
@@ -382,6 +541,8 @@ impl DatabaseAccess {
             state.names.insert(id, name);
         }
         if let Some((policy, digest)) = change.policy {
+            state.versions.push(policy.clone());
+            state.signers = Self::signers(&state.versions);
             state.policy = policy;
             state.policy_digest = digest;
         }
@@ -586,5 +747,152 @@ impl std::fmt::Debug for DatabaseAccess {
             .field("identity", self.identity.id())
             .field("anchor", &self.anchor)
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use fylo_identity::{Identity, KeyReference};
+
+    use super::{AccessState, DatabaseAccess};
+    use crate::{
+        AccessAction, AccessDocument, AccessGrantRequest, AccessGrants, AccessPolicy, AccessRule,
+    };
+
+    const LEDGER: u32 = 7;
+
+    struct Keys(std::path::PathBuf);
+
+    impl Keys {
+        fn new(label: &str) -> Self {
+            let directory = std::env::temp_dir().join(crate::write::unique_name(label));
+            std::fs::create_dir(&directory).unwrap();
+            Self(directory)
+        }
+
+        fn identity(&self, name: &str) -> Identity {
+            Identity::create(&KeyReference::File(self.0.join(format!("{name}.pem")))).unwrap()
+        }
+    }
+
+    impl Drop for Keys {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn writer_rule(writer: &Identity) -> AccessGrantRequest {
+        AccessGrantRequest {
+            keys: vec![writer.public()],
+            label: None,
+            rule: AccessRule {
+                id: "writer".into(),
+                identity: "writer".into(),
+                actions: vec![AccessAction::Write],
+                resources: vec!["collection:ledger".into()],
+            },
+        }
+    }
+
+    fn state(versions: Vec<AccessPolicy>) -> AccessState {
+        AccessState {
+            generation: 1,
+            document: AccessDocument {
+                format: AccessDocument::FORMAT.into(),
+                policies: Vec::new(),
+                keyring: Vec::new(),
+            },
+            policy: versions.last().unwrap().clone(),
+            policy_digest: String::new(),
+            signers: DatabaseAccess::signers(&versions),
+            versions,
+            names: BTreeMap::from([(LEDGER, "ledger".to_owned())]),
+            grants: AccessGrants::default(),
+            keys: BTreeMap::new(),
+        }
+    }
+
+    /// Version 1 makes `admin` admin, version 2 grants `writer`, and
+    /// version 3 revokes it at LSN 10.
+    fn revoked(admin: &Identity, writer: &Identity) -> Vec<AccessPolicy> {
+        let first = AccessPolicy::first(&admin.public());
+        let granted = first.with_grant(&writer_rule(writer), "v1".into()).unwrap();
+        let (mut revoked, _) = granted.without_rule("writer", "v2".into()).unwrap();
+        revoked.boundaries = BTreeMap::from([(LEDGER, 10)]);
+        vec![first, granted, revoked]
+    }
+
+    #[test]
+    fn a_revoked_writer_signs_validly_only_before_the_boundary() {
+        let keys = Keys::new("access-could-write");
+        let (admin, writer) = (keys.identity("admin"), keys.identity("writer"));
+        let state = state(revoked(&admin, &writer));
+        assert!(DatabaseAccess::could_write(&state, LEDGER, 9, writer.id()));
+        assert!(!DatabaseAccess::could_write(
+            &state,
+            LEDGER,
+            10,
+            writer.id()
+        ));
+        assert!(!DatabaseAccess::could_write(
+            &state,
+            LEDGER,
+            11,
+            writer.id()
+        ));
+    }
+
+    #[test]
+    fn an_admin_signs_validly_past_the_boundary() {
+        let keys = Keys::new("access-could-write-admin");
+        let (admin, writer) = (keys.identity("admin"), keys.identity("writer"));
+        let state = state(revoked(&admin, &writer));
+        assert!(DatabaseAccess::could_write(&state, LEDGER, 11, admin.id()));
+    }
+
+    #[test]
+    fn a_writer_granted_again_signs_validly_past_the_boundary() {
+        let keys = Keys::new("access-could-write-again");
+        let (admin, writer) = (keys.identity("admin"), keys.identity("writer"));
+        let mut versions = revoked(&admin, &writer);
+        let again = versions[2]
+            .with_grant(&writer_rule(&writer), "v3".into())
+            .unwrap();
+        versions.push(again);
+        assert!(DatabaseAccess::could_write(
+            &state(versions),
+            LEDGER,
+            11,
+            writer.id()
+        ));
+    }
+
+    #[test]
+    fn an_identity_the_policy_never_granted_signs_validly_nowhere() {
+        let keys = Keys::new("access-could-write-stranger");
+        let (admin, writer) = (keys.identity("admin"), keys.identity("writer"));
+        let stranger = keys.identity("stranger");
+        let state = state(revoked(&admin, &writer));
+        assert!(!DatabaseAccess::could_write(
+            &state,
+            LEDGER,
+            0,
+            stranger.id()
+        ));
+    }
+
+    #[test]
+    fn a_collection_the_directory_does_not_hold_is_refused() {
+        let keys = Keys::new("access-could-write-unknown");
+        let (admin, writer) = (keys.identity("admin"), keys.identity("writer"));
+        let state = state(revoked(&admin, &writer));
+        assert!(!DatabaseAccess::could_write(
+            &state,
+            LEDGER + 1,
+            0,
+            admin.id()
+        ));
     }
 }

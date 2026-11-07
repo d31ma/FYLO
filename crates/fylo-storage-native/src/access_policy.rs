@@ -23,6 +23,13 @@ pub struct AccessPolicy {
     pub identities: BTreeMap<String, AccessPolicyIdentity>,
     /// The allow rules.
     pub rules: Vec<AccessRule>,
+    /// Where a revocation took effect (ADR 0021, phase 4): for each
+    /// collection the removed rule covered, the next LSN of its log when
+    /// this version was written. A record at or past it must be signed by an
+    /// identity that can write the collection under this version or a later
+    /// one.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub boundaries: BTreeMap<u32, u64>,
 }
 
 impl AccessPolicy {
@@ -51,7 +58,17 @@ impl AccessPolicy {
                 actions: vec![AccessAction::Admin],
                 resources: vec![AccessRule::database_resource()],
             }],
+            boundaries: BTreeMap::new(),
         }
+    }
+
+    /// Whether the key `id` may write the collection `name` under this
+    /// version.
+    #[must_use]
+    pub fn may_write(&self, id: &IdentityId, name: &str) -> bool {
+        self.rules_for(id)
+            .iter()
+            .any(|rule| rule.strongest_on_collection(name) >= Some(AccessAction::Write))
     }
 
     /// The public keys of every identity a rule names: everyone who gets
@@ -141,6 +158,7 @@ impl AccessPolicy {
         AccessPolicy {
             version: self.version + 1,
             previous: Some(previous),
+            boundaries: BTreeMap::new(),
             ..self.clone()
         }
     }

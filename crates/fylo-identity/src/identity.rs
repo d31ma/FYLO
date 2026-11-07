@@ -17,6 +17,7 @@ use crate::public_identity::PublicIdentity;
 pub struct Identity {
     reference: KeyReference,
     secret_key: SecretKey,
+    signing_key: SigningKey,
     id: IdentityId,
 }
 
@@ -81,7 +82,7 @@ impl Identity {
     /// Sign `message` with ECDSA P-256 and SHA-256: 64 bytes, `r` then `s`.
     #[must_use]
     pub fn sign(&self, message: &[u8]) -> Vec<u8> {
-        let signature: Signature = SigningKey::from(&self.secret_key).sign(message);
+        let signature: Signature = self.signing_key.sign(message);
         signature.to_bytes().to_vec()
     }
 
@@ -101,9 +102,11 @@ impl Identity {
 
     fn from_secret_key(reference: KeyReference, secret_key: SecretKey) -> Identity {
         let id = IdentityId::from_public_key(&secret_key.public_key());
+        let signing_key = SigningKey::from(&secret_key);
         Identity {
             reference,
             secret_key,
+            signing_key,
             id,
         }
     }

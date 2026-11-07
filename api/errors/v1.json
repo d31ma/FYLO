@@ -320,6 +320,10 @@
         {
             "code": "EIDENTITY_UNWRAP",
             "retryable": false
+        },
+        {
+            "code": "ESIGNATURE",
+            "retryable": false
         }
     ]
 }

@@ -77,7 +77,8 @@ pub struct ContainerProblem {
     /// `tornSlot`, `slotDamaged`, `snapshotOutOfRange`,
     /// `snapshotExtentMismatch`, `snapshotNotInMap`,
     /// `snapshotHashMismatch`, `dictionaryDamaged`, `dictionaryMismatch`,
-    /// `dictionaryMissing`, `dictionaryUnused` or, in a sealed file,
+    /// `dictionaryMissing`, `dictionaryUnused`, in a protected file opened
+    /// with an identity `badSignature`, or, in a sealed file,
     /// `sealedBlockDamaged`, whose extent is the one of the image the
     /// block holds part of.
     pub code: &'static str,
@@ -658,6 +659,7 @@ impl ContainerFile {
                     continue;
                 };
                 for (_, stored) in bodies {
+                    self.verify_signature(owner, extent, stored, findings);
                     let Ok(parsed) = crate::ContainerStoredBody::parse(stored) else {
                         continue;
                     };
@@ -703,6 +705,37 @@ impl ContainerFile {
             }
         }
         Ok(())
+    }
+
+    /// In a protected file opened with an identity (ADR 0021), report a
+    /// frame that is not signed by an identity that could write its
+    /// collection there. Without an identity the signatures are not checked.
+    #[cfg(not(target_family = "wasm"))]
+    fn verify_signature(&self, owner: u32, extent: u64, stored: &[u8], findings: &mut Findings) {
+        let Some(access) = self.database_access() else {
+            return;
+        };
+        if access.verify_frame(owner, stored).is_err() {
+            findings.error(
+                "badSignature",
+                Some(extent),
+                format!(
+                    "a record of collection {owner} is not signed by an identity that could \
+                     write it there (ESIGNATURE)"
+                ),
+            );
+        }
+    }
+
+    #[cfg(target_family = "wasm")]
+    #[allow(clippy::unused_self)]
+    fn verify_signature(
+        &self,
+        _owner: u32,
+        _extent: u64,
+        _stored: &[u8],
+        _findings: &mut Findings,
+    ) {
     }
 
     /// SHA-256 of `length` payload bytes laid across consecutive extents

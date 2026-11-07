@@ -29,6 +29,11 @@ pub enum LogFormatError {
     /// key the opening identity was not granted, or the identity may not
     /// write it (ADR 0021). Never damage, and never a torn tail.
     Denied,
+    /// A whole frame of a protected database carries no signature, or one
+    /// that does not verify, or one by an identity that could not write
+    /// the collection at that point of its log (ADR 0021). Never damage
+    /// to cut, and never a torn tail.
+    BadSignature,
 }
 
 impl LogFormatError {
@@ -44,6 +49,7 @@ impl LogFormatError {
                 | Self::MissingDictionary
                 | Self::Unauthenticated
                 | Self::Denied
+                | Self::BadSignature
         )
     }
 }
@@ -65,6 +71,9 @@ impl std::fmt::Display for LogFormatError {
                 "log record is sealed for another place, or was altered after sealing"
             }
             Self::Denied => "log record belongs to a collection this identity has no grant for",
+            Self::BadSignature => {
+                "log record is not signed by an identity that could write its collection"
+            }
         };
         formatter.write_str(message)
     }

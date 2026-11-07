@@ -23,7 +23,7 @@ impl NativeWriteRoot {
         request: &AccessGrantRequest,
     ) -> Result<AccessPolicy, NativeStorageError> {
         self.protected_database()?
-            .change_access(|access| access.prepare_grant(request))
+            .change_access(|access, _| access.prepare_grant(request))
     }
 
     /// Remove the rule `id` as the next policy version, signed by this
@@ -36,7 +36,7 @@ impl NativeWriteRoot {
     /// the database would be left with no admin.
     pub fn revoke_access(&self, id: &str) -> Result<AccessPolicy, NativeStorageError> {
         self.protected_database()?
-            .change_access(|access| access.prepare_revoke(id))
+            .change_access(|access, next_lsns| access.prepare_revoke(id, next_lsns))
     }
 
     fn protected_database(
