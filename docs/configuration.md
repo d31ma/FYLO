@@ -204,6 +204,27 @@ environment state. See [native SDK examples](../clients/README.md).
 Installer, build, and release-tool variables such as `FYLO_VERIFY_PROVENANCE`
 are not engine configuration and are unchanged by this migration.
 
+## Application identities
+
+ADR 0021 (proposed) names each application by an identity: a P-256 key pair
+whose identifier, `fid1:p256:...`, a database policy will grant. Phase 2
+adds the identities only; no database checks them yet.
+
+```bash
+fylo identity create --store keychain:com.example.app   # prints fid1:p256:...
+fylo identity show keychain:com.example.app
+```
+
+| Reference | Private key |
+| --- | --- |
+| `file:<path>` | PKCS#8 PEM file, created `0600`. On Unix a file another user owns, or that group or other users can read or write, is refused (`EIDENTITY_EXPOSED`) |
+| `keychain:<label>` | macOS keychain item. `FYLO_KEYCHAIN=<path>` uses that keychain file instead of the default keychain, for CI and tests |
+| `creds:<name>` | Linux `systemd-creds` credential, read from `$CREDENTIALS_DIRECTORY` |
+| `cng:<name>`, `webcrypto:<name>` | Defined; not available yet (`EIDENTITY_UNSUPPORTED`) |
+
+`FYLO_KEYCHAIN` is read by the keychain store itself, like the installer
+variables above, and is not engine configuration.
+
 ## Browser and mobile clients
 
 Browser and mobile clients do not spawn the native CLI or implicitly read local

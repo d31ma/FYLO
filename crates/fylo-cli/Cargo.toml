@@ -14,6 +14,7 @@ path = "src/main.rs"
 [dependencies]
 fylo-engine = { version = "0.1.0", path = "../fylo-engine" }
 fylo-format = { version = "0.1.0", path = "../fylo-format" }
+fylo-identity = { version = "0.1.0", path = "../fylo-identity" }
 fylo-machine = { version = "0.1.0", path = "../fylo-machine" }
 fylo-query = { version = "0.1.0", path = "../fylo-query" }
 fylo-storage-native = { version = "0.1.0", path = "../fylo-storage-native" }

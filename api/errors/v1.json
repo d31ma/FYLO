@@ -272,6 +272,38 @@
         {
             "code": "ESCHEMAUNAVAILABLE",
             "retryable": false
+        },
+        {
+            "code": "EIDENTITY_REFERENCE",
+            "retryable": false
+        },
+        {
+            "code": "EIDENTITY_ID",
+            "retryable": false
+        },
+        {
+            "code": "EIDENTITY_NOT_FOUND",
+            "retryable": false
+        },
+        {
+            "code": "EIDENTITY_EXISTS",
+            "retryable": false
+        },
+        {
+            "code": "EIDENTITY_EXPOSED",
+            "retryable": false
+        },
+        {
+            "code": "EIDENTITY_KEY",
+            "retryable": false
+        },
+        {
+            "code": "EIDENTITY_UNSUPPORTED",
+            "retryable": false
+        },
+        {
+            "code": "EIDENTITY_STORE",
+            "retryable": false
         }
     ]
 }

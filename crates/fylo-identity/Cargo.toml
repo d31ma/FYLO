@@ -1,0 +1,23 @@
+[package]
+name = "fylo-identity"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "FYLO application identities: P-256 key pairs named by key references (ADR 0021)"
+publish = false
+
+[dependencies]
+p256.workspace = true
+sha2.workspace = true
+zeroize.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["process"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework.workspace = true
+
+[lints]
+workspace = true

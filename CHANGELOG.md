@@ -4,6 +4,23 @@
 
 ### Added
 
+- **Application identities and `fylo identity` (ADR 0021, proposed, phase
+  2).** An identity is a P-256 key pair whose static identifier is
+  `fid1:p256:<base32 SHA-256 of the public key>`. `fylo identity create
+  --store <reference>` makes a key and prints the identifier; `fylo identity
+  show <reference>` prints it for an existing key; `--json` adds the
+  reference. Keys are named by reference: `file:<path>` (a PKCS#8 PEM file,
+  created `0600` and fsynced; on Unix a file another user owns, or that group
+  or other users can read or write, is refused with `EIDENTITY_EXPOSED`) and
+  `keychain:<label>` on macOS (a generic-password item in the default
+  keychain, or in the keychain file `FYLO_KEYCHAIN` names). `creds:<name>`
+  reads a `systemd-creds` credential on Linux and writes one with
+  `systemd-creds encrypt`; `cng:` (Windows) and `webcrypto:` (browser) are
+  defined but refused with `EIDENTITY_UNSUPPORTED` for now. `create` never
+  replaces a key (`EIDENTITY_EXISTS`). New crate `fylo-identity`; new
+  dependency `p256` 0.14 (reviewed in
+  `docs/security/access-identity-dependencies.md`). Nothing enforces access
+  with identities yet: protected databases are ADR 0021's phase 3.
 - **`fylo rekey` rotates a `.vdbx` database's key (ADR 0016 section 9).**
   `fylo rekey app.vdbx --new-key '${NAME}'` rewrites an encrypted database
   under the secret `${NAME}` names, resolved as `fylo.encryption.key` is;

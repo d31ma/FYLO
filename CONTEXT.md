@@ -31,6 +31,12 @@ truth.
 - **Browser shim**: a JavaScript host using OPFS/FSA and an optional portable
   Rust/Wasm query kernel.
 - **Explorer**: a separately hostable UI that views a user-selected FYLO root.
+- **Identity** (ADR 0021): an application's P-256 key pair. Its static
+  identifier is `fid1:p256:` and the base32 SHA-256 of the public key; it is
+  what a database policy grants `read`, `write` or `admin`.
+- **Key reference**: where an identity's private key lives, named without the
+  key: `file:<path>`, `keychain:<label>`, `cng:<name>`, `creds:<name>` or
+  `webcrypto:<name>`.
 - **S3 client**: any compatible object-storage client used for additive
   backup/restore; it does not replace the authoritative local root.
 
