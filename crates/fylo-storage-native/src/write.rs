@@ -33,10 +33,6 @@ const GENERATION_FORMAT: &str = "fylo.collection-generation.v1";
 const MAX_TRANSACTION_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_CAPTURE_BYTES: u64 = 8 * 1024 * 1024;
 const LOCK_TTL_MILLIS: u64 = 5 * 60 * 1000;
-/// Floor for the index WAL before compaction is worth its rewrite. Above it
-/// the snapshot's own size takes over, so a reader never merges more WAL than
-/// snapshot.
-const INDEX_WAL_COMPACT_BYTES: u64 = 64 * 1024;
 #[cfg(unix)]
 const DEFAULT_ACCESS_MODE: u32 = 0o600;
 
@@ -2323,7 +2319,8 @@ impl NativeWriteRoot {
             false
         };
         let journal_recovered = self.recover_journal_locked(collection)?;
-        Ok(log_recovered || journal_recovered)
+        let index_compacted = commit_log::LogCheckpoint::compact_index(collection)?;
+        Ok(log_recovered || journal_recovered || index_compacted)
     }
 
     /// Finish a layout migration a crash interrupted. The caller's view of
@@ -2801,30 +2798,20 @@ fn record_index_keys(
 
 /// Fold the WAL into the snapshot once a reader would carry too much of it.
 ///
-/// The threshold doubles with the snapshot, so a load of `n` records pays for
-/// `O(log n)` compactions and each is amortized `O(1)` per write. Compaction
-/// merges the same bytes the reader already merges, so unlike a rebuild it
-/// never reads a record.
+/// The threshold grows with the snapshot up to a fixed ceiling (see
+/// [`crate::index_log_limit::IndexLogLimit`]), so a load of `n` records pays
+/// for `O(log n)` compactions until the snapshot passes the ceiling, and one
+/// per ceiling's worth of keys after it. Compaction merges the same bytes the
+/// reader already merges, so unlike a rebuild it never reads a record.
 fn compact_index_if_large(
     transaction: &mut Transaction<'_>,
     collection: &super::NativeCollection,
 ) -> Result<(), NativeStorageError> {
-    let index = collection.path.join("index");
-    let wal = index.join("keys.wal");
-    let snapshot = index.join("keys.snapshot");
-    let length = |path: &Path| {
-        fs::symlink_metadata(path)
-            .ok()
-            .filter(fs::Metadata::is_file)
-            .map_or(0, |metadata| metadata.len())
-    };
-    if length(&wal) <= INDEX_WAL_COMPACT_BYTES.max(length(&snapshot)) {
+    if !commit_log::LogCheckpoint::index_wants_compaction(collection)? {
         return Ok(());
     }
-    let merged = collection.index_snapshot()?;
-    transaction.capture(&snapshot)?;
-    durable_replace(&snapshot, merged.as_bytes())?;
-    durable_replace(&wal, b"")
+    transaction.capture(&collection.path.join("index").join("keys.snapshot"))?;
+    commit_log::LogCheckpoint::fold_index(collection)
 }
 
 /// Union of [`record_index_keys`] over one statement's matched records.
@@ -6587,8 +6574,129 @@ mod tests {
         let snapshot = fs::metadata(index.join("keys.snapshot")).unwrap().len();
         assert!(snapshot > 0, "compaction never ran");
         assert!(
-            wal <= INDEX_WAL_COMPACT_BYTES.max(snapshot),
+            !crate::index_log_limit::IndexLogLimit::wants_compaction(wal, snapshot),
             "WAL grew to {wal} bytes against a {snapshot}-byte snapshot"
+        );
+    }
+
+    const MEBIBYTE: usize = 1024 * 1024;
+
+    fn index_path(fixture: &TestRoot, file: &str) -> PathBuf {
+        fixture.0.join(".collections/users/index").join(file)
+    }
+
+    fn index_length(fixture: &TestRoot, file: &str) -> u64 {
+        fs::metadata(index_path(fixture, file)).unwrap().len()
+    }
+
+    /// Append lines that remove and re-add `key` until the log holds
+    /// `bytes`, so it grows without changing what it merges to.
+    fn append_no_op_lines(fixture: &TestRoot, key: &str, bytes: usize) {
+        let pair = format!("-\t{key}\n+\t{key}\n");
+        let lines = pair.repeat(bytes.div_ceil(pair.len()));
+        let mut wal = OpenOptions::new()
+            .append(true)
+            .open(index_path(fixture, "keys.wal"))
+            .unwrap();
+        wal.write_all(lines.as_bytes()).unwrap();
+    }
+
+    /// Sorted index keys that no record produced, `bytes` long in all.
+    fn filler_snapshot(bytes: usize) -> Vec<u8> {
+        let padding = "p".repeat(100);
+        let line_length = format!("filler/{padding}/00000000\n").len();
+        let mut snapshot = Vec::with_capacity(bytes + line_length);
+        for number in 0..bytes.div_ceil(line_length) {
+            writeln!(snapshot, "filler/{padding}/{number:08}").unwrap();
+        }
+        snapshot
+    }
+
+    /// A collection whose `keys.wal` passed the 64 MiB that readers accept,
+    /// as a long load left it before the log was capped. Returns its index.
+    fn collection_with_oversized_index_log(fixture: &TestRoot) -> Vec<u8> {
+        let writer = NativeWriteRoot::open(&fixture.0).unwrap();
+        writer
+            .put_document(
+                "users",
+                "4VRNF52J000",
+                br#"{"name":"kept"}"#,
+                PutDocumentOptions::default(),
+            )
+            .unwrap();
+        let collection = writer.root.collection("users").unwrap();
+        let index = collection.index_snapshot().unwrap().as_bytes().to_vec();
+        let key = std::str::from_utf8(&index).unwrap().lines().next().unwrap();
+        append_no_op_lines(fixture, key, 65 * MEBIBYTE);
+        assert_eq!(
+            collection.index_snapshot().unwrap_err().code(),
+            NativeStorageErrorCode::FileTooLarge,
+            "readers refuse the oversized log"
+        );
+        index
+    }
+
+    #[test]
+    fn recovery_compacts_an_index_log_that_readers_refuse() {
+        let fixture = TestRoot::create();
+        let index = collection_with_oversized_index_log(&fixture);
+        let writer = NativeWriteRoot::open(&fixture.0).unwrap();
+        writer.recover_collection("users").unwrap();
+        assert_eq!(index_length(&fixture, "keys.wal"), 0);
+        let collection = writer.root.collection("users").unwrap();
+        assert_eq!(collection.index_snapshot().unwrap().as_bytes(), index);
+    }
+
+    #[test]
+    fn a_write_compacts_an_index_log_that_readers_refuse() {
+        let fixture = TestRoot::create();
+        collection_with_oversized_index_log(&fixture);
+        let writer = NativeWriteRoot::open(&fixture.0).unwrap();
+        writer
+            .put_document(
+                "users",
+                "4VRNF52J001",
+                br#"{"name":"added"}"#,
+                PutDocumentOptions::default(),
+            )
+            .unwrap();
+        assert!(index_length(&fixture, "keys.wal") < MEBIBYTE as u64);
+        let collection = writer.root.collection("users").unwrap();
+        let index = collection.index_snapshot().unwrap();
+        let keys = std::str::from_utf8(index.as_bytes()).unwrap();
+        assert!(
+            keys.contains("4VRNF52J000"),
+            "the first record stays indexed"
+        );
+        assert!(keys.contains("4VRNF52J001"), "the new record is indexed");
+    }
+
+    /// A snapshot over 64 MiB once let the log grow as large as it, past
+    /// what readers accept. The log is now folded at a quarter of the read
+    /// limit however large the snapshot is; 17 MiB stands in for 64.
+    #[test]
+    fn the_index_log_is_compacted_at_a_quarter_of_the_read_limit() {
+        let fixture = TestRoot::create();
+        fs::write(
+            index_path(&fixture, "keys.snapshot"),
+            filler_snapshot(17 * MEBIBYTE),
+        )
+        .unwrap();
+        let first_filler_key = format!("filler/{}/00000000", "p".repeat(100));
+        append_no_op_lines(&fixture, &first_filler_key, 16 * MEBIBYTE + MEBIBYTE / 2);
+        let writer = NativeWriteRoot::open(&fixture.0).unwrap();
+        writer
+            .put_document(
+                "users",
+                "4VRNF52J000",
+                br#"{"name":"row"}"#,
+                PutDocumentOptions::default(),
+            )
+            .unwrap();
+        let wal = index_length(&fixture, "keys.wal");
+        assert!(
+            wal <= 16 * MEBIBYTE as u64,
+            "a {wal}-byte log was left beside a 17 MiB snapshot"
         );
     }
 

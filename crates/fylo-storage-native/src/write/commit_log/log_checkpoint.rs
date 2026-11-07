@@ -5,12 +5,13 @@ use fylo_format::{LogRecordKind, LogScan};
 use fylo_vfs::{self as fs, File};
 
 use super::super::{
-    GenerationRecord, INDEX_WAL_COMPACT_BYTES, durable_replace, failpoint, remove_dir_durable,
-    safe_relative_path, sync_directory, write_json_durable,
+    GenerationRecord, durable_replace, failpoint, remove_dir_durable, safe_relative_path,
+    sync_directory, write_json_durable,
 };
 use super::commit_manifest::CommitManifest;
 use super::commit_step::CommitStep;
 use super::log_segment::LogSegment;
+use crate::index_log_limit::IndexLogLimit;
 use crate::{NativeCollection, NativeStorageError, NativeStorageErrorCode, path_exists_no_follow};
 
 /// Makes every applied commit durable in its files and removes the log.
@@ -121,19 +122,26 @@ impl LogCheckpoint {
         Ok(())
     }
 
-    pub(crate) fn compact_index(collection: &NativeCollection) -> Result<(), NativeStorageError> {
-        if collection.index_in_medium()? {
-            return Ok(());
+    /// Fold the index log into the snapshot when it is due. Returns whether
+    /// it folded.
+    pub(crate) fn compact_index(collection: &NativeCollection) -> Result<bool, NativeStorageError> {
+        if !Self::index_wants_compaction(collection)? {
+            return Ok(false);
         }
+        Self::fold_index(collection)?;
+        Ok(true)
+    }
+
+    /// Replace the snapshot with the merged index and empty the log.
+    ///
+    /// A crash between the two leaves the old log beside the merged
+    /// snapshot. Replaying a log onto a set that already holds its outcome
+    /// gives the same set, so readers still see the same index.
+    pub(crate) fn fold_index(collection: &NativeCollection) -> Result<(), NativeStorageError> {
         let index = collection.path.join("index");
-        let wal = index.join("keys.wal");
-        let snapshot = index.join("keys.snapshot");
-        if Self::length(&wal)? <= INDEX_WAL_COMPACT_BYTES.max(Self::length(&snapshot)?) {
-            return Ok(());
-        }
-        let merged = collection.index_snapshot()?;
-        durable_replace(&snapshot, merged.as_bytes())?;
-        durable_replace(&wal, b"")
+        let merged = collection.index_snapshot_for_compaction()?;
+        durable_replace(&index.join("keys.snapshot"), merged.as_bytes())?;
+        durable_replace(&index.join("keys.wal"), b"")
     }
 
     /// The index log has outgrown the size a reader should merge.
@@ -146,7 +154,7 @@ impl LogCheckpoint {
         let index = collection.path.join("index");
         let wal = Self::length(&index.join("keys.wal"))?;
         let snapshot = Self::length(&index.join("keys.snapshot"))?;
-        Ok(wal > INDEX_WAL_COMPACT_BYTES.max(snapshot))
+        Ok(IndexLogLimit::wants_compaction(wal, snapshot))
     }
 
     pub(crate) fn length(path: &Path) -> Result<u64, NativeStorageError> {

@@ -250,6 +250,17 @@
 
 ### Fixed
 
+- **A large collection no longer breaks when its index log passes 64 MiB.**
+  `keys.wal` was compacted only once it outgrew `keys.snapshot`, so once the
+  snapshot passed 64 MiB the log could grow past the 64 MiB that readers
+  accept, and every read, write, checkpoint and recovery of the collection
+  then failed with `ENATIVE_FILE_SIZE`. A load through the normal put path
+  hit this at about 100,000 small or 24,000 medium documents. The log is now compacted at the smaller of the snapshot
+  size and 16 MiB. A collection already in that state is repaired, with
+  nothing lost, by its next write, by `NativeWriteRoot::recover_collection`,
+  or by the recovery a machine-protocol invocation runs before its request:
+  each reads the oversized log with the snapshot's 256 MiB limit and folds
+  it. Until then a reader's `ENATIVE_FILE_SIZE` error says how to repair it.
 - **A directory root works on exFAT, FAT and the SMB and NFS shares where
   macOS keeps extended attributes in `._<name>` files.** macOS writes one
   `AppleDouble` companion beside every file and directory that carries an

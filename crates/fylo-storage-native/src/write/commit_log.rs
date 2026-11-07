@@ -53,6 +53,7 @@ pub use database_maintenance_report::{DatabaseCompactionReport, DatabaseSalvageR
 pub use database_pack_report::{DatabasePackReport, PackedCollection};
 pub use database_rekey::DatabaseRekey;
 pub use layout_migration_report::LayoutMigrationReport;
+pub(crate) use log_checkpoint::LogCheckpoint;
 pub use salvage_report::SalvageReport;
 #[cfg(test)]
 pub(crate) use segment_compactor::{CopiedHook, SegmentCompactor};

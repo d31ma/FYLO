@@ -196,10 +196,13 @@ fn reuses_identical_inputs_from_distinct_roots() {
         IndexCacheFixture::FIRST_RECORD,
     );
     let cache = IndexCache::new(IndexCache::MAXIMUM_RETAINED_BYTES);
-    let initial = left.collection().index_snapshot_with_cache(&cache).unwrap();
+    let initial = left
+        .collection()
+        .index_snapshot_with_cache(&cache, crate::MAX_INDEX_WAL_BYTES)
+        .unwrap();
     let repeated = right
         .collection()
-        .index_snapshot_with_cache(&cache)
+        .index_snapshot_with_cache(&cache, crate::MAX_INDEX_WAL_BYTES)
         .unwrap();
     assert!(Arc::ptr_eq(&initial, &repeated));
     assert_eq!(
@@ -222,12 +225,16 @@ fn reloads_after_root_replacement_at_the_same_path() {
     );
     let collection = left.collection();
     let cache = IndexCache::new(IndexCache::MAXIMUM_RETAINED_BYTES);
-    let initial = collection.index_snapshot_with_cache(&cache).unwrap();
+    let initial = collection
+        .index_snapshot_with_cache(&cache, crate::MAX_INDEX_WAL_BYTES)
+        .unwrap();
     let temporary = left.0.with_extension("swapping");
     fs::rename(&left.0, &temporary).unwrap();
     fs::rename(&right.0, &left.0).unwrap();
     fs::rename(&temporary, &right.0).unwrap();
-    let replacement = collection.index_snapshot_with_cache(&cache).unwrap();
+    let replacement = collection
+        .index_snapshot_with_cache(&cache, crate::MAX_INDEX_WAL_BYTES)
+        .unwrap();
     assert_eq!(replacement.as_bytes(), IndexCacheFixture::SECOND_RECORD);
     assert_eq!(initial.as_bytes(), IndexCacheFixture::FIRST_RECORD);
 }

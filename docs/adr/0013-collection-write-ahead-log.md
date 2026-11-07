@@ -381,8 +381,13 @@ source of truth, and the durability promise above.
   replays. Otherwise a checkpoint finished and died before removing the
   directory, and only the directory is removed.
 - **Checkpoints** run at 4,096 records, at 16 MiB, or when `keys.wal` outgrows
-  the larger of 64 KiB and the snapshot. That is the compaction rule, moved
-  from the write path to here. A clean close is
+  the snapshot, clamped between 64 KiB and 16 MiB. That is the compaction
+  rule, which the write path without a log uses too. The 16 MiB ceiling is a
+  quarter of the 64 MiB that readers accept for `keys.wal` (2026-11-07):
+  without it a snapshot over 64 MiB let the log grow past what readers read,
+  and the collection failed every read and write with `ENATIVE_FILE_SIZE`.
+  Compaction reads the log with the snapshot's 256 MiB limit, so recovery and
+  the next write fold such a log. A clean close is
   `NativeWriteRoot::close_logs()`, which the write CLI and `fylo exec` (single
   request and `--loop`) call on exit.
 - **Locks.** There is no `--exclusive-root` shortcut: a process started

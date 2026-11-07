@@ -72,6 +72,7 @@ mod database_key;
 mod durability;
 mod filesystem_profile;
 mod index_cache;
+mod index_log_limit;
 mod lease;
 mod log_position;
 mod platform_companion;
@@ -186,7 +187,7 @@ pub const MAX_DOCUMENT_BYTES: u64 = 16 * 1024 * 1024;
 /// Maximum raw-file bytes returned by one native preview read.
 pub const MAX_RAW_FILE_BYTES: u64 = 256 * 1024 * 1024;
 /// Maximum prefix-index WAL bytes merged by one read.
-pub const MAX_INDEX_WAL_BYTES: u64 = 64 * 1024 * 1024;
+pub const MAX_INDEX_WAL_BYTES: u64 = index_log_limit::IndexLogLimit::READ_BYTES;
 /// Maximum developer metadata value accepted from one xattr/ADS entry.
 pub const MAX_META_VALUE_BYTES: usize = 60 * 1024;
 /// Maximum aggregate FYLO metadata accepted from one raw file.
@@ -2649,12 +2650,25 @@ impl NativeCollection {
         &self,
     ) -> Result<std::sync::Arc<IndexSnapshot>, NativeStorageError> {
         self.root.assert_profile_owned()?;
-        self.index_snapshot_with_cache(index_cache::IndexCache::shared())
+        self.index_snapshot_with_cache(index_cache::IndexCache::shared(), MAX_INDEX_WAL_BYTES)
+    }
+
+    /// The merged index for compaction, which also folds a log too large for
+    /// readers, as only a release without the log ceiling could leave it.
+    pub(crate) fn index_snapshot_for_compaction(
+        &self,
+    ) -> Result<std::sync::Arc<IndexSnapshot>, NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        self.index_snapshot_with_cache(
+            index_cache::IndexCache::shared(),
+            index_log_limit::IndexLogLimit::compaction_read_bytes(),
+        )
     }
 
     fn index_snapshot_with_cache(
         &self,
         cache: &index_cache::IndexCache,
+        log_limit: u64,
     ) -> Result<std::sync::Arc<IndexSnapshot>, NativeStorageError> {
         if self.index_in_medium()? {
             let medium = self.segment_medium()?;
@@ -2677,7 +2691,11 @@ impl NativeCollection {
         )?;
         let wal_path = index.join("keys.wal");
         let wal_bytes = if path_exists_no_follow(&wal_path)? {
-            Some(self.root.read_file(&wal_path, MAX_INDEX_WAL_BYTES)?)
+            Some(
+                self.root
+                    .read_file(&wal_path, log_limit)
+                    .map_err(index_log_limit::IndexLogLimit::explain_refusal)?,
+            )
         } else {
             None
         };

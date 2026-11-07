@@ -150,7 +150,7 @@ values:
   index/                   ← local filesystem prefix index catalog
     manifest.json          ← format version marker
     keys.snapshot          ← sorted index keys, mmap'd for O(log n) lookup
-    keys.wal               ← append-only mutation log (compacted once it outgrows the snapshot)
+    keys.wal               ← append-only mutation log (compacted once it outgrows the snapshot, or 16 MiB)
   events/
     <collection>.ndjson    ← append-only event journal
   locks/                   ← advisory file locks
