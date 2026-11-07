@@ -49,6 +49,27 @@ fn a_root_is_owned_by_one_handle_until_it_is_closed() {
     fixture.open().close().unwrap();
 }
 
+/// The snapshot's length stands in for 240 MiB of index keys: a write only
+/// measures the index files before it commits.
+#[test]
+fn a_full_collection_refuses_a_put_with_index_full() {
+    let fixture = Fixture::new();
+    let root = fixture.open();
+    root.create_collection("people").unwrap();
+    let people = root.collection("people");
+    let ada = people.put(fields(&json!({"name": "Ada"}))).unwrap();
+    fs::File::create(fixture.0.join(".collections/people/index/keys.snapshot"))
+        .unwrap()
+        .set_len(240 * 1024 * 1024)
+        .unwrap();
+
+    let refused = people.put(fields(&json!({"name": "Grace"}))).unwrap_err();
+
+    assert_eq!(refused.code(), "EINDEX_FULL");
+    assert!(refused.message().contains("collection people is full"));
+    people.delete(&ada).unwrap();
+}
+
 #[test]
 fn documents_round_trip_with_fylo_assigned_ttids() {
     let fixture = Fixture::new();

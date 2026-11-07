@@ -87,7 +87,11 @@ impl NativeWriteRoot {
                 state = queue.wait(state);
                 continue;
             }
-            match self.append_commit(collection, busy, &planned) {
+            let appended = planned
+                .index_growth()
+                .require_room(collection)
+                .and_then(|()| self.append_commit(collection, busy, &planned));
+            match appended {
                 Ok(placed) => break (placed, planned, value),
                 Err(error) => {
                     Self::end_idle(&queue, &mut state, collection);

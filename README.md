@@ -151,6 +151,7 @@ values:
     manifest.json          ← format version marker
     keys.snapshot          ← sorted index keys, mmap'd for O(log n) lookup
     keys.wal               ← append-only mutation log (compacted once it outgrows the snapshot, or 16 MiB)
+                             (the two together hold at most 240 MiB of keys; see Limitations)
   events/
     <collection>.ndjson    ← append-only event journal
   locks/                   ← advisory file locks
@@ -1473,6 +1474,7 @@ text.
 | `EQUEUE_INVALID`                                                       | A queue name, identity, option, or idempotency reuse is invalid            | Do not retry without correcting the request                      |
 | `EQUEUE_RECEIPT`                                                       | A queue receipt is incorrect, expired, or already superseded               | Do not acknowledge as that worker                                |
 | `EQUEUE_LIMIT`                                                         | A queue message, claim, delay, attempt, state, or read limit was exceeded  | Reduce the requested resource                                    |
+| `EINDEX_FULL`                                                          | The write could grow the collection's index past its 240 MiB write limit   | Do not retry; delete documents or use another collection         |
 | `EDECRYPTFAILED`                                                       | An `$encrypted` field could not be decrypted with the configured key       | Do not retry; fix the key configuration                          |
 | `EINVALIDCURSOR`                                                       | The pagination cursor is invalid, expired, or from another process         | Restart the traversal from page one                              |
 | `EROOTLOCKED` / `EROOTLEASELOST`                                       | Exclusive root ownership was unavailable or lost                           | Fail over per your supervisor policy                             |
@@ -1663,6 +1665,7 @@ local fixture, mount or infrastructure plan is not a production support claim.
 | **Canonical identifiers**            | TTID matches case-insensitively but FYLO names a file after the identifier, so a write with a non-canonical spelling is refused. Uppercasing the identifier repairs it.                              |
 | **Shard width is per collection**    | Recorded in the catalog descriptor and 1–4. A write configured for a different width fails with `ESHARDWIDTH`; `fylo reshard` moves the collection.                                                  |
 | **Bulk import for trusted sources**  | SSRF guard blocks private addresses and caps at 50 MiB. Not for user-provided URLs.                                                                                                                  |
+| **Index size per collection**        | A file-layout collection's index is read whole and capped at 256 MiB: roughly 150k-200k small or 35k-48k medium documents. Writes stop at 240 MiB with `EINDEX_FULL`; deletes still work.            |
 
 ---
 

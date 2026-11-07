@@ -2395,6 +2395,7 @@ impl NativeWriteRoot {
         after: &BTreeSet<String>,
     ) -> Result<(), NativeStorageError> {
         self.root.assert_profile_owned()?;
+        Self::require_index_room(transaction, collection, (before, after))?;
         let mut appended = Vec::new();
         for (sign, key) in before
             .difference(after)
@@ -2411,8 +2412,22 @@ impl NativeWriteRoot {
         }
         let index = collection.path.join("index");
         ensure_directory(&self.root, &index)?;
+        transaction.record_index_append();
         append_synced(&index.join("keys.wal"), &appended)?;
         compact_index_if_large(transaction, collection)
+    }
+
+    /// Refuse a record change whose index keys do not fit, before the index
+    /// is touched, so the transaction's rollback only restores the record.
+    fn require_index_room(
+        transaction: &mut Transaction<'_>,
+        collection: &super::NativeCollection,
+        (before, after): (&BTreeSet<String>, &BTreeSet<String>),
+    ) -> Result<(), NativeStorageError> {
+        let removed: BTreeSet<String> = before.difference(after).cloned().collect();
+        let added: BTreeSet<String> = after.difference(before).cloned().collect();
+        let refused = commit_log::IndexGrowth::of(&removed, &added).require_room(collection);
+        refused.inspect_err(|_| transaction.refuse_index_change())
     }
 
     fn rebuild_index(
@@ -2799,7 +2814,7 @@ fn record_index_keys(
 /// Fold the WAL into the snapshot once a reader would carry too much of it.
 ///
 /// The threshold grows with the snapshot up to a fixed ceiling (see
-/// [`crate::index_log_limit::IndexLogLimit`]), so a load of `n` records pays
+/// [`crate::index_limit::IndexLimit`]), so a load of `n` records pays
 /// for `O(log n)` compactions until the snapshot passes the ceiling, and one
 /// per ceiling's worth of keys after it. Compaction merges the same bytes the
 /// reader already merges, so unlike a rebuild it never reads a record.
@@ -3135,6 +3150,11 @@ struct Transaction<'a> {
     /// The collection's schema version count before this transaction, kept
     /// current by its commit (ADR 0017 section 6).
     schema_counts: Option<schema_counts::SchemaVersionCounts>,
+    /// Whether this transaction appended to the index log.
+    index_appended: bool,
+    /// Whether this transaction refused a record change whose index keys
+    /// did not fit.
+    index_refused: bool,
 }
 
 impl<'a> Transaction<'a> {
@@ -3192,6 +3212,8 @@ impl<'a> Transaction<'a> {
             captured: BTreeSet::new(),
             finished: false,
             schema_counts,
+            index_appended: false,
+            index_refused: false,
         };
         // The manifest and the writing generation are already durable, so a
         // failure here owns them. Returning the error alone would leave a live
@@ -3409,6 +3431,24 @@ impl<'a> Transaction<'a> {
         Ok(delta)
     }
 
+    fn refuse_index_change(&mut self) {
+        self.index_refused = true;
+    }
+
+    fn record_index_append(&mut self) {
+        self.index_appended = true;
+    }
+
+    /// Rebuild the index from the restored records, unless a refusal came
+    /// before anything was appended to it: then the index files are as the
+    /// transaction found them.
+    fn rebuild_changed_index(&self) -> Result<(), NativeStorageError> {
+        if self.index_refused && !self.index_appended {
+            return Ok(());
+        }
+        self.writer.rebuild_index(self.collection)
+    }
+
     fn rollback(&mut self) -> Result<(), NativeStorageError> {
         self.writer.root.assert_profile_owned()?;
         if self.finished {
@@ -3424,8 +3464,7 @@ impl<'a> Transaction<'a> {
             &self.captures,
         )
         .map_err(|error| rollback_step("restoring captures", &error))?;
-        self.writer
-            .rebuild_index(self.collection)
+        self.rebuild_changed_index()
             .map_err(|error| rollback_step("rebuilding the index", &error))?;
         write_generation(
             self.writer,
@@ -6574,7 +6613,7 @@ mod tests {
         let snapshot = fs::metadata(index.join("keys.snapshot")).unwrap().len();
         assert!(snapshot > 0, "compaction never ran");
         assert!(
-            !crate::index_log_limit::IndexLogLimit::wants_compaction(wal, snapshot),
+            !crate::index_limit::IndexLimit::wants_compaction(wal, snapshot),
             "WAL grew to {wal} bytes against a {snapshot}-byte snapshot"
         );
     }
@@ -6697,6 +6736,203 @@ mod tests {
         assert!(
             wal <= 16 * MEBIBYTE as u64,
             "a {wal}-byte log was left beside a 17 MiB snapshot"
+        );
+    }
+
+    const INDEX_FULL_PADDING: usize = 1000;
+    const LONG_NAME_BYTES: usize = 4000;
+
+    /// Sorted filler keys in whole lines, as many as fit in `bytes`.
+    fn filler_snapshot_within(bytes: u64) -> Vec<u8> {
+        let padding = "p".repeat(INDEX_FULL_PADDING);
+        let line_length = format!("filler/{padding}/00000000\n").len() as u64;
+        let mut snapshot = Vec::with_capacity(usize::try_from(bytes).unwrap());
+        for number in 0..bytes / line_length {
+            writeln!(snapshot, "filler/{padding}/{number:08}").unwrap();
+        }
+        snapshot
+    }
+
+    /// Give a collection's `keys.snapshot` a length of `bytes` without
+    /// storing any: for writes that only measure the index, never read it.
+    fn sized_index_snapshot(index: &Path, bytes: u64) {
+        fs::File::create(index.join("keys.snapshot"))
+            .unwrap()
+            .set_len(bytes)
+            .unwrap();
+    }
+
+    fn put_named(
+        writer: &NativeWriteRoot,
+        identifier: &str,
+        name: &str,
+    ) -> Result<(), NativeStorageError> {
+        writer.put_document(
+            "users",
+            identifier,
+            serde_json::to_vec(&json!({ "name": name }))
+                .unwrap()
+                .as_slice(),
+            PutDocumentOptions::default(),
+        )
+    }
+
+    /// A write whose keys would take the merged index past the 256 MiB that
+    /// readers accept used to commit, and every read of the collection then
+    /// failed with `CorruptIndex`. It is now refused, and nothing changes.
+    #[test]
+    fn a_write_that_would_overfill_the_index_is_refused_and_the_collection_stays_readable() {
+        let fixture = TestRoot::create();
+        let writer = NativeWriteRoot::open(&fixture.0).unwrap();
+        put_named(&writer, "4VRNF52J000", "kept").unwrap();
+        fs::write(
+            index_path(&fixture, "keys.snapshot"),
+            filler_snapshot_within(crate::index_limit::IndexLimit::INDEX_BYTES - 2000),
+        )
+        .unwrap();
+        let index_before =
+            index_length(&fixture, "keys.snapshot") + index_length(&fixture, "keys.wal");
+
+        let refused = put_named(&writer, "4VRNF52J001", &"n".repeat(LONG_NAME_BYTES)).unwrap_err();
+
+        assert_eq!(refused.code(), NativeStorageErrorCode::IndexFull);
+        assert_eq!(refused.code().as_str(), "EINDEX_FULL");
+        assert!(refused.message().contains("collection users is full"));
+        assert!(refused.message().contains("251658240 bytes"));
+        let collection = writer.root.collection("users").unwrap();
+        assert_eq!(
+            collection.read_document("4VRNF52J001").unwrap_err().code(),
+            NativeStorageErrorCode::NotFound
+        );
+        assert_eq!(
+            index_length(&fixture, "keys.snapshot") + index_length(&fixture, "keys.wal"),
+            index_before
+        );
+        let index = collection.index_snapshot().unwrap();
+        assert!(
+            std::str::from_utf8(index.as_bytes())
+                .unwrap()
+                .contains("4VRNF52J000")
+        );
+    }
+
+    #[test]
+    fn a_write_that_fits_under_the_write_limit_is_accepted() {
+        let fixture = TestRoot::create();
+        let writer = NativeWriteRoot::open(&fixture.0).unwrap();
+        put_named(&writer, "4VRNF52J000", "first").unwrap();
+        sized_index_snapshot(
+            &fixture.0.join(".collections/users/index"),
+            crate::index_limit::IndexLimit::WRITE_BYTES - 10_000,
+        );
+
+        put_named(&writer, "4VRNF52J001", "second").unwrap();
+
+        let collection = writer.root.collection("users").unwrap();
+        assert!(collection.read_document("4VRNF52J001").is_ok());
+    }
+
+    #[test]
+    fn a_full_collection_still_takes_deletes_and_in_place_updates() {
+        let fixture = TestRoot::create();
+        let writer = NativeWriteRoot::open(&fixture.0).unwrap();
+        put_named(&writer, "4VRNF52J000", "row-1").unwrap();
+        put_named(&writer, "4VRNF52J001", "gone").unwrap();
+        sized_index_snapshot(
+            &fixture.0.join(".collections/users/index"),
+            crate::index_limit::IndexLimit::WRITE_BYTES,
+        );
+
+        writer
+            .patch_document("users", "4VRNF52J000", br#"{"name":"row-2"}"#, None)
+            .unwrap();
+        writer
+            .delete_document("users", "4VRNF52J001", None)
+            .unwrap();
+
+        let refused = put_named(&writer, "4VRNF52J002", "new").unwrap_err();
+        assert_eq!(refused.code(), NativeStorageErrorCode::IndexFull);
+    }
+
+    #[test]
+    fn a_full_collection_refuses_a_whole_batch() {
+        let fixture = TestRoot::create();
+        let writer = NativeWriteRoot::open(&fixture.0).unwrap();
+        put_named(&writer, "4VRNF52J000", "first").unwrap();
+        sized_index_snapshot(
+            &fixture.0.join(".collections/users/index"),
+            crate::index_limit::IndexLimit::WRITE_BYTES,
+        );
+        let batch = [
+            DocumentWrite::Delete {
+                identifier: "4VRNF52J000".into(),
+            },
+            DocumentWrite::Put {
+                identifier: "4VRNF52J001".into(),
+                fields: json!({ "name": "a much longer name than the first one had" })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            },
+        ];
+
+        let refused = writer
+            .commit_document_writes_with("users", &batch, &PlainDocumentCodec)
+            .unwrap_err();
+
+        assert_eq!(refused.code(), NativeStorageErrorCode::IndexFull);
+        let collection = writer.root.collection("users").unwrap();
+        assert!(collection.read_document("4VRNF52J000").is_ok());
+        assert_eq!(
+            collection.read_document("4VRNF52J001").unwrap_err().code(),
+            NativeStorageErrorCode::NotFound
+        );
+    }
+
+    /// A file collection writes through a transaction rather than the log.
+    /// Its refusal restores the record without rebuilding the index from
+    /// every record, which would also drop the filler keys measured here.
+    #[test]
+    fn a_full_file_collection_refuses_a_put_without_rebuilding_its_index() {
+        let fixture = TestRoot::create();
+        fs::create_dir_all(fixture.0.join(".fylo-catalog/collections")).unwrap();
+        fs::write(
+            fixture.0.join(".fylo-catalog/collections/assets.json"),
+            br#"{"kind":"file"}"#,
+        )
+        .unwrap();
+        let index = fixture.0.join(".buckets/assets/index");
+        fs::create_dir_all(fixture.0.join(".buckets/assets/docs")).unwrap();
+        fs::create_dir_all(fixture.0.join(".buckets/assets/.deleted")).unwrap();
+        fs::create_dir_all(&index).unwrap();
+        fs::write(index.join("keys.wal"), b"").unwrap();
+        sized_index_snapshot(&index, crate::index_limit::IndexLimit::WRITE_BYTES);
+        let writer = NativeWriteRoot::open(&fixture.0).unwrap();
+
+        let refused = writer
+            .put_raw_file(
+                "assets",
+                "4VRNF52JPCO",
+                &[0, 1, 2, 3],
+                &PutRawFileOptions {
+                    key: "/fixtures/sample.bin".into(),
+                    extension: ".bin".into(),
+                    metadata: std::collections::BTreeMap::new(),
+                    access: WriteAccess::default(),
+                },
+            )
+            .unwrap_err();
+
+        assert_eq!(refused.code(), NativeStorageErrorCode::IndexFull);
+        assert!(refused.message().contains("collection assets is full"));
+        let collection = writer.root.collection("assets").unwrap();
+        assert_eq!(
+            collection.read_raw_file("4VRNF52JPCO").unwrap_err().code(),
+            NativeStorageErrorCode::NotFound
+        );
+        assert_eq!(
+            fs::metadata(index.join("keys.snapshot")).unwrap().len(),
+            crate::index_limit::IndexLimit::WRITE_BYTES
         );
     }
 

@@ -287,6 +287,7 @@ mod tests {
     use serde_json::json;
 
     use super::super::super::{NativeWriteRoot, unique_name};
+    use super::super::index_growth::IndexGrowth;
     use super::super::logged_plan::LoggedPlan;
     use super::super::placed_record::PlacedRecord;
     use super::super::segment_checkpoint::SegmentCheckpoint;
@@ -493,6 +494,10 @@ mod tests {
 
         fn blobs(&self) -> &[u8] {
             self.0.blobs()
+        }
+
+        fn index_growth(&self) -> IndexGrowth {
+            self.0.index_growth()
         }
 
         fn apply(

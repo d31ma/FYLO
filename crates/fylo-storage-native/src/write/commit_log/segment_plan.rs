@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use fylo_format::LogRecord;
 
+use super::index_growth::IndexGrowth;
 use super::logged_plan::LoggedPlan;
 use super::placed_record::PlacedRecord;
 use crate::segments::{
@@ -166,6 +167,10 @@ impl LoggedPlan for SegmentPlan {
 
     fn blobs(&self) -> &[u8] {
         &self.blobs
+    }
+
+    fn index_growth(&self) -> IndexGrowth {
+        IndexGrowth::of(&self.index_removed, &self.index_added)
     }
 
     fn apply(

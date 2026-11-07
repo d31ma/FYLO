@@ -8,6 +8,7 @@ use super::super::{CapturedAttribute, json_error, portable_path, safe_relative_p
 use super::blob_reference::BlobReference;
 use super::commit_manifest::CommitManifest;
 use super::commit_step::CommitStep;
+use super::index_growth::IndexGrowth;
 use super::logged_plan::LoggedPlan;
 use super::move_step::MoveStep;
 use super::placed_record::PlacedRecord;
@@ -305,6 +306,10 @@ impl LoggedPlan for CommitPlan {
 
     fn blobs(&self) -> &[u8] {
         &self.blobs
+    }
+
+    fn index_growth(&self) -> IndexGrowth {
+        IndexGrowth::of(&self.index_removed, &self.index_added)
     }
 
     fn apply(

@@ -11,7 +11,7 @@ use super::super::{
 use super::commit_manifest::CommitManifest;
 use super::commit_step::CommitStep;
 use super::log_segment::LogSegment;
-use crate::index_log_limit::IndexLogLimit;
+use crate::index_limit::IndexLimit;
 use crate::{NativeCollection, NativeStorageError, NativeStorageErrorCode, path_exists_no_follow};
 
 /// Makes every applied commit durable in its files and removes the log.
@@ -154,7 +154,7 @@ impl LogCheckpoint {
         let index = collection.path.join("index");
         let wal = Self::length(&index.join("keys.wal"))?;
         let snapshot = Self::length(&index.join("keys.snapshot"))?;
-        Ok(IndexLogLimit::wants_compaction(wal, snapshot))
+        Ok(IndexLimit::wants_compaction(wal, snapshot))
     }
 
     pub(crate) fn length(path: &Path) -> Result<u64, NativeStorageError> {

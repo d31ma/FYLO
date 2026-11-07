@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use super::super::schema_counts::SchemaCountDelta;
+use super::index_growth::IndexGrowth;
 use super::placed_record::PlacedRecord;
 use crate::{NativeCollection, NativeRoot, NativeStorageError};
 
@@ -19,6 +20,10 @@ pub(crate) trait LoggedPlan {
 
     /// The blob area of the commit record.
     fn blobs(&self) -> &[u8];
+
+    /// The prefix-index bytes the plan adds and removes, checked against
+    /// the collection's index limit before the commit record is written.
+    fn index_growth(&self) -> IndexGrowth;
 
     /// Bring the collection up to date with the durable record. The flag in
     /// the error says whether the index delta was already appended.

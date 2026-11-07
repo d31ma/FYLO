@@ -11,7 +11,7 @@ use std::io::{Read, Take};
 use std::path::{Component, Path, PathBuf};
 
 use fylo_format::TtidTimestamps;
-use fylo_query::{IndexSnapshot, QueryLimits};
+use fylo_query::IndexSnapshot;
 #[cfg(not(target_family = "wasm"))]
 use same_file::Handle as FileIdentity;
 use serde::{Deserialize, Serialize};
@@ -72,7 +72,7 @@ mod database_key;
 mod durability;
 mod filesystem_profile;
 mod index_cache;
-mod index_log_limit;
+mod index_limit;
 mod lease;
 mod log_position;
 mod platform_companion;
@@ -187,7 +187,7 @@ pub const MAX_DOCUMENT_BYTES: u64 = 16 * 1024 * 1024;
 /// Maximum raw-file bytes returned by one native preview read.
 pub const MAX_RAW_FILE_BYTES: u64 = 256 * 1024 * 1024;
 /// Maximum prefix-index WAL bytes merged by one read.
-pub const MAX_INDEX_WAL_BYTES: u64 = index_log_limit::IndexLogLimit::READ_BYTES;
+pub const MAX_INDEX_WAL_BYTES: u64 = index_limit::IndexLimit::LOG_READ_BYTES;
 /// Maximum developer metadata value accepted from one xattr/ADS entry.
 pub const MAX_META_VALUE_BYTES: usize = 60 * 1024;
 /// Maximum aggregate FYLO metadata accepted from one raw file.
@@ -2661,7 +2661,7 @@ impl NativeCollection {
         self.root.assert_profile_owned()?;
         self.index_snapshot_with_cache(
             index_cache::IndexCache::shared(),
-            index_log_limit::IndexLogLimit::compaction_read_bytes(),
+            index_limit::IndexLimit::compaction_read_bytes(),
         )
     }
 
@@ -2679,7 +2679,7 @@ impl NativeCollection {
         }
         let snapshot_bytes = self.root.read_file(
             &self.index_snapshot_path(),
-            QueryLimits::default().max_snapshot_bytes as u64,
+            index_limit::IndexLimit::INDEX_BYTES,
         )?;
         cache.load(index_cache::IndexInputs {
             snapshot: snapshot_bytes,
@@ -2714,7 +2714,7 @@ impl NativeCollection {
         }
         let (snapshot, metadata) = self.root.open_file(
             &self.index_snapshot_path(),
-            QueryLimits::default().max_snapshot_bytes as u64,
+            index_limit::IndexLimit::INDEX_BYTES,
         )?;
         let log = self.index_log(MAX_INDEX_WAL_BYTES)?.unwrap_or_default();
         reader.read((snapshot, metadata.len()), &log)
@@ -2741,7 +2741,7 @@ impl NativeCollection {
         }
         self.read_index_log(&wal_path, log_limit)
             .map(Some)
-            .map_err(index_log_limit::IndexLogLimit::explain_refusal)
+            .map_err(index_limit::IndexLimit::explain_refusal)
     }
 
     fn read_index_log(&self, path: &Path, log_limit: u64) -> Result<Vec<u8>, NativeStorageError> {
@@ -3121,6 +3121,9 @@ pub enum NativeStorageErrorCode {
     CorruptDocument,
     /// Prefix-index bytes were corrupt.
     CorruptIndex,
+    /// A write could grow a collection's prefix index past its write limit,
+    /// which stays below the size a reader accepts, so it was refused.
+    IndexFull,
     /// Collection name was invalid or reserved.
     InvalidCollection,
     /// Document ID syntax was invalid.
@@ -3181,6 +3184,7 @@ impl NativeStorageErrorCode {
             Self::CorruptMetadata => "ENATIVE_METADATA",
             Self::CorruptDocument => "ENATIVE_DOCUMENT",
             Self::CorruptIndex => "ENATIVE_INDEX",
+            Self::IndexFull => "EINDEX_FULL",
             Self::InvalidCollection => "ENATIVE_COLLECTION",
             Self::InvalidDocumentId => "EINVALIDDOCID",
             Self::NotFound => "ENATIVE_NOT_FOUND",

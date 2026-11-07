@@ -250,6 +250,20 @@
 
 ### Fixed
 
+- **A collection's index can no longer grow past what readers accept.** A
+  file-layout collection's prefix index (`keys.snapshot` merged with
+  `keys.wal`) is read whole and capped at 256 MiB, about 150,000-200,000
+  small or 35,000-48,000 medium documents. A write that took it past the
+  cap used to commit, and from then on every read of the collection failed
+  with `ENATIVE_INDEX`. Every write that adds index keys (put, replace,
+  patch, batch, SQL, bulk import, raw files, the machine protocol and the
+  `fylo` crate) now measures the index files first and is refused with the
+  new code `EINDEX_FULL`, which names the collection and the limit, when the
+  index could pass 240 MiB: the cap less 16 MiB kept for compaction. Nothing
+  is written and the collection stays readable. Deletes, and updates that
+  add no more index bytes than they remove, still work on a full
+  collection. `docs/index-redesign.md` compares indexes that are not read
+  whole. A collection already past 256 MiB is not repaired by this change.
 - **Native range queries use the index, and large indexes are no longer
   reloaded per query.** `$gt`, `$gte`, `$lt` and `$lte` on an indexed field
   read one run of the field's sortable `n` keys, then only those documents,

@@ -214,6 +214,10 @@
             "retryable": false
         },
         {
+            "code": "EINDEX_FULL",
+            "retryable": false
+        },
+        {
             "code": "ENATIVE_COLLECTION",
             "retryable": false
         },

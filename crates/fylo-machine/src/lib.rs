@@ -4394,6 +4394,54 @@ mod tests {
         assert_eq!(frames[0]["error"]["code"], json!("EUNSUPPORTEDOP"));
     }
 
+    /// A full collection answers `EINDEX_FULL` on every path that adds a
+    /// document, and still deletes. The snapshot's length stands in for
+    /// 240 MiB of index keys: a write only measures the index files.
+    #[test]
+    fn a_full_collection_refuses_puts_with_index_full() {
+        let root = std::env::temp_dir().join(format!(
+            "fylo-machine-index-full-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let created = run(&format!(
+            "{}\n{}\n",
+            json!({ "op": "createCollection", "collection": "notes", "root": root }),
+            json!({ "op": "putData", "collection": "notes", "data": { "n": 1 }, "root": root }),
+        ));
+        let identifier = created[1]["result"].as_str().unwrap().to_owned();
+        std::fs::File::create(root.join(".collections/notes/index/keys.snapshot"))
+            .unwrap()
+            .set_len(240 * 1024 * 1024)
+            .unwrap();
+
+        let frames = run(&format!(
+            "{}\n{}\n{}\n",
+            json!({ "op": "putData", "collection": "notes", "data": { "n": 2 }, "root": root }),
+            json!({ "op": "batchPutData", "collection": "notes", "batch": [{ "n": 3 }], "root": root }),
+            json!({ "op": "delDoc", "collection": "notes", "id": identifier, "root": root }),
+        ));
+
+        assert_eq!(
+            frames[0]["error"]["code"],
+            json!("EINDEX_FULL"),
+            "{}",
+            frames[0]
+        );
+        assert_eq!(
+            frames[1]["error"]["code"],
+            json!("EINDEX_FULL"),
+            "{}",
+            frames[1]
+        );
+        assert_eq!(frames[2]["ok"], json!(true), "{}", frames[2]);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     /// Resharding moves every record, its tombstones, and its raw files. The
     /// implementation was reachable only from a development binary, so this
     /// covers the surface an operator actually has.
