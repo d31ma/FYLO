@@ -29,6 +29,7 @@
 //! root, with collections as tables.
 
 mod collection;
+mod collection_recovery;
 mod error;
 mod queue;
 #[cfg(feature = "sql")]
@@ -36,6 +37,7 @@ mod sql;
 
 use std::path::{Path, PathBuf};
 
+use collection_recovery::CollectionRecovery;
 use fylo_engine::{ReadOnlyEngine, WriteEngine};
 use fylo_storage_native::{
     CollectionKind, FilesystemProfile, NativeQueue, NativeRoot, NativeWriteRoot, RootLease,
@@ -103,7 +105,7 @@ impl Root {
         };
         root.check_lease()?;
         root.refuse_branch_worktree()?;
-        root.writer()?.recover_repository_materialization()?;
+        root.recover()?;
         Ok(root)
     }
 
@@ -184,6 +186,16 @@ impl Root {
     /// `ECOLLECTION_NOT_FOUND` for a missing collection, or a read failure.
     pub fn inspect_collection(&self, name: &str) -> Result<CollectionInspection, Error> {
         self.reader()?.inspect(name).map_err(Error::from)
+    }
+
+    /// Finish what a stopped writer left: the repository materialization,
+    /// then every collection's interrupted commit, as `fylo exec` does
+    /// before its first request.
+    fn recover(&self) -> Result<(), Error> {
+        let writer = self.writer()?;
+        writer.recover_repository_materialization()?;
+        let root = NativeRoot::open_profiled(self.options())?;
+        CollectionRecovery::run(&root, &writer)
     }
 
     fn options(&self) -> RootOpenOptions {
