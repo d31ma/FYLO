@@ -895,19 +895,19 @@ then check every one against the whole query. A query whose every `$ops`
 entry has at least one field the index can answer reads only those
 documents; otherwise it reads every document.
 
-| Operator                     | Native engine (CLI, clients, Rust)              | Browser engine                    |
-| ---------------------------- | ----------------------------------------------- | --------------------------------- |
+| Operator                     | Native engine (CLI, clients, Rust)               | Browser engine                    |
+| ---------------------------- | ------------------------------------------------ | --------------------------------- |
 | `$eq`                        | Exact match key (`eq`) and coerced numbers (`n`) | Exact match key (`eq`)            |
-| `$gt`, `$gte`, `$lt`, `$lte` | One run of sortable numeric keys (`n`)          | Sortable numeric keys (`n`/`nr`)  |
-| `$contains`                  | Reads every document                            | Exact match on array members      |
-| `$like "ali%"`               | Reads every document                            | Forward prefix (`f`)              |
-| `$like "%ice"`               | Reads every document                            | Reversed prefix (`r`)             |
-| `$like "%lic%"`              | Reads every document                            | Trigram (`g3`) → hydrate → verify |
+| `$gt`, `$gte`, `$lt`, `$lte` | One run of sortable numeric keys (`n`)           | Sortable numeric keys (`n`/`nr`)  |
+| `$contains`                  | Reads every document                             | Exact match on array members      |
+| `$like "ali%"`               | Reads every document                             | Forward prefix (`f`)              |
+| `$like "%ice"`               | Reads every document                             | Reversed prefix (`r`)             |
+| `$like "%lic%"`              | Reads every document                             | Trigram (`g3`) → hydrate → verify |
 
-The native engine reads every document for `$eq: null`, for a comparison
-whose bound is not a number, and for comparisons an empty array satisfies
+Both engines read every document for comparisons an empty array satisfies
 (such as `$gte: 0`): an empty array compares as `0` but has no index key.
-It reads only the index keys a query needs from `keys.snapshot`, plus the
+The native engine also reads every document for `$eq: null` and for a
+comparison whose bound is not a number. It reads only the index keys a query needs from `keys.snapshot`, plus the
 write-ahead log, rather than loading the whole index.
 
 ---

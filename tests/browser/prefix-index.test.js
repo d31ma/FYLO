@@ -188,6 +188,23 @@ describe('BrowserPrefixIndex', () => {
         expect(Object.keys(found).sort()).toEqual([ten, hex].sort())
         await fylo.close()
     })
+
+    test('a range that admits 0 finds an empty array, as native does', async () => {
+        const fylo = new BrowserCore({ fs: createMemoryFilesystem(), root: '/' })
+        await fylo.users.create()
+        const empty = await fylo.users.put({ score: [] })
+        const zero = await fylo.users.put({ score: 0 })
+        const five = await fylo.users.put({ score: 5 })
+        const found = async (operand) =>
+            Object.keys(await collect(fylo, { $ops: [{ score: operand }] })).sort()
+
+        expect(await found({ $gte: 0 })).toEqual([empty, zero, five].sort())
+        expect(await found({ $lte: 0 })).toEqual([empty, zero].sort())
+        expect(await found({ $lt: 1 })).toEqual([empty, zero].sort())
+        expect(await found({ $gt: 0 })).toEqual([five])
+        expect(await found({ $gte: 1 })).toEqual([five])
+        await fylo.close()
+    })
 })
 
 async function collect(fylo, query) {

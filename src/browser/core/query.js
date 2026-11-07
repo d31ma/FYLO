@@ -242,6 +242,7 @@ export class BrowserQueryEngine {
      */
     async candidateDocIdsForOperand(collection, fieldPath, operand) {
         if (operand.$eq !== undefined || operand.$contains !== undefined) return null
+        if (this.matchedByEmptyArray(operand)) return null
         let candidateIds = null
         if (
             operand.$gt !== undefined ||
@@ -268,6 +269,14 @@ export class BrowserQueryEngine {
             candidateIds = this.intersectDocIds(candidateIds, likeCandidates)
         }
         return candidateIds
+    }
+
+    /**
+     * @param {Operand} operand
+     * @returns {boolean}
+     */
+    matchedByEmptyArray(operand) {
+        return this.matchesOperand([], operand)
     }
 
     /**
