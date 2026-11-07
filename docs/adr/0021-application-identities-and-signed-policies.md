@@ -204,8 +204,8 @@ What a protected `.vdbx` file holds, in addition to ADR 0016:
   kept the old key; the records stay under collection keys whose epochs do
   rotate. It waits for the protected `fylo rekey` (phase 7), which rewrites
   the file under fresh keys anyway.
-- **Not yet.** `fylo pack --sealed` and `fylo rekey` refuse a protected
-  database (phases 6 and 7). The browser build has no identities (phase 5)
+- **Not yet** (as of phase 3; phase 7, section 7, added both).
+  `fylo pack --sealed` and `fylo rekey` refused a protected database. The browser build has no identities (phase 5)
   and opens a protected file locked; P-256, ECDSA and HPKE stay out of
   `fylo-browser.wasm`, which they would grow by about 190 KB. Policy
   conditions (`notBefore`, `notAfter`) are not in `fylo.policy/1` yet.
@@ -397,6 +397,25 @@ in phase 7.
       them to the collection's key.
     - A sealed protected database is never rekeyed: rekey its source and
       pack it again.
+
+- **`fylo pack --sealed` of a protected database.** Run by an admin, it
+  builds a copy as a rekey builds its new file, with every key, epoch and
+  policy version as they are and no new version (each record signed again
+  by the admin), then writes it as a sealed file whose blocks are not
+  encrypted again: the superblock keeps `INCOMPAT_PROTECTED` and
+  `INCOMPAT_ENCRYPTED` with `INCOMPAT_SEALED`, the database id and the
+  catalog key's check value, and the sealed header's block encryption is
+  off. Its units stay sealed under the catalog and collection keys and
+  signed, so each identity reads only what it was granted, as in the
+  source, and no shared key exists to leak. Renumbering the extents
+  rewrites only the plain slots of the collection blocks; their sealed
+  headers are opened with the catalog key, to see which are dropped, and
+  copied as they are. The access slots are read through the image like
+  any other byte. The copy is checked against the source with the oracle
+  and as `fylo verify` checks it with the admin's identity, then flushed
+  and named; a pack that stops leaves no output. `--encrypt` is refused
+  with it. The section 4 rule "never with `INCOMPAT_SEALED`" no longer
+  holds.
 
 ### 8. Phases
 

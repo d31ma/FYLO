@@ -92,7 +92,7 @@ impl SealedImage {
             .checked_mul(superblock.extent_bytes());
         let index_end = header.index_offset + header.index_bytes();
         if image != Some(header.image_bytes)
-            || header.encrypted != superblock.is_encrypted()
+            || header.encrypted != superblock.seals_blocks()
             || index_end > file.metadata()?.len()
         {
             return Err(ContainerFormatError::InvalidField.into());

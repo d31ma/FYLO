@@ -32,6 +32,7 @@ mod pack_blockers;
 mod placed_record;
 mod protected_pack;
 mod protected_rekey;
+mod protected_sealed_pack;
 mod record_access_group;
 mod record_access_migration;
 mod record_image;

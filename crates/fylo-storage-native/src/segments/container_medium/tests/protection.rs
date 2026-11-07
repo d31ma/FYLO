@@ -323,12 +323,13 @@ fn rekey_refuses_a_protected_database() {
 }
 
 #[test]
-fn a_sealed_pack_refuses_a_protected_database() {
+fn a_sealed_pack_of_a_protected_database_takes_no_shared_key() {
     let database = Protected::create("vdbx-protected-sealed");
     let out = database.directory.join("copy.vdbx");
+    let key = DatabaseKey::new(vec![b'k'; 32]);
     let error = database
         .writer()
-        .pack_sealed_database(&out, None)
+        .pack_sealed_database(&out, Some(&key))
         .unwrap_err();
     assert_eq!(error.code(), NativeStorageErrorCode::Unsupported);
     assert!(!out.exists());

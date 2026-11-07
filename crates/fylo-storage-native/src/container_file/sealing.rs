@@ -56,14 +56,20 @@ impl ContainerFile {
         out: &Path,
         secret: Option<&[u8]>,
     ) -> Result<ContainerSealedReport, ContainerError> {
-        if self.is_encrypted() || self.image.is_some() || self.allocator.has_unsaved_changes() {
+        let sealable = !self.is_encrypted() || (self.is_protected() && secret.is_none());
+        if !sealable
+            || self.is_locked()
+            || self.image.is_some()
+            || self.allocator.has_unsaved_changes()
+        {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "only a plain, unsealed and checkpointed container can be sealed",
+                "only a plain or unlocked protected, unsealed and checkpointed container can \
+                 be sealed",
             )
             .into());
         }
-        let plan = Renumbering::of(self);
+        let plan = Renumbering::of(self, self.cipher.clone());
         let cipher = match secret {
             Some(secret) => {
                 let salt = ContainerCipher::new_salt()?;
@@ -72,6 +78,13 @@ impl ContainerFile {
             None => None,
         };
         let mut superblock = plan.superblock(&self.superblock)?;
+        if self.is_protected() {
+            // The units stay sealed under the catalog and collection keys:
+            // the database id and the catalog key's check carry over.
+            superblock.incompat |= ContainerSuperblock::INCOMPAT_ENCRYPTED;
+            superblock.key_salt = self.superblock.key_salt;
+            superblock.key_check = self.superblock.key_check;
+        }
         if let Some((cipher, salt)) = &cipher {
             superblock.incompat |= ContainerSuperblock::INCOMPAT_ENCRYPTED;
             superblock.key_salt = *salt;
@@ -152,11 +165,17 @@ impl ContainerFile {
                 .map_err(|_| ContainerFormatError::Oversized)?;
             let block =
                 usize::try_from(BLOCK_BYTES).map_err(|_| ContainerFormatError::Oversized)?;
-            for bytes in extent[payload..].chunks_exact_mut(block) {
+            let blocks = usize::try_from(self.directory_blocks())
+                .map_err(|_| ContainerFormatError::Oversized)?;
+            for (number, bytes) in extent[payload..]
+                .chunks_exact_mut(block)
+                .take(blocks)
+                .enumerate()
+            {
                 if bytes.iter().all(|byte| *byte == 0) {
                     break;
                 }
-                plan.renumber_block(bytes)?;
+                plan.renumber_block(number, bytes)?;
             }
         }
         Ok(())
@@ -177,10 +196,13 @@ struct Renumbering {
     map_sequence: u64,
     /// The image's map.
     pages: Vec<ContainerExtentMapPage>,
+    /// A protected source's catalog key, which its collection blocks'
+    /// headers are sealed with.
+    catalog: Option<std::sync::Arc<ContainerCipher>>,
 }
 
 impl Renumbering {
-    fn of(source: &ContainerFile) -> Self {
+    fn of(source: &ContainerFile, catalog: Option<std::sync::Arc<ContainerCipher>>) -> Self {
         let mut states = Vec::new();
         let mut kept = Vec::new();
         for page in source.allocator.map_pages() {
@@ -230,6 +252,7 @@ impl Renumbering {
             map_extents,
             map_sequence,
             pages,
+            catalog,
         }
     }
 
@@ -286,8 +309,8 @@ impl Renumbering {
     /// is cleared, so no older slot names an extent the image left out. A
     /// dropped collection's slots name released extents, so both pairs are
     /// cleared.
-    fn renumber_block(&self, block: &mut [u8]) -> Result<(), ContainerError> {
-        let dropped = ContainerCollectionHeader::decode(block)?.dropped;
+    fn renumber_block(&self, number: usize, block: &mut [u8]) -> Result<(), ContainerError> {
+        let dropped = self.header_of(number, block)?.dropped;
         let (_, slots) = block.split_at_mut(ContainerCollectionHeader::CHECKPOINT_SLOTS_OFFSET);
         let (checkpoints, generations) = slots.split_at_mut(
             ContainerCollectionHeader::GENERATION_SLOTS_OFFSET
@@ -324,6 +347,27 @@ impl Renumbering {
             generations[..ContainerGenerationSlot::ENCODED_BYTES].copy_from_slice(&slot.encode());
         }
         Ok(())
+    }
+
+    /// The header of collection block `number`, opened with the catalog key
+    /// in a protected source. Only the slots after it are rewritten, so the
+    /// sealed header is copied as it is.
+    fn header_of(
+        &self,
+        number: usize,
+        block: &[u8],
+    ) -> Result<ContainerCollectionHeader, ContainerError> {
+        let Some(catalog) = &self.catalog else {
+            return Ok(ContainerCollectionHeader::decode(block)?);
+        };
+        let block_number = u32::try_from(number).map_err(|_| ContainerFormatError::Oversized)?;
+        let body = catalog.open(
+            ContainerSealContext::Directory {
+                block: block_number,
+            },
+            ContainerCollectionHeader::decode_sealed(block)?,
+        )?;
+        Ok(ContainerCollectionHeader::decode_body(&body)?)
     }
 
     /// A snapshot reference renumbered. A run's extents are consecutive and

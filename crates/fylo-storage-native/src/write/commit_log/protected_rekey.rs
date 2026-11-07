@@ -6,7 +6,7 @@ use super::database_pack_report::DatabasePackReport;
 use super::document_image::DocumentImage;
 use super::segment_compactor::SegmentCompactor;
 use crate::container_database::ContainerDatabase;
-use crate::database_access::RekeyPlan;
+use crate::database_access::{RekeyPlan, RekeyScope};
 use crate::segments::ContainerMedium;
 use crate::{
     DatabaseAccess, DocumentRekey, NativeCollection, NativeRoot, NativeStorageError,
@@ -66,13 +66,18 @@ impl NativeWriteRoot {
             let writer = database.hold_writer()?;
             let names = database.collection_names();
             let collections = self.packed_collections(&names)?;
+            let scope = collection.map_or(RekeyScope::Everything, RekeyScope::Collection);
             let plan = access
-                .plan_rekey(collection)
+                .plan_rekey(scope)
                 .map_err(|error| Self::access_error(&error))?;
             let staging = Self::pack_staging(&path, Self::PACK_STAGING_SUFFIX)?;
             Self::remove_staging(&staging)?;
             let report = Self::renewing(&database, true, || {
-                self.stage_rekeyed(&collections.1, &staging, (&plan, &access), rekey)
+                let report =
+                    self.stage_rekeyed(&collections.1, &staging, (&plan, &access), rekey)?;
+                Self::flush_staging(&staging)?;
+                failpoint("after-pack-staging")?;
+                Ok(report)
             })
             .inspect_err(|_| Self::abandon_staging(&staging))?;
             Self::replace_database(&database, Some(writer), (&staging, &path))?;
@@ -87,7 +92,7 @@ impl NativeWriteRoot {
     }
 
     /// The access of a protected, unsealed database opened by an admin.
-    fn admin_access(
+    pub(super) fn admin_access(
         database: &ContainerDatabase,
     ) -> Result<Arc<DatabaseAccess>, NativeStorageError> {
         if !database.is_protected() || database.is_sealed() {
@@ -106,15 +111,16 @@ impl NativeWriteRoot {
         Ok(access)
     }
 
-    fn access_error(error: &crate::DatabaseAccessError) -> NativeStorageError {
+    pub(super) fn access_error(error: &crate::DatabaseAccessError) -> NativeStorageError {
         NativeStorageError::new(
             ContainerMedium::access_code(error),
             format!("{error} ({})", error.code()),
         )
     }
 
-    /// Build, check and flush the new file at `staging`.
-    fn stage_rekeyed(
+    /// Build the new file at `staging` from `plan` and check it as `fylo
+    /// verify` does with the admin's identity.
+    pub(super) fn stage_rekeyed(
         &self,
         collections: &[NativeCollection],
         staging: &Path,
@@ -138,8 +144,6 @@ impl NativeWriteRoot {
         NativeRoot::close_database(staging)?;
         let report = built?;
         Self::verify_protected(staging, &identity)?;
-        Self::flush_staging(staging)?;
-        failpoint("after-pack-staging")?;
         Ok(report)
     }
 

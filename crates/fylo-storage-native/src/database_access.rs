@@ -51,6 +51,18 @@ struct AccessState {
 /// A collection's id, an epoch, and that epoch's key.
 type EpochKey = (u32, u32, Zeroizing<[u8; 32]>);
 
+/// Which keys a copy of a protected database renews (ADR 0021 section 7).
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum RekeyScope<'a> {
+    /// None: `fylo pack --sealed` copies it with every key and the policy
+    /// chain as they are.
+    Nothing,
+    /// One collection's key: `fylo rekey --collection`.
+    Collection(&'a str),
+    /// The catalog key and every collection key: `fylo rekey`.
+    Everything,
+}
+
 /// What a protected `fylo rekey` writes its new file with (ADR 0021
 /// section 7): the same database id, a catalog key, the access slot of the
 /// new file (every policy version sealed under that key, then a `rekey`
@@ -533,39 +545,39 @@ impl DatabaseAccess {
     /// catalog key, and a `rekey` version signed by this admin follows it.
     pub(crate) fn plan_rekey(
         &self,
-        collection: Option<&str>,
+        scope: RekeyScope<'_>,
     ) -> Result<RekeyPlan, DatabaseAccessError> {
         self.require_admin()?;
         let state = self.read();
-        if let Some(name) = collection {
+        if let RekeyScope::Collection(name) = scope {
             Self::require_collection(&state, name)?;
         }
-        let catalog_key = match collection {
-            Some(_) => self.catalog_key.clone(),
-            None => AccessBinding::random_key()?,
+        let catalog_key = match scope {
+            RekeyScope::Everything => AccessBinding::random_key()?,
+            RekeyScope::Nothing | RekeyScope::Collection(_) => self.catalog_key.clone(),
         };
         let catalog = ContainerCipher::from_key(&catalog_key);
         let mut policies = self.resealed_policies(&state, &catalog)?;
-        let change = match collection {
-            Some(name) => {
-                AccessPolicyChange::now(AccessPolicyChange::REKEY_COLLECTION).with_collection(name)
+        let policy = match Self::rekey_change(scope) {
+            Some(change) => {
+                let policy = state.policy.recording(state.policy_digest.clone(), change);
+                policies.push(AccessPolicyChain::seal(
+                    &policy,
+                    &catalog,
+                    self.binding,
+                    &self.identity,
+                )?);
+                policy
             }
-            None => AccessPolicyChange::now(AccessPolicyChange::REKEY),
+            None => state.policy.clone(),
         };
-        let policy = state.policy.recording(state.policy_digest.clone(), change);
-        policies.push(AccessPolicyChain::seal(
-            &policy,
-            &catalog,
-            self.binding,
-            &self.identity,
-        )?);
         let keyring = Self::wraps_for(
             &policy.granted_keys(),
             &self.binding.catalog_info(),
             &catalog_key,
             None,
         )?;
-        let (keys, rotated) = self.rekeyed_collections(&state, collection)?;
+        let (keys, rotated) = self.rekeyed_collections(&state, scope)?;
         let document = AccessDocument {
             format: AccessDocument::FORMAT.to_owned(),
             policies,
@@ -578,6 +590,16 @@ impl DatabaseAccess {
             keys,
             rotated,
         })
+    }
+
+    fn rekey_change(scope: RekeyScope<'_>) -> Option<AccessPolicyChange> {
+        match scope {
+            RekeyScope::Nothing => None,
+            RekeyScope::Collection(name) => Some(
+                AccessPolicyChange::now(AccessPolicyChange::REKEY_COLLECTION).with_collection(name),
+            ),
+            RekeyScope::Everything => Some(AccessPolicyChange::now(AccessPolicyChange::REKEY)),
+        }
     }
 
     fn require_collection(state: &AccessState, name: &str) -> Result<(), DatabaseAccessError> {
@@ -614,7 +636,7 @@ impl DatabaseAccess {
     fn rekeyed_collections(
         &self,
         state: &AccessState,
-        collection: Option<&str>,
+        scope: RekeyScope<'_>,
     ) -> Result<(BTreeMap<String, CollectionKeys>, Vec<String>), DatabaseAccessError> {
         let mut keys = BTreeMap::new();
         let mut rotated = Vec::new();
@@ -623,7 +645,7 @@ impl DatabaseAccess {
                 .keys
                 .get(id)
                 .ok_or_else(|| self.denied(&format!("holds no key of collection {name:?}")))?;
-            if collection.is_some_and(|only| only != name) {
+            if !Self::renews(scope, name) {
                 keys.insert(name.clone(), held.clone());
                 continue;
             }
@@ -633,6 +655,14 @@ impl DatabaseAccess {
             rotated.push(name.clone());
         }
         Ok((keys, rotated))
+    }
+
+    fn renews(scope: RekeyScope<'_>, name: &str) -> bool {
+        match scope {
+            RekeyScope::Nothing => false,
+            RekeyScope::Collection(only) => only == name,
+            RekeyScope::Everything => true,
+        }
     }
 
     /// Prepare policy version n+1 with `request`'s rule added, signed by

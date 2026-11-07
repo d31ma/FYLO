@@ -4,6 +4,14 @@
 
 ### Added
 
+- **`fylo pack --sealed` of a protected database (ADR 0021 section 7,
+  phase 7).** As an admin, `fylo pack <db.vdbx> --out <copy.vdbx> --sealed
+  --identity <reference>` writes a sealed, read-only copy that keeps the
+  database's policy, keys and grants: its records stay sealed under each
+  collection's key and signed, so every identity reads only what it was
+  granted. The `.vdbx` format now allows a sealed protected file
+  (`INCOMPAT_PROTECTED` with `INCOMPAT_SEALED`), whose blocks are not
+  encrypted again; older builds refuse it.
 - **`fylo rekey` of a protected database (ADR 0021 section 7, phase 7).**
   As an admin, `fylo rekey <db.vdbx> --identity <reference>` rewrites the
   database under a new catalog key and new collection keys, and `fylo

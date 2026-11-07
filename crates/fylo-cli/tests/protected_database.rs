@@ -583,3 +583,124 @@ fn rekey_of_a_protected_database_takes_no_shared_key() {
     ));
     assert!(refused.contains("--new-key"), "{refused}");
 }
+
+fn write_secret(fixture: &Fixture, admin: &str) {
+    stdout(&fixture.as_admin(
+        admin,
+        &[
+            "exec",
+            "--request",
+            r#"{"op":"createCollection","collection":"secrets"}"#,
+            "--root",
+            "app.vdbx",
+        ],
+    ));
+    stdout(&fixture.as_admin(
+        admin,
+        &[
+            "sql",
+            "INSERT INTO secrets (code) VALUES ('WOMBAT-SECRET')",
+            "--root",
+            "app.vdbx",
+        ],
+    ));
+}
+
+#[test]
+fn a_sealed_pack_of_a_protected_database_keeps_each_grant() {
+    let fixture = Fixture::new("sealed-protected");
+    let admin = fixture.protected();
+    let identifier = write_user(&fixture, &admin);
+    write_secret(&fixture, &admin);
+    fixture.identity("reader");
+    grant_reader(&fixture, &admin);
+    let packed = json(&fixture.as_admin(
+        &admin,
+        &["pack", "app.vdbx", "--out", "copy.vdbx", "--sealed"],
+    ));
+    assert!(packed["sealed"].is_object(), "{packed}");
+    let bytes = fs::read(fixture.0.join("copy.vdbx")).unwrap();
+    assert!(!contains(&bytes, CANARY));
+    assert!(!contains(&bytes, "WOMBAT-SECRET"));
+    let got = json(&fixture.run(&as_reader(
+        &admin,
+        &["get", "users", &identifier, "--root", "copy.vdbx", "--json"],
+    )));
+    assert_eq!(got[&identifier]["name"], CANARY);
+    let secrets = fixture.run(&as_reader(
+        &admin,
+        &["sql", "SELECT * FROM secrets", "--root", "copy.vdbx"],
+    ));
+    assert!(!contains(&secrets.stdout, "WOMBAT-SECRET"));
+    let all = stdout(&fixture.as_admin(
+        &admin,
+        &["sql", "SELECT * FROM secrets", "--root", "copy.vdbx"],
+    ));
+    assert!(all.contains("WOMBAT-SECRET"), "{all}");
+    let write = failure(&fixture.as_admin(
+        &admin,
+        &[
+            "sql",
+            "INSERT INTO users (name) VALUES ('x')",
+            "--root",
+            "copy.vdbx",
+        ],
+    ));
+    assert!(!write.is_empty());
+    let listed = json(&fixture.as_admin(&admin, &["access", "list", "copy.vdbx"]));
+    assert_eq!(listed["policy"]["version"], 2);
+    let report = json(&fixture.as_admin(&admin, &["verify", "copy.vdbx"]));
+    assert_eq!(report["ok"], true, "{report}");
+}
+
+#[test]
+fn a_sealed_pack_of_a_protected_database_needs_an_admin() {
+    let fixture = Fixture::new("sealed-protected-reader");
+    let admin = fixture.protected();
+    write_user(&fixture, &admin);
+    fixture.identity("reader");
+    grant_reader(&fixture, &admin);
+    let refused = failure(&fixture.run(&as_reader(
+        &admin,
+        &["pack", "app.vdbx", "--out", "copy.vdbx", "--sealed"],
+    )));
+    assert!(refused.contains("EACCES"), "{refused}");
+    assert!(!fixture.0.join("copy.vdbx").exists());
+}
+
+#[test]
+fn a_sealed_pack_of_a_protected_database_that_stops_leaves_no_copy() {
+    let fixture = Fixture::new("sealed-protected-stopped");
+    let admin = fixture.protected();
+    let identifier = write_user(&fixture, &admin);
+    let stopped = Command::new(BINARY)
+        .current_dir(&fixture.0)
+        .args([
+            "pack",
+            "app.vdbx",
+            "--out",
+            "copy.vdbx",
+            "--sealed",
+            "--identity",
+            "file:admin.pem",
+            "--trust-anchor",
+            &admin,
+        ])
+        .env_remove("FYLO_IDENTITY")
+        .env_remove("FYLO_TRUST_ANCHOR")
+        .env("FYLO_RUST_FAILPOINT", "after-pack-staging")
+        .env("FYLO_RUST_FAILPOINT_ACTION", "abort")
+        .output()
+        .unwrap();
+    assert!(!stopped.status.success(), "{stopped:?}");
+    assert!(!fixture.0.join("copy.vdbx").exists());
+    json(&fixture.as_admin(
+        &admin,
+        &["pack", "app.vdbx", "--out", "copy.vdbx", "--sealed"],
+    ));
+    let got = json(&fixture.as_admin(
+        &admin,
+        &["get", "users", &identifier, "--root", "copy.vdbx", "--json"],
+    ));
+    assert_eq!(got[&identifier]["name"], CANARY);
+}

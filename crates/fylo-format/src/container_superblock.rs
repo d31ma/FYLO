@@ -66,7 +66,9 @@ impl ContainerSuperblock {
     /// The file is protected (ADR 0021): its keys are wrapped for
     /// application identities under a signed policy, held in the access
     /// slots at the end of the directory extent. Always set with
-    /// `INCOMPAT_ENCRYPTED`, never with `INCOMPAT_SEALED`.
+    /// `INCOMPAT_ENCRYPTED`. With `INCOMPAT_SEALED` (ADR 0021 section 7) the
+    /// image's units stay sealed under the catalog and collection keys and
+    /// its blocks are not encrypted again.
     pub const INCOMPAT_PROTECTED: u32 = 1 << 4;
     const KNOWN_INCOMPAT: u32 = Self::INCOMPAT_ENCRYPTED
         | Self::INCOMPAT_SEALED
@@ -107,6 +109,14 @@ impl ContainerSuperblock {
     #[must_use]
     pub const fn is_protected(&self) -> bool {
         self.incompat & Self::INCOMPAT_PROTECTED != 0
+    }
+
+    /// Whether a sealed file's blocks are each sealed with the file key: an
+    /// encrypted sealed file that is not protected. A protected one keeps
+    /// its units sealed under its own keys instead.
+    #[must_use]
+    pub const fn seals_blocks(&self) -> bool {
+        self.is_encrypted() && !self.is_protected()
     }
 
     /// Whether the file is a sealed, read-only pack.
@@ -193,8 +203,7 @@ impl ContainerSuperblock {
             && all_zero(&bytes[128..Self::CHECKED_BYTES]);
         let encryption_consistent = (superblock.is_encrypted()
             || (all_zero(&superblock.key_salt) && all_zero(&superblock.key_check)))
-            && (!superblock.is_protected()
-                || (superblock.is_encrypted() && !superblock.is_sealed()));
+            && (!superblock.is_protected() || superblock.is_encrypted());
         let extents_consistent = (Self::MIN_EXTENT_SHIFT..=Self::MAX_EXTENT_SHIFT)
             .contains(&superblock.extent_shift)
             && superblock.directory_extent >= 1
@@ -325,6 +334,23 @@ mod tests {
             ContainerSuperblock::decode(&[0_u8; 4096]),
             Err(ContainerFormatError::BadMagic)
         );
+    }
+
+    #[test]
+    fn a_protected_file_may_be_sealed_but_never_unencrypted() {
+        let mut sealed = sample(1);
+        sealed.incompat |= ContainerSuperblock::INCOMPAT_PROTECTED
+            | ContainerSuperblock::INCOMPAT_ENCRYPTED
+            | ContainerSuperblock::INCOMPAT_SEALED;
+        sealed.key_salt = [7; 32];
+        sealed.key_check = [9; 16];
+        let decoded = ContainerSuperblock::decode(&sealed.encode()).unwrap();
+        assert!(decoded.is_sealed() && decoded.is_protected());
+        assert!(!decoded.seals_blocks());
+
+        let mut plain = sample(1);
+        plain.incompat |= ContainerSuperblock::INCOMPAT_PROTECTED;
+        assert!(ContainerSuperblock::decode(&plain.encode()).is_err());
     }
 
     #[test]

@@ -621,7 +621,7 @@ impl ContainerFile {
     #[must_use]
     pub fn is_locked(&self) -> bool {
         match &self.image {
-            Some(image) => image.is_locked(),
+            Some(image) => image.is_locked() || (self.is_protected() && self.cipher.is_none()),
             None => self.is_encrypted() && self.cipher.is_none(),
         }
     }
@@ -630,7 +630,7 @@ impl ContainerFile {
     /// sealed with the file key: in an encrypted file that is not sealed.
     /// A sealed file seals its blocks instead, and what they hold is plain.
     fn seals_units(&self) -> bool {
-        self.is_encrypted() && self.image.is_none()
+        self.is_encrypted() && (self.image.is_none() || self.is_protected())
     }
 
     /// Whether the file is a sealed pack (`fylo pack --sealed`).
@@ -680,7 +680,11 @@ impl ContainerFile {
             return Ok(());
         }
         cipher.check(&self.superblock.key_check)?;
-        if let Some(image) = &mut self.image {
+        if let Some(image) = self
+            .image
+            .as_mut()
+            .filter(|_| !self.superblock.is_protected())
+        {
             // The blocks hold the map and the directory, both plain.
             image.set_cipher(Some(cipher));
             let opened = self.read_map().and_then(|allocator| {

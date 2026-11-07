@@ -9,7 +9,7 @@ use std::sync::Arc;
 use fylo_format::{ContainerAccessSlot, ContainerExtentHeader, ContainerSuperblock};
 use fylo_identity::Identity;
 
-use super::{ACCESS_SLOT_BYTES, ContainerError, ContainerFile, read_exact_at};
+use super::{ACCESS_SLOT_BYTES, ContainerError, ContainerFile};
 use crate::access_binding::AccessBinding;
 use crate::{ContainerCipher, DatabaseAccess, DatabaseAccessError, DatabaseIdentity};
 
@@ -124,7 +124,7 @@ impl ContainerFile {
         let offset = self.superblock.directory_extent * self.extent_bytes()
             + ContainerExtentHeader::PAYLOAD_OFFSET
             + at;
-        read_exact_at(self.file(), &mut copies, offset)?;
+        self.read_at(&mut copies, offset)?;
         ContainerAccessSlot::newest(&copies[..slot_bytes], &copies[slot_bytes..]).ok_or_else(|| {
             ContainerError::Access(DatabaseAccessError::Damaged(
                 "neither access slot of the protected database is valid".into(),
