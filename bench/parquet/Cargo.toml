@@ -1,0 +1,28 @@
+[package]
+name = "fylo-parquet-bench"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Benchmark: FYLO's storage layouts against Apache Parquet on FYLO's workload"
+
+# A workspace of its own, so the Parquet and Arrow crates never enter FYLO's
+# Cargo.lock. Cargo.lock here starts as a copy of FYLO's, so FYLO's crates
+# build with the versions FYLO pins.
+[workspace]
+
+[dependencies]
+fylo-engine = { path = "../../crates/fylo-engine" }
+fylo-query = { path = "../../crates/fylo-query" }
+fylo-storage-native = { path = "../../crates/fylo-storage-native" }
+serde_json = { version = "1.0.151", features = ["preserve_order"] }
+libc = "0.2.189"
+arrow-array = "60.1.0"
+arrow-schema = "60.1.0"
+arrow-json = "60.1.0"
+arrow-select = "60.1.0"
+arrow-ord = "60.1.0"
+parquet = { version = "60.1.0", default-features = false, features = ["arrow", "snap", "zstd", "lz4"] }
+
+[profile.release]
+debug = false
+codegen-units = 16

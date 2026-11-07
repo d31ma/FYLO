@@ -1,0 +1,16 @@
+=== load fylo-files small n=1000000
+error: EENGINE_STORAGE: ENATIVE_FILE_SIZE: /Users/peregrine/Developer/Builds/parquet-bench-data/ceiling-small/root/.collections/items/index/keys.wal contains 91425817 bytes; limit is 67108864 (after 101000 documents loaded)
+total 375640
+drwxr-xr-x  5 peregrine  staff       160 Nov  7 08:38 .
+drwxr-xr-x  6 peregrine  staff       192 Nov  7 08:38 ..
+-rw-r--r--  1 peregrine  staff  91425373 Nov  7 08:38 keys.snapshot
+-rw-r--r--  1 peregrine  staff  91425817 Nov  7 08:39 keys.wal
+-rw-r--r--  1 peregrine  staff        62 Nov  7 08:38 manifest.json
+=== load fylo-files medium n=100000
+error: EENGINE_STORAGE: ENATIVE_FILE_SIZE: /Users/peregrine/Developer/Builds/parquet-bench-data/ceiling-medium/root/.collections/items/index/keys.wal contains 111469736 bytes; limit is 67108864 (after 24000 documents loaded)
+total 447528
+drwxr-xr-x  5 peregrine  staff        160 Nov  7 08:39 .
+drwxr-xr-x  6 peregrine  staff        192 Nov  7 08:39 ..
+-rw-r--r--  1 peregrine  staff  111467215 Nov  7 08:39 keys.snapshot
+-rw-r--r--  1 peregrine  staff  111469736 Nov  7 08:40 keys.wal
+-rw-r--r--  1 peregrine  staff         62 Nov  7 08:39 manifest.json

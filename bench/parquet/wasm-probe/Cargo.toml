@@ -1,0 +1,24 @@
+[package]
+name = "parquet-wasm-probe"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "How much a Parquet reader and writer adds to a wasm32 module"
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+bytes = "1"
+arrow-array = "60.1.0"
+arrow-schema = "60.1.0"
+parquet = { version = "60.1.0", default-features = false, features = ["arrow", "snap"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
