@@ -266,11 +266,24 @@ impl ContainerDatabase {
     ) -> Result<crate::AccessPolicy, NativeStorageError> {
         self.require_key()?;
         self.file.change_map(|open| {
+            open.settle_catalog().map_err(ContainerMedium::error)?;
             let policy = open
                 .change_access(prepare)
                 .map_err(ContainerMedium::error)?;
+            open.settle_catalog().map_err(ContainerMedium::error)?;
             open.checkpoint()?;
             Ok(policy)
+        })
+    }
+
+    /// A revocation stopped after its commit point, before the directory is
+    /// resealed under the new catalog key: what a crash there leaves.
+    #[cfg(test)]
+    pub(crate) fn revoke_unsettled(&self, rule: &str) -> Result<(), NativeStorageError> {
+        self.file.change_map(|open| {
+            open.change_access(|access, next_lsns| access.prepare_revoke(rule, next_lsns))
+                .map_err(ContainerMedium::error)?;
+            open.checkpoint()
         })
     }
 

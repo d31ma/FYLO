@@ -11,6 +11,7 @@ use zeroize::Zeroizing;
 
 use crate::access_binding::AccessBinding;
 use crate::access_policy_chain::AccessPolicyChain;
+use crate::catalog_keys::CatalogKeys;
 use crate::collection_keys::CollectionKeys;
 use crate::{
     AccessAction, AccessDocument, AccessGrantRequest, AccessGrants, AccessKeyWrap, AccessPolicy,
@@ -25,7 +26,6 @@ use crate::{
 pub struct DatabaseAccess {
     identity: Arc<Identity>,
     binding: AccessBinding,
-    catalog_key: Zeroizing<[u8; 32]>,
     anchor: IdentityId,
     trusted_on_first_use: bool,
     fingerprint: [u8; 32],
@@ -38,6 +38,7 @@ pub struct DatabaseAccess {
 
 struct AccessState {
     generation: u64,
+    catalog: CatalogKeys,
     document: AccessDocument,
     policy: AccessPolicy,
     policy_digest: String,
@@ -83,6 +84,7 @@ pub(crate) struct RekeyPlan {
 /// a newly named collection, and a new policy version.
 pub(crate) struct AccessChange {
     pub(crate) slot: ContainerAccessSlot,
+    catalog: Option<CatalogKeys>,
     keys: Vec<EpochKey>,
     collection: Option<(u32, String)>,
     policy: Option<(AccessPolicy, String)>,
@@ -115,6 +117,8 @@ impl DatabaseAccess {
             format: AccessDocument::FORMAT.to_owned(),
             policies: vec![envelope],
             keyring: vec![wrap],
+            previous: None,
+            original: None,
         };
         Self::slot(1, &document)
     }
@@ -132,16 +136,20 @@ impl DatabaseAccess {
     ) -> Result<Arc<ContainerCipher>, DatabaseAccessError> {
         let binding = AccessBinding::new(database);
         let document = Self::parse(&slot.body)?;
-        let catalog_key = Self::unwrap_catalog(&document, identity.identity(), binding)?;
-        let catalog = ContainerCipher::from_key(&catalog_key);
+        let current = Self::unwrap_catalog(&document, identity.identity(), binding)?;
+        let catalog_keys = CatalogKeys::from_document(current, &document)?;
+        let catalog = ContainerCipher::from_key(catalog_keys.original());
         Self::require_catalog(&catalog, key_check)?;
-        let chain = AccessPolicyChain::verify(&document.policies, &catalog, binding)?;
+        let chain = AccessPolicyChain::verify(
+            &document.policies,
+            &ContainerCipher::from_key(catalog_keys.current()),
+            binding,
+        )?;
         let trusted_on_first_use = Self::require_trusted(chain.anchor(), identity.trust())?;
         let keys = Self::unwrap_collections(&document, identity.identity(), binding);
         let access = DatabaseAccess {
             identity: Arc::clone(identity.identity()),
             binding,
-            catalog_key,
             anchor: chain.anchor().clone(),
             trusted_on_first_use,
             fingerprint: identity.identity().public().fingerprint(),
@@ -149,6 +157,7 @@ impl DatabaseAccess {
             inherited: Mutex::new(BTreeMap::new()),
             state: RwLock::new(AccessState {
                 generation: slot.generation,
+                catalog: catalog_keys,
                 policy_digest: chain.digest(),
                 policy: chain.policy().clone(),
                 versions: chain.versions().to_vec(),
@@ -225,8 +234,14 @@ impl DatabaseAccess {
     #[inline(never)]
     pub(crate) fn reload(&self, slot: &ContainerAccessSlot) -> Result<(), DatabaseAccessError> {
         let document = Self::parse(&slot.body)?;
-        let catalog = ContainerCipher::from_key(&self.catalog_key);
-        let chain = AccessPolicyChain::verify(&document.policies, &catalog, self.binding)?;
+        let current = Self::unwrap_catalog(&document, &self.identity, self.binding)?;
+        let catalog = CatalogKeys::from_document(current, &document)?;
+        Self::require_same_original(&self.read().catalog, &catalog)?;
+        let chain = AccessPolicyChain::verify(
+            &document.policies,
+            &ContainerCipher::from_key(catalog.current()),
+            self.binding,
+        )?;
         Self::require_same_anchor(&self.anchor, chain.anchor())?;
         let keys = Self::unwrap_collections(&document, &self.identity, self.binding);
         let mut state = self.write();
@@ -234,6 +249,7 @@ impl DatabaseAccess {
         let names: Vec<&str> = names.iter().map(String::as_str).collect();
         state.grants = AccessGrants::resolve(chain.policy(), self.identity.id(), &names);
         state.generation = slot.generation;
+        state.catalog = catalog;
         state.policy_digest = chain.digest();
         state.policy = chain.policy().clone();
         state.versions = chain.versions().to_vec();
@@ -433,6 +449,57 @@ impl DatabaseAccess {
         Ok(crate::FieldKeys::new(derived))
     }
 
+    /// Whether a catalog-key rotation is still resealing the directory
+    /// (ADR 0021 section 7).
+    pub(crate) fn rotation_pending(&self) -> bool {
+        self.read().catalog.rotation_pending()
+    }
+
+    /// The key that seals a directory block: the current catalog key.
+    pub(crate) fn catalog_sealing_key(&self) -> Arc<Aes256Gcm> {
+        self.read().catalog.sealing()
+    }
+
+    /// The keys that may open a directory block: the current catalog key,
+    /// then the previous one while a rotation is pending.
+    pub(crate) fn catalog_opening_keys(&self) -> Vec<Arc<Aes256Gcm>> {
+        self.read().catalog.opening()
+    }
+
+    /// Prepare the access document without the previous catalog key, once
+    /// every directory block is sealed under the current one.
+    pub(crate) fn prepare_settled(&self) -> Result<AccessChange, DatabaseAccessError> {
+        let state = self.read();
+        let catalog = state.catalog.settled();
+        let (previous, original) = catalog.document_fields()?;
+        let document = AccessDocument {
+            previous,
+            original,
+            ..state.document.clone()
+        };
+        Ok(AccessChange {
+            slot: Self::slot(state.generation + 1, &document)?,
+            catalog: Some(catalog),
+            keys: Vec::new(),
+            collection: None,
+            policy: None,
+        })
+    }
+
+    fn require_same_original(
+        held: &CatalogKeys,
+        found: &CatalogKeys,
+    ) -> Result<(), DatabaseAccessError> {
+        Some(found)
+            .filter(|found| found.original() == held.original())
+            .map(|_| ())
+            .ok_or_else(|| {
+                DatabaseAccessError::Policy(
+                    "the catalog key in the access document does not match this database".into(),
+                )
+            })
+    }
+
     /// Refuse unless this identity is an admin of the database.
     pub(crate) fn require_admin(&self) -> Result<(), DatabaseAccessError> {
         Some(self.read().grants.is_admin())
@@ -506,6 +573,7 @@ impl DatabaseAccess {
                 .into_iter()
                 .map(|(epoch, key)| (id, epoch, key))
                 .collect(),
+            catalog: None,
             collection: Some((id, name.to_owned())),
             policy: None,
         })
@@ -554,10 +622,10 @@ impl DatabaseAccess {
         }
         let catalog_key = match scope {
             RekeyScope::Everything => AccessBinding::random_key()?,
-            RekeyScope::Nothing | RekeyScope::Collection(_) => self.catalog_key.clone(),
+            RekeyScope::Nothing | RekeyScope::Collection(_) => state.catalog.current().clone(),
         };
         let catalog = ContainerCipher::from_key(&catalog_key);
-        let mut policies = self.resealed_policies(&state, &catalog)?;
+        let mut policies = Self::resealed_policies(&state, &catalog)?;
         let policy = match Self::rekey_change(scope) {
             Some(change) => {
                 let policy = state.policy.recording(state.policy_digest.clone(), change);
@@ -582,6 +650,8 @@ impl DatabaseAccess {
             format: AccessDocument::FORMAT.to_owned(),
             policies,
             keyring,
+            previous: None,
+            original: None,
         };
         Ok(RekeyPlan {
             database: self.binding.database(),
@@ -613,11 +683,10 @@ impl DatabaseAccess {
 
     /// Every policy version, sealed under `catalog`.
     fn resealed_policies(
-        &self,
         state: &AccessState,
         catalog: &ContainerCipher,
     ) -> Result<Vec<AccessPolicyEnvelope>, DatabaseAccessError> {
-        let current = ContainerCipher::from_key(&self.catalog_key);
+        let current = ContainerCipher::from_key(state.catalog.current());
         let mut policies = Vec::with_capacity(state.document.policies.len() + 1);
         for (version, envelope) in (1_u64..).zip(&state.document.policies) {
             policies.push(AccessPolicyChain::reseal(
@@ -677,7 +746,7 @@ impl DatabaseAccess {
         let policy = state
             .policy
             .with_grant(request, state.policy_digest.clone())?;
-        self.prepare_policy(&state, policy, &[])
+        self.prepare_policy(&state, policy, (&[], false))
     }
 
     /// Prepare policy version n+1 without the rule `id`, signed by this
@@ -703,16 +772,21 @@ impl DatabaseAccess {
             .map(|(collection, _)| *collection)
             .collect();
         policy.boundaries = Self::boundaries(&covered, next_lsns);
-        self.prepare_policy(&state, policy, &covered)
+        self.prepare_policy(&state, policy, (&covered, true))
     }
 
     fn prepare_policy(
         &self,
         state: &AccessState,
         policy: AccessPolicy,
-        new_epochs: &[u32],
+        (new_epochs, rotate): (&[u32], bool),
     ) -> Result<AccessChange, DatabaseAccessError> {
-        let catalog = ContainerCipher::from_key(&self.catalog_key);
+        let catalog_keys = if rotate {
+            state.catalog.rotated(CatalogKeys::fresh()?)
+        } else {
+            state.catalog.clone()
+        };
+        let catalog = ContainerCipher::from_key(catalog_keys.current());
         let envelope = AccessPolicyChain::seal(&policy, &catalog, self.binding, &self.identity)?;
         let bytes = serde_json::to_vec(&policy)
             .map_err(|error| DatabaseAccessError::Damaged(error.to_string()))?;
@@ -723,16 +797,21 @@ impl DatabaseAccess {
                 .or_insert_with(CollectionKeys::new)
                 .add(*epoch, key);
         }
-        let keyring = self.rebuild_keyring(&policy, &state.names, &keys)?;
-        let mut policies = state.document.policies.clone();
+        let keyring =
+            self.rebuild_keyring(&policy, (&state.names, &keys), catalog_keys.current())?;
+        let mut policies = Self::resealed_policies(state, &catalog)?;
         policies.push(envelope);
+        let (previous, original) = catalog_keys.document_fields()?;
         let document = AccessDocument {
             format: AccessDocument::FORMAT.to_owned(),
             policies,
             keyring,
+            previous,
+            original,
         };
         Ok(AccessChange {
             slot: Self::slot(state.generation + 1, &document)?,
+            catalog: rotate.then_some(catalog_keys),
             keys: fresh,
             collection: None,
             policy: Some((policy, AccessPolicyChain::digest_of(&bytes))),
@@ -760,13 +839,13 @@ impl DatabaseAccess {
     fn rebuild_keyring(
         &self,
         policy: &AccessPolicy,
-        names: &BTreeMap<u32, String>,
-        keys: &BTreeMap<u32, CollectionKeys>,
+        (names, keys): (&BTreeMap<u32, String>, &BTreeMap<u32, CollectionKeys>),
+        catalog_key: &[u8; 32],
     ) -> Result<Vec<AccessKeyWrap>, DatabaseAccessError> {
         let mut keyring = Self::wraps_for(
             &policy.granted_keys(),
             &self.binding.catalog_info(),
-            &self.catalog_key,
+            catalog_key,
             None,
         )?;
         for (collection, name) in names {
@@ -794,6 +873,9 @@ impl DatabaseAccess {
         let mut state = self.write();
         state.generation = change.slot.generation;
         state.document = document;
+        if let Some(catalog) = change.catalog {
+            state.catalog = catalog;
+        }
         for (collection, epoch, key) in &change.keys {
             state
                 .keys
@@ -1063,10 +1145,13 @@ mod tests {
     fn state(versions: Vec<AccessPolicy>) -> AccessState {
         AccessState {
             generation: 1,
+            catalog: crate::catalog_keys::CatalogKeys::new(zeroize::Zeroizing::new([3; 32])),
             document: AccessDocument {
                 format: AccessDocument::FORMAT.into(),
                 policies: Vec::new(),
                 keyring: Vec::new(),
+                previous: None,
+                original: None,
             },
             policy: versions.last().unwrap().clone(),
             policy_digest: String::new(),

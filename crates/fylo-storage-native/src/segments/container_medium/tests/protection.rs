@@ -806,3 +806,86 @@ fn summary(times: &[std::time::Duration]) -> String {
     let at = |percent: usize| sorted[(sorted.len() - 1) * percent / 100];
     format!("p50 {:?}, p95 {:?}, n {}", at(50), at(95), sorted.len())
 }
+
+/// The bytes of both access slots of `bytes`, a protected file, and where
+/// they start.
+fn access_slots(bytes: &[u8]) -> (usize, Vec<u8>) {
+    let magic = b"VDXACCS\0";
+    let at = bytes
+        .windows(magic.len())
+        .position(|window| window == magic)
+        .unwrap();
+    (at, bytes[at..at + 512 * 1024].to_vec())
+}
+
+#[test]
+fn a_revocation_rotates_the_catalog_key_so_old_slots_open_no_directory() {
+    let database = Protected::create("vdbx-protected-catalog");
+    write_ledger(&database);
+    let reader = database.identity("reader");
+    database.grant("reader", &reader, &[AccessAction::Read], &["collection:*"]);
+    database.reopen();
+    let kept = std::fs::read(database.path()).unwrap();
+    database.writer().revoke_access("reader-rule").unwrap();
+    database.reopen();
+    let root = database.root();
+    assert!(!root.database_access().flatten().unwrap().rotation_pending());
+    assert_eq!(
+        root.database_collection_names().unwrap(),
+        vec![LEDGER.to_owned()]
+    );
+    assert_eq!(read(&root), order());
+    drop(root);
+    // The reader puts back the slots it kept, whose wrap of the old catalog
+    // key it can open: the directory is sealed under the new key now.
+    database.reopen();
+    let mut spliced = std::fs::read(database.path()).unwrap();
+    let (at, slots) = access_slots(&kept);
+    assert_eq!(access_slots(&spliced).0, at);
+    spliced[at..at + slots.len()].copy_from_slice(&slots);
+    std::fs::write(database.path(), &spliced).unwrap();
+    let opened = NativeRoot::open_profiled(database.as_identity(&reader));
+    let names = opened
+        .as_ref()
+        .ok()
+        .and_then(NativeRoot::database_collection_names)
+        .unwrap_or_default();
+    assert!(names.is_empty(), "{names:?}");
+}
+
+#[test]
+fn a_rotation_stopped_before_the_reseal_reads_and_the_next_change_finishes_it() {
+    let database = Protected::create("vdbx-protected-catalog-stopped");
+    write_ledger(&database);
+    let reader = database.identity("reader");
+    database.grant("reader", &reader, &[AccessAction::Read], &["collection:*"]);
+    database.reopen();
+    let root = database.root();
+    root.database()
+        .unwrap()
+        .revoke_unsettled("reader-rule")
+        .unwrap();
+    drop(root);
+    database.reopen();
+    let root = database.root();
+    assert!(root.database_access().flatten().unwrap().rotation_pending());
+    assert_eq!(
+        root.database_collection_names().unwrap(),
+        vec![LEDGER.to_owned()]
+    );
+    assert_eq!(read(&root), order());
+    drop(root);
+    assert_eq!(
+        database.open_code(database.as_identity(&reader)),
+        NativeStorageErrorCode::PermissionDenied
+    );
+    let other = database.identity("other");
+    database.grant("other", &other, &[AccessAction::Read], &["collection:*"]);
+    database.reopen();
+    let root = database.root();
+    assert!(!root.database_access().flatten().unwrap().rotation_pending());
+    assert_eq!(read(&root), order());
+    drop(root);
+    let root = NativeRoot::open_profiled(database.as_identity(&other)).unwrap();
+    assert_eq!(read(&root), order());
+}

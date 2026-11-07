@@ -495,8 +495,9 @@ fn a_revoked_reader_that_kept_its_old_keys_reads_nothing_after_a_collection_reke
     ));
     let rekeyed = json(&fixture.as_admin(&admin, &["rekey", "app.vdbx", "--collection", "users"]));
     assert_eq!(rekeyed["rekeyed"], "collection");
-    // The reader puts back the access slots it kept, with the wraps of the
-    // catalog key (unchanged by a collection rekey) and of the old epoch.
+    // The reader puts back the access slots it kept, with its wraps of the
+    // old catalog key and the old epoch: the revocation rotated the catalog
+    // key, and the rekey sealed the collection under a new epoch.
     let mut spliced = fs::read(fixture.0.join("app.vdbx")).unwrap();
     let magic = b"VDXACCS\0";
     let find = |bytes: &[u8]| {
@@ -510,8 +511,8 @@ fn a_revoked_reader_that_kept_its_old_keys_reads_nothing_after_a_collection_reke
     let slots = 512 * 1024;
     spliced[new..new + slots].copy_from_slice(&kept[old..old + slots]);
     fs::write(fixture.0.join("app.vdbx"), &spliced).unwrap();
-    let listed = json(&fixture.run(&as_reader(&admin, &["access", "list", "app.vdbx"])));
-    assert_eq!(listed["grants"]["users"], "read");
+    let listed = failure(&fixture.run(&as_reader(&admin, &["access", "list", "app.vdbx"])));
+    assert!(listed.contains("EPOLICY"), "{listed}");
     let read = fixture.run(&as_reader(
         &admin,
         &["get", "users", &identifier, "--root", "app.vdbx", "--json"],

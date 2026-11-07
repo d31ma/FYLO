@@ -1146,7 +1146,7 @@ impl ContainerFile {
 
     /// Write `header` as the static part of directory block `block`, sealed
     /// when the file is encrypted, flush, and keep it as this open's view.
-    fn rewrite_header(
+    pub(super) fn rewrite_header(
         &mut self,
         block: u32,
         header: ContainerCollectionHeader,

@@ -102,6 +102,12 @@ pub enum ContainerSealContext {
         /// The policy version.
         version: u64,
     },
+    /// An earlier catalog key of a protected file, sealed under the
+    /// current one in its access document (ADR 0021 section 7).
+    CatalogKey {
+        /// 1 for the previous key, 2 for the original one.
+        role: u64,
+    },
 }
 
 impl ContainerSealContext {
@@ -121,6 +127,7 @@ impl ContainerSealContext {
             } => (4, collection, checkpoint, u32::from(kind.code())),
             Self::Block { number } => (5, 0, number, 0),
             Self::Policy { version } => (6, 0, version, 0),
+            Self::CatalogKey { role } => (7, 0, role, 0),
         };
         let mut bytes = [0_u8; 28];
         bytes[..8].copy_from_slice(b"VDXSEAL\x01");
@@ -314,6 +321,7 @@ impl ContainerCipher {
     ) -> Result<Arc<Aes256Gcm>, ContainerCipherError> {
         match (&self.access, context.collection()) {
             (Some(access), Some(collection)) => access.sealing_key(collection),
+            (Some(access), None) if context.by_catalog() => Ok(access.catalog_sealing_key()),
             _ => Ok(Arc::clone(&self.cipher)),
         }
     }
@@ -326,6 +334,7 @@ impl ContainerCipher {
     ) -> Result<Option<Vec<Arc<Aes256Gcm>>>, ContainerCipherError> {
         match (&self.access, context.collection()) {
             (Some(access), Some(collection)) => access.opening_keys(collection).map(Some),
+            (Some(access), None) if context.by_catalog() => Ok(Some(access.catalog_opening_keys())),
             _ => Ok(None),
         }
     }
@@ -339,8 +348,16 @@ impl ContainerSealContext {
             Self::Record { collection, .. }
             | Self::Dictionary { collection, .. }
             | Self::Snapshot { collection, .. } => Some(collection),
-            Self::Directory { .. } | Self::Block { .. } | Self::Policy { .. } => None,
+            Self::Directory { .. }
+            | Self::Block { .. }
+            | Self::Policy { .. }
+            | Self::CatalogKey { .. } => None,
         }
+    }
+
+    /// Whether the catalog key seals this unit in a protected file.
+    fn by_catalog(self) -> bool {
+        matches!(self, Self::Directory { .. })
     }
 }
 

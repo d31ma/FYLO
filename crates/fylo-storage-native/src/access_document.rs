@@ -13,6 +13,14 @@ pub struct AccessDocument {
     pub policies: Vec<AccessPolicyEnvelope>,
     /// The key wraps.
     pub keyring: Vec<AccessKeyWrap>,
+    /// While a catalog-key rotation reseals the directory, the previous
+    /// catalog key, sealed under the current one (ADR 0021 section 7).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous: Option<String>,
+    /// After a rotation, the catalog key whose check value the superblock
+    /// holds, sealed under the current one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub original: Option<String>,
 }
 
 impl AccessDocument {
@@ -27,7 +35,7 @@ impl AccessDocument {
         let map = AccessJson::object(&value, "the access document")?;
         AccessJson::known_keys(
             map,
-            &["format", "policies", "keyring"],
+            &["format", "policies", "keyring", "previous", "original"],
             "the access document",
         )?;
         let policies = AccessJson::array(map, "policies")?
@@ -42,6 +50,8 @@ impl AccessDocument {
             format: AccessJson::string(map, "format")?,
             policies,
             keyring,
+            previous: AccessJson::optional_string(map, "previous")?,
+            original: AccessJson::optional_string(map, "original")?,
         })
     }
 

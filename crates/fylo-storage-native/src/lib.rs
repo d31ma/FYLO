@@ -36,6 +36,7 @@ mod access_trust;
 mod beneath_open;
 #[cfg(not(target_family = "wasm"))]
 mod byte_range_lock;
+mod catalog_keys;
 mod collection_keys;
 mod collection_layout;
 #[cfg(not(target_family = "wasm"))]

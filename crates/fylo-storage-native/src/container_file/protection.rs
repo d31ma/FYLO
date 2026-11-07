@@ -180,6 +180,7 @@ impl ContainerFile {
         let Some(access) = self.database_access().cloned() else {
             return Ok(());
         };
+        self.settle_catalog()?;
         let change = access
             .prepare_collection(id, name)
             .map_err(ContainerError::Access)?;
@@ -213,6 +214,36 @@ impl ContainerFile {
         self.write_access_slot(&change.slot)?;
         access.commit(change).map_err(ContainerError::Access)?;
         Ok(access.policy())
+    }
+
+    /// Finish a catalog-key rotation a revocation started (ADR 0021
+    /// section 7): seal every directory block under the current catalog
+    /// key, then write the access document without the previous key. A
+    /// stop at any point leaves every block under one of the two keys the
+    /// document still holds, and the next change of the access document,
+    /// or of the directory, finishes it.
+    ///
+    /// # Errors
+    ///
+    /// The write failure.
+    pub(crate) fn settle_catalog(&mut self) -> Result<(), ContainerError> {
+        let Some(access) = self.database_access().cloned() else {
+            return Ok(());
+        };
+        if !access.rotation_pending() {
+            return Ok(());
+        }
+        let blocks: Vec<(u32, fylo_format::ContainerCollectionHeader)> = self
+            .collections
+            .iter()
+            .map(|collection| (collection.block, collection.header.clone()))
+            .collect();
+        for (block, header) in blocks {
+            self.rewrite_header(block, header)?;
+        }
+        let change = access.prepare_settled().map_err(ContainerError::Access)?;
+        self.write_access_slot(&change.slot)?;
+        access.commit(change).map_err(ContainerError::Access)
     }
 
     /// Each live collection's next LSN, from its generation slot as the

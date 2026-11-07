@@ -4,6 +4,16 @@
 
 ### Added
 
+- **A revocation rotates a protected database's catalog key (ADR 0021
+  section 7, phase 7).** `fylo access revoke` now gives the catalog key,
+  which seals collection names and the policy, a new value wrapped only
+  for the identities the new policy names, so a revoked identity that kept
+  the old key can no longer read the directory. The access-slot write is
+  the commit point; the directory is then resealed in place and the
+  previous key dropped, and a stop in between leaves everything readable
+  and is finished by the next access change. The access document gains
+  the optional fields `previous` and `original`; older builds refuse a
+  document that has them.
 - **`fylo pack --sealed` of a protected database (ADR 0021 section 7,
   phase 7).** As an admin, `fylo pack <db.vdbx> --out <copy.vdbx> --sealed
   --identity <reference>` writes a sealed, read-only copy that keeps the

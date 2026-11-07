@@ -149,7 +149,8 @@ What a protected `.vdbx` file holds, in addition to ADR 0016:
       are `database`, `collection:*` and `collection:<name>`.
     - The change is written under the allocation lock and checkpointed. A
       writer in another process takes it in at its next refresh; until then
-      it may seal units with the epoch it holds.
+      it may seal units with the epoch it holds. Since phase 7 a
+      revocation also rotates the catalog key (section 7).
     - A frame of a collection the identity has no key for stops a scan as
       unreadable, never as a torn tail, and reads fail with `EACCES`.
 - **Signed records (phase 4).** Every record frame of a protected file
@@ -195,15 +196,8 @@ What a protected `.vdbx` file holds, in addition to ADR 0016:
       location or index snapshot rewritten by a process that holds the
       collection key while the checkpoint record names the old digests:
       writers' recovery compares them, readers trust the slot.
-- **The catalog key is not rotated on revocation** (phase 3's gap, kept).
-  Rotating it means re-sealing every directory block and policy version and
-  changing the superblock's key-check value, three writes a crash can
-  separate; doing it crash-safe needs either a second catalog key readers
-  try during the change or the whole-file rewrite of `fylo rekey`. What it
-  protects is collection names and the policy text, from an identity that
-  kept the old key; the records stay under collection keys whose epochs do
-  rotate. It waits for the protected `fylo rekey` (phase 7), which rewrites
-  the file under fresh keys anyway.
+- **The catalog key was not rotated on revocation** in phases 3 to 6;
+  phase 7 rotates it (section 7).
 - **Not yet** (as of phase 3; phase 7, section 7, added both).
   `fylo pack --sealed` and `fylo rekey` refused a protected database. The browser build has no identities (phase 5)
   and opens a protected file locked; P-256, ECDSA and HPKE stay out of
@@ -416,6 +410,42 @@ in phase 7.
   and named; a pack that stops leaves no output. `--encrypt` is refused
   with it. The section 4 rule "never with `INCOMPAT_SEALED`" no longer
   holds.
+
+- **A revocation rotates the catalog key.** Until phase 7 an identity
+  that was revoked and kept the catalog key could still read collection
+  names and the policy. Rotating it touches three things a crash can
+  separate (the policy versions in the access slots, every directory
+  block, and the superblock's key-check value), so the rotation is laid
+  out so that no state in between is ever wrong:
+    - **The superblock is never rewritten.** Its check value keeps naming
+      the original catalog key. The access document gains `original`, that
+      key sealed under the current one (context `CatalogKey`, role 2), so
+      an opener unwraps the current key, opens the original with it and
+      checks that against the superblock: a key from another file still
+      fails, and only a holder of the current key learns the original. The
+      original key seals nothing once the rotation finishes.
+    - **One write is the commit point.** The revocation's access-slot
+      write (the A/B rule, so a stop leaves the old document or the new one
+      whole) carries the new catalog key wrapped for every identity the
+      new policy names, every policy version sealed under it (their
+      signatures carry over), the new version, and `previous`, the old
+      catalog key sealed under the new one (role 1). From then on the
+      revoked identity has no wrap of the current key.
+    - **Then the directory is resealed, and `previous` dropped.** Every
+      directory block header is rewritten in place under the new key (as a
+      descriptor change rewrites one), and a last slot write removes
+      `previous`. Until then a reader opens each block with the current key
+      and then the previous one; AES-GCM refuses the wrong one, so a mix of
+      both is always readable. A stop after the commit point leaves the
+      revocation in force and every block readable, and the next change of
+      the access document or of the directory (a grant, a revocation, a new
+      collection) finishes the reseal first. Until it does, the revoked
+      identity can still open blocks that are under the old key, so the
+      rotation runs to the end within the same `fylo access revoke`.
+    - A process that had the file open takes the new key in at its next
+      refresh of the access slots, as it takes in new collection keys.
+    - A grant does not rotate the key; a rekey of the whole database
+      writes a new file under a new one anyway.
 
 ### 8. Phases
 
