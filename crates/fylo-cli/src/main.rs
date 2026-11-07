@@ -720,7 +720,7 @@ fn run_compat_cli(arguments: &[String], application: &ApplicationConfig) -> Resu
     let root = compat_root(arguments, application)?;
     let profile = filesystem_profile(arguments)?;
     // A root named `*.vdbx` is a database, not a directory to create; the
-    // machine protocol refuses it with ELAYOUTUNSUPPORTED for now.
+    // machine protocol opens it, or creates it protected (ADR 0021, P5-1).
     if profile == FilesystemProfile::Native && !NativeRoot::names_database(&root) {
         fs::create_dir_all(&root).map_err(|error| format!("cannot create FYLO root: {error}"))?;
     }

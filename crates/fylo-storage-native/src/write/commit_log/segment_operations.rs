@@ -8,8 +8,8 @@ use serde_json::{Map, Value};
 
 use super::super::document_codec::{DocumentCodec, DocumentPolicy};
 use super::super::{
-    NativeWriteRoot, SqlMutationResult, SqlMutationResultKind, WriteAccess, WriteActor,
-    merge_top_level, now_millis, parse_document_fields, require_write_access,
+    DocumentWrite, NativeWriteRoot, SqlMutationResult, SqlMutationResultKind, WriteAccess,
+    WriteActor, merge_top_level, now_millis, parse_document_fields, require_write_access,
 };
 use super::commit_plan::Ownership;
 use super::logged_writer::Planned;
@@ -62,6 +62,106 @@ impl NativeWriteRoot {
             plan.index_delta(&BTreeSet::new(), &after);
             Ok((Some(plan), ()))
         })
+    }
+
+    /// [`Self::commit_document_writes_logged`] for a segment collection:
+    /// every write goes into one plan, so the batch commits or fails whole.
+    pub(crate) fn commit_document_writes_segmented(
+        &self,
+        collection: &NativeCollection,
+        writes: &[DocumentWrite],
+        bodies: &[Option<Vec<u8>>],
+        access: WriteAccess,
+    ) -> Result<(), NativeStorageError> {
+        self.commit_logged(collection, || {
+            let store = SegmentStore::open_for_writer(collection.segment_medium()?)?;
+            let mut plan = SegmentPlan::new("write-documents");
+            for (write, body) in writes.iter().zip(bodies) {
+                let change = (write, body.as_deref());
+                Self::push_document_write(&mut plan, collection, &store, change, access)?;
+            }
+            Ok((Some(plan), ()))
+        })
+    }
+
+    fn push_document_write(
+        plan: &mut SegmentPlan,
+        collection: &NativeCollection,
+        store: &SegmentStore,
+        (write, body): (&DocumentWrite, Option<&[u8]>),
+        access: WriteAccess,
+    ) -> Result<(), NativeStorageError> {
+        let identifier = write.identifier();
+        match (write, body) {
+            (DocumentWrite::Put { .. }, Some(canonical)) => {
+                Self::push_new_document(plan, collection, store, (identifier, canonical), access)
+            }
+            (DocumentWrite::Replace { .. }, Some(canonical)) => {
+                Self::push_replaced_document(plan, collection, store, (identifier, canonical))
+            }
+            (DocumentWrite::Delete { .. }, None) => {
+                let stored = store.document(identifier, LocationState::Live)?;
+                plan.index_delta(
+                    &Self::document_keys(identifier, &stored.body)?,
+                    &BTreeSet::new(),
+                );
+                Self::push_state_change(plan, collection, stored, LocationState::Deleted)
+            }
+            _ => Err(NativeStorageError::new(
+                NativeStorageErrorCode::CorruptDocument,
+                "a batch write is missing its body",
+            )),
+        }
+    }
+
+    fn push_new_document(
+        plan: &mut SegmentPlan,
+        collection: &NativeCollection,
+        store: &SegmentStore,
+        (identifier, canonical): (&str, &[u8]),
+        access: WriteAccess,
+    ) -> Result<(), NativeStorageError> {
+        if store.table().get(identifier).is_some() {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                "document identifier already exists",
+            ));
+        }
+        let (attributes, mode) =
+            Self::segment_initial_attributes(collection, &BTreeMap::new(), access)?;
+        let entry = SegmentEntry {
+            id: identifier.to_owned(),
+            state: LocationState::Live,
+            body: None,
+            attributes,
+            modified_ms: now_millis()?,
+            mode,
+        };
+        plan.index_delta(
+            &BTreeSet::new(),
+            &Self::document_keys(identifier, canonical)?,
+        );
+        plan.push(&collection.path, (entry, Some(canonical)), None)
+    }
+
+    fn push_replaced_document(
+        plan: &mut SegmentPlan,
+        collection: &NativeCollection,
+        store: &SegmentStore,
+        (identifier, canonical): (&str, &[u8]),
+    ) -> Result<(), NativeStorageError> {
+        let stored = store.document(identifier, LocationState::Live)?;
+        plan.index_delta(
+            &Self::document_keys(identifier, &stored.body)?,
+            &Self::document_keys(identifier, canonical)?,
+        );
+        let mut entry = stored.entry.clone();
+        entry.modified_ms = now_millis()?;
+        plan.push(
+            &collection.path,
+            (entry, Some(canonical)),
+            Some(stored.location),
+        )
     }
 
     pub(crate) fn patch_document_segmented(

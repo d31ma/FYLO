@@ -220,9 +220,15 @@ What a protected `.vdbx` file holds, in addition to ADR 0016:
   (`ELAYOUTUNSUPPORTED`). `fylo::LinkIdentity` reads `FYLO_IDENTITY` and
   `FYLO_TRUST_ANCHOR`, or `fylo.identity` and `fylo.trustAnchor` from the
   `application.json` beside the database, for `fylo link`'s open hook (Q9).
-  The hook still opens directory roots only: SQL over a `.vdbx` database,
-  protected or not, is not built yet, and `Root::sql` refuses one with
-  `ELAYOUTUNSUPPORTED`.
+  SQL over a `.vdbx` database, protected or not (decision P5-6): `Root::sql`
+  registers the database's live document collections as tables and reads
+  and writes them through the same root, so a protected one runs as the
+  identity it was opened with; opened without one it is refused with
+  `ENOIDENTITY` rather than shown with no tables. Each statement's rows
+  commit as one segment plan (all or none), the `.vdbx` form of the files
+  layout's batch log record. The hook opens any path
+  named `*.vdbx` (and directory roots, as before), and refuses a missing
+  one (`ENOENT`) instead of creating a database or a SQLite file.
 - **`cng:` (phase 5, decision P5-2).** A key persisted under its name in the
   Microsoft Software Key Storage Provider (DPAPI-protected, per user),
   imported from PKCS#8 with an export policy so FYLO signs in software;

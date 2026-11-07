@@ -723,16 +723,17 @@ impl NativeWriteRoot {
     /// none. Each body is built through `codec` under the collection's
     /// validation mode, exactly as a single put or replace builds it.
     ///
-    /// Each identifier may appear once. A batch needs the files layout on the
-    /// native profile, where every document mutation is logged.
+    /// Each identifier may appear once. A batch needs the native profile,
+    /// where every document mutation is logged; a segment collection (every
+    /// collection of a `.vdbx` database) commits it as one segment plan.
     ///
     /// # Errors
     ///
     /// Returns an error for an invalid identifier or document, a repeated
     /// identifier, a put over a live document, a replace or delete of a
     /// missing one, a body the schema rejects in `strict` mode, a batch too
-    /// large for one log record, the segments layout or a non-native profile
-    /// (`Unsupported`), or any durable write failure. Nothing is written when
+    /// large for one log record, a non-native profile (`Unsupported`), or any
+    /// durable write failure. Nothing is written when
     /// it fails.
     pub fn commit_document_writes_with(
         &self,
@@ -760,10 +761,10 @@ impl NativeWriteRoot {
             }
         }
         let collection = self.document_collection(collection_name, "commit_document_writes")?;
-        if !self.uses_log(&collection) || collection.uses_segments() {
+        if !self.uses_log(&collection) {
             return Err(NativeStorageError::new(
                 NativeStorageErrorCode::Unsupported,
-                "a batch of document writes needs the files layout on the native profile",
+                "a batch of document writes needs the native profile's commit log",
             ));
         }
         if writes.is_empty() {
@@ -783,7 +784,7 @@ impl NativeWriteRoot {
                     DocumentWrite::Delete { .. } => None,
                 });
             }
-            self.commit_document_writes_logged(&collection, writes, &bodies, access)
+            self.commit_document_writes_to(&collection, writes, &bodies, access)
         })();
         policy.finish(outcome)
     }

@@ -28,7 +28,8 @@
 //! document collections and, in a directory root, the queue. A protected
 //! `.vdbx` database (ADR 0021) opens with an application identity and a
 //! trusted anchor ([`OpenOptions::with_identity`]). The `sql` feature adds
-//! [`Root::sql`]: Turso SQL over the same root, with collections as tables.
+//! [`Root::sql`]: Turso SQL over the same root or database, with
+//! collections as tables.
 
 mod collection;
 mod collection_recovery;

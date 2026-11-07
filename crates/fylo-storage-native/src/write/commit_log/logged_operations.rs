@@ -70,6 +70,20 @@ impl NativeWriteRoot {
 
     /// Plan every write of a batch into one commit, with each body already
     /// in canonical form (`bodies[i]` for `writes[i]`, `None` for a delete).
+    /// Commit a batch through the collection's own layout.
+    pub(crate) fn commit_document_writes_to(
+        &self,
+        collection: &NativeCollection,
+        writes: &[DocumentWrite],
+        bodies: &[Option<Vec<u8>>],
+        access: WriteAccess,
+    ) -> Result<(), NativeStorageError> {
+        if collection.uses_segments() {
+            return self.commit_document_writes_segmented(collection, writes, bodies, access);
+        }
+        self.commit_document_writes_logged(collection, writes, bodies, access)
+    }
+
     pub(crate) fn commit_document_writes_logged(
         &self,
         collection: &NativeCollection,

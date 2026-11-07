@@ -136,16 +136,9 @@ impl Root {
     /// # Errors
     ///
     /// Fails when the root's collections cannot be listed or a collection's
-    /// schema registry is corrupt, and with `ELAYOUTUNSUPPORTED` for a
-    /// `.vdbx` database, whose SQL layer is not built yet.
+    /// schema registry is corrupt, and with `ENOIDENTITY` for a protected
+    /// `.vdbx` database opened without an application identity.
     pub fn sql_with(self: &Arc<Self>, options: SqlOptions) -> Result<Sql, Error> {
-        if fylo_storage_native::NativeRoot::names_database(self.path()) {
-            return Err(Error::new(
-                "ELAYOUTUNSUPPORTED",
-                "SQL runs over directory roots only in this release; a .vdbx database is read \
-                 and written through its collections",
-            ));
-        }
         let catalog = self.turso_database(options)?;
         let connection = catalog
             .database
@@ -198,19 +191,10 @@ impl Root {
 
     /// Every document collection of the root, by name.
     fn document_collections(&self) -> Result<Vec<String>, Error> {
-        let directory = self.path().join(".collections");
-        let entries = match fylo_vfs::read_dir(&directory) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => return Err(Error::new("ENATIVE_IO", error.to_string())),
-        };
+        let candidates = self.collection_names()?;
         let reader = self.reader()?;
         let mut names = Vec::new();
-        for entry in entries {
-            let entry = entry.map_err(|error| Error::new("ENATIVE_IO", error.to_string()))?;
-            let Some(name) = entry.file_name().to_str().map(ToOwned::to_owned) else {
-                continue;
-            };
+        for name in candidates {
             if reader.collection_kind(&name).ok()
                 == Some(fylo_storage_native::CollectionKind::Document)
             {
@@ -220,17 +204,70 @@ impl Root {
         names.sort();
         Ok(names)
     }
+
+    fn collection_names(&self) -> Result<Vec<String>, Error> {
+        if fylo_storage_native::NativeRoot::names_database(self.path()) {
+            return self.database_collection_names();
+        }
+        self.directory_collection_names()
+    }
+
+    /// A `.vdbx` database's live collections. A protected one opened
+    /// without an identity is locked and lists none, so it is refused
+    /// rather than shown as a database with no tables.
+    fn database_collection_names(&self) -> Result<Vec<String>, Error> {
+        let root = fylo_storage_native::NativeRoot::open_profiled(self.options())?;
+        if matches!(root.database_access(), Some(None)) {
+            return Err(Error::new(
+                "ENOIDENTITY",
+                "a protected .vdbx database opens for SQL only as an application identity \
+                 (fylo.identity or FYLO_IDENTITY, with its trust anchor)",
+            ));
+        }
+        Ok(root.database_collection_names().unwrap_or_default())
+    }
+
+    fn directory_collection_names(&self) -> Result<Vec<String>, Error> {
+        let directory = self.path().join(".collections");
+        let entries = match fylo_vfs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(Error::new("ENATIVE_IO", error.to_string())),
+        };
+        let mut names = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(|error| Error::new("ENATIVE_IO", error.to_string()))?;
+            if let Some(name) = entry.file_name().to_str() {
+                names.push(name.to_owned());
+            }
+        }
+        Ok(names)
+    }
 }
 
 /// Whether `path` is a FYLO root that a Turso binding should open as its
-/// database: an existing directory with FYLO collections. Anything else,
-/// a `.vdbx` database included until its SQL layer is built, opens as Turso
-/// always does. The hook takes the identity a protected database needs from
-/// [`crate::LinkIdentity`], ready for that layer.
+/// database: an existing directory with FYLO collections, or a path named
+/// `*.vdbx`. Anything else opens as Turso always does. A protected `.vdbx`
+/// opens as the identity [`crate::LinkIdentity`] finds for it; a missing
+/// one is refused rather than created, so the hook never makes a database
+/// no one is named for, nor a `SQLite` file under FYLO's extension.
 #[must_use]
 pub fn is_fylo_root(path: &std::path::Path) -> bool {
+    opens_as_fylo(path)
+}
+
+fn opens_as_fylo(path: &std::path::Path) -> bool {
+    is_fylo_directory(path) || is_fylo_database(path)
+}
+
+fn is_fylo_directory(path: &std::path::Path) -> bool {
     fylo_vfs::metadata(path).is_ok_and(|metadata| metadata.is_dir())
         && fylo_vfs::metadata(path.join(".collections")).is_ok_and(|metadata| metadata.is_dir())
+}
+
+fn is_fylo_database(path: &std::path::Path) -> bool {
+    path.extension()
+        .is_some_and(|extension| extension == "vdbx")
 }
 
 /// Layer 2 (`fylo link`, ADR 0019 section 2): make the Turso engine this
@@ -248,13 +285,27 @@ fn open_for_turso(path: &str) -> Option<turso_core::Result<Arc<Database>>> {
     if !is_fylo_root(path) {
         return None;
     }
-    let opened = crate::LinkIdentity::open_options(path)
+    let opened = require_existing(path)
+        .and_then(|()| crate::LinkIdentity::open_options(path))
         .and_then(|options| Root::open(path, options))
         .map(Arc::new)
         .and_then(|root| root.turso_database(SqlOptions::default()))
         .map(|catalog| catalog.database)
         .map_err(|error| LimboError::ExtensionError(error.to_string()));
     Some(opened)
+}
+
+fn require_existing(path: &std::path::Path) -> Result<(), Error> {
+    if fylo_vfs::metadata(path).is_ok() {
+        return Ok(());
+    }
+    Err(Error::new(
+        "ENOENT",
+        format!(
+            "{} does not exist; create a .vdbx database with `fylo create` first",
+            path.display()
+        ),
+    ))
 }
 
 fn register<T: turso_core::InternalVirtualTable + 'static>(

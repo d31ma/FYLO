@@ -4,6 +4,17 @@
 
 ### Added
 
+- **SQL over `.vdbx` databases (ADR 0021, decision P5-6).** `Root::sql`
+  opens a `.vdbx` database, plain or protected, with its document
+  collections as tables, read and written as the identity the root was
+  opened with; a protected one opened without an identity is refused with
+  `ENOIDENTITY`. `fylo link`'s open hook now opens any `*.vdbx` path, with
+  the identity `fylo::LinkIdentity` finds for it, so a Turso-SDK app opens a
+  protected database; a missing `.vdbx` is refused with `ENOENT`, never
+  created. A batch of document writes (each SQL statement's rows) to a
+  `.vdbx` collection now commits as one segment plan, all or none, as on
+  the files layout.
+
 - **Protected databases in the browser (ADR 0021, decision P5-5).** A page
   makes a `webcrypto:<name>` identity with `createWebCryptoIdentity` (two
   non-extractable `CryptoKey`s in the origin's IndexedDB) and gets its
@@ -23,10 +34,9 @@
   the database. **Breaking:** the machine protocol creates a missing
   `.vdbx` protected with the configured identity as admin, and refuses with
   `ENOIDENTITY` without one (it no longer creates plain or shared-key
-  databases; use `fylo create --unprotected`). SQL over a `.vdbx` database
-  is refused with `ELAYOUTUNSUPPORTED` until its layer is built. `cng:`
-  stores Windows identities in CNG's software key storage provider (DPAPI),
-  per user, and like every store refuses to replace a key it already holds.
+  databases; use `fylo create --unprotected`). `cng:` stores Windows
+  identities in CNG's software key storage provider (DPAPI), per user, and
+  like every store refuses to replace a key it already holds.
   Explorer shows a protected `.vdbx` as protected and locked.
 - **Signed records in protected databases (ADR 0021, phase 4).** Every
   record frame of a protected `.vdbx` (commits, aborts, checkpoints,
