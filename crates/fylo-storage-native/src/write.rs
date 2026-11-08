@@ -1592,6 +1592,10 @@ impl NativeWriteRoot {
             }),
             None => self,
         };
+        #[cfg(unix)]
+        super::extended_attribute_probe::ExtendedAttributeProbe::check_before_create(
+            &self.root, kind,
+        )?;
         writer.create_collection_as_configured(collection_name, kind, versioned)
     }
 
@@ -4326,6 +4330,7 @@ fn validate_custom_metadata(
 
 #[cfg(unix)]
 pub(crate) fn remove_fylo_attribute(path: &Path, name: &str) -> Result<(), NativeStorageError> {
+    use super::extended_attribute_error::ExtendedAttributeError;
     use xattr::FileExt;
 
     let file = OpenOptions::new()
@@ -4336,7 +4341,14 @@ pub(crate) fn remove_fylo_attribute(path: &Path, name: &str) -> Result<(), Nativ
     match file.remove_xattr(name) {
         Ok(()) => {}
         Err(error) if missing_xattr(&error) => return Ok(()),
-        Err(error) => return Err(NativeStorageError::io(error)),
+        Err(error) => {
+            return Err(ExtendedAttributeError::for_attribute(
+                error,
+                "removexattr",
+                name,
+                path,
+            ));
+        }
     }
     crate::sync_handle(&file).map_err(NativeStorageError::io)?;
     failpoint("after-metadata-write")
@@ -4424,6 +4436,7 @@ pub(crate) fn write_fylo_attribute(
     name: &str,
     value: &[u8],
 ) -> Result<(), NativeStorageError> {
+    use super::extended_attribute_error::ExtendedAttributeError;
     use xattr::FileExt;
 
     let file = OpenOptions::new()
@@ -4432,7 +4445,7 @@ pub(crate) fn write_fylo_attribute(
         .open(path)
         .map_err(NativeStorageError::io)?;
     file.set_xattr(name, value)
-        .map_err(NativeStorageError::io)?;
+        .map_err(|error| ExtendedAttributeError::for_attribute(error, "setxattr", name, path))?;
     crate::sync_handle(&file).map_err(NativeStorageError::io)?;
     failpoint("after-metadata-write")
 }
@@ -5078,18 +5091,25 @@ fn native_mode(_metadata: &fs::Metadata) -> u32 {
 
 #[cfg(unix)]
 fn capture_attributes(path: &Path) -> Result<Vec<CapturedAttribute>, NativeStorageError> {
+    use super::extended_attribute_error::ExtendedAttributeError;
     use xattr::FileExt;
 
     let file = File::open(path).map_err(NativeStorageError::io)?;
     let mut attributes = Vec::new();
-    for name in file.list_xattr().map_err(NativeStorageError::io)? {
+    for name in file
+        .list_xattr()
+        .map_err(|error| ExtendedAttributeError::for_file(error, "listxattr", path))?
+    {
         let name = name.to_str().ok_or_else(|| {
             NativeStorageError::new(
                 NativeStorageErrorCode::CorruptMetadata,
                 "transaction xattr name is not valid UTF-8",
             )
         })?;
-        let Some(value) = file.get_xattr(name).map_err(NativeStorageError::io)? else {
+        let Some(value) = file.get_xattr(name).map_err(|error| {
+            ExtendedAttributeError::for_attribute(error, "getxattr", name, path)
+        })?
+        else {
             continue;
         };
         attributes.push(CapturedAttribute {
@@ -5200,6 +5220,7 @@ fn restore_attributes(
     path: &Path,
     attributes: &[CapturedAttribute],
 ) -> Result<(), NativeStorageError> {
+    use super::extended_attribute_error::ExtendedAttributeError;
     use xattr::FileExt;
 
     let file = OpenOptions::new()
@@ -5207,8 +5228,18 @@ fn restore_attributes(
         .write(true)
         .open(path)
         .map_err(NativeStorageError::io)?;
-    for name in file.list_xattr().map_err(NativeStorageError::io)? {
-        file.remove_xattr(&name).map_err(NativeStorageError::io)?;
+    for name in file
+        .list_xattr()
+        .map_err(|error| ExtendedAttributeError::for_file(error, "listxattr", path))?
+    {
+        file.remove_xattr(&name).map_err(|error| {
+            ExtendedAttributeError::for_attribute(
+                error,
+                "removexattr",
+                &name.to_string_lossy(),
+                path,
+            )
+        })?;
     }
     for attribute in attributes {
         let value = BASE64.decode(&attribute.value).map_err(|error| {
@@ -5223,8 +5254,9 @@ fn restore_attributes(
                 "transaction xattr is not canonical base64",
             ));
         }
-        file.set_xattr(&attribute.name, &value)
-            .map_err(NativeStorageError::io)?;
+        file.set_xattr(&attribute.name, &value).map_err(|error| {
+            ExtendedAttributeError::for_attribute(error, "setxattr", &attribute.name, path)
+        })?;
     }
     Ok(())
 }

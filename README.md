@@ -679,6 +679,16 @@ bytes alone — use a version-control restore for full fidelity). Filesystem-bac
 document and file collections use native xattrs on macOS/Linux and an NTFS
 Alternate Data Stream manifest on Windows. Browser document collections use the
 durable OPFS sidecar instead.
+A filesystem without extended attributes (a Docker Desktop VirtioFS bind mount
+on macOS, a FAT volume) can still hold documents, but not their metadata or a
+bucket's files. There, creating a bucket fails at once, and a write that stores
+metadata fails, with an `ENATIVE_IO` error that names the call, the attribute
+and the file, such as `setxattr user.fylo.meta.starred on <path>: filesystem
+does not support extended attributes`. To keep metadata and buckets, use a
+local filesystem with extended attributes, the `efs-sidecar-v1` filesystem
+profile, or a `.vdbx` database. Before creating a bucket, the native writer
+checks the filesystem by setting and removing `user.fylo.probe` on a
+short-lived `.fylo-xattr-probe-*.tmp` file at the top of the root.
 Metadata is per-version on filesystem-backed JSON documents. The machine ops
 `getMeta` and `setMeta` cover it from every client shim; native metadata remains
 an engine implementation detail rather than a package-level byte API.

@@ -445,6 +445,25 @@
   from storage at one stable generation. Under writes that never pause, a
   query can still end with the retryable `EENGINE_CONCURRENT_WRITE` once its
   attempts run out, never with a missing document.
+- **Attribute writes on a filesystem without extended attributes now say
+  what failed (#106).** On a mount without extended attributes, such as a
+  Docker Desktop VirtioFS bind mount on macOS or a FAT volume, a write that
+  stores metadata (`setMeta`, a put with metadata, any file put into a
+  bucket) failed with a bare `ENATIVE_IO: Operation not supported (os error
+  95)`. The error now names the call, the attribute and the file, for
+  example `setxattr user.fylo.meta.starred on <path>: filesystem does not
+  support extended attributes (...)`, and the remedies: use a local
+  filesystem with extended attributes, the `efs-sidecar-v1` filesystem
+  profile, or a `.vdbx` database. The same applies to reading, listing,
+  restoring and copying attributes. The code stays `ENATIVE_IO`, and every
+  other error is unchanged. Creating a bucket (`createCollection` with
+  `"kind": "file"`) on such a filesystem now fails at once with that error,
+  because every raw file needs its `user.fylo.key` attribute; before, it
+  succeeded and every later `putData` failed. The check sets and removes
+  `user.fylo.probe` on a short-lived `.fylo-xattr-probe-*.tmp` file at the
+  top of the root. Documents without metadata keep working on these
+  filesystems, so document collections, reads, `.vdbx` databases and the
+  `efs-sidecar-v1` profile are never checked.
 - **A schema manifest without `versions` no longer fails every read.** A
   `fylo.schema` manifest such as `{ "current": "v1" }`, with no `versions`
   list, was accepted for writes, but since lazy migration on read every

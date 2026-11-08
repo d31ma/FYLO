@@ -1343,16 +1343,24 @@ fn metadata_blob(path: &Path) -> Result<Option<Vec<u8>>, NativeStorageError> {
     use base64::engine::general_purpose::STANDARD as BASE64;
     use xattr::FileExt;
 
+    use crate::extended_attribute_error::ExtendedAttributeError;
+
     let file = fs::File::open(path).map_err(NativeStorageError::io)?;
     let mut attributes = BTreeMap::new();
-    for name in file.list_xattr().map_err(NativeStorageError::io)? {
+    for name in file
+        .list_xattr()
+        .map_err(|error| ExtendedAttributeError::for_file(error, "listxattr", path))?
+    {
         let Some(name) = name.to_str() else {
             continue;
         };
         if !name.starts_with("user.fylo.") || name == crate::CHECKSUM_XATTR {
             continue;
         }
-        let Some(value) = file.get_xattr(name).map_err(NativeStorageError::io)? else {
+        let Some(value) = file.get_xattr(name).map_err(|error| {
+            ExtendedAttributeError::for_attribute(error, "getxattr", name, path)
+        })?
+        else {
             continue;
         };
         attributes.insert(name.to_owned(), BASE64.encode(value));
@@ -2004,9 +2012,18 @@ fn copy_directory(
 
 #[cfg(unix)]
 fn copy_extended_metadata(source: &Path, target: &Path) -> Result<(), NativeStorageError> {
-    for name in xattr::list(source).map_err(NativeStorageError::io)? {
-        if let Some(value) = xattr::get(source, &name).map_err(NativeStorageError::io)? {
-            xattr::set(target, &name, &value).map_err(NativeStorageError::io)?;
+    use crate::extended_attribute_error::ExtendedAttributeError;
+
+    for name in xattr::list(source)
+        .map_err(|error| ExtendedAttributeError::for_file(error, "listxattr", source))?
+    {
+        let label = name.to_string_lossy();
+        if let Some(value) = xattr::get(source, &name).map_err(|error| {
+            ExtendedAttributeError::for_attribute(error, "getxattr", &label, source)
+        })? {
+            xattr::set(target, &name, &value).map_err(|error| {
+                ExtendedAttributeError::for_attribute(error, "setxattr", &label, target)
+            })?;
         }
     }
     Ok(())
@@ -2170,7 +2187,11 @@ fn apply_metadata_blob(target: &Path, bytes: &[u8]) -> Result<(), NativeStorageE
                 "version metadata attribute has invalid base64",
             )
         })?;
-        xattr::set(target, name, &decoded).map_err(NativeStorageError::io)?;
+        xattr::set(target, name, &decoded).map_err(|error| {
+            crate::extended_attribute_error::ExtendedAttributeError::for_attribute(
+                error, "setxattr", name, target,
+            )
+        })?;
     }
     Ok(())
 }

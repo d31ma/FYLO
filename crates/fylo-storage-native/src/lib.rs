@@ -57,6 +57,10 @@ mod database_identity;
 mod database_key;
 mod document_rekey;
 mod durability;
+#[cfg(unix)]
+mod extended_attribute_error;
+#[cfg(unix)]
+mod extended_attribute_probe;
 mod field_keys;
 mod filesystem_profile;
 mod index_cache;
@@ -3286,11 +3290,15 @@ fn read_fylo_attributes(
     file: &File,
     path: &Path,
 ) -> Result<BTreeMap<String, Vec<u8>>, NativeStorageError> {
+    use extended_attribute_error::ExtendedAttributeError;
     use xattr::FileExt;
 
     let mut attributes = BTreeMap::new();
     let mut aggregate_bytes = 0_usize;
-    for name in file.list_xattr().map_err(NativeStorageError::io)? {
+    for name in file
+        .list_xattr()
+        .map_err(|error| ExtendedAttributeError::for_file(error, "listxattr", path))?
+    {
         let name = name.to_str().ok_or_else(|| {
             NativeStorageError::new(
                 NativeStorageErrorCode::CorruptMetadata,
@@ -3305,7 +3313,10 @@ fn read_fylo_attributes(
         {
             continue;
         }
-        let Some(value) = file.get_xattr(name).map_err(NativeStorageError::io)? else {
+        let Some(value) = file.get_xattr(name).map_err(|error| {
+            ExtendedAttributeError::for_attribute(error, "getxattr", name, path)
+        })?
+        else {
             continue;
         };
         if value.len() > MAX_META_VALUE_BYTES && name.starts_with(META_XATTR_PREFIX) {
