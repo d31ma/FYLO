@@ -1,10 +1,14 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { delimiter, dirname, join, resolve } from 'node:path'
 
 const releasedBinary = resolve(requiredOption('--released-binary'))
+const releasedHelpers = resolve(requiredOption('--released-helpers'))
 const rustBinary = resolve(requiredOption('--rust-binary'))
 if (releasedBinary === rustBinary) throw new Error('released and Rust binaries must be distinct')
+for (const helper of ['ttid', 'chex']) {
+    assert(!Bun.which(helper), `${helper} must not be on PATH: the Rust candidate runs without it`)
+}
 
 const registry = JSON.parse(await readFile('api/machine/v1/operations.json', 'utf8'))
 const canonicalOperations = registry.operations.map(({ name }) => name).sort()
@@ -618,7 +622,10 @@ class Machine {
         if (binary === rustBinary) args.push('--config', applicationConfig)
         // The immutable legacy release predates application.json; only that
         // comparison baseline still receives its historical configuration API.
-        else environment.FYLO_SCHEMA = schemaRoot
+        else {
+            environment.FYLO_SCHEMA = schemaRoot
+            environment.PATH = `${releasedHelpers}${delimiter}${process.env.PATH}`
+        }
         this.child = Bun.spawn(args, {
             // Keep packaged Bun releases away from a repository-local `.env`.
             // The corpus is intentionally self-contained inside its root.
