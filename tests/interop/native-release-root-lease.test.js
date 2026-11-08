@@ -77,6 +77,94 @@ async function deadline(promise, timeout, message) {
     }
 }
 
+async function expectDiskPressureRecovery(filesystemProfile, failpoint) {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'fylo-native-disk-pressure-'))
+    roots.push(root)
+    const identifier = '4VRNF52JPCO'
+
+    const seed = new ReleaseLoop(root, {}, undefined, filesystemProfile)
+    expect((await seed.request({ op: 'handshake' })).ok).toBe(true)
+    expect(
+        (
+            await seed.request({
+                op: 'createCollection',
+                collection: 'messages',
+                kind: 'document'
+            })
+        ).ok
+    ).toBe(true)
+    expect(
+        (
+            await seed.request({
+                op: 'putData',
+                collection: 'messages',
+                id: identifier,
+                data: { body: 'before pressure' }
+            })
+        ).ok
+    ).toBe(true)
+    await seed.stop()
+
+    const pressured = new ReleaseLoop(
+        root,
+        { FYLO_RUST_FAILPOINT: failpoint, FYLO_RUST_FAILPOINT_ACTION: 'enospc' },
+        undefined,
+        filesystemProfile
+    )
+    expect((await pressured.request({ op: 'handshake' })).ok).toBe(true)
+    const failed = await pressured.request({
+        op: 'batchPutData',
+        collection: 'messages',
+        batch: [
+            { id: '4VRNF52JPCP', data: { body: 'one' } },
+            { id: '4VRNF52JPCQ', data: { body: 'two' } }
+        ]
+    })
+    expect(failed).toMatchObject({
+        ok: false,
+        error: { code: 'ENATIVE_IO' }
+    })
+    expect(failed.error.code).not.toBe('EUNKNOWN')
+
+    const survivor = await pressured.request({
+        op: 'getDoc',
+        collection: 'messages',
+        id: identifier
+    })
+    expect(survivor).toMatchObject({
+        ok: true,
+        result: { [identifier]: { body: 'before pressure' } }
+    })
+    const committed = await pressured.request({
+        op: 'findDocs',
+        collection: 'messages',
+        query: {}
+    })
+    expect(Object.keys(committed.result)).toEqual([identifier])
+    await pressured.stop()
+
+    const restarted = new ReleaseLoop(root, {}, undefined, filesystemProfile)
+    expect((await restarted.request({ op: 'handshake' })).ok).toBe(true)
+    const put = await restarted.request({
+        op: 'putData',
+        collection: 'messages',
+        id: '4VRNF52JPCR',
+        data: { body: 'after pressure' }
+    })
+    expect(put.ok).toBe(true)
+    expect(
+        await restarted.request({
+            op: 'getDoc',
+            collection: 'messages',
+            id: '4VRNF52JPCR'
+        })
+    ).toMatchObject({
+        ok: true,
+        result: { '4VRNF52JPCR': { body: 'after pressure' } }
+    })
+    await restarted.stop()
+}
+
 afterAll(async () => {
     await Promise.all(roots.map((root) => rm(root, { recursive: true, force: true })))
 })
@@ -130,83 +218,7 @@ describe.skipIf(!required)('exact native release root lease', () => {
     })
 
     test('reports disk pressure, keeps the loop responsive, and restarts cleanly (#89)', async () => {
-        const root = await mkdtemp(path.join(os.tmpdir(), 'fylo-native-disk-pressure-'))
-        roots.push(root)
-        const identifier = '4VRNF52JPCO'
-
-        const seed = new ReleaseLoop(root)
-        expect((await seed.request({ op: 'handshake' })).ok).toBe(true)
-        expect(
-            (
-                await seed.request({
-                    op: 'createCollection',
-                    collection: 'messages',
-                    kind: 'document'
-                })
-            ).ok
-        ).toBe(true)
-        expect(
-            (
-                await seed.request({
-                    op: 'putData',
-                    collection: 'messages',
-                    id: identifier,
-                    data: { body: 'before pressure' }
-                })
-            ).ok
-        ).toBe(true)
-        await seed.stop()
-
-        const pressured = new ReleaseLoop(root, {
-            FYLO_RUST_FAILPOINT: 'before-file-write',
-            FYLO_RUST_FAILPOINT_ACTION: 'enospc'
-        })
-        expect((await pressured.request({ op: 'handshake' })).ok).toBe(true)
-        const failed = await pressured.request({
-            op: 'batchPutData',
-            collection: 'messages',
-            batch: [
-                { id: '4VRNF52JPCP', data: { body: 'one' } },
-                { id: '4VRNF52JPCQ', data: { body: 'two' } }
-            ]
-        })
-        expect(failed).toMatchObject({
-            ok: false,
-            error: { code: 'ENATIVE_IO' }
-        })
-        expect(failed.error.code).not.toBe('EUNKNOWN')
-
-        const survivor = await pressured.request({
-            op: 'getDoc',
-            collection: 'messages',
-            id: identifier
-        })
-        expect(survivor).toMatchObject({
-            ok: true,
-            result: { [identifier]: { body: 'before pressure' } }
-        })
-        await pressured.stop()
-
-        const restarted = new ReleaseLoop(root)
-        expect((await restarted.request({ op: 'handshake' })).ok).toBe(true)
-        const put = await restarted.request({
-            op: 'putData',
-            collection: 'messages',
-            id: '4VRNF52JPCR',
-            data: { body: 'after pressure' }
-        })
-        expect(put.ok).toBe(true)
-        expect(
-            await restarted.request({
-                op: 'getDoc',
-                collection: 'messages',
-                id: '4VRNF52JPCR'
-            })
-        ).toMatchObject({
-            ok: true,
-            result: { '4VRNF52JPCR': { body: 'after pressure' } }
-        })
-        await restarted.stop()
+        await expectDiskPressureRecovery(undefined, 'before-log-append')
     })
 
     test.skipIf(process.platform === 'win32')(
@@ -295,6 +307,10 @@ describe.skipIf(!required || process.env.FYLO_REQUIRE_EFS_PROFILE !== '1')(
                 }
             }
         )
+
+        test('reports disk pressure on the EFS journal path and restarts cleanly (#89)', async () => {
+            await expectDiskPressureRecovery('efs-sidecar-v1', 'before-file-write')
+        })
 
         test('bad profile fails before replacing the recorded owner', async () => {
             const parent = await mkdtemp(path.join(os.tmpdir(), 'fylo-bad-profile-owner-'))
