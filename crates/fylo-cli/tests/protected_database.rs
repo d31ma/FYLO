@@ -814,3 +814,99 @@ fn access_report_and_verify_say_nothing_of_a_settled_rotation() {
     let verified = json(&fixture.as_admin(&admin, &["verify", "app.vdbx"]));
     assert_eq!(verified["problems"], Value::Array(Vec::new()));
 }
+
+/// Make the newest access slot copy of `app.vdbx` fail its checksum, as a
+/// write torn by a power cut leaves it, so the open takes the older copy.
+fn tear_newest_access_slot(fixture: &Fixture) {
+    let path = fixture.0.join("app.vdbx");
+    let mut bytes = fs::read(&path).unwrap();
+    let copies: Vec<usize> = bytes
+        .windows(ACCESS_SLOT_MAGIC.len())
+        .enumerate()
+        .filter(|(_, window)| *window == ACCESS_SLOT_MAGIC)
+        .map(|(at, _)| at)
+        .collect();
+    assert_eq!(copies.len(), 2, "{copies:?}");
+    let newest = *copies
+        .iter()
+        .max_by_key(|at| slot_generation(&bytes, **at))
+        .unwrap();
+    bytes[newest + ACCESS_SLOT_HEADER_BYTES] ^= 0xff;
+    fs::write(&path, bytes).unwrap();
+}
+
+const ACCESS_SLOT_MAGIC: &[u8] = b"VDXACCS\0";
+const ACCESS_SLOT_HEADER_BYTES: usize = 24;
+
+fn slot_generation(bytes: &[u8], at: usize) -> u64 {
+    u64::from_le_bytes(bytes[at + 8..at + 16].try_into().unwrap())
+}
+
+/// The identity the handshake of an `exec --loop` session reports, as the
+/// admin.
+fn loop_handshake(fixture: &Fixture, anchor: &str) -> Value {
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut child = Command::new(BINARY)
+        .current_dir(&fixture.0)
+        .args(["exec", "--loop", "--root", "app.vdbx"])
+        .args(["--identity", "file:admin.pem", "--trust-anchor", anchor])
+        .env_remove("FYLO_IDENTITY")
+        .env_remove("FYLO_TRUST_ANCHOR")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    writeln!(child.stdin.take().unwrap(), r#"{{"op":"handshake"}}"#).unwrap();
+    let output = child.wait_with_output().unwrap();
+    let first = stdout(&output).lines().next().unwrap().to_owned();
+    serde_json::from_str::<Value>(&first).unwrap()["result"]["identity"].clone()
+}
+
+/// A revocation whose last access slot write was torn: the older copy
+/// still holds the previous catalog key, so the rotation is pending.
+fn revoked_with_torn_last_slot(fixture: &Fixture) -> (String, String) {
+    let admin = fixture.protected();
+    let identifier = write_user(fixture, &admin);
+    fixture.identity("reader");
+    grant_reader(fixture, &admin);
+    json(&fixture.as_admin(
+        &admin,
+        &["access", "revoke", "app.vdbx", "--rule", "readers"],
+    ));
+    tear_newest_access_slot(fixture);
+    (admin, identifier)
+}
+
+#[test]
+fn the_loop_handshake_reports_a_rotation_a_torn_slot_write_left_pending() {
+    let fixture = Fixture::new("settle-torn-handshake");
+    let (admin, _) = revoked_with_torn_last_slot(&fixture);
+    let identity = loop_handshake(&fixture, &admin);
+    assert_eq!(identity["database"]["admin"], true, "{identity}");
+    assert_eq!(identity["database"]["catalogRotationPendingSince"], 3);
+}
+
+#[test]
+fn a_rotation_a_torn_slot_write_left_pending_reads_reports_and_settles() {
+    let fixture = Fixture::new("settle-torn");
+    let (admin, identifier) = revoked_with_torn_last_slot(&fixture);
+    let got = json(&fixture.as_admin(
+        &admin,
+        &["get", "users", &identifier, "--root", "app.vdbx", "--json"],
+    ));
+    assert_eq!(got[&identifier]["name"], CANARY);
+    let report = json(&fixture.as_admin(&admin, &["access", "report", "app.vdbx"]));
+    assert_eq!(report["catalogRotation"]["pendingSince"], 3, "{report}");
+    let verified = json(&fixture.as_admin(&admin, &["verify", "app.vdbx"]));
+    assert_eq!(verified["problems"][0]["code"], "catalogRotationPending");
+    let settled = json(&fixture.as_admin(&admin, &["access", "settle", "app.vdbx"]));
+    assert_eq!(settled["settled"], true, "{settled}");
+    assert_eq!(settled["pendingSince"], 3);
+    let identity = loop_handshake(&fixture, &admin);
+    assert_eq!(
+        identity["database"]["catalogRotationPendingSince"],
+        Value::Null
+    );
+}

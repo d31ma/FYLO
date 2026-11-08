@@ -15,7 +15,7 @@
 import { expect, test } from './browser-test.mjs'
 import { expectOk, nativeBinary } from './engine-harness.mjs'
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { gunzipSync } from 'node:zlib'
 
@@ -264,4 +264,179 @@ test('without an identity, or with one that has no grant, a protected database s
         identity: { name: identityName(testInfo, 'missing'), trustAnchor: fixture.admin }
     })
     expect(missing.code).toBe('ENOIDENTITY')
+})
+
+const ACCESS_SLOT_MAGIC = Buffer.from('VDXACCS\0', 'latin1')
+const ACCESS_SLOT_HEADER_BYTES = 24
+
+/**
+ * Make the newest access slot copy of `file` fail its checksum, as a power
+ * cut tearing the last slot write of a revocation leaves it: the older copy
+ * still holds the previous catalog key, so the rotation stays pending.
+ */
+function tearNewestAccessSlot(file) {
+    const bytes = readFileSync(file)
+    const first = bytes.indexOf(ACCESS_SLOT_MAGIC)
+    const second = bytes.indexOf(ACCESS_SLOT_MAGIC, first + 1)
+    expect(second).toBeGreaterThan(first)
+    const newest =
+        bytes.readBigUInt64LE(second + 8) > bytes.readBigUInt64LE(first + 8) ? second : first
+    bytes[newest + ACCESS_SLOT_HEADER_BYTES] ^= 0xff
+    writeFileSync(file, bytes)
+}
+
+/** Open `url` as the webcrypto: identity `name`, which the admin anchors. */
+async function openAs(harness, fixture, url, name, label) {
+    const opened = await harness.call('open', {
+        kind: 'copy',
+        url,
+        label,
+        identity: { name, trustAnchor: fixture.admin }
+    })
+    expect(opened.error, `open: ${opened.error} (${opened.code})`).toBeUndefined()
+    return opened
+}
+
+/**
+ * Read the canary document and verify the file, then close the copy and
+ * remove it. The browser's session has no root of its own, so its
+ * handshake names no database; `verifyDatabase` is what reports a pending
+ * rotation there.
+ */
+async function readCanary(harness, opened, fixture) {
+    const [read, verified] = await harness.exec(opened.id, [
+        { op: 'getDoc', collection: 'users', id: fixture.userId },
+        { op: 'verifyDatabase' }
+    ])
+    await harness.call('close', opened.id)
+    await harness.call('removeCopy', opened.name)
+    expectOk([read, verified])
+    expect(JSON.stringify(read.result)).toContain(CANARY)
+    return verified.result.problems.map((problem) => problem.code)
+}
+
+/**
+ * A protected database where the browser identity `name` reads `users` and
+ * a second identity was granted and then revoked, which rotates the catalog
+ * key.
+ */
+async function revokedFixture(harness, testInfo, worker) {
+    const fixture = protectedDatabase(`${worker}-${testInfo.project.name}`)
+    const name = identityName(testInfo, worker)
+    const identity = await harness.createIdentity(name)
+    grant(fixture, 'browser', identity.publicKey, 'read')
+    const revokedName = identityName(testInfo, `${worker}-revoked`)
+    const revoked = await harness.createIdentity(revokedName)
+    asAdmin(fixture, [
+        'access',
+        'grant',
+        'app.vdbx',
+        '--grantee',
+        'revoked',
+        '--key',
+        revoked.publicKey,
+        '--actions',
+        'read',
+        '--collection',
+        'users',
+        '--rule',
+        'revoked-rule'
+    ])
+    asAdmin(fixture, ['access', 'revoke', 'app.vdbx', '--rule', 'revoked-rule'])
+    return { fixture, name, revokedName }
+}
+
+test('a sealed pack of a protected database opens for a granted webcrypto: identity', async ({
+    page
+}, testInfo) => {
+    const fixture = protectedDatabase(`sealed-${testInfo.project.name}`)
+    const harness = await AccessPage.open(page)
+    const name = identityName(testInfo, 'sealed')
+    const identity = await harness.createIdentity(name)
+    grant(fixture, 'browser', identity.publicKey, 'read')
+    const packed = JSON.parse(
+        asAdmin(fixture, ['pack', 'app.vdbx', '--out', 'sealed.vdbx', '--sealed'])
+    )
+    expect(packed.sealed).toBeTruthy()
+    const url = `/${FIXTURES}/sealed-${testInfo.project.name}/sealed.vdbx`
+
+    const opened = await openAs(harness, fixture, url, name, `sealed-${testInfo.project.name}.vdbx`)
+    const [read, refused] = await harness.exec(opened.id, [
+        { op: 'getDoc', collection: 'users', id: fixture.userId },
+        { op: 'putData', collection: 'users', data: { name: 'not on a sealed copy' } }
+    ])
+    expectOk([read])
+    expect(JSON.stringify(read.result)).toContain(CANARY)
+    expect(refused.ok).toBe(false)
+    await harness.call('close', opened.id)
+    await harness.call('removeCopy', opened.name)
+
+    const stranger = identityName(testInfo, 'sealed-stranger')
+    await harness.createIdentity(stranger)
+    const locked = await harness.call('open', {
+        kind: 'url',
+        url,
+        identity: { name: stranger, trustAnchor: fixture.admin }
+    })
+    if (locked.error === undefined) {
+        const [denied] = await harness.exec(locked.id, [
+            { op: 'getDoc', collection: 'users', id: fixture.userId }
+        ])
+        expect(denied.ok).toBe(false)
+        expect(JSON.stringify(denied.error)).not.toContain(CANARY)
+        await harness.call('close', locked.id)
+    }
+})
+
+test('after a revocation rotated the catalog key a granted identity reads and the revoked one does not', async ({
+    page
+}, testInfo) => {
+    const harness = await AccessPage.open(page)
+    const { fixture, name, revokedName } = await revokedFixture(harness, testInfo, 'rotated')
+    const audit = JSON.parse(asAdmin(fixture, ['access', 'audit', 'app.vdbx']))
+    expect(audit.entries.map((entry) => entry.kind)).toEqual(['create', 'grant', 'grant', 'revoke'])
+
+    const opened = await openAs(
+        harness,
+        fixture,
+        fixture.url,
+        name,
+        `rotated-${testInfo.project.name}.vdbx`
+    )
+    expect(await readCanary(harness, opened, fixture)).toEqual([])
+
+    const revoked = await harness.call('open', {
+        kind: 'url',
+        url: fixture.url,
+        identity: { name: revokedName, trustAnchor: fixture.admin }
+    })
+    if (revoked.error === undefined) {
+        const [denied] = await harness.exec(revoked.id, [
+            { op: 'getDoc', collection: 'users', id: fixture.userId }
+        ])
+        expect(denied.ok).toBe(false)
+        expect(JSON.stringify(denied.error)).not.toContain(CANARY)
+        await harness.call('close', revoked.id)
+    } else {
+        expect(revoked.code).toBe('EACCES')
+    }
+})
+
+test('a rotation left pending by a torn slot write reads in the browser and reports pending', async ({
+    page
+}, testInfo) => {
+    const harness = await AccessPage.open(page)
+    const { fixture, name } = await revokedFixture(harness, testInfo, 'pending')
+    tearNewestAccessSlot(join(fixture.directory, 'app.vdbx'))
+    const report = JSON.parse(asAdmin(fixture, ['access', 'report', 'app.vdbx']))
+    expect(report.catalogRotation.pendingSince).toBe(4)
+
+    const opened = await openAs(
+        harness,
+        fixture,
+        fixture.url,
+        name,
+        `pending-${testInfo.project.name}.vdbx`
+    )
+    expect(await readCanary(harness, opened, fixture)).toEqual(['catalogRotationPending'])
 })
