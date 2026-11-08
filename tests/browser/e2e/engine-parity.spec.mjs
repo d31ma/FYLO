@@ -382,6 +382,7 @@ test('error frames carry the native code and message', async ({ fylo }) => {
         // creating an existing collection is idempotent.
         expect(browser.filter((frame) => frame.ok).map((frame) => frame.op)).toEqual([
             'getDoc',
+            'inspectCollection',
             'createCollection'
         ])
         expectNoMismatch()
@@ -672,7 +673,6 @@ test('executeSQL reads and writes like native', async ({ fylo }) => {
             select('SELECT name FROM sql-users INNER JOIN teams ON team = id'),
             select('SELECT * FROM ghosts'),
             select('SELECT'),
-            select('DROP TABLE sql-users'),
             select("EXPLAIN SELECT * FROM sql-users WHERE team = 'red'")
         ])
         expect(Object.keys(native[0].result)).toHaveLength(people.length)
@@ -694,6 +694,21 @@ test('executeSQL reads and writes like native', async ({ fylo }) => {
             select("UPDATE sql-users SET WHERE name = 'x'")
         ])
         expect(writes.native.slice(2, 5).map((frame) => frame.result)).toEqual([3, 0, 2])
+        expectNoMismatch()
+
+        const definitions = await pair.step([
+            select("INSERT INTO sql-users (name) VALUES ('Eve')"),
+            select("EXPLAIN DELETE FROM sql-users WHERE name = 'Eve'"),
+            select('SELECT name FROM sql-users'),
+            select('CREATE TABLE sql-made'),
+            { op: 'inspectCollection', collection: 'sql-made' },
+            select('DROP TABLE sql-users'),
+            { op: 'inspectCollection', collection: 'sql-users' }
+        ])
+        expect(definitions.native[1].result.executed).toBe(false)
+        expect(Object.keys(definitions.native[2].result)).toHaveLength(1)
+        expect(definitions.native[4].result.exists).toBe(true)
+        expect(definitions.native[6].result.exists).toBe(false)
         expectNoMismatch()
     } finally {
         await pair.close()
