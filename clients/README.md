@@ -185,9 +185,11 @@ outcome = send_email()
 Go handlers receive `map[string]any`; C# and Dart receive native JSON objects.
 The dependency-free Rust and Java shims pass one validated raw delivery JSON
 object because those two single-file clients do not bundle a JSON decoder.
-Decorators process one batch rather than polling forever, keeping execution and
-scaling under the host platform's control. Long handlers can call the existing
-lease-extension method before the visibility deadline.
+Python's `queue_process` also runs `async` handlers; inside an event loop that
+is already running, prefer `queue_process_async`. Decorators process one batch
+rather than polling forever, keeping execution and scaling under the host
+platform's control. Long handlers can call the existing lease-extension method
+before the visibility deadline.
 
 Object arguments are always the language's **native container** — a `dict`
 (Python), `Hash` (Ruby), object (Node), associative array (PHP), `map[string]any`
@@ -255,11 +257,32 @@ const metadata = await db.users.getMeta(id)
 ## Errors
 
 A failed operation raises, throws, or returns an error, depending on the
-language. Each client's error type carries the machine error `code` from
+language. The error carries the machine error `code` from
 [`api/errors/v1.json`](../api/errors/v1.json) (for example `EBADREQUEST` or
 `EROOTLOCKED`) alongside a human-readable message. Branch on the code, not on
 the message: messages may change between releases, codes are part of the
 versioned contract.
+
+| Language        | Where the code is                                                                            |
+| --------------- | -------------------------------------------------------------------------------------------- |
+| Node/TypeScript | `err.code`                                                                                   |
+| Python          | `FyloError.code`                                                                             |
+| Ruby            | `FyloError#code`                                                                             |
+| PHP             | `FyloError::getFyloCode()` (`getCode()` stays `0`)                                           |
+| Go              | `var e *fylo.Error; if errors.As(err, &e) { e.Code }`                                        |
+| Rust            | `FyloError::code_of(&io_error) -> Option<&str>`; methods still return `io::Result`           |
+| Java            | `Fylo.FyloException.getCode()` (extends `IOException`; the message is the raw response line) |
+| C#              | `FyloException.Code`                                                                         |
+| Dart            | `FyloException.code`                                                                         |
+
+The Swift, Kotlin, and Flutter clients also report the machine code on their
+error type; see the header comment of each client file for the accessor.
+
+The raw `request` escape hatch takes one JSON object per line, so the Rust,
+Java, and C# shims reject a raw request string that contains a carriage return
+or line feed before writing anything to the child: Rust returns an
+`io::ErrorKind::InvalidInput` error, Java throws `IllegalArgumentException`,
+and C# throws `ArgumentException`.
 
 ## SQL
 
