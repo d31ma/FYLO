@@ -36,8 +36,8 @@ truth.
   what a database policy grants `read`, `write` or `admin`.
 - **Key reference**: where an identity's private key lives, named without the
   key: `file:<path>`, `keychain:<label>`, `enclave:<label>`, `cng:<name>`,
-  `creds:<name>` or `webcrypto:<name>`. `enclave:` is a hardware key: it
-  never leaves the Secure Enclave.
+  `tpm:<name>`, `creds:<name>` or `webcrypto:<name>`. `enclave:` and `tpm:`
+  are hardware keys: they never leave the Secure Enclave or the TPM.
 - **Protected database** (ADR 0021): an encrypted `.vdbx` file whose keys
   are wrapped for application identities under a signed policy; nothing is
   readable or writable without a grant.

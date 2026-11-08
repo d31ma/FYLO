@@ -223,6 +223,7 @@ fylo identity show keychain:com.example.app
 | `enclave:<label>` | macOS Secure Enclave key, never exported. Its token blob, usable only by this Mac's Secure Enclave, is a keychain item (`FYLO_KEYCHAIN` applies). Each signature takes milliseconds |
 | `creds:<name>` | Linux `systemd-creds` credential, read from `$CREDENTIALS_DIRECTORY` |
 | `cng:<name>` | Windows CNG software key storage provider item, per user (DPAPI) |
+| `tpm:<name>` | Windows TPM 2.0 key (Microsoft Platform Crypto Provider), never exported. Without a TPM, `EIDENTITY_UNSUPPORTED` |
 | `webcrypto:<name>` | Browser only: two non-extractable `CryptoKey`s in the origin's IndexedDB, made by `createWebCryptoIdentity` |
 
 `FYLO_KEYCHAIN` is read by the keychain store itself, like the installer

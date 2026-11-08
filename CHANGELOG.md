@@ -4,6 +4,13 @@
 
 ### Added
 
+- **`tpm:<name>` identities on Windows (ADR 0021 section 8, phase 8).**
+  `fylo identity create --store tpm:<name>` makes a P-256 key inside the
+  TPM 2.0 through the Microsoft Platform Crypto Provider; it is never
+  exported, and FYLO asks the TPM to sign and to agree. On a machine
+  without a TPM, `create` and `show` fail with `EIDENTITY_UNSUPPORTED`
+  ("no TPM is available on this machine"). Only that path is tested
+  (`windows-vm` has no TPM); the success path is untested on hardware.
 - **Session certificates for hardware identities (ADR 0021 section 8,
   phase 8).** A writer whose identity is a hardware key (`enclave:`, and
   `tpm:` where available) now signs records with a fresh in-memory session

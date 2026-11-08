@@ -24,6 +24,9 @@ pub enum KeyReference {
     Enclave(String),
     /// `cng:<name>`: a Windows CNG key.
     Cng(String),
+    /// `tpm:<name>`: a Windows TPM 2.0 key that never leaves the TPM
+    /// (phase 8).
+    Tpm(String),
     /// `creds:<name>`: a `systemd-creds` credential of a Linux service.
     Creds(String),
     /// `webcrypto:<name>`: a non-extractable `CryptoKey` in the browser.
@@ -35,6 +38,7 @@ impl KeyReference {
     const KEYCHAIN: &'static str = "keychain";
     const ENCLAVE: &'static str = "enclave";
     const CNG: &'static str = "cng";
+    const TPM: &'static str = "tpm";
     const CREDS: &'static str = "creds";
     const WEB_CRYPTO: &'static str = "webcrypto";
 
@@ -55,6 +59,7 @@ impl KeyReference {
             Self::Keychain(label) => Self::keychain_store(label),
             Self::Enclave(label) => Self::hardware_only(&format!("enclave:{label}")),
             Self::Cng(name) => Self::cng_store(name),
+            Self::Tpm(name) => Self::hardware_only(&format!("tpm:{name}")),
             Self::Creds(name) => Self::credential_store(name),
             Self::WebCrypto(name) => Box::new(UnsupportedKeyStore::new(format!(
                 "webcrypto:{name} keys live in a browser origin's IndexedDB; only FYLO's browser runtime opens them"
@@ -68,6 +73,7 @@ impl KeyReference {
     pub(crate) fn hardware_store(&self) -> Option<Box<dyn HardwareKeyStore>> {
         match self {
             Self::Enclave(label) => Some(Self::enclave_store(label)),
+            Self::Tpm(name) => Some(Self::platform_store(name)),
             _ => None,
         }
     }
@@ -91,6 +97,7 @@ impl KeyReference {
             Self::KEYCHAIN => Self::checked_name(name).map(Self::Keychain),
             Self::ENCLAVE => Self::checked_name(name).map(Self::Enclave),
             Self::CNG => Self::checked_name(name).map(Self::Cng),
+            Self::TPM => Self::checked_name(name).map(Self::Tpm),
             Self::CREDS => Self::checked_name(name).map(Self::Creds),
             Self::WEB_CRYPTO => Self::checked_name(name).map(Self::WebCrypto),
             _ => Err(Self::invalid(&format!("{store}:{name}"))),
@@ -117,7 +124,7 @@ impl KeyReference {
 
     fn invalid(text: &str) -> IdentityError {
         IdentityError::InvalidReference(format!(
-            "{text:?} is not a key reference: use file:<path>, keychain:<label>, enclave:<label>, cng:<name>, creds:<name> or webcrypto:<name>"
+            "{text:?} is not a key reference: use file:<path>, keychain:<label>, enclave:<label>, cng:<name>, tpm:<name>, creds:<name> or webcrypto:<name>"
         ))
     }
 
@@ -171,6 +178,20 @@ impl KeyReference {
 
     #[cfg(not(target_family = "wasm"))]
     #[cfg(windows)]
+    fn platform_store(name: &str) -> Box<dyn HardwareKeyStore> {
+        Box::new(crate::cng_key_store::PlatformKeyStore::new(name.to_owned()))
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[cfg(not(windows))]
+    fn platform_store(name: &str) -> Box<dyn HardwareKeyStore> {
+        Box::new(UnsupportedKeyStore::new(format!(
+            "tpm:{name} needs Windows with a TPM 2.0; use enclave:<label> on a Mac, or a software store"
+        )))
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[cfg(windows)]
     fn cng_store(name: &str) -> Box<dyn KeyStore> {
         Box::new(crate::cng_key_store::CngKeyStore::new(name.to_owned()))
     }
@@ -191,6 +212,7 @@ impl fmt::Display for KeyReference {
             Self::Keychain(label) => write!(formatter, "{}:{label}", Self::KEYCHAIN),
             Self::Enclave(label) => write!(formatter, "{}:{label}", Self::ENCLAVE),
             Self::Cng(name) => write!(formatter, "{}:{name}", Self::CNG),
+            Self::Tpm(name) => write!(formatter, "{}:{name}", Self::TPM),
             Self::Creds(name) => write!(formatter, "{}:{name}", Self::CREDS),
             Self::WebCrypto(name) => write!(formatter, "{}:{name}", Self::WEB_CRYPTO),
         }
@@ -228,6 +250,10 @@ mod tests {
         assert_eq!(
             KeyReference::parse("cng:yon").unwrap(),
             KeyReference::Cng("yon".into())
+        );
+        assert_eq!(
+            KeyReference::parse("tpm:yon").unwrap(),
+            KeyReference::Tpm("yon".into())
         );
         assert_eq!(
             KeyReference::parse("creds:fylo-yon").unwrap(),

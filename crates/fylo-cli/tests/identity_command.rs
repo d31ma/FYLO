@@ -168,6 +168,23 @@ fn webcrypto_keys_are_refused_outside_the_browser() {
     assert!(error.starts_with("EIDENTITY_UNSUPPORTED:"), "{error}");
 }
 
+#[cfg(not(windows))]
+#[test]
+fn tpm_keys_are_refused_outside_windows() {
+    let fixture = Fixture::new("tpm");
+    let error = failure(&fixture.run(&["create", "--store", "tpm:yon"]));
+    assert!(error.starts_with("EIDENTITY_UNSUPPORTED:"), "{error}");
+    assert!(error.contains("needs Windows with a TPM 2.0"), "{error}");
+}
+
+#[cfg(not(windows))]
+#[test]
+fn tpm_show_is_refused_outside_windows() {
+    let fixture = Fixture::new("tpm-show");
+    let error = failure(&fixture.run(&["show", "tpm:yon"]));
+    assert!(error.starts_with("EIDENTITY_UNSUPPORTED:"), "{error}");
+}
+
 #[cfg(unix)]
 fn set_mode(path: &Path, mode: u32) {
     use std::os::unix::fs::PermissionsExt as _;

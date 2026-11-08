@@ -12,7 +12,7 @@ type Operation = fn(&KeyReference) -> Result<Identity, IdentityError>;
 
 impl IdentityCommand {
     const JSON_FLAG: &'static str = "--json";
-    const USAGE: &'static str = "Usage:\n  fylo identity create --store <reference> [--json]\n  fylo identity show <reference> [--json]\n\nReferences: file:<path>, keychain:<label> (macOS), enclave:<label> (macOS Secure Enclave), cng:<name> (Windows), creds:<name> (Linux services), webcrypto:<name> (browser)";
+    const USAGE: &'static str = "Usage:\n  fylo identity create --store <reference> [--json]\n  fylo identity show <reference> [--json]\n\nReferences: file:<path>, keychain:<label> (macOS), enclave:<label> (macOS Secure Enclave), cng:<name> (Windows), tpm:<name> (Windows TPM 2.0), creds:<name> (Linux services), webcrypto:<name> (browser)";
 
     /// Run `fylo identity` with the arguments after `identity`.
     ///

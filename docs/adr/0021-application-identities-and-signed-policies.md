@@ -45,6 +45,7 @@ caller cannot skip: the operating system's secret store and cryptography
 | `keychain:<label>` | A macOS keychain item; `FYLO_KEYCHAIN` names a keychain file to use instead of the default keychain                       | macOS                          |
 | `enclave:<label>`  | A Secure Enclave key that never leaves the enclave; its token blob is a keychain item (phase 8, section 8)                | macOS with a Secure Enclave    |
 | `cng:<name>`       | A Windows CNG key, DPAPI-protected                                                                                        | Windows                        |
+| `tpm:<name>`       | A TPM 2.0 key of the Microsoft Platform Crypto Provider that never leaves the TPM (phase 8, section 8)                    | Windows with a TPM 2.0         |
 | `creds:<name>`     | A `systemd-creds` credential handed to one unit                                                                           | Linux services                 |
 | `webcrypto:<name>` | A non-extractable `CryptoKey` in the origin's IndexedDB                                                                   | Browser                        |
 
@@ -542,6 +543,26 @@ in phase 7.
       `unsafe` module (`docs/security/unsafe-inventory.md`).
     - Measured (Apple M4 Mac mini, this Mac): create 10–12 ms, a signature
       4.5–4.7 ms, an ECDH agreement 4.5 ms.
+- **`tpm:<name>`** (Windows). `fylo identity create --store tpm:<name>`
+  asks the Microsoft Platform Crypto Provider to make a persisted P-256
+  key (`NCryptCreatePersistedKey`, `ECDH_P256`, key usage signing and key
+  agreement) inside the TPM 2.0. FYLO signs with `NCryptSignHash` over the
+  SHA-256 of the message and agrees with `NCryptSecretAgreement` and the
+  raw-secret KDF (`TRUNCATE`, little-endian, turned big-endian). It extends
+  the reviewed `cng_key_store.rs`, which stays the crate's only Windows
+  `unsafe` module. A name already in use is refused (`EIDENTITY_EXISTS`).
+    - **No TPM:** a machine without a usable TPM 2.0 (no device, the TPM
+      Base Services stopped, the provider not ready) fails `create` and
+      `show` with `EIDENTITY_UNSUPPORTED`, "needs a TPM 2.0, and no TPM is
+      available on this machine", naming the CNG status.
+    - **Tested:** only that path. `windows-vm` (QEMU on Hypervisor.framework)
+      has no TPM: `tpm-tis-device` fails there with `HV_BAD_ARGUMENT`, and
+      upstream QEMU has no `tpm-crb-device` for this machine. The success
+      path (create, sign, agree, open again, a protected database with a
+      `tpm:` admin) is **untested** on real hardware, including whether the
+      Platform Crypto Provider accepts one `ECDH_P256` key for both
+      signing and agreement; if it does not, `create` fails with the TPM's
+      status and nothing is stored.
 - **Opening wraps with a hardware key.** The `hpke` crate takes only a
   private key, and the hardware gives out only the ECDH shared secret. So a
   hardware identity opens its wraps with RFC 9180 base mode written out
