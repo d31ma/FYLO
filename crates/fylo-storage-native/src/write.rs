@@ -1506,10 +1506,8 @@ impl NativeWriteRoot {
 
     /// Open one collection, or report that there is none.
     ///
-    /// `NativeRoot::collection` reports a missing directory as an unsafe path,
-    /// because for a reader it is one — the descriptor named something that is
-    /// not there. Creating and dropping have to tell "absent" apart from
-    /// "unsafe", so the directory is probed directly first.
+    /// Creating and dropping have to tell "absent" apart from every other
+    /// failure, so the directory is probed directly first.
     fn collection_if_present(
         &self,
         collection_name: &str,

@@ -641,7 +641,8 @@ impl NativeRoot {
             CollectionKind::File => ".buckets",
         };
         let path = self.canonical.join(namespace).join(name);
-        self.verify_path(&path, ExpectedType::Directory)?;
+        self.verify_path(&path, ExpectedType::Directory)
+            .map_err(|error| Self::named_missing_collection(error, name))?;
         if !NativeCollection::SEGMENTS_SUPPORTED && descriptor.layout == CollectionLayout::Segments
         {
             return Err(NativeStorageError::new(
@@ -668,6 +669,16 @@ impl NativeRoot {
             schema_head,
             block: None,
         })
+    }
+
+    fn named_missing_collection(error: NativeStorageError, name: &str) -> NativeStorageError {
+        if error.code() != NativeStorageErrorCode::NotFound {
+            return error;
+        }
+        NativeStorageError::new(
+            NativeStorageErrorCode::NotFound,
+            format!("collection \"{name}\" does not exist"),
+        )
     }
 
     /// Open the collection of a `.vdbx` database named `name`: its directory
@@ -1267,11 +1278,11 @@ impl NativeRoot {
             };
             let alias = Self::case_insensitive_shard_alias(&components, index);
             if !SpellingCache::shared().contains(&current, segment)? && !alias {
-                return Err(Self::non_canonical_spelling(&current.join(segment)));
+                return Err(self.unlisted_component(&current.join(segment)));
             }
             let parent = current.clone();
             current.push(segment);
-            let metadata = Self::walked_metadata(&parent, segment, &current, alias)?;
+            let metadata = self.walked_metadata(&parent, segment, &current, alias)?;
             if is_link_or_reparse(&metadata) {
                 return Err(NativeStorageError::new(
                     NativeStorageErrorCode::UnsafePath,
@@ -1311,6 +1322,21 @@ impl NativeRoot {
         NativeStorageError::new(NativeStorageErrorCode::UnsafePath, message)
     }
 
+    fn unlisted_component(&self, path: &Path) -> NativeStorageError {
+        match fs::symlink_metadata(path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => self.missing_path(path),
+            _ => Self::non_canonical_spelling(path),
+        }
+    }
+
+    fn missing_path(&self, path: &Path) -> NativeStorageError {
+        let relative = path.strip_prefix(&self.canonical).unwrap_or(path);
+        NativeStorageError::new(
+            NativeStorageErrorCode::NotFound,
+            format!("storage path does not exist: {}", relative.display()),
+        )
+    }
+
     fn non_canonical_spelling(path: &Path) -> NativeStorageError {
         NativeStorageError::new(
             NativeStorageErrorCode::UnsafePath,
@@ -1321,23 +1347,25 @@ impl NativeRoot {
         )
     }
 
-    /// A cached listing can still name an entry that was removed since; the
-    /// missing entry then gets the spelling verdict of a fresh listing.
+    /// A cached listing can still name an entry that was removed since; a
+    /// fresh listing then tells a removed entry from a listed one.
     fn walked_metadata(
+        &self,
         parent: &Path,
         segment: &std::ffi::OsStr,
         current: &Path,
         alias: bool,
     ) -> Result<Metadata, NativeStorageError> {
         match fs::symlink_metadata(current) {
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Err(
-                Self::missing_component(parent, segment, current, alias, error),
-            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Err(self.missing_component(parent, segment, current, alias, error))
+            }
             result => result.map_err(NativeStorageError::io),
         }
     }
 
     fn missing_component(
+        &self,
         parent: &Path,
         segment: &std::ffi::OsStr,
         current: &Path,
@@ -1346,7 +1374,7 @@ impl NativeRoot {
     ) -> NativeStorageError {
         SpellingCache::shared().forget(parent);
         match SpellingCache::shared().contains(parent, segment) {
-            Ok(false) if !alias => Self::non_canonical_spelling(current),
+            Ok(false) if !alias => self.missing_path(current),
             Ok(_) => NativeStorageError::io(error),
             Err(listing_error) => listing_error,
         }
@@ -4838,6 +4866,68 @@ mod tests {
                 .code(),
             NativeStorageErrorCode::UnsafePath
         );
+    }
+
+    #[test]
+    fn verify_path_reports_a_missing_component_as_not_found() {
+        let fixture = TestRoot::create();
+        let root = NativeRoot::open(&fixture.0).unwrap();
+        let missing = root.path().join(".collections/absent/docs");
+        let error = root
+            .verify_path(&missing, ExpectedType::Directory)
+            .unwrap_err();
+        assert_eq!(error.code(), NativeStorageErrorCode::NotFound);
+        assert_eq!(
+            error.message(),
+            "storage path does not exist: .collections/absent"
+        );
+    }
+
+    #[test]
+    fn opening_a_missing_collection_reports_not_found() {
+        let fixture = TestRoot::create();
+        let root = NativeRoot::open(&fixture.0).unwrap();
+        let error = root.collection("absent").unwrap_err();
+        assert_eq!(error.code(), NativeStorageErrorCode::NotFound);
+        assert_eq!(error.message(), "collection \"absent\" does not exist");
+    }
+
+    #[test]
+    fn opening_a_collection_in_a_root_without_collections_reports_not_found() {
+        let fixture = TestRoot::create();
+        fs::remove_dir_all(fixture.0.join(".collections")).unwrap();
+        let root = NativeRoot::open(&fixture.0).unwrap();
+        assert_eq!(
+            root.collection("users").unwrap_err().code(),
+            NativeStorageErrorCode::NotFound
+        );
+    }
+
+    #[test]
+    fn opening_a_removed_collection_reports_not_found() {
+        let fixture = TestRoot::create();
+        let root = NativeRoot::open(&fixture.0).unwrap();
+        root.collection("users").unwrap();
+        fs::remove_dir_all(fixture.0.join(".collections/users")).unwrap();
+        assert_eq!(
+            root.collection("users").unwrap_err().code(),
+            NativeStorageErrorCode::NotFound
+        );
+    }
+
+    #[cfg(any(target_os = "macos", windows))]
+    #[test]
+    fn opening_a_collection_stored_under_another_spelling_is_refused() {
+        let fixture = TestRoot::create();
+        fs::rename(
+            fixture.0.join(".collections/users"),
+            fixture.0.join(".collections/USERS"),
+        )
+        .unwrap();
+        let root = NativeRoot::open(&fixture.0).unwrap();
+        let error = root.collection("users").unwrap_err();
+        assert_eq!(error.code(), NativeStorageErrorCode::UnsafePath);
+        assert!(error.message().contains("non-canonical spelling"));
     }
 
     #[test]

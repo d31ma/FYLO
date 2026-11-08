@@ -1441,9 +1441,13 @@ impl Session {
     fn inspect_collection(&self, request: &Value) -> Result<Value, MachineError> {
         let engine = self.engine(request)?;
         let collection = require_string(request, "collection")?;
-        let inspection = engine
-            .inspect(collection)
-            .map_err(|error| engine_error(&error))?;
+        let inspection = match engine.inspect(collection) {
+            Ok(inspection) => inspection,
+            Err(error) if error.storage_code() == Some(NativeStorageErrorCode::NotFound) => {
+                return Ok(absent_collection(collection));
+            }
+            Err(error) => return Err(engine_error(&error)),
+        };
         let kind =
             serde_json::to_value(inspection.kind).map_err(|error| serialization_error(&error))?;
         let indexed = engine
@@ -3854,6 +3858,17 @@ fn engine_error(error: &EngineError) -> MachineError {
         .or_else(|| error.query_code_str())
         .unwrap_or_else(|| error.code().as_str());
     MachineError::new(code, error.to_string())
+}
+
+fn absent_collection(collection: &str) -> Value {
+    json!({
+        "collection": collection,
+        "exists": false,
+        "worm": false,
+        "docsStored": 0,
+        "deletedDocs": 0,
+        "indexedDocs": 0,
+    })
 }
 
 fn serialization_error(error: &serde_json::Error) -> MachineError {
