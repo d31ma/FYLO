@@ -102,7 +102,7 @@ try {
 
 async function cleanUp() {
     // Clients first: a hard NFS mount whose server is gone cannot be torn down.
-    for (const container of ['a', 'b', 'floci']) {
+    for (const container of ['a', 'b', 'floci', 'bootstrap']) {
         await docker(['rm', '-f', `${NAME}-${container}`], { check: false, quiet: true })
     }
     // Stop the kernel server threads first, or the container cannot exit.
@@ -280,21 +280,7 @@ async function lambdaSmoke() {
             }
         }).then(({ stdout }) => (stdout.trim() ? JSON.parse(stdout) : {}))
     try {
-        await docker(
-            [
-                'run',
-                '--rm',
-                '-v',
-                `${cache.target}:/target:ro`,
-                '-v',
-                `${context}:/out`,
-                BASE,
-                'cp',
-                `${binaries}/examples/lambda_invocation`,
-                '/out/bootstrap'
-            ],
-            { quiet: true }
-        )
+        await copyBootstrap(join(context, 'bootstrap'))
         await writeFile(
             join(context, 'Dockerfile'),
             `FROM ${LAMBDA_BASE}\nCOPY bootstrap /var/runtime/bootstrap\nCMD ["fylo"]\n`
@@ -478,6 +464,20 @@ async function lambdaSmoke() {
             { check: false, quiet: true }
         )
         await rm(context, { recursive: true, force: true })
+    }
+}
+
+async function copyBootstrap(destination) {
+    const holder = `${NAME}-bootstrap`
+    await docker(['create', '--name', holder, '-v', `${cache.target}:/target:ro`, BASE], {
+        quiet: true
+    })
+    try {
+        await docker(['cp', `${holder}:${binaries}/examples/lambda_invocation`, destination], {
+            quiet: true
+        })
+    } finally {
+        await docker(['rm', '-f', holder], { check: false, quiet: true })
     }
 }
 
