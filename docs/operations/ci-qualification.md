@@ -53,6 +53,7 @@ bun run rust:fmt
 bun run rust:mcdc
 bun run rust:check
 bun run rust:clippy
+bun run rust:clippy:wasm
 bun run rust:test
 RUSTDOCFLAGS='-D warnings' bun run rust:doc
 bun run typecheck

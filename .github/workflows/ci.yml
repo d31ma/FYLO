@@ -60,6 +60,15 @@ jobs:
                   bun run rust:test
                   bun ./scripts/run-rust.mjs cargo build --locked -p fylo-cli --bin fylo-rust
 
+            - name: Install pinned wasm32 target
+              run: |
+                  set -euo pipefail
+                  toolchain=$(grep -oE 'channel *= *"[^"]+"' rust-toolchain.toml | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+                  rustup target add wasm32-unknown-unknown --toolchain "$toolchain"
+
+            - name: Lint browser engine paths for wasm32
+              run: bun run rust:clippy:wasm
+
             - name: Build warning-free public documentation
               run: bun run rust:doc
               env:

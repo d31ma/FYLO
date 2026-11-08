@@ -22,6 +22,7 @@ bun run predicate:verify
 bun run sql:verify
 bun run rust:fmt
 bun run rust:clippy
+bun run rust:clippy:wasm
 bun run rust:test
 bun run rust:deny
 bun run rust:interop:readonly
