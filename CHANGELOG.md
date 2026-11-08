@@ -4,6 +4,17 @@
 
 ### Added
 
+- **`enclave:<label>` identities on macOS (ADR 0021 section 8, phase 8).**
+  `fylo identity create --store enclave:<label>` makes a P-256 key inside
+  the Secure Enclave, which never leaves it; `fylo identity show` opens it
+  again. The enclave's token blob for the key is a keychain item (service
+  `<label>`, account `fylo-enclave-identity`; `FYLO_KEYCHAIN` applies),
+  bound to the creating application by the keychain's access list and
+  useless on another Mac. Such an identity can create, administer, read and
+  write protected databases like any other; each of its signatures takes
+  about 5 ms. Permanent Data Protection keychain keys and access groups
+  need a signed application with the `keychain-access-groups` entitlement
+  and are not offered.
 - **`fylo access settle <db.vdbx>` (ADR 0021 section 7).** Finishes a
   catalog-key rotation a stopped `fylo access revoke` left pending: it
   reseals the directory under the current catalog key, drops the previous

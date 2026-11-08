@@ -1,23 +1,24 @@
 use std::fmt;
 
-use p256::ecdsa::signature::Signer as _;
-use p256::ecdsa::{Signature, SigningKey};
 use p256::elliptic_curve::Generate;
 use p256::{PublicKey, SecretKey};
 use zeroize::Zeroizing;
 
+use crate::hardware_private_key::HardwarePrivateKey;
 use crate::identity_error::IdentityError;
 use crate::identity_id::IdentityId;
 use crate::key_reference::KeyReference;
-use crate::key_wrap::KeyWrap;
+use crate::private_key::PrivateKey;
 use crate::public_identity::PublicIdentity;
+use crate::software_key::SoftwareKey;
 
 /// An application identity: a P-256 private key held in a key store, named
-/// by its [`KeyReference`] and identified by its [`IdentityId`].
+/// by its [`KeyReference`] and identified by its [`IdentityId`]. The key is
+/// in memory for the software stores, and stays in the hardware for
+/// `enclave:` and `tpm:` (ADR 0021, phase 8).
 pub struct Identity {
     reference: KeyReference,
-    secret_key: SecretKey,
-    signing_key: SigningKey,
+    key: Box<dyn PrivateKey>,
     id: IdentityId,
 }
 
@@ -30,9 +31,8 @@ impl Identity {
     /// [`IdentityError::Unsupported`] for a store this platform does not
     /// have, and [`IdentityError::Store`] when the store fails.
     pub fn create(reference: &KeyReference) -> Result<Identity, IdentityError> {
-        let secret_key = Self::generate_secret_key()?;
-        reference.store().save(&secret_key)?;
-        Ok(Self::from_secret_key(reference.clone(), secret_key))
+        let key = Self::created_key(reference)?;
+        Ok(Self::from_key(reference.clone(), key))
     }
 
     /// Open the key `reference` names.
@@ -43,8 +43,8 @@ impl Identity {
     /// [`IdentityError::InvalidKey`] for a key that is not P-256 PKCS#8, and
     /// the store's own failures.
     pub fn open(reference: &KeyReference) -> Result<Identity, IdentityError> {
-        let secret_key = reference.store().load()?;
-        Ok(Self::from_secret_key(reference.clone(), secret_key))
+        let key = Self::opened_key(reference)?;
+        Ok(Self::from_key(reference.clone(), key))
     }
 
     /// Parse `reference` (for example `keychain:com.delma.yon`) and open it.
@@ -70,7 +70,7 @@ impl Identity {
     /// The public key policies grant and verify against.
     #[must_use]
     pub fn public_key(&self) -> PublicKey {
-        self.secret_key.public_key()
+        self.key.public_key()
     }
 
     /// The public half, which policies list and wrap keys for.
@@ -80,10 +80,28 @@ impl Identity {
     }
 
     /// Sign `message` with ECDSA P-256 and SHA-256: 64 bytes, `r` then `s`.
+    /// A hardware key that refuses yields no signature bytes, which every
+    /// check refuses; [`Identity::try_sign`] says why.
     #[must_use]
     pub fn sign(&self, message: &[u8]) -> Vec<u8> {
-        let signature: Signature = self.signing_key.sign(message);
-        signature.to_bytes().to_vec()
+        self.key.sign(message).unwrap_or_default()
+    }
+
+    /// Sign `message` as [`Identity::sign`] does, reporting a hardware key's
+    /// failure.
+    ///
+    /// # Errors
+    /// [`IdentityError::Store`] when the Secure Enclave or TPM refuses.
+    pub fn try_sign(&self, message: &[u8]) -> Result<Vec<u8>, IdentityError> {
+        self.key.sign(message)
+    }
+
+    /// Whether the private key stays in hardware (`enclave:`, `tpm:`), so
+    /// each signature costs milliseconds. A writer then signs records with
+    /// a session key this identity certifies once (ADR 0021, phase 8).
+    #[must_use]
+    pub fn is_hardware(&self) -> bool {
+        self.key.is_hardware()
     }
 
     /// Open a key wrapped for this identity and the purpose `info`
@@ -97,18 +115,32 @@ impl Identity {
         info: &[u8],
         wrapped: &[u8],
     ) -> Result<Zeroizing<Vec<u8>>, IdentityError> {
-        KeyWrap::open(&self.secret_key, info, wrapped)
+        self.key.unwrap_key(info, wrapped)
     }
 
-    fn from_secret_key(reference: KeyReference, secret_key: SecretKey) -> Identity {
-        let id = IdentityId::from_public_key(&secret_key.public_key());
-        let signing_key = SigningKey::from(&secret_key);
-        Identity {
-            reference,
-            secret_key,
-            signing_key,
-            id,
+    fn created_key(reference: &KeyReference) -> Result<Box<dyn PrivateKey>, IdentityError> {
+        match reference.hardware_store() {
+            Some(store) => Ok(Box::new(HardwarePrivateKey::new(store.create()?))),
+            None => Self::create_software(reference),
         }
+    }
+
+    fn opened_key(reference: &KeyReference) -> Result<Box<dyn PrivateKey>, IdentityError> {
+        match reference.hardware_store() {
+            Some(store) => Ok(Box::new(HardwarePrivateKey::new(store.open()?))),
+            None => Ok(Box::new(SoftwareKey::new(reference.store().load()?))),
+        }
+    }
+
+    fn create_software(reference: &KeyReference) -> Result<Box<dyn PrivateKey>, IdentityError> {
+        let secret_key = Self::generate_secret_key()?;
+        reference.store().save(&secret_key)?;
+        Ok(Box::new(SoftwareKey::new(secret_key)))
+    }
+
+    fn from_key(reference: KeyReference, key: Box<dyn PrivateKey>) -> Identity {
+        let id = IdentityId::from_public_key(&key.public_key());
+        Identity { reference, key, id }
     }
 
     fn generate_secret_key() -> Result<SecretKey, IdentityError> {

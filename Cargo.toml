@@ -46,6 +46,10 @@ repository = "https://github.com/d31ma/Fylo"
 [workspace.dependencies]
 aes-gcm = "0.11.0"
 base64 = "0.22.1"
+# Core Foundation for `enclave:` keys (ADR 0021, phase 8); the versions
+# `security-framework` already brings in.
+core-foundation = { version = "0.10.1", default-features = false }
+core-foundation-sys = { version = "0.8.7", default-features = false }
 getrandom = "0.4.3"
 hmac = "0.13.0"
 # `$encrypted` field keys of protected databases (ADR 0021 phase 7): HKDF-SHA256
@@ -83,6 +87,8 @@ same-file = "1.0.6"
 # The macOS keychain store of application identities (ADR 0021); already in
 # the graph through rustls' platform verifier. TLS features off.
 security-framework = { version = "3.7.0", default-features = false }
+# The raw Security declarations behind `enclave:` keys (ADR 0021, phase 8).
+security-framework-sys = { version = "2.17.0", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.151", features = ["preserve_order"] }
 sha2 = "0.11.0"

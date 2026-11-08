@@ -790,12 +790,17 @@ dependencies = [
 name = "fylo-identity"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm 0.11.0",
  "base64",
+ "core-foundation",
+ "core-foundation-sys",
  "fylo-vfs",
+ "hkdf",
  "hpke",
  "p256",
  "rustix",
  "security-framework",
+ "security-framework-sys",
  "sha2",
  "windows-sys 0.61.2",
  "zeroize",

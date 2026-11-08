@@ -4,6 +4,8 @@ use std::str::FromStr;
 
 #[cfg(not(target_family = "wasm"))]
 use crate::file_key_store::FileKeyStore;
+#[cfg(not(target_family = "wasm"))]
+use crate::hardware_key_store::HardwareKeyStore;
 use crate::identity_error::IdentityError;
 #[cfg(not(target_family = "wasm"))]
 use crate::key_store::KeyStore;
@@ -17,6 +19,9 @@ pub enum KeyReference {
     File(PathBuf),
     /// `keychain:<label>`: a macOS keychain item.
     Keychain(String),
+    /// `enclave:<label>`: a macOS Secure Enclave key that never leaves the
+    /// enclave (phase 8).
+    Enclave(String),
     /// `cng:<name>`: a Windows CNG key.
     Cng(String),
     /// `creds:<name>`: a `systemd-creds` credential of a Linux service.
@@ -28,6 +33,7 @@ pub enum KeyReference {
 impl KeyReference {
     const FILE: &'static str = "file";
     const KEYCHAIN: &'static str = "keychain";
+    const ENCLAVE: &'static str = "enclave";
     const CNG: &'static str = "cng";
     const CREDS: &'static str = "creds";
     const WEB_CRYPTO: &'static str = "webcrypto";
@@ -47,12 +53,30 @@ impl KeyReference {
         match self {
             Self::File(path) => Box::new(FileKeyStore::new(path.clone())),
             Self::Keychain(label) => Self::keychain_store(label),
+            Self::Enclave(label) => Self::hardware_only(&format!("enclave:{label}")),
             Self::Cng(name) => Self::cng_store(name),
             Self::Creds(name) => Self::credential_store(name),
             Self::WebCrypto(name) => Box::new(UnsupportedKeyStore::new(format!(
                 "webcrypto:{name} keys live in a browser origin's IndexedDB; only FYLO's browser runtime opens them"
             ))),
         }
+    }
+
+    /// The hardware store a hardware reference names; `None` for the
+    /// software stores, whose keys [`Self::store`] reads.
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn hardware_store(&self) -> Option<Box<dyn HardwareKeyStore>> {
+        match self {
+            Self::Enclave(label) => Some(Self::enclave_store(label)),
+            _ => None,
+        }
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn hardware_only(reference: &str) -> Box<dyn KeyStore> {
+        Box::new(UnsupportedKeyStore::new(format!(
+            "{reference} is a hardware key; it is made and used where it lives, never read"
+        )))
     }
 
     fn split(text: &str) -> Result<(&str, &str), IdentityError> {
@@ -65,6 +89,7 @@ impl KeyReference {
         match store {
             Self::FILE => Ok(Self::File(PathBuf::from(name))),
             Self::KEYCHAIN => Self::checked_name(name).map(Self::Keychain),
+            Self::ENCLAVE => Self::checked_name(name).map(Self::Enclave),
             Self::CNG => Self::checked_name(name).map(Self::Cng),
             Self::CREDS => Self::checked_name(name).map(Self::Creds),
             Self::WEB_CRYPTO => Self::checked_name(name).map(Self::WebCrypto),
@@ -92,7 +117,7 @@ impl KeyReference {
 
     fn invalid(text: &str) -> IdentityError {
         IdentityError::InvalidReference(format!(
-            "{text:?} is not a key reference: use file:<path>, keychain:<label>, cng:<name>, creds:<name> or webcrypto:<name>"
+            "{text:?} is not a key reference: use file:<path>, keychain:<label>, enclave:<label>, cng:<name>, creds:<name> or webcrypto:<name>"
         ))
     }
 
@@ -109,6 +134,22 @@ impl KeyReference {
     fn keychain_store(label: &str) -> Box<dyn KeyStore> {
         Box::new(UnsupportedKeyStore::new(format!(
             "keychain:{label} needs macOS; use file:<path>, or cng:<name> on Windows and creds:<name> for a Linux service"
+        )))
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[cfg(target_os = "macos")]
+    fn enclave_store(label: &str) -> Box<dyn HardwareKeyStore> {
+        Box::new(crate::enclave_key_store::EnclaveKeyStore::new(
+            label.to_owned(),
+        ))
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[cfg(not(target_os = "macos"))]
+    fn enclave_store(label: &str) -> Box<dyn HardwareKeyStore> {
+        Box::new(UnsupportedKeyStore::new(format!(
+            "enclave:{label} needs a Mac with a Secure Enclave; use tpm:<name> on Windows, or a software store"
         )))
     }
 
@@ -148,6 +189,7 @@ impl fmt::Display for KeyReference {
         match self {
             Self::File(path) => write!(formatter, "{}:{}", Self::FILE, path.display()),
             Self::Keychain(label) => write!(formatter, "{}:{label}", Self::KEYCHAIN),
+            Self::Enclave(label) => write!(formatter, "{}:{label}", Self::ENCLAVE),
             Self::Cng(name) => write!(formatter, "{}:{name}", Self::CNG),
             Self::Creds(name) => write!(formatter, "{}:{name}", Self::CREDS),
             Self::WebCrypto(name) => write!(formatter, "{}:{name}", Self::WEB_CRYPTO),
@@ -178,6 +220,10 @@ mod tests {
         assert_eq!(
             KeyReference::parse("keychain:com.delma.yon").unwrap(),
             KeyReference::Keychain("com.delma.yon".into())
+        );
+        assert_eq!(
+            KeyReference::parse("enclave:com.delma.yon").unwrap(),
+            KeyReference::Enclave("com.delma.yon".into())
         );
         assert_eq!(
             KeyReference::parse("cng:yon").unwrap(),

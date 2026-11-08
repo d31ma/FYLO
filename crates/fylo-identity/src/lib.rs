@@ -2,16 +2,28 @@
 //!
 //! An identity is a P-256 key pair. Its static identifier is the fingerprint
 //! of its public key, `fid1:p256:<base32 of SHA-256>`. A process names its
-//! private key by a [`KeyReference`] (`file:`, `keychain:`, `cng:`, `creds:`
-//! or `webcrypto:`) and never by the key itself.
+//! private key by a [`KeyReference`] (`file:`, `keychain:`, `enclave:`,
+//! `cng:`, `creds:` or `webcrypto:`) and never by the key itself.
 
 mod base32;
 #[cfg(windows)]
 mod cng_key_store;
 #[cfg(target_os = "linux")]
 mod credential_key_store;
+#[cfg(target_os = "macos")]
+mod enclave_key;
+#[cfg(target_os = "macos")]
+mod enclave_key_store;
 #[cfg(not(target_family = "wasm"))]
 mod file_key_store;
+#[cfg(not(target_family = "wasm"))]
+mod hardware_key;
+#[cfg(not(target_family = "wasm"))]
+mod hardware_key_store;
+#[cfg(not(target_family = "wasm"))]
+mod hardware_key_wrap;
+#[cfg(not(target_family = "wasm"))]
+mod hardware_private_key;
 #[cfg(not(target_family = "wasm"))]
 mod identity;
 mod identity_error;
@@ -22,11 +34,17 @@ mod key_store;
 #[cfg(not(target_family = "wasm"))]
 mod key_wrap;
 #[cfg(target_os = "macos")]
+mod keychain_item;
+#[cfg(target_os = "macos")]
 mod keychain_key_store;
+#[cfg(not(target_family = "wasm"))]
+mod private_key;
 #[cfg(not(target_family = "wasm"))]
 mod private_key_pem;
 #[cfg(not(target_family = "wasm"))]
 mod public_identity;
+#[cfg(not(target_family = "wasm"))]
+mod software_key;
 #[cfg(not(target_family = "wasm"))]
 mod unsupported_key_store;
 

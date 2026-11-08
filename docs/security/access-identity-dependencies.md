@@ -46,5 +46,23 @@ not implemented: the CNG API is `unsafe` FFI, so it needs either a reviewed
 safe wrapper crate or an ADR 0004 exception, which is a decision for that
 phase.
 
+## Phase 8: hardware keys
+
+`enclave:` (macOS) and the hand-written HPKE open for hardware keys add four
+direct dependencies to `fylo-identity`, and no crate to the graph:
+
+| | Version | Why | Already in the graph through |
+| --- | --- | --- | --- |
+| `aes-gcm` | 0.11.0 | AES-256-GCM of the HPKE open a hardware key does (`hardware_key_wrap.rs`) | `hpke`, `fylo-storage-native` |
+| `hkdf` | 0.13.0 | The HPKE key schedule's labeled extract and expand | `hpke`, `fylo-storage-native` |
+| `core-foundation` | 0.10.1 (macOS) | The `CFData`, `CFString` and `CFDictionary` values of the Secure Enclave calls | `security-framework` |
+| `security-framework-sys` | 2.17.0 (macOS) | `SecKeyCreateWithData` and the `kSecAttr*` constants, which `security-framework` does not wrap | `security-framework` |
+
+The Secure Enclave calls go through `security-framework`'s safe `SecKey`
+API (`SecKey::new` with `Token::SecureEnclave`, `create_signature`,
+`key_exchange`) except the two listed in the unsafe inventory. The
+hand-written HPKE open is the removal path above, used only where `hpke`
+cannot be: its tests open `hpke`'s own wraps.
+
 Advisories: none known for these versions at the time of review.
 `cargo-deny` licenses, bans and sources still apply in CI.

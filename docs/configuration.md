@@ -220,6 +220,7 @@ fylo identity show keychain:com.example.app
 | --- | --- |
 | `file:<path>` | PKCS#8 PEM file, created `0600`. On Unix a file another user owns, or that group or other users can read or write, is refused (`EIDENTITY_EXPOSED`) |
 | `keychain:<label>` | macOS keychain item. `FYLO_KEYCHAIN=<path>` uses that keychain file instead of the default keychain, for CI and tests |
+| `enclave:<label>` | macOS Secure Enclave key, never exported. Its token blob, usable only by this Mac's Secure Enclave, is a keychain item (`FYLO_KEYCHAIN` applies). Each signature takes milliseconds |
 | `creds:<name>` | Linux `systemd-creds` credential, read from `$CREDENTIALS_DIRECTORY` |
 | `cng:<name>` | Windows CNG software key storage provider item, per user (DPAPI) |
 | `webcrypto:<name>` | Browser only: two non-extractable `CryptoKey`s in the origin's IndexedDB, made by `createWebCryptoIdentity` |

@@ -43,6 +43,7 @@ caller cannot skip: the operating system's secret store and cryptography
 | ------------------ | ------------------------------------------------------------------------------------------------------------------------- | ------------------------------ |
 | `file:<path>`      | PKCS#8 PEM file, mode `0400` or `0600`, owned by the process's user. FYLO refuses a file any other user can read or write | Everywhere; development and CI |
 | `keychain:<label>` | A macOS keychain item; `FYLO_KEYCHAIN` names a keychain file to use instead of the default keychain                       | macOS                          |
+| `enclave:<label>`  | A Secure Enclave key that never leaves the enclave; its token blob is a keychain item (phase 8, section 8)                | macOS with a Secure Enclave    |
 | `cng:<name>`       | A Windows CNG key, DPAPI-protected                                                                                        | Windows                        |
 | `creds:<name>`     | A `systemd-creds` credential handed to one unit                                                                           | Linux services                 |
 | `webcrypto:<name>` | A non-extractable `CryptoKey` in the origin's IndexedDB                                                                   | Browser                        |
@@ -509,7 +510,49 @@ in phase 7.
       chain holds. The `at` time is the
       signer's claim, not a trusted timestamp.
 
-### 8. Phases
+### 8. Hardware keys (phase 8)
+
+- **`enclave:<label>`** (macOS). `fylo identity create --store
+  enclave:<label>` makes a P-256 key inside the Secure Enclave
+  (`SecKeyCreateRandomKey` with the Secure Enclave token). The key never
+  leaves the enclave: FYLO asks it to sign (ECDSA, SHA-256) and to agree
+  (ECDH), and never sees the private scalar.
+    - The key is made **non-permanent**. A permanent key in the Data
+      Protection keychain, and an access group, need the
+      `keychain-access-groups` entitlement, which only a signed application
+      with a provisioning profile carries; an unsigned or ad-hoc signed
+      binary, such as `fylo` from `cargo build`, gets
+      `errSecMissingEntitlement` (-34018). Measured on this Mac.
+    - Instead FYLO keeps the enclave's **token blob** for the key, which
+      only this Mac's Secure Enclave can use, as a generic-password item in
+      the keychain: service `<label>`, account `fylo-enclave-identity`, in
+      the default keychain or in `FYLO_KEYCHAIN`. The keychain's access
+      list binds the item to the application that created it, as for
+      `keychain:`, so it is the code-signature binding; another
+      application needs the user's consent. A copied blob is useless on
+      another Mac, and on this one it can only ask the enclave to use the
+      key, never export it. `fylo identity show` restores the key from the
+      blob (`SecKeyCreateWithData` with the blob as `kSecAttrTokenOID`).
+    - An application that is signed with an access group may move to a
+      permanent Data Protection keychain key later; that is a new store,
+      not this one.
+    - The blob and `SecKeyCreateWithData` have no safe binding, so
+      `crates/fylo-identity/src/enclave_key.rs` is `fylo-identity`'s second
+      `unsafe` module (`docs/security/unsafe-inventory.md`).
+    - Measured (Apple M4 Mac mini, this Mac): create 10–12 ms, a signature
+      4.5–4.7 ms, an ECDH agreement 4.5 ms.
+- **Opening wraps with a hardware key.** The `hpke` crate takes only a
+  private key, and the hardware gives out only the ECDH shared secret. So a
+  hardware identity opens its wraps with RFC 9180 base mode written out
+  (`hardware_key_wrap.rs`: DHKEM(P-256, HKDF-SHA256) decapsulation with the
+  hardware's agreement, then the HKDF-SHA256 key schedule and
+  AES-256-GCM). It opens exactly the wraps `hpke` seals; its tests open
+  `hpke`'s wraps with a software stand-in that agrees as the hardware does.
+- **Writes.** A hardware identity signs every record as a software one
+  does until session certificates (below) take over; each signature then
+  costs milliseconds.
+
+### 9. Phases
 
 The study's section 9 is the plan. Phase 2 (identities and key stores) needs
 none of the answers above and lands first. Phase 3 (protected reads) and later
