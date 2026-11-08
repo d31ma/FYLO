@@ -4896,9 +4896,10 @@ mod tests {
             .verify_path(&missing, ExpectedType::Directory)
             .unwrap_err();
         assert_eq!(error.code(), NativeStorageErrorCode::NotFound);
+        let absent = Path::new(".collections").join("absent");
         assert_eq!(
             error.message(),
-            "storage path does not exist: .collections/absent"
+            format!("storage path does not exist: {}", absent.display())
         );
     }
 
