@@ -191,7 +191,7 @@ describe('website child-scoped FYLO configuration', () => {
         const browserEnvironment = new DocsSample({ topic: 'configuration' })
         browserEnvironment.$lang = 'web'
         expect(browserEnvironment.code()).toContain(
-            'https://d31ma.github.io/FYLO/version/26.33.02/fylo.js'
+            'https://d31ma.github.io/FYLO/version/26.45.07/fylo.js'
         )
         expect(browserEnvironment.code()).toContain('const db = await Fylo.open({')
         expect(browserEnvironment.code()).toContain('<script type="module">')

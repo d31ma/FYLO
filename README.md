@@ -272,7 +272,7 @@ hosting the engine in a WebView) owns its own database.
 Add the version-pinned loader to the document head:
 
 ```html
-<script src="https://d31ma.github.io/FYLO/version/26.33.02/fylo.js"></script>
+<script src="https://d31ma.github.io/FYLO/version/26.45.07/fylo.js"></script>
 ```
 
 ```ts
@@ -296,7 +296,7 @@ native `fylo` binary, through any binary-backed client, for those features.
 
 Use `https://d31ma.github.io/FYLO/version/latest/fylo.js` to track the newest
 successful release. Direct ESM consumers can import
-`https://d31ma.github.io/FYLO/version/26.33.02/fylo-web.mjs` instead.
+`https://d31ma.github.io/FYLO/version/26.45.07/fylo-web.mjs` instead.
 
 Treat the loader as executable supply-chain input: it runs with the embedding
 origin's authority, including access to that origin's FYLO data. Production
@@ -361,7 +361,7 @@ Every GitHub release also includes a versioned, checksum-covered
 Extract it directly into the root of a static host:
 
 ```bash
-VERSION=26.33.02
+VERSION=26.45.07
 curl -fLO "https://github.com/d31ma/Fylo/releases/download/v${VERSION}/fylo-explorer-${VERSION}.zip"
 mkdir "fylo-explorer-${VERSION}"
 unzip "fylo-explorer-${VERSION}.zip" -d "fylo-explorer-${VERSION}"

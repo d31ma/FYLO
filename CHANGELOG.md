@@ -1,6 +1,41 @@
 # Changelog
 
-## Unreleased
+## 26.45.07 - 2026-11-08
+
+### Breaking Changes
+
+- **POSTIX, per-record access control, is removed (ADR 0021).** A machine
+  request that carries an `access` object now fails with `EBADREQUEST`, and
+  the protocol-v1 handshake no longer reports `capabilities.machineAccess`.
+  Consumers that required `machineAccess` gate on the handshake's `identity`
+  instead (#105). Access is granted per application identity on protected
+  `.vdbx` databases; see **Removed** below and
+  `docs/migrating-to-protected-databases.md`.
+- **The machine protocol creates a missing `.vdbx` protected**, with the
+  configured identity as admin, and refuses with `ENOIDENTITY` without one;
+  `fylo create` without `--admin` needs `--unprotected`. See **Added**.
+- **Browser hosts: the host table and module ABI are version 2**, with five
+  identity imports and a `fylo_configure` export. See **Added**.
+- **A collection that does not exist is reported as `ENATIVE_NOT_FOUND`**
+  (`collection "<name>" does not exist`) instead of `ENATIVE_UNSAFE_PATH`
+  "non-canonical spelling" with the absolute root path, and native
+  `inspectCollection` returns `exists: false` instead of failing. Callers
+  that matched `ENATIVE_UNSAFE_PATH` for a missing collection must match
+  `ENATIVE_NOT_FOUND`. A path stored under a different letter case is still
+  refused.
+- **Native `EXPLAIN` no longer executes the statement.** It returns
+  `{operation, collection, access, executed: false}`; `EXPLAIN ANALYZE`
+  executes and adds `executed: true`, `elapsedMs` and `result`. Callers that
+  relied on `EXPLAIN` returning rows must use `EXPLAIN ANALYZE` or drop the
+  keyword.
+- **The browser and mobile engines reject what they cannot honour** with the
+  new error code `EBROWSER_UNSUPPORTED`: `create({kind: 'file'})`,
+  `create({schema})`, encryption options, and `Blob`, `File` or `URL` values
+  in document collections. These used to be silently ignored, and plaintext
+  was stored when encryption was requested.
+- **Swift: `FyloError.failed` now carries `(String, code: String?)`.**
+  Change `case .failed(let m)` to `case .failed(let m, _)`, or read
+  `error.code`. This is source-breaking in Swift 5 and 6 modes.
 
 ### Added
 
@@ -429,6 +464,48 @@
   with an error pointing at ADR 0018; the README's slug upgrader is one
   `slugify` step. `schemaInspect` reports `migrationPath` and
   `migrationExists` in place of `upgraderPath` and `upgraderExists`.
+- Every binary-backed shim exposes the machine error code: Python
+  `FyloError.code`, Ruby `FyloError#code`, PHP `getFyloCode()`, Go
+  `*fylo.Error.Code`, Java `getCode()`, C# `FyloException.Code`, Rust
+  `FyloError::code_of` and Dart `FyloException.code`. Messages are unchanged.
+- The browser client, Swift, Kotlin and Flutter add `executeSQL(sql)`;
+  `sql()` is kept. Bridge errors carry a stable code: Swift `FyloError.code`,
+  Kotlin and Flutter `FyloException.code`, and browser `error.code`.
+- `ENATIVE_NOT_FOUND` and `EBROWSER_UNSUPPORTED` are in the stable error
+  catalog.
+- The browser engine's raw Wasm budget rises 4 KiB to 2,452 KiB (2,510,848
+  bytes) for this release's engine fixes (EXPLAIN plans, native
+  `CREATE`/`DROP TABLE`, not-found handling for missing collections), which
+  add about 4.85 KB. The gzip budget (800 KiB) is unchanged. Rollback and
+  recovery now check for a fully captured index by comparing two paths
+  directly, recovering 7,391 bytes.
+- Explorer's vendored browser engine is resynced with this release's engine
+  and browser host fixes, including the fail-closed guard and the OPFS
+  directory-handle fix.
+
+- **Schemas are enforced in one place, the storage writer's record builder
+  (ADR 0017 section 1).** Every write that stores a document body builds it
+  there, under the collection's validation mode; the engine no longer
+  validates puts on its own.
+- **Writes stamp `_v` whenever the collection has a versioned schema**, in
+  every validation mode, and a `_v` the caller sends is replaced by the head
+  label. Without `fylo.strict`, writes used to store no `_v` (or the caller's),
+  so a document written in the head shape later read as the oldest version.
+- **CHEX and TTID are built in; FYLO no longer needs their binaries.** Schema
+  validation now runs in-process through `fylo-chex`, a vendored copy of the
+  CHEX v26.32.02 validator core (same regex dialect, error names, and messages).
+  TTID generation, decoding, and canonical checks were already native to FYLO,
+  so the `ttid` binary was only probed for. `scripts/install-vendor-bins.sh` and
+  its PowerShell peer now install only TACHYON.
+- The handshake no longer has a `dependencies` object. A new
+  `capabilities.schemaValidation` entry names the built-in CHEX validator and
+  its CHEX release, and is `false` in the WebAssembly builds, which still leave
+  the validator out to stay within their size budgets.
+- One-frame serverless invocations now accept `schemaValidate` and
+  `strict_schema=true`. They were refused only because the external CHEX helper
+  had no invocation deadline or descendant teardown (ADR 0011, amended).
+- `getDoc`, `findDocs` and the other reads that only need a collection's kind
+  no longer list the collection to learn it.
 
 ### Fixed
 
@@ -456,10 +533,11 @@
   filesystem with extended attributes, the `efs-sidecar-v1` filesystem
   profile, or a `.vdbx` database. The same applies to reading, listing,
   restoring and copying attributes. The code stays `ENATIVE_IO`, and every
-  other error is unchanged. Creating a bucket (`createCollection` with
-  `"kind": "file"`) on such a filesystem now fails at once with that error,
-  because every raw file needs its `user.fylo.key` attribute; before, it
-  succeeded and every later `putData` failed. The check sets and removes
+  other error is unchanged. The probe runs when a bucket is created
+  (`createCollection` with `"kind": "file"`), so on such a filesystem creating
+  the bucket now fails with that error, because every raw file needs its
+  `user.fylo.key` attribute; before, it succeeded and every later `putData`
+  failed. The probe sets and removes
   `user.fylo.probe` on a short-lived `.fylo-xattr-probe-*.tmp` file at the
   top of the root. Documents without metadata keep working on these
   filesystems, so document collections, reads, `.vdbx` databases and the
@@ -582,32 +660,62 @@
 - SQL `UPDATE` and `DELETE` `WHERE` clauses now match decrypted values, so a
   condition on an `$encrypted` field finds its documents instead of comparing
   against ciphertext.
+- Node and Bun shims: calls and `close()` no longer hang after the `fylo`
+  child dies by a signal, including the shim's own kill after a malformed or
+  oversized response frame.
+- Dart shim: requests made after the child exits fail at once with the exit
+  reason.
+- Python shim: `queue_process` runs async handlers instead of dead-lettering
+  them.
+- PHP shim: empty arrays for object arguments are sent as JSON objects, so the
+  `findDeletedDocs`, `findDocsPage` and `findDeletedDocsPage` defaults work.
+- Go shim: nil maps are sent as empty objects instead of `null`.
+- Java, C# and Rust shims reject a raw request containing CR or LF before
+  writing it, so it can no longer desync later responses.
+- Native SQL `CREATE TABLE <name>` creates a document collection, and
+  `DROP TABLE <name>` drops it.
+- iOS (Swift) bridge requests no longer fail on WKWebView's Promise result;
+  every native client dispatches with `void`.
+- Mobile `open` no longer hangs until the 30 s RPC timeout: the bridge runs
+  without a worker unless the native config sets `worker: true`. A failed
+  mobile `open` can be retried, `findDocs` with `$onlyIds` returns an id list,
+  and collections named `options`, `collections` and similar work.
+- Browser `rebuildCollection`, and dropping then recreating a collection, work
+  on OPFS. Both always failed on WebKit because of a stale directory-handle
+  cache.
+- A rebuild or rolled-back write in a file bucket that met a file whose
+  extended attributes had been stripped left the bucket unreadable: every read
+  failed with `EENGINE_CONCURRENT_WRITE`, and recovery never finished. The
+  rollback now keeps the index it restored, and a bucket already stuck this
+  way recovers on the next write. The rebuild still fails with
+  `ENATIVE_METADATA`, now naming the file's path relative to the root. On
+  26.33.02 itself: move the file named in the rebuild error out of
+  `.buckets/<name>/docs/<shard>/`, run any write (for example
+  `rebuildCollection`), then add the file again with `putData` and its key,
+  supplying its custom metadata again.
+- The portable `wasm32-wasip1` build (`bun run rust:build:wasi`) compiles
+  again. Browser identities are limited to `wasm32-unknown-unknown`; WASI uses
+  software `file:` identities, and OS key stores fail closed.
 
-### Changed
+### Documentation
 
-- **Schemas are enforced in one place, the storage writer's record builder
-  (ADR 0017 section 1).** Every write that stores a document body builds it
-  there, under the collection's validation mode; the engine no longer
-  validates puts on its own.
-- **Writes stamp `_v` whenever the collection has a versioned schema**, in
-  every validation mode, and a `_v` the caller sends is replaced by the head
-  label. Without `fylo.strict`, writes used to store no `_v` (or the caller's),
-  so a document written in the head shape later read as the oldest version.
-- **CHEX and TTID are built in; FYLO no longer needs their binaries.** Schema
-  validation now runs in-process through `fylo-chex`, a vendored copy of the
-  CHEX v26.32.02 validator core (same regex dialect, error names, and messages).
-  TTID generation, decoding, and canonical checks were already native to FYLO,
-  so the `ttid` binary was only probed for. `scripts/install-vendor-bins.sh` and
-  its PowerShell peer now install only TACHYON.
-- The handshake no longer has a `dependencies` object. A new
-  `capabilities.schemaValidation` entry names the built-in CHEX validator and
-  its CHEX release, and is `false` in the WebAssembly builds, which still leave
-  the validator out to stay within their size budgets.
-- One-frame serverless invocations now accept `schemaValidate` and
-  `strict_schema=true`. They were refused only because the external CHEX helper
-  had no invocation deadline or descendant teardown (ADR 0011, amended).
-- `getDoc`, `findDocs` and the other reads that only need a collection's kind
-  no longer list the collection to learn it.
+- Website samples compile against the shipped clients (Go and Rust collection
+  kind, typed id reads, browser cursors, no Swift `import Fylo`, Python
+  snake_case, C# `Fylo.Fylo`).
+- The browser loader and the mobile and Flutter clients document that they
+  do not support raw-file buckets, schemas or field encryption, and fail with
+  `EBROWSER_UNSUPPORTED`.
+- The unimplemented `versioning.autoCommit` and `versioned: false` options are
+  removed from the docs.
+- New per-client error-code reference, the full 54-operation machine list, and
+  `EXPLAIN` / `EXPLAIN ANALYZE` semantics.
+- The bucket guide (README and website) documents the shipped API:
+  `create('file')`, Node `putFile`, `getFileData`, `findDocs` on key and meta,
+  `verifyCollection`, `getMeta` and `setMeta`. The never-shipped `put(File)`,
+  bytes/blob/stream, `rekey`, `folder()`, `verify()`, per-write `maxBytes`,
+  `onEvent` bucket events and rebuild key repair are removed.
+- `efs-sidecar-v1` is documented as Unix-only; Windows refuses it with
+  `ENATIVE_UNSUPPORTED`.
 
 ### Removed
 
