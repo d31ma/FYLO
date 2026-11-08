@@ -381,3 +381,36 @@ fn inspect_reports_documents_per_version_until_the_collection_converges() {
     assert_eq!(recorded, collection.scan_schema_versions().unwrap());
     assert_eq!(recorded.at("v2"), 2);
 }
+
+#[test]
+fn a_manifest_that_lists_no_versions_reads_documents_as_stored() {
+    let fixture = Fixture::new(false);
+    fs::write(
+        fixture.folder().join("manifest.json"),
+        br#"{"current":"v1"}"#,
+    )
+    .unwrap();
+    let unpushed = Fixture {
+        parent: fixture.parent.join("unpushed"),
+        root: fixture.parent.join("unpushed").join("root"),
+        schema: fixture.schema.clone(),
+        encrypted: false,
+    };
+    fs::create_dir_all(&unpushed.root).unwrap();
+    NativeWriteRoot::open(&unpushed.root)
+        .unwrap()
+        .create_collection(PEOPLE, CollectionKind::Document, None)
+        .unwrap();
+    unpushed.put(PEOPLE, ADA, &json!({"fullName":"Ada Lovelace"}));
+
+    unpushed
+        .writer()
+        .patch_document_fields(PEOPLE, ADA, &Map::new())
+        .unwrap();
+    let reader = ReadOnlyEngine::open(&unpushed.root)
+        .unwrap()
+        .with_schema_configuration(&unpushed.schema, None)
+        .unwrap();
+    let ada = reader.get(PEOPLE, ADA).unwrap();
+    assert_eq!(fields(&ada)["fullName"], "Ada Lovelace");
+}

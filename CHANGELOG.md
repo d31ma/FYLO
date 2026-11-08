@@ -422,6 +422,13 @@
 
 ### Fixed
 
+- **A schema manifest without `versions` no longer fails every read.** A
+  `fylo.schema` manifest such as `{ "current": "v1" }`, with no `versions`
+  list, was accepted for writes, but since lazy migration on read every
+  read and every patch of that collection failed with `ESCHEMA: 'current'
+  (v1) is not present in 'versions'`. Such a collection has a single
+  version, so its documents are again read as they are stored. A manifest
+  whose `versions` list does not name `current` is still an error.
 - **A power cut that tears a directory block no longer makes a `.vdbx` file
   unopenable (ADR 0021 section 7).** A catalog reseal (`fylo access revoke`,
   `fylo access settle`), a drop, a descriptor change or a new collection

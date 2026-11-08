@@ -57,6 +57,9 @@ impl VersionChain {
         let Some(manifest) = SchemaManifest::load(&paths)? else {
             return Ok(None);
         };
+        if manifest.versions.is_empty() {
+            return Ok(None);
+        }
         let Some(end) = manifest
             .versions
             .iter()
