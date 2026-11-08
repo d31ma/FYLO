@@ -447,7 +447,7 @@ async function csharpProbe(root) {
     await copyFile(resolve('clients/csharp/Fylo.cs'), join(directory, 'Fylo.cs'))
     await writeFile(
         join(directory, 'Probe.csproj'),
-        '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings></PropertyGroup></Project>'
+        '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings></PropertyGroup></Project>'
     )
     await writeFile(
         join(directory, 'Program.cs'),

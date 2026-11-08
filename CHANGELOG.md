@@ -378,6 +378,10 @@
 
 ### Changed
 
+- **The C# client is tested on .NET 10.** .NET 8 support ends on
+  2026-11-10, so CI, the publish workflow and the C# interop and
+  language-client tests now build `net10.0` with the .NET 10 SDK. The client
+  itself (`clients/csharp/Fylo.cs`) is unchanged.
 - **Documented: `cng:` keys under passwordless Windows logons.** An account
   with no password that signs in over SSH with a key can lose its `cng:`
   identities, with `EIDENTITY_NOT_FOUND`, once another account logs on,
