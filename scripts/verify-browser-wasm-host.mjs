@@ -180,7 +180,10 @@ function verifySchemaValidation(instance, handshake) {
             join(schemaDir, collection, 'manifest.json'),
             JSON.stringify({ current: 'v1', versions: [{ v: 'v1' }] })
         )
-        writeFileSync(join(schemaDir, collection, 'history', 'v1.schema.json'), JSON.stringify(chex))
+        writeFileSync(
+            join(schemaDir, collection, 'history', 'v1.schema.json'),
+            JSON.stringify(chex)
+        )
     }
     author('people', { name: '^[A-Z]\\w+$', 'age?': '^[0-9]+$', city: '(?i)^[a-zé ]+$' })
     // A Unicode word boundary has no DFA form: native-only (not portable).
@@ -222,11 +225,25 @@ function verifySchemaValidation(instance, handshake) {
     }
 
     const requests = [
-        { op: 'putData', collection: 'people', data: { name: 'Ada', age: 36, city: 'Montréal' }, root },
+        {
+            op: 'putData',
+            collection: 'people',
+            data: { name: 'Ada', age: 36, city: 'Montréal' },
+            root
+        },
         { op: 'putData', collection: 'people', data: invalid, root },
         { op: 'putData', collection: 'people', data: { name: 'Ada', extra: 1, city: 'x' }, root },
-        { op: 'executeSQL', sql: "INSERT INTO people (name, city) VALUES ('grace', 'Paris')", root },
-        { op: 'schemaValidate', collection: 'people', document: { name: 'Grace', city: 'Été' }, root },
+        {
+            op: 'executeSQL',
+            sql: "INSERT INTO people (name, city) VALUES ('grace', 'Paris')",
+            root
+        },
+        {
+            op: 'schemaValidate',
+            collection: 'people',
+            document: { name: 'Grace', city: 'Été' },
+            root
+        },
         { op: 'schemaMode', collection: 'people', mode: 'warn', root },
         { op: 'putData', collection: 'people', data: invalid, root },
         { op: 'schemaMode', collection: 'people', mode: 'off', root },
@@ -278,13 +295,19 @@ function verifySchemaValidation(instance, handshake) {
             `a non-portable schema in ${name} mode did not fail closed: ${JSON.stringify(frame.error ?? frame.result)}`
         )
     }
-    assert(unportableOff.ok, `off mode refused a non-portable collection: ${unportableOff.error?.message}`)
+    assert(
+        unportableOff.ok,
+        `off mode refused a non-portable collection: ${unportableOff.error?.message}`
+    )
     assert(
         folderOnly.error?.code === 'ESCHEMAUNAVAILABLE',
         `a folder-only schema did not fail closed: ${JSON.stringify(folderOnly.error ?? folderOnly.result)}`
     )
     const people = Object.values(found.result)
-    assert(people.length === 3, `expected 3 people (valid, warned, unchecked), got ${people.length}`)
+    assert(
+        people.length === 3,
+        `expected 3 people (valid, warned, unchecked), got ${people.length}`
+    )
     assert(
         people.some((person) => person.name === 'Ada' && person._v === 'v1'),
         'the valid document was not stamped with the head version'
