@@ -3,7 +3,6 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-#[cfg(unix)]
 use fylo_engine::{EngineErrorCode, ReadOnlyEngine};
 use fylo_query::ScanQuery;
 #[cfg(unix)]
