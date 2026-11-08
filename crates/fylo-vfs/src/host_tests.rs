@@ -60,7 +60,21 @@ unsafe extern "C" fn open(path: *const u8, len: usize, flags: u32, out: *mut u64
             unsafe { *out = handle };
             0
         }
-        Err(error) => -error.raw_os_error().unwrap_or(5),
+        Err(error) => -linux_errno(&error),
+    }
+}
+
+fn linux_errno(error: &std::io::Error) -> i32 {
+    match error.kind() {
+        std::io::ErrorKind::NotFound => 2,
+        std::io::ErrorKind::PermissionDenied => 13,
+        std::io::ErrorKind::ResourceBusy => 16,
+        std::io::ErrorKind::AlreadyExists => 17,
+        std::io::ErrorKind::NotADirectory => 20,
+        std::io::ErrorKind::IsADirectory => 21,
+        std::io::ErrorKind::InvalidInput => 22,
+        std::io::ErrorKind::DirectoryNotEmpty => 39,
+        _ => 5,
     }
 }
 
@@ -91,7 +105,7 @@ unsafe extern "C" fn read_at(
                 unsafe { *out = count };
                 0
             }
-            Err(error) => -error.raw_os_error().unwrap_or(5),
+            Err(error) => -linux_errno(&error),
         }
     })
 }
@@ -118,7 +132,7 @@ unsafe extern "C" fn write_at(
                 unsafe { *out = count };
                 0
             }
-            Err(error) => -error.raw_os_error().unwrap_or(5),
+            Err(error) => -linux_errno(&error),
         }
     })
 }
@@ -129,7 +143,7 @@ unsafe extern "C" fn truncate(handle: u64, len: u64) -> i32 {
             .get_mut(&handle)
             .map_or(-9, |file| match file.set_len(len) {
                 Ok(()) => 0,
-                Err(error) => -error.raw_os_error().unwrap_or(5),
+                Err(error) => -linux_errno(&error),
             })
     })
 }
@@ -140,7 +154,7 @@ unsafe extern "C" fn flush(handle: u64) -> i32 {
             .get_mut(&handle)
             .map_or(-9, |file| match file.sync_all() {
                 Ok(()) => 0,
-                Err(error) => -error.raw_os_error().unwrap_or(5),
+                Err(error) => -linux_errno(&error),
             })
     })
 }
@@ -176,7 +190,7 @@ unsafe extern "C" fn mkdir(path: *const u8, len: usize, recursive: u32) -> i32 {
     };
     match result {
         Ok(()) => 0,
-        Err(error) => -error.raw_os_error().unwrap_or(5),
+        Err(error) => -linux_errno(&error),
     }
 }
 
@@ -185,7 +199,7 @@ unsafe extern "C" fn unlink(path: *const u8, len: usize) -> i32 {
     let path = unsafe { borrow_path(path, len) };
     match std::fs::remove_file(&path) {
         Ok(()) => 0,
-        Err(error) => -error.raw_os_error().unwrap_or(5),
+        Err(error) => -linux_errno(&error),
     }
 }
 
@@ -199,7 +213,7 @@ unsafe extern "C" fn rmdir(path: *const u8, len: usize, recursive: u32) -> i32 {
     };
     match result {
         Ok(()) => 0,
-        Err(error) => -error.raw_os_error().unwrap_or(5),
+        Err(error) => -linux_errno(&error),
     }
 }
 
@@ -213,7 +227,7 @@ unsafe extern "C" fn rename_entry(
     let (from, to) = unsafe { (borrow_path(from, from_len), borrow_path(to, to_len)) };
     match std::fs::rename(&from, &to) {
         Ok(()) => 0,
-        Err(error) => -error.raw_os_error().unwrap_or(5),
+        Err(error) => -linux_errno(&error),
     }
 }
 
