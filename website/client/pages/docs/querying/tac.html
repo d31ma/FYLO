@@ -89,8 +89,10 @@
     <div class="doc-section">
         <h2>Reading the plan</h2>
         <p>
-            <code>EXPLAIN</code> reports the chosen access path without executing;
-            <code>EXPLAIN ANALYZE</code> executes and adds elapsed time and the result. Every
+            <code>EXPLAIN</code> reports the chosen access path and never executes, even for
+            <code>INSERT</code>, <code>UPDATE</code>, <code>DELETE</code>, <code>CREATE</code>, or
+            <code>DROP</code>. <code>EXPLAIN ANALYZE</code> returns the same fields plus
+            <code>executed: true</code>, <code>elapsedMs</code>, and <code>result</code>. Every
             language sends the same statement through the machine protocol.
         </p>
         <div class="doc-note">

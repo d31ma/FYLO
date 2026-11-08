@@ -465,7 +465,9 @@ files. See the [configuration and migration guide](docs/configuration.md) and
 
 Collections must be created explicitly before reads, writes, updates, deletes,
 imports, rebuilds, or queries. Use `db.<collection>.inspect()` when you want a
-safe existence check; it returns `exists: false` instead of throwing.
+safe existence check; it returns `exists: false` instead of throwing. Every
+other operation on a missing collection fails with the machine error code
+`ENATIVE_NOT_FOUND`.
 
 ### Create
 
@@ -805,6 +807,9 @@ const id = await db.sql`INSERT INTO posts (title, published) VALUES (${'Hello'},
 const posts = await db.sql`SELECT * FROM posts WHERE published = ${true}`
 ```
 
+`CREATE TABLE <name>` creates a document collection and `DROP TABLE <name>`
+drops one.
+
 `UPDATE` and `DELETE` statements are atomic within their collection: either
 every matched document, its native metadata, and index entries commit, or the
 statement restores all before-images.
@@ -817,6 +822,8 @@ result:
 const plan = await db.executeSQL("EXPLAIN SELECT * FROM posts WHERE title = 'Hello'")
 // { operation: 'SELECT', collection: 'posts', access: [...], executed: false }
 ```
+
+`EXPLAIN ANALYZE` returns the same fields plus `executed: true`, `elapsedMs` and `result`; `EXPLAIN` never executes, even for INSERT, UPDATE, DELETE, CREATE or DROP.
 
 The CLI accepts the same syntax:
 
