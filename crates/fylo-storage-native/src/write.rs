@@ -2191,8 +2191,10 @@ impl NativeWriteRoot {
         let captures = read_captures(&root)?;
         if manifest.phase == TransactionPhase::Active {
             restore_captures(&self.root, &collection.path, &root, &captures)?;
+            rebuild_restored_index(self, collection, &root, &captures)?;
+        } else {
+            self.rebuild_index(collection)?;
         }
-        self.rebuild_index(collection)?;
         write_generation(
             self,
             collection,
@@ -2674,6 +2676,29 @@ fn capture_index_files(
 ) -> Result<(), NativeStorageError> {
     transaction.capture(&collection.path.join("index").join("keys.snapshot"))?;
     capture_index(transaction, collection)
+}
+
+fn rebuild_restored_index(
+    writer: &NativeWriteRoot,
+    collection: &super::NativeCollection,
+    transaction_root: &Path,
+    captures: &[Capture],
+) -> Result<(), NativeStorageError> {
+    if captures_whole_index(captures) {
+        return Ok(());
+    }
+    writer
+        .rebuild_index(collection)
+        .or_else(|_| restore_captures(&writer.root, &collection.path, transaction_root, captures))
+}
+
+fn captures_whole_index(captures: &[Capture]) -> bool {
+    let captured_paths: BTreeSet<&Path> = captures
+        .iter()
+        .map(|capture| Path::new(capture.path.as_str()))
+        .collect();
+    captured_paths.contains(Path::new("index/keys.snapshot"))
+        && captured_paths.contains(Path::new("index/keys.wal"))
 }
 
 fn finish_transaction(
@@ -3255,13 +3280,15 @@ impl<'a> Transaction<'a> {
     }
 
     /// Rebuild the index from the restored records, unless a refusal came
-    /// before anything was appended to it: then the index files are as the
-    /// transaction found them.
+    /// before anything was appended to it or both index files were captured:
+    /// then the index files are as the transaction found them. A rebuild that
+    /// fails keeps the restored captures, so a rollback never leaves the
+    /// collection writing.
     fn rebuild_changed_index(&self) -> Result<(), NativeStorageError> {
         if self.index_refused && !self.index_appended {
             return Ok(());
         }
-        self.writer.rebuild_index(self.collection)
+        rebuild_restored_index(self.writer, self.collection, &self.root, &self.captures)
     }
 
     fn rollback(&mut self) -> Result<(), NativeStorageError> {

@@ -2561,7 +2561,10 @@ impl NativeCollection {
         let (mut file, metadata) = self.root.open_file(&path, MAX_RAW_FILE_BYTES)?;
         let attributes = record_attributes::RecordAttributes::read(&self.root, &file, &path)?;
         attributes.verify(&self.root, &file, &path)?;
-        let key = required_utf8_attribute(&attributes, KEY_XATTR, identifier)?;
+        let location = path
+            .strip_prefix(&self.root.canonical)
+            .unwrap_or(Path::new(filename));
+        let key = required_utf8_attribute(&attributes, KEY_XATTR, identifier, location)?;
         validate_raw_key(&key)?;
         let custom_metadata = decode_custom_metadata(&attributes)?;
         LegacyAccessWarning::notice(&attributes);
@@ -3490,11 +3493,18 @@ fn required_utf8_attribute(
     attributes: &BTreeMap<String, Vec<u8>>,
     name: &str,
     identifier: &str,
+    location: &Path,
 ) -> Result<String, NativeStorageError> {
     let value = attributes.get(name).ok_or_else(|| {
         NativeStorageError::new(
             NativeStorageErrorCode::CorruptMetadata,
-            format!("raw file system metadata is missing: {identifier}"),
+            format!(
+                "raw file system metadata is missing: {identifier} at {}; its key and \
+                 metadata were stored only in the file's extended attributes. Move the file \
+                 out of the store, run any write on the collection, then add it again with \
+                 putData and its key",
+                location.display()
+            ),
         )
     })?;
     String::from_utf8(value.clone()).map_err(|error| {
