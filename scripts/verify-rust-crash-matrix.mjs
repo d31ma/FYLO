@@ -63,6 +63,34 @@ const COMPACTION_POINTS = [
     'after-capture'
 ]
 const COMPACTION_ID = '4VRNF52JPDZ'
+// Transitions on paths the EFS profile refuses to take: the write-ahead log
+// (NativeWriteRoot::uses_log), segment collections (creates_segments), a
+// migration into segments, and `.vdbx` databases (admit_database). Each needs
+// the native profile, so no EFS scenario can reach it.
+const WRITE_AHEAD_LOG = 'the write-ahead log, which only the native profile uses'
+const SEGMENTS = 'a segment collection, which only the native profile creates'
+const DATABASE = 'a .vdbx database, which only the native profile opens'
+const EFS_UNREACHABLE = {
+    'before-log-append': WRITE_AHEAD_LOG,
+    'after-log-append': WRITE_AHEAD_LOG,
+    'before-log-sync': WRITE_AHEAD_LOG,
+    'after-log-sync': WRITE_AHEAD_LOG,
+    'after-log-apply-step': WRITE_AHEAD_LOG,
+    'after-checkpoint-flush': WRITE_AHEAD_LOG,
+    'after-checkpoint-remove': WRITE_AHEAD_LOG,
+    'after-schema-record': SEGMENTS,
+    'after-schemas-snapshot': SEGMENTS,
+    'after-compaction-copy': SEGMENTS,
+    'after-compaction-sync': SEGMENTS,
+    'after-compaction-record': SEGMENTS,
+    'after-compaction-remove': SEGMENTS,
+    'after-layout-staging': SEGMENTS,
+    'after-layout-marker': SEGMENTS,
+    'after-layout-swap': SEGMENTS,
+    'after-pack-staging': DATABASE,
+    'after-shrink-relocate': DATABASE,
+    'after-shrink-truncate': DATABASE
+}
 const wideDocument = (seed) =>
     Object.fromEntries(
         Array.from({ length: 24 }, (_, field) => [`field${field}`, `${seed}-value-${field}`])
@@ -1493,6 +1521,8 @@ async function verifyEfsCrashScenarios(preview, workspace) {
         await requestRequired(database, { op: 'commit', message: 'EFS crash seed' })
     })
     await efsInventory(source)
+    const efsSchemas = join(workspace, 'efs')
+    await prepareSchemaFolder(preview, efsSchemas)
     const { failpoints } = JSON.parse((await run(preview, ['failpoints'])).stdout)
     const pairPoints = ['after-record-payload-rename', 'after-record-sidecar-rename']
     for (const name of pairPoints) {
@@ -1580,6 +1610,12 @@ async function verifyEfsCrashScenarios(preview, workspace) {
                 collection,
                 width: 3
             }
+        },
+        {
+            // A files-layout schema push writes the version file, then moves
+            // the descriptor's head.
+            name: 'schema-push',
+            request: { op: 'schemaPush', collection, schemaDir: efsSchemas + '-schemas' }
         },
         {
             name: 'commit',
@@ -1739,7 +1775,14 @@ async function verifyEfsCrashScenarios(preview, workspace) {
         console.log('Validated ' + interrupted + ' EFS-profile interrupted mutations in this shard')
         return
     }
-    const missing = failpoints.filter((name) => !reached.has(name))
+    const uncovered = failpoints.filter((name) => !reached.has(name))
+    const exempt = uncovered.filter((name) => EFS_UNREACHABLE[name] !== undefined)
+    for (const name of exempt) {
+        console.error(
+            'not reachable under efs-sidecar-v1: ' + name + ' needs ' + EFS_UNREACHABLE[name]
+        )
+    }
+    const missing = uncovered.filter((name) => !exempt.includes(name))
     assert(
         missing.length === 0,
         'EFS crash scenarios missed declared transitions: ' + missing.join(', ')

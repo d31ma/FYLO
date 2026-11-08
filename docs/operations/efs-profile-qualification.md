@@ -23,6 +23,16 @@ payload, metadata, modes and recorded mtime; recover twice. Include retained
 deletes, SQL deletion, reshard, staged version operations, history and full-root
 backup/restore.
 
+`bun scripts/verify-rust-crash-matrix.mjs --filesystem-profile efs-sidecar-v1`
+must reach every declared failpoint except those on paths the profile refuses,
+which it lists as not reachable: the write-ahead log and its checkpoints (only
+the native profile writes through the log), segment collections and their
+schema records, compaction and layout migration (only the native profile
+creates segments), and `.vdbx` pack and shrink (only the native profile opens a
+database). A files-layout `schemaPush` reaches `after-schema-file`. On
+2026-11-08 the local run on APFS interrupted 282 mutations and 40 index
+compactions and recovered every one.
+
 Distinguish exact journal/snapshot time recovery from historical commit
 materialization. Existing version-2 metadata objects do not store historical
 payload mtime; require existing native VCS semantics rather than inventing fields
