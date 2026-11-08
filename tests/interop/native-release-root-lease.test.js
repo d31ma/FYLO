@@ -308,9 +308,29 @@ describe.skipIf(!required || process.env.FYLO_REQUIRE_EFS_PROFILE !== '1')(
             }
         )
 
-        test('reports disk pressure on the EFS journal path and restarts cleanly (#89)', async () => {
-            await expectDiskPressureRecovery('efs-sidecar-v1', 'before-file-write')
-        })
+        test.skipIf(process.platform === 'win32')(
+            'reports disk pressure on the EFS journal path and restarts cleanly (#89)',
+            async () => {
+                await expectDiskPressureRecovery('efs-sidecar-v1', 'before-file-write')
+            }
+        )
+
+        test.skipIf(process.platform !== 'win32')(
+            'Windows refuses the EFS profile because sidecars need POSIX identity',
+            async () => {
+                const root = await mkdtemp(path.join(os.tmpdir(), 'fylo-efs-windows-'))
+                roots.push(root)
+                const refused = new ReleaseLoop(root, {}, undefined, 'efs-sidecar-v1')
+                try {
+                    expect(await refused.request({ op: 'handshake' })).toMatchObject({
+                        ok: false,
+                        error: { code: 'ENATIVE_UNSUPPORTED' }
+                    })
+                } finally {
+                    await refused.stop()
+                }
+            }
+        )
 
         test('bad profile fails before replacing the recorded owner', async () => {
             const parent = await mkdtemp(path.join(os.tmpdir(), 'fylo-bad-profile-owner-'))
@@ -378,38 +398,41 @@ describe.skipIf(!required || process.env.FYLO_REQUIRE_EFS_PROFILE !== '1')(
             ).toBeNull()
         })
 
-        test('losing the owner generation stops the EFS machine mutation', async () => {
-            const parent = await mkdtemp(path.join(os.tmpdir(), 'fylo-efs-lost-owner-'))
-            roots.push(parent)
-            const root = path.join(parent, 'root')
-            await mkdir(root)
-            const owner = new ReleaseLoop(root, {}, undefined, 'efs-sidecar-v1')
-            try {
-                expect((await owner.request({ op: 'handshake' })).ok).toBe(true)
-                expect(
-                    (
+        test.skipIf(process.platform === 'win32')(
+            'losing the owner generation stops the EFS machine mutation',
+            async () => {
+                const parent = await mkdtemp(path.join(os.tmpdir(), 'fylo-efs-lost-owner-'))
+                roots.push(parent)
+                const root = path.join(parent, 'root')
+                await mkdir(root)
+                const owner = new ReleaseLoop(root, {}, undefined, 'efs-sidecar-v1')
+                try {
+                    expect((await owner.request({ op: 'handshake' })).ok).toBe(true)
+                    expect(
+                        (
+                            await owner.request({
+                                op: 'createCollection',
+                                collection: 'records',
+                                kind: 'document'
+                            })
+                        ).ok
+                    ).toBe(true)
+                    const metadataPath = path.join(parent, '.root.fylo-root-owner.lock.json')
+                    const metadata = JSON.parse(await readFile(metadataPath, 'utf8'))
+                    metadata.owner = 'replacement-owner-generation'
+                    await writeFile(metadataPath, JSON.stringify(metadata))
+                    expect(
                         await owner.request({
-                            op: 'createCollection',
+                            op: 'putData',
                             collection: 'records',
-                            kind: 'document'
+                            id: '4VRNF52JPCO',
+                            data: { body: 'must not be acknowledged' }
                         })
-                    ).ok
-                ).toBe(true)
-                const metadataPath = path.join(parent, '.root.fylo-root-owner.lock.json')
-                const metadata = JSON.parse(await readFile(metadataPath, 'utf8'))
-                metadata.owner = 'replacement-owner-generation'
-                await writeFile(metadataPath, JSON.stringify(metadata))
-                expect(
-                    await owner.request({
-                        op: 'putData',
-                        collection: 'records',
-                        id: '4VRNF52JPCO',
-                        data: { body: 'must not be acknowledged' }
-                    })
-                ).toMatchObject({ ok: false, error: { code: 'EROOTLEASELOST' } })
-            } finally {
-                await owner.stop()
+                    ).toMatchObject({ ok: false, error: { code: 'EROOTLEASELOST' } })
+                } finally {
+                    await owner.stop()
+                }
             }
-        })
+        )
     }
 )
