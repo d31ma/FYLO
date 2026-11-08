@@ -17,7 +17,10 @@ use crate::{EngineError, ReadDocument, ReadOnlyEngine};
 /// Whatever it reads from storage is admitted only if the collection's
 /// generation was the resident one before and after the read. Otherwise the
 /// hot set was behind the disk: it is cleared and the read is answered from
-/// storage, as an engine without a hot set would.
+/// storage, as an engine without a hot set would. That holds for a read that
+/// failed part-way too, such as a listed document deleted before it was read
+/// (issue #104): the failure is dropped with the stale state, and storage
+/// answers at one stable generation.
 pub(crate) struct HotReader<'a> {
     engine: &'a ReadOnlyEngine,
     hot_set: &'a HotSet,
@@ -109,8 +112,8 @@ impl<'a> HotReader<'a> {
             return Ok(None);
         }
         let mut source = DocumentSource::new(self, header, collection);
-        let document = source.document(identifier)?;
-        Ok(source.finish()?.then_some(document))
+        let document = source.document(identifier);
+        Self::settled(source.finish()?, document)
     }
 
     fn answer_get(
@@ -135,9 +138,30 @@ impl<'a> HotReader<'a> {
             return Ok(None);
         }
         let mut source = DocumentSource::new(self, Arc::clone(&header), collection);
-        let candidates = Self::candidates(&mut source, &header, query)?;
-        let rows = Self::matching_rows(&mut source, &candidates, query)?;
-        Ok(source.finish()?.then_some(rows))
+        let rows = Self::resident_rows(&mut source, &header, query);
+        Self::settled(source.finish()?, rows)
+    }
+
+    fn resident_rows(
+        source: &mut DocumentSource<'_>,
+        header: &ResidentCollection,
+        query: &StructuredQuery,
+    ) -> Result<Vec<ReadDocument>, EngineError> {
+        let candidates = Self::candidates(source, header, query)?;
+        Self::matching_rows(source, &candidates, query)
+    }
+
+    /// The outcome of a read when storage held still while it ran, or `None`
+    /// when the hot set was behind storage. A failed read is kept only in the
+    /// first case, so an error caused by the stale state is not reported.
+    fn settled<T>(
+        consistent: bool,
+        read: Result<T, EngineError>,
+    ) -> Result<Option<T>, EngineError> {
+        if !consistent {
+            return Ok(None);
+        }
+        read.map(Some)
     }
 
     fn answer_find(

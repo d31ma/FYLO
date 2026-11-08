@@ -124,7 +124,10 @@ changes no format.
 - `crates/fylo-engine/tests/hot_set.rs`: warm results equal storage results
   for planned, limited, range and unplanned queries and for gets, and a warm
   pass reads nothing; a cleared hot set sees the next write; a write it was not
-  told about is caught on the next miss and the hot set is cleared; the budget
+  told about is caught on the next miss and the hot set is cleared; a listed
+  document deleted before it was read is answered from storage, not reported
+  missing (issue #104, also raced from a second thread in
+  `tests/find_delete_race.rs`); the budget
   holds while evicting; an entry over budget is served and not kept; file
   collections; per-actor access with denied documents left unparsed.
 - `crates/fylo-machine/tests/embedded_hot_set.rs`, against a test-only

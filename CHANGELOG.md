@@ -432,6 +432,19 @@
 
 ### Fixed
 
+- **A query no longer fails with `ENATIVE_NOT_FOUND` when a document it
+  listed is deleted before it is read (#104).** `findDocs` (and `joinDocs`
+  and SQL `SELECT`, which run through it) lists a collection's ids and then
+  reads each document; a delete in between failed the whole query with
+  `ENATIVE_NOT_FOUND: document not found: <id>`. 26.33.02 returned that
+  error before re-checking the collection's generation, and an exclusive
+  session's hot set did the same when its id list was older than storage.
+  Both now follow the documented read contract, that readers materialize
+  against one stable generation and retry if it changes: a read that a write
+  overlapped is dropped, the hot set is cleared, and the query runs again
+  from storage at one stable generation. Under writes that never pause, a
+  query can still end with the retryable `EENGINE_CONCURRENT_WRITE` once its
+  attempts run out, never with a missing document.
 - **A schema manifest without `versions` no longer fails every read.** A
   `fylo.schema` manifest such as `{ "current": "v1" }`, with no `versions`
   list, was accepted for writes, but since lazy migration on read every

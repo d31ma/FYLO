@@ -175,6 +175,31 @@ fn a_write_it_was_not_told_about_is_caught_on_the_next_miss() {
 }
 
 #[test]
+fn a_listed_document_deleted_before_it_was_read_is_answered_from_storage() {
+    let fixture = Fixture::new();
+    fixture.seed(3);
+    let hot_set = Arc::new(HotSet::new(HotSet::DEFAULT_BUDGET_BYTES));
+    let hot = fixture.hot(&hot_set);
+    let first = hot.find("records", &query(&json!({"$limit": 1}))).unwrap();
+    assert_eq!(first.len(), 1);
+    fixture
+        .storage()
+        .delete_document("records", &Fixture::id(2))
+        .unwrap();
+    let everything = hot.find("records", &query(&json!({}))).unwrap();
+    let identifiers: Vec<String> = everything
+        .iter()
+        .map(|row| row.metadata.id.clone())
+        .collect();
+    assert_eq!(identifiers, vec![Fixture::id(0), Fixture::id(1)]);
+    assert_eq!(
+        hot_set.statistics().clears,
+        1,
+        "the stale id list was dropped"
+    );
+}
+
+#[test]
 fn the_budget_bounds_what_stays_resident() {
     let fixture = Fixture::new();
     fixture.seed(120);

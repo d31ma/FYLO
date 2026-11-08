@@ -1871,6 +1871,10 @@ impl ReadOnlyEngine {
         })
     }
 
+    /// Run `read` until it starts and ends at one stable generation. Its
+    /// outcome, an error included, is kept only then: a read a write
+    /// overlapped, such as one that listed a document deleted before it was
+    /// read (issue #104), is dropped and run again.
     fn read_stable<T>(
         collection: &NativeCollection,
         read: impl Fn() -> Result<T, EngineError>,
