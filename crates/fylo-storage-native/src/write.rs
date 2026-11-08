@@ -5157,6 +5157,7 @@ fn capture_attributes(path: &Path) -> Result<Vec<CapturedAttribute>, NativeStora
         .collect())
 }
 
+#[allow(clippy::unnecessary_wraps)]
 #[cfg(all(
     not(unix),
     not(windows),

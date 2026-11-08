@@ -705,7 +705,7 @@ impl NativeWriteRoot {
         };
         if !reserved {
             #[cfg_attr(
-                target_family = "wasm",
+                all(target_arch = "wasm32", target_os = "unknown"),
                 expect(
                     clippy::len_zero,
                     reason = "the native std::fs::Metadata has no is_empty"

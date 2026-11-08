@@ -2,14 +2,14 @@ use std::fmt;
 use std::path::PathBuf;
 use std::str::FromStr;
 
-#[cfg(not(target_family = "wasm"))]
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use crate::file_key_store::FileKeyStore;
-#[cfg(not(target_family = "wasm"))]
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use crate::hardware_key_store::HardwareKeyStore;
 use crate::identity_error::IdentityError;
-#[cfg(not(target_family = "wasm"))]
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use crate::key_store::KeyStore;
-#[cfg(not(target_family = "wasm"))]
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use crate::unsupported_key_store::UnsupportedKeyStore;
 
 /// Where an identity's private key lives, named without the key itself.
@@ -52,7 +52,7 @@ impl KeyReference {
         Self::from_parts(store, name)
     }
 
-    #[cfg(not(target_family = "wasm"))]
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     pub(crate) fn store(&self) -> Box<dyn KeyStore> {
         match self {
             Self::File(path) => Box::new(FileKeyStore::new(path.clone())),
@@ -69,7 +69,7 @@ impl KeyReference {
 
     /// The hardware store a hardware reference names; `None` for the
     /// software stores, whose keys [`Self::store`] reads.
-    #[cfg(not(target_family = "wasm"))]
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     pub(crate) fn hardware_store(&self) -> Option<Box<dyn HardwareKeyStore>> {
         match self {
             Self::Enclave(label) => Some(Self::enclave_store(label)),
@@ -78,7 +78,7 @@ impl KeyReference {
         }
     }
 
-    #[cfg(not(target_family = "wasm"))]
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     fn hardware_only(reference: &str) -> Box<dyn KeyStore> {
         Box::new(UnsupportedKeyStore::new(format!(
             "{reference} is a hardware key; it is made and used where it lives, never read"
@@ -128,7 +128,7 @@ impl KeyReference {
         ))
     }
 
-    #[cfg(not(target_family = "wasm"))]
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     #[cfg(target_os = "macos")]
     fn keychain_store(label: &str) -> Box<dyn KeyStore> {
         Box::new(crate::keychain_key_store::KeychainKeyStore::new(
@@ -136,7 +136,7 @@ impl KeyReference {
         ))
     }
 
-    #[cfg(not(target_family = "wasm"))]
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     #[cfg(not(target_os = "macos"))]
     fn keychain_store(label: &str) -> Box<dyn KeyStore> {
         Box::new(UnsupportedKeyStore::new(format!(
@@ -144,7 +144,7 @@ impl KeyReference {
         )))
     }
 
-    #[cfg(not(target_family = "wasm"))]
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     #[cfg(target_os = "macos")]
     fn enclave_store(label: &str) -> Box<dyn HardwareKeyStore> {
         Box::new(crate::enclave_key_store::EnclaveKeyStore::new(
@@ -152,7 +152,7 @@ impl KeyReference {
         ))
     }
 
-    #[cfg(not(target_family = "wasm"))]
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     #[cfg(not(target_os = "macos"))]
     fn enclave_store(label: &str) -> Box<dyn HardwareKeyStore> {
         Box::new(UnsupportedKeyStore::new(format!(
@@ -160,7 +160,7 @@ impl KeyReference {
         )))
     }
 
-    #[cfg(not(target_family = "wasm"))]
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     #[cfg(target_os = "linux")]
     fn credential_store(name: &str) -> Box<dyn KeyStore> {
         Box::new(crate::credential_key_store::CredentialKeyStore::new(
@@ -168,7 +168,7 @@ impl KeyReference {
         ))
     }
 
-    #[cfg(not(target_family = "wasm"))]
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     #[cfg(not(target_os = "linux"))]
     fn credential_store(name: &str) -> Box<dyn KeyStore> {
         Box::new(UnsupportedKeyStore::new(format!(
@@ -176,13 +176,13 @@ impl KeyReference {
         )))
     }
 
-    #[cfg(not(target_family = "wasm"))]
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     #[cfg(windows)]
     fn platform_store(name: &str) -> Box<dyn HardwareKeyStore> {
         Box::new(crate::cng_key_store::PlatformKeyStore::new(name.to_owned()))
     }
 
-    #[cfg(not(target_family = "wasm"))]
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     #[cfg(not(windows))]
     fn platform_store(name: &str) -> Box<dyn HardwareKeyStore> {
         Box::new(UnsupportedKeyStore::new(format!(
@@ -190,13 +190,13 @@ impl KeyReference {
         )))
     }
 
-    #[cfg(not(target_family = "wasm"))]
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     #[cfg(windows)]
     fn cng_store(name: &str) -> Box<dyn KeyStore> {
         Box::new(crate::cng_key_store::CngKeyStore::new(name.to_owned()))
     }
 
-    #[cfg(not(target_family = "wasm"))]
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     #[cfg(not(windows))]
     fn cng_store(name: &str) -> Box<dyn KeyStore> {
         Box::new(UnsupportedKeyStore::new(format!(

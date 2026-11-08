@@ -16,7 +16,7 @@ zeroize.workspace = true
 # Native identities sign, check and wrap in software. The browser's
 # (`webcrypto:`, decision P5-5) reach WebCrypto through the host table, so
 # neither crate grows the browser engine.
-[target.'cfg(not(target_family = "wasm"))'.dependencies]
+[target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
 # A hardware key's wraps are opened by hand (`hardware_key_wrap.rs`): the
 # `hpke` crate takes only a private key, and the hardware gives out only an
 # ECDH secret. Both crates are already in the graph through `hpke`.
@@ -25,7 +25,7 @@ hkdf.workspace = true
 hpke.workspace = true
 p256.workspace = true
 
-[target.'cfg(target_family = "wasm")'.dependencies]
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 fylo-vfs = { version = "0.1.0", path = "../fylo-vfs" }
 
 [target.'cfg(unix)'.dependencies]
