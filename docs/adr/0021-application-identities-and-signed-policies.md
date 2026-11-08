@@ -268,16 +268,16 @@ What a protected `.vdbx` file holds, in addition to ADR 0016:
   to 2,448 KiB (2,498,895 bytes at the change); the gzip budget (800 KiB)
   did not change, and the module is 804,949 bytes gzipped. The user had
   agreed to about 20 KB if the module was still over after one more cut.
-- **A temporary raise to 2,460 KiB (phases 7 and 8, the user's decision,
-  2026-11-08).** Phase 8's session certificates and the `tpm:` and enclave
-  paths, and then the directory journal (section 7), took the engine to
-  2,516,646 bytes (810,057 gzipped), over the 2,448 KiB raw budget. The
-  journal's write path and its read fallback both run in the browser, so it
-  adds 3,882 bytes that cannot be cut. The raw budget is 2,460 KiB
-  (2,519,040 bytes) for now; the gzip budget does not change. The raise is
-  temporary: phase 8 is removing code the browser never runs (settle and
-  admin paths, and the enclave, `tpm:` and session-certificate code) from
-  `fylo-browser.wasm`, and will lower the budget again when that lands.
+- **A temporary raise to 2,460 KiB, undone by phase 8 (the user's
+  decision, 2026-11-08: trim first, then raise).** The engine had gone
+  over 2,448 KiB before phase 8: `fylo access settle` (section 7) took it
+  from 2,500,367 to 2,510,357 bytes, phase 8 added about 2 KB (the session
+  certificate a reader checks, and the `enclave:` and `tpm:` reference
+  names), and the directory journal 3,882 bytes that run in the browser.
+  At 2,516,646 bytes the raw budget rose to 2,460 KiB for a day. Phase 8
+  then took out what the browser never needs, 13,917 bytes, and the budget
+  is 2,448 KiB again (section 8, "The browser engine's size"); the gzip
+  budget (800 KiB) never changed.
 
 ### 5. Decisions for phase 5 (the user, 2026-11-07)
 
@@ -471,9 +471,11 @@ in phase 7.
           one-verb `fylo access` commands (`grant`, `revoke`, `audit`),
           and "settled" is the state the reseal leaves, as section 7 calls
           it.
-        - An admin's first write (taking a collection's writer lock) on a
-          database it opened with a rotation pending settles it the same
-          way first, before the write takes its lock. It adds no failure
+        - A native admin's first write (taking a collection's writer
+          lock) on a database it opened with a rotation pending settles it
+          the same way first, before the write takes its lock. A browser
+          admin's write leaves it, as another identity's does (section 8,
+          "The browser engine's size"). It adds no failure
           mode a write did not have: the reseal and slot write are writes
           to the same file under the allocation lock, which writes already
           take, and when the `settle` version would not fit in the 256 KiB
@@ -715,6 +717,34 @@ in phase 7.
     - Until then the threat-model row stands: rollback to an older signed
       copy is not detected inside the file; OS permissions, backups and
       the [hardening samples](../hardening/README.md) remain the defence.
+- **The browser engine's size (phase 8).** Measured function by function
+  on develop `fa847cd` (2,512,764 bytes). The largest functions,
+  `Session::dispatch_once` (73,982 bytes) and `run_log_recovery` (14,611),
+  are the dispatcher and recovery, each called from one place; what had
+  grown past 2,448 KiB was code the browser reaches, chiefly settling.
+  Two things the browser does not need were cut, 13,917 bytes in all:
+    - **Dependency source paths** (4,576 bytes). Panic messages carried
+      each crate's path under the builder's Cargo home
+      (`/Users/<name>/.cargo/registry/src/index.crates.io-<hash>/`, 65 of
+      them). `scripts/build-browser.mjs` now fetches the crates and maps
+      those prefixes away (`--remap-path-prefix`), for both modules: the
+      builder's home folder no longer ships, and the size no longer depends
+      on where Cargo lives.
+    - **Settling a catalog rotation** (9,341 bytes). Resealing the
+      directory, the `settle` policy version and the policy serializers
+      only it reached. A browser admin's write on a database with a
+      rotation pending now leaves it pending, as a non-admin's write does:
+      the file stays readable under both keys, `verifyDatabase` reports
+      it, and a native admin's next write or `fylo access settle` finishes
+      it. A browser admin's new collection still gets its keys.
+  The enclave and `tpm:` stores, session-certificate issuing, grant,
+  revoke, rekey and pack were already outside `fylo-browser.wasm`; what
+  stays of phase 8 is the session-certificate check a reader needs (about
+  1.7 KB) and the reference names. With the journal the engine is
+  2,502,729 bytes (810,324 gzipped), and the raw budget is back at
+  2,448 KiB, 4,023 bytes above it. `wasm-opt -Oz` (Binaryen) would take
+  about 430 KB more off the module; the build does not run it, and adding
+  it is a separate decision.
 
 ### 9. Phases
 

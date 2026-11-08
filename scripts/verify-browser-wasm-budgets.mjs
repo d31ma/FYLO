@@ -5,7 +5,7 @@ import { dirname, resolve } from 'node:path'
 
 const MAX_WASM_BYTES = 128 * 1024
 const MAX_WASM_GZIP_BYTES = 64 * 1024
-const MAX_ENGINE_WASM_BYTES = 2460 * 1024
+const MAX_ENGINE_WASM_BYTES = 2448 * 1024
 const MAX_ENGINE_WASM_GZIP_BYTES = 800 * 1024
 const MAX_HOST_BYTES = 192 * 1024
 const outputArgument = process.argv.indexOf('--output')

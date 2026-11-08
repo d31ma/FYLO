@@ -316,15 +316,15 @@ async function readCanary(harness, opened, fixture) {
 }
 
 /**
- * A protected database where the browser identity `name` reads `users` and
- * a second identity was granted and then revoked, which rotates the catalog
- * key.
+ * A protected database where the browser identity `name` holds
+ * `browserGrant` (reading `users` by default) and a second identity was
+ * granted and then revoked, which rotates the catalog key.
  */
-async function revokedFixture(harness, testInfo, worker) {
+async function revokedFixture(harness, testInfo, worker, browserGrant = ['read']) {
     const fixture = protectedDatabase(`${worker}-${testInfo.project.name}`)
     const name = identityName(testInfo, worker)
     const identity = await harness.createIdentity(name)
-    grant(fixture, 'browser', identity.publicKey, 'read')
+    grant(fixture, 'browser', identity.publicKey, ...browserGrant)
     const revokedName = identityName(testInfo, `${worker}-revoked`)
     const revoked = await harness.createIdentity(revokedName)
     asAdmin(fixture, [
@@ -439,4 +439,43 @@ test('a rotation left pending by a torn slot write reads in the browser and repo
         `pending-${testInfo.project.name}.vdbx`
     )
     expect(await readCanary(harness, opened, fixture)).toEqual(['catalogRotationPending'])
+})
+
+test('a webcrypto: admin writes under a pending rotation and leaves it for a native admin to settle', async ({
+    page
+}, testInfo) => {
+    const harness = await AccessPage.open(page)
+    const { fixture, name } = await revokedFixture(harness, testInfo, 'pending-admin', [
+        'admin',
+        ['--database']
+    ])
+    tearNewestAccessSlot(join(fixture.directory, 'app.vdbx'))
+
+    const opened = await openAs(
+        harness,
+        fixture,
+        fixture.url,
+        name,
+        `pending-admin-${testInfo.project.name}.vdbx`
+    )
+    const [written] = await harness.exec(opened.id, [
+        { op: 'putData', collection: 'users', data: { name: 'written while pending' } }
+    ])
+    expectOk([written])
+    const bytes = await harness.snapshot(opened.id)
+    await harness.call('close', opened.id)
+    await harness.call('removeCopy', opened.name)
+    writeFileSync(join(fixture.directory, 'app.vdbx'), bytes)
+
+    const report = JSON.parse(asAdmin(fixture, ['access', 'report', 'app.vdbx']))
+    expect(report.catalogRotation.pendingSince).toBe(4)
+    const settled = JSON.parse(asAdmin(fixture, ['access', 'settle', 'app.vdbx']))
+    expect(settled.settled).toBe(true)
+    expect(settled.pendingSince).toBe(4)
+    const verified = JSON.parse(asAdmin(fixture, ['verify', 'app.vdbx']))
+    expect(verified.ok, JSON.stringify(verified)).toBe(true)
+    const document = JSON.parse(
+        asAdmin(fixture, ['get', 'users', written.result, '--root', 'app.vdbx', '--json'])
+    )
+    expect(JSON.stringify(document)).toContain('written while pending')
 })

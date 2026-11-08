@@ -224,7 +224,9 @@ impl ContainerFile {
     /// point leaves every block under one of the two keys the document
     /// still holds, and running it again finishes it. Returns the policy
     /// version the rotation started at, or `None` when none was pending,
-    /// and then writes nothing.
+    /// and then writes nothing. A browser build never settles: it returns
+    /// `None` and leaves the rotation for a native admin, so the browser
+    /// engine carries no resealing code (ADR 0021 section 8).
     ///
     /// # Errors
     ///
@@ -237,6 +239,9 @@ impl ContainerFile {
         let Some(since) = access.catalog_rotation_pending() else {
             return Ok(None);
         };
+        if cfg!(target_family = "wasm") {
+            return Ok(None);
+        }
         self.reseal_directory()?;
         let change = access
             .prepare_settled(record)

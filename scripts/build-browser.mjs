@@ -1,7 +1,8 @@
-import { cp, mkdir, readFile, rm } from 'node:fs/promises'
+import { cp, mkdir, readdir, readFile, rm } from 'node:fs/promises'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { resolve } from 'node:path'
+import { homedir } from 'node:os'
+import { join, resolve } from 'node:path'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
 const engineOnly = process.argv.includes('--engine-only')
@@ -121,6 +122,15 @@ async function buildWasm(manifest, rustflags, profile) {
         }
     )
     await run('rustup', ['target', 'add', 'wasm32-unknown-unknown', '--toolchain', toolchain])
+    await run('rustup', [
+        'run',
+        toolchain,
+        'cargo',
+        'fetch',
+        '--manifest-path',
+        manifest,
+        '--locked'
+    ])
     await run(
         'rustup',
         [
@@ -139,9 +149,26 @@ async function buildWasm(manifest, rustflags, profile) {
             ...process.env,
             ...profile,
             RUSTC: rustc.trim(),
-            RUSTFLAGS: [process.env.RUSTFLAGS, rustflags].filter(Boolean).join(' ')
+            RUSTFLAGS: [process.env.RUSTFLAGS, rustflags, await dependencySourceRemaps()]
+                .filter(Boolean)
+                .join(' ')
         }
     )
+}
+
+async function dependencySourceRemaps() {
+    const cargoHome = process.env.CARGO_HOME ?? join(homedir(), '.cargo')
+    const registry = join(cargoHome, 'registry', 'src')
+    const indexes = await readdir(registry).catch(() => [])
+    const prefixes = [
+        registry,
+        ...indexes.map((index) => join(registry, index)),
+        join(cargoHome, 'git', 'checkouts')
+    ]
+    return prefixes
+        .filter((prefix) => !/\s/.test(prefix))
+        .map((prefix) => `--remap-path-prefix=${prefix}/=`)
+        .join(' ')
 }
 
 async function rustToolchain() {

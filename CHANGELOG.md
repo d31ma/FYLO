@@ -378,6 +378,16 @@
 
 ### Changed
 
+- **A browser admin no longer settles a pending catalog rotation (ADR 0021
+  section 8).** A `webcrypto:` admin's write on a protected database whose
+  catalog-key rotation is pending leaves it pending, as another identity's
+  write does; a native admin's next write or `fylo access settle` finishes
+  it. That and remapping dependency source paths out of panic messages
+  (the builder's Cargo home no longer ships in either browser module) took
+  13,917 bytes off `fylo-browser.wasm` (2,502,729 bytes with the directory
+  journal), and its raw budget is back at 2,448 KiB from the temporary
+  2,460 KiB.
+
 - **A `.vdbx` directory holds 509 collections per 2 MiB directory extent
   (2,045 per 8 MiB), two fewer:** the directory journal below takes the
   last two blocks.
