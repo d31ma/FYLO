@@ -418,7 +418,7 @@ fn fixed(text: &str) -> Value {
 
 /// A database whose collections `east` and `west` hold document 1, the
 /// same in each, and `east` documents 2 to 6 with the same body, so some
-/// of their records are as long as document 1's.
+/// of `east`'s records are as long as one another.
 fn swappable(label: &str) -> Encrypted {
     let database = Encrypted::create(label);
     let writer = database.writer();
@@ -501,20 +501,32 @@ fn a_frame_moved_into_another_collection_is_refused() {
 #[test]
 fn a_replayed_frame_is_refused_rather_than_read_as_another_record() {
     let database = swappable("vdbx-encrypted-replay");
-    let first = frame_at(&database, "east", lsn_of(&database, "east", 1));
-    let (number, later) = (2..=6)
+    // A record holds the time it was written, so the six records of one
+    // body differ by a byte or two at most, and two of them are always as
+    // long as one another.
+    let frames: Vec<(usize, (u64, usize))> = (1..=6)
         .map(|number| {
             (
                 number,
                 frame_at(&database, "east", lsn_of(&database, "east", number)),
             )
         })
-        .find(|(_, later)| later.1 == first.1)
-        .expect("a later record as long as the first");
-    // Document 1's record, replayed over a later one: it opens, since it
-    // is a record of this collection, but it is not the record whose place
-    // it took, and nothing it holds is served for the later document.
-    copy_frame(&database, first, later);
+        .collect();
+    let (earlier, (number, later)) = frames
+        .iter()
+        .enumerate()
+        .find_map(|(index, (_, earlier))| {
+            frames[index + 1..]
+                .iter()
+                .find(|(_, later)| later.1 == earlier.1)
+                .map(|later| (*earlier, *later))
+        })
+        .expect("two records of east as long as one another");
+    // An earlier document's record, replayed over a later one: it opens,
+    // since it is a record of this collection, but it is not the record
+    // whose place it took, and nothing it holds is served for the later
+    // document.
+    copy_frame(&database, earlier, later);
     let error = read_error(&database, "east", number);
     assert_eq!(
         error.code(),
