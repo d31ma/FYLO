@@ -1,5 +1,5 @@
 // src/browser/host-vfs.mjs
-var MODULE_ABI_VERSION = 1;
+var MODULE_ABI_VERSION = 2;
 var KIND_MISSING = 0;
 var KIND_FILE = 1;
 var KIND_DIRECTORY = 2;
@@ -16,7 +16,8 @@ var EACCES = -13;
 var EEXIST = -17;
 var EROFS = -30;
 var ESTALE = -116;
-function createHostImports({ memory, backend, onError }) {
+var ENOSYS = -38;
+function createHostImports({ memory, backend, identity, onError }) {
   const view = () => new Uint8Array(memory().buffer);
   const data = () => new DataView(memory().buffer);
   const decoder = new TextDecoder;
@@ -104,6 +105,40 @@ function createHostImports({ memory, backend, onError }) {
         backend.random(view().subarray(buffer, buffer + length));
         return 0;
       }),
+      identity_public: guard((out) => {
+        if (!identity)
+          return ENOSYS;
+        view().set(identity.publicKey(), out);
+        return 0;
+      }),
+      identity_sign: guard((message, length, out) => {
+        if (!identity)
+          return ENOSYS;
+        view().set(identity.sign(view().slice(message, message + length)), out);
+        return 0;
+      }),
+      identity_verify: guard((publicKey, message, length, signature) => {
+        if (!identity)
+          return ENOSYS;
+        const valid = identity.verify(view().slice(publicKey, publicKey + 65), view().slice(message, message + length), view().slice(signature, signature + 64));
+        return valid ? 0 : 1;
+      }),
+      identity_unwrap: guard((info, infoLength, wrapped, wrappedLength, out) => {
+        if (!identity)
+          return ENOSYS;
+        const key = identity.unwrap(view().slice(info, info + infoLength), view().slice(wrapped, wrapped + wrappedLength));
+        view().set(key, out);
+        return 0;
+      }),
+      identity_wrap: guard((publicKey, info, infoLength, secret, secretLength, out, capacity, needed) => {
+        if (!identity)
+          return ENOSYS;
+        const wrapped = identity.wrap(view().slice(publicKey, publicKey + 65), view().slice(info, info + infoLength), view().slice(secret, secret + secretLength));
+        data().setUint32(needed, wrapped.length, true);
+        if (wrapped.length <= capacity)
+          view().set(wrapped, out);
+        return 0;
+      }),
       read_dir: guard((pathPointer, pathLength, buffer, capacity, neededPointer) => {
         const names = backend.readDir(readPath(pathPointer, pathLength));
         const encoded = encodeNames(names);
@@ -167,6 +202,114 @@ function exec(instance, ndjson, trace = () => {}) {
   const response = new Uint8Array(memory.buffer).slice(pointer, pointer + length);
   fylo_free(pointer, length);
   return new TextDecoder().decode(response);
+}
+function configure(instance, settings) {
+  const { fylo_alloc, fylo_free, fylo_configure, fylo_abi_version, memory } = instance.exports;
+  if (fylo_abi_version() !== MODULE_ABI_VERSION) {
+    throw new Error(`unsupported FYLO module ABI: ${fylo_abi_version()}`);
+  }
+  const request = new TextEncoder().encode(JSON.stringify(settings));
+  const requestPointer = fylo_alloc(request.length);
+  new Uint8Array(memory.buffer).set(request, requestPointer);
+  const packed = fylo_configure(requestPointer, request.length);
+  fylo_free(requestPointer, request.length);
+  if (packed === 0n)
+    return;
+  const pointer = Number(packed >> 32n);
+  const length = Number(packed & 0xffffffffn);
+  const reason = new TextDecoder().decode(new Uint8Array(memory.buffer).slice(pointer, pointer + length));
+  fylo_free(pointer, length);
+  throw Object.assign(new Error(reason), { code: "EIDENTITY" });
+}
+
+// src/browser/identity-bridge.mjs
+var STATE = 0;
+var REQUEST_LEN = 1;
+var STATUS = 2;
+var REPLY_LEN = 3;
+var CONTROL_SLOTS = 4;
+var STATE_IDLE = 0;
+var STATE_REQUEST = 1;
+var STATE_RESPONSE = 2;
+var BRIDGE_BYTES = 1024 * 1024;
+var OP_PUBLIC = 1;
+var OP_SIGN = 2;
+var OP_VERIFY = 3;
+var OP_UNWRAP = 4;
+var OP_WRAP = 5;
+function createIdentityBridgeBuffer() {
+  return new SharedArrayBuffer(CONTROL_SLOTS * 4 + BRIDGE_BYTES);
+}
+var encoder = new TextEncoder;
+var KEM_SUITE = concat(encoder.encode("KEM"), u16(16));
+var HPKE_SUITE = concat(encoder.encode("HPKE"), u16(16), u16(1), u16(2));
+var VERSION_LABEL = encoder.encode("HPKE-v1");
+function u16(value) {
+  return new Uint8Array([value >> 8 & 255, value & 255]);
+}
+function concat(...parts) {
+  const out = new Uint8Array(parts.reduce((total, part) => total + part.length, 0));
+  let at = 0;
+  for (const part of parts) {
+    out.set(part, at);
+    at += part.length;
+  }
+  return out;
+}
+var BASE32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+function base32(bytes) {
+  let text = "";
+  let buffer = 0;
+  let bits = 0;
+  for (const byte of bytes) {
+    buffer = (buffer << 8 | byte) & 65535;
+    bits += 8;
+    while (bits >= 5) {
+      bits -= 5;
+      text += BASE32[buffer >> bits & 31];
+    }
+  }
+  if (bits > 0)
+    text += BASE32[buffer << 5 - bits & 31];
+  return text;
+}
+function base64url(bytes) {
+  return btoa(String.fromCharCode(...bytes)).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+}
+async function describeIdentity(publicKey) {
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", publicKey));
+  return { publicKey: `fpk1:p256:${base64url(publicKey)}`, id: `fid1:p256:${base32(digest)}` };
+}
+function encodeFields(fields) {
+  const header = new Uint32Array([fields.length, ...fields.map((field) => field.length)]);
+  return concat(new Uint8Array(header.buffer), ...fields);
+}
+function createIdentityBridgeBackend(buffer) {
+  const control = new Int32Array(buffer, 0, CONTROL_SLOTS);
+  const data = new Uint8Array(buffer, CONTROL_SLOTS * 4);
+  function call(op, fields) {
+    const request = encodeFields([new Uint8Array([op]), ...fields]);
+    data.set(request);
+    Atomics.store(control, REQUEST_LEN, request.length);
+    Atomics.store(control, STATE, STATE_REQUEST);
+    Atomics.notify(control, STATE);
+    while (Atomics.load(control, STATE) !== STATE_RESPONSE) {
+      Atomics.wait(control, STATE, STATE_REQUEST);
+    }
+    const status = Atomics.load(control, STATUS);
+    const reply = data.slice(0, Atomics.load(control, REPLY_LEN));
+    Atomics.store(control, STATE, STATE_IDLE);
+    if (status !== 0)
+      throw new Error(new TextDecoder().decode(reply));
+    return reply;
+  }
+  return {
+    publicKey: () => call(OP_PUBLIC, []),
+    sign: (message) => call(OP_SIGN, [message]),
+    verify: (publicPoint, message, signature) => call(OP_VERIFY, [publicPoint, message, signature])[0] === 1,
+    unwrap: (info, wrapped) => call(OP_UNWRAP, [info, wrapped]),
+    wrap: (publicPoint, info, secret) => call(OP_WRAP, [publicPoint, info, secret])
+  };
 }
 
 // src/browser/vdbx-names.mjs
@@ -403,6 +546,8 @@ var releaseLock;
 var instance;
 var probe;
 var lastHostError;
+var identityWorker;
+var identityId = null;
 var queue = Promise.resolve();
 self.onmessage = (event) => {
   const message = event.data ?? {};
@@ -442,7 +587,7 @@ async function dispatch(message) {
       throw new Error(`unknown op: ${message.op}`);
   }
 }
-async function open({ id, source, path = DEFAULT_DATABASE_PATH, moduleUrl }) {
+async function open({ id, source, path = DEFAULT_DATABASE_PATH, moduleUrl, identity }) {
   if (backend)
     throw new Error("this Worker already has a database open");
   lastHostError = undefined;
@@ -458,24 +603,49 @@ async function open({ id, source, path = DEFAULT_DATABASE_PATH, moduleUrl }) {
     }
     probe = createProbe(backend);
     if (moduleUrl)
-      instance = await instantiate(moduleUrl, backend);
+      instance = await instantiate(moduleUrl, backend, identity);
     return describe();
   } catch (error) {
     close();
     throw error;
   }
 }
-async function instantiate(moduleUrl, target) {
+async function instantiate(moduleUrl, target, identity) {
   let created;
   const imports = createHostImports({
     memory: () => created.exports.memory,
     backend: target,
+    identity: identity ? await startIdentityBridge(identity) : undefined,
     onError: (message) => {
       lastHostError = message;
     }
   });
   created = (await WebAssembly.instantiateStreaming(fetch(moduleUrl), imports)).instance;
+  if (identity) {
+    configure(created, {
+      identity: `webcrypto:${identity.name}`,
+      trustAnchor: identity.trustAnchor,
+      trustOnFirstUse: identity.trustOnFirstUse === true
+    });
+  }
   return created;
+}
+async function startIdentityBridge({ name, workerUrl }) {
+  if (typeof SharedArrayBuffer !== "function" || globalThis.crossOriginIsolated !== true) {
+    throw Object.assign(new Error("opening a database as a webcrypto: identity needs a cross-origin isolated " + "page (COOP: same-origin, COEP: require-corp)"), { code: "ENOISOLATION" });
+  }
+  const buffer = createIdentityBridgeBuffer();
+  identityWorker = new Worker(workerUrl, { type: "module" });
+  const ready = await new Promise((resolve) => {
+    identityWorker.onmessage = (event) => resolve(event.data ?? {});
+    identityWorker.onerror = (event) => resolve({ error: event.message || "the crypto bridge Worker failed to start" });
+    identityWorker.postMessage({ buffer, name });
+  });
+  if (!ready.ready) {
+    throw Object.assign(new Error(ready.error), { code: ready.code ?? "EIDENTITY" });
+  }
+  identityId = (await describeIdentity(ready.publicKey)).id;
+  return createIdentityBridgeBackend(buffer);
 }
 async function openWorkingCopy({ name, copyFrom }, path, progress) {
   if (!isWorkingCopyName(name))
@@ -537,6 +707,7 @@ function describe() {
     size: len,
     modifiedMs,
     engine: Boolean(instance),
+    identity: identityId,
     crossOriginIsolated: globalThis.crossOriginIsolated === true
   };
 }
@@ -550,6 +721,9 @@ function close() {
   probe = undefined;
   instance = undefined;
   backend = undefined;
+  identityWorker?.terminate();
+  identityWorker = undefined;
+  identityId = null;
   try {
     accessHandle?.close();
   } finally {

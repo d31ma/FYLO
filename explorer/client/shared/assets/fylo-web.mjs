@@ -2311,6 +2311,8 @@ class BrowserQueryEngine {
   async candidateDocIdsForOperand(collection, fieldPath, operand) {
     if (operand.$eq !== undefined || operand.$contains !== undefined)
       return null;
+    if (this.matchedByEmptyArray(operand))
+      return null;
     let candidateIds = null;
     if (operand.$gt !== undefined || operand.$gte !== undefined || operand.$lt !== undefined || operand.$lte !== undefined) {
       for (const key of ["$gt", "$gte", "$lt", "$lte"]) {
@@ -2331,6 +2333,9 @@ class BrowserQueryEngine {
       candidateIds = this.intersectDocIds(candidateIds, likeCandidates);
     }
     return candidateIds;
+  }
+  matchedByEmptyArray(operand) {
+    return this.matchesOperand([], operand);
   }
   async candidateDocIdsForOperation(collection, operation) {
     let candidateIds = null;
@@ -4871,11 +4876,11 @@ class SingleFileDatabase {
     this.info = info;
     this.call = call;
   }
-  static async open(source, { workerUrl, moduleUrl, path, onProgress }) {
+  static async open(source, { workerUrl, moduleUrl, path, identity, onProgress }) {
     const worker = new Worker(workerUrl, { type: "module" });
     const calls = createCalls(worker, onProgress);
     try {
-      const info = await calls({ op: "open", source, path, moduleUrl });
+      const info = await calls({ op: "open", source, path, moduleUrl, identity });
       return new SingleFileDatabase(worker, info, calls);
     } catch (error) {
       worker.terminate();
@@ -5052,6 +5057,86 @@ function downloadDatabase(blob, name, document = globalThis.document) {
   link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
+// src/browser/identity-bridge.mjs
+var BRIDGE_BYTES = 1024 * 1024;
+var DATABASE = "fylo-identities";
+var STORE = "keys";
+var ECDSA = { name: "ECDSA", namedCurve: "P-256" };
+var ECDH = { name: "ECDH", namedCurve: "P-256" };
+var encoder = new TextEncoder;
+var KEM_SUITE = concat(encoder.encode("KEM"), u16(16));
+var HPKE_SUITE = concat(encoder.encode("HPKE"), u16(16), u16(1), u16(2));
+var VERSION_LABEL = encoder.encode("HPKE-v1");
+function u16(value) {
+  return new Uint8Array([value >> 8 & 255, value & 255]);
+}
+function concat(...parts) {
+  const out = new Uint8Array(parts.reduce((total, part) => total + part.length, 0));
+  let at = 0;
+  for (const part of parts) {
+    out.set(part, at);
+    at += part.length;
+  }
+  return out;
+}
+function openStore(indexedDB2 = globalThis.indexedDB) {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB2.open(DATABASE, 1);
+    request.onupgradeneeded = () => request.result.createObjectStore(STORE);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+function storeRequest(database, mode, act) {
+  return new Promise((resolve, reject) => {
+    const request = act(database.transaction(STORE, mode).objectStore(STORE));
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+async function loadWebCryptoIdentity(name) {
+  const database = await openStore();
+  return storeRequest(database, "readonly", (store) => store.get(name));
+}
+async function createWebCryptoIdentity(name) {
+  const database = await openStore();
+  if (await storeRequest(database, "readonly", (store) => store.getKey(name))) {
+    throw Object.assign(new Error(`webcrypto:${name} already has a key`), {
+      code: "EIDENTITY_EXISTS"
+    });
+  }
+  const pair = await crypto.subtle.generateKey(ECDSA, true, ["sign", "verify"]);
+  const pkcs8 = await crypto.subtle.exportKey("pkcs8", pair.privateKey);
+  const publicKey = new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey));
+  const sign = await crypto.subtle.importKey("pkcs8", pkcs8, ECDSA, false, ["sign"]);
+  const derive = await crypto.subtle.importKey("pkcs8", pkcs8, ECDH, false, ["deriveBits"]);
+  await storeRequest(database, "readwrite", (store) => store.add({ sign, derive, publicKey }, name));
+  return publicKey;
+}
+var BASE32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+function base32(bytes) {
+  let text = "";
+  let buffer = 0;
+  let bits = 0;
+  for (const byte of bytes) {
+    buffer = (buffer << 8 | byte) & 65535;
+    bits += 8;
+    while (bits >= 5) {
+      bits -= 5;
+      text += BASE32[buffer >> bits & 31];
+    }
+  }
+  if (bits > 0)
+    text += BASE32[buffer << 5 - bits & 31];
+  return text;
+}
+function base64url(bytes) {
+  return btoa(String.fromCharCode(...bytes)).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+}
+async function describeIdentity(publicKey) {
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", publicKey));
+  return { publicKey: `fpk1:p256:${base64url(publicKey)}`, id: `fid1:p256:${base32(digest)}` };
+}
 // src/query/postgrest.js
 function queryFromSearch(search) {
   const query = {};
@@ -5126,14 +5211,17 @@ export {
   queryFromSearch,
   pickFyloRoot,
   pickDatabaseFile,
+  loadWebCryptoIdentity,
   listWorkingCopies,
   listRecentRoots,
   hasVdbxMagic,
   forgetRecentRoot,
   ensureRootPermission,
+  describeIdentity,
   client_default as default,
   databaseFromDrop,
   createWorkerClient,
+  createWebCryptoIdentity,
   createWasmIndexScannerFactory,
   createOverlayFilesystem,
   createOpfsFilesystem,

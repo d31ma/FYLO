@@ -2311,6 +2311,8 @@ class BrowserQueryEngine {
   async candidateDocIdsForOperand(collection, fieldPath, operand) {
     if (operand.$eq !== undefined || operand.$contains !== undefined)
       return null;
+    if (this.matchedByEmptyArray(operand))
+      return null;
     let candidateIds = null;
     if (operand.$gt !== undefined || operand.$gte !== undefined || operand.$lt !== undefined || operand.$lte !== undefined) {
       for (const key of ["$gt", "$gte", "$lt", "$lte"]) {
@@ -2331,6 +2333,9 @@ class BrowserQueryEngine {
       candidateIds = this.intersectDocIds(candidateIds, likeCandidates);
     }
     return candidateIds;
+  }
+  matchedByEmptyArray(operand) {
+    return this.matchesOperand([], operand);
   }
   async candidateDocIdsForOperation(collection, operation) {
     let candidateIds = null;
