@@ -378,6 +378,11 @@
 
 ### Changed
 
+- **Documented: `cng:` keys under passwordless Windows logons.** An account
+  with no password that signs in over SSH with a key can lose its `cng:`
+  identities, with `EIDENTITY_NOT_FOUND`, once another account logs on,
+  until a reboot (Windows DPAPI). [Configuration](docs/configuration.md#cng-keys-and-passwordless-windows-logons)
+  says what to do: a password logon, or a `tpm:` identity.
 - **A browser admin no longer settles a pending catalog rotation (ADR 0021
   section 8).** A `webcrypto:` admin's write on a protected database whose
   catalog-key rotation is pending leaves it pending, as another identity's

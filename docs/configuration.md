@@ -229,6 +229,28 @@ fylo identity show keychain:com.example.app
 `FYLO_KEYCHAIN` is read by the keychain store itself, like the installer
 variables above, and is not engine configuration.
 
+### `cng:` keys and passwordless Windows logons
+
+A `cng:` key is protected by DPAPI with the owning user's credentials.
+Windows can lose that protection for a session that never gave a password.
+On a Windows 11 test machine, an account with no password, signed in over
+SSH with a public key, could use its `cng:` keys until a second account
+logged on (here a scheduled task running as that account). From then on
+the owner's session no longer saw its own keys, and FYLO reported
+`EIDENTITY_NOT_FOUND`, although the key file was still in
+`%APPDATA%\Microsoft\Crypto\Keys`. After a reboot the keys worked again.
+This is Windows' DPAPI behaviour, not FYLO's.
+
+- Do not run `fylo identity create` again for that name. The new key would
+  replace the existing one, and its identifier, which databases grant,
+  would be lost.
+- Run a process that uses a `cng:` identity under an account that logs on
+  with a password: an interactive sign-in, or a service or scheduled task
+  that stores the account's password.
+- Or use a `tpm:` identity, which the TPM protects instead of DPAPI.
+- To recover a session that has lost its keys, reboot, then sign in with
+  a password.
+
 ### Protected databases (phase 3)
 
 ```bash

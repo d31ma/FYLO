@@ -49,3 +49,8 @@ Do not map a Windows label to an Ubuntu image and treat the result as Windows va
 authoritative job by pushing a branch or pull request to GitHub. For interactive failures, use an
 x64 Windows Server VM with the repository checkout on an NTFS volume, then run the same commands
 shown in the `windows-storage` job.
+
+A test VM whose account has no password and signs in over SSH with a key can lose its `cng:`
+identities when another account logs on, for example a scheduled task that runs a test as a
+second user. Its `cng:` tests then fail with `EIDENTITY_NOT_FOUND` until the VM reboots. See
+[`cng:` keys and passwordless Windows logons](../configuration.md#cng-keys-and-passwordless-windows-logons).
