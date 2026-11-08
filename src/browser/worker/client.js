@@ -1,3 +1,5 @@
+import { BrowserProtocolError } from '../core/browser-protocol-error.js'
+
 /**
  * @typedef {import('../core/types.js').BrowserCoreOptions} BrowserCoreOptions
  * @typedef {import('../core/types.js').BrowserRequest} BrowserRequest
@@ -50,7 +52,11 @@ export class FyloWorkerClient {
         if (!pending) return
         this.pending.delete(id)
         if (envelope.ok === false) {
-            pending.reject(new Error(envelope.error?.message ?? 'FYLO worker request failed'))
+            pending.reject(
+                BrowserProtocolError.from(
+                    envelope.error ?? { message: 'FYLO worker request failed' }
+                )
+            )
             return
         }
         pending.resolve(envelope)
@@ -91,7 +97,7 @@ export class FyloWorkerClient {
      */
     async request(request) {
         const response = /** @type {BrowserResponse} */ (await this.envelope(request))
-        if (!response.ok) throw new Error(response.error.message)
+        if (!response.ok) throw BrowserProtocolError.from(response.error)
         return response.result
     }
 

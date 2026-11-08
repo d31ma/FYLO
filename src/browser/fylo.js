@@ -3,7 +3,8 @@ import { runBrowserRequest } from './core/protocol.js'
 import { createBrowserFilesystem, normalizeBrowserStorage } from './storage.js'
 import { createWorkerClient } from './worker/client.js'
 import { createWasmIndexScannerFactory } from './wasm/index-scanner.js'
-import { CollectionNotFoundError } from '../core/collection.js'
+import { BrowserFeatureGuard } from './core/browser-feature-guard.js'
+import { BrowserProtocolError } from './core/browser-protocol-error.js'
 
 /**
  * @typedef {import('./core/filesystem.js').FyloFilesystem} FyloFilesystem
@@ -72,6 +73,7 @@ export class FyloBrowser {
      * @param {{ fs?: FyloFilesystem, storage?: import('./storage.js').BrowserStorage, namespace?: string, root?: string, worker?: boolean, worm?: BrowserCoreOptions['worm'], wasm?: true | { url?: string | URL, module?: WebAssembly.Module } }=} options
      */
     constructor(options = {}) {
+        BrowserFeatureGuard.requirePlainClientOptions(options)
         this.namespace = options.namespace ?? 'fylo'
         this.root = options.root ?? '/'
         const useWorker = shouldUseWorker(options.worker ?? true)
@@ -198,6 +200,11 @@ export class FyloBrowser {
         return await this.dispatch({ op: 'executeSQL', sql: statement })
     }
 
+    /** @param {string} statement @returns {Promise<unknown>} */
+    async executeSQL(statement) {
+        return await this._sql(statement)
+    }
+
     /** @param {BrowserRequest} request @returns {Promise<import('./core/types.js').BrowserSuccessResponse | import('./core/types.js').BrowserErrorResponse>} */
     async request(request) {
         if (this.worker) return await this.worker.envelope(request)
@@ -212,13 +219,13 @@ export class FyloBrowser {
         if (this.worker) return await this.worker.request(request)
         if (!this.core) throw new Error('FYLO browser runtime is not initialised')
         const response = await runBrowserRequest(this.core, request)
-        if (!response.ok) throw browserProtocolError(response.error)
+        if (!response.ok) throw BrowserProtocolError.from(response.error)
         return response.result
     }
 
-    /** @param {string} collection @returns {Promise<void>} */
-    async createCollection(collection) {
-        await this.dispatch({ op: 'createCollection', collection })
+    /** @param {string} collection @param {Record<string, any>} [options] @returns {Promise<void>} */
+    async createCollection(collection, options = {}) {
+        await this.dispatch({ op: 'createCollection', collection, options })
     }
 
     /** @param {string} collection @returns {Promise<void>} */
@@ -511,8 +518,9 @@ export class BrowserCollectionFacade {
         return await this.fylo.rebuildCollection(this.collection)
     }
 
-    async create() {
-        await this.fylo.createCollection(this.collection)
+    /** @param {Record<string, any>} [options] */
+    async create(options = {}) {
+        await this.fylo.createCollection(this.collection, options)
     }
 
     async drop() {
@@ -528,27 +536,6 @@ export class BrowserCollectionFacade {
 /** @param {ConstructorParameters<typeof FyloBrowser>[0]} [options] @returns {FyloBrowser} */
 export function createBrowserFylo(options) {
     return new FyloBrowser(options)
-}
-
-/**
- * @param {unknown} error
- * @returns {Error}
- */
-function browserProtocolError(error) {
-    if (!error || typeof error !== 'object') {
-        return new Error('Unknown browser protocol error')
-    }
-    const err = /** @type {Record<string, unknown>} */ (error)
-    if (err.code === 'FYLO_COLLECTION_NOT_FOUND') {
-        return new CollectionNotFoundError(
-            typeof err.message === 'string'
-                ? err.message.replace(/^Collection not found: /, '')
-                : ''
-        )
-    }
-    const failure = new Error(typeof err.message === 'string' ? err.message : 'Request failed')
-    failure.name = typeof err.name === 'string' ? err.name : 'Error'
-    return failure
 }
 
 /**

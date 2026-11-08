@@ -226,6 +226,10 @@
             "retryable": false
         },
         {
+            "code": "EBROWSER_UNSUPPORTED",
+            "retryable": false
+        },
+        {
             "code": "ELAYOUTUNSUPPORTED",
             "retryable": false
         },

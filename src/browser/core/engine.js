@@ -11,6 +11,7 @@ import { BrowserEventBus } from './browser-event-bus.js'
 import { BrowserPrefixIndex } from './prefix-index.js'
 import { BrowserQueryEngine, documentNumber } from './query.js'
 import { BrowserPath } from './browser-path.js'
+import { BrowserFeatureGuard } from './browser-feature-guard.js'
 import '../../core/extensions.js'
 
 /**
@@ -291,8 +292,9 @@ export class BrowserCore {
         await this.index.ensureCollection(collection)
     }
 
-    /** @param {string} collection @returns {Promise<void>} */
-    async createCollection(collection) {
+    /** @param {string} collection @param {Record<string, any>} [options] @returns {Promise<void>} */
+    async createCollection(collection, options = {}) {
+        BrowserFeatureGuard.requireDocumentCollection(options)
         await this.ensureCollection(collection)
     }
 
@@ -380,6 +382,7 @@ export class BrowserCore {
      * @returns {Promise<TTIDValue>}
      */
     async putData(collection, data, meta) {
+        BrowserFeatureGuard.requireDocumentData(data)
         if (meta !== undefined) MetadataRecord.validate(meta)
         await this.requireCollection(collection)
         const explicit = explicitDocumentEntry(data)
@@ -433,6 +436,7 @@ export class BrowserCore {
 
     /** @param {string} collection @param {Record<string, any>[]} batch @returns {Promise<TTIDValue[]>} */
     async batchPutData(collection, batch) {
+        BrowserFeatureGuard.requireDocumentBatch(batch)
         /** @type {TTIDValue[]} */
         const ids = []
         for (const data of batch) ids.push(await this.putData(collection, data))
@@ -906,8 +910,9 @@ class BrowserCollectionFacade {
         this.core = core
         this.collection = collection
     }
-    async create() {
-        await this.core.createCollection(this.collection)
+    /** @param {Record<string, any>} [options] */
+    async create(options = {}) {
+        await this.core.createCollection(this.collection, options)
     }
     async drop() {
         await this.core.dropCollection(this.collection)

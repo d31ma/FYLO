@@ -170,11 +170,21 @@ export class OpfsFilesystem {
     /** @param {string} path @param {{ recursive?: boolean }} [options] @returns {Promise<void>} */
     async rmdir(path, options = {}) {
         const parent = await this.directoryHandle(BrowserPath.dirname(path), false)
+        this.#forgetDirectory(path)
         try {
             await parent.removeEntry(this.basename(path), { recursive: options.recursive === true })
         } catch (err) {
             if (!isNotFound(err)) throw err
         }
+    }
+
+    /** @param {string} path @returns {void} */
+    #forgetDirectory(path) {
+        const key = this.key(path)
+        const stale = [...this.dirCache.keys()].filter(
+            (cacheKey) => cacheKey === key || cacheKey.startsWith(`${key}/`)
+        )
+        for (const cacheKey of stale) this.dirCache.delete(cacheKey)
     }
 
     /** @param {string} path @returns {Promise<string>} */

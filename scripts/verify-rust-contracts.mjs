@@ -32,6 +32,7 @@ const queueSource = await readFile('crates/fylo-storage-native/src/queue.rs', 'u
 const engineSource = await readFile('crates/fylo-engine/src/lib.rs', 'utf8')
 const identityErrorSource = await readFile('crates/fylo-identity/src/identity_error.rs', 'utf8')
 const wasmHostSource = await readFile('src/browser/wasm/index-scanner.js', 'utf8')
+const browserGuardSource = await readFile('src/browser/core/browser-feature-guard.js', 'utf8')
 const ciSource = await readFile('.github/workflows/ci.yml', 'utf8')
 const nightlySource = await readFile('.github/workflows/rust-nightly.yml', 'utf8')
 const releaseSource = await readFile('.github/workflows/publish.yml', 'utf8')
@@ -45,7 +46,8 @@ const implementationSources = [
     queueSource,
     engineSource,
     identityErrorSource,
-    wasmHostSource
+    wasmHostSource,
+    browserGuardSource
 ]
 
 assert(operations.protocolVersion === MACHINE_PROTOCOL_VERSION, 'operation protocol version drift')
