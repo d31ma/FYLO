@@ -406,7 +406,12 @@ jobs:
                   bun ./scripts/verify-browser-wasm-budgets.mjs
                   --output target/wasm-budget-${{ matrix.browser }}.json
 
+            - name: Build the native CLI the browser corpus drives
+              run: bun ./scripts/run-rust.mjs cargo build --release --locked -p fylo-cli --bin fylo-rust
+
             - name: Run real-browser OPFS, restart, and fallback corpus
+              env:
+                  FYLO_E2E_SKIP_NATIVE_BUILD: '1'
               run: node ./node_modules/@playwright/test/cli.js test --project=${{ matrix.browser }}
 
             - name: Retain browser evidence
