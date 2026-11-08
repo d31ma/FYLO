@@ -792,6 +792,9 @@ function normalizeHandshake(value) {
     delete normalized.capabilities?.hotSet
     // So is the single-file `.vdbx` database (ADR 0016).
     delete normalized.capabilities?.singleFileDatabase
+    delete normalized.capabilities?.filesystemMetadata
+    delete normalized.identity
+    delete normalized.storage
     return normalized
 }
 
@@ -801,6 +804,7 @@ function normalizeKnownReleaseDeltas(operation, value) {
         const released = structuredClone(value)
         delete released.validation
         delete released.schemaViolations
+        delete released.layout
         return released
     }
     if (operation === 'schemaInspect' && value && typeof value === 'object') {
