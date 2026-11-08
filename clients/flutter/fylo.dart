@@ -30,7 +30,7 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 class FyloException implements Exception {
   final String message;
   final String? code;
-  FyloException(this.message, [this.code]);
+  FyloException(this.message, {this.code});
   @override
   String toString() => 'FyloException: $message';
 }
@@ -253,7 +253,7 @@ class Fylo {
       request.fail(
         FyloException(
           (error is Map ? error['message'] : null) ?? 'fylo error',
-          code is String ? code : null,
+          code: code is String ? code : null,
         ),
       );
     }
