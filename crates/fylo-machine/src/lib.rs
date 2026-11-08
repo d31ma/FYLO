@@ -33,7 +33,7 @@ use std::time::Instant;
 use base64::Engine as _;
 use fylo_engine::{EngineError, HotSet, ReadOnlyEngine, WriteEngine};
 use fylo_format::Document;
-use fylo_query::{JoinSpec, QueryLimits, SqlOperation, StructuredQuery, prepare_sql};
+use fylo_query::{JoinSpec, QueryLimits, SqlOperation, SqlPlan, StructuredQuery, prepare_sql};
 use fylo_storage_native::{
     CollectionKind, CollectionLayout, FilesystemProfile, NativeQueue, NativeRoot,
     NativeStorageError, NativeStorageErrorCode, NativeWriteRoot, PutRawFileOptions,
@@ -1633,21 +1633,63 @@ impl Session {
             .or_else(|| self.config.schema.clone())
     }
 
-    /// `SELECT` is answered by the read engine; every mutation goes through the
-    /// native transaction writer, so both share the published SQL contract.
+    /// `EXPLAIN` describes the plan and never executes it; `EXPLAIN ANALYZE`
+    /// executes it and adds the elapsed time and the result.
     fn execute_sql(&self, request: &Value) -> Result<Value, MachineError> {
         let statement = require_string(request, "sql")?;
         let plan = prepare_sql(statement, QueryLimits::default())
             .map_err(|error| MachineError::new("EQUERY_INVALID", error.to_string()))?;
-        if plan.operation == SqlOperation::Select {
-            return self
-                .engine(request)?
-                .select_sql(&plan)
-                .map_err(|error| engine_error(&error));
+        if !plan.explain {
+            return self.execute_sql_plan(request, &plan);
         }
+        let description = describe_sql_plan(&plan);
+        if !plan.analyze {
+            return Ok(description);
+        }
+        self.analyze_sql_plan(request, &plan, description)
+    }
+
+    fn analyze_sql_plan(
+        &self,
+        request: &Value,
+        plan: &SqlPlan,
+        mut description: Value,
+    ) -> Result<Value, MachineError> {
+        let started = Clock::start();
+        let result = self.execute_sql_plan(request, plan)?;
+        description["executed"] = Value::Bool(true);
+        description["elapsedMs"] = Value::from(started.elapsed_millis());
+        description["result"] = result;
+        Ok(description)
+    }
+
+    /// `SELECT` is answered by the read engine, `CREATE TABLE` and
+    /// `DROP TABLE` create and drop a document collection, and every other
+    /// mutation goes through the native transaction writer, so all share the
+    /// published SQL contract.
+    fn execute_sql_plan(&self, request: &Value, plan: &SqlPlan) -> Result<Value, MachineError> {
+        match plan.operation {
+            SqlOperation::Select => self
+                .engine(request)?
+                .select_sql(plan)
+                .map_err(|error| engine_error(&error)),
+            SqlOperation::Create => self.create_named_collection(
+                request,
+                &plan.collection,
+                CollectionKind::Document,
+                None,
+            ),
+            SqlOperation::Drop => self.drop_named_collection(request, &plan.collection),
+            SqlOperation::Insert | SqlOperation::Update | SqlOperation::Delete => {
+                self.execute_sql_mutation(request, plan)
+            }
+        }
+    }
+
+    fn execute_sql_mutation(&self, request: &Value, plan: &SqlPlan) -> Result<Value, MachineError> {
         let mutation = self
             .write_engine(request)?
-            .execute_sql_mutation(statement)
+            .execute_sql_mutation(&plan.sql)
             .map_err(|error| engine_error(&error))?;
         match mutation.kind {
             SqlMutationResultKind::Insert => mutation
@@ -1691,6 +1733,16 @@ impl Session {
             }
         };
         let layout = optional_layout(request)?;
+        self.create_named_collection(request, collection, kind, layout)
+    }
+
+    fn create_named_collection(
+        &self,
+        request: &Value,
+        collection: &str,
+        kind: CollectionKind,
+        layout: Option<CollectionLayout>,
+    ) -> Result<Value, MachineError> {
         let writer = self.writer(request)?;
         writer
             .create_collection_with_layout(collection, kind, None, layout)
@@ -1719,6 +1771,14 @@ impl Session {
 
     fn drop_collection(&self, request: &Value) -> Result<Value, MachineError> {
         let collection = require_string(request, "collection")?;
+        self.drop_named_collection(request, collection)
+    }
+
+    fn drop_named_collection(
+        &self,
+        request: &Value,
+        collection: &str,
+    ) -> Result<Value, MachineError> {
         self.writer(request)?
             .drop_collection(collection)
             .map_err(|error| storage_error(&error))?;
@@ -3858,6 +3918,15 @@ fn engine_error(error: &EngineError) -> MachineError {
         .or_else(|| error.query_code_str())
         .unwrap_or_else(|| error.code().as_str());
     MachineError::new(code, error.to_string())
+}
+
+fn describe_sql_plan(plan: &SqlPlan) -> Value {
+    json!({
+        "operation": plan.operation,
+        "collection": plan.collection,
+        "access": plan.access,
+        "executed": false,
+    })
 }
 
 fn absent_collection(collection: &str) -> Value {
