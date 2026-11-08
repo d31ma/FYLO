@@ -7,6 +7,7 @@
 
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use fylo_engine::{EngineErrorCode, ReadOnlyEngine, WriteEngine};
@@ -22,12 +23,12 @@ struct Database(PathBuf);
 
 impl Database {
     fn create() -> Self {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let directory =
-            std::env::temp_dir().join(format!("fylo-engine-vdbx-{}-{nonce}", std::process::id()));
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let directory = std::env::temp_dir().join(format!(
+            "fylo-engine-vdbx-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
         fs::create_dir(&directory).unwrap();
         let directory = fs::canonicalize(directory).unwrap();
         NativeRoot::create_database(directory.join("db.vdbx")).unwrap();
