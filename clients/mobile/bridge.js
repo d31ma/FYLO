@@ -13,7 +13,7 @@
 // iOS, https via WebViewAssetLoader on Android) or OPFS is unavailable.
 import { createBrowserClient } from './fylo.mjs'
 
-let db = null
+let opening = null
 const MAX_REQUEST_BASE64 = 8 * 1024 * 1024
 const MAX_RESPONSE_BYTES = 6 * 1024 * 1024
 const MAX_SQL_CHARS = 64 * 1024
@@ -41,23 +41,35 @@ function own(value, key) {
     return value && typeof value === 'object' && Object.hasOwn(value, key) ? value[key] : undefined
 }
 
+function bridgeError(message, code) {
+    const error = new Error(message)
+    error.code = code
+    return error
+}
+
+function errorCode(error, fallback) {
+    return typeof error?.code === 'string' && error.code.length > 0 ? error.code : fallback
+}
+
 function requireBoundedString(value, name, maximum) {
     if (typeof value !== 'string' || value.length === 0 || value.length > maximum) {
-        throw new Error(`${name} must be a non-empty string of at most ${maximum} characters`)
+        throw bridgeError(
+            `${name} must be a non-empty string of at most ${maximum} characters`,
+            'EBADREQUEST'
+        )
     }
     return value
 }
 
 function requireObject(value, name) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
-        throw new Error(`${name} must be an object`)
+        throw bridgeError(`${name} must be an object`, 'EBADREQUEST')
     }
     return value
 }
 
 function mobileConfig(value) {
-    if (value === undefined) return {}
-    const config = requireObject(value, 'config')
+    const config = value === undefined ? {} : requireObject(value, 'config')
     const safe = Object.create(null)
     const namespace = own(config, 'namespace')
     const root = own(config, 'root')
@@ -68,21 +80,32 @@ function mobileConfig(value) {
     if (root !== undefined) {
         const path = requireBoundedString(root, 'config.root', 256)
         if (!path.startsWith('/') || path.includes('..') || path.includes('\\')) {
-            throw new Error('config.root must be an absolute browser path without traversal')
+            throw bridgeError(
+                'config.root must be an absolute browser path without traversal',
+                'EBADREQUEST'
+            )
         }
         safe.root = path
     }
-    if (worker !== undefined) {
-        if (typeof worker !== 'boolean') throw new Error('config.worker must be boolean')
-        safe.worker = worker
+    if (worker !== undefined && typeof worker !== 'boolean') {
+        throw bridgeError('config.worker must be boolean', 'EBADREQUEST')
     }
+    safe.worker = worker === true
     safe.storage = 'opfs'
     return safe
 }
 
+function collectionOptions(args) {
+    const supplied = own(args, 'options')
+    const options = supplied === undefined ? {} : { ...requireObject(supplied, 'options') }
+    const kind = own(args, 'kind')
+    if (kind !== undefined) options.kind = requireBoundedString(kind, 'kind', 32)
+    return options
+}
+
 function validateArgs(method, args) {
     if (!args || typeof args !== 'object' || Array.isArray(args)) {
-        throw new Error('args must be an object')
+        throw bridgeError('args must be an object', 'EBADREQUEST')
     }
     if (method !== 'open' && method !== 'executeSQL') {
         const collection = requireBoundedString(
@@ -91,7 +114,7 @@ function validateArgs(method, args) {
             MAX_COLLECTION_CHARS
         )
         if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(collection)) {
-            throw new Error('collection contains unsupported characters')
+            throw bridgeError('collection contains unsupported characters', 'EBADREQUEST')
         }
     }
     if (
@@ -132,7 +155,10 @@ function post(message) {
         text = JSON.stringify({
             id: own(message, 'id') ?? null,
             ok: false,
-            error: { message: 'FYLO bridge response exceeds the 6 MiB limit' }
+            error: {
+                message: 'FYLO bridge response exceeds the 6 MiB limit',
+                code: 'EFRAME_RESPONSE_TOO_LARGE'
+            }
         })
     }
     if (rawPost(text)) return
@@ -148,15 +174,29 @@ function post(message) {
     }, 20)
 }
 
-async function ensureDb(config) {
-    if (!db) {
-        db = createBrowserClient(mobileConfig(config))
-        await db.ready()
-    }
-    return db
+async function openDb(config) {
+    const client = createBrowserClient(mobileConfig(config))
+    await client.ready()
+    return client
 }
 
-async function collect(cursor) {
+function ensureDb(config) {
+    if (!opening) {
+        opening = openDb(config)
+        opening.catch(() => {
+            opening = null
+        })
+    }
+    return opening
+}
+
+async function collectIds(cursor) {
+    const ids = []
+    for await (const id of cursor.collect()) ids.push(id)
+    return ids
+}
+
+async function collectDocs(cursor) {
     const out = Object.create(null)
     for await (const page of cursor.collect()) {
         for (const [key, value] of Object.entries(page)) out[key] = value
@@ -164,17 +204,21 @@ async function collect(cursor) {
     return out
 }
 
+function collect(cursor, query) {
+    return own(query, '$onlyIds') ? collectIds(cursor) : collectDocs(cursor)
+}
+
 async function route(method, a) {
-    if (!OPERATIONS.has(method)) throw new Error('unknown method: ' + method)
+    if (!OPERATIONS.has(method)) throw bridgeError('unknown method: ' + method, 'EUNSUPPORTEDOP')
     a = validateArgs(method, a)
     const database = await ensureDb(own(a, 'config'))
     const collection = own(a, 'collection')
-    const col = collection ? database[collection] : null
+    const col = collection ? database.collection(collection) : null
     switch (method) {
         case 'open':
             return { ready: true }
         case 'createCollection':
-            return col.create()
+            return col.create(collectionOptions(a))
         case 'dropCollection':
             return col.drop()
         case 'inspectCollection':
@@ -198,20 +242,22 @@ async function route(method, a) {
         case 'restoreDoc':
             return col.restore(own(a, 'id'))
         case 'findDocs':
-            return collect(col.find(own(a, 'query') ?? {}))
+            return collect(col.find(own(a, 'query') ?? {}), own(a, 'query'))
         case 'executeSQL':
-            return database._sql(own(a, 'sql')) // raw string; local store only
+            return database.executeSQL(own(a, 'sql'))
         default:
-            throw new Error('unknown method: ' + method)
+            throw bridgeError('unknown method: ' + method, 'EUNSUPPORTEDOP')
     }
 }
 
 // UTF-8-safe base64 decode (native encodes JSON as base64 of UTF-8 bytes).
 function decode(encoded) {
     if (typeof encoded !== 'string' || encoded.length > MAX_REQUEST_BASE64) {
-        throw new Error('FYLO bridge request exceeds the 8 MiB limit')
+        throw bridgeError('FYLO bridge request exceeds the 8 MiB limit', 'EFRAME_REQUEST_TOO_LARGE')
     }
-    if (!/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)) throw new Error('Invalid base64 request')
+    if (!/^[A-Za-z0-9+/]*={0,2}$/.test(encoded)) {
+        throw bridgeError('Invalid base64 request', 'EBADREQUEST')
+    }
     const binary = atob(encoded)
     const bytes = new Uint8Array(binary.length)
     for (let index = 0; index < binary.length; index++) {
@@ -255,17 +301,21 @@ globalThis.__fyloDispatch = async (encoded) => {
                 id,
                 ok: false,
                 error: {
-                    message: String(error?.message || 'Invalid FYLO bridge request')
+                    message: String(error?.message || 'Invalid FYLO bridge request'),
+                    code: errorCode(error, 'EBADREQUEST')
                 }
             })
         }
         return
     }
     try {
-        if (!msg || typeof msg !== 'object' || Array.isArray(msg))
-            throw new Error('invalid request')
+        if (!msg || typeof msg !== 'object' || Array.isArray(msg)) {
+            throw bridgeError('invalid request', 'EBADREQUEST')
+        }
         const id = own(msg, 'id')
-        if (!Number.isSafeInteger(id) || id <= 0) throw new Error('id must be a positive integer')
+        if (!Number.isSafeInteger(id) || id <= 0) {
+            throw bridgeError('id must be a positive integer', 'EBADREQUEST')
+        }
         const method = requireBoundedString(own(msg, 'method'), 'method', 64)
         const result = await route(method, own(msg, 'args') ?? {})
         post({ id, ok: true, result: result === undefined ? null : result })
@@ -273,7 +323,7 @@ globalThis.__fyloDispatch = async (encoded) => {
         post({
             id: Number.isSafeInteger(own(msg, 'id')) ? own(msg, 'id') : null,
             ok: false,
-            error: { message: String((e && e.message) || e) }
+            error: { message: String((e && e.message) || e), code: errorCode(e, 'EUNKNOWN') }
         })
     }
 }

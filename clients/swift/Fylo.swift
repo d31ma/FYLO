@@ -11,8 +11,9 @@
 //   let doc = try await db.getLatest("users", id)
 //   let admins = try await db.findDocs("users", ["$ops": [["role": ["$eq": "admin"]]]])
 //
-// Bundle three files as app resources: this engine's `fylo.mjs` (from a FYLO
-// release), plus `host.html` and `bridge.js` from clients/mobile/. They are
+// Bundle three files as app resources: the `fylo-web.mjs` asset from a FYLO
+// release, saved as `fylo.mjs` (bridge.js imports ./fylo.mjs), plus
+// `host.html` and `bridge.js` from clients/mobile/. They are
 // served over a custom `fylo-app://` scheme — a secure origin, which OPFS
 // requires (a file:// origin does not get OPFS).
 //
@@ -22,9 +23,12 @@ import Foundation
 import WebKit
 
 enum FyloError: Error, CustomStringConvertible {
-    case failed(String)
+    case failed(String, code: String? = nil)
     var description: String {
-        switch self { case .failed(let message): return message }
+        switch self { case .failed(let message, _): return message }
+    }
+    var code: String? {
+        switch self { case .failed(_, let code): return code }
     }
 }
 
@@ -132,7 +136,7 @@ final class Fylo: NSObject {
                 pending[id] = PendingRequest(continuation: cont, timeout: timeout)
                 DispatchQueue.main.asyncAfter(deadline: .now() + rpcTimeout, execute: timeout)
                 // base64 body is safe inside the JS string literal.
-                webView.evaluateJavaScript("window.__fyloDispatch(\"\(base64)\")") { _, error in
+                webView.evaluateJavaScript("void window.__fyloDispatch(\"\(base64)\")") { _, error in
                     if let error {
                         self.failRequest(id: id, error: error)
                     }
@@ -149,9 +153,8 @@ final class Fylo: NSObject {
     }
 
     // MARK: Collections
-    // `kind` is accepted for cross-client parity; the on-device engine stores documents untyped.
     @discardableResult func createCollection(_ collection: String, _ kind: String = "document") async throws -> Any? {
-        try await request("createCollection", ["collection": collection])
+        try await request("createCollection", ["collection": collection, "kind": kind])
     }
     @discardableResult func dropCollection(_ collection: String) async throws -> Any? {
         try await request("dropCollection", ["collection": collection])
@@ -196,8 +199,11 @@ final class Fylo: NSObject {
 
     /// Run raw SQL against the local store. Native interpolation is verbatim —
     /// escape/validate untrusted input yourself.
-    @discardableResult func sql(_ statement: String) async throws -> Any? {
+    @discardableResult func executeSQL(_ statement: String) async throws -> Any? {
         try await request("executeSQL", ["sql": statement])
+    }
+    @discardableResult func sql(_ statement: String) async throws -> Any? {
+        try await executeSQL(statement)
     }
 
     /// Collection-scoped facade with short method names, so
@@ -343,7 +349,10 @@ extension Fylo: WKScriptMessageHandler {
         } else {
             let error = reply["error"] as? [String: Any]
             request.continuation.resume(
-                throwing: FyloError.failed(error?["message"] as? String ?? "fylo error")
+                throwing: FyloError.failed(
+                    error?["message"] as? String ?? "fylo error",
+                    code: error?["code"] as? String
+                )
             )
         }
     }

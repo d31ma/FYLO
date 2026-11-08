@@ -26,12 +26,32 @@ export const RESULT = 4
 export const STATE_IDLE = 0
 export const STATE_REQUEST = 1
 export const STATE_RESPONSE = 2
+/** The session is ending: the engine's pending call fails instead of waiting. */
+export const STATE_CLOSED = 3
 
-/** Room for one raw file plus its framing; the engine bounds records well below this. */
+/** The shared area one call crosses; larger reads and writes go in slices. */
 export const BRIDGE_BYTES = 64 * 1024 * 1024
+/** The most file bytes one call carries, leaving room for the request JSON. */
+const CHUNK_BYTES = 16 * 1024 * 1024
 
 export function createBridgeBuffer() {
     return new SharedArrayBuffer(CONTROL_SLOTS * 4 + BRIDGE_BYTES)
+}
+
+/**
+ * Wake the engine Worker out of its wait before the session ends.
+ *
+ * Call this before terminating the engine Worker, and from `pagehide`. WebKit
+ * does not release the Web Lock of a Worker terminated while it is parked in
+ * `Atomics.wait` (Safari 26): the root stays locked by a dead Worker and the
+ * next session on it waits forever. A Worker woken first releases it.
+ *
+ * @param {SharedArrayBuffer} buffer the session's bridge buffer
+ */
+export function closeBridge(buffer) {
+    const control = new Int32Array(buffer, 0, CONTROL_SLOTS)
+    Atomics.store(control, STATE, STATE_CLOSED)
+    Atomics.notify(control, STATE)
 }
 
 /**
@@ -64,18 +84,24 @@ export function createBridgeBackend(buffer, rootPath) {
         if (payload?.length) data.set(payload, encoded.length)
         Atomics.store(control, REQUEST_LEN, encoded.length)
         Atomics.store(control, PAYLOAD_LEN, payload?.length ?? 0)
-        Atomics.store(control, STATE, STATE_REQUEST)
+        // Every transition is a compare-and-swap, so a close is never overwritten.
+        if (Atomics.compareExchange(control, STATE, STATE_IDLE, STATE_REQUEST) !== STATE_IDLE) {
+            throw closedError(request)
+        }
         Atomics.notify(control, STATE)
         // Blocks this Worker. The bridge Worker is a different thread, so it is
         // free to run its promises while this one is parked.
-        while (Atomics.load(control, STATE) !== STATE_RESPONSE) {
+        for (;;) {
+            const state = Atomics.load(control, STATE)
+            if (state === STATE_RESPONSE) break
+            if (state === STATE_CLOSED) throw closedError(request)
             Atomics.wait(control, STATE, STATE_REQUEST)
         }
         const status = Atomics.load(control, STATUS)
         const result = Atomics.load(control, RESULT)
         const length = Atomics.load(control, PAYLOAD_LEN)
         const answer = length > 0 ? data.slice(0, length) : new Uint8Array()
-        Atomics.store(control, STATE, STATE_IDLE)
+        Atomics.compareExchange(control, STATE, STATE_RESPONSE, STATE_IDLE)
         if (status !== 0) {
             const error = new Error(decoder.decode(answer) || `bridge call failed: ${request.op}`)
             error.code = status === -2 ? 'ENOENT' : status === -17 ? 'EEXIST' : 'EIO'
@@ -91,13 +117,33 @@ export function createBridgeBackend(buffer, rootPath) {
         close(handle) {
             call({ op: 'close', handle })
         },
+        // A read or write larger than the shared area crosses in slices, so a
+        // file is limited by OPFS, not by the bridge.
         readAt(handle, offset, into) {
-            const { result, payload } = call({ op: 'read', handle, offset, length: into.length })
-            into.set(payload.subarray(0, result))
-            return result
+            let done = 0
+            while (done < into.length) {
+                const length = Math.min(into.length - done, CHUNK_BYTES)
+                const { result, payload } = call({
+                    op: 'read',
+                    handle,
+                    offset: offset + done,
+                    length
+                })
+                into.set(payload.subarray(0, result), done)
+                done += result
+                if (result < length) break
+            }
+            return done
         },
         writeAt(handle, offset, from) {
-            return call({ op: 'write', handle, offset }, from).result
+            let done = 0
+            do {
+                const slice = from.subarray(done, done + CHUNK_BYTES)
+                const result = call({ op: 'write', handle, offset: offset + done }, slice).result
+                done += result
+                if (result < slice.length) break
+            } while (done < from.length)
+            return done
         },
         truncate(handle, length) {
             call({ op: 'truncate', handle, length })
@@ -141,6 +187,12 @@ export function createBridgeBackend(buffer, rootPath) {
             console.error(message)
         }
     }
+}
+
+function closedError(request) {
+    const error = new Error(`bridge closed before ${request.op} finished`)
+    error.code = 'EIO'
+    return error
 }
 
 /** Keep every host operation inside the root granted to this engine. */

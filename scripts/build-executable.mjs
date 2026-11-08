@@ -1,3 +1,4 @@
+import { CargoArtifacts } from './cargo-artifacts.mjs'
 import { chmod, copyFile, mkdir, rm } from 'node:fs/promises'
 import path from 'node:path'
 
@@ -108,8 +109,7 @@ if (build.exitCode !== 0) process.exit(build.exitCode)
 
 const targetIsWindows = target.identity.startsWith('windows-')
 const executable = targetIsWindows ? 'fylo-rust.exe' : 'fylo-rust'
-const built = path.resolve(
-    'target',
+const built = CargoArtifacts.path(
     ...(target.rustTarget ? [target.rustTarget] : []),
     'release',
     executable

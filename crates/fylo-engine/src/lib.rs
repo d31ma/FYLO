@@ -5,27 +5,41 @@
 //! stable collection generation around every logical read.
 
 mod encryption;
+mod field_rekey;
+mod hot_set;
+mod index_operation;
+mod index_plan;
+mod lazy_migration;
 mod schema;
+mod schema_admin;
+#[cfg(any(test, target_arch = "wasm32"))]
+mod stored_validation;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use encryption::{EncryptionReader, is_encrypted_field, reject_undeclared_ciphertext};
+pub use field_rekey::FieldRekey;
 use fylo_format::{
-    CanonicalMetadata, Document, DocumentLimits, FormatError, FormatErrorCode, decode_ttid,
+    CanonicalMetadata, Document, DocumentLimits, FormatError, FormatErrorCode, TtidTimestamps,
 };
 use fylo_query::{
     IndexLookupValue, JoinSpec, QueryError, QueryErrorCode, QueryLimits, ScanQuery, SqlOperation,
     SqlPlan, StructuredQuery, index_entries_for_document,
 };
 use fylo_storage_native::{
-    AccessDescriptor, CollectionKind, GenerationStatus, IndexVerification, NativeAccess,
-    NativeCollection, NativeRoot, NativeStorageError, NativeStorageErrorCode, NativeWriteRoot,
-    PutDocumentOptions, RepositoryHistory, RootConfig, StoredRawFile, VersionVerification,
-    WriteAccess, WriteActor,
+    CollectionKind, CollectionLayout, DocumentCodec, DocumentWrite, GenerationState,
+    GenerationStatus, IndexVerification, NativeCollection, NativeRoot, NativeStorageError,
+    NativeStorageErrorCode, NativeWriteRoot, PutDocumentOptions, RepositoryHistory, RootConfig,
+    RootOpenOptions, SqlMutationResult, StoredBytes, StoredRawFile, ValidationMode,
+    VersionVerification,
 };
-use schema::SchemaTools;
+use hot_set::HotReader;
+pub use hot_set::{HotSet, HotSetStatistics};
+use lazy_migration::{ChainCache, CountCache};
+use schema::{SchemaRegistry, SchemaTools, VersionChain};
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 
@@ -38,6 +52,14 @@ const MAX_DRIFT_SAMPLE: usize = 12;
 pub struct ReadOnlyEngine {
     root: NativeRoot,
     encryption: Option<EncryptionReader>,
+    hot_set: Option<Arc<HotSet>>,
+    registry: SchemaRegistry,
+    /// The `fylo.schema` folder, for collections without a registry.
+    schema_dir: Option<PathBuf>,
+    /// Return documents as stored rather than migrated to the head.
+    stored_shape: bool,
+    chains: ChainCache,
+    counts: CountCache,
 }
 
 /// Native FYLO write engine.
@@ -51,11 +73,72 @@ pub struct WriteEngine {
     writer: NativeWriteRoot,
     encryption: Option<EncryptionReader>,
     schema: Option<std::rc::Rc<SchemaTools>>,
+    registry: SchemaRegistry,
 }
 
 pub use fylo_storage_native::RootConfig as EngineConfig;
 
 impl WriteEngine {
+    /// Attach schema tooling and field encryption to the already opened root.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid schema metadata or encryption credentials.
+    pub fn with_schema_configuration(
+        mut self,
+        schema_root: impl AsRef<Path>,
+        credentials: Option<(&str, &str)>,
+    ) -> Result<Self, EngineError> {
+        let schema_root = schema_root.as_ref().to_path_buf();
+        self.encryption = Some(
+            EncryptionReader::open(&schema_root, credentials, self.registry.clone())
+                .map_err(EngineError::encryption)?,
+        );
+        self.schema = Some(std::rc::Rc::new(SchemaTools::new(schema_root)));
+        Ok(self)
+    }
+
+    /// Attach field encryption keys without a `fylo.schema` folder, for
+    /// collections whose schemas live in the root's registry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid encryption credentials.
+    pub fn with_encryption_credentials(
+        mut self,
+        secret: &str,
+        salt: &str,
+    ) -> Result<Self, EngineError> {
+        self.encryption = Some(Self::rekeyed(
+            self.encryption.take(),
+            &self.registry,
+            (secret, salt),
+        )?);
+        Ok(self)
+    }
+
+    fn rekeyed(
+        reader: Option<EncryptionReader>,
+        registry: &SchemaRegistry,
+        credentials: (&str, &str),
+    ) -> Result<EncryptionReader, EngineError> {
+        reader
+            .unwrap_or_else(|| EncryptionReader::unconfigured(registry.clone()))
+            .with_credentials(Some(credentials), None)
+            .map_err(EngineError::encryption)
+    }
+
+    /// What a protected `fylo rekey` of this engine's database uses to
+    /// write `$encrypted` values again under new keys (ADR 0021 section 7).
+    #[must_use]
+    pub fn field_rekey(&self) -> FieldRekey {
+        FieldRekey::new(
+            self.encryption
+                .clone()
+                .unwrap_or_else(|| EncryptionReader::unconfigured(self.registry.clone())),
+        )
+    }
+
     /// Apply host-supplied runtime knobs to this engine and its writer.
     ///
     /// Every `open_*` constructor starts from the default, so a host that
@@ -81,11 +164,32 @@ impl WriteEngine {
     ///
     /// Returns an error when the root cannot be opened safely.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, EngineError> {
-        Ok(Self {
-            writer: NativeWriteRoot::open(path).map_err(EngineError::storage)?,
-            encryption: None,
+        Self::open_profiled(RootOpenOptions::new(path))
+    }
+
+    /// Open a root using its explicit metadata profile and owning lease.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error before recovery or writes for a mismatched profile,
+    /// invalid lease, or unsafe root.
+    pub fn open_profiled(options: RootOpenOptions) -> Result<Self, EngineError> {
+        NativeWriteRoot::open_profiled(options)
+            .map(Self::from_writer)
+            .map_err(EngineError::storage)
+    }
+
+    /// A write engine over a root the caller already opened.
+    #[must_use]
+    pub fn from_writer(writer: NativeWriteRoot) -> Self {
+        let registry =
+            SchemaRegistry::directory(writer.native_root().clone(), Some(writer.clone()));
+        Self {
+            writer,
+            encryption: Some(EncryptionReader::unconfigured(registry.clone())),
             schema: None,
-        })
+            registry,
+        }
     }
 
     /// Open a materialized branch worktree with catalog and repository
@@ -98,12 +202,7 @@ impl WriteEngine {
         path: impl AsRef<Path>,
         repository_root: impl AsRef<Path>,
     ) -> Result<Self, EngineError> {
-        Ok(Self {
-            writer: NativeWriteRoot::open_with_repository(path, repository_root)
-                .map_err(EngineError::storage)?,
-            encryption: None,
-            schema: None,
-        })
+        Self::open_profiled(RootOpenOptions::new(path).with_repository(repository_root))
     }
 
     /// Open a write engine with schema tooling but no decryption key.
@@ -118,14 +217,7 @@ impl WriteEngine {
         path: impl AsRef<Path>,
         schema_root: impl AsRef<Path>,
     ) -> Result<Self, EngineError> {
-        let schema_root = schema_root.as_ref().to_path_buf();
-        Ok(Self {
-            writer: NativeWriteRoot::open(path).map_err(EngineError::storage)?,
-            encryption: Some(
-                EncryptionReader::open(&schema_root, None).map_err(EngineError::encryption)?,
-            ),
-            schema: Some(std::rc::Rc::new(SchemaTools::new(schema_root))),
-        })
+        Self::open(path)?.with_schema_configuration(schema_root, None)
     }
 
     /// Open a materialized branch worktree with schema tooling.
@@ -138,15 +230,8 @@ impl WriteEngine {
         repository_root: impl AsRef<Path>,
         schema_root: impl AsRef<Path>,
     ) -> Result<Self, EngineError> {
-        let schema_root = schema_root.as_ref().to_path_buf();
-        Ok(Self {
-            writer: NativeWriteRoot::open_with_repository(path, repository_root)
-                .map_err(EngineError::storage)?,
-            encryption: Some(
-                EncryptionReader::open(&schema_root, None).map_err(EngineError::encryption)?,
-            ),
-            schema: Some(std::rc::Rc::new(SchemaTools::new(schema_root))),
-        })
+        Self::open_with_repository(path, repository_root)?
+            .with_schema_configuration(schema_root, None)
     }
 
     /// Open a write engine with JavaScript-compatible field encryption.
@@ -161,15 +246,7 @@ impl WriteEngine {
         secret: &str,
         salt: &str,
     ) -> Result<Self, EngineError> {
-        let schema_root = schema_root.as_ref().to_path_buf();
-        Ok(Self {
-            writer: NativeWriteRoot::open(path).map_err(EngineError::storage)?,
-            encryption: Some(
-                EncryptionReader::open(&schema_root, Some((secret, salt)))
-                    .map_err(EngineError::encryption)?,
-            ),
-            schema: Some(std::rc::Rc::new(SchemaTools::new(schema_root))),
-        })
+        Self::open(path)?.with_schema_configuration(schema_root, Some((secret, salt)))
     }
 
     /// Open a materialized branch worktree with schema-driven encryption.
@@ -185,16 +262,8 @@ impl WriteEngine {
         secret: &str,
         salt: &str,
     ) -> Result<Self, EngineError> {
-        let schema_root = schema_root.as_ref().to_path_buf();
-        Ok(Self {
-            writer: NativeWriteRoot::open_with_repository(path, repository_root)
-                .map_err(EngineError::storage)?,
-            encryption: Some(
-                EncryptionReader::open(&schema_root, Some((secret, salt)))
-                    .map_err(EngineError::encryption)?,
-            ),
-            schema: Some(std::rc::Rc::new(SchemaTools::new(schema_root))),
-        })
+        Self::open_with_repository(path, repository_root)?
+            .with_schema_configuration(schema_root, Some((secret, salt)))
     }
 
     /// Canonical root identity.
@@ -214,9 +283,8 @@ impl WriteEngine {
         collection: &str,
         identifier: &str,
         fields: Map<String, Value>,
-        access: WriteAccess,
     ) -> Result<(), EngineError> {
-        self.put_document_with_metadata(collection, identifier, fields, BTreeMap::new(), access)
+        self.put_document_with_metadata(collection, identifier, fields, BTreeMap::new())
     }
 
     /// Create one document with developer metadata in the same transaction.
@@ -231,17 +299,39 @@ impl WriteEngine {
         identifier: &str,
         fields: Map<String, Value>,
         metadata: BTreeMap<String, Value>,
-        access: WriteAccess,
     ) -> Result<(), EngineError> {
-        let bytes = self.encode(collection, fields)?;
-        self.writer
-            .put_document(
-                collection,
-                identifier,
-                &bytes,
-                PutDocumentOptions { metadata, access },
-            )
-            .map_err(EngineError::storage)
+        self.record_encrypted_fields(collection)?;
+        let codec = EngineDocumentCodec::new(self);
+        let outcome = self.writer.put_document_fields_with(
+            collection,
+            identifier,
+            fields,
+            PutDocumentOptions { metadata },
+            &codec,
+        );
+        codec.finish(outcome)
+    }
+
+    /// Commit several writes to one collection as one log record, building
+    /// each body exactly as a put or a replace does: schema-declared fields
+    /// are encrypted and validated first. Recovery applies all of them or
+    /// none.
+    ///
+    /// # Errors
+    ///
+    /// As `NativeWriteRoot::commit_document_writes_with`, plus missing
+    /// encryption credentials.
+    pub fn commit_document_writes(
+        &self,
+        collection: &str,
+        writes: &[DocumentWrite],
+    ) -> Result<(), EngineError> {
+        self.record_encrypted_fields(collection)?;
+        let codec = EngineDocumentCodec::new(self);
+        let outcome = self
+            .writer
+            .commit_document_writes_with(collection, writes, &codec);
+        codec.finish(outcome)
     }
 
     /// Replace one document body, encrypting every schema-declared field first.
@@ -249,19 +339,275 @@ impl WriteEngine {
     /// # Errors
     ///
     /// Returns an error for an invalid document, missing encryption
-    /// credentials, a denied write, or any durable write failure.
+    /// credentials, or any durable write failure.
     pub fn patch_document(
         &self,
         collection: &str,
         identifier: &str,
         fields: Map<String, Value>,
-        actor: Option<&AccessContext>,
     ) -> Result<(), EngineError> {
-        let bytes = self.encode(collection, fields)?;
-        let actor = actor.map(write_actor);
+        self.record_encrypted_fields(collection)?;
+        let codec = EngineDocumentCodec::new(self);
+        let outcome = self
+            .writer
+            .patch_document_with(collection, identifier, fields, &codec);
+        codec.finish(outcome)
+    }
+
+    /// Shallow-merge `changes` into one stored document, then validate and
+    /// encrypt the merged document exactly as a put would.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a missing document, a stored field that does not
+    /// decrypt, a merged document the schema rejects, or any durable write
+    /// failure.
+    pub fn patch_document_fields(
+        &self,
+        collection: &str,
+        identifier: &str,
+        changes: &Map<String, Value>,
+    ) -> Result<(), EngineError> {
+        self.record_encrypted_fields(collection)?;
+        let codec = EngineDocumentCodec::new(self);
+        let outcome = self
+            .writer
+            .patch_document_fields_with(collection, identifier, changes, &codec);
+        codec.finish(outcome)
+    }
+
+    /// Execute a SQL `INSERT`, `UPDATE` or `DELETE`, validating and encrypting
+    /// every row it writes exactly as a put would.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed SQL, a row the schema rejects, a
+    /// stored field that does not decrypt, or any durable write failure.
+    pub fn execute_sql_mutation(&self, sql: &str) -> Result<SqlMutationResult, EngineError> {
+        let codec = EngineDocumentCodec::new(self);
+        let outcome = self.writer.execute_sql_mutation_with(sql, &codec);
+        // The statement names its collection, so the record follows the
+        // rows it encoded rather than leading them.
+        let encoded = codec.encoded.take();
+        let result = codec.finish(outcome)?;
+        for collection in encoded {
+            self.record_encrypted_fields(&collection)?;
+        }
+        Ok(result)
+    }
+
+    /// Bring `collection`'s encrypted-fields record up to the `$encrypted`
+    /// list this engine's `fylo.schema` folder declares, when the engine has
+    /// the key and the collection no registry, so a writer without the
+    /// folder encrypts those fields too, or is refused without the key. A
+    /// collection that does not exist records nothing; the write that
+    /// follows reports it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unreadable schema folder, lock contention,
+    /// or an interrupted durable write.
+    pub fn record_encrypted_fields(&self, collection: &str) -> Result<(), EngineError> {
+        let Some(encryption) = self.encryption.as_ref() else {
+            return Ok(());
+        };
+        match encryption.record_folder_declaration(collection) {
+            Err(error)
+                if matches!(
+                    error.storage_code(),
+                    Some(
+                        NativeStorageErrorCode::NotFound
+                            | NativeStorageErrorCode::InvalidCollection
+                    )
+                ) =>
+            {
+                Ok(())
+            }
+            outcome => outcome,
+        }
+    }
+
+    /// Rewrite one stored document at the head schema version: read it,
+    /// apply the JSON migrations from its `_v` (ADR 0018), then validate and
+    /// encrypt it as a put would, in one read-modify-write (ADR 0017
+    /// section 5, eager migration).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no schema root is configured, the document is
+    /// missing, a migration fails, or the head schema rejects the migrated
+    /// document.
+    pub fn migrate_document(&self, collection: &str, identifier: &str) -> Result<(), EngineError> {
+        if self.registry_head(collection)?.is_none() {
+            self.schema_tools()?;
+        }
+        // Every pre-image is migrated to the head as it is decoded, so an
+        // empty patch is the migration.
+        self.patch_document_fields(collection, identifier, &Map::new())
+    }
+
+    /// `collection`'s version chain as this engine sees it now: a write
+    /// engine reads the head on every write.
+    fn version_chain(&self, collection: &str) -> Result<Option<VersionChain>, EngineError> {
+        VersionChain::load(&self.registry, self.schema_folder(), collection)
+            .map_err(EngineError::schema)
+    }
+
+    /// A stored document as a mutation sees it: decrypted, and migrated to
+    /// the head when it is below it (ADR 0017 section 1, step 1), exactly
+    /// as a read returns it.
+    fn decode_fields_at_head(
+        &self,
+        chain: Option<&VersionChain>,
+        collection: &str,
+        fields: Map<String, Value>,
+    ) -> Result<Map<String, Value>, EngineError> {
+        match chain {
+            Some(chain) if !chain.is_at_head(&fields) => {
+                let version = chain.written_at(&fields).to_owned();
+                let decoded = self.decode_fields_at(collection, fields, &version)?;
+                chain
+                    .migrate(collection, &decoded)
+                    .map_err(EngineError::schema)
+            }
+            _ => self.decode_fields(collection, fields),
+        }
+    }
+
+    fn decode_fields_at(
+        &self,
+        collection: &str,
+        fields: Map<String, Value>,
+        version: &str,
+    ) -> Result<Map<String, Value>, EngineError> {
+        match self.encryption.as_ref() {
+            Some(encryption) => encryption
+                .decode_document_at(collection, fields, Some(version))
+                .map_err(EngineError::encryption),
+            None => self.decode_fields(collection, fields),
+        }
+    }
+
+    /// [`Self::decode_fields`] for a document about to be migrated, which
+    /// schema materialization takes to be at the oldest version when it has
+    /// no `_v`; it is decrypted as that version, too.
+    fn decode_fields_as_written(
+        &self,
+        collection: &str,
+        fields: Map<String, Value>,
+    ) -> Result<Map<String, Value>, EngineError> {
+        let Some(encryption) = self.encryption.as_ref() else {
+            return self.decode_fields(collection, fields);
+        };
+        let version = match fields.get("_v").and_then(Value::as_str) {
+            Some(version) => Some(version.to_owned()),
+            None => encryption
+                .oldest_version(collection)
+                .map_err(EngineError::encryption)?,
+        };
+        encryption
+            .decode_document_at(collection, fields, version.as_deref())
+            .map_err(EngineError::encryption)
+    }
+
+    fn decode_fields(
+        &self,
+        collection: &str,
+        fields: Map<String, Value>,
+    ) -> Result<Map<String, Value>, EngineError> {
+        if let Some(encryption) = self.encryption.as_ref() {
+            encryption
+                .decode_document(collection, fields)
+                .map_err(EngineError::encryption)
+        } else {
+            reject_undeclared_ciphertext(collection, &fields).map_err(EngineError::encryption)?;
+            Ok(fields)
+        }
+    }
+
+    /// The validation mode writes to `collection` run under (ADR 0017
+    /// section 2).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a missing collection or a corrupt descriptor.
+    pub fn validation_mode(&self, collection: &str) -> Result<ValidationMode, EngineError> {
         self.writer
-            .patch_document(collection, identifier, &bytes, actor.as_ref())
+            .validation_mode(collection)
             .map_err(EngineError::storage)
+    }
+
+    /// Record `mode` in `collection`'s catalog descriptor. Returns the mode
+    /// the descriptor recorded before, if any.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a missing collection or a failed durable write.
+    pub fn set_validation_mode(
+        &self,
+        collection: &str,
+        mode: ValidationMode,
+    ) -> Result<Option<ValidationMode>, EngineError> {
+        self.writer
+            .set_validation_mode(collection, mode)
+            .map_err(EngineError::storage)
+    }
+
+    /// `fylo schema check`: every live document of `collection` the head
+    /// schema rejects, whatever the collection's validation mode, so a
+    /// collection in `warn` mode can be brought into line before it becomes
+    /// `strict`. At most `limit` failures are listed; `failed` counts all.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no schema root is configured, the collection is
+    /// missing or not a document collection, or a stored document cannot be
+    /// read or decrypted.
+    pub fn schema_check(&self, collection: &str, limit: usize) -> Result<Value, EngineError> {
+        let current = self.schema_current(collection)?;
+        #[cfg(target_arch = "wasm32")]
+        self.require_stored_validator(collection)?;
+        let handle = self
+            .writer
+            .collection(collection)
+            .map_err(EngineError::storage)?;
+        let identifiers = handle.document_ids().map_err(EngineError::storage)?;
+        let chain = self.version_chain(collection)?;
+        let mut failures = Vec::new();
+        let mut failed = 0_usize;
+        for identifier in &identifiers {
+            let stored = match handle.read_document(identifier) {
+                Ok(stored) => stored,
+                // Deleted since it was listed.
+                Err(error) if error.code() == NativeStorageErrorCode::NotFound => continue,
+                Err(error) => return Err(EngineError::storage(error)),
+            };
+            let Ok(Value::Object(fields)) = serde_json::from_slice::<Value>(&stored.bytes) else {
+                return Err(EngineError::new(
+                    EngineErrorCode::CorruptData,
+                    format!("stored document {identifier} is not a JSON object"),
+                ));
+            };
+            // Checked as a read returns it: an old document that migrates to
+            // a valid head document passes.
+            let fields = self.decode_fields_at_head(chain.as_ref(), collection, fields)?;
+            if let Some(reason) = self.violation(collection, &fields) {
+                failed += 1;
+                if failures.len() < limit {
+                    failures.push(json!({ "id": identifier, "error": reason }));
+                }
+            }
+        }
+        Ok(json!({
+            "collection": collection,
+            "schemaDir": self.schema_folder(),
+            "current": current,
+            "validation": self.validation_mode(collection)?.as_str(),
+            "checked": identifiers.len(),
+            "failed": failed,
+            "documents": failures,
+            "truncated": failed > limit,
+        }))
     }
 
     /// `schemaInspect` for one collection.
@@ -271,9 +617,14 @@ impl WriteEngine {
     /// Returns an error when no schema root is configured or the manifest is
     /// corrupt.
     pub fn schema_inspect(&self, collection: &str) -> Result<Value, EngineError> {
-        self.schema_tools()?
-            .inspect(collection)
-            .map_err(EngineError::schema)
+        let report = if self.registry_head(collection)?.is_some() {
+            self.registry_inspection(collection)?
+        } else {
+            self.schema_tools()?
+                .inspect(collection)
+                .map_err(EngineError::schema)?
+        };
+        self.with_convergence(collection, report)
     }
 
     /// `schemaDoctor` for one collection.
@@ -282,6 +633,9 @@ impl WriteEngine {
     ///
     /// Returns an error when no schema root is configured.
     pub fn schema_doctor(&self, collection: &str) -> Result<Value, EngineError> {
+        if self.registry_head(collection)?.is_some() {
+            return self.registry_diagnosis(collection);
+        }
         Ok(self.schema_tools()?.doctor(collection))
     }
 
@@ -292,6 +646,9 @@ impl WriteEngine {
     /// Returns an error when no schema root is configured or the manifest is
     /// corrupt.
     pub fn schema_current(&self, collection: &str) -> Result<Option<String>, EngineError> {
+        if let Some(head) = self.registry_head(collection)? {
+            return Ok(Some(head.label().to_owned()));
+        }
         self.schema_tools()?
             .current_version(collection)
             .map_err(EngineError::schema)
@@ -317,25 +674,41 @@ impl WriteEngine {
         collection: &str,
         document: &Map<String, Value>,
     ) -> Result<Map<String, Value>, EngineError> {
+        #[cfg(target_arch = "wasm32")]
+        self.require_stored_validator(collection)?;
+        if let Some(validated) = self
+            .registry
+            .validate_against_head(collection, document)
+            .map_err(EngineError::schema)?
+        {
+            return Ok(validated);
+        }
         Ok(self
             .schema_tools()?
             .validate_against_head(collection, document)
             .map_err(EngineError::schema)?
-            .unwrap_or_else(|| document.clone()))
+            .unwrap_or_else(|| Document::copy_fields(document)))
     }
 
-    /// Materialize one document at the head schema version by executing the
-    /// collection's ordered JavaScript upgrader chain in the embedded runtime.
+    /// Materialize one document at the head schema version by applying the
+    /// collection's ordered chain of JSON migrations (ADR 0018).
     ///
     /// # Errors
     ///
-    /// Returns an error when the manifest or upgrader chain is invalid, an
-    /// upgrader throws, or an upgrader does not return a JSON object.
+    /// Returns an error when the manifest is invalid, a migration is missing
+    /// or malformed, or a step meets a field of the wrong type.
     pub fn schema_materialize(
         &self,
         collection: &str,
         document: &Map<String, Value>,
     ) -> Result<Map<String, Value>, EngineError> {
+        if let Some(materialized) = self
+            .registry
+            .materialize(collection, document)
+            .map_err(EngineError::schema)?
+        {
+            return Ok(materialized);
+        }
         self.schema_tools()?
             .materialize(collection, document)
             .map_err(EngineError::schema)
@@ -345,25 +718,48 @@ impl WriteEngine {
         self.schema.as_deref().ok_or_else(|| {
             EngineError::new(
                 EngineErrorCode::Schema,
-                "schema operations require FYLO_SCHEMA and both encryption credentials",
+                "schema operations require fylo.schema configuration",
             )
         })
     }
 
+    /// Why `fields` does not match `collection`'s head schema, if it does
+    /// not. Storage decides from the collection's validation mode whether this
+    /// runs and what a failure does.
+    fn violation(&self, collection: &str, fields: &Map<String, Value>) -> Option<String> {
+        match self.registry.validate_against_head(collection, fields) {
+            Ok(Some(_)) => None,
+            Err(reason) => Some(reason),
+            Ok(None) => self
+                .schema
+                .as_ref()
+                .and_then(|schema| schema.validate_against_head(collection, fields).err()),
+        }
+    }
+
+    /// The bytes a write stores for the post-image `fields`: `_v` stamped,
+    /// declared fields encrypted, canonically encoded. Validation is not part
+    /// of it; storage runs [`Self::violation`] first, under the collection's
+    /// validation mode, so the stamp and encryption apply in every mode.
     fn encode(&self, collection: &str, fields: Map<String, Value>) -> Result<Vec<u8>, EngineError> {
         let fields = if let Some(encryption) = self.encryption.as_ref() {
-            // Validate before encrypting: CHEX must see the plaintext the
-            // schema describes, and the `_v` stamp it returns must survive.
-            //
-            // The JavaScript engine validates and stamps `_v` only in strict
-            // mode, so an unconditional native stamp would make the same put
-            // produce different bytes in the two engines.
-            let fields = match self.schema.as_ref() {
-                Some(schema) if self.writer.config().strict_schema => schema
-                    .validate_against_head(collection, &fields)
-                    .map_err(EngineError::schema)?
-                    .unwrap_or(fields),
-                _ => fields,
+            // Stamp before encrypting: the stamp is plaintext metadata, and
+            // encryption must see the post-image the schema describes. A
+            // collection with a schema registry is stamped with its head
+            // there, whether or not a `fylo.schema` folder is configured.
+            let fields = match (self.registry_head(collection)?, self.schema.as_ref()) {
+                (Some(head), _) => {
+                    let mut fields = fields;
+                    fields.insert(
+                        SchemaRegistry::VERSION_FIELD.into(),
+                        Value::String(head.label().to_owned()),
+                    );
+                    fields
+                }
+                (None, Some(schema)) => schema
+                    .stamp_head(collection, fields)
+                    .map_err(EngineError::schema)?,
+                (None, None) => fields,
             };
             encryption
                 .encode_document(collection, fields)
@@ -378,50 +774,208 @@ impl WriteEngine {
     }
 }
 
-fn write_actor(actor: &AccessContext) -> WriteActor {
-    WriteActor::new(actor.uid, actor.groups.iter().copied())
+/// The write engine's validation and encryption, handed to storage for the
+/// mutations whose post-images storage computes itself (ADR 0017 section 1).
+///
+/// Storage reports codec failures as storage errors, so the engine error that
+/// caused one is kept here and returned in its place, with its own code.
+struct EngineDocumentCodec<'a> {
+    engine: &'a WriteEngine,
+    failure: std::cell::RefCell<Option<EngineError>>,
+    /// Version chains read for this mutation, which holds its collection
+    /// against other writers while it decodes.
+    chains: std::cell::RefCell<BTreeMap<String, Option<Arc<VersionChain>>>>,
+    /// Collections this mutation encoded a body for.
+    encoded: std::cell::RefCell<std::collections::BTreeSet<String>>,
 }
 
-/// Trusted actor identity supplied by a client or application boundary.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AccessContext {
-    uid: u32,
-    groups: BTreeSet<u32>,
-}
-
-impl AccessContext {
-    /// Construct an actor from a UID and trusted supplementary GIDs.
-    #[must_use]
-    pub fn new(uid: u32, groups: impl IntoIterator<Item = u32>) -> Self {
+impl<'a> EngineDocumentCodec<'a> {
+    fn new(engine: &'a WriteEngine) -> Self {
         Self {
-            uid,
-            groups: groups.into_iter().collect(),
+            engine,
+            failure: std::cell::RefCell::new(None),
+            chains: std::cell::RefCell::new(BTreeMap::new()),
+            encoded: std::cell::RefCell::default(),
         }
     }
 
-    /// Trusted actor UID.
-    #[must_use]
-    pub const fn uid(&self) -> u32 {
-        self.uid
+    fn chain(&self, collection: &str) -> Result<Option<Arc<VersionChain>>, EngineError> {
+        if let Some(chain) = self.chains.borrow().get(collection) {
+            return Ok(chain.clone());
+        }
+        let chain = self.engine.version_chain(collection)?.map(Arc::new);
+        self.chains
+            .borrow_mut()
+            .insert(collection.to_owned(), chain.clone());
+        Ok(chain)
     }
 
-    /// Trusted supplementary group IDs.
-    #[must_use]
-    pub const fn groups(&self) -> &BTreeSet<u32> {
-        &self.groups
+    fn fail(&self, error: EngineError) -> NativeStorageError {
+        let stand_in = NativeStorageError::codec_rejected(error.to_string());
+        self.failure.replace(Some(error));
+        stand_in
+    }
+
+    fn finish<T>(self, outcome: Result<T, NativeStorageError>) -> Result<T, EngineError> {
+        outcome.map_err(|error| {
+            self.failure
+                .into_inner()
+                .unwrap_or_else(|| EngineError::storage(error))
+        })
+    }
+}
+
+impl DocumentCodec for EngineDocumentCodec<'_> {
+    fn decode(
+        &self,
+        collection: &str,
+        fields: Map<String, Value>,
+    ) -> Result<Map<String, Value>, NativeStorageError> {
+        self.chain(collection)
+            .and_then(|chain| {
+                self.engine
+                    .decode_fields_at_head(chain.as_deref(), collection, fields)
+            })
+            .map_err(|error| self.fail(error))
+    }
+
+    fn decodes_for_query(&self, collection: &str) -> Result<bool, NativeStorageError> {
+        let outcome = self.chain(collection).and_then(|chain| {
+            if chain.is_some() {
+                return Ok(true);
+            }
+            Ok(match self.engine.encryption.as_ref() {
+                Some(encryption) => !encryption
+                    .encrypted_fields(collection)
+                    .map_err(EngineError::encryption)?
+                    .is_empty(),
+                None => false,
+            })
+        });
+        outcome.map_err(|error| self.fail(error))
+    }
+
+    fn validate(
+        &self,
+        collection: &str,
+        fields: &Map<String, Value>,
+    ) -> Result<Option<String>, NativeStorageError> {
+        // Storage asks only under `strict` and `warn`, and a build that
+        // cannot validate refuses the write in both (ADR 0017 section 4).
+        #[cfg(target_arch = "wasm32")]
+        self.engine
+            .require_stored_validator(collection)
+            .map_err(|error| self.fail(error))?;
+        Ok(self.engine.violation(collection, fields))
+    }
+
+    fn encode(
+        &self,
+        collection: &str,
+        fields: Map<String, Value>,
+    ) -> Result<Vec<u8>, NativeStorageError> {
+        if !self.encoded.borrow().contains(collection) {
+            self.encoded.borrow_mut().insert(collection.to_owned());
+        }
+        self.engine
+            .encode(collection, fields)
+            .map_err(|error| self.fail(error))
     }
 }
 
 impl ReadOnlyEngine {
+    const SEGMENT_READ_BATCH: usize = 256;
+
+    /// Attach schema-driven decryption without changing the repository identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid schema metadata or encryption credentials.
+    pub fn with_schema_configuration(
+        mut self,
+        schema_root: impl AsRef<Path>,
+        credentials: Option<(&str, &str)>,
+    ) -> Result<Self, EngineError> {
+        self.encryption = Some(
+            EncryptionReader::open(&schema_root, credentials, self.registry.clone())
+                .map_err(EngineError::encryption)?,
+        );
+        self.schema_dir = Some(schema_root.as_ref().to_path_buf());
+        self.chains = ChainCache::default();
+        Ok(self)
+    }
+
+    /// Return documents exactly as they are stored, below the head version
+    /// included, instead of migrated to the head (ADR 0017 section 5). Eager
+    /// migration reads this way to find the documents it has to rewrite. The
+    /// hot set holds migrated documents, so this engine does without it.
+    #[must_use]
+    pub fn as_stored(mut self) -> Self {
+        self.stored_shape = true;
+        self.hot_set = None;
+        self
+    }
+
+    /// Attach decryption keys without a `fylo.schema` folder, for collections
+    /// whose schemas live in the root's registry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid encryption credentials.
+    pub fn with_encryption_credentials(
+        mut self,
+        secret: &str,
+        salt: &str,
+    ) -> Result<Self, EngineError> {
+        self.encryption = Some(WriteEngine::rekeyed(
+            self.encryption.take(),
+            &self.registry,
+            (secret, salt),
+        )?);
+        Ok(self)
+    }
+
+    /// Answer document reads from `hot_set`, reading storage only for what
+    /// is not resident there.
+    ///
+    /// See [`HotSet`] for the contract: the caller must be the root's only
+    /// writer and clear the hot set after every change.
+    #[must_use]
+    pub fn with_hot_set(mut self, hot_set: Arc<HotSet>) -> Self {
+        self.hot_set = Some(hot_set);
+        self
+    }
+
     /// Open an existing FYLO root without modifying it.
     ///
     /// # Errors
     ///
     /// Returns an error when the root cannot be opened safely.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, EngineError> {
+        Self::open_profiled(RootOpenOptions::new(path))
+    }
+
+    /// Open an existing root with an explicit profile and owning lease.
+    ///
+    /// This read-only constructor never initializes an EFS profile descriptor.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for unsafe roots, incompatible profiles, or invalid leases.
+    pub fn open_profiled(options: RootOpenOptions) -> Result<Self, EngineError> {
+        let root = NativeRoot::open_profiled(options).map_err(EngineError::storage)?;
+        // One head per collection for this engine's lifetime: every read it
+        // answers sees the same schema version.
+        let registry = SchemaRegistry::directory(root.clone(), None).with_remembered_heads();
         Ok(Self {
-            root: NativeRoot::open(path).map_err(EngineError::storage)?,
-            encryption: None,
+            root,
+            encryption: Some(EncryptionReader::unconfigured(registry.clone())),
+            hot_set: None,
+            registry,
+            schema_dir: None,
+            stored_shape: false,
+            chains: ChainCache::default(),
+            counts: CountCache::default(),
         })
     }
 
@@ -435,11 +989,7 @@ impl ReadOnlyEngine {
         path: impl AsRef<Path>,
         repository_root: impl AsRef<Path>,
     ) -> Result<Self, EngineError> {
-        Ok(Self {
-            root: NativeRoot::open_with_repository(path, repository_root)
-                .map_err(EngineError::storage)?,
-            encryption: None,
-        })
+        Self::open_profiled(RootOpenOptions::new(path).with_repository(repository_root))
     }
 
     /// Open a read-only engine with a schema root but without a decryption key.
@@ -455,12 +1005,7 @@ impl ReadOnlyEngine {
         path: impl AsRef<Path>,
         schema_root: impl AsRef<Path>,
     ) -> Result<Self, EngineError> {
-        Ok(Self {
-            root: NativeRoot::open(path).map_err(EngineError::storage)?,
-            encryption: Some(
-                EncryptionReader::open(schema_root, None).map_err(EngineError::encryption)?,
-            ),
-        })
+        Self::open(path)?.with_schema_configuration(schema_root, None)
     }
 
     /// Open a read-only engine with JavaScript-compatible field decryption.
@@ -475,13 +1020,7 @@ impl ReadOnlyEngine {
         secret: &str,
         salt: &str,
     ) -> Result<Self, EngineError> {
-        Ok(Self {
-            root: NativeRoot::open(path).map_err(EngineError::storage)?,
-            encryption: Some(
-                EncryptionReader::open(schema_root, Some((secret, salt)))
-                    .map_err(EngineError::encryption)?,
-            ),
-        })
+        Self::open(path)?.with_schema_configuration(schema_root, Some((secret, salt)))
     }
 
     /// Canonical root identity.
@@ -521,54 +1060,74 @@ impl ReadOnlyEngine {
     /// Returns a stable error for unsafe storage, corrupt documents, invalid
     /// identifiers, or concurrent write generations.
     pub fn get(&self, collection: &str, identifier: &str) -> Result<ReadDocument, EngineError> {
-        self.get_with_access(collection, identifier, None)
+        match &self.hot_set {
+            Some(hot_set) => HotReader::new(self, hot_set, collection).get(identifier),
+            None => self.get_from_storage(collection, identifier),
+        }
     }
 
-    /// Read one document as a trusted actor.
+    fn get_from_storage(
+        &self,
+        collection: &str,
+        identifier: &str,
+    ) -> Result<ReadDocument, EngineError> {
+        let collection = self.open_collection(collection)?;
+        Self::read_stable(&collection, || self.read_document(&collection, identifier))
+    }
+
+    /// Whether a collection holds JSON documents or raw files.
+    ///
+    /// Unlike [`Self::inspect`], this lists nothing.
     ///
     /// # Errors
     ///
-    /// Returns `EACCES` when the document's portable descriptor denies reads.
-    pub fn get_as(
-        &self,
-        collection: &str,
-        identifier: &str,
-        actor: &AccessContext,
-    ) -> Result<ReadDocument, EngineError> {
-        self.get_with_access(collection, identifier, Some(actor))
+    /// Returns a stable error for a missing, unsafe or corrupt collection.
+    pub fn collection_kind(&self, collection: &str) -> Result<CollectionKind, EngineError> {
+        match &self.hot_set {
+            Some(hot_set) => HotReader::new(self, hot_set, collection).kind(),
+            None => Ok(self.open_collection(collection)?.kind()),
+        }
     }
 
-    fn get_with_access(
+    fn open_collection(&self, collection: &str) -> Result<NativeCollection, EngineError> {
+        self.root
+            .collection(collection)
+            .map_err(EngineError::storage)
+    }
+
+    /// Parse, decode and stamp one stored document.
+    fn build_record(
         &self,
         collection: &str,
         identifier: &str,
-        actor: Option<&AccessContext>,
+        stored: &StoredBytes,
     ) -> Result<ReadDocument, EngineError> {
-        let collection = self
-            .root
-            .collection(collection)
-            .map_err(EngineError::storage)?;
-        Self::read_stable(&collection, || {
-            let stored = collection
-                .read_document(identifier)
-                .map_err(EngineError::storage)?;
-            require_read_access(stored.access, actor)?;
-            let document = self.decode_document(
-                collection.name(),
-                Document::parse(&stored.bytes, DocumentLimits::default())
-                    .map_err(EngineError::format)?,
-            )?;
-            let timestamps = decode_ttid(identifier).map_err(EngineError::format)?;
-            Ok(ReadDocument {
-                metadata: CanonicalMetadata {
-                    id: identifier.to_owned(),
-                    created_at: timestamps.created_at,
-                    updated_at: stored.modified_millis,
-                    mtime: stored.modified_millis,
-                },
-                document,
-            })
+        let document = self.decode_document(
+            collection,
+            Document::parse(&stored.bytes, DocumentLimits::default())
+                .map_err(EngineError::format)?,
+        )?;
+        let timestamps = TtidTimestamps::decode(identifier).map_err(EngineError::format)?;
+        Ok(ReadDocument {
+            metadata: CanonicalMetadata {
+                id: identifier.to_owned(),
+                created_at: timestamps.created_at,
+                updated_at: stored.modified_millis,
+                mtime: stored.modified_millis,
+            },
+            document,
         })
+    }
+
+    fn read_document(
+        &self,
+        collection: &NativeCollection,
+        identifier: &str,
+    ) -> Result<ReadDocument, EngineError> {
+        let stored = collection
+            .read_document(identifier)
+            .map_err(EngineError::storage)?;
+        self.build_record(collection.name(), identifier, &stored)
     }
 
     /// Canonical plus developer metadata for one live record.
@@ -578,100 +1137,47 @@ impl ReadOnlyEngine {
     ///
     /// # Errors
     ///
-    /// Returns an error for a missing record, corrupt metadata, an unsafe
-    /// path, or denied access.
+    /// Returns an error for a missing record, corrupt metadata, or an unsafe
+    /// path.
     pub fn metadata(&self, collection: &str, identifier: &str) -> Result<Value, EngineError> {
-        self.metadata_with_access(collection, identifier, None)
-    }
-
-    /// Canonical plus developer metadata checked as one trusted actor.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same failures as [`Self::metadata`], including `EACCES`
-    /// when the actor has no read bit through owner, group, or other.
-    pub fn metadata_as(
-        &self,
-        collection: &str,
-        identifier: &str,
-        actor: &AccessContext,
-    ) -> Result<Value, EngineError> {
-        self.metadata_with_access(collection, identifier, Some(actor))
-    }
-
-    fn metadata_with_access(
-        &self,
-        collection: &str,
-        identifier: &str,
-        actor: Option<&AccessContext>,
-    ) -> Result<Value, EngineError> {
         let handle = self
             .root
             .collection(collection)
             .map_err(EngineError::storage)?;
-        if handle.kind() == CollectionKind::File {
-            let file = match actor {
-                Some(actor) => self.get_file_as(collection, identifier, actor)?,
-                None => self.get_file(collection, identifier)?,
-            };
+        Self::read_stable(&handle, || {
+            if handle.kind() == CollectionKind::File {
+                let stored = handle
+                    .read_raw_file(identifier)
+                    .map_err(EngineError::storage)?;
+                let file = build_read_file(identifier, stored)?;
+                let mut merged = file.metadata.merge_with_custom(&file.custom_metadata);
+                let descriptor = serde_json::to_value(&file.file).map_err(|error| {
+                    EngineError::new(EngineErrorCode::CorruptData, error.to_string())
+                })?;
+                if let Some(fields) = descriptor.as_object() {
+                    for (name, value) in fields {
+                        merged.insert(name.clone(), value.clone());
+                    }
+                }
+                return Ok(Value::Object(merged));
+            }
+            let record = self.read_document(&handle, identifier)?;
             let custom: Map<String, Value> = handle
                 .read_custom_metadata(identifier)
                 .map_err(EngineError::storage)?
                 .into_iter()
                 .collect();
-            let mut merged = file.metadata.merge_with_custom(&custom);
-            let descriptor = serde_json::to_value(&file.file).map_err(|error| {
-                EngineError::new(EngineErrorCode::CorruptData, error.to_string())
-            })?;
-            if let Some(fields) = descriptor.as_object() {
-                for (name, value) in fields {
-                    merged.entry(name.clone()).or_insert_with(|| value.clone());
-                }
-            }
-            return Ok(Value::Object(merged));
-        }
-        let record = match actor {
-            Some(actor) => self.get_as(collection, identifier, actor)?,
-            None => self.get(collection, identifier)?,
-        };
-        let custom: Map<String, Value> = handle
-            .read_custom_metadata(identifier)
-            .map_err(EngineError::storage)?
-            .into_iter()
-            .collect();
-        Ok(Value::Object(record.metadata.merge_with_custom(&custom)))
+            Ok(Value::Object(record.metadata.merge_with_custom(&custom)))
+        })
     }
 
-    /// Read one unwrapped raw file with canonical, custom, and native metadata.
+    /// Read one unwrapped raw file with canonical and custom metadata.
     ///
     /// # Errors
     ///
     /// Returns a stable error for unsafe storage, missing/corrupt xattrs,
     /// invalid identifiers, oversized files, or concurrent write generations.
     pub fn get_file(&self, collection: &str, identifier: &str) -> Result<ReadFile, EngineError> {
-        self.get_file_with_access(collection, identifier, None)
-    }
-
-    /// Read one raw file as a trusted actor.
-    ///
-    /// # Errors
-    ///
-    /// Returns `EACCES` when the file's portable descriptor denies reads.
-    pub fn get_file_as(
-        &self,
-        collection: &str,
-        identifier: &str,
-        actor: &AccessContext,
-    ) -> Result<ReadFile, EngineError> {
-        self.get_file_with_access(collection, identifier, Some(actor))
-    }
-
-    fn get_file_with_access(
-        &self,
-        collection: &str,
-        identifier: &str,
-        actor: Option<&AccessContext>,
-    ) -> Result<ReadFile, EngineError> {
         let collection = self
             .root
             .collection(collection)
@@ -680,7 +1186,6 @@ impl ReadOnlyEngine {
             let stored = collection
                 .read_raw_file(identifier)
                 .map_err(EngineError::storage)?;
-            require_read_access(stored.access_descriptor, actor)?;
             build_read_file(identifier, stored)
         })
     }
@@ -696,29 +1201,6 @@ impl ReadOnlyEngine {
         collection: &str,
         identifier: &str,
     ) -> Result<ReadDeletedDocument, EngineError> {
-        self.get_deleted_with_access(collection, identifier, None)
-    }
-
-    /// Read one retained deleted document as a trusted actor.
-    ///
-    /// # Errors
-    ///
-    /// Returns `EACCES` when the retained descriptor denies reads.
-    pub fn get_deleted_as(
-        &self,
-        collection: &str,
-        identifier: &str,
-        actor: &AccessContext,
-    ) -> Result<ReadDeletedDocument, EngineError> {
-        self.get_deleted_with_access(collection, identifier, Some(actor))
-    }
-
-    fn get_deleted_with_access(
-        &self,
-        collection: &str,
-        identifier: &str,
-        actor: Option<&AccessContext>,
-    ) -> Result<ReadDeletedDocument, EngineError> {
         let collection = self
             .root
             .collection(collection)
@@ -727,13 +1209,12 @@ impl ReadOnlyEngine {
             let stored = collection
                 .read_deleted_document(identifier)
                 .map_err(EngineError::storage)?;
-            require_read_access(stored.access, actor)?;
             let document = self.decode_document(
                 collection.name(),
                 Document::parse(&stored.bytes, DocumentLimits::default())
                     .map_err(EngineError::format)?,
             )?;
-            let timestamps = decode_ttid(identifier).map_err(EngineError::format)?;
+            let timestamps = TtidTimestamps::decode(identifier).map_err(EngineError::format)?;
             Ok(ReadDeletedDocument {
                 id: identifier.to_owned(),
                 created_at: timestamps.created_at,
@@ -754,29 +1235,6 @@ impl ReadOnlyEngine {
         collection: &str,
         identifier: &str,
     ) -> Result<ReadDeletedFile, EngineError> {
-        self.get_deleted_file_with_access(collection, identifier, None)
-    }
-
-    /// Read one retained deleted raw file as a trusted actor.
-    ///
-    /// # Errors
-    ///
-    /// Returns `EACCES` when the retained descriptor denies reads.
-    pub fn get_deleted_file_as(
-        &self,
-        collection: &str,
-        identifier: &str,
-        actor: &AccessContext,
-    ) -> Result<ReadDeletedFile, EngineError> {
-        self.get_deleted_file_with_access(collection, identifier, Some(actor))
-    }
-
-    fn get_deleted_file_with_access(
-        &self,
-        collection: &str,
-        identifier: &str,
-        actor: Option<&AccessContext>,
-    ) -> Result<ReadDeletedFile, EngineError> {
         let collection = self
             .root
             .collection(collection)
@@ -785,7 +1243,6 @@ impl ReadOnlyEngine {
             let stored = collection
                 .read_deleted_raw_file(identifier)
                 .map_err(EngineError::storage)?;
-            require_read_access(stored.access_descriptor, actor)?;
             let deleted_at = stored.modified_millis;
             Ok(ReadDeletedFile {
                 deleted_at,
@@ -811,7 +1268,7 @@ impl ReadOnlyEngine {
             .map_err(EngineError::storage)?;
         Self::read_stable(&collection, || {
             collection
-                .index_snapshot()
+                .shared_index_snapshot()
                 .map_err(EngineError::storage)?
                 .scan(queries, QueryLimits::default())
                 .map_err(EngineError::query)?
@@ -863,12 +1320,15 @@ impl ReadOnlyEngine {
                         let stored = collection
                             .read_document(&identifier)
                             .map_err(EngineError::storage)?;
-                        self.decode_document(
+                        // The index is built from documents as stored, so it
+                        // is checked against them, not their head shape.
+                        self.decrypt_fields(
                             collection.name(),
                             Document::parse(&stored.bytes, DocumentLimits::default())
-                                .map_err(EngineError::format)?,
+                                .map_err(EngineError::format)?
+                                .into_fields(),
+                            None,
                         )?
-                        .into_fields()
                     }
                     CollectionKind::File => {
                         let stored = collection
@@ -884,7 +1344,7 @@ impl ReadOnlyEngine {
                                 "encrypted index field has no schema/key context".to_owned()
                             })?;
                             encryption
-                                .blind_index(value)
+                                .blind_index(collection.name(), value)
                                 .map(IndexLookupValue::encrypted)
                         } else {
                             Ok(IndexLookupValue::plain(value))
@@ -945,107 +1405,44 @@ impl ReadOnlyEngine {
         collection: &str,
         query: &StructuredQuery,
     ) -> Result<Vec<ReadDocument>, EngineError> {
-        self.find_with_access(collection, query, None)
+        match &self.hot_set {
+            Some(hot_set) => HotReader::new(self, hot_set, collection).find(query),
+            None => self.find_from_storage(collection, query),
+        }
     }
 
-    /// Narrow a query to the documents the prefix index says could match.
-    ///
-    /// Returns `None` when the query cannot be planned, which means "read
-    /// everything" — the honest answer for a predicate the index cannot
-    /// select on. Planning is deliberately limited to equality: it is what the
-    /// index answers exactly, and a wrong candidate set here would silently
-    /// lose rows rather than merely run slowly.
-    ///
-    /// A document matches the query when any operation matches, so candidates
-    /// are unioned across operations; an operation matches when every field
-    /// does, so candidates are intersected within one. If any single operation
-    /// cannot be planned, the union would be incomplete and the whole query
-    /// falls back.
-    fn plan_equality_candidates(
+    fn plan_index_candidates(
         &self,
         collection: &NativeCollection,
         query: &StructuredQuery,
     ) -> Result<Option<Vec<String>>, EngineError> {
-        if query.operations().is_empty() {
+        let encrypted_fields = self.encrypted_fields(collection.name())?;
+        let Some(plan) = index_plan::IndexPlan::new(query, &encrypted_fields) else {
+            return Ok(None);
+        };
+        // An index built from documents below the head can be wrong for the
+        // fields their migrations write; such a query reads every document.
+        if let Some(guard) = self.migration_guard(collection)?
+            && !guard.allows(&plan)
+        {
             return Ok(None);
         }
-        // A schema-encrypted field is indexed under a keyed blind token, so it
-        // is left to the scan rather than planned from the plaintext operand.
-        let encrypted_fields = self
+        // Only the key ranges the plan reads are loaded, however large the
+        // index is.
+        let snapshot = collection
+            .index_snapshot_in_ranges(&plan.key_ranges())
+            .map_err(EngineError::storage)?;
+        plan.scan(&snapshot).map(Some)
+    }
+
+    fn encrypted_fields(&self, collection: &str) -> Result<Vec<String>, EngineError> {
+        Ok(self
             .encryption
             .as_ref()
-            .map(|encryption| encryption.encrypted_fields(collection.name()))
+            .map(|encryption| encryption.encrypted_fields(collection))
             .transpose()
             .map_err(EngineError::encryption)?
-            .unwrap_or_default();
-
-        let mut prefixes: Vec<Vec<String>> = Vec::new();
-        for operation in query.operations() {
-            let mut operands = Vec::new();
-            for (field, operand) in operation {
-                let Some(operand) = operand.as_object() else {
-                    return Ok(None);
-                };
-                // Every operator in the operand must be planned, or the
-                // candidates would be a superset the predicate still filters —
-                // correct, but no narrower than a scan for the unplanned part.
-                // Only `$eq` alone is worth planning.
-                let [("$eq", value)] = operand
-                    .iter()
-                    .map(|(name, value)| (name.as_str(), value))
-                    .collect::<Vec<_>>()[..]
-                else {
-                    return Ok(None);
-                };
-                let field_path = field.replace('.', "/");
-                if is_encrypted_field(&field_path, &encrypted_fields) {
-                    return Ok(None);
-                }
-                let Some(prefix) = fylo_query::equality_prefix(&field_path, value) else {
-                    return Ok(None);
-                };
-                operands.push(prefix);
-            }
-            if operands.is_empty() {
-                return Ok(None);
-            }
-            prefixes.push(operands);
-        }
-
-        let snapshot = collection.index_snapshot().map_err(EngineError::storage)?;
-        let mut union = BTreeSet::new();
-        for operands in prefixes {
-            let mut candidates: Option<BTreeSet<String>> = None;
-            for prefix in operands {
-                let matched = snapshot
-                    .scan(
-                        &[ScanQuery {
-                            prefix,
-                            range: None,
-                        }],
-                        QueryLimits::default(),
-                    )
-                    .map_err(EngineError::query)?
-                    .into_iter()
-                    .map(|identifier| {
-                        String::from_utf8(identifier).map_err(|error| {
-                            EngineError::new(
-                                EngineErrorCode::CorruptData,
-                                format!("index document identifier is not UTF-8: {error}"),
-                            )
-                        })
-                    })
-                    .collect::<Result<BTreeSet<_>, _>>()?;
-                candidates = Some(match candidates {
-                    Some(current) => current.intersection(&matched).cloned().collect(),
-                    None => matched,
-                });
-            }
-            union.extend(candidates.unwrap_or_default());
-        }
-        // Sorted, because the caller's contract is TTID-ascending rows and a
-        // set iterates in key order rather than storage order.
-        Ok(Some(union.into_iter().collect()))
+            .unwrap_or_default())
     }
 
     /// Join two document collections.
@@ -1057,15 +1454,11 @@ impl ReadOnlyEngine {
     /// # Errors
     ///
     /// Returns a stable error for unsafe/corrupt storage or an invalid join.
-    pub fn join(
-        &self,
-        join: &JoinSpec,
-        actor: Option<&AccessContext>,
-    ) -> Result<JoinResult, EngineError> {
+    pub fn join(&self, join: &JoinSpec) -> Result<JoinResult, EngineError> {
         let empty = StructuredQuery::from_value(&json!({}), QueryLimits::default())
             .map_err(EngineError::query)?;
-        let left = self.find_with_access(join.left_collection(), &empty, actor)?;
-        let right = self.find_with_access(join.right_collection(), &empty, actor)?;
+        let left = self.find(join.left_collection(), &empty)?;
+        let right = self.find(join.right_collection(), &empty)?;
 
         let mut rows: Vec<JoinedRow> = Vec::new();
         'outer: for left_row in &left {
@@ -1131,23 +1524,6 @@ impl ReadOnlyEngine {
         ))
     }
 
-    /// Execute a structured query as a trusted actor.
-    ///
-    /// Protected rows that deny reads are omitted, matching the JavaScript
-    /// collection cursor.
-    ///
-    /// # Errors
-    ///
-    /// Returns a stable error for unsafe/corrupt storage or invalid queries.
-    pub fn find_as(
-        &self,
-        collection: &str,
-        query: &StructuredQuery,
-        actor: &AccessContext,
-    ) -> Result<Vec<ReadDocument>, EngineError> {
-        self.find_with_access(collection, query, Some(actor))
-    }
-
     /// Execute a structured query over live raw-file manifests.
     ///
     /// # Errors
@@ -1158,7 +1534,6 @@ impl ReadOnlyEngine {
         &self,
         collection: &str,
         query: &StructuredQuery,
-        actor: Option<&AccessContext>,
     ) -> Result<Vec<RawFileQueryRow>, EngineError> {
         let collection = self
             .root
@@ -1171,7 +1546,7 @@ impl ReadOnlyEngine {
             ));
         }
         Self::read_stable(&collection, || {
-            let identifiers = match self.plan_equality_candidates(&collection, query)? {
+            let identifiers = match self.plan_index_candidates(&collection, query)? {
                 Some(candidates) => candidates,
                 None => collection.raw_file_ids().map_err(EngineError::storage)?,
             };
@@ -1180,12 +1555,9 @@ impl ReadOnlyEngine {
                 let stored = collection
                     .read_raw_file(&identifier)
                     .map_err(EngineError::storage)?;
-                if !read_access_allowed(stored.access_descriptor, actor) {
-                    continue;
-                }
                 let updated_at = stored.modified_millis;
                 let fields = raw_file_index_fields(&identifier, stored)?;
-                let created_at = decode_ttid(&identifier)
+                let created_at = TtidTimestamps::decode(&identifier)
                     .map_err(EngineError::format)?
                     .created_at;
                 if !query.matches(&fields, created_at, updated_at) {
@@ -1213,7 +1585,6 @@ impl ReadOnlyEngine {
         &self,
         collection: &str,
         query: &StructuredQuery,
-        actor: Option<&AccessContext>,
     ) -> Result<Vec<RawFileQueryRow>, EngineError> {
         let collection = self
             .root
@@ -1234,12 +1605,9 @@ impl ReadOnlyEngine {
                 let stored = collection
                     .read_deleted_raw_file(&identifier)
                     .map_err(EngineError::storage)?;
-                if !read_access_allowed(stored.access_descriptor, actor) {
-                    continue;
-                }
                 let deleted_at = stored.modified_millis;
                 let fields = raw_file_index_fields(&identifier, stored)?;
-                let created_at = decode_ttid(&identifier)
+                let created_at = TtidTimestamps::decode(&identifier)
                     .map_err(EngineError::format)?
                     .created_at;
                 if !query.matches(&fields, created_at, deleted_at) {
@@ -1257,65 +1625,73 @@ impl ReadOnlyEngine {
         })
     }
 
-    fn find_with_access(
+    fn find_from_storage(
         &self,
         collection: &str,
         query: &StructuredQuery,
-        actor: Option<&AccessContext>,
     ) -> Result<Vec<ReadDocument>, EngineError> {
-        let collection = self
-            .root
-            .collection(collection)
-            .map_err(EngineError::storage)?;
+        let collection = self.open_collection(collection)?;
         Self::read_stable(&collection, || {
             // Documents are the truth and the index is an accelerator, so a
             // planned query narrows which documents are read and the predicate
             // is still applied to each one. The index can only over-match — an
             // array is indexed per element — never under-match.
-            let planned = self.plan_equality_candidates(&collection, query)?;
+            let planned = self.plan_index_candidates(&collection, query)?;
             let identifiers = match planned {
                 Some(candidates) => candidates,
                 None => collection.document_ids().map_err(EngineError::storage)?,
             };
             let mut records = Vec::new();
-            for identifier in identifiers {
-                let stored = collection
-                    .read_document(&identifier)
+            for batch in identifiers.chunks(Self::read_batch(&collection)) {
+                let stored_batch = collection
+                    .read_documents(batch)
                     .map_err(EngineError::storage)?;
-                if !read_access_allowed(stored.access, actor) {
-                    continue;
-                }
-                let document = self.decode_document(
-                    collection.name(),
-                    Document::parse(&stored.bytes, DocumentLimits::default())
-                        .map_err(EngineError::format)?,
-                )?;
-                let timestamps = decode_ttid(&identifier).map_err(EngineError::format)?;
-                if !query.matches(
-                    document.fields(),
-                    timestamps.created_at,
-                    stored.modified_millis,
-                ) {
-                    continue;
-                }
-                records.push(ReadDocument {
-                    metadata: CanonicalMetadata {
-                        id: identifier,
-                        created_at: timestamps.created_at,
-                        updated_at: stored.modified_millis,
-                        mtime: stored.modified_millis,
-                    },
-                    document,
-                });
-                if query
-                    .limit()
-                    .is_some_and(|limit| limit > 0 && records.len() >= limit)
-                {
-                    break;
+                for (identifier, stored) in batch.iter().zip(stored_batch) {
+                    if let Some(record) =
+                        self.query_record(&collection, query, (identifier, stored))?
+                    {
+                        records.push(record);
+                    }
+                    if query
+                        .limit()
+                        .is_some_and(|limit| limit > 0 && records.len() >= limit)
+                    {
+                        return Ok(records);
+                    }
                 }
             }
             Ok(records)
         })
+    }
+
+    /// Documents a query reads at a time. A segment collection reads a batch
+    /// with a few coalesced reads; a file collection reads one file per
+    /// document either way, so it reads one at a time and stops at a limit
+    /// without reading further.
+    fn read_batch(collection: &NativeCollection) -> usize {
+        match collection.layout() {
+            CollectionLayout::Segments => Self::SEGMENT_READ_BATCH,
+            CollectionLayout::Files => 1,
+        }
+    }
+
+    /// The query result for one stored document, or `None` when the
+    /// predicate does not match.
+    fn query_record(
+        &self,
+        collection: &NativeCollection,
+        query: &StructuredQuery,
+        (identifier, stored): (&str, StoredBytes),
+    ) -> Result<Option<ReadDocument>, EngineError> {
+        let record = self.build_record(collection.name(), identifier, &stored)?;
+        if !query.matches(
+            record.document.fields(),
+            record.metadata.created_at,
+            record.metadata.updated_at,
+        ) {
+            return Ok(None);
+        }
+        Ok(Some(record))
     }
 
     /// Execute a structured query across retained tombstones.
@@ -1330,7 +1706,6 @@ impl ReadOnlyEngine {
         &self,
         collection: &str,
         query: &StructuredQuery,
-        actor: Option<&AccessContext>,
     ) -> Result<Vec<ReadDeletedDocument>, EngineError> {
         let collection = self
             .root
@@ -1345,15 +1720,13 @@ impl ReadOnlyEngine {
                 let stored = collection
                     .read_deleted_document(&identifier)
                     .map_err(EngineError::storage)?;
-                if !read_access_allowed(stored.access, actor) {
-                    continue;
-                }
                 let document = self.decode_document(
                     collection.name(),
                     Document::parse(&stored.bytes, DocumentLimits::default())
                         .map_err(EngineError::format)?,
                 )?;
-                let timestamps = decode_ttid(&identifier).map_err(EngineError::format)?;
+                let timestamps =
+                    TtidTimestamps::decode(&identifier).map_err(EngineError::format)?;
                 if !query.matches(
                     document.fields(),
                     timestamps.created_at,
@@ -1389,27 +1762,6 @@ impl ReadOnlyEngine {
     /// Returns a stable error for non-SELECT plans, joins, malformed query
     /// ASTs, unsafe storage, or unstable collection generations.
     pub fn select_sql(&self, plan: &SqlPlan) -> Result<Value, EngineError> {
-        self.select_sql_with_access(plan, None)
-    }
-
-    /// Execute a read-only SQL plan as a trusted actor.
-    ///
-    /// # Errors
-    ///
-    /// Returns a stable error for invalid plans, storage, or access failures.
-    pub fn select_sql_as(
-        &self,
-        plan: &SqlPlan,
-        actor: &AccessContext,
-    ) -> Result<Value, EngineError> {
-        self.select_sql_with_access(plan, Some(actor))
-    }
-
-    fn select_sql_with_access(
-        &self,
-        plan: &SqlPlan,
-        actor: Option<&AccessContext>,
-    ) -> Result<Value, EngineError> {
         if plan.operation != SqlOperation::Select {
             return Err(EngineError::new(
                 EngineErrorCode::Query,
@@ -1424,8 +1776,37 @@ impl ReadOnlyEngine {
         }
         let query = StructuredQuery::from_value(&plan.ast, QueryLimits::default())
             .map_err(EngineError::query)?;
-        let records = self.find_with_access(&plan.collection, &query, actor)?;
+        let records = self.find(&plan.collection, &query)?;
         Ok(shape_select_results(records, &plan.ast))
+    }
+
+    /// Top-level field names the collection's head schema declares, in
+    /// schema order, with the optional-field `?` removed; `None` for a
+    /// collection without a schema in the root's registry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a corrupt registry.
+    pub fn head_schema_fields(&self, collection: &str) -> Result<Option<Vec<String>>, EngineError> {
+        let Some(head) = self
+            .registry
+            .head(collection)
+            .map_err(EngineError::schema)?
+        else {
+            return Ok(None);
+        };
+        let fields = head
+            .record
+            .chex
+            .as_object()
+            .map_or_else(Vec::new, |schema| {
+                schema
+                    .keys()
+                    .filter(|name| !name.starts_with('$'))
+                    .map(|name| name.trim_end_matches('?').to_owned())
+                    .collect()
+            });
+        Ok(Some(fields))
     }
 
     /// Inspect one collection without changing any files.
@@ -1473,88 +1854,94 @@ impl ReadOnlyEngine {
             Ok(CollectionInspection {
                 collection: collection.name().to_owned(),
                 kind: collection.kind(),
+                layout: collection.layout(),
                 generation: generation.generation,
                 state: generation.state,
                 document_count,
                 file_count,
                 deleted_count,
                 index_bytes,
+                validation: collection.validation(),
+                schema_violations: fylo_storage_native::schema_violations(
+                    self.root.path(),
+                    collection.name(),
+                ),
                 read_only: true,
             })
         })
     }
 
+    /// Run `read` until it starts and ends at one stable generation. Its
+    /// outcome, an error included, is kept only then: a read a write
+    /// overlapped, such as one that listed a document deleted before it was
+    /// read (issue #104), is dropped and run again.
     fn read_stable<T>(
         collection: &NativeCollection,
         read: impl Fn() -> Result<T, EngineError>,
     ) -> Result<T, EngineError> {
         for _ in 0..MAX_STABLE_READ_ATTEMPTS {
-            let before = collection.generation().map_err(EngineError::storage)?;
-            if before.state == GenerationStatus::Writing {
+            let Some(before) = Self::read_attempt_generation(collection)? else {
                 continue;
-            }
-            let value = read()?;
-            let after = collection.generation().map_err(EngineError::storage)?;
-            if after.state == GenerationStatus::Stable && after.generation == before.generation {
-                return Ok(value);
+            };
+            let value = read();
+            let Some(after) = Self::read_attempt_generation(collection)? else {
+                continue;
+            };
+            if stable_generation_observed(after.state, before.generation, after.generation) {
+                return value;
             }
         }
-        Err(EngineError::new(
-            EngineErrorCode::ConcurrentWrite,
-            "collection changed during a read-only operation",
-        ))
+        Err(Self::concurrent_write())
     }
 
+    /// The collection's generation and log end, refusing a collection that
+    /// is being written or has a committed record not yet applied.
+    fn stable_generation(collection: &NativeCollection) -> Result<GenerationState, EngineError> {
+        Self::read_attempt_generation(collection)?.ok_or_else(Self::concurrent_write)
+    }
+
+    fn concurrent_write() -> EngineError {
+        EngineError::new(
+            EngineErrorCode::ConcurrentWrite,
+            "collection changed during a read-only operation",
+        )
+    }
+
+    fn read_attempt_generation(
+        collection: &NativeCollection,
+    ) -> Result<Option<GenerationState>, EngineError> {
+        match collection.generation() {
+            Ok(state) if state.state == GenerationStatus::Writing => Ok(None),
+            Ok(state) => Ok(Some(state)),
+            Err(error) if error.code() == NativeStorageErrorCode::ConcurrentWrite => Ok(None),
+            Err(error) => Err(EngineError::storage(error)),
+        }
+    }
+
+    /// The one point every document read passes: decrypt the stored body
+    /// and, for a document below its collection's head version, migrate it
+    /// to the head in memory (ADR 0017 section 5).
     fn decode_document(
         &self,
         collection: &str,
         document: Document,
     ) -> Result<Document, EngineError> {
-        let fields = document.into_fields();
-        let fields = if let Some(encryption) = &self.encryption {
-            encryption
-                .decode_document(collection, fields)
-                .map_err(EngineError::encryption)?
-        } else {
-            reject_undeclared_ciphertext(collection, &fields).map_err(EngineError::encryption)?;
-            fields
-        };
+        let fields = self.present_fields(collection, document.into_fields())?;
         Document::try_from_value(Value::Object(fields), DocumentLimits::default())
             .map_err(EngineError::format)
     }
 }
 
-fn require_read_access(
-    descriptor: Option<AccessDescriptor>,
-    actor: Option<&AccessContext>,
-) -> Result<(), EngineError> {
-    if read_access_allowed(descriptor, actor) {
-        Ok(())
-    } else {
-        Err(EngineError::new(
-            EngineErrorCode::Access,
-            "portable FYLO access descriptor denied the read",
-        ))
-    }
-}
-
-fn read_access_allowed(
-    descriptor: Option<AccessDescriptor>,
-    actor: Option<&AccessContext>,
+fn stable_generation_observed(
+    after_state: GenerationStatus,
+    before_generation: u64,
+    after_generation: u64,
 ) -> bool {
-    let Some(descriptor) = descriptor else {
-        return true;
-    };
-    let bits = match actor {
-        Some(actor) if actor.uid == descriptor.uid => (descriptor.mode >> 6) & 0o7,
-        Some(actor) if actor.groups.contains(&descriptor.gid) => (descriptor.mode >> 3) & 0o7,
-        _ => descriptor.mode & 0o7,
-    };
-    bits & 0o4 != 0
+    after_state == GenerationStatus::Stable && after_generation == before_generation
 }
 
 fn build_read_file(identifier: &str, stored: StoredRawFile) -> Result<ReadFile, EngineError> {
-    let timestamps = decode_ttid(identifier).map_err(EngineError::format)?;
+    let timestamps = TtidTimestamps::decode(identifier).map_err(EngineError::format)?;
     let metadata = CanonicalMetadata {
         id: identifier.to_owned(),
         created_at: timestamps.created_at,
@@ -1575,7 +1962,6 @@ fn build_read_file(identifier: &str, stored: StoredRawFile) -> Result<ReadFile, 
         },
         metadata,
         custom_metadata: stored.custom_metadata.into_iter().collect(),
-        access: stored.access,
         bytes: stored.bytes,
     })
 }
@@ -1769,8 +2155,6 @@ pub struct ReadFile {
     pub file: RawFileManifest,
     /// Developer-defined xattr/ADS metadata.
     pub custom_metadata: Map<String, Value>,
-    /// Native owner, group, and permission mode.
-    pub access: NativeAccess,
     /// Unwrapped file bytes. Protocol adapters must choose a bounded encoding.
     #[serde(skip_serializing)]
     pub bytes: Vec<u8>,
@@ -1820,6 +2204,8 @@ pub struct CollectionInspection {
     pub collection: String,
     /// Document or file collection.
     pub kind: CollectionKind,
+    /// How the collection stores its documents.
+    pub layout: CollectionLayout,
     /// Stable transaction generation.
     pub generation: u64,
     /// Stable/writing state observed by the reader.
@@ -1832,6 +2218,12 @@ pub struct CollectionInspection {
     pub deleted_count: usize,
     /// Immutable index snapshot bytes, or zero when absent.
     pub index_bytes: usize,
+    /// Validation mode the collection's descriptor records. `None` means the
+    /// writing host's `strict_schema` setting decides (ADR 0017 section 2).
+    pub validation: Option<ValidationMode>,
+    /// Writes this process committed in `warn` mode although the schema
+    /// rejected them.
+    pub schema_violations: u64,
     /// Always true for this preview engine.
     pub read_only: bool,
 }
@@ -1851,12 +2243,22 @@ pub enum EngineErrorCode {
     ConcurrentWrite,
     /// Encrypted data could not be safely decoded.
     Encryption,
-    /// Portable UID/GID/mode policy denied the operation.
+    /// The identity the root was opened with may not do the operation.
     Access,
     /// The native engine cannot honour a documented contract on this input.
     Unsupported,
     /// A document failed schema validation, or schema tooling failed.
     Schema,
+    /// A schema version label is already committed with different content;
+    /// committed versions are immutable (ADR 0017 section 3).
+    SchemaConflict,
+    /// A schema declares an array whose items are objects, which the
+    /// document format refuses on every write (ADR 0017 section 2).
+    ArrayOfObjects,
+    /// This build cannot validate the collection's head schema version, so
+    /// it refuses the write rather than store an unvalidated document
+    /// (ADR 0017 section 4, "Fail closed").
+    SchemaUnavailable,
 }
 
 impl EngineErrorCode {
@@ -1873,6 +2275,9 @@ impl EngineErrorCode {
             Self::Access => "EACCES",
             Self::Unsupported => "EENGINE_UNSUPPORTED",
             Self::Schema => "ESCHEMA",
+            Self::SchemaConflict => "ESCHEMACONFLICT",
+            Self::ArrayOfObjects => "EARRAYOFOBJECTS",
+            Self::SchemaUnavailable => "ESCHEMAUNAVAILABLE",
         }
     }
 }
@@ -1898,7 +2303,18 @@ impl EngineError {
         Self::new(EngineErrorCode::Schema, message)
     }
 
+    #[cfg(any(test, target_arch = "wasm32"))]
+    fn schema_unavailable(message: String) -> Self {
+        Self::new(EngineErrorCode::SchemaUnavailable, message)
+    }
+
     fn storage(error: NativeStorageError) -> Self {
+        // Storage enforces the schema (ADR 0017 section 1), but a rejected
+        // document is the same schema failure it was when the engine refused
+        // it, with the same code and message.
+        if error.code() == NativeStorageErrorCode::SchemaViolation {
+            return Self::schema(error.message().to_owned());
+        }
         Self {
             code: EngineErrorCode::Storage,
             message: error.to_string(),
@@ -1983,5 +2399,38 @@ impl std::error::Error for EngineError {
         self.source
             .as_ref()
             .map(|error| error.as_ref() as &(dyn std::error::Error + 'static))
+    }
+}
+
+#[cfg(test)]
+mod mcdc_tests {
+    use super::*;
+    use fylo_test_support::{McdcCase, assert_unique_cause_mcdc};
+
+    fn stable_case(
+        name: &'static str,
+        state: GenerationStatus,
+        before: u64,
+        after: u64,
+    ) -> McdcCase<2> {
+        McdcCase::new(
+            name,
+            [state == GenerationStatus::Stable, after == before],
+            stable_generation_observed(state, before, after),
+        )
+    }
+
+    #[test]
+    fn mcdc_engine_stable_generation_observation() {
+        let cases = [
+            stable_case("stable_same_generation", GenerationStatus::Stable, 7, 7),
+            stable_case("writer_visible", GenerationStatus::Writing, 7, 7),
+            stable_case("generation_changed", GenerationStatus::Stable, 7, 8),
+        ];
+        assert_unique_cause_mcdc(
+            "engine.stable_generation_observation",
+            ["after_is_stable", "generation_unchanged"],
+            &cases,
+        );
     }
 }

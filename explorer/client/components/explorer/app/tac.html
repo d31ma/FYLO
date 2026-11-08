@@ -10,7 +10,7 @@
                 >{rootName}</w-chip
             >
         </logic>
-        <logic :if="status === 'open' && writable">
+        <logic :if="status === 'open' && rootWritable">
             <span class="explorer-write-status" role="status" aria-label="Write access enabled"
                 >writes on</span
             >
@@ -38,7 +38,7 @@
         >
             <w-icon name="◐"></w-icon>
         </button>
-        <logic :if="status === 'open' && !writable">
+        <logic :if="status === 'open' && !rootWritable">
             <button type="button" class="w-btn w-btn-outlined w-btn--sm" on:click="enableWrites()">
                 Enable writes
             </button>
@@ -63,27 +63,24 @@
             </button>
         </div>
     </logic>
-    <logic :if="writable && lockWarning">
+    <logic :if="rootWritable && lockWarning">
         <w-alert variant="warning" title="Database may be in use">
             This root has live lock files — another FYLO process may be writing to it. There is no
             cross-process locking from a browser; concurrent writes are last-writer-wins.
         </w-alert>
     </logic>
 
-    <switch :value="status">
-        <case :when="'unsupported'">
-            <div class="explorer-center">
+    <logic :if="status === 'pick' || status === 'unsupported'">
+        <div class="explorer-center">
+            <logic :if="status === 'unsupported'">
                 <h2>{unsupportedBrowser} can't open local folders</h2>
                 <p>
                     Fylo Explorer needs the File System Access API to read a real FYLO folder.
                     {unsupportedBrowser} does not provide it. Use a current desktop version of
-                    Chrome, Edge, or Brave instead.
+                    Chrome, Edge, or Brave instead, or open a single .vdbx database file below.
                 </p>
-            </div>
-        </case>
-
-        <case :when="'pick'">
-            <div class="explorer-center">
+            </logic>
+            <logic :if="status === 'pick'">
                 <div class="explorer-intro">
                     <h1>Fylo Explorer (FX)</h1>
                     <p class="explorer-intro-lead">
@@ -159,6 +156,191 @@
                         </loop>
                     </ul>
                 </logic>
+            </logic>
+            <section
+                :class="databaseDropping ? 'explorer-database-open is-dropping' : 'explorer-database-open'"
+                aria-labelledby="explorer-database-heading"
+                on:dragover="databaseDragOver(event)"
+                on:dragleave="databaseDragLeave()"
+                on:drop="databaseDrop(event)"
+            >
+                <h2 id="explorer-database-heading">Open a database file</h2>
+                <p>
+                    A .vdbx file holds a whole FYLO database. It opens read-only in any current
+                    browser, including Firefox and Safari. Drop one here or choose it.
+                    <logic :if="canCopyDatabase">
+                        To change it, edit a copy kept in this browser and save it back.
+                    </logic>
+                </p>
+                <div class="explorer-tool-row">
+                    <logic :if="canPickDatabase">
+                        <button type="button" class="w-btn w-btn-filled" on:click="openDatabasePicker()">
+                            Open database…
+                        </button>
+                    </logic>
+                    <label
+                        :class="canPickDatabase ? 'w-btn w-btn-outlined explorer-upload' : 'w-btn w-btn-filled explorer-upload'"
+                    >
+                        <logic :if="canPickDatabase">Choose file…</logic>
+                        <logic :if="!canPickDatabase">Open database…</logic>
+                        <input
+                            type="file"
+                            accept=".vdbx,application/vnd.d31ma.vdbx"
+                            aria-label="Database file to open"
+                            on:change="databaseInput(event)"
+                        />
+                    </label>
+                </div>
+                <logic :if="workingCopies.length > 0">
+                    <h3>Copies being edited in this browser</h3>
+                    <ul class="explorer-list explorer-recent-list">
+                        <loop :for="let copy of workingCopies">
+                            <li class="explorer-recent-root">
+                                <button
+                                    type="button"
+                                    class="w-btn w-btn-text explorer-recent-open"
+                                    on:click="resumeWorkingCopy(copy)"
+                                >
+                                    <span class="explorer-recent-name">{copy.name}</span>
+                                </button>
+                                <button
+                                    type="button"
+                                    class="w-btn w-btn-text w-btn--sm"
+                                    :aria-label="'Discard the working copy ' + copy.name"
+                                    on:click="discardWorkingCopy(copy)"
+                                >
+                                    Discard
+                                </button>
+                            </li>
+                        </loop>
+                    </ul>
+                </logic>
+            </section>
+        </div>
+    </logic>
+
+    <switch :value="status">
+        <case :when="'database'">
+            <div class="explorer-center explorer-database">
+                <h2>{dbName}</h2>
+                <dl class="explorer-database-facts">
+                    <dt>Size</dt>
+                    <dd>{databaseSizeLabel()}</dd>
+                    <dt>Opened</dt>
+                    <dd>
+                        <logic :if="dbMode === 'read'">read-only, as picked</logic>
+                        <logic :if="dbMode === 'copy'">as a working copy in this browser</logic>
+                    </dd>
+                    <dt>Format</dt>
+                    <dd>
+                        <logic :if="dbReport">FYLO database, {dbReport.format}</logic>
+                        <logic :if="!dbReport && dbMagic">.vdbx header, but unreadable</logic>
+                        <logic :if="!dbReport && !dbMagic">no .vdbx header found</logic>
+                    </dd>
+                </dl>
+                <logic :if="dbReport">
+                    <section class="explorer-database-report" aria-label="Inside the database">
+                        <dl class="explorer-database-facts">
+                            <dt>Generation</dt>
+                            <dd>{dbReport.generation}</dd>
+                            <dt>Extents</dt>
+                            <dd>
+                                {dbReport.extentCount} of
+                                {databaseSizeLabel(dbReport.extentBytes)}
+                            </dd>
+                            <dt>Encrypted</dt>
+                            <dd>{databaseFlag(dbReport.encrypted)}</dd>
+                            <dt>Protected</dt>
+                            <dd>{databaseFlag(dbReport.protected)}</dd>
+                            <dt>Locked</dt>
+                            <dd>{databaseFlag(dbReport.locked)}</dd>
+                            <dt>Sealed</dt>
+                            <dd>{databaseFlag(dbReport.sealed)}</dd>
+                            <dt>Codecs</dt>
+                            <dd>{dbReport.codecs.join(', ') || 'none'}</dd>
+                        </dl>
+                        <logic :if="databaseAccessNote(dbReport)">
+                            <p class="explorer-database-locked" role="note">
+                                {databaseAccessNote(dbReport)}
+                            </p>
+                        </logic>
+                        <h3>Collections</h3>
+                        <logic :if="dbRows.collections.length === 0">
+                            <p>This database has no collections yet.</p>
+                        </logic>
+                        <logic :if="dbRows.collections.length > 0">
+                            <table class="explorer-table explorer-database-collections">
+                                <thead>
+                                    <tr>
+                                        <th>Name</th>
+                                        <th class="explorer-num">Records</th>
+                                        <th class="explorer-num">Checkpoint</th>
+                                        <th>State</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <loop :for="let row of dbRows.collections">
+                                        <tr>
+                                            <td>{row.name}</td>
+                                            <td class="explorer-num">{row.records}</td>
+                                            <td class="explorer-num">
+                                                {row.checkpoint === null ? 'none' : row.checkpoint}
+                                            </td>
+                                            <td>{row.dropped ? 'dropped' : 'live'}</td>
+                                        </tr>
+                                    </loop>
+                                </tbody>
+                            </table>
+                        </logic>
+                        <h3>Extents</h3>
+                        <table class="explorer-table explorer-database-extents">
+                            <thead>
+                                <tr>
+                                    <th>Kind</th>
+                                    <th class="explorer-num">Extents</th>
+                                    <th class="explorer-num">Sealed</th>
+                                    <th class="explorer-num">Live</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <loop :for="let row of dbRows.extents">
+                                    <tr>
+                                        <td>{row.kind}</td>
+                                        <td class="explorer-num">{row.extents}</td>
+                                        <td class="explorer-num">{row.sealed}</td>
+                                        <td class="explorer-num">{databaseSizeLabel(row.liveBytes)}</td>
+                                    </tr>
+                                </loop>
+                            </tbody>
+                        </table>
+                    </section>
+                </logic>
+                <logic :if="dbReportError">
+                    <p class="explorer-hint" role="status">
+                        The engine could not read this file: {dbReportError}
+                    </p>
+                </logic>
+                <div class="explorer-tool-row">
+                    <logic :if="dbMode === 'read' && canCopyDatabase">
+                        <button type="button" class="w-btn w-btn-filled" on:click="editDatabaseCopy()">
+                            Edit a copy
+                        </button>
+                    </logic>
+                    <logic :if="dbMode === 'copy'">
+                        <button type="button" class="w-btn w-btn-filled" on:click="saveDatabaseCopy()">
+                            Save
+                        </button>
+                    </logic>
+                    <button type="button" class="w-btn w-btn-outlined" on:click="closeDatabase()">
+                        Close
+                    </button>
+                </div>
+                <logic :if="dbProgress">
+                    <p role="status">{dbProgress}</p>
+                </logic>
+                <logic :if="dbMessage">
+                    <p role="status">{dbMessage}</p>
+                </logic>
             </div>
         </case>
 
@@ -194,6 +376,15 @@
                     </button>
                 </logic>
             </div>
+            <logic :if="view === 'docs' && active && schemaLocked[active]">
+                <div class="explorer-schema-notice" role="note">
+                    <w-alert variant="info" title="Read-only: this collection has a schema">
+                        This folder view runs an engine that cannot check {active}'s schema,
+                        so it does not write to it. Write to it with the FYLO CLI or your
+                        application.
+                    </w-alert>
+                </div>
+            </logic>
             <div
                 :class="'explorer-body ' + paneClass()"
                 :style="bodyStyle()"
@@ -956,6 +1147,9 @@
                             :value="draft"
                             on:input="draftInput(event)"
                         ></textarea>
+                        <logic :if="fieldError">
+                            <p class="explorer-field-error" role="alert">{schemaErrorText()}</p>
+                        </logic>
                         <div class="explorer-filter">
                             <button
                                 type="button"
@@ -977,7 +1171,7 @@
                         <div class="explorer-jsonedit">
                             <div class="jsonedit-brace">{</div>
                             <loop :for="let f of editView()">
-                                <div class="jsonedit-line">
+                                <div :class="f.invalid ? 'jsonedit-line is-invalid' : 'jsonedit-line'">
                                     <span class="jsonedit-key">"{f.key}":</span>
                                     <logic :if="f.literal">
                                         <span class="jsonedit-lit">null</span>
@@ -990,6 +1184,7 @@
                                             class="w-input jsonedit-input"
                                             spellcheck="false"
                                             aria-label="Value for {f.key}"
+                                            :aria-invalid="f.invalid ? 'true' : 'false'"
                                             :size="f.value.length || 1"
                                             :value="f.value"
                                             on:input="fieldValueInput(f.key, event)"
@@ -1001,10 +1196,18 @@
                                     <logic :if="f.comma"
                                         ><span class="jsonedit-punct">,</span></logic
                                     >
+                                    <logic :if="f.invalid">
+                                        <span class="jsonedit-error" role="alert"
+                                            >{fieldError.message}</span
+                                        >
+                                    </logic>
                                 </div>
                             </loop>
                             <div class="jsonedit-brace">}</div>
                         </div>
+                        <logic :if="fieldErrorOffEditor()">
+                            <p class="explorer-field-error" role="alert">{schemaErrorText()}</p>
+                        </logic>
                         <div class="explorer-filter">
                             <button
                                 type="button"
@@ -1131,7 +1334,7 @@
             </div>
         </case>
 
-        <case default>
+        <case :when="'boot'">
             <div class="explorer-center"><p>Starting…</p></div>
         </case>
     </switch>

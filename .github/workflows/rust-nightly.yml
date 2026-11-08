@@ -54,8 +54,8 @@ jobs:
 
     fuzz:
         name: Retained portable-kernel fuzz evidence
-        runs-on: ubuntu-latest
-        timeout-minutes: 20
+        runs-on: ubuntu-24.04
+        timeout-minutes: 35
 
         steps:
             - name: Check out source
@@ -76,6 +76,29 @@ jobs:
               run: >-
                   cargo +nightly-2026-07-20 fuzz run portable_inputs
                   -- -max_total_time=180 -timeout=10 -rss_limit_mb=4096
+
+            - name: Fuzz .vdbx container structures
+              run: >-
+                  cargo +nightly-2026-07-20 fuzz run container_structures
+                  -- -max_total_time=180 -timeout=10 -rss_limit_mb=4096
+
+            - name: Fuzz .vdbx record body codecs
+              run: >-
+                  cargo +nightly-2026-07-20 fuzz run container_codec
+                  -- -max_total_time=120 -timeout=10 -rss_limit_mb=4096
+                  -malloc_limit_mb=64 -max_len=16384
+
+            - name: Fuzz .vdbx encrypted units
+              run: >-
+                  cargo +nightly-2026-07-20 fuzz run container_cipher
+                  -- -max_total_time=120 -timeout=10 -rss_limit_mb=4096
+                  -max_len=4096
+
+            - name: Fuzz .vdbx file opening and inspection
+              run: >-
+                  cargo +nightly-2026-07-20 fuzz run container_file
+                  -- -max_total_time=120 -timeout=10 -rss_limit_mb=4096
+                  -max_len=4096
 
             - name: Record exact qualification identity
               if: always()

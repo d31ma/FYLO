@@ -22,11 +22,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
-	"runtime"
 	"strconv"
-	"strings"
 	"sync"
 )
 
@@ -43,17 +40,11 @@ type Fylo struct {
 	mu   sync.Mutex
 }
 
-// Environment configures only the spawned FYLO process. File and Values are
-// mutually exclusive; a nil value removes an inherited variable.
-type Environment struct {
-	File   string
-	Values map[string]*string
-}
-
 // Options configures the binary-backed client without changing the host process.
 type Options struct {
 	Binary string
-	Env    *Environment
+	// Config is an optional application.json path.
+	Config string
 }
 
 // QueueConsumerOptions configures one bounded decorated invocation.
@@ -70,6 +61,17 @@ type QueueProcessResult struct {
 	Acknowledged int
 	Retried      int
 	DeadLettered int
+}
+
+// Error is a failed FYLO operation. Code is the machine-protocol error code;
+// use errors.As to read it.
+type Error struct {
+	Code    string
+	Message string
+}
+
+func (e *Error) Error() string {
+	return e.Message
 }
 
 // QueueHandler processes one native delivery object.
@@ -91,12 +93,10 @@ func OpenWithOptions(root string, options Options) (*Fylo, error) {
 		"--max-request-bytes", strconv.Itoa(maxRequestBytes),
 		"--max-response-bytes", strconv.Itoa(maxResponseBytes),
 	}
-	cmd := exec.Command(binary, args...)
-	environment, err := childEnvironment(options.Env)
-	if err != nil {
-		return nil, err
+	if options.Config != "" {
+		args = append(args, "--config", options.Config)
 	}
-	cmd.Env = environment
+	cmd := exec.Command(binary, args...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -114,158 +114,12 @@ func OpenWithOptions(root string, options Options) (*Fylo, error) {
 	}, nil
 }
 
-func childEnvironment(config *Environment) ([]string, error) {
-	if config == nil {
-		return nil, nil
-	}
-	if config.File != "" && config.Values != nil {
-		return nil, fmt.Errorf("FYLO env File and Values are mutually exclusive")
-	}
-	overrides := config.Values
-	if config.File != "" {
-		var err error
-		overrides, err = environmentFile(config.File)
-		if err != nil {
-			return nil, err
-		}
-	}
-	values := make(map[string]string)
-	names := make(map[string]string)
-	for _, entry := range os.Environ() {
-		separator := strings.IndexByte(entry, '=')
-		if separator < 1 {
-			continue
-		}
-		name := entry[:separator]
-		canonical := environmentName(name)
-		names[canonical] = name
-		values[canonical] = entry[separator+1:]
-	}
-	for name, value := range overrides {
-		if name == "" || strings.ContainsAny(name, "=\x00") {
-			return nil, fmt.Errorf("invalid environment variable name %q", name)
-		}
-		canonical := environmentName(name)
-		if value == nil {
-			delete(names, canonical)
-			delete(values, canonical)
-			continue
-		}
-		if strings.ContainsRune(*value, '\x00') {
-			return nil, fmt.Errorf("invalid environment variable value for %q: contains NUL", name)
-		}
-		names[canonical] = name
-		values[canonical] = *value
-	}
-	environment := make([]string, 0, len(values))
-	for canonical, value := range values {
-		environment = append(environment, names[canonical]+"="+value)
-	}
-	return environment, nil
-}
-
-func environmentName(name string) string {
-	if runtime.GOOS == "windows" {
-		return strings.ToUpper(name)
-	}
-	return name
-}
-
-func environmentFile(path string) (map[string]*string, error) {
-	contents, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("cannot read FYLO environment file %s: %w", path, err)
-	}
-	source := strings.TrimPrefix(string(contents), "\ufeff")
-	values := make(map[string]*string)
-	for index, original := range strings.Split(strings.ReplaceAll(source, "\r\n", "\n"), "\n") {
-		line := index + 1
-		entry := strings.TrimSpace(original)
-		if entry == "" || strings.HasPrefix(entry, "#") {
-			continue
-		}
-		if strings.HasPrefix(entry, "export") && len(entry) > 6 && (entry[6] == ' ' || entry[6] == '\t') {
-			entry = strings.TrimLeft(entry[7:], " \t")
-		}
-		separator := strings.IndexByte(entry, '=')
-		if separator < 0 {
-			return nil, fmt.Errorf("%s:%d: expected NAME=VALUE", path, line)
-		}
-		name := strings.TrimSpace(entry[:separator])
-		if !validEnvironmentName(name) {
-			return nil, fmt.Errorf("%s:%d: invalid environment variable name %q", path, line, name)
-		}
-		input := strings.TrimLeft(entry[separator+1:], " \t")
-		value, err := environmentValue(path, line, input)
-		if err != nil {
-			return nil, err
-		}
-		valueCopy := value
-		values[name] = &valueCopy
-	}
-	return values, nil
-}
-
-func validEnvironmentName(name string) bool {
-	for index, character := range name {
-		if (character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z') || character == '_' || (index > 0 && character >= '0' && character <= '9') {
-			continue
-		}
-		return false
-	}
-	return name != ""
-}
-
-func environmentValue(path string, line int, input string) (string, error) {
-	if input == "" || (input[0] != '"' && input[0] != '\'') {
-		if comment := strings.IndexByte(input, '#'); comment >= 0 {
-			input = input[:comment]
-		}
-		return strings.TrimRight(input, " \t"), nil
-	}
-	quote := input[0]
-	var value strings.Builder
-	for index := 1; index < len(input); index++ {
-		character := input[index]
-		if character == quote {
-			trailing := strings.TrimSpace(input[index+1:])
-			if trailing != "" && !strings.HasPrefix(trailing, "#") {
-				return "", fmt.Errorf("%s:%d: unexpected characters after quoted value", path, line)
-			}
-			return value.String(), nil
-		}
-		if quote == '"' && character == '\\' {
-			index++
-			if index >= len(input) {
-				return "", fmt.Errorf("%s:%d: unterminated escape sequence", path, line)
-			}
-			escaped := input[index]
-			switch escaped {
-			case 'n':
-				value.WriteByte('\n')
-			case 'r':
-				value.WriteByte('\r')
-			case 't':
-				value.WriteByte('\t')
-			case '"', '\\':
-				value.WriteByte(escaped)
-			default:
-				value.WriteByte('\\')
-				value.WriteByte(escaped)
-			}
-			continue
-		}
-		value.WriteByte(character)
-	}
-	return "", fmt.Errorf("%s:%d: unterminated quoted value", path, line)
-}
-
 // op builds a request, sends it, and returns `result` (or an error on failure).
 func (f *Fylo) op(name string, fields map[string]any) (any, error) {
 	payload := map[string]any{"op": name}
 	for k, v := range fields {
-		if v != nil {
-			payload[k] = v
+		if value, present := requestValue(v); present {
+			payload[k] = value
 		}
 	}
 	resp, err := f.Request(payload)
@@ -273,15 +127,27 @@ func (f *Fylo) op(name string, fields map[string]any) (any, error) {
 		return nil, err
 	}
 	if ok, _ := resp["ok"].(bool); !ok {
-		msg := "fylo error"
-		if e, ok := resp["error"].(map[string]any); ok {
-			if m, ok := e["message"].(string); ok {
-				msg = m
-			}
-		}
-		return nil, fmt.Errorf("%s", msg)
+		return nil, responseError(resp)
 	}
 	return resp["result"], nil
+}
+
+// requestValue sends a nil map as an empty JSON object and omits other nil values.
+func requestValue(value any) (any, bool) {
+	if object, isObject := value.(map[string]any); isObject && object == nil {
+		return map[string]any{}, true
+	}
+	return value, value != nil
+}
+
+func responseError(resp map[string]any) *Error {
+	details, _ := resp["error"].(map[string]any)
+	message, hasMessage := details["message"].(string)
+	if !hasMessage {
+		message = "fylo error"
+	}
+	code, _ := details["code"].(string)
+	return &Error{Code: code, Message: message}
 }
 
 // --- Collections ---
@@ -461,18 +327,14 @@ func (f *Fylo) FindDeletedDocsPage(collection string, query, page map[string]any
 func (f *Fylo) JoinDocs(join map[string]any) (any, error) {
 	return f.op("joinDocs", map[string]any{"join": join})
 }
-func (f *Fylo) ExecuteSQL(sql string, access ...map[string]any) (any, error) {
-	fields := map[string]any{"sql": sql}
-	if len(access) > 0 {
-		fields["access"] = access[0]
-	}
-	return f.op("executeSQL", fields)
+func (f *Fylo) ExecuteSQL(sql string) (any, error) {
+	return f.op("executeSQL", map[string]any{"sql": sql})
 }
 
 // Sql runs raw SQL, built with fmt.Sprintf. Values are inlined verbatim —
 // escape/validate untrusted input yourself.
-func (f *Fylo) Sql(query string, access ...map[string]any) (any, error) {
-	return f.ExecuteSQL(query, access...)
+func (f *Fylo) Sql(query string) (any, error) {
+	return f.ExecuteSQL(query)
 }
 func (f *Fylo) ImportBulkData(collection, url string) (any, error) {
 	return f.op("importBulkData", map[string]any{"collection": collection, "url": url})

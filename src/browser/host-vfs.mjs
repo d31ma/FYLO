@@ -12,8 +12,8 @@
 // available only inside a dedicated Worker; `nodeBackend` below is the same
 // shape over `node:fs` so the boundary can be tested without a browser.
 
-export const HOST_ABI_VERSION = 1
-export const MODULE_ABI_VERSION = 1
+export const HOST_ABI_VERSION = 2
+export const MODULE_ABI_VERSION = 2
 
 export const KIND_MISSING = 0
 export const KIND_FILE = 1
@@ -30,14 +30,18 @@ export const OPEN_APPEND = 1 << 5
 const ENOENT = -2
 const EIO = -5
 const EBADF = -9
+const EACCES = -13
 const EEXIST = -17
+const EROFS = -30
+const ESTALE = -116
+const ENOSYS = -38
 
 /**
  * Build the import object for one module instance.
  *
  * @param {{ memory: () => WebAssembly.Memory, backend: HostBackend }} options
  */
-export function createHostImports({ memory, backend, onError }) {
+export function createHostImports({ memory, backend, identity, onError }) {
     const view = () => new Uint8Array(memory().buffer)
     const data = () => new DataView(memory().buffer)
     const decoder = new TextDecoder()
@@ -146,6 +150,51 @@ export function createHostImports({ memory, backend, onError }) {
                 backend.random(view().subarray(buffer, buffer + length))
                 return 0
             }),
+            // ADR 0021 (decision P5-5): the application identity a protected
+            // database opens with. `identity` answers synchronously, through
+            // the crypto bridge Worker; without one every call is ENOSYS and
+            // a protected database stays locked.
+            identity_public: guard((out) => {
+                if (!identity) return ENOSYS
+                view().set(identity.publicKey(), out)
+                return 0
+            }),
+            identity_sign: guard((message, length, out) => {
+                if (!identity) return ENOSYS
+                view().set(identity.sign(view().slice(message, message + length)), out)
+                return 0
+            }),
+            identity_verify: guard((publicKey, message, length, signature) => {
+                if (!identity) return ENOSYS
+                const valid = identity.verify(
+                    view().slice(publicKey, publicKey + 65),
+                    view().slice(message, message + length),
+                    view().slice(signature, signature + 64)
+                )
+                return valid ? 0 : 1
+            }),
+            identity_unwrap: guard((info, infoLength, wrapped, wrappedLength, out) => {
+                if (!identity) return ENOSYS
+                const key = identity.unwrap(
+                    view().slice(info, info + infoLength),
+                    view().slice(wrapped, wrapped + wrappedLength)
+                )
+                view().set(key, out)
+                return 0
+            }),
+            identity_wrap: guard(
+                (publicKey, info, infoLength, secret, secretLength, out, capacity, needed) => {
+                    if (!identity) return ENOSYS
+                    const wrapped = identity.wrap(
+                        view().slice(publicKey, publicKey + 65),
+                        view().slice(info, info + infoLength),
+                        view().slice(secret, secret + secretLength)
+                    )
+                    data().setUint32(needed, wrapped.length, true)
+                    if (wrapped.length <= capacity) view().set(wrapped, out)
+                    return 0
+                }
+            ),
             read_dir: guard((pathPointer, pathLength, buffer, capacity, neededPointer) => {
                 const names = backend.readDir(readPath(pathPointer, pathLength))
                 const encoded = encodeNames(names)
@@ -181,6 +230,12 @@ function errno(error) {
             return EEXIST
         case 'EBADF':
             return EBADF
+        case 'EACCES':
+            return EACCES
+        case 'EROFS':
+            return EROFS
+        case 'ESTALE':
+            return ESTALE
         default:
             return EIO
     }
@@ -216,6 +271,35 @@ export function exec(instance, ndjson, trace = () => {}) {
 }
 
 /**
+ * Give the module its settings before its next batch (`fylo_configure`):
+ * the `webcrypto:` identity a protected database opens with, and how its
+ * creator is trusted. Throws `EIDENTITY` with the engine's reason when it
+ * refuses them.
+ *
+ * @param {WebAssembly.Instance} instance
+ * @param {{ identity?: string, trustAnchor?: string, trustOnFirstUse?: boolean }} settings
+ */
+export function configure(instance, settings) {
+    const { fylo_alloc, fylo_free, fylo_configure, fylo_abi_version, memory } = instance.exports
+    if (fylo_abi_version() !== MODULE_ABI_VERSION) {
+        throw new Error(`unsupported FYLO module ABI: ${fylo_abi_version()}`)
+    }
+    const request = new TextEncoder().encode(JSON.stringify(settings))
+    const requestPointer = fylo_alloc(request.length)
+    new Uint8Array(memory.buffer).set(request, requestPointer)
+    const packed = fylo_configure(requestPointer, request.length)
+    fylo_free(requestPointer, request.length)
+    if (packed === 0n) return
+    const pointer = Number(packed >> 32n)
+    const length = Number(packed & 0xffffffffn)
+    const reason = new TextDecoder().decode(
+        new Uint8Array(memory.buffer).slice(pointer, pointer + length)
+    )
+    fylo_free(pointer, length)
+    throw Object.assign(new Error(reason), { code: 'EIDENTITY' })
+}
+
+/**
  * @typedef {object} HostBackend
  * @property {(path: string, flags: number) => number} open
  * @property {(handle: number) => void} close
@@ -234,4 +318,16 @@ export function exec(instance, ndjson, trace = () => {}) {
  * @property {(path: string) => Uint8Array} readAttrs
  * @property {(path: string, manifest: Uint8Array) => void} writeAttrs
  * @property {((message: string) => void)=} log
+ */
+
+/**
+ * The application identity a host offers the engine (ADR 0021), answered
+ * synchronously; `identity-bridge.mjs` builds one over a crypto Worker.
+ *
+ * @typedef {object} HostIdentity
+ * @property {() => Uint8Array} publicKey 65-byte SEC1 uncompressed point
+ * @property {(message: Uint8Array) => Uint8Array} sign 64-byte ECDSA P-256 signature
+ * @property {(publicKey: Uint8Array, message: Uint8Array, signature: Uint8Array) => boolean} verify
+ * @property {(info: Uint8Array, wrapped: Uint8Array) => Uint8Array} unwrap 32-byte key
+ * @property {(publicKey: Uint8Array, info: Uint8Array, secret: Uint8Array) => Uint8Array} wrap
  */

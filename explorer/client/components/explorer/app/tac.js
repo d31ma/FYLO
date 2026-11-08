@@ -34,7 +34,8 @@ const UNFINGERPRINTED = '__FYLO_ASSET_VERSION__'
 
 /** @param {unknown} value @returns {string} */
 export function validatedBuildToken(value) {
-    if (value === undefined || value === null || value === '' || value === UNFINGERPRINTED) return ''
+    if (value === undefined || value === null || value === '' || value === UNFINGERPRINTED)
+        return ''
     const token = String(value)
     if (!BUILD_TOKEN.test(token)) throw new Error('Invalid FYLO Explorer build token')
     return token
@@ -45,15 +46,134 @@ export function engineAssetUrl(
     build,
     origin = globalThis.location?.origin ?? 'https://fylo.invalid'
 ) {
+    return sharedAssetUrl('/shared/assets/fylo-web.mjs', build, origin)
+}
+
+/** The Worker that holds one `.vdbx` file (ADR 0016). @param {unknown} build @param {string} [origin] */
+export function databaseWorkerUrl(
+    build,
+    origin = globalThis.location?.origin ?? 'https://fylo.invalid'
+) {
+    return sharedAssetUrl('/shared/assets/vdbx-worker.js', build, origin)
+}
+
+/** The whole engine, run in that Worker over the file. @param {unknown} build @param {string} [origin] */
+export function databaseEngineUrl(
+    build,
+    origin = globalThis.location?.origin ?? 'https://fylo.invalid'
+) {
+    return sharedAssetUrl('/shared/assets/fylo-browser.wasm', build, origin)
+}
+
+/** The machine op that describes a `.vdbx` container without changing it. */
+export const VDBX_INSPECT_OP = 'inspectDatabase'
+
+/**
+ * Turn the engine's container report into rows the view can loop over.
+ *
+ * @param {any} report the `result` of a successful inspect frame
+ */
+/**
+ * Why Explorer shows a `.vdbx` file's collections and documents sealed, or
+ * '' when it can read them. A protected database (ADR 0021) opens only
+ * with an application identity, which Explorer does not hold yet, so it is
+ * locked here; an encrypted one opened without its key is locked too.
+ * @param {{ protected?: boolean, encrypted?: boolean, locked?: boolean } | null} report
+ * @returns {string}
+ */
+export function databaseAccessNote(report) {
+    if (!report?.locked) return ''
+    if (report.protected) {
+        return 'Protected by application identities (ADR 0021). Explorer opens it without an identity, so it is locked: collection names and documents stay sealed.'
+    }
+    return 'Encrypted with a database key. Explorer opened it without the key, so it is locked: collection names and documents stay sealed.'
+}
+
+export function databaseReportRows(report) {
+    const extents = report?.extents ?? {}
+    const kinds = Object.entries(extents.byKind ?? {}).map(([kind, census]) => ({
+        kind,
+        extents: census.extents ?? 0,
+        sealed: census.sealed ?? 0,
+        liveBytes: census.liveBytes ?? 0
+    }))
+    return {
+        collections: (report?.collections ?? []).map((collection) => ({
+            name: String(collection.name),
+            id: collection.id,
+            records: collection.records ?? 0,
+            checkpoint: collection.checkpointLsn ?? null,
+            dropped: collection.dropped === true
+        })),
+        extents: [
+            ...kinds,
+            { kind: 'free', extents: extents.free ?? 0, sealed: 0, liveBytes: 0 },
+            { kind: 'released', extents: extents.released ?? 0, sealed: 0, liveBytes: 0 }
+        ]
+    }
+}
+
+function sharedAssetUrl(pathname, build, origin) {
     const base = new URL(origin)
     if (!/^https?:$/.test(base.protocol)) throw new Error('Invalid FYLO Explorer asset origin')
-    const asset = new URL('/shared/assets/fylo-web.mjs', base)
-    if (asset.origin !== base.origin || asset.pathname !== '/shared/assets/fylo-web.mjs') {
+    const asset = new URL(pathname, base)
+    if (asset.origin !== base.origin || asset.pathname !== pathname) {
         throw new Error('Invalid FYLO Explorer asset URL')
     }
     const token = validatedBuildToken(build)
     if (token) asset.searchParams.set('v', token)
     return asset.href
+}
+
+// --- Schemas (ADR 0017) ---
+
+/** Validation modes that mean a collection's writes are checked against a schema. */
+const CHECKED_MODES = new Set(['strict', 'warn'])
+
+/**
+ * Whether a collection has a schema the folder view must not write around.
+ *
+ * The folder view runs the JavaScript engine, which cannot validate, so a
+ * collection with an in-database registry or a checked validation mode is
+ * read-only there (ADR 0017 section 8, step 6).
+ *
+ * @param {Record<string, any> | null | undefined} descriptor its catalog descriptor
+ * @param {boolean} [hasRegistry] whether `.fylo-schemas/<collection>/` exists
+ */
+export function collectionHasSchema(descriptor, hasRegistry = false) {
+    if (hasRegistry) return true
+    if (!descriptor || typeof descriptor !== 'object') return false
+    return (
+        descriptor.schemas === 'registry' ||
+        descriptor.schemaHead !== undefined ||
+        CHECKED_MODES.has(descriptor.validation)
+    )
+}
+
+/**
+ * Read a refused write as a schema failure, with the field that failed.
+ *
+ * `ESCHEMA` carries CHEX's message, which names the property path in quotes:
+ * "Property 'name' does not exist…", "RegEx pattern fails for property
+ * 'email'…", "Type mismatch for 'tags[2]'…". `ESCHEMAUNAVAILABLE` names no
+ * field: this build cannot validate the collection at all.
+ *
+ * @param {unknown} error
+ * @returns {{ code: 'ESCHEMA' | 'ESCHEMAUNAVAILABLE', path: string, field: string, message: string } | null}
+ */
+export function schemaFailure(error) {
+    const failure = /** @type {{ code?: unknown, message?: unknown }} */ (error ?? {})
+    const message = String(failure.message ?? error ?? '')
+    const named = /^(ESCHEMAUNAVAILABLE|ESCHEMA)\b[:\s]*/.exec(message)
+    const code = [failure.code, named?.[1]].find(
+        (value) => value === 'ESCHEMA' || value === 'ESCHEMAUNAVAILABLE'
+    )
+    if (!code) return null
+    const text = named ? message.slice(named[0].length) : message
+    if (code === 'ESCHEMAUNAVAILABLE') return { code, path: '', field: '', message: text }
+    const path = /(?:[Pp]roperty|for) '([^']+)'/.exec(text)?.[1] ?? ''
+    const field = path.split(/[.[]/)[0] ?? ''
+    return { code, path, field, message: text }
 }
 
 function limitError(operation, actual, maximum) {
@@ -353,10 +473,32 @@ export function browserLabel(userAgent = '') {
 }
 
 export default class {
-    /** @type {'boot' | 'unsupported' | 'pick' | 'open'} */
+    /** @type {'boot' | 'unsupported' | 'pick' | 'open' | 'database'} */
     status = 'boot'
     /** Browser name shown only when File System Access is unavailable. */
     unsupportedBrowser = 'This browser'
+
+    // --- A single `.vdbx` file (ADR 0016), opened in every browser ---
+    /** Whether the native open picker exists; otherwise the file input opens it. */
+    canPickDatabase = false
+    /** Whether "Edit a copy" can work: OPFS plus its synchronous Worker handle. */
+    canCopyDatabase = false
+    /** @type {{ name: string, size: number, modifiedMs: number }[]} */
+    workingCopies = []
+    databaseDropping = false
+    dbName = ''
+    dbSize = 0
+    /** @type {'read' | 'copy'} */
+    dbMode = 'read'
+    dbMagic = false
+    dbProgress = ''
+    dbMessage = ''
+    /** The engine's report of what the file holds, or null until it reads it. */
+    dbReport = null
+    /** @type {{ collections: any[], extents: any[] }} */
+    dbRows = { collections: [], extents: [] }
+    /** Why the engine could not read the file, when it could not. */
+    dbReportError = ''
 
     /** @type {{ name: string, handle: any }[]} */
     roots = []
@@ -404,8 +546,13 @@ export default class {
     /** @type {{ key: string, id: string, mime: string, size: string, modified: string } | null} */
     rawMeta = null
     error = ''
-    writable = false
+    /** Whether the user enabled writes on the root. */
+    rootWritable = false
     lockWarning = false
+    /** Collections with a schema, which the folder view keeps read-only. */
+    schemaLocked = safeRecord()
+    /** @type {ReturnType<typeof schemaFailure>} the last write's schema failure */
+    fieldError = null
     /** @type {'' | 'new' | 'edit'} */
     editing = ''
     draft = ''
@@ -643,6 +790,18 @@ export default class {
         return this._lib
     }
 
+    /**
+     * Whether the open collection can be written here: writes are enabled on
+     * the root and the collection has no schema the folder view would skip.
+     */
+    get writable() {
+        return this.rootWritable && !this.schemaLocked[this.active]
+    }
+
+    set writable(value) {
+        this.rootWritable = Boolean(value)
+    }
+
     @onMount
     async boot() {
         // Child components report actions through the pub/sub hub instead of
@@ -658,15 +817,19 @@ export default class {
         })
         this.tac.subscribe('explorer:export', (name) => this.doExport(name))
         this.tac.subscribe('explorer:import', (payload) => this.doImport(payload))
+        this.canPickDatabase = typeof globalThis.showOpenFilePicker === 'function'
+        this.canCopyDatabase = typeof globalThis.navigator?.storage?.getDirectory === 'function'
         if (typeof globalThis.showDirectoryPicker !== 'function') {
             this.unsupportedBrowser = browserLabel(globalThis.navigator?.userAgent)
             this.status = 'unsupported'
+            await this.refreshWorkingCopies()
             return
         }
         const { listRecentRoots } = await this.lib()
         const handles = await listRecentRoots()
         this.roots = handles.map((handle) => ({ name: handle.name, handle }))
         this.status = 'pick'
+        await this.refreshWorkingCopies()
         await this.restoreLastSession(handles)
     }
 
@@ -781,6 +944,249 @@ export default class {
         this.roots = this.roots.filter((root) => root.name !== recent.name)
     }
 
+    // --- Open database: one `.vdbx` file, read-only, in any browser ---
+    //
+    // The file runs in its own Worker over a synchronous backend, so this
+    // needs neither File System Access nor a cross-origin isolated page. A
+    // browser cannot write a picked file in place, so "Edit a copy" streams it
+    // into OPFS and "Save" writes the copy back or downloads it. The folder
+    // view above is untouched and stays on the JavaScript engine.
+
+    async openDatabasePicker() {
+        try {
+            const { pickDatabaseFile } = await this.lib()
+            const picked = await pickDatabaseFile()
+            if (picked) await this.openDatabase(picked)
+        } catch (err) {
+            if (err?.name !== 'AbortError') this.error = String(err?.message ?? err)
+        }
+    }
+
+    async databaseInput(event) {
+        const file = event.target.files?.[0]
+        event.target.value = ''
+        if (file) await this.openDatabase({ file })
+    }
+
+    databaseDragOver(event) {
+        if (![...(event.dataTransfer?.types ?? [])].includes('Files')) return
+        event.preventDefault()
+        event.dataTransfer.dropEffect = 'copy'
+        this.databaseDropping = true
+    }
+
+    databaseDragLeave() {
+        this.databaseDropping = false
+    }
+
+    async databaseDrop(event) {
+        event.preventDefault()
+        this.databaseDropping = false
+        // The handle has to be asked for before this handler yields: the drop's
+        // data is cleared once the event returns.
+        const transfer = event.dataTransfer
+        let picked
+        if (this._lib) {
+            picked = await this._lib.databaseFromDrop(transfer)
+        } else {
+            const file = transfer?.files?.[0]
+            picked = file ? { file } : null
+        }
+        if (picked) await this.openDatabase(picked)
+    }
+
+    /** @param {{ file: File, handle?: FileSystemFileHandle }} picked */
+    async openDatabase({ file, handle }) {
+        return await this.track(async () => {
+            this.error = ''
+            try {
+                await this.closeDatabaseSession()
+                const { SingleFileDatabase } = await this.lib()
+                this._database = await SingleFileDatabase.open(
+                    { kind: 'file', file },
+                    this.databaseOpenOptions()
+                )
+                this._databaseFile = file
+                this._databaseHandle = handle ?? null
+                await this.showDatabase(file.name, 'read')
+            } catch (err) {
+                await this.closeDatabaseSession()
+                this.error = `Could not open ${file.name}: ${err?.message ?? err}`
+            }
+        })
+    }
+
+    async editDatabaseCopy() {
+        return await this.track(async () => {
+            const file = this._databaseFile
+            if (!file) return
+            this.error = ''
+            try {
+                const { SingleFileDatabase, workingCopyName } = await this.lib()
+                const name = workingCopyName(file.name)
+                await this._database?.close()
+                this._database = null
+                this.dbProgress = 'Copying…'
+                this._database = await SingleFileDatabase.open(
+                    { kind: 'opfs', name, copyFrom: file },
+                    {
+                        ...this.databaseOpenOptions(),
+                        onProgress: ({ copied, total }) => {
+                            this.dbProgress = `Copying… ${Math.floor((copied / Math.max(total, 1)) * 100)}%`
+                        }
+                    }
+                )
+                this._workingCopy = name
+                this.dbProgress = ''
+                await this.showDatabase(file.name, 'copy')
+                this.dbMessage = 'Editing a copy kept in this browser. Save writes it back.'
+            } catch (err) {
+                this.dbProgress = ''
+                this.error = `Could not make an editable copy: ${err?.message ?? err}`
+                // Fall back to the read-only view of the same file.
+                await this.openDatabase({ file, handle: this._databaseHandle ?? undefined })
+            }
+        })
+    }
+
+    async saveDatabaseCopy() {
+        return await this.track(async () => {
+            if (!this._database || this.dbMode !== 'copy') return
+            this.error = ''
+            try {
+                const { saveDatabase } = await this.lib()
+                const blob = await this._database.snapshot()
+                const outcome = await saveDatabase(blob, {
+                    handle: this._databaseHandle,
+                    suggestedName: this.dbName
+                })
+                this.dbMessage =
+                    outcome === 'written' ? `Saved ${this.dbName}.` : `Downloaded ${this.dbName}.`
+            } catch (err) {
+                if (err?.name !== 'AbortError') this.error = String(err?.message ?? err)
+            }
+        })
+    }
+
+    async resumeWorkingCopy(copy) {
+        return await this.track(async () => {
+            this.error = ''
+            try {
+                await this.closeDatabaseSession()
+                const { SingleFileDatabase } = await this.lib()
+                this._database = await SingleFileDatabase.open(
+                    { kind: 'opfs', name: copy.name },
+                    this.databaseOpenOptions()
+                )
+                this._workingCopy = copy.name
+                await this.showDatabase(copy.name, 'copy')
+            } catch (err) {
+                await this.closeDatabaseSession()
+                this.error = `Could not open ${copy.name}: ${err?.message ?? err}`
+            }
+        })
+    }
+
+    async discardWorkingCopy(copy) {
+        try {
+            const { removeWorkingCopy } = await this.lib()
+            await removeWorkingCopy(copy.name)
+        } catch (err) {
+            this.error = String(err?.message ?? err)
+        }
+        await this.refreshWorkingCopies()
+    }
+
+    async closeDatabase() {
+        await this.closeDatabaseSession()
+        this.status = this.canOpenFolders() ? 'pick' : 'unsupported'
+        await this.refreshWorkingCopies()
+    }
+
+    async closeDatabaseSession() {
+        const open = this._database
+        this._database = null
+        this._databaseFile = null
+        this._databaseHandle = null
+        this._workingCopy = ''
+        this.dbProgress = ''
+        this.dbMessage = ''
+        this.dbReport = null
+        this.dbRows = { collections: [], extents: [] }
+        this.dbReportError = ''
+        await open?.close().catch(() => {})
+    }
+
+    databaseOpenOptions() {
+        return {
+            workerUrl: databaseWorkerUrl(globalThis.__FYLO_BUILD),
+            moduleUrl: databaseEngineUrl(globalThis.__FYLO_BUILD)
+        }
+    }
+
+    async showDatabase(name, mode) {
+        const { hasVdbxMagic } = await this.lib()
+        const { len } = await this._database.stat()
+        this.dbName = name
+        this.dbSize = len
+        this.dbMode = mode
+        this.dbMagic = hasVdbxMagic(await this._database.read(0, 8))
+        this.dbMessage = ''
+        await this.inspectDatabase()
+        this.status = 'database'
+    }
+
+    // Ask the engine what the file holds. It reads only the superblock, the
+    // extent map and the collection directory, so this is cheap even for a
+    // large file, and it never writes.
+    async inspectDatabase() {
+        this.dbReport = null
+        this.dbRows = { collections: [], extents: [] }
+        this.dbReportError = ''
+        if (!this._database) return
+        try {
+            const request = { op: VDBX_INSPECT_OP, root: this._database.info.path }
+            const answer = await this._database.exec(`${JSON.stringify(request)}\n`)
+            const frame = JSON.parse(answer.split('\n').find(Boolean) ?? '{}')
+            if (!frame.ok) {
+                this.dbReportError = frame.error?.message ?? 'the engine could not read this file'
+                return
+            }
+            this.dbReport = frame.result
+            this.dbRows = databaseReportRows(frame.result)
+        } catch (err) {
+            this.dbReportError = String(err?.message ?? err)
+        }
+    }
+
+    databaseAccessNote(report) {
+        return databaseAccessNote(report)
+    }
+
+    databaseFlag(value) {
+        return value ? 'yes' : 'no'
+    }
+
+    canOpenFolders() {
+        return typeof globalThis.showDirectoryPicker === 'function'
+    }
+
+    async refreshWorkingCopies() {
+        if (!this.canCopyDatabase) return
+        try {
+            const { listWorkingCopies } = await this.lib()
+            this.workingCopies = await listWorkingCopies()
+        } catch {
+            this.workingCopies = []
+        }
+    }
+
+    databaseSizeLabel(bytes = this.dbSize) {
+        if (bytes < 1024) return `${bytes} bytes`
+        if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`
+        return formatBytes(bytes)
+    }
+
     async connect(handle, writable = false) {
         const { FsaFilesystem, createOverlayFilesystem, createBrowserClient } = await this.lib()
         await this._db?.close?.()
@@ -807,6 +1213,8 @@ export default class {
         for (const name of this.collections) this.kinds[name] = 'document'
         for (const name of this.buckets) this.kinds[name] = 'file'
         this.shardLayouts = safeRecord()
+        const registries = new Set(await this._fs.list('/.fylo-schemas').catch(() => []))
+        const locked = safeRecord()
         await Promise.all(
             [...this.collections, ...this.buckets].map(async (name) => {
                 const descriptor = await this._fs
@@ -814,8 +1222,10 @@ export default class {
                     .then(JSON.parse)
                     .catch(() => ({}))
                 this.shardLayouts[name] = normalizeShardLayout(descriptor)
+                if (collectionHasSchema(descriptor, registries.has(name))) locked[name] = true
             })
         )
+        this.schemaLocked = locked
         this.view = 'docs'
         this.rootName = handle.name
         this.writable = writable
@@ -2480,6 +2890,10 @@ export default class {
                     this.error = 'Enable writes before importing.'
                     return
                 }
+                if (this.schemaLocked[collection]) {
+                    this.error = `${collection} has a schema, which this folder view cannot check, so it cannot import into it.`
+                    return
+                }
                 if (!collection) {
                     this.error = 'Choose a target collection to import into.'
                     return
@@ -2731,6 +3145,17 @@ export default class {
                 this.error = 'Read-only mode: only SELECT statements — enable writes for DML/DDL'
                 return
             }
+            const lockedTarget = /^SELECT\b/i.test(statement)
+                ? ''
+                : Object.keys(this.schemaLocked).find((name) =>
+                      new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(
+                          statement
+                      )
+                  )
+            if (lockedTarget) {
+                this.error = `${lockedTarget} has a schema, which this folder view cannot check, so it only runs SELECT on it. Write to it with the FYLO CLI or your application.`
+                return
+            }
             try {
                 // Indexes are accelerators: rebuild each document collection
                 // into the in-memory overlay once, so a SELECT works on a
@@ -2869,15 +3294,18 @@ export default class {
      */
     editView() {
         const last = this.editFields.length - 1
+        const failed = this.fieldError?.field
         return this.editFields.map((f, i) => ({
             ...f,
             comma: i < last,
             quoted: f.type === 'string',
-            literal: f.type === 'null'
+            literal: f.type === 'null',
+            invalid: Boolean(failed) && f.key === failed
         }))
     }
 
     startNew() {
+        this.fieldError = null
         this.editing = 'new'
         this.draft = '' // blank + placeholder; a fresh <textarea> can't show a value attr
     }
@@ -2900,20 +3328,24 @@ export default class {
             const type = valueType(v)
             return { key, type, value: fieldValue(v), regex: this.regexFor(key, type) }
         })
+        this.fieldError = null
         this.editing = 'edit'
     }
 
     cancelEdit() {
         this.editing = ''
         this.editFields = []
+        this.fieldError = null
     }
 
     draftInput(event) {
         this.draft = event.target.value
+        this.fieldError = null
     }
 
     // Document pane: a field's value changed (its key and type stay fixed).
     fieldValueInput(key, event) {
+        if (this.fieldError?.field === key) this.fieldError = null
         const value = event.target.value
         this.editFields = this.editFields.map((f) => (f.key === key ? { ...f, value } : f))
     }
@@ -2959,9 +3391,28 @@ export default class {
                 await this.select(finalId)
                 this.flash(finalId, wasEdit ? 'updated' : 'added')
             } catch (err) {
-                this.error = String(err?.message ?? err)
+                // A schema refusal belongs on the field that failed, not in the
+                // page-wide banner.
+                this.fieldError = schemaFailure(err)
+                if (!this.fieldError) this.error = String(err?.message ?? err)
             }
         })
+    }
+
+    /** Whether a schema refusal names no field the field editor shows. */
+    fieldErrorOffEditor() {
+        if (!this.fieldError) return false
+        return !this.editFields.some((f) => f.key === this.fieldError?.field)
+    }
+
+    /** The message shown with a schema refusal that names no field of the editor. */
+    schemaErrorText() {
+        const failure = this.fieldError
+        if (!failure) return ''
+        if (failure.code === 'ESCHEMAUNAVAILABLE') {
+            return `This browser cannot validate ${this.active}'s schema, so it will not write to it. ${failure.message}`.trim()
+        }
+        return failure.path ? `${failure.path}: ${failure.message}` : failure.message
     }
 
     // Merge the edited field regexes into the collection's schema.json (a flat

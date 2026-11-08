@@ -10,7 +10,10 @@ for (const [from, to = from] of [
     ['fylo.mjs', 'fylo-web.mjs'],
     ['shared.js'],
     ['dedicated.js'],
-    ['fylo-index.wasm']
+    ['vdbx-worker.js'],
+    ['fylo-index.wasm'],
+    // The whole engine, which Explorer runs over a single .vdbx file.
+    ['fylo-browser.wasm']
 ]) {
     const output = new URL(to, destination)
     // Replace instead of copying over the prior artifact. File Provider roots

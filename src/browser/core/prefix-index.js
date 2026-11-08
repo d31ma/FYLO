@@ -1,6 +1,6 @@
 import { stringifyStoredValue } from '../../storage/value-codec.js'
 import TTID from '../vendor/ttid.mjs'
-import { join } from './path.js'
+import { BrowserPath } from './browser-path.js'
 
 /**
  * Browser host for the canonical prefix-index format. Stores the same
@@ -591,22 +591,22 @@ export class BrowserPrefixIndex {
      * @returns {string}
      */
     root(collection) {
-        return join(this.rootForCollection(collection), 'index')
+        return BrowserPath.join(this.rootForCollection(collection), 'index')
     }
 
     /** @param {string} collection @returns {string} */
     manifestPath(collection) {
-        return join(this.root(collection), LOCAL_FS_MANIFEST)
+        return BrowserPath.join(this.root(collection), LOCAL_FS_MANIFEST)
     }
 
     /** @param {string} collection @returns {string} */
     snapshotPath(collection) {
-        return join(this.root(collection), LOCAL_FS_SNAPSHOT)
+        return BrowserPath.join(this.root(collection), LOCAL_FS_SNAPSHOT)
     }
 
     /** @param {string} collection @returns {string} */
     walPath(collection) {
-        return join(this.root(collection), LOCAL_FS_WAL)
+        return BrowserPath.join(this.root(collection), LOCAL_FS_WAL)
     }
 
     /** @param {string} collection @returns {Promise<void>} */

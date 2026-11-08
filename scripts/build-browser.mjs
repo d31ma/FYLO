@@ -1,6 +1,8 @@
-import { cp, mkdir, readFile, rm } from 'node:fs/promises'
+import { cp, mkdir, readdir, readFile, rm } from 'node:fs/promises'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { homedir } from 'node:os'
+import { join, resolve } from 'node:path'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
 const engineOnly = process.argv.includes('--engine-only')
@@ -37,6 +39,22 @@ if (!engineOnly) {
         '--outfile',
         './dist-web/dedicated.js'
     ])
+    // The single-file `.vdbx` Worker (ADR 0016): no SharedArrayBuffer bridge.
+    await run('bun', [
+        'build',
+        './src/browser/fylo-single-file-worker.mjs',
+        '--target=browser',
+        '--outfile',
+        './dist-web/vdbx-worker.js'
+    ])
+    // The crypto bridge Worker a protected `.vdbx` opens through (ADR 0021).
+    await run('bun', [
+        'build',
+        './src/browser/fylo-identity-worker.mjs',
+        '--target=browser',
+        '--outfile',
+        './dist-web/identity-worker.js'
+    ])
 }
 
 // The index kernel accelerates queries beside the JavaScript core; the browser
@@ -49,18 +67,37 @@ if (!engineOnly) {
 // build: the index kernel has no such shim to satisfy the flag.
 const CUSTOM_ENTROPY = '--cfg getrandom_backend="custom"'
 
+// The whole engine is transfer-bound in a browser, so it is optimized for size;
+// the index kernel is the scan hot path and keeps the release profile's speed.
+// `z` rather than `s` since the engine links the CHEX validator (ADR 0017
+// section 4): at `s` the module measured 1,900,375 bytes, past its 1,792 KiB
+// budget, and at `z` 1,750,942 (578,155 gzipped).
+const ENGINE_PROFILE = { CARGO_PROFILE_RELEASE_OPT_LEVEL: 'z' }
+
 const WASM_ARTIFACTS = [
-    ['fylo_browser_index.wasm', 'fylo-index.wasm', 'src/browser/wasm/Cargo.toml', ''],
-    ['fylo_wasm.wasm', 'fylo-browser.wasm', 'crates/fylo-wasm/Cargo.toml', CUSTOM_ENTROPY]
+    ['fylo_browser_index.wasm', 'fylo-index.wasm', 'src/browser/wasm/Cargo.toml', '', {}],
+    [
+        'fylo_wasm.wasm',
+        'fylo-browser.wasm',
+        'crates/fylo-wasm/Cargo.toml',
+        CUSTOM_ENTROPY,
+        ENGINE_PROFILE
+    ]
 ]
 
 if (withWasm) {
     const artifacts = engineOnly ? WASM_ARTIFACTS.slice(1) : WASM_ARTIFACTS
-    for (const [built, published, manifest, rustflags] of artifacts) {
-        await buildWasm(manifest, rustflags)
+    for (const [built, published, manifest, rustflags, profile] of artifacts) {
+        await buildWasm(manifest, rustflags, profile)
         await rm(new URL(`../dist-web/${published}`, import.meta.url), { force: true })
         await cp(
-            new URL(`../target/wasm32-unknown-unknown/release/${built}`, import.meta.url),
+            resolve(
+                root,
+                process.env.CARGO_TARGET_DIR ?? 'target',
+                'wasm32-unknown-unknown',
+                'release',
+                built
+            ),
             new URL(`../dist-web/${published}`, import.meta.url)
         )
     }
@@ -70,13 +107,13 @@ if (engineOnly) {
     console.log('Built dist-web/fylo-browser.wasm')
 } else {
     console.log(
-        `Built dist-web/fylo.mjs, shared.js, dedicated.js${
+        `Built dist-web/fylo.mjs, shared.js, dedicated.js, vdbx-worker.js, identity-worker.js${
             withWasm ? `, ${WASM_ARTIFACTS.map(([, published]) => published).join(', ')}` : ''
         }`
     )
 }
 
-async function buildWasm(manifest, rustflags) {
+async function buildWasm(manifest, rustflags, profile) {
     const toolchain = await rustToolchain()
     const rustc = await capture('rustup', ['which', 'rustc', '--toolchain', toolchain]).catch(
         async () => {
@@ -85,6 +122,15 @@ async function buildWasm(manifest, rustflags) {
         }
     )
     await run('rustup', ['target', 'add', 'wasm32-unknown-unknown', '--toolchain', toolchain])
+    await run('rustup', [
+        'run',
+        toolchain,
+        'cargo',
+        'fetch',
+        '--manifest-path',
+        manifest,
+        '--locked'
+    ])
     await run(
         'rustup',
         [
@@ -101,10 +147,28 @@ async function buildWasm(manifest, rustflags) {
         ],
         {
             ...process.env,
+            ...profile,
             RUSTC: rustc.trim(),
-            RUSTFLAGS: [process.env.RUSTFLAGS, rustflags].filter(Boolean).join(' ')
+            RUSTFLAGS: [process.env.RUSTFLAGS, rustflags, await dependencySourceRemaps()]
+                .filter(Boolean)
+                .join(' ')
         }
     )
+}
+
+async function dependencySourceRemaps() {
+    const cargoHome = process.env.CARGO_HOME ?? join(homedir(), '.cargo')
+    const registry = join(cargoHome, 'registry', 'src')
+    const indexes = await readdir(registry).catch(() => [])
+    const prefixes = [
+        registry,
+        ...indexes.map((index) => join(registry, index)),
+        join(cargoHome, 'git', 'checkouts')
+    ]
+    return prefixes
+        .filter((prefix) => !/\s/.test(prefix))
+        .map((prefix) => `--remap-path-prefix=${prefix}/=`)
+        .join(' ')
 }
 
 async function rustToolchain() {

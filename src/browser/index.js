@@ -15,6 +15,22 @@ export {
     ensureRootPermission
 } from './fsa-filesystem.js'
 export { FyloWorkerClient, createWorkerClient } from './worker/client.js'
+export {
+    SingleFileDatabase,
+    VDBX_MEDIA_TYPE,
+    databaseFromDrop,
+    hasVdbxMagic,
+    listWorkingCopies,
+    pickDatabaseFile,
+    removeWorkingCopy,
+    saveDatabase,
+    workingCopyName
+} from './vdbx-client.mjs'
+export {
+    createWebCryptoIdentity,
+    describeIdentity,
+    loadWebCryptoIdentity
+} from './identity-bridge.mjs'
 export { WasmIndexScannerFactory, createWasmIndexScannerFactory } from './wasm/index-scanner.js'
 export { BrowserCore } from './core/engine.js'
 export { createMemoryFilesystem, MemoryFilesystem } from './core/memory-filesystem.js'

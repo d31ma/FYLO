@@ -1,121 +1,139 @@
 <div class="doc-sample">
-    <div class="doc-sample-langs" role="group" aria-label="Language">
+    <div class="scroll-strip language-strip">
         <button
             type="button"
-            class="w-btn w-btn-tonal w-btn--sm"
-            aria-pressed="true"
-            data-lang="python"
-            on:click="showLang('python')"
+            class="strip-arrow"
+            data-scroll-direction="-1"
+            aria-label="Scroll languages left"
         >
-            Python
+            ‹
         </button>
+        <div class="doc-sample-langs" role="group" aria-label="Language">
+            <button
+                type="button"
+                class="w-btn w-btn-tonal w-btn--sm"
+                aria-pressed="true"
+                data-lang="python"
+                on:click="showLang('python')"
+            >
+                Python
+            </button>
+            <button
+                type="button"
+                class="w-btn w-btn-ghost w-btn--sm"
+                aria-pressed="false"
+                data-lang="ruby"
+                on:click="showLang('ruby')"
+            >
+                Ruby
+            </button>
+            <button
+                type="button"
+                class="w-btn w-btn-ghost w-btn--sm"
+                aria-pressed="false"
+                data-lang="node"
+                on:click="showLang('node')"
+            >
+                Node.js
+            </button>
+            <button
+                type="button"
+                class="w-btn w-btn-ghost w-btn--sm"
+                aria-pressed="false"
+                data-lang="php"
+                on:click="showLang('php')"
+            >
+                PHP
+            </button>
+            <button
+                type="button"
+                class="w-btn w-btn-ghost w-btn--sm"
+                aria-pressed="false"
+                data-lang="go"
+                on:click="showLang('go')"
+            >
+                Go
+            </button>
+            <button
+                type="button"
+                class="w-btn w-btn-ghost w-btn--sm"
+                aria-pressed="false"
+                data-lang="rust"
+                on:click="showLang('rust')"
+            >
+                Rust
+            </button>
+            <button
+                type="button"
+                class="w-btn w-btn-ghost w-btn--sm"
+                aria-pressed="false"
+                data-lang="csharp"
+                on:click="showLang('csharp')"
+            >
+                C#
+            </button>
+            <button
+                type="button"
+                class="w-btn w-btn-ghost w-btn--sm"
+                aria-pressed="false"
+                data-lang="java"
+                on:click="showLang('java')"
+            >
+                Java
+            </button>
+            <button
+                type="button"
+                class="w-btn w-btn-ghost w-btn--sm"
+                aria-pressed="false"
+                data-lang="swift"
+                on:click="showLang('swift')"
+            >
+                Swift (iOS)
+            </button>
+            <button
+                type="button"
+                class="w-btn w-btn-ghost w-btn--sm"
+                aria-pressed="false"
+                data-lang="kotlin"
+                on:click="showLang('kotlin')"
+            >
+                Kotlin (Android)
+            </button>
+            <button
+                type="button"
+                class="w-btn w-btn-ghost w-btn--sm"
+                aria-pressed="false"
+                data-lang="dart"
+                on:click="showLang('dart')"
+            >
+                Dart
+            </button>
+            <button
+                type="button"
+                class="w-btn w-btn-ghost w-btn--sm"
+                aria-pressed="false"
+                data-lang="flutter"
+                on:click="showLang('flutter')"
+            >
+                Flutter
+            </button>
+            <button
+                type="button"
+                class="w-btn w-btn-ghost w-btn--sm"
+                aria-pressed="false"
+                data-lang="web"
+                on:click="showLang('web')"
+            >
+                JS (Browser)
+            </button>
+        </div>
         <button
             type="button"
-            class="w-btn w-btn-ghost w-btn--sm"
-            aria-pressed="false"
-            data-lang="ruby"
-            on:click="showLang('ruby')"
+            class="strip-arrow"
+            data-scroll-direction="1"
+            aria-label="Scroll languages right"
         >
-            Ruby
-        </button>
-        <button
-            type="button"
-            class="w-btn w-btn-ghost w-btn--sm"
-            aria-pressed="false"
-            data-lang="node"
-            on:click="showLang('node')"
-        >
-            Node.js
-        </button>
-        <button
-            type="button"
-            class="w-btn w-btn-ghost w-btn--sm"
-            aria-pressed="false"
-            data-lang="php"
-            on:click="showLang('php')"
-        >
-            PHP
-        </button>
-        <button
-            type="button"
-            class="w-btn w-btn-ghost w-btn--sm"
-            aria-pressed="false"
-            data-lang="go"
-            on:click="showLang('go')"
-        >
-            Go
-        </button>
-        <button
-            type="button"
-            class="w-btn w-btn-ghost w-btn--sm"
-            aria-pressed="false"
-            data-lang="rust"
-            on:click="showLang('rust')"
-        >
-            Rust
-        </button>
-        <button
-            type="button"
-            class="w-btn w-btn-ghost w-btn--sm"
-            aria-pressed="false"
-            data-lang="csharp"
-            on:click="showLang('csharp')"
-        >
-            C#
-        </button>
-        <button
-            type="button"
-            class="w-btn w-btn-ghost w-btn--sm"
-            aria-pressed="false"
-            data-lang="java"
-            on:click="showLang('java')"
-        >
-            Java
-        </button>
-        <button
-            type="button"
-            class="w-btn w-btn-ghost w-btn--sm"
-            aria-pressed="false"
-            data-lang="swift"
-            on:click="showLang('swift')"
-        >
-            Swift (iOS)
-        </button>
-        <button
-            type="button"
-            class="w-btn w-btn-ghost w-btn--sm"
-            aria-pressed="false"
-            data-lang="kotlin"
-            on:click="showLang('kotlin')"
-        >
-            Kotlin (Android)
-        </button>
-        <button
-            type="button"
-            class="w-btn w-btn-ghost w-btn--sm"
-            aria-pressed="false"
-            data-lang="dart"
-            on:click="showLang('dart')"
-        >
-            Dart
-        </button>
-        <button
-            type="button"
-            class="w-btn w-btn-ghost w-btn--sm"
-            aria-pressed="false"
-            data-lang="flutter"
-            on:click="showLang('flutter')"
-        >
-            Flutter
-        </button>
-        <button
-            type="button"
-            class="w-btn w-btn-ghost w-btn--sm"
-            aria-pressed="false"
-            data-lang="web"
-            on:click="showLang('web')"
-        >
-            JS (Browser)
+            ›
         </button>
     </div>
 

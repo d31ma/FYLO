@@ -1,0 +1,458 @@
+diff -ruN a/turso_core/Cargo.toml b/turso_core/Cargo.toml
+--- a/turso_core/Cargo.toml
++++ b/turso_core/Cargo.toml
+@@ -54,6 +54,7 @@
+     "dep:crc32fast",
+ ]
+ fuzz = []
++fylo = []
+ io_memory_yield = []
+ io_uring = [
+     "dep:io-uring",
+@@ -323,10 +324,13 @@
+ 
+ [dependencies.regex]
+ version = "1.11.1"
++# FYLO: CHEX's regex dialect, so building SQL does not widen schema validation.
++features = ["std", "unicode-perl", "unicode-case"]
++default-features = false
+ 
+ [dependencies.regex-syntax]
+ version = "0.8.5"
+-features = ["unicode"]
++features = ["unicode-perl", "unicode-case"]
+ default-features = false
+ 
+ [dependencies.roaring]
+diff -ruN a/turso_core/database.rs b/turso_core/database.rs
+--- a/turso_core/database.rs
++++ b/turso_core/database.rs
+@@ -1214,6 +1214,11 @@
+     /// Drives the IO loop internally. When `OpenOptions::storage` is unset,
+     /// opens the file at `path` (consulting the process-wide registry first).
+     pub fn open(io: Arc<dyn IO>, path: &str, mut options: OpenOptions) -> Result<Arc<Database>> {
++        // FYLO: a path the embedder's hook claims opens as its database.
++        #[cfg(feature = "fylo")]
++        if let Some(opened) = crate::fylo_hook::open_hooked(path) {
++            return opened;
++        }
+         // Reject before resolving default storage: a registry hit there would
+         // otherwise return the cached default-WAL instance and silently ignore
+         // the custom wal_path before open_async runs its own check.
+diff -ruN a/turso_core/fylo_hook.rs b/turso_core/fylo_hook.rs
+--- a/turso_core/fylo_hook.rs
++++ b/turso_core/fylo_hook.rs
+@@ -0,0 +1,23 @@
++//! FYLO: let the embedder claim a database path, so a binding built with
++//! FYLO opens a FYLO root as its database instead of a file. With no hook
++//! installed, or a path the hook declines, opening behaves as upstream.
++
++use crate::sync::Arc;
++use crate::{Database, Result};
++use std::sync::OnceLock;
++
++/// Returns `None` for a path it does not claim.
++pub type OpenHook = fn(&str) -> Option<Result<Arc<Database>>>;
++
++static OPEN_HOOK: OnceLock<OpenHook> = OnceLock::new();
++
++/// Install the hook once; later calls keep the first hook.
++pub fn install_open_hook(hook: OpenHook) {
++    let _ = OPEN_HOOK.set(hook);
++}
++
++/// The database the hook opens for `path`, or `None` when no hook is
++/// installed or the hook declines the path.
++pub fn open_hooked(path: &str) -> Option<Result<Arc<Database>>> {
++    OPEN_HOOK.get()?(path)
++}
+diff -ruN a/turso_core/lib.rs b/turso_core/lib.rs
+--- a/turso_core/lib.rs
++++ b/turso_core/lib.rs
+@@ -44,6 +44,8 @@
+ 
+ #[cfg(feature = "cli_only")]
+ pub(crate) mod btree_dump;
++#[cfg(feature = "fylo")]
++pub mod fylo_hook;
+ pub(crate) mod sync;
+ pub(crate) mod thread;
+ 
+diff -ruN a/turso_core/statement.rs b/turso_core/statement.rs
+--- a/turso_core/statement.rs
++++ b/turso_core/statement.rs
+@@ -1656,6 +1656,17 @@
+                 // yielded a Row (DML still in progress or hit Busy/error), or a
+                 // write statement without RETURNING. Rollback to avoid committing
+                 // partial DML or silently retrying after transient errors (Busy).
++                // FYLO: that includes the virtual-table writes it buffered.
++                #[cfg(feature = "fylo")]
++                if let Err(rollback_err) =
++                    crate::vdbe::execute::vtab_rollback_all(&self.program.connection)
++                {
++                    capture_reset_error(
++                        &mut reset_error,
++                        rollback_err,
++                        "Virtual-table rollback failed during statement reset",
++                    );
++                }
+                 if let Err(abort_err) = self.program.abort(
+                     &self.pager,
+                     None,
+diff -ruN a/turso_core/translate/insert.rs b/turso_core/translate/insert.rs
+--- a/turso_core/translate/insert.rs
++++ b/turso_core/translate/insert.rs
+@@ -3346,14 +3346,17 @@
+     if virtual_table.readonly() && !allow_dbpage_write {
+         crate::bail_constraint_error!("Table is read-only: {}", virtual_table.name);
+     }
+-    let (num_values, value) = match &mut body {
++    let (num_values, rows) = match &mut body {
+         InsertBody::Select(select, None) => match &mut select.body.select {
+-            OneSelect::Values(values) => (values[0].len(), values.pop().unwrap()),
++            OneSelect::Values(values) => (values[0].len(), std::mem::take(values)),
+             _ => crate::bail_parse_error!("Virtual tables only support VALUES clause in INSERT"),
+         },
+-        InsertBody::DefaultValues => (0, vec![]),
++        InsertBody::DefaultValues => (0, vec![vec![]]),
+         _ => crate::bail_parse_error!("Unsupported INSERT body for virtual tables"),
+     };
++    // FYLO: write every VALUES row; upstream writes only the last one.
++    #[cfg(not(feature = "fylo"))]
++    let rows: Vec<_> = rows.into_iter().last().into_iter().collect();
+     let table = Table::Virtual(virtual_table.clone());
+     let cursor_id = program.alloc_cursor_id(CursorType::VirtualTable(virtual_table));
+     program.emit_insn(Insn::VOpen { cursor_id });
+@@ -3375,15 +3378,16 @@
+      * */
+     let insertion = build_insertion(program, &table, &columns, num_values)?;
+ 
+-    translate_rows_single(program, &value, &insertion, resolver, false)?;
+     let conflict_action = on_conflict.as_ref().map(|c| c.bit_value()).unwrap_or(0) as u16;
+-
+-    program.emit_insn(Insn::VUpdate {
+-        cursor_id,
+-        arg_count: insertion.col_mappings.len() + 2, // +1 for NULL, +1 for rowid
+-        start_reg: registers_start,
+-        conflict_action,
+-    });
++    for value in &rows {
++        translate_rows_single(program, value, &insertion, resolver, false)?;
++        program.emit_insn(Insn::VUpdate {
++            cursor_id,
++            arg_count: insertion.col_mappings.len() + 2, // +1 for NULL, +1 for rowid
++            start_reg: registers_start,
++            conflict_action,
++        });
++    }
+ 
+     program.emit_insn(Insn::Close { cursor_id });
+ 
+diff -ruN a/turso_core/vdbe/execute.rs b/turso_core/vdbe/execute.rs
+--- a/turso_core/vdbe/execute.rs
++++ b/turso_core/vdbe/execute.rs
+@@ -1719,10 +1719,16 @@
+     } else {
+         virtual_table.update(&argv)
+     };
++    // FYLO: a virtual-table row counts in changes(), as a table row does.
++    #[cfg(feature = "fylo")]
++    if result.is_ok() {
++        state.record_statement_change();
++    }
+     match result {
+         Ok(Some(new_rowid)) => {
+             state.record_rows_written(1);
+-            if *conflict_action == 5 {
++            // FYLO: an insert sets last_insert_rowid(), as SQLite's xUpdate does.
++            if *conflict_action == 5 || cfg!(feature = "fylo") {
+                 // ResolveType::Replace
+                 program.connection.update_last_rowid(new_rowid);
+             }
+@@ -1810,12 +1816,9 @@
+     let mut states = program.connection.vtab_txn_states.write();
+     if states.insert(vtab_id) {
+         // Only begin a new transaction if one is not already active for this virtual table module
+-        let vtabs = &program.connection.syms.read().vtabs;
+-        let vtab = vtabs
+-            .iter()
+-            .find(|p| p.1.id().eq(&vtab_id))
++        let vtab = find_vtab(&program.connection, vtab_id)
+             .expect("Could not find virtual table for VBegin");
+-        vtab.1.begin()?;
++        vtab.begin()?;
+     }
+     state.pc += 1;
+     Ok(InsnFunctionStepResult::Step)
+@@ -4001,18 +4004,38 @@
+ }
+ 
+ /// Call xCommit on all virtual tables that participated in the current transaction.
++/// The virtual table with `id`: one created by a module, or (FYLO) an internal
++/// table in the connection's schema.
++fn find_vtab(conn: &Connection, id: u64) -> Option<Arc<crate::VirtualTable>> {
++    let created = conn
++        .syms
++        .read()
++        .vtabs
++        .values()
++        .find(|vtab| vtab.id() == id)
++        .cloned();
++    #[cfg(feature = "fylo")]
++    let created = created.or_else(|| {
++        conn.schema
++            .read()
++            .tables
++            .values()
++            .find_map(|table| match table.as_ref() {
++                crate::schema::Table::Virtual(vtab) if vtab.id() == id => Some(vtab.clone()),
++                _ => None,
++            })
++    });
++    created
++}
++
+ pub(crate) fn vtab_commit_all(conn: &Connection) -> crate::Result<()> {
+     let mut set = conn.vtab_txn_states.write();
+     if set.is_empty() {
+         return Ok(());
+     }
+-    let reg = &conn.syms.read().vtabs;
+     for id in set.drain() {
+-        let vtab = reg
+-            .iter()
+-            .find(|(_, vtab)| vtab.id() == id)
+-            .expect("vtab must exist");
+-        vtab.1.commit()?;
++        let vtab = find_vtab(conn, id).expect("vtab must exist");
++        vtab.commit()?;
+     }
+     Ok(())
+ }
+@@ -4234,18 +4257,14 @@
+ }
+ 
+ /// Rollback all virtual tables that are part of the current transaction.
+-fn vtab_rollback_all(conn: &Connection) -> crate::Result<()> {
++pub(crate) fn vtab_rollback_all(conn: &Connection) -> crate::Result<()> {
+     let mut set = conn.vtab_txn_states.write();
+     if set.is_empty() {
+         return Ok(());
+     }
+-    let reg = &conn.syms.read().vtabs;
+     for id in set.drain() {
+-        let vtab = reg
+-            .iter()
+-            .find(|(_, vtab)| vtab.id() == id)
+-            .expect("vtab must exist");
+-        vtab.1.rollback()?;
++        let vtab = find_vtab(conn, id).expect("vtab must exist");
++        vtab.rollback()?;
+     }
+     Ok(())
+ }
+@@ -5318,6 +5337,9 @@
+ 
+         match tx_op {
+             TxOp::Rollback => {
++                // FYLO: ROLLBACK also discards the virtual tables' writes.
++                #[cfg(feature = "fylo")]
++                vtab_rollback_all(&conn)?;
+                 if let Some(mv_store) = mv_store.as_ref() {
+                     if let Some(tx_id) = conn.get_mv_tx_id() {
+                         mv_store.rollback_tx(tx_id, pager.clone(), &conn, MAIN_DB_ID);
+@@ -5349,6 +5371,10 @@
+                 }
+                 // Pre-check deferred FKs; leave tx open and do NOT clear violations
+                 check_deferred_fk_on_commit(&conn)?;
++                // FYLO: COMMIT also commits the virtual tables' writes. A failure
++                // leaves the transaction open, so the caller can roll it back.
++                #[cfg(feature = "fylo")]
++                vtab_commit_all(&conn)?;
+                 conn.auto_commit.store(true, Ordering::SeqCst);
+                 state.auto_txn_cleanup = TxnCleanup::RollbackTxn;
+             }
+diff -ruN a/turso_core/vdbe/mod.rs b/turso_core/vdbe/mod.rs
+--- a/turso_core/vdbe/mod.rs
++++ b/turso_core/vdbe/mod.rs
+@@ -3269,6 +3269,18 @@
+         }
+ 
+         let mut abort_error: Option<LimboError> = None;
++        // FYLO: a statement that failed must not leave its virtual-table
++        // writes buffered for the next statement's commit.
++        #[cfg(feature = "fylo")]
++        if err.is_some() {
++            if let Err(err) = execute::vtab_rollback_all(&self.connection) {
++                capture_abort_error(
++                    &mut abort_error,
++                    err,
++                    "vtab_rollback_all failed during abort",
++                );
++            }
++        }
+         state.explicit_checkpoint_guard = None;
+         // PRAGMA journal_mode owns its MVCC checkpoint in active_op_state rather
+         // than commit_state. Clean it before transaction abort logic inspects
+diff -ruN a/turso_core/vtab.rs b/turso_core/vtab.rs
+--- a/turso_core/vtab.rs
++++ b/turso_core/vtab.rs
+@@ -39,6 +39,9 @@
+         match &self.vtab_type {
+             VirtualTableType::Pragma(_) => true,
+             VirtualTableType::External(table) => table.readonly(),
++            #[cfg(feature = "fylo")]
++            VirtualTableType::Internal(table) => table.read().readonly(),
++            #[cfg(not(feature = "fylo"))]
+             VirtualTableType::Internal(_) => true,
+         }
+     }
+@@ -78,7 +81,13 @@
+             columns: Self::resolve_columns(sql)?,
+             kind,
+             vtab_type: VirtualTableType::Internal(table),
+-            vtab_id: 0,
++            // FYLO: writable internal tables join the connection's virtual-table
++            // transactions, which find a table by its id.
++            vtab_id: if cfg!(feature = "fylo") {
++                VTAB_ID_COUNTER.fetch_add(1, Ordering::Acquire)
++            } else {
++                0
++            },
+             is_droppable: false,
+             innocuous: true,
+         })
+@@ -154,7 +163,9 @@
+                 table.open(conn, self.vtab_id)?,
+             )),
+             VirtualTableType::Internal(table) => {
+-                Ok(VirtualTableCursor::new_internal(table.read().open(conn)?))
++                let mut cursor = VirtualTableCursor::new_internal(table.read().open(conn)?);
++                cursor.internal_vtab_id = self.vtab_id;
++                Ok(cursor)
+             }
+         }
+     }
+@@ -163,6 +174,9 @@
+         match &self.vtab_type {
+             VirtualTableType::Pragma(_) => Err(LimboError::ReadOnly),
+             VirtualTableType::External(table) => table.update(args),
++            #[cfg(feature = "fylo")]
++            VirtualTableType::Internal(table) => table.read().update(args),
++            #[cfg(not(feature = "fylo"))]
+             VirtualTableType::Internal(_) => Err(LimboError::ReadOnly),
+         }
+     }
+@@ -193,6 +207,9 @@
+                 "Pragma virtual tables do not support transactions".to_string(),
+             )),
+             VirtualTableType::External(table) => table.begin(),
++            #[cfg(feature = "fylo")]
++            VirtualTableType::Internal(table) => table.read().begin(),
++            #[cfg(not(feature = "fylo"))]
+             VirtualTableType::Internal(_) => Err(LimboError::ExtensionError(
+                 "Internal virtual tables currently do not support transactions".to_string(),
+             )),
+@@ -205,6 +222,9 @@
+                 "Pragma virtual tables do not support transactions".to_string(),
+             )),
+             VirtualTableType::External(table) => table.commit(),
++            #[cfg(feature = "fylo")]
++            VirtualTableType::Internal(table) => table.read().commit(),
++            #[cfg(not(feature = "fylo"))]
+             VirtualTableType::Internal(_) => Err(LimboError::ExtensionError(
+                 "Internal virtual tables currently do not support transactions".to_string(),
+             )),
+@@ -217,6 +237,9 @@
+                 "Pragma virtual tables do not support transactions".to_string(),
+             )),
+             VirtualTableType::External(table) => table.rollback(),
++            #[cfg(feature = "fylo")]
++            VirtualTableType::Internal(table) => table.read().rollback(),
++            #[cfg(not(feature = "fylo"))]
+             VirtualTableType::Internal(_) => Err(LimboError::ExtensionError(
+                 "Internal virtual tables currently do not support transactions".to_string(),
+             )),
+@@ -245,6 +268,8 @@
+ pub struct VirtualTableCursor {
+     inner: VirtualTableCursorInner,
+     null_flag: bool,
++    /// The id of the internal table this cursor reads, for `VBegin`.
++    internal_vtab_id: u64,
+ }
+ 
+ crate::assert::assert_send_sync!(VirtualTableCursor);
+@@ -254,6 +279,7 @@
+         Self {
+             inner: VirtualTableCursorInner::Pragma(Box::new(cursor)),
+             null_flag: false,
++            internal_vtab_id: 0,
+         }
+     }
+ 
+@@ -261,6 +287,7 @@
+         Self {
+             inner: VirtualTableCursorInner::External(cursor),
+             null_flag: false,
++            internal_vtab_id: 0,
+         }
+     }
+ 
+@@ -268,6 +295,7 @@
+         Self {
+             inner: VirtualTableCursorInner::Internal(cursor),
+             null_flag: false,
++            internal_vtab_id: 0,
+         }
+     }
+ 
+@@ -326,6 +354,9 @@
+         match &self.inner {
+             VirtualTableCursorInner::Pragma(_) => None,
+             VirtualTableCursorInner::External(cursor) => cursor.vtab_id.into(),
++            #[cfg(feature = "fylo")]
++            VirtualTableCursorInner::Internal(_) => Some(self.internal_vtab_id),
++            #[cfg(not(feature = "fylo"))]
+             VirtualTableCursorInner::Internal(_) => None,
+         }
+     }
+@@ -607,6 +638,39 @@
+         order_by: &[turso_ext::OrderByInfo],
+     ) -> Result<turso_ext::IndexInfo, ResultCode>;
+     fn sql(&self) -> String;
++
++    /// FYLO: whether writes are refused. Internal tables are read-only unless
++    /// they say otherwise.
++    #[cfg(feature = "fylo")]
++    fn readonly(&self) -> bool {
++        true
++    }
++
++    /// FYLO: `xUpdate`. `args` is SQLite's layout: one value (the rowid) for a
++    /// DELETE; otherwise the old rowid (NULL for an INSERT), the new rowid,
++    /// then every column. Returns the new rowid of an INSERT.
++    #[cfg(feature = "fylo")]
++    fn update(&self, _args: &[Value]) -> crate::Result<Option<i64>> {
++        Err(LimboError::ReadOnly)
++    }
++
++    /// FYLO: called once per transaction before the first write.
++    #[cfg(feature = "fylo")]
++    fn begin(&self) -> crate::Result<()> {
++        Ok(())
++    }
++
++    /// FYLO: called when the transaction or autocommit statement commits.
++    #[cfg(feature = "fylo")]
++    fn commit(&self) -> crate::Result<()> {
++        Ok(())
++    }
++
++    /// FYLO: called when the transaction or statement rolls back.
++    #[cfg(feature = "fylo")]
++    fn rollback(&self) -> crate::Result<()> {
++        Ok(())
++    }
+ }
+ 
+ pub trait InternalVirtualTableCursor: Send + Sync {

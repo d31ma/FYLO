@@ -1,0 +1,225 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index 2c9428d..b9235b1 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -1,103 +1,23 @@
+ # Copyright 2023-2026 the Turso authors. All rights reserved. MIT license.
+ 
+ [workspace]
++# FYLO: only the crates the JavaScript, Java and Python bindings and the SDK kit
++# need; core/ is replaced by FYLO's vendor/turso_core (see turso_core below).
+ resolver = "2"
+ members = [
+     "bindings/java",
+     "bindings/javascript",
+-    "bindings/javascript/sync",
+     "bindings/python",
+-    "bindings/rust",
+-    "cli",
+-    "core",
+-    "extensions/completion",
+     "extensions/core",
+-    "extensions/crypto",
+-    "extensions/csv",
+-    "extensions/ipaddr",
+-    "extensions/regexp",
+-    "extensions/tests",
+-    "extensions/fuzzy",
+     "macros",
+-    "testing/simulator",
+-    "bindings/c",
+-    "testing/stress",
+-    "testing/sqlite_test_ext",
+-    "tests",
+-    "sqlite/parser",
+-    "postgres/cli",
+-    "postgres/client",
+-    "postgres/frontend",
+-    "postgres/parser",
+-    "postgres/regress",
+-    "postgres/server",
+-    "postgres/tests",
+-    "serverless/rust",
+-    "serverless/rust/conformance",
+-    "serverless/rust/differential",
+-    "sync/engine",
+-    "sync/sdk-kit",
+-    "sql_generation",
+-    "testing/concurrent-simulator",
+-    "perf/throughput",
+-    "perf/latency",
+-    "perf/fts",
+-    "perf/join-benchmark",
+-    "perf/encryption",
+-    "perf/memory",
+-    "perf/memory/codspeed",
+-    "perf/query-batch",
+-    "tools/dbhash",
+     "sdk-kit",
+     "sdk-kit-macros",
+-    "testing/differential-oracle/sql_gen_prop",
+-    "testing/differential-oracle/sql_gen",
+-    "testing/differential-oracle/fuzzer",
+-    "testing/sqltest"
+-]
+-
+-default-members = [
+-    "bindings/java",
+-    "bindings/javascript",
+-    "bindings/javascript/sync",
+-    "bindings/python",
+-    "bindings/rust",
+-    "cli",
+-    "core",
+-    "extensions/completion",
+-    "extensions/core",
+-    "extensions/crypto",
+-    "extensions/csv",
+-    "extensions/ipaddr",
+-    "extensions/regexp",
+-    "extensions/tests",
+-    "extensions/fuzzy",
+-    "macros",
+-    "testing/simulator",
+-    "bindings/c",
+-    "testing/stress",
+-    "testing/sqlite_test_ext",
+-    "tests",
+     "sqlite/parser",
+-    "postgres/tests",
+-    "serverless/rust",
+-    "serverless/rust/conformance",
+-    "serverless/rust/differential",
+     "sync/engine",
+     "sync/sdk-kit",
+-    "sql_generation",
+-    "testing/concurrent-simulator",
+-    "perf/throughput",
+-    "perf/encryption",
+-    "tools/dbhash",
+-    "sdk-kit",
+-    "sdk-kit-macros",
+-    "testing/differential-oracle/sql_gen_prop",
+-    "testing/differential-oracle/sql_gen",
+-    "testing/differential-oracle/fuzzer",
+-    "testing/sqltest"
+ ]
+ 
++
+ [workspace.package]
+ version = "0.8.3"
+ authors = ["the Turso authors"]
+@@ -112,7 +32,8 @@ turso_sdk_kit = { path = "sdk-kit", version = "0.8.3" }
+ turso_sdk_kit_macros = { path = "sdk-kit-macros", version = "0.8.3" }
+ turso_sync_sdk_kit = { path = "sync/sdk-kit", version = "0.8.3" }
+ limbo_completion = { path = "extensions/completion", version = "0.8.3" }
+-turso_core = { path = "core", version = "0.8.3" }
++# FYLO: Turso's engine with FYLO's patch (ADR 0019), shared with the fylo crate.
++turso_core = { path = "@FYLO@/vendor/turso_core", version = "=0.8.3" }
+ turso_sync_engine = { path = "sync/engine", version = "0.8.3" }
+ turso_ext = { path = "extensions/core", version = "0.8.3" }
+ turso_macros = { path = "macros", version = "0.8.3" }
+@@ -237,3 +158,10 @@ large_stack_frames = "deny"
+ large_types_passed_by_value = "deny"
+ redundant_clone = "deny"
+ assigning_clones = "deny"
++
++# FYLO: the patched engine depends on these crates' registry releases, which
++# are this tag's own sources; resolve them here so the build has one of each.
++[patch.crates-io]
++turso_ext = { path = "extensions/core" }
++turso_macros = { path = "macros" }
++turso_parser = { path = "sqlite/parser" }
+diff --git a/bindings/java/Cargo.toml b/bindings/java/Cargo.toml
+index 79af781..aac42c8 100644
+--- a/bindings/java/Cargo.toml
++++ b/bindings/java/Cargo.toml
+@@ -19,5 +19,7 @@ path = "rs_src/lib.rs"
+ 
+ [dependencies]
+ turso_core = { workspace = true, features = ["io_uring"] }
++# FYLO: open a FYLO root as the database (ADR 0019 section 2).
++fylo = { path = "@FYLO@/crates/fylo", features = ["sql"] }
+ jni = "0.21.1"
+ thiserror = { workspace = true }
+diff --git a/bindings/java/rs_src/turso_db.rs b/bindings/java/rs_src/turso_db.rs
+index 62acb99..08fad8c 100644
+--- a/bindings/java/rs_src/turso_db.rs
++++ b/bindings/java/rs_src/turso_db.rs
+@@ -79,6 +79,8 @@ pub extern "system" fn Java_tech_turso_core_TursoDB_openUtf8<'local>(
+         }
+     };
+ 
++    // FYLO: a FYLO root opens as its collections; any other path as upstream.
++    fylo::install_turso_open_hook();
+     let db = match Database::open_file(io.clone(), &path, Arc::new(SqliteDialect)) {
+         Ok(db) => db,
+         Err(e) => {
+@@ -162,6 +164,8 @@ pub extern "system" fn Java_tech_turso_core_TursoDB_openWithEncryptionUtf8<'loca
+         DatabaseOpts::new()
+     };
+ 
++    // FYLO: a FYLO root opens as its collections; any other path as upstream.
++    fylo::install_turso_open_hook();
+     let db = match Database::open_file_with_flags(
+         io.clone(),
+         &path,
+diff --git a/bindings/javascript/Cargo.toml b/bindings/javascript/Cargo.toml
+index abca28e..6a0e51a 100644
+--- a/bindings/javascript/Cargo.toml
++++ b/bindings/javascript/Cargo.toml
+@@ -17,6 +17,8 @@ crate-type = ["cdylib", "lib"]
+ turso_core = { workspace = true, features = ["fts"] }
+ turso_parser = { workspace = true }
+ napi = { version = "3.8.3", default-features = false, features = ["napi6"] }
++# FYLO: open a FYLO root as the database (ADR 0019 section 2).
++fylo = { path = "@FYLO@/crates/fylo", features = ["sql"] }
+ napi-derive = { version = "3.5.2", default-features = true }
+ tracing-subscriber = { workspace = true, features = ["env-filter"] }
+ tracing.workspace = true
+diff --git a/bindings/javascript/src/lib.rs b/bindings/javascript/src/lib.rs
+index 49b0015..16c8e30 100644
+--- a/bindings/javascript/src/lib.rs
++++ b/bindings/javascript/src/lib.rs
+@@ -337,6 +337,8 @@ fn connect_sync(db: &DatabaseInner) -> napi::Result<()> {
+         None
+     };
+ 
++    // FYLO: a FYLO root opens as its collections; any other path as upstream.
++    fylo::install_turso_open_hook();
+     let db_core = turso_core::Database::open_file_with_flags(
+         io.clone(),
+         &db.path,
+diff --git a/sdk-kit/Cargo.toml b/sdk-kit/Cargo.toml
+index 1a4be03..2239336 100644
+--- a/sdk-kit/Cargo.toml
++++ b/sdk-kit/Cargo.toml
+@@ -18,6 +18,8 @@ doc = false
+ crate-type = ["lib", "cdylib", "staticlib"]
+ 
+ [dependencies]
++# FYLO: open a FYLO root as the database (ADR 0019 section 2).
++fylo = { path = "@FYLO@/crates/fylo", features = ["sql"] }
+ env_logger = { workspace = true, default-features = false }
+ turso_core = { workspace = true, features = [
+     "conn_raw_api",
+diff --git a/sdk-kit/src/rsapi.rs b/sdk-kit/src/rsapi.rs
+index b6bc73f..1da5dfd 100644
+--- a/sdk-kit/src/rsapi.rs
++++ b/sdk-kit/src/rsapi.rs
+@@ -980,6 +980,15 @@ impl TursoDatabase {
+                     // Store the IO so that it can be retrieved with `io()` call even if the database is still opening
+                     *self.io.lock().unwrap() = Some(io.clone());
+ 
++                    // FYLO: a FYLO root opens as its collections; any other path as upstream.
++                    fylo::install_turso_open_hook();
++                    if let Some(opened) = turso_core::fylo_hook::open_hooked(&self.config.path) {
++                        drop(inner_db);
++                        *self.db.lock().unwrap() = Some(opened?);
++                        state.phase = TursoDatabaseOpenPhase::Done;
++                        return Ok(IOResult::Done(()));
++                    }
++
+                     // Opts must be computed BEFORE the file open so we can apply
+                     // OpenFlags::NoLock when multiprocess WAL is enabled — taking
+                     // the OS-level fcntl lock here would block every other

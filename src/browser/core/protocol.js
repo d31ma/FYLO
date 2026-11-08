@@ -119,7 +119,7 @@ const BROWSER_OPERATIONS = {
     executeSQL: (fylo, request) => fylo.executeSQL(requireString(request, 'sql')),
     createCollection: async (fylo, request) => {
         const collection = requireString(request, 'collection')
-        await fylo.createCollection(collection)
+        await fylo.createCollection(collection, isRecord(request.options) ? request.options : {})
         return { collection }
     },
     dropCollection: async (fylo, request) => {

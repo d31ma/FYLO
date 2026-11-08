@@ -20,7 +20,7 @@ export default class {
         },
         {
             group: 'Schemas',
-            items: 'schemaInspect, schemaCurrent, schemaHistory, schemaDoctor, schemaValidate, schemaMaterialize'
+            items: 'schemaInspect, schemaCurrent, schemaHistory, schemaDoctor, schemaValidate, schemaMaterialize, schemaMode, schemaCheck, schemaMigrate, schemaPush, schemaPull'
         },
         {
             group: 'Serverless queue',
@@ -61,12 +61,4 @@ export default class {
 })
 
 await consume()`
-
-    accessCode = `{
-    "op": "patchDoc",
-    "collection": "messages",
-    "id": "4UUB32VGUDW",
-    "data": { "title": "reviewed" },
-    "access": { "uid": 1002, "groups": [4001] }
-}`
 }

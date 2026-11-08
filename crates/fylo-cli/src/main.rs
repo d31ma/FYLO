@@ -1,5 +1,12 @@
 //! FYLO Rust preview CLI.
 
+mod access_command;
+mod grants_file;
+mod identity_command;
+mod link_command;
+mod pack_command;
+mod segment_command;
+
 use std::env;
 use std::fs;
 use std::io::{self, BufReader, Cursor, Read};
@@ -7,16 +14,37 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use fylo_engine::{AccessContext, ReadOnlyEngine};
-use fylo_format::decode_ttid;
-use fylo_machine::{FrameLimits, RootConfig, serve_configured, serve_exclusive, serve_once};
+use fylo_engine::ReadOnlyEngine;
+use fylo_format::TtidTimestamps;
+use fylo_machine::{ApplicationConfig, FrameLimits, serve_application, serve_profiled};
 use fylo_query::{QueryLimits, ScanQuery, StructuredQuery, prepare_sql};
+use fylo_storage_native::{
+    FilesystemProfile, NativeRoot, NativeWriteRoot, RecordAccessMigration, RootLease,
+    RootOpenOptions,
+};
 use serde_json::{Map, Value, json};
+
+use access_command::AccessCommand;
+use identity_command::IdentityCommand;
+use link_command::LinkCommand;
+use pack_command::{PackCommand, PackOptions, RekeyTo};
+use segment_command::{SegmentCommand, SegmentOptions};
 
 const VERSION: &str = include_str!("../../../VERSION");
 
 fn main() -> ExitCode {
-    let arguments: Vec<String> = env::args().skip(1).collect();
+    let mut arguments: Vec<String> = env::args().skip(1).collect();
+    // Host selectors may precede the subcommand; keep their values out of positionals.
+    let mut selectors = Vec::new();
+    while arguments
+        .first()
+        .is_some_and(|arg| matches!(arg.as_str(), "--config" | "--filesystem-profile"))
+        && arguments.len() >= 3
+    {
+        selectors.push(arguments.remove(0));
+        selectors.push(arguments.remove(0));
+    }
+    arguments.extend(selectors);
     if arguments.is_empty()
         || arguments.first().is_some_and(|command| command == "help")
         || arguments
@@ -26,10 +54,36 @@ fn main() -> ExitCode {
         println!("{}", usage());
         return ExitCode::SUCCESS;
     }
+    if let Err(error) = refuse_removed_access_flags(&arguments) {
+        return print_outcome(Err(error));
+    }
     if arguments.first().is_some_and(|command| command == "exec") {
         return run_machine(&arguments);
     }
-    match run(&arguments) {
+    if arguments.first().is_some_and(|command| command == "access") {
+        let positionals = positionals(&arguments);
+        return print_outcome(
+            machine_config(&arguments)
+                .and_then(|config| AccessCommand::run(&arguments, &positionals[1..], &config)),
+        );
+    }
+    if arguments.first().is_some_and(|command| command == "link") {
+        return print_outcome(LinkCommand::run(&arguments[1..]));
+    }
+    if arguments
+        .first()
+        .is_some_and(|command| command == "identity")
+    {
+        return print_outcome(IdentityCommand::run(&arguments[1..]));
+    }
+    if let Some((operation, path)) = database_command(&arguments) {
+        return run_database(&arguments, operation, &path);
+    }
+    print_outcome(run(&arguments))
+}
+
+fn print_outcome(outcome: Result<String, String>) -> ExitCode {
+    match outcome {
         Ok(output) => {
             println!("{output}");
             ExitCode::SUCCESS
@@ -45,22 +99,23 @@ fn run(arguments: &[String]) -> Result<String, String> {
     let Some(command) = arguments.first().map(String::as_str) else {
         return Err(usage());
     };
+    let profile = filesystem_profile(arguments)?;
     if command == "version" || arguments.iter().any(|argument| argument == "--version") {
-        if arguments.iter().any(|argument| argument == "--json")
-            || option(arguments, "--output") == Some("json")
-        {
-            return pretty(&machine_result(&json!({ "op": "handshake" }), None)?);
-        }
-        return Ok(VERSION.trim().to_owned());
+        return version_output(arguments);
     }
-    if RETIRED_COMMANDS.contains(&command) {
-        return Err(retired_command(command));
+    if let Some(outcome) = administrative_command(command, arguments) {
+        return outcome;
     }
-    if uses_compat_cli(arguments) {
-        return run_compat_cli(arguments);
+    let compatibility_command = uses_compat_cli(arguments);
+    if !compatibility_command && !is_read_command(command) {
+        return Err(usage());
     }
-    let root = required_option(arguments, "--root")?;
-    let engine = open_engine(root)?;
+    let application = machine_config(arguments)?;
+    if compatibility_command {
+        return run_compat_cli(arguments, &application);
+    }
+    let root = compat_root(arguments, &application)?;
+    let engine = open_engine(&root, &application, profile)?;
     match command {
         "log" => history_output(&engine, arguments),
         "verify-history" => version_verification_output(&engine, arguments),
@@ -68,11 +123,7 @@ fn run(arguments: &[String]) -> Result<String, String> {
         "get" => {
             let collection = required_option(arguments, "--collection")?;
             let identifier = required_option(arguments, "--id")?;
-            let actor = access_context(arguments)?;
-            let record = match actor.as_ref() {
-                Some(actor) => engine.get_as(collection, identifier, actor),
-                None => engine.get(collection, identifier),
-            };
+            let record = engine.get(collection, identifier);
             serde_json::to_string_pretty(&record.map_err(|error| error.to_string())?)
                 .map_err(|error| error.to_string())
         }
@@ -80,11 +131,7 @@ fn run(arguments: &[String]) -> Result<String, String> {
         "get-deleted" => {
             let collection = required_option(arguments, "--collection")?;
             let identifier = required_option(arguments, "--id")?;
-            let actor = access_context(arguments)?;
-            let record = match actor.as_ref() {
-                Some(actor) => engine.get_deleted_as(collection, identifier, actor),
-                None => engine.get_deleted(collection, identifier),
-            };
+            let record = engine.get_deleted(collection, identifier);
             serde_json::to_string_pretty(&record.map_err(|error| error.to_string())?)
                 .map_err(|error| error.to_string())
         }
@@ -118,11 +165,7 @@ fn run(arguments: &[String]) -> Result<String, String> {
             let encoded = required_option(arguments, "--query")?;
             let query = StructuredQuery::parse(encoded.as_bytes(), QueryLimits::default())
                 .map_err(|error| error.to_string())?;
-            let actor = access_context(arguments)?;
-            let records = match actor.as_ref() {
-                Some(actor) => engine.find_as(collection, &query, actor),
-                None => engine.find(collection, &query),
-            };
+            let records = engine.find(collection, &query);
             serde_json::to_string_pretty(&records.map_err(|error| error.to_string())?)
                 .map_err(|error| error.to_string())
         }
@@ -130,11 +173,7 @@ fn run(arguments: &[String]) -> Result<String, String> {
             let statement = required_option(arguments, "--statement")?;
             let plan = prepare_sql(statement, QueryLimits::default())
                 .map_err(|error| error.to_string())?;
-            let actor = access_context(arguments)?;
-            let result = match actor.as_ref() {
-                Some(actor) => engine.select_sql_as(&plan, actor),
-                None => engine.select_sql(&plan),
-            };
+            let result = engine.select_sql(&plan);
             serde_json::to_string_pretty(&result.map_err(|error| error.to_string())?)
                 .map_err(|error| error.to_string())
         }
@@ -142,13 +181,194 @@ fn run(arguments: &[String]) -> Result<String, String> {
     }
 }
 
+/// A retired command's explanation, or the result of a segment layout
+/// command or of `pack` or `unpack`, which bypass the machine protocol.
+fn administrative_command(command: &str, arguments: &[String]) -> Option<Result<String, String>> {
+    if RETIRED_COMMANDS.contains(&command) {
+        return Some(Err(retired_command(command)));
+    }
+    if PackCommand::COMMANDS.contains(&command) {
+        return Some(run_pack_command(command, arguments));
+    }
+    SegmentCommand::COMMANDS
+        .contains(&command)
+        .then(|| run_segment_command(command, arguments))
+}
+
+/// `fylo pack [<root>] --out <db.vdbx>` packs the root named by argument,
+/// by `--root` or by the configuration; `fylo unpack <db.vdbx> --out
+/// <directory>`, `fylo create <db.vdbx>` and `fylo rekey <db.vdbx>` name
+/// their database by argument or by `--root`. `rekey --new-key` takes a
+/// `${NAME}` secret reference, resolved as `fylo.encryption.key` is.
+fn run_pack_command(command: &str, arguments: &[String]) -> Result<String, String> {
+    let application = machine_config(arguments)?;
+    let values = positionals(arguments);
+    let source = match (values.get(1), command) {
+        (Some(source), _) => PathBuf::from(source),
+        (None, "pack") => compat_root(arguments, &application)?,
+        (None, _) => PathBuf::from(
+            option(arguments, "--root")
+                .ok_or_else(|| format!("{command} needs the .vdbx database to {command}"))?,
+        ),
+    };
+    let options = PackOptions {
+        out: option(arguments, "--out").map(PathBuf::from),
+        sealed: arguments.iter().any(|argument| argument == "--sealed"),
+        encrypt: arguments.iter().any(|argument| argument == "--encrypt"),
+        rekey_to: rekey_to(arguments)?,
+        admin: option(arguments, "--admin").map(ToOwned::to_owned),
+        unprotected: arguments.iter().any(|argument| argument == "--unprotected"),
+        protect: arguments.iter().any(|argument| argument == "--protect"),
+        record_access: record_access(arguments)?,
+        grants: option(arguments, "--grants").map(PathBuf::from),
+        collection: option(arguments, "--collection").map(ToOwned::to_owned),
+    };
+    let output = PackCommand::run(command, (&source, &application), &options);
+    NativeWriteRoot::close_logs().map_err(|error| error.to_string())?;
+    output
+}
+
+/// What `pack --protect` does with records' POSTIX access descriptors.
+fn record_access(arguments: &[String]) -> Result<RecordAccessMigration, String> {
+    let drop = arguments
+        .iter()
+        .any(|argument| argument == "--drop-record-access");
+    let keep = arguments
+        .iter()
+        .any(|argument| argument == "--keep-record-access-as-metadata");
+    match (drop, keep) {
+        (true, true) => Err(
+            "pass one of --drop-record-access and --keep-record-access-as-metadata, not both"
+                .into(),
+        ),
+        (true, false) => Ok(RecordAccessMigration::Drop),
+        (false, true) => Ok(RecordAccessMigration::KeepAsMetadata),
+        (false, false) => Ok(RecordAccessMigration::Refuse),
+    }
+}
+
+/// What `rekey --new-key '${NAME}'` or `rekey --decrypt` asks for. The
+/// reference is resolved as `fylo.encryption.key` is, never taken as a
+/// literal secret.
+fn rekey_to(arguments: &[String]) -> Result<Option<RekeyTo>, String> {
+    let decrypt = arguments.iter().any(|argument| argument == "--decrypt");
+    match (option(arguments, "--new-key"), decrypt) {
+        (Some(_), true) => Err("rekey --decrypt takes no --new-key".into()),
+        (Some(reference), false) => ApplicationConfig::database_key_reference(
+            option(arguments, "--config").map(Path::new),
+            reference,
+            "--new-key",
+        )
+        .map(|key| Some(RekeyTo::Key(key))),
+        (None, true) => Ok(Some(RekeyTo::Plain)),
+        (None, false) => Ok(None),
+    }
+}
+
+fn run_segment_command(command: &str, arguments: &[String]) -> Result<String, String> {
+    let application = machine_config(arguments)?;
+    let values = positionals(arguments);
+    let options = SegmentOptions {
+        to: option(arguments, "--to").map(ToOwned::to_owned),
+        out: option(arguments, "--out").map(PathBuf::from),
+        shrink: arguments.iter().any(|argument| argument == "--shrink"),
+    };
+    let output = if let Some(database) = database_target(command, arguments) {
+        SegmentCommand::run_database(command, (&database, &application), &options)
+    } else {
+        let root = compat_root(arguments, &application)?;
+        let collection = required_positional(&values, 1, "collection name")?;
+        SegmentCommand::run(command, (&root, &application), collection, &options)
+    };
+    NativeWriteRoot::close_logs().map_err(|error| error.to_string())?;
+    output
+}
+
+/// The `.vdbx` database that `fylo compact <db.vdbx>` or `fylo salvage
+/// <db.vdbx>` names, by argument or by `--root` with no collection (ADR
+/// 0016 section 11). `fylo compact <collection> --root <db.vdbx>` names
+/// one collection of it instead.
+fn database_target(command: &str, arguments: &[String]) -> Option<PathBuf> {
+    if !matches!(command, "compact" | "salvage") {
+        return None;
+    }
+    let values = positionals(arguments);
+    let named = match values.as_slice() {
+        [_, path] => Some(path.as_str()),
+        [_] => option(arguments, "--root"),
+        _ => None,
+    };
+    named
+        .filter(|path| {
+            Path::new(path)
+                .extension()
+                .is_some_and(|extension| extension == "vdbx")
+        })
+        .map(PathBuf::from)
+}
+
+fn is_read_command(command: &str) -> bool {
+    matches!(
+        command,
+        "log"
+            | "verify-history"
+            | "inspect"
+            | "get"
+            | "get-file"
+            | "get-deleted"
+            | "get-deleted-file"
+            | "scan-index"
+            | "verify-index"
+            | "find"
+            | "sql"
+    )
+}
+
+fn version_output(arguments: &[String]) -> Result<String, String> {
+    if arguments.iter().any(|argument| argument == "--json")
+        || option(arguments, "--output") == Some("json")
+    {
+        let profile = filesystem_profile(arguments)?;
+        let application = if profile == FilesystemProfile::Native {
+            ApplicationConfig::default()
+        } else {
+            machine_config(arguments)?
+        };
+        let options = machine_options(
+            option(arguments, "--root").map(PathBuf::from),
+            profile,
+            &application,
+        )?;
+        return pretty(&machine_result(
+            &json!({ "op": "handshake" }),
+            options,
+            &application,
+        )?);
+    }
+    Ok(VERSION.trim().to_owned())
+}
+
 fn run_machine(arguments: &[String]) -> ExitCode {
+    let profile = match filesystem_profile(arguments) {
+        Ok(profile) => profile,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
     if arguments.iter().any(|argument| argument == "--worm") {
         eprintln!("fylo-rust exec does not support process-local WORM mode");
         return ExitCode::FAILURE;
     }
+    let application = match machine_config(arguments) {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
     if arguments.iter().any(|argument| argument == "--loop") {
-        return run_machine_loop(arguments);
+        return run_machine_loop(arguments, application, profile);
     }
     let source = match required_option(arguments, "--request") {
         Ok(source) => source,
@@ -179,7 +399,19 @@ fn run_machine(arguments: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    match machine_frame(&request, root, limits) {
+    let options = match machine_options(root, profile, &application) {
+        Ok(options) => options,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let frame = machine_frame(&request, options, limits, &application).and_then(|frame| {
+        NativeWriteRoot::close_logs()
+            .map(|()| frame)
+            .map_err(|error| error.to_string())
+    });
+    match frame {
         Ok(frame) => {
             println!("{}", serde_json::to_string(&frame).unwrap_or_default());
             if frame.get("ok") == Some(&Value::Bool(true)) {
@@ -195,7 +427,62 @@ fn run_machine(arguments: &[String]) -> ExitCode {
     }
 }
 
-fn run_machine_loop(arguments: &[String]) -> ExitCode {
+/// The `.vdbx` operation and file that `fylo inspect <db.vdbx>` or
+/// `fylo verify <db.vdbx>` names, by argument or by `--root` (ADR 0016
+/// section 11). Any other command, or another path, is not one.
+fn database_command(arguments: &[String]) -> Option<(&'static str, PathBuf)> {
+    let operation = match arguments.first().map(String::as_str) {
+        Some("inspect") => "inspectDatabase",
+        Some("verify") => "verifyDatabase",
+        _ => return None,
+    };
+    let values = positionals(arguments);
+    let named = match values.as_slice() {
+        [_, path] => Some(path.as_str()),
+        [_] => option(arguments, "--root"),
+        _ => None,
+    };
+    named
+        .filter(|path| {
+            Path::new(path)
+                .extension()
+                .is_some_and(|extension| extension == "vdbx")
+        })
+        .map(|path| (operation, PathBuf::from(path)))
+}
+
+/// Print a `.vdbx` file's inspect or verify report as JSON. A verify report
+/// with errors is printed and fails the command.
+fn run_database(arguments: &[String], operation: &str, path: &Path) -> ExitCode {
+    // The request names the file; it is never admitted as a directory root.
+    let result = machine_config(arguments).and_then(|application| {
+        machine_result(
+            &json!({ "op": operation, "root": path }),
+            None,
+            &application,
+        )
+    });
+    match result.and_then(|report| pretty(&report).map(|output| (report, output))) {
+        Ok((report, output)) => {
+            println!("{output}");
+            if operation == "verifyDatabase" && report.get("ok") != Some(&Value::Bool(true)) {
+                ExitCode::FAILURE
+            } else {
+                ExitCode::SUCCESS
+            }
+        }
+        Err(error) => {
+            eprintln!("{error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_machine_loop(
+    arguments: &[String],
+    config: ApplicationConfig,
+    profile: FilesystemProfile,
+) -> ExitCode {
     let root = option(arguments, "--root").map(PathBuf::from);
     let limits = match machine_limits(arguments) {
         Ok(limits) => limits,
@@ -204,24 +491,37 @@ fn run_machine_loop(arguments: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let mut input = BufReader::new(io::stdin().lock());
-    let mut output = io::stdout().lock();
-    let config = match machine_config(arguments) {
-        Ok(config) => config,
+    let options = match machine_options(root, profile, &config) {
+        Ok(options) => options,
         Err(error) => {
             eprintln!("{error}");
             return ExitCode::FAILURE;
         }
     };
-    let result = if arguments
+    let mut input = BufReader::new(io::stdin().lock());
+    let mut output = io::stdout().lock();
+    let exclusive = arguments
         .iter()
-        .any(|argument| argument == "--exclusive-root")
-    {
-        serve_exclusive(&mut input, &mut output, root, limits)
-    } else {
-        serve_configured(&mut input, &mut output, root, limits, config)
+        .any(|argument| argument == "--exclusive-root");
+    let result = match options {
+        Some(options) => serve_profiled(
+            (&mut input, &mut output),
+            options,
+            config,
+            (limits, exclusive, true),
+        ),
+        None => serve_application(
+            &mut input,
+            &mut output,
+            None,
+            limits,
+            config,
+            exclusive,
+            true,
+        ),
     };
-    match result {
+    let closed = NativeWriteRoot::close_logs().map_err(|error| error.to_string());
+    match result.map_err(|error| error.to_string()).and(closed) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{error}");
@@ -232,20 +532,42 @@ fn run_machine_loop(arguments: &[String]) -> ExitCode {
 
 fn machine_frame(
     request: &Value,
-    root: Option<PathBuf>,
+    options: Option<RootOpenOptions>,
     limits: FrameLimits,
+    application: &ApplicationConfig,
 ) -> Result<Value, String> {
     let mut input = serde_json::to_vec(&request).map_err(|error| error.to_string())?;
     input.push(b'\n');
     let mut reader = Cursor::new(input);
     let mut output = Vec::new();
-    serve_once(&mut reader, &mut output, root, limits).map_err(|error| error.to_string())?;
+    match options {
+        Some(options) => serve_profiled(
+            (&mut reader, &mut output),
+            options,
+            application.clone(),
+            (limits, false, false),
+        ),
+        None => serve_application(
+            &mut reader,
+            &mut output,
+            None,
+            limits,
+            application.clone(),
+            false,
+            false,
+        ),
+    }
+    .map_err(|error| error.to_string())?;
     let text = std::str::from_utf8(&output).map_err(|error| error.to_string())?;
     serde_json::from_str(text.trim_end()).map_err(|error| error.to_string())
 }
 
-fn machine_result(request: &Value, root: Option<PathBuf>) -> Result<Value, String> {
-    let frame = machine_frame(request, root, FrameLimits::default())?;
+fn machine_result(
+    request: &Value,
+    options: Option<RootOpenOptions>,
+    application: &ApplicationConfig,
+) -> Result<Value, String> {
+    let frame = machine_frame(request, options, FrameLimits::default(), application)?;
     if frame.get("ok") == Some(&Value::Bool(true)) {
         return Ok(frame.get("result").cloned().unwrap_or(Value::Null));
     }
@@ -263,23 +585,93 @@ fn machine_result(request: &Value, root: Option<PathBuf>) -> Result<Value, Strin
 
 /// Resolve the engine's runtime knobs for this invocation.
 ///
-/// The CLI is the one composition root that still has a process environment,
-/// so it is the only place that reads one. An explicit flag wins over the
-/// variable so a caller can override an inherited environment without
-/// unsetting it.
-fn machine_config(arguments: &[String]) -> Result<RootConfig, String> {
-    let mut config = RootConfig::from_env().map_err(|error| error.to_string())?;
+/// Explicit flags override application-owned settings without mutating the
+/// caller's process environment. Environment variables are only secret sources.
+fn machine_config(arguments: &[String]) -> Result<ApplicationConfig, String> {
+    if arguments.iter().any(|arg| arg == "--config") {
+        required_option(arguments, "--config")?;
+    }
+    let mut config = ApplicationConfig::load(option(arguments, "--config").map(Path::new))?;
+    if let Some(root) = option(arguments, "--root") {
+        config.root = Some(PathBuf::from(root));
+    }
+    if let Some(schema) = option(arguments, "--schema-dir") {
+        config.schema = Some(PathBuf::from(schema));
+    }
     if arguments
         .iter()
         .any(|argument| argument == "--strict-schema")
     {
-        config.strict_schema = true;
+        config.storage.strict_schema = true;
     }
     if let Some(width) = option(arguments, "--shard-width") {
-        config.shard_width =
+        config.storage.shard_width =
             Some(fylo_machine::parse_shard_width(width).map_err(|error| error.to_string())?);
     }
+    if let Some(bytes) = optional_usize(arguments, "--hot-set-bytes")? {
+        config.hot_set_bytes = Some(bytes);
+    }
+    apply_identity_options(arguments, &mut config)?;
     Ok(config)
+}
+
+/// `--identity <reference>`, `--trust-anchor <fid1:...>` and
+/// `--trust-on-first-use` over the configuration's identity (ADR 0021).
+/// Trust on first use warns: whoever can write the file decides who its
+/// admin is.
+fn apply_identity_options(
+    arguments: &[String],
+    config: &mut ApplicationConfig,
+) -> Result<(), String> {
+    let identity = option(arguments, "--identity");
+    let anchor = option(arguments, "--trust-anchor");
+    let first_use = arguments
+        .iter()
+        .any(|argument| argument == "--trust-on-first-use");
+    if identity.is_none() && anchor.is_none() && !first_use {
+        return Ok(());
+    }
+    if let Some(identity) = identity {
+        config.identity_reference = Some(identity.to_owned());
+    }
+    if let Some(anchor) = anchor {
+        config.trust_anchor = Some(anchor.to_owned());
+    }
+    if first_use {
+        config.trust_anchor = None;
+        config.trust_on_first_use = true;
+        eprintln!(
+            "warning: --trust-on-first-use trusts whichever admin created the database; pin it with --trust-anchor (fylo access list shows it)"
+        );
+    }
+    config.open_identity()
+}
+
+fn filesystem_profile(arguments: &[String]) -> Result<FilesystemProfile, String> {
+    let count = arguments
+        .iter()
+        .filter(|argument| argument.as_str() == "--filesystem-profile")
+        .count();
+    if count == 0 {
+        return Ok(FilesystemProfile::Native);
+    }
+    if count != 1 {
+        return Err("--filesystem-profile may be specified only once".into());
+    }
+    FilesystemProfile::parse(required_option(arguments, "--filesystem-profile")?)
+        .map_err(|error| error.to_string())
+}
+
+fn machine_options(
+    root: Option<PathBuf>,
+    profile: FilesystemProfile,
+    application: &ApplicationConfig,
+) -> Result<Option<RootOpenOptions>, String> {
+    let root = root.or_else(|| application.root.clone());
+    if profile == FilesystemProfile::EfsSidecarV1 && root.is_none() {
+        return Err("--filesystem-profile efs-sidecar-v1 requires --root or fylo.root".into());
+    }
+    Ok(root.map(|root| RootOpenOptions::new(root).with_profile(profile)))
 }
 
 fn machine_limits(arguments: &[String]) -> Result<FrameLimits, String> {
@@ -325,14 +717,19 @@ fn uses_compat_cli(arguments: &[String]) -> bool {
 // splitting it across registries would make command-to-protocol drift harder
 // to review against the JavaScript CLI.
 #[allow(clippy::too_many_lines)]
-fn run_compat_cli(arguments: &[String]) -> Result<String, String> {
+fn run_compat_cli(arguments: &[String], application: &ApplicationConfig) -> Result<String, String> {
     if arguments.iter().any(|argument| argument == "--worm") {
         return Err("process-local WORM mode was retired; use UID/GID/mode permissions".into());
     }
     let values = positionals(arguments);
     let command = values.first().map(String::as_str).unwrap_or_default();
-    let root = compat_root(arguments)?;
-    fs::create_dir_all(&root).map_err(|error| format!("cannot create FYLO root: {error}"))?;
+    let root = compat_root(arguments, application)?;
+    let profile = filesystem_profile(arguments)?;
+    // A root named `*.vdbx` is a database, not a directory to create; the
+    // machine protocol opens it, or creates it protected (ADR 0021, P5-1).
+    if profile == FilesystemProfile::Native && !NativeRoot::names_database(&root) {
+        fs::create_dir_all(&root).map_err(|error| format!("cannot create FYLO root: {error}"))?;
+    }
     let mut request = Map::new();
     let mut sql = None;
     match command {
@@ -472,7 +869,8 @@ fn run_compat_cli(arguments: &[String]) -> Result<String, String> {
         }
         _ => return Err(format!("unknown command: {command}\n{}", usage())),
     }
-    let result = machine_result(&Value::Object(request), Some(root))?;
+    let options = machine_options(Some(root), profile, application)?;
+    let result = machine_result(&Value::Object(request), options, application)?;
     if arguments.iter().any(|argument| argument == "--json") {
         if command == "latest" && arguments.iter().any(|argument| argument == "--id-only") {
             return pretty(&json!({ "id": result }));
@@ -553,6 +951,11 @@ fn schema_request(
         "doctor" => "schemaDoctor",
         "validate" => "schemaValidate",
         "materialize" => "schemaMaterialize",
+        "mode" => "schemaMode",
+        "check" => "schemaCheck",
+        "migrate" => "schemaMigrate",
+        "push" => "schemaPush",
+        "pull" => "schemaPull",
         _ => return Err("missing or invalid schema command".into()),
     };
     insert_op(request, operation);
@@ -567,6 +970,13 @@ fn schema_request(
     if let Some(schema_dir) = option(arguments, "--schema-dir") {
         request.insert("schemaDir".into(), json!(schema_dir));
     }
+    if action == "migrate"
+        && arguments
+            .iter()
+            .any(|argument| argument == "--include-unversioned")
+    {
+        request.insert("includeUnversioned".into(), json!(true));
+    }
     if matches!(action, "validate" | "materialize") {
         let source = required_positional(values, 3, "JSON document input")?;
         let text = read_json_source(source)?;
@@ -577,7 +987,67 @@ fn schema_request(
         }
         request.insert("document".into(), document);
     }
+    if action == "mode"
+        && let Some(mode) = values.get(3)
+    {
+        if fylo_storage_native::ValidationMode::parse(mode).is_none() {
+            return Err(format!(
+                "invalid validation mode {mode}: expected off, warn or strict"
+            ));
+        }
+        request.insert("mode".into(), json!(mode));
+    }
+    if action == "check"
+        && let Some(limit) = optional_usize(arguments, "--limit")?
+    {
+        request.insert("limit".into(), json!(limit));
+    }
+    if action == "pull" {
+        let out = std::path::absolute(required_option(arguments, "--out")?)
+            .map_err(|error| format!("invalid --out path: {error}"))?;
+        request.insert("out".into(), json!(out));
+    }
     Ok(())
+}
+
+fn render_schema_registry(action: &str, result: &Value) -> String {
+    let collection = result["collection"].as_str().unwrap_or_default();
+    if action == "pull" {
+        return format!(
+            "Pulled {} schema version(s) of {collection} to {} (current {})",
+            result["versions"],
+            result["out"].as_str().unwrap_or_default(),
+            result["current"].as_str().unwrap_or_default()
+        );
+    }
+    let pushed: Vec<&str> = result["pushed"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|version| version["label"].as_str())
+        .collect();
+    let head = result["head"].as_str().unwrap_or("none");
+    if pushed.is_empty() {
+        return format!("Schema registry of {collection} is up to date at {head}");
+    }
+    let mut line = format!(
+        "Pushed {} schema version(s) of {collection}: {} (head {head})",
+        pushed.len(),
+        pushed.join(", ")
+    );
+    if let Some(dry_run) = result["dryRun"].as_object() {
+        use std::fmt::Write as _;
+        let _ = write!(
+            line,
+            "; dry run checked {} of {} document(s)",
+            dry_run["checked"], dry_run["total"]
+        );
+    }
+    for warning in result["warnings"].as_array().into_iter().flatten() {
+        line.push_str("\nwarning: ");
+        line.push_str(warning.as_str().unwrap_or_default());
+    }
+    line
 }
 
 fn render_compat_result(
@@ -649,7 +1119,7 @@ fn render_compat_result(
             result,
         )),
         "inspect" => Ok(format!(
-            "Collection {}\nExists: {}\nWORM mode: {}\nStored documents: {}\nDeleted documents: {}\nIndexed documents: {}",
+            "Collection {}\nExists: {}\nWORM mode: {}\nStored documents: {}\nDeleted documents: {}\nIndexed documents: {}\nSchema validation: {}",
             result["collection"].as_str().unwrap_or_default(),
             yes_no(result["exists"].as_bool().unwrap_or(false)),
             if result["worm"].as_bool().unwrap_or(false) {
@@ -659,7 +1129,8 @@ fn render_compat_result(
             },
             result["docsStored"],
             result["deletedDocs"],
-            result["indexedDocs"]
+            result["indexedDocs"],
+            result["validation"].as_str().unwrap_or("off")
         )),
         "get" | "latest" | "deleted" => {
             if result.as_object().is_some_and(Map::is_empty) {
@@ -735,15 +1206,29 @@ fn render_schema(action: &str, result: &Value) -> Result<String, String> {
             result["current"].as_str().unwrap_or("unversioned")
         )),
         "materialize" => pretty(&result["document"]),
-        "inspect" => Ok(format!(
-            "Schema {}\nSchema dir: {}\nVersioned: {}\nCurrent: {}\nVersions: {}",
+        "migrate" => Ok(format!(
+            "Migrated {} of {} documents in {} to {} ({} already at head, {} without _v skipped)",
+            result["migrated"],
+            result["scanned"],
             result["collection"].as_str().unwrap_or_default(),
-            result["schemaDir"].as_str().unwrap_or_default(),
-            yes_no(result["versioned"].as_bool().unwrap_or(false)),
-            result["current"].as_str().unwrap_or("none"),
-            result["versions"].as_array().map_or(0, Vec::len)
+            result["current"].as_str().unwrap_or_default(),
+            result["atHead"],
+            result["unversioned"]
         )),
+        "inspect" => Ok(render_schema_inspect(result)),
         "history" => pretty(&result["versions"]),
+        "mode" => Ok(format!(
+            "Schema validation for {}: {}{}",
+            result["collection"].as_str().unwrap_or_default(),
+            result["validation"].as_str().unwrap_or_default(),
+            if result["recorded"].is_null() {
+                " (from fylo.strict; not recorded in the collection)"
+            } else {
+                ""
+            }
+        )),
+        "check" => Ok(render_schema_check(result)),
+        "push" | "pull" => Ok(render_schema_registry(action, result)),
         "doctor" => Ok(format!(
             "Schema doctor {}: {}\nSchema dir: {}",
             result["collection"].as_str().unwrap_or_default(),
@@ -756,6 +1241,85 @@ fn render_schema(action: &str, result: &Value) -> Result<String, String> {
         )),
         _ => pretty(result),
     }
+}
+
+/// `fylo schema inspect`: the collection's versions and, for a collection
+/// with documents to count, how many are stored at each version and whether
+/// every one is at the head (ADR 0017 section 6).
+fn render_schema_inspect(result: &Value) -> String {
+    let mut lines = vec![
+        format!(
+            "Schema {}",
+            result["collection"].as_str().unwrap_or_default()
+        ),
+        format!(
+            "Schema dir: {}",
+            result["schemaDir"].as_str().unwrap_or_default()
+        ),
+        format!(
+            "Versioned: {}",
+            yes_no(result["versioned"].as_bool().unwrap_or(false))
+        ),
+        format!("Current: {}", result["current"].as_str().unwrap_or("none")),
+    ];
+    if let Some(mode) = result["validation"].as_str() {
+        lines.push(format!("Validation: {mode}"));
+    }
+    let versions = result["versions"].as_array();
+    lines.push(format!("Versions: {}", versions.map_or(0, Vec::len)));
+    if !result["converged"].is_boolean() {
+        return lines.join("\n");
+    }
+    for version in versions.into_iter().flatten() {
+        lines.push(format!(
+            "  {}{}: {} document(s)",
+            version["version"].as_str().unwrap_or_default(),
+            if version["current"].as_bool().unwrap_or(false) {
+                " (head)"
+            } else {
+                ""
+            },
+            version["documents"]
+        ));
+    }
+    for (label, documents) in result["unknownVersions"].as_object().into_iter().flatten() {
+        lines.push(format!(
+            "  {label} (not in the schema): {documents} document(s)"
+        ));
+    }
+    if result["unversioned"].as_u64().unwrap_or(0) > 0 {
+        lines.push(format!(
+            "Without _v, counted at the oldest version: {}",
+            result["unversioned"]
+        ));
+    }
+    lines.push(format!(
+        "Converged: {}",
+        yes_no(result["converged"].as_bool().unwrap_or(false))
+    ));
+    lines.join("\n")
+}
+
+fn render_schema_check(result: &Value) -> String {
+    let mut lines = vec![format!(
+        "Schema check {} at {} ({}): {} of {} document(s) fail",
+        result["collection"].as_str().unwrap_or_default(),
+        result["current"].as_str().unwrap_or("unversioned"),
+        result["validation"].as_str().unwrap_or_default(),
+        result["failed"],
+        result["checked"]
+    )];
+    for document in result["documents"].as_array().into_iter().flatten() {
+        lines.push(format!(
+            "{}  {}",
+            document["id"].as_str().unwrap_or_default(),
+            document["error"].as_str().unwrap_or_default()
+        ));
+    }
+    if result["truncated"] == Value::Bool(true) {
+        lines.push("(more not listed; raise --limit)".into());
+    }
+    lines.join("\n")
 }
 
 fn render_sql(statement: &str, result: &Value, arguments: &[String]) -> Result<String, String> {
@@ -805,7 +1369,10 @@ fn render_table(result: &Value, arguments: &[String]) -> Result<String, String> 
     }
     let alignment = table_alignment(option(arguments, "--align"))?;
     let page_size = table_page_size(option(arguments, "--page-size"))?;
-    let row_key_label = if documents.keys().any(|key| decode_ttid(key).is_ok()) {
+    let row_key_label = if documents
+        .keys()
+        .any(|key| TtidTimestamps::decode(key).is_ok())
+    {
         "_id"
     } else {
         "_key"
@@ -1081,12 +1648,12 @@ fn character_display_width(character: char) -> usize {
     }
 }
 
-fn compat_root(arguments: &[String]) -> Result<PathBuf, String> {
+fn compat_root(arguments: &[String], application: &ApplicationConfig) -> Result<PathBuf, String> {
     if let Some(root) = option(arguments, "--root") {
         return Ok(PathBuf::from(root));
     }
-    if let Some(root) = env::var_os("FYLO_ROOT") {
-        return Ok(PathBuf::from(root));
+    if let Some(root) = application.root.as_ref() {
+        return Ok(root.clone());
     }
     env::current_dir()
         .map(|directory| directory.join(".fylo-data"))
@@ -1112,6 +1679,9 @@ fn required_positional<'a>(
 
 fn positionals(arguments: &[String]) -> Vec<String> {
     const VALUE_FLAGS: &[&str] = &[
+        "--config",
+        "--filesystem-profile",
+        "--shard-width",
         "--root",
         "--schema-dir",
         "--request",
@@ -1122,14 +1692,24 @@ fn positionals(arguments: &[String]) -> Vec<String> {
         "--output",
         "--max-request-bytes",
         "--max-response-bytes",
+        "--hot-set-bytes",
         "--collection",
         "--id",
         "--query",
         "--queries",
         "--statement",
-        "--uid",
-        "--groups",
         "--limit",
+        "--out",
+        "--new-key",
+        "--identity",
+        "--trust-anchor",
+        "--admin",
+        "--grantee",
+        "--key",
+        "--actions",
+        "--rule",
+        "--label",
+        "--grants",
     ];
     let mut values = Vec::new();
     let mut index = 0;
@@ -1219,36 +1799,39 @@ fn history_limit(arguments: &[String]) -> Result<usize, String> {
         .map_err(|error| format!("invalid --limit: {error}"))
 }
 
-fn open_engine(root: &str) -> Result<ReadOnlyEngine, String> {
-    let Ok(schema_root) = env::var("FYLO_SCHEMA") else {
-        return ReadOnlyEngine::open(root).map_err(|error| error.to_string());
+fn open_engine(
+    root: &Path,
+    application: &ApplicationConfig,
+    profile: FilesystemProfile,
+) -> Result<ReadOnlyEngine, String> {
+    let mut options =
+        application.with_database_access(RootOpenOptions::new(root).with_profile(profile));
+    if profile == FilesystemProfile::EfsSidecarV1 {
+        let lease =
+            RootLease::acquire_with_profile(root, profile).map_err(|error| error.to_string())?;
+        options = options.with_lease(lease);
+    }
+    let engine = ReadOnlyEngine::open_profiled(options).map_err(|error| error.to_string())?;
+    let Some(schema_root) = application.schema.as_ref() else {
+        return Ok(engine);
     };
-    if !Path::new(&schema_root).is_dir() {
-        return ReadOnlyEngine::open(root).map_err(|error| error.to_string());
-    }
-    let credentials = env::var("FYLO_ENCRYPTION_KEY")
-        .ok()
-        .zip(env::var("FYLO_CIPHER_SALT").ok());
-    match credentials {
-        Some((secret, salt)) => {
-            ReadOnlyEngine::open_with_encryption(root, schema_root, &secret, &salt)
-                .map_err(|error| error.to_string())
-        }
-        None => {
-            ReadOnlyEngine::open_with_schema(root, schema_root).map_err(|error| error.to_string())
-        }
-    }
+    engine
+        .with_schema_configuration(
+            schema_root,
+            application
+                .credentials
+                .as_ref()
+                .map(|(secret, salt)| (secret.as_str(), salt.as_str())),
+        )
+        .map_err(|error| error.to_string())
 }
 
 fn get_file_output(engine: &ReadOnlyEngine, arguments: &[String]) -> Result<String, String> {
     let collection = required_option(arguments, "--collection")?;
     let identifier = required_option(arguments, "--id")?;
-    let actor = access_context(arguments)?;
-    let file = match actor.as_ref() {
-        Some(actor) => engine.get_file_as(collection, identifier, actor),
-        None => engine.get_file(collection, identifier),
-    }
-    .map_err(|error| error.to_string())?;
+    let file = engine
+        .get_file(collection, identifier)
+        .map_err(|error| error.to_string())?;
     let mut output = serde_json::to_value(&file).map_err(|error| error.to_string())?;
     output
         .as_object_mut()
@@ -1263,12 +1846,9 @@ fn get_deleted_file_output(
 ) -> Result<String, String> {
     let collection = required_option(arguments, "--collection")?;
     let identifier = required_option(arguments, "--id")?;
-    let actor = access_context(arguments)?;
-    let file = match actor.as_ref() {
-        Some(actor) => engine.get_deleted_file_as(collection, identifier, actor),
-        None => engine.get_deleted_file(collection, identifier),
-    }
-    .map_err(|error| error.to_string())?;
+    let file = engine
+        .get_deleted_file(collection, identifier)
+        .map_err(|error| error.to_string())?;
     let mut output = serde_json::to_value(&file).map_err(|error| error.to_string())?;
     output
         .as_object_mut()
@@ -1288,30 +1868,19 @@ fn required_option<'a>(arguments: &'a [String], name: &str) -> Result<&'a str, S
         .ok_or_else(|| format!("missing value for {name}\n{}", usage()))
 }
 
-fn access_context(arguments: &[String]) -> Result<Option<AccessContext>, String> {
-    if !arguments.iter().any(|argument| argument == "--uid") {
-        if arguments.iter().any(|argument| argument == "--groups") {
-            return Err("--groups requires --uid".into());
-        }
-        return Ok(None);
+fn refuse_removed_access_flags(arguments: &[String]) -> Result<(), String> {
+    const REMOVED: [&str; 3] = ["--uid", "--groups", "--allow-engine-only-access"];
+    match arguments
+        .iter()
+        .find(|argument| REMOVED.contains(&argument.as_str()))
+    {
+        Some(flag) => Err(format!(
+            "{flag} was removed with POSTIX access control (ADR 0021); a protected .vdbx \
+             database opened with an identity replaces it \
+             (docs/migrating-to-protected-databases.md)"
+        )),
+        None => Ok(()),
     }
-    let uid = required_option(arguments, "--uid")?
-        .parse::<u32>()
-        .map_err(|error| format!("invalid --uid: {error}"))?;
-    let groups = if arguments.iter().any(|argument| argument == "--groups") {
-        required_option(arguments, "--groups")?
-            .split(',')
-            .filter(|value| !value.is_empty())
-            .map(|value| {
-                value
-                    .parse::<u32>()
-                    .map_err(|error| format!("invalid --groups: {error}"))
-            })
-            .collect::<Result<Vec<_>, _>>()?
-    } else {
-        Vec::new()
-    };
-    Ok(Some(AccessContext::new(uid, groups)))
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -1340,7 +1909,11 @@ fn retired_command(command: &str) -> String {
 }
 
 fn usage() -> String {
-    "Usage:\n  fylo checkout [-b] <branch> [--root <path>] [--json]\n  fylo branch [--root <path>] [--json]\n  fylo commit -m <message> [--root <path>] [--json]\n  fylo log [--root <path>] [--json]\n  fylo status [--root <path>] [--json]\n  fylo diff [<from>] [<to>] [--root <path>] [--json]\n  fylo restore-commit <commit-id> [--root <path>] [--force] [--json]\n  fylo merge <ref> [-m <message>] [--root <path>] [--json]\n  fylo version [--output json]\n  fylo \"<SQL>\"\n  fylo sql \"<SQL>\"\n  fylo exec --request <json|@path|-> [--root <path>]\n  fylo exec --loop [--root <path>] [--exclusive-root]\n  fylo inspect <collection> [--root <path>] [--json]\n  fylo get <collection> <doc-id> [--root <path>] [--json]\n  fylo latest <collection> <doc-id> [--root <path>] [--json] [--id-only]\n  fylo rebuild <collection> [--root <path>] [--json]\n  fylo reshard <collection> --width <n> [--root <path>] [--json]\n  fylo verify <collection> [--root <path>] [--json]\n  fylo deleted <collection> [--root <path>] [--json]\n  fylo restore <collection> <doc-id> [--root <path>] [--json]\n  fylo schema inspect <collection> [--schema-dir <path>] [--json]\n  fylo schema current <collection> [--schema-dir <path>] [--json]\n  fylo schema history <collection> [--schema-dir <path>] [--json]\n  fylo schema doctor <collection> [--schema-dir <path>] [--json]\n  fylo schema validate <collection> <json|@path|-> [--schema-dir <path>] [--json]\n  fylo schema materialize <collection> <json|@path|-> [--schema-dir <path>] [--json]\n\nOptions:\n  --root <path>   Override FYLO_ROOT for this command\n  --schema-dir <path> Override FYLO_SCHEMA for schema admin commands\n  --json          Emit machine-readable JSON output\n  --id-only       Return only the resolved document id for latest\n  -b              Create a new branch during checkout\n  -m, --message <v> Commit message\n  --force         Allow restore-commit to overwrite uncommitted changes\n  --request <v>   Machine request payload, @file path, or - for stdin\n  --exclusive-root Acquire an exclusive crash-safe root lease for exec --loop\n  --strict-schema Validate writes against the collection head schema (FYLO_STRICT)\n  --shard-width <n> Shard width for collections created by this session (FYLO_SHARD_WIDTH)\n  --width <n>     Destination shard width for reshard\n  --max-request-bytes <n> Maximum NDJSON request bytes, excluding LF\n  --max-response-bytes <n> Maximum NDJSON response bytes, excluding LF\n  --output <mode> Output mode for version: text or json\n  --version       Print the FYLO runtime version\n  --help          Show this message"
+    "Usage:\n  fylo checkout [-b] <branch> [--root <path>] [--json]\n  fylo branch [--root <path>] [--json]\n  fylo commit -m <message> [--root <path>] [--json]\n  fylo log [--root <path>] [--json]\n  fylo status [--root <path>] [--json]\n  fylo diff [<from>] [<to>] [--root <path>] [--json]\n  fylo restore-commit <commit-id> [--root <path>] [--force] [--json]\n  fylo merge <ref> [-m <message>] [--root <path>] [--json]\n  fylo version [--output json]\n  fylo \"<SQL>\"\n  fylo sql \"<SQL>\"\n  fylo exec --request <json|@path|-> [--root <path>]\n  fylo exec --loop [--root <path>] [--exclusive-root [--hot-set-bytes <n>]]\n  fylo inspect <collection> [--root <path>] [--json]\n  fylo inspect <db.vdbx>\n  fylo get <collection> <doc-id> [--root <path>] [--json]\n  fylo latest <collection> <doc-id> [--root <path>] [--json] [--id-only]\n  fylo rebuild <collection> [--root <path>] [--json]\n  fylo reshard <collection> --width <n> [--root <path>] [--json]\n  fylo verify <collection> [--root <path>] [--json]\n  fylo layout <collection> --to <files|segments> [--root <path>]\n  fylo compact <collection> [--root <path>]\n  fylo compact <db.vdbx> [--shrink]\n  fylo export <collection> --out <directory> [--root <path>]\n  fylo verify-segments <collection> [--root <path>]\n  fylo salvage <collection> --out <directory> [--root <path>]\n  fylo salvage <db.vdbx> --out <directory>\n  fylo verify <db.vdbx>\n  fylo create <db.vdbx> --admin <reference>\n  fylo create <db.vdbx> --unprotected [--encrypt]\n  fylo access report <root|db.vdbx>\n  fylo access list <db.vdbx> --identity <reference> [--trust-anchor <fid1:...> | --trust-on-first-use]\n  fylo access audit <db.vdbx> --identity <reference> [--trust-anchor <fid1:...> | --trust-on-first-use]\n  fylo access grant <db.vdbx> --grantee <name> --key <fpk1:...> --actions <read,write,admin> (--collection <name> | --all-collections | --database) [--rule <id>] [--label <text>]\n  fylo access revoke <db.vdbx> --rule <id>\n  fylo access settle <db.vdbx>\n  fylo pack [<root>] --out <db.vdbx> [--encrypt]\n  fylo pack <root|db.vdbx> --out <db.vdbx> --sealed [--encrypt]\n  fylo pack [<root>|<db.vdbx>] --out <db.vdbx> --protect --admin <reference> [--drop-record-access | --keep-record-access-as-metadata] [--grants <file.json>]\n  fylo unpack <db.vdbx> --out <directory>\n  fylo rekey <db.vdbx> --new-key '${NAME}' [--encrypt]\n  fylo rekey <db.vdbx> --decrypt\n  fylo rekey <db.vdbx> [--collection <name>] --identity <reference> (protected: as an admin)\n  fylo deleted <collection> [--root <path>] [--json]\n  fylo restore <collection> <doc-id> [--root <path>] [--json]\n  fylo schema inspect <collection> [--schema-dir <path>] [--json]\n  fylo schema current <collection> [--schema-dir <path>] [--json]\n  fylo schema history <collection> [--schema-dir <path>] [--json]\n  fylo schema doctor <collection> [--schema-dir <path>] [--json]\n  fylo schema validate <collection> <json|@path|-> [--schema-dir <path>] [--json]\n  fylo schema materialize <collection> <json|@path|-> [--schema-dir <path>] [--json]\n  fylo schema migrate <collection> [--include-unversioned] [--schema-dir <path>] [--json]\n  fylo schema mode <collection> [off|warn|strict] [--json]\n  fylo schema check <collection> [--limit <n>] [--schema-dir <path>] [--json]\n  fylo schema push <collection> [--schema-dir <path>] [--json]\n  fylo schema pull <collection> --out <path> [--json]\n  fylo link [--check | --undo] [--project <dir>] [--artifacts <dir>]\n  fylo identity create --store <reference> [--json]\n  fylo identity show <reference> [--json]\n\nOptions:\n  --config <path> Load application.json (default: ./application.json)\n  --root <path>   Override fylo.root for this command\n  --schema-dir <path> Override fylo.schema for schema admin commands\n  --json          Emit machine-readable JSON output\n  --id-only       Return only the resolved document id for latest\n  -b              Create a new branch during checkout\n  -m, --message <v> Commit message\n  --force         Allow restore-commit to overwrite uncommitted changes\n  --include-unversioned Also migrate documents with no _v, as the oldest version\n  --request <v>   Machine request payload, @file path, or - for stdin\n  --exclusive-root Acquire an exclusive crash-safe root lease for exec --loop\n  --hot-set-bytes <n> Memory an --exclusive-root session keeps for warm reads; 0 turns it off (default 67108864)\n  --strict-schema Validate writes against the collection head schema (fylo.strict)\n  --shard-width <n> Shard width for collections created by this session (fylo.shard.width)\n  --width <n>     Destination shard width for reshard\n  --to <layout>   Destination layout for layout: files or segments\n  --shrink        Give the space compact frees in a .vdbx database back to the disk\n  --out <directory> Empty directory export and salvage write the per-document tree to, and unpack the root to\n  --out <db.vdbx> New .vdbx database pack writes; it must not exist\n  --encrypt       Encrypt the database create or pack writes with fylo.encryption.key, or with rekey a plain one with --new-key\n  --sealed        Pack a read-only database recompressed in 64 KiB blocks; it also copies a live .vdbx database\n  --new-key '${NAME}' Secret reference (environment or .env, as fylo.encryption.key) rekey encrypts the database with; with --encrypt it encrypts a plain one\n  --decrypt       Rewrite an encrypted database plain with rekey\n  --limit <n>     Failing documents schema check lists (default 100)\n  --out <path>    Folder schema pull writes the fylo.schema layout to\n  --max-request-bytes <n> Maximum NDJSON request bytes, excluding LF\n  --max-response-bytes <n> Maximum NDJSON response bytes, excluding LF\n  --output <mode> Output mode for version: text or json\n  --project <dir> Project fylo link links (default: the current directory)\n  --artifacts <dir> FYLO-built Turso libraries fylo link places (default: $FYLO_LINK_ARTIFACTS, then ../lib/fylo-link beside fylo)\n  --check         Verify fylo link's links and the SDK versions\n  --undo          Remove only the links fylo link placed\n  --admin <reference> Admin and trust anchor of the protected database create makes (ADR 0021)\n  --protect       Pack into a protected database whose admin and trust anchor --admin names (ADR 0021)\n  --drop-record-access Let pack --protect drop records' POSTIX access descriptors\n  --keep-record-access-as-metadata Let pack --protect keep each descriptor as the metadata field legacyAccess, unenforced\n  --grants <file.json> Grants pack --protect adds: {\"grants\": [{\"grantee\", \"key\", \"actions\", \"collection\" | \"allCollections\" | \"database\"}]}\n  --unprotected   Let create make a database with no identities; new databases are protected by default\n  --identity <reference> Application identity a protected database opens with (fylo.identity, FYLO_IDENTITY)\n  --trust-anchor <fid1:...> Admin a protected database must have been created by (fylo.trustAnchor, FYLO_TRUST_ANCHOR)\n  --trust-on-first-use Trust a protected database's creator, whoever it is, with a warning\n  --store <reference> Key store fylo identity create writes a new key to: file:<path>, keychain:<label>, enclave:<label>, cng:<name>, tpm:<name>, creds:<name> or webcrypto:<name>\n  --version       Print the FYLO runtime version\n  --help          Show this message"
+        .replace(
+            "  --root <path>   Override fylo.root for this command",
+            "  --root <path>   Override fylo.root for this command\n  --filesystem-profile <native|efs-sidecar-v1> Select metadata profile explicitly",
+        )
         .replace(
             "  --request <v>   Machine request payload, @file path, or - for stdin",
             "  --page-size <n> Repeat headers every n rows in text output\n  --align <mode>  Cell alignment: left, center, right, or auto\n  --request <v>   Machine request payload, @file path, or - for stdin",
@@ -1386,6 +1959,67 @@ mod tests {
         assert!(output.starts_with("Usage:\n  fylo checkout"));
         assert!(output.contains("fylo exec --loop"));
         assert!(!output.contains("fylo-rust"));
+    }
+
+    #[test]
+    fn inspect_and_verify_route_a_vdbx_path_to_the_database_operations() {
+        let arguments = |values: &[&str]| -> Vec<String> {
+            values.iter().map(|value| (*value).to_owned()).collect()
+        };
+        assert_eq!(
+            database_command(&arguments(&["inspect", "db.vdbx"])),
+            Some(("inspectDatabase", PathBuf::from("db.vdbx")))
+        );
+        assert_eq!(
+            database_command(&arguments(&["verify", "--root", "data/db.vdbx"])),
+            Some(("verifyDatabase", PathBuf::from("data/db.vdbx")))
+        );
+        assert_eq!(database_command(&arguments(&["verify", "users"])), None);
+        assert_eq!(
+            database_command(&arguments(&["inspect", "users", "--root", "db.vdbx"])),
+            None
+        );
+        assert_eq!(database_command(&arguments(&["get", "db.vdbx"])), None);
+    }
+
+    #[test]
+    fn compact_and_salvage_name_a_whole_database_or_one_collection_of_it() {
+        let arguments = |values: &[&str]| -> Vec<String> {
+            values.iter().map(|value| (*value).to_owned()).collect()
+        };
+        assert_eq!(
+            database_target("compact", &arguments(&["compact", "db.vdbx", "--shrink"])),
+            Some(PathBuf::from("db.vdbx"))
+        );
+        assert_eq!(
+            database_target(
+                "compact",
+                &arguments(&["compact", "--root", "data/db.vdbx"])
+            ),
+            Some(PathBuf::from("data/db.vdbx"))
+        );
+        assert_eq!(
+            database_target(
+                "salvage",
+                &arguments(&["salvage", "db.vdbx", "--out", "salvaged"])
+            ),
+            Some(PathBuf::from("db.vdbx"))
+        );
+        assert_eq!(
+            database_target(
+                "compact",
+                &arguments(&["compact", "users", "--root", "db.vdbx"])
+            ),
+            None
+        );
+        assert_eq!(
+            database_target("compact", &arguments(&["compact", "users"])),
+            None
+        );
+        assert_eq!(
+            database_target("export", &arguments(&["export", "db.vdbx"])),
+            None
+        );
     }
 
     #[test]

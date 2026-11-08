@@ -1,145 +1,111 @@
-.hero {
-  position: relative;
-  overflow: hidden;
-  padding: 6.5rem 1rem 5rem;
-  text-align: center;
-  /* Two offset glows read as ambient light rather than one flat wash. */
-  background:
-    radial-gradient(ellipse 60% 45% at 50% -5%, rgba(248, 155, 75, 0.22) 0%, transparent 70%),
-    radial-gradient(ellipse 90% 60% at 50% 0%, rgba(248, 155, 75, 0.08) 0%, transparent 75%);
+.home-hero {
+    padding: clamp(3.5rem, 7vw, 6rem) 1rem clamp(3rem, 6vw, 5rem);
+    text-align: center;
 }
 
-/* Hairline that fades out at the edges, so the hero ends without a hard rule. */
-.hero::after {
-  content: '';
-  position: absolute;
-  inset: auto 0 0;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, var(--w-border), transparent);
+.home-hero-inner {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
 }
 
-.hero-inner {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 1.75rem;
+.home-kicker {
+    margin: 0 0 1.15rem;
+    color: var(--w-primary);
+    font-size: 0.82rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
 }
 
-.hero h1 {
-  margin: 0;
-  font-size: clamp(2.4rem, 7vw, 4.25rem);
-  font-weight: 650;
-  letter-spacing: -0.03em;
-  line-height: 1.05;
+.home-hero h1 {
+    margin: 0;
+    font-size: clamp(3.4rem, 10vw, 6rem);
+    font-weight: 760;
+    letter-spacing: -0.055em;
+    line-height: 0.95;
 }
 
-.hero-grad {
-  display: block;
-  background: linear-gradient(90deg, var(--w-text) 20%, var(--w-primary) 90%);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+.home-headline {
+    margin: 1.5rem 0 0;
+    font-size: clamp(1.45rem, 4vw, 2.25rem);
+    line-height: 1.2;
+    letter-spacing: -0.025em;
+    text-wrap: balance;
 }
 
-.hero-plain {
-  display: block;
-  color: var(--w-text);
+.home-summary {
+    max-width: 46rem;
+    margin: 1.15rem 0 0;
+    color: var(--w-text-subtle);
+    font-size: 1.02rem;
+    line-height: 1.75;
+    text-wrap: pretty;
 }
 
-.hero-sub {
-  max-width: 42rem;
-  margin: 0;
-  color: var(--w-text-subtle);
-  font-size: 1.05rem;
-  line-height: 1.8;
+.home-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 0.75rem;
+    margin-top: 2rem;
 }
 
-.hero-install {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 0.85rem 1.25rem;
-  border: 1px solid var(--w-border);
-  border-radius: var(--w-radius-pill);
-  background: var(--w-surface-container-low);
-  cursor: pointer;
-  max-width: 100%;
-  transition:
-    border-color 0.18s ease,
-    background 0.18s ease;
+.home-install {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.65rem;
+    max-width: 100%;
+    min-height: 44px;
+    margin-top: 1.25rem;
+    padding: 0.6rem 0.9rem;
+    border: 1px solid var(--w-border);
+    border-radius: var(--w-radius-md);
+    background: var(--w-surface-container-low);
+    color: var(--w-text-subtle);
+    cursor: pointer;
+    font: inherit;
 }
 
-.hero-install:hover {
-  border-color: rgba(248, 155, 75, 0.4);
-  background: var(--w-surface-container-high);
+.home-install code {
+    min-width: 0;
+    overflow-x: auto;
+    color: var(--w-text);
+    font-family: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.82rem;
+    white-space: nowrap;
+    scrollbar-width: none;
 }
 
-.hero-prompt {
-  color: var(--w-text-very-subtle);
-  font-family: ui-monospace, Menlo, Consolas, monospace;
-  flex-shrink: 0;
+.home-install code::-webkit-scrollbar {
+    display: none;
 }
 
-.hero-cmd {
-  font-family: ui-monospace, Menlo, Consolas, monospace;
-  font-size: 0.95rem;
-  color: var(--w-primary);
-  white-space: nowrap;
-  /* Keep the pill within the viewport: the command scrolls inside it instead of
-     bleeding past the edge on narrow screens. Click-to-copy still grabs it all. */
-  min-width: 0;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-
-.hero-cmd::-webkit-scrollbar {
-  display: none;
-}
-
-.hero-copied {
-  color: var(--w-success, #4caf50);
-  font-size: 0.8rem;
-  flex-shrink: 0;
-}
-
-.hero-copy-hint {
-  color: var(--w-text-very-subtle);
-  font-size: 0.8rem;
-  flex-shrink: 0;
-}
-
-.hero-actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 0.75rem;
-}
-
-.hero-ticks {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 0.5rem 1.5rem;
-  color: var(--w-text-subtle);
-  font-size: 0.88rem;
+.home-install-status {
+    flex: 0 0 auto;
+    color: var(--w-primary);
+    font-size: 0.75rem;
+    font-weight: 600;
 }
 
 @media (max-width: 599.98px) {
-  .hero {
-    padding-top: 3.5rem;
-  }
-  .hero-actions {
-    width: 100%;
-    flex-direction: column;
-  }
-  .hero-actions .w-btn {
-    width: 100%;
-    box-sizing: border-box;
-  }
-  .hero-ticks {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 0.5rem;
-    text-align: left;
-  }
+    .home-hero {
+        padding-top: 3.5rem;
+    }
+
+    .home-actions {
+        width: 100%;
+        flex-direction: column;
+    }
+
+    .home-actions .w-btn {
+        width: 100%;
+        min-height: 44px;
+        box-sizing: border-box;
+    }
+
+    .home-install {
+        width: 100%;
+        box-sizing: border-box;
+    }
 }

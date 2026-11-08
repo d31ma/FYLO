@@ -13,13 +13,14 @@
 use std::io::{self, ErrorKind, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// ABI version the engine expects from a host table.
 ///
 /// A host compiled against an older layout would otherwise be read as the
 /// current one, which is a silent memory error rather than a version mismatch.
-pub const HOST_ABI_VERSION: u32 = 1;
+pub const HOST_ABI_VERSION: u32 = 2;
 
 /// Entry kind reported by [`HostVfs::stat`].
 pub const HOST_KIND_MISSING: u32 = 0;
@@ -121,6 +122,33 @@ pub struct HostVfs {
     /// Reports the byte length the listing needs. A caller whose buffer was too
     /// small retries with that length, so the host never truncates silently.
     pub read_dir: unsafe extern "C" fn(*const u8, usize, *mut u8, usize, *mut usize) -> i32,
+    /// Write the 65-byte SEC1 uncompressed public key of the application
+    /// identity the host opens protected databases with (ADR 0021, decision
+    /// P5-5). A host with no identity returns a negative `errno`.
+    pub identity_public: unsafe extern "C" fn(*mut u8) -> i32,
+    /// Sign a message with the identity's key: ECDSA P-256 with SHA-256,
+    /// 64 bytes `r` then `s`, written to the output.
+    pub identity_sign: unsafe extern "C" fn(*const u8, usize, *mut u8) -> i32,
+    /// Check an ECDSA P-256 signature (64 bytes) over a message against a
+    /// 65-byte SEC1 public key: `0` when it verifies, `1` when it does not.
+    pub identity_verify: unsafe extern "C" fn(*const u8, *const u8, usize, *const u8) -> i32,
+    /// Open a key wrapped for the identity (RFC 9180 base mode,
+    /// DHKEM(P-256, HKDF-SHA256), HKDF-SHA256, AES-256-GCM): `info`, then the
+    /// 65-byte encapsulated key and ciphertext; writes the 32-byte key.
+    pub identity_unwrap: unsafe extern "C" fn(*const u8, usize, *const u8, usize, *mut u8) -> i32,
+    /// Wrap a secret for a 65-byte SEC1 public key, the way `identity_unwrap`
+    /// opens it. Reports the bytes the wrap needs; a caller whose buffer was
+    /// too small retries with that length.
+    pub identity_wrap: unsafe extern "C" fn(
+        *const u8,
+        *const u8,
+        usize,
+        *const u8,
+        usize,
+        *mut u8,
+        usize,
+        *mut usize,
+    ) -> i32,
 }
 
 // SAFETY: every field is a bare function pointer or a `u32`. Neither carries
@@ -251,6 +279,133 @@ pub fn host_random(destination: &mut [u8]) -> Result<(), &'static str> {
     }
 }
 
+/// The 65-byte SEC1 public key of the host's application identity.
+///
+/// # Errors
+///
+/// Returns an error when no host is installed or it holds no identity.
+pub fn host_identity_public() -> Result<[u8; 65], &'static str> {
+    let host = HOST.get().ok_or("no host is installed")?;
+    let mut public = [0_u8; 65];
+    // SAFETY: `public` is a live, writable 65-byte buffer for the call; the
+    // host may not retain the pointer.
+    let code = unsafe { (host.identity_public)(public.as_mut_ptr()) };
+    host_status(code, "the host holds no application identity")?;
+    Ok(public)
+}
+
+/// Sign `message` with the host's application identity.
+///
+/// # Errors
+///
+/// Returns an error when no host is installed or signing fails.
+pub fn host_identity_sign(message: &[u8]) -> Result<[u8; 64], &'static str> {
+    let host = HOST.get().ok_or("no host is installed")?;
+    let mut signature = [0_u8; 64];
+    // SAFETY: `message` is a live slice of the stated length and `signature`
+    // a live, writable 64-byte buffer; the host retains neither.
+    let code =
+        unsafe { (host.identity_sign)(message.as_ptr(), message.len(), signature.as_mut_ptr()) };
+    host_status(code, "the host could not sign with its identity")?;
+    Ok(signature)
+}
+
+/// Whether `signature` over `message` verifies with `public`.
+///
+/// # Errors
+///
+/// Returns an error when no host is installed or the host fails to check.
+pub fn host_identity_verify(
+    public: &[u8; 65],
+    message: &[u8],
+    signature: &[u8; 64],
+) -> Result<bool, &'static str> {
+    let host = HOST.get().ok_or("no host is installed")?;
+    // SAFETY: every pointer addresses a live slice of the length passed or of
+    // its fixed array length; the host only reads them and retains none.
+    let code = unsafe {
+        (host.identity_verify)(
+            public.as_ptr(),
+            message.as_ptr(),
+            message.len(),
+            signature.as_ptr(),
+        )
+    };
+    match code {
+        0 => Ok(true),
+        1 => Ok(false),
+        _ => Err("the host could not check a signature"),
+    }
+}
+
+/// Open a key wrapped for the host's identity under `info`.
+///
+/// # Errors
+///
+/// Returns an error when no host is installed or the wrap does not open.
+pub fn host_identity_unwrap(info: &[u8], wrapped: &[u8]) -> Result<[u8; 32], &'static str> {
+    let host = HOST.get().ok_or("no host is installed")?;
+    let mut key = [0_u8; 32];
+    // SAFETY: `info` and `wrapped` are live slices of the lengths passed and
+    // `key` a live, writable 32-byte buffer; the host retains none.
+    let code = unsafe {
+        (host.identity_unwrap)(
+            info.as_ptr(),
+            info.len(),
+            wrapped.as_ptr(),
+            wrapped.len(),
+            key.as_mut_ptr(),
+        )
+    };
+    host_status(
+        code,
+        "the wrapped key does not open with the host's identity",
+    )?;
+    Ok(key)
+}
+
+/// Wrap `secret` for `public` under `info`.
+///
+/// # Errors
+///
+/// Returns an error when no host is installed or wrapping fails.
+pub fn host_identity_wrap(
+    public: &[u8; 65],
+    info: &[u8],
+    secret: &[u8],
+) -> Result<Vec<u8>, &'static str> {
+    let host = HOST.get().ok_or("no host is installed")?;
+    let mut buffer = vec![0_u8; 65 + secret.len() + 16];
+    loop {
+        let mut needed = 0_usize;
+        // SAFETY: every input pointer addresses a live slice of the length
+        // passed; `buffer` is live and writable for its whole length and
+        // `needed` for one `usize`; the host retains none of them.
+        let code = unsafe {
+            (host.identity_wrap)(
+                public.as_ptr(),
+                info.as_ptr(),
+                info.len(),
+                secret.as_ptr(),
+                secret.len(),
+                buffer.as_mut_ptr(),
+                buffer.len(),
+                &raw mut needed,
+            )
+        };
+        host_status(code, "the host could not wrap a key")?;
+        if needed <= buffer.len() {
+            buffer.truncate(needed);
+            return Ok(buffer);
+        }
+        buffer.resize(needed, 0);
+    }
+}
+
+fn host_status(code: i32, message: &'static str) -> Result<(), &'static str> {
+    if code == 0 { Ok(()) } else { Err(message) }
+}
+
 fn host() -> io::Result<&'static HostVfs> {
     HOST.get().ok_or_else(|| {
         io::Error::new(
@@ -264,7 +419,36 @@ fn check(code: i32) -> io::Result<()> {
     if code == 0 {
         return Ok(());
     }
-    Err(io::Error::from_raw_os_error(-code))
+    Err(host_error(-code))
+}
+
+/// The error a host errno stands for, in Linux's numbering and wording, which
+/// is what the host contract uses.
+///
+/// `io::Error::from_raw_os_error` will not do: `wasm32-unknown-unknown` has no
+/// errno table, so it describes every code as "operation successful" and
+/// classifies none, and a caller matching on `NotFound` or `AlreadyExists`
+/// sees an uncategorized failure instead.
+fn host_error(errno: i32) -> io::Error {
+    let (kind, text) = match errno {
+        1 => (ErrorKind::PermissionDenied, "Operation not permitted"),
+        2 => (ErrorKind::NotFound, "No such file or directory"),
+        5 => (ErrorKind::Other, "Input/output error"),
+        9 => (ErrorKind::Other, "Bad file descriptor"),
+        13 => (ErrorKind::PermissionDenied, "Permission denied"),
+        16 => (ErrorKind::ResourceBusy, "Device or resource busy"),
+        17 => (ErrorKind::AlreadyExists, "File exists"),
+        20 => (ErrorKind::NotADirectory, "Not a directory"),
+        21 => (ErrorKind::IsADirectory, "Is a directory"),
+        22 => (ErrorKind::InvalidInput, "Invalid argument"),
+        27 => (ErrorKind::FileTooLarge, "File too large"),
+        28 => (ErrorKind::StorageFull, "No space left on device"),
+        30 => (ErrorKind::ReadOnlyFilesystem, "Read-only file system"),
+        39 => (ErrorKind::DirectoryNotEmpty, "Directory not empty"),
+        116 => (ErrorKind::StaleNetworkFileHandle, "Stale file handle"),
+        _ => (ErrorKind::Other, "Unknown error"),
+    };
+    io::Error::new(kind, format!("{text} (os error {errno})"))
 }
 
 fn path_bytes(path: &Path) -> io::Result<&[u8]> {
@@ -446,7 +630,9 @@ impl OpenOptions {
 #[derive(Debug)]
 pub struct File {
     handle: u64,
-    position: u64,
+    // Atomic rather than plain so `&File` can read, write and seek, as
+    // `std::fs::File` can; the engine relies on that shape.
+    position: AtomicU64,
     append: bool,
     // A host addresses metadata by path, not by handle, so the file keeps the
     // path it was opened with rather than adding a thirteenth ABI slot.
@@ -463,9 +649,9 @@ impl File {
         // The host contract forbids retaining either pointer.
         let code = unsafe { (host.open)(bytes.as_ptr(), bytes.len(), flags, &raw mut handle) };
         check(code)?;
-        let mut file = Self {
+        let file = Self {
             handle,
-            position: 0,
+            position: AtomicU64::new(0),
             append: flags & HOST_OPEN_APPEND != 0,
             path: path.to_path_buf(),
         };
@@ -501,7 +687,7 @@ impl File {
     /// # Errors
     ///
     /// Returns the host's failure.
-    pub fn set_len(&mut self, len: u64) -> io::Result<()> {
+    pub fn set_len(&self, len: u64) -> io::Result<()> {
         let host = host()?;
         // SAFETY: `handle` came from this table's `open` and has not been closed.
         check(unsafe { (host.truncate)(self.handle, len) })
@@ -575,7 +761,7 @@ impl File {
     /// Returns the host's failure.
     pub fn try_clone(&self) -> io::Result<Self> {
         let mut clone = Self::open_with(&self.path, HOST_OPEN_READ)?;
-        clone.position = self.position;
+        clone.position = AtomicU64::new(self.position.load(Ordering::Relaxed));
         Ok(clone)
     }
 }
@@ -590,47 +776,52 @@ impl Drop for File {
     }
 }
 
-impl Read for File {
+impl Read for &File {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         let host = host()?;
+        let position = self.position.load(Ordering::Relaxed);
         let mut read = 0_usize;
         // SAFETY: `buffer` is a live, writable slice of the stated length, and
         // `read` is a live local. Neither pointer outlives the call.
         let code = unsafe {
             (host.read_at)(
                 self.handle,
-                self.position,
+                position,
                 buffer.as_mut_ptr(),
                 buffer.len(),
                 &raw mut read,
             )
         };
         check(code)?;
-        self.position = self.position.saturating_add(read as u64);
+        self.position
+            .store(position.saturating_add(read as u64), Ordering::Relaxed);
         Ok(read)
     }
 }
 
-impl Write for File {
+impl Write for &File {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
         let host = host()?;
-        if self.append {
-            self.position = self.metadata()?.len();
-        }
+        let position = if self.append {
+            self.metadata()?.len()
+        } else {
+            self.position.load(Ordering::Relaxed)
+        };
         let mut written = 0_usize;
         // SAFETY: `buffer` is a live slice of the stated length and `written` a
         // live local; the host may not retain either.
         let code = unsafe {
             (host.write_at)(
                 self.handle,
-                self.position,
+                position,
                 buffer.as_ptr(),
                 buffer.len(),
                 &raw mut written,
             )
         };
         check(code)?;
-        self.position = self.position.saturating_add(written as u64);
+        self.position
+            .store(position.saturating_add(written as u64), Ordering::Relaxed);
         Ok(written)
     }
 
@@ -639,14 +830,38 @@ impl Write for File {
     }
 }
 
-impl Seek for File {
+impl Seek for &File {
     fn seek(&mut self, from: SeekFrom) -> io::Result<u64> {
-        self.position = match from {
+        let current = self.position.load(Ordering::Relaxed);
+        let position = match from {
             SeekFrom::Start(offset) => offset,
-            SeekFrom::Current(delta) => self.position.saturating_add_signed(delta),
+            SeekFrom::Current(delta) => current.saturating_add_signed(delta),
             SeekFrom::End(delta) => self.metadata()?.len().saturating_add_signed(delta),
         };
-        Ok(self.position)
+        self.position.store(position, Ordering::Relaxed);
+        Ok(position)
+    }
+}
+
+impl Read for File {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        (&*self).read(buffer)
+    }
+}
+
+impl Write for File {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        (&*self).write(buffer)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        (&*self).flush()
+    }
+}
+
+impl Seek for File {
+    fn seek(&mut self, from: SeekFrom) -> io::Result<u64> {
+        (&*self).seek(from)
     }
 }
 
@@ -705,7 +920,9 @@ fn stat(path: &Path) -> io::Result<HostStat> {
     let code = unsafe { (host.stat)(bytes.as_ptr(), bytes.len(), &raw mut out) };
     check(code)?;
     if out.kind == HOST_KIND_MISSING {
-        return Err(io::Error::new(ErrorKind::NotFound, "entry not found"));
+        // Worded as a native stat of a missing path is, so that both builds
+        // report the same message.
+        return Err(host_error(2));
     }
     Ok(out)
 }

@@ -28,11 +28,12 @@
 - [Querying](#querying)
 - [Schema Versioning](#schema-versioning)
 - [Encryption](#encryption)
-- [POSTIX Access Control](#postix-access-control-uid-gid-and-mode)
+- [Access Control](#access-control-application-identities)
 - [Serverless Queue](#serverless-queue)
 - [Remote Access](#remote-access)
 - [CLI & Machine Interface](#cli--machine-interface)
 - [Recovery & Rebuild](#recovery--rebuild)
+- [EFS metadata candidate](#efs-metadata-candidate)
 - [Limitations](#limitations)
 - [License](#license)
 
@@ -58,14 +59,13 @@ FYLO trades complexity for clarity. Documents are plain JSON files on disk. Inde
 
 FYLO ships as a single self-contained `fylo` binary via
 [GitHub Releases](https://github.com/d31ma/Fylo/releases) — not npm. Install it
-onto your `PATH`, together with the [`chex`](https://github.com/d31ma/CHEX) and
-[`ttid`](https://github.com/d31ma/TTID) binaries it drives:
+onto your `PATH`. [CHEX](https://github.com/d31ma/CHEX) schema validation and
+[TTID](https://github.com/d31ma/TTID) identifiers are built in, so there is
+nothing else to install:
 
 ```bash
 # fylo (macOS / Linux)
 curl -fsSL https://github.com/d31ma/Fylo/releases/latest/download/install.sh | sh
-# chex + ttid
-sh ./scripts/install-vendor-bins.sh
 ```
 
 Set `FYLO_VERIFY_PROVENANCE=1` before running the installer to require signed
@@ -128,10 +128,14 @@ NDJSON to stdin, reads NDJSON from stdout, and cannot tell which it got.
 WebAssembly is not a browser technology — `wasm32-wasip1` has real files and
 real stdio, so the same engine runs under any WASI runtime on a server.
 
-The browser build owns its storage rather than delegating to a JavaScript
-engine, which is why version control, schema, and encryption reach the browser
-at all. See the [artifact matrix](docs/releases/artifact-matrix.md) for what
-each one can and cannot do, and why.
+The `fylo-browser.wasm` build owns its storage rather than delegating to a
+JavaScript engine, which is why an embedder can carry version control, schema,
+and encryption into a browser with it. The browser loader that apps use today
+(`fylo.js` / `fylo-web.mjs`) and the mobile clients that host it are a separate
+JavaScript engine: in this release they do not support raw-file buckets,
+schemas, or field encryption (see [Browser access](#browser-access)). See the
+[artifact matrix](docs/releases/artifact-matrix.md) for what each artifact can
+and cannot do, and why.
 
 Document collections live under `.collections`; buckets (for raw files) live
 under `.buckets`. The two are structurally identical — only the top-level
@@ -150,7 +154,8 @@ values:
   index/                   ← local filesystem prefix index catalog
     manifest.json          ← format version marker
     keys.snapshot          ← sorted index keys, mmap'd for O(log n) lookup
-    keys.wal               ← append-only mutation log (compacted once it outgrows the snapshot)
+    keys.wal               ← append-only mutation log (compacted once it outgrows the snapshot, or 16 MiB)
+                             (the two together hold at most 240 MiB of keys; see Limitations)
   events/
     <collection>.ndjson    ← append-only event journal
   locks/                   ← advisory file locks
@@ -162,10 +167,42 @@ not mistaken for a document, indexed, versioned, or copied as record payload:
 ```text
 <root>/.fylo-transactions/<namespace>/<collection>/
   state.json               ← stable/writing generation marker
+  log/segment.log          ← write-ahead log since the last checkpoint
   <transaction-id>/
     transaction.json       ← operation, commit phase, before-image manifest
     before/                 ← linked/copied files needed for rollback
 ```
+
+Document mutations commit through the collection's write-ahead log
+([ADR 0013](docs/adr/0013-collection-write-ahead-log.md)): one checksummed
+append and one flush per commit, after which the document, its metadata and
+the index are brought up to date without further flushes. Recovery replays the
+log; a checkpoint flushes the applied files and removes the log, leaving the
+layout below exactly as an older release wrote it. Raw-file collections and
+structural operations (create, drop, reshard, rebuild, version control) use
+the transaction journal.
+
+A document collection can instead keep its documents in append-only segment
+files ([ADR 0015](docs/adr/0015-append-only-document-segments.md)): set
+`fylo.layout` to `"segments"` for new collections, or move one with
+`fylo layout <collection> --to segments`. Each segment record holds one
+document's exact JSON and all its metadata, the segment being appended to is
+the write-ahead log, and a read is one positioned read:
+
+```text
+<root>/.collections/<collection>/
+  segments/
+    0000000001.seg         ← sealed, immutable
+    0000000002.seg         ← active: commits append here
+    state.slots            ← generation slots, updated in place
+    locations.snapshot     ← id → record location (derived)
+    locations.wal
+  index/                   ← prefix index, unchanged (derived)
+  docs                     ← a plain file, so older releases refuse the collection
+```
+
+`fylo export` writes the one-file-per-document tree back out byte for byte,
+and `fylo compact` reclaims the space old versions take.
 
 Every transactional collection mutation publishes an odd `writing` generation
 before changing records and the next even `stable` generation after commit.
@@ -235,21 +272,31 @@ hosting the engine in a WebView) owns its own database.
 Add the version-pinned loader to the document head:
 
 ```html
-<script src="https://d31ma.github.io/FYLO/version/26.33.02/fylo.js"></script>
+<script src="https://d31ma.github.io/FYLO/version/26.45.07/fylo.js"></script>
 ```
 
 ```ts
 const db = await Fylo.open()
 
+await db.users.create()
 const id = await db.users.put({ name: 'Ada', role: 'admin' })
 await db.users.put(id).metadata({ source: 'browser', reviewed: false })
 const metadata = await db.users.get(id).metadata()
 const doc = await db.users.latest(id)
 ```
 
+Create a collection before the first `put`; writing to a collection that does
+not exist fails with `Collection not found`.
+
+**Not supported in the browser or on mobile in this release:** raw-file buckets
+(`kind: 'file'`), schemas, and field encryption. The browser loader
+(`fylo.js` / `fylo-web.mjs`) and the iOS, Android, and Flutter clients that
+embed it fail such requests with an error instead of ignoring them. Use the
+native `fylo` binary, through any binary-backed client, for those features.
+
 Use `https://d31ma.github.io/FYLO/version/latest/fylo.js` to track the newest
 successful release. Direct ESM consumers can import
-`https://d31ma.github.io/FYLO/version/26.33.02/fylo-web.mjs` instead.
+`https://d31ma.github.io/FYLO/version/26.45.07/fylo-web.mjs` instead.
 
 Treat the loader as executable supply-chain input: it runs with the embedding
 origin's authority, including access to that origin's FYLO data. Production
@@ -314,7 +361,7 @@ Every GitHub release also includes a versioned, checksum-covered
 Extract it directly into the root of a static host:
 
 ```bash
-VERSION=26.33.02
+VERSION=26.45.07
 curl -fLO "https://github.com/d31ma/Fylo/releases/download/v${VERSION}/fylo-explorer-${VERSION}.zip"
 mkdir "fylo-explorer-${VERSION}"
 unzip "fylo-explorer-${VERSION}.zip" -d "fylo-explorer-${VERSION}"
@@ -367,61 +414,60 @@ should not share its JavaScript execution boundary.
 
 ## Configuration
 
-| Variable              | Purpose                                         | Default        |
-| --------------------- | ----------------------------------------------- | -------------- |
-| `FYLO_ROOT`           | Filesystem root for collections                 | `./.fylo-data` |
-| `FYLO_SCHEMA`         | Directory containing JSON validation schemas    | —              |
-| `FYLO_STRICT`         | Validate documents with chex before writes      | —              |
-| `FYLO_SHARD_WIDTH`    | Shard width for newly created collections (1–4) | `1`            |
-| `FYLO_ENCRYPTION_KEY` | AES-GCM key for `$encrypted` fields (≥32 chars) | —              |
-| `FYLO_CIPHER_SALT`    | Salt for blind index derivation                 | —              |
+Native runtime settings live in `application.json` under the `fylo` key. Each
+underscore in a former `FYLO_*` setting becomes a nested key; for example,
+`FYLO_SHARD_WIDTH` becomes `fylo.shard.width`. Environment settings are no longer
+implicit overrides.
 
-Copy `.env.example` to `.env` and fill in your values.
+```json
+{
+    "fylo": {
+        "root": "./data",
+        "schema": "./schemas",
+        "strict": true,
+        "shard": { "width": 1 },
+        "encryption": { "key": "${FYLO_ENCRYPTION_KEY}" },
+        "cipher": { "salt": "${FYLO_CIPHER_SALT}" }
+    }
+}
+```
 
-Every binary-backed SDK shim can scope a `.env` file to one FYLO child. For
-example, Node/TypeScript uses:
+Keep only secrets in an adjacent `.env`, and explicitly reference them using a
+whole-value `${NAME}` string. Injected environment secrets take precedence over
+the adjacent file; unrelated variables are ignored. Omit encryption and cipher
+entries when they are not needed. [application.example.json](application.example.json)
+is a minimal starting point that does not require secrets.
+
+The CLI discovers `application.json` in its working directory, or accepts
+`--config /path/to/application.json`. Every binary-backed SDK shim can select a
+configuration file for its own FYLO child:
 
 ```js
 const db = new Fylo('/mnt/fylo', {
     binary: '/opt/fylo/bin/fylo',
-    env: './config/mail.fylo.env'
+    config: './config/mail/application.json'
 })
 ```
 
-Each shim also accepts its language's native environment map/dictionary. In
-Node/TypeScript, pass only the settings this child needs:
+Explicit constructor roots and CLI flags win over JSON settings, followed by
+engine defaults. Paths in JSON resolve relative to that file. An absent default
+file uses defaults; an explicitly selected missing file, invalid configuration,
+or unresolved secret reference fails initialization. Loading configuration never
+mutates the process environment.
 
-```js
-const db = new Fylo('/mnt/fylo', {
-    env: {
-        FYLO_SCHEMA: '/srv/mail/schemas',
-        FYLO_STRICT: '1'
-    }
-})
-```
-
-The configured values override inherited variables for that child without
-mutating the host process environment. An explicit constructor root,
-`shardWidth`, or enabled `strictSchema` is passed as a CLI flag and takes
-precedence over its environment equivalent. A missing or malformed `.env` file
-fails before FYLO is spawned. See [the SDK shim guide](clients/README.md) for
-Python, Ruby, PHP, Go, Rust, Java, C#, and Dart syntax.
-
-Treat both the environment file path and map as trusted bootstrap configuration.
-Never accept either from a request, tenant setting, upload, or other untrusted
-input: arbitrary environment keys can alter `PATH`, dynamic-loader behavior,
-and the program that the child starts. Use an absolute, administrator-controlled
-binary path; copy only explicitly approved `FYLO_*` values instead of spreading
-`process.env`; and audit inherited variables, removing unrelated keys where the
-shim supports null/nil removal. Keep populated files out of source control,
-store secrets in a secret manager when possible, and make local secret files
-owner-readable only (for example, `chmod 600`).
+Treat configuration and binary paths as trusted bootstrap input. Keep secret
+files private and out of source control. Browser/mobile clients continue using
+explicit storage-host options and never implicitly load local JSON or `.env`
+files. See the [configuration and migration guide](docs/configuration.md) and
+[SDK shim examples](clients/README.md).
 
 ## CRUD Operations
 
 Collections must be created explicitly before reads, writes, updates, deletes,
 imports, rebuilds, or queries. Use `db.<collection>.inspect()` when you want a
-safe existence check; it returns `exists: false` instead of throwing.
+safe existence check; it returns `exists: false` instead of throwing. Every
+other operation on a missing collection fails with the machine error code
+`ENATIVE_NOT_FOUND`.
 
 ### Create
 
@@ -473,82 +519,79 @@ directly; it must be restored.
 
 ### Raw Files (Buckets)
 
-A **bucket** stores raw files: create it with `kind: 'file'`, then pass a
-`Blob`, `File`, or `URL` to the normal `put()` method. The two collection kinds
-differ only by value type — a document collection takes a `Record`, a bucket
-takes a `Blob`/`File` — and the API is otherwise identical. Buckets are stored
-on disk under `.buckets/<name>/` (documents live under `.collections/<name>/`);
-the two share an identical internal layout. Databases written by older FYLO
-versions, where file collections lived under `.collections/`, are migrated to
-`.buckets/` automatically the first time the engine opens them.
+A **bucket** stores raw files: create a collection with kind `file`, then store
+a file by its local path or a URL. FYLO copies the bytes in; it keeps no link to
+the source. Buckets are stored on disk under `.buckets/<name>/` (documents live
+under `.collections/<name>/`); the two share an identical internal layout.
+Databases written by older FYLO versions, where file collections lived under
+`.collections/`, are migrated to `.buckets/` automatically the first time the
+engine opens them.
+
+Buckets need the native `fylo` binary. The browser loader and the iOS, Android,
+and Flutter clients do not support them in this release and reject
+`kind: 'file'` with an error.
+
+The examples use the Node shim. It has a dedicated `putFile`; every other shim
+stores a file by sending the same `putData` request, with a `file` field,
+through its raw `request` method (see the machine requests below), and reads
+it with `getFileData` the same way.
 
 ```js
-await db.assets.create({ kind: 'file' })
+import { Fylo } from './fylo.mjs'
 
-const id = await db.assets.put(new File(['hello'], 'greeting.txt', { type: 'text/plain' }))
+const db = new Fylo('/mnt/fylo')
 
-const metadata = await db.assets.get(id).once()
-const bytes = await db.assets.get(id).bytes()
-const blob = await db.assets.get(id).blob()
-const stream = await db.assets.get(id).stream()
+await db.assets.create('file')
+
+const id = await db.assets.putFile(
+    { path: '/uploads/summary.pdf' },
+    { key: '/reports/2026/summary.pdf' },
+    { rating: 5, starred: true }
+)
+
+const manifest = await db.getDoc('assets', id) // { [id]: manifest }, no bytes
+const { result } = await db.request({ op: 'getFileData', collection: 'assets', id })
+const bytes = Buffer.from(result.data, 'base64')
 ```
 
-File collections also support slash-delimited logical object keys. `/` is the default;
-root and trailing-slash keys append the generated TTID filename, while an exact
-key is preserved as supplied:
+`putFile(collection, file, fileOptions, meta)` takes `{ path }` or `{ url }` as
+the file, and the collection facade drops the collection argument. Every file
+has a slash-delimited logical `key`. Without one, the key is `/` followed by the
+source file name; an exact key is preserved as supplied:
 
 ```js
-const id = await db.assets.put(file, { key: '/reports/2026/summary.pdf' })
+const exact = await db.assets.find({
+    $ops: [{ key: { $eq: '/reports/2026/summary.pdf' } }]
+})
 
-const exact = await db.assets
-    .find({
-        $ops: [{ key: { $eq: '/reports/2026/summary.pdf' } }]
-    })
-    .collect()
-
-const reports = await db.assets
-    .find({
-        $ops: [{ key: { $like: '/reports/%' } }]
-    })
-    .collect()
+const reports = await db.assets.find({
+    $ops: [{ key: { $like: '/reports/%' } }]
+})
 ```
 
-Keys are unique among active files in a collection. They always begin with `/`,
-may be at most 1024 UTF-8 bytes, and cannot contain backslashes, control
-characters, or `.` / `..` path segments. A key is logical metadata, not a local
-filesystem path; the raw bytes still use the TTID filename shown below.
+Keys always begin with `/`, may be at most 1024 UTF-8 bytes, and cannot contain
+backslashes, control characters, or `.` / `..` path segments. A key is logical
+metadata, not a local filesystem path; the raw bytes still use the TTID
+filename shown below. FYLO stores a key exactly as supplied and does not make
+keys unique, so two files can share one; pick unique keys in your application
+when you need them. To change a file's key, store the file again under the new
+key and delete the old record.
 
-Keys can be reassigned in place — no byte rewrite — and folder-style trees
-derived from them can be browsed one level at a time:
-
-```js
-await db.assets.rekey(id, '/reports/2027/summary.pdf') // move one file
-await db.assets.rekey.prefix('/reports/', '/archive/') // move a whole folder
-
-const { files, folders } = await db.assets.folder('/archive/')
-// files   → { [id]: manifest } for direct children
-// folders → ['2026', '2027'] — immediate subfolder names
-```
-
-`folder()` reads only key metadata for deeper descendants (one xattr each), so
-browsing stays cheap in large trees. Checksums are cached in a
-`user.fylo.checksum` xattr stamped with (size, mtime), so listings and reads
-do not re-hash file contents; the hash is recomputed automatically whenever
-the stamp no longer matches the file.
-
-The cache trusts its stamp, so silent corruption that preserves both size and
-mtime is invisible to the fast path. `verify()` is the stamp-ignoring audit
-that closes the gap — it re-hashes the full contents of every file (active
-and soft-deleted), freshens matching stamps, and reports mismatches without
-touching the corrupt file's original claim:
+Checksums are cached in a `user.fylo.checksum` xattr stamped with (size, mtime),
+so listings and reads do not re-hash file contents; the hash is recomputed
+automatically whenever the stamp no longer matches the file. The cache trusts
+its stamp, so silent corruption that preserves both size and mtime is invisible
+to the fast path. `verifyCollection` is the stamp-ignoring audit that closes the
+gap: it re-hashes the full contents of every file (active and soft-deleted),
+freshens matching stamps, and reports mismatches without touching the corrupt
+file's original claim:
 
 ```js
-const report = await db.assets.verify()
+const { result: report } = await db.request({ op: 'verifyCollection', collection: 'assets' })
 // { collection, filesScanned, verified, stamped, corrupt: [{ id, namespace, expected, actual }] }
 ```
 
-Each mismatch also emits a `file.checksum-mismatch` event through `onEvent`.
-The audit reads every byte, so it is slow by design — run it as a scheduled
+The audit reads every byte, so it is slow by design: run it as a scheduled
 background job, not per request. The CLI equivalent exits non-zero when
 corruption is found, so a cron line is all a weekly audit needs:
 
@@ -556,16 +599,6 @@ corruption is found, so a cron line is all a weekly audit needs:
 # Weekly integrity audit, Sunday 03:00 — mail/alert fires on non-zero exit
 0 3 * * 0  fylo verify assets --root /mnt/fylo --json || notify "fylo: corruption detected"
 ```
-
-Machine-protocol callers use `{"op": "verifyCollection", "collection": "assets"}`.
-Metadata has machine ops too: `putData` accepts a top-level `meta` record;
-`{"op":"getMeta","collection":"...","id":"..."}` reads it, and
-`{"op":"setMeta","collection":"...","id":"...","meta":{...}}` bulk-edits
-it. Browser document collections persist metadata in a
-durable internal OPFS sidecar and expose the same metadata API. Local-first
-clients read and write that sidecar entirely on-device. There is no background
-metadata transport or remote conflict clock; moving data between devices is an
-application-level export, filesystem mount, or backup concern.
 
 FYLO stores the bytes unchanged at:
 
@@ -576,92 +609,79 @@ FYLO stores the bytes unchanged at:
 **That path is internal and versioned, not an interface.** `<shard>` is derived
 from the identifier by a rule that has already changed once
 ([ADR 0006](docs/adr/0006-shard-records-by-the-trailing-creation-characters.md))
-and may change again. Read content through `getFileData` (below) or the client
-API; do not compute the path.
+and may change again. Read content through `getFileData` (below); do not
+compute the path.
 
-No source path or URL is retained. Metadata is derived from the stored file,
-with the logical `key` stored as a `user.fylo.key` extended attribute (xattr)
-on the file itself, so it travels with the bytes across moves:
-`name`, `key`, `extension`, `contentType`, `contentLength`, `etag`,
-`checksumSHA256`, `createdAt`, and `lastModified`. `key` is the record's
-logical name, not a location inside the bucket. These fields use the normal
-prefix index and can be queried with `find()`.
+Metadata is derived from the stored file, with the logical `key` stored as a
+`user.fylo.key` extended attribute (xattr) on the file itself, so it travels
+with the bytes across moves: `name`, `key`, `extension`, `contentType`,
+`contentLength`, `etag`, `checksumSHA256`, `createdAt`, and `lastModified`.
+These fields use the normal prefix index and can be queried with `findDocs`.
 
 Every timestamp FYLO returns is a **whole** number of epoch milliseconds.
 `createdAt` is decoded from the TTID; `lastModified` — like `updatedAt`,
 `mtime`, and `deletedAt` on documents — is the filesystem modification time,
-truncated to the millisecond. The JavaScript engine passed Node's fractional
-`fs.stat().mtimeMs` straight through, which meant one payload could mix
-`1785784975586` and `1785784975653.6606` and break a client that typed epoch
-milliseconds as an integer. Sub-millisecond filesystem precision is not
-something FYLO orders records by, so the type is now uniform instead.
+truncated to the millisecond.
 
 Developer-defined metadata rides along the same way, as `user.fylo.meta.*`
-xattrs on the document or raw file. `put` has two metadata-focused forms:
-`put(id, documentOrFile).metadata(record)` writes bytes and metadata together,
-and `put(id).metadata(record)` bulk-edits an existing record (`null` removes an
-entry). `get(id).metadata()` reads the complete canonical record plus custom
-metadata. Every record includes `id`, `mtime`, `updatedAt`, and `createdAt`;
-raw files also include their stored file descriptor:
+xattrs on the document or raw file. Pass it as the `meta` argument of `putFile`
+(the top-level `meta` field of `putData`), bulk-edit it with `setMeta` (`null`
+removes an entry), and read it with `getMeta`, which returns the complete
+canonical record plus custom metadata. Every record includes `id`, `mtime`,
+`updatedAt`, and `createdAt`; raw files also include their stored file
+descriptor:
 
 ```js
-const id = await Fylo.uniqueTTID()
-await db.assets
-    .put(id, file, { key: '/pics/beach.jpg' })
-    .metadata({ camera: 'A7 IV', rating: 5, starred: true })
-await db.assets.put(id).metadata({ rating: 4, starred: null }) // update + remove
-await db.assets.get(id).metadata()
+await db.setMeta('assets', id, { rating: 4, starred: null }) // update + remove
+await db.getMeta('assets', id)
 // { id, name, key, extension, contentType, contentLength, etag, checksumSHA256,
-//   lastModified, mtime, updatedAt, createdAt, camera: 'A7 IV', rating: 4 }
+//   lastModified, mtime, updatedAt, createdAt, rating: 4 }
 ```
 
 Canonical fields take precedence if a custom metadata key uses the same name.
+Every shim exposes `getMeta` and `setMeta`, with language-specific casing and
+collection-scoped forms documented in [`clients/README.md`](clients/README.md).
 
-Those fluent signatures belong to the browser collection facade. Native
-language shims expose the same behavior as `getMeta(collection, id)` and
-`setMeta(collection, id, record)`, with
-language-specific casing and collection-scoped forms documented in
-[`clients/README.md`](clients/README.md). All surfaces use the same `getMeta`,
-`setMeta`, and metadata-bearing `putData` machine operations; the shims do not
-invent a second metadata store or merge policy.
-
-The existing generated-ID form (`put(dataOrFile, options)`) remains available.
 The record must be a plain object. Names are 1-64 characters of letters, digits,
 `.`, `_`, or `-`, starting with a letter or digit. Each value must be
 JSON-serializable and at most 60 KiB after UTF-8 JSON encoding; strings, numbers,
 booleans, arrays, and objects round-trip with their types. A top-level `null`
 value is a deletion marker, not a storable metadata value. FYLO validates the
 whole mutation before writing it and rolls back a filesystem xattr batch if a
-later write fails. Browser sidecars enforce the same names, value types, and
-size ceiling. On file collections, metadata is returned inside each manifest
-(`manifest.meta`) and is indexed, so it can be queried — including numerically:
+later write fails. On file collections, metadata is indexed under `meta/`, so it
+can be queried, including numerically:
 
 ```js
 await db.assets.find({ $ops: [{ ['meta/starred']: { $eq: true } }] })
 await db.assets.find({ $ops: [{ ['meta/rating']: { $gte: 4 } }] })
 ```
 
-Metadata survives soft delete, restore, and version-control
-restores because it is snapshotted with each commit. If a store directory is ever copied by an xattr-dropping
-tool, `rebuild()` repairs each stripped file to its default `/<filename>` key
-(emitting a `file.key-repaired` event; custom keys are not recoverable from
-bytes alone — use a version-control restore for full fidelity). Filesystem-backed
-document and file collections use native xattrs on macOS/Linux and an NTFS
-Alternate Data Stream manifest on Windows. Browser document collections use the
-durable OPFS sidecar instead.
+Metadata survives soft delete, restore, and version-control restores because it
+is snapshotted with each commit. A file's key and metadata live only in its
+xattrs, so copy a store directory only with a tool that preserves extended
+attributes; a raw file whose xattrs were stripped cannot be indexed again from
+its bytes alone, so restore it from version control or a backup instead.
+Filesystem-backed document and file collections use native xattrs on
+macOS/Linux and an NTFS Alternate Data Stream manifest on Windows.
+A filesystem without extended attributes (a Docker Desktop VirtioFS bind mount
+on macOS, a FAT volume) can still hold documents, but not their metadata or a
+bucket's files. There, creating a bucket fails at once, and a write that stores
+metadata fails, with an `ENATIVE_IO` error that names the call, the attribute
+and the file, such as `setxattr user.fylo.meta.starred on <path>: filesystem
+does not support extended attributes`. To keep metadata and buckets, use a
+local filesystem with extended attributes, the `efs-sidecar-v1` filesystem
+profile (Unix only), or a `.vdbx` database. Before creating a bucket, the native writer
+checks the filesystem by setting and removing `user.fylo.probe` on a
+short-lived `.fylo-xattr-probe-*.tmp` file at the top of the root.
 Metadata is per-version on filesystem-backed JSON documents. The machine ops
 `getMeta` and `setMeta` cover it from every client shim; native metadata remains
 an engine implementation detail rather than a package-level byte API.
 
-`URL` ingestion snapshots the content at write time. `file:` URLs work
-server-side; browser runtimes accept `Blob`, `File`, and network URLs. The
-default ingestion limit is 50 MiB and can be changed per write:
+A `url` source (`file:`, `http:`, or `https:`) is fetched once, at write time,
+with a 30-second timeout and a 512 MiB limit.
 
-```js
-await db.assets.put(file, { maxBytes: 250 * 1024 * 1024 })
-```
-
-Compiled executable callers use a tagged absolute path:
+The machine request behind `putFile` takes the file as a tagged absolute path
+(or `url`), with an optional `key`:
 
 ```json
 {
@@ -747,6 +767,9 @@ const id = await db.sql`INSERT INTO posts (title, published) VALUES (${'Hello'},
 const posts = await db.sql`SELECT * FROM posts WHERE published = ${true}`
 ```
 
+`CREATE TABLE <name>` creates a document collection and `DROP TABLE <name>`
+drops one.
+
 `UPDATE` and `DELETE` statements are atomic within their collection: either
 every matched document, its native metadata, and index entries commit, or the
 statement restores all before-images.
@@ -760,131 +783,118 @@ const plan = await db.executeSQL("EXPLAIN SELECT * FROM posts WHERE title = 'Hel
 // { operation: 'SELECT', collection: 'posts', access: [...], executed: false }
 ```
 
+`EXPLAIN ANALYZE` returns the same fields plus `executed: true`, `elapsedMs` and `result`; `EXPLAIN` never executes, even for INSERT, UPDATE, DELETE, CREATE or DROP.
+
 The CLI accepts the same syntax:
 
 ```bash
 fylo sql "EXPLAIN SELECT * FROM posts WHERE published = true" --root /mnt/fylo
 ```
 
-### POSTIX access control (UID, GID, and mode)
+### Access control: application identities
 
-POSTIX replaces the former row-level security API with filesystem-native,
-per-record access control. A document/file `put` or SQL `INSERT` can bind a
-developer-supplied POSIX UID, GID, both, or only a mode. Any omitted identity
-retains the new file's native owner/group; omitting `mode` uses `0o600`.
+FYLO grants access per **application identity**, on **protected `.vdbx`
+databases**, and denies by default
+([ADR 0021](docs/adr/0021-application-identities-and-signed-policies.md)).
+An identity is a P-256 key pair one application holds. A protected database
+is encrypted with a key per collection, and each key is wrapped only for the
+identities a signed policy grants it, so the rules hold for any process that
+reads the file, on every platform and in the browser.
 
-```js
-const id = await db.documents.put({ title: 'private' }).as({ uid: 1001, mode: 0o600 })
-const teamId = await db.documents.put({ title: 'team draft' }).as({ gid: editorsGid, mode: 0o660 })
-const managedId = await db.documents
-    .put({ title: 'managed' })
-    .as({ uid: 1001, gid: editorsGid, mode: 0o660 })
-const nativeOwnerId = await db.documents.put({ title: 'native owner' }).as({ mode: 0o600 })
+```bash
+# One key per application; the database's admin gets its own.
+fylo identity create --store file:admin.pem
+fylo identity create --store keychain:myapp-web
+fylo identity show keychain:myapp-web --json   # id (fid1:...) and publicKey (fpk1:...)
 
-await db.documents.get(id).as({ uid: 1001 })
-await db.documents.patch(id, { title: 'updated' }).as({ uid: 1001 })
-await db.documents.delete(id).as({ uid: 1001 })
+# A new database is protected unless created with --unprotected.
+fylo create app.vdbx --admin file:admin.pem
 
-// A trusted membership resolver proves that 1002 belongs to editorsGid.
-await db.documents.patch(teamId, { title: 'reviewed' }).as({ uid: 1002 })
-await db.documents.delete(teamId).as({ uid: 1002 })
+# The admin grants read, write (includes read) or admin on a collection,
+# every collection, or the database.
+fylo access grant app.vdbx --grantee web --key fpk1:p256:... \
+    --actions read --collection users \
+    --identity file:admin.pem --trust-anchor fid1:...
+fylo access revoke app.vdbx --rule web-collection:users \
+    --identity file:admin.pem --trust-anchor fid1:...
+fylo access list app.vdbx --identity keychain:myapp-web --trust-anchor fid1:...
+fylo access settle app.vdbx --identity file:admin.pem --trust-anchor fid1:...
 ```
 
-SQL uses the same execution context without embedding credentials in the SQL
-text:
+- **Opening.** A process opens a protected database as one identity:
+  `fylo.identity` and `fylo.trustAnchor` in `application.json`,
+  `FYLO_IDENTITY` and `FYLO_TRUST_ANCHOR`, or `--identity` and
+  `--trust-anchor`. The trust anchor is the `fid1:` identifier of the admin
+  that created the database; an open without one fails with `EPOLICY`
+  unless the caller opts in to `--trust-on-first-use`, which warns.
+- **Denials.** Without an identity the database is locked (`ENOIDENTITY`).
+  An identity with no grant on a collection gets `EACCES`; a record not
+  signed by an identity that could write it is `ESIGNATURE`.
+- **Writes are signed.** Every record carries its writer's ECDSA signature,
+  which readers check, so a process that only holds a read key cannot add
+  records others accept.
+- **Revocation** writes the next policy version and starts a new key epoch
+  for the collections the rule covered; records written before stay readable
+  to an identity that kept the old key until a rekey rewrites them. It also
+  rotates the catalog key, which seals collection names and the policy. If
+  a revocation stops part way, `fylo access report` and `fylo verify` say
+  a catalog rotation is pending, and `fylo access settle app.vdbx` (as an
+  admin) finishes it; an admin's next write also does. `fylo access audit`
+  lists every signed policy change, settles included.
+- **Every entry point** takes the identity: the CLI, `fylo exec --loop`
+  (its handshake reports the identity and its grants), the `fylo` crate
+  (`OpenOptions::with_identity`), `fylo link` for Turso SDKs, SQL over
+  `.vdbx`, and the browser (`identity: { name, workerUrl, trustAnchor }`
+  with a `webcrypto:` key).
+- **Directory roots** stay an unprotected layout for development and
+  tooling: anyone who can read the folder reads every record and every
+  indexed value.
 
-```js
-const sqlId = await db.sql`
-    INSERT INTO documents (title) VALUES (${'team draft'})
-`.as({ gid: editorsGid, mode: 0o660 })
-
-await db.sql`UPDATE documents SET title = ${'updated'} WHERE title = ${'team draft'}`.as({
-    uid: 1002
-})
-```
-
-Fylo applies `chown` and `chmod` to the record and stores a portable access
-descriptor in `user.fylo.access`. It evaluates mode classes with normal POSIX
-precedence: owner bits for the owner UID, otherwise group bits for a member of
-the record GID, otherwise other bits. Membership does not fall through to
-`other` when the selected owner/group bits deny an operation. Group members can
-modify and delete only when the group write bit is set, so use `0o660` rather
-than `0o600` for a group-readable and group-writable record.
-
-The binary supports application-authenticated virtual identities over its
-local NDJSON boundary. Every document and raw-file
-CRUD/query request accepts `access`; the shipped Node client exposes it through
-the same fluent syntax:
-
-```js
-const teamId = await db.messages.put({ title: 'team draft' }).as({ gid: editorsGid, mode: 0o660 })
-
-const actor = {
-    uid: authenticatedUser.uid,
-    groups: await identityProvider.groupIdsFor(authenticatedUser.uid)
-}
-await db.messages.patch(teamId, { title: 'reviewed' }).as(actor)
-await db.attachments
-    .putFile({ path: sourcePath, key: '/mail/attachment.pdf' })
-    .as({ gid: editorsGid, mode: 0o660 })
-```
-
-`access.groups` is a trusted, request-scoped supplementary-GID assertion for
-machine mode only. The cached binary clears it after each request and falls
-back to the host POSIX group resolver when it is omitted. Treat stdin as a
-privileged application boundary: derive both `uid` and `groups` from
-authenticated server state and never copy either from an end-user payload. A
-record written without `.as()` or machine `access` has no descriptor and
-remains open to reads and writes.
-
-The UID is still an authorization claim supplied by your application—Fylo does
-not authenticate it. Validate the caller before passing a UID. The Fylo
-process must also have permission to call `chown`; otherwise the put fails
-atomically. Denied direct operations throw `FyloPermissionError` with
-`code === 'EACCES'`, while queries and SQL omit unreadable records.
-
-This API is available only when the native binary and its binary-backed shims
-run on a POSIX host such as macOS or Linux. It is not a Windows authorization
-boundary, even though Windows supports FYLO's local crash recovery. Browser,
-Explorer, and WebView-based mobile clients (Swift/Kotlin/Flutter) cannot call
-`chown`/`chmod`, so they do not expose `.as()` as an equivalent security
-boundary; those clients must remain behind an authenticated native POSIX
-gateway when POSTIX enforcement is required.
-
-Canonical metadata includes `uid`, `gid`, and `mode` for protected records:
-
-```js
-const { uid, gid, mode, createdAt, updatedAt, mtime } = await db.documents
-    .getMeta(id)
-    .as({ uid: 1001 })
-```
+End-user rules (which person may see which record) stay in your
+application. Per-record POSTIX access (`uid`, `gid`, `mode`, `.as()`,
+`--uid`, `--groups` and the machine `access` field) was removed in this
+release. Roots that carry such descriptors still open, with the descriptors
+ignored and a one-time warning; `fylo access report <root>` lists them and
+`fylo pack --protect` moves the root into a protected database. See
+[Migrating to protected databases](docs/migrating-to-protected-databases.md).
 
 ### Query Strategy
 
-| Operator                     | Index used                        | Fallback                 |
-| ---------------------------- | --------------------------------- | ------------------------ |
-| `$eq`                        | Exact match key (`eq`)            | —                        |
-| `$gt`, `$gte`, `$lt`, `$lte` | Sortable numeric key (`n`/`nr`)   | Full scan if non-numeric |
-| `$contains`                  | Exact match on array members      | —                        |
-| `$like "ali%"`               | Forward prefix (`f`)              | Full scan                |
-| `$like "%ice"`               | Reversed prefix (`r`)             | Full scan                |
-| `$like "%lic%"`              | Trigram (`g3`) → hydrate → verify | Full scan                |
+Both engines use the prefix index only to choose which documents to read,
+then check every one against the whole query. A query whose every `$ops`
+entry has at least one field the index can answer reads only those
+documents; otherwise it reads every document.
+
+| Operator                     | Native engine (CLI, clients, Rust)               | Browser engine                    |
+| ---------------------------- | ------------------------------------------------ | --------------------------------- |
+| `$eq`                        | Exact match key (`eq`) and coerced numbers (`n`) | Exact match key (`eq`)            |
+| `$gt`, `$gte`, `$lt`, `$lte` | One run of sortable numeric keys (`n`)           | Sortable numeric keys (`n`/`nr`)  |
+| `$contains`                  | Reads every document                             | Exact match on array members      |
+| `$like "ali%"`               | Reads every document                             | Forward prefix (`f`)              |
+| `$like "%ice"`               | Reads every document                             | Reversed prefix (`r`)             |
+| `$like "%lic%"`              | Reads every document                             | Trigram (`g3`) → hydrate → verify |
+
+Both engines read every document for comparisons an empty array satisfies
+(such as `$gte: 0`): an empty array compares as `0` but has no index key.
+The native engine also reads every document for `$eq: null` and for a
+comparison whose bound is not a number. It reads only the index keys a query needs from `keys.snapshot`, plus the
+write-ahead log, rather than loading the whole index.
 
 ---
 
 ## Schema Versioning
 
-Schemas live under `FYLO_SCHEMA` in a per-collection layout:
+Schemas live under `fylo.schema` in a per-collection layout:
 
 ```text
-<FYLO_SCHEMA>/
+<fylo.schema>/
   <collection>/
     manifest.json          ← { current, versions: [{v, sha256?, addedAt?}] }
     history/
       v1.schema.json       ← chex regex schema
       v2.schema.json       ← head is whichever manifest.current points at
-    upgraders/
-      v1-to-v2.js          ← export default async (doc) => upgradedDoc
+    migrations/
+      v1-to-v2.json        ← { "steps": [ ... ] }, run when moving v1 → v2
 ```
 
 `manifest.json`:
@@ -910,35 +920,168 @@ Chex regex schemas (`history/v2.schema.json`):
 }
 ```
 
-Upgraders are pure functions:
+Migrations are JSON, not code (ADR 0018). `migrations/v1-to-v2.json` lists
+the steps that turn a v1 document into a v2 one:
 
-```js
-export default function upgrade(doc) {
-    return {
-        ...doc,
-        slug:
-            String(doc.title ?? '')
-                .toLowerCase()
-                .replace(/[^a-z0-9]+/g, '-')
-                .replace(/^-+|-+$/g, '') || 'untitled'
-    }
+```json
+{
+    "steps": [{ "slugify": "slug", "from": "title" }]
 }
 ```
+
+Steps run in order on the document with `_v` removed, then `_v` is stamped
+with the target version. A document several versions behind runs each step
+file along the manifest history, in order. Each step is an object with exactly
+one operation key, whose value is the field it works on, plus that operation's
+parameters. Fields are slash-separated paths through nested objects
+(`payload/verifier`); writing a path creates missing parent objects.
+
+| Step                                                 | Effect                                                                                 |
+| ---------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| `{"rename": "a", "to": "b"}`                         | move the field                                                                         |
+| `{"copy": "a", "to": "b"}`                           | copy the field                                                                         |
+| `{"default": "a", "value": 0}`                       | set the field only if it is missing or `null`                                          |
+| `{"set": "a", "value": 0}`                           | set the field unconditionally                                                          |
+| `{"remove": "a"}`                                    | delete the field                                                                       |
+| `{"convert": "a", "to": "number"}`                   | convert to `"string"`, `"number"` or `"boolean"` (`"true"`/`"false"`, `1`/`0`)         |
+| `{"map": "a", "values": {"y": true}, "else": false}` | replace the value by its entry in `values`, else by `else` (if given)                  |
+| `{"wrap": "a"}`                                      | turn a value that is not an array into a one-element array                             |
+| `{"lower": "a"}`, `{"upper": "a"}`                   | change a string's case (Unicode full case mapping)                                     |
+| `{"trim": "a"}`                                      | remove leading and trailing whitespace                                                 |
+| `{"replace": "a", "find": "x", "with": "y"}`         | replace every occurrence of literal text (no regex)                                    |
+| `{"template": "a", "value": "{first} {name/last}"}`  | set a string built from other fields; `{{` and `}}` are literal braces                 |
+| `{"slugify": "a", "from": "title"}`                  | lower-case `from`, join runs of ASCII letters and digits with `-`, `untitled` if empty |
+
+A step whose source field is missing does nothing, except `set`, `template`
+and `slugify`, which always write their field. `default`, `convert` and the
+string steps treat `null` as missing; a missing or `null` placeholder or
+`slugify` source reads as empty text. A field of the wrong type (for example
+`lower` on a number) fails the migration. A step with an unknown parameter or
+two operation keys is rejected.
+
+FYLO never runs JavaScript from a schema folder. A version step that has only
+an old `upgraders/v1-to-v2.js` file fails `schemaMaterialize` with an error
+pointing at ADR 0018; rewrite it as steps. A change the steps cannot express is
+an application update in two versions: add a version whose schema accepts both
+the old and the new shape, rewrite the documents with `patchDocs` or SQL
+`UPDATE`, then add a version that accepts only the new shape.
 
 Behavior:
 
 - Documents carry `_v` (version label)
-- Reads materialize old docs to head shape in memory
-- Strict writes validate against head schema via the `chex` binary
-- Documents missing `_v` are treated as oldest version (legacy upgrade on read)
-- Any collection directory under `FYLO_SCHEMA` that contains a `manifest.json` is auto-created on `new Fylo(...)`; await `fylo.ready()` if you need the bootstrap to settle before issuing reads from a synchronous probe (mutation/query methods await internally)
-- FYLO schemas do not support arrays of objects — declare each nested object as its own collection. A schema that would accept `items: [{ name: '...' }]` will throw `FYLO schema '...' does not support arrays of objects at '$.items'` on first read. Arrays of scalars and nested objects (as fields) are fine.
+- In strict mode, every write that stores a document body validates the whole
+  resulting document against the head schema with the built-in CHEX validator
+  and stamps `_v`: `putData`, `batchPutData`, `importBulkData`, `patchDoc`,
+  `patchDocs`, and SQL `INSERT` and `UPDATE`. A patch is validated as the
+  merged document, not as the fields it sends
+- Every read returns documents in the head shape (ADR 0017 section 5):
+  `getDoc`, `findDocs`, joins, SQL `SELECT`, deleted-document reads and the
+  hot set. A document stored below the head is decrypted at the version it was
+  written at and migrated in memory by the JSON steps of each later version;
+  its stored bytes do not change until something writes it. Queries and SQL
+  `UPDATE` and `DELETE` match the migrated document, so a query on a renamed
+  field gives the same answer before and after `fylo schema migrate`. While a
+  collection has documents below the head, a query that uses a field a
+  migration writes or renames reads every document instead of the index;
+  queries on other fields keep it
+- A write that patches an old document (`patchDoc`, `patchDocs`, SQL
+  `UPDATE`) migrates it to the head first, so the stored document moves to the
+  head shape
+- A document missing `_v` is read, materialized and counted as the oldest
+  version; one whose `_v` the schema does not list fails the read with
+  `ESCHEMA`
+- `fylo schema inspect <collection>` (`schemaInspect`) reports the
+  collection's validation mode, its head, how many live documents are stored
+  at each version (`versions[].documents`, plus `unversioned` and
+  `unknownVersions`) and `converged`: whether every document is at the head.
+  Once it has converged, a read costs one comparison of `_v`. For a registry
+  collection the writer keeps the count in
+  `<root>/.fylo-schemas/<collection>/counts.json` (one file per branch
+  worktree), stamped with the collection's generation, and recounts by scan
+  whenever a crash, a recovery or another process leaves it stale. A
+  collection whose versions come only from the `fylo.schema` folder is counted
+  by scan when asked
+- `schemaMaterialize` (`fylo schema materialize`) migrates one given document
+  to the head shape in memory
+- `fylo schema migrate <collection>` (`schemaMigrate`) rewrites every document
+  below the head version at the head, validating and encrypting each as a
+  write would, and is safe to run again. Documents without `_v` are skipped
+  and counted, because outside strict mode they may already be in the head
+  shape; `--include-unversioned` migrates them as the oldest version
+- A document is decrypted with the `$encrypted` list of the version in its
+  `_v`, so a later version may rename or drop an encrypted field
+- Any collection directory under `fylo.schema` that contains a `manifest.json` is auto-created on `new Fylo(...)`; await `fylo.ready()` if you need the bootstrap to settle before issuing reads from a synchronous probe (mutation/query methods await internally)
+- FYLO documents cannot hold arrays of objects — declare each nested object as its own collection. A write of a document with `items: [{ name: '...' }]` fails with `EARRAYOFOBJECTS`, even if its CHEX schema describes the array. Arrays of scalars and nested objects (as fields) are fine.
+
+### Schema registry: `fylo schema push` and `pull`
+
+The folder is where schemas are written and kept in source control. A
+directory root also keeps its own copy, the **schema registry** (ADR 0017
+section 3): each committed version of a collection's schema is one immutable
+file, `<root>/.fylo-schemas/<collection>/<ordinal>.json`, holding its label
+(the `_v` value), the CHEX schema with its `$encrypted` list, its SHA-256,
+its JSON migration from the previous version, the compiled validator and when
+and by what it was committed. The collection's catalog descriptor records the
+head version.
+
+```bash
+fylo schema push article --schema-dir ./schemas --root /mnt/fylo   # commit new versions
+fylo schema pull article --out ./schemas-copy --root /mnt/fylo     # write the folder layout back out
+```
+
+- `fylo schema push` (`schemaPush`) commits, in manifest order, each version of
+  the folder that the registry does not have yet. Before committing it
+  migrates the collection's documents (all of them up to 10,000, an evenly
+  spaced sample above that) to the new head and validates them there; if any
+  fail it commits nothing and names the first failures. A label already
+  committed with different content is refused with `ESCHEMACONFLICT`:
+  committed versions never change, so give the change a new label. It also
+  refuses a migration with a JavaScript upgrader (ADR 0018), a top-level `$`
+  key other than `$encrypted`, and an array whose items are objects
+  (`EARRAYOFOBJECTS`). A version with a pattern that has no DFA form (a
+  Unicode `\b`) is committed with a warning that builds without a regex
+  compiler cannot validate it.
+- `fylo schema pull` (`schemaPull`) writes the registry out as a
+  `fylo.schema` folder: manifest, history and migrations.
+- Once a collection has a registry, validation, `_v` stamping, `$encrypted`
+  lists, `schemaMaterialize`, `schemaMigrate`, `schemaInspect` and
+  `schemaDoctor` read it, whether or not `fylo.schema` is configured, and edits
+  to the folder take effect at the next push. A collection without one keeps
+  reading the folder, as before.
+- The WebAssembly builds (`fylo.wasm`, `fylo-browser.wasm`) have no regex
+  compiler. They validate with the compiled validator a native push stored in
+  the registry, which gives the same results and messages as the native
+  binary. Where they cannot validate (a head version that is not portable, a
+  record whose compiled validator is missing or refused, or a collection with
+  no registry whose schema is in a `fylo.schema` folder or whose descriptor
+  records `strict` or `warn`) they refuse `strict` and `warn` writes with
+  `ESCHEMAUNAVAILABLE` rather than store an unvalidated document; `off` writes
+  as before. Push schemas with a native build.
+- `"schema": { "path": "./schemas", "autoPush": true }` in `application.json`
+  pushes every folder collection the root has whenever a write opens the root,
+  which keeps the "edit the file, the next write uses it" workflow for
+  development. It is off by default; `"schema": "./schemas"` is the same as
+  `{ "path": "./schemas" }`.
+- The first time a write opens a root with a `fylo.schema` folder, every
+  existing collection the folder versions is imported into the registry once,
+  without a dry run, and `<root>/.fylo-schemas/import.json` records it, so
+  upgrading does not silently drop validation. Collections created later wait
+  for a push.
+- A collection with a registry also writes its generation state in a format
+  older releases refuse with `ENATIVE_METADATA`, so a binary that cannot read
+  the registry cannot write unvalidated documents to it.
+- Push and pull work on the `main` branch: the registry is shared by every
+  branch, and a push checks the documents of the checked-out one.
 
 ---
 
 ## Encryption
 
 Fields declared in `$encrypted` arrays are stored with AES-GCM. Equality queries use HMAC blind indexes — lookups work without decrypting, but an attacker with index access can count repetitions.
+
+Field encryption needs the native `fylo` binary. The browser loader and the
+mobile clients do not support schemas or field encryption in this release and
+fail such requests with an error.
 
 ```json
 {
@@ -951,6 +1094,9 @@ Fields declared in `$encrypted` arrays are stored with AES-GCM. Equality queries
 }
 ```
 
+`$encrypted` describes how fields are stored; it is not a document property,
+so it works with strict mode and a document never carries it.
+
 Nested fields use a **slash-separated** path (`payload/verifier`), matching the
 index field-path format. A dotted path such as `payload.verifier` is accepted
 as a literal field name, matches nothing, and silently leaves the field
@@ -958,8 +1104,8 @@ unencrypted — check the stored document if a field is not being encrypted.
 
 Requirements:
 
-- `FYLO_ENCRYPTION_KEY` must be ≥32 characters
-- `FYLO_CIPHER_SALT` is recommended
+- The secret referenced by `fylo.encryption.key` must contain at least 32 UTF-8 bytes
+- `fylo.encryption.key` and `fylo.cipher.salt` must be configured together as secret references; literal credentials in JSON are rejected
 - Process-global: one key for all collections
 
 Decryption is schema-driven and does not depend on write history: a read-only
@@ -979,12 +1125,15 @@ hold a plaintext value for it.
 
 ## Remote Access
 
-There is none — by design. FYLO has no server and speaks no network protocol.
-Every client owns its database directly: the CLI and language shims drive the
-`fylo` binary against a local root, and the browser/mobile clients embed the
-engine over an on-device OPFS store (see [Browser access](#browser-access)).
-If a root must be reached from another machine, that is a filesystem-layer
-concern (a mounted drive, a synced directory) — not FYLO's.
+There is none, by design. FYLO is an embedded library, like SQLite: it opens
+the database files directly in your app's process and speaks no network
+protocol. The CLI and language shims drive the `fylo` binary against a local
+root, and the browser/mobile clients embed the engine over an on-device OPFS
+store (see [Browser access](#browser-access)).
+
+When the database lives on network storage, run your app server next to the
+files and have clients talk to your app, rather than opening a live root over
+SMB or NFS from another machine.
 
 The PostgREST-style filter grammar (`role=eq.admin&age=gte.30`) lives on as a
 query front-end: `queryFromSearch` in `src/query/postgrest.js` translates it
@@ -1025,7 +1174,24 @@ fylo checkout main --root /mnt/fylo
 fylo schema inspect article --schema-dir ./schemas --json
 fylo schema doctor article --schema-dir ./schemas
 fylo schema validate article @article.json --schema-dir ./schemas --json
+fylo schema mode article warn --root /mnt/fylo        # off, warn or strict
+fylo schema check article --schema-dir ./schemas --json  # documents the head rejects
+fylo schema push article --schema-dir ./schemas          # commit new versions to the registry
+fylo schema pull article --out ./schemas-copy            # write the registry back out
 ```
+
+Each collection has a schema validation mode, kept in its catalog descriptor
+so every process that opens the root uses it. `strict` refuses a document the
+head schema rejects with `ESCHEMA` and writes nothing. `warn` writes it anyway,
+logs a warning to stderr and counts it; `inspectCollection` reports the mode
+and this process's count as `validation` and `schemaViolations`. `off` checks
+nothing. Every mode still stamps `_v` and encrypts `$encrypted` fields, and the
+mode applies to every write that stores a document body: `putData`,
+`batchPutData`, `importBulkData`, `patchDoc`, `patchDocs` and SQL `INSERT` and
+`UPDATE`. A collection with no recorded mode follows `fylo.strict`
+(`--strict-schema`): `strict` when it is on, `off` otherwise. Use `warn` while
+adopting a schema over existing data, and `fylo schema check` to find the
+documents to fix before switching to `strict`.
 
 `status` and `diff` compare document payloads only (`docs/` and `.deleted/`),
 so rebuilt indexes, event journals, lock files, and mtime-only changes do not
@@ -1042,36 +1208,11 @@ instead of copying whole collections. Bulk operations coalesce — `put.batch`,
 every document they touch, so large ingests stay fast. Prefer these over
 per-document writes when loading data.
 
-Disable auto-commit for manual Git-style working trees:
-
-```js
-const db = new Fylo('/mnt/fylo', {
-    versioning: { autoCommit: false }
-})
-```
-
-Version-control snapshots keep a full content-addressed copy of every raw
-file, which doubles disk and write bandwidth for large media collections.
-Exclude a collection from history entirely at creation time:
-
-```js
-await db.media.create({ kind: 'file', versioned: false })
-```
-
-Unversioned collections never appear in commits, diffs, or restores — their
-working files are the only copy, and `restoreCommit` leaves them untouched.
-
-Machine/executable callers can use the same option in JSON:
-
-```json
-{
-    "op": "putData",
-    "root": "/mnt/fylo",
-    "collection": "posts",
-    "versioning": { "autoCommit": false },
-    "data": { "title": "manual commit later" }
-}
-```
+This release has no option to turn auto-commit off or to exclude a collection
+from history: neither the clients nor the machine protocol accept one. Version-control snapshots keep a
+full content-addressed copy of every raw file, which doubles disk and write
+bandwidth for large media collections, so budget for that when you store large
+files in a bucket.
 
 `restore-commit` refuses to overwrite uncommitted working tree changes unless
 `--force` is passed; commit snapshots themselves remain immutable. `merge`
@@ -1186,35 +1327,32 @@ printf '%s\n' '{"op":"handshake"}' | fylo exec --loop --root /mnt/fylo
 
 `version --output json` and the `handshake` result share one stable identity:
 FYLO runtime and protocol versions, immutable release commit and target,
-required CHEX/TTID versions plus their current availability, effective frame
-limits, and supported capabilities. Source and locally compiled development
-executions explicitly report an unknown commit; release builds embed the
-immutable source revision and build target. A handshake is side-effect-free
-and does not create the configured root or initialize a collection.
+effective frame limits, and supported capabilities. The `schemaValidation`
+capability names the built-in CHEX validator and the CHEX release it follows;
+WebAssembly builds add `compiledOnly: true`, because they validate only with
+the compiled validators in a root's schema registry. Source and locally
+compiled development executions explicitly report an unknown commit; release
+builds embed the immutable source revision and build target. A handshake is
+side-effect-free and does not create the configured root or initialize a
+collection.
 
 Capability records are versioned contracts. `documentBuckets.version === 1`
 advertises raw-file collections (`kind: "file"`), their supported machine
 operations, path/URL ingestion, `getFileData`'s base64 and path outputs, and
 full-content SHA-256 verification.
-`machineAccess.version === 1` advertises the operations that enforce trusted
-POSTIX access, the accepted descriptor and actor fields, and the `EACCES` /
-query-omission denial semantics. `machineAccess` is present only in macOS and
-Linux builds; its absence means the runtime does not provide that authorization
-boundary. Consumers should reject a missing or unknown capability version
-before touching a production root.
+The handshake's top-level `identity` reports the application identity the
+session opens protected databases with, and, when its root is one, the grants
+that identity holds there (`null` without an identity; see
+[api/machine/v1](api/machine/v1/README.md)).
 `serverlessQueue.version === 1` advertises the embedded filesystem queue,
 including its operation names, delivery model, message/claim limits, consumer
 groups, visibility leases, delayed delivery, idempotent publication, and
 group-specific dead letters.
 
-Supported operations: `handshake`, `executeSQL`, `createCollection`, `dropCollection`, `inspectCollection`, `rebuildCollection`, `reshardCollection`, `verifyCollection`, `getDoc`, `getFileData`, `getLatest`, `getMeta`, `setMeta`, `findDocs`, `findDeletedDocs`, `restoreDoc`, `joinDocs`, `putData`, `batchPutData`, `patchDoc`, `patchDocs`, `delDoc`, `delDocs`, `importBulkData`, `checkout`, `branch`, `commit`, `log`, `status`, `diff`, `restoreCommit`, `merge`, `schemaInspect`, `schemaCurrent`, `schemaHistory`, `schemaDoctor`, `schemaValidate`, `schemaMaterialize`, `queuePublish`, `queueClaim`, `queueAck`, `queueNack`, `queueExtend`, `queueStats`, `queueDeadLetters`.
+Supported operations: `handshake`, `executeSQL`, `createCollection`, `dropCollection`, `inspectCollection`, `rebuildCollection`, `reshardCollection`, `migrateLayout`, `compactCollection`, `verifyCollection`, `getDoc`, `getFileData`, `getLatest`, `getMeta`, `setMeta`, `findDocs`, `findDeletedDocs`, `restoreDoc`, `joinDocs`, `putData`, `batchPutData`, `patchDoc`, `patchDocs`, `delDoc`, `delDocs`, `importBulkData`, `checkout`, `branch`, `commit`, `log`, `status`, `diff`, `restoreCommit`, `merge`, `schemaInspect`, `schemaCurrent`, `schemaHistory`, `schemaDoctor`, `schemaValidate`, `schemaMaterialize`, `schemaMode`, `schemaCheck`, `schemaMigrate`, `schemaPush`, `schemaPull`, `queuePublish`, `queueClaim`, `queueAck`, `queueNack`, `queueExtend`, `queueStats`, `queueDeadLetters`, `inspectDatabase`, `verifyDatabase`.
 
-Document and raw-file CRUD/query operations accept an optional `access`
-object. Puts accept `{ uid?, gid?, mode? }`; reads, metadata, queries, updates,
-deletes, and restores accept `{ uid }`. A trusted binary-backed application
-may additionally include `groups: number[]` with `uid` for virtual POSIX
-membership. Denied direct operations return `error.code: "EACCES"`; collection
-queries omit unreadable records.
+Requests name no caller: a request that carries the removed `access` object
+is refused with `EBADREQUEST`. Access comes from the session's identity.
 
 #### Bounded NDJSON frames
 
@@ -1248,7 +1386,7 @@ Responses never silently cross the advertised maximum. `findDocs` and
 The result is `{ items, nextCursor, page: { count, limit } }`. The first request
 materializes an immutable, process-scoped snapshot ordered by TTID binary text, so
 concurrent mutations cannot duplicate or skip entries. Cursors are scoped to
-the operation, collection, query, and access identity; they expire after 15
+the operation, collection and query; they expire after 15
 minutes and become invalid when the loop exits. On `EINVALIDCURSOR` or child
 restart, discard partial state and restart from page one. Snapshot state is
 private to the native process, cleaned on completion/expiry/shutdown, and capped
@@ -1274,15 +1412,23 @@ text.
 | `EUNSUPPORTEDOP`                                                       | The operation is unknown to this runtime                                   | Do not retry; check the handshake capabilities                   |
 | `EINVALIDDOCID`                                                        | The supplied document ID is not a valid TTID                               | Do not retry; fix the ID                                         |
 | `EARRAYOFOBJECTS`                                                      | The document contains an array of objects, which the data model rejects    | Do not retry; restructure per the document-model rule below      |
-| `EACCES`                                                               | The access context is not permitted to perform the operation               | Do not retry with the same identity                              |
+| `EACCES`                                                               | The identity has no grant for the operation on a protected database        | Do not retry with the same identity                              |
 | `EQUEUE_INVALID`                                                       | A queue name, identity, option, or idempotency reuse is invalid            | Do not retry without correcting the request                      |
 | `EQUEUE_RECEIPT`                                                       | A queue receipt is incorrect, expired, or already superseded               | Do not acknowledge as that worker                                |
 | `EQUEUE_LIMIT`                                                         | A queue message, claim, delay, attempt, state, or read limit was exceeded  | Reduce the requested resource                                    |
+| `EINDEX_FULL`                                                          | The write could grow the collection's index past its 240 MiB write limit   | Do not retry; delete documents or use another collection         |
 | `EDECRYPTFAILED`                                                       | An `$encrypted` field could not be decrypted with the configured key       | Do not retry; fix the key configuration                          |
 | `EINVALIDCURSOR`                                                       | The pagination cursor is invalid, expired, or from another process         | Restart the traversal from page one                              |
+| `ENATIVE_NOT_FOUND`                                                    | The named collection does not exist                                        | Do not retry; create the collection first                        |
+| `EBROWSER_UNSUPPORTED`                                                 | The browser or mobile engine does not implement the requested feature      | Do not retry; use the native engine                              |
 | `EROOTLOCKED` / `EROOTLEASELOST`                                       | Exclusive root ownership was unavailable or lost                           | Fail over per your supervisor policy                             |
 | `EFRAME_*`                                                             | Frame-contract violations, as documented above                             | Per the framing rules above                                      |
 | `EQUERYLOOPREQUIRED` / `EQUERYITEMTOOLARGE` / `EQUERYSNAPSHOTTOOLARGE` | Pagination contract violations, as documented above                        | Per the pagination rules above                                   |
+| `ESCHEMA`                                                              | A document does not match the head schema, or a schema is invalid          | Do not retry; fix the document or schema                         |
+| `ESCHEMACONFLICT`                                                      | A pushed schema label is already committed with different content          | Do not retry; give the changed schema a new version label        |
+| `ESCHEMAUNAVAILABLE`                                                   | This build cannot validate the collection's head schema version            | Do not retry; push the schema natively, or write natively        |
+| `EVDBX_NOT_VDBX` / `EVDBX_VERSION`                                     | The file is not a `.vdbx` database, or needs a newer FYLO                  | Do not retry; open it with a build that supports it              |
+| `EVDBX_CORRUPT`                                                        | A `.vdbx` structure failed its checks                                      | Do not retry; run `fylo verify <db.vdbx>`                        |
 | `ENATIVE_IO`                                                           | Native filesystem I/O failed, including disk pressure or xattr operations  | Treat a mutation as ambiguous; inspect the cause before retrying |
 | `EUNKNOWN`                                                             | An engine failure without a more specific classification                   | Treat conservatively; inspect `error.message` diagnostically     |
 
@@ -1328,6 +1474,12 @@ releases it; persistent metadata is only diagnostic/fencing state and is not a
 PID-file claim, so PID reuse and stale metadata cannot retain ownership. Every
 request verifies the unique owner generation, and a replaced former owner
 fails closed with `EROOTLEASELOST`.
+
+Because nothing else can write the root, an exclusive session also keeps a
+hot set of parsed documents and indexes in memory, 64 MiB by default.
+`--hot-set-bytes <n>` sets the budget and `0` turns it off; the handshake
+reports it as `capabilities.hotSet` (see
+[ADR 0014](docs/adr/0014-in-memory-hot-set.md)).
 
 The lease contract is supported on native local filesystems on macOS, Linux,
 and Windows. Containers on the same host can share it only when they share the
@@ -1395,6 +1547,59 @@ atomic link/rename semantics supported storage targets.
 
 ---
 
+## EFS metadata candidate
+
+FYLO's broader direction is provider-independent serverless runtime capability.
+This storage work is a first backend slice inside FYLO, not an external AWS shim.
+Invocation lifetime, fencing, retries and cold-start recovery need their own
+explicit core contracts. PaaS retains AWS infrastructure configuration.
+
+The isolated general invocation source candidate adds typed `InvocationOptions`
+and `InvocationRuntime` inside FYLO. It handles one bounded core frame with
+trusted host configuration and a monotonic deadline/cleanup reserve, then returns
+buffered response bytes only after private handles are gone and the owning lease
+has completed unique checked release. Legacy streaming APIs keep their behavior.
+The host selects an existing root/repository. This initial invocation slice
+refuses repository/version operations listed in the
+[machine contract](api/machine/v1/README.md); its reused handshake retains the
+legacy capability fields. Recovery is capped at 10,000 collection names per root.
+The 22 invocation contract tests are authored but unexecuted; distributed fencing,
+general idempotency and provider support are not established. See
+[ADR 0011](docs/adr/0011-serverless-invocation-contract.md).
+
+An isolated candidate adds explicit `--filesystem-profile efs-sidecar-v1` for
+filesystems without native xattrs. Existing constructors, shims and CLI calls
+default to `native`. Selection does not promote EFS or change the local-filesystem
+support boundary described above. No native compiler/tests or actual EFS/Lambda
+qualification have completed for this candidate.
+
+The profile is Unix-only (macOS and Linux), because its sidecars need POSIX
+file identity. On Windows, opening a root with it fails at the handshake with
+`ENATIVE_UNSUPPORTED: EFS metadata profile requires supported POSIX file
+identity`.
+
+The profile uses a versioned root descriptor and mandatory private
+`<payload>.fylo-attrs` JSON/base64 files, including an empty `{}` manifest.
+Readers and writers require the same admitted root owner. Payload, metadata and
+authorization share a stable-generation read; paired mutations use the existing
+journal. Initialization is restricted to a new empty root. A native open refuses
+a marked EFS root; old binaries must remain restricted to their original roots.
+No live conversion is provided.
+
+The initial identity policy preserves the actual root UID/GID and rejects
+unsupported ownership changes. The initial sidecar backend requires owner-readable
+payload modes; unsupported projections fail before record mutation. Advisory-lock
+admission does not establish remote
+fencing or NFS cache coherence. Record-identity binding for same-payload manifest
+swaps is under review. EFS queue execution also remains blocked: the current
+queue entry point opens the native profile, and its source path is outside the
+initial adapter grant. Queue state must still be included in every full backup.
+
+See [ADR 0010](docs/adr/0010-explicit-efs-metadata-profile.md), the
+[storage contract](api/storage/v1/README.md) and the
+[qualification plan](docs/operations/efs-profile-qualification.md). A successful
+local fixture, mount or infrastructure plan is not a production support claim.
+
 ## Limitations
 
 | Limitation                           | Detail                                                                                                                                                                                               |
@@ -1406,9 +1611,10 @@ atomic link/rename semantics supported storage targets.
 | **Process-global cipher**            | One key per process for all `$encrypted` fields. No per-collection key rotation built in.                                                                                                            |
 | **No cross-collection transactions** | SQL mutations and ordinary writes are atomic within one collection; there is no atomic multi-collection commit.                                                                                      |
 | **Timestamp metadata**               | `createdAt` comes from TTID; `updatedAt` comes from file modification metadata. Every timestamp is whole epoch milliseconds.                                                                         |
-| **Canonical identifiers**            | TTID matches case-insensitively but FYLO names a file after the identifier, so a write with a non-canonical spelling is refused. `ttid canonicalize` repairs one.                                    |
+| **Canonical identifiers**            | TTID matches case-insensitively but FYLO names a file after the identifier, so a write with a non-canonical spelling is refused. Uppercasing the identifier repairs it.                              |
 | **Shard width is per collection**    | Recorded in the catalog descriptor and 1–4. A write configured for a different width fails with `ESHARDWIDTH`; `fylo reshard` moves the collection.                                                  |
 | **Bulk import for trusted sources**  | SSRF guard blocks private addresses and caps at 50 MiB. Not for user-provided URLs.                                                                                                                  |
+| **Index size per collection**        | A file-layout collection's index is read whole and capped at 256 MiB: roughly 150k-200k small or 35k-48k medium documents. Writes stop at 240 MiB with `EINDEX_FULL`; deletes still work.            |
 
 ---
 

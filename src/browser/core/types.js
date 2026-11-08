@@ -79,6 +79,7 @@
  * @property {Record<TTID, Record<string, any>>=} oldDoc
  * @property {StoreUpdate=} update
  * @property {StoreDelete=} delete
+ * @property {Record<string, any>=} options
  */
 
 /**

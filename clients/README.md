@@ -25,12 +25,17 @@ addon. There are two kinds, sharing the same method names:
 
 ### Local-only clients (embed the engine on-device)
 
-| Platform         | File                     | How                                     |
-| ---------------- | ------------------------ | --------------------------------------- |
-| Browser (JS)     | `browser/fylo.js` loader | OPFS store                              |
-| iOS (Swift)      | `swift/Fylo.swift`       | WKWebView hosting `fylo.mjs`            |
-| Android (Kotlin) | `kotlin/Fylo.kt`         | android.webkit.WebView                  |
-| Flutter (Dart)   | `flutter/fylo.dart`      | flutter_inappwebview hosting `fylo.mjs` |
+| Platform         | File                     | How                                       |
+| ---------------- | ------------------------ | ----------------------------------------- |
+| Browser (JS)     | `browser/fylo.js` loader | OPFS store                                |
+| iOS (Swift)      | `swift/Fylo.swift`       | WKWebView hosting `fylo.mjs`              |
+| Android (Kotlin) | `kotlin/Fylo.kt`         | android.webkit.WebView hosting `fylo.mjs` |
+| Flutter (Dart)   | `flutter/fylo.dart`      | flutter_inappwebview hosting `fylo.mjs`   |
+
+The mobile hosts load the engine as `fylo.mjs`: save the release asset
+`fylo-web.mjs` under that name (see [Mobile](#mobile-ios--android)). The local-only
+clients do not support raw-file buckets, schemas, or field encryption in this
+release; see [Local-only limits](#local-only-limits).
 
 See [Browser](#browser-fylo-webmjs), [Mobile](#mobile-ios--android), and
 [Flutter](#flutter) below.
@@ -180,9 +185,11 @@ outcome = send_email()
 Go handlers receive `map[string]any`; C# and Dart receive native JSON objects.
 The dependency-free Rust and Java shims pass one validated raw delivery JSON
 object because those two single-file clients do not bundle a JSON decoder.
-Decorators process one batch rather than polling forever, keeping execution and
-scaling under the host platform's control. Long handlers can call the existing
-lease-extension method before the visibility deadline.
+Python's `queue_process` also runs `async` handlers; inside an event loop that
+is already running, prefer `queue_process_async`. Decorators process one batch
+rather than polling forever, keeping execution and scaling under the host
+platform's control. Long handlers can call the existing lease-extension method
+before the visibility deadline.
 
 Object arguments are always the language's **native container** — a `dict`
 (Python), `Hash` (Ruby), object (Node), associative array (PHP), `map[string]any`
@@ -196,10 +203,12 @@ Every client also has a **collection-scoped** view with short method names, so y
 don't repeat the collection on each call — this reads like the browser client:
 
 ```
-db.collection("users").put(data)     // create/drop/inspect/rebuild
-db.collection("users").latest(id)    // put/get/latest/patch/delete/restore
+db.collection("users").create()      // also drop/inspect/rebuild
+db.collection("users").put(data)     // also get/latest/patch/delete/restore
 db.collection("users").find(query)   // find
 ```
+
+Go and Rust take the kind explicitly: `Create("document")` / `create("document")`.
 
 `db.collection(name)` (PascalCase `Collection` in Go/C#) works in every language.
 In the **dynamic languages** you can drop `collection(...)` entirely and index by
@@ -245,14 +254,52 @@ const metadata = await db.users.getMeta(id)
 // { id, mtime, updatedAt, createdAt, reviewed: false }
 ```
 
+## Errors
+
+A failed operation raises, throws, or returns an error, depending on the
+language. The error carries the machine error `code` from
+[`api/errors/v1.json`](../api/errors/v1.json) (for example `EBADREQUEST` or
+`EROOTLOCKED`) alongside a human-readable message. Branch on the code, not on
+the message: messages may change between releases, codes are part of the
+versioned contract.
+
+| Language        | Where the code is                                                                            |
+| --------------- | -------------------------------------------------------------------------------------------- |
+| Node/TypeScript | `err.code`                                                                                   |
+| Python          | `FyloError.code`                                                                             |
+| Ruby            | `FyloError#code`                                                                             |
+| PHP             | `FyloError::getFyloCode()` (`getCode()` stays `0`)                                           |
+| Go              | `var e *fylo.Error; if errors.As(err, &e) { e.Code }`                                        |
+| Rust            | `FyloError::code_of(&io_error) -> Option<&str>`; methods still return `io::Result`           |
+| Java            | `Fylo.FyloException.getCode()` (extends `IOException`; the message is the raw response line) |
+| C#              | `FyloException.Code`                                                                         |
+| Dart            | `FyloException.code`                                                                         |
+| Browser (JS)    | `err.code`                                                                                   |
+| Swift (iOS)     | `FyloError.code`                                                                             |
+| Kotlin          | `FyloException.code`                                                                         |
+| Flutter         | `FyloException.code`                                                                         |
+
+Swift's `FyloError.failed` case now carries two values, the message and the
+code. Code that matched `case .failed(let message)` must change to
+`case .failed(let message, _)`, or catch `let error as FyloError` and read
+`error.description` and `error.code`.
+
+The raw `request` escape hatch takes one JSON object per line, so the Rust,
+Java, and C# shims reject a raw request string that contains a carriage return
+or line feed before writing anything to the child: Rust returns an
+`io::ErrorKind::InvalidInput` error, Java throws `IllegalArgumentException`,
+and C# throws `ArgumentException`.
+
 ## SQL
 
-Every client has `executeSQL(sql)` for a raw string. Each also exposes a `sql`
-helper you interpolate with your language's **native** syntax:
+Every client has `executeSQL(sql)` for a raw string (`execute_sql` in
+Python/Ruby/Rust, `ExecuteSQL` in Go/C#). Each also exposes a `sql` helper you
+interpolate with your language's **native** syntax:
 
 | Language         | Interpolation                            | Escapes values? |
 | ---------------- | ---------------------------------------- | --------------- |
 | Node/TS          | `` db.sql`… ${x}` `` (tagged template)   | ✅ safe         |
+| Browser (JS)     | `` db.sql`… ${x}` `` (tagged template)   | ✅ safe         |
 | C#               | `db.Sql($"… {x}")` (`FormattableString`) | ✅ safe         |
 | Python           | `db.sql(f"… {x}")`                       | ❌ verbatim     |
 | Ruby             | `db.sql("… #{x}")`                       | ❌ verbatim     |
@@ -263,107 +310,28 @@ helper you interpolate with your language's **native** syntax:
 | Swift (iOS)      | `try await db.sql("… \(x)")`             | ❌ verbatim     |
 | Kotlin (Android) | `db.sql("… $x")`                         | ❌ verbatim     |
 | Dart             | `db.sql("… $x")`                         | ❌ verbatim     |
+| Flutter          | `db.sql("… $x")`                         | ❌ verbatim     |
 
-Node and C# hand the interpolated values to the client, which escapes them —
-those are injection-safe. The rest interpolate **before** the client sees the
+Node, the browser client, and C# hand the interpolated values to the client,
+which escapes them — those are injection-safe. The rest interpolate **before** the client sees the
 string, so values are inlined verbatim: **escape or validate untrusted input
-yourself**, or keep to app-generated SQL. On the mobile clients, `sql` runs
-against the local on-device store.
+yourself**, or keep to app-generated SQL. In the browser, prefer the `sql` tagged
+template over `executeSQL` whenever a statement includes a value. On the mobile
+and Flutter clients, `sql` runs against the local on-device store.
 
-### POSIX access context
+### Access control
 
-Machine document and raw-file CRUD/query operations accept an
-application-authenticated POSIX access context. Fylo does not authenticate
-these claims. Puts may use UID, GID, both, or mode alone. Omitted identities
-retain the new file's native owner/group, and an omitted mode defaults to
-`0o600`. Reads, metadata calls, queries, updates, deletes, and restores accept
-UID but not GID or mode.
+Per-record access was removed. No shim sends a `uid`, `gid`, `groups`, or
+`mode` with a request, and the binary refuses a request that carries an
+`access` field with `EBADREQUEST`.
 
-The Node shim exposes chainable `.as(...)` on every applicable method:
-
-```js
-const id = await db.messages
-    .put({ tenant: 'domain-a', subject: 'Hello' })
-    .as({ gid: domainGid, mode: 0o660 })
-
-const actor = {
-    uid: authenticatedUser.uid,
-    groups: await memberships.groupIdsFor(authenticatedUser.uid)
-}
-await db.messages.get(id).as(actor)
-await db.messages.patch(id, { subject: 'Updated' }).as(actor)
-await db.messages.delete(id).as(actor)
-
-const attachmentId = await db.attachments
-    .putFile(
-        { path: '/srv/uploads/message.pdf', key: '/domain-a/message.pdf' },
-        { maxBytes: 10_000_000 }
-    )
-    .as({ gid: domainGid, mode: 0o660 })
-```
-
-`access.groups` is available only on the local machine-protocol boundary and
-must be derived from trusted application state. Never forward a UID or group
-list from an end-user request. The binary scopes the list to that one request;
-an omitted list uses the host POSIX group resolver, and an empty list grants no
-group memberships. Raw `request(...)` callers use the same JSON shape:
-
-```json
-{
-    "op": "patchDoc",
-    "collection": "messages",
-    "id": "01...",
-    "newDoc": { "subject": "Updated" },
-    "access": { "uid": 1001, "groups": [2001] }
-}
-```
-
-SQL uses the same context. `gid` and `mode` are accepted only for `INSERT`;
-omit them from `SELECT`, `UPDATE`, and `DELETE`.
-
-| Language | Protected SQL call                                                                   |
-| -------- | ------------------------------------------------------------------------------------ |
-| Node/TS  | ``await db.sql`INSERT INTO users (name) VALUES (${name})`.as({ uid, mode: 0o600 })`` |
-| Python   | `db.sql(query, {"uid": uid, "mode": 0o600})`                                         |
-| Ruby     | `db.sql(query, { "uid" => uid, "mode" => 0o600 })`                                   |
-| PHP      | `$db->sql($query, ['uid' => $uid, 'mode' => 0600])`                                  |
-| Go       | `db.Sql(query, map[string]any{"uid": uid, "mode": 0o600})`                           |
-| Rust     | `db.sql_as(query, uid, Some(0o600))`                                                 |
-| Java     | `db.sql(query, Map.of("uid", uid, "mode", 384))`                                     |
-| C#       | `db.Sql($"INSERT ...", new { uid, mode = 384 })`                                     |
-| Dart     | `db.sql(query, uid: uid, mode: 384)`                                                 |
-
-A group-owned insert uses group write bits:
-
-| Language | GID-only SQL INSERT                                               |
-| -------- | ----------------------------------------------------------------- |
-| Node/TS  | ``await db.sql`INSERT ...`.as({ gid: editorsGid, mode: 0o660 })`` |
-| Python   | `db.sql(query, {"gid": editors_gid, "mode": 0o660})`              |
-| Ruby     | `db.sql(query, { "gid" => editors_gid, "mode" => 0o660 })`        |
-| PHP      | `$db->sql($query, ['gid' => $editorsGid, 'mode' => 0660])`        |
-| Go       | `db.Sql(query, map[string]any{"gid": editorsGid, "mode": 0o660})` |
-| Rust     | `db.sql_access(query, None, Some(editors_gid), Some(0o660))`      |
-| Java     | `db.sql(query, Map.of("gid", editorsGid, "mode", 432))`           |
-| C#       | `db.Sql($"INSERT ...", new { gid = editorsGid, mode = 432 })`     |
-| Dart     | `db.sql(query, gid: editorsGid, mode: 432)`                       |
-
-The machine payload is the same for every shim:
-
-```json
-{
-    "op": "executeSQL",
-    "sql": "INSERT INTO users (name) VALUES ('Ada')",
-    "access": { "gid": 2001, "mode": 432 }
-}
-```
-
-`SELECT` returns only rows readable by that UID. `UPDATE` and `DELETE` use the
-same UID for both candidate visibility and write authorization. Group
-membership comes from request-scoped trusted `groups` when supplied by the
-application, otherwise from the host POSIX group database. This is a
-native-POSIX feature on macOS/Linux hosts. It is not enforced by the Windows
-binary, browser, Explorer, or mobile local-only clients because those surfaces
-cannot provide the required `chown`/`chmod` boundary.
+Access is now granted per application identity on a protected `.vdbx`
+database. The shim's `fylo` process opens the database as one identity. Set the
+identity with `fylo.identity` in `application.json` or with `FYLO_IDENTITY`,
+and pin the expected signer with `fylo.trustAnchor` or `FYLO_TRUST_ANCHOR`. An
+administrator grants each identity `read`, `write`, or `admin` with
+`fylo access grant`. To move an existing root, see
+[Migrating to protected databases](../docs/migrating-to-protected-databases.md).
 
 ## How the shims work
 
@@ -390,64 +358,60 @@ const identity = await db.handshake()
 console.log(identity.runtimeVersion, identity.commit, identity.machine)
 ```
 
-Every binary-backed shim accepts an optional child environment. Point it at a
-`.env` file, or supply the language's native map/dictionary when configuration
-already lives in application memory. The file form is exposed idiomatically in
-each SDK:
+Every binary-backed shim accepts an optional `application.json` configuration
+path. Settings live under `fylo`, with nested keys such as `fylo.shard.width`.
+The former `env` file/map option is replaced by `config`:
 
-| SDK             | Configuration                                                                                                                   |
-| --------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| Node/TypeScript | `new Fylo(root, { env: './fylo.env' })`                                                                                         |
-| Python          | `Fylo(root, env='./fylo.env')`                                                                                                  |
-| Ruby            | `Fylo.open(root, env: './fylo.env')`                                                                                            |
-| PHP             | `new Fylo($root, 'fylo', './fylo.env')`                                                                                         |
-| Go              | `fylo.OpenWithOptions(root, fylo.Options{Env: &fylo.Environment{File: "./fylo.env"}})`                                          |
-| Rust            | `Fylo::open_with_options(root, FyloOptions { env: Some(ProcessEnvironment::File("./fylo.env".into())), ..Default::default() })` |
-| Java            | `new Fylo(root, options)` with `options.env = "./fylo.env"`                                                                     |
-| C#              | `new Fylo(root, new Fylo.Options { Env = "./fylo.env" })`                                                                       |
-| Dart            | `Fylo.open(root, env: './fylo.env')`                                                                                            |
+| SDK             | Configuration                                                                                                    |
+| --------------- | ---------------------------------------------------------------------------------------------------------------- |
+| Node/TypeScript | `new Fylo(root, { config: './application.json' })`                                                               |
+| Python          | `Fylo(root, config='./application.json')`                                                                        |
+| Ruby            | `Fylo.open(root, config: './application.json')`                                                                  |
+| PHP             | `new Fylo($root, 'fylo', './application.json')`                                                                  |
+| Go              | `fylo.OpenWithOptions(root, fylo.Options{Config: "./application.json"})`                                         |
+| Rust            | `Fylo::open_with_options(root, FyloOptions { config: Some("./application.json".into()), ..Default::default() })` |
+| Java            | `new Fylo(root, options)` with `options.config = "./application.json"`                                           |
+| C#              | `new Fylo.Fylo(root, new Fylo.Fylo.Options { Config = "./application.json" })`                                   |
+| Dart            | `Fylo.open(root, config: './application.json')`                                                                  |
 
-For example, Node/TypeScript can use either form:
+Each component can choose its own configuration file:
 
 ```js
 const mail = new Fylo('/var/lib/caduceus/mail', {
     binary: '/opt/fylo/bin/fylo',
-    env: './config/mail.fylo.env'
+    config: './config/mail/application.json'
 })
 
 const identity = new Fylo('/var/lib/caduceus/identity', {
     binary: '/opt/fylo/bin/fylo',
-    env: {
-        FYLO_SCHEMA: '/srv/identity/schemas',
-        FYLO_STRICT: '1'
-    }
+    config: './config/identity/application.json'
 })
 ```
 
-The `.env` format accepts blank lines, comments, an optional `export` prefix,
-and quoted or unquoted values. File/map values override inherited variables
-for the spawned FYLO process only; they never mutate the host process
-environment. Use a null/nil value in a map to remove an inherited key. Explicit
-constructor roots and engine flags retain their normal CLI precedence. Missing
-or malformed files fail before a child is started. Variable expansion and
-command substitution are deliberately unsupported.
+The native CLI loads the selected file, or discovers `application.json` in its
+working directory when `config` is omitted. Explicit constructor roots and
+engine flags take precedence over JSON. Paths inside JSON resolve from the
+configuration directory. An absent default file uses engine defaults, but an
+explicitly selected missing file, invalid setting, or missing secret reference
+fails initialization.
 
-Treat both forms as trusted bootstrap configuration. Never accept an environment
-file path or map from an HTTP request, tenant setting, upload, job payload, or
-other untrusted input: arbitrary keys can change `PATH`, dynamic-loader
-behavior, and which program the child starts. Use an absolute,
-administrator-controlled binary path and allowlist the `FYLO_*` keys your
-application supports. When values must come from the host environment, copy
-named keys explicitly instead of spreading the complete environment; audit the
-inherited baseline and use null/nil removal for unrelated keys. Keep populated
-files out of source control, prefer a secret manager for credentials, and make
-local secret files owner-readable only (for example, `chmod 600`). Add every
-chosen file name or pattern to the consuming application's ignore rules — the
-example `./config/mail.fylo.env` is not automatically protected by this
-repository's root `.env` rule.
+Keep `.env` beside that configuration file and use it only for secrets. Reference
+them explicitly with `"encryption": { "key": "${FYLO_ENCRYPTION_KEY}" }` and
+`"cipher": { "salt": "${FYLO_CIPHER_SALT}" }`. Configure both references together
+or omit both; literal credentials in JSON are rejected.
+Inherited environment secrets take precedence over the adjacent `.env`; all
+unreferenced variables are ignored. Loading configuration never mutates the
+process environment or injects `.env` keys into the child environment.
 
-Browser and mobile clients do not expose this setting because they do not spawn
-the native FYLO binary. Configure their storage adapters directly instead.
+Treat configuration and binary paths as trusted bootstrap input, not request or
+tenant data. Keep secret files out of source control and owner-readable only
+(for example, `chmod 600 .env`); prefer a secret manager in production. See the
+[configuration guide](../docs/configuration.md) for the full migration and secret
+reference contract.
+
+Browser and mobile clients do not implicitly read these files because they do
+not spawn the native FYLO binary. Configure their storage adapters directly,
+and never publish native secrets in website JSON or bundles.
 
 `exclusiveRoot` makes a competing loop reject its startup handshake with
 `EROOTLOCKED`. The configured frame limits are passed to the child and must
@@ -488,7 +452,7 @@ directly — fully offline, no backend, no network.
 For a regular website, add a version-pinned loader to the document head:
 
 ```html
-<script src="https://d31ma.github.io/FYLO/version/26.33.02/fylo.js"></script>
+<script src="https://d31ma.github.io/FYLO/version/26.45.07/fylo.js"></script>
 ```
 
 Then open the browser-local database from your application code:
@@ -496,6 +460,7 @@ Then open the browser-local database from your application code:
 ```js
 const db = await Fylo.open()
 
+await db.users.create()
 const id = await db.users.put({ name: 'Ada', role: 'admin' })
 await db.users.put(id).metadata({ source: 'browser' })
 const metadata = await db.users.get(id).metadata()
@@ -507,7 +472,7 @@ want the newest release. For direct ESM imports, the engine is published beside
 the loader:
 
 ```js
-import { createBrowserClient } from 'https://d31ma.github.io/FYLO/version/26.33.02/fylo-web.mjs'
+import { createBrowserClient } from 'https://d31ma.github.io/FYLO/version/26.45.07/fylo-web.mjs'
 
 const db = createBrowserClient()
 await db.ready()
@@ -544,6 +509,21 @@ in memory while reads fall through to the selected directory.
 Every release remains available under `version/<version>/`; `version/latest/`
 is updated only after a successful Release workflow.
 
+### Local-only limits
+
+The browser loader (`fylo.js` / `fylo-web.mjs`) and the iOS, Android, and Flutter
+clients that host it do not support these features in this release:
+
+- raw-file buckets (`createCollection(name, "file")`, `kind: 'file'`)
+- schemas (collection schema validation and schema administration)
+- field encryption (`$encrypted`)
+
+Such requests fail with the error code `EBROWSER_UNSUPPORTED` instead of being
+ignored. Use the native
+`fylo` binary, through any binary-backed shim, when you need them. Create each
+collection before its first write; writing to a collection that does not exist
+fails with `Collection not found`.
+
 ## Mobile (iOS / Android)
 
 Phones can't spawn the binary either, so the mobile clients are **local-only**
@@ -552,27 +532,43 @@ WebView (WKWebView on iOS, `android.webkit.WebView` on Android) and expose a
 native async API. All reads and writes hit an on-device OPFS store — fully
 offline, no backend.
 
-Bundle three files as app assets: `fylo.mjs` (from a Fylo release) plus
-`host.html` and `bridge.js` from [`mobile/`](mobile/). They must be served from a
+Bundle three files as app assets: the release asset `fylo-web.mjs` saved as
+`fylo.mjs` (the bridge imports `./fylo.mjs`), plus `host.html` and `bridge.js`
+from [`mobile/`](mobile/). They must be served from a
 **secure origin** — a custom `fylo-app://` scheme on iOS, an `https://` origin via
 request interception on Android — or the browser engine can't use OPFS.
+
+Raw-file buckets, schemas, and field encryption are not available on mobile in
+this release (see [Local-only limits](#local-only-limits)).
+
+The bridge runs the engine on the WebView's main thread. A native `config` may
+set `worker: true` to use a worker instead; the host must then also serve the
+engine's worker scripts.
+
+On iOS, add `Fylo.swift` to your app target; it is compiled with your app, so
+there is no module to import. On Android, add `Fylo.kt` to your app module
+together with the `org.jetbrains.kotlinx:kotlinx-coroutines-android` dependency:
+the client resumes on `Dispatchers.Main`, which that artifact provides at runtime.
 
 ```swift
 // iOS — clients/swift/Fylo.swift (Foundation + WebKit)
 let db = try await Fylo()
+try await db.createCollection("users")
 try await db.putData("users", ["name": "Ada", "role": "admin"])
 let admins = try await db.findDocs("users", ["$ops": [["role": ["$eq": "admin"]]]])
 ```
 
 ```kotlin
-// Android — clients/kotlin/Fylo.kt (android.webkit + org.json + coroutines)
+// Android — clients/kotlin/Fylo.kt (android.webkit + org.json + kotlinx-coroutines-android)
+// Inside a coroutine, e.g. lifecycleScope.launch { ... }
 val db = Fylo.open(context)
+db.createCollection("users")
 db.putData("users", mapOf("name" to "Ada", "role" to "admin"))
 val admins = db.findDocs("users", mapOf("\$ops" to listOf(mapOf("role" to mapOf("\$eq" to "admin")))))
 ```
 
 Same method names as the shims (`createCollection`, `putData`, `getLatest`,
-`patchDoc`, `delDoc`, `restoreDoc`, `findDocs`, `sql`).
+`patchDoc`, `delDoc`, `restoreDoc`, `findDocs`, `executeSQL`, `sql`).
 
 ## Flutter
 
@@ -582,8 +578,10 @@ Flutter apps are Dart, so where the app runs decides which client to use:
   model as the native mobile clients, hosting `fylo.mjs` in a headless
   [`flutter_inappwebview`](https://pub.dev/packages/flutter_inappwebview) (`^6.0.0`).
   It exposes the same async API + `collection()` facade. Add the three engine
-  assets under `assets/fylo/` (`fylo.mjs` from a release, plus `host.html` and
-  `bridge.js` from `mobile/`) and declare them in `pubspec.yaml`.
+  assets under `assets/fylo/` (the release asset `fylo-web.mjs` saved as
+  `fylo.mjs`, plus `host.html` and `bridge.js` from `mobile/`) and declare them
+  in `pubspec.yaml`. Raw-file buckets, schemas, and field encryption are not
+  available here in this release (see [Local-only limits](#local-only-limits)).
 - **Flutter web** → use `fylo-web.mjs` directly via `dart:js_interop`. It already
   runs in a browser with OPFS, so no WebView is needed.
 - **Flutter desktop, native binary** → the `dart/fylo.dart` shim also works, since
@@ -593,6 +591,7 @@ Flutter apps are Dart, so where the app runs decides which client to use:
 import 'fylo.dart';
 
 final db = await Fylo.open();
+await db.collection('users').create();
 await db.collection('users').put({'name': 'Ada', 'role': 'admin'});
 final admins = await db.collection('users').find({r'$ops': [{'role': {r'$eq': 'admin'}}]});
 ```
@@ -609,10 +608,12 @@ WebView can reach that localhost server — in `ios/Runner/Info.plist`:
 
 ## Concurrency
 
-The shims send one request at a time and read one response (guarded by a lock
-where the language needs it). The protocol carries a `requestId` echoed back in
-each response, so if you need pipelining you can send many requests and match
-replies by id — but start simple; one-in-flight is enough for most apps.
+The Node and Dart shims pipeline: each call writes its request to the child
+immediately, and a first-in, first-out queue pairs each response with its
+request, because the loop answers requests in the order it reads them. The
+other shims send one request at a time and wait for its response (guarded by a
+lock where the language needs it). Responses also echo an optional `requestId`
+from the request, so a custom driver can match replies by id.
 
 ## Example (Python)
 
@@ -620,11 +621,11 @@ replies by id — but start simple; one-in-flight is enough for most apps.
 from fylo import Fylo
 
 with Fylo("/path/to/db") as db:
-    db.createCollection("users")
-    doc_id = db.putData("users", {"name": "Ada", "score": 90})
-    doc = db.getLatest("users", doc_id)
+    db.create_collection("users")
+    doc_id = db.put_data("users", {"name": "Ada", "score": 90})
+    doc = db.get_latest("users", doc_id)
     print(doc)   # {"<id>": {"name": "Ada", "score": 90}}
-    winners = db.findDocs("users", {"$ops": [{"score": {"$gte": 50}}]})
+    winners = db.find_docs("users", {"$ops": [{"score": {"$gte": 50}}]})
 ```
 
 Construct with a db root, call the operation methods, close when done (or use a

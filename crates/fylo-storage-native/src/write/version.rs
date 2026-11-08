@@ -14,9 +14,11 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     CollectionWriteLock, NativeStorageError, NativeStorageErrorCode, NativeWriteRoot,
-    durable_replace, failpoint, generate_ttid, read_bounded_json, sync_directory,
+    durable_replace, durable_replace_with_mode, failpoint, generate_ttid, read_bounded_json,
+    sync_directory,
 };
 use crate::MAX_VERSION_TREE_BYTES;
+use crate::platform_companion::{read_dir_without_companions, remove_companion};
 
 /// Bytes hashed for one content-addressed blob.
 const MAX_BLOB_BYTES: u64 = 64 * 1024 * 1024;
@@ -140,6 +142,11 @@ impl NativeWriteRoot {
     /// Returns an error for corrupt repository metadata or an incomplete
     /// rollback/roll-forward repair.
     pub fn recover_repository_materialization(&self) -> Result<(), NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        // A `.vdbx` database has no version repository to recover.
+        if self.root.is_database() {
+            return Ok(());
+        }
         let repository = self.repository_root().join(".fylo-vcs");
         match fs::symlink_metadata(&repository) {
             Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
@@ -171,7 +178,7 @@ impl NativeWriteRoot {
             ));
         }
         let mut recovery_needed = false;
-        for entry in fs::read_dir(&staging).map_err(NativeStorageError::io)? {
+        for entry in read_dir_without_companions(&staging).map_err(NativeStorageError::io)? {
             let entry = entry.map_err(NativeStorageError::io)?;
             let kind = entry.file_type().map_err(NativeStorageError::io)?;
             if kind.is_symlink() {
@@ -189,6 +196,31 @@ impl NativeWriteRoot {
         Ok(())
     }
 
+    /// Version control commits, restores and merges the per-document tree,
+    /// so it refuses a root with a segment collection until it moves to the
+    /// logical record view (ADR 0015 section 1).
+    fn require_no_segment_collections(&self) -> Result<(), NativeStorageError> {
+        self.root
+            .refuse_in_database("a .vdbx database has no version control")?;
+        let collections = self.root.path().join(".collections");
+        if !crate::path_exists_no_follow(&collections)? {
+            return Ok(());
+        }
+        for entry in read_dir_without_companions(&collections).map_err(NativeStorageError::io)? {
+            let entry = entry.map_err(NativeStorageError::io)?;
+            if crate::path_exists_no_follow(&entry.path().join("segments"))? {
+                return Err(NativeStorageError::new(
+                    NativeStorageErrorCode::Unsupported,
+                    format!(
+                        "version control does not support the segment layout yet; migrate {} to files first",
+                        entry.file_name().to_string_lossy()
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Write one auto-commit when the working tree differs from `HEAD`.
     ///
     /// Returns the new commit identifier, or `None` when the root is not
@@ -201,6 +233,8 @@ impl NativeWriteRoot {
     /// out non-default branch, an unsafe path, lock contention, or an
     /// interrupted durable write.
     pub fn commit_if_dirty(&self, message: &str) -> Result<Option<String>, NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        self.require_no_segment_collections()?;
         let message = message.trim();
         if message.is_empty() {
             return Err(NativeStorageError::new(
@@ -210,7 +244,12 @@ impl NativeWriteRoot {
         }
         let repository = self.ensure_repository()?;
         let branch = read_head_branch(&repository)?;
-        let _lock = CollectionWriteLock::acquire_at(&repository.join("locks"), "autocommit.lock")?;
+        let repository_root = self.repository_context()?;
+        let _lock = CollectionWriteLock::acquire_profiled(
+            &repository_root,
+            &repository.join("locks"),
+            "autocommit.lock",
+        )?;
         let reference_path = repository
             .join("refs")
             .join("heads")
@@ -275,8 +314,9 @@ impl NativeWriteRoot {
     /// Returns an error for a corrupt repository, an unsafe path, or an
     /// unreadable working tree.
     pub fn repository_status(&self) -> Result<RepositoryStatus, NativeStorageError> {
+        self.root.assert_profile_owned()?;
         let repository = self.repository_root().join(".fylo-vcs");
-        if !repository.join("HEAD").is_file() {
+        if !fs::metadata(repository.join("HEAD")).is_ok_and(|metadata| metadata.is_file()) {
             return Ok(RepositoryStatus {
                 enabled: false,
                 branch: None,
@@ -324,8 +364,9 @@ impl NativeWriteRoot {
         from: &str,
         to: &str,
     ) -> Result<RepositoryDiff, NativeStorageError> {
+        self.root.assert_profile_owned()?;
         let repository = self.repository_root().join(".fylo-vcs");
-        if !repository.join("HEAD").is_file() {
+        if !fs::metadata(repository.join("HEAD")).is_ok_and(|metadata| metadata.is_file()) {
             return Err(NativeStorageError::new(
                 NativeStorageErrorCode::NotFound,
                 "FYLO root has no version repository",
@@ -373,12 +414,14 @@ impl NativeWriteRoot {
         branch: &str,
         create: bool,
     ) -> Result<serde_json::Value, NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        self.require_no_segment_collections()?;
         crate::validate_branch_name(branch)?;
         let repository = self.ensure_repository()?;
         let current = read_head_branch(&repository)?;
         let reference_path = branch_reference_path(&repository, branch);
         let created = if create {
-            if reference_path.is_file() {
+            if fs::metadata(&reference_path).is_ok_and(|metadata| metadata.is_file()) {
                 return Err(NativeStorageError::new(
                     NativeStorageErrorCode::CorruptMetadata,
                     format!("branch already exists: {branch}"),
@@ -386,14 +429,14 @@ impl NativeWriteRoot {
             }
             let current_reference = read_branch_reference(&repository, &current)?;
             let target = branch_worktree(self.repository_root(), branch)?;
-            if target.exists() {
+            if fs::metadata(&target).is_ok() {
                 return Err(NativeStorageError::new(
                     NativeStorageErrorCode::CorruptMetadata,
                     format!("branch worktree already exists: {branch}"),
                 ));
             }
             fs::create_dir_all(&target).map_err(NativeStorageError::io)?;
-            copy_worktree(self.path(), &target)?;
+            copy_worktree(&self.root, self.path(), &target)?;
             let now = iso8601_millis(super::unix_millis()?);
             let reference = BranchReference {
                 name: branch.to_owned(),
@@ -421,7 +464,7 @@ impl NativeWriteRoot {
             write_branch_reference(&repository, &reference)?;
             true
         } else {
-            if !reference_path.is_file() {
+            if !fs::metadata(&reference_path).is_ok_and(|metadata| metadata.is_file()) {
                 return Err(NativeStorageError::new(
                     NativeStorageErrorCode::NotFound,
                     format!("branch not found: {branch}"),
@@ -446,6 +489,7 @@ impl NativeWriteRoot {
     ///
     /// Returns an error for corrupt or unsafe repository metadata.
     pub fn repository_branches(&self) -> Result<serde_json::Value, NativeStorageError> {
+        self.root.assert_profile_owned()?;
         let repository = self.ensure_repository()?;
         let current = read_head_branch(&repository)?;
         let mut references = Vec::new();
@@ -469,6 +513,8 @@ impl NativeWriteRoot {
         commit: &str,
         force: bool,
     ) -> Result<serde_json::Value, NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        self.require_no_segment_collections()?;
         crate::validate_ttid_shape(commit)?;
         let repository = self.ensure_repository()?;
         let branch = read_head_branch(&repository)?;
@@ -506,6 +552,8 @@ impl NativeWriteRoot {
         source: &str,
         message: Option<&str>,
     ) -> Result<serde_json::Value, NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        self.require_no_segment_collections()?;
         let repository = self.ensure_repository()?;
         if !self.repository_status()?.clean {
             return Err(NativeStorageError::new(
@@ -606,7 +654,15 @@ impl NativeWriteRoot {
         Ok(result)
     }
 
+    fn repository_context(&self) -> Result<crate::NativeRoot, NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        crate::NativeRoot::open_profiled(self.root.options_for(self.repository_root()))
+    }
+
     fn ensure_repository(&self) -> Result<PathBuf, NativeStorageError> {
+        self.root
+            .refuse_in_database("a .vdbx database has no version control")?;
+        let repository_root = self.repository_context()?;
         let repository = self.repository_root().join(".fylo-vcs");
         for relative in [
             ".fylo-vcs/refs/heads",
@@ -619,7 +675,7 @@ impl NativeWriteRoot {
             ensure_repository_directory(self.repository_root(), Path::new(relative))?;
         }
         let main_reference = branch_reference_path(&repository, DEFAULT_BRANCH);
-        if !main_reference.is_file() {
+        if !fs::metadata(&main_reference).is_ok_and(|metadata| metadata.is_file()) {
             let now = iso8601_millis(super::unix_millis()?);
             write_branch_reference(
                 &repository,
@@ -633,10 +689,10 @@ impl NativeWriteRoot {
                 },
             )?;
         }
-        if !repository.join("HEAD").is_file() {
+        if !fs::metadata(repository.join("HEAD")).is_ok_and(|metadata| metadata.is_file()) {
             write_head_branch(&repository, DEFAULT_BRANCH)?;
         }
-        recover_materialization_transactions(self.repository_root(), &repository)?;
+        recover_materialization_transactions(&repository_root, &repository)?;
         Ok(repository)
     }
 
@@ -646,8 +702,12 @@ impl NativeWriteRoot {
         tree: &BTreeMap<String, TreeDocument>,
         reference: Option<MaterializationRefTransition>,
     ) -> Result<(), NativeStorageError> {
-        let _lock =
-            CollectionWriteLock::acquire_at(&repository.join("locks"), "materialization.lock")?;
+        let repository_root = self.repository_context()?;
+        let _lock = CollectionWriteLock::acquire_profiled(
+            &repository_root,
+            &repository.join("locks"),
+            "materialization.lock",
+        )?;
         let transaction = repository.join("staging").join(generate_ttid()?);
         let stage = transaction.join("next");
         let previous = transaction.join("previous");
@@ -660,14 +720,10 @@ impl NativeWriteRoot {
             targets: Vec::new(),
             reference,
         };
-        for document in tree.values() {
-            let data_directory = self.collection_data_directory(&document.collection);
-            collections.insert((data_directory.to_owned(), document.collection.clone()));
-            target_collections.insert(document.collection.clone(), data_directory.to_owned());
-        }
+        self.collect_tree_collections(tree, &mut collections, &mut target_collections);
         for data_directory in DATA_DIRECTORIES {
             let root = self.path().join(data_directory);
-            let Ok(entries) = fs::read_dir(root) else {
+            let Ok(entries) = read_dir_without_companions(root) else {
                 continue;
             };
             for entry in entries {
@@ -685,10 +741,14 @@ impl NativeWriteRoot {
             manifest.targets.push(MaterializationTarget {
                 relative: path_to_wire(&relative),
                 collection: collection.clone(),
-                had_current: self.path().join(&relative).exists(),
+                had_current: fs::metadata(self.path().join(&relative)).is_ok(),
                 should_install: target_collections.get(collection) == Some(data_directory),
             });
         }
+        // The swap replaces documents outside any collection transaction, so
+        // no commit keeps the schema version counts (ADR 0017 section 6);
+        // drop them, and the rebuild below counts again.
+        self.invalidate_schema_counts_of(collections.iter().map(|(_, name)| name.as_str()))?;
         write_materialization_manifest(&transaction, &manifest)?;
         let outcome = (|| {
             self.stage_repository_tree(repository, tree, &stage)?;
@@ -697,18 +757,19 @@ impl NativeWriteRoot {
             manifest.phase = MaterializationPhase::Swapping;
             write_materialization_manifest(&transaction, &manifest)?;
             for target in &manifest.targets {
+                self.root.assert_profile_owned()?;
                 let relative = safe_materialization_target(target)?;
                 let current = self.path().join(&relative);
                 let backup = previous.join(&relative);
                 let next = stage.join(&relative);
-                if current.exists() {
+                if fs::metadata(&current).is_ok() {
                     fs::create_dir_all(backup.parent().ok_or_else(unsafe_repository_path)?)
                         .map_err(NativeStorageError::io)?;
                     rename_durable(&current, &backup)?;
                     manifest.phase = MaterializationPhase::BackupMoved;
                     write_materialization_manifest(&transaction, &manifest)?;
                 }
-                if next.exists() {
+                if fs::metadata(&next).is_ok() {
                     fs::create_dir_all(current.parent().ok_or_else(unsafe_repository_path)?)
                         .map_err(NativeStorageError::io)?;
                     rename_durable(&next, &current)?;
@@ -734,14 +795,28 @@ impl NativeWriteRoot {
         })();
         if let Err(error) = outcome {
             return rollback_after_materialization_error(
-                self.repository_root(),
+                &repository_root,
                 &transaction,
                 &manifest,
                 error,
             );
         }
+        self.root.assert_profile_owned()?;
         cleanup_materialization(repository, &transaction)?;
         Ok(())
+    }
+
+    fn collect_tree_collections(
+        &self,
+        tree: &BTreeMap<String, TreeDocument>,
+        collections: &mut BTreeSet<(String, String)>,
+        target_collections: &mut BTreeMap<String, String>,
+    ) {
+        for document in tree.values() {
+            let data_directory = self.collection_data_directory(&document.collection);
+            collections.insert((data_directory.to_owned(), document.collection.clone()));
+            target_collections.insert(document.collection.clone(), data_directory.to_owned());
+        }
     }
 
     fn materialize_repository_transition(
@@ -764,29 +839,70 @@ impl NativeWriteRoot {
         tree: &BTreeMap<String, TreeDocument>,
         stage: &Path,
     ) -> Result<(), NativeStorageError> {
+        self.root.assert_profile_owned()?;
         fs::create_dir_all(stage).map_err(NativeStorageError::io)?;
+        let stage_root = crate::NativeRoot::open_profiled(self.root.options_for(stage))?;
         for document in tree.values() {
             if document.kind == "metadata" {
                 continue;
             }
+            self.root.assert_profile_owned()?;
             let target = stage.join(safe_relative_path(&document.path)?);
             let bytes = read_version_object(repository, &document.hash)?;
             fs::create_dir_all(target.parent().ok_or_else(unsafe_repository_path)?)
                 .map_err(NativeStorageError::io)?;
-            durable_replace(&target, &bytes)?;
-        }
-        for document in tree.values().filter(|document| document.kind == "metadata") {
-            let bytes = read_version_object(repository, &document.hash)?;
-            if let Some(target) = find_staged_record(
-                stage,
-                self.collection_data_directory(&document.collection),
-                &document.collection,
-                &document.id,
-            )? {
-                apply_metadata_blob(&target, &bytes)?;
+            if self.filesystem_profile() == crate::FilesystemProfile::EfsSidecarV1 {
+                let metadata = tree
+                    .values()
+                    .find(|entry| {
+                        entry.kind == "metadata"
+                            && entry.collection == document.collection
+                            && entry.id == document.id
+                    })
+                    .map(|entry| read_version_object(repository, &entry.hash))
+                    .transpose()?;
+                let metadata =
+                    metadata.ok_or_else(|| corrupt_tree("bound version record has no metadata"))?;
+                let attributes = decode_profiled_metadata_blob(&metadata)?;
+                crate::sidecar_attributes::SidecarAttributes::verify_bytes_binding(
+                    &stage_root,
+                    &target,
+                    &bytes,
+                    &attributes,
+                )?;
+                durable_replace_with_mode(&target, &bytes, super::DEFAULT_ACCESS_MODE)?;
+                crate::sidecar_attributes::SidecarAttributes::initialize(&stage_root, &target)?;
+                crate::sidecar_attributes::SidecarAttributes::replace(
+                    &stage_root,
+                    &target,
+                    &attributes,
+                )?;
+                if document.path.starts_with(".buckets/") {
+                    super::stamp_raw_file_checksum(
+                        &stage_root,
+                        &target,
+                        &crate::sha256_hex(&bytes),
+                    )?;
+                }
+            } else {
+                durable_replace(&target, &bytes)?;
             }
         }
-        Ok(())
+        if self.filesystem_profile() == crate::FilesystemProfile::Native {
+            for document in tree.values().filter(|document| document.kind == "metadata") {
+                self.root.assert_profile_owned()?;
+                let bytes = read_version_object(repository, &document.hash)?;
+                if let Some(target) = find_staged_record(
+                    stage,
+                    self.collection_data_directory(&document.collection),
+                    &document.collection,
+                    &document.id,
+                )? {
+                    apply_metadata_blob(&target, &bytes)?;
+                }
+            }
+        }
+        self.root.assert_profile_owned()
     }
 
     fn write_merge_commit(
@@ -961,15 +1077,20 @@ impl NativeWriteRoot {
         repository: &Path,
         persist: bool,
     ) -> Result<Vec<SnapshotEntry>, NativeStorageError> {
+        self.root.assert_profile_owned()?;
         let mut entries = Vec::new();
         for data_directory in DATA_DIRECTORIES {
             let data_root = self.path().join(data_directory);
-            let Ok(children) = fs::read_dir(&data_root) else {
+            let Ok(children) = read_dir_without_companions(&data_root) else {
                 continue;
             };
             for child in children {
                 let child = child.map_err(NativeStorageError::io)?;
-                let metadata = child.metadata().map_err(NativeStorageError::io)?;
+                let metadata =
+                    fs::symlink_metadata(child.path()).map_err(NativeStorageError::io)?;
+                if metadata.file_type().is_symlink() {
+                    return Err(unsafe_repository_path());
+                }
                 if !metadata.is_dir() {
                     continue;
                 }
@@ -984,16 +1105,38 @@ impl NativeWriteRoot {
                     .collection(&collection)
                     .map_or(crate::DEFAULT_SHARD_WIDTH, |handle| handle.shard_width());
                 let collection_root = data_root.join(&collection);
+                let generation =
+                    if self.filesystem_profile() == crate::FilesystemProfile::EfsSidecarV1 {
+                        let state = self.root.collection(&collection)?.generation()?;
+                        if state.state != crate::GenerationStatus::Stable {
+                            return Err(NativeStorageError::new(
+                                NativeStorageErrorCode::ConcurrentWrite,
+                                "cannot snapshot a writing generation",
+                            ));
+                        }
+                        Some(state)
+                    } else {
+                        None
+                    };
                 for (namespace, kind) in [("docs", "active"), (".deleted", "deleted")] {
-                    Self::snapshot_namespace(
-                        repository,
-                        persist,
-                        shard_width,
-                        &collection_root.join(namespace),
-                        &collection,
-                        kind,
+                    self.snapshot_namespace(
+                        (repository, persist),
+                        (
+                            shard_width,
+                            &collection_root.join(namespace),
+                            &collection,
+                            kind,
+                        ),
                         &mut entries,
                     )?;
+                }
+                if let Some(before) = generation
+                    && self.root.collection(&collection)?.generation()? != before
+                {
+                    return Err(NativeStorageError::new(
+                        NativeStorageErrorCode::ConcurrentWrite,
+                        "snapshot generation changed",
+                    ));
                 }
             }
         }
@@ -1007,23 +1150,26 @@ impl NativeWriteRoot {
     }
 
     fn snapshot_namespace(
-        repository: &Path,
-        persist: bool,
-        shard_width: u32,
-        namespace_root: &Path,
-        collection: &str,
-        kind: &'static str,
+        &self,
+        (repository, persist): (&Path, bool),
+        (shard_width, namespace_root, collection, kind): (u32, &Path, &str, &'static str),
         entries: &mut Vec<SnapshotEntry>,
     ) -> Result<(), NativeStorageError> {
-        let Ok(shards) = fs::read_dir(namespace_root) else {
+        let Ok(shards) = read_dir_without_companions(namespace_root) else {
             return Ok(());
         };
         for shard in shards {
             let shard = shard.map_err(NativeStorageError::io)?;
-            if !shard.metadata().map_err(NativeStorageError::io)?.is_dir() {
+            let file_type = shard.file_type().map_err(NativeStorageError::io)?;
+            if file_type.is_symlink() {
+                return Err(unsafe_repository_path());
+            }
+            if !file_type.is_dir() {
                 continue;
             }
-            for record in fs::read_dir(shard.path()).map_err(NativeStorageError::io)? {
+            for record in
+                read_dir_without_companions(shard.path()).map_err(NativeStorageError::io)?
+            {
                 let record = record.map_err(NativeStorageError::io)?;
                 let metadata =
                     fs::symlink_metadata(record.path()).map_err(NativeStorageError::io)?;
@@ -1037,6 +1183,9 @@ impl NativeWriteRoot {
                     continue;
                 }
                 let filename = record.file_name().to_string_lossy().into_owned();
+                if crate::is_scratch_file(&filename) {
+                    continue;
+                }
                 let identifier = filename
                     .split_once('.')
                     .map_or(filename.as_str(), |(head, _)| head)
@@ -1050,7 +1199,15 @@ impl NativeWriteRoot {
                         "version blob exceeds the native commit size limit",
                     ));
                 }
-                let bytes = fs::read(record.path()).map_err(NativeStorageError::io)?;
+                let (bytes, metadata_blob) =
+                    if self.filesystem_profile() == crate::FilesystemProfile::EfsSidecarV1 {
+                        self.read_profiled_snapshot(&record.path())?
+                    } else {
+                        (
+                            fs::read(record.path()).map_err(NativeStorageError::io)?,
+                            metadata_blob(&record.path())?,
+                        )
+                    };
                 let hash = crate::sha256_hex(&bytes);
                 if persist {
                     write_object(repository, &hash, &bytes)?;
@@ -1063,7 +1220,7 @@ impl NativeWriteRoot {
                     filename,
                     hash,
                 });
-                if let Some(blob) = metadata_blob(&record.path())? {
+                if let Some(blob) = metadata_blob {
                     let hash = crate::sha256_hex(&blob);
                     if persist {
                         write_object(repository, &hash, &blob)?;
@@ -1080,6 +1237,32 @@ impl NativeWriteRoot {
             }
         }
         Ok(())
+    }
+
+    fn read_profiled_snapshot(
+        &self,
+        path: &Path,
+    ) -> Result<(Vec<u8>, Option<Vec<u8>>), NativeStorageError> {
+        use std::io::Read as _;
+        let (mut file, metadata) = self.root.open_file(path, MAX_BLOB_BYTES)?;
+        let attributes = crate::record_attributes::RecordAttributes::read(&self.root, &file, path)?;
+        let bytes = crate::read_bounded((&mut file).take(MAX_BLOB_BYTES + 1), MAX_BLOB_BYTES)?;
+        attributes.verify(&self.root, &file, path)?;
+        attributes.verify_contents(&self.root, path, &bytes)?;
+        if path.starts_with(self.path().join(".buckets"))
+            && crate::cached_checksum(
+                attributes.get(crate::CHECKSUM_XATTR),
+                metadata.len(),
+                crate::modified_millis(&metadata)?,
+            )
+            .as_deref()
+                != Some(crate::sha256_hex(&bytes).as_str())
+        {
+            return Err(corrupt_tree(
+                "raw snapshot payload does not match its manifest",
+            ));
+        }
+        Ok((bytes, encode_profiled_metadata_blob(&attributes)?))
     }
 
     /// Namespace directory a collection's records live in.
@@ -1107,6 +1290,51 @@ impl NativeWriteRoot {
     }
 }
 
+fn encode_profiled_metadata_blob(
+    attributes: &BTreeMap<String, Vec<u8>>,
+) -> Result<Option<Vec<u8>>, NativeStorageError> {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::STANDARD as BASE64;
+    let encoded = attributes
+        .iter()
+        .filter(|(name, _)| name.as_str() != crate::CHECKSUM_XATTR)
+        .map(|(name, bytes)| (name.clone(), BASE64.encode(bytes)))
+        .collect();
+    encode_metadata_blob(&encoded)
+}
+
+fn deserialize_version_attributes<'de, D: serde::Deserializer<'de>>(
+    decoder: D,
+) -> Result<BTreeMap<String, String>, D::Error> {
+    decoder.deserialize_map(crate::sidecar_attributes::SidecarAttributes)
+}
+
+fn decode_profiled_metadata_blob(
+    bytes: &[u8],
+) -> Result<BTreeMap<String, Vec<u8>>, NativeStorageError> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Metadata {
+        version: u32,
+        #[serde(deserialize_with = "deserialize_version_attributes")]
+        xattrs: BTreeMap<String, String>,
+    }
+    let metadata: Metadata =
+        serde_json::from_slice(bytes).map_err(|_| corrupt_tree("corrupt version metadata"))?;
+    if metadata.version != 2 {
+        return Err(corrupt_tree("unsupported version metadata envelope"));
+    }
+    let encoded =
+        serde_json::to_vec(&metadata.xattrs).map_err(|error| super::json_error(&error))?;
+    let attributes = crate::sidecar_attributes::SidecarAttributes::decode(&encoded)?;
+    if attributes.contains_key(crate::CHECKSUM_XATTR) {
+        return Err(corrupt_tree(
+            "version metadata must not contain a checksum cache",
+        ));
+    }
+    Ok(attributes)
+}
+
 /// Reproduces `xattrBlobForFile`: every `user.fylo.*` attribute except the
 /// checksum, sorted, base64-encoded, in a version-2 envelope.
 #[cfg(unix)]
@@ -1115,16 +1343,24 @@ fn metadata_blob(path: &Path) -> Result<Option<Vec<u8>>, NativeStorageError> {
     use base64::engine::general_purpose::STANDARD as BASE64;
     use xattr::FileExt;
 
+    use crate::extended_attribute_error::ExtendedAttributeError;
+
     let file = fs::File::open(path).map_err(NativeStorageError::io)?;
     let mut attributes = BTreeMap::new();
-    for name in file.list_xattr().map_err(NativeStorageError::io)? {
+    for name in file
+        .list_xattr()
+        .map_err(|error| ExtendedAttributeError::for_file(error, "listxattr", path))?
+    {
         let Some(name) = name.to_str() else {
             continue;
         };
         if !name.starts_with("user.fylo.") || name == crate::CHECKSUM_XATTR {
             continue;
         }
-        let Some(value) = file.get_xattr(name).map_err(NativeStorageError::io)? else {
+        let Some(value) = file.get_xattr(name).map_err(|error| {
+            ExtendedAttributeError::for_attribute(error, "getxattr", name, path)
+        })?
+        else {
             continue;
         };
         attributes.insert(name.to_owned(), BASE64.encode(value));
@@ -1151,11 +1387,14 @@ fn metadata_blob(path: &Path) -> Result<Option<Vec<u8>>, NativeStorageError> {
 }
 
 #[cfg(not(any(unix, windows)))]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "the signature mirrors the Unix and Windows implementations"
+)]
 fn metadata_blob(_path: &Path) -> Result<Option<Vec<u8>>, NativeStorageError> {
     Ok(None)
 }
 
-#[cfg(any(unix, windows))]
 fn encode_metadata_blob(
     attributes: &BTreeMap<String, String>,
 ) -> Result<Option<Vec<u8>>, NativeStorageError> {
@@ -1418,6 +1657,7 @@ fn remove_materialized_target(path: &Path) -> Result<(), NativeStorageError> {
     }
     let parent = path.parent().ok_or_else(unsafe_repository_path)?;
     fs::remove_dir_all(path).map_err(NativeStorageError::io)?;
+    remove_companion(path);
     sync_directory(parent)
 }
 
@@ -1444,12 +1684,16 @@ fn cleanup_materialization(
 }
 
 fn rollback_materialization(
-    root: &Path,
+    context: &crate::NativeRoot,
     transaction: &Path,
     manifest: &MaterializationTransaction,
 ) -> Result<(), NativeStorageError> {
+    context.assert_profile_owned()?;
+    let root = context.repository_root();
     let target_root = materialization_target_root(root, manifest)?;
+    verify_profiled_worktree(context, &transaction.join("previous"))?;
     for target in manifest.targets.iter().rev() {
+        context.assert_profile_owned()?;
         let relative = safe_materialization_target(target)?;
         let current = target_root.join(&relative);
         let backup = transaction.join("previous").join(&relative);
@@ -1462,6 +1706,7 @@ fn rollback_materialization(
             remove_materialized_target(&current)?;
         }
     }
+    context.assert_profile_owned()?;
     if let Some(reference) = &manifest.reference {
         write_branch_reference(&root.join(".fylo-vcs"), &reference.prior)?;
     }
@@ -1469,12 +1714,12 @@ fn rollback_materialization(
 }
 
 fn rollback_after_materialization_error(
-    root: &Path,
+    context: &crate::NativeRoot,
     transaction: &Path,
     manifest: &MaterializationTransaction,
     error: NativeStorageError,
 ) -> Result<(), NativeStorageError> {
-    if let Err(rollback) = rollback_materialization(root, transaction, manifest) {
+    if let Err(rollback) = rollback_materialization(context, transaction, manifest) {
         return Err(NativeStorageError::new(
             NativeStorageErrorCode::Io,
             format!(
@@ -1486,12 +1731,18 @@ fn rollback_after_materialization_error(
 }
 
 fn rollforward_materialization(
-    root: &Path,
+    context: &crate::NativeRoot,
     transaction: &Path,
     manifest: &MaterializationTransaction,
 ) -> Result<(), NativeStorageError> {
+    context.assert_profile_owned()?;
+    let root = context.repository_root();
     let target_root = materialization_target_root(root, manifest)?;
+    verify_profiled_worktree(context, &target_root)?;
+    verify_profiled_worktree(context, &transaction.join("next"))?;
+    verify_profiled_worktree(context, &transaction.join("previous"))?;
     for target in &manifest.targets {
+        context.assert_profile_owned()?;
         let relative = safe_materialization_target(target)?;
         let current = target_root.join(&relative);
         let staged = transaction.join("next").join(&relative);
@@ -1512,6 +1763,7 @@ fn rollforward_materialization(
             rename_durable(&staged, &current)?;
         }
     }
+    context.assert_profile_owned()?;
     if let Some(reference) = &manifest.reference {
         write_branch_reference(&root.join(".fylo-vcs"), &reference.target)?;
     }
@@ -1519,14 +1771,19 @@ fn rollforward_materialization(
 }
 
 fn recover_materialization_transactions(
-    root: &Path,
+    context: &crate::NativeRoot,
     repository: &Path,
 ) -> Result<(), NativeStorageError> {
-    let _lock = CollectionWriteLock::acquire_at(&repository.join("locks"), "materialization.lock")?;
+    context.assert_profile_owned()?;
+    let _lock = CollectionWriteLock::acquire_profiled(
+        context,
+        &repository.join("locks"),
+        "materialization.lock",
+    )?;
     let staging = repository.join("staging");
     fs::create_dir_all(&staging).map_err(NativeStorageError::io)?;
     let mut transactions = Vec::new();
-    for entry in fs::read_dir(&staging).map_err(NativeStorageError::io)? {
+    for entry in read_dir_without_companions(&staging).map_err(NativeStorageError::io)? {
         let entry = entry.map_err(NativeStorageError::io)?;
         let kind = entry.file_type().map_err(NativeStorageError::io)?;
         if kind.is_symlink() {
@@ -1541,6 +1798,7 @@ fn recover_materialization_transactions(
     }
     transactions.sort();
     for transaction in transactions {
+        context.assert_profile_owned()?;
         if !path_exists(&transaction.join("transaction.json"))? {
             if path_exists(&transaction.join("previous"))? {
                 return Err(NativeStorageError::new(
@@ -1554,13 +1812,13 @@ fn recover_materialization_transactions(
         let manifest = read_materialization_manifest(&transaction)?;
         match manifest.phase {
             MaterializationPhase::Installed | MaterializationPhase::RefUpdated => {
-                rollforward_materialization(root, &transaction, &manifest)?;
+                rollforward_materialization(context, &transaction, &manifest)?;
             }
             MaterializationPhase::Preparing
             | MaterializationPhase::Staged
             | MaterializationPhase::Swapping
             | MaterializationPhase::BackupMoved => {
-                rollback_materialization(root, &transaction, &manifest)?;
+                rollback_materialization(context, &transaction, &manifest)?;
             }
         }
     }
@@ -1572,7 +1830,7 @@ fn collect_branch_references(
     directory: &Path,
     references: &mut Vec<BranchReference>,
 ) -> Result<(), NativeStorageError> {
-    for entry in fs::read_dir(directory).map_err(NativeStorageError::io)? {
+    for entry in read_dir_without_companions(directory).map_err(NativeStorageError::io)? {
         let entry = entry.map_err(NativeStorageError::io)?;
         let kind = entry.file_type().map_err(NativeStorageError::io)?;
         if kind.is_symlink() {
@@ -1616,19 +1874,96 @@ fn branch_worktree(root: &Path, branch: &str) -> Result<PathBuf, NativeStorageEr
     Ok(target)
 }
 
-fn copy_worktree(source: &Path, target: &Path) -> Result<(), NativeStorageError> {
-    for data_directory in DATA_DIRECTORIES {
-        let current = source.join(data_directory);
-        if current.is_dir() {
-            copy_directory(&current, &target.join(data_directory))?;
+fn verify_profiled_worktree(
+    context: &crate::NativeRoot,
+    path: &Path,
+) -> Result<(), NativeStorageError> {
+    if context.filesystem_profile() == crate::FilesystemProfile::Native || !path_exists(path)? {
+        return Ok(());
+    }
+    let root = crate::NativeRoot::open_profiled(context.options_for(path))?;
+    for namespace in DATA_DIRECTORIES {
+        let data = path.join(namespace);
+        if path_exists(&data)? {
+            verify_profiled_directory(&root, &data)?;
         }
     }
-    Ok(())
+    context.assert_profile_owned()
 }
 
-fn copy_directory(source: &Path, target: &Path) -> Result<(), NativeStorageError> {
+fn verify_profiled_directory(
+    context: &crate::NativeRoot,
+    path: &Path,
+) -> Result<(), NativeStorageError> {
+    context.verify_path(path, crate::ExpectedType::Directory)?;
+    for entry in read_dir_without_companions(path).map_err(NativeStorageError::io)? {
+        let entry = entry.map_err(NativeStorageError::io)?;
+        let kind = entry.file_type().map_err(NativeStorageError::io)?;
+        if kind.is_dir() {
+            verify_profiled_directory(context, &entry.path())?;
+        } else {
+            context.verify_path(&entry.path(), crate::ExpectedType::File)?;
+            crate::sidecar_attributes::SidecarAttributes::verify_member(context, &entry.path())?;
+        }
+    }
+    context.assert_profile_owned()
+}
+
+fn copy_worktree(
+    context: &crate::NativeRoot,
+    source: &Path,
+    target: &Path,
+) -> Result<(), NativeStorageError> {
+    context.assert_profile_owned()?;
+    let mut generations = BTreeMap::new();
+    for data_directory in DATA_DIRECTORIES {
+        let current = source.join(data_directory);
+        if fs::metadata(&current).is_ok_and(|metadata| metadata.is_dir()) {
+            if context.filesystem_profile() == crate::FilesystemProfile::EfsSidecarV1 {
+                context.verify_path(&current, crate::ExpectedType::Directory)?;
+                for entry in
+                    read_dir_without_companions(&current).map_err(NativeStorageError::io)?
+                {
+                    let entry = entry.map_err(NativeStorageError::io)?;
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    if entry.file_type().map_err(NativeStorageError::io)?.is_dir()
+                        && crate::validate_collection_name(&name).is_ok()
+                    {
+                        let state = context.collection(&name)?.generation()?;
+                        if state.state != crate::GenerationStatus::Stable {
+                            return Err(NativeStorageError::new(
+                                NativeStorageErrorCode::ConcurrentWrite,
+                                "cannot copy a writing generation",
+                            ));
+                        }
+                        generations.insert(name, state);
+                    }
+                }
+            }
+            copy_directory(context, &current, &target.join(data_directory))?;
+        }
+    }
+    for (name, before) in generations {
+        if context.collection(&name)?.generation()? != before {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::ConcurrentWrite,
+                "branch copy generation changed",
+            ));
+        }
+    }
+    context.assert_profile_owned()
+}
+
+fn copy_directory(
+    context: &crate::NativeRoot,
+    source: &Path,
+    target: &Path,
+) -> Result<(), NativeStorageError> {
+    context.assert_profile_owned()?;
     fs::create_dir_all(target).map_err(NativeStorageError::io)?;
-    for entry in fs::read_dir(source).map_err(NativeStorageError::io)? {
+    // A companion is the platform's, not a record: the copy's own attributes
+    // are copied below, and the platform writes the target's companion.
+    for entry in read_dir_without_companions(source).map_err(NativeStorageError::io)? {
         let entry = entry.map_err(NativeStorageError::io)?;
         let kind = entry.file_type().map_err(NativeStorageError::io)?;
         let destination = target.join(entry.file_name());
@@ -1639,7 +1974,29 @@ fn copy_directory(source: &Path, target: &Path) -> Result<(), NativeStorageError
             ));
         }
         if kind.is_dir() {
-            copy_directory(&entry.path(), &destination)?;
+            copy_directory(context, &entry.path(), &destination)?;
+        } else if kind.is_file()
+            && context.filesystem_profile() == crate::FilesystemProfile::EfsSidecarV1
+        {
+            let (source, metadata) = context.open_file(&entry.path(), crate::MAX_RAW_FILE_BYTES)?;
+            crate::sidecar_attributes::SidecarAttributes::verify_member(context, &entry.path())?;
+            crate::sidecar_attributes::SidecarAttributes::verify_owner(
+                context,
+                &metadata,
+                entry
+                    .path()
+                    .as_os_str()
+                    .to_string_lossy()
+                    .ends_with(crate::SIDECAR_SUFFIX),
+            )?;
+            super::copy_durable_with_mode(
+                &entry.path(),
+                &destination,
+                Some(super::native_mode(&metadata)),
+                Some(metadata.modified().map_err(NativeStorageError::io)?),
+            )?;
+            context.verify_open_file_identity(&entry.path(), &source)?;
+            context.assert_profile_owned()?;
         } else if kind.is_file() {
             fs::copy(entry.path(), &destination).map_err(NativeStorageError::io)?;
             let permissions = entry
@@ -1655,9 +2012,18 @@ fn copy_directory(source: &Path, target: &Path) -> Result<(), NativeStorageError
 
 #[cfg(unix)]
 fn copy_extended_metadata(source: &Path, target: &Path) -> Result<(), NativeStorageError> {
-    for name in xattr::list(source).map_err(NativeStorageError::io)? {
-        if let Some(value) = xattr::get(source, &name).map_err(NativeStorageError::io)? {
-            xattr::set(target, &name, &value).map_err(NativeStorageError::io)?;
+    use crate::extended_attribute_error::ExtendedAttributeError;
+
+    for name in xattr::list(source)
+        .map_err(|error| ExtendedAttributeError::for_file(error, "listxattr", source))?
+    {
+        let label = name.to_string_lossy();
+        if let Some(value) = xattr::get(source, &name).map_err(|error| {
+            ExtendedAttributeError::for_attribute(error, "getxattr", &label, source)
+        })? {
+            xattr::set(target, &name, &value).map_err(|error| {
+                ExtendedAttributeError::for_attribute(error, "setxattr", &label, target)
+            })?;
         }
     }
     Ok(())
@@ -1692,6 +2058,10 @@ fn copy_extended_metadata(source: &Path, target: &Path) -> Result<(), NativeStor
 }
 
 #[cfg(not(any(unix, windows)))]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "the signature mirrors the Unix and Windows implementations"
+)]
 fn copy_extended_metadata(_source: &Path, _target: &Path) -> Result<(), NativeStorageError> {
     Ok(())
 }
@@ -1753,7 +2123,7 @@ fn find_staged_record(
 ) -> Result<Option<PathBuf>, NativeStorageError> {
     for namespace in ["docs", ".deleted"] {
         let root = stage.join(data_directory).join(collection).join(namespace);
-        let Ok(shards) = fs::read_dir(root) else {
+        let Ok(shards) = read_dir_without_companions(root) else {
             continue;
         };
         for shard in shards {
@@ -1761,9 +2131,14 @@ fn find_staged_record(
             if !shard.file_type().map_err(NativeStorageError::io)?.is_dir() {
                 continue;
             }
-            for entry in fs::read_dir(shard.path()).map_err(NativeStorageError::io)? {
+            for entry in
+                read_dir_without_companions(shard.path()).map_err(NativeStorageError::io)?
+            {
                 let entry = entry.map_err(NativeStorageError::io)?;
                 let name = entry.file_name();
+                if crate::is_scratch_file(&name.to_string_lossy()) {
+                    continue;
+                }
                 if name.to_string_lossy().split('.').next() == Some(identifier) {
                     return Ok(Some(entry.path()));
                 }
@@ -1812,7 +2187,11 @@ fn apply_metadata_blob(target: &Path, bytes: &[u8]) -> Result<(), NativeStorageE
                 "version metadata attribute has invalid base64",
             )
         })?;
-        xattr::set(target, name, &decoded).map_err(NativeStorageError::io)?;
+        xattr::set(target, name, &decoded).map_err(|error| {
+            crate::extended_attribute_error::ExtendedAttributeError::for_attribute(
+                error, "setxattr", name, target,
+            )
+        })?;
     }
     Ok(())
 }
@@ -1865,6 +2244,10 @@ fn apply_metadata_blob(target: &Path, bytes: &[u8]) -> Result<(), NativeStorageE
 }
 
 #[cfg(not(any(unix, windows)))]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "the signature mirrors the Unix and Windows implementations"
+)]
 fn apply_metadata_blob(_target: &Path, _bytes: &[u8]) -> Result<(), NativeStorageError> {
     Ok(())
 }
@@ -2127,7 +2510,7 @@ fn write_tree_node(
 
 fn write_object(repository: &Path, hash: &str, bytes: &[u8]) -> Result<(), NativeStorageError> {
     let target = object_path(repository, hash)?;
-    if target.is_file() {
+    if fs::metadata(&target).is_ok_and(|metadata| metadata.is_file()) {
         return Ok(());
     }
     let parent = target.parent().ok_or_else(|| {
@@ -2275,7 +2658,7 @@ fn read_head_branch(repository: &Path) -> Result<String, NativeStorageError> {
 }
 
 /// `Date.prototype.toISOString` without a calendar dependency.
-fn iso8601_millis(milliseconds: u64) -> String {
+pub(crate) fn iso8601_millis(milliseconds: u64) -> String {
     let seconds = milliseconds / 1000;
     let millis = milliseconds % 1000;
     let (hour, minute, second) = (seconds / 3600 % 24, seconds / 60 % 60, seconds % 60);

@@ -11,8 +11,8 @@
  * and frequency for indexed values, but stored document bodies use random nonces.
  *
  * Encrypted fields are declared per-collection in JSON schema files via the
- * `$encrypted` array. The encryption key is sourced from `FYLO_ENCRYPTION_KEY`.
- * Set `FYLO_CIPHER_SALT` to a unique random value to prevent cross-deployment attacks.
+ * `$encrypted` array. The host supplies both credentials explicitly; this
+ * portable adapter never reads application files or the process environment.
  */
 export class Cipher {
     /** @type {CryptoKey | null} */
@@ -65,8 +65,9 @@ export class Cipher {
     /**
      * Derives AES + HMAC keys from a secret string. Called once at startup.
      * @param {string} secret
+     * @param {string} cipherSalt
      */
-    static async configure(secret) {
+    static async configure(secret, cipherSalt) {
         const encoder = new TextEncoder()
         const keyMaterial = await crypto.subtle.importKey(
             'raw',
@@ -75,11 +76,8 @@ export class Cipher {
             false,
             ['deriveBits']
         )
-        const cipherSalt = process.env.FYLO_CIPHER_SALT
         if (!cipherSalt) {
-            throw new Error(
-                'FYLO_CIPHER_SALT env var is not set. Generate one with: export FYLO_CIPHER_SALT=$(openssl rand -hex 32)'
-            )
+            throw new Error('Cipher requires an explicit, deployment-specific salt')
         }
         // Derive 64 bytes: 32 for AES-GCM key + 32 for HMAC blind indexes.
         const bits = await crypto.subtle.deriveBits(
@@ -124,7 +122,7 @@ export class Cipher {
      */
     static async deriveNonce(plaintext) {
         const hmacKey = Cipher.hmacKey
-        if (!hmacKey) throw new Error('Cipher not configured — set FYLO_ENCRYPTION_KEY env var')
+        if (!hmacKey) throw new Error('Cipher not configured — supply the key and salt explicitly')
         const encoder = new TextEncoder()
         const sig = await crypto.subtle.sign('HMAC', hmacKey, encoder.encode(plaintext))
         return new Uint8Array(sig).slice(0, 12)
@@ -158,7 +156,7 @@ export class Cipher {
      */
     static async blindIndex(value) {
         const hmacKey = Cipher.hmacKey
-        if (!hmacKey) throw new Error('Cipher not configured — set FYLO_ENCRYPTION_KEY env var')
+        if (!hmacKey) throw new Error('Cipher not configured — supply the key and salt explicitly')
         const sig = await crypto.subtle.sign('HMAC', hmacKey, new TextEncoder().encode(value))
         return `idx1.${Cipher.base64Url(new Uint8Array(sig))}`
     }
@@ -172,7 +170,7 @@ export class Cipher {
      */
     static async encrypt(value, deterministic = false) {
         const key = Cipher.key
-        if (!key) throw new Error('Cipher not configured — set FYLO_ENCRYPTION_KEY env var')
+        if (!key) throw new Error('Cipher not configured — supply the key and salt explicitly')
         const nonce = deterministic
             ? await Cipher.deriveNonce(value)
             : crypto.getRandomValues(new Uint8Array(12))
@@ -204,7 +202,7 @@ export class Cipher {
      */
     static async decrypt(encoded) {
         const key = Cipher.key
-        if (!key) throw new Error('Cipher not configured — set FYLO_ENCRYPTION_KEY env var')
+        if (!key) throw new Error('Cipher not configured — supply the key and salt explicitly')
         if (!encoded.startsWith('v2.')) {
             throw new Error(
                 `Unsupported ciphertext format. Expected v2.* (AES-GCM); received ${encoded.slice(0, 8)}…`

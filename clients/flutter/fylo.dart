@@ -10,8 +10,9 @@
 //   await db.collection('users').put({'name': 'Ada', 'role': 'admin'});
 //   final admins = await db.collection('users').find({r'$ops': [{'role': {r'$eq': 'admin'}}]});
 //
-// Bundle the engine assets in your app's pubspec under assets/fylo/: fylo.mjs
-// (from a FYLO release) plus host.html and bridge.js from clients/mobile/. They
+// Bundle the engine assets in your app's pubspec under assets/fylo/: the
+// fylo-web.mjs asset from a FYLO release, saved as fylo.mjs (bridge.js imports
+// ./fylo.mjs), plus host.html and bridge.js from clients/mobile/. They
 // are served over http://localhost by an in-app server — a secure context, so
 // OPFS is available (a file:// origin would not get OPFS). On iOS, add an App
 // Transport Security exception so the WebView can reach the localhost server:
@@ -28,7 +29,8 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
 class FyloException implements Exception {
   final String message;
-  FyloException(this.message);
+  final String? code;
+  FyloException(this.message, {this.code});
   @override
   String toString() => 'FyloException: $message';
 }
@@ -247,8 +249,12 @@ class Fylo {
       request.complete(reply['result']);
     } else {
       final error = reply['error'];
+      final code = error is Map ? error['code'] : null;
       request.fail(
-        FyloException((error is Map ? error['message'] : null) ?? 'fylo error'),
+        FyloException(
+          (error is Map ? error['message'] : null) ?? 'fylo error',
+          code: code is String ? code : null,
+        ),
       );
     }
   }
@@ -319,7 +325,7 @@ class Fylo {
     try {
       // base64 body is safe inside the JS string literal.
       await controller.evaluateJavascript(
-          source: 'window.__fyloDispatch("$encoded")');
+          source: 'void window.__fyloDispatch("$encoded")');
     } catch (error, stackTrace) {
       _pending.remove(id)?.fail(error, stackTrace);
     }
@@ -364,8 +370,10 @@ class Fylo {
 
   /// Run raw SQL against the local store. Native interpolation is verbatim —
   /// escape/validate untrusted input yourself.
-  Future<dynamic> sql(String statement) =>
-      request('executeSQL', {'sql': statement});
+  Future<dynamic> executeSQL(String sql) =>
+      request('executeSQL', {'sql': sql});
+
+  Future<dynamic> sql(String statement) => executeSQL(statement);
 
   /// Collection-scoped facade with short method names, so
   /// `db.collection('users').put(data)` reads like the browser client.

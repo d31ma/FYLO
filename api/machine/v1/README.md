@@ -45,6 +45,15 @@ Within protocol v1:
 - changing idempotency, durability, or retry behavior requires a new protocol
   version or an explicit compatibility RFC.
 
+## Repository history
+
+The `log` operation returns its commit array directly in `result`, in
+newest-to-oldest first-parent order. Each commit has `id`, `branch`, `parents`,
+`message`, `createdAt` and `root`. `limit` defaults to 50 and must be between 1
+and 1000. `restoreCommit` moves the active branch head to the selected commit;
+subsequent `log` requests traverse that commit's first-parent history. Stored
+commit manifests remain immutable.
+
 ## Embedded serverless queue
 
 Protocol v1 exposes a brokerless filesystem queue through `queuePublish`,
@@ -57,3 +66,115 @@ Topic and consumer-group names contain at most 127 UTF-8 bytes. Queue reads are
 bounded before the engine leases or aggregates records so the response frame
 limit cannot strand an unreturnable delivery. Header discovery and queue stats
 also stop at 64 MiB of message-file scan work per request.
+
+## Candidate filesystem profile reporting
+
+The isolated adapter adds explicit CLI selection
+`--filesystem-profile efs-sidecar-v1` and an additive embedded `serve_profiled`
+entry point. Legacy wrappers and unselected calls keep the native profile.
+Profile selection is immutable for the session; request fields cannot enable a
+different backend or authorize another root. EFS admission occurs before startup
+recovery and every subsequent engine or writer construction, even without
+`--exclusive-root`. Unsupported locking fails before owner metadata publication.
+
+The candidate handshake adds `capabilities.filesystemMetadata` with `version:1`,
+`profiles:["native","efs-sidecar-v1"]` and `efsQualified:false`. These identify
+candidate implementations, not a filesystem support tier. `result.storage`
+reports `filesystemProfile` and `rootLock` fields `owned`, `kernelEnforced` and
+`remoteQualified:false`. `owned` describes current owner-metadata verification;
+`kernelEnforced` means the actual kernel-mediated advisory-lock acquisition
+succeeded. Neither proves mandatory fencing, current remote lock ownership or
+independent-client cache coherence. Native sessions without an owning lease
+report both local lock flags false.
+
+Frame limits, schema/encryption configuration, operation names and stable errors
+retain their existing contracts. EFS queue operations currently fail closed at
+the native queue-open seam; its `serverlessQueue` capability is false while the
+native default remains unchanged. Queue support needs a scoped source extension
+and later qualification. See the
+[EFS candidate plan](../../../docs/operations/efs-profile-qualification.md).
+
+These storage fields do not describe an ephemeral invocation lifetime.
+`persistent=false` disables pagination cursors; the current streaming loop still
+reads until EOF and flushes while its session owns leases. The additive isolated
+`InvocationOptions`/`InvocationRuntime` source candidate accepts exactly one
+bounded nonempty LF core frame. The host selects immutable root/profile/application
+configuration, an absolute monotonic deadline and a nonzero cleanup reserve.
+The host root/repository must already exist and resolve to the same directory.
+External leases, unrelated request roots and request schema overrides are refused.
+Canonical aliases of the admitted root are allowed.
+
+This invocation slice refuses `log`, `commit`, `checkout`, `branch`, `status`,
+`diff`, `restoreCommit` and `merge` before admission. The reused core handshake
+retains legacy capability fields; those fields do not qualify these operations
+for invocation use. Malformed input and forbidden configuration return I/O errors.
+
+The invocation candidate also refuses `schemaValidate` and host configuration
+with `strict_schema=true` before acquiring a lease. External validator deadlines
+and checked descendant cleanup are not qualified. Embedded `schemaMaterialize`,
+non-strict schema inspection and encryption configuration retain their existing
+scope. Persistent streaming and native schema validation remain available.
+
+The runtime acquires its own kernel-admitted cooperative lease, recovers before
+dispatch and keeps engines/handles private. Recovery enumerates at most 10,000
+unique collection names per main/active root. It buffers the existing response and
+requires unique checked teardown before returning bytes. Cleanup or unlock
+uncertainty returns an error without completed response bytes; mutation retry is
+never automatic. Checks cannot preempt blocking I/O or prove distributed fencing.
+Returned output is bounded; intermediate serializer allocations have no hard cap.
+Existing streaming APIs retain their behavior. Native behavior tests and remote
+qualification remain pending. See
+[ADR 0011](../../../docs/adr/0011-serverless-invocation-contract.md).
+
+## In-memory hot set (`capabilities.hotSet`)
+
+Every handshake reports top-level `capabilities.hotSet`. A session that holds
+the root's exclusive lease (`exec --loop --exclusive-root`, or the Rust
+`FrameSession` with that lease) keeps parsed documents, index snapshots,
+document id lists and collection headers in memory, 64 MiB by default
+(ADR 0014). `--hot-set-bytes <n>` sets the budget and `0` turns it off.
+
+`hotSet` is `false` when the session has no hot set: without the exclusive
+lease, or with `--hot-set-bytes 0`. Otherwise it is an object of counters:
+`budgetBytes`, `residentBytes`, `collections`, `documents`, `hits`, `misses`,
+`evictions`, `refusals` and `clears`. The counters are for operators; results
+never depend on them. Frames in one session run one at a time, reads
+included; a frame that is not a read clears the hot set before and after it
+runs.
+
+## Application identity (`identity`)
+
+Access control is per application identity on protected `.vdbx` databases
+(ADR 0021). The session opens databases as the identity its configuration
+names (`fylo.identity` or `FYLO_IDENTITY`, pinned with `fylo.trustAnchor` or
+`FYLO_TRUST_ANCHOR`, or `--identity` and `--trust-anchor`); a request never
+names one.
+
+Every handshake reports top-level `identity`: `null` when no identity is
+configured, otherwise an object with
+
+- `id`: the identity's `fid1:` identifier, and `publicKey`, its `fpk1:` key;
+- `trust`: `pinned` (with `trustAnchor`, the pinned `fid1:` admin),
+  `firstUse` or `unpinned`;
+- `database`: `null` unless the session's root is a protected `.vdbx`
+  database, otherwise what this identity may do there: `trustAnchor` (the
+  admin that created it), `trustedOnFirstUse`, `admin`, `grants`, each
+  collection the identity may use mapped to `read`, `write` or `admin`, and
+  `catalogRotationPendingSince`: `null`, or the policy version of a
+  revocation whose catalog-key rotation stopped before it finished, which
+  an admin settles with `fylo access settle` or its next write. When
+  the database refuses the identity, `database` holds only `error`, with the
+  stable `code` (`EACCES`, `EPOLICY`, `ESIGNATURE`) and a `message`.
+
+The handshake opens the root to report this; it takes no write lease.
+
+## Removed: per-request `access` (POSTIX)
+
+The per-request `access` object (`uid`, `gid`, `mode`, `groups`) and the
+`capabilities.machineAccess` capability were removed with POSTIX (ADR 0021,
+decision Q1). A request that still carries `access` is refused with
+`EBADREQUEST`, so a client that relied on per-record rules learns of the
+change instead of losing them silently. Records an earlier release wrote
+with a descriptor are read in full; the descriptor is ignored, and the
+first such read in a process prints a one-time warning to stderr. See
+[migrating to protected databases](../../../docs/migrating-to-protected-databases.md).

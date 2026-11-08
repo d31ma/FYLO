@@ -1,16 +1,14 @@
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test'
 import { existsSync } from 'node:fs'
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 
 const roots = []
 const repoRoot = process.cwd()
-const binaryPath = path.join(
-    repoRoot,
-    'dist-bin',
-    process.platform === 'win32' ? 'fylo.exe' : 'fylo'
-)
+const binaryPath = process.env.FYLO_BINARY
+    ? path.resolve(process.env.FYLO_BINARY)
+    : path.join(repoRoot, 'dist-bin', process.platform === 'win32' ? 'fylo.exe' : 'fylo')
 const shimRoot = path.join(repoRoot, 'clients')
 
 /**
@@ -93,36 +91,37 @@ describe('client shim interop via fylo exec --loop', () => {
         }
     })
 
-    test('every binary-backed language shim exposes child-scoped environment configuration', async () => {
+    test('every binary-backed language shim exposes native application configuration', async () => {
         const contracts = new Map([
-            ['node/fylo.mjs', ['childEnvironment', 'env?: string']],
-            ['python/fylo.py', ['_child_environment', 'env=None']],
-            ['ruby/fylo.rb', ['child_environment', 'env: nil']],
-            ['php/fylo.php', ['childEnvironment', 'string|array|null $env']],
-            ['go/fylo.go', ['OpenWithOptions', 'type Environment struct']],
-            ['rust/fylo.rs', ['ProcessEnvironment', 'open_with_options']],
-            ['java/Fylo.java', ['class Options', 'applyChildEnvironment']],
-            ['csharp/Fylo.cs', ['class Options', 'ApplyChildEnvironment']],
-            ['dart/fylo.dart', ['_childEnvironment', 'Object? env']]
+            ['node/fylo.mjs', ['config?: string']],
+            ['python/fylo.py', ['config=None']],
+            ['ruby/fylo.rb', ['config: nil']],
+            ['php/fylo.php', ['?string $config']],
+            ['go/fylo.go', ['OpenWithOptions', 'Config']],
+            ['rust/fylo.rs', ['config: Option<PathBuf>', 'open_with_options']],
+            ['java/Fylo.java', ['class Options', 'String config']],
+            ['csharp/Fylo.cs', ['class Options', 'string Config']],
+            ['dart/fylo.dart', ['String? config']]
         ])
         for (const [relative, markers] of contracts) {
             const source = await readFile(path.join(shimRoot, relative), 'utf8')
             for (const marker of markers) expect(source, relative).toContain(marker)
+            expect(source, relative).toContain('--config')
         }
     })
 
-    test('the published environment template uses native FYLO variable names and defaults', async () => {
-        const [example, ignore] = await Promise.all([
+    test('the published configuration templates separate settings from secrets', async () => {
+        const [example, application, ignore] = await Promise.all([
             readFile(path.join(repoRoot, '.env.example'), 'utf8'),
+            readFile(path.join(repoRoot, 'application.example.json'), 'utf8'),
             readFile(path.join(repoRoot, '.gitignore'), 'utf8')
         ])
-        expect(example).toContain('FYLO_SCHEMA=')
-        expect(example).toContain('FYLO_SHARD_WIDTH=1')
-        expect(example).not.toContain('FYLO_SCHEMA_DIR')
-        expect(example).not.toContain('CHEX_SCHEMA_DIR')
-        expect(example).not.toContain('FYLO_LOGGING')
-        expect(ignore.split(/\r?\n/)).toContain('fylo.env')
-        expect(ignore.split(/\r?\n/)).toContain('*.fylo.env')
+        expect(example).toContain('FYLO_ENCRYPTION_KEY=')
+        expect(example).toContain('FYLO_CIPHER_SALT=')
+        expect(example).not.toContain('FYLO_SHARD_WIDTH=')
+        expect(example).not.toContain('FYLO_ROOT=')
+        expect(JSON.parse(application).fylo.shard.width).toBe(1)
+        expect(ignore.split(/\r?\n/)).toContain('.env')
     })
 
     test('every binary-backed language shim exposes the durable queue lifecycle', async () => {
@@ -292,7 +291,7 @@ describe('client shim interop via fylo exec --loop', () => {
         await requireCommand('python3')
         const root = await tempRoot('fylo-python-shim-')
         const script = `
-import asyncio, json, os, sys
+import asyncio, json, sys
 sys.path.insert(0, ${JSON.stringify(path.join(shimRoot, 'python'))})
 from fylo import Fylo
 
@@ -336,11 +335,9 @@ with Fylo(${JSON.stringify(root)}, binary=${JSON.stringify(binaryPath)}) as db:
     assert initial_meta['source'] == 'python' and initial_meta['reviewed'] is False, initial_meta
     assert initial_meta['id'] == doc_id and initial_meta['createdAt'] > 0, initial_meta
     assert 'source' not in meta and meta['reviewed'] is False, meta
-    access = {'uid': os.getuid(), 'mode': 0o600}
-    sql_id = db.sql("INSERT INTO users (name, score, scope) VALUES ('SQL Ada', 91, 'private-sql')", access)
-    assert db.sql("SELECT * FROM users WHERE scope = 'private-sql'") == {}
-    owner_rows = db.sql("SELECT * FROM users WHERE scope = 'private-sql'", {'uid': os.getuid()})
-    assert owner_rows[sql_id]['name'] == 'SQL Ada', owner_rows
+    sql_id = db.sql("INSERT INTO users (name, score, scope) VALUES ('SQL Ada', 91, 'sql')")
+    sql_rows = db.sql("SELECT * FROM users WHERE scope = 'sql'")
+    assert sql_rows[sql_id]['name'] == 'SQL Ada', sql_rows
     print(json.dumps({'ok': True, 'id': doc_id, 'doc': doc, 'found': found, 'meta': meta}))
 `
         const result = await run(['python3', '-c', script])
@@ -422,16 +419,13 @@ try {
   const meta = await db.getMeta('users', id)
   if (initialMeta.source !== 'node' || initialMeta.reviewed !== false) throw new Error('bad initial metadata')
   if ('source' in meta || meta.reviewed !== false) throw new Error('bad updated metadata')
-  const uid = process.getuid()
-  const sqlId = await db.sql\`INSERT INTO users (name, score, scope) VALUES (\${'SQL Ada'}, \${91}, \${'private-sql'})\`.as({ uid, mode: 0o600 })
-  const anonymousRows = await db.sql\`SELECT * FROM users WHERE scope = \${'private-sql'}\`
-  if (sqlId in anonymousRows) throw new Error('anonymous SQL leaked protected row')
-  const ownerRows = await db.sql\`SELECT * FROM users WHERE scope = \${'private-sql'}\`.as({ uid })
-  if (ownerRows[sqlId]?.name !== 'SQL Ada') throw new Error('owner SQL could not read row')
-  const updated = await db.sql\`UPDATE users SET score = \${92} WHERE scope = \${'private-sql'}\`.as({ uid })
-  if (updated !== 1) throw new Error('owner SQL could not update row')
-  const deleted = await db.sql\`DELETE FROM users WHERE scope = \${'private-sql'}\`.as({ uid })
-  if (deleted !== 1) throw new Error('owner SQL could not delete row')
+  const sqlId = await db.sql\`INSERT INTO users (name, score, scope) VALUES (\${'SQL Ada'}, \${91}, \${'sql'})\`
+  const sqlRows = await db.sql\`SELECT * FROM users WHERE scope = \${'sql'}\`
+  if (sqlRows[sqlId]?.name !== 'SQL Ada') throw new Error('SQL could not read row')
+  const updated = await db.sql\`UPDATE users SET score = \${92} WHERE scope = \${'sql'}\`
+  if (updated !== 1) throw new Error('SQL could not update row')
+  const deleted = await db.sql\`DELETE FROM users WHERE scope = \${'sql'}\`
+  if (deleted !== 1) throw new Error('SQL could not delete row')
   console.log(JSON.stringify({ ok: true, id, doc, found, meta }))
 } finally {
   await db.close()
@@ -479,245 +473,188 @@ try {
         expect(JSON.parse(result.stdout).ok).toBe(true)
     })
 
-    test('Node shim scopes a .env file or environment map to its FYLO child', async () => {
+    test('Node shim reads application.json without environment overrides or process mutation', async () => {
         await requireCommand('node')
-        const fileRoot = await tempRoot('fylo-node-env-file-')
-        const mappedRoot = await tempRoot('fylo-node-env-map-')
-        const optionRoot = await tempRoot('fylo-node-env-option-')
-        const envFile = path.join(fileRoot, 'fylo.env')
-        const malformedFile = path.join(fileRoot, 'malformed.env')
+        const fileRoot = await tempRoot('fylo-node-config with spaces-')
+        const optionRoot = await tempRoot('fylo-node-config-option-')
+        const config = path.join(fileRoot, 'application.json')
         await writeFile(
-            envFile,
-            [
-                '# File values override the inherited child environment.',
-                'export FYLO_SHARD_WIDTH = "2" # quoted values and comments are supported',
-                'FYLO_ROOT=/this/root/must/not/win',
-                ''
-            ].join('\n')
+            config,
+            JSON.stringify({
+                application: { name: 'host-app' },
+                fylo: { root: '/this/root/must/not/win', shard: { width: 2 } }
+            })
         )
-        await writeFile(malformedFile, 'FYLO_SHARD_WIDTH="2"\nBROKEN\n')
         const script = `
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { Fylo } from ${JSON.stringify(path.join(shimRoot, 'node', 'fylo.mjs'))}
-
-const inherited = process.env.FYLO_SHARD_WIDTH
-const fromFile = new Fylo(${JSON.stringify(fileRoot)}, {
-  binary: ${JSON.stringify(binaryPath)},
-  env: ${JSON.stringify(envFile)},
-})
-let fileId
-try {
-  await fromFile.createCollection('users')
-  fileId = await fromFile.putData('users', { source: 'file' })
-} finally {
-  await fromFile.close()
-}
-if (!existsSync(join(${JSON.stringify(fileRoot)}, '.collections', 'users', 'docs', fileId.slice(-2), fileId + '.json'))) {
-  throw new Error('.env shard width was not applied to the FYLO child')
-}
-if (process.env.FYLO_SHARD_WIDTH !== inherited) {
-  throw new Error('FYLO .env configuration mutated process.env')
-}
-
-const fromMap = new Fylo(${JSON.stringify(mappedRoot)}, {
-  binary: ${JSON.stringify(binaryPath)},
-  env: { ...process.env, FYLO_SHARD_WIDTH: 3 },
-})
-let mappedId
-try {
-  await fromMap.createCollection('users')
-  mappedId = await fromMap.putData('users', { source: 'map' })
-} finally {
-  await fromMap.close()
-}
-if (!existsSync(join(${JSON.stringify(mappedRoot)}, '.collections', 'users', 'docs', mappedId.slice(-3), mappedId + '.json'))) {
-  throw new Error('environment map was not applied to the FYLO child')
-}
-
-const fromOption = new Fylo(${JSON.stringify(optionRoot)}, {
-  binary: ${JSON.stringify(binaryPath)},
-  env: ${JSON.stringify(envFile)},
-  shardWidth: 1,
-})
-let optionId
-try {
-  await fromOption.createCollection('users')
-  optionId = await fromOption.putData('users', { source: 'option' })
-} finally {
-  await fromOption.close()
-}
-if (!existsSync(join(${JSON.stringify(optionRoot)}, '.collections', 'users', 'docs', optionId.slice(-1), optionId + '.json'))) {
-  throw new Error('explicit shardWidth did not override the child environment')
-}
-
-let malformedRejected = false
-try {
-  new Fylo(${JSON.stringify(fileRoot)}, {
-    binary: ${JSON.stringify(binaryPath)},
-    env: ${JSON.stringify(malformedFile)},
+const inherited = JSON.stringify(process.env)
+for (const [root, options, width] of [
+  [${JSON.stringify(fileRoot)}, {}, 2],
+  [${JSON.stringify(optionRoot)}, { shardWidth: 1 }, 1],
+]) {
+  const db = new Fylo(root, {
+    binary: ${JSON.stringify(binaryPath)}, config: ${JSON.stringify(config)}, ...options,
   })
-} catch (error) {
-  malformedRejected = error instanceof SyntaxError && error.message.includes('malformed.env:2')
+  let id
+  try {
+    await db.createCollection('users')
+    id = await db.putData('users', { source: 'config' })
+  } finally {
+    await db.close()
+  }
+  if (!existsSync(join(root, '.collections', 'users', 'docs', id.slice(-width), id + '.json'))) {
+    throw new Error('application.json or explicit option precedence was not applied')
+  }
 }
-if (!malformedRejected) throw new Error('malformed .env file did not fail before spawn')
-
-let missingRejected = false
-try {
-  new Fylo(${JSON.stringify(fileRoot)}, {
-    binary: ${JSON.stringify(binaryPath)},
-    env: ${JSON.stringify(path.join(fileRoot, 'missing.env'))},
-  })
-} catch (error) {
-  missingRejected = error.message.includes('cannot read FYLO environment file')
-}
-if (!missingRejected) throw new Error('missing .env file did not fail before spawn')
-
-const secretSentinel = 'SHOULD_NOT_APPEAR_IN_AN_ERROR'
-let nulRejectedWithoutLeak = false
-try {
-  new Fylo(${JSON.stringify(fileRoot)}, {
-    binary: ${JSON.stringify(binaryPath)},
-    env: { FYLO_ENCRYPTION_KEY: secretSentinel + '\\0tail' },
-  })
-} catch (error) {
-  nulRejectedWithoutLeak = error.message.includes('FYLO_ENCRYPTION_KEY') &&
-    !error.message.includes(secretSentinel)
-}
-if (!nulRejectedWithoutLeak) {
-  throw new Error('NUL environment value was accepted or leaked its secret value')
-}
-console.log(JSON.stringify({ ok: true, inherited }))
+if (JSON.stringify(process.env) !== inherited) throw new Error('configuration mutated process.env')
+console.log(JSON.stringify({ ok: true }))
 `
         const result = await run(['node', '--input-type=module', '-e', script], {
-            env: { FYLO_SHARD_WIDTH: '4' }
+            env: { FYLO_SHARD_WIDTH: '4', FYLO_ROOT: '/this/env/root/must/not/win' }
         })
-        expectSuccess('Node child environment scoping', result)
-        expect(JSON.parse(result.stdout)).toEqual({ ok: true, inherited: '4' })
+        expectSuccess('Node application configuration', result)
+        expect(JSON.parse(result.stdout)).toEqual({ ok: true })
     })
 
-    test.skipIf(process.platform === 'win32')(
-        'Node shim preserves reserved object-property names in a child environment file',
-        async () => {
-            await requireCommand('node')
-            const root = await tempRoot('fylo-node-env-reserved-')
-            const environmentFile = path.join(root, 'reserved.fylo.env')
-            const probe = path.join(root, 'environment-probe.mjs')
-            await writeFile(environmentFile, '__proto__=preserved\n')
-            await writeFile(
-                probe,
-                `#!/usr/bin/env node
-if (!Object.prototype.hasOwnProperty.call(process.env, '__proto__') || process.env['__proto__'] !== 'preserved') {
-  process.stderr.write('reserved environment key was not preserved')
-  process.exit(2)
-}
-let buffer = ''
-process.stdin.setEncoding('utf8')
-process.stdin.on('data', (chunk) => {
-  buffer += chunk
-  const newline = buffer.indexOf('\\n')
-  if (newline < 0) return
-  buffer = buffer.slice(newline + 1)
-  process.stdout.write(JSON.stringify({
-    ok: true,
-    result: { machine: { maxRequestBytes: 1048576, maxResponseBytes: 8388608 } }
-  }) + '\\n')
-})
-process.stdin.on('end', () => process.exit(0))
-`
+    test('Node shim rejects legacy env and malformed config options before spawning', async () => {
+        const { Fylo } = await import('../../clients/node/fylo.mjs')
+        for (const env of ['legacy.env', { SECRET: 'must-not-be-logged' }, undefined]) {
+            expect(() => new Fylo('/unused', { binary: '/missing-binary', env })).toThrow(
+                'env is no longer supported; use config'
             )
-            await chmod(probe, 0o700)
+        }
+        for (const config of ['', '   ', null, {}, [], 123, 'secret-value\0tail']) {
+            let failure
+            try {
+                new Fylo('/unused', { binary: '/missing-binary', config })
+            } catch (error) {
+                failure = error
+            }
+            expect(failure).toBeInstanceOf(TypeError)
+            expect(failure.message).toContain(
+                'config must be a non-empty application.json file path'
+            )
+            expect(failure.message).not.toContain('secret-value')
+        }
+        for (const shardWidth of [0, -1, 5, 1.5]) {
+            expect(() => new Fylo('/unused', { binary: '/missing-binary', shardWidth })).toThrow(
+                'shardWidth must be an integer from 1 to 4'
+            )
+        }
+    })
+
+    test('Node shim propagates missing, malformed, and invalid application configuration failures', async () => {
+        await requireCommand('node')
+        const root = await tempRoot('fylo-node-config-invalid-')
+        const cases = [
+            ['missing.json', undefined],
+            ['malformed.json', '{"fylo":'],
+            ['invalid.json', JSON.stringify({ fylo: { shard: { width: '2' } } })],
+            ['unknown.json', JSON.stringify({ fylo: { shard_width: 2 } })]
+        ]
+        for (const [name, source] of cases) {
+            const config = path.join(root, name)
+            if (source !== undefined) await writeFile(config, source)
             const script = `
 import { Fylo } from ${JSON.stringify(path.join(shimRoot, 'node', 'fylo.mjs'))}
 const db = new Fylo(${JSON.stringify(root)}, {
-  binary: ${JSON.stringify(probe)},
-  env: ${JSON.stringify(environmentFile)},
+  binary: ${JSON.stringify(binaryPath)}, config: ${JSON.stringify(config)},
 })
-try {
-  await db.ready
-  console.log(JSON.stringify({ ok: true }))
-} finally {
-  await db.close()
-}
+let rejected = false
+try { await db.ready } catch { rejected = true } finally { await db.close() }
+if (!rejected) throw new Error('invalid configuration was accepted')
+console.log(JSON.stringify({ ok: true }))
 `
             const result = await run(['node', '--input-type=module', '-e', script])
-            expectSuccess('Node reserved environment key', result)
+            expectSuccess('Node configuration failure: ' + name, result)
             expect(JSON.parse(result.stdout)).toEqual({ ok: true })
         }
-    )
+    })
 
-    test.skipIf(process.platform === 'win32' || !process.getuid)(
-        'Node shim applies trusted virtual-group access to documents and raw files (#68)',
-        async () => {
-            await requireCommand('node')
-            const root = await tempRoot('fylo-node-access-')
-            const source = path.join(root, 'tenant-attachment.txt')
-            await writeFile(source, 'private attachment')
-            const script = `
+    test('Node shim leaves secret resolution to the native application configuration loader', async () => {
+        await requireCommand('node')
+        const root = await tempRoot('fylo-node-config-secret-')
+        const config = path.join(root, 'application.json')
+        const schema = path.join(root, 'schema')
+        await mkdir(path.join(schema, 'users', 'history'), { recursive: true })
+        await writeFile(
+            path.join(schema, 'users', 'manifest.json'),
+            JSON.stringify({ current: 'v1', versions: [{ v: 'v1' }] })
+        )
+        await writeFile(
+            path.join(schema, 'users', 'history', 'v1.schema.json'),
+            JSON.stringify({ type: 'object', $encrypted: ['name'] })
+        )
+        await writeFile(
+            config,
+            JSON.stringify({
+                fylo: {
+                    schema,
+                    encryption: { key: '$' + '{FYLO_INTEROP_SECRET}' },
+                    cipher: { salt: '$' + '{FYLO_INTEROP_SALT}' }
+                }
+            })
+        )
+        await writeFile(
+            path.join(root, '.env'),
+            [
+                'FYLO_INTEROP_SECRET=interop-local-secret-at-least-thirty-two-bytes',
+                'FYLO_INTEROP_SALT=local-file-salt',
+                ''
+            ].join('\n')
+        )
+        const script = `
 import { Fylo } from ${JSON.stringify(path.join(shimRoot, 'node', 'fylo.mjs'))}
-const db = new Fylo(${JSON.stringify(root)}, { binary: ${JSON.stringify(binaryPath)} })
-const gid = process.getgid()
-const memberUid = process.getuid() + 10001
-const member = { uid: memberUid, groups: [gid] }
-const outsider = { uid: memberUid + 1, groups: [] }
+const inherited = JSON.stringify(process.env)
+const db = new Fylo(${JSON.stringify(root)}, {
+  binary: ${JSON.stringify(binaryPath)}, config: ${JSON.stringify(config)},
+})
 try {
-  await db.createCollection('messages')
-  await db.createCollection('attachments', 'file')
-
-  const id = await db.putData('messages', { tenant: 'domain-a', title: 'draft' }).as({ gid, mode: 0o660 })
-  const found = await db.findDocs('messages', { tenant: 'domain-a' }).as(member)
-  if (found[id]?.title !== 'draft') throw new Error('trusted group could not query document')
-  const hidden = await db.findDocs('messages', { tenant: 'domain-a' }).as({ uid: memberUid, groups: [] })
-  if (id in hidden) throw new Error('virtual group membership leaked between requests')
-
-  await db.patchDoc('messages', id, { title: 'updated' }).as(member)
-  await db.setMeta('messages', id, { source: 'node-access' }).as(member)
-  const meta = await db.getMeta('messages', id).as(member)
-  if (meta.source !== 'node-access') throw new Error('trusted group could not access metadata')
-
-  let denied = false
-  try {
-    await db.getDoc('messages', id).as(outsider)
-  } catch (error) {
-    denied = error.code === 'EACCES'
-  }
-  if (!denied) throw new Error('outsider document read did not fail with EACCES')
-
-  await db.delDoc('messages', id).as(member)
-  const deleted = await db.findDeletedDocs('messages').as(member)
-  if (!deleted[id]) throw new Error('trusted group could not query deleted document')
-  await db.restoreDoc('messages', id).as(member)
-
-  const fileId = await db.putFile(
-    'attachments',
-    { path: ${JSON.stringify(source)}, key: '/domain-a/attachment.txt' },
-    { maxBytes: 64 }
-  ).as({ gid, mode: 0o660 })
-  const file = await db.getDoc('attachments', fileId).as(member)
-  if (file[fileId]?.key !== '/domain-a/attachment.txt') {
-    throw new Error('trusted group could not read raw-file manifest')
-  }
-  const files = await db.findDocs('attachments', { key: '/domain-a/attachment.txt' }).as(member)
-  if (!files[fileId]) throw new Error('trusted group could not query raw-file bucket')
-
-  denied = false
-  try {
-    await db.delDoc('attachments', fileId).as(outsider)
-  } catch (error) {
-    denied = error.code === 'EACCES'
-  }
-  if (!denied) throw new Error('outsider raw-file delete did not fail with EACCES')
-  await db.delDoc('attachments', fileId).as(member)
-  console.log(JSON.stringify({ ok: true }))
-} finally {
-  await db.close()
-}
+  await db.createCollection('users')
+  const id = await db.putData('users', { name: 'Secret Ada' })
+  const doc = await db.getLatest('users', id)
+  if (doc[id]?.name !== 'Secret Ada') throw new Error('secret-backed configuration failed round trip')
+  if (JSON.stringify(process.env) !== inherited) throw new Error('.env mutated host process.env')
+  console.log(JSON.stringify({ ok: true, id }))
+} finally { await db.close() }
 `
-            const result = await run(['node', '--input-type=module', '-e', script])
-            expectSuccess('node virtual-group access interop', result)
-            expect(JSON.parse(result.stdout).ok).toBe(true)
-        }
-    )
+        const result = await run(['node', '--input-type=module', '-e', script])
+        expectSuccess('Node secret references', result)
+        const { id } = JSON.parse(result.stdout)
+        const document = await readFile(
+            path.join(root, '.collections', 'users', 'docs', id.slice(-1), id + '.json'),
+            'utf8'
+        )
+        expect(document).not.toContain('Secret Ada')
+        expect(result.stderr).not.toContain('interop-local-secret-at-least-thirty-two-bytes')
+
+        // A referenced deployment secret overrides the adjacent .env value.
+        await writeFile(
+            path.join(root, '.env'),
+            ['FYLO_INTEROP_SECRET=wrong-secret', 'FYLO_INTEROP_SALT=wrong-salt', ''].join('\n')
+        )
+        const reopen = `
+import { Fylo } from ${JSON.stringify(path.join(shimRoot, 'node', 'fylo.mjs'))}
+const db = new Fylo(${JSON.stringify(root)}, {
+  binary: ${JSON.stringify(binaryPath)}, config: ${JSON.stringify(config)},
+})
+try {
+  const doc = await db.getLatest('users', ${JSON.stringify(id)})
+  if (doc[${JSON.stringify(id)}]?.name !== 'Secret Ada') throw new Error('injected secret did not take precedence')
+  console.log(JSON.stringify({ ok: true }))
+} finally { await db.close() }
+`
+        const reopened = await run(['node', '--input-type=module', '-e', reopen], {
+            env: {
+                FYLO_INTEROP_SECRET: 'interop-local-secret-at-least-thirty-two-bytes',
+                FYLO_INTEROP_SALT: 'local-file-salt'
+            }
+        })
+        expectSuccess('Node injected secret precedence', reopened)
+        expect(JSON.parse(reopened.stdout)).toEqual({ ok: true })
+    })
 
     test('Node shim keeps the compiled loop alive after a raw-file path put (#65)', async () => {
         await requireCommand('node')
@@ -779,11 +716,9 @@ begin
   end
   summary = consume.call
   raise 'queue consumer wrapper did not ack' unless handled == [2] && summary['acknowledged'] == 1
-  access = { 'uid' => Process.uid, 'mode' => 0o600 }
-  sql_id = db.sql("INSERT INTO users (name, score, scope) VALUES ('SQL Ada', 91, 'private-sql')", access)
-  raise 'anonymous SQL leaked protected row' unless db.sql("SELECT * FROM users WHERE scope = 'private-sql'").empty?
-  owner_rows = db.sql("SELECT * FROM users WHERE scope = 'private-sql'", { 'uid' => Process.uid })
-  raise 'owner SQL could not read row' unless owner_rows[sql_id]['name'] == 'SQL Ada'
+  sql_id = db.sql("INSERT INTO users (name, score, scope) VALUES ('SQL Ada', 91, 'sql')")
+  sql_rows = db.sql("SELECT * FROM users WHERE scope = 'sql'")
+  raise 'SQL could not read row' unless sql_rows[sql_id]['name'] == 'SQL Ada'
   puts JSON.generate({ ok: true, id: id, doc: doc, found: found, meta: meta })
 ensure
   db.close
@@ -796,9 +731,11 @@ end
         expect(parsed.found[parsed.id].name).toBe('Ada')
     })
 
-    test('Ruby shim can remove an inherited variable from its FYLO child', async () => {
+    test('Ruby shim forwards application configuration and ignores legacy setting variables', async () => {
         await requireCommand('ruby')
-        const root = await tempRoot('fylo-ruby-env-unset-')
+        const root = await tempRoot('fylo-ruby-config-')
+        const config = path.join(root, 'application.json')
+        await writeFile(config, JSON.stringify({ fylo: { shard: { width: 2 } } }))
         const script = `
 $LOAD_PATH.unshift(${JSON.stringify(path.join(shimRoot, 'ruby'))})
 require 'fylo'
@@ -807,14 +744,14 @@ require 'json'
 db = Fylo.new(
   ${JSON.stringify(root)},
   binary: ${JSON.stringify(binaryPath)},
-  env: { 'FYLO_SHARD_WIDTH' => nil }
+  config: ${JSON.stringify(config)}
 )
 begin
   db.create_collection('users')
-  id = db.put_data('users', { 'source' => 'ruby-unset' })
+  id = db.put_data('users', { 'source' => 'ruby-config' })
   docs = File.join(${JSON.stringify(root)}, '.collections', 'users', 'docs')
   puts JSON.generate({
-    one: File.exist?(File.join(docs, id[-1], id + '.json')),
+    two: File.exist?(File.join(docs, id[-2, 2], id + '.json')),
     four: File.exist?(File.join(docs, id[-4, 4], id + '.json'))
   })
 ensure
@@ -824,7 +761,609 @@ end
         const result = await run(['ruby', '-e', script], {
             env: { FYLO_SHARD_WIDTH: '4' }
         })
-        expectSuccess('Ruby child environment removal', result)
-        expect(JSON.parse(result.stdout)).toEqual({ one: true, four: false })
+        expectSuccess('Ruby application configuration', result)
+        expect(JSON.parse(result.stdout)).toEqual({ two: true, four: false })
     })
+})
+
+const INVALID_ID_MESSAGE = 'EENGINE_STORAGE: EINVALIDDOCID: invalid FYLO document identifier'
+const COMPILED_CLIENT_TIMEOUT = 180_000
+const FAKE_HANDSHAKE =
+    '{"protocolVersion":1,"ok":true,"op":"handshake","requestId":null,"durationMs":0,"result":{"machine":{"maxRequestBytes":1048576,"maxResponseBytes":8388608}}}'
+
+/**
+ * @param {string} directory
+ * @param {string} afterHandshake
+ */
+async function fakeBinary(directory, afterHandshake) {
+    const file = path.join(directory, 'fake-fylo.sh')
+    await writeFile(
+        file,
+        `#!/bin/sh\nread line\nprintf '%s\\n' '${FAKE_HANDSHAKE}'\n${afterHandshake}\n`,
+        { mode: 0o755 }
+    )
+    return file
+}
+
+/**
+ * @param {string} stdout
+ */
+function lastJsonLine(stdout) {
+    const lines = stdout.trim().split(/\r?\n/)
+    return JSON.parse(lines[lines.length - 1])
+}
+
+/**
+ * @param {string} runtime
+ * @param {string} binary
+ */
+function nodeFailureScript(runtime, binary) {
+    return `
+import { Fylo } from ${JSON.stringify(path.join(shimRoot, 'node', 'fylo.mjs'))}
+const settle = (promise) =>
+  Promise.race([
+    promise.then(() => 'resolved', (error) => error.message),
+    new Promise((resolve) => setTimeout(() => resolve('hung'), 5000)),
+  ])
+const db = new Fylo('/unused-root', { binary: ${JSON.stringify(binary)} })
+await db.handshake()
+const first = await settle(db.findDocs('users', {}))
+const second = await settle(db.findDocs('users', {}))
+const closed = await settle(db.close())
+console.log(JSON.stringify({ runtime: ${JSON.stringify(runtime)}, first, second, closed }))
+process.exit(0)
+`
+}
+
+describe('client shim failure contracts via fylo exec --loop', () => {
+    test.each(['node', 'bun'])(
+        'Node shim settles later calls and close after the child dies by a signal (%s)',
+        async (runtime) => {
+            await requireCommand(runtime)
+            const directory = await tempRoot('fylo-node-signal-')
+            const binary = await fakeBinary(directory, 'read line\nkill -9 $$')
+            const script = path.join(directory, 'signal.mjs')
+            await writeFile(script, nodeFailureScript(runtime, binary))
+            const result = await run([runtime, script], { timeout: 30_000 })
+            expectSuccess(`${runtime} signal death`, result)
+            expect(JSON.parse(result.stdout)).toEqual({
+                runtime,
+                first: 'fylo process exited',
+                second: 'fylo process exited',
+                closed: 'resolved'
+            })
+        }
+    )
+
+    test.each(['node', 'bun'])(
+        'Node shim settles later calls and close after a malformed response frame (%s)',
+        async (runtime) => {
+            await requireCommand(runtime)
+            const directory = await tempRoot('fylo-node-malformed-')
+            const binary = await fakeBinary(
+                directory,
+                "while read line; do printf '%s\\n' '{not json'; done"
+            )
+            const script = path.join(directory, 'malformed.mjs')
+            await writeFile(script, nodeFailureScript(runtime, binary))
+            const result = await run([runtime, script], { timeout: 30_000 })
+            expectSuccess(`${runtime} malformed frame`, result)
+            expect(JSON.parse(result.stdout)).toEqual({
+                runtime,
+                first: 'FYLO returned malformed UTF-8 or JSON',
+                second: 'fylo process exited',
+                closed: 'resolved'
+            })
+        }
+    )
+
+    test('Node shim exposes the machine error code', async () => {
+        await requireCommand('node')
+        const root = await tempRoot('fylo-node-code-')
+        const script = `
+import { Fylo } from ${JSON.stringify(path.join(shimRoot, 'node', 'fylo.mjs'))}
+const db = new Fylo(${JSON.stringify(root)}, { binary: ${JSON.stringify(binaryPath)} })
+try {
+  await db.createCollection('users')
+  const error = await db.getDoc('users', 'bad').then(() => null, (failure) => failure)
+  console.log(JSON.stringify({ code: error.code, message: error.message }))
+} finally {
+  await db.close()
+}
+`
+        const result = await run(['node', '--input-type=module', '-e', script])
+        expectSuccess('node error code', result)
+        expect(JSON.parse(result.stdout)).toEqual({
+            code: 'EINVALIDDOCID',
+            message: INVALID_ID_MESSAGE
+        })
+    })
+
+    test('Python shim runs async handlers in queue_process and exposes the error code', async () => {
+        await requireCommand('python3')
+        const root = await tempRoot('fylo-python-failures-')
+        const script = `
+import asyncio, json, sys
+sys.path.insert(0, ${JSON.stringify(path.join(shimRoot, 'python'))})
+from fylo import Fylo, FyloError
+
+handled = []
+
+async def handle(delivery):
+    await asyncio.sleep(0)
+    handled.append(delivery['payload']['job'])
+
+async def fail(delivery):
+    await asyncio.sleep(0)
+    raise RuntimeError('FYLO_SENTINEL_SECRET_MUST_NOT_PERSIST')
+
+with Fylo(${JSON.stringify(root)}, binary=${JSON.stringify(binaryPath)}) as db:
+    db.queue_publish('async.jobs', {'job': 1})
+    without_loop = db.queue_process('async.jobs', 'worker', handle)
+
+    async def inside_loop():
+        db.queue_publish('async.jobs', {'job': 2})
+        return db.queue_process('async.jobs', 'worker', handle)
+
+    with_loop = asyncio.run(inside_loop())
+    db.queue_publish('async.failures', {'job': 3})
+    failed = db.queue_process('async.failures', 'worker', fail, max_attempts=1)
+    letters = db.queue_dead_letters('async.failures', 'worker')
+    db.create_collection('users')
+    try:
+        db.get_doc('users', 'bad')
+        error = None
+    except FyloError as failure:
+        error = failure
+    print(json.dumps({
+        'handled': handled,
+        'withoutLoop': without_loop,
+        'withLoop': with_loop,
+        'failed': failed,
+        'reasons': [letter['reason'] for letter in letters],
+        'code': error.code,
+        'message': str(error),
+    }))
+`
+        const result = await run(['python3', '-c', script])
+        expectSuccess('python async queue_process and error code', result)
+        const parsed = JSON.parse(result.stdout)
+        expect(parsed.handled).toEqual([1, 2])
+        expect(parsed.withoutLoop.acknowledged).toBe(1)
+        expect(parsed.withLoop.acknowledged).toBe(1)
+        expect(parsed.failed.deadLettered).toBe(1)
+        expect(parsed.reasons).toEqual(['queue handler failed'])
+        expect(parsed.code).toBe('EINVALIDDOCID')
+        expect(parsed.message).toBe(INVALID_ID_MESSAGE)
+    })
+
+    test('Ruby shim exposes the machine error code', async () => {
+        await requireCommand('ruby')
+        const root = await tempRoot('fylo-ruby-code-')
+        const script = `
+$LOAD_PATH.unshift(${JSON.stringify(path.join(shimRoot, 'ruby'))})
+require 'fylo'
+require 'json'
+
+db = Fylo.new(${JSON.stringify(root)}, binary: ${JSON.stringify(binaryPath)})
+begin
+  db.create_collection('users')
+  begin
+    db.get_doc('users', 'bad')
+  rescue FyloError => error
+    puts JSON.generate({ code: error.code, message: error.message })
+  end
+ensure
+  db.close
+end
+`
+        const result = await run(['ruby', '-e', script])
+        expectSuccess('ruby error code', result)
+        expect(JSON.parse(result.stdout)).toEqual({
+            code: 'EINVALIDDOCID',
+            message: INVALID_ID_MESSAGE
+        })
+    })
+
+    test('PHP shim sends empty map arguments as objects and exposes the error code', async () => {
+        await requireCommand('php')
+        const root = await tempRoot('fylo-php-failures-')
+        const script = `<?php
+require ${JSON.stringify(path.join(shimRoot, 'php', 'fylo.php'))};
+
+function attempt(callable $call): string
+{
+    try {
+        $call();
+        return 'ok';
+    } catch (FyloError $error) {
+        return $error->getMessage();
+    }
+}
+
+$db = new Fylo(${JSON.stringify(root)}, ${JSON.stringify(binaryPath)});
+try {
+    $db->createCollection('users');
+    $id = $db->putData('users', []);
+    $results = [
+        'setMeta' => attempt(fn () => $db->setMeta('users', $id, [])),
+        'findDocs' => attempt(fn () => $db->findDocs('users', [])),
+        'findDeletedDocs' => attempt(fn () => $db->findDeletedDocs('users')),
+        'findDocsPage' => attempt(fn () => $db->findDocsPage('users', [])),
+        'findDeletedDocsPage' => attempt(fn () => $db->findDeletedDocsPage('users')),
+        'collectionFind' => attempt(fn () => $db->collection('users')->find([])),
+    ];
+    try {
+        $db->getDoc('users', 'bad');
+    } catch (FyloError $error) {
+        $failure = ['code' => $error->getFyloCode(), 'message' => $error->getMessage(), 'number' => $error->getCode()];
+    }
+    echo json_encode(['created' => is_string($id), 'results' => $results, 'failure' => $failure]);
+} finally {
+    $db->close();
+}
+`
+        const file = path.join(root, 'probe.php')
+        await writeFile(file, script)
+        const result = await run(['php', file])
+        expectSuccess('php empty maps and error code', result)
+        expect(JSON.parse(result.stdout)).toEqual({
+            created: true,
+            results: {
+                setMeta: 'ok',
+                findDocs: 'ok',
+                findDeletedDocs: 'ok',
+                findDocsPage: 'ok',
+                findDeletedDocsPage: 'ok',
+                collectionFind: 'ok'
+            },
+            failure: { code: 'EINVALIDDOCID', message: INVALID_ID_MESSAGE, number: 0 }
+        })
+    })
+
+    test(
+        'Go shim sends nil maps as objects and exposes the error code through errors.As',
+        async () => {
+            await requireCommand('go')
+            const directory = await tempRoot('fylo-go-failures-')
+            await mkdir(path.join(directory, 'fylo'))
+            await writeFile(
+                path.join(directory, 'fylo', 'fylo.go'),
+                await readFile(path.join(shimRoot, 'go', 'fylo.go'))
+            )
+            await writeFile(path.join(directory, 'go.mod'), 'module fylo-shim-test\n\ngo 1.22\n')
+            await writeFile(
+                path.join(directory, 'main.go'),
+                `package main
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+
+	fylo "fylo-shim-test/fylo"
+)
+
+func outcome(err error) string {
+	if err != nil {
+		return err.Error()
+	}
+	return "ok"
+}
+
+func main() {
+	db, err := fylo.OpenWithOptions(os.Args[2], fylo.Options{Binary: os.Args[1]})
+	if err != nil {
+		panic(err)
+	}
+	defer db.Close()
+	if _, err := db.CreateCollection("users", "document"); err != nil {
+		panic(err)
+	}
+	created, err := db.PutData("users", nil)
+	id, _ := created.(string)
+	results := map[string]string{"putData": outcome(err)}
+	_, err = db.SetMeta("users", id, nil)
+	results["setMeta"] = outcome(err)
+	_, err = db.FindDocs("users", nil)
+	results["findDocs"] = outcome(err)
+	_, err = db.FindDocsPage("users", nil, nil)
+	results["findDocsPage"] = outcome(err)
+	_, err = db.FindDeletedDocsPage("users", nil, nil)
+	results["findDeletedDocsPage"] = outcome(err)
+	_, err = db.GetDoc("users", "bad")
+	var failure *fylo.Error
+	matched := errors.As(err, &failure)
+	output, _ := json.Marshal(map[string]any{
+		"results": results,
+		"matched": matched,
+		"code":    failure.Code,
+		"message": err.Error(),
+	})
+	fmt.Print(string(output))
+}
+`
+            )
+            const result = await run(['go', 'run', '.', binaryPath, path.join(directory, 'root')], {
+                cwd: directory,
+                timeout: COMPILED_CLIENT_TIMEOUT
+            })
+            expectSuccess('go nil maps and error code', result)
+            expect(JSON.parse(result.stdout)).toEqual({
+                results: {
+                    putData: 'ok',
+                    setMeta: 'ok',
+                    findDocs: 'ok',
+                    findDocsPage: 'ok',
+                    findDeletedDocsPage: 'ok'
+                },
+                matched: true,
+                code: 'EINVALIDDOCID',
+                message: INVALID_ID_MESSAGE
+            })
+        },
+        COMPILED_CLIENT_TIMEOUT
+    )
+
+    test(
+        'Java shim rejects a multi-line raw request and exposes the error code',
+        async () => {
+            await requireCommand('javac')
+            const directory = await tempRoot('fylo-java-failures-')
+            await writeFile(
+                path.join(directory, 'Fylo.java'),
+                await readFile(path.join(shimRoot, 'java', 'Fylo.java'))
+            )
+            await writeFile(
+                path.join(directory, 'Probe.java'),
+                `import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+public final class Probe {
+    public static void main(String[] args) throws Exception {
+        Fylo.Options options = new Fylo.Options();
+        options.binary = args[0];
+        try (Fylo db = new Fylo(args[1], options)) {
+            db.createCollection("users");
+            Matcher created = Pattern.compile("\\"result\\":\\"([^\\"]+)\\"").matcher(db.putData("users", Map.of("name", "Ada")));
+            created.find();
+            String id = created.group(1);
+            String lineBreak = "accepted";
+            try {
+                db.request("{\\"op\\":\\"inspectCollection\\",\\"collection\\":\\"users\\"}\\n{\\"op\\":\\"handshake\\"}");
+            } catch (IllegalArgumentException error) {
+                lineBreak = error.getMessage();
+            }
+            String next = db.getLatest("users", id);
+            Fylo.FyloException failure = null;
+            try {
+                db.getDoc("users", "bad");
+            } catch (Fylo.FyloException error) {
+                failure = error;
+            }
+            System.out.print("{\\"lineBreak\\":" + Fylo.toJson(lineBreak)
+                + ",\\"nextIsOwnResponse\\":" + (next.contains("\\"op\\":\\"getLatest\\"") && next.contains(id))
+                + ",\\"code\\":" + Fylo.toJson(failure.getCode())
+                + ",\\"messageIsResponse\\":" + failure.getMessage().contains(${JSON.stringify(INVALID_ID_MESSAGE)}) + "}");
+        }
+    }
+}
+`
+            )
+            const compile = await run(['javac', 'Fylo.java', 'Probe.java'], {
+                cwd: directory,
+                timeout: COMPILED_CLIENT_TIMEOUT
+            })
+            expectSuccess('javac', compile)
+            const result = await run(
+                ['java', '-cp', directory, 'Probe', binaryPath, path.join(directory, 'root')],
+                { timeout: COMPILED_CLIENT_TIMEOUT }
+            )
+            expectSuccess('java line breaks and error code', result)
+            expect(JSON.parse(result.stdout)).toEqual({
+                lineBreak: 'FYLO request must be a single line without CR or LF characters',
+                nextIsOwnResponse: true,
+                code: 'EINVALIDDOCID',
+                messageIsResponse: true
+            })
+        },
+        COMPILED_CLIENT_TIMEOUT
+    )
+
+    test(
+        'C# shim rejects a multi-line raw request and exposes the error code',
+        async () => {
+            await requireCommand('dotnet')
+            const directory = await tempRoot('fylo-csharp-failures-')
+            await writeFile(
+                path.join(directory, 'Fylo.cs'),
+                await readFile(path.join(shimRoot, 'csharp', 'Fylo.cs'))
+            )
+            await writeFile(
+                path.join(directory, 'Probe.csproj'),
+                '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>disable</Nullable></PropertyGroup></Project>'
+            )
+            await writeFile(
+                path.join(directory, 'Program.cs'),
+                `using System.Text.Json;
+
+using var db = new Fylo.Fylo(args[1], new Fylo.Fylo.Options { Binary = args[0] });
+db.CreateCollection("users");
+string id = db.PutData("users", new Dictionary<string, object> { ["name"] = "Ada" }).GetString();
+string lineBreak = "accepted";
+try
+{
+    db.Request("{\\"op\\":\\"inspectCollection\\",\\"collection\\":\\"users\\"}\\n{\\"op\\":\\"handshake\\"}").Dispose();
+}
+catch (ArgumentException error)
+{
+    lineBreak = error.Message;
+}
+JsonElement next = db.GetLatest("users", id);
+Fylo.FyloException failure = null;
+try
+{
+    db.GetDoc("users", "bad");
+}
+catch (Fylo.FyloException error)
+{
+    failure = error;
+}
+Console.WriteLine(JsonSerializer.Serialize(new Dictionary<string, object>
+{
+    ["lineBreak"] = lineBreak,
+    ["nextIsOwnResponse"] = next.TryGetProperty(id, out _),
+    ["code"] = failure.Code,
+    ["message"] = failure.Message,
+}));
+`
+            )
+            const result = await run(
+                [
+                    'dotnet',
+                    'run',
+                    '--project',
+                    directory,
+                    '--',
+                    binaryPath,
+                    path.join(directory, 'root')
+                ],
+                {
+                    timeout: COMPILED_CLIENT_TIMEOUT,
+                    env: { DOTNET_CLI_TELEMETRY_OPTOUT: '1', DOTNET_NOLOGO: '1' }
+                }
+            )
+            expectSuccess('csharp line breaks and error code', result)
+            const parsed = lastJsonLine(result.stdout)
+            expect(parsed.lineBreak).toContain(
+                'FYLO request must be a single line without CR or LF characters'
+            )
+            expect(parsed.nextIsOwnResponse).toBe(true)
+            expect(parsed.code).toBe('EINVALIDDOCID')
+            expect(parsed.message).toBe(INVALID_ID_MESSAGE)
+        },
+        COMPILED_CLIENT_TIMEOUT
+    )
+
+    test(
+        'Rust shim rejects a multi-line raw request and exposes the error code',
+        async () => {
+            await requireCommand('rustc')
+            const directory = await tempRoot('fylo-rust-failures-')
+            await writeFile(
+                path.join(directory, 'fylo.rs'),
+                await readFile(path.join(shimRoot, 'rust', 'fylo.rs'))
+            )
+            await writeFile(
+                path.join(directory, 'probe.rs'),
+                `mod fylo;
+use fylo::{Fylo, FyloError, FyloOptions, Json};
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    let options = FyloOptions { binary: args[1].clone(), config: None };
+    let mut db = Fylo::open_with_options(&args[2], options).unwrap();
+    db.create_collection("users", "document").unwrap();
+    let created = db.put_data("users", Json::obj(vec![("name", "Ada".into())])).unwrap();
+    let id = created.split("\\"result\\":\\"").nth(1).unwrap().split('"').next().unwrap().to_string();
+    let line_break = db
+        .request("{\\"op\\":\\"inspectCollection\\",\\"collection\\":\\"users\\"}\\n{\\"op\\":\\"handshake\\"}")
+        .unwrap_err()
+        .to_string();
+    let next = db.get_latest("users", &id).unwrap();
+    let failure = db.get_doc("users", "bad").unwrap_err();
+    println!(
+        "{{\\"lineBreak\\":{:?},\\"nextIsOwnResponse\\":{},\\"code\\":{:?},\\"messageIsResponse\\":{}}}",
+        line_break,
+        next.contains("\\"op\\":\\"getLatest\\"") && next.contains(&id),
+        FyloError::code_of(&failure).unwrap_or_default(),
+        failure.to_string().contains(${JSON.stringify(INVALID_ID_MESSAGE)})
+    );
+}
+`
+            )
+            const executable = path.join(directory, 'probe')
+            const compile = await run(
+                ['rustc', '--edition', '2021', '-A', 'dead_code', 'probe.rs', '-o', executable],
+                { cwd: directory, timeout: COMPILED_CLIENT_TIMEOUT }
+            )
+            expectSuccess('rustc', compile)
+            const result = await run([executable, binaryPath, path.join(directory, 'root')])
+            expectSuccess('rust line breaks and error code', result)
+            expect(JSON.parse(result.stdout)).toEqual({
+                lineBreak: 'FYLO request must be a single line without CR or LF characters',
+                nextIsOwnResponse: true,
+                code: 'EINVALIDDOCID',
+                messageIsResponse: true
+            })
+        },
+        COMPILED_CLIENT_TIMEOUT
+    )
+
+    test(
+        'Dart shim fails requests fast after the child exits and exposes the error code',
+        async () => {
+            await requireCommand('dart')
+            const directory = await tempRoot('fylo-dart-failures-')
+            await writeFile(
+                path.join(directory, 'fylo.dart'),
+                await readFile(path.join(shimRoot, 'dart', 'fylo.dart'))
+            )
+            await writeFile(
+                path.join(directory, 'probe.dart'),
+                `import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
+import 'fylo.dart';
+
+Future<String> outcome(Future<Object?> request) => request
+    .then((_) => 'resolved', onError: (Object error) => '$error')
+    .timeout(const Duration(seconds: 5), onTimeout: () => 'hung');
+
+Future<void> main(List<String> args) async {
+  final binary = args[0];
+  final root = args[1];
+  final broken = await Fylo.open('$root/broken',
+      binary: binary, config: '$root/missing-application.json');
+  final first = await outcome(broken.request({'op': 'handshake'}));
+  final second = await outcome(broken.request({'op': 'handshake'}));
+  final closed = await outcome(broken.close());
+  final db = await Fylo.open('$root/db', binary: binary);
+  FyloException? failure;
+  try {
+    await db.createCollection('users');
+    await db.getDoc('users', 'bad');
+  } on FyloException catch (error) {
+    failure = error;
+  } finally {
+    await db.close();
+  }
+  stdout.write(jsonEncode({
+    'first': first.startsWith('FyloException: fylo process exited'),
+    'second': second.startsWith('FyloException: fylo process exited'),
+    'closed': closed,
+    'code': failure?.code,
+    'message': failure?.message,
+  }));
+}
+`
+            )
+            const result = await run(
+                ['dart', 'run', path.join(directory, 'probe.dart'), binaryPath, directory],
+                { timeout: COMPILED_CLIENT_TIMEOUT }
+            )
+            expectSuccess('dart after exit and error code', result)
+            expect(JSON.parse(result.stdout)).toEqual({
+                first: true,
+                second: true,
+                closed: 'resolved',
+                code: 'EINVALIDDOCID',
+                message: INVALID_ID_MESSAGE
+            })
+        },
+        COMPILED_CLIENT_TIMEOUT
+    )
 })

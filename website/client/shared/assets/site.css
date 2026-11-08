@@ -45,6 +45,7 @@ html[w-theme='light'] .w-chip-tonal {
 
 html {
     scroll-behavior: smooth;
+    scroll-padding-top: 4.5rem;
 }
 
 body {
@@ -206,19 +207,32 @@ body {
     transform: translateY(0);
 }
 
+/* Tachyon component boundaries are compiler artefacts, not layout boxes. This
+   mirrors the DuVay website shell and lets sticky descendants use the page as
+   their containing block. */
+tachyon-component {
+    display: contents;
+}
+
+.home-main {
+    min-height: calc(100vh - 56px);
+}
+
 /* ── Documentation ──────────────────────────────────────────────────────── */
-/* Lives in the global sheet rather than per-component: every /docs page and the
-   docs-nav component share this layout, and Tachyon scopes component CSS to the
-   component that declares it. */
 .doc-shell {
     display: grid;
-    grid-template-columns: 15rem minmax(0, 1fr);
-    gap: clamp(1.5rem, 4vw, 3.5rem);
-    padding: clamp(1.75rem, 4vw, 2.75rem) clamp(1rem, 4vw, 1.5rem) clamp(3rem, 6vw, 4.5rem);
+    grid-template-columns: 15rem minmax(0, 1fr) 12rem;
+    width: 100%;
+    max-width: 84rem;
+    min-height: calc(100vh - 56px);
+    margin: 0 auto;
+    padding: 0 1rem;
+    box-sizing: border-box;
 }
 
 .doc-main {
     min-width: 0;
+    padding: 2.5rem clamp(1.5rem, 4vw, 3rem) 4.5rem;
 }
 
 .doc-page h1 {
@@ -383,11 +397,12 @@ body {
 /* ── Docs sidebar ───────────────────────────────────────────────────────── */
 .doc-nav {
     position: sticky;
-    top: 4.5rem;
+    top: 56px;
     align-self: start;
-    max-height: calc(100dvh - 6rem);
+    height: calc(100dvh - 56px);
     overflow-y: auto;
-    padding-right: 0.5rem;
+    padding: 2rem 1rem 3rem 0;
+    box-sizing: border-box;
 }
 
 .doc-nav-group + .doc-nav-group {
@@ -436,6 +451,52 @@ body {
     color: var(--w-on-primary-container, var(--w-primary));
     background: var(--w-primary-container);
     font-weight: 600;
+}
+
+/* ── On-this-page navigation ────────────────────────────────────────────── */
+.doc-toc {
+    position: sticky;
+    top: 56px;
+    align-self: start;
+    height: calc(100dvh - 56px);
+    overflow-y: auto;
+    padding: 2.5rem 0 3rem;
+    box-sizing: border-box;
+}
+
+.doc-toc-title {
+    margin: 0 0 0.6rem;
+    color: var(--w-text-very-subtle);
+    font-size: 0.7rem;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+}
+
+.doc-toc-list {
+    display: flex;
+    flex-direction: column;
+    border-left: 1px solid var(--w-divider);
+}
+
+.doc-toc-list a {
+    margin-left: -1px;
+    padding: 0.35rem 0 0.35rem 0.8rem;
+    border-left: 2px solid transparent;
+    color: var(--w-text-subtle);
+    font-size: 0.78rem;
+    line-height: 1.4;
+    text-decoration: none;
+}
+
+.doc-toc-list a:hover,
+.doc-toc-list a:focus-visible {
+    border-left-color: var(--w-primary);
+    color: var(--w-primary);
+}
+
+.doc-toc[hidden] {
+    display: none;
 }
 
 /* ── Guide cards ────────────────────────────────────────────────────────── */
@@ -517,28 +578,45 @@ body {
     text-decoration: underline;
 }
 
+@media (max-width: 1199.98px) {
+    .doc-shell {
+        grid-template-columns: 15rem minmax(0, 1fr);
+    }
+
+    .doc-toc {
+        display: none;
+    }
+}
+
 @media (max-width: 899.98px) {
     .doc-shell {
         grid-template-columns: minmax(0, 1fr);
+        padding: 0;
+    }
+
+    .doc-main {
+        padding: 2rem clamp(1rem, 4vw, 1.5rem) 3.5rem;
     }
     /* The sidebar becomes a swipeable strip above the content rather than a
      column that would eat half a phone screen. */
     .doc-nav {
         position: static;
+        height: auto;
         max-height: none;
         padding: 0 0 1rem;
-        margin-inline: calc(-1 * clamp(1rem, 4vw, 1.5rem));
+        min-width: 0;
         border-bottom: 1px solid var(--w-divider);
     }
     .doc-nav-inner {
         display: flex;
+        min-width: 0;
         gap: 1.5rem;
         overflow-x: auto;
         padding-inline: clamp(1rem, 4vw, 1.5rem);
-        scrollbar-width: none;
+        scrollbar-width: thin;
     }
-    .doc-nav-inner::-webkit-scrollbar {
-        display: none;
+    .doc-nav-group {
+        flex: 0 0 auto;
     }
     .doc-nav-group + .doc-nav-group {
         margin-top: 0;
@@ -561,11 +639,213 @@ body {
     margin: 0 0 1rem;
 }
 
+.client-language-strip {
+    display: flex;
+    gap: 0.5rem;
+    overflow-x: auto;
+    padding: 0.25rem 0 0.75rem;
+    scrollbar-width: thin;
+}
+
+.client-language-strip .w-chip {
+    flex: 0 0 auto;
+}
+
 .doc-sample-langs {
     display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    position: relative;
+    scrollbar-width: thin;
     gap: 0.25rem;
     margin-bottom: 0.6rem;
+}
+
+/* Shared landing-page rhythm, following the DuVay/Tachyon documentation sites. */
+.home-section {
+    padding: clamp(3rem, 6vw, 5rem) 1rem;
+    border-top: 1px solid var(--w-divider);
+}
+
+.home-section-heading {
+    max-width: 46rem;
+    margin: 0 auto 2rem;
+    text-align: center;
+}
+
+.home-section .home-kicker {
+    margin: 0 0 0.8rem;
+    color: var(--w-primary);
+    font-size: 0.78rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.home-section h2 {
+    margin: 0 0 1rem;
+    font-size: clamp(1.75rem, 3.5vw, 2.5rem);
+    letter-spacing: -0.035em;
+    line-height: 1.2;
+}
+
+.home-section p {
+    color: var(--w-text-subtle);
+    line-height: 1.75;
+}
+
+.home-section a {
+    color: var(--w-primary);
+    text-underline-offset: 0.25em;
+}
+
+.home-example-panel,
+.home-config-panel {
+    min-width: 0;
+    border: 1px solid var(--w-border);
+    border-radius: var(--w-radius-md);
+    background: var(--w-surface-container-low);
+    overflow: hidden;
+}
+
+.home-panel-label {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.85rem 1.25rem;
+    border-bottom: 1px solid var(--w-divider);
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+
+.home-panel-label a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+}
+
+.home-panel-tag {
+    color: var(--w-text-subtle);
+    font-weight: 400;
+}
+
+.home-example-panel .doc-sample {
+    min-width: 0;
+    padding: 1rem 1.25rem 1.25rem;
+}
+
+.home-example-panel .code-block {
+    margin: 0;
+    min-height: 16rem;
+    background: var(--w-surface);
+    box-shadow: none;
+}
+
+.home-example-note,
+.home-boundaries {
+    margin: 1.5rem 0 0;
+    text-align: center;
+    font-size: 0.875rem;
+}
+
+.home-config-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: clamp(2rem, 6vw, 5rem);
+    align-items: center;
+}
+
+.home-config-copy {
+    min-width: 0;
+    max-width: 34rem;
+}
+
+.home-config-copy code,
+.home-config-note code {
+    font-size: 0.9em;
+    color: var(--w-text);
+}
+
+.home-text-link {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+    font-weight: 600;
+}
+
+.home-config-panel .code-block {
+    border: 0;
+    border-radius: 0;
+    margin: 0;
+    background: transparent;
+    box-shadow: none;
+    font-size: 0.82rem;
+}
+
+.home-config-note {
+    margin: 0;
+    padding: 0 1.25rem 1.25rem;
+    font-size: 0.8rem;
+}
+
+.home-guide-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 1rem;
+}
+
+.home-guide {
+    display: block;
+    padding: 1.5rem;
+    border: 1px solid var(--w-border);
+    border-radius: var(--w-radius-md);
+    text-decoration: none;
+    transition:
+        border-color 160ms ease,
+        background 160ms ease;
+}
+
+.home-guide:hover {
+    border-color: var(--w-primary);
+    background: var(--w-surface-container-low);
+}
+
+.home-guide > span {
+    font-size: 0.75rem;
+    font-weight: 600;
+}
+
+.home-guide h3 {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.5rem;
+    margin: 0.75rem 0;
+    color: var(--w-text);
+    font-size: 1.05rem;
+    line-height: 1.5;
+}
+
+.home-guide p {
+    margin: 0;
+    font-size: 0.9rem;
+}
+
+@media (max-width: 760px) {
+    .home-config-grid,
+    .home-guide-grid {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .home-section {
+        padding-inline: 0;
+    }
+
+    .home-example-panel .doc-sample-langs {
+        margin-inline: 0;
+        padding-inline: 0;
+    }
 }
 
 .doc-sample-langs .w-btn {
@@ -585,12 +865,75 @@ body {
     .doc-sample-langs {
         flex-wrap: nowrap;
         overflow-x: auto;
-        margin-inline: -1rem;
-        padding-inline: 1rem;
+        margin-inline: 0;
+        padding-inline: 0;
         scroll-padding-inline: 1rem;
-        scrollbar-width: none;
+        scrollbar-width: thin;
     }
-    .doc-sample-langs::-webkit-scrollbar {
-        display: none;
+}
+
+.scroll-strip {
+    display: grid;
+    grid-template-columns: 0 minmax(0, 1fr) 0;
+    align-items: center;
+    min-width: 0;
+}
+
+.scroll-strip.has-overflow {
+    grid-template-columns: 44px minmax(0, 1fr) 44px;
+}
+
+.scroll-strip > .doc-nav-inner,
+.scroll-strip > .doc-sample-langs {
+    grid-column: 2;
+    min-width: 0;
+    margin: 0;
+    overscroll-behavior-x: contain;
+    -webkit-overflow-scrolling: touch;
+}
+
+.language-strip {
+    margin-bottom: 0.75rem;
+}
+
+.strip-arrow {
+    display: none;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border: 0;
+    border-radius: var(--w-radius-sm);
+    background: var(--w-surface-container-low);
+    color: var(--w-primary);
+    font: inherit;
+    font-size: 1.6rem;
+    cursor: pointer;
+}
+
+.has-overflow > .strip-arrow {
+    display: inline-flex;
+}
+
+.strip-arrow:disabled {
+    opacity: 0.35;
+    cursor: default;
+}
+
+.strip-arrow:hover:not(:disabled) {
+    background: var(--w-primary-container);
+}
+
+@media (hover: hover) and (pointer: fine) {
+    .has-overflow > .doc-nav-inner,
+    .has-overflow > .doc-sample-langs {
+        cursor: grab;
+        user-select: none;
+    }
+
+    .scroll-strip > .is-dragging,
+    .scroll-strip > .is-dragging * {
+        cursor: grabbing;
     }
 }

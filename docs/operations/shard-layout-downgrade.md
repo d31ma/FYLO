@@ -38,7 +38,7 @@ shard or the other at every point, and both are layouts v26.31.06 accepts, so
 an interrupted run leaves the root readable by the current binary and finishes
 on a re-run.
 
-A collection created with a non-default `FYLO_SHARD_WIDTH` has no downgrade
+A collection created with a non-default `fylo.shard.width` has no downgrade
 path at all — an older binary only understands a width of exactly 2.
 
 ## After relocating

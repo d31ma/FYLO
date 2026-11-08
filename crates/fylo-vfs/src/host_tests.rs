@@ -14,7 +14,9 @@ use std::sync::Mutex;
 use super::host::{
     File, HOST_ABI_VERSION, HOST_KIND_DIRECTORY, HOST_KIND_FILE, HOST_KIND_MISSING,
     HOST_OPEN_CREATE, HOST_OPEN_EXCLUSIVE, HOST_OPEN_WRITE, HostStat, HostVfs, OpenOptions,
-    create_dir_all, install_host, read, read_dir, remove_file, rename, symlink_metadata, write,
+    create_dir_all, host_identity_public, host_identity_sign, host_identity_unwrap,
+    host_identity_verify, host_identity_wrap, install_host, read, read_dir, remove_file, rename,
+    symlink_metadata, write,
 };
 
 static HANDLES: Mutex<Option<BTreeMap<u64, std::fs::File>>> = Mutex::new(None);
@@ -58,7 +60,21 @@ unsafe extern "C" fn open(path: *const u8, len: usize, flags: u32, out: *mut u64
             unsafe { *out = handle };
             0
         }
-        Err(error) => -error.raw_os_error().unwrap_or(5),
+        Err(error) => -linux_errno(&error),
+    }
+}
+
+fn linux_errno(error: &std::io::Error) -> i32 {
+    match error.kind() {
+        std::io::ErrorKind::NotFound => 2,
+        std::io::ErrorKind::PermissionDenied => 13,
+        std::io::ErrorKind::ResourceBusy => 16,
+        std::io::ErrorKind::AlreadyExists => 17,
+        std::io::ErrorKind::NotADirectory => 20,
+        std::io::ErrorKind::IsADirectory => 21,
+        std::io::ErrorKind::InvalidInput => 22,
+        std::io::ErrorKind::DirectoryNotEmpty => 39,
+        _ => 5,
     }
 }
 
@@ -89,7 +105,7 @@ unsafe extern "C" fn read_at(
                 unsafe { *out = count };
                 0
             }
-            Err(error) => -error.raw_os_error().unwrap_or(5),
+            Err(error) => -linux_errno(&error),
         }
     })
 }
@@ -116,7 +132,7 @@ unsafe extern "C" fn write_at(
                 unsafe { *out = count };
                 0
             }
-            Err(error) => -error.raw_os_error().unwrap_or(5),
+            Err(error) => -linux_errno(&error),
         }
     })
 }
@@ -127,7 +143,7 @@ unsafe extern "C" fn truncate(handle: u64, len: u64) -> i32 {
             .get_mut(&handle)
             .map_or(-9, |file| match file.set_len(len) {
                 Ok(()) => 0,
-                Err(error) => -error.raw_os_error().unwrap_or(5),
+                Err(error) => -linux_errno(&error),
             })
     })
 }
@@ -138,7 +154,7 @@ unsafe extern "C" fn flush(handle: u64) -> i32 {
             .get_mut(&handle)
             .map_or(-9, |file| match file.sync_all() {
                 Ok(()) => 0,
-                Err(error) => -error.raw_os_error().unwrap_or(5),
+                Err(error) => -linux_errno(&error),
             })
     })
 }
@@ -174,7 +190,7 @@ unsafe extern "C" fn mkdir(path: *const u8, len: usize, recursive: u32) -> i32 {
     };
     match result {
         Ok(()) => 0,
-        Err(error) => -error.raw_os_error().unwrap_or(5),
+        Err(error) => -linux_errno(&error),
     }
 }
 
@@ -183,7 +199,7 @@ unsafe extern "C" fn unlink(path: *const u8, len: usize) -> i32 {
     let path = unsafe { borrow_path(path, len) };
     match std::fs::remove_file(&path) {
         Ok(()) => 0,
-        Err(error) => -error.raw_os_error().unwrap_or(5),
+        Err(error) => -linux_errno(&error),
     }
 }
 
@@ -197,7 +213,7 @@ unsafe extern "C" fn rmdir(path: *const u8, len: usize, recursive: u32) -> i32 {
     };
     match result {
         Ok(()) => 0,
-        Err(error) => -error.raw_os_error().unwrap_or(5),
+        Err(error) => -linux_errno(&error),
     }
 }
 
@@ -211,7 +227,7 @@ unsafe extern "C" fn rename_entry(
     let (from, to) = unsafe { (borrow_path(from, from_len), borrow_path(to, to_len)) };
     match std::fs::rename(&from, &to) {
         Ok(()) => 0,
-        Err(error) => -error.raw_os_error().unwrap_or(5),
+        Err(error) => -linux_errno(&error),
     }
 }
 
@@ -338,7 +354,67 @@ fn install() {
         read_attrs: host_read_attrs,
         write_attrs: host_write_attrs,
         log: host_log,
+        identity_public: no_identity_public,
+        identity_sign: no_identity_sign,
+        identity_verify: no_identity_verify,
+        identity_unwrap: no_identity_unwrap,
+        identity_wrap: no_identity_wrap,
     });
+}
+
+/// The reference host holds no application identity: every crypto call
+/// fails with `ENOSYS`, as a host without one must.
+const NO_IDENTITY: i32 = -38;
+
+unsafe extern "C" fn no_identity_public(_out: *mut u8) -> i32 {
+    NO_IDENTITY
+}
+
+unsafe extern "C" fn no_identity_sign(_message: *const u8, _len: usize, _out: *mut u8) -> i32 {
+    NO_IDENTITY
+}
+
+unsafe extern "C" fn no_identity_verify(
+    _public: *const u8,
+    _message: *const u8,
+    _len: usize,
+    _signature: *const u8,
+) -> i32 {
+    NO_IDENTITY
+}
+
+unsafe extern "C" fn no_identity_unwrap(
+    _info: *const u8,
+    _info_len: usize,
+    _wrapped: *const u8,
+    _wrapped_len: usize,
+    _out: *mut u8,
+) -> i32 {
+    NO_IDENTITY
+}
+
+#[allow(clippy::too_many_arguments)]
+unsafe extern "C" fn no_identity_wrap(
+    _public: *const u8,
+    _info: *const u8,
+    _info_len: usize,
+    _secret: *const u8,
+    _secret_len: usize,
+    _out: *mut u8,
+    _capacity: usize,
+    _needed: *mut usize,
+) -> i32 {
+    NO_IDENTITY
+}
+
+#[test]
+fn a_host_without_an_identity_refuses_every_crypto_call() {
+    install();
+    assert!(host_identity_public().is_err());
+    assert!(host_identity_sign(b"message").is_err());
+    assert!(host_identity_verify(&[4; 65], b"message", &[0; 64]).is_err());
+    assert!(host_identity_unwrap(b"info", &[0; 97]).is_err());
+    assert!(host_identity_wrap(&[4; 65], b"info", &[0; 32]).is_err());
 }
 
 fn scratch(name: &str) -> PathBuf {
@@ -501,4 +577,29 @@ fn reports_a_missing_host_rather_than_pretending_to_store() {
         ),
         "{error}"
     );
+}
+
+#[test]
+fn classifies_host_errnos_the_way_a_native_build_does() {
+    install();
+    let root = scratch("errnos");
+    let target = root.join("present");
+    write(&target, b"x").expect("write");
+
+    let missing = read(root.join("absent")).unwrap_err();
+    assert_eq!(missing.kind(), std::io::ErrorKind::NotFound);
+    assert_eq!(
+        missing.to_string(),
+        "No such file or directory (os error 2)"
+    );
+
+    let clash = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&target)
+        .unwrap_err();
+    assert_eq!(clash.kind(), std::io::ErrorKind::AlreadyExists);
+    assert_eq!(clash.to_string(), "File exists (os error 17)");
+
+    let _ = std::fs::remove_dir_all(root);
 }

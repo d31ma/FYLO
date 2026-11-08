@@ -1,17 +1,18 @@
+import { CargoArtifacts } from './cargo-artifacts.mjs'
 import { gzipSync } from 'node:zlib'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 
 const MAX_WASM_BYTES = 128 * 1024
 const MAX_WASM_GZIP_BYTES = 64 * 1024
-const MAX_ENGINE_WASM_BYTES = 1792 * 1024
-const MAX_ENGINE_WASM_GZIP_BYTES = 640 * 1024
+const MAX_ENGINE_WASM_BYTES = 2452 * 1024
+const MAX_ENGINE_WASM_GZIP_BYTES = 800 * 1024
 const MAX_HOST_BYTES = 192 * 1024
 const outputArgument = process.argv.indexOf('--output')
 const output =
     outputArgument === -1
         ? null
-        : resolve(process.argv[outputArgument + 1] ?? 'target/wasm-budget.json')
+        : resolve(process.argv[outputArgument + 1] ?? CargoArtifacts.path('wasm-budget.json'))
 
 const assets = {
     wasm: await measure('dist-web/fylo-index.wasm'),

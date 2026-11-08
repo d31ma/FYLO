@@ -4,24 +4,41 @@
 //! limits, and stable error mapping; it does not reimplement query,
 //! permission, or transaction semantics.
 
+mod application;
+mod frame_access;
+mod frame_session;
+mod handshake_identity;
+mod invocation_options;
+mod invocation_runtime;
+mod request_frame;
 mod strict;
 
+pub use application::ApplicationConfig;
+pub use frame_session::FrameSession;
+pub use invocation_options::InvocationOptions;
+pub use invocation_runtime::InvocationRuntime;
+pub use request_frame::RequestFrame;
+
+use handshake_identity::HandshakeIdentity;
 use std::io::{BufRead, Read, Write};
 #[cfg(not(target_arch = "wasm32"))]
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 use std::time::Instant;
 
 use base64::Engine as _;
-use fylo_engine::{AccessContext, EngineError, ReadOnlyEngine, WriteEngine};
-use fylo_query::{JoinSpec, QueryLimits, SqlOperation, StructuredQuery, prepare_sql};
+use fylo_engine::{EngineError, HotSet, ReadOnlyEngine, WriteEngine};
+use fylo_format::Document;
+use fylo_query::{JoinSpec, QueryLimits, SqlOperation, SqlPlan, StructuredQuery, prepare_sql};
 use fylo_storage_native::{
-    CollectionKind, NativeQueue, NativeStorageError, NativeStorageErrorCode, NativeWriteRoot,
-    PutRawFileOptions, QueueClaimOptions, QueuePublishOptions, RootLease, SqlMutationResultKind,
-    WriteAccess, WriteActor,
+    CollectionKind, CollectionLayout, FilesystemProfile, NativeQueue, NativeRoot,
+    NativeStorageError, NativeStorageErrorCode, NativeWriteRoot, PutRawFileOptions,
+    QueueClaimOptions, QueuePublishOptions, RootLease, RootOpenOptions, SqlMutationResultKind,
+    ValidationMode,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -57,27 +74,8 @@ const BUILD_KIND: &str = match option_env!("FYLO_BUILD_KIND") {
     None => "development-compiled",
 };
 const BUILD_TARGET: Option<&str> = option_env!("FYLO_BUILD_TARGET");
-const REQUIRED_CHEX_VERSION: &str = "26.32.02";
-const REQUIRED_TTID_VERSION: &str = "26.32.03";
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-const MACHINE_ACCESS_OPERATIONS: &[&str] = &[
-    "executeSQL",
-    "getDoc",
-    "getLatest",
-    "getMeta",
-    "setMeta",
-    "findDocs",
-    "findDeletedDocs",
-    "restoreDoc",
-    "joinDocs",
-    "putData",
-    "batchPutData",
-    "patchDoc",
-    "patchDocs",
-    "delDoc",
-    "delDocs",
-    "importBulkData",
-];
+/// The CHEX release whose validator `fylo-chex` vendors.
+const CHEX_VERSION: &str = "26.32.02";
 const DOCUMENT_BUCKET_OPERATIONS: &[&str] = &[
     "createCollection",
     "dropCollection",
@@ -192,7 +190,7 @@ pub fn serve<R: BufRead, W: Write>(
         limits,
         false,
         true,
-        RootConfig::from_env().unwrap_or_default(),
+        ApplicationConfig::default(),
     )
 }
 
@@ -217,7 +215,7 @@ pub fn serve_once<R: BufRead, W: Write>(
         limits,
         false,
         false,
-        RootConfig::from_env().unwrap_or_default(),
+        ApplicationConfig::default(),
     )
 }
 
@@ -244,15 +242,14 @@ pub fn serve_exclusive<R: BufRead, W: Write>(
         limits,
         true,
         true,
-        RootConfig::from_env().unwrap_or_default(),
+        ApplicationConfig::default(),
     )
 }
 
 /// Serve one bounded session with host-supplied runtime knobs.
 ///
-/// [`serve`], [`serve_once`], and [`serve_exclusive`] read those knobs from the
-/// process environment. A host that has none — a browser or mobile embedding —
-/// passes them here instead.
+/// Native, browser, and mobile hosts pass these explicit storage settings;
+/// no environment variables are consulted.
 ///
 /// # Errors
 ///
@@ -264,7 +261,92 @@ pub fn serve_configured<R: BufRead, W: Write>(
     limits: FrameLimits,
     config: RootConfig,
 ) -> std::io::Result<()> {
-    serve_session(input, output, default_root, limits, false, true, config)
+    serve_session(
+        input,
+        output,
+        default_root,
+        limits,
+        false,
+        true,
+        ApplicationConfig {
+            storage: config,
+            ..ApplicationConfig::default()
+        },
+    )
+}
+
+/// Serve using one resolved application configuration without changing the environment.
+///
+/// An explicit default root takes precedence over the configured root.
+///
+/// # Errors
+///
+/// Returns an error when the transport fails.
+pub fn serve_application<R: BufRead, W: Write>(
+    input: &mut R,
+    output: &mut W,
+    default_root: Option<PathBuf>,
+    limits: FrameLimits,
+    application: ApplicationConfig,
+    exclusive_root: bool,
+    persistent: bool,
+) -> std::io::Result<()> {
+    serve_session(
+        input,
+        output,
+        default_root,
+        limits,
+        exclusive_root,
+        persistent,
+        application,
+    )
+}
+
+/// Serve using an immutable root profile and the existing application configuration.
+///
+/// EFS profile selection is a host decision. Requests cannot change the selected
+/// profile or switch to an unadmitted repository. EFS sessions acquire the owning
+/// repository lease before initial recovery, including one-frame sessions.
+///
+/// # Errors
+///
+/// Returns an error when the transport fails; admission failures are protocol frames.
+pub fn serve_profiled<R: BufRead, W: Write>(
+    transport: (&mut R, &mut W),
+    root: RootOpenOptions,
+    application: ApplicationConfig,
+    session: (FrameLimits, bool, bool),
+) -> std::io::Result<()> {
+    serve_profiled_session(transport, Some(root), application, session)
+}
+
+fn execute_invocation_frame(
+    request: &Value,
+    root: RootOpenOptions,
+    config: ApplicationConfig,
+    (limits, budget): (FrameLimits, (std::time::Instant, std::time::Duration)),
+) -> std::io::Result<Vec<u8>> {
+    let lease = root.owning_lease().ok_or_else(|| {
+        std::io::Error::other("invocation session requires its internal root owner")
+    })?;
+    let default_root = root.root().to_path_buf();
+    let session = Session {
+        default_root: Some(default_root.clone()),
+        filesystem_profile: root.filesystem_profile(),
+        limits,
+        config,
+        leases: std::cell::RefCell::new(std::collections::BTreeMap::from([(default_root, lease)])),
+        cursors: std::cell::RefCell::new(std::collections::BTreeMap::new()),
+        cursor_sequence: std::cell::Cell::new(0),
+        startup_error: None,
+        persistent: false,
+        hot_set: None,
+        hot_engine: std::cell::RefCell::new(None),
+    };
+    drop(root);
+    // Returning data drops this private session and every transient engine.
+    // The caller retains the unique lease for checked finalization afterward.
+    session.execute_invocation(request, budget)
 }
 
 fn serve_session<R: BufRead, W: Write>(
@@ -274,44 +356,24 @@ fn serve_session<R: BufRead, W: Write>(
     limits: FrameLimits,
     exclusive_root: bool,
     persistent: bool,
-    config: RootConfig,
+    config: ApplicationConfig,
 ) -> std::io::Result<()> {
-    let limits = limits.clamped();
-    let mut leases = std::collections::BTreeMap::new();
-    let startup_error = if exclusive_root {
-        match default_root.as_ref() {
-            None => Some(MachineError::new(
-                "EBADREQUEST",
-                "--exclusive-root requires a default FYLO root",
-            )),
-            Some(root) => match RootLease::acquire(root) {
-                Err(error) => Some(storage_error(&error)),
-                Ok(lease) => {
-                    let recovery = NativeWriteRoot::open(root)
-                        .and_then(|writer| writer.recover_repository_materialization());
-                    match recovery {
-                        Ok(()) => {
-                            leases.insert(root.clone(), lease);
-                            None
-                        }
-                        Err(error) => Some(storage_error(&error)),
-                    }
-                }
-            },
-        }
-    } else {
-        None
-    };
-    let mut session = Session {
-        default_root,
-        limits,
+    let default_root = default_root.or_else(|| config.root.clone());
+    serve_profiled_session(
+        (input, output),
+        default_root.map(RootOpenOptions::new),
         config,
-        leases: std::cell::RefCell::new(leases),
-        cursors: std::cell::RefCell::new(std::collections::BTreeMap::new()),
-        cursor_sequence: std::cell::Cell::new(0),
-        startup_error,
-        persistent,
-    };
+        (limits, exclusive_root, persistent),
+    )
+}
+
+fn serve_profiled_session<R: BufRead, W: Write>(
+    (input, output): (&mut R, &mut W),
+    options: Option<RootOpenOptions>,
+    config: ApplicationConfig,
+    session: (FrameLimits, bool, bool),
+) -> std::io::Result<()> {
+    let mut session = Session::open(options, config, session);
     loop {
         match session.handle_frame(input, output)? {
             FrameOutcome::Handled => {}
@@ -320,15 +382,114 @@ fn serve_session<R: BufRead, W: Write>(
     }
 }
 
+impl Session {
+    /// Admit the default root (and its recovery) before the first frame, as
+    /// every session transport does.
+    fn open(
+        options: Option<RootOpenOptions>,
+        config: ApplicationConfig,
+        (limits, exclusive_root, persistent): (FrameLimits, bool, bool),
+    ) -> Self {
+        let profile = options.as_ref().map_or(
+            FilesystemProfile::Native,
+            RootOpenOptions::filesystem_profile,
+        );
+        let mut default_root = options.as_ref().map(|options| {
+            options
+                .repository_root()
+                .unwrap_or_else(|| options.root())
+                .to_path_buf()
+        });
+        let supplied_lease = options.as_ref().and_then(RootOpenOptions::owning_lease);
+        let owns_root = exclusive_root || supplied_lease.is_some();
+        let limits = limits.clamped();
+        let mut leases = std::collections::BTreeMap::new();
+        let startup_error = if exclusive_root
+            || profile == FilesystemProfile::EfsSidecarV1
+            || supplied_lease.is_some()
+        {
+            match default_root.as_ref() {
+                None => Some(MachineError::new(
+                    "EBADREQUEST",
+                    "--exclusive-root requires a default FYLO root",
+                )),
+                Some(root) => match supplied_lease.map_or_else(
+                    || RootLease::acquire_with_profile(root, profile),
+                    |lease| lease.assert_owned().map(|()| lease),
+                ) {
+                    Err(error) => Some(storage_error(&error)),
+                    Ok(lease) => {
+                        let options = options
+                            .expect("a resolved root has open options")
+                            .with_lease(lease.clone());
+                        let recovery = assert_repository_lease(root, &lease).and_then(|()| {
+                            NativeWriteRoot::open_profiled(options)
+                                .and_then(|writer| writer.recover_repository_materialization())
+                                .map_err(|error| storage_error(&error))
+                        });
+                        match recovery {
+                            Ok(()) => {
+                                let admitted_root = if profile == FilesystemProfile::EfsSidecarV1 {
+                                    lease.root().to_path_buf()
+                                } else {
+                                    root.clone()
+                                };
+                                leases.insert(admitted_root.clone(), lease);
+                                if profile == FilesystemProfile::EfsSidecarV1 {
+                                    default_root = Some(admitted_root);
+                                }
+                                None
+                            }
+                            Err(error) => Some(error),
+                        }
+                    }
+                },
+            }
+        } else {
+            None
+        };
+        let hot_set = Self::hot_set_for(&config, persistent && owns_root && !leases.is_empty());
+        Self {
+            default_root,
+            filesystem_profile: profile,
+            limits,
+            config,
+            leases: std::cell::RefCell::new(leases),
+            cursors: std::cell::RefCell::new(std::collections::BTreeMap::new()),
+            cursor_sequence: std::cell::Cell::new(0),
+            startup_error,
+            persistent,
+            hot_set,
+            hot_engine: std::cell::RefCell::new(None),
+        }
+    }
+}
+
+impl Session {
+    /// A hot set for a persistent session that holds its root's exclusive
+    /// lease, unless the application turned it off with a zero budget.
+    fn hot_set_for(config: &ApplicationConfig, owns_root: bool) -> Option<Arc<HotSet>> {
+        let budget = config.hot_set_bytes.unwrap_or(HotSet::DEFAULT_BUDGET_BYTES);
+        (owns_root && budget > 0).then(|| Arc::new(HotSet::new(budget)))
+    }
+}
+
 struct Session {
     default_root: Option<PathBuf>,
+    filesystem_profile: FilesystemProfile,
     limits: FrameLimits,
-    config: RootConfig,
+    config: ApplicationConfig,
     leases: std::cell::RefCell<std::collections::BTreeMap<PathBuf, RootLease>>,
     cursors: std::cell::RefCell<std::collections::BTreeMap<String, CursorState>>,
     cursor_sequence: std::cell::Cell<u64>,
     startup_error: Option<MachineError>,
     persistent: bool,
+    /// Resident reads of the default root. Only a session that holds the
+    /// root's exclusive lease has one: every write then passes through it.
+    hot_set: Option<Arc<HotSet>>,
+    /// The engine opened for the hot set, with the hot-set epoch it was
+    /// opened in. A clear may follow a checkout, so it reopens after one.
+    hot_engine: std::cell::RefCell<Option<(u64, ReadOnlyEngine)>>,
 }
 
 /// One paginated query snapshot, held for the life of the session.
@@ -340,6 +501,195 @@ struct CursorState {
 }
 
 impl Session {
+    const MAX_INVOCATION_COLLECTIONS: usize = 10_000;
+
+    fn execute_invocation(
+        &self,
+        request: &Value,
+        budget: (std::time::Instant, std::time::Duration),
+    ) -> std::io::Result<Vec<u8>> {
+        let started = Clock::start();
+        self.recover_invocation(budget)?;
+        InvocationOptions::check_work_budget(budget)?;
+        let result = self.dispatch(request);
+        InvocationOptions::check_work_budget(budget)?;
+        self.buffer_invocation_response(request, started, result)
+    }
+
+    fn buffer_invocation_response(
+        &self,
+        request: &Value,
+        started: Clock,
+        result: Result<Value, MachineError>,
+    ) -> std::io::Result<Vec<u8>> {
+        let operation = optional_string(request, "op");
+        let request_id = optional_string(request, "requestId");
+        // A slice cursor cannot grow past the configured frame plus its LF.
+        // Partial output stays private if even a failure frame does not fit.
+        let mut bytes = vec![0; self.limits.max_response_bytes + 1];
+        let written = {
+            let mut output = std::io::Cursor::new(bytes.as_mut_slice());
+            match result {
+                Ok(result) => self.write_success(
+                    &mut output,
+                    operation.as_deref(),
+                    request_id.as_deref(),
+                    started,
+                    &result,
+                ),
+                Err(error) => Self::write_failure(
+                    &mut output,
+                    operation.as_deref(),
+                    request_id.as_deref(),
+                    started,
+                    &error,
+                ),
+            }?;
+            usize::try_from(output.position()).map_err(std::io::Error::other)?
+        };
+        bytes.truncate(written);
+        bytes.shrink_to_fit();
+        Ok(bytes)
+    }
+
+    fn recover_invocation(
+        &self,
+        budget: (std::time::Instant, std::time::Duration),
+    ) -> std::io::Result<()> {
+        InvocationOptions::check_work_budget(budget)?;
+        let repository = self.default_root.as_ref().ok_or_else(|| {
+            std::io::Error::other("invocation session has no admitted repository")
+        })?;
+        let options = self
+            .root_options(repository.clone(), repository.clone())
+            .map_err(|error| Self::invocation_machine_error(&error))?;
+        NativeWriteRoot::open_profiled(options)
+            .and_then(|writer| writer.recover_repository_materialization())
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        InvocationOptions::check_work_budget(budget)?;
+        let active =
+            active_worktree(repository).map_err(|error| Self::invocation_machine_error(&error))?;
+        self.recover_invocation_root(repository, repository, Some(budget))?;
+        if active != *repository {
+            self.recover_invocation_root(&active, repository, Some(budget))?;
+        }
+        Ok(())
+    }
+
+    /// [`InvocationOptions::check_work_budget`] when there is a budget.
+    fn check_budget(
+        budget: Option<(std::time::Instant, std::time::Duration)>,
+    ) -> std::io::Result<()> {
+        budget.map_or(Ok(()), InvocationOptions::check_work_budget)
+    }
+
+    fn recover_invocation_root(
+        &self,
+        root: &std::path::Path,
+        repository: &std::path::Path,
+        budget: Option<(std::time::Instant, std::time::Duration)>,
+    ) -> std::io::Result<()> {
+        Self::check_budget(budget)?;
+        let options = self
+            .root_options(root.to_path_buf(), repository.to_path_buf())
+            .map_err(|error| Self::invocation_machine_error(&error))?;
+        let native = NativeRoot::open_profiled(options.clone())
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        let names = Self::invocation_collection_names(&native, budget)?;
+        let writer = NativeWriteRoot::open_profiled(options)
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        for (name, has_live_directory) in names {
+            Self::check_budget(budget)?;
+            match writer.recover_collection(&name) {
+                Ok(_) => {}
+                Err(error)
+                    if !has_live_directory && error.code() == NativeStorageErrorCode::NotFound => {}
+                Err(error) => return Err(std::io::Error::other(error.to_string())),
+            }
+        }
+        Ok(())
+    }
+
+    fn invocation_collection_names(
+        root: &NativeRoot,
+        budget: Option<(std::time::Instant, std::time::Duration)>,
+    ) -> std::io::Result<std::collections::BTreeMap<String, bool>> {
+        let mut names = std::collections::BTreeMap::new();
+        for namespace in [".collections", ".buckets"] {
+            Self::collect_invocation_names(
+                &root.path().join(namespace),
+                false,
+                &mut names,
+                budget,
+            )?;
+        }
+        let catalog = root.catalog_root().join(".fylo-catalog");
+        if Self::invocation_directory_exists(&catalog)? {
+            Self::collect_invocation_names(&catalog.join("collections"), true, &mut names, budget)?;
+        }
+        Ok(names)
+    }
+
+    fn collect_invocation_names(
+        directory: &std::path::Path,
+        catalog: bool,
+        names: &mut std::collections::BTreeMap<String, bool>,
+        budget: Option<(std::time::Instant, std::time::Duration)>,
+    ) -> std::io::Result<()> {
+        if !Self::invocation_directory_exists(directory)? {
+            return Ok(());
+        }
+        for entry in fylo_vfs::read_dir(directory)? {
+            Self::check_budget(budget)?;
+            let entry = entry?;
+            if fylo_storage_native::is_platform_companion(&entry.file_name()) {
+                continue;
+            }
+            let kind = entry.file_type()?;
+            if kind.is_symlink() || (catalog && !kind.is_file()) || (!catalog && !kind.is_dir()) {
+                return Err(std::io::Error::other(
+                    "invocation collection entry has an unsafe type",
+                ));
+            }
+            let file_name = entry.file_name();
+            let file_name = file_name
+                .to_str()
+                .ok_or_else(|| std::io::Error::other("invocation collection name is not UTF-8"))?;
+            let name = if catalog {
+                file_name.strip_suffix(".json").ok_or_else(|| {
+                    std::io::Error::other("invocation catalog entry is not a collection descriptor")
+                })?
+            } else {
+                file_name
+            };
+            names
+                .entry(name.to_owned())
+                .and_modify(|live| *live |= !catalog)
+                .or_insert(!catalog);
+            if names.len() > Self::MAX_INVOCATION_COLLECTIONS {
+                return Err(std::io::Error::other(
+                    "invocation collection recovery exceeds its bounded collection count",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn invocation_directory_exists(path: &std::path::Path) -> std::io::Result<bool> {
+        match fylo_vfs::symlink_metadata(path) {
+            Ok(metadata) if !metadata.file_type().is_symlink() && metadata.is_dir() => Ok(true),
+            Ok(_) => Err(std::io::Error::other(
+                "invocation collection directory has an unsafe type",
+            )),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn invocation_machine_error(error: &MachineError) -> std::io::Error {
+        std::io::Error::other(format!("{}: {}", error.code, error.message))
+    }
+
     fn handle_frame<R: BufRead, W: Write>(
         &mut self,
         input: &mut R,
@@ -347,6 +697,15 @@ impl Session {
     ) -> std::io::Result<FrameOutcome> {
         let started = Clock::start();
         let (frame, read, oversized, delimited) = self.read_request_frame(input)?;
+        self.answer_frame((frame, read, oversized, delimited), started, output)
+    }
+
+    fn answer_frame<W: Write>(
+        &mut self,
+        (frame, read, oversized, delimited): (Vec<u8>, usize, bool, bool),
+        started: Clock,
+        output: &mut W,
+    ) -> std::io::Result<FrameOutcome> {
         if read == 0 && frame.is_empty() {
             return Ok(FrameOutcome::Eof);
         }
@@ -425,7 +784,7 @@ impl Session {
             )?;
             return Ok(FrameOutcome::Terminate);
         }
-        match self.dispatch(&request) {
+        match self.dispatch_frame(&request, operation.as_deref()) {
             Ok(result) => self.write_success(
                 output,
                 operation.as_deref(),
@@ -454,7 +813,68 @@ impl Session {
         Ok((frame, read, oversized, delimited))
     }
 
+    /// Dispatch one frame, clearing the hot set around any frame that may
+    /// write.
+    fn dispatch_frame(
+        &self,
+        request: &Value,
+        operation: Option<&str>,
+    ) -> Result<Value, MachineError> {
+        let writes = frame_access::FrameAccess::of(operation) == frame_access::FrameAccess::Write;
+        if writes {
+            self.clear_hot_set();
+        }
+        let result = self.dispatch(request);
+        if writes {
+            self.clear_hot_set();
+        }
+        result
+    }
+
     fn dispatch(&self, request: &Value) -> Result<Value, MachineError> {
+        match self.dispatch_once(request) {
+            Err(error)
+                if error.code == "EENGINE_CONCURRENT_WRITE" && self.recover_stranded(request) =>
+            {
+                self.clear_hot_set();
+                self.dispatch_once(request)
+            }
+            result => result,
+        }
+    }
+
+    /// Roll back or forward a transaction nobody is finishing, so a read
+    /// does not report a concurrent write forever.
+    ///
+    /// This session holds the root lease, so a collection still marked as
+    /// writing was left by a crashed writer or by a rollback that itself ran
+    /// out of space. Recovery takes each collection lock and refuses a live
+    /// writer, in which case the original error stands. It runs only after a
+    /// read fails, so it costs nothing on the read path.
+    fn recover_stranded(&self, request: &Value) -> bool {
+        let Ok(repository) = self.root(request) else {
+            return false;
+        };
+        let Ok(active) = active_worktree(&repository) else {
+            return false;
+        };
+        // No budget: this is a one-off repair, not an invocation, and a
+        // deadline would need `Instant::now`, which panics in a browser and
+        // took the module down mid-recovery.
+        self.recover_invocation_root(&active, &repository, None)
+            .is_ok()
+    }
+
+    /// Forget every resident read: around each frame that may write, and
+    /// after recovery rewrote the root.
+    fn clear_hot_set(&self) {
+        if let Some(hot_set) = &self.hot_set {
+            hot_set.clear();
+        }
+    }
+
+    fn dispatch_once(&self, request: &Value) -> Result<Value, MachineError> {
+        refuse_access_field(request)?;
         let Some(operation) = request.get("op").and_then(Value::as_str) else {
             return Err(MachineError::new(
                 "EBADREQUEST",
@@ -467,6 +887,8 @@ impl Session {
             "getFileData" => self.get_file_data(request),
             "findDocs" => self.find_documents(request),
             "inspectCollection" => self.inspect_collection(request),
+            "inspectDatabase" => self.inspect_database(&self.database_path(request, operation)?),
+            "verifyDatabase" => self.verify_database(&self.database_path(request, operation)?),
             "verifyCollection" => self.verify_collection(request),
             "log" => self.history(request),
             "getMeta" => self.get_metadata(request),
@@ -476,6 +898,8 @@ impl Session {
             "dropCollection" => self.drop_collection(request),
             "rebuildCollection" => self.rebuild_collection(request),
             "reshardCollection" => self.reshard_collection(request),
+            "migrateLayout" => self.migrate_layout(request),
+            "compactCollection" => self.compact_collection(request),
             "putData" => self.put_data(request),
             "patchDoc" => self.patch_document(request),
             "delDoc" => self.delete_document(request),
@@ -499,6 +923,11 @@ impl Session {
             "schemaDoctor" => self.schema_doctor(request),
             "schemaValidate" => self.schema_validate(request),
             "schemaMaterialize" => self.schema_materialize(request),
+            "schemaMode" => self.schema_mode(request),
+            "schemaCheck" => self.schema_check(request),
+            "schemaMigrate" => self.schema_migrate(request),
+            "schemaPush" => self.schema_push(request),
+            "schemaPull" => self.schema_pull(request),
             "importBulkData" => self.import_bulk_data(request),
             "queuePublish" => self.queue_publish(request),
             "queueClaim" => self.queue_claim(request),
@@ -524,12 +953,28 @@ impl Session {
         }
     }
 
-    fn handshake(&self) -> Value {
-        let capabilities = serde_json::Map::from_iter([
+    fn handshake_capabilities(&self) -> serde_json::Map<String, Value> {
+        serde_json::Map::from_iter([
             ("handshake".into(), Value::Bool(true)),
             (
                 "exclusiveRoot".into(),
                 Value::Bool(RootLease::platform_enforces_exclusivity()),
+            ),
+            (
+                "filesystemMetadata".into(),
+                json!({
+                    "version": 1,
+                    "profiles": ["native", "efs-sidecar-v1"],
+                    "efsQualified": false
+                }),
+            ),
+            (
+                "singleFileDatabase".into(),
+                json!({
+                    "version": 1,
+                    "extension": "vdbx",
+                    "operations": ["inspectDatabase", "verifyDatabase"]
+                }),
             ),
             (
                 "queryPagination".into(),
@@ -561,40 +1006,44 @@ impl Session {
                     "integrity": "sha256-full-content"
                 }),
             ),
-            ("serverlessQueue".into(), serverless_queue_capability()),
-        ]);
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        let capabilities = {
-            let mut capabilities = capabilities;
-            capabilities.insert(
-                "machineAccess".into(),
-                json!({
-                    "version": 1,
-                    "operations": MACHINE_ACCESS_OPERATIONS,
-                    "writeDescriptorFields": ["uid", "gid", "mode"],
-                    "actorFields": ["uid", "groups"],
-                    "directDenial": "EACCES",
-                    "queryDenial": "omit"
-                }),
-            );
-            capabilities
-        };
+            ("schemaValidation".into(), schema_validation_capability()),
+            (
+                "serverlessQueue".into(),
+                if self.filesystem_profile == FilesystemProfile::Native {
+                    serverless_queue_capability()
+                } else {
+                    Value::Bool(false)
+                },
+            ),
+            ("hotSet".into(), self.hot_set_capability()),
+        ])
+    }
+
+    /// The hot set's budget and counters, or `false` when it is off.
+    fn hot_set_capability(&self) -> Value {
+        self.hot_set
+            .as_ref()
+            .map_or(Value::Bool(false), |hot_set| json!(hot_set.statistics()))
+    }
+
+    fn handshake(&self) -> Value {
+        let capabilities = self.handshake_capabilities();
+        let leases = self.leases.borrow();
+        let lease = self.default_root.as_ref().and_then(|root| leases.get(root));
+        // This reports metadata ownership and the actual local advisory-lock
+        // acquisition. It makes no remote fencing or NFS/EFS qualification claim.
+        let owned = self
+            .default_root
+            .as_ref()
+            .zip(lease)
+            .is_some_and(|(root, lease)| assert_repository_lease(root, lease).is_ok());
+        let kernel_enforced = lease.is_some_and(RootLease::kernel_enforced);
         json!({
             "protocolVersion": PROTOCOL_VERSION,
             "runtimeVersion": RUNTIME_VERSION.trim(),
             "commit": BUILD_COMMIT,
             "buildKind": BUILD_KIND,
             "buildTarget": runtime_target(),
-            "dependencies": {
-                "chex": {
-                    "requiredVersion": REQUIRED_CHEX_VERSION,
-                    "available": executable_on_path("chex"),
-                },
-                "ttid": {
-                    "requiredVersion": REQUIRED_TTID_VERSION,
-                    "available": executable_on_path("ttid"),
-                },
-            },
             "machine": {
                 "framing": "ndjson",
                 "encoding": "utf-8",
@@ -606,17 +1055,26 @@ impl Session {
                 "truncatedFrame": "error-and-terminate",
                 "malformedFrame": "error-and-resume-at-next-LF"
             },
-            "capabilities": capabilities
+            "capabilities": capabilities,
+            "identity": HandshakeIdentity::report(&self.config, self.default_root.as_deref()),
+            "storage": {
+                "filesystemProfile": self.filesystem_profile.as_str(),
+                "rootLock": {
+                    "owned": owned,
+                    "kernelEnforced": kernel_enforced,
+                    "remoteQualified": false
+                }
+            }
         })
     }
 
     /// Resolve the request's root, taking an exclusive kernel lease the first
     /// time this session touches it.
     ///
-    /// The lease is held for the life of the session, so a JavaScript owner
-    /// cannot open the root underneath us and we cannot open one it holds. The
-    /// recorded generation is re-checked per frame, which is a cheap read of a
-    /// resident file.
+    /// The advisory lease is held for the life of the session. Cooperating
+    /// native clients cannot admit a competing owner; this is not a remote
+    /// fencing guarantee. Recorded ownership and the root profile are checked
+    /// before resolving engines, writers, or queues.
     fn root(&self, request: &Value) -> Result<PathBuf, MachineError> {
         let root = request
             .get("root")
@@ -626,43 +1084,210 @@ impl Session {
             .ok_or_else(|| {
                 MachineError::new("EBADREQUEST", "machine request requires a FYLO root")
             })?;
+        let root = if self.filesystem_profile == FilesystemProfile::EfsSidecarV1 {
+            let canonical = fylo_vfs::canonicalize(&root).map_err(|_| {
+                MachineError::new(
+                    "EBADREQUEST",
+                    "cannot resolve the EFS request repository root",
+                )
+            })?;
+            if self.default_root.as_ref() != Some(&canonical) {
+                return Err(MachineError::new(
+                    "EBADREQUEST",
+                    "an EFS-profile session cannot override its admitted repository root",
+                ));
+            }
+            canonical
+        } else {
+            root
+        };
+        if NativeRoot::names_database(&root) {
+            return self.admit_database(root);
+        }
         let mut leases = self.leases.borrow_mut();
         if let Some(lease) = leases.get(&root) {
-            lease
-                .assert_owned()
-                .map_err(|error| storage_error(&error))?;
+            assert_repository_lease(&root, lease)?;
+            NativeRoot::open_profiled(
+                RootOpenOptions::new(&root)
+                    .with_profile(self.filesystem_profile)
+                    .with_lease(lease.clone()),
+            )
+            .map_err(|error| storage_error(&error))?;
             return Ok(root);
         }
-        let lease = RootLease::acquire(&root).map_err(|error| storage_error(&error))?;
-        NativeWriteRoot::open(&root)
-            .and_then(|writer| writer.recover_repository_materialization())
+        let lease = RootLease::acquire_with_profile(&root, self.filesystem_profile)
             .map_err(|error| storage_error(&error))?;
+        assert_repository_lease(&root, &lease)?;
+        NativeWriteRoot::open_profiled(
+            RootOpenOptions::new(&root)
+                .with_profile(self.filesystem_profile)
+                .with_lease(lease.clone()),
+        )
+        .and_then(|writer| writer.recover_repository_materialization())
+        .map_err(|error| storage_error(&error))?;
         leases.insert(root.clone(), lease);
         Ok(root)
     }
 
+    /// Admit a `.vdbx` database root. A database is owned through its own
+    /// file (ADR 0016 section 7), so it takes no root lease: opening it
+    /// checks it, and a missing one is created protected with the configured
+    /// identity, or refused with `ENOIDENTITY` (ADR 0021, decision P5-1).
+    /// An encrypted database opens with the configured key, and without one
+    /// it is locked: it lists no collections and refuses reads of one and
+    /// every write with `EKEY`.
+    fn admit_database(&self, root: PathBuf) -> Result<PathBuf, MachineError> {
+        if self.filesystem_profile != FilesystemProfile::Native {
+            return Err(MachineError::new(
+                "ELAYOUTUNSUPPORTED",
+                "a .vdbx database needs the native filesystem profile",
+            ));
+        }
+        if fylo_vfs::metadata(&root)
+            .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+        {
+            self.create_missing_database(&root)?;
+        }
+        NativeRoot::open_profiled(
+            self.config
+                .with_database_access(RootOpenOptions::new(&root)),
+        )
+        .map_err(|error| storage_error(&error))?;
+        Ok(root)
+    }
+
+    /// Create the missing database `root` names: protected, with the
+    /// configured identity as its admin and trust anchor (ADR 0021,
+    /// decision P5-1). Without an identity nothing is created, and the
+    /// request fails with `ENOIDENTITY`.
+    #[cfg(not(target_family = "wasm"))]
+    fn create_missing_database(&self, root: &Path) -> Result<(), MachineError> {
+        let identity = self
+            .config
+            .identity
+            .as_ref()
+            .ok_or_else(Self::no_identity)?;
+        NativeRoot::create_protected_database(root, identity.identity())
+            .map_err(|error| storage_error(&error))
+    }
+
+    /// The browser makes a database with Explorer or natively, never through
+    /// the machine protocol, which keeps the policy-writing code out of the
+    /// browser engine's size budget.
+    #[cfg(target_family = "wasm")]
+    #[allow(clippy::unused_self)]
+    fn create_missing_database(&self, _root: &Path) -> Result<(), MachineError> {
+        Err(Self::no_identity())
+    }
+
+    fn no_identity() -> MachineError {
+        MachineError::new(
+            "ENOIDENTITY",
+            "the .vdbx database does not exist, and a new one is protected: name its admin \
+             identity (fylo.identity, FYLO_IDENTITY or --identity), or create it with \
+             fylo create --unprotected",
+        )
+    }
+
+    fn root_options(
+        &self,
+        root: PathBuf,
+        repository_root: PathBuf,
+    ) -> Result<RootOpenOptions, MachineError> {
+        if NativeRoot::names_database(&repository_root) {
+            return Ok(self.config.with_database_access(
+                RootOpenOptions::new(root).with_profile(self.filesystem_profile),
+            ));
+        }
+        let lease = self
+            .leases
+            .borrow()
+            .get(&repository_root)
+            .cloned()
+            .ok_or_else(|| {
+                MachineError::new(
+                    "EROOTLEASELOST",
+                    "the repository root has not been admitted",
+                )
+            })?;
+        assert_repository_lease(&repository_root, &lease)?;
+        Ok(RootOpenOptions::new(root)
+            .with_repository(repository_root)
+            .with_profile(self.filesystem_profile)
+            .with_lease(lease))
+    }
+
     fn engine(&self, request: &Value) -> Result<ReadOnlyEngine, MachineError> {
+        match &self.hot_set {
+            Some(hot_set) if Self::names_session_defaults(request) => {
+                self.resident_engine(request, hot_set)
+            }
+            _ => self.open_engine(request),
+        }
+    }
+
+    /// The hot set holds only the default root under the session's schema
+    /// directory, so a request naming either of its own is read from storage.
+    fn names_session_defaults(request: &Value) -> bool {
+        request.get("root").is_none() && request.get("schemaDir").is_none()
+    }
+
+    /// The engine this session opened since the hot set's last clear, so a
+    /// warm read opens nothing. Every request it answers names the default
+    /// root and schema directory, so one engine answers them all.
+    fn resident_engine(
+        &self,
+        request: &Value,
+        hot_set: &Arc<HotSet>,
+    ) -> Result<ReadOnlyEngine, MachineError> {
+        let epoch = hot_set.epoch();
+        let mut cached = self.hot_engine.borrow_mut();
+        if let Some((opened_in, engine)) = cached.as_ref()
+            && *opened_in == epoch
+        {
+            return Ok(engine.clone());
+        }
+        let engine = self.open_engine(request)?.with_hot_set(Arc::clone(hot_set));
+        *cached = Some((epoch, engine.clone()));
+        Ok(engine)
+    }
+
+    fn open_engine(&self, request: &Value) -> Result<ReadOnlyEngine, MachineError> {
         let repository_root = self.root(request)?;
         let active_root = active_worktree(&repository_root)?;
-        ReadOnlyEngine::open_with_repository(active_root, repository_root)
-            .map_err(|error| engine_error(&error))
+        let engine =
+            ReadOnlyEngine::open_profiled(self.root_options(active_root, repository_root)?)
+                .map_err(|error| engine_error(&error))?;
+        match self.schema_path(request) {
+            Some(schema) => engine
+                .with_schema_configuration(
+                    schema,
+                    self.config
+                        .credentials
+                        .as_ref()
+                        .map(|(key, salt)| (key.as_str(), salt.as_str())),
+                )
+                .map_err(|error| engine_error(&error)),
+            // Keys without a folder still decrypt the collections whose
+            // schemas are in the root's registry.
+            None => match self.config.credentials.as_ref() {
+                Some((key, salt)) => engine
+                    .with_encryption_credentials(key, salt)
+                    .map_err(|error| engine_error(&error)),
+                None => Ok(engine),
+            },
+        }
     }
 
     fn get_document(&self, request: &Value) -> Result<Value, MachineError> {
         let engine = self.engine(request)?;
         let collection = require_string(request, "collection")?;
         let identifier = require_string(request, "id")?;
-        let actor = actor(request)?;
         let kind = engine
-            .inspect(collection)
-            .map_err(|error| engine_error(&error))?
-            .kind;
+            .collection_kind(collection)
+            .map_err(|error| engine_error(&error))?;
         if kind == CollectionKind::File {
-            let file = match actor.as_ref() {
-                Some(actor) => engine.get_file_as(collection, identifier, actor),
-                None => engine.get_file(collection, identifier),
-            };
-            let file = match file {
+            let file = match engine.get_file(collection, identifier) {
                 Ok(file) => file,
                 Err(error) if error.storage_code() == Some(NativeStorageErrorCode::NotFound) => {
                     return Ok(json!({}));
@@ -679,19 +1304,14 @@ impl Session {
             }
             return Ok(json!({ identifier: manifest }));
         }
-        let record = match actor.as_ref() {
-            Some(actor) => engine.get_as(collection, identifier, actor),
-            None => engine.get(collection, identifier),
-        };
-        let record = match record {
+        let record = match engine.get(collection, identifier) {
             Ok(record) => record,
             Err(error) if error.storage_code() == Some(NativeStorageErrorCode::NotFound) => {
                 return Ok(json!({}));
             }
             Err(error) => return Err(engine_error(&error)),
         };
-        let document =
-            serde_json::to_value(record.document).map_err(|error| serialization_error(&error))?;
+        let document = Value::Object(record.document.into_fields());
         Ok(json!({ identifier: document }))
     }
 
@@ -711,11 +1331,9 @@ impl Session {
         let engine = self.engine(request)?;
         let collection = require_string(request, "collection")?;
         let identifier = require_string(request, "id")?;
-        let actor = actor(request)?;
         if engine
-            .inspect(collection)
+            .collection_kind(collection)
             .map_err(|error| engine_error(&error))?
-            .kind
             != CollectionKind::File
         {
             return Err(MachineError::new(
@@ -723,11 +1341,7 @@ impl Session {
                 "getFileData requires a file collection",
             ));
         }
-        let file = match actor.as_ref() {
-            Some(actor) => engine.get_file_as(collection, identifier, actor),
-            None => engine.get_file(collection, identifier),
-        };
-        let file = match file {
+        let file = match engine.get_file(collection, identifier) {
             Ok(file) => file,
             Err(error) if error.storage_code() == Some(NativeStorageErrorCode::NotFound) => {
                 return Ok(json!({}));
@@ -777,32 +1391,26 @@ impl Session {
         let engine = self.engine(request)?;
         let collection = require_string(request, "collection")?;
         let query = structured_query(request)?;
-        let actor = actor(request)?;
         if engine
-            .inspect(collection)
+            .collection_kind(collection)
             .map_err(|error| engine_error(&error))?
-            .kind
             == CollectionKind::File
         {
             let pairs = engine
-                .find_files(collection, &query, actor.as_ref())
+                .find_files(collection, &query)
                 .map_err(|error| engine_error(&error))?
                 .into_iter()
                 .map(|(identifier, fields)| (identifier, Value::Object(fields)))
                 .collect();
             return self.shape_query_result(request, pairs);
         }
-        let rows = match actor.as_ref() {
-            Some(actor) => engine.find_as(collection, &query, actor),
-            None => engine.find(collection, &query),
-        }
-        .map_err(|error| engine_error(&error))?;
+        let rows = engine
+            .find(collection, &query)
+            .map_err(|error| engine_error(&error))?;
         let mut pairs = Vec::with_capacity(rows.len());
         for record in rows {
             let identifier = record.metadata.id.clone();
-            let document = serde_json::to_value(record.document)
-                .map_err(|error| serialization_error(&error))?;
-            pairs.push((identifier, document));
+            pairs.push((identifier, Value::Object(record.document.into_fields())));
         }
         self.shape_query_result(request, pairs)
     }
@@ -833,24 +1441,103 @@ impl Session {
     fn inspect_collection(&self, request: &Value) -> Result<Value, MachineError> {
         let engine = self.engine(request)?;
         let collection = require_string(request, "collection")?;
-        let inspection = engine
-            .inspect(collection)
-            .map_err(|error| engine_error(&error))?;
+        let inspection = match engine.inspect(collection) {
+            Ok(inspection) => inspection,
+            Err(error) if error.storage_code() == Some(NativeStorageErrorCode::NotFound) => {
+                return Ok(absent_collection(collection));
+            }
+            Err(error) => return Err(engine_error(&error)),
+        };
         let kind =
             serde_json::to_value(inspection.kind).map_err(|error| serialization_error(&error))?;
         let indexed = engine
             .verify_index(collection)
             .map_err(|error| engine_error(&error))?
             .indexed_documents;
+        let validation =
+            ValidationMode::resolve(inspection.validation, self.config.storage.strict_schema);
         Ok(json!({
             "collection": inspection.collection,
             "kind": kind,
+            "layout": inspection.layout.as_str(),
             "exists": true,
             "worm": false,
             "docsStored": inspection.document_count + inspection.file_count,
             "deletedDocs": inspection.deleted_count,
             "indexedDocs": indexed,
+            "validation": validation.as_str(),
+            "schemaViolations": inspection.schema_violations,
         }))
+    }
+
+    /// The `.vdbx` file a request names: its `root`, or the session's.
+    fn database_path(&self, request: &Value, operation: &str) -> Result<PathBuf, MachineError> {
+        request
+            .get("root")
+            .and_then(Value::as_str)
+            .map(PathBuf::from)
+            .or_else(|| self.default_root.clone())
+            .ok_or_else(|| {
+                MachineError::new(
+                    "EBADREQUEST",
+                    format!("{operation} requires a .vdbx path as root"),
+                )
+            })
+    }
+
+    /// Describe a `.vdbx` file from its superblock, map and directory,
+    /// without reading a record or taking a lock (ADR 0016). An encrypted
+    /// file is unlocked with the configured key to list its collections;
+    /// without one it reports `locked` and lists none, and a wrong key
+    /// fails with `EKEY`.
+    fn inspect_database(&self, path: &Path) -> Result<Value, MachineError> {
+        let report = fylo_storage_native::ContainerFile::open_reader(path)
+            .and_then(|mut container| {
+                self.unlock_for_report(&mut container)?;
+                container.report()
+            })
+            .map_err(|error| MachineError::new(error.code(), error.to_string()))?;
+        serde_json::to_value(report).map_err(|error| serialization_error(&error))
+    }
+
+    /// Unlock `container` to report on it: a protected file with the
+    /// configured identity, another encrypted file with the configured key.
+    fn unlock_for_report(
+        &self,
+        container: &mut fylo_storage_native::ContainerFile,
+    ) -> Result<(), fylo_storage_native::ContainerError> {
+        match (&self.config.identity, &self.config.database_key) {
+            (Some(identity), _) if container.is_protected() => {
+                container.unlock_with_identity(identity)
+            }
+            (_, Some(key)) if !container.is_protected() => container.unlock_with_key(key),
+            _ => Ok(()),
+        }
+    }
+
+    /// Check a `.vdbx` file's structures without its key, a lock or any
+    /// change (ADR 0016 section 11). Damage is reported in the result, whose
+    /// `ok` is false when any problem is an error; the frame fails only when
+    /// the file cannot be opened or read.
+    ///
+    /// An encrypted sealed file holds its structures in sealed blocks, so
+    /// without the key only the blocks' checksums are checked; with the
+    /// configured key every block is opened and the structures are checked
+    /// too. A wrong key fails with `EKEY`.
+    fn verify_database(&self, path: &Path) -> Result<Value, MachineError> {
+        let report = fylo_storage_native::ContainerFile::open_reader(path)
+            .and_then(|mut container| {
+                if container.is_protected() {
+                    self.unlock_for_report(&mut container)?;
+                } else if container.is_sealed()
+                    && let Some(key) = &self.config.database_key
+                {
+                    container.unlock_with_key(key)?;
+                }
+                container.verify()
+            })
+            .map_err(|error| MachineError::new(error.code(), error.to_string()))?;
+        serde_json::to_value(report).map_err(|error| serialization_error(&error))
     }
 
     fn verify_collection(&self, request: &Value) -> Result<Value, MachineError> {
@@ -877,71 +1564,133 @@ impl Session {
         let engine = self.engine(request)?;
         let collection = require_string(request, "collection")?;
         let identifier = require_string(request, "id")?;
-        let actor = actor(request)?;
-        match actor.as_ref() {
-            Some(actor) => engine.metadata_as(collection, identifier, actor),
-            None => engine.metadata(collection, identifier),
-        }
-        .map_err(|error| engine_error(&error))
+        engine
+            .metadata(collection, identifier)
+            .map_err(|error| engine_error(&error))
     }
 
     fn writer(&self, request: &Value) -> Result<NativeWriteRoot, MachineError> {
         let repository_root = self.root(request)?;
         let active_root = active_worktree(&repository_root)?;
-        NativeWriteRoot::open_with_repository(active_root, repository_root)
-            .map(|writer| writer.with_config(self.config))
-            .map_err(|error| storage_error(&error))
+        let writer =
+            NativeWriteRoot::open_profiled(self.root_options(active_root, repository_root)?)
+                .map(|writer| writer.with_config(self.config.storage))
+                .map_err(|error| storage_error(&error))?;
+        // A request that never decodes documents still opens the root, so the
+        // one-time import happens on this binary's first open, whatever the
+        // request. Without a folder there is nothing to import.
+        if self
+            .schema_path(request)
+            .is_some_and(|schema| schema.is_dir())
+        {
+            self.configured(WriteEngine::from_writer(writer.clone()), request)?;
+        }
+        Ok(writer)
     }
 
     fn write_engine(&self, request: &Value) -> Result<WriteEngine, MachineError> {
         let repository_root = self.root(request)?;
         let root = active_worktree(&repository_root)?;
-        let schema = request
-            .get("schemaDir")
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned)
-            .or_else(|| configured("FYLO_SCHEMA"))
-            .filter(|schema| std::path::Path::new(schema).is_dir());
-        let credentials = configured("FYLO_ENCRYPTION_KEY").zip(configured("FYLO_CIPHER_SALT"));
-        match (schema, credentials) {
-            (Some(schema), Some((secret, salt))) => {
-                WriteEngine::open_with_repository_and_encryption(
-                    root,
-                    repository_root,
-                    schema,
-                    &secret,
-                    &salt,
-                )
-            }
-            (Some(schema), None) => {
-                WriteEngine::open_with_repository_and_schema(root, repository_root, schema)
-            }
-            (None, _) => WriteEngine::open_with_repository(root, repository_root),
-        }
-        .map(|engine| engine.with_config(self.config))
-        .map_err(|error| engine_error(&error))
+        let engine = WriteEngine::open_profiled(self.root_options(root, repository_root)?)
+            .map_err(|error| engine_error(&error))?;
+        self.configured(engine, request)
     }
 
-    /// `SELECT` is answered by the read engine; every mutation goes through the
-    /// native transaction writer, so both share the published SQL contract.
+    /// `engine` with this session's schema folder, keys and storage knobs,
+    /// after the one-time import of the folder into the root's schema
+    /// registry and, under `fylo.schema.autoPush`, a push of its new versions
+    /// (ADR 0017 section 3).
+    fn configured(
+        &self,
+        engine: WriteEngine,
+        request: &Value,
+    ) -> Result<WriteEngine, MachineError> {
+        let credentials = self
+            .config
+            .credentials
+            .as_ref()
+            .map(|(secret, salt)| (secret.as_str(), salt.as_str()));
+        let engine = match (self.schema_path(request), credentials) {
+            (Some(schema), _) => engine.with_schema_configuration(schema, credentials),
+            // Keys without a folder still encrypt the collections whose
+            // schemas are in the registry.
+            (None, Some((secret, salt))) => engine.with_encryption_credentials(secret, salt),
+            (None, None) => Ok(engine),
+        }
+        .map_err(|error| engine_error(&error))?
+        .with_config(self.config.storage);
+        engine
+            .synchronize_schemas()
+            .map_err(|error| engine_error(&error))?;
+        Ok(engine)
+    }
+
+    fn schema_path(&self, request: &Value) -> Option<PathBuf> {
+        request
+            .get("schemaDir")
+            .and_then(Value::as_str)
+            .map(PathBuf::from)
+            .or_else(|| self.config.schema.clone())
+    }
+
+    /// `EXPLAIN` describes the plan and never executes it; `EXPLAIN ANALYZE`
+    /// executes it and adds the elapsed time and the result.
     fn execute_sql(&self, request: &Value) -> Result<Value, MachineError> {
         let statement = require_string(request, "sql")?;
         let plan = prepare_sql(statement, QueryLimits::default())
             .map_err(|error| MachineError::new("EQUERY_INVALID", error.to_string()))?;
-        if plan.operation == SqlOperation::Select {
-            let engine = self.engine(request)?;
-            let actor = actor(request)?;
-            return match actor.as_ref() {
-                Some(actor) => engine.select_sql_as(&plan, actor),
-                None => engine.select_sql(&plan),
-            }
-            .map_err(|error| engine_error(&error));
+        if !plan.explain {
+            return self.execute_sql_plan(request, &plan);
         }
-        let writer = self.writer(request)?;
-        let actor = write_actor(request)?;
-        let mutation = writer
-            .execute_sql_mutation(statement, actor.as_ref(), access(request)?)
-            .map_err(|error| storage_error(&error))?;
+        let description = describe_sql_plan(&plan);
+        if !plan.analyze {
+            return Ok(description);
+        }
+        self.analyze_sql_plan(request, &plan, description)
+    }
+
+    fn analyze_sql_plan(
+        &self,
+        request: &Value,
+        plan: &SqlPlan,
+        mut description: Value,
+    ) -> Result<Value, MachineError> {
+        let started = Clock::start();
+        let result = self.execute_sql_plan(request, plan)?;
+        description["executed"] = Value::Bool(true);
+        description["elapsedMs"] = Value::from(started.elapsed_millis());
+        description["result"] = result;
+        Ok(description)
+    }
+
+    /// `SELECT` is answered by the read engine, `CREATE TABLE` and
+    /// `DROP TABLE` create and drop a document collection, and every other
+    /// mutation goes through the native transaction writer, so all share the
+    /// published SQL contract.
+    fn execute_sql_plan(&self, request: &Value, plan: &SqlPlan) -> Result<Value, MachineError> {
+        match plan.operation {
+            SqlOperation::Select => self
+                .engine(request)?
+                .select_sql(plan)
+                .map_err(|error| engine_error(&error)),
+            SqlOperation::Create => self.create_named_collection(
+                request,
+                &plan.collection,
+                CollectionKind::Document,
+                None,
+            ),
+            SqlOperation::Drop => self.drop_named_collection(request, &plan.collection),
+            SqlOperation::Insert | SqlOperation::Update | SqlOperation::Delete => {
+                self.execute_sql_mutation(request, plan)
+            }
+        }
+    }
+
+    fn execute_sql_mutation(&self, request: &Value, plan: &SqlPlan) -> Result<Value, MachineError> {
+        let mutation = self
+            .write_engine(request)?
+            .execute_sql_mutation(&plan.sql)
+            .map_err(|error| engine_error(&error))?;
         match mutation.kind {
             SqlMutationResultKind::Insert => mutation
                 .identifiers
@@ -967,10 +1716,7 @@ impl Session {
         let join = JoinSpec::from_value(join, QueryLimits::default())
             .map_err(|error| MachineError::new("EBADREQUEST", error.to_string()))?;
         let engine = self.engine(request)?;
-        let actor = actor(request)?;
-        let result = engine
-            .join(&join, actor.as_ref())
-            .map_err(|error| engine_error(&error))?;
+        let result = engine.join(&join).map_err(|error| engine_error(&error))?;
         serde_json::to_value(result).map_err(|error| serialization_error(&error))
     }
 
@@ -986,9 +1732,34 @@ impl Session {
                 ));
             }
         };
-        self.writer(request)?
-            .create_collection(collection, kind, None)
+        let layout = optional_layout(request)?;
+        self.create_named_collection(request, collection, kind, layout)
+    }
+
+    fn create_named_collection(
+        &self,
+        request: &Value,
+        collection: &str,
+        kind: CollectionKind,
+        layout: Option<CollectionLayout>,
+    ) -> Result<Value, MachineError> {
+        let writer = self.writer(request)?;
+        writer
+            .create_collection_with_layout(collection, kind, None, layout)
             .map_err(|error| storage_error(&error))?;
+        // A keyed session whose folder declares the collection records its
+        // encrypted fields now, before any session without the folder can
+        // write to it. A `.fxdb` database has no place for the folder's
+        // one-time import, so a folder never writes one; only a pack brings
+        // a record into it.
+        if self.config.credentials.is_some()
+            && self.schema_path(request).is_some()
+            && !writer.native_root().is_database()
+        {
+            self.write_engine(request)?
+                .record_encrypted_fields(collection)
+                .map_err(|error| engine_error(&error))?;
+        }
         Ok(json!({
             "collection": collection,
             "kind": match kind {
@@ -1000,6 +1771,14 @@ impl Session {
 
     fn drop_collection(&self, request: &Value) -> Result<Value, MachineError> {
         let collection = require_string(request, "collection")?;
+        self.drop_named_collection(request, collection)
+    }
+
+    fn drop_named_collection(
+        &self,
+        request: &Value,
+        collection: &str,
+    ) -> Result<Value, MachineError> {
         self.writer(request)?
             .drop_collection(collection)
             .map_err(|error| storage_error(&error))?;
@@ -1034,6 +1813,41 @@ impl Session {
             .reshard_collection(collection, width)
             .map_err(|error| storage_error(&error))?;
         Ok(json!({ "collection": collection, "shardWidth": width, "moved": moved }))
+    }
+
+    fn migrate_layout(&self, request: &Value) -> Result<Value, MachineError> {
+        let collection = require_string(request, "collection")?;
+        let layout = optional_layout(request)?.ok_or_else(|| {
+            MachineError::new(
+                "EBADREQUEST",
+                "machine request field \"layout\" must be \"files\" or \"segments\"",
+            )
+        })?;
+        let report = self
+            .writer(request)?
+            .migrate_layout(collection, layout)
+            .map_err(|error| storage_error(&error))?;
+        Ok(json!({
+            "collection": report.collection,
+            "layout": report.layout.as_str(),
+            "documents": report.documents,
+            "deleted": report.deleted,
+        }))
+    }
+
+    fn compact_collection(&self, request: &Value) -> Result<Value, MachineError> {
+        let collection = require_string(request, "collection")?;
+        let report = self
+            .writer(request)?
+            .compact_collection(collection)
+            .map_err(|error| storage_error(&error))?;
+        Ok(json!({
+            "collection": collection,
+            "segmentsCompacted": report.segments_compacted,
+            "documentsCopied": report.documents_copied,
+            "bytesBefore": report.bytes_before,
+            "bytesAfter": report.bytes_after,
+        }))
     }
 
     fn rebuild_collection(&self, request: &Value) -> Result<Value, MachineError> {
@@ -1089,9 +1903,8 @@ impl Session {
             .put_document_with_metadata(
                 collection,
                 &identifier,
-                data.clone(),
+                Document::copy_fields(data),
                 metadata,
-                access(request)?,
             )
             .map_err(|error| engine_error(&error))?;
         Ok(Value::String(identifier))
@@ -1168,7 +1981,6 @@ impl Session {
                     key,
                     extension,
                     metadata,
-                    access: access(request)?,
                 },
             )
             .map_err(|error| storage_error(&error))?;
@@ -1184,19 +1996,17 @@ impl Session {
                 "machine request field \"newDoc\" must be an object",
             ));
         };
-        let actor = write_actor(request)?;
-        self.writer(request)?
-            .patch_document_fields(collection, identifier, changes, actor.as_ref())
-            .map_err(|error| storage_error(&error))?;
+        self.write_engine(request)?
+            .patch_document_fields(collection, identifier, changes)
+            .map_err(|error| engine_error(&error))?;
         Ok(Value::String(identifier.to_owned()))
     }
 
     fn delete_document(&self, request: &Value) -> Result<Value, MachineError> {
         let collection = require_string(request, "collection")?;
         let identifier = require_string(request, "id")?;
-        let actor = write_actor(request)?;
         self.writer(request)?
-            .delete_document(collection, identifier, actor.as_ref())
+            .delete_document(collection, identifier)
             .map_err(|error| storage_error(&error))?;
         Ok(json!({ "deleted": true }))
     }
@@ -1210,9 +2020,8 @@ impl Session {
                 "machine request field \"meta\" must be an object",
             ));
         };
-        let actor = write_actor(request)?;
         self.writer(request)?
-            .set_record_metadata(collection, identifier, record, actor.as_ref())
+            .set_record_metadata(collection, identifier, record)
             .map_err(|error| storage_error(&error))?;
         self.get_metadata(request)
     }
@@ -1269,15 +2078,13 @@ impl Session {
         let engine = self.engine(request)?;
         let collection = require_string(request, "collection")?;
         let query = structured_query(request)?;
-        let actor = actor(request)?;
         if engine
-            .inspect(collection)
+            .collection_kind(collection)
             .map_err(|error| engine_error(&error))?
-            .kind
             == CollectionKind::File
         {
             let pairs = engine
-                .find_deleted_files(collection, &query, actor.as_ref())
+                .find_deleted_files(collection, &query)
                 .map_err(|error| engine_error(&error))?
                 .into_iter()
                 .map(|(identifier, fields)| (identifier, Value::Object(fields)))
@@ -1285,14 +2092,12 @@ impl Session {
             return self.shape_query_result(request, pairs);
         }
         let rows = engine
-            .find_deleted(collection, &query, actor.as_ref())
+            .find_deleted(collection, &query)
             .map_err(|error| engine_error(&error))?;
         let mut pairs = Vec::with_capacity(rows.len());
         for record in rows {
             let identifier = record.id.clone();
-            let encoded = serde_json::to_value(record.document)
-                .map_err(|error| serialization_error(&error))?;
-            pairs.push((identifier, encoded));
+            pairs.push((identifier, Value::Object(record.document.into_fields())));
         }
         self.shape_query_result(request, pairs)
     }
@@ -1356,7 +2161,9 @@ impl Session {
         } else {
             let sequence = self.cursor_sequence.get().wrapping_add(1);
             self.cursor_sequence.set(sequence);
-            let token = format!("fqc1.{}.{sequence}", std::process::id());
+            // `std::process::id` panics in a browser module and takes the whole
+            // batch down with it, writes already applied included.
+            let token = format!("fqc1.{}.{sequence}", fylo_storage_native::process_id());
             let sorted = bounded_query_snapshot(rows)?;
             cursors.insert(
                 token.clone(),
@@ -1409,9 +2216,8 @@ impl Session {
     fn restore_document(&self, request: &Value) -> Result<Value, MachineError> {
         let collection = require_string(request, "collection")?;
         let identifier = require_string(request, "id")?;
-        let actor = write_actor(request)?;
         self.writer(request)?
-            .restore_document(collection, identifier, actor.as_ref())
+            .restore_document(collection, identifier)
             .map_err(|error| storage_error(&error))?;
         Ok(json!({ "restored": true, "id": identifier }))
     }
@@ -1429,7 +2235,6 @@ impl Session {
         };
         let engine = self.write_engine(request)?;
         let writer = self.writer(request)?;
-        let access = access(request)?;
         let mut identifiers = Vec::with_capacity(batch.len());
         for entry in batch {
             let Some(fields) = entry.as_object() else {
@@ -1442,7 +2247,7 @@ impl Session {
                 .allocate_identifier()
                 .map_err(|error| storage_error(&error))?;
             engine
-                .put_document(collection, &identifier, fields.clone(), access)
+                .put_document(collection, &identifier, Document::copy_fields(fields))
                 .map_err(|error| engine_error(&error))?;
             identifiers.push(Value::String(identifier));
         }
@@ -1465,14 +2270,13 @@ impl Session {
         let documents = parse_import_documents(&body)?;
         let engine = self.write_engine(request)?;
         let writer = self.writer(request)?;
-        let access = access(request)?;
         let count = options.limit.unwrap_or(usize::MAX).min(documents.len());
         for fields in documents.into_iter().take(count) {
             let identifier = writer
                 .allocate_identifier()
                 .map_err(|error| storage_error(&error))?;
             engine
-                .put_document(collection, &identifier, fields, access)
+                .put_document(collection, &identifier, fields)
                 .map_err(|error| engine_error(&error))?;
         }
         Ok(Value::from(count))
@@ -1480,6 +2284,12 @@ impl Session {
 
     fn queue(&self, request: &Value) -> Result<NativeQueue, MachineError> {
         let root = self.root(request)?;
+        if self.filesystem_profile == FilesystemProfile::EfsSidecarV1 {
+            return Err(MachineError::new(
+                NativeStorageErrorCode::Unsupported.as_str(),
+                "queue operations are not supported for the EFS metadata profile",
+            ));
+        }
         let lease = self
             .leases
             .borrow()
@@ -1648,12 +2458,11 @@ impl Session {
             ));
         };
         let matched = self.matching_identifiers(request, collection, update)?;
-        let writer = self.writer(request)?;
-        let actor = write_actor(request)?;
+        let engine = self.write_engine(request)?;
         for identifier in &matched {
-            writer
-                .patch_document_fields(collection, identifier, changes, actor.as_ref())
-                .map_err(|error| storage_error(&error))?;
+            engine
+                .patch_document_fields(collection, identifier, changes)
+                .map_err(|error| engine_error(&error))?;
         }
         Ok(Value::from(matched.len()))
     }
@@ -1668,10 +2477,9 @@ impl Session {
         };
         let matched = self.matching_identifiers(request, collection, filter)?;
         let writer = self.writer(request)?;
-        let actor = write_actor(request)?;
         for identifier in &matched {
             writer
-                .delete_document(collection, identifier, actor.as_ref())
+                .delete_document(collection, identifier)
                 .map_err(|error| storage_error(&error))?;
         }
         Ok(Value::from(matched.len()))
@@ -1692,23 +2500,19 @@ impl Session {
         let query = StructuredQuery::from_value(&query, QueryLimits::default())
             .map_err(|error| MachineError::new("EQUERY_INVALID", error.to_string()))?;
         let engine = self.engine(request)?;
-        let actor = actor(request)?;
         if engine
-            .inspect(collection)
+            .collection_kind(collection)
             .map_err(|error| engine_error(&error))?
-            .kind
             == CollectionKind::File
         {
             return engine
-                .find_files(collection, &query, actor.as_ref())
+                .find_files(collection, &query)
                 .map(|rows| rows.into_iter().map(|(identifier, _)| identifier).collect())
                 .map_err(|error| engine_error(&error));
         }
-        let rows = match actor.as_ref() {
-            Some(actor) => engine.find_as(collection, &query, actor),
-            None => engine.find(collection, &query),
-        }
-        .map_err(|error| engine_error(&error))?;
+        let rows = engine
+            .find(collection, &query)
+            .map_err(|error| engine_error(&error))?;
         Ok(rows.into_iter().map(|row| row.metadata.id).collect())
     }
 
@@ -1837,11 +2641,65 @@ impl Session {
             .map_err(|error| engine_error(&error))?;
         Ok(json!({
             "collection": collection,
-            "schemaDir": engine.schema_dir().map_err(|error| engine_error(&error))?,
+            "schemaDir": engine.schema_folder(),
             "current": current,
             "valid": true,
             "document": validated,
         }))
+    }
+
+    /// `fylo schema mode`: report a collection's validation mode, and with
+    /// `mode`, record that one in its descriptor first (ADR 0017 section 2).
+    fn schema_mode(&self, request: &Value) -> Result<Value, MachineError> {
+        let collection = require_string(request, "collection")?;
+        let writer = self.writer(request)?;
+        if let Some(mode) = request.get("mode") {
+            let mode = mode
+                .as_str()
+                .and_then(ValidationMode::parse)
+                .ok_or_else(|| {
+                    MachineError::new(
+                        "EBADREQUEST",
+                        "machine request field \"mode\" must be \"off\", \"warn\" or \"strict\"",
+                    )
+                })?;
+            writer
+                .set_validation_mode(collection, mode)
+                .map_err(|error| storage_error(&error))?;
+        }
+        let recorded = writer
+            .collection(collection)
+            .map_err(|error| storage_error(&error))?
+            .validation();
+        Ok(json!({
+            "collection": collection,
+            "validation": ValidationMode::resolve(recorded, self.config.storage.strict_schema)
+                .as_str(),
+            "recorded": recorded.map(ValidationMode::as_str),
+            "schemaViolations": fylo_storage_native::schema_violations(writer.path(), collection),
+        }))
+    }
+
+    /// `fylo schema check`: the documents of a collection its head schema
+    /// rejects, at most `limit` of them (default 100).
+    fn schema_check(&self, request: &Value) -> Result<Value, MachineError> {
+        let collection = require_string(request, "collection")?;
+        let limit = match request.get("limit") {
+            None => 100,
+            Some(limit) => limit
+                .as_u64()
+                .and_then(|limit| usize::try_from(limit).ok())
+                .filter(|limit| *limit > 0)
+                .ok_or_else(|| {
+                    MachineError::new(
+                        "EBADREQUEST",
+                        "machine request field \"limit\" must be a positive integer",
+                    )
+                })?,
+        };
+        self.write_engine(request)?
+            .schema_check(collection, limit)
+            .map_err(|error| engine_error(&error))
     }
 
     fn schema_materialize(&self, request: &Value) -> Result<Value, MachineError> {
@@ -1864,10 +2722,103 @@ impl Session {
             .map_err(|error| engine_error(&error))?;
         Ok(json!({
             "collection": collection,
-            "schemaDir": engine.schema_dir().map_err(|error| engine_error(&error))?,
+            "schemaDir": engine.schema_folder(),
             "current": current,
             "document": materialized,
         }))
+    }
+
+    /// Rewrite every document below the head schema version at the head,
+    /// one read-modify-write per document (ADR 0017 section 5). A document
+    /// without `_v` is ambiguous outside strict mode, which never stamped it,
+    /// so it is migrated only when the request sets `includeUnversioned`.
+    fn schema_migrate(&self, request: &Value) -> Result<Value, MachineError> {
+        let collection = require_string(request, "collection")?;
+        let include_unversioned = request.get("includeUnversioned") == Some(&Value::Bool(true));
+        let engine = self.write_engine(request)?;
+        let Some(current) = engine
+            .schema_current(collection)
+            .map_err(|error| engine_error(&error))?
+        else {
+            return Err(MachineError::new(
+                "ESCHEMA",
+                format!("collection '{collection}' has no versioned schema to migrate to"),
+            ));
+        };
+        let query = StructuredQuery::from_value(&json!({}), QueryLimits::default())
+            .map_err(|error| MachineError::new("EQUERY_INVALID", error.to_string()))?;
+        // Reads return the head shape (ADR 0017 section 5), so the documents
+        // still to rewrite are found as they are stored.
+        let rows = self
+            .engine(request)?
+            .as_stored()
+            .find(collection, &query)
+            .map_err(|error| engine_error(&error))?;
+        let (mut migrated, mut at_head, mut unversioned) = (0_usize, 0_usize, 0_usize);
+        for row in &rows {
+            match row.document.fields().get("_v").and_then(Value::as_str) {
+                Some(version) if version == current => at_head += 1,
+                None if !include_unversioned => unversioned += 1,
+                _ => {
+                    engine
+                        .migrate_document(collection, &row.metadata.id)
+                        .map_err(|error| {
+                            let failure = engine_error(&error);
+                            MachineError::new(
+                                &failure.code,
+                                format!("document {}: {}", row.metadata.id, failure.message),
+                            )
+                        })?;
+                    migrated += 1;
+                }
+            }
+        }
+        Ok(json!({
+            "collection": collection,
+            "schemaDir": engine.schema_folder(),
+            "current": current,
+            "scanned": rows.len(),
+            "migrated": migrated,
+            "atHead": at_head,
+            "unversioned": unversioned,
+        }))
+    }
+
+    /// `fylo schema push`: commit the versions of the request's or the
+    /// session's `fylo.schema` folder that the collection's schema registry
+    /// lacks, after a dry run over its documents (ADR 0017 section 3).
+    fn schema_push(&self, request: &Value) -> Result<Value, MachineError> {
+        let collection = require_string(request, "collection")?;
+        self.require_main_worktree(request)?;
+        self.write_engine(request)?
+            .schema_push(collection, None, None)
+            .map_err(|error| engine_error(&error))
+    }
+
+    /// `fylo schema pull`: write the collection's schema registry to `out`
+    /// in the `fylo.schema` folder layout.
+    fn schema_pull(&self, request: &Value) -> Result<Value, MachineError> {
+        let collection = require_string(request, "collection")?;
+        let out = require_string(request, "out")?;
+        self.require_main_worktree(request)?;
+        self.write_engine(request)?
+            .schema_pull(collection, std::path::Path::new(out))
+            .map_err(|error| engine_error(&error))
+    }
+
+    /// The registry lives beside the catalog, which every branch shares, but
+    /// a push dry-runs against the documents of the checked-out worktree and
+    /// fences its generation state. Refuse on another branch rather than
+    /// check, or fence, the wrong ones.
+    fn require_main_worktree(&self, request: &Value) -> Result<(), MachineError> {
+        let repository_root = self.root(request)?;
+        if active_worktree(&repository_root)? != repository_root {
+            return Err(MachineError::new(
+                "ESCHEMA",
+                "schema push and pull work on the main branch; check out main first",
+            ));
+        }
+        Ok(())
     }
 
     fn write_success<W: Write>(
@@ -1979,7 +2930,33 @@ impl Clock {
     }
 }
 
+fn assert_repository_lease(
+    repository_root: &std::path::Path,
+    lease: &RootLease,
+) -> Result<(), MachineError> {
+    lease
+        .assert_owned()
+        .map_err(|error| storage_error(&error))?;
+    let canonical = fylo_vfs::canonicalize(repository_root).map_err(|_| {
+        MachineError::new(
+            "EROOTLEASELOST",
+            "cannot resolve the owning repository root",
+        )
+    })?;
+    if canonical != lease.root() {
+        return Err(MachineError::new(
+            "EROOTLEASELOST",
+            "the supplied root lease belongs to another repository",
+        ));
+    }
+    Ok(())
+}
+
 fn active_worktree(repository_root: &std::path::Path) -> Result<PathBuf, MachineError> {
+    // A `.vdbx` database has no worktrees.
+    if NativeRoot::names_database(repository_root) {
+        return Ok(repository_root.to_path_buf());
+    }
     let head_path = repository_root.join(".fylo-vcs").join("HEAD");
     let head_metadata = match fylo_vfs::symlink_metadata(&head_path) {
         Ok(metadata) => metadata,
@@ -2639,16 +3616,9 @@ fn host_allowed(hostname: &str, allowed: Option<&[String]>) -> bool {
 #[cfg(not(target_arch = "wasm32"))]
 fn is_private(address: IpAddr) -> bool {
     match address {
-        IpAddr::V4(address) => {
-            let [first, second, ..] = address.octets();
-            first == 0
-                || first == 10
-                || first == 127
-                || (first == 169 && second == 254)
-                || (first == 172 && (16..=31).contains(&second))
-                || (first == 192 && second == 168)
-                || (first == 100 && (64..=127).contains(&second))
-        }
+        IpAddr::V4(address) => private_ipv4_conditions(address)
+            .into_iter()
+            .any(|condition| condition),
         IpAddr::V6(address) => address.to_ipv4_mapped().map_or_else(
             || {
                 address.is_unspecified()
@@ -2659,6 +3629,20 @@ fn is_private(address: IpAddr) -> bool {
             |address| is_private(IpAddr::V4(address)),
         ),
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn private_ipv4_conditions(address: std::net::Ipv4Addr) -> [bool; 7] {
+    let [first, second, ..] = address.octets();
+    [
+        first == 0,
+        first == 10,
+        first == 127,
+        first == 169 && second == 254,
+        first == 172 && (16..=31).contains(&second),
+        first == 192 && second == 168,
+        first == 100 && (64..=127).contains(&second),
+    ]
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -2677,7 +3661,7 @@ fn import_size_error(max_bytes: usize) -> MachineError {
     )
 }
 
-/// Cursor identity: the same op, collection, query, and actor must resume the
+/// Cursor identity: the same op, collection, and query must resume the
 /// same snapshot, and anything else must be rejected rather than silently
 /// paged against the wrong result set.
 /// One page's worth of rows, plus the first row that could not fit.
@@ -2760,7 +3744,8 @@ fn fill_page(
         if only_ids {
             page.identifiers.push(Value::String(identifier.clone()));
         } else {
-            page.items.insert(identifier.clone(), document.clone());
+            page.items
+                .insert(identifier.clone(), Document::copy_value(document));
         }
         let rendered = if only_ids {
             Value::Array(page.identifiers.clone())
@@ -2789,19 +3774,11 @@ fn fill_page(
     page
 }
 
-/// An empty environment variable is falsy in JavaScript, and a repository
-/// `.env` commonly declares these names with empty values. Treating one as
-/// configured would open the engine with credentials that cannot work.
-fn configured(name: &str) -> Option<String> {
-    std::env::var(name).ok().filter(|value| !value.is_empty())
-}
-
 fn cursor_scope(request: &Value) -> String {
     let parts = json!({
         "op": request.get("op"),
         "collection": request.get("collection"),
         "query": request.get("query"),
-        "access": request.get("access"),
     });
     serde_json::to_string(&parts).unwrap_or_default()
 }
@@ -2812,6 +3789,24 @@ fn unix_millis() -> u64 {
         .map_or(0, |elapsed| {
             u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
         })
+}
+
+/// Every build links the CHEX validator (ADR 0017 sections 4 and 7). A
+/// WebAssembly build has no regex compiler: it validates only with the
+/// compiled validators a native push stored in the schema registry, and
+/// refuses `strict` and `warn` writes to a collection it cannot validate with
+/// `ESCHEMAUNAVAILABLE`, which `compiledOnly` tells a supervisor to expect.
+fn schema_validation_capability() -> Value {
+    let mut capability = json!({
+        "version": 1,
+        "validator": "chex",
+        "chexVersion": CHEX_VERSION,
+        "inProcess": true
+    });
+    if cfg!(target_family = "wasm") {
+        capability["compiledOnly"] = Value::Bool(true);
+    }
+    capability
 }
 
 fn serverless_queue_capability() -> Value {
@@ -2837,6 +3832,23 @@ fn structured_query(request: &Value) -> Result<StructuredQuery, MachineError> {
     let query = request.get("query").cloned().unwrap_or_else(|| json!({}));
     StructuredQuery::from_value(&query, QueryLimits::default())
         .map_err(|error| MachineError::new("EQUERY_INVALID", error.to_string()))
+}
+
+/// The optional `layout` field of a request.
+fn optional_layout(request: &Value) -> Result<Option<CollectionLayout>, MachineError> {
+    let Some(value) = request.get("layout") else {
+        return Ok(None);
+    };
+    value
+        .as_str()
+        .and_then(|name| CollectionLayout::parse(name).ok())
+        .map(Some)
+        .ok_or_else(|| {
+            MachineError::new(
+                "EBADREQUEST",
+                "machine request field \"layout\" must be \"files\" or \"segments\"",
+            )
+        })
 }
 
 fn require_string<'a>(request: &'a Value, field: &str) -> Result<&'a str, MachineError> {
@@ -2875,62 +3887,20 @@ fn optional_u64(request: &Value, field: &str) -> Result<Option<u64>, MachineErro
     }
 }
 
-fn actor(request: &Value) -> Result<Option<AccessContext>, MachineError> {
-    let Some(access) = request.get("access").and_then(Value::as_object) else {
-        return Ok(None);
-    };
-    let Some(uid) = access.get("uid").and_then(Value::as_u64) else {
-        return Ok(None);
-    };
-    let uid = u32::try_from(uid)
-        .map_err(|_| MachineError::new("EBADREQUEST", "machine access uid is out of range"))?;
-    let groups = access
-        .get("groups")
-        .and_then(Value::as_array)
-        .map(|groups| {
-            groups
-                .iter()
-                .filter_map(Value::as_u64)
-                .filter_map(|group| u32::try_from(group).ok())
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    Ok(Some(AccessContext::new(uid, groups)))
+fn refuse_access_field(request: &Value) -> Result<(), MachineError> {
+    if request.get("access").is_some() {
+        return Err(MachineError::new(
+            "EBADREQUEST",
+            "machine request field \"access\" was removed with POSTIX (ADR 0021); a protected \
+             .vdbx database opened with an identity replaces it \
+             (docs/migrating-to-protected-databases.md)",
+        ));
+    }
+    Ok(())
 }
 
 fn storage_error(error: &NativeStorageError) -> MachineError {
     MachineError::new(error.code().as_str(), error.to_string())
-}
-
-fn write_actor(request: &Value) -> Result<Option<WriteActor>, MachineError> {
-    Ok(actor(request)?.map(|actor| WriteActor::new(actor.uid(), actor.groups().iter().copied())))
-}
-
-/// Owner, group, and mode are honoured on creation only, matching the
-/// published `put`/`INSERT` contract.
-fn access(request: &Value) -> Result<WriteAccess, MachineError> {
-    let Some(fields) = request.get("access").and_then(Value::as_object) else {
-        return Ok(WriteAccess::default());
-    };
-    let read = |name: &str| -> Result<Option<u32>, MachineError> {
-        fields
-            .get(name)
-            .and_then(Value::as_u64)
-            .map(|value| {
-                u32::try_from(value).map_err(|_| {
-                    MachineError::new(
-                        "EBADREQUEST",
-                        format!("machine access {name} is out of range"),
-                    )
-                })
-            })
-            .transpose()
-    };
-    Ok(WriteAccess {
-        uid: read("uid")?,
-        gid: read("gid")?,
-        mode: read("mode")?,
-    })
 }
 
 fn optional_string(value: &Value, name: &str) -> Option<String> {
@@ -2948,6 +3918,26 @@ fn engine_error(error: &EngineError) -> MachineError {
         .or_else(|| error.query_code_str())
         .unwrap_or_else(|| error.code().as_str());
     MachineError::new(code, error.to_string())
+}
+
+fn describe_sql_plan(plan: &SqlPlan) -> Value {
+    json!({
+        "operation": plan.operation,
+        "collection": plan.collection,
+        "access": plan.access,
+        "executed": false,
+    })
+}
+
+fn absent_collection(collection: &str) -> Value {
+    json!({
+        "collection": collection,
+        "exists": false,
+        "worm": false,
+        "docsStored": 0,
+        "deletedDocs": 0,
+        "indexedDocs": 0,
+    })
 }
 
 fn serialization_error(error: &serde_json::Error) -> MachineError {
@@ -2979,31 +3969,49 @@ fn runtime_target() -> String {
     format!("{os}-{architecture}")
 }
 
-fn executable_on_path(name: &str) -> bool {
-    let Some(path) = std::env::var_os("PATH") else {
-        return false;
-    };
-    std::env::split_paths(&path).any(|directory| {
-        let candidate = directory.join(name);
-        if candidate.is_file() {
-            return true;
-        }
-        #[cfg(windows)]
-        {
-            for extension in ["exe", "cmd", "bat", "com"] {
-                if directory.join(format!("{name}.{extension}")).is_file() {
-                    return true;
-                }
-            }
-        }
-        false
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fylo_test_support::{McdcCase, assert_unique_cause_mcdc};
     use std::io::Cursor;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn private_ipv4_case(name: &'static str, address: [u8; 4]) -> McdcCase<7> {
+        let address = std::net::Ipv4Addr::from(address);
+        McdcCase::new(
+            name,
+            private_ipv4_conditions(address),
+            is_private(IpAddr::V4(address)),
+        )
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn mcdc_machine_private_ipv4_rejection() {
+        let cases = [
+            private_ipv4_case("public_baseline", [8, 8, 8, 8]),
+            private_ipv4_case("this_network", [0, 1, 2, 3]),
+            private_ipv4_case("private_10", [10, 1, 2, 3]),
+            private_ipv4_case("loopback", [127, 0, 0, 1]),
+            private_ipv4_case("link_local", [169, 254, 1, 1]),
+            private_ipv4_case("private_172", [172, 16, 1, 1]),
+            private_ipv4_case("private_192", [192, 168, 1, 1]),
+            private_ipv4_case("carrier_grade_nat", [100, 64, 1, 1]),
+        ];
+        assert_unique_cause_mcdc(
+            "machine.private_ipv4_rejection",
+            [
+                "this_network",
+                "private_10",
+                "loopback",
+                "link_local",
+                "private_172",
+                "private_192",
+                "carrier_grade_nat",
+            ],
+            &cases,
+        );
+    }
 
     fn run(input: &str) -> Vec<Value> {
         let mut reader = Cursor::new(input.as_bytes().to_vec());
@@ -3014,6 +4022,80 @@ mod tests {
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
             .collect()
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn inspect_database_describes_a_vdbx_file_without_a_root() {
+        let dir = std::env::temp_dir().join(format!(
+            "fylo-machine-vdbx-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("app.vdbx");
+        fylo_storage_native::ContainerFile::create(&path, 20).unwrap();
+        {
+            let mut container = fylo_storage_native::ContainerFile::open_unchecked(&path).unwrap();
+            container.add_collection("users", b"").unwrap();
+        }
+        let request = json!({"op": "inspectDatabase", "root": path});
+        let frames = run(&format!(
+            "{request}\n{}\n",
+            json!({"op": "inspectDatabase", "root": dir.join("missing.vdbx")})
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(frames[0]["ok"], json!(true), "{}", frames[0]);
+        let result = &frames[0]["result"];
+        assert_eq!(result["format"], json!("fylo.vdbx"));
+        assert_eq!(result["encrypted"], json!(false));
+        assert_eq!(result["collections"][0]["name"], json!("users"));
+        assert_eq!(frames[1]["ok"], json!(false));
+        assert_eq!(frames[1]["error"]["code"], json!("ENATIVE_NOT_FOUND"));
+        let capabilities = &run("{\"op\":\"handshake\"}\n")[0]["result"]["capabilities"];
+        assert_eq!(
+            capabilities["singleFileDatabase"]["operations"],
+            json!(["inspectDatabase", "verifyDatabase"])
+        );
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn verify_database_checks_a_vdbx_file_without_a_root() {
+        let dir = std::env::temp_dir().join(format!(
+            "fylo-machine-vdbx-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("app.vdbx");
+        fylo_storage_native::ContainerFile::create(&path, 20).unwrap();
+        {
+            let mut container = fylo_storage_native::ContainerFile::open_unchecked(&path).unwrap();
+            container.add_collection("users", b"").unwrap();
+        }
+        let request = json!({"op": "verifyDatabase", "root": path});
+        let clean = run(&format!("{request}\n"));
+        // A damaged directory extent header is reported, not refused.
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes[(1 << 20) + 20] ^= 0x40;
+        std::fs::write(&path, bytes).unwrap();
+        let frames = run(&format!(
+            "{request}\n{}\n",
+            json!({"op": "verifyDatabase", "root": dir.join("missing.vdbx")})
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(clean[0]["ok"], json!(true), "{}", clean[0]);
+        assert_eq!(clean[0]["result"]["ok"], json!(true));
+        assert_eq!(clean[0]["result"]["problems"], json!([]));
+        assert_eq!(frames[0]["ok"], json!(true), "{}", frames[0]);
+        let result = &frames[0]["result"];
+        assert_eq!(result["ok"], json!(false));
+        assert_eq!(result["problems"][0]["code"], json!("extentHeaderMismatch"));
+        assert_eq!(result["problems"][0]["severity"], json!("error"));
+        assert_eq!(result["problems"][0]["extent"], json!(1));
+        assert_eq!(frames[1]["ok"], json!(false));
+        assert_eq!(frames[1]["error"]["code"], json!("ENATIVE_NOT_FOUND"));
     }
 
     #[test]
@@ -3031,7 +4113,7 @@ mod tests {
     }
 
     #[test]
-    fn handshake_versions_machine_access_and_document_bucket_capabilities() {
+    fn handshake_versions_document_bucket_and_queue_capabilities() {
         let frame = &run("{\"op\":\"handshake\"}\n")[0];
         let capabilities = &frame["result"]["capabilities"];
 
@@ -3053,23 +4135,33 @@ mod tests {
             capabilities["serverlessQueue"]["delivery"],
             json!("at-least-once")
         );
+    }
 
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        {
-            assert_eq!(capabilities["machineAccess"]["version"], json!(1));
-            assert_eq!(
-                capabilities["machineAccess"]["operations"],
-                json!(MACHINE_ACCESS_OPERATIONS)
-            );
-            assert_eq!(
-                capabilities["machineAccess"]["directDenial"],
-                json!("EACCES")
-            );
-            assert_eq!(capabilities["machineAccess"]["queryDenial"], json!("omit"));
-        }
+    #[test]
+    fn handshake_has_no_machine_access_capability() {
+        let frame = &run("{\"op\":\"handshake\"}\n")[0];
 
-        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-        assert!(capabilities.get("machineAccess").is_none());
+        assert!(
+            frame["result"]["capabilities"]
+                .get("machineAccess")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_request_with_an_access_field_is_refused() {
+        let frame = &run(
+            "{\"op\":\"getDoc\",\"collection\":\"users\",\"id\":\"4VRNF52JPCO\",\"access\":{\"uid\":1000}}\n",
+        )[0];
+
+        assert_eq!(frame["ok"], json!(false));
+        assert_eq!(frame["error"]["code"], json!("EBADREQUEST"));
+        assert!(
+            frame["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("removed with POSTIX (ADR 0021)")
+        );
     }
 
     #[test]
@@ -3250,6 +4342,54 @@ mod tests {
     fn an_unknown_operation_reports_eunsupportedop() {
         let frames = run("{\"op\":\"launchMissiles\"}\n");
         assert_eq!(frames[0]["error"]["code"], json!("EUNSUPPORTEDOP"));
+    }
+
+    /// A full collection answers `EINDEX_FULL` on every path that adds a
+    /// document, and still deletes. The snapshot's length stands in for
+    /// 240 MiB of index keys: a write only measures the index files.
+    #[test]
+    fn a_full_collection_refuses_puts_with_index_full() {
+        let root = std::env::temp_dir().join(format!(
+            "fylo-machine-index-full-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let created = run(&format!(
+            "{}\n{}\n",
+            json!({ "op": "createCollection", "collection": "notes", "root": root }),
+            json!({ "op": "putData", "collection": "notes", "data": { "n": 1 }, "root": root }),
+        ));
+        let identifier = created[1]["result"].as_str().unwrap().to_owned();
+        std::fs::File::create(root.join(".collections/notes/index/keys.snapshot"))
+            .unwrap()
+            .set_len(240 * 1024 * 1024)
+            .unwrap();
+
+        let frames = run(&format!(
+            "{}\n{}\n{}\n",
+            json!({ "op": "putData", "collection": "notes", "data": { "n": 2 }, "root": root }),
+            json!({ "op": "batchPutData", "collection": "notes", "batch": [{ "n": 3 }], "root": root }),
+            json!({ "op": "delDoc", "collection": "notes", "id": identifier, "root": root }),
+        ));
+
+        assert_eq!(
+            frames[0]["error"]["code"],
+            json!("EINDEX_FULL"),
+            "{}",
+            frames[0]
+        );
+        assert_eq!(
+            frames[1]["error"]["code"],
+            json!("EINDEX_FULL"),
+            "{}",
+            frames[1]
+        );
+        assert_eq!(frames[2]["ok"], json!(true), "{}", frames[2]);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     /// Resharding moves every record, its tombstones, and its raw files. The
@@ -3498,13 +4638,16 @@ mod tests {
     fn one_shot_sessions_reject_paged_queries() {
         let session = Session {
             default_root: None,
+            filesystem_profile: FilesystemProfile::Native,
             limits: FrameLimits::default(),
-            config: RootConfig::default(),
+            config: ApplicationConfig::default(),
             leases: std::cell::RefCell::new(std::collections::BTreeMap::new()),
             cursors: std::cell::RefCell::new(std::collections::BTreeMap::new()),
             cursor_sequence: std::cell::Cell::new(0),
             startup_error: None,
             persistent: false,
+            hot_set: None,
+            hot_engine: std::cell::RefCell::new(None),
         };
         let error = session
             .paginate(&json!({ "page": { "limit": 1 } }), Vec::new())

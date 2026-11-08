@@ -5,12 +5,13 @@ import { CollectionNotFoundError, validateCollectionName } from '../../core/coll
 import { FyloQueryPlanner } from '../../query/planner.js'
 import { runInLane } from './filesystem.js'
 import { BrowserDocuments } from './documents.js'
-import { validateMetadataRecord } from './metadata.js'
-import { BrowserMetadataStore } from './metadata.js'
-import { BrowserEventBus } from './event-bus.js'
+import { MetadataRecord } from './metadata-record.js'
+import { BrowserMetadataStore } from './browser-metadata-store.js'
+import { BrowserEventBus } from './browser-event-bus.js'
 import { BrowserPrefixIndex } from './prefix-index.js'
-import { BrowserQueryEngine } from './query.js'
-import { assertPathInside, join } from './path.js'
+import { BrowserQueryEngine, documentNumber } from './query.js'
+import { BrowserPath } from './browser-path.js'
+import { BrowserFeatureGuard } from './browser-feature-guard.js'
 import '../../core/extensions.js'
 
 /**
@@ -18,12 +19,58 @@ import '../../core/extensions.js'
  * @type {Record<string, (leftValue: unknown, rightValue: unknown) => boolean>}
  */
 const JOIN_COMPARATORS = {
-    $eq: (leftValue, rightValue) => leftValue === rightValue,
-    $ne: (leftValue, rightValue) => leftValue !== rightValue,
-    $gt: (leftValue, rightValue) => Number(leftValue) > Number(rightValue),
-    $lt: (leftValue, rightValue) => Number(leftValue) < Number(rightValue),
-    $gte: (leftValue, rightValue) => Number(leftValue) >= Number(rightValue),
-    $lte: (leftValue, rightValue) => Number(leftValue) <= Number(rightValue)
+    $eq: (leftValue, rightValue) => joinEqual(leftValue, rightValue),
+    $ne: (leftValue, rightValue) => !joinEqual(leftValue, rightValue),
+    $gt: (leftValue, rightValue) => joinNumber(leftValue) > joinNumber(rightValue),
+    $lt: (leftValue, rightValue) => joinNumber(leftValue) < joinNumber(rightValue),
+    $gte: (leftValue, rightValue) => joinNumber(leftValue) >= joinNumber(rightValue),
+    $lte: (leftValue, rightValue) => joinNumber(leftValue) <= joinNumber(rightValue)
+}
+
+/**
+ * Structural equality; a missing field equals nothing. Mirrors `strict_equals`
+ * in `crates/fylo-query/src/join.rs`.
+ * @param {unknown} left
+ * @param {unknown} right
+ * @returns {boolean}
+ */
+function joinEqual(left, right) {
+    if (left === undefined || right === undefined) return false
+    return structurallyEqual(left, right)
+}
+
+/** @param {unknown} left @param {unknown} right @returns {boolean} */
+function structurallyEqual(left, right) {
+    if (left === null || right === null || typeof left !== 'object' || typeof right !== 'object')
+        return left === right
+    if (Array.isArray(left) !== Array.isArray(right)) return false
+    const leftKeys = Object.keys(left)
+    const rightRecord = /** @type {Record<string, unknown>} */ (right)
+    return (
+        leftKeys.length === Object.keys(right).length &&
+        leftKeys.every(
+            (key) =>
+                Object.hasOwn(right, key) &&
+                structurallyEqual(
+                    /** @type {Record<string, unknown>} */ (left)[key],
+                    rightRecord[key]
+                )
+        )
+    )
+}
+
+/**
+ * The number an ordering join compares, or `NaN` so every ordering answers
+ * false. Mirrors `coerce_number` in `crates/fylo-query/src/join.rs`.
+ * @param {unknown} value
+ * @returns {number}
+ */
+function joinNumber(value) {
+    if (value === null) return 0
+    if (typeof value === 'boolean') return value ? 1 : 0
+    if (typeof value === 'number') return value
+    if (typeof value === 'string') return documentNumber(value) ?? Number.NaN
+    return Number.NaN
 }
 
 /**
@@ -186,17 +233,17 @@ export class BrowserCore {
     /** @param {string} collection @returns {string} */
     collectionRoot(collection) {
         this.assertCollectionName(collection)
-        return join(this.root, '.collections', collection)
+        return BrowserPath.join(this.root, '.collections', collection)
     }
 
     /** @param {string} collection @returns {string} */
     docsRoot(collection) {
-        return join(this.collectionRoot(collection), 'docs')
+        return BrowserPath.join(this.collectionRoot(collection), 'docs')
     }
 
     /** @param {string} collection @returns {string} */
     deletedRoot(collection) {
-        return join(this.collectionRoot(collection), '.deleted')
+        return BrowserPath.join(this.collectionRoot(collection), '.deleted')
     }
 
     /** @param {string} collection @returns {string} */
@@ -208,8 +255,8 @@ export class BrowserCore {
     docPath(collection, docId) {
         validateDocId(docId)
         const root = this.docsRoot(collection)
-        const target = join(root, shardOf(docId), `${docId}.json`)
-        assertPathInside(root, target)
+        const target = BrowserPath.join(root, shardOf(docId), `${docId}.json`)
+        BrowserPath.assertPathInside(root, target)
         return target
     }
 
@@ -217,8 +264,8 @@ export class BrowserCore {
     deletedPath(collection, docId) {
         validateDocId(docId)
         const root = this.deletedRoot(collection)
-        const target = join(root, shardOf(docId), `${docId}.json`)
-        assertPathInside(root, target)
+        const target = BrowserPath.join(root, shardOf(docId), `${docId}.json`)
+        BrowserPath.assertPathInside(root, target)
         return target
     }
 
@@ -239,12 +286,15 @@ export class BrowserCore {
         await this.fs.mkdir(this.docsRoot(collection), { recursive: true })
         await this.fs.mkdir(this.deletedRoot(collection), { recursive: true })
         await this.fs.mkdir(this.metadata.root(collection), { recursive: true })
-        await this.fs.mkdir(join(this.collectionRoot(collection), 'events'), { recursive: true })
+        await this.fs.mkdir(BrowserPath.join(this.collectionRoot(collection), 'events'), {
+            recursive: true
+        })
         await this.index.ensureCollection(collection)
     }
 
-    /** @param {string} collection @returns {Promise<void>} */
-    async createCollection(collection) {
+    /** @param {string} collection @param {Record<string, any>} [options] @returns {Promise<void>} */
+    async createCollection(collection, options = {}) {
+        BrowserFeatureGuard.requireDocumentCollection(options)
         await this.ensureCollection(collection)
     }
 
@@ -332,7 +382,8 @@ export class BrowserCore {
      * @returns {Promise<TTIDValue>}
      */
     async putData(collection, data, meta) {
-        if (meta !== undefined) validateMetadataRecord(meta)
+        BrowserFeatureGuard.requireDocumentData(data)
+        if (meta !== undefined) MetadataRecord.validate(meta)
         await this.requireCollection(collection)
         const explicit = explicitDocumentEntry(data)
         const id = explicit?.[0] ?? /** @type {TTIDValue} */ (TTID.generate())
@@ -385,6 +436,7 @@ export class BrowserCore {
 
     /** @param {string} collection @param {Record<string, any>[]} batch @returns {Promise<TTIDValue[]>} */
     async batchPutData(collection, batch) {
+        BrowserFeatureGuard.requireDocumentBatch(batch)
         /** @type {TTIDValue[]} */
         const ids = []
         for (const data of batch) ids.push(await this.putData(collection, data))
@@ -858,8 +910,9 @@ class BrowserCollectionFacade {
         this.core = core
         this.collection = collection
     }
-    async create() {
-        await this.core.createCollection(this.collection)
+    /** @param {Record<string, any>} [options] */
+    async create(options = {}) {
+        await this.core.createCollection(this.collection, options)
     }
     async drop() {
         await this.core.dropCollection(this.collection)

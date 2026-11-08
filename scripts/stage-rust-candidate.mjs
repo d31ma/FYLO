@@ -1,3 +1,4 @@
+import { CargoArtifacts } from './cargo-artifacts.mjs'
 import { createHash } from 'node:crypto'
 import { chmod, copyFile, mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { arch, platform, release } from 'node:os'
@@ -5,7 +6,7 @@ import { basename, join, resolve } from 'node:path'
 
 const arguments_ = process.argv.slice(2)
 const binary = resolve(requiredOption('--binary'))
-const output = resolve(option('--output') ?? 'target/candidate')
+const output = resolve(option('--output') ?? CargoArtifacts.path('candidate'))
 const label = option('--label') ?? `${platform()}-${arch()}`
 const allowDirty = arguments_.includes('--allow-dirty')
 const expectedVersion = (await readFile('VERSION', 'utf8')).trim()

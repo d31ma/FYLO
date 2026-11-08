@@ -1,5 +1,765 @@
 # Changelog
 
+## 26.45.07 - 2026-11-08
+
+### Breaking Changes
+
+- **POSTIX, per-record access control, is removed (ADR 0021).** A machine
+  request that carries an `access` object now fails with `EBADREQUEST`, and
+  the protocol-v1 handshake no longer reports `capabilities.machineAccess`.
+  Consumers that required `machineAccess` gate on the handshake's `identity`
+  instead (#105). Access is granted per application identity on protected
+  `.vdbx` databases; see **Removed** below and
+  `docs/migrating-to-protected-databases.md`.
+- **The machine protocol creates a missing `.vdbx` protected**, with the
+  configured identity as admin, and refuses with `ENOIDENTITY` without one;
+  `fylo create` without `--admin` needs `--unprotected`. See **Added**.
+- **Browser hosts: the host table and module ABI are version 2**, with five
+  identity imports and a `fylo_configure` export. See **Added**.
+- **A collection that does not exist is reported as `ENATIVE_NOT_FOUND`**
+  (`collection "<name>" does not exist`) instead of `ENATIVE_UNSAFE_PATH`
+  "non-canonical spelling" with the absolute root path, and native
+  `inspectCollection` returns `exists: false` instead of failing. Callers
+  that matched `ENATIVE_UNSAFE_PATH` for a missing collection must match
+  `ENATIVE_NOT_FOUND`. A path stored under a different letter case is still
+  refused.
+- **Native `EXPLAIN` no longer executes the statement.** It returns
+  `{operation, collection, access, executed: false}`; `EXPLAIN ANALYZE`
+  executes and adds `executed: true`, `elapsedMs` and `result`. Callers that
+  relied on `EXPLAIN` returning rows must use `EXPLAIN ANALYZE` or drop the
+  keyword.
+- **The browser and mobile engines reject what they cannot honour** with the
+  new error code `EBROWSER_UNSUPPORTED`: `create({kind: 'file'})`,
+  `create({schema})`, encryption options, and `Blob`, `File` or `URL` values
+  in document collections. These used to be silently ignored, and plaintext
+  was stored when encryption was requested.
+- **Swift: `FyloError.failed` now carries `(String, code: String?)`.**
+  Change `case .failed(let m)` to `case .failed(let m, _)`, or read
+  `error.code`. This is source-breaking in Swift 5 and 6 modes.
+
+### Added
+
+- **`tpm:<name>` identities on Windows (ADR 0021 section 8, phase 8).**
+  `fylo identity create --store tpm:<name>` makes a P-256 key inside the
+  TPM 2.0 through the Microsoft Platform Crypto Provider; it is never
+  exported, and FYLO asks the TPM to sign and to agree. On a machine
+  without a TPM, `create` and `show` fail with `EIDENTITY_UNSUPPORTED`
+  ("no TPM is available on this machine"). Only that path is tested
+  (`windows-vm` has no TPM); the success path is untested on hardware.
+- **Session certificates for hardware identities (ADR 0021 section 8,
+  phase 8).** A writer whose identity is a hardware key (`enclave:`, and
+  `tpm:` where available) now signs records with a fresh in-memory session
+  key that the identity certifies once per writer open, so each record is
+  signed in software instead of in the Secure Enclave or TPM. Such a frame
+  sets header flag `0x80` and carries a 234-byte trailer: signer kind 2,
+  the 169-byte certificate (identity fingerprint, session public key,
+  `notAfter`, the identity's signature) and the session key's signature.
+  Readers check the chain and the identity's write grant at the record's
+  LSN, as for identity-signed records; revocation is the identity's. A
+  session lasts at most 24 hours by the writer's clock and is replaced
+  before it ends; readers do not judge `notAfter` by their own clock.
+  `DatabaseIdentity::with_session_keys(true)` opts a software identity in.
+  Builds before this refuse session-signed frames. The optional rollback
+  pin was not built; ADR 0021 section 8 says why.
+- **Sample OS hardening profiles (ADR 0021, phase 8).**
+  [`docs/hardening/`](docs/hardening/README.md) has an AppArmor profile,
+  an SELinux policy module and an AppContainer (MSIX) manifest with ACL
+  notes, for administrators who want the kernel to let only one
+  application read a protected database's key and file, and nobody trace
+  it. They are samples to adapt and test on the host, not shipped policy,
+  and FYLO's CI does not test them.
+- **`enclave:<label>` identities on macOS (ADR 0021 section 8, phase 8).**
+  `fylo identity create --store enclave:<label>` makes a P-256 key inside
+  the Secure Enclave, which never leaves it; `fylo identity show` opens it
+  again. The enclave's token blob for the key is a keychain item (service
+  `<label>`, account `fylo-enclave-identity`; `FYLO_KEYCHAIN` applies),
+  bound to the creating application by the keychain's access list and
+  useless on another Mac. Such an identity can create, administer, read and
+  write protected databases like any other; each of its signatures takes
+  about 5 ms. Permanent Data Protection keychain keys and access groups
+  need a signed application with the `keychain-access-groups` entitlement
+  and are not offered.
+- **`fylo access settle <db.vdbx>` (ADR 0021 section 7).** Finishes a
+  catalog-key rotation a stopped `fylo access revoke` left pending: it
+  reseals the directory under the current catalog key, drops the previous
+  key, and records a `settle` policy version signed by the admin, which
+  `fylo access audit` lists. It is crash-safe, safe to run again, admin
+  only, and with nothing pending says so and writes nothing. Until it runs,
+  directory blocks under the old key stay readable by the revoked
+  identity; an admin's first write now settles the rotation the same way.
+  `fylo access report` shows `catalogRotation` (pending since which policy
+  version, and the command), `fylo verify` warns `catalogRotationPending`
+  (also without an identity), and the `exec --loop` handshake's
+  `identity.database` carries `catalogRotationPendingSince`.
+- **`fylo access audit <db.vdbx>` (ADR 0021 section 7, phase 7).** Lists
+  every policy version of a protected database, oldest first: the admin
+  whose signature it carries, what it changed (`create`, `grant`,
+  `revoke`, `rekey`, `rekeyCollection`), the rule or collection, when (by
+  the signer's clock), and the rules it added and removed. Any identity
+  the policy names may run it; it writes nothing.
+- **A revocation rotates a protected database's catalog key (ADR 0021
+  section 7, phase 7).** `fylo access revoke` now gives the catalog key,
+  which seals collection names and the policy, a new value wrapped only
+  for the identities the new policy names, so a revoked identity that kept
+  the old key can no longer read the directory. The access-slot write is
+  the commit point; the directory is then resealed in place and the
+  previous key dropped, and a stop in between leaves everything readable
+  and is finished by the next access change. The access document gains
+  the optional fields `previous` and `original`; older builds refuse a
+  document that has them.
+- **`fylo pack --sealed` of a protected database (ADR 0021 section 7,
+  phase 7).** As an admin, `fylo pack <db.vdbx> --out <copy.vdbx> --sealed
+  --identity <reference>` writes a sealed, read-only copy that keeps the
+  database's policy, keys and grants: its records stay sealed under each
+  collection's key and signed, so every identity reads only what it was
+  granted. The `.vdbx` format now allows a sealed protected file
+  (`INCOMPAT_PROTECTED` with `INCOMPAT_SEALED`), whose blocks are not
+  encrypted again; older builds refuse it.
+- **`fylo rekey` of a protected database (ADR 0021 section 7, phase 7).**
+  As an admin, `fylo rekey <db.vdbx> --identity <reference>` rewrites the
+  database under a new catalog key and new collection keys, and `fylo
+  rekey <db.vdbx> --collection <name>` gives that collection alone a new
+  key epoch, so an identity that was revoked and kept its old keys reads
+  none of the old data. Both write a new file (same database id and
+  policy chain, then a signed `rekey` policy version), checked as `fylo
+  verify` checks it, and rename it over the database; a rekey that stops
+  leaves the database as it was. `$encrypted` values of a rekeyed
+  collection are written again under its new field key, which also moves
+  values written under `fylo.encryption.key` to the collection's key.
+  Policy versions now carry a signed `change` record (`grant`, `revoke`,
+  `rekey`, `rekeyCollection`) with the signer's time.
+- **Per-collection keys for `$encrypted` fields in protected databases
+  (ADR 0021 section 7, phase 7).** A protected `.vdbx` database encrypts a
+  collection's `$encrypted` fields with keys derived (HKDF-SHA256) from
+  that collection's key, one per key epoch, and never with
+  `fylo.encryption.key`, which now applies to unprotected roots only. An
+  identity granted a collection reads its fields with no shared secret
+  configured; one without the collection cannot. Values a protected
+  database wrote under the shared key before still read when it is
+  configured, until `fylo rekey` rewrites them.
+- **The machine handshake reports the session's identity (ADR 0021, phase
+  6).** Top-level `identity` is `null` without one, otherwise its `id`,
+  `publicKey` and how the trust anchor is set, and, when the session's root
+  is a protected `.vdbx`, what the identity may do there (`admin`, `grants`
+  per collection) or the code the database refused it with.
+- **`fylo access report <root|db.vdbx>` (ADR 0021, phase 6).** Lists what
+  a directory root or a `.vdbx` database uses today and what a move into a
+  protected database changes: per collection its layout, live and deleted
+  documents, the POSTIX access descriptors its records carry (grouped by
+  `uid`, `gid` and `mode`) and its `$encrypted` fields; the root's
+  encryption (`none`, `shared-key` or `protected`); what `fylo pack` would
+  refuse (buckets, the queue, version control, the EFS sidecar profile);
+  and the `fylo pack --protect` command to run. It reads every record and
+  writes nothing; a shared-key or protected database is reported locked
+  unless opened with its key or an identity.
+- **`fylo pack --protect` (ADR 0021, phase 6).** `fylo pack <root|db.vdbx>
+  --out <db.vdbx> --protect --admin <reference>` copies a directory root,
+  or a plain or shared-key `.vdbx` database (opened with its key), into a
+  new protected database whose admin and trust anchor is that identity:
+  documents, deleted documents and schema versions, with each collection's
+  indexes folded again from its records and every record signed by the
+  admin. `--grants <file.json>` adds grants in the same pack. Records that
+  carry POSTIX access descriptors are refused (`EPOLICY`) unless
+  `--drop-record-access` drops them or `--keep-record-access-as-metadata`
+  keeps each, unenforced, as the metadata field `legacyAccess` (decision
+  P5-8). The copy is built as a staging file, checked against the source
+  record by record and as `fylo verify` checks it with the admin's
+  identity, flushed, and only then named; the source is not written, and
+  a pack that stops leaves no output.
+- **SQL over `.vdbx` databases (ADR 0021, decision P5-6).** `Root::sql`
+  opens a `.vdbx` database, plain or protected, with its document
+  collections as tables, read and written as the identity the root was
+  opened with; a protected one opened without an identity is refused with
+  `ENOIDENTITY`. `fylo link`'s open hook now opens any `*.vdbx` path, with
+  the identity `fylo::LinkIdentity` finds for it, so a Turso-SDK app opens a
+  protected database; a missing `.vdbx` is refused with `ENOENT`, never
+  created. A batch of document writes (each SQL statement's rows) to a
+  `.vdbx` collection now commits as one segment plan, all or none, as on
+  the files layout.
+
+- **Protected databases in the browser (ADR 0021, decision P5-5).** A page
+  makes a `webcrypto:<name>` identity with `createWebCryptoIdentity` (two
+  non-extractable `CryptoKey`s in the origin's IndexedDB) and gets its
+  `fpk1:` key and `fid1:` identifier from `describeIdentity`. Opening a
+  `.vdbx` with `identity: { name, workerUrl, trustAnchor }` reads and
+  writes it as that identity: the single-file Worker signs records and
+  opens collection keys through a crypto bridge Worker
+  (`dist-web/identity-worker.js`) running WebCrypto, which needs a
+  cross-origin isolated page. **Breaking for custom hosts:** the host table
+  and module ABI are version 2, with five identity imports and a
+  `fylo_configure` export. The browser engine's raw size budget rose from
+  2,432 KiB to 2,448 KiB; its gzip budget is unchanged.
+- **Entry points for protected databases (ADR 0021, phase 5).** The `fylo`
+  crate opens `.vdbx` databases and takes `OpenOptions::with_identity`
+  (Yon); `fylo::LinkIdentity` gives `fylo link`'s open hook the identity
+  from `FYLO_IDENTITY`/`FYLO_TRUST_ANCHOR` or the `application.json` beside
+  the database. **Breaking:** the machine protocol creates a missing
+  `.vdbx` protected with the configured identity as admin, and refuses with
+  `ENOIDENTITY` without one (it no longer creates plain or shared-key
+  databases; use `fylo create --unprotected`). `cng:` stores Windows
+  identities in CNG's software key storage provider (DPAPI), per user, and
+  like every store refuses to replace a key it already holds.
+  Explorer shows a protected `.vdbx` as protected and locked.
+- **Signed records in protected databases (ADR 0021, phase 4).** Every
+  record frame of a protected `.vdbx` (commits, aborts, checkpoints,
+  compactions, schema versions) carries an ECDSA P-256 signature by the
+  identity that wrote it, over the database, collection, LSN and stored
+  bytes. Readers check that the signer could write the collection at that
+  point of its log, using the revocation boundaries a revoke now records in
+  its policy version. A frame that fails is `ESIGNATURE`: readers read the
+  collection as it stood before it, writers refuse to write past it, and
+  `fylo verify <db.vdbx>` run with an identity reports it (`badSignature`).
+  Measured: a durable put 202 µs protected against 106 µs plain; an open
+  542 µs against 58 µs. Session certificates and catalog-key rotation are
+  deferred (ADR 0021 section 4).
+- **Protected `.vdbx` databases (ADR 0021, phase 3).** `fylo create
+  app.vdbx --admin <key reference>` makes a database whose keys are
+  released only to application identities a signed policy grants: a random
+  catalog key (directory and policy) and a key per collection, wrapped for
+  each identity with HPKE (RFC 9180, P-256). Policy version 1 makes the
+  creator its admin and **trust anchor**; an open must pin the anchor
+  (`--trust-anchor`, `fylo.trustAnchor`, `FYLO_TRUST_ANCHOR`) or ask for
+  trust on first use (`--trust-on-first-use`, which warns), or it fails with
+  `EPOLICY`. The identity comes from `--identity`, `fylo.identity` or
+  `FYLO_IDENTITY`. Without one a protected database is locked
+  (`ENOIDENTITY`); an identity with no grant gets `EACCES`.
+  `fylo access list <db.vdbx>` prints the identity's grants, the anchor and
+  the policy; `fylo inspect` reports `protected`. An admin runs `fylo access
+  grant <db.vdbx> --grantee <name> --key <fpk1:...> --actions read|write|admin
+  (--collection <name> | --all-collections | --database)` and `fylo access
+  revoke <db.vdbx> --rule <id>`: each writes the next signed policy version
+  and rebuilds the keyring for it. A revocation starts a new key epoch for
+  the collections the rule covered; older data stays readable to whoever
+  kept the old key until a rekey. A `read` grant refuses writes with
+  `EACCES` (FYLO's own check until signed writes). **Breaking:** `fylo
+  create` without `--admin` now needs `--unprotected` (Q2). Signed writes
+  follow in a later phase;
+  `fylo pack --sealed` and `fylo rekey` refuse a protected database for now,
+  and the browser build opens one locked. New dependency `hpke` 0.15 and
+  `p256`'s `ecdsa` feature, native only (reviewed in
+  `docs/security/access-identity-dependencies.md`). `fylo identity show
+  --json` adds the `publicKey` (`fpk1:p256:...`) a policy lists.
+- **Application identities and `fylo identity` (ADR 0021, proposed, phase
+  2).** An identity is a P-256 key pair whose static identifier is
+  `fid1:p256:<base32 SHA-256 of the public key>`. `fylo identity create
+  --store <reference>` makes a key and prints the identifier; `fylo identity
+  show <reference>` prints it for an existing key; `--json` adds the
+  reference. Keys are named by reference: `file:<path>` (a PKCS#8 PEM file,
+  created `0600` and fsynced; on Unix a file another user owns, or that group
+  or other users can read or write, is refused with `EIDENTITY_EXPOSED`) and
+  `keychain:<label>` on macOS (a generic-password item in the default
+  keychain, or in the keychain file `FYLO_KEYCHAIN` names). `creds:<name>`
+  reads a `systemd-creds` credential on Linux and writes one with
+  `systemd-creds encrypt`; `cng:` (Windows) and `webcrypto:` (browser) are
+  defined but refused with `EIDENTITY_UNSUPPORTED` for now. `create` never
+  replaces a key (`EIDENTITY_EXISTS`). New crate `fylo-identity`; new
+  dependency `p256` 0.14 (reviewed in
+  `docs/security/access-identity-dependencies.md`). Nothing enforces access
+  with identities yet: protected databases are ADR 0021's phase 3.
+- **`fylo rekey` rotates a `.vdbx` database's key (ADR 0016 section 9).**
+  `fylo rekey app.vdbx --new-key '${NAME}'` rewrites an encrypted database
+  under the secret `${NAME}` names, resolved as `fylo.encryption.key` is;
+  a literal key is refused. `--encrypt` encrypts a plain database and
+  `--decrypt` writes an encrypted one plain; a rotation of a plain database
+  is refused with `ENATIVE_UNSUPPORTED`. The database is opened with the
+  old key first, so a wrong one fails with `EKEY` and changes nothing, then
+  held exclusively as `fylo compact --shrink` holds it, packed into
+  `.<name>.pack-staging` under a fresh salt, checked with the pack oracle,
+  flushed and renamed over the database: at any stop the path holds the old
+  file or the new one whole, and the next pack or rekey removes a staging
+  file left behind. Writers that opened the old file meanwhile open the new
+  one; a process that had it open reads it on and is refused writes with
+  `EROOTLEASELOST` until it opens the path again. A sealed database is
+  resealed under the new key. `NativeWriteRoot::rekey_database` and
+  `DatabaseRekey` expose it to Rust callers.
+- **Encrypted `.vdbx` databases, opt-in and off by default (ADR 0016
+  section 9).** `fylo create app.vdbx --encrypt`, `fylo pack --encrypt`, or
+  `fylo.encryption.file: true` in `application.json` creates a database
+  whose record frames, directory, dictionaries and schema snapshots are
+  sealed with AES-256-GCM under a key derived from `fylo.encryption.key`,
+  compressed first. A frame is bound to its collection and LSN, so one moved
+  into another collection or copied over another record is refused. Opened
+  without the key the database is locked: it lists no collections, and a
+  read of one and every write fail with the new `EKEY` code, as does a wrong
+  key. `fylo inspect` reports `encrypted` and `locked`; `fylo verify` works
+  without the key. `fylo create <db.vdbx>` makes an empty plain database.
+- **`fylo pack` and `fylo unpack` (ADR 0016 section 11).** `fylo pack <root>
+  --out app.vdbx` copies every document collection of a directory root, in
+  the file or the segment layout, into a new `.vdbx` database with its
+  schema versions, shard widths and validation modes. It builds the file as
+  `.<name>.pack-staging` beside `--out` while holding every collection's
+  lock, checks it against the source with ADR 0015's oracle, flushes it and
+  only then gives it its name, so a stop leaves no `--out`; the next pack
+  removes the staging file. It refuses an existing `--out`, and a root with
+  buckets, version control or the embedded queue with `ELAYOUTUNSUPPORTED`;
+  `fylo unpack app.vdbx --out <directory>`
+  writes a directory root in the file layout, each collection as
+  `fylo export` writes it, with its descriptor and schema registry. Both
+  bypass the machine protocol, as `export` does. New failpoint
+  `after-pack-staging`.
+- **Sealed `.vdbx` packs (ADR 0016 sections 8 and 11).** `fylo pack
+  <root|db.vdbx> --out sealed.vdbx --sealed` writes a read-only image of a
+  directory root or of a live database, so it also takes a consistent
+  backup. Its free extents are dropped and the rest renumbered, and the
+  image is stored in 64 KiB blocks compressed at zstd level 19 with an index,
+  so a point read opens one block. Under `--encrypt`, or from an encrypted
+  database, each block is sealed with AES-256-GCM bound to its number. Every
+  read path opens it, the browser engine included, and `fylo inspect`
+  reports its `blocks`; every write fails with the new `EROFS` code
+  (`ENATIVE_UNSUPPORTED` through the machine protocol). `fylo verify`
+  reports a damaged block as `sealedBlockDamaged`, and a read of one fails
+  with `EVDBX_CORRUPT`.
+- **In-memory hot set for exclusive embedded sessions.** A session that holds
+  the root's exclusive lease (`fylo exec --loop --exclusive-root`, or the Rust
+  `FrameSession`) keeps parsed documents, index snapshots, id lists and
+  collection headers in memory, 64 MiB by default. `--hot-set-bytes <n>` sets
+  the budget and `0` turns it off. Every handshake reports it as
+  `capabilities.hotSet`: the budget and counters, or `false` (ADR 0014).
+- **Fylo Explorer opens a `.vdbx` database file in any current browser.** The
+  start screen takes one by picker, file input or drag and drop, including in
+  Firefox and Safari, and opens it read-only. "Edit a copy" streams it into the
+  browser's private storage, and "Save" writes it back over the original where
+  the browser allows it, or downloads it. The file is held by a Worker with no
+  `SharedArrayBuffer` bridge, so the page needs no COOP or COEP headers
+  (ADR 0016). Browsing the collections inside the file arrives with the
+  single-file format in the engine; the folder view is unchanged.
+
+- **Schema registry for directory roots (ADR 0017 section 3).** A root keeps
+  each committed version of a collection's schema as an immutable file,
+  `<root>/.fylo-schemas/<collection>/<ordinal>.json` (label, CHEX source with
+  `$encrypted`, SHA-256, JSON migration, compiled validator, commit time and
+  actor), with the head in the collection's catalog descriptor.
+  `fylo schema push <collection>` (`schemaPush`) commits the `fylo.schema`
+  folder's new versions in manifest order after a dry run that migrates the
+  collection's documents (a sample above 10,000) and validates them; it refuses
+  a changed committed label with the new `ESCHEMACONFLICT`, JavaScript
+  upgraders, `$` directives other than `$encrypted`, and arrays of objects
+  (`EARRAYOFOBJECTS`). `fylo schema pull <collection> --out DIR`
+  (`schemaPull`) writes the registry back out as the folder layout. Once a
+  collection has a registry, validation, `_v` stamping, encryption lists,
+  materialization and migration read it, with or without a folder.
+  `fylo.schema` may be `{ "path": ..., "autoPush": true }` to push at open
+  (off by default), and the first write open of a root with a folder imports
+  its existing collections once. A registry collection writes its generation
+  state as `fylo.collection-generation.v3`, which older releases refuse.
+- **Segment collections keep their schema registry in their segments (ADR
+  0017 section 3).** On a collection with the segment layout, `fylo schema
+  push` (`schemaPush`) commits each version as a schema record, record kind
+  `5` with manifest `fylo.schema-version.v1`, appended and flushed through the
+  collection's commit path, so a schema change is atomic, ordered against the
+  document commits around it and replayed by recovery; the next write
+  validates against it. A derived schemas snapshot,
+  `segments/schemas.snapshot`, lists every version for a fast open, is
+  rewritten by each schema commit and named by each checkpoint record, and is
+  rebuilt from the records when it is missing, damaged or older than the
+  descriptor. The records are authoritative: the descriptor's
+  `"schemas": "registry"` and `schemaHead` are still written, after the
+  record, and recovery brings a lagging head up to date; a descriptor that
+  names a head the records lack fails closed. Compaction copies schema
+  records with their sequence numbers, `fylo verify-segments` checks them and
+  the snapshot (`schemaVersions`), `fylo salvage` writes the versions it
+  recovers to `.fylo-schemas/<ordinal>.json` under its output, and
+  `fylo layout` carries the registry in both directions. New failpoints
+  `after-schema-record` and `after-schemas-snapshot`; `fylo-write-preview
+  schema-head` reports the head for the crash matrix.
+- **The WebAssembly builds validate schema writes (ADR 0017 section 4).**
+  `fylo.wasm` and `fylo-browser.wasm` link CHEX without a regex compiler and
+  validate a registry collection with the DFAs `fylo schema push` stored in
+  its head version, with the native binary's results and messages; strict,
+  warn and off work as natively. They fail closed: a head that is not
+  portable or whose stored validator is missing or refused, and a collection
+  without a registry whose schema is in a `fylo.schema` folder or whose
+  descriptor records `strict` or `warn`, refuse strict and warn writes with
+  the new `ESCHEMAUNAVAILABLE`. Their handshake's `schemaValidation` is the
+  CHEX record with `compiledOnly: true` instead of `false`. The browser engine
+  is now built at `opt-level = "z"`, which keeps it within its size budget.
+- **`fylo schema migrate <collection>`** (`schemaMigrate`) rewrites the
+  documents below a collection's head schema version at the head, through the
+  same validation and encryption as any write. A document without `_v` is
+  skipped and counted unless `--include-unversioned` is given (ADR 0017
+  section 5).
+- **Reads return the head schema shape (ADR 0017 section 5, lazy migration).**
+  `getDoc`, `findDocs`, joins, SQL `SELECT`, deleted-document reads and the hot
+  set decrypt a document stored below its collection's head at the version it
+  was written at and migrate it in memory; stored bytes do not change. Queries,
+  and SQL `UPDATE` and `DELETE` `WHERE`, match the migrated document, so a
+  query on a renamed field answers the same before and after
+  `schemaMigrate`. Until a collection converges, an index plan that touches a
+  field a pending migration writes or renames falls back to reading every
+  document; other fields keep the index. A patch or SQL `UPDATE` of an old
+  document stores it in the head shape. A `_v` the schema does not list fails
+  the read with `ESCHEMA`.
+- **Convergence counts (ADR 0017 section 6).** For a registry collection with
+  two or more versions, the writer keeps the number of live documents per
+  stored `_v` in `.fylo-schemas/<collection>/counts.json` (a separate
+  `counts.<hash>.json` per branch worktree), updated from each commit's
+  before- and after-images on the write-ahead log and the transaction journal,
+  stamped with the collection generation and recounted by scan when stale,
+  for example after crash recovery, checkout, merge or `restoreCommit`.
+  Folder-only collections are counted by scan on demand. `schemaInspect` and
+  `fylo schema inspect` now report `validation`, `head`, the documents at each
+  version, `unversioned`, `unknownVersions` and `converged`; a converged
+  collection's reads stop consulting migrations.
+- **Schema validation modes per collection (ADR 0017 section 2).**
+  `fylo schema mode <collection> off|warn|strict` (`schemaMode`) records the
+  mode in the collection's catalog descriptor, so it applies to every process
+  that opens the root. `strict` refuses a document the head schema rejects with
+  `ESCHEMA`; `warn` writes it, logs a warning to stderr and counts it, which
+  `inspectCollection` reports as `schemaViolations`; `off` checks nothing. A
+  collection with no recorded mode follows `fylo.strict` as before, and its
+  descriptor bytes do not change. `fylo schema check <collection>`
+  (`schemaCheck`) lists the documents the head schema rejects. `ESCHEMA` is now
+  in the stable error registry.
+
+### Changed
+
+- **CI: release verification runs on pull requests into `main`; runners
+  pinned.** The Release workflow's verification jobs (native Windows x64,
+  macOS arm64 and x64, Linux x64 and arm64, tests, and compiled binary
+  interop) now also run on pull requests into `main`, so a release pull
+  request is tested on every release platform before it merges. Reading the
+  version, building and attesting assets, and publishing the GitHub release
+  still run only for a push to `main` or a manual dispatch, and Pages
+  publishes only after such a run. Every workflow job now names a fixed
+  runner image (`ubuntu-24.04`, `macos-15`) instead of `ubuntu-latest` or
+  `macos-latest`.
+- **The C# client is tested on .NET 10.** .NET 8 support ends on
+  2026-11-10, so CI, the publish workflow and the C# interop and
+  language-client tests now build `net10.0` with the .NET 10 SDK. The client
+  itself (`clients/csharp/Fylo.cs`) is unchanged.
+- **Documented: `cng:` keys under passwordless Windows logons.** An account
+  with no password that signs in over SSH with a key can lose its `cng:`
+  identities, with `EIDENTITY_NOT_FOUND`, once another account logs on,
+  until a reboot (Windows DPAPI). [Configuration](docs/configuration.md#cng-keys-and-passwordless-windows-logons)
+  says what to do: a password logon, or a `tpm:` identity.
+- **A browser admin no longer settles a pending catalog rotation (ADR 0021
+  section 8).** A `webcrypto:` admin's write on a protected database whose
+  catalog-key rotation is pending leaves it pending, as another identity's
+  write does; a native admin's next write or `fylo access settle` finishes
+  it. That and remapping dependency source paths out of panic messages
+  (the builder's Cargo home no longer ships in either browser module) took
+  13,917 bytes off `fylo-browser.wasm` (2,502,729 bytes with the directory
+  journal), and its raw budget is back at 2,448 KiB from the temporary
+  2,460 KiB.
+
+- **A `.vdbx` directory holds 509 collections per 2 MiB directory extent
+  (2,045 per 8 MiB), two fewer:** the directory journal below takes the
+  last two blocks.
+- **New `.vdbx` databases use 2 MiB extents instead of 8 MiB (ADR 0016
+  section 3).** Every kind of data starts its own extent, so the extent size
+  set the floor of a small database: an empty one took 24 MiB and the 5k
+  fixture 96 MiB, all of it allocated on FAT, exFAT or a non-sparse NTFS
+  file. They now take 6 MiB and 28 MiB. The file format is unchanged and
+  existing databases keep their extent size. A stored record must fit in one
+  extent, so a new database refuses a document over about 2 MiB once
+  compressed with `ENATIVE_FILE_SIZE`, and creates at most 511 collections,
+  dropped ones included, before `EVDBX_FULL` (2,047 at 8 MiB).
+- **Schema migrations are JSON, not JavaScript (ADR 0018).** A version step is
+  now `fylo.schema/<collection>/migrations/<from>-to-<to>.json`, a list of
+  declarative steps (`rename`, `default`, `set`, `remove`, `copy`, `convert`,
+  `map`, `wrap`, `lower`, `upper`, `trim`, `replace`, `template` and
+  `slugify`) that every build runs the same way. FYLO no longer runs
+  `upgraders/*.js` files, and the Boa JavaScript runtime is gone from the
+  binary. A step that still has only a `.js` upgrader fails `schemaMaterialize`
+  with an error pointing at ADR 0018; the README's slug upgrader is one
+  `slugify` step. `schemaInspect` reports `migrationPath` and
+  `migrationExists` in place of `upgraderPath` and `upgraderExists`.
+- Every binary-backed shim exposes the machine error code: Python
+  `FyloError.code`, Ruby `FyloError#code`, PHP `getFyloCode()`, Go
+  `*fylo.Error.Code`, Java `getCode()`, C# `FyloException.Code`, Rust
+  `FyloError::code_of` and Dart `FyloException.code`. Messages are unchanged.
+- The browser client, Swift, Kotlin and Flutter add `executeSQL(sql)`;
+  `sql()` is kept. Bridge errors carry a stable code: Swift `FyloError.code`,
+  Kotlin and Flutter `FyloException.code`, and browser `error.code`.
+- `ENATIVE_NOT_FOUND` and `EBROWSER_UNSUPPORTED` are in the stable error
+  catalog.
+- The browser engine's raw Wasm budget rises 4 KiB to 2,452 KiB (2,510,848
+  bytes) for this release's engine fixes (EXPLAIN plans, native
+  `CREATE`/`DROP TABLE`, not-found handling for missing collections), which
+  add about 4.85 KB. The gzip budget (800 KiB) is unchanged. Rollback and
+  recovery now check for a fully captured index by comparing two paths
+  directly, recovering 7,391 bytes.
+- Explorer's vendored browser engine is resynced with this release's engine
+  and browser host fixes, including the fail-closed guard and the OPFS
+  directory-handle fix.
+
+- **Schemas are enforced in one place, the storage writer's record builder
+  (ADR 0017 section 1).** Every write that stores a document body builds it
+  there, under the collection's validation mode; the engine no longer
+  validates puts on its own.
+- **Writes stamp `_v` whenever the collection has a versioned schema**, in
+  every validation mode, and a `_v` the caller sends is replaced by the head
+  label. Without `fylo.strict`, writes used to store no `_v` (or the caller's),
+  so a document written in the head shape later read as the oldest version.
+- **CHEX and TTID are built in; FYLO no longer needs their binaries.** Schema
+  validation now runs in-process through `fylo-chex`, a vendored copy of the
+  CHEX v26.32.02 validator core (same regex dialect, error names, and messages).
+  TTID generation, decoding, and canonical checks were already native to FYLO,
+  so the `ttid` binary was only probed for. `scripts/install-vendor-bins.sh` and
+  its PowerShell peer now install only TACHYON.
+- The handshake no longer has a `dependencies` object. A new
+  `capabilities.schemaValidation` entry names the built-in CHEX validator and
+  its CHEX release, and is `false` in the WebAssembly builds, which still leave
+  the validator out to stay within their size budgets.
+- One-frame serverless invocations now accept `schemaValidate` and
+  `strict_schema=true`. They were refused only because the external CHEX helper
+  had no invocation deadline or descendant teardown (ADR 0011, amended).
+- `getDoc`, `findDocs` and the other reads that only need a collection's kind
+  no longer list the collection to learn it.
+
+### Fixed
+
+- **A query no longer fails with `ENATIVE_NOT_FOUND` when a document it
+  listed is deleted before it is read (#104).** `findDocs` (and `joinDocs`
+  and SQL `SELECT`, which run through it) lists a collection's ids and then
+  reads each document; a delete in between failed the whole query with
+  `ENATIVE_NOT_FOUND: document not found: <id>`. 26.33.02 returned that
+  error before re-checking the collection's generation, and an exclusive
+  session's hot set did the same when its id list was older than storage.
+  Both now follow the documented read contract, that readers materialize
+  against one stable generation and retry if it changes: a read that a write
+  overlapped is dropped, the hot set is cleared, and the query runs again
+  from storage at one stable generation. Under writes that never pause, a
+  query can still end with the retryable `EENGINE_CONCURRENT_WRITE` once its
+  attempts run out, never with a missing document.
+- **Attribute writes on a filesystem without extended attributes now say
+  what failed (#106).** On a mount without extended attributes, such as a
+  Docker Desktop VirtioFS bind mount on macOS or a FAT volume, a write that
+  stores metadata (`setMeta`, a put with metadata, any file put into a
+  bucket) failed with a bare `ENATIVE_IO: Operation not supported (os error
+  95)`. The error now names the call, the attribute and the file, for
+  example `setxattr user.fylo.meta.starred on <path>: filesystem does not
+  support extended attributes (...)`, and the remedies: use a local
+  filesystem with extended attributes, the `efs-sidecar-v1` filesystem
+  profile, or a `.vdbx` database. The same applies to reading, listing,
+  restoring and copying attributes. The code stays `ENATIVE_IO`, and every
+  other error is unchanged. The probe runs when a bucket is created
+  (`createCollection` with `"kind": "file"`), so on such a filesystem creating
+  the bucket now fails with that error, because every raw file needs its
+  `user.fylo.key` attribute; before, it succeeded and every later `putData`
+  failed. The probe sets and removes
+  `user.fylo.probe` on a short-lived `.fylo-xattr-probe-*.tmp` file at the
+  top of the root. Documents without metadata keep working on these
+  filesystems, so document collections, reads, `.vdbx` databases and the
+  `efs-sidecar-v1` profile are never checked.
+- **A schema manifest without `versions` no longer fails every read.** A
+  `fylo.schema` manifest such as `{ "current": "v1" }`, with no `versions`
+  list, was accepted for writes, but since lazy migration on read every
+  read and every patch of that collection failed with `ESCHEMA: 'current'
+  (v1) is not present in 'versions'`. Such a collection has a single
+  version, so its documents are again read as they are stored. A manifest
+  whose `versions` list does not name `current` is still an error.
+- **A power cut that tears a directory block no longer makes a `.vdbx` file
+  unopenable (ADR 0021 section 7).** A catalog reseal (`fylo access revoke`,
+  `fylo access settle`), a drop, a descriptor change or a new collection
+  rewrites a 4 KiB directory block in place; a device write torn inside it
+  failed the block's checksum, and the whole file then refused to open with
+  `ENATIVE_METADATA`. Each such write now goes to a two-copy directory
+  journal first; an open finishes a torn block from it (a writable open
+  writes it back), and `fylo verify` warns `directoryBlockTorn`. The cost
+  is one more 3.5 KiB write and flush per block written: about 1 ms on a
+  3-collection `fylo access revoke` or `settle`, nothing measurable on an
+  add or drop.
+- **The Windows build of `fylo-engine`'s tests compiles again.** The
+  `read_only` tests imported `ReadOnlyEngine` and `EngineErrorCode` only on
+  Unix since phase 6, so `cargo clippy --all-targets` and the test build
+  failed on Windows.
+- **A collection's index can no longer grow past what readers accept.** A
+  file-layout collection's prefix index (`keys.snapshot` merged with
+  `keys.wal`) is read whole and capped at 256 MiB, about 150,000-200,000
+  small or 35,000-48,000 medium documents. A write that took it past the
+  cap used to commit, and from then on every read of the collection failed
+  with `ENATIVE_INDEX`. Every write that adds index keys (put, replace,
+  patch, batch, SQL, bulk import, raw files, the machine protocol and the
+  `fylo` crate) now measures the index files first and is refused with the
+  new code `EINDEX_FULL`, which names the collection and the limit, when the
+  index could pass 240 MiB: the cap less 16 MiB kept for compaction. Nothing
+  is written and the collection stays readable. Deletes, and updates that
+  add no more index bytes than they remove, still work on a full
+  collection. `docs/index-redesign.md` compares indexes that are not read
+  whole. A collection already past 256 MiB is not repaired by this change.
+- **Native range queries use the index, and large indexes are no longer
+  reloaded per query.** `$gt`, `$gte`, `$lt` and `$lte` on an indexed field
+  read one run of the field's sortable `n` keys, then only those documents,
+  as the README's query strategy says (before, they read every document). A
+  planned query now reads only the index key ranges it needs from
+  `keys.snapshot`, plus the WAL lines in them, instead of merging the whole
+  index once it outgrew the 64 MiB cache. Measured on the Parquet
+  comparison's data (p50): a 1% range query 574 ms → 10 ms at 10,000 small
+  documents and 3.05 s → 48 ms at 50,000; an equality query 593 ms → 19 ms
+  at 10,000 medium and 596 ms → 25 ms at 50,000 small. New
+  `NativeCollection::index_snapshot_in_ranges`, `IndexSnapshot::scan_range`,
+  `IndexKeyRange` and `NumericRange`. Like `$eq` before it, a range query now
+  trusts the index: an index missing a field's `n` keys (hand-written, or
+  stale) hides those documents until `fylo rebuild` or `verify_index` repairs
+  or reports it.
+
+- **A large collection no longer breaks when its index log passes 64 MiB.**
+  `keys.wal` was compacted only once it outgrew `keys.snapshot`, so once the
+  snapshot passed 64 MiB the log could grow past the 64 MiB that readers
+  accept, and every read, write, checkpoint and recovery of the collection
+  then failed with `ENATIVE_FILE_SIZE`. A load through the normal put path
+  hit this at about 100,000 small or 24,000 medium documents. The log is now compacted at the smaller of the snapshot
+  size and 16 MiB. A collection already in that state is repaired, with
+  nothing lost, by its next write, by `NativeWriteRoot::recover_collection`,
+  or by the recovery a machine-protocol invocation runs before its request:
+  each reads the oversized log with the snapshot's 256 MiB limit and folds
+  it. Until then a reader's `ENATIVE_FILE_SIZE` error says how to repair it.
+- **A directory root works on exFAT, FAT and the SMB and NFS shares where
+  macOS keeps extended attributes in `._<name>` files.** macOS writes one
+  `AppleDouble` companion beside every file and directory that carries an
+  attribute on such a volume, and Finder a `.DS_Store` in each directory it
+  shows, and FYLO read each as damage: opening a collection failed with
+  `ENATIVE_UNSAFE_PATH: document shard is not a regular directory: …/._0`,
+  and index rebuild, recovery, rollback, `fylo unpack`, the queue and version
+  control failed alike. Every directory FYLO lists now skips those exact
+  names, which no name FYLO writes can take — a branch name may no longer
+  have a segment beginning `._` or named `.DS_Store` — and removing a file
+  or directory also removes its companion, so a shard, log or collection
+  directory left holding only orphaned companions can still be removed.
+- **A writer no longer waits a minute for a `.vdbx` lease a crashed writer on
+  the same machine left (ADR 0016 section 7).** Where the lock-free lease is
+  used (SMB, NFS, exclusive mode), a writer killed with `kill -9` kept every
+  other writer out for 65 s on the ATLAS share. The lease owner now holds a
+  lock on a marker file in the system temporary directory, which the OS lets
+  go when the process stops, so the next writer on that machine takes the
+  lease over at once. A crashed writer on another machine is still waited
+  out for the takeover time.
+- **A read of a `.vdbx` database right after a crashed write no longer fails
+  with `EENGINE_CONCURRENT_WRITE`.** A reader that finds a collection's slot
+  `writing` tells a running writer from one that stopped by the lock bytes
+  (ADR 0016 section 7): it finishes a stopped writer's write itself, as a
+  directory root's reader recovers a stranded one, where it may write the
+  file without waiting for or keeping out another writer, and otherwise
+  reads the collection as it was last published. A running writer's write
+  is left to it.
+- **A `.vdbx` checkpoint that fails in place rolls back before it returns.**
+  On a full disk it left its fold published as `writing`, so `fylo recover`
+  found work and readers reported a concurrent write until the next writer.
+
+- **A document is decrypted with the `$encrypted` list of the version it was
+  written at.** Reads used the head version's list, so once a new version
+  renamed or dropped an encrypted field, older documents came back with
+  ciphertext in that field.
+- **`patchDoc`, `patchDocs`, and SQL `INSERT` and `UPDATE` now encrypt
+  `$encrypted` fields.** They wrote those fields in plaintext, after which every
+  read of the collection failed. A document already stored that way still
+  fails closed on read; delete it and put it again.
+- **The same writes now validate in strict mode** against the head schema, as
+  the whole merged document, and stamp `_v`. They used to store invalid values,
+  unknown fields, and (for SQL `INSERT`) no `_v`.
+- **Strict mode works with `$encrypted`.** CHEX treated the `$encrypted` list
+  as a required property, so every strict write to an encrypting collection
+  failed.
+- **An encrypted string stays a string.** `"999"`, `"true"` and `"null"` came
+  back from decryption as a number, a boolean and null. Values already stored
+  keep the old behavior until rewritten.
+- Strict validation compiles each pattern once per process instead of on every
+  write, and a process derives its encryption keys once instead of on every
+  request.
+- SQL `UPDATE` and `DELETE` `WHERE` clauses now match decrypted values, so a
+  condition on an `$encrypted` field finds its documents instead of comparing
+  against ciphertext.
+- Node and Bun shims: calls and `close()` no longer hang after the `fylo`
+  child dies by a signal, including the shim's own kill after a malformed or
+  oversized response frame.
+- Dart shim: requests made after the child exits fail at once with the exit
+  reason.
+- Python shim: `queue_process` runs async handlers instead of dead-lettering
+  them.
+- PHP shim: empty arrays for object arguments are sent as JSON objects, so the
+  `findDeletedDocs`, `findDocsPage` and `findDeletedDocsPage` defaults work.
+- Go shim: nil maps are sent as empty objects instead of `null`.
+- Java, C# and Rust shims reject a raw request containing CR or LF before
+  writing it, so it can no longer desync later responses.
+- Native SQL `CREATE TABLE <name>` creates a document collection, and
+  `DROP TABLE <name>` drops it.
+- iOS (Swift) bridge requests no longer fail on WKWebView's Promise result;
+  every native client dispatches with `void`.
+- Mobile `open` no longer hangs until the 30 s RPC timeout: the bridge runs
+  without a worker unless the native config sets `worker: true`. A failed
+  mobile `open` can be retried, `findDocs` with `$onlyIds` returns an id list,
+  and collections named `options`, `collections` and similar work.
+- Browser `rebuildCollection`, and dropping then recreating a collection, work
+  on OPFS. Both always failed on WebKit because of a stale directory-handle
+  cache.
+- A rebuild or rolled-back write in a file bucket that met a file whose
+  extended attributes had been stripped left the bucket unreadable: every read
+  failed with `EENGINE_CONCURRENT_WRITE`, and recovery never finished. The
+  rollback now keeps the index it restored, and a bucket already stuck this
+  way recovers on the next write. The rebuild still fails with
+  `ENATIVE_METADATA`, now naming the file's path relative to the root. On
+  26.33.02 itself: move the file named in the rebuild error out of
+  `.buckets/<name>/docs/<shard>/`, run any write (for example
+  `rebuildCollection`), then add the file again with `putData` and its key,
+  supplying its custom metadata again.
+- The portable `wasm32-wasip1` build (`bun run rust:build:wasi`) compiles
+  again. Browser identities are limited to `wasm32-unknown-unknown`; WASI uses
+  software `file:` identities, and OS key stores fail closed.
+
+### Documentation
+
+- Website samples compile against the shipped clients (Go and Rust collection
+  kind, typed id reads, browser cursors, no Swift `import Fylo`, Python
+  snake_case, C# `Fylo.Fylo`).
+- The browser loader and the mobile and Flutter clients document that they
+  do not support raw-file buckets, schemas or field encryption, and fail with
+  `EBROWSER_UNSUPPORTED`.
+- The unimplemented `versioning.autoCommit` and `versioned: false` options are
+  removed from the docs.
+- New per-client error-code reference, the full 54-operation machine list, and
+  `EXPLAIN` / `EXPLAIN ANALYZE` semantics.
+- The bucket guide (README and website) documents the shipped API:
+  `create('file')`, Node `putFile`, `getFileData`, `findDocs` on key and meta,
+  `verifyCollection`, `getMeta` and `setMeta`. The never-shipped `put(File)`,
+  bytes/blob/stream, `rekey`, `folder()`, `verify()`, per-write `maxBytes`,
+  `onEvent` bucket events and rebuild key repair are removed.
+- `efs-sidecar-v1` is documented as Unix-only; Windows refuses it with
+  `ENATIVE_UNSUPPORTED`.
+
+### Removed
+
+- **Breaking: POSTIX, per-record access control, is removed (ADR 0021,
+  decision Q1).** Access is granted per application identity on protected
+  `.vdbx` databases instead, and denied by default. Gone: the per-record
+  `uid`, `gid` and `mode` descriptors and their `chown`/`chmod` projection
+  onto record files; `.as()` in every client and shim (and the Rust shim's
+  `sql_as` and `sql_access`, and the `access` argument of each client's
+  `executeSQL`/`sql`); the CLI's `--uid` and `--groups`; the machine
+  protocol's per-request `access` object and `capabilities.machineAccess`;
+  the `uid`, `gid` and `mode` in canonical metadata; `EACCES` for records
+  a descriptor denied (it remains for identities without a grant); and
+  `--allow-engine-only-access` of `fylo layout` and `fylo pack`. A machine
+  request that still carries `access`, and the removed CLI flags, fail
+  instead of being ignored (`EBADREQUEST` for the request). Records an
+  earlier release wrote with a descriptor are read in full with the
+  descriptor ignored, and the first such read in a process prints a
+  one-time warning to stderr. `fylo access report` lists them and
+  `fylo pack --protect` migrates the root; see
+  `docs/migrating-to-protected-databases.md`.
+- The `fylo.chex.binary` setting. A configuration that still sets `fylo.chex`
+  fails with a message asking you to remove it.
+- **`fylo serve` and `Fylo.connect` were removed before release.** FYLO is an
+  embedded library, like SQLite: your app opens the database files directly in
+  its own process. There is no network server, no `fyloServe` hello and no
+  `capabilities.networkServer`. On network storage, run your app server next to
+  the files. ADR 0012 is withdrawn; the hot set it led to now runs in exclusive
+  embedded sessions.
+
+### Security
+
+- **rustls 0.23.46.** The TLS stack under `fylo-machine` (directly and through
+  `reqwest`, `hyper-rustls` and `tokio-rustls`) moves from 0.23.45 to 0.23.46,
+  which fixes Session `Debug` formatting exposing TLS master secrets and
+  resumption PSKs (GHSA-c8m5-c952-6cm4), an unauthenticated ServerHello
+  poisoning the per-name key-exchange record (GHSA-w44r-93j7-qv28), and Brotli
+  certificate decompression allocating up to 1 GiB before authentication
+  (GHSA-h2v8-394m-p7vv).
+- **rustls-webpki 0.103.16 and webpki-root-certs 1.0.10.** Certificate
+  verification no longer accepts paths through the distrusted emSign
+  intermediates (RUSTSEC-2026-0382), and the bundled roots drop `emSign ECC
+  Root CA - G3` (RUSTSEC-2026-0383). No other dependency changed.
+
 ## 26.33.02 - 2026-08-11
 
 ### Added

@@ -55,7 +55,7 @@ that descriptor is the authority: readers derive the shard from it and never
 guess.
 
 The width for collections that do not exist yet comes from `RootConfig`,
-which the CLI fills from `--shard-width` or `FYLO_SHARD_WIDTH`. It defaults to
+which the CLI fills from `--shard-width` or `fylo.shard.width` in `application.json`. It defaults to
 **1** and is capped at 4 — 36^4 is already 1.7 million directories, past which
 enumeration costs more than the fan-out saves. It is validated where the
 collection is created, not only where the CLI parses it, because a host that

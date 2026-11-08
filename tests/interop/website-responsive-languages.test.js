@@ -1,9 +1,29 @@
 import { describe, expect, test } from 'bun:test'
+import { createHash } from 'node:crypto'
 import path from 'node:path'
 import CodeShowcase from '../../website/client/components/code/showcase/tac.js'
 import DocsSample from '../../website/client/components/docs/sample/tac.js'
 
 const root = path.resolve(import.meta.dir, '../..')
+
+describe('website DuVay dependency', () => {
+    test('vendors the checksum-pinned latest release stylesheet', async () => {
+        const vendorRoot = path.join(root, 'website/client/shared/assets/duvay')
+        const provenance = await Bun.file(path.join(vendorRoot, 'provenance.json')).json()
+        const stylesheet = await Bun.file(path.join(vendorRoot, provenance.artifact)).arrayBuffer()
+        const checksum = createHash('sha256').update(new Uint8Array(stylesheet)).digest('hex')
+
+        expect(provenance).toEqual({
+            name: '@d31ma/duvay-css',
+            version: '26.35.01-1',
+            artifact: 'duvay.min.css',
+            sha256: 'dd0b9a6841313bc3b4bf30da476dc1aa88821a58220d662b679f83873b92c768',
+            source: 'https://github.com/d31ma/DUVAY/releases/tag/v26.35.01-1',
+            license: 'MIT'
+        })
+        expect(checksum).toBe(provenance.sha256)
+    })
+})
 
 describe('website language selector', () => {
     test('is a swipeable horizontal strip on narrow screens', async () => {
@@ -40,21 +60,37 @@ describe('website template companion state', () => {
     })
 })
 
-describe('website POSIX access guidance', () => {
-    test('explains UID, GID, mode-only writes, and trusted group resolution', async () => {
+describe('website application identity guidance', () => {
+    test('explains identities, grants, and trust anchors instead of per-record access', async () => {
         const [features, faq, docs] = await Promise.all([
             Bun.file(path.join(root, 'website/client/components/features/grid/tac.html')).text(),
             Bun.file(path.join(root, 'website/client/components/faq/panels/tac.html')).text(),
             Bun.file(path.join(root, 'website/client/components/docs/content/tac.js')).text()
         ])
 
-        expect(features).toMatch(/POSIX\s+UID\/GID\/mode enforcement/)
-        expect(faq).toContain('gid: editorsGid, mode: 0o660')
-        expect(faq).toContain('Group write permission')
-        expect(faq).toContain('request-scoped virtual groups')
-        expect(docs).toContain('groups: [editorsGid]')
-        expect(docs).toContain('.as({ uid: 1001, gid: editorsGid, mode: 0o660 })')
-        expect(docs).toContain('.as({ mode: 0o600 })')
+        expect(features).toContain('Encryption & application identities')
+        expect(features).toMatch(/signed grants for application\s+identities on protected \.vdbx/)
+        expect(faq).toContain('How do I control who can read or write data?')
+        expect(faq).toMatch(/fylo identity create/)
+        expect(faq).toMatch(/fylo access grant/)
+        expect(faq).toContain('--trust-anchor')
+        expect(faq).toContain('Per-record access was removed.')
+        expect(docs).toContain('fylo identity create --store file:app.pem')
+        expect(docs).toContain('fylo create app.vdbx --admin file:admin.pem')
+        expect(docs).toContain(
+            'fylo access grant app.vdbx --grantee web --key fpk1:... --actions read --collection users'
+        )
+        expect(docs).toContain('--identity file:app.pem --trust-anchor fid1:...')
+        expect(docs).not.toContain('.as(')
+        expect(docs).not.toContain('POSTIX')
+    })
+
+    test('says encryption is opt-in and off by default, including for .vdbx', async () => {
+        const docs = await Bun.file(
+            path.join(root, 'website/client/components/docs/content/tac.html')
+        ).text()
+        expect(docs).toContain('Encryption is opt-in and off by default')
+        expect(docs).toMatch(/<code>\.vdbx<\/code> database file is not encrypted/)
     })
 })
 
@@ -85,30 +121,51 @@ describe('website child-scoped FYLO configuration', () => {
         ]) {
             expect(sample).toContain(marker)
         }
-        expect(clients).toContain('<docs-sample topic="environment" hydrate="load" />')
-        expect(clients).toContain('FYLO_SHARD_WIDTH=2')
-        expect(operations).toContain('<code>FYLO_SHARD_WIDTH</code>')
+        expect(clients).toContain('<docs-sample topic="configuration" hydrate="load" />')
+        for (const client of [
+            'Node/TypeScript',
+            'Python',
+            'Ruby',
+            'PHP',
+            'Go',
+            'Rust',
+            'Java',
+            'C#',
+            'Dart'
+        ]) {
+            expect(clients).toContain(client)
+        }
+        expect(clients).toContain('"shard": &#123; "width": 2 &#125;')
+        expect(operations).toContain('<code>fylo.shard.width</code>')
         expect(operations).toMatch(
-            /<td><code>FYLO_SHARD_WIDTH<\/code><\/td>[\s\S]*?<td><code>1<\/code><\/td>/
+            /<td><code>fylo.shard.width<\/code><\/td>[\s\S]*?<td><code>1<\/code><\/td>/
         )
         expect(operations).not.toContain('<code>FYLO_LOGGING</code>')
         expect(operations).toContain('Resolution and isolation')
-        expect(operations).toMatch(/without\s+changing global environment state/)
+        expect(operations).toMatch(/without\s+modifying\s+global environment state/)
         expect(features).toContain('independently configured roots can share one application')
         expect(faq).toContain('Can one application run multiple FYLO configurations?')
-        expect(faq).toContain('without mutating the host process')
-        expect(features).toContain('Encryption &amp; POSTIX access')
+        expect(faq).toContain('without mutating the host environment')
+        expect(features).toContain('Encryption & application identities')
         expect(sampleMarkup).toContain('role="group" aria-label="Language"')
         expect(sampleMarkup).not.toContain('role="tab"')
         expect(sampleMarkup).not.toContain('role="tablist"')
         expect(sampleMarkup.match(/aria-pressed=/g)).toHaveLength(13)
         expect(browserEntry).toContain('requestAnimationFrame(revealLanguageSelections)')
         expect(browserEntry).toContain('strip.querySelector(\'[aria-pressed="true"]\')')
-        expect(faq.match(/aria-controls="faq-[^"]+-answer"/g)).toHaveLength(8)
-        expect(faq.match(/role="region"/g)).toHaveLength(8)
-        expect(clients).toContain('trusted bootstrap configuration')
-        expect(clients).toContain('absolute, administrator-controlled binary path')
-        expect(operations).toMatch(/Never\s+derive either from a request/)
+        expect(faq.match(/aria-controls="faq-[^"]+-answer"/g)).toHaveLength(9)
+        expect(faq.match(/role="region"/g)).toHaveLength(9)
+        // ADR 0016 section 9: wherever .vdbx is introduced, say encryption is off by default.
+        expect(faq).toContain('Can a whole database live in one file?')
+        expect(faq).toMatch(/A \.vdbx file is not encrypted\s+by default: encryption is opt-in/)
+        expect(clients).toContain('trusted bootstrap input')
+        expect(operations).toContain('administrator-controlled bootstrap input')
+        expect(operations).toMatch(/Never\s+derive them from a request/)
+        expect(sample).not.toContain('./config/fylo.env')
+        expect(sample).toContain('config: Some("./config/application.json".into())')
+        expect(operations).toContain('"key": "$&#123;FYLO_ENCRYPTION_KEY&#125;"')
+        expect(operations).toContain('Unreferenced variables are ignored')
+        expect(clients).toContain('former <code>env</code> file/map option is replaced')
 
         const restoredButtons = ['python', 'ruby'].map((lang) => ({
             dataset: { lang },
@@ -118,7 +175,7 @@ describe('website child-scoped FYLO configuration', () => {
                 if (name === 'aria-pressed') this.pressed = value
             }
         }))
-        const restoredSample = new DocsSample({ topic: 'environment' })
+        const restoredSample = new DocsSample({ topic: 'configuration' })
         restoredSample.$lang = 'ruby'
         restoredSample.hydrate({ querySelectorAll: () => restoredButtons })
         expect(restoredButtons.map(({ pressed }) => pressed)).toEqual(['false', 'true'])
@@ -131,20 +188,20 @@ describe('website child-scoped FYLO configuration', () => {
         expect(browserCrud.code()).toContain('await db.users.patch(')
         expect(browserCrud.code()).toContain('await db.users.delete(')
 
-        const browserEnvironment = new DocsSample({ topic: 'environment' })
+        const browserEnvironment = new DocsSample({ topic: 'configuration' })
         browserEnvironment.$lang = 'web'
         expect(browserEnvironment.code()).toContain(
-            'https://d31ma.github.io/FYLO/version/26.33.02/fylo.js'
+            'https://d31ma.github.io/FYLO/version/26.45.07/fylo.js'
         )
         expect(browserEnvironment.code()).toContain('const db = await Fylo.open({')
         expect(browserEnvironment.code()).toContain('<script type="module">')
         expect(browserEnvironment.code()).not.toContain('createBrowserClient(')
 
-        const dartEnvironment = new DocsSample({ topic: 'environment' })
+        const dartEnvironment = new DocsSample({ topic: 'configuration' })
         dartEnvironment.$lang = 'dart'
         expect(dartEnvironment.code()).toContain('Future<void> main() async {')
 
-        const flutterEnvironment = new DocsSample({ topic: 'environment' })
+        const flutterEnvironment = new DocsSample({ topic: 'configuration' })
         flutterEnvironment.$lang = 'flutter'
         expect(flutterEnvironment.code()).toContain('Future<void> configureFylo() async {')
     })
@@ -176,7 +233,7 @@ describe('website serverless queue guidance', () => {
                 Bun.file(path.join(root, 'website/client/pages/docs/protocol/tac.js')).text(),
                 Bun.file(path.join(root, 'website/client/pages/docs/queue/tac.html')).text(),
                 Bun.file(path.join(root, 'website/client/pages/docs/queue/tac.js')).text(),
-                Bun.file(path.join(root, 'website/client/components/docs/nav/tac.html')).text(),
+                Bun.file(path.join(root, 'website/client/components/doc/sidebar/tac.html')).text(),
                 Bun.file(path.join(root, 'website/client/shared/scripts/imports.js')).text(),
                 Bun.file(path.join(root, 'website/client/components/features/grid/tac.html')).text()
             ])
@@ -210,6 +267,71 @@ describe('website serverless queue guidance', () => {
         expect(queueGuide).not.toMatch(
             /reason:\s*(?:String\(error\)|error(?:\.message|\.toString\(\))?|`[^`]*\$\{error(?:\.message)?\}[^`]*`)/
         )
+    })
+})
+
+describe('website DuVay-derived structure', () => {
+    test('uses a focused homepage and one shared documentation shell', async () => {
+        const [home, header, hero, features, layout, sidebar, toc, download] = await Promise.all([
+            Bun.file(path.join(root, 'website/client/pages/tac.html')).text(),
+            Bun.file(path.join(root, 'website/client/components/site/header/tac.html')).text(),
+            Bun.file(path.join(root, 'website/client/components/hero/tac.html')).text(),
+            Bun.file(path.join(root, 'website/client/components/features/grid/tac.html')).text(),
+            Bun.file(path.join(root, 'website/client/components/doc/layout/tac.html')).text(),
+            Bun.file(path.join(root, 'website/client/components/doc/sidebar/tac.html')).text(),
+            Bun.file(path.join(root, 'website/client/components/doc/toc/tac.html')).text(),
+            Bun.file(path.join(root, 'website/client/pages/download/tac.html')).text()
+        ])
+
+        expect(home).toContain('<site-header />')
+        expect(header).toContain('src="/shared/assets/fylo-mark.svg"')
+        expect(header).not.toContain('aria-hidden="true">F</span>')
+        expect(home).toContain('<hero hydrate="load" />')
+        expect(home).toContain('<features-grid hydrate="load" />')
+        for (const retiredSection of [
+            '<stats-strip',
+            '<code-showcase',
+            '<arch-section',
+            '<faq-panels',
+            '<cta-banner'
+        ]) {
+            expect(home).not.toContain(retiredSection)
+        }
+        expect(hero).toContain('Filesystem-first document store')
+        expect(home).toContain('<home-quickstart />')
+        expect(home).toContain('<site-footer />')
+        expect(hero).toContain('Query the files you already own.')
+        expect(features.match(/class="feature-card"/g)).toHaveLength(6)
+        expect(layout).toContain('<site-header />')
+        expect(layout).toContain('<doc-sidebar />')
+        expect(layout).toContain('<main class="doc-main doc-page">')
+        expect(layout).toContain('<doc-toc />')
+        expect(sidebar).toContain('aria-label="Documentation"')
+        expect(toc).toContain('data-doc-toc-list')
+        expect(download).toContain('<site-header />')
+    })
+
+    test('wraps every documentation route in the shared layout', async () => {
+        const glob = new Bun.Glob('website/client/pages/docs/**/tac.html')
+        const pages = []
+        for await (const file of glob.scan({ cwd: root })) pages.push(file)
+
+        expect(pages).toHaveLength(18)
+        for (const file of pages) {
+            const source = await Bun.file(path.join(root, file)).text()
+            expect(source).toContain('<doc-layout>')
+            expect(source).toContain('</doc-layout>')
+            expect(source).not.toContain('<div class="doc-shell">')
+        }
+    })
+
+    test('puts responsive shared styles in every bootstrap document head', async () => {
+        const config = await Bun.file(path.join(root, 'website/tac.config.js')).text()
+
+        expect(config).toContain('width=device-width, initial-scale=1')
+        expect(config).toContain('/shared/assets/duvay/duvay.min.css')
+        expect(config).toContain('/shared/assets/site.css')
+        expect(config).toContain('<!--fylo-head-->')
     })
 })
 

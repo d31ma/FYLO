@@ -1,0 +1,59 @@
+[package]
+name = "fylo-identity"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "FYLO application identities: P-256 key pairs named by key references (ADR 0021)"
+publish = false
+
+[dependencies]
+base64.workspace = true
+sha2.workspace = true
+zeroize.workspace = true
+
+# Native identities sign, check and wrap in software. The browser's
+# (`webcrypto:`, decision P5-5) reach WebCrypto through the host table, so
+# neither crate grows the browser engine.
+[target.'cfg(not(all(target_arch = "wasm32", target_os = "unknown")))'.dependencies]
+# A hardware key's wraps are opened by hand (`hardware_key_wrap.rs`): the
+# `hpke` crate takes only a private key, and the hardware gives out only an
+# ECDH secret. Both crates are already in the graph through `hpke`.
+aes-gcm.workspace = true
+hkdf.workspace = true
+hpke.workspace = true
+p256.workspace = true
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+fylo-vfs = { version = "0.1.0", path = "../fylo-vfs" }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["process"] }
+
+# The `cng:` store (ADR 0021, decision P5-2): CNG's key storage provider.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Cryptography"] }
+
+# `enclave:` (phase 8) reads the Secure Enclave key's token blob through
+# Core Foundation; both crates are already in the graph through
+# `security-framework`.
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation.workspace = true
+core-foundation-sys.workspace = true
+security-framework.workspace = true
+security-framework-sys.workspace = true
+
+# `cng_key_store.rs` calls CNG, and `enclave_key.rs` the Secure Enclave's
+# token calls, which no safe signature in the graph expresses (decision
+# P5-2, phase 8). `deny` rather than the workspace's `forbid` is what lets
+# those modules opt in, with a SAFETY comment per block.
+[lints.rust]
+unsafe_code = "deny"
+unused_must_use = "deny"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"

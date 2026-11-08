@@ -1,0 +1,75 @@
+use serde::{Deserialize, Serialize};
+
+use fylo_format::LogRecordKind;
+
+use super::log_segment::LogSegment;
+use super::segment_rebuild::SegmentRebuild;
+use super::segment_recovery::SchemaCopies;
+use crate::segments::{LocationTable, SegmentLocation, SegmentMedium};
+use crate::{NativeStorageError, NativeStorageErrorCode};
+
+/// The manifest of a compaction record: the compacted segment a collection
+/// adopts and the segments it replaces (ADR 0015 section 7).
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct CompactionManifest {
+    pub(crate) format: String,
+    pub(crate) segment: u64,
+    pub(crate) sha256: String,
+    pub(crate) replaces: Vec<u64>,
+}
+
+impl CompactionManifest {
+    pub(crate) const FORMAT: &'static str = "fylo.segment-compaction.v1";
+
+    pub(crate) fn decode(bytes: &[u8]) -> Result<Self, NativeStorageError> {
+        let manifest: Self = serde_json::from_slice(bytes).map_err(|error| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                format!("segment compaction manifest is corrupt: {error}"),
+            )
+        })?;
+        if manifest.format != Self::FORMAT {
+            return Err(NativeStorageError::new(
+                NativeStorageErrorCode::CorruptMetadata,
+                "segment compaction manifest has an unknown format",
+            ));
+        }
+        Ok(manifest)
+    }
+
+    /// Location rows that move each document whose newest entry the
+    /// compacted segment copied to that copy, and where it holds each schema
+    /// record. A copy whose document was written again after the copy was
+    /// taken is dead on arrival.
+    pub(crate) fn adopted(
+        medium: &dyn SegmentMedium,
+        table: &LocationTable,
+        segment: u64,
+    ) -> Result<(Vec<SegmentLocation>, SchemaCopies), NativeStorageError> {
+        let scan = LogSegment::scan_segment(medium, segment)?.ok_or_else(|| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::CorruptDocument,
+                format!("compacted segment {segment} has no valid header"),
+            )
+        })?;
+        let lengths = SegmentRebuild::frame_lengths(&scan);
+        let mut rows = Vec::new();
+        let mut schemas = SchemaCopies::new();
+        for ((offset, record), length) in scan.records.iter().zip(lengths) {
+            if record.kind == LogRecordKind::Schema {
+                schemas.insert(record.lsn, (segment, *offset, length));
+                continue;
+            }
+            for row in SegmentRebuild::rows_of(segment, (*offset, length), record)? {
+                if table
+                    .get(&row.id)
+                    .is_some_and(|current| current.lsn == row.lsn)
+                {
+                    rows.push(row);
+                }
+            }
+        }
+        Ok((rows, schemas))
+    }
+}

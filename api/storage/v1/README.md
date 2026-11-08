@@ -37,11 +37,85 @@ Canonical fields win collisions:
 - `createdAt`;
 - `updatedAt`;
 - `mtime`;
-- raw-file descriptors;
-- supported native `uid`, `gid`, and `mode`.
+- raw-file descriptors.
+
+Records that an earlier release wrote with a POSTIX access descriptor
+(`user.fylo.access`: `uid`, `gid`, `mode`) keep it as an opaque attribute that
+nothing enforces or returns; `fylo pack --protect` drops it or keeps it as the
+metadata field `legacyAccess` (ADR 0021, phase 6).
 
 ## Compatibility
 
 Any new writer format requires an ADR, migration RFC, interrupted-upgrade
 tests, rollback/restore policy, and golden fixtures. A Rust language migration
 does not by itself change these formats.
+
+## Explicit EFS sidecar candidate
+
+Native remains the default. `efs-sidecar-v1` is an explicit, unqualified source
+candidate, selected through additive profiled constructors or the CLI flag.
+Metadata representation is separate from FYLO's planned provider-independent
+invocation lifetime, retry and concurrency contracts; it does not by itself
+make a backend serverless-safe.
+It never infers a backend from an xattr error. The
+[descriptor schema](filesystem-profile.schema.json) describes
+`.fylo-catalog/filesystem-profile.json`: `format`, `profile`, and actual immutable
+root `uid`/`gid`, with unknown/missing/mismatched fields rejected. The isolated
+bound candidate requires `fylo.filesystem-profile.v2` and refuses every unbound
+experimental v1 descriptor before lease publication or recovery. It neither
+adopts nor converts v1 data. Only a selected
+writer initializes a genuinely empty root under its verified owning lease;
+readers do not initialize. Worktrees use the repository descriptor and lease.
+
+Every payload requires a regular private `<payload>.fylo-attrs` manifest using
+the existing sorted attribute-name/base64 map. The reserved
+`user.fylo.record-identity` value is compact UTF-8 JSON
+`["fylo.record-identity.v1",namespace,collection,ttid,sha256]`, encoded as the
+map's canonical base64. Namespace is `.collections` or `.buckets`; SHA-256 binds
+persisted payload bytes, including ciphertext. Identity excludes the root,
+shard, deletion placement and worktree path. Attribute removal retains this
+binding; a mandatory manifest never becomes literal `{}`. The binding is
+internal storage metadata, protected from attribute mutation and separate from
+custom metadata keys and their existing byte limits. Its value is capped at
+512 bytes; the existing outer manifest limit still applies.
+Reads reject missing, malformed, unsafe or oversized manifests and verify both
+file identities, logical identity and payload binding inside the same
+stable-generation envelope as metadata and
+authorization. Moves, deletes, SQL mutations, reshard and journal recovery
+treat payload and sidecar as a logical pair, including destination before-images.
+Two filesystem renames alone do not supply joint atomicity.
+
+Existing version-2 metadata objects and transaction captures keep their formats.
+No general UID/GID capture expansion is included. Root ownership is fixed;
+unsupported transitions fail before mutation. The initial sidecar backend also
+refuses modes lacking owner-read capability before mutation. Payload mtime remains
+canonical and recorded mtime must be restored during recovery. Sidecars do not appear in
+logical record counts, staged lookup or custom document bodies.
+
+The version-2 metadata object has no historical payload-mtime or standalone
+mode field. Commit materialization retains native VCS time semantics; this
+profile does not invent historical timestamps. Journal rollback and full-root
+snapshot/restore still require recorded-time fidelity, and unchanged pair moves
+and branch copies preserve current payload time.
+
+The v2 source checks binding before authorization/metadata exposure and checks
+returned bytes again. Overwrites validate the old pair and refresh binding;
+VCS export/materialization and before-image recovery require verified pairs.
+Missing or unbound history is refused rather than regenerated. An unkeyed
+digest is consistency binding, not authentication against an owner rewriting
+both payload and binding. These changes are uncompiled and behavior-unqualified.
+Queue execution also remains unqualified and
+fails closed at the native queue-open seam. Neither limitation may be hidden
+by fallback or a deployment support claim.
+
+The earlier candidate's exact v1 descriptor check refuses v2. Older unrelated
+binaries are not guaranteed to inspect any descriptor; keep them on their
+original native root. Selecting a v2 binary for an existing experimental v1 root
+would make it unavailable with that reader without changing its bytes. Native
+roots/defaults remain outside this change. No live roots have been inventoried
+or converted by this work. Migration must be a separately authorized cold copy with
+complete metadata/history/query/permission comparison; retain the original root
+and binary for rollback. Backups include descriptor, every sidecar, journals,
+VCS, queues and native modes/times, plus separately protected keys. See
+[ADR 0010](../../../docs/adr/0010-explicit-efs-metadata-profile.md) and the
+[snapshot runbook](../../../docs/operations/filesystem-snapshot-restore.md).

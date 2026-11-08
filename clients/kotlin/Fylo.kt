@@ -11,14 +11,15 @@
 //   val doc = db.getLatest("users", id)
 //   val admins = db.findDocs("users", mapOf("\$ops" to listOf(mapOf("role" to mapOf("\$eq" to "admin")))))
 //
-// Bundle three files under the app's assets at `assets/fylo/`: this engine's
-// `fylo.mjs` (from a FYLO release), plus `host.html` and `bridge.js` from
-// clients/mobile/. They are served over an https origin (a secure context,
+// Bundle three files under the app's assets at `assets/fylo/`: the
+// `fylo-web.mjs` asset from a FYLO release, saved as `fylo.mjs` (bridge.js
+// imports ./fylo.mjs), plus `host.html` and `bridge.js` from clients/mobile/. They are served over an https origin (a secure context,
 // which OPFS requires — a file:// origin does not get OPFS) via request
 // interception; no network is used for the assets.
 //
-// Platform only: android.webkit + org.json (both in the SDK) and
-// kotlinx.coroutines (standard on Android). No third-party HTTP/JSON libs.
+// Platform only: android.webkit + org.json (both in the SDK). Add the
+// kotlinx-coroutines-android dependency: it provides Dispatchers.Main, which
+// this client uses. No third-party HTTP/JSON libs.
 // Requires a Chromium WebView with OPFS (Android System WebView / Chrome 108+).
 
 import android.annotation.SuppressLint
@@ -86,7 +87,7 @@ class Fylo private constructor(
             val completed = withTimeoutOrNull(rpcTimeoutMillis) {
                 withContext(Dispatchers.Main) {
                     // base64 body is safe inside the JS string literal.
-                    webView.evaluateJavascript("window.__fyloDispatch(\"$base64\")", null)
+                    webView.evaluateJavascript("void window.__fyloDispatch(\"$base64\")", null)
                 }
                 listOf(deferred.await())
             }
@@ -137,8 +138,10 @@ class Fylo private constructor(
             if (reply.optBoolean("ok", false)) {
                 deferred.complete(if (reply.isNull("result")) null else reply.opt("result"))
             } else {
-                val message = reply.optJSONObject("error")?.optString("message") ?: "fylo error"
-                deferred.completeExceptionally(FyloException(message))
+                val error = reply.optJSONObject("error")
+                val message = error?.optString("message") ?: "fylo error"
+                val code = error?.optString("code")?.takeIf { it.isNotEmpty() }
+                deferred.completeExceptionally(FyloException(message, code))
             }
         }
 
@@ -153,9 +156,8 @@ class Fylo private constructor(
     }
 
     // --- Collections ---
-    // `kind` is accepted for cross-client parity; the on-device engine stores documents untyped.
     suspend fun createCollection(collection: String, kind: String = "document"): Any? =
-        request("createCollection", mapOf("collection" to collection))
+        request("createCollection", mapOf("collection" to collection, "kind" to kind))
     suspend fun dropCollection(collection: String): Any? =
         request("dropCollection", mapOf("collection" to collection))
     suspend fun inspectCollection(collection: String): Any? =
@@ -189,8 +191,10 @@ class Fylo private constructor(
      * Run raw SQL against the local store. Native interpolation is verbatim —
      * escape/validate untrusted input yourself.
      */
-    suspend fun sql(statement: String): Any? =
-        request("executeSQL", mapOf("sql" to statement))
+    suspend fun executeSQL(sql: String): Any? =
+        request("executeSQL", mapOf("sql" to sql))
+
+    suspend fun sql(statement: String): Any? = executeSQL(statement)
 
     /**
      * Collection-scoped facade with short method names, so
@@ -250,7 +254,7 @@ class Fylo private constructor(
         else Handler(Looper.getMainLooper()).post(dispose)
     }
 
-    class FyloException(message: String) : RuntimeException(message)
+    class FyloException(message: String, val code: String? = null) : RuntimeException(message)
 
     companion object {
         private const val HOST = "fylo.localhost"

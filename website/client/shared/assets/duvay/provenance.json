@@ -1,0 +1,8 @@
+{
+    "name": "@d31ma/duvay-css",
+    "version": "26.35.01-1",
+    "artifact": "duvay.min.css",
+    "sha256": "dd0b9a6841313bc3b4bf30da476dc1aa88821a58220d662b679f83873b92c768",
+    "source": "https://github.com/d31ma/DUVAY/releases/tag/v26.35.01-1",
+    "license": "MIT"
+}

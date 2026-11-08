@@ -171,12 +171,12 @@ describe('standalone Explorer app', () => {
         const pinnedTachyon = `github:d31ma/Tachyon#${tachyonCommit}`
         expect(packageJson.devDependencies['@d31ma/tachyon']).toBe(pinnedTachyon)
         expect(lock).toContain(tachyonCommit.slice(0, 7))
-        expect(websitePackage.scripts.bundle).toContain('ty bundle')
+        expect(websitePackage.scripts.bundle).toContain('run-site.mjs bundle')
         expect(websitePackage.devDependencies?.['@d31ma/tachyon']).toBeUndefined()
         expect(await exists(path.join(website, 'bun.lock'))).toBe(false)
-        expect(installer).toContain("TACHYON_VERSION='v26.33.01'")
+        expect(installer).toContain("TACHYON_VERSION='v26.36.01'")
         expect(installer).toContain(
-            "TACHYON_SHA256='0ecafafd0468b8e559e98f1192e88df2cc5c53fb195e8ff8305b4d2f3b2ee584'"
+            "TACHYON_SHA256='1bf8d005bc2552dec0b8b1fbfeefde1b01ef6c4342f98b8d958d76d75c8d9f80'"
         )
         expect(vendoredBundle).toBe(browserBundle)
         for (const asset of ['shared.js', 'dedicated.js', 'fylo-index.wasm']) {

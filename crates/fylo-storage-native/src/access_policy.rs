@@ -1,0 +1,328 @@
+use std::collections::BTreeMap;
+
+use fylo_identity::{IdentityId, PublicIdentity};
+use serde::Serialize;
+
+use crate::{
+    AccessAction, AccessGrantRequest, AccessPolicyChange, AccessPolicyIdentity, AccessRule,
+    DatabaseAccessError,
+};
+
+/// A protected database's policy (ADR 0021): allow rules only, so nothing
+/// is allowed without a rule. Each change is a new version that names the
+/// one before by hash and is signed by an admin of it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct AccessPolicy {
+    /// Always [`AccessPolicy::FORMAT`].
+    pub format: String,
+    /// 1 for the policy a creation writes, then one more per change.
+    pub version: u64,
+    /// `sha256:<hex>` of the previous version's bytes; none for version 1.
+    pub previous: Option<String>,
+    /// The identities rules name, by policy name.
+    pub identities: BTreeMap<String, AccessPolicyIdentity>,
+    /// The allow rules.
+    pub rules: Vec<AccessRule>,
+    /// Where a revocation took effect (ADR 0021, phase 4): for each
+    /// collection the removed rule covered, the next LSN of its log when
+    /// this version was written. A record at or past it must be signed by an
+    /// identity that can write the collection under this version or a later
+    /// one.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub boundaries: BTreeMap<u32, u64>,
+    /// What this version changed, and when (ADR 0021 section 7).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub change: Option<AccessPolicyChange>,
+}
+
+impl AccessPolicy {
+    const KEYS: [&'static str; 7] = [
+        "format",
+        "version",
+        "previous",
+        "identities",
+        "rules",
+        "boundaries",
+        "change",
+    ];
+
+    /// A policy version from its JSON bytes.
+    ///
+    /// # Errors
+    /// The first field that is missing, of the wrong type, or unknown.
+    pub fn from_json(bytes: &[u8]) -> Result<AccessPolicy, String> {
+        use crate::access_json::AccessJson;
+        let value: serde_json::Value =
+            serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
+        let map = AccessJson::object(&value, "the policy")?;
+        AccessJson::known_keys(map, &Self::KEYS, "the policy")?;
+        let identities = Self::identities_from(AccessJson::object(
+            map.get("identities").unwrap_or(&serde_json::Value::Null),
+            "identities",
+        )?)?;
+        let rules = AccessJson::array(map, "rules")?
+            .iter()
+            .map(AccessRule::from_value)
+            .collect::<Result<_, _>>()?;
+        Ok(AccessPolicy {
+            format: AccessJson::string(map, "format")?,
+            version: AccessJson::number(map, "version")?,
+            previous: AccessJson::optional_string(map, "previous")?,
+            identities,
+            rules,
+            boundaries: Self::boundaries_from(map.get("boundaries"))?,
+            change: map
+                .get("change")
+                .map(AccessPolicyChange::from_value)
+                .transpose()?,
+        })
+    }
+
+    fn identities_from(
+        map: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<BTreeMap<String, AccessPolicyIdentity>, String> {
+        let mut identities = BTreeMap::new();
+        for (name, identity) in map {
+            identities.insert(name.clone(), AccessPolicyIdentity::from_value(identity)?);
+        }
+        Ok(identities)
+    }
+
+    fn boundaries_from(value: Option<&serde_json::Value>) -> Result<BTreeMap<u32, u64>, String> {
+        let mut boundaries = BTreeMap::new();
+        let Some(value) = value else {
+            return Ok(boundaries);
+        };
+        for (collection, lsn) in crate::access_json::AccessJson::object(value, "boundaries")? {
+            boundaries.insert(
+                Self::boundary_collection(collection)?,
+                Self::boundary_lsn(lsn)?,
+            );
+        }
+        Ok(boundaries)
+    }
+
+    fn boundary_collection(collection: &str) -> Result<u32, String> {
+        collection
+            .parse::<u32>()
+            .map_err(|_| format!("{collection:?} is not a collection id"))
+    }
+
+    fn boundary_lsn(lsn: &serde_json::Value) -> Result<u64, String> {
+        lsn.as_u64()
+            .ok_or_else(|| "a boundary must be a whole number".to_owned())
+    }
+
+    /// The policy format this build reads and writes.
+    pub const FORMAT: &'static str = "fylo.policy/1";
+    /// The policy name of the identity a database is created with.
+    pub const CREATOR: &'static str = "admin";
+    /// The rule that makes the creator an admin of the database.
+    pub const CREATOR_RULE: &'static str = "root-admin";
+
+    /// Version 1: `admin` holds `admin` on the database.
+    #[must_use]
+    pub fn first(admin: &PublicIdentity) -> AccessPolicy {
+        let identity = AccessPolicyIdentity {
+            keys: vec![admin.to_string()],
+            label: None,
+        };
+        AccessPolicy {
+            format: Self::FORMAT.to_owned(),
+            version: 1,
+            previous: None,
+            identities: BTreeMap::from([(Self::CREATOR.to_owned(), identity)]),
+            rules: vec![AccessRule {
+                id: Self::CREATOR_RULE.to_owned(),
+                identity: Self::CREATOR.to_owned(),
+                actions: vec![AccessAction::Admin],
+                resources: vec![AccessRule::database_resource()],
+            }],
+            boundaries: BTreeMap::new(),
+            change: None,
+        }
+    }
+
+    /// Whether the key `id` may write the collection `name` under this
+    /// version.
+    #[must_use]
+    pub fn may_write(&self, id: &IdentityId, name: &str) -> bool {
+        self.rules_for(id)
+            .iter()
+            .any(|rule| rule.strongest_on_collection(name) >= Some(AccessAction::Write))
+    }
+
+    /// The public keys of every identity a rule names: everyone who gets
+    /// the catalog key.
+    #[must_use]
+    pub fn granted_keys(&self) -> Vec<PublicIdentity> {
+        self.keys_of_rules(&|_| true)
+    }
+
+    /// The public keys of every identity with an admin rule on the
+    /// database.
+    #[must_use]
+    pub fn admin_keys(&self) -> Vec<PublicIdentity> {
+        self.keys_of_rules(&|rule| rule.allows_on_database(AccessAction::Admin))
+    }
+
+    /// The public keys of every identity a rule covering the collection
+    /// `name` names: everyone who gets its key.
+    #[must_use]
+    pub fn collection_keys(&self, name: &str) -> Vec<PublicIdentity> {
+        self.keys_of_rules(&|rule| rule.strongest_on_collection(name).is_some())
+    }
+
+    /// The rules that name an identity holding the key `id`.
+    #[must_use]
+    pub fn rules_for(&self, id: &IdentityId) -> Vec<&AccessRule> {
+        let names = self.names_holding(id);
+        self.rules
+            .iter()
+            .filter(|rule| names.contains(&rule.identity.as_str()))
+            .collect()
+    }
+
+    /// The next version: this one with `request`'s rule added, and its
+    /// keys added to the identity the rule names.
+    ///
+    /// # Errors
+    /// `EPOLICY` for a rule id already in use, a rule with no action or no
+    /// resource, or a resource this format does not know.
+    pub fn with_grant(
+        &self,
+        request: &AccessGrantRequest,
+        previous: String,
+    ) -> Result<AccessPolicy, DatabaseAccessError> {
+        Self::require_valid_rule(&request.rule)?;
+        self.require_new_rule(&request.rule.id)?;
+        let mut next = self.next(previous);
+        let identity = next
+            .identities
+            .entry(request.rule.identity.clone())
+            .or_insert_with(|| AccessPolicyIdentity {
+                keys: Vec::new(),
+                label: request.label.clone(),
+            });
+        let added = request.keys.iter().map(ToString::to_string);
+        identity.keys.extend(added);
+        identity.keys.sort();
+        identity.keys.dedup();
+        next.rules.push(request.rule.clone());
+        next.change =
+            Some(AccessPolicyChange::now(AccessPolicyChange::GRANT).with_rule(&request.rule.id));
+        Ok(next)
+    }
+
+    /// The next version: this one without the rule `id`, and without the
+    /// identities no rule names any more. Returns it and the removed rule.
+    ///
+    /// # Errors
+    /// `EPOLICY` when no rule has that id, or when removing it would leave
+    /// the database with no admin.
+    pub fn without_rule(
+        &self,
+        id: &str,
+        previous: String,
+    ) -> Result<(AccessPolicy, AccessRule), DatabaseAccessError> {
+        let mut next = self.next(previous);
+        let position = next
+            .rules
+            .iter()
+            .position(|rule| rule.id == id)
+            .ok_or_else(|| Self::refused(&format!("the policy has no rule {id:?}")))?;
+        let removed = next.rules.remove(position);
+        next.drop_unnamed_identities();
+        next.require_admin()?;
+        next.change = Some(AccessPolicyChange::now(AccessPolicyChange::REVOKE).with_rule(id));
+        Ok((next, removed))
+    }
+
+    /// The next version, with the same rules, recording `change`.
+    #[must_use]
+    pub fn recording(&self, previous: String, change: AccessPolicyChange) -> AccessPolicy {
+        AccessPolicy {
+            change: Some(change),
+            ..self.next(previous)
+        }
+    }
+
+    fn next(&self, previous: String) -> AccessPolicy {
+        AccessPolicy {
+            version: self.version + 1,
+            previous: Some(previous),
+            boundaries: BTreeMap::new(),
+            change: None,
+            ..self.clone()
+        }
+    }
+
+    fn drop_unnamed_identities(&mut self) {
+        let named: Vec<String> = self
+            .rules
+            .iter()
+            .map(|rule| rule.identity.clone())
+            .collect();
+        self.identities.retain(|name, _| named.contains(name));
+    }
+
+    fn require_admin(&self) -> Result<(), DatabaseAccessError> {
+        Some(self.admin_keys())
+            .filter(|admins| !admins.is_empty())
+            .map(|_| ())
+            .ok_or_else(|| Self::refused("a policy keeps at least one admin of the database"))
+    }
+
+    fn require_new_rule(&self, id: &str) -> Result<(), DatabaseAccessError> {
+        Some(id)
+            .filter(|id| self.rules.iter().all(|rule| rule.id != *id))
+            .map(|_| ())
+            .ok_or_else(|| Self::refused(&format!("the policy already has a rule {id:?}")))
+    }
+
+    fn require_valid_rule(rule: &AccessRule) -> Result<(), DatabaseAccessError> {
+        Some(rule)
+            .filter(|rule| !rule.id.is_empty() && !rule.identity.is_empty())
+            .filter(|rule| !rule.actions.is_empty() && !rule.resources.is_empty())
+            .filter(|rule| rule.resources.iter().all(|resource| AccessRule::is_resource(resource)))
+            .map(|_| ())
+            .ok_or_else(|| {
+                Self::refused(
+                    "a rule needs an id, an identity, actions, and resources among database, collection:* and collection:<name>",
+                )
+            })
+    }
+
+    fn refused(message: &str) -> DatabaseAccessError {
+        DatabaseAccessError::Policy(message.to_owned())
+    }
+
+    fn names_holding(&self, id: &IdentityId) -> Vec<&str> {
+        self.identities
+            .iter()
+            .filter(|(_, identity)| Self::parsed_keys(identity).iter().any(|key| key.id() == id))
+            .map(|(name, _)| name.as_str())
+            .collect()
+    }
+
+    fn keys_of_rules(&self, selected: &dyn Fn(&AccessRule) -> bool) -> Vec<PublicIdentity> {
+        let mut keys: Vec<PublicIdentity> = self
+            .rules
+            .iter()
+            .filter(|rule| selected(rule))
+            .filter_map(|rule| self.identities.get(&rule.identity))
+            .flat_map(Self::parsed_keys)
+            .collect();
+        keys.sort_unstable_by(|left, right| left.id().cmp(right.id()));
+        keys.dedup_by(|left, right| left.id() == right.id());
+        keys
+    }
+
+    fn parsed_keys(identity: &AccessPolicyIdentity) -> Vec<PublicIdentity> {
+        identity
+            .keys
+            .iter()
+            .filter_map(|key| PublicIdentity::parse(key).ok())
+            .collect()
+    }
+}

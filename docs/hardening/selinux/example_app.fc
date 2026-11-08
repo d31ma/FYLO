@@ -1,0 +1,4 @@
+# File contexts for the sample module example_app.te. CHANGE the paths.
+/usr/local/bin/example-app	--	system_u:object_r:example_app_exec_t:s0
+/var/lib/example-app(/.*)?		system_u:object_r:example_app_db_t:s0
+/etc/example-app/identity\.pem	--	system_u:object_r:example_app_key_t:s0

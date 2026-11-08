@@ -1,15 +1,22 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { delimiter, dirname, join, resolve } from 'node:path'
 
 const releasedBinary = resolve(requiredOption('--released-binary'))
+const releasedHelpers = resolve(requiredOption('--released-helpers'))
 const rustBinary = resolve(requiredOption('--rust-binary'))
 if (releasedBinary === rustBinary) throw new Error('released and Rust binaries must be distinct')
+for (const helper of ['ttid', 'chex']) {
+    assert(!Bun.which(helper), `${helper} must not be on PATH: the Rust candidate runs without it`)
+}
 
 const registry = JSON.parse(await readFile('api/machine/v1/operations.json', 'utf8'))
 const canonicalOperations = registry.operations.map(({ name }) => name).sort()
 const candidateOnlyOperations = [
+    'compactCollection',
     'getFileData',
+    'inspectDatabase',
+    'migrateLayout',
     'queueAck',
     'queueClaim',
     'queueDeadLetters',
@@ -17,17 +24,27 @@ const candidateOnlyOperations = [
     'queueNack',
     'queuePublish',
     'queueStats',
-    'reshardCollection'
+    'reshardCollection',
+    'schemaCheck',
+    'schemaMigrate',
+    'schemaMode',
+    'schemaPull',
+    'schemaPush',
+    'verifyDatabase'
 ]
 const releasedOperations = canonicalOperations.filter(
     (operation) => !candidateOnlyOperations.includes(operation)
 )
 const workspace = await mkdtemp(join(tmpdir(), 'fylo-release-machine-parity-'))
 const schemaRoot = join(workspace, 'schema')
+const registrySchemaRoot = join(workspace, 'registry-schema')
+const applicationConfig = join(workspace, 'application.json')
 const rawSource = join(workspace, 'source.bin')
 
 try {
     await createSchemaFixture(schemaRoot)
+    await createRegistrySchemaFixture(registrySchemaRoot)
+    await writeFile(applicationConfig, JSON.stringify({ fylo: { schema: schemaRoot } }))
     await writeFile(rawSource, new Uint8Array([0, 1, 2, 3, 254, 255]))
 
     const released = await runScenario('released', releasedBinary, join(workspace, 'released'))
@@ -48,7 +65,7 @@ try {
 
 async function runScenario(label, binary, root) {
     await mkdir(root, { recursive: true })
-    let machine = new Machine(binary, root, { FYLO_SCHEMA: schemaRoot })
+    let machine = new Machine(binary, root)
     const operations = new Set()
     const transcript = []
     const identifiers = new Map()
@@ -288,6 +305,43 @@ async function runScenario(label, binary, root) {
                 { op: 'reshardCollection', collection: 'assets', width: 2 },
                 { record: false }
             )
+            await request(
+                'create-segmented',
+                { op: 'createCollection', collection: 'segmented', layout: 'segments' },
+                { record: false }
+            )
+            await request(
+                'compact-segmented',
+                { op: 'compactCollection', collection: 'segmented' },
+                { record: false }
+            )
+            await request(
+                'migrate-segmented',
+                { op: 'migrateLayout', collection: 'segmented', layout: 'files' },
+                { record: false }
+            )
+            await request(
+                'drop-segmented',
+                { op: 'dropCollection', collection: 'segmented' },
+                { record: false }
+            )
+
+            // A .vdbx file is opened by path, never through the root; the
+            // released engine predates it. A missing file is refused.
+            for (const op of ['inspectDatabase', 'verifyDatabase']) {
+                const refused = await request(
+                    `${op}-missing`,
+                    { op, root: join(root, 'missing.vdbx') },
+                    { record: false }
+                ).then(
+                    () => null,
+                    (error) => error
+                )
+                assert(
+                    refused?.message.includes('ENATIVE_NOT_FOUND'),
+                    `${op} did not refuse a missing .vdbx: ${refused?.message}`
+                )
+            }
 
             const published = await request(
                 'queue-publish',
@@ -403,7 +457,7 @@ async function runScenario(label, binary, root) {
             create: true
         })
         await machine.close()
-        machine = new Machine(binary, root, { FYLO_SCHEMA: schemaRoot })
+        machine = new Machine(binary, root)
         if (label === 'rust') {
             const branchAdaMetadata = await request(
                 'get-ada-meta-after-checkout-feature',
@@ -440,7 +494,7 @@ async function runScenario(label, binary, root) {
         await request('merge-current-feature', { op: 'merge', source: 'feature/parity' })
         await request('checkout-main', { op: 'checkout', branch: 'main' })
         await machine.close()
-        machine = new Machine(binary, root, { FYLO_SCHEMA: schemaRoot })
+        machine = new Machine(binary, root)
         await request('diff-commits', { op: 'diff', from: initial.id, to: feature.id })
         await request('restore-initial', { op: 'restoreCommit', id: initial.id, force: true })
         await request('get-grace-after-restore', {
@@ -481,6 +535,74 @@ async function runScenario(label, binary, root) {
             schemaDir: schemaRoot,
             document: { _v: 'v1', fullName: 'Grace Hopper', active: true }
         })
+        if (label === 'rust') {
+            await request(
+                'create-profiles',
+                { op: 'createCollection', collection: 'profiles' },
+                { record: false }
+            )
+            await request(
+                'put-profile',
+                {
+                    op: 'putData',
+                    collection: 'profiles',
+                    data: { _v: 'v1', fullName: 'Grace Hopper', active: true }
+                },
+                { record: false }
+            )
+            await request(
+                'schema-migrate',
+                { op: 'schemaMigrate', collection: 'profiles', schemaDir: schemaRoot },
+                { record: false }
+            )
+            await request(
+                'schema-mode',
+                { op: 'schemaMode', collection: 'profiles', mode: 'warn' },
+                { record: false }
+            )
+            await request(
+                'schema-check',
+                { op: 'schemaCheck', collection: 'profiles', schemaDir: schemaRoot },
+                { record: false }
+            )
+            // Convergence counts (ADR 0017 section 6) postdate the release.
+            const converged = await request(
+                'schema-inspect-converged',
+                { op: 'schemaInspect', collection: 'profiles', schemaDir: schemaRoot },
+                { record: false }
+            )
+            assertEqual(
+                [converged.head, converged.documents, converged.converged],
+                ['v2', 1, true],
+                'schemaInspect convergence'
+            )
+            // The schema registry (ADR 0017 section 3) postdates the release.
+            await request(
+                'create-registered',
+                { op: 'createCollection', collection: 'registered' },
+                { record: false }
+            )
+            const pushed = await request(
+                'schema-push',
+                { op: 'schemaPush', collection: 'registered', schemaDir: registrySchemaRoot },
+                { record: false }
+            )
+            assertEqual(
+                pushed.pushed.map(({ label }) => label),
+                ['v1'],
+                'schemaPush committed versions'
+            )
+            const pulled = await request(
+                'schema-pull',
+                {
+                    op: 'schemaPull',
+                    collection: 'registered',
+                    out: join(workspace, `${label}-pulled-schema`)
+                },
+                { record: false }
+            )
+            assertEqual(pulled.current, 'v1', 'schemaPull current version')
+        }
     } finally {
         await machine.close()
     }
@@ -493,13 +615,22 @@ async function runScenario(label, binary, root) {
 }
 
 class Machine {
-    constructor(binary, root, environment) {
+    constructor(binary, root) {
         this.sequence = 0
-        this.child = Bun.spawn([binary, 'exec', '--loop', '--root', root], {
+        const args = [binary, 'exec', '--loop', '--root', root]
+        const environment = { ...process.env }
+        if (binary === rustBinary) args.push('--config', applicationConfig)
+        // The immutable legacy release predates application.json; only that
+        // comparison baseline still receives its historical configuration API.
+        else {
+            environment.FYLO_SCHEMA = schemaRoot
+            environment.PATH = `${releasedHelpers}${delimiter}${process.env.PATH}`
+        }
+        this.child = Bun.spawn(args, {
             // Keep packaged Bun releases away from a repository-local `.env`.
             // The corpus is intentionally self-contained inside its root.
             cwd: root,
-            env: { ...process.env, ...environment },
+            env: environment,
             stdin: 'pipe',
             stdout: 'pipe',
             stderr: 'pipe'
@@ -552,6 +683,7 @@ class Machine {
 async function createSchemaFixture(root) {
     const collection = join(root, 'profiles')
     await mkdir(join(collection, 'history'), { recursive: true })
+    await mkdir(join(collection, 'migrations'), { recursive: true })
     await mkdir(join(collection, 'upgraders'), { recursive: true })
     await writeFile(
         join(collection, 'manifest.json'),
@@ -566,8 +698,27 @@ async function createSchemaFixture(root) {
         JSON.stringify({ name: '^.+$', active: '^(true|false)$' })
     )
     await writeFile(
+        join(collection, 'migrations', 'v1-to-v2.json'),
+        JSON.stringify({ steps: [{ rename: 'fullName', to: 'name' }] })
+    )
+    // Released builds run this JavaScript upgrader; JSON migrations replaced
+    // it (ADR 0018). Both produce the same document.
+    await writeFile(
         join(collection, 'upgraders', 'v1-to-v2.js'),
         'export default async (document) => ({ name: document.fullName, active: document.active })\n'
+    )
+}
+
+async function createRegistrySchemaFixture(root) {
+    const collection = join(root, 'registered')
+    await mkdir(join(collection, 'history'), { recursive: true })
+    await writeFile(
+        join(collection, 'manifest.json'),
+        JSON.stringify({ current: 'v1', versions: [{ v: 'v1' }] })
+    )
+    await writeFile(
+        join(collection, 'history', 'v1.schema.json'),
+        JSON.stringify({ title: '^.+$' })
     )
 }
 
@@ -583,6 +734,7 @@ function canonicalize(value, context, key = '') {
         normalized = normalized.replaceAll(`/private${context.root}`, '<root>')
         normalized = normalized.replaceAll(context.root, '<root>')
         normalized = normalized.replaceAll(schemaRoot, '<schema>')
+        normalized = normalizeMigrationStep(normalized)
         if (key === 'path') {
             normalized = normalized.replace(/\/[^/]+\/(?=<id:[^>]+>)/g, '/<shard>/')
         }
@@ -604,12 +756,22 @@ function canonicalize(value, context, key = '') {
     return Object.fromEntries(
         entries
             .filter(([entryKey]) => entryKey !== 'durationMs')
-            .sort(([left], [right]) => left.localeCompare(right))
             .map(([entryKey, item]) => [
-                canonicalize(entryKey, context),
+                normalizeMigrationStep(canonicalize(entryKey, context)),
                 canonicalize(item, context, entryKey)
             ])
+            .sort(([left], [right]) => left.localeCompare(right))
     )
+}
+
+// Released builds report a JavaScript upgrader per version step
+// (`upgraderPath`, `upgraders/<from>-to-<to>.js`); JSON migrations replaced
+// them (ADR 0018).
+function normalizeMigrationStep(text) {
+    return text
+        .replace(/^upgrader(Path|Exists)$/, 'migration$1')
+        .replace(/\/upgraders\/([^/]+)-to-([^/]+)\.js/g, '/migrations/$1-to-$2.json')
+        .replace(/Missing upgrader /g, 'Missing migration ')
 }
 
 function normalizeHandshake(value) {
@@ -622,12 +784,46 @@ function normalizeHandshake(value) {
     delete normalized.capabilities?.machineAccess
     delete normalized.capabilities?.serverlessQueue
     delete normalized.capabilities?.wholeRootBackup
-    delete normalized.dependencies?.chex?.requiredVersion
-    delete normalized.dependencies?.ttid?.requiredVersion
+    // Released builds probed PATH for external CHEX and TTID binaries; both
+    // are built in now, which the schemaValidation capability reports instead.
+    delete normalized.dependencies
+    delete normalized.capabilities?.schemaValidation
+    // The hot set (ADR 0014) is newer than every released build.
+    delete normalized.capabilities?.hotSet
+    // So is the single-file `.vdbx` database (ADR 0016).
+    delete normalized.capabilities?.singleFileDatabase
+    delete normalized.capabilities?.filesystemMetadata
+    delete normalized.identity
+    delete normalized.storage
     return normalized
 }
 
 function normalizeKnownReleaseDeltas(operation, value) {
+    if (operation === 'inspectCollection' && value && typeof value === 'object') {
+        // Validation modes (ADR 0017 section 2) are newer than every release.
+        const released = structuredClone(value)
+        delete released.validation
+        delete released.schemaViolations
+        delete released.layout
+        return released
+    }
+    if (operation === 'schemaInspect' && value && typeof value === 'object') {
+        // Convergence counts (ADR 0017 section 6) are newer than every
+        // release; they appear once the collection exists.
+        const released = structuredClone(value)
+        for (const field of [
+            'validation',
+            'head',
+            'documents',
+            'unversioned',
+            'unknownVersions',
+            'converged'
+        ]) {
+            delete released[field]
+        }
+        for (const version of released.versions ?? []) delete version.documents
+        return released
+    }
     if (operation !== 'diff' || !Array.isArray(value?.changes)) return value
     const normalized = structuredClone(value)
     // v26.30.06 loses custom xattrs while copying a branch and consequently

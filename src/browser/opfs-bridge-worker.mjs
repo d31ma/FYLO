@@ -10,6 +10,7 @@ import {
     REQUEST_LEN,
     RESULT,
     STATE,
+    STATE_CLOSED,
     STATE_IDLE,
     STATE_REQUEST,
     STATE_RESPONSE,
@@ -17,6 +18,8 @@ import {
 } from './opfs-bridge.mjs'
 
 const ATTRIBUTE_MANIFEST = '.fylo-attributes.json'
+/** How long the bridge trusts one `Atomics.waitAsync` before looking itself. */
+const WAKE_CHECK_MS = 100
 
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
@@ -53,12 +56,21 @@ async function serve(message) {
         // this Worker exists to run — the OPFS calls would never resolve.
         let observed = Atomics.load(control, STATE)
         while (observed !== STATE_REQUEST) {
+            if (observed === STATE_CLOSED) {
+                shutDown(context)
+                return
+            }
             // `Atomics.waitAsync` where the engine supports it; a macrotask
             // poll otherwise. Either way this must never park the thread, or
             // the OPFS promises this Worker exists to run would not resolve.
+            // The wait is bounded because WebKit can lose the wakeup: after
+            // OPFS work between waits, a notify sometimes unregisters the
+            // waiter without settling its promise, and the engine Worker then
+            // waits forever (about one session in eight on Safari 26). The
+            // loop rechecks STATE, so a timeout costs one look every 100 ms.
             const waited =
                 typeof Atomics.waitAsync === 'function'
-                    ? Atomics.waitAsync(control, STATE, observed)
+                    ? Atomics.waitAsync(control, STATE, observed, WAKE_CHECK_MS)
                     : { async: false }
             if (waited.async) await waited.value
             else await new Promise((resume) => setTimeout(resume, 0))
@@ -78,7 +90,7 @@ async function serve(message) {
             result = outcome.result ?? 0
             answer = outcome.payload ?? new Uint8Array()
         } catch (error) {
-            status = error?.name === 'NotFoundError' ? -2 : error?.code === 'EEXIST' ? -17 : -5
+            status = errno(error)
             answer = encoder.encode(error instanceof Error ? error.message : String(error))
         }
         if (answer.length > data.length) {
@@ -89,9 +101,27 @@ async function serve(message) {
         Atomics.store(control, STATUS, status)
         Atomics.store(control, RESULT, result)
         Atomics.store(control, PAYLOAD_LEN, answer.length)
-        Atomics.store(control, STATE, STATE_RESPONSE)
+        // Only over the request: a close that arrived while this call ran
+        // must survive, or the engine would carry on in a closed session.
+        const previous = Atomics.compareExchange(control, STATE, STATE_REQUEST, STATE_RESPONSE)
         Atomics.notify(control, STATE)
+        if (previous === STATE_CLOSED) {
+            shutDown(context)
+            return
+        }
     }
+}
+
+/**
+ * Give back every handle and end this Worker: the session closed.
+ *
+ * WebKit can keep a page's Workers running after it reloads, and an open sync
+ * access handle there blocks the next page from writing that file.
+ */
+function shutDown(context) {
+    for (const access of context.handles.values()) access?.close()
+    context.handles.clear()
+    self.close()
 }
 
 async function perform(context, request, payload) {
@@ -153,11 +183,13 @@ async function perform(context, request, payload) {
         case 'unlink': {
             const { parent, name } = await parentOf(context, request.path, false)
             await parent.removeEntry(name)
+            await dropAttributes(context, request.path)
             return {}
         }
         case 'rmdir': {
             const { parent, name } = await parentOf(context, request.path, false)
             await parent.removeEntry(name, { recursive: request.recursive })
+            await dropAttributes(context, request.path)
             return {}
         }
         case 'rename':
@@ -255,7 +287,23 @@ async function stat(context, path) {
 }
 
 async function rename(context, from, to) {
-    const source = await fileHandle(context, from, false)
+    const origin = await parentOf(context, from, false)
+    let source
+    try {
+        source = await origin.parent.getFileHandle(origin.name)
+    } catch (error) {
+        if (error?.name !== 'TypeMismatchError') throw error
+        // A directory: the engine stages whole trees (a merge, a rebuild) and
+        // renames them into place, as it would on a disk.
+        await renameDirectory(context, origin, to)
+        await moveAttributes(context, from, to)
+        return
+    }
+    await renameFile(context, source, from, to)
+    await moveAttributes(context, from, to)
+}
+
+async function renameFile(context, source, from, to) {
     const { parent, name } = await parentOf(context, to, true)
     if (typeof source.move === 'function') {
         await source.move(parent, name)
@@ -276,6 +324,99 @@ async function rename(context, from, to) {
     }
     const origin = await parentOf(context, from, false)
     await origin.parent.removeEntry(origin.name)
+}
+
+/**
+ * Rename a directory the way POSIX `rename(2)` does: onto nothing, or onto an
+ * empty directory it replaces. Not every engine can `move` a directory
+ * handle, so the fallback copies the tree and removes the source, which is
+ * not atomic; FYLO's journals recover an interrupted one, as for files.
+ */
+async function renameDirectory(context, origin, to) {
+    const source = await origin.parent.getDirectoryHandle(origin.name)
+    const { parent, name } = await parentOf(context, to, true)
+    let existing
+    try {
+        existing = await parent.getDirectoryHandle(name)
+    } catch (error) {
+        if (error?.name !== 'NotFoundError') throw error
+    }
+    if (existing) {
+        for await (const _ of existing.keys()) {
+            const error = new Error(`rename target is not empty: ${to}`)
+            error.code = 'ENOTEMPTY'
+            throw error
+        }
+        await parent.removeEntry(name)
+    }
+    if (typeof source.move === 'function') {
+        try {
+            await source.move(parent, name)
+            return
+        } catch (error) {
+            // Engines that move only files say so this way; copy instead.
+            if (
+                !['NotSupportedError', 'TypeMismatchError', 'InvalidModificationError'].includes(
+                    error?.name
+                )
+            ) {
+                throw error
+            }
+        }
+    }
+    await copyDirectory(source, await parent.getDirectoryHandle(name, { create: true }))
+    await origin.parent.removeEntry(origin.name, { recursive: true })
+}
+
+async function copyDirectory(source, target) {
+    for await (const [name, child] of source.entries()) {
+        if (child.kind === 'directory') {
+            await copyDirectory(child, await target.getDirectoryHandle(name, { create: true }))
+            continue
+        }
+        const bytes = new Uint8Array(await (await child.getFile()).arrayBuffer())
+        const access = await (
+            await target.getFileHandle(name, { create: true })
+        ).createSyncAccessHandle()
+        try {
+            access.truncate(0)
+            access.write(bytes, { at: 0 })
+            access.flush()
+        } finally {
+            access.close()
+        }
+    }
+}
+
+/** Forget a removed entry's attributes, as unlinking an inode does. */
+async function dropAttributes(context, path) {
+    const manifest = await loadAttributes(context)
+    let dropped = false
+    for (const key of Object.keys(manifest)) {
+        if (key !== path && !key.startsWith(`${path}/`)) continue
+        delete manifest[key]
+        dropped = true
+    }
+    if (dropped) await saveAttributes(context, manifest)
+}
+
+/**
+ * Carry a renamed entry's attributes, and those of everything under it, to
+ * the new path. On a disk they live on the inode and move with it; here they
+ * are keyed by path, so a rename that left them behind would strip a record
+ * of its metadata.
+ */
+async function moveAttributes(context, from, to) {
+    const manifest = await loadAttributes(context)
+    const prefix = `${from}/`
+    let moved = false
+    for (const key of Object.keys(manifest)) {
+        if (key !== from && !key.startsWith(prefix)) continue
+        manifest[`${to}${key.slice(from.length)}`] = manifest[key]
+        delete manifest[key]
+        moved = true
+    }
+    if (moved) await saveAttributes(context, manifest)
 }
 
 async function loadAttributes(context) {
@@ -300,6 +441,23 @@ async function saveAttributes(context, manifest) {
         access.flush()
     } finally {
         access.close()
+    }
+}
+
+/** The negative errno a failed OPFS call stands for. */
+function errno(error) {
+    if (error?.name === 'NotFoundError') return -2
+    switch (error?.code) {
+        case 'EEXIST':
+            return -17
+        case 'ENOTEMPTY':
+            return -39
+        case 'EACCES':
+            return -13
+        case 'EBADF':
+            return -9
+        default:
+            return -5
     }
 }
 

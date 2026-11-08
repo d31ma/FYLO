@@ -3,20 +3,6 @@
     "$id": "https://fylo.del.ma/api/machine/v1/schema.json",
     "title": "FYLO machine protocol v1",
     "$defs": {
-        "access": {
-            "type": "object",
-            "properties": {
-                "uid": { "type": "integer", "minimum": 0 },
-                "gid": { "type": "integer", "minimum": 0 },
-                "mode": { "type": "integer", "minimum": 0, "maximum": 4095 },
-                "groups": {
-                    "type": "array",
-                    "items": { "type": "integer", "minimum": 0 },
-                    "uniqueItems": true
-                }
-            },
-            "additionalProperties": false
-        },
         "request": {
             "type": "object",
             "required": ["op"],
@@ -31,7 +17,11 @@
                         "inspectCollection",
                         "rebuildCollection",
                         "reshardCollection",
+                        "migrateLayout",
+                        "compactCollection",
                         "verifyCollection",
+                        "inspectDatabase",
+                        "verifyDatabase",
                         "getDoc",
                         "getFileData",
                         "getLatest",
@@ -62,6 +52,11 @@
                         "schemaDoctor",
                         "schemaValidate",
                         "schemaMaterialize",
+                        "schemaMode",
+                        "schemaCheck",
+                        "schemaMigrate",
+                        "schemaPush",
+                        "schemaPull",
                         "queuePublish",
                         "queueClaim",
                         "queueAck",
@@ -78,6 +73,9 @@
                 "versioning": { "type": "object" },
                 "collection": { "type": "string", "minLength": 1 },
                 "kind": { "enum": ["document", "file"] },
+                "mode": { "enum": ["off", "warn", "strict"] },
+                "layout": { "enum": ["files", "segments"] },
+                "allowEngineOnlyAccess": { "type": "boolean" },
                 "branch": { "type": "string" },
                 "create": { "type": "boolean" },
                 "force": { "type": "boolean" },
@@ -115,7 +113,6 @@
                 "id": { "type": "string" },
                 "onlyId": { "type": "boolean" },
                 "sql": { "type": "string" },
-                "access": { "$ref": "#/$defs/access" },
                 "query": { "type": "object" },
                 "page": {
                     "type": "object",
@@ -146,7 +143,9 @@
                 "delete": { "type": "object" },
                 "options": { "type": "object" },
                 "url": { "type": "string" },
-                "limitOrOptions": { "type": ["integer", "object"] }
+                "limitOrOptions": { "type": ["integer", "object"] },
+                "includeUnversioned": { "type": "boolean" },
+                "out": { "type": "string", "minLength": 1 }
             },
             "additionalProperties": false
         },

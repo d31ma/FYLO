@@ -198,6 +198,10 @@
             "retryable": false
         },
         {
+            "code": "ENATIVE_NOT_FOUND",
+            "retryable": false
+        },
+        {
             "code": "ENATIVE_WRONG_TYPE",
             "retryable": false
         },
@@ -214,11 +218,23 @@
             "retryable": false
         },
         {
+            "code": "EINDEX_FULL",
+            "retryable": false
+        },
+        {
             "code": "ENATIVE_COLLECTION",
             "retryable": false
         },
         {
             "code": "ENATIVE_UNSUPPORTED",
+            "retryable": false
+        },
+        {
+            "code": "EBROWSER_UNSUPPORTED",
+            "retryable": false
+        },
+        {
+            "code": "ELAYOUTUNSUPPORTED",
             "retryable": false
         },
         {
@@ -240,6 +256,86 @@
         {
             "code": "EENGINE_CONCURRENT_WRITE",
             "retryable": true
+        },
+        {
+            "code": "EVDBX_NOT_VDBX",
+            "retryable": false
+        },
+        {
+            "code": "EVDBX_VERSION",
+            "retryable": false
+        },
+        {
+            "code": "EVDBX_CORRUPT",
+            "retryable": false
+        },
+        {
+            "code": "EKEY",
+            "retryable": false
+        },
+        {
+            "code": "ESCHEMA",
+            "retryable": false
+        },
+        {
+            "code": "ESCHEMACONFLICT",
+            "retryable": false
+        },
+        {
+            "code": "ESCHEMAUNAVAILABLE",
+            "retryable": false
+        },
+        {
+            "code": "EIDENTITY_REFERENCE",
+            "retryable": false
+        },
+        {
+            "code": "EIDENTITY_ID",
+            "retryable": false
+        },
+        {
+            "code": "EIDENTITY_NOT_FOUND",
+            "retryable": false
+        },
+        {
+            "code": "EIDENTITY_EXISTS",
+            "retryable": false
+        },
+        {
+            "code": "EIDENTITY_EXPOSED",
+            "retryable": false
+        },
+        {
+            "code": "EIDENTITY_KEY",
+            "retryable": false
+        },
+        {
+            "code": "EIDENTITY_UNSUPPORTED",
+            "retryable": false
+        },
+        {
+            "code": "EIDENTITY_STORE",
+            "retryable": false
+        },
+        {
+            "code": "ENOIDENTITY",
+            "retryable": false
+        },
+        {
+            "code": "EPOLICY",
+            "retryable": false
+        },
+        {
+            "code": "EIDENTITY_SIGNATURE",
+            "retryable": false
+        },
+        {
+            "code": "EIDENTITY_UNWRAP",
+            "retryable": false
+        },
+        {
+            "code": "ESIGNATURE",
+            "retryable": false
         }
     ]
 }

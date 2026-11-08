@@ -37,6 +37,16 @@
             "retry": "safe"
         },
         {
+            "name": "migrateLayout",
+            "class": "write",
+            "retry": "safe"
+        },
+        {
+            "name": "compactCollection",
+            "class": "derived-write",
+            "retry": "safe"
+        },
+        {
             "name": "verifyCollection",
             "class": "read",
             "retry": "safe"
@@ -192,6 +202,31 @@
             "retry": "safe"
         },
         {
+            "name": "schemaMode",
+            "class": "write",
+            "retry": "safe"
+        },
+        {
+            "name": "schemaCheck",
+            "class": "read",
+            "retry": "safe"
+        },
+        {
+            "name": "schemaMigrate",
+            "class": "write",
+            "retry": "safe"
+        },
+        {
+            "name": "schemaPush",
+            "class": "write",
+            "retry": "safe"
+        },
+        {
+            "name": "schemaPull",
+            "class": "read",
+            "retry": "safe"
+        },
+        {
             "name": "queuePublish",
             "class": "queue-write",
             "retry": "conditional-idempotency-key"
@@ -224,6 +259,16 @@
         {
             "name": "queueDeadLetters",
             "class": "queue-read",
+            "retry": "safe"
+        },
+        {
+            "name": "inspectDatabase",
+            "class": "read",
+            "retry": "safe"
+        },
+        {
+            "name": "verifyDatabase",
+            "class": "read",
             "retry": "safe"
         }
     ]

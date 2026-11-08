@@ -1,0 +1,81 @@
+//! The collection write-ahead log (ADR 0010).
+
+mod abort_manifest;
+mod blob_reference;
+mod checkpoint_manifest;
+mod collection_access_report;
+mod collection_guard;
+mod commit_manifest;
+mod commit_plan;
+mod commit_queue;
+mod commit_step;
+mod compaction_manifest;
+mod compaction_report;
+mod database_maintenance;
+mod database_maintenance_report;
+mod database_pack;
+mod database_pack_report;
+mod database_rekey;
+mod document_image;
+mod file_export;
+mod index_growth;
+mod layout_migration;
+mod layout_migration_report;
+mod log_checkpoint;
+mod log_recovery;
+mod log_segment;
+mod logged_operations;
+mod logged_plan;
+mod logged_writer;
+mod move_step;
+mod pack_blockers;
+mod placed_record;
+mod protected_pack;
+mod protected_rekey;
+mod protected_sealed_pack;
+mod record_access_group;
+mod record_access_migration;
+mod record_image;
+mod root_access_report;
+mod salvage_report;
+mod segment_checkpoint;
+mod segment_compactor;
+mod segment_import;
+mod segment_inspection;
+mod segment_layout;
+mod segment_maintenance;
+mod segment_operations;
+mod segment_plan;
+mod segment_rebuild;
+mod segment_recovery;
+mod segment_replay;
+mod segment_schema_commit;
+mod segment_schemas;
+mod segment_verification;
+mod step_applier;
+mod update_step;
+
+pub use collection_access_report::CollectionAccessReport;
+pub(crate) use collection_guard::CollectionGuard;
+pub(crate) use commit_queue::CommitQueue;
+pub use compaction_report::CompactionReport;
+pub use database_maintenance_report::{DatabaseCompactionReport, DatabaseSalvageReport};
+pub use database_pack_report::{DatabasePackReport, PackedCollection};
+pub use database_rekey::DatabaseRekey;
+pub(crate) use index_growth::IndexGrowth;
+pub use layout_migration_report::LayoutMigrationReport;
+pub(crate) use log_checkpoint::LogCheckpoint;
+pub use record_access_group::RecordAccessGroup;
+pub use record_access_migration::RecordAccessMigration;
+pub use root_access_report::RootAccessReport;
+pub use salvage_report::SalvageReport;
+#[cfg(test)]
+pub(crate) use segment_compactor::{CopiedHook, SegmentCompactor};
+pub(crate) use segment_layout::SegmentLayout;
+pub(crate) use segment_schemas::SegmentSchemas;
+pub use segment_verification::SegmentVerification;
+
+/// A file's modification time in whole Unix milliseconds.
+pub(crate) fn modified_ms(metadata: &fylo_vfs::Metadata) -> Result<u64, crate::NativeStorageError> {
+    record_image::RecordImage::modified_ms_of(metadata)
+}

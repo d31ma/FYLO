@@ -14,6 +14,7 @@ crate-type = ["cdylib", "rlib"]
 fylo-machine = { version = "0.1.0", path = "../fylo-machine" }
 fylo-vfs = { version = "0.1.0", path = "../fylo-vfs" }
 getrandom.workspace = true
+serde_json.workspace = true
 
 # The module's imports and its exported buffer handoff both cross a boundary no
 # safe signature can express. ADR 0008 confines that to this crate's boundary

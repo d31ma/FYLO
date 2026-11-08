@@ -1,5 +1,6 @@
 import { createBrowserFylo } from './fylo.js'
 import { hasOpfs } from './opfs-filesystem.js'
+import { BrowserProtocolError } from './core/browser-protocol-error.js'
 
 /**
  * @typedef {Parameters<typeof createBrowserFylo>[0]} BrowserFyloOptions
@@ -16,6 +17,7 @@ const RESERVED = new Set([
     'request',
     'sql',
     '_sql',
+    'executeSQL',
     'inspect',
     'rebuild',
     'create',
@@ -83,6 +85,14 @@ export class BrowserFyloClient {
         return await this.browser._sql(statement)
     }
 
+    /**
+     * @param {string} statement
+     * @returns {Promise<unknown>}
+     */
+    async executeSQL(statement) {
+        return await this._sql(statement)
+    }
+
     /** @param {import('./core/types.js').BrowserRequest} request */
     async request(request) {
         await this.ready()
@@ -98,10 +108,10 @@ export class BrowserFyloClient {
         return facade
     }
 
-    /** @param {string} collection */
-    async createCollection(collection) {
+    /** @param {string} collection @param {Record<string, any>} [options] */
+    async createCollection(collection, options = {}) {
         await this.ready()
-        await this.browser.createCollection(collection)
+        await this.browser.createCollection(collection, options)
     }
 
     /** @param {string} collection */
@@ -167,8 +177,9 @@ export class BrowserDirectCollection {
         this.find = find
     }
 
-    async create() {
-        await this.host.createCollection(this.collection)
+    /** @param {Record<string, any>} [options] */
+    async create(options = {}) {
+        await this.host.createCollection(this.collection, options)
     }
 
     async drop() {
@@ -187,7 +198,7 @@ export class BrowserDirectCollection {
     async #req(op, fields = {}) {
         await this.host.ready()
         const res = await this.host.request({ op, collection: this.collection, ...fields })
-        if (!res.ok) throw new Error(res.error?.message ?? 'browser request failed')
+        if (!res.ok) throw BrowserProtocolError.from(res.error)
         return res.result
     }
 
@@ -261,7 +272,7 @@ export class BrowserDirectCollection {
             },
             async once() {
                 const res = await host.request({ op: 'getDoc', collection, id, onlyId })
-                if (!res.ok) throw new Error(res.error?.message ?? 'browser getDoc failed')
+                if (!res.ok) throw BrowserProtocolError.from(res.error)
                 return res.result
             },
             metadata: async () => await this.#req('getMeta', { id }),
@@ -287,7 +298,7 @@ export class BrowserDirectCollection {
             },
             async *collect() {
                 const res = await host.request({ op: 'findDocs', collection, query })
-                if (!res.ok) throw new Error(res.error?.message ?? 'browser findDocs failed')
+                if (!res.ok) throw BrowserProtocolError.from(res.error)
                 const docs = res.result
                 if (Array.isArray(docs)) {
                     for (const id of docs) yield id
@@ -308,7 +319,7 @@ export class BrowserDirectCollection {
             },
             async *collect() {
                 const res = await host.request({ op: 'findDeletedDocs', collection, query })
-                if (!res.ok) throw new Error(res.error?.message ?? 'browser findDeletedDocs failed')
+                if (!res.ok) throw BrowserProtocolError.from(res.error)
                 const docs = res.result
                 if (docs && typeof docs === 'object') {
                     for (const [id, doc] of Object.entries(docs)) {

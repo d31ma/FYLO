@@ -1,0 +1,266 @@
+//! A hot set answers reads exactly as storage does, from memory once warm,
+//! within its budget, and never across a generation it did not read.
+
+use std::fs;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use fylo_engine::{HotSet, ReadDocument, ReadOnlyEngine, WriteEngine};
+use fylo_query::{QueryLimits, StructuredQuery};
+use fylo_storage_native::{CollectionKind, NativeWriteRoot};
+use serde_json::{Map, Value, json};
+
+struct Fixture(PathBuf);
+
+impl Fixture {
+    fn new() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "fylo-hot-set-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&root).unwrap();
+        let fixture = Self(root);
+        fixture
+            .storage()
+            .create_collection("records", CollectionKind::Document, None)
+            .unwrap();
+        fixture
+    }
+
+    fn storage(&self) -> NativeWriteRoot {
+        NativeWriteRoot::open(&self.0).unwrap()
+    }
+
+    fn writer(&self) -> WriteEngine {
+        WriteEngine::open(&self.0).unwrap()
+    }
+
+    fn id(number: usize) -> String {
+        format!("4VRNF5{:05}", 20_000 + number)
+    }
+
+    fn fields(value: &Value) -> Map<String, Value> {
+        value.as_object().unwrap().clone()
+    }
+
+    fn put(&self, number: usize, value: &Value) {
+        self.writer()
+            .put_document("records", &Self::id(number), Self::fields(value))
+            .unwrap();
+    }
+
+    fn patch(&self, number: usize, value: &Value) {
+        self.writer()
+            .patch_document("records", &Self::id(number), Self::fields(value))
+            .unwrap();
+    }
+
+    fn seed(&self, count: usize) {
+        for number in 0..count {
+            self.put(
+                number,
+                &json!({"number": number, "group": number % 5, "body": "x".repeat(64)}),
+            );
+        }
+    }
+
+    fn cold(&self) -> ReadOnlyEngine {
+        ReadOnlyEngine::open(&self.0).unwrap()
+    }
+
+    fn hot(&self, hot_set: &Arc<HotSet>) -> ReadOnlyEngine {
+        self.cold().with_hot_set(Arc::clone(hot_set))
+    }
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+fn query(value: &Value) -> StructuredQuery {
+    StructuredQuery::from_value(value, QueryLimits::default()).unwrap()
+}
+
+fn queries() -> Vec<StructuredQuery> {
+    vec![
+        query(&json!({"$ops": [{"group": {"$eq": 2}}]})),
+        query(&json!({"$ops": [{"group": {"$eq": 3}}], "$limit": 4})),
+        query(&json!({"$ops": [{"number": {"$gt": 40}}]})),
+        query(&json!({})),
+    ]
+}
+
+fn summary(rows: &[ReadDocument]) -> Vec<(String, Value)> {
+    rows.iter()
+        .map(|row| {
+            (
+                row.metadata.id.clone(),
+                Value::Object(row.document.fields().clone()),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn warm_reads_match_storage_and_come_from_memory() {
+    let fixture = Fixture::new();
+    fixture.seed(50);
+    let hot_set = Arc::new(HotSet::new(HotSet::DEFAULT_BUDGET_BYTES));
+    let hot = fixture.hot(&hot_set);
+    let cold = fixture.cold();
+    for query in queries() {
+        let expected = summary(&cold.find("records", &query).unwrap());
+        assert_eq!(summary(&hot.find("records", &query).unwrap()), expected);
+        assert_eq!(summary(&hot.find("records", &query).unwrap()), expected);
+    }
+    for number in [0, 7, 49] {
+        let id = Fixture::id(number);
+        assert_eq!(
+            hot.get("records", &id).unwrap(),
+            cold.get("records", &id).unwrap()
+        );
+    }
+    let warm = hot_set.statistics();
+    assert_eq!(warm.documents, 50);
+    for query in queries() {
+        hot.find("records", &query).unwrap();
+    }
+    let after = hot_set.statistics();
+    assert_eq!(after.misses, warm.misses, "a warm pass read storage");
+    assert!(after.hits > warm.hits);
+    assert!(after.resident_bytes <= after.budget_bytes);
+}
+
+#[test]
+fn a_cleared_hot_set_sees_the_next_write() {
+    let fixture = Fixture::new();
+    fixture.seed(3);
+    let hot_set = Arc::new(HotSet::new(HotSet::DEFAULT_BUDGET_BYTES));
+    let hot = fixture.hot(&hot_set);
+    let by_group = query(&json!({"$ops": [{"group": {"$eq": 9}}]}));
+    assert!(hot.find("records", &by_group).unwrap().is_empty());
+    fixture.patch(1, &json!({"number": 1, "group": 9}));
+    hot_set.clear();
+    let rows = hot.find("records", &by_group).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].metadata.id, Fixture::id(1));
+    assert_eq!(
+        hot.get("records", &Fixture::id(1))
+            .unwrap()
+            .document
+            .fields()["group"],
+        json!(9)
+    );
+}
+
+#[test]
+fn a_write_it_was_not_told_about_is_caught_on_the_next_miss() {
+    let fixture = Fixture::new();
+    fixture.seed(2);
+    let hot_set = Arc::new(HotSet::new(HotSet::DEFAULT_BUDGET_BYTES));
+    let hot = fixture.hot(&hot_set);
+    hot.get("records", &Fixture::id(0)).unwrap();
+    fixture.put(5, &json!({"number": 5, "group": 0}));
+    let added = hot.get("records", &Fixture::id(5)).unwrap();
+    assert_eq!(added.document.fields()["number"], json!(5));
+    let statistics = hot_set.statistics();
+    assert_eq!(statistics.clears, 1, "the stale generation was dropped");
+    let everything = hot.find("records", &query(&json!({}))).unwrap();
+    assert_eq!(everything.len(), 3);
+}
+
+#[test]
+fn a_listed_document_deleted_before_it_was_read_is_answered_from_storage() {
+    let fixture = Fixture::new();
+    fixture.seed(3);
+    let hot_set = Arc::new(HotSet::new(HotSet::DEFAULT_BUDGET_BYTES));
+    let hot = fixture.hot(&hot_set);
+    let first = hot.find("records", &query(&json!({"$limit": 1}))).unwrap();
+    assert_eq!(first.len(), 1);
+    fixture
+        .storage()
+        .delete_document("records", &Fixture::id(2))
+        .unwrap();
+    let everything = hot.find("records", &query(&json!({}))).unwrap();
+    let identifiers: Vec<String> = everything
+        .iter()
+        .map(|row| row.metadata.id.clone())
+        .collect();
+    assert_eq!(identifiers, vec![Fixture::id(0), Fixture::id(1)]);
+    assert_eq!(
+        hot_set.statistics().clears,
+        1,
+        "the stale id list was dropped"
+    );
+}
+
+#[test]
+fn the_budget_bounds_what_stays_resident() {
+    let fixture = Fixture::new();
+    fixture.seed(120);
+    let budget = 24 * 1024;
+    let hot_set = Arc::new(HotSet::new(budget));
+    let hot = fixture.hot(&hot_set);
+    let cold = fixture.cold();
+    for round in 0..3 {
+        for query in queries() {
+            let expected = summary(&cold.find("records", &query).unwrap());
+            assert_eq!(summary(&hot.find("records", &query).unwrap()), expected);
+            assert!(
+                hot_set.statistics().resident_bytes <= budget,
+                "round {round}"
+            );
+        }
+        for number in (0..120).step_by(7) {
+            hot.get("records", &Fixture::id(number)).unwrap();
+            assert!(hot_set.statistics().resident_bytes <= budget);
+        }
+    }
+    let statistics = hot_set.statistics();
+    assert!(statistics.evictions > 0);
+    assert!(statistics.documents < 120);
+}
+
+#[test]
+fn a_document_larger_than_the_budget_is_served_but_not_kept() {
+    let fixture = Fixture::new();
+    fixture.put(0, &json!({"body": "y".repeat(8 * 1024)}));
+    let hot_set = Arc::new(HotSet::new(4 * 1024));
+    let hot = fixture.hot(&hot_set);
+    for _ in 0..2 {
+        let read = hot.get("records", &Fixture::id(0)).unwrap();
+        assert_eq!(
+            read.document.fields()["body"].as_str().unwrap().len(),
+            8 * 1024
+        );
+    }
+    let statistics = hot_set.statistics();
+    assert_eq!(statistics.documents, 0);
+    assert!(statistics.refusals >= 2);
+}
+
+#[test]
+fn file_collections_report_their_kind_and_read_from_storage() {
+    let fixture = Fixture::new();
+    fixture
+        .storage()
+        .create_collection("blobs", CollectionKind::File, None)
+        .unwrap();
+    let hot_set = Arc::new(HotSet::new(HotSet::DEFAULT_BUDGET_BYTES));
+    let hot = fixture.hot(&hot_set);
+    assert_eq!(hot.collection_kind("blobs").unwrap(), CollectionKind::File);
+    assert_eq!(
+        hot.collection_kind("records").unwrap(),
+        CollectionKind::Document
+    );
+    let id = Fixture::id(0);
+    let cold_error = fixture.cold().get("blobs", &id).unwrap_err();
+    let hot_error = hot.get("blobs", &id).unwrap_err();
+    assert_eq!(hot_error.code(), cold_error.code());
+    assert!(hot.collection_kind("missing").is_err());
+}

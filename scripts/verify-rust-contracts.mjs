@@ -24,24 +24,30 @@ const nativeClients = await Promise.all(
 )
 const machineSource = await readFile('crates/fylo-machine/src/lib.rs', 'utf8')
 const querySource = await readFile('crates/fylo-query/src/lib.rs', 'utf8')
-const formatSource = await readFile('crates/fylo-format/src/lib.rs', 'utf8')
+const formatErrorSource = await readFile('crates/fylo-format/src/format_error_code.rs', 'utf8')
 const storageSource = await readFile('crates/fylo-storage-native/src/lib.rs', 'utf8')
 const storageWriteSource = await readFile('crates/fylo-storage-native/src/write.rs', 'utf8')
+const containerSource = await readFile('crates/fylo-storage-native/src/container_file.rs', 'utf8')
 const queueSource = await readFile('crates/fylo-storage-native/src/queue.rs', 'utf8')
 const engineSource = await readFile('crates/fylo-engine/src/lib.rs', 'utf8')
+const identityErrorSource = await readFile('crates/fylo-identity/src/identity_error.rs', 'utf8')
 const wasmHostSource = await readFile('src/browser/wasm/index-scanner.js', 'utf8')
+const browserGuardSource = await readFile('src/browser/core/browser-feature-guard.js', 'utf8')
 const ciSource = await readFile('.github/workflows/ci.yml', 'utf8')
 const nightlySource = await readFile('.github/workflows/rust-nightly.yml', 'utf8')
 const releaseSource = await readFile('.github/workflows/publish.yml', 'utf8')
 const implementationSources = [
     machineSource,
     querySource,
-    formatSource,
+    formatErrorSource,
     storageSource,
     storageWriteSource,
+    containerSource,
     queueSource,
     engineSource,
-    wasmHostSource
+    identityErrorSource,
+    wasmHostSource,
+    browserGuardSource
 ]
 
 assert(operations.protocolVersion === MACHINE_PROTOCOL_VERSION, 'operation protocol version drift')
@@ -50,8 +56,8 @@ assert(
     'response schema protocol version drift'
 )
 assert(
-    schema.$defs.request.properties.op.enum.length === 45,
-    'filesystem-only machine registry must have 45 operations'
+    schema.$defs.request.properties.op.enum.length === 54,
+    'filesystem-only machine registry must have 54 operations'
 )
 
 const registeredOperations = operations.operations.map(({ name }) => name).sort()

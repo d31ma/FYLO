@@ -19,102 +19,23 @@ response dict — use it for ops without a dedicated method (branching, schema).
 
 import json
 import asyncio
+import concurrent.futures
 import functools
 import inspect
 import os
-import re
 import subprocess
 import threading
-from collections.abc import Mapping
 
 MAX_REQUEST_BYTES = 1024 * 1024
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
-ENVIRONMENT_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-
-
-def _quoted_environment_value(path, line, value, quote):
-    output = []
-    index = 1
-    while index < len(value):
-        character = value[index]
-        if character == quote:
-            trailing = value[index + 1 :].strip()
-            if trailing and not trailing.startswith("#"):
-                raise ValueError(f"{path}:{line}: unexpected characters after quoted value")
-            return "".join(output)
-        if quote == '"' and character == "\\":
-            index += 1
-            if index >= len(value):
-                raise ValueError(f"{path}:{line}: unterminated escape sequence")
-            escaped = value[index]
-            output.append({"n": "\n", "r": "\r", "t": "\t", '"': '"', "\\": "\\"}.get(escaped, "\\" + escaped))
-        else:
-            output.append(character)
-        index += 1
-    raise ValueError(f"{path}:{line}: unterminated quoted value")
-
-
-def _environment_file(path):
-    path = os.fspath(path)
-    try:
-        with open(path, encoding="utf-8-sig") as source:
-            lines = source.read().splitlines()
-    except OSError as error:
-        raise ValueError(f"cannot read FYLO environment file {path}: {error}") from error
-    values = {}
-    for line, original in enumerate(lines, 1):
-        entry = original.strip()
-        if not entry or entry.startswith("#"):
-            continue
-        if entry.startswith("export") and len(entry) > 6 and entry[6].isspace():
-            entry = entry[7:].lstrip()
-        if "=" not in entry:
-            raise ValueError(f"{path}:{line}: expected NAME=VALUE")
-        name, value = entry.split("=", 1)
-        name = name.strip()
-        if not ENVIRONMENT_NAME.fullmatch(name):
-            raise ValueError(f"{path}:{line}: invalid environment variable name {name!r}")
-        value = value.lstrip()
-        if value.startswith(('"', "'")):
-            values[name] = _quoted_environment_value(path, line, value, value[0])
-        else:
-            values[name] = value.split("#", 1)[0].rstrip()
-    return values
-
-
-def _child_environment(config):
-    if config is None:
-        return None
-    if isinstance(config, (str, bytes, os.PathLike)):
-        overrides = _environment_file(config)
-    elif isinstance(config, Mapping):
-        overrides = config
-    else:
-        raise TypeError("env must be a .env file path or an environment variable mapping")
-    windows = os.name == "nt"
-    environment = {
-        name.upper() if windows else name: value for name, value in os.environ.items()
-    }
-    for name, value in overrides.items():
-        if not isinstance(name, str) or not name or "=" in name or "\0" in name:
-            raise TypeError(f"invalid environment variable name {name!r}")
-        environment_name = name.upper() if windows else name
-        if value is None:
-            environment.pop(environment_name, None)
-        else:
-            environment_value = str(value)
-            if "\0" in environment_value:
-                raise TypeError(f"invalid environment variable value for {name!r}: NUL is not allowed")
-            environment[environment_name] = environment_value
-    return environment
-
-
 class FyloError(RuntimeError):
-    pass
+    def __init__(self, message, code=None):
+        super().__init__(message)
+        self.code = code
 
 
 class Fylo:
-    def __init__(self, root, binary="fylo", env=None):
+    def __init__(self, root, binary="fylo", config=None):
         args = [
             binary,
             "exec",
@@ -126,12 +47,13 @@ class Fylo:
             "--max-response-bytes",
             str(MAX_RESPONSE_BYTES),
         ]
+        if config is not None:
+            args.extend(["--config", os.fspath(config)])
         self._proc = subprocess.Popen(
             args,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             bufsize=0,
-            env=_child_environment(env),
         )
         self._lock = threading.Lock()
 
@@ -164,7 +86,8 @@ class Fylo:
                 payload[key] = value
         response = self.request(payload)
         if not response.get("ok"):
-            raise FyloError((response.get("error") or {}).get("message", "fylo error"))
+            error = response.get("error") or {}
+            raise FyloError(error.get("message", "fylo error"), error.get("code"))
         return response.get("result")
 
     # --- Collections ---
@@ -263,9 +186,7 @@ class Fylo:
             try:
                 outcome = handler(delivery)
                 if inspect.isawaitable(outcome):
-                    if inspect.iscoroutine(outcome):
-                        outcome.close()
-                    raise TypeError("async queue handlers require queue_process_async")
+                    self._run_awaitable(outcome)
             except Exception:
                 failed = True
             if not failed:
@@ -283,6 +204,25 @@ class Fylo:
                 key = "deadLettered" if settled.get("deadLettered") else "retried"
                 result[key] += 1
         return result
+
+    @staticmethod
+    def _run_awaitable(awaitable):
+        if Fylo._event_loop_is_running():
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                return pool.submit(asyncio.run, Fylo._wait_for(awaitable)).result()
+        return asyncio.run(Fylo._wait_for(awaitable))
+
+    @staticmethod
+    def _event_loop_is_running():
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return False
+        return True
+
+    @staticmethod
+    async def _wait_for(awaitable):
+        return await awaitable
 
     def queue_consumer(
         self,
@@ -450,14 +390,14 @@ class Fylo:
     def join_docs(self, join):
         return self._op("joinDocs", join=join)
 
-    def execute_sql(self, sql, access=None):
-        return self._op("executeSQL", sql=sql, access=access)
+    def execute_sql(self, sql):
+        return self._op("executeSQL", sql=sql)
 
-    def sql(self, query, access=None):
+    def sql(self, query):
         """Run raw SQL, built with a native f-string: db.sql(f"... {x}").
         Values are inlined verbatim — escape/validate untrusted input yourself.
         """
-        return self.execute_sql(query, access)
+        return self.execute_sql(query)
 
     def import_bulk_data(self, collection, url, limit_or_options=None):
         return self._op(

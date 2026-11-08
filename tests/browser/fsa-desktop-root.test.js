@@ -1,6 +1,7 @@
 import { afterAll, describe, expect, test } from 'bun:test'
 import { readdir, rm } from 'node:fs/promises'
 import path from 'node:path'
+import { CargoArtifacts } from '../../scripts/cargo-artifacts.mjs'
 import { Fylo } from '../../clients/node/fylo.mjs'
 import { createBrowserClient } from '../../src/browser/client.js'
 import { mockDirectoryHandle } from './helpers/fsa-mock.js'
@@ -19,9 +20,8 @@ async function collect(cursor) {
 
 const root = await createTestRoot('fylo-fsa-')
 const binary = path.resolve(
-    'target',
-    'debug',
-    process.platform === 'win32' ? 'fylo-rust.exe' : 'fylo-rust'
+    process.env.FYLO_BINARY ??
+        CargoArtifacts.path('debug', process.platform === 'win32' ? 'fylo-rust.exe' : 'fylo-rust')
 )
 
 afterAll(async () => {

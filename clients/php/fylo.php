@@ -19,7 +19,22 @@
 // convention; object arguments are native associative arrays. request($op) is
 // the raw escape hatch returning the full decoded response.
 
-class FyloError extends Exception {}
+class FyloError extends Exception
+{
+    private ?string $fyloCode = null;
+
+    public static function fromResponseError(array $error): self
+    {
+        $exception = new self($error['message'] ?? 'fylo error');
+        $exception->fyloCode = $error['code'] ?? null;
+        return $exception;
+    }
+
+    public function getFyloCode(): ?string
+    {
+        return $this->fyloCode;
+    }
+}
 
 #[Attribute(Attribute::TARGET_METHOD)]
 class FyloQueueConsumer
@@ -38,11 +53,12 @@ class Fylo
 {
     private const MAX_REQUEST_BYTES = 1048576;
     private const MAX_RESPONSE_BYTES = 8388608;
+    private const OBJECT_FIELDS = ['data', 'meta', 'newDoc', 'update', 'delete', 'query', 'page', 'join'];
     private $proc;
     private $stdin;
     private $stdout;
 
-    public function __construct(string $root, string $binary = 'fylo', string|array|null $env = null)
+    public function __construct(string $root, string $binary = 'fylo', ?string $config = null)
     {
         $args = [
             $binary,
@@ -55,102 +71,14 @@ class Fylo
             '--max-response-bytes',
             (string) self::MAX_RESPONSE_BYTES,
         ];
+        if ($config !== null) array_push($args, '--config', $config);
         $descriptors = [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['file', 'php://stderr', 'w']];
-        $this->proc = proc_open($args, $descriptors, $pipes, null, self::childEnvironment($env));
+        $this->proc = proc_open($args, $descriptors, $pipes);
         if (!is_resource($this->proc)) {
             throw new FyloError('failed to start fylo');
         }
         $this->stdin = $pipes[0];
         $this->stdout = $pipes[1];
-    }
-
-    private static function childEnvironment(string|array|null $config): ?array
-    {
-        if ($config === null) return null;
-        $overrides = is_string($config) ? self::environmentFile($config) : $config;
-        $environment = getenv();
-        if (!is_array($environment)) $environment = [];
-        $windows = PHP_OS_FAMILY === 'Windows';
-        if ($windows) {
-            $environment = array_combine(
-                array_map('strtoupper', array_keys($environment)),
-                array_values($environment)
-            ) ?: [];
-        }
-        foreach ($overrides as $name => $value) {
-            $name = (string) $name;
-            if ($name === '' || str_contains($name, '=') || str_contains($name, "\0")) {
-                throw new InvalidArgumentException('invalid environment variable name ' . json_encode($name));
-            }
-            $environmentName = $windows ? strtoupper($name) : $name;
-            if ($value === null) {
-                unset($environment[$environmentName]);
-            } else {
-                $environmentValue = (string) $value;
-                if (str_contains($environmentValue, "\0")) {
-                    throw new InvalidArgumentException(
-                        'invalid environment variable value for ' . json_encode($name) . ': NUL is not allowed'
-                    );
-                }
-                $environment[$environmentName] = $environmentValue;
-            }
-        }
-        return $environment;
-    }
-
-    private static function environmentFile(string $path): array
-    {
-        $lines = @file($path, FILE_IGNORE_NEW_LINES);
-        if ($lines === false) throw new FyloError("cannot read FYLO environment file $path");
-        $values = [];
-        foreach ($lines as $offset => $original) {
-            $line = $offset + 1;
-            $entry = trim($original);
-            if ($offset === 0 && str_starts_with($entry, "\xEF\xBB\xBF")) {
-                $entry = substr($entry, 3);
-            }
-            if ($entry === '' || str_starts_with($entry, '#')) continue;
-            $entry = preg_replace('/^export\s+/', '', $entry);
-            $separator = strpos($entry, '=');
-            if ($separator === false) throw new FyloError("$path:$line: expected NAME=VALUE");
-            $name = trim(substr($entry, 0, $separator));
-            if (!preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $name)) {
-                throw new FyloError("$path:$line: invalid environment variable name " . json_encode($name));
-            }
-            $input = ltrim(substr($entry, $separator + 1));
-            if ($input !== '' && ($input[0] === '"' || $input[0] === "'")) {
-                $values[$name] = self::quotedEnvironmentValue($path, $line, $input, $input[0]);
-            } else {
-                $comment = strpos($input, '#');
-                $values[$name] = rtrim($comment === false ? $input : substr($input, 0, $comment));
-            }
-        }
-        return $values;
-    }
-
-    private static function quotedEnvironmentValue(string $path, int $line, string $input, string $quote): string
-    {
-        $value = '';
-        $length = strlen($input);
-        for ($index = 1; $index < $length; $index++) {
-            $character = $input[$index];
-            if ($character === $quote) {
-                $trailing = trim(substr($input, $index + 1));
-                if ($trailing !== '' && !str_starts_with($trailing, '#')) {
-                    throw new FyloError("$path:$line: unexpected characters after quoted value");
-                }
-                return $value;
-            }
-            if ($quote === '"' && $character === '\\') {
-                $index++;
-                if ($index >= $length) throw new FyloError("$path:$line: unterminated escape sequence");
-                $escaped = $input[$index];
-                $value .= ['n' => "\n", 'r' => "\r", 't' => "\t", '"' => '"', '\\' => '\\'][$escaped] ?? "\\$escaped";
-            } else {
-                $value .= $character;
-            }
-        }
-        throw new FyloError("$path:$line: unterminated quoted value");
     }
 
     /** Send one raw machine-protocol op; return the full decoded response. */
@@ -377,16 +305,16 @@ class Fylo
     {
         return $this->op('joinDocs', ['join' => $join]);
     }
-    public function executeSQL(string $sql, ?array $access = null)
+    public function executeSQL(string $sql)
     {
-        return $this->op('executeSQL', ['sql' => $sql, 'access' => $access]);
+        return $this->op('executeSQL', ['sql' => $sql]);
     }
 
     // Run raw SQL, built with native interpolation: $db->sql("... $x").
     // Values are inlined verbatim — escape/validate untrusted input yourself.
-    public function sql(string $query, ?array $access = null)
+    public function sql(string $query)
     {
-        return $this->executeSQL($query, $access);
+        return $this->executeSQL($query);
     }
     public function importBulkData(string $collection, string $url)
     {
@@ -418,14 +346,23 @@ class Fylo
         $payload = ['op' => $name];
         foreach ($fields as $key => $value) {
             if ($value !== null) {
-                $payload[$key] = $value;
+                $payload[$key] = $this->fieldValue($key, $value);
             }
         }
         $resp = $this->request($payload);
         if (empty($resp['ok'])) {
-            throw new FyloError($resp['error']['message'] ?? 'fylo error');
+            throw FyloError::fromResponseError($resp['error'] ?? []);
         }
         return $resp['result'] ?? null;
+    }
+
+    /** Send an empty PHP array as a JSON object for fields the protocol defines as objects. */
+    private function fieldValue(string $key, mixed $value): mixed
+    {
+        if ($value === [] && in_array($key, self::OBJECT_FIELDS, true)) {
+            return new stdClass();
+        }
+        return $value;
     }
 
     /** Copy documented queue options only; unknown and protected fields are ignored. */

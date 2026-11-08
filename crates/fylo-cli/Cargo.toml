@@ -14,10 +14,18 @@ path = "src/main.rs"
 [dependencies]
 fylo-engine = { version = "0.1.0", path = "../fylo-engine" }
 fylo-format = { version = "0.1.0", path = "../fylo-format" }
+fylo-identity = { version = "0.1.0", path = "../fylo-identity" }
 fylo-machine = { version = "0.1.0", path = "../fylo-machine" }
 fylo-query = { version = "0.1.0", path = "../fylo-query" }
 fylo-storage-native = { version = "0.1.0", path = "../fylo-storage-native" }
 serde_json.workspace = true
+# `fylo link` verifies hard links and copies by SHA-256.
+sha2.workspace = true
 
 [lints]
 workspace = true
+
+# The migration tests seed a root an earlier release wrote, whose record
+# files carry POSTIX access descriptors in the `user.fylo.access` xattr.
+[target.'cfg(unix)'.dev-dependencies]
+xattr.workspace = true

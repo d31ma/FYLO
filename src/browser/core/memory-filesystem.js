@@ -1,4 +1,4 @@
-import { dirname, join, normalize } from './path.js'
+import { BrowserPath } from './browser-path.js'
 
 /**
  * @typedef {import('./filesystem.js').FyloFilesystem} FyloFilesystem
@@ -66,7 +66,7 @@ export class MemoryFilesystem {
      * @returns {string}
      */
     key(path) {
-        const normalised = normalize(path)
+        const normalised = BrowserPath.normalize(path)
         if (!normalised.startsWith('/')) return `/${normalised === '.' ? '' : normalised}`
         return normalised
     }
@@ -109,7 +109,7 @@ export class MemoryFilesystem {
             }
             return
         }
-        const parent = dirname(key)
+        const parent = BrowserPath.dirname(key)
         if (!this.dirs.has(parent)) throw notFound(parent)
         this.dirs.add(key)
         this.mtimes.set(key, Date.now())
@@ -207,7 +207,7 @@ export class MemoryFilesystem {
      * @returns {void}
      */
     ensureParents(key) {
-        const parent = dirname(key)
+        const parent = BrowserPath.dirname(key)
         if (this.files.has(parent)) throw notDirectory(parent)
         if (this.dirs.has(parent)) return
         const segments = parent.split('/').filter((segment) => segment.length > 0)
@@ -332,5 +332,3 @@ export function createMemoryFilesystem(seed = {}) {
     }
     return fs
 }
-
-export { join }

@@ -25,7 +25,7 @@ export default class {
         },
         {
             code: 'EACCES',
-            meaning: 'The access context is not permitted to perform the operation.',
+            meaning: 'The application identity has no grant for the operation.',
             retry: 'Do not retry with the same identity.'
         },
         {
@@ -107,6 +107,38 @@ export default class {
             code: 'EQUERYSNAPSHOTTOOLARGE',
             meaning: 'The query snapshot exceeded its 1 GiB storage cap.',
             retry: 'Narrow the query.'
+        },
+        {
+            code: 'ESCHEMACONFLICT',
+            meaning: 'A pushed schema label is already committed with different content.',
+            retry: 'Do not retry; give the changed schema a new version label.'
+        },
+        {
+            code: 'ESCHEMAUNAVAILABLE',
+            meaning:
+                "This build cannot validate the collection's head schema version, so a strict or warn write is refused.",
+            retry: 'Do not retry; push the schema with a native build, or write natively.'
+        },
+        {
+            code: 'EVDBX_NOT_VDBX',
+            meaning: 'The file is not a .vdbx database.',
+            retry: 'Do not retry; check the path.'
+        },
+        {
+            code: 'EVDBX_VERSION',
+            meaning: 'The .vdbx file uses a format version or feature this build does not support.',
+            retry: 'Do not retry; open it with a newer FYLO.'
+        },
+        {
+            code: 'EVDBX_CORRUPT',
+            meaning: 'A .vdbx structure failed its checksum or consistency checks.',
+            retry: 'Do not retry; run fylo verify on the file.'
+        },
+        {
+            code: 'EKEY',
+            meaning:
+                'The .vdbx database is encrypted and was opened without its key, or with a different one.',
+            retry: 'Do not retry; configure fylo.encryption.key with the key the database was created with.'
         },
         {
             code: 'ENATIVE_IO',

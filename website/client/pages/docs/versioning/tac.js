@@ -20,18 +20,4 @@ fylo checkout main --root /mnt/fylo`
   commits/<commit-id>/      # commit metadata and root tree hash
   objects/<hh>/<hash>       # verified content-addressed blobs and tree nodes
   staging/<transaction>/    # durable restore/merge recovery transactions`
-
-    offCode = `const db = new Fylo('/mnt/fylo', {
-    versioning: { autoCommit: false }
-})`
-
-    unversionedCode = `await db.media.create({ kind: 'file', versioned: false })`
-
-    machineCode = `{
-    "op": "putData",
-    "root": "/mnt/fylo",
-    "collection": "posts",
-    "versioning": { "autoCommit": false },
-    "data": { "title": "manual commit later" }
-}`
 }

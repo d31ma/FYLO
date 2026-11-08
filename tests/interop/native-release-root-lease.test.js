@@ -2,7 +2,7 @@ import { afterAll, describe, expect, test } from 'bun:test'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { createInterface } from 'node:readline'
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -17,8 +17,11 @@ const expectedTarget =
 const roots = []
 
 class ReleaseLoop {
-    constructor(root, env = {}) {
-        this.child = spawn(binary, ['exec', '--loop', '--root', root, '--exclusive-root'], {
+    constructor(root, env = {}, config, filesystemProfile) {
+        const args = ['exec', '--loop', '--root', root, '--exclusive-root']
+        if (config) args.push('--config', config)
+        if (filesystemProfile) args.push('--filesystem-profile', filesystemProfile)
+        this.child = spawn(binary, args, {
             stdio: ['pipe', 'pipe', 'pipe'],
             env: { ...process.env, ...env }
         })
@@ -26,6 +29,7 @@ class ReleaseLoop {
         this.responses = []
         this.waiters = []
         this.exited = once(this.child, 'exit')
+        this.closed = once(this.child, 'close')
         this.child.stderr.setEncoding('utf8')
         this.child.stderr.on('data', (chunk) => {
             this.stderr += chunk
@@ -50,10 +54,12 @@ class ReleaseLoop {
     }
 
     async stop(crash = false) {
-        if (this.child.exitCode !== null) return
-        if (crash) this.child.kill(process.platform === 'win32' ? undefined : 'SIGKILL')
-        else this.child.stdin.end()
-        await this.exited
+        if (this.child.exitCode === null && this.child.signalCode === null) {
+            if (crash) this.child.kill(process.platform === 'win32' ? undefined : 'SIGKILL')
+            else this.child.stdin.end()
+            await this.exited
+        }
+        await this.closed
     }
 }
 
@@ -71,16 +77,92 @@ async function deadline(promise, timeout, message) {
     }
 }
 
-async function waitForProcessExit(pid) {
-    while (true) {
-        try {
-            process.kill(pid, 0)
-        } catch (error) {
-            if (error?.code === 'ESRCH') return
-            throw error
-        }
-        await Bun.sleep(10)
-    }
+async function expectDiskPressureRecovery(filesystemProfile, failpoint) {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'fylo-native-disk-pressure-'))
+    roots.push(root)
+    const identifier = '4VRNF52JPCO'
+
+    const seed = new ReleaseLoop(root, {}, undefined, filesystemProfile)
+    expect((await seed.request({ op: 'handshake' })).ok).toBe(true)
+    expect(
+        (
+            await seed.request({
+                op: 'createCollection',
+                collection: 'messages',
+                kind: 'document'
+            })
+        ).ok
+    ).toBe(true)
+    expect(
+        (
+            await seed.request({
+                op: 'putData',
+                collection: 'messages',
+                id: identifier,
+                data: { body: 'before pressure' }
+            })
+        ).ok
+    ).toBe(true)
+    await seed.stop()
+
+    const pressured = new ReleaseLoop(
+        root,
+        { FYLO_RUST_FAILPOINT: failpoint, FYLO_RUST_FAILPOINT_ACTION: 'enospc' },
+        undefined,
+        filesystemProfile
+    )
+    expect((await pressured.request({ op: 'handshake' })).ok).toBe(true)
+    const failed = await pressured.request({
+        op: 'batchPutData',
+        collection: 'messages',
+        batch: [
+            { id: '4VRNF52JPCP', data: { body: 'one' } },
+            { id: '4VRNF52JPCQ', data: { body: 'two' } }
+        ]
+    })
+    expect(failed).toMatchObject({
+        ok: false,
+        error: { code: 'ENATIVE_IO' }
+    })
+    expect(failed.error.code).not.toBe('EUNKNOWN')
+
+    const survivor = await pressured.request({
+        op: 'getDoc',
+        collection: 'messages',
+        id: identifier
+    })
+    expect(survivor).toMatchObject({
+        ok: true,
+        result: { [identifier]: { body: 'before pressure' } }
+    })
+    const committed = await pressured.request({
+        op: 'findDocs',
+        collection: 'messages',
+        query: {}
+    })
+    expect(Object.keys(committed.result)).toEqual([identifier])
+    await pressured.stop()
+
+    const restarted = new ReleaseLoop(root, {}, undefined, filesystemProfile)
+    expect((await restarted.request({ op: 'handshake' })).ok).toBe(true)
+    const put = await restarted.request({
+        op: 'putData',
+        collection: 'messages',
+        id: '4VRNF52JPCR',
+        data: { body: 'after pressure' }
+    })
+    expect(put.ok).toBe(true)
+    expect(
+        await restarted.request({
+            op: 'getDoc',
+            collection: 'messages',
+            id: '4VRNF52JPCR'
+        })
+    ).toMatchObject({
+        ok: true,
+        result: { '4VRNF52JPCR': { body: 'after pressure' } }
+    })
+    await restarted.stop()
 }
 
 afterAll(async () => {
@@ -136,133 +218,221 @@ describe.skipIf(!required)('exact native release root lease', () => {
     })
 
     test('reports disk pressure, keeps the loop responsive, and restarts cleanly (#89)', async () => {
-        const root = await mkdtemp(path.join(os.tmpdir(), 'fylo-native-disk-pressure-'))
-        roots.push(root)
-        const identifier = '4VRNF52JPCO'
-
-        const seed = new ReleaseLoop(root)
-        expect((await seed.request({ op: 'handshake' })).ok).toBe(true)
-        expect(
-            (
-                await seed.request({
-                    op: 'createCollection',
-                    collection: 'messages',
-                    kind: 'document'
-                })
-            ).ok
-        ).toBe(true)
-        expect(
-            (
-                await seed.request({
-                    op: 'putData',
-                    collection: 'messages',
-                    id: identifier,
-                    data: { body: 'before pressure' }
-                })
-            ).ok
-        ).toBe(true)
-        await seed.stop()
-
-        const pressured = new ReleaseLoop(root, {
-            FYLO_RUST_FAILPOINT: 'before-file-write',
-            FYLO_RUST_FAILPOINT_ACTION: 'enospc'
-        })
-        expect((await pressured.request({ op: 'handshake' })).ok).toBe(true)
-        const failed = await pressured.request({
-            op: 'batchPutData',
-            collection: 'messages',
-            batch: [
-                { id: '4VRNF52JPCP', data: { body: 'one' } },
-                { id: '4VRNF52JPCQ', data: { body: 'two' } }
-            ]
-        })
-        expect(failed).toMatchObject({
-            ok: false,
-            error: { code: 'ENATIVE_IO' }
-        })
-        expect(failed.error.code).not.toBe('EUNKNOWN')
-
-        const survivor = await pressured.request({
-            op: 'getDoc',
-            collection: 'messages',
-            id: identifier
-        })
-        expect(survivor).toMatchObject({
-            ok: true,
-            result: { [identifier]: { body: 'before pressure' } }
-        })
-        await pressured.stop()
-
-        const restarted = new ReleaseLoop(root)
-        expect((await restarted.request({ op: 'handshake' })).ok).toBe(true)
-        const put = await restarted.request({
-            op: 'putData',
-            collection: 'messages',
-            id: '4VRNF52JPCR',
-            data: { body: 'after pressure' }
-        })
-        expect(put.ok).toBe(true)
-        expect(
-            await restarted.request({
-                op: 'getDoc',
-                collection: 'messages',
-                id: '4VRNF52JPCR'
-            })
-        ).toMatchObject({
-            ok: true,
-            result: { '4VRNF52JPCR': { body: 'after pressure' } }
-        })
-        await restarted.stop()
+        await expectDiskPressureRecovery(undefined, 'before-log-append')
     })
 
     test.skipIf(process.platform === 'win32')(
-        'reaps the validator and closes machine stdout on process exit (#89)',
+        'validates schemas in-process and closes machine stdout on process exit (#89)',
         async () => {
             const root = await mkdtemp(path.join(os.tmpdir(), 'fylo-native-pipe-owner-'))
             roots.push(root)
             const schema = path.join(root, 'schema')
-            const validator = path.join(root, 'fake-chex.sh')
-            const pidFile = path.join(root, 'fake-chex.pid')
             await mkdir(schema)
             await writeFile(
                 path.join(schema, 'messages.schema.json'),
-                JSON.stringify({ type: 'object' })
+                JSON.stringify({ body: '^input$' })
             )
-            await writeFile(
-                validator,
-                `#!/bin/sh\nprintf '%s\\n' "$$" > "$FYLO_CHEX_PID_FILE"\nIFS= read -r request || exit 1\nprintf '%s\\n' '{"ok":true,"result":{"body":"validated"}}'\nwhile :; do sleep 1; done\n`
-            )
-            await chmod(validator, 0o755)
 
-            const loop = new ReleaseLoop(root, {
-                FYLO_CHEX_BINARY: validator,
-                FYLO_CHEX_PID_FILE: pidFile
-            })
-            const response = await loop.request({
-                op: 'schemaValidate',
-                collection: 'messages',
-                schemaDir: schema,
-                document: { body: 'input' }
-            })
-            expect(response).toMatchObject({
-                ok: true,
-                result: { valid: true, document: { body: 'validated' } }
-            })
+            const loop = new ReleaseLoop(root, {})
+            try {
+                const response = await loop.request({
+                    op: 'schemaValidate',
+                    collection: 'messages',
+                    schemaDir: schema,
+                    document: { body: 'input' }
+                })
+                expect(response).toMatchObject({
+                    ok: true,
+                    result: { valid: true, document: { body: 'input' } }
+                })
+                const rejected = await loop.request({
+                    op: 'schemaValidate',
+                    collection: 'messages',
+                    schemaDir: schema,
+                    document: { body: 'other' }
+                })
+                expect(rejected.ok).toBe(false)
 
-            const validatorPid = Number((await readFile(pidFile, 'utf8')).trim())
-            await deadline(
-                waitForProcessExit(validatorPid),
-                1_000,
-                'schema validator outlived the request that owned it'
-            )
-            const stdoutClosed = once(loop.reader, 'close')
-            loop.child.kill('SIGKILL')
-            await deadline(loop.exited, 5_000, 'machine loop did not exit after SIGKILL')
-            await deadline(
-                stdoutClosed,
-                1_000,
-                'machine stdout remained open after its process exited'
-            )
+                const stdoutClosed = once(loop.reader, 'close')
+                loop.child.kill('SIGKILL')
+                await deadline(loop.exited, 5_000, 'machine loop did not exit after SIGKILL')
+                await deadline(
+                    stdoutClosed,
+                    1_000,
+                    'machine stdout remained open after its process exited'
+                )
+                await deadline(loop.closed, 1_000, 'machine stdio remained open after process exit')
+            } finally {
+                await deadline(loop.stop(true), 5_000, 'schema fixture machine did not close')
+            }
         }
     )
 })
+
+// The exact candidate must be selected explicitly; this does not qualify EFS.
+describe.skipIf(!required || process.env.FYLO_REQUIRE_EFS_PROFILE !== '1')(
+    'explicit metadata profile root admission',
+    () => {
+        test.skipIf(process.platform === 'win32')(
+            'EFS owners contend through canonical aliases and preserve owner metadata',
+            async () => {
+                const parent = await mkdtemp(path.join(os.tmpdir(), 'fylo-efs-shared-parent-'))
+                roots.push(parent)
+                const root = path.join(parent, 'root')
+                await mkdir(root)
+                const alias = path.join(parent, 'alias')
+                await symlink(root, alias, 'dir')
+                const owner = new ReleaseLoop(root, {}, undefined, 'efs-sidecar-v1')
+                let contender
+                try {
+                    expect((await owner.request({ op: 'handshake' })).ok).toBe(true)
+                    const metadataPath = path.join(parent, '.root.fylo-root-owner.lock.json')
+                    const before = await readFile(metadataPath)
+                    contender = new ReleaseLoop(alias, {}, undefined, 'efs-sidecar-v1')
+                    expect(await contender.request({ op: 'handshake' })).toMatchObject({
+                        ok: false,
+                        error: { code: 'EROOTLOCKED' }
+                    })
+                    expect(await readFile(metadataPath)).toEqual(before)
+                    expect((await owner.request({ op: 'handshake' })).ok).toBe(true)
+                } finally {
+                    if (contender) await contender.stop()
+                    await owner.stop()
+                }
+                const replacement = new ReleaseLoop(alias, {}, undefined, 'efs-sidecar-v1')
+                try {
+                    expect((await replacement.request({ op: 'handshake' })).ok).toBe(true)
+                } finally {
+                    await replacement.stop()
+                }
+            }
+        )
+
+        test.skipIf(process.platform === 'win32')(
+            'reports disk pressure on the EFS journal path and restarts cleanly (#89)',
+            async () => {
+                await expectDiskPressureRecovery('efs-sidecar-v1', 'before-file-write')
+            }
+        )
+
+        test.skipIf(process.platform !== 'win32')(
+            'Windows refuses the EFS profile because sidecars need POSIX identity',
+            async () => {
+                const root = await mkdtemp(path.join(os.tmpdir(), 'fylo-efs-windows-'))
+                roots.push(root)
+                const refused = new ReleaseLoop(root, {}, undefined, 'efs-sidecar-v1')
+                try {
+                    expect(await refused.request({ op: 'handshake' })).toMatchObject({
+                        ok: false,
+                        error: { code: 'ENATIVE_UNSUPPORTED' }
+                    })
+                } finally {
+                    await refused.stop()
+                }
+            }
+        )
+
+        test('bad profile fails before replacing the recorded owner', async () => {
+            const parent = await mkdtemp(path.join(os.tmpdir(), 'fylo-bad-profile-owner-'))
+            roots.push(parent)
+            const root = path.join(parent, 'root')
+            await mkdir(root)
+            const metadataPath = path.join(parent, '.root.fylo-root-owner.lock.json')
+            const canonical = await realpath(root)
+            const before = JSON.stringify({
+                version: 1,
+                root: canonical,
+                owner: 'must-survive-admission',
+                pid: process.pid
+            })
+            await writeFile(metadataPath, before)
+            const rejected = spawn(
+                binary,
+                [
+                    'exec',
+                    '--loop',
+                    '--root',
+                    root,
+                    '--exclusive-root',
+                    '--filesystem-profile',
+                    'unknown-profile'
+                ],
+                { stdio: ['pipe', 'pipe', 'pipe'] }
+            )
+            const stdout = []
+            const stderr = []
+            rejected.stdout.on('data', (chunk) => stdout.push(chunk))
+            rejected.stderr.on('data', (chunk) => stderr.push(chunk))
+            rejected.stdin.end(JSON.stringify({ op: 'handshake' }) + '\n')
+            let timer
+            let exitCode
+            try {
+                const exited = once(rejected, 'exit')
+                const exitedValues = await Promise.race([
+                    exited,
+                    new Promise((_, reject) => {
+                        timer = setTimeout(() => {
+                            rejected.kill('SIGKILL')
+                            reject(new Error('unknown profile was not rejected'))
+                        }, 5_000)
+                    })
+                ])
+                exitCode = exitedValues[0]
+            } finally {
+                clearTimeout(timer)
+            }
+            const output = Buffer.concat(stdout).toString()
+            expect(
+                exitCode !== 0 ||
+                    output
+                        .split('\n')
+                        .filter(Boolean)
+                        .every((line) => JSON.parse(line).ok === false)
+            ).toBe(true)
+            expect(Buffer.concat(stderr).toString() + output).toMatch(/profile/i)
+            expect(await readFile(metadataPath, 'utf8')).toBe(before)
+            expect(
+                await readFile(path.join(root, '.fylo-catalog/filesystem-profile.json')).catch(
+                    () => null
+                )
+            ).toBeNull()
+        })
+
+        test.skipIf(process.platform === 'win32')(
+            'losing the owner generation stops the EFS machine mutation',
+            async () => {
+                const parent = await mkdtemp(path.join(os.tmpdir(), 'fylo-efs-lost-owner-'))
+                roots.push(parent)
+                const root = path.join(parent, 'root')
+                await mkdir(root)
+                const owner = new ReleaseLoop(root, {}, undefined, 'efs-sidecar-v1')
+                try {
+                    expect((await owner.request({ op: 'handshake' })).ok).toBe(true)
+                    expect(
+                        (
+                            await owner.request({
+                                op: 'createCollection',
+                                collection: 'records',
+                                kind: 'document'
+                            })
+                        ).ok
+                    ).toBe(true)
+                    const metadataPath = path.join(parent, '.root.fylo-root-owner.lock.json')
+                    const metadata = JSON.parse(await readFile(metadataPath, 'utf8'))
+                    metadata.owner = 'replacement-owner-generation'
+                    await writeFile(metadataPath, JSON.stringify(metadata))
+                    expect(
+                        await owner.request({
+                            op: 'putData',
+                            collection: 'records',
+                            id: '4VRNF52JPCO',
+                            data: { body: 'must not be acknowledged' }
+                        })
+                    ).toMatchObject({ ok: false, error: { code: 'EROOTLEASELOST' } })
+                } finally {
+                    await owner.stop()
+                }
+            }
+        )
+    }
+)

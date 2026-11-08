@@ -1,0 +1,15 @@
+{
+  "orderId": "ORD-1001",
+  "items": [
+    {
+      "sku": "BOOK-1",
+      "quantity": 2,
+      "giftWrap": false
+    },
+    {
+      "sku": "PEN-9",
+      "quantity": 12,
+      "giftWrap": true
+    }
+  ]
+}

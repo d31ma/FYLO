@@ -18,12 +18,13 @@
 //! 4. `fylo_free` on both buffers.
 //!
 //! `fylo_exec` takes a batch of newline-delimited frames and answers all of
-//! them, which is `exec --loop` in one call. Query cursors live for the length
-//! of the batch, so a paged read is one call rather than a session the host
-//! has to keep alive.
+//! them, which is `exec --loop` in one call. The module keeps one session
+//! across calls, so a query cursor from one batch pages on in the next, as it
+//! does for the life of an `exec --loop` process.
 
 #![cfg(target_arch = "wasm32")]
 
 mod boundary;
+mod browser_settings;
 
-pub use boundary::{fylo_abi_version, fylo_alloc, fylo_exec, fylo_free};
+pub use boundary::{fylo_abi_version, fylo_alloc, fylo_configure, fylo_exec, fylo_free};

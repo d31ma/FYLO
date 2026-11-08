@@ -11,27 +11,24 @@ export default class {
     "payload?": { "verifier?": "^.+$" }
 }`
 
-    postixCode = `const id = await db.documents.put({ title: 'private' })
-    .as({ uid: 1001, mode: 0o600 })
+    identityCode = `fylo identity create --store file:admin.pem
+fylo identity create --store file:app.pem
+fylo identity show file:app.pem --json
+fylo create app.vdbx --admin file:admin.pem`
 
-const teamId = await db.documents.put({ title: 'team draft' })
-    .as({ gid: editorsGid, mode: 0o660 })
+    grantCode = `fylo access grant app.vdbx --grantee web --key fpk1:p256:... \\
+    --actions read --collection users \\
+    --identity file:admin.pem --trust-anchor fid1:p256:...
+fylo access list app.vdbx --identity file:app.pem --trust-anchor fid1:p256:...`
 
-await db.documents.get(id).as({ uid: 1001 })
-await db.documents.patch(id, { title: 'updated' }).as({ uid: 1001 })
-await db.documents.delete(id).as({ uid: 1001 })`
+    configCode = `{
+    "fylo": {
+        "root": "./app.vdbx",
+        "identity": "file:app.pem",
+        "trustAnchor": "fid1:p256:..."
+    }
+}`
 
-    sqlAccessCode = `const sqlId = await db.sql\`
-    INSERT INTO documents (title) VALUES (\${'team draft'})
-\`.as({ gid: editorsGid, mode: 0o660 })
-
-await db.sql\`UPDATE documents SET title = \${'updated'} WHERE title = \${'team draft'}\`
-    .as({ uid: 1002 })`
-
-    actorCode = `const actor = {
-    uid: authenticatedUser.uid,
-    groups: await identityProvider.groupIdsFor(authenticatedUser.uid)
-}
-
-await db.messages.patch(teamId, { title: 'reviewed' }).as(actor)`
+    migrateCode = `fylo access report ./old-root
+fylo pack ./old-root --out app.vdbx --protect --admin file:admin.pem --drop-record-access`
 }

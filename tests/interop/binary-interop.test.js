@@ -151,8 +151,14 @@ describe('compiled binary language interop', () => {
         expect(cliIdentity.commit).toBe(expectedCommit)
         if (cliIdentity.buildKind === 'release')
             expect(cliIdentity.commit).toMatch(/^[0-9a-f]{40}$/)
-        expect(cliIdentity.dependencies.chex.requiredVersion).toBe('26.32.02')
-        expect(cliIdentity.dependencies.ttid.requiredVersion).toBe('26.32.03')
+        // TTID and CHEX are built in: nothing external is required at runtime.
+        expect(cliIdentity.dependencies).toBeUndefined()
+        expect(cliIdentity.capabilities.schemaValidation).toEqual({
+            version: 1,
+            validator: 'chex',
+            chexVersion: '26.32.02',
+            inProcess: true
+        })
         expect(cliIdentity.capabilities.documentBuckets).toEqual({
             version: 1,
             collectionKind: 'file',
@@ -204,35 +210,42 @@ describe('compiled binary language interop', () => {
             maxClaimMessages: 1000,
             maxPendingPerGroup: 10000
         })
-        if (!['darwin', 'linux'].includes(process.platform)) {
-            expect(cliIdentity.capabilities.machineAccess).toBeUndefined()
-        } else {
-            expect(cliIdentity.capabilities.machineAccess).toEqual({
-                version: 1,
-                operations: [
-                    'executeSQL',
-                    'getDoc',
-                    'getLatest',
-                    'getMeta',
-                    'setMeta',
-                    'findDocs',
-                    'findDeletedDocs',
-                    'restoreDoc',
-                    'joinDocs',
-                    'putData',
-                    'batchPutData',
-                    'patchDoc',
-                    'patchDocs',
-                    'delDoc',
-                    'delDocs',
-                    'importBulkData'
-                ],
-                writeDescriptorFields: ['uid', 'gid', 'mode'],
-                actorFields: ['uid', 'groups'],
-                directDenial: 'EACCES',
-                queryDenial: 'omit'
-            })
-        }
+    })
+
+    test('compiled handshake has no machineAccess capability', async () => {
+        const loop = await run([binaryPath, 'exec', '--loop'], {
+            stdin: '{"op":"handshake"}\n'
+        })
+        expectSuccess('compiled handshake', loop)
+        const handshake = JSON.parse(loop.stdout)
+
+        expect(handshake.ok).toBe(true)
+        expect(handshake.result.capabilities.machineAccess).toBeUndefined()
+    })
+
+    test('compiled loop refuses a request that carries an access field', async () => {
+        const root = await tempRoot('fylo-binary-access-field-')
+        const requests = [
+            { op: 'createCollection', collection: 'users' },
+            {
+                op: 'putData',
+                collection: 'users',
+                data: { name: 'Ada' },
+                access: { uid: 1001, mode: 0o600 }
+            },
+            { op: 'findDocs', collection: 'users', query: {}, access: { uid: 1001, groups: [] } }
+        ]
+        const result = await run([binaryPath, 'exec', '--loop', '--root', path.join(root, 'db')], {
+            stdin: `${requests.map((request) => JSON.stringify(request)).join('\n')}\n`
+        })
+        expectSuccess('compiled access field probe', result)
+        const [created, put, found] = result.stdout.trim().split('\n').map(JSON.parse)
+
+        expect(created.ok).toBe(true)
+        expect(put.ok).toBe(false)
+        expect(put.error.code).toBe('EBADREQUEST')
+        expect(found.ok).toBe(false)
+        expect(found.error.code).toBe('EBADREQUEST')
     })
 
     test('Python can drive FYLO through the machine JSON protocol', async () => {
@@ -546,7 +559,7 @@ public class Interop {
             String.raw`<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
   </PropertyGroup>
@@ -1043,7 +1056,6 @@ require 'fylo.php';
 
 $binary = $argv[1];
 $root = $argv[2];
-$uid = (int) $argv[3];
 $db = new Fylo($root, $binary);
 $protected = $db->queuePublish(
     'php.protected',
@@ -1101,10 +1113,10 @@ $found = $db->findDocs("users", ['$ops' => [['age' => ['$gte' => 18]]]]);
 if ($doc[$id]["name"] !== "Ada" || empty($found)) {
     throw new Exception("bad result");
 }
-$sqlId = $db->sql("INSERT INTO users (name, scope) VALUES ('SQL Ada', 'private-sql')", ['uid' => $uid, 'mode' => 0600]);
-$private = $db->sql("SELECT * FROM users WHERE scope = 'private-sql'", ['uid' => $uid]);
-if (($private[$sqlId]['name'] ?? null) !== 'SQL Ada') {
-    throw new Exception("bad protected SQL result");
+$sqlId = $db->sql("INSERT INTO users (name, scope) VALUES ('SQL Ada', 'sql')");
+$rows = $db->sql("SELECT * FROM users WHERE scope = 'sql'");
+if (($rows[$sqlId]['name'] ?? null) !== 'SQL Ada') {
+    throw new Exception("bad SQL result");
 }
 $db->queuePublish('php.decorated', ['job' => 1]);
 $worker = new class {
@@ -1123,12 +1135,9 @@ $db->close();
 echo '{"ok":true}' . "\n";
 `
         )
-        const result = await run(
-            ['php', 'driver.php', binaryPath, root, String(process.getuid())],
-            {
-                cwd: ws
-            }
-        )
+        const result = await run(['php', 'driver.php', binaryPath, root], {
+            cwd: ws
+        })
         expectShimOk('php shim', result)
     })
 
@@ -1146,7 +1155,6 @@ echo '{"ok":true}' . "\n";
 import (
 	"fmt"
 	"os"
-	"strconv"
 
 	fylo "interop/fylo"
 )
@@ -1206,17 +1214,13 @@ func main() {
 	if doc == nil || found == nil {
 		panic("bad result")
 	}
-	uid, err := strconv.Atoi(os.Args[3])
+	sqlID, err := db.Sql("INSERT INTO users (name, scope) VALUES ('SQL Ada', 'sql')")
 	if err != nil {
 		panic(err)
 	}
-	sqlID, err := db.Sql("INSERT INTO users (name, scope) VALUES ('SQL Ada', 'private-sql')", map[string]any{"uid": uid, "mode": 0o600})
-	if err != nil {
-		panic(err)
-	}
-	private, err := db.Sql("SELECT * FROM users WHERE scope = 'private-sql'", map[string]any{"uid": uid})
-	if err != nil || sqlID == nil || private == nil {
-		panic("bad protected SQL result")
+	rows, err := db.Sql("SELECT * FROM users WHERE scope = 'sql'")
+	if err != nil || sqlID == nil || rows == nil {
+		panic("bad SQL result")
 	}
 	if _, err := db.QueuePublish("go.decorated", map[string]any{"job": 1}, nil); err != nil {
 		panic(err)
@@ -1237,7 +1241,7 @@ func main() {
 }
 `
         )
-        const result = await run(['go', 'run', '.', binaryPath, root, String(process.getuid())], {
+        const result = await run(['go', 'run', '.', binaryPath, root], {
             cwd: ws,
             timeout: 120_000
         })
@@ -1258,8 +1262,6 @@ use fylo::{Fylo, Json, QueueConsumerOptions};
 fn main() {
     let binary = std::env::args().nth(1).unwrap();
     let root = std::env::args().nth(2).unwrap();
-    let uid = std::env::args().nth(3).unwrap().parse::<u32>().unwrap();
-    let gid = std::env::args().nth(4).unwrap().parse::<u32>().unwrap();
     let mut db = Fylo::open(&root, &binary).unwrap();
     db.create_collection("users", "document").unwrap();
     let put = db
@@ -1298,30 +1300,13 @@ fn main() {
     assert!(put.contains("\"result\""));
     assert!(found.contains("\"ok\":true"));
     let sql_put = db
-        .sql_as(
-            "INSERT INTO users (name, scope) VALUES ('SQL Ada', 'private-sql')",
-            uid,
-            Some(0o600),
-        )
+        .sql("INSERT INTO users (name, scope) VALUES ('SQL Ada', 'sql')")
         .unwrap();
-    let private = db
-        .sql_as(
-            "SELECT * FROM users WHERE scope = 'private-sql'",
-            uid,
-            None,
-        )
+    let rows = db
+        .sql("SELECT * FROM users WHERE scope = 'sql'")
         .unwrap();
     assert!(sql_put.contains("\"ok\":true"), "{sql_put}");
-    assert!(private.contains("SQL Ada"), "{private}");
-    let group_sql_put = db
-        .sql_access(
-            "INSERT INTO users (name, scope) VALUES ('Group SQL Ada', 'group-sql')",
-            None,
-            Some(gid),
-            Some(0o660),
-        )
-        .unwrap();
-    assert!(group_sql_put.contains("\"ok\":true"), "{group_sql_put}");
+    assert!(rows.contains("SQL Ada"), "{rows}");
     db.queue_publish(
         "rust.decorated",
         Json::obj(vec![("job", 1.into())]),
@@ -1351,12 +1336,9 @@ fn main() {
             timeout: 120_000
         })
         expectSuccess('rustc shim compile', compile)
-        const result = await run(
-            [executable, binaryPath, root, String(process.getuid()), String(process.getgid())],
-            {
-                timeout: 120_000
-            }
-        )
+        const result = await run([executable, binaryPath, root], {
+            timeout: 120_000
+        })
         expectShimOk('rust shim', result)
     })
 
@@ -1382,7 +1364,6 @@ public class Interop {
 
     public static void main(String[] a) throws Exception {
         try (Fylo db = new Fylo(a[1], a[0])) {
-            int uid = Integer.parseInt(a[2]);
             db.createCollection("users");
             String put = db.putData("users", Map.of("name", "Ada", "role", "admin", "age", 30));
             String found = db.findDocs("users",
@@ -1391,13 +1372,10 @@ public class Interop {
                 throw new Exception("bad result");
             }
             String sqlPut = db.sql(
-                "INSERT INTO users (name, scope) VALUES ('SQL Ada', 'private-sql')",
-                Map.of("uid", uid, "mode", 384));
-            String privateRows = db.sql(
-                "SELECT * FROM users WHERE scope = 'private-sql'",
-                Map.of("uid", uid));
-            if (!sqlPut.contains("\"result\"") || !privateRows.contains("SQL Ada")) {
-                throw new Exception("bad protected SQL result");
+                "INSERT INTO users (name, scope) VALUES ('SQL Ada', 'sql')");
+            String rows = db.sql("SELECT * FROM users WHERE scope = 'sql'");
+            if (!sqlPut.contains("\"result\"") || !rows.contains("SQL Ada")) {
+                throw new Exception("bad SQL result");
             }
             db.queuePublish("java.decorated", Map.of("job", 1));
             Workers workers = new Workers();
@@ -1416,12 +1394,9 @@ public class Interop {
             timeout: 120_000
         })
         expectSuccess('javac shim compile', compile)
-        const result = await run(
-            ['java', '-cp', ws, 'Interop', binaryPath, root, String(process.getuid())],
-            {
-                timeout: 120_000
-            }
-        )
+        const result = await run(['java', '-cp', ws, 'Interop', binaryPath, root], {
+            timeout: 120_000
+        })
         expectShimOk('java shim', result)
     })
 
@@ -1435,7 +1410,7 @@ public class Interop {
             String.raw`<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
   </PropertyGroup>
@@ -1447,7 +1422,6 @@ public class Interop {
             String.raw`using System.Collections.Generic;
 
 var db = new Fylo.Fylo(args[1], args[0]);
-var uid = int.Parse(args[2]);
 db.CreateCollection("users");
 var data = new Dictionary<string, object> { ["name"] = "Ada", ["role"] = "admin", ["age"] = 30 };
 db.PutData("users", data);
@@ -1459,14 +1433,10 @@ var query = new Dictionary<string, object>
     }
 };
 db.FindDocs("users", query);
-var sqlId = db.ExecuteSQL(
-    "INSERT INTO users (name, scope) VALUES ('SQL Ada', 'private-sql')",
-    new { uid, mode = 384 });
-var privateRows = db.ExecuteSQL(
-    "SELECT * FROM users WHERE scope = 'private-sql'",
-    new { uid });
-if (sqlId.GetString() is null || !privateRows.ToString().Contains("SQL Ada"))
-    throw new System.Exception("bad protected SQL result");
+var sqlId = db.ExecuteSQL("INSERT INTO users (name, scope) VALUES ('SQL Ada', 'sql')");
+var rows = db.ExecuteSQL("SELECT * FROM users WHERE scope = 'sql'");
+if (sqlId.GetString() is null || !rows.ToString().Contains("SQL Ada"))
+    throw new System.Exception("bad SQL result");
 db.QueuePublish("csharp.decorated", new { job = 1 });
 var worker = new Worker();
 var outcome = db.RunQueueConsumer(worker, nameof(Worker.Handle));
@@ -1487,10 +1457,9 @@ sealed class Worker
 }
 `
         )
-        const result = await run(
-            ['dotnet', 'run', '--project', ws, '--', binaryPath, root, String(process.getuid())],
-            { timeout: 180_000 }
-        )
+        const result = await run(['dotnet', 'run', '--project', ws, '--', binaryPath, root], {
+            timeout: 180_000
+        })
         expectShimOk('csharp shim', result)
     })
 
@@ -1557,31 +1526,20 @@ Future<void> main(List<String> args) async {
   if (protectedNack['deadLettered'] != true) {
     throw StateError('Dart queue nack options altered protected request fields');
   }
-  final uid = int.parse(args[2]);
-  final gid = int.parse(args[3]);
   await db.createCollection('users');
   final id = await db.putData('users', {'name': 'Ada', 'role': 'admin', 'age': 30}) as String;
   final doc = await db.getLatest('users', id) as Map;
   final found = await db.findDocs('users', {r'$ops': [{'age': {r'$gte': 18}}]}) as Map;
   if ((doc[id] as Map)['name'] != 'Ada' || found.isEmpty) throw StateError('bad result');
   final sqlId = await db.sql(
-    "INSERT INTO users (name, scope) VALUES ('SQL Ada', 'private-sql')",
-    uid: uid,
-    mode: 384,
+    "INSERT INTO users (name, scope) VALUES ('SQL Ada', 'sql')",
   ) as String;
-  final privateRows = await db.sql(
-    "SELECT * FROM users WHERE scope = 'private-sql'",
-    uid: uid,
+  final rows = await db.sql(
+    "SELECT * FROM users WHERE scope = 'sql'",
   ) as Map;
-  if ((privateRows[sqlId] as Map)['name'] != 'SQL Ada') {
-    throw StateError('bad protected SQL result');
+  if ((rows[sqlId] as Map)['name'] != 'SQL Ada') {
+    throw StateError('bad SQL result');
   }
-  final groupSqlId = await db.sql(
-    "INSERT INTO users (name, scope) VALUES ('Group SQL Ada', 'group-sql')",
-    gid: gid,
-    mode: 432,
-  ) as String;
-  if (groupSqlId.isEmpty) throw StateError('bad group SQL result');
   await db.queuePublish('dart.decorated', {'job': 1});
   final worker = Workers();
   final consume = db.queueConsumer(
@@ -1597,20 +1555,10 @@ Future<void> main(List<String> args) async {
 }
 `
         )
-        const result = await run(
-            [
-                'dart',
-                'driver.dart',
-                binaryPath,
-                root,
-                String(process.getuid()),
-                String(process.getgid())
-            ],
-            {
-                cwd: ws,
-                timeout: 120_000
-            }
-        )
+        const result = await run(['dart', 'driver.dart', binaryPath, root], {
+            cwd: ws,
+            timeout: 120_000
+        })
         expectShimOk('dart shim', result)
     })
 })

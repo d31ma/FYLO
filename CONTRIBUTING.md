@@ -22,6 +22,7 @@ bun run predicate:verify
 bun run sql:verify
 bun run rust:fmt
 bun run rust:clippy
+bun run rust:clippy:wasm
 bun run rust:test
 bun run rust:deny
 bun run rust:interop:readonly
@@ -33,6 +34,26 @@ bun run test:interop
 Browser/Wasm changes also run `bun run build:web:wasm` and the compiled-module
 browser corpus. Transaction, platform, backup, and release changes require
 their dedicated qualification profiles.
+
+### Running the tests in a container
+
+The tests keep their databases, and the lease's host markers, under the
+temporary directory (`TMPDIR`). The lease and recovery tests need byte-range
+locks there, which FYLO trusts only on the filesystems listed in
+[the lock qualification](docs/operations/vdbx-byte-range-lock-qualification.md)
+(ext4, tmpfs, APFS and NTFS). A container's `/tmp` is usually overlayfs, where
+FYLO falls back to lease files, so those tests stop with "this test needs
+byte-range locks". Point `TMPDIR` at a volume instead (a named Docker volume is
+usually ext4 on a Linux engine), and turn core dumps off, because the crash tests abort
+child processes on purpose and each abort would otherwise leave a `core` file
+in its working directory:
+
+```bash
+docker run --ulimit core=0 -v fylo-tmp:/fylo-tmp -e TMPDIR=/fylo-tmp ...
+```
+
+In a shell already inside the container, `ulimit -c 0` and
+`export TMPDIR=<a directory on the volume>` do the same.
 
 ## Change requirements
 

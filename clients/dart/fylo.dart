@@ -24,7 +24,10 @@ import 'dart:typed_data';
 
 class FyloException implements Exception {
   final String message;
-  FyloException(this.message);
+
+  /// The machine-protocol error code, such as EINVALIDDOCID, when FYLO sent one.
+  final String? code;
+  FyloException(this.message, {this.code});
   @override
   String toString() => 'FyloException: $message';
 }
@@ -67,8 +70,11 @@ class Fylo {
   final Uint8List _responseBuffer = Uint8List(maxResponseBytes);
   int _responseLength = 0;
   bool _responseOversized = false;
+  FyloException? _exitError;
 
   Fylo._(this._proc, this._stdin, Stream<List<int>> bytes) {
+    _proc.exitCode.then(_markExited);
+    _stdin.done.then((_) {}, onError: _ignoreInputAfterExit);
     bytes.listen((chunk) {
       for (final byte in chunk) {
         if (byte != 0x0a) {
@@ -107,9 +113,16 @@ class Fylo {
         _responseOversized = false;
       }
     }, onDone: () {
-      _failAll(FyloException('fylo process exited'));
+      _exitError ??= FyloException('fylo process exited');
+      _failAll(_exitError!);
     });
   }
+
+  void _markExited(int exitCode) {
+    _exitError = FyloException('fylo process exited with code $exitCode');
+  }
+
+  void _ignoreInputAfterExit(Object error) {}
 
   void _failAll(FyloException error) {
     for (final completer in _queue) {
@@ -118,9 +131,9 @@ class Fylo {
     _queue.clear();
   }
 
-  /// Start a warm fylo process rooted at [root]. [env] is a .env path or map.
+  /// Start a warm fylo process rooted at [root]. [config] is an optional application.json path.
   static Future<Fylo> open(String root,
-      {String binary = 'fylo', Object? env}) async {
+      {String binary = 'fylo', String? config}) async {
     final args = [
       'exec',
       '--loop',
@@ -131,124 +144,14 @@ class Fylo {
       '--max-response-bytes',
       '$maxResponseBytes'
     ];
-    final childEnv = await _childEnvironment(env);
-    final proc = await Process.start(binary, args,
-        environment: childEnv, includeParentEnvironment: childEnv == null);
+    if (config != null) args.addAll(['--config', config]);
+    final proc = await Process.start(binary, args);
     return Fylo._(proc, proc.stdin, proc.stdout);
-  }
-
-  static Future<Map<String, String>?> _childEnvironment(Object? config) async {
-    if (config == null) return null;
-    final Map<dynamic, dynamic> overrides;
-    if (config is String) {
-      overrides = await _environmentFile(config);
-    } else if (config is Map) {
-      overrides = config;
-    } else {
-      throw ArgumentError(
-          'env must be a .env file path or an environment variable Map');
-    }
-    final environment = <String, String>{};
-    for (final entry in Platform.environment.entries) {
-      environment[Platform.isWindows ? entry.key.toUpperCase() : entry.key] =
-          entry.value;
-    }
-    for (final entry in overrides.entries) {
-      final name = entry.key.toString();
-      if (name.isEmpty || name.contains('=') || name.contains('\u0000')) {
-        throw ArgumentError(
-            'invalid environment variable name ${jsonEncode(name)}');
-      }
-      final environmentName = Platform.isWindows ? name.toUpperCase() : name;
-      if (entry.value == null) {
-        environment.remove(environmentName);
-      } else {
-        final environmentValue = entry.value.toString();
-        if (environmentValue.contains('\u0000')) {
-          throw ArgumentError(
-              'invalid environment variable value for ${jsonEncode(name)}: NUL is not allowed');
-        }
-        environment[environmentName] = environmentValue;
-      }
-    }
-    return environment;
-  }
-
-  static Future<Map<String, String>> _environmentFile(String path) async {
-    final String source;
-    try {
-      source = await File(path).readAsString();
-    } on FileSystemException catch (error) {
-      throw FyloException(
-          'cannot read FYLO environment file $path: ${error.message}');
-    }
-    final values = <String, String>{};
-    final lines = source.replaceFirst('\uFEFF', '').split(RegExp(r'\r?\n'));
-    final namePattern = RegExp(r'^[A-Za-z_][A-Za-z0-9_]*$');
-    for (var offset = 0; offset < lines.length; offset++) {
-      final line = offset + 1;
-      var text = lines[offset].trim();
-      if (text.isEmpty || text.startsWith('#')) continue;
-      text = text.replaceFirst(RegExp(r'^export\s+'), '');
-      final separator = text.indexOf('=');
-      if (separator < 0) {
-        throw FyloException('$path:$line: expected NAME=VALUE');
-      }
-      final name = text.substring(0, separator).trim();
-      if (!namePattern.hasMatch(name)) {
-        throw FyloException(
-            '$path:$line: invalid environment variable name ${jsonEncode(name)}');
-      }
-      final input = text.substring(separator + 1).trimLeft();
-      values[name] = _environmentValue(path, line, input);
-    }
-    return values;
-  }
-
-  static String _environmentValue(String path, int line, String input) {
-    if (input.isEmpty || (input[0] != '"' && input[0] != "'")) {
-      final comment = input.indexOf('#');
-      return (comment < 0 ? input : input.substring(0, comment)).trimRight();
-    }
-    final quote = input[0];
-    final value = StringBuffer();
-    for (var index = 1; index < input.length; index++) {
-      final character = input[index];
-      if (character == quote) {
-        final trailing = input.substring(index + 1).trim();
-        if (trailing.isNotEmpty && !trailing.startsWith('#')) {
-          throw FyloException(
-              '$path:$line: unexpected characters after quoted value');
-        }
-        return value.toString();
-      }
-      if (quote == '"' && character == r'\') {
-        index++;
-        if (index >= input.length) {
-          throw FyloException('$path:$line: unterminated escape sequence');
-        }
-        final escaped = input[index];
-        if (escaped == 'n') {
-          value.write('\n');
-        } else if (escaped == 'r') {
-          value.write('\r');
-        } else if (escaped == 't') {
-          value.write('\t');
-        } else if (escaped == '"' || escaped == r'\') {
-          value.write(escaped);
-        } else {
-          value.write(r'\');
-          value.write(escaped);
-        }
-      } else {
-        value.write(character);
-      }
-    }
-    throw FyloException('$path:$line: unterminated quoted value');
   }
 
   /// Send one raw machine-protocol op; resolves with the full response object.
   Future<Map<String, dynamic>> request(Map<String, dynamic> op) {
+    if (_exitError != null) return Future.error(_exitError!);
     final payload = utf8.encode(jsonEncode(op));
     if (payload.length > maxRequestBytes) {
       return Future.error(
@@ -269,7 +172,8 @@ class Fylo {
     if (response['ok'] != true) {
       final error = response['error'];
       throw FyloException(
-          (error is Map ? error['message'] : null) ?? 'fylo error');
+          (error is Map ? error['message'] : null) ?? 'fylo error',
+          code: error is Map ? error['code'] as String? : null);
     }
     return response['result'];
   }
@@ -429,22 +333,11 @@ class Fylo {
           {'collection': collection, 'query': query, 'page': page});
   Future<dynamic> joinDocs(Map<String, dynamic> join) =>
       _op('joinDocs', {'join': join});
-  Future<dynamic> executeSQL(String sql, {int? uid, int? gid, int? mode}) =>
-      _op('executeSQL', {
-        'sql': sql,
-        'access': uid == null && gid == null && mode == null
-            ? null
-            : {
-                if (uid != null) 'uid': uid,
-                if (gid != null) 'gid': gid,
-                if (mode != null) 'mode': mode
-              }
-      });
+  Future<dynamic> executeSQL(String sql) => _op('executeSQL', {'sql': sql});
 
   /// Run raw SQL, built with native interpolation: db.sql("… ${x}").
   /// Values are inlined verbatim — escape/validate untrusted input yourself.
-  Future<dynamic> sql(String query, {int? uid, int? gid, int? mode}) =>
-      executeSQL(query, uid: uid, gid: gid, mode: mode);
+  Future<dynamic> sql(String query) => executeSQL(query);
 
   Future<dynamic> importBulkData(String collection, String url) =>
       _op('importBulkData', {'collection': collection, 'url': url});
@@ -455,7 +348,7 @@ class Fylo {
 
   /// Close stdin so the loop ends, and wait for the process to exit.
   Future<void> close() async {
-    await _stdin.close();
+    await _stdin.close().then((_) {}, onError: _ignoreInputAfterExit);
     await _proc.exitCode;
   }
 }

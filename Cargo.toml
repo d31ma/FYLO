@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
+    "crates/fylo-chex",
     "crates/fylo-format",
     "crates/fylo-engine",
     "crates/fylo-query",
@@ -9,10 +10,19 @@ members = [
     "crates/fylo-machine",
     "crates/fylo-wasm",
     "crates/fylo-cli",
+    "crates/fylo",
+    "crates/fylo-identity",
+    "crates/fylo-test-support",
     "src/browser/wasm",
     "xtask",
 ]
+# Turso's engine, patched with its `fylo` feature (ADR 0019): the `fylo`
+# crate's `sql` feature builds it, but it is third-party source, so FYLO's
+# lints and tests do not run on it. `scripts/vendor-turso-core.sh` rebuilds it
+# from the crates.io release and `vendor/turso_core-0.8.3-fylo.patch`.
+exclude = ["vendor/turso_core"]
 default-members = [
+    "crates/fylo-chex",
     "crates/fylo-format",
     "crates/fylo-engine",
     "crates/fylo-query",
@@ -21,6 +31,8 @@ default-members = [
     "crates/fylo-machine",
     "crates/fylo-wasm",
     "crates/fylo-cli",
+    "crates/fylo",
+    "crates/fylo-identity",
     "xtask",
 ]
 
@@ -34,20 +46,58 @@ repository = "https://github.com/d31ma/Fylo"
 [workspace.dependencies]
 aes-gcm = "0.11.0"
 base64 = "0.22.1"
-boa_engine = { version = "0.21.1", default-features = false }
+# Core Foundation for `enclave:` keys (ADR 0021, phase 8); the versions
+# `security-framework` already brings in.
+core-foundation = { version = "0.10.1", default-features = false }
+core-foundation-sys = { version = "0.8.7", default-features = false }
 getrandom = "0.4.3"
 hmac = "0.13.0"
+# `$encrypted` field keys of protected databases (ADR 0021 phase 7): HKDF-SHA256
+# from each collection key. Already in the graph under `hpke`.
+hkdf = "0.13.0"
+# Key wrapping for application identities (ADR 0021): RFC 9180 base mode,
+# DHKEM(P-256, HKDF-SHA256), HKDF-SHA256, AES-256-GCM. Same RustCrypto
+# generation as `p256`, `aes-gcm`, `sha2`; `nistp` also builds P-384 and P-521.
+hpke = { version = "0.15.1", default-features = false, features = ["aes", "alloc", "getrandom", "nistp"] }
+libc = { version = "0.2.189", default-features = false }
+# `.vdbx` LZ4 frames (ADR 0016 section 8): pure Rust, so the browser writes
+# them; the safe encoder and decoder keep `unsafe` out.
+lz4_flex = { version = "0.14.0", default-features = false, features = ["std", "safe-encode", "safe-decode"] }
+# Application identities (ADR 0021): P-256 keys, PKCS#8 PEM key files, SEC1
+# public keys for the `fid1:p256:` fingerprint, and ECDSA for signed policies.
+p256 = { version = "0.14.0", default-features = false, features = ["arithmetic", "ecdsa", "pem", "std"] }
 pbkdf2 = { version = "0.13.0", features = ["hmac"] }
+# CHEX's regex dialect: the same feature set the upstream binary shipped, so a
+# schema matches exactly as it did. `perf` stays off (literal prefilters that
+# barely help on short field values); `unicode-perl` keeps `\d` and `\w` valid.
+regex = { version = "1.13.1", default-features = false, features = ["std", "unicode-perl", "unicode-case"] }
+# CHEX's compiled form (ADR 0017 section 4): each leaf pattern as a sparse
+# DFA. Already in the graph under `regex`; only DFA search is on here, so the
+# browser build links a DFA loader and searcher but no regex compiler.
+# `fylo-chex`'s `compile` feature adds the parser and the DFA builder natively.
+regex-automata = { version = "0.4.18", default-features = false, features = ["alloc", "dfa-search"] }
 reqwest = { version = "0.13.2", default-features = false, features = ["blocking", "rustls-no-provider"] }
+# `.vdbx` zstd frames in the browser (ADR 0016 section 8): pure Rust, decode
+# only.
+ruzstd = { version = "0.9.1", default-features = false, features = ["std"] }
 rustix = { version = "1.1.4", default-features = false, features = ["fs"] }
 rustls = { version = "0.23.43", default-features = false, features = ["ring", "std", "tls12"] }
 ryu-js = "1.0.3"
 same-file = "1.0.6"
+# The macOS keychain store of application identities (ADR 0021); already in
+# the graph through rustls' platform verifier. TLS features off.
+security-framework = { version = "3.7.0", default-features = false }
+# The raw Security declarations behind `enclave:` keys (ADR 0021, phase 8).
+security-framework-sys = { version = "2.17.0", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.151", features = ["preserve_order"] }
 sha2 = "0.11.0"
+windows-sys = { version = "0.61.2", default-features = false }
 xattr = "1.6.1"
 zeroize = "1.8.2"
+# `.vdbx` zstd frames natively (ADR 0016 section 8): the C library, for its
+# ratio and its dictionary trainer. Never built for WebAssembly.
+zstd = { version = "0.14.3", default-features = false, features = ["zdict_builder"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

@@ -1,0 +1,1863 @@
+//! A `.vdbx` container file: create, open and checkpoint (ADR 0016).
+//!
+//! This layer owns the file's fixed structures — the two superblock copies,
+//! the extent map and the collection directory — and hands out extents. It
+//! knows nothing about the records inside a segment; the segment store reads
+//! and writes extent payloads through [`ContainerFile::read_payload`] and
+//! [`ContainerFile::write_payload`].
+
+use std::io;
+use std::path::Path;
+use std::sync::Arc;
+
+use fylo_format::{
+    ContainerAccessSlot, ContainerCheckpointSlot, ContainerCollectionHeader, ContainerExtentHeader,
+    ContainerExtentKind, ContainerExtentMapPage, ContainerFormatError, ContainerGenerationSlot,
+    ContainerSuperblock,
+};
+use fylo_vfs::{File, OpenOptions};
+
+use crate::container_allocator::{
+    ContainerAllocatorError, ContainerExtentAllocation, ContainerExtentAllocator,
+};
+use crate::{ContainerCipher, ContainerCipherError, ContainerSealContext};
+
+mod dictionary;
+mod directory_journal;
+#[cfg(test)]
+pub(crate) mod fault;
+#[cfg(test)]
+use fault::ContainerFault;
+mod protection;
+mod punch;
+use punch::punch_hole;
+mod sealed_image;
+pub use sealed_image::ContainerSealedReport;
+use sealed_image::SealedImage;
+#[cfg(not(target_family = "wasm"))]
+mod sealing;
+mod snapshot;
+mod verify;
+pub use verify::{ContainerProblem, ContainerProblemSeverity, ContainerVerifyReport};
+
+/// Why a container operation failed.
+#[derive(Debug)]
+pub enum ContainerError {
+    /// The filesystem refused an operation.
+    Io(io::Error),
+    /// A structure failed to decode.
+    Format(ContainerFormatError),
+    /// The extent map refused an operation.
+    Allocator(ContainerAllocatorError),
+    /// A collection with that name already exists.
+    CollectionExists,
+    /// No collection block is free in the directory extent.
+    DirectoryFull,
+    /// The file may only be read (a reader's open, or a read-only-compatible
+    /// feature this build lacks).
+    ReadOnly,
+    /// The file is a sealed pack (`fylo pack --sealed`), which is never
+    /// written.
+    Sealed,
+    /// Other writers kept the file past the busy timeout (`EBUSY`).
+    Busy,
+    /// The file is encrypted and has not been unlocked with its key
+    /// (`EKEY`).
+    Locked,
+    /// Encryption refused: a wrong key, or a sealed unit that is damaged.
+    Cipher(ContainerCipherError),
+    /// The single-writer lease refused or was lost.
+    #[cfg(not(target_family = "wasm"))]
+    Lease(crate::ContainerLeaseError),
+    /// A protected file refused the identity or the action (ADR 0021).
+    Access(crate::DatabaseAccessError),
+}
+
+impl std::fmt::Display for ContainerError {
+    #[inline(never)]
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(error) => write!(formatter, "container I/O failed: {error}"),
+            Self::Format(error) => write!(formatter, "container is malformed: {error}"),
+            Self::Allocator(error) => write!(formatter, "container extent map refused: {error:?}"),
+            Self::CollectionExists => formatter.write_str("container collection already exists"),
+            Self::DirectoryFull => formatter.write_str("container collection directory is full"),
+            Self::ReadOnly => formatter.write_str("container may only be read"),
+            Self::Sealed => formatter.write_str(
+                "the .vdbx database is sealed (fylo pack --sealed) and may only be read; \
+                 unpack it, or pack it again without --sealed, to write to it",
+            ),
+            Self::Busy => formatter.write_str("container is busy with other writers"),
+            Self::Locked => formatter.write_str("container is encrypted and needs its key"),
+            Self::Cipher(error) => write!(formatter, "container encryption: {error}"),
+            Self::Access(error) => write!(formatter, "{error}"),
+            #[cfg(not(target_family = "wasm"))]
+            Self::Lease(error) => write!(formatter, "container lease: {error}"),
+        }
+    }
+}
+
+impl ContainerError {
+    /// The stable error code machine clients see.
+    #[must_use]
+    #[inline(never)]
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Io(error) if error.kind() == io::ErrorKind::NotFound => "ENATIVE_NOT_FOUND",
+            Self::Io(error) if error.kind() == io::ErrorKind::PermissionDenied => "EACCES",
+            Self::Io(_) => "ENATIVE_IO",
+            Self::Format(ContainerFormatError::BadMagic) => "EVDBX_NOT_VDBX",
+            Self::Format(
+                ContainerFormatError::UnsupportedVersion
+                | ContainerFormatError::IncompatibleFeature,
+            ) => "EVDBX_VERSION",
+            Self::Format(_) | Self::Allocator(_) => "EVDBX_CORRUPT",
+            Self::CollectionExists => "EVDBX_EXISTS",
+            Self::DirectoryFull => "EVDBX_FULL",
+            Self::ReadOnly | Self::Sealed => "EROFS",
+            Self::Busy => "EBUSY",
+            Self::Locked | Self::Cipher(ContainerCipherError::WrongKey) => "EKEY",
+            Self::Cipher(ContainerCipherError::Unauthenticated) => "EVDBX_CORRUPT",
+            Self::Cipher(ContainerCipherError::Random) => "ENATIVE_IO",
+            Self::Cipher(ContainerCipherError::NoGrant) => "EACCES",
+            Self::Access(error) => error.code(),
+            #[cfg(not(target_family = "wasm"))]
+            Self::Lease(crate::ContainerLeaseError::Busy { .. }) => "EBUSY",
+            #[cfg(not(target_family = "wasm"))]
+            Self::Lease(crate::ContainerLeaseError::Lost) => "EVDBX_LEASE_LOST",
+            #[cfg(not(target_family = "wasm"))]
+            Self::Lease(crate::ContainerLeaseError::Io(_)) => "ENATIVE_IO",
+        }
+    }
+}
+
+impl std::error::Error for ContainerError {}
+
+impl From<io::Error> for ContainerError {
+    fn from(error: io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+impl From<ContainerFormatError> for ContainerError {
+    fn from(error: ContainerFormatError) -> Self {
+        Self::Format(error)
+    }
+}
+
+impl From<ContainerAllocatorError> for ContainerError {
+    fn from(error: ContainerAllocatorError) -> Self {
+        Self::Allocator(error)
+    }
+}
+
+impl From<ContainerCipherError> for ContainerError {
+    fn from(error: ContainerCipherError) -> Self {
+        Self::Cipher(error)
+    }
+}
+
+/// One collection as the directory records it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContainerCollection {
+    /// Its block number in the directory extent.
+    pub block: u32,
+    /// The static header.
+    pub header: ContainerCollectionHeader,
+    /// The newest valid generation slot, if any has been published.
+    pub generation: Option<ContainerGenerationSlot>,
+    /// The newest valid checkpoint slot, if the collection has checkpointed.
+    pub checkpoint: Option<ContainerCheckpointSlot>,
+}
+
+/// What `fylo inspect` reports about a container. It reads only the
+/// superblock, map and directory, never a record.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(clippy::struct_excessive_bools)]
+pub struct ContainerReport {
+    /// Always `fylo.vdbx`.
+    pub format: &'static str,
+    /// Superblock generation in force.
+    pub generation: u64,
+    /// Bytes per extent.
+    pub extent_bytes: u64,
+    /// Extents the map describes, including the superblock region.
+    pub extent_count: u64,
+    /// The file's length.
+    pub file_bytes: u64,
+    /// Whether records are encrypted. Off unless the database asked for it.
+    pub encrypted: bool,
+    /// Whether the file is encrypted and was opened without its key, so
+    /// the collections are not listed.
+    pub locked: bool,
+    /// Whether the file is protected by application identities
+    /// (ADR 0021); `locked` then means it was opened without an identity.
+    pub protected: bool,
+    /// Whether the file is a sealed, read-only pack.
+    pub sealed: bool,
+    /// A sealed file's blocks.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocks: Option<ContainerSealedReport>,
+    /// Codecs some frame may use.
+    pub codecs: Vec<&'static str>,
+    /// Extents by state and kind.
+    pub extents: crate::ContainerExtentCensus,
+    /// The collections, in directory order.
+    pub collections: Vec<ContainerCollectionReport>,
+}
+
+/// One collection in a [`ContainerReport`].
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContainerCollectionReport {
+    /// Its name.
+    pub name: String,
+    /// Its id.
+    pub id: u32,
+    /// Whether it was dropped and awaits release.
+    pub dropped: bool,
+    /// Records committed, as its newest generation slot counts them.
+    pub records: u64,
+    /// The newest checkpoint's LSN, if it has checkpointed.
+    pub checkpoint_lsn: Option<u64>,
+    /// The id of the dictionary new records are compressed with, as the
+    /// newest checkpoint names it, if the collection has one.
+    pub dictionary: Option<u32>,
+    /// Dictionaries the map shows the collection holding: the current one
+    /// and older ones some record may still name.
+    pub dictionaries: u64,
+}
+
+/// The file under a container: natively the shared lock handle, which every
+/// open of the file in the process uses, and in WebAssembly the host file.
+#[cfg(not(target_family = "wasm"))]
+pub(crate) type Handle = crate::ByteRangeLockFile;
+#[cfg(target_family = "wasm")]
+pub(crate) type Handle = File;
+
+/// An open `.vdbx` container.
+#[derive(Debug)]
+pub struct ContainerFile {
+    handle: Handle,
+    writable: bool,
+    superblock: ContainerSuperblock,
+    superblock_in_a: bool,
+    allocator: ContainerExtentAllocator,
+    collections: Vec<ContainerCollection>,
+    /// The record key of an encrypted file. A sealed file seals its blocks
+    /// instead, with the key its image holds.
+    cipher: Option<Arc<ContainerCipher>>,
+    /// The blocks of a sealed file, which every read goes through.
+    image: Option<SealedImage>,
+}
+
+const SUPERBLOCK_BYTES: u64 = ContainerSuperblock::ENCODED_BYTES as u64;
+const PAGE_BYTES: u64 = 4096;
+const BLOCK_BYTES: u64 = ContainerCollectionHeader::BLOCK_BYTES as u64;
+const ACCESS_SLOT_BYTES: u64 = ContainerAccessSlot::SLOT_BYTES as u64;
+
+impl ContainerFile {
+    /// Create a new, empty container at `path`, which must not exist.
+    ///
+    /// The file holds the superblock region, one directory extent and one
+    /// map extent. Every byte the creation writes is flushed before this
+    /// returns; the caller flushes the parent directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns the creation, write or flush failure, or `InvalidField` for an
+    /// extent shift outside the format's range.
+    pub fn create(path: &Path, extent_shift: u8) -> Result<(), ContainerError> {
+        Self::create_with(path, extent_shift, None)
+    }
+
+    /// Create a new, empty container whose records, directory, dictionaries
+    /// and snapshots are sealed with a key derived from `secret` (ADR 0016
+    /// section 9). Encryption is opt-in; [`Self::create`] makes a plain file.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`Self::create`], and `Cipher(Random)` when no salt can be
+    /// drawn.
+    pub fn create_encrypted(
+        path: &Path,
+        extent_shift: u8,
+        secret: &[u8],
+    ) -> Result<(), ContainerError> {
+        Self::create_with(path, extent_shift, Some(secret))
+    }
+
+    fn create_with(
+        path: &Path,
+        extent_shift: u8,
+        secret: Option<&[u8]>,
+    ) -> Result<(), ContainerError> {
+        let (incompat, key_salt, key_check) = match secret {
+            Some(secret) => {
+                let salt = ContainerCipher::new_salt()?;
+                let check = ContainerCipher::derive(secret, &salt).key_check();
+                (ContainerSuperblock::INCOMPAT_ENCRYPTED, salt, check)
+            }
+            None => (0, [0; 32], [0; 16]),
+        };
+        Self::create_raw(path, extent_shift, (incompat, key_salt, key_check), None)
+    }
+
+    /// Create the file with the given encryption header, and the first
+    /// access slot of a protected file.
+    fn create_raw(
+        path: &Path,
+        extent_shift: u8,
+        (incompat, key_salt, key_check): (u32, [u8; 32], [u8; 16]),
+        access: Option<&ContainerAccessSlot>,
+    ) -> Result<(), ContainerError> {
+        if !(ContainerSuperblock::MIN_EXTENT_SHIFT..=ContainerSuperblock::MAX_EXTENT_SHIFT)
+            .contains(&extent_shift)
+        {
+            return Err(ContainerFormatError::InvalidField.into());
+        }
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(path)?;
+        let mut allocator = ContainerExtentAllocator::new(1);
+        let directory = allocator.allocate(ContainerExtentKind::Directory, 0);
+        let map = allocator.allocate(ContainerExtentKind::Map, 0);
+        let extent_bytes = 1_u64 << extent_shift;
+        file.set_len(allocator.extent_count() * extent_bytes)?;
+        write_extent_header(
+            &file,
+            extent_bytes,
+            directory,
+            ContainerExtentKind::Directory,
+            0,
+        )?;
+        write_extent_header(&file, extent_bytes, map, ContainerExtentKind::Map, 0)?;
+        write_map(&file, extent_bytes, &[map.index], &allocator.map_pages())?;
+        if let Some(access) = access {
+            let at = directory.index * extent_bytes
+                + ContainerExtentHeader::PAYLOAD_OFFSET
+                + Self::access_slot_offset(extent_bytes, true);
+            write_all_at(&file, &access.encode()?, at)?;
+        }
+        let superblock = ContainerSuperblock {
+            generation: 1,
+            extent_shift,
+            extent_count: allocator.extent_count(),
+            next_extent_sequence: allocator.next_sequence(),
+            directory_extent: directory.index,
+            map_first_extent: map.index,
+            map_extent_count: 1,
+            compat: 0,
+            read_only_compat: 0,
+            incompat,
+            key_salt,
+            key_check,
+        };
+        write_all_at(&file, &superblock.encode(), 0)?;
+        crate::sync_handle(&file)?;
+        Ok(())
+    }
+
+    /// Open an existing container for reading and writing, with no
+    /// coordination with other writers: for a host that coordinates them
+    /// itself, as the browser does with a Web Lock, and for tests. Natively,
+    /// use [`Self::open_writer`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the open or read failure, a decoding error for the
+    /// superblocks, map or directory, `Allocator(InconsistentMap)` when the
+    /// map does not describe the file, and `ReadOnly` for a file this build
+    /// may only read.
+    pub fn open_unchecked(path: &Path) -> Result<Self, ContainerError> {
+        #[cfg(not(target_family = "wasm"))]
+        let handle = crate::ByteRangeLockFile::open(path)?;
+        #[cfg(target_family = "wasm")]
+        let handle = OpenOptions::new().read(true).write(true).open(path)?;
+        Self::from_handle(handle, true)
+    }
+
+    /// Open a container to read. It takes no lock and is never blocked by
+    /// writers; it works on read-only files and mounts, and on sealed files.
+    /// Every write fails with `ReadOnly`. An encrypted file opens locked:
+    /// call [`Self::unlock`] before reading its collections.
+    ///
+    /// # Errors
+    ///
+    /// Returns the open or read failure, or a decoding error.
+    pub fn open_reader(path: &Path) -> Result<Self, ContainerError> {
+        let handle = Self::read_only_handle(path)?;
+        Self::from_handle(handle, false)
+    }
+
+    /// Open the file at `path` to read. Natively this shares the handle the
+    /// process already has on the file, if any: on macOS, closing any other
+    /// descriptor for the file would drop every lock the process holds on it.
+    fn read_only_handle(path: &Path) -> io::Result<Handle> {
+        #[cfg(not(target_family = "wasm"))]
+        {
+            crate::ByteRangeLockFile::open_read_only(path)
+        }
+        #[cfg(target_family = "wasm")]
+        {
+            OpenOptions::new().read(true).open(path)
+        }
+    }
+
+    /// Refuse the file `file` with `Sealed` when its superblock says it is a
+    /// sealed pack, before anything is taken to write it.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Sealed`, or the read failure. A superblock that does not
+    /// decode is left for the open to report.
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn refuse_sealed(file: &File) -> Result<(), ContainerError> {
+        let mut copies = vec![0_u8; 2 * ContainerSuperblock::ENCODED_BYTES];
+        read_exact_at(file, &mut copies, 0)?;
+        let newest = ContainerSuperblock::newest(
+            &copies[..ContainerSuperblock::ENCODED_BYTES],
+            &copies[ContainerSuperblock::ENCODED_BYTES..],
+        );
+        match newest {
+            Ok((superblock, _)) if superblock.is_sealed() => Err(ContainerError::Sealed),
+            _ => Ok(()),
+        }
+    }
+
+    pub(crate) fn from_handle(handle: Handle, writable: bool) -> Result<Self, ContainerError> {
+        let mut container = Self {
+            handle,
+            writable,
+            superblock: placeholder_superblock(),
+            superblock_in_a: true,
+            allocator: ContainerExtentAllocator::new(1),
+            collections: Vec::new(),
+            cipher: None,
+            image: None,
+        };
+        let mut copies = vec![0_u8; 2 * ContainerSuperblock::ENCODED_BYTES];
+        read_exact_at(container.file(), &mut copies, 0)?;
+        let (superblock, in_a) = ContainerSuperblock::newest(
+            &copies[..ContainerSuperblock::ENCODED_BYTES],
+            &copies[ContainerSuperblock::ENCODED_BYTES..],
+        )?;
+        if writable && superblock.is_sealed() {
+            return Err(ContainerError::Sealed);
+        }
+        if writable && superblock.requires_read_only() {
+            return Err(ContainerError::ReadOnly);
+        }
+        if superblock.is_sealed() {
+            container.image = Some(SealedImage::load(container.file(), &superblock)?);
+        }
+        container.superblock = superblock;
+        container.superblock_in_a = in_a;
+        // An encrypted directory waits for the key, and so does the map of
+        // an encrypted sealed file, whose blocks hold it.
+        if container
+            .image
+            .as_ref()
+            .is_none_or(|image| !image.is_locked())
+        {
+            container.allocator = container.read_map()?;
+        }
+        if !container.is_encrypted() {
+            container.collections = container.read_directory()?;
+        }
+        // An older superblock copy can describe more extents than a later
+        // shrink left in the file; give them back their zeros.
+        let required = container.allocator.extent_count() * container.extent_bytes();
+        if writable && container.file().metadata()?.len() < required {
+            container.file().set_len(required)?;
+        }
+        Ok(container)
+    }
+
+    /// Read the superblocks again and, when another process has
+    /// checkpointed the map since this open last read it, the map and the
+    /// directory too. Returns whether it read them.
+    ///
+    /// A reader writes nothing, so the map on disk is never older than its
+    /// own. A writer under the lease is the only one to checkpoint, so for
+    /// it this finds nothing new. A writer sharing the file with writers in
+    /// other processes reads their checkpoints too, and loses what its own
+    /// map changed since its last checkpoint: it refreshes under the
+    /// allocation byte ([`Self::lock_allocation`]) before it changes the
+    /// map, and checkpoints before it lets the byte go, so nothing it took
+    /// or released is lost; a take-back in memory only ([`Self::reclaim`])
+    /// or a seal not yet checkpointed must be made again.
+    ///
+    /// # Errors
+    ///
+    /// Returns the read failure or a decoding error; the open keeps what it
+    /// had.
+    pub fn refresh(&mut self) -> Result<bool, ContainerError> {
+        // A sealed file never changes.
+        if self.image.is_some() {
+            return Ok(false);
+        }
+        let mut copies = vec![0_u8; 2 * ContainerSuperblock::ENCODED_BYTES];
+        read_exact_at(self.file(), &mut copies, 0)?;
+        let (superblock, in_a) = ContainerSuperblock::newest(
+            &copies[..ContainerSuperblock::ENCODED_BYTES],
+            &copies[ContainerSuperblock::ENCODED_BYTES..],
+        )?;
+        if superblock.generation == self.superblock.generation {
+            return Ok(false);
+        }
+        let previous = std::mem::replace(&mut self.superblock, superblock);
+        let allocator = match self.read_map() {
+            Ok(allocator) => allocator,
+            Err(error) => {
+                self.superblock = previous;
+                return Err(error);
+            }
+        };
+        if let Err(error) = self.reload_access() {
+            self.superblock = previous;
+            return Err(error);
+        }
+        let collections = if self.is_locked() {
+            Vec::new()
+        } else {
+            match self.read_directory() {
+                Ok(collections) => collections,
+                Err(error) => {
+                    self.superblock = previous;
+                    return Err(error);
+                }
+            }
+        };
+        self.superblock_in_a = in_a;
+        self.allocator = allocator;
+        self.collections = collections;
+        self.bind_access();
+        Ok(true)
+    }
+
+    fn file(&self) -> &File {
+        Self::handle_file(&self.handle)
+    }
+
+    fn handle_file(handle: &Handle) -> &File {
+        #[cfg(not(target_family = "wasm"))]
+        {
+            handle.file()
+        }
+        #[cfg(target_family = "wasm")]
+        {
+            handle
+        }
+    }
+
+    /// Whether this open may write.
+    #[must_use]
+    pub fn is_writable(&self) -> bool {
+        self.writable
+    }
+
+    /// Take the writer byte of the collection in directory block `block`
+    /// exclusive, waiting up to `wait`, so one process at a time writes
+    /// that collection; dropping the guard lets the next in. Under the
+    /// lease the byte is decided inside this process alone.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Busy` when another writer keeps it past `wait`, `ReadOnly`
+    /// for a reader, or the lock failure.
+    #[cfg(not(target_family = "wasm"))]
+    pub fn lock_collection_writer(
+        &self,
+        block: u32,
+        wait: std::time::Duration,
+    ) -> Result<crate::ByteLockGuard, ContainerError> {
+        lock_byte(
+            &self.lock_handle()?,
+            crate::LockByte::collection_writer(block),
+            wait,
+        )
+    }
+
+    /// Take the allocation byte exclusive, waiting up to `wait`, so one
+    /// process at a time takes, seals, releases and checkpoints extents
+    /// (ADR 0016 section 7). A writer sharing the file with others holds it
+    /// across [`Self::refresh`], its change to the map and the
+    /// [`Self::checkpoint`] that records it. Under the lease the byte is
+    /// decided inside this process alone.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Busy` when another writer keeps it past `wait`, `ReadOnly`
+    /// for a reader, or the lock failure.
+    #[cfg(not(target_family = "wasm"))]
+    pub fn lock_allocation(
+        &self,
+        wait: std::time::Duration,
+    ) -> Result<crate::ByteLockGuard, ContainerError> {
+        lock_byte(&self.lock_handle()?, crate::LockByte::ALLOCATION, wait)
+    }
+
+    /// The lock handle of a writable open, to take a byte through without
+    /// borrowing the open while waiting ([`lock_byte`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns `ReadOnly` or `Locked`.
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn lock_handle(&self) -> Result<crate::ByteRangeLockFile, ContainerError> {
+        self.require_writable()?;
+        Ok(self.handle.clone())
+    }
+
+    /// Whether the file was created encrypted.
+    #[must_use]
+    pub fn is_encrypted(&self) -> bool {
+        self.superblock.incompat & ContainerSuperblock::INCOMPAT_ENCRYPTED != 0
+    }
+
+    /// Whether the file is protected by application identities (ADR 0021).
+    #[must_use]
+    pub fn is_protected(&self) -> bool {
+        self.superblock.is_protected()
+    }
+
+    /// Where a protected file's access slots start in the directory
+    /// extent's payload: the directory blocks end there. A file that is not
+    /// protected has none, so its blocks fill the payload.
+    fn access_slot_offset(extent_bytes: u64, protected: bool) -> u64 {
+        let capacity = extent_bytes - ContainerExtentHeader::PAYLOAD_OFFSET;
+        capacity - u64::from(protected) * 2 * ACCESS_SLOT_BYTES
+    }
+
+    /// Whether the file is encrypted and not yet unlocked.
+    #[must_use]
+    pub fn is_locked(&self) -> bool {
+        match &self.image {
+            Some(image) => image.is_locked() || (self.is_protected() && self.cipher.is_none()),
+            None => self.is_encrypted() && self.cipher.is_none(),
+        }
+    }
+
+    /// Whether records, the directory, dictionaries and snapshots are each
+    /// sealed with the file key: in an encrypted file that is not sealed.
+    /// A sealed file seals its blocks instead, and what they hold is plain.
+    fn seals_units(&self) -> bool {
+        self.is_encrypted() && (self.image.is_none() || self.is_protected())
+    }
+
+    /// Whether the file is a sealed pack (`fylo pack --sealed`).
+    #[must_use]
+    pub fn is_sealed(&self) -> bool {
+        self.image.is_some()
+    }
+
+    /// Unlock an encrypted file with its secret and read its directory. A
+    /// plain file needs no key, and this does nothing for one.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Cipher(WrongKey)` for a secret that is not this file's,
+    /// `Cipher(Unauthenticated)` for a damaged directory block, or the read
+    /// failure.
+    pub fn unlock(&mut self, secret: &[u8]) -> Result<(), ContainerError> {
+        if !self.is_locked() {
+            return Ok(());
+        }
+        self.unlock_with(Arc::new(ContainerCipher::derive(
+            secret,
+            &self.superblock.key_salt,
+        )))
+    }
+
+    /// Unlock an encrypted file with the key a root is configured with,
+    /// as [`Self::unlock`] does with its secret.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`Self::unlock`].
+    pub fn unlock_with_key(&mut self, key: &crate::DatabaseKey) -> Result<(), ContainerError> {
+        self.unlock(key.secret())
+    }
+
+    /// Unlock an encrypted file with a key already derived for it, as
+    /// another open of the same file derived it ([`Self::shared_cipher`]),
+    /// and read its directory. A plain file needs no key, and this does
+    /// nothing for one.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`Self::unlock`].
+    pub fn unlock_with(&mut self, cipher: Arc<ContainerCipher>) -> Result<(), ContainerError> {
+        if !self.is_locked() {
+            return Ok(());
+        }
+        cipher.check(&self.superblock.key_check)?;
+        if let Some(image) = self
+            .image
+            .as_mut()
+            .filter(|_| !self.superblock.is_protected())
+        {
+            // The blocks hold the map and the directory, both plain.
+            image.set_cipher(Some(cipher));
+            let opened = self.read_map().and_then(|allocator| {
+                self.allocator = allocator;
+                self.read_directory()
+            });
+            return match opened {
+                Ok(collections) => {
+                    self.collections = collections;
+                    Ok(())
+                }
+                Err(error) => {
+                    self.allocator = ContainerExtentAllocator::new(1);
+                    if let Some(image) = &mut self.image {
+                        image.set_cipher(None);
+                    }
+                    Err(error)
+                }
+            };
+        }
+        self.cipher = Some(cipher);
+        match self.read_directory() {
+            Ok(collections) => {
+                self.collections = collections;
+                self.bind_access();
+                Ok(())
+            }
+            Err(error) => {
+                self.cipher = None;
+                Err(error)
+            }
+        }
+    }
+
+    /// The file key, for the segment store to seal records, dictionaries
+    /// and snapshots with. `None` for a plain file or a locked one.
+    #[must_use]
+    pub fn cipher(&self) -> Option<&ContainerCipher> {
+        self.cipher.as_deref()
+    }
+
+    /// The file key, shared, for record frames that seal and open bodies
+    /// without holding the file, and for another open of the same file to
+    /// unlock with ([`Self::unlock_with`]).
+    #[must_use]
+    pub fn shared_cipher(&self) -> Option<Arc<ContainerCipher>> {
+        self.cipher.clone()
+    }
+
+    fn require_writable(&self) -> Result<(), ContainerError> {
+        if self.image.is_some() {
+            Err(ContainerError::Sealed)
+        } else if !self.writable {
+            Err(ContainerError::ReadOnly)
+        } else if self.is_locked() {
+            Err(self.locked_error())
+        } else {
+            Ok(())
+        }
+    }
+
+    /// The superblock in force.
+    #[must_use]
+    pub fn superblock(&self) -> &ContainerSuperblock {
+        &self.superblock
+    }
+
+    /// Whether `path` still names this file, as far as `fylo rekey` can
+    /// have changed it: a rekey replaces the file with another whose key
+    /// salt differs, since at least one of the two is encrypted under a salt
+    /// drawn for it alone. A path that names nothing, or no container, does
+    /// not name this file.
+    ///
+    /// # Errors
+    ///
+    /// Returns a read failure other than the file being absent or short.
+    pub fn is_named_by(&self, path: &Path) -> Result<bool, ContainerError> {
+        let handle = match Self::read_only_handle(path) {
+            Ok(handle) => handle,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(error.into()),
+        };
+        let mut copies = vec![0_u8; 2 * ContainerSuperblock::ENCODED_BYTES];
+        match read_exact_at(Self::handle_file(&handle), &mut copies, 0) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(false),
+            Err(error) => return Err(error.into()),
+        }
+        let newest = ContainerSuperblock::newest(
+            &copies[..ContainerSuperblock::ENCODED_BYTES],
+            &copies[ContainerSuperblock::ENCODED_BYTES..],
+        );
+        Ok(newest.is_ok_and(|(superblock, _)| superblock.key_salt == self.superblock.key_salt))
+    }
+
+    /// The collections in the directory, in block order.
+    #[must_use]
+    pub fn collections(&self) -> &[ContainerCollection] {
+        &self.collections
+    }
+
+    /// The extent map, for planning compaction and shrinking.
+    #[must_use]
+    pub fn allocator(&self) -> &ContainerExtentAllocator {
+        &self.allocator
+    }
+
+    fn extent_bytes(&self) -> u64 {
+        self.superblock.extent_bytes()
+    }
+
+    fn payload_offset(&self, extent: u64, offset: u64, length: usize) -> io::Result<u64> {
+        let capacity = self.extent_bytes() - ContainerExtentHeader::PAYLOAD_OFFSET;
+        let end = offset.checked_add(length as u64);
+        if extent == 0
+            || extent >= self.allocator.extent_count()
+            || end.is_none_or(|end| end > capacity)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "container payload range is outside its extent",
+            ));
+        }
+        Ok(extent * self.extent_bytes() + ContainerExtentHeader::PAYLOAD_OFFSET + offset)
+    }
+
+    /// Bytes of payload one extent holds.
+    #[must_use]
+    pub fn payload_capacity(&self) -> u64 {
+        self.extent_bytes() - ContainerExtentHeader::PAYLOAD_OFFSET
+    }
+
+    /// Read payload bytes of one extent.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidInput` for a range outside the extent, or the read
+    /// failure.
+    pub fn read_payload(&self, extent: u64, offset: u64, buffer: &mut [u8]) -> io::Result<()> {
+        let at = self.payload_offset(extent, offset, buffer.len())?;
+        self.read_at(buffer, at)
+    }
+
+    /// Read `buffer.len()` bytes of the container at `offset`: from the
+    /// file, or from the blocks of a sealed one.
+    fn read_at(&self, buffer: &mut [u8], offset: u64) -> io::Result<()> {
+        match &self.image {
+            Some(image) => image.read(self.file(), buffer, offset),
+            None => read_exact_at(self.file(), buffer, offset),
+        }
+    }
+
+    /// The container's length: the file's, or a sealed file's image's.
+    fn container_bytes(&self) -> io::Result<u64> {
+        match &self.image {
+            Some(image) => Ok(image.image_bytes()),
+            None => Ok(self.file().metadata()?.len()),
+        }
+    }
+
+    /// Write payload bytes of one extent, without flushing.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidInput` for a range outside the extent, or the write
+    /// failure.
+    pub fn write_payload(&self, extent: u64, offset: u64, bytes: &[u8]) -> io::Result<()> {
+        if !self.writable {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "container is open to read",
+            ));
+        }
+        let at = self.payload_offset(extent, offset, bytes.len())?;
+        write_all_at(self.file(), bytes, at)
+    }
+
+    /// Read and check an extent's header against what a location expects.
+    ///
+    /// # Errors
+    ///
+    /// Returns the read failure, `InvalidInput` for an extent no file could
+    /// hold, or a decoding error; `InvalidField` means the extent was freed
+    /// and reused, and the caller retries.
+    pub fn expect_extent(
+        &self,
+        extent: u64,
+        kind: ContainerExtentKind,
+        owner: u32,
+        sequence: u64,
+    ) -> Result<ContainerExtentHeader, ContainerError> {
+        // The extent comes from a location the file itself recorded, so it is
+        // untrusted. One past the map is not refused: a reader's map can
+        // predate extents a writer has added since.
+        let at = extent.checked_mul(self.extent_bytes()).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "container extent is beyond any file",
+            )
+        })?;
+        let mut bytes = [0_u8; ContainerExtentHeader::ENCODED_BYTES];
+        self.read_at(&mut bytes, at)?;
+        Ok(ContainerExtentHeader::expect(
+            &bytes, extent, kind, owner, sequence,
+        )?)
+    }
+
+    /// Flush every write made so far.
+    ///
+    /// # Errors
+    ///
+    /// Returns the flush failure.
+    pub fn sync(&self) -> io::Result<()> {
+        crate::sync_handle(self.file())
+    }
+
+    /// Take an extent and write its header, growing the file if needed. The
+    /// header is not flushed; the commit that first uses the extent flushes
+    /// it with its own record.
+    ///
+    /// A reused segment extent is cleared first, by a hole where the
+    /// filesystem punches one and with zeros elsewhere, because a segment's
+    /// end is found by scanning to its last valid frame and must never reach
+    /// a former owner's frames. Other kinds record their lengths.
+    ///
+    /// # Errors
+    ///
+    /// Returns the write or resize failure, after which nothing is taken:
+    /// the map in memory is as it was, so no checkpoint maps an extent
+    /// whose header was never written.
+    pub fn allocate(
+        &mut self,
+        kind: ContainerExtentKind,
+        owner: u32,
+    ) -> Result<ContainerExtentAllocation, ContainerError> {
+        self.require_writable()?;
+        let (saved, length) = (self.allocator.clone(), self.file().metadata()?.len());
+        let allocation = self.allocator.allocate(kind, owner);
+        if let Err(error) = self.prepare_extent(allocation, kind, owner) {
+            self.roll_back(saved, length);
+            return Err(error.into());
+        }
+        Ok(allocation)
+    }
+
+    /// Grow the file to hold a new extent, or clear a reused segment
+    /// extent, and write the extent's header.
+    fn prepare_extent(
+        &self,
+        allocation: ContainerExtentAllocation,
+        kind: ContainerExtentKind,
+        owner: u32,
+    ) -> io::Result<()> {
+        if allocation.grows_file {
+            #[cfg(test)]
+            fault::check(ContainerFault::Grow)?;
+            self.file()
+                .set_len(self.allocator.extent_count() * self.extent_bytes())?;
+        } else if kind == ContainerExtentKind::Segment {
+            self.clear_extent(allocation.index)?;
+        }
+        write_extent_header(self.file(), self.extent_bytes(), allocation, kind, owner)
+    }
+
+    /// Undo a change to the map that failed before anything named what it
+    /// took: put back the map `saved`, and cut off what the change grew
+    /// the file by past `length`. The cut is only tidying: a file longer
+    /// than its map opens as before.
+    fn roll_back(&mut self, saved: ContainerExtentAllocator, length: u64) {
+        self.allocator = saved;
+        if self
+            .file()
+            .metadata()
+            .is_ok_and(|metadata| metadata.len() > length)
+        {
+            let _ = self.file().set_len(length);
+        }
+    }
+
+    fn clear_extent(&self, extent: u64) -> io::Result<()> {
+        #[cfg(test)]
+        fault::check(ContainerFault::ClearExtent)?;
+        let start = extent * self.extent_bytes();
+        if punch_hole(self.file(), start, self.extent_bytes())? {
+            return Ok(());
+        }
+        let zeros = vec![0_u8; 1 << 20];
+        let mut at = start;
+        let end = start + self.extent_bytes();
+        while at < end {
+            let length =
+                usize::try_from(end - at).map_or(zeros.len(), |left| left.min(zeros.len()));
+            write_all_at(self.file(), &zeros[..length], at)?;
+            at += length as u64;
+        }
+        Ok(())
+    }
+
+    /// Mark an extent immutable.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Allocator` when the extent is not in use.
+    pub fn seal(&mut self, extent: u64, live_bytes: u64) -> Result<(), ContainerError> {
+        self.require_writable()?;
+        Ok(self.allocator.seal(extent, live_bytes)?)
+    }
+
+    /// Mark a sealed extent as written to again.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Allocator` when the extent is not in use.
+    pub fn unseal(&mut self, extent: u64) -> Result<(), ContainerError> {
+        self.require_writable()?;
+        Ok(self.allocator.unseal(extent)?)
+    }
+
+    /// Release an extent a committed compaction replaced. It is reused only
+    /// after the next checkpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Allocator` when the extent is not in use.
+    pub fn release(&mut self, extent: u64) -> Result<(), ContainerError> {
+        self.require_writable()?;
+        Ok(self.allocator.release(extent)?)
+    }
+
+    /// Add a collection to the directory and flush it.
+    ///
+    /// # Errors
+    ///
+    /// Returns `CollectionExists`, `DirectoryFull`, a format error for an
+    /// over-long name or descriptor, or the write or flush failure.
+    pub fn add_collection(
+        &mut self,
+        name: &str,
+        descriptor: &[u8],
+    ) -> Result<&ContainerCollection, ContainerError> {
+        self.require_writable()?;
+        if self
+            .collections
+            .iter()
+            .any(|collection| !collection.header.dropped && collection.header.name == name)
+        {
+            return Err(ContainerError::CollectionExists);
+        }
+        let block = self.collections.len();
+        if block as u64 >= self.directory_blocks() {
+            return Err(ContainerError::DirectoryFull);
+        }
+        let id = self
+            .collections
+            .iter()
+            .map(|collection| collection.header.id)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        let header = ContainerCollectionHeader {
+            id,
+            name: name.to_owned(),
+            dropped: false,
+            descriptor: descriptor.to_vec(),
+        };
+        let block_number = u32::try_from(block).map_err(|_| ContainerError::DirectoryFull)?;
+        self.add_collection_keys(id, name)?;
+        let mut bytes = match &self.cipher {
+            Some(cipher) => ContainerCollectionHeader::encode_sealed(&cipher.seal(
+                ContainerSealContext::Directory {
+                    block: block_number,
+                },
+                &header.encode_body()?,
+            )?)?,
+            None => header.encode()?,
+        };
+        bytes.resize(ContainerCollectionHeader::BLOCK_BYTES, 0);
+        self.write_static_part(block_number, &bytes)?;
+        self.collections.push(ContainerCollection {
+            block: block_number,
+            header,
+            generation: None,
+            checkpoint: None,
+        });
+        Ok(&self.collections[block])
+    }
+
+    /// Drop the collection named `name`: rewrite its block's static part
+    /// with the dropped flag, flush, and release every extent it owns. The
+    /// extents are reused after the next checkpoint; the block never is, so
+    /// a block number names one collection for the life of the file.
+    /// Returns the dropped collection's block.
+    ///
+    /// The slots are left as they were. A crash before the flush leaves the
+    /// collection in place; one after it leaves its extents owned until the
+    /// next writer that opens the file releases them.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ReadOnly` or `Locked`, `InvalidInput` when no live
+    /// collection has that name, or the write or flush failure.
+    pub fn drop_collection(&mut self, name: &str) -> Result<u32, ContainerError> {
+        self.require_writable()?;
+        self.require_admin()?;
+        let collection = self
+            .collections
+            .iter()
+            .find(|collection| !collection.header.dropped && collection.header.name == name)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "no such container collection")
+            })?;
+        let (block, header_id) = (collection.block, collection.header.id);
+        let header = ContainerCollectionHeader {
+            dropped: true,
+            ..collection.header.clone()
+        };
+        self.rewrite_header(block, header)?;
+        self.release_owned_by(header_id)?;
+        Ok(block)
+    }
+
+    /// Replace the catalog descriptor of the live collection named `name`:
+    /// rewrite its block's static part, as a drop does, and flush. Returns
+    /// the collection's block.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ReadOnly` or `Locked`, `InvalidInput` when no live
+    /// collection has that name, a format error for a descriptor past
+    /// [`ContainerCollectionHeader::MAX_DESCRIPTOR_BYTES`], or the write or
+    /// flush failure.
+    pub fn replace_descriptor(
+        &mut self,
+        name: &str,
+        descriptor: &[u8],
+    ) -> Result<u32, ContainerError> {
+        self.require_writable()?;
+        let collection = self
+            .collections
+            .iter()
+            .find(|collection| !collection.header.dropped && collection.header.name == name)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "no such container collection")
+            })?;
+        let block = collection.block;
+        let header = ContainerCollectionHeader {
+            descriptor: descriptor.to_vec(),
+            ..collection.header.clone()
+        };
+        self.require_collection_write(header.id)?;
+        self.rewrite_header(block, header)?;
+        Ok(block)
+    }
+
+    /// Write `header` as the static part of directory block `block`, sealed
+    /// when the file is encrypted, flush, and keep it as this open's view.
+    pub(super) fn rewrite_header(
+        &mut self,
+        block: u32,
+        header: ContainerCollectionHeader,
+    ) -> Result<(), ContainerError> {
+        let bytes = match &self.cipher {
+            Some(cipher) => ContainerCollectionHeader::encode_sealed(&cipher.seal(
+                ContainerSealContext::Directory { block },
+                &header.encode_body()?,
+            )?)?,
+            None => header.encode()?,
+        };
+        #[cfg(test)]
+        fault::check(ContainerFault::DirectoryBlock)?;
+        self.write_static_part(block, &bytes)?;
+        self.collection_mut(block)?.header = header;
+        Ok(())
+    }
+
+    /// Release every extent a dropped collection still owns: one a crash
+    /// left after [`Self::drop_collection`] flushed the dropped flag.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ReadOnly` or `Locked`.
+    pub fn release_dropped(&mut self) -> Result<(), ContainerError> {
+        self.require_writable()?;
+        let dropped: Vec<u32> = self
+            .collections
+            .iter()
+            .filter(|collection| collection.header.dropped)
+            .map(|collection| collection.header.id)
+            .collect();
+        for id in dropped {
+            self.release_owned_by(id)?;
+        }
+        Ok(())
+    }
+
+    fn release_owned_by(&mut self, owner: u32) -> Result<(), ContainerError> {
+        for kind in [
+            ContainerExtentKind::Segment,
+            ContainerExtentKind::Dictionary,
+            ContainerExtentKind::Locations,
+            ContainerExtentKind::Index,
+            ContainerExtentKind::Schemas,
+        ] {
+            for (extent, _) in self.allocator.owned(kind, owner) {
+                self.allocator.release(extent)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Publish a collection's generation in place, into the slot that does
+    /// not hold its newest one, without flushing (ADR 0015 section 6).
+    ///
+    /// # Errors
+    ///
+    /// Returns the write failure, or `InvalidInput` for an unknown block.
+    pub fn publish_generation(
+        &mut self,
+        block: u32,
+        slot: ContainerGenerationSlot,
+    ) -> Result<(), ContainerError> {
+        self.require_writable()?;
+        let directory = self.superblock.directory_extent;
+        let at =
+            self.slot_pair_offset(block, ContainerCollectionHeader::GENERATION_SLOTS_OFFSET)?;
+        let mut pair = [0_u8; 2 * ContainerGenerationSlot::ENCODED_BYTES];
+        self.read_payload(directory, at, &mut pair)?;
+        let into_b = ContainerGenerationSlot::newest(&pair).is_some_and(|(_, in_a)| in_a);
+        let offset = if into_b {
+            at + ContainerGenerationSlot::ENCODED_BYTES as u64
+        } else {
+            at
+        };
+        self.write_payload(directory, offset, &slot.encode())?;
+        self.collection_mut(block)?.generation = Some(slot);
+        Ok(())
+    }
+
+    /// Read a collection's newest valid generation slot from the file, as
+    /// another handle on it may have published it since this one opened.
+    ///
+    /// # Errors
+    ///
+    /// Returns the read failure, or `InvalidInput` for an unknown block.
+    pub fn read_generation(
+        &self,
+        block: u32,
+    ) -> Result<Option<ContainerGenerationSlot>, ContainerError> {
+        let at =
+            self.slot_pair_offset(block, ContainerCollectionHeader::GENERATION_SLOTS_OFFSET)?;
+        let mut pair = [0_u8; 2 * ContainerGenerationSlot::ENCODED_BYTES];
+        self.read_payload(self.superblock.directory_extent, at, &mut pair)?;
+        Ok(ContainerGenerationSlot::newest(&pair).map(|(slot, _)| slot))
+    }
+
+    /// Read a collection's newest valid checkpoint slot from the file.
+    ///
+    /// # Errors
+    ///
+    /// Returns the read failure, or `InvalidInput` for an unknown block.
+    pub fn read_checkpoint(
+        &self,
+        block: u32,
+    ) -> Result<Option<ContainerCheckpointSlot>, ContainerError> {
+        let at =
+            self.slot_pair_offset(block, ContainerCollectionHeader::CHECKPOINT_SLOTS_OFFSET)?;
+        let mut pair = [0_u8; 2 * ContainerCheckpointSlot::ENCODED_BYTES];
+        self.read_payload(self.superblock.directory_extent, at, &mut pair)?;
+        Ok(ContainerCheckpointSlot::newest(&pair).map(|(slot, _)| slot))
+    }
+
+    /// Take back an extent the durable map shows free although a slot
+    /// names it: one taken after the last checkpoint by a process that
+    /// stopped before the next. Its header must show it holds allocation
+    /// `sequence` of `kind` for `owner`. The sequence counter moves past it,
+    /// so no later allocation repeats the number.
+    ///
+    /// A reader may take an extent back too: only its map in memory
+    /// changes, so it can read the extent a writer's slot names before the
+    /// writer's next checkpoint shows it.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidField` when the header holds something else,
+    /// `Allocator(InconsistentMap)` when the map shows the extent in use,
+    /// or the read failure.
+    pub fn reclaim(
+        &mut self,
+        extent: u64,
+        kind: ContainerExtentKind,
+        owner: u32,
+        sequence: u64,
+    ) -> Result<(), ContainerError> {
+        self.expect_extent(extent, kind, owner, sequence)?;
+        Ok(self.allocator.reclaim(extent, kind, owner, sequence)?)
+    }
+
+    /// Record a collection's checkpoint in the slot that does not hold its
+    /// newest one, and flush.
+    ///
+    /// # Errors
+    ///
+    /// Returns the write or flush failure, or `InvalidInput` for an unknown
+    /// block.
+    pub fn record_checkpoint(
+        &mut self,
+        block: u32,
+        slot: ContainerCheckpointSlot,
+    ) -> Result<(), ContainerError> {
+        self.require_writable()?;
+        let directory = self.superblock.directory_extent;
+        let at =
+            self.slot_pair_offset(block, ContainerCollectionHeader::CHECKPOINT_SLOTS_OFFSET)?;
+        let mut pair = [0_u8; 2 * ContainerCheckpointSlot::ENCODED_BYTES];
+        self.read_payload(directory, at, &mut pair)?;
+        let into_b = ContainerCheckpointSlot::newest(&pair).is_some_and(|(_, in_a)| in_a);
+        let offset = if into_b {
+            at + ContainerCheckpointSlot::ENCODED_BYTES as u64
+        } else {
+            at
+        };
+        self.write_payload(directory, offset, &slot.encode())?;
+        self.sync()?;
+        self.collection_mut(block)?.checkpoint = Some(slot);
+        Ok(())
+    }
+
+    /// Checkpoint the extent map: write a new copy into fresh extents, flush,
+    /// then point the other superblock copy at it and flush again.
+    ///
+    /// The old map's extents are released before the new map is built, so
+    /// the new map already shows them free; they become reusable once the
+    /// new superblock is durable. A crash before that leaves the old
+    /// superblock pointing at the old, untouched map.
+    ///
+    /// # Errors
+    ///
+    /// Returns the write, resize or flush failure. One before the new
+    /// superblock copy is written leaves the map in memory as it was, with
+    /// the old map in force. Once the copy is written it may be the one in
+    /// force, flushed or not: a failed flush keeps both maps, taking the new
+    /// superblock and leaving the old map's extents released, not free,
+    /// until a later checkpoint completes.
+    pub fn checkpoint(&mut self) -> Result<(), ContainerError> {
+        self.require_writable()?;
+        let (saved, length) = (self.allocator.clone(), self.file().metadata()?.len());
+        let next = match self.write_map_copy() {
+            Ok(next) => next,
+            Err(error) => {
+                self.roll_back(saved, length);
+                return Err(error);
+            }
+        };
+        let synced = self.sync();
+        #[cfg(test)]
+        let synced = synced.and_then(|()| fault::check(ContainerFault::Flush));
+        self.superblock = next;
+        self.superblock_in_a = !self.superblock_in_a;
+        synced?;
+        self.allocator.checkpoint_completed();
+        Ok(())
+    }
+
+    /// Write a copy of the map into fresh extents, flush it, and write the
+    /// superblock copy not in force to name it, without flushing. Returns
+    /// that superblock.
+    fn write_map_copy(&mut self) -> Result<ContainerSuperblock, ContainerError> {
+        let old_first = self.superblock.map_first_extent;
+        for extent in old_first..old_first + u64::from(self.superblock.map_extent_count) {
+            self.allocator.release(extent)?;
+        }
+        // The run may grow the file and so the map; size it for the worst
+        // case, where every extent of the run is new.
+        let pages_per_extent = self.payload_capacity() / PAGE_BYTES;
+        let mut run = 1_u64;
+        while run * pages_per_extent < map_pages_for(self.allocator.extent_count() + run) {
+            run += 1;
+        }
+        let run = usize::try_from(run).map_err(|_| ContainerFormatError::Oversized)?;
+        let map_extents = self
+            .allocator
+            .allocate_run(ContainerExtentKind::Map, 0, run);
+        let required = self.allocator.extent_count() * self.extent_bytes();
+        if self.file().metadata()?.len() < required {
+            #[cfg(test)]
+            fault::check(ContainerFault::Grow)?;
+            self.file().set_len(required)?;
+        }
+        let indices: Vec<u64> = map_extents
+            .iter()
+            .map(|allocation| allocation.index)
+            .collect();
+        for allocation in &map_extents {
+            write_extent_header(
+                self.file(),
+                self.extent_bytes(),
+                *allocation,
+                ContainerExtentKind::Map,
+                0,
+            )?;
+        }
+        write_map(
+            self.file(),
+            self.extent_bytes(),
+            &indices,
+            &self.allocator.map_pages(),
+        )?;
+        self.sync()?;
+
+        let mut next = self.superblock.clone();
+        next.generation += 1;
+        next.extent_count = self.allocator.extent_count();
+        next.next_extent_sequence = self.allocator.next_sequence();
+        next.map_first_extent = indices[0];
+        next.map_extent_count =
+            u32::try_from(indices.len()).map_err(|_| ContainerFormatError::Oversized)?;
+        let at = if self.superblock_in_a {
+            SUPERBLOCK_BYTES
+        } else {
+            0
+        };
+        #[cfg(test)]
+        fault::check(ContainerFault::Superblock)?;
+        write_all_at(self.file(), &next.encode(), at)?;
+        Ok(next)
+    }
+
+    /// Set read-only-compatible feature bits in the superblock, durably,
+    /// before the file holds what they name: a [`Self::checkpoint`] writes
+    /// the other superblock copy with them and flushes. Every later
+    /// checkpoint keeps them, and so does a writer in another process, which
+    /// reads the newer superblock before it checkpoints. Returns whether
+    /// anything changed; bits already set need no write.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ReadOnly` for a reader, or the checkpoint failure, after
+    /// which the superblock in memory has the feature bits it had.
+    pub fn add_read_only_compat(&mut self, features: u32) -> Result<bool, ContainerError> {
+        self.require_writable()?;
+        let previous = self.superblock.read_only_compat;
+        if previous & features == features {
+            return Ok(false);
+        }
+        self.superblock.read_only_compat = previous | features;
+        if let Err(error) = self.checkpoint() {
+            self.superblock.read_only_compat = previous;
+            return Err(error);
+        }
+        Ok(true)
+    }
+
+    /// Set incompatible feature bits in the superblock, durably, before the
+    /// file holds what they name: a writer about to write a codec the
+    /// superblock does not list yet (ADR 0016 sections 2 and 8). It works as
+    /// [`Self::add_read_only_compat`] does. Returns whether anything changed.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ReadOnly` for a reader, or the checkpoint failure, after
+    /// which the superblock in memory has the feature bits it had.
+    pub fn add_incompat(&mut self, features: u32) -> Result<bool, ContainerError> {
+        self.require_writable()?;
+        let previous = self.superblock.incompat;
+        if previous & features == features {
+            return Ok(false);
+        }
+        self.superblock.incompat = previous | features;
+        if let Err(error) = self.checkpoint() {
+            self.superblock.incompat = previous;
+            return Err(error);
+        }
+        Ok(true)
+    }
+
+    /// Return the free extents at the end of the file to the filesystem:
+    /// checkpoint a map that no longer describes them, then cut the file.
+    /// A crash before the cut leaves a longer file, which opens as before.
+    /// Returns the bytes released.
+    ///
+    /// # Errors
+    ///
+    /// Returns the checkpoint or resize failure.
+    pub fn shrink_free_tail(&mut self) -> Result<u64, ContainerError> {
+        self.require_writable()?;
+        let before = self.file().metadata()?.len();
+        let (saved, generation) = (self.allocator.clone(), self.superblock.generation);
+        if self.allocator.truncate_free_tail() == self.superblock.extent_count {
+            return Ok(0);
+        }
+        if let Err(error) = self.checkpoint() {
+            // No superblock names the shorter map, so the map keeps the
+            // tail the file still holds.
+            if self.superblock.generation == generation {
+                self.allocator = saved;
+            }
+            return Err(error);
+        }
+        let length = self.allocator.extent_count() * self.extent_bytes();
+        if length < before {
+            self.file().set_len(length)?;
+            self.sync()?;
+        }
+        Ok(before.saturating_sub(length))
+    }
+
+    /// Punch holes over the free extents, where the filesystem can, so their
+    /// space goes back to the disk while the file keeps its length. Returns
+    /// how many extents were punched; zero where the platform or filesystem
+    /// cannot punch holes, which only means the space is kept.
+    ///
+    /// # Errors
+    ///
+    /// Returns a failure other than the filesystem not supporting it.
+    pub fn punch_free_extents(&self) -> Result<u64, ContainerError> {
+        self.require_writable()?;
+        let mut punched = 0;
+        for extent in self.allocator.free_extents() {
+            if !punch_hole(
+                self.file(),
+                extent * self.extent_bytes(),
+                self.extent_bytes(),
+            )? {
+                break;
+            }
+            punched += 1;
+        }
+        Ok(punched)
+    }
+
+    /// Describe the container for `fylo inspect`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the failure to read the file's length.
+    pub fn report(&self) -> Result<ContainerReport, ContainerError> {
+        let superblock = &self.superblock;
+        let mut codecs = Vec::new();
+        if superblock.incompat & ContainerSuperblock::INCOMPAT_CODEC_ZSTD != 0 {
+            codecs.push("zstd");
+        }
+        if superblock.incompat & ContainerSuperblock::INCOMPAT_CODEC_LZ4 != 0 {
+            codecs.push("lz4");
+        }
+        Ok(ContainerReport {
+            format: "fylo.vdbx",
+            generation: superblock.generation,
+            extent_bytes: self.extent_bytes(),
+            extent_count: superblock.extent_count,
+            file_bytes: self.file().metadata()?.len(),
+            encrypted: self.is_encrypted(),
+            locked: self.is_locked(),
+            protected: self.is_protected(),
+            sealed: superblock.is_sealed(),
+            blocks: self.image.as_ref().map(SealedImage::report),
+            codecs,
+            extents: self.allocator.census(),
+            collections: self
+                .collections
+                .iter()
+                .map(|collection| ContainerCollectionReport {
+                    name: collection.header.name.clone(),
+                    id: collection.header.id,
+                    dropped: collection.header.dropped,
+                    records: collection
+                        .generation
+                        .as_ref()
+                        .map_or(0, |slot| slot.record_count),
+                    checkpoint_lsn: collection.checkpoint.as_ref().map(|slot| slot.lsn),
+                    dictionary: collection
+                        .checkpoint
+                        .as_ref()
+                        .and_then(|slot| slot.dictionary)
+                        .map(|(_, id, _)| id),
+                    dictionaries: self
+                        .allocator
+                        .owned(ContainerExtentKind::Dictionary, collection.header.id)
+                        .len() as u64,
+                })
+                .collect(),
+        })
+    }
+
+    /// Read and decode the header of `extent`.
+    fn read_extent_header_at(&self, extent: u64) -> Result<ContainerExtentHeader, ContainerError> {
+        let at = extent
+            .checked_mul(self.extent_bytes())
+            .filter(|_| extent >= 1)
+            .ok_or(ContainerAllocatorError::OutOfRange)?;
+        let mut bytes = [0_u8; ContainerExtentHeader::ENCODED_BYTES];
+        self.read_at(&mut bytes, at)?;
+        Ok(ContainerExtentHeader::decode(&bytes)?)
+    }
+
+    fn directory_blocks(&self) -> u64 {
+        self.journal_offset() / BLOCK_BYTES
+    }
+
+    fn slot_pair_offset(&self, block: u32, within: usize) -> Result<u64, ContainerError> {
+        if !self
+            .collections
+            .iter()
+            .any(|collection| collection.block == block)
+        {
+            return Err(
+                io::Error::new(io::ErrorKind::InvalidInput, "unknown collection block").into(),
+            );
+        }
+        Ok(u64::from(block) * BLOCK_BYTES + within as u64)
+    }
+
+    fn collection_mut(&mut self, block: u32) -> Result<&mut ContainerCollection, ContainerError> {
+        self.collections
+            .iter_mut()
+            .find(|collection| collection.block == block)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "unknown collection block").into()
+            })
+    }
+
+    fn read_map(&self) -> Result<ContainerExtentAllocator, ContainerError> {
+        let superblock = &self.superblock;
+        let pages = map_pages_for(superblock.extent_count);
+        let pages_per_extent = self.payload_capacity() / PAGE_BYTES;
+        if pages > u64::from(superblock.map_extent_count) * pages_per_extent {
+            return Err(ContainerAllocatorError::InconsistentMap.into());
+        }
+        let mut decoded = Vec::new();
+        let mut page_bytes = vec![0_u8; ContainerExtentMapPage::ENCODED_BYTES];
+        for page in 0..pages {
+            let extent = superblock.map_first_extent + page / pages_per_extent;
+            let at = extent * superblock.extent_bytes()
+                + ContainerExtentHeader::PAYLOAD_OFFSET
+                + (page % pages_per_extent) * PAGE_BYTES;
+            self.read_at(&mut page_bytes, at)?;
+            decoded.push(ContainerExtentMapPage::decode(&page_bytes)?);
+        }
+        Ok(ContainerExtentAllocator::from_map(
+            superblock.extent_count,
+            superblock.next_extent_sequence,
+            &decoded,
+        )?)
+    }
+
+    fn read_directory(&self) -> Result<Vec<ContainerCollection>, ContainerError> {
+        let mut collections = Vec::new();
+        let mut block_bytes = vec![0_u8; ContainerCollectionHeader::BLOCK_BYTES];
+        for block in 0..self.directory_blocks() {
+            self.read_payload(
+                self.superblock.directory_extent,
+                block * BLOCK_BYTES,
+                &mut block_bytes,
+            )?;
+            if block_bytes.iter().all(|byte| *byte == 0) {
+                break;
+            }
+            let block = u32::try_from(block).map_err(|_| ContainerFormatError::Oversized)?;
+            let header = self
+                .decode_static_part(block, &block_bytes)
+                .or_else(|error| self.decode_journaled(block, error))?;
+            let checkpoint_at = ContainerCollectionHeader::CHECKPOINT_SLOTS_OFFSET;
+            let generation_at = ContainerCollectionHeader::GENERATION_SLOTS_OFFSET;
+            collections.push(ContainerCollection {
+                block,
+                header,
+                checkpoint: ContainerCheckpointSlot::newest(
+                    &block_bytes[checkpoint_at..generation_at],
+                )
+                .map(|(slot, _)| slot),
+                generation: ContainerGenerationSlot::newest(&block_bytes[generation_at..])
+                    .map(|(slot, _)| slot),
+            });
+        }
+        Ok(collections)
+    }
+
+    /// The header the static part at the start of `bytes` holds for
+    /// directory block `block`, opened with the file's key when it has one.
+    fn decode_static_part(
+        &self,
+        block: u32,
+        bytes: &[u8],
+    ) -> Result<ContainerCollectionHeader, ContainerError> {
+        match &self.cipher {
+            Some(cipher) => Ok(ContainerCollectionHeader::decode_body(&cipher.open(
+                ContainerSealContext::Directory { block },
+                ContainerCollectionHeader::decode_sealed(bytes)?,
+            )?)?),
+            None => Ok(ContainerCollectionHeader::decode(bytes)?),
+        }
+    }
+
+    /// The header of a block whose static part failed with `error`, from
+    /// the directory journal when its newest copy names the block: a write
+    /// a power cut tore. A writable open writes it back. Otherwise `error`.
+    fn decode_journaled(
+        &self,
+        block: u32,
+        error: ContainerError,
+    ) -> Result<ContainerCollectionHeader, ContainerError> {
+        let Some(static_part) = self.journaled_static_part(block)? else {
+            return Err(error);
+        };
+        let header = self
+            .decode_static_part(block, &static_part)
+            .map_err(|_| error)?;
+        self.restore_static_part(block, &static_part)?;
+        Ok(header)
+    }
+}
+
+/// Take `byte` exclusive through `handle`, waiting up to `wait`; a wait
+/// that runs out is `Busy`.
+///
+/// # Errors
+///
+/// Returns `Busy`, or the lock failure.
+#[cfg(not(target_family = "wasm"))]
+pub(crate) fn lock_byte(
+    handle: &crate::ByteRangeLockFile,
+    byte: crate::LockByte,
+    wait: std::time::Duration,
+) -> Result<crate::ByteLockGuard, ContainerError> {
+    handle
+        .lock(byte, crate::LockMode::Exclusive, wait)
+        .map_err(|error| {
+            if error.kind() == io::ErrorKind::TimedOut {
+                ContainerError::Busy
+            } else {
+                ContainerError::Io(error)
+            }
+        })
+}
+
+/// Map pages describing a file of `extent_count` extents; extent 0 has none.
+fn map_pages_for(extent_count: u64) -> u64 {
+    extent_count
+        .saturating_sub(1)
+        .div_ceil(ContainerExtentMapPage::ENTRIES_PER_PAGE as u64)
+}
+
+fn placeholder_superblock() -> ContainerSuperblock {
+    ContainerSuperblock {
+        generation: 0,
+        extent_shift: ContainerSuperblock::DEFAULT_EXTENT_SHIFT,
+        extent_count: 0,
+        next_extent_sequence: 0,
+        directory_extent: 0,
+        map_first_extent: 0,
+        map_extent_count: 0,
+        compat: 0,
+        read_only_compat: 0,
+        incompat: 0,
+        key_salt: [0; 32],
+        key_check: [0; 16],
+    }
+}
+
+fn write_extent_header(
+    file: &File,
+    extent_bytes: u64,
+    allocation: ContainerExtentAllocation,
+    kind: ContainerExtentKind,
+    owner: u32,
+) -> io::Result<()> {
+    #[cfg(test)]
+    fault::check(ContainerFault::ExtentHeader(kind))?;
+    let header = ContainerExtentHeader {
+        kind,
+        owner,
+        sequence: allocation.sequence,
+        index: allocation.index,
+    };
+    write_all_at(file, &header.encode(), allocation.index * extent_bytes)
+}
+
+fn write_map(
+    file: &File,
+    extent_bytes: u64,
+    extents: &[u64],
+    pages: &[ContainerExtentMapPage],
+) -> Result<(), ContainerError> {
+    let pages_per_extent = (extent_bytes - ContainerExtentHeader::PAYLOAD_OFFSET) / PAGE_BYTES;
+    for (page_number, page) in pages.iter().enumerate() {
+        let page_number = page_number as u64;
+        let extent = extents
+            .get(
+                usize::try_from(page_number / pages_per_extent)
+                    .map_err(|_| ContainerFormatError::Oversized)?,
+            )
+            .copied()
+            .ok_or(ContainerFormatError::Oversized)?;
+        let at = extent * extent_bytes
+            + ContainerExtentHeader::PAYLOAD_OFFSET
+            + (page_number % pages_per_extent) * PAGE_BYTES;
+        #[cfg(test)]
+        fault::check(ContainerFault::Map)?;
+        write_all_at(file, &page.encode()?, at)?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn read_exact_at(file: &File, buffer: &mut [u8], offset: u64) -> io::Result<()> {
+    std::os::unix::fs::FileExt::read_exact_at(file, buffer, offset)
+}
+
+#[cfg(unix)]
+fn write_all_at(file: &File, bytes: &[u8], offset: u64) -> io::Result<()> {
+    std::os::unix::fs::FileExt::write_all_at(file, bytes, offset)
+}
+
+#[cfg(windows)]
+fn read_exact_at(file: &File, mut buffer: &mut [u8], mut offset: u64) -> io::Result<()> {
+    while !buffer.is_empty() {
+        match std::os::windows::fs::FileExt::seek_read(file, buffer, offset)? {
+            0 => return Err(io::ErrorKind::UnexpectedEof.into()),
+            read => {
+                buffer = &mut buffer[read..];
+                offset += read as u64;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn write_all_at(file: &File, mut bytes: &[u8], mut offset: u64) -> io::Result<()> {
+    while !bytes.is_empty() {
+        match std::os::windows::fs::FileExt::seek_write(file, bytes, offset)? {
+            0 => return Err(io::ErrorKind::WriteZero.into()),
+            written => {
+                bytes = &bytes[written..];
+                offset += written as u64;
+            }
+        }
+    }
+    Ok(())
+}
+
+// The host table is positional, and `&File` keeps its own cursor; a wasm
+// module is single-threaded, so seeking then reading cannot interleave.
+#[cfg(target_family = "wasm")]
+fn read_exact_at(file: &File, buffer: &mut [u8], offset: u64) -> io::Result<()> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut handle = file;
+    handle.seek(SeekFrom::Start(offset))?;
+    handle.read_exact(buffer)
+}
+
+#[cfg(target_family = "wasm")]
+fn write_all_at(file: &File, bytes: &[u8], offset: u64) -> io::Result<()> {
+    use std::io::{Seek, SeekFrom, Write};
+    let mut handle = file;
+    handle.seek(SeekFrom::Start(offset))?;
+    handle.write_all(bytes)
+}
+
+#[cfg(test)]
+mod tests;

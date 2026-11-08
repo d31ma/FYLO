@@ -1,35 +1,51 @@
-/* Match the 24px column gutter DuVay gives the grid — a tighter row gap reads
-   as a layout mistake. */
+.home-features {
+    padding: 0 1rem clamp(3rem, 6vw, 5rem);
+}
+
+.home-features-heading {
+    margin-bottom: 2rem;
+    text-align: center;
+}
+
+.home-features-heading h2 {
+    margin: 0 0 0.45rem;
+    font-size: clamp(1.65rem, 4vw, 2.25rem);
+    letter-spacing: -0.025em;
+}
+
+.home-features-heading p {
+    margin: 0;
+    color: var(--w-text-subtle);
+    line-height: 1.65;
+}
+
 .features-row {
-  row-gap: var(--w-space-6);
+    row-gap: var(--w-space-4);
 }
 
 .feature-card {
-  height: 100%;
-  padding: 1.65rem;
-  box-sizing: border-box;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent 60%);
-  transition:
-    transform 0.2s ease,
-    border-color 0.2s ease,
-    box-shadow 0.2s ease;
-}
-
-.feature-card:hover {
-  transform: translateY(-3px);
-  border-color: rgba(248, 155, 75, 0.38);
-  box-shadow: 0 22px 44px -28px rgba(0, 0, 0, 0.9);
+    height: 100%;
+    padding: 1.25rem;
+    box-sizing: border-box;
+    border: 1px solid var(--w-border);
+    border-radius: var(--w-radius-md);
+    background: var(--w-surface-container-low);
 }
 
 .feature-card h3 {
-  margin: 0.85rem 0 0.5rem;
-  font-size: 1.05rem;
-  letter-spacing: -0.01em;
+    margin: 0 0 0.65rem;
+    font-size: 1rem;
+    letter-spacing: -0.01em;
 }
 
 .feature-card p {
-  margin: 0;
-  color: var(--w-text-subtle);
-  font-size: 0.9rem;
-  line-height: 1.7;
+    margin: 0;
+    color: var(--w-text-subtle);
+    font-size: 0.9rem;
+    line-height: 1.65;
+}
+
+.feature-card code {
+    font-family: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.86em;
 }

@@ -4,15 +4,20 @@ use std::env;
 use std::path::Path;
 use std::process::ExitCode;
 
-use fylo_engine::{AccessContext, WriteEngine};
+use fylo_engine::WriteEngine;
 use fylo_storage_native::{
-    NativeWriteRoot, PutDocumentOptions, PutRawFileOptions, WriteAccess, WriteActor,
+    CollectionLayout, DatabaseRekey, NativeWriteRoot, PutDocumentOptions, PutRawFileOptions,
 };
 use serde_json::{Value, json};
 
 fn main() -> ExitCode {
     let arguments: Vec<String> = env::args().skip(1).collect();
-    match run(&arguments) {
+    let outcome = run(&arguments).and_then(|output| {
+        NativeWriteRoot::close_logs()
+            .map(|()| output)
+            .map_err(|error| error.to_string())
+    });
+    match outcome {
         Ok(output) => {
             println!("{output}");
             ExitCode::SUCCESS
@@ -24,12 +29,17 @@ fn main() -> ExitCode {
     }
 }
 
+/// The crash matrix enumerates this rather than keeping its own list.
+fn failpoints() -> Result<String, String> {
+    serde_json::to_string(&json!({ "failpoints": fylo_storage_native::FAILPOINTS.as_slice() }))
+        .map_err(|error| error.to_string())
+}
+
 fn run(arguments: &[String]) -> Result<String, String> {
     let command = arguments.first().map(String::as_str).ok_or_else(usage)?;
+    refuse_removed_access_flags(arguments)?;
     if command == "failpoints" {
-        // The crash matrix enumerates this rather than keeping its own list.
-        return serde_json::to_string(&json!({ "failpoints": fylo_storage_native::FAILPOINTS }))
-            .map_err(|error| error.to_string());
+        return failpoints();
     }
     let root = required_option(arguments, "--root")?;
     let writer = NativeWriteRoot::open(root).map_err(|error| error.to_string())?;
@@ -51,9 +61,8 @@ fn run(arguments: &[String]) -> Result<String, String> {
             let identifier = required_option(arguments, "--id")?;
             let changes = serde_json::from_str(required_option(arguments, "--changes")?)
                 .map_err(|error| format!("invalid --changes: {error}"))?;
-            let actor = actor(arguments)?;
             writer
-                .patch_document_fields(collection, identifier, &changes, actor.as_ref())
+                .patch_document_fields(collection, identifier, &changes)
                 .map_err(|error| error.to_string())?;
             false
         }
@@ -64,8 +73,8 @@ fn run(arguments: &[String]) -> Result<String, String> {
                 .map_or(Value::Null, Value::String);
             false
         }
-        "set-metadata" | "set-access" => {
-            run_metadata(command, arguments, &writer)?;
+        "set-metadata" => {
+            run_metadata(arguments, &writer)?;
             false
         }
         "reshard" => {
@@ -78,36 +87,29 @@ fn run(arguments: &[String]) -> Result<String, String> {
             result = Value::from(moved);
             false
         }
+        "push-schema" | "schema-head" | "compact" | "migrate-layout" | "pack" | "rekey" => {
+            result = run_layout(command, arguments, &writer)?;
+            false
+        }
         "restore-document" => {
             let collection = required_option(arguments, "--collection")?;
             let identifier = required_option(arguments, "--id")?;
-            let actor = actor(arguments)?;
             writer
-                .restore_document(collection, identifier, actor.as_ref())
+                .restore_document(collection, identifier)
                 .map_err(|error| error.to_string())?;
             false
         }
         "delete-document" => {
             let collection = required_option(arguments, "--collection")?;
             let identifier = required_option(arguments, "--id")?;
-            let actor = actor(arguments)?;
             writer
-                .delete_document(collection, identifier, actor.as_ref())
+                .delete_document(collection, identifier)
                 .map_err(|error| error.to_string())?;
             false
         }
         "sql" => {
-            let actor = actor(arguments)?;
             let mutation = writer
-                .execute_sql_mutation(
-                    required_option(arguments, "--statement")?,
-                    actor.as_ref(),
-                    WriteAccess {
-                        uid: optional_u32(arguments, "--uid")?,
-                        gid: optional_u32(arguments, "--gid")?,
-                        mode: optional_mode(arguments, "--mode")?,
-                    },
-                )
+                .execute_sql_mutation(required_option(arguments, "--statement")?)
                 .map_err(|error| error.to_string())?;
             result = serde_json::to_value(mutation).map_err(|error| error.to_string())?;
             false
@@ -124,120 +126,132 @@ fn run(arguments: &[String]) -> Result<String, String> {
     .map_err(|error| error.to_string())
 }
 
+/// Collection maintenance: `push-schema` and `schema-head` (ADR 0017), the
+/// segment layout's `compact` and `migrate-layout` (ADR 0015), `compact`
+/// of a whole `.vdbx` database when no collection is named, `pack`
+/// (ADR 0016), which only reads the root it packs, and `rekey --encrypt`
+/// of a plain database, under the key `--new-key` names as a secret
+/// reference.
+fn run_layout(
+    command: &str,
+    arguments: &[String],
+    writer: &NativeWriteRoot,
+) -> Result<Value, String> {
+    if command == "push-schema" {
+        return push_schema(writer, arguments);
+    }
+    if command == "pack" {
+        let report = writer
+            .pack_database(Path::new(required_option(arguments, "--out")?))
+            .map_err(|error| error.to_string())?;
+        return Ok(Value::from(report.collections.len()));
+    }
+    if command == "rekey" {
+        let key = fylo_machine::ApplicationConfig::database_key_reference(
+            option(arguments, "--config").map(Path::new),
+            required_option(arguments, "--new-key")?,
+            "--new-key",
+        )?;
+        if !arguments.iter().any(|argument| argument == "--encrypt") {
+            return Err("rekey here encrypts a plain database and needs --encrypt".into());
+        }
+        let report = writer
+            .rekey_database(DatabaseRekey::Encrypt(&key))
+            .map_err(|error| error.to_string())?;
+        return Ok(Value::from(report.collections.len()));
+    }
+    if command == "compact" && option(arguments, "--collection").is_none() {
+        // A whole `.vdbx` database, and with `--shrink` its file.
+        let shrink = arguments.iter().any(|argument| argument == "--shrink");
+        let report = writer
+            .compact_database(shrink)
+            .map_err(|error| error.to_string())?;
+        return Ok(json!({
+            "collections": report.collections.len(),
+            "extentsMoved": report.extents_moved,
+            "fileBytes": report.file_bytes_after,
+        }));
+    }
+    let collection = required_option(arguments, "--collection")?;
+    if command == "schema-head" {
+        // The registry head as a reader sees it: from the descriptor, or for
+        // a segment collection from its schema records.
+        return writer
+            .native_root()
+            .schema_registry_head(collection)
+            .map(|head| head.map_or(Value::Null, Value::from))
+            .map_err(|error| error.to_string());
+    }
+    if command == "compact" {
+        let report = writer
+            .compact_collection(collection)
+            .map_err(|error| error.to_string())?;
+        return Ok(json!({ "documentsCopied": report.documents_copied }));
+    }
+    let layout = CollectionLayout::parse(required_option(arguments, "--layout")?)
+        .map_err(|error| error.to_string())?;
+    let report = writer
+        .migrate_layout(collection, layout)
+        .map_err(|error| error.to_string())?;
+    Ok(json!({ "layout": report.layout.as_str(), "documents": report.documents }))
+}
+
 fn run_patch(arguments: &[String], writer: &NativeWriteRoot) -> Result<(), String> {
     let collection = required_option(arguments, "--collection")?;
     let identifier = required_option(arguments, "--id")?;
     let document = required_option(arguments, "--document")?;
-    let actor = actor(arguments)?;
-    if let Some(engine) = write_engine(writer.path())? {
+    if let Some(engine) = write_engine(writer.path(), arguments)? {
         let fields = serde_json::from_str(document)
             .map_err(|error| format!("invalid --document: {error}"))?;
-        let context = access_context(arguments)?;
         return engine
-            .patch_document(collection, identifier, fields, context.as_ref())
+            .patch_document(collection, identifier, fields)
             .map_err(|error| error.to_string());
     }
     writer
-        .patch_document(collection, identifier, document.as_bytes(), actor.as_ref())
+        .patch_document(collection, identifier, document.as_bytes())
         .map_err(|error| error.to_string())
 }
 
-fn access_context(arguments: &[String]) -> Result<Option<AccessContext>, String> {
-    let Some(uid) = optional_u32(arguments, "--actor-uid")? else {
+/// Use the same explicit application configuration as the published CLI.
+fn write_engine(root: &Path, arguments: &[String]) -> Result<Option<WriteEngine>, String> {
+    let config =
+        fylo_machine::ApplicationConfig::load(option(arguments, "--config").map(Path::new))?;
+    let Some(schema_root) = config.schema.as_ref() else {
         return Ok(None);
     };
-    let groups = option(arguments, "--actor-groups")
-        .map(|encoded| {
-            encoded
-                .split(',')
-                .filter(|value| !value.is_empty())
-                .map(|value| {
-                    value
-                        .parse::<u32>()
-                        .map_err(|error| format!("invalid --actor-groups: {error}"))
-                })
-                .collect::<Result<Vec<_>, _>>()
-        })
-        .transpose()?
-        .unwrap_or_default();
-    Ok(Some(AccessContext::new(uid, groups)))
-}
-
-/// Route document bodies through the engine only when a usable schema root and
-/// both credentials are present, matching the read-only preview CLI.
-fn write_engine(root: &Path) -> Result<Option<WriteEngine>, String> {
-    let Some(schema_root) = configured("FYLO_SCHEMA") else {
-        return Ok(None);
-    };
-    if !Path::new(&schema_root).is_dir() {
-        return Ok(None);
+    let engine = match config.credentials.as_ref() {
+        Some((secret, salt)) => WriteEngine::open_with_encryption(root, schema_root, secret, salt),
+        None => WriteEngine::open_with_schema(root, schema_root),
     }
-    let Some((secret, salt)) =
-        configured("FYLO_ENCRYPTION_KEY").zip(configured("FYLO_CIPHER_SALT"))
-    else {
-        return WriteEngine::open_with_schema(root, schema_root)
-            .map(Some)
-            .map_err(|error| error.to_string());
-    };
-    WriteEngine::open_with_encryption(root, schema_root, &secret, &salt)
-        .map(Some)
-        .map_err(|error| error.to_string())
+    .map_err(|error| error.to_string())?
+    .with_config(config.storage);
+    Ok(Some(engine))
 }
 
-/// An empty environment variable is falsy in JavaScript, and a repository
-/// `.env` commonly declares these names with empty values.
-fn configured(name: &str) -> Option<String> {
-    env::var(name).ok().filter(|value| !value.is_empty())
-}
-
-fn run_metadata(
-    command: &str,
-    arguments: &[String],
-    writer: &NativeWriteRoot,
-) -> Result<(), String> {
+fn run_metadata(arguments: &[String], writer: &NativeWriteRoot) -> Result<(), String> {
     let collection = required_option(arguments, "--collection")?;
     let identifier = required_option(arguments, "--id")?;
-    let actor = actor(arguments)?;
-    if command == "set-metadata" {
-        let record = serde_json::from_str(required_option(arguments, "--record")?)
-            .map_err(|error| format!("invalid --record: {error}"))?;
-        let replace = arguments.iter().any(|argument| argument == "--replace");
-        return if replace {
-            writer.replace_record_metadata(collection, identifier, &record, actor.as_ref())
-        } else {
-            writer.set_record_metadata(collection, identifier, &record, actor.as_ref())
-        }
-        .map_err(|error| error.to_string());
+    let record = serde_json::from_str(required_option(arguments, "--record")?)
+        .map_err(|error| format!("invalid --record: {error}"))?;
+    let replace = arguments.iter().any(|argument| argument == "--replace");
+    if replace {
+        writer.replace_record_metadata(collection, identifier, &record)
+    } else {
+        writer.set_record_metadata(collection, identifier, &record)
     }
-    writer
-        .set_record_access(
-            collection,
-            identifier,
-            WriteAccess {
-                uid: optional_u32(arguments, "--uid")?,
-                gid: optional_u32(arguments, "--gid")?,
-                mode: optional_mode(arguments, "--mode")?,
-            },
-            actor.as_ref(),
-        )
-        .map_err(|error| error.to_string())
+    .map_err(|error| error.to_string())
 }
 
 fn run_put(command: &str, arguments: &[String], writer: &NativeWriteRoot) -> Result<(), String> {
     let collection = required_option(arguments, "--collection")?;
     let identifier = required_option(arguments, "--id")?;
-    let access = WriteAccess {
-        uid: optional_u32(arguments, "--uid")?,
-        gid: optional_u32(arguments, "--gid")?,
-        mode: optional_mode(arguments, "--mode")?,
-    };
     if command == "put-document" {
         let document = required_option(arguments, "--document")?;
-        if let Some(engine) = write_engine(writer.path())? {
+        if let Some(engine) = write_engine(writer.path(), arguments)? {
             let fields = serde_json::from_str(document)
                 .map_err(|error| format!("invalid --document: {error}"))?;
             return engine
-                .put_document(collection, identifier, fields, access)
+                .put_document(collection, identifier, fields)
                 .map_err(|error| error.to_string());
         }
         return writer
@@ -245,10 +259,7 @@ fn run_put(command: &str, arguments: &[String], writer: &NativeWriteRoot) -> Res
                 collection,
                 identifier,
                 document.as_bytes(),
-                PutDocumentOptions {
-                    access,
-                    ..PutDocumentOptions::default()
-                },
+                PutDocumentOptions::default(),
             )
             .map_err(|error| error.to_string());
     }
@@ -268,56 +279,22 @@ fn run_put(command: &str, arguments: &[String], writer: &NativeWriteRoot) -> Res
                 key: required_option(arguments, "--key")?.into(),
                 extension: required_option(arguments, "--extension")?.into(),
                 metadata,
-                access,
             },
         )
         .map_err(|error| error.to_string())
 }
 
-fn actor(arguments: &[String]) -> Result<Option<WriteActor>, String> {
-    let Some(uid) = optional_u32(arguments, "--actor-uid")? else {
-        if arguments
-            .iter()
-            .any(|argument| argument == "--actor-groups")
-        {
-            return Err("--actor-groups requires --actor-uid".into());
-        }
-        return Ok(None);
-    };
-    let groups = option(arguments, "--actor-groups")
-        .map(|encoded| {
-            encoded
-                .split(',')
-                .filter(|value| !value.is_empty())
-                .map(|value| {
-                    value
-                        .parse::<u32>()
-                        .map_err(|error| format!("invalid --actor-groups: {error}"))
-                })
-                .collect::<Result<Vec<_>, _>>()
-        })
-        .transpose()?
-        .unwrap_or_default();
-    Ok(Some(WriteActor::new(uid, groups)))
-}
-
-fn optional_u32(arguments: &[String], name: &str) -> Result<Option<u32>, String> {
-    option(arguments, name)
-        .map(|value| {
-            value
-                .parse::<u32>()
-                .map_err(|error| format!("invalid {name}: {error}"))
-        })
-        .transpose()
-}
-
-fn optional_mode(arguments: &[String], name: &str) -> Result<Option<u32>, String> {
-    option(arguments, name)
-        .map(|value| {
-            let value = value.strip_prefix("0o").unwrap_or(value);
-            u32::from_str_radix(value, 8).map_err(|error| format!("invalid {name}: {error}"))
-        })
-        .transpose()
+fn refuse_removed_access_flags(arguments: &[String]) -> Result<(), String> {
+    const REMOVED: [&str; 5] = ["--uid", "--gid", "--mode", "--actor-uid", "--actor-groups"];
+    match arguments
+        .iter()
+        .find(|argument| REMOVED.contains(&argument.as_str()))
+    {
+        Some(flag) => Err(format!(
+            "{flag} was removed with POSTIX access control (ADR 0021)"
+        )),
+        None => Ok(()),
+    }
 }
 
 fn option<'a>(arguments: &'a [String], name: &str) -> Option<&'a str> {
@@ -352,26 +329,40 @@ fn decode_hex(value: &str) -> Result<Vec<u8>, String> {
         .collect()
 }
 
+/// `fylo schema push` without the CLI's configuration, so the crash matrix
+/// can interrupt a schema registry commit.
+fn push_schema(writer: &NativeWriteRoot, arguments: &[String]) -> Result<Value, String> {
+    WriteEngine::from_writer(writer.clone())
+        .with_schema_configuration(required_option(arguments, "--schema-dir")?, None)
+        .map_err(|error| error.to_string())?
+        .schema_push(
+            required_option(arguments, "--collection")?,
+            None,
+            Some("fylo-write-preview"),
+        )
+        .map_err(|error| error.to_string())
+}
+
 fn usage() -> String {
     "Usage:\n  fylo-write-preview recover --root <path> --collection <name>\n  \
      fylo-write-preview put-document --root <path> --collection <name> --id <ttid> --document \
-     <json> [--uid <uid>] [--gid <gid>] [--mode <octal>]\n  fylo-write-preview put-file --root \
+     <json>\n  fylo-write-preview put-file --root \
      <path> --collection <name> --id <ttid> --bytes-hex \
      <hex> --key <key> --extension <ext> [--metadata <json>]\n  fylo-write-preview patch-document \
-     --root <path> --collection <name> --id <ttid> --document <json> [--actor-uid <uid> \
-     [--actor-groups <gid,...>]]\n  fylo-write-preview patch-fields --root <path> --collection \
-     <name> --id <ttid> --changes <json> [--actor-uid <uid> [--actor-groups <gid,...>]]\n  \
-     fylo-write-preview delete-document --root <path> --collection <name> --id <ttid> \
-     [--actor-uid <uid> [--actor-groups <gid,...>]]\n  fylo-write-preview sql --root <path> \
-     --statement <sql> [--actor-uid <uid> [--actor-groups <gid,...>]] [--uid <uid>] [--gid \
-     <gid>] [--mode <octal>]\n  fylo-write-preview set-metadata --root <path> --collection \
-     <name> --id <ttid> --record <json> [--replace] [--actor-uid <uid> [--actor-groups <gid,...>]]\n  \
-     fylo-write-preview set-access --root <path> --collection <name> --id <ttid> [--uid <uid>] \
-     [--gid <gid>] [--mode <octal>] [--actor-uid <uid> [--actor-groups <gid,...>]]\n  \
+     --root <path> --collection <name> --id <ttid> --document <json>\n  fylo-write-preview \
+     patch-fields --root <path> --collection <name> --id <ttid> --changes <json>\n  \
+     fylo-write-preview delete-document --root <path> --collection <name> --id <ttid>\n  \
+     fylo-write-preview sql --root <path> --statement <sql>\n  fylo-write-preview set-metadata \
+     --root <path> --collection <name> --id <ttid> --record <json> [--replace]\n  \
      fylo-write-preview commit --root <path> --message <message>\n  fylo-write-preview \
-     restore-document --root <path> --collection <name> --id <ttid> [--actor-uid <uid> \
-     [--actor-groups <gid,...>]]\n  fylo-write-preview reshard --root <path> \
-     --collection <name> --width <0-4>\n  fylo-write-preview failpoints"
+     restore-document --root <path> --collection <name> --id <ttid>\n  fylo-write-preview \
+     reshard --root <path> \
+     --collection <name> --width <0-4>\n  fylo-write-preview push-schema --root <path> \
+     --collection <name> --schema-dir <path>\n  fylo-write-preview schema-head --root <path> \
+     --collection <name>\n  fylo-write-preview compact --root <path> [--collection <name> | \
+     --shrink]\n  fylo-write-preview pack --root <path> --out <db.vdbx>\n  \
+     fylo-write-preview rekey --root <db.vdbx> --encrypt --new-key '${NAME}'\n  \
+     fylo-write-preview failpoints"
         .into()
 }
 
@@ -380,17 +371,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rejects_groups_without_a_trusted_actor_uid() {
-        let arguments = ["--actor-groups".into(), "100,200".into()];
+    fn refuses_a_removed_access_flag() {
+        let arguments = ["put-document".into(), "--uid".into(), "1000".into()];
         assert_eq!(
-            actor(&arguments).unwrap_err(),
-            "--actor-groups requires --actor-uid"
+            run(&arguments).unwrap_err(),
+            "--uid was removed with POSTIX access control (ADR 0021)"
         );
-    }
-
-    #[test]
-    fn parses_octal_modes_without_decimal_ambiguity() {
-        let arguments = ["--mode".into(), "0o660".into()];
-        assert_eq!(optional_mode(&arguments, "--mode").unwrap(), Some(0o660));
     }
 }

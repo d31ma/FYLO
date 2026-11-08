@@ -108,19 +108,16 @@ describe('release supply-chain pinning', () => {
         ])
 
         for (const installer of [shell, powershell]) {
-            expect(installer).toContain('v26.32.03')
-            expect(installer).toContain('v26.32.02')
-            expect(installer).toContain('v26.33.01')
+            expect(installer).toContain('v26.36.01')
             expect(installer).not.toContain('releases/latest')
             expect(installer).not.toContain('SHA256SUMS')
+            // TTID and CHEX are built into FYLO; nothing downloads them.
+            expect(installer).not.toContain('d31ma/TTID')
+            expect(installer).not.toContain('d31ma/CHEX')
         }
-        expect(shell).toContain('2ec6d27844720cdbaf7f9b4e06ab20f06cb69aa272930a22eca0edf57ef4dcf4')
+        expect(shell).toContain('1bf8d005bc2552dec0b8b1fbfeefde1b01ef6c4342f98b8d958d76d75c8d9f80')
         expect(powershell).toContain(
-            '41c06d2305e40ceb34baefc214610a869defc772501047e39c23427e0ff8565f'
-        )
-        expect(shell).toContain('0ecafafd0468b8e559e98f1192e88df2cc5c53fb195e8ff8305b4d2f3b2ee584')
-        expect(powershell).toContain(
-            '15b624f77c4e582a41332e44aadc7451369b960f8081da7fd670e11eb76a6424'
+            '8b8cc73a8407e5397e66d7fab6f3946162847c4b5639d089d0f16af57f3631f8'
         )
         expect(kotlin).toContain("KOTLIN_VERSION='2.1.10'")
         expect(kotlin).toContain(

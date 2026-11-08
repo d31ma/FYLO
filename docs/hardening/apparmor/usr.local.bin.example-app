@@ -1,0 +1,55 @@
+# Sample AppArmor profile for an application that uses a protected FYLO
+# database (ADR 0021, docs/hardening/README.md). Not tested by FYLO's CI.
+#
+# CHANGE: the executable path, the database directory, the key path or
+# systemd credential name, and anything else the application itself needs
+# (its own configuration, logs, network). Install as
+# /etc/apparmor.d/usr.local.bin.example-app, check it with
+#   apparmor_parser -Q -K /etc/apparmor.d/usr.local.bin.example-app
+# load it in complain mode first:
+#   aa-complain /etc/apparmor.d/usr.local.bin.example-app
+# and enforce it (aa-enforce) once the audit log is quiet.
+
+abi <abi/3.0>,
+
+include <tunables/global>
+
+# CHANGE: the application's executable.
+profile example-app /usr/local/bin/example-app {
+  include <abstractions/base>
+
+  # The executable itself, and the shared libraries it maps.
+  /usr/local/bin/example-app mr,
+
+  # The database directory: FYLO opens the .vdbx file read-write, takes
+  # byte-range locks on it (k), syncs the directory after a rename, and
+  # during `rekey` or `pack` writes a staging file beside it that it
+  # renames over the database. CHANGE: the directory.
+  /var/lib/example-app/ r,
+  /var/lib/example-app/*.vdbx rwk,
+  /var/lib/example-app/*.vdbx.pack-staging* rwk,
+  /var/lib/example-app/*.vdbx.seal-staging* rwk,
+
+  # The identity's private key. Keep one of the two.
+  # A `file:` key, mode 0600, owned by the application's user. CHANGE.
+  owner /etc/example-app/identity.pem r,
+  # A `creds:` key: systemd hands the unit its credential in
+  # $CREDENTIALS_DIRECTORY. CHANGE: the unit name.
+  owner /run/credentials/example-app.service/ r,
+  owner /run/credentials/example-app.service/* r,
+
+  # Entropy for keys, nonces and session keys.
+  /dev/urandom r,
+  @{PROC}/sys/kernel/random/uuid r,
+
+  # Nobody traces the application or reads its memory, and it traces
+  # nobody: the session and collection keys live in its memory.
+  deny ptrace (readby, tracedby),
+  deny ptrace (read, trace),
+  deny @{PROC}/@{pid}/mem rw,
+
+  # FYLO opens no listener and no connection. Remove these lines if the
+  # application itself needs the network.
+  deny network inet,
+  deny network inet6,
+}

@@ -153,13 +153,13 @@ describe('browser Wasm index integration', () => {
         expect(factory.scanners).toHaveLength(1)
         expect(factory.scanners[0].loads).toBe(1)
 
-        await fylo.users.patch(high, { score: 5 })
+        await fylo.users.patch(high, { score: -5 })
         await fylo.users.patch(low, { score: 30 })
         expect(Object.keys(await collect(fylo, { $ops: [{ score: { $gte: 15 } }] }))).toEqual([low])
         expect(factory.scanners[0].loads).toBe(1)
 
         await fylo.index.compact('users')
-        expect(Object.keys(await collect(fylo, { $ops: [{ score: { $lt: 15 } }] }))).toEqual([high])
+        expect(Object.keys(await collect(fylo, { $ops: [{ score: { $lt: 0 } }] }))).toEqual([high])
         expect(factory.scanners[0].loads).toBe(2)
         expect(fylo.index.accelerationStatus()).toMatchObject({
             mode: 'wasm',
@@ -185,7 +185,7 @@ describe('browser Wasm index integration', () => {
         const second = new BrowserCore({ fs, root: '/', indexScannerFactory: secondFactory })
         await second.ready()
         expect(
-            Object.keys(await collect(second, { $ops: [{ name: { $eq: 'Restarted' } }] }))
+            Object.keys(await collect(second, { $ops: [{ name: { $like: 'Restarted' } }] }))
         ).toEqual([id])
         expect(secondFactory.scanners).toHaveLength(1)
         expect(secondFactory.scanners[0].loads).toBe(1)
@@ -200,9 +200,9 @@ describe('browser Wasm index integration', () => {
         const id = await fylo.users.put({ name: 'Fallback', score: 7 })
         await fylo.index.compact('users')
 
-        expect(Object.keys(await collect(fylo, { $ops: [{ name: { $eq: 'Fallback' } }] }))).toEqual(
-            [id]
-        )
+        expect(
+            Object.keys(await collect(fylo, { $ops: [{ name: { $like: 'Fallback' } }] }))
+        ).toEqual([id])
         expect(fylo.index.accelerationStatus()).toMatchObject({
             mode: 'wasm',
             state: 'fallback',
@@ -227,9 +227,9 @@ describe('browser Wasm index integration', () => {
         const id = await fylo.users.put({ name: 'Fallback', score: 7 })
         await fylo.index.compact('users')
 
-        expect(Object.keys(await collect(fylo, { $ops: [{ name: { $eq: 'Fallback' } }] }))).toEqual(
-            [id]
-        )
+        expect(
+            Object.keys(await collect(fylo, { $ops: [{ name: { $like: 'Fallback' } }] }))
+        ).toEqual([id])
         expect(fylo.index.accelerationStatus()).toMatchObject({
             mode: 'wasm',
             state: 'fallback',

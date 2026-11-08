@@ -1,0 +1,685 @@
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+
+use fylo_storage_native::ContainerFile;
+use serde_json::Value;
+
+const BINARY: &str = env!("CARGO_BIN_EXE_fylo-rust");
+
+struct Fixture(PathBuf);
+
+impl Fixture {
+    fn new(name: &str) -> Self {
+        let path =
+            std::env::temp_dir().join(format!("fylo-cli-vdbx-{name}-{}", std::process::id()));
+        fs::create_dir_all(&path).unwrap();
+        Self(path)
+    }
+
+    fn run(&self, arguments: &[&str]) -> Output {
+        Command::new(BINARY)
+            .current_dir(&self.0)
+            .args(arguments)
+            .output()
+            .unwrap()
+    }
+
+    /// Run with `secret` as the database key `keyed.json` names, a
+    /// configuration that does not encrypt new databases by itself.
+    fn run_keyed(&self, secret: &str, arguments: &[&str]) -> Output {
+        fs::write(
+            self.0.join("keyed.json"),
+            r#"{"fylo":{"encryption":{"key":"${FYLO_CLI_TEST_DATABASE_KEY}","file":true}}}"#,
+        )
+        .unwrap();
+        Command::new(BINARY)
+            .current_dir(&self.0)
+            .args(arguments)
+            .args(["--config", "keyed.json"])
+            .env("FYLO_CLI_TEST_DATABASE_KEY", secret)
+            .output()
+            .unwrap()
+    }
+}
+
+impl Fixture {
+    /// Run `fylo rekey` on `app.vdbx` opened with `old`, the key
+    /// `keyed.json` names, with `new` as the secret `${FYLO_CLI_TEST_NEW_KEY}`
+    /// names, in the environment.
+    fn rekey(&self, old: &str, new: &str, arguments: &[&str]) -> Output {
+        fs::write(
+            self.0.join("keyed.json"),
+            r#"{"fylo":{"encryption":{"key":"${FYLO_CLI_TEST_DATABASE_KEY}","file":true}}}"#,
+        )
+        .unwrap();
+        Command::new(BINARY)
+            .current_dir(&self.0)
+            .args(["rekey", "app.vdbx"])
+            .args(arguments)
+            .args(["--config", "keyed.json"])
+            .env("FYLO_CLI_TEST_DATABASE_KEY", old)
+            .env("FYLO_CLI_TEST_NEW_KEY", new)
+            .output()
+            .unwrap()
+    }
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+fn database(path: &Path) {
+    ContainerFile::create(path, 20).unwrap();
+    let mut container = ContainerFile::open_unchecked(path).unwrap();
+    container.add_collection("users", b"").unwrap();
+}
+
+fn json(output: &Output) -> Value {
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+#[test]
+fn inspect_prints_a_vdbx_report() {
+    let fixture = Fixture::new("inspect");
+    database(&fixture.0.join("app.vdbx"));
+    let output = fixture.run(&["inspect", "app.vdbx"]);
+    assert!(output.status.success(), "{output:?}");
+    let report = json(&output);
+    assert_eq!(report["format"], "fylo.vdbx");
+    assert_eq!(report["collections"][0]["name"], "users");
+    // No directory root was created in its place.
+    assert!(!fixture.0.join(".fylo-data").exists());
+}
+
+#[test]
+fn verify_prints_the_report_and_fails_on_damage() {
+    let fixture = Fixture::new("verify");
+    let path = fixture.0.join("app.vdbx");
+    database(&path);
+    let clean = fixture.run(&["verify", "app.vdbx"]);
+    assert!(clean.status.success(), "{clean:?}");
+    assert_eq!(json(&clean)["ok"], true);
+    let by_root = fixture.run(&["verify", "--root", "app.vdbx"]);
+    assert!(by_root.status.success(), "{by_root:?}");
+
+    // Damage the directory extent's header.
+    let mut bytes = fs::read(&path).unwrap();
+    bytes[(1 << 20) + 20] ^= 0x40;
+    fs::write(&path, bytes).unwrap();
+    let damaged = fixture.run(&["verify", "app.vdbx"]);
+    assert!(!damaged.status.success(), "{damaged:?}");
+    let report = json(&damaged);
+    assert_eq!(report["ok"], false);
+    assert_eq!(report["problems"][0]["code"], "extentHeaderMismatch");
+
+    let missing = fixture.run(&["verify", "missing.vdbx"]);
+    assert!(!missing.status.success());
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("ENATIVE_NOT_FOUND"));
+}
+
+#[test]
+fn commands_and_sql_run_against_a_database_root() {
+    require_byte_range_locks();
+    let fixture = Fixture::new("root");
+    let created = fixture.run(&["create", "app.vdbx", "--unprotected"]);
+    assert!(created.status.success(), "{created:?}");
+    let create = fixture.run(&[
+        "exec",
+        "--request",
+        r#"{"op":"createCollection","collection":"users"}"#,
+        "--root",
+        "app.vdbx",
+    ]);
+    assert!(create.status.success(), "{create:?}");
+    let insert = fixture.run(&[
+        "sql",
+        "INSERT INTO users (name, team) VALUES ('ada', 'red')",
+        "--root",
+        "app.vdbx",
+    ]);
+    assert!(insert.status.success(), "{insert:?}");
+    let identifier = String::from_utf8(insert.stdout).unwrap().trim().to_owned();
+    let got = fixture.run(&["get", "users", &identifier, "--root", "app.vdbx", "--json"]);
+    assert!(got.status.success(), "{got:?}");
+    assert_eq!(json(&got)[&identifier]["name"], "ada");
+    // The database is the only thing the commands created.
+    let names: Vec<_> = fs::read_dir(&fixture.0)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(names, ["app.vdbx"]);
+}
+
+/// A directory root with one collection and one document, returning the
+/// document's identifier.
+fn seeded_root(fixture: &Fixture, root: &str) -> String {
+    let create = fixture.run(&[
+        "exec",
+        "--request",
+        r#"{"op":"createCollection","collection":"users"}"#,
+        "--root",
+        root,
+    ]);
+    assert!(create.status.success(), "{create:?}");
+    let insert = fixture.run(&[
+        "sql",
+        "INSERT INTO users (name, team) VALUES ('ada', 'red')",
+        "--root",
+        root,
+    ]);
+    assert!(insert.status.success(), "{insert:?}");
+    String::from_utf8(insert.stdout).unwrap().trim().to_owned()
+}
+
+#[test]
+fn pack_and_unpack_carry_a_root_through_a_database() {
+    let fixture = Fixture::new("pack");
+    let identifier = seeded_root(&fixture, "data");
+    let pack = fixture.run(&["pack", "data", "--out", "app.vdbx"]);
+    assert!(pack.status.success(), "{pack:?}");
+    let report = json(&pack);
+    assert_eq!(report["collections"][0]["collection"], "users");
+    assert_eq!(report["collections"][0]["documents"], 1);
+    let verify = fixture.run(&["verify", "app.vdbx"]);
+    assert!(verify.status.success(), "{verify:?}");
+    let got = fixture.run(&["get", "users", &identifier, "--root", "app.vdbx", "--json"]);
+    assert!(got.status.success(), "{got:?}");
+    assert_eq!(json(&got)[&identifier]["name"], "ada");
+
+    let unpack = fixture.run(&["unpack", "app.vdbx", "--out", "restored"]);
+    assert!(unpack.status.success(), "{unpack:?}");
+    assert_eq!(json(&unpack)["collections"][0]["documents"], 1);
+    let got = fixture.run(&["get", "users", &identifier, "--root", "restored", "--json"]);
+    assert!(got.status.success(), "{got:?}");
+    assert_eq!(json(&got)[&identifier]["team"], "red");
+    assert!(fixture.0.join("restored/.collections/users/docs").is_dir());
+}
+
+#[test]
+fn a_sealed_pack_is_read_everywhere_and_written_nowhere() {
+    let fixture = Fixture::new("pack-sealed");
+    let identifier = seeded_root(&fixture, "data");
+    let sealed = fixture.run(&["pack", "data", "--out", "sealed.vdbx", "--sealed"]);
+    assert!(sealed.status.success(), "{sealed:?}");
+    let report = json(&sealed);
+    assert_eq!(report["collections"][0]["documents"], 1);
+    assert!(
+        report["sealed"]["storedBytes"].as_u64().unwrap() > 0,
+        "{report}"
+    );
+    let inspect = json(&fixture.run(&["inspect", "sealed.vdbx"]));
+    assert_eq!(inspect["sealed"], true);
+    assert_eq!(inspect["extents"]["free"], 0);
+    let verify = fixture.run(&["verify", "sealed.vdbx"]);
+    assert!(verify.status.success(), "{verify:?}");
+    let got = fixture.run(&[
+        "get",
+        "users",
+        &identifier,
+        "--root",
+        "sealed.vdbx",
+        "--json",
+    ]);
+    assert!(got.status.success(), "{got:?}");
+    assert_eq!(json(&got)[&identifier]["name"], "ada");
+    let selected = fixture.run(&["sql", "SELECT team FROM users", "--root", "sealed.vdbx"]);
+    assert!(selected.status.success(), "{selected:?}");
+    assert!(String::from_utf8_lossy(&selected.stdout).contains("red"));
+    let insert = fixture.run(&[
+        "sql",
+        "INSERT INTO users (name) VALUES ('bob')",
+        "--root",
+        "sealed.vdbx",
+    ]);
+    assert!(!insert.status.success());
+    assert!(
+        String::from_utf8_lossy(&insert.stderr).contains("EROFS"),
+        "{insert:?}"
+    );
+    // A live database backs up the same way.
+    let pack = fixture.run(&["pack", "data", "--out", "app.vdbx"]);
+    assert!(pack.status.success(), "{pack:?}");
+    let backup = fixture.run(&["pack", "app.vdbx", "--out", "backup.vdbx", "--sealed"]);
+    assert!(backup.status.success(), "{backup:?}");
+    let unpack = fixture.run(&["unpack", "backup.vdbx", "--out", "restored"]);
+    assert!(unpack.status.success(), "{unpack:?}");
+    let got = fixture.run(&["get", "users", &identifier, "--root", "restored", "--json"]);
+    assert_eq!(json(&got)[&identifier]["team"], "red");
+}
+
+#[test]
+fn pack_refuses_an_existing_output() {
+    let fixture = Fixture::new("pack-refuse");
+    seeded_root(&fixture, "data");
+    fs::write(fixture.0.join("app.vdbx"), b"keep").unwrap();
+    let existing = fixture.run(&["pack", "data", "--out", "app.vdbx"]);
+    assert!(!existing.status.success());
+    assert!(String::from_utf8_lossy(&existing.stderr).contains("already exists"));
+    assert_eq!(fs::read(fixture.0.join("app.vdbx")).unwrap(), b"keep");
+    let missing = fixture.run(&["pack", "data"]);
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("--out"));
+}
+
+#[test]
+fn a_pack_stopped_after_staging_leaves_no_database() {
+    let fixture = Fixture::new("pack-crash");
+    let identifier = seeded_root(&fixture, "data");
+    let stopped = Command::new(BINARY)
+        .current_dir(&fixture.0)
+        .args(["pack", "data", "--out", "app.vdbx"])
+        .env("FYLO_RUST_FAILPOINT", "after-pack-staging")
+        .env("FYLO_RUST_FAILPOINT_ACTION", "abort")
+        .output()
+        .unwrap();
+    assert!(!stopped.status.success(), "{stopped:?}");
+    // The verified staging file is left, and no database under the name.
+    assert!(!fixture.0.join("app.vdbx").exists());
+    assert!(fixture.0.join(".app.vdbx.pack-staging").is_file());
+
+    // An injected error, which the process survives, removes its staging
+    // file itself.
+    let failed = Command::new(BINARY)
+        .current_dir(&fixture.0)
+        .args(["pack", "data", "--out", "app.vdbx"])
+        .env("FYLO_RUST_FAILPOINT", "after-pack-staging")
+        .output()
+        .unwrap();
+    assert!(!failed.status.success(), "{failed:?}");
+    assert!(!fixture.0.join("app.vdbx").exists());
+    assert!(!fixture.0.join(".app.vdbx.pack-staging").exists());
+
+    let pack = fixture.run(&["pack", "data", "--out", "app.vdbx"]);
+    assert!(pack.status.success(), "{pack:?}");
+    // Beside the root's own owner lock files and a core dump the aborted run
+    // may leave, only the database is left.
+    let mut names: Vec<_> = fs::read_dir(&fixture.0)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| !name.starts_with(".data.fylo-root-owner") && !is_core_dump(name))
+        .collect();
+    names.sort();
+    assert_eq!(names, ["app.vdbx", "data"]);
+    let got = fixture.run(&["get", "users", &identifier, "--root", "app.vdbx", "--json"]);
+    assert!(got.status.success(), "{got:?}");
+}
+
+#[test]
+fn a_sealed_pack_stopped_after_staging_leaves_no_database() {
+    let fixture = Fixture::new("pack-sealed-crash");
+    let identifier = seeded_root(&fixture, "data");
+    let stopped = Command::new(BINARY)
+        .current_dir(&fixture.0)
+        .args(["pack", "data", "--out", "app.vdbx", "--sealed"])
+        .env("FYLO_RUST_FAILPOINT", "after-pack-staging")
+        .env("FYLO_RUST_FAILPOINT_ACTION", "abort")
+        .output()
+        .unwrap();
+    assert!(!stopped.status.success(), "{stopped:?}");
+    // The verified sealed staging file is left, the plain one it was made
+    // from is gone, and no database is under the name.
+    assert!(!fixture.0.join("app.vdbx").exists());
+    assert!(fixture.0.join(".app.vdbx.seal-staging").is_file());
+    assert!(!fixture.0.join(".app.vdbx.pack-staging").exists());
+
+    let pack = fixture.run(&["pack", "data", "--out", "app.vdbx", "--sealed"]);
+    assert!(pack.status.success(), "{pack:?}");
+    let mut names: Vec<_> = fs::read_dir(&fixture.0)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| !name.starts_with(".data.fylo-root-owner") && !is_core_dump(name))
+        .collect();
+    names.sort();
+    assert_eq!(names, ["app.vdbx", "data"]);
+    let got = fixture.run(&["get", "users", &identifier, "--root", "app.vdbx", "--json"]);
+    assert!(got.status.success(), "{got:?}");
+}
+
+/// A key generated for one test; no real secret is ever written.
+fn generated_secret(name: &str) -> String {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    format!("generated-{name}-{stamp:032x}-{}", std::process::id())
+}
+
+fn contains(bytes: &[u8], needle: &[u8]) -> bool {
+    bytes.windows(needle.len()).any(|window| window == needle)
+}
+
+#[test]
+fn create_encrypt_makes_a_database_only_its_key_opens() {
+    let fixture = Fixture::new("encrypt");
+    let secret = generated_secret("encrypt");
+    // --encrypt needs the key.
+    let keyless = fixture.run(&["create", "app.vdbx", "--unprotected", "--encrypt"]);
+    assert!(!keyless.status.success(), "{keyless:?}");
+    assert!(String::from_utf8_lossy(&keyless.stderr).contains("EKEY"));
+    assert!(!fixture.0.join("app.vdbx").exists());
+
+    let create = fixture.run_keyed(
+        &secret,
+        &["create", "app.vdbx", "--unprotected", "--encrypt"],
+    );
+    assert!(create.status.success(), "{create:?}");
+    assert_eq!(json(&create)["encrypted"], true);
+    let again = fixture.run_keyed(&secret, &["create", "app.vdbx"]);
+    assert!(!again.status.success(), "{again:?}");
+    let collection = fixture.run_keyed(
+        &secret,
+        &[
+            "exec",
+            "--request",
+            r#"{"op":"createCollection","collection":"users"}"#,
+            "--root",
+            "app.vdbx",
+        ],
+    );
+    assert!(collection.status.success(), "{collection:?}");
+    let insert = fixture.run_keyed(
+        &secret,
+        &[
+            "sql",
+            "INSERT INTO users (name, team) VALUES ('NUMBAT-CANARY', 'red')",
+            "--root",
+            "app.vdbx",
+        ],
+    );
+    assert!(insert.status.success(), "{insert:?}");
+    let identifier = String::from_utf8(insert.stdout).unwrap().trim().to_owned();
+    let got = fixture.run_keyed(
+        &secret,
+        &["get", "users", &identifier, "--root", "app.vdbx", "--json"],
+    );
+    assert!(got.status.success(), "{got:?}");
+    assert_eq!(json(&got)[&identifier]["name"], "NUMBAT-CANARY");
+    let bytes = fs::read(fixture.0.join("app.vdbx")).unwrap();
+    assert!(!contains(&bytes, b"NUMBAT-CANARY"));
+
+    // Without the key, inspect reports it locked, verify passes, and a read
+    // is refused.
+    let inspect = fixture.run(&["inspect", "app.vdbx"]);
+    assert!(inspect.status.success(), "{inspect:?}");
+    let report = json(&inspect);
+    assert_eq!(report["encrypted"], true);
+    assert_eq!(report["locked"], true);
+    assert_eq!(report["collections"], serde_json::json!([]));
+    let verify = fixture.run(&["verify", "app.vdbx"]);
+    assert!(verify.status.success(), "{verify:?}");
+    let locked = fixture.run(&["get", "users", &identifier, "--root", "app.vdbx", "--json"]);
+    assert!(!locked.status.success(), "{locked:?}");
+    assert!(String::from_utf8_lossy(&locked.stderr).contains("EKEY"));
+    let wrong = fixture.run_keyed(
+        &generated_secret("wrong"),
+        &["get", "users", &identifier, "--root", "app.vdbx", "--json"],
+    );
+    assert!(!wrong.status.success(), "{wrong:?}");
+    assert!(String::from_utf8_lossy(&wrong.stderr).contains("does not match"));
+    assert_eq!(fs::read(fixture.0.join("app.vdbx")).unwrap(), bytes);
+
+    // With it, inspect lists the collections.
+    let inspect = fixture.run_keyed(&secret, &["inspect", "app.vdbx"]);
+    assert!(inspect.status.success(), "{inspect:?}");
+    assert_eq!(json(&inspect)["locked"], false);
+    assert_eq!(json(&inspect)["collections"][0]["name"], "users");
+}
+
+#[test]
+fn pack_encrypt_seals_a_root_and_unpack_needs_its_key() {
+    let fixture = Fixture::new("pack-encrypt");
+    let secret = generated_secret("pack");
+    let identifier = seeded_root(&fixture, "data");
+    let pack = fixture.run_keyed(&secret, &["pack", "data", "--out", "app.vdbx", "--encrypt"]);
+    assert!(pack.status.success(), "{pack:?}");
+    let bytes = fs::read(fixture.0.join("app.vdbx")).unwrap();
+    assert!(!contains(&bytes, b"\"ada\""));
+    let report = json(&fixture.run(&["inspect", "app.vdbx"]));
+    assert_eq!(report["encrypted"], true);
+    let got = fixture.run_keyed(
+        &secret,
+        &["get", "users", &identifier, "--root", "app.vdbx", "--json"],
+    );
+    assert!(got.status.success(), "{got:?}");
+    assert_eq!(json(&got)[&identifier]["name"], "ada");
+
+    let locked = fixture.run(&["unpack", "app.vdbx", "--out", "restored"]);
+    assert!(!locked.status.success(), "{locked:?}");
+    assert!(String::from_utf8_lossy(&locked.stderr).contains("EKEY"));
+    let unpack = fixture.run_keyed(&secret, &["unpack", "app.vdbx", "--out", "restored"]);
+    assert!(unpack.status.success(), "{unpack:?}");
+    assert_eq!(json(&unpack)["collections"][0]["documents"], 1);
+}
+
+#[test]
+fn create_needs_an_admin_or_unprotected() {
+    let fixture = Fixture::new("create-protected-default");
+    let refused = fixture.run(&["create", "app.vdbx"]);
+    assert!(!refused.status.success(), "{refused:?}");
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("--unprotected"));
+    assert!(!fixture.0.join("app.vdbx").exists());
+}
+
+#[test]
+fn create_unprotected_makes_a_plain_database() {
+    let fixture = Fixture::new("create-plain");
+    let create = fixture.run(&["create", "app.vdbx", "--unprotected"]);
+    assert!(create.status.success(), "{create:?}");
+    assert_eq!(json(&create)["protected"], false);
+    assert_eq!(json(&create)["encrypted"], false);
+    assert_eq!(
+        json(&fixture.run(&["inspect", "app.vdbx"]))["encrypted"],
+        false
+    );
+    let directory = fixture.run(&["create", "data", "--unprotected"]);
+    assert!(!directory.status.success(), "{directory:?}");
+}
+
+#[test]
+fn compact_shrinks_and_salvage_writes_out_a_database() {
+    let fixture = Fixture::new("compact");
+    let secret = generated_secret("compact");
+    let create = fixture.run_keyed(
+        &secret,
+        &["create", "app.vdbx", "--unprotected", "--encrypt"],
+    );
+    assert!(create.status.success(), "{create:?}");
+    let collection = fixture.run_keyed(
+        &secret,
+        &[
+            "exec",
+            "--request",
+            r#"{"op":"createCollection","collection":"users"}"#,
+            "--root",
+            "app.vdbx",
+        ],
+    );
+    assert!(collection.status.success(), "{collection:?}");
+    let mut identifiers = Vec::new();
+    for team in ["red", "blue", "gone"] {
+        let insert = fixture.run_keyed(
+            &secret,
+            &[
+                "sql",
+                &format!("INSERT INTO users (name, team) VALUES ('ada', '{team}')"),
+                "--root",
+                "app.vdbx",
+            ],
+        );
+        assert!(insert.status.success(), "{insert:?}");
+        identifiers.push(String::from_utf8(insert.stdout).unwrap().trim().to_owned());
+    }
+    let delete = fixture.run_keyed(
+        &secret,
+        &[
+            "sql",
+            "DELETE FROM users WHERE team = 'gone'",
+            "--root",
+            "app.vdbx",
+        ],
+    );
+    assert!(delete.status.success(), "{delete:?}");
+
+    // Without the key the database is locked, and nothing changes.
+    let bytes = fs::read(fixture.0.join("app.vdbx")).unwrap();
+    for arguments in [
+        &["compact", "app.vdbx", "--shrink"][..],
+        &["salvage", "app.vdbx", "--out", "salvaged"][..],
+    ] {
+        let locked = fixture.run(arguments);
+        assert!(!locked.status.success(), "{locked:?}");
+        assert!(String::from_utf8_lossy(&locked.stderr).contains("EKEY"));
+    }
+    assert_eq!(fs::read(fixture.0.join("app.vdbx")).unwrap(), bytes);
+    assert!(!fixture.0.join("salvaged").exists());
+
+    let compact = fixture.run_keyed(&secret, &["compact", "app.vdbx", "--shrink"]);
+    assert!(compact.status.success(), "{compact:?}");
+    let report = json(&compact);
+    assert_eq!(report["shrink"], true);
+    assert_eq!(report["collections"][0]["collection"], "users");
+    assert!(report["collections"][0]["segmentsCompacted"].as_u64() >= Some(1));
+    // A database this small gains the compacted copies' extents; a shrink
+    // gives back only what lies free.
+    assert!(
+        report["fileBytesAfter"]
+            .as_u64()
+            .is_some_and(|bytes| bytes > 0)
+    );
+    let verify = fixture.run(&["verify", "app.vdbx"]);
+    assert!(verify.status.success(), "{verify:?}");
+    let got = fixture.run_keyed(
+        &secret,
+        &[
+            "get",
+            "users",
+            &identifiers[1],
+            "--root",
+            "app.vdbx",
+            "--json",
+        ],
+    );
+    assert!(got.status.success(), "{got:?}");
+    assert_eq!(json(&got)[&identifiers[1]]["team"], "blue");
+
+    let salvage = fixture.run_keyed(&secret, &["salvage", "app.vdbx", "--out", "salvaged"]);
+    assert!(salvage.status.success(), "{salvage:?}");
+    let report = json(&salvage);
+    assert_eq!(report["collections"][0]["collection"], "users");
+    assert_eq!(report["collections"][0]["damaged"], serde_json::json!([]));
+    let got = fixture.run(&[
+        "get",
+        "users",
+        &identifiers[0],
+        "--root",
+        "salvaged",
+        "--json",
+    ]);
+    assert!(got.status.success(), "{got:?}");
+    assert_eq!(json(&got)[&identifiers[0]]["team"], "red");
+    assert!(fixture.0.join("salvaged/.collections/users/docs").is_dir());
+}
+
+#[test]
+fn rekey_moves_an_encrypted_database_to_the_secret_new_key_names() {
+    require_byte_range_locks();
+    let fixture = Fixture::new("rekey");
+    let (old, new) = (generated_secret("old"), generated_secret("new"));
+    let identifier = seeded_root(&fixture, "data");
+    let pack = fixture.run_keyed(&old, &["pack", "data", "--out", "app.vdbx", "--encrypt"]);
+    assert!(pack.status.success(), "{pack:?}");
+    let bytes = fs::read(fixture.0.join("app.vdbx")).unwrap();
+    let new_key = ["--new-key", "${FYLO_CLI_TEST_NEW_KEY}"];
+
+    // The new key is a secret reference, never a literal, and the old key
+    // must open the database: a wrong one changes nothing.
+    let literal = fixture.rekey(&old, &new, &["--new-key", &new]);
+    assert!(!literal.status.success(), "{literal:?}");
+    let refused = String::from_utf8_lossy(&literal.stderr);
+    assert!(refused.contains("secret reference"), "{refused}");
+    assert!(!refused.contains(&new), "{refused}");
+    let wrong = fixture.rekey(&generated_secret("wrong"), &new, &new_key);
+    assert!(!wrong.status.success(), "{wrong:?}");
+    assert!(String::from_utf8_lossy(&wrong.stderr).contains("EKEY"));
+    let keyless = fixture.run(&["rekey", "app.vdbx", "--new-key", "${FYLO_CLI_TEST_NEW_KEY}"]);
+    assert!(!keyless.status.success(), "{keyless:?}");
+    for usage in [
+        &[][..],
+        &["--encrypt", "--new-key", "${FYLO_CLI_TEST_NEW_KEY}"][..],
+    ] {
+        let refused = fixture.rekey(&old, &new, usage);
+        assert!(!refused.status.success(), "{refused:?}");
+    }
+    assert_eq!(fs::read(fixture.0.join("app.vdbx")).unwrap(), bytes);
+
+    let rekey = fixture.rekey(&old, &new, &new_key);
+    assert!(rekey.status.success(), "{rekey:?}");
+    let report = json(&rekey);
+    assert_eq!(report["encrypted"], true);
+    assert_eq!(report["collections"][0]["collection"], "users");
+    assert_eq!(report["collections"][0]["documents"], 1);
+    let get = |secret: &str| {
+        fixture.run_keyed(
+            secret,
+            &["get", "users", &identifier, "--root", "app.vdbx", "--json"],
+        )
+    };
+    let stale = get(&old);
+    assert!(!stale.status.success(), "{stale:?}");
+    assert!(String::from_utf8_lossy(&stale.stderr).contains("EKEY"));
+    let got = get(&new);
+    assert!(got.status.success(), "{got:?}");
+    assert_eq!(json(&got)[&identifier]["name"], "ada");
+    let verify = fixture.run(&["verify", "app.vdbx"]);
+    assert!(verify.status.success(), "{verify:?}");
+    let mut names: Vec<_> = fs::read_dir(&fixture.0)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| !name.starts_with(".data.fylo-root-owner"))
+        .collect();
+    names.sort();
+    assert_eq!(names, ["app.vdbx", "data", "keyed.json"]);
+
+    // --decrypt writes it plain, and a plain database is refused a new key
+    // unless --encrypt asks for one.
+    let decrypt = fixture.rekey(&new, &new, &["--decrypt"]);
+    assert!(decrypt.status.success(), "{decrypt:?}");
+    assert_eq!(json(&decrypt)["encrypted"], false);
+    assert_eq!(
+        json(&fixture.run(&["inspect", "app.vdbx"]))["encrypted"],
+        false
+    );
+    let plain = fixture.rekey(&new, &old, &new_key);
+    assert!(!plain.status.success(), "{plain:?}");
+    let refused = String::from_utf8_lossy(&plain.stderr);
+    assert!(
+        refused.contains("plain") && refused.contains("--encrypt"),
+        "{refused}"
+    );
+    let encrypt = fixture.rekey(
+        &new,
+        &old,
+        &["--encrypt", "--new-key", "${FYLO_CLI_TEST_NEW_KEY}"],
+    );
+    assert!(encrypt.status.success(), "{encrypt:?}");
+    let got = get(&old);
+    assert!(got.status.success(), "{got:?}");
+    assert_eq!(json(&got)[&identifier]["team"], "red");
+}
+
+fn require_byte_range_locks() {
+    let filesystem = fylo_storage_native::FilesystemInfo::of_directory(&std::env::temp_dir())
+        .expect("probe TMPDIR");
+    assert!(
+        filesystem.byte_range_locks_qualified(),
+        "this test needs byte-range locks, which FYLO does not trust on TMPDIR's {} filesystem; \
+         point TMPDIR at a directory on ext4, tmpfs, APFS or NTFS (CONTRIBUTING.md)",
+        filesystem.name
+    );
+}
+
+fn is_core_dump(name: &str) -> bool {
+    name == "core" || name.starts_with("core.")
+}
