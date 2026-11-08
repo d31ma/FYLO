@@ -141,6 +141,14 @@ jobs:
                   bun-version-file: .bun-version
 
             - name: Setup PHP
+              id: setup-php
+              continue-on-error: true
+              uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2.40.0
+              with:
+                  php-version: '8.3'
+
+            - name: Setup PHP (second attempt)
+              if: steps.setup-php.outcome == 'failure'
               uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # v2.40.0
               with:
                   php-version: '8.3'
