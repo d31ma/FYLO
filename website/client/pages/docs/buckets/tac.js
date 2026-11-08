@@ -2,7 +2,7 @@ const TITLE = 'Buckets & raw files — FYLO'
 document.title = TITLE
 
 export default class {
-    basicCode = `await db.assets.create({ kind: 'file' })
+    basicCode = `await db.assets.create('file')
 
 const id = await db.assets.put(
     new File(['hello'], 'greeting.txt', { type: 'text/plain' })

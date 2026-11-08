@@ -128,10 +128,14 @@ NDJSON to stdin, reads NDJSON from stdout, and cannot tell which it got.
 WebAssembly is not a browser technology — `wasm32-wasip1` has real files and
 real stdio, so the same engine runs under any WASI runtime on a server.
 
-The browser build owns its storage rather than delegating to a JavaScript
-engine, which is why version control, schema, and encryption reach the browser
-at all. See the [artifact matrix](docs/releases/artifact-matrix.md) for what
-each one can and cannot do, and why.
+The `fylo-browser.wasm` build owns its storage rather than delegating to a
+JavaScript engine, which is why an embedder can carry version control, schema,
+and encryption into a browser with it. The browser loader that apps use today
+(`fylo.js` / `fylo-web.mjs`) and the mobile clients that host it are a separate
+JavaScript engine: in this release they do not support raw-file buckets,
+schemas, or field encryption (see [Browser access](#browser-access)). See the
+[artifact matrix](docs/releases/artifact-matrix.md) for what each artifact can
+and cannot do, and why.
 
 Document collections live under `.collections`; buckets (for raw files) live
 under `.buckets`. The two are structurally identical — only the top-level
@@ -274,11 +278,21 @@ Add the version-pinned loader to the document head:
 ```ts
 const db = await Fylo.open()
 
+await db.users.create()
 const id = await db.users.put({ name: 'Ada', role: 'admin' })
 await db.users.put(id).metadata({ source: 'browser', reviewed: false })
 const metadata = await db.users.get(id).metadata()
 const doc = await db.users.latest(id)
 ```
+
+Create a collection before the first `put`; writing to a collection that does
+not exist fails with `Collection not found`.
+
+**Not supported in the browser or on mobile in this release:** raw-file buckets
+(`kind: 'file'`), schemas, and field encryption. The browser loader
+(`fylo.js` / `fylo-web.mjs`) and the iOS, Android, and Flutter clients that
+embed it fail such requests with an error instead of ignoring them. Use the
+native `fylo` binary, through any binary-backed client, for those features.
 
 Use `https://d31ma.github.io/FYLO/version/latest/fylo.js` to track the newest
 successful release. Direct ESM consumers can import
@@ -512,8 +526,12 @@ the two share an identical internal layout. Databases written by older FYLO
 versions, where file collections lived under `.collections/`, are migrated to
 `.buckets/` automatically the first time the engine opens them.
 
+Buckets need the native `fylo` binary. The browser loader and the iOS, Android,
+and Flutter clients do not support them in this release and reject
+`kind: 'file'` with an error.
+
 ```js
-await db.assets.create({ kind: 'file' })
+await db.assets.create('file')
 
 const id = await db.assets.put(new File(['hello'], 'greeting.txt', { type: 'text/plain' }))
 
@@ -1094,6 +1112,10 @@ fylo schema pull article --out ./schemas-copy --root /mnt/fylo     # write the f
 
 Fields declared in `$encrypted` arrays are stored with AES-GCM. Equality queries use HMAC blind indexes — lookups work without decrypting, but an attacker with index access can count repetitions.
 
+Field encryption needs the native `fylo` binary. The browser loader and the
+mobile clients do not support schemas or field encryption in this release and
+fail such requests with an error.
+
 ```json
 {
     "$encrypted": ["ssn", "email", "payload/verifier"],
@@ -1219,36 +1241,11 @@ instead of copying whole collections. Bulk operations coalesce — `put.batch`,
 every document they touch, so large ingests stay fast. Prefer these over
 per-document writes when loading data.
 
-Disable auto-commit for manual Git-style working trees:
-
-```js
-const db = new Fylo('/mnt/fylo', {
-    versioning: { autoCommit: false }
-})
-```
-
-Version-control snapshots keep a full content-addressed copy of every raw
-file, which doubles disk and write bandwidth for large media collections.
-Exclude a collection from history entirely at creation time:
-
-```js
-await db.media.create({ kind: 'file', versioned: false })
-```
-
-Unversioned collections never appear in commits, diffs, or restores — their
-working files are the only copy, and `restoreCommit` leaves them untouched.
-
-Machine/executable callers can use the same option in JSON:
-
-```json
-{
-    "op": "putData",
-    "root": "/mnt/fylo",
-    "collection": "posts",
-    "versioning": { "autoCommit": false },
-    "data": { "title": "manual commit later" }
-}
-```
+This release has no option to turn auto-commit off or to exclude a collection
+from history: neither the clients nor the machine protocol accept one. Version-control snapshots keep a
+full content-addressed copy of every raw file, which doubles disk and write
+bandwidth for large media collections, so budget for that when you store large
+files in a bucket.
 
 `restore-commit` refuses to overwrite uncommitted working tree changes unless
 `--force` is passed; commit snapshots themselves remain immutable. `merge`
@@ -1385,7 +1382,7 @@ including its operation names, delivery model, message/claim limits, consumer
 groups, visibility leases, delayed delivery, idempotent publication, and
 group-specific dead letters.
 
-Supported operations: `handshake`, `executeSQL`, `createCollection`, `dropCollection`, `inspectCollection`, `rebuildCollection`, `reshardCollection`, `verifyCollection`, `getDoc`, `getFileData`, `getLatest`, `getMeta`, `setMeta`, `findDocs`, `findDeletedDocs`, `restoreDoc`, `joinDocs`, `putData`, `batchPutData`, `patchDoc`, `patchDocs`, `delDoc`, `delDocs`, `importBulkData`, `checkout`, `branch`, `commit`, `log`, `status`, `diff`, `restoreCommit`, `merge`, `schemaInspect`, `schemaCurrent`, `schemaHistory`, `schemaDoctor`, `schemaValidate`, `schemaMaterialize`, `queuePublish`, `queueClaim`, `queueAck`, `queueNack`, `queueExtend`, `queueStats`, `queueDeadLetters`.
+Supported operations: `handshake`, `executeSQL`, `createCollection`, `dropCollection`, `inspectCollection`, `rebuildCollection`, `reshardCollection`, `migrateLayout`, `compactCollection`, `verifyCollection`, `getDoc`, `getFileData`, `getLatest`, `getMeta`, `setMeta`, `findDocs`, `findDeletedDocs`, `restoreDoc`, `joinDocs`, `putData`, `batchPutData`, `patchDoc`, `patchDocs`, `delDoc`, `delDocs`, `importBulkData`, `checkout`, `branch`, `commit`, `log`, `status`, `diff`, `restoreCommit`, `merge`, `schemaInspect`, `schemaCurrent`, `schemaHistory`, `schemaDoctor`, `schemaValidate`, `schemaMaterialize`, `schemaMode`, `schemaCheck`, `schemaMigrate`, `schemaPush`, `schemaPull`, `queuePublish`, `queueClaim`, `queueAck`, `queueNack`, `queueExtend`, `queueStats`, `queueDeadLetters`, `inspectDatabase`, `verifyDatabase`.
 
 Requests name no caller: a request that carries the removed `access` object
 is refused with `EBADREQUEST`. Access comes from the session's identity.

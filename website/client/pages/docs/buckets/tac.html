@@ -14,9 +14,16 @@
             <code>File</code>, or <code>URL</code> to the ordinary <code>put()</code>.
         </p>
         <docs-sample topic="bucket" hydrate="load" />
+        <div class="doc-note doc-note--warn">
+            <p>
+                Buckets need the native <code>fylo</code> binary. The browser loader and the iOS,
+                Android, and Flutter clients do not support them in this release and reject
+                <code>kind: 'file'</code> with an error.
+            </p>
+        </div>
         <p>
-            The fluent byte accessors below belong to the browser facade. Binary-backed shims read
-            the same bytes through the machine protocol — see
+            The fluent byte accessors below are the JavaScript collection facade. Binary-backed
+            shims read the same bytes through the machine protocol — see
             <a href="/docs/clients">Language clients</a>.
         </p>
         <pre class="code-block"><code>{basicCode}</code></pre>

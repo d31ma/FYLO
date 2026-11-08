@@ -7,6 +7,7 @@ export default class {
 
     useCode = `const db = await Fylo.open()
 
+await db.users.create()
 const id = await db.users.put({ name: 'Ada', role: 'admin' })
 await db.users.put(id).metadata({ source: 'browser', reviewed: false })
 

@@ -38,6 +38,16 @@
                 WebView, so everything on this page applies to them too.
             </p>
         </div>
+        <div class="doc-note doc-note--warn">
+            <p>
+                Not supported by the browser loader (<code>fylo.js</code> /
+                <code>fylo-web.mjs</code>) or the mobile clients in this release: raw-file buckets
+                (<code>kind: 'file'</code>), schemas, and field encryption. Such requests fail with
+                an error instead of being ignored; use the native <code>fylo</code> binary through a
+                binary-backed client for them. Create a collection before its first
+                <code>put</code>.
+            </p>
+        </div>
     </div>
 
     <div class="doc-section">

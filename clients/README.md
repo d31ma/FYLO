@@ -25,12 +25,17 @@ addon. There are two kinds, sharing the same method names:
 
 ### Local-only clients (embed the engine on-device)
 
-| Platform         | File                     | How                                     |
-| ---------------- | ------------------------ | --------------------------------------- |
-| Browser (JS)     | `browser/fylo.js` loader | OPFS store                              |
-| iOS (Swift)      | `swift/Fylo.swift`       | WKWebView hosting `fylo.mjs`            |
-| Android (Kotlin) | `kotlin/Fylo.kt`         | android.webkit.WebView                  |
-| Flutter (Dart)   | `flutter/fylo.dart`      | flutter_inappwebview hosting `fylo.mjs` |
+| Platform         | File                     | How                                       |
+| ---------------- | ------------------------ | ----------------------------------------- |
+| Browser (JS)     | `browser/fylo.js` loader | OPFS store                                |
+| iOS (Swift)      | `swift/Fylo.swift`       | WKWebView hosting `fylo.mjs`              |
+| Android (Kotlin) | `kotlin/Fylo.kt`         | android.webkit.WebView hosting `fylo.mjs` |
+| Flutter (Dart)   | `flutter/fylo.dart`      | flutter_inappwebview hosting `fylo.mjs`   |
+
+The mobile hosts load the engine as `fylo.mjs`: save the release asset
+`fylo-web.mjs` under that name (see [Mobile](#mobile-ios--android)). The local-only
+clients do not support raw-file buckets, schemas, or field encryption in this
+release; see [Local-only limits](#local-only-limits).
 
 See [Browser](#browser-fylo-webmjs), [Mobile](#mobile-ios--android), and
 [Flutter](#flutter) below.
@@ -196,10 +201,12 @@ Every client also has a **collection-scoped** view with short method names, so y
 don't repeat the collection on each call — this reads like the browser client:
 
 ```
-db.collection("users").put(data)     // create/drop/inspect/rebuild
-db.collection("users").latest(id)    // put/get/latest/patch/delete/restore
+db.collection("users").create()      // also drop/inspect/rebuild
+db.collection("users").put(data)     // also get/latest/patch/delete/restore
 db.collection("users").find(query)   // find
 ```
+
+Go and Rust take the kind explicitly: `Create("document")` / `create("document")`.
 
 `db.collection(name)` (PascalCase `Collection` in Go/C#) works in every language.
 In the **dynamic languages** you can drop `collection(...)` entirely and index by
@@ -245,14 +252,25 @@ const metadata = await db.users.getMeta(id)
 // { id, mtime, updatedAt, createdAt, reviewed: false }
 ```
 
+## Errors
+
+A failed operation raises, throws, or returns an error, depending on the
+language. Each client's error type carries the machine error `code` from
+[`api/errors/v1.json`](../api/errors/v1.json) (for example `EBADREQUEST` or
+`EROOTLOCKED`) alongside a human-readable message. Branch on the code, not on
+the message: messages may change between releases, codes are part of the
+versioned contract.
+
 ## SQL
 
-Every client has `executeSQL(sql)` for a raw string. Each also exposes a `sql`
-helper you interpolate with your language's **native** syntax:
+Every client has `executeSQL(sql)` for a raw string (`execute_sql` in
+Python/Ruby/Rust, `ExecuteSQL` in Go/C#). Each also exposes a `sql` helper you
+interpolate with your language's **native** syntax:
 
 | Language         | Interpolation                            | Escapes values? |
 | ---------------- | ---------------------------------------- | --------------- |
 | Node/TS          | `` db.sql`… ${x}` `` (tagged template)   | ✅ safe         |
+| Browser (JS)     | `` db.sql`… ${x}` `` (tagged template)   | ✅ safe         |
 | C#               | `db.Sql($"… {x}")` (`FormattableString`) | ✅ safe         |
 | Python           | `db.sql(f"… {x}")`                       | ❌ verbatim     |
 | Ruby             | `db.sql("… #{x}")`                       | ❌ verbatim     |
@@ -263,12 +281,14 @@ helper you interpolate with your language's **native** syntax:
 | Swift (iOS)      | `try await db.sql("… \(x)")`             | ❌ verbatim     |
 | Kotlin (Android) | `db.sql("… $x")`                         | ❌ verbatim     |
 | Dart             | `db.sql("… $x")`                         | ❌ verbatim     |
+| Flutter          | `db.sql("… $x")`                         | ❌ verbatim     |
 
-Node and C# hand the interpolated values to the client, which escapes them —
-those are injection-safe. The rest interpolate **before** the client sees the
+Node, the browser client, and C# hand the interpolated values to the client,
+which escapes them — those are injection-safe. The rest interpolate **before** the client sees the
 string, so values are inlined verbatim: **escape or validate untrusted input
-yourself**, or keep to app-generated SQL. On the mobile clients, `sql` runs
-against the local on-device store.
+yourself**, or keep to app-generated SQL. In the browser, prefer the `sql` tagged
+template over `executeSQL` whenever a statement includes a value. On the mobile
+and Flutter clients, `sql` runs against the local on-device store.
 
 ### Access control
 
@@ -313,17 +333,17 @@ Every binary-backed shim accepts an optional `application.json` configuration
 path. Settings live under `fylo`, with nested keys such as `fylo.shard.width`.
 The former `env` file/map option is replaced by `config`:
 
-| SDK             | Configuration                                                                                                                   |
-| --------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| Node/TypeScript | `new Fylo(root, { config: './application.json' })` |
-| Python | `Fylo(root, config='./application.json')` |
-| Ruby | `Fylo.open(root, config: './application.json')` |
-| PHP | `new Fylo($root, 'fylo', './application.json')` |
-| Go | `fylo.OpenWithOptions(root, fylo.Options{Config: "./application.json"})` |
-| Rust | `Fylo::open_with_options(root, FyloOptions { config: Some("./application.json".into()), ..Default::default() })` |
-| Java | `new Fylo(root, options)` with `options.config = "./application.json"` |
-| C# | `new Fylo(root, new Fylo.Options { Config = "./application.json" })` |
-| Dart | `Fylo.open(root, config: './application.json')` |
+| SDK             | Configuration                                                                                                    |
+| --------------- | ---------------------------------------------------------------------------------------------------------------- |
+| Node/TypeScript | `new Fylo(root, { config: './application.json' })`                                                               |
+| Python          | `Fylo(root, config='./application.json')`                                                                        |
+| Ruby            | `Fylo.open(root, config: './application.json')`                                                                  |
+| PHP             | `new Fylo($root, 'fylo', './application.json')`                                                                  |
+| Go              | `fylo.OpenWithOptions(root, fylo.Options{Config: "./application.json"})`                                         |
+| Rust            | `Fylo::open_with_options(root, FyloOptions { config: Some("./application.json".into()), ..Default::default() })` |
+| Java            | `new Fylo(root, options)` with `options.config = "./application.json"`                                           |
+| C#              | `new Fylo.Fylo(root, new Fylo.Fylo.Options { Config = "./application.json" })`                                   |
+| Dart            | `Fylo.open(root, config: './application.json')`                                                                  |
 
 Each component can choose its own configuration file:
 
@@ -411,6 +431,7 @@ Then open the browser-local database from your application code:
 ```js
 const db = await Fylo.open()
 
+await db.users.create()
 const id = await db.users.put({ name: 'Ada', role: 'admin' })
 await db.users.put(id).metadata({ source: 'browser' })
 const metadata = await db.users.get(id).metadata()
@@ -459,6 +480,20 @@ in memory while reads fall through to the selected directory.
 Every release remains available under `version/<version>/`; `version/latest/`
 is updated only after a successful Release workflow.
 
+### Local-only limits
+
+The browser loader (`fylo.js` / `fylo-web.mjs`) and the iOS, Android, and Flutter
+clients that host it do not support these features in this release:
+
+- raw-file buckets (`createCollection(name, "file")`, `kind: 'file'`)
+- schemas (collection schema validation and schema administration)
+- field encryption (`$encrypted`)
+
+Such requests fail with an error instead of being ignored. Use the native
+`fylo` binary, through any binary-backed shim, when you need them. Create each
+collection before its first write; writing to a collection that does not exist
+fails with `Collection not found`.
+
 ## Mobile (iOS / Android)
 
 Phones can't spawn the binary either, so the mobile clients are **local-only**
@@ -467,27 +502,39 @@ WebView (WKWebView on iOS, `android.webkit.WebView` on Android) and expose a
 native async API. All reads and writes hit an on-device OPFS store — fully
 offline, no backend.
 
-Bundle three files as app assets: `fylo.mjs` (from a Fylo release) plus
-`host.html` and `bridge.js` from [`mobile/`](mobile/). They must be served from a
+Bundle three files as app assets: the release asset `fylo-web.mjs` saved as
+`fylo.mjs` (the bridge imports `./fylo.mjs`), plus `host.html` and `bridge.js`
+from [`mobile/`](mobile/). They must be served from a
 **secure origin** — a custom `fylo-app://` scheme on iOS, an `https://` origin via
 request interception on Android — or the browser engine can't use OPFS.
+
+Raw-file buckets, schemas, and field encryption are not available on mobile in
+this release (see [Local-only limits](#local-only-limits)).
+
+On iOS, add `Fylo.swift` to your app target; it is compiled with your app, so
+there is no module to import. On Android, add `Fylo.kt` to your app module
+together with the `org.jetbrains.kotlinx:kotlinx-coroutines-android` dependency:
+the client resumes on `Dispatchers.Main`, which that artifact provides at runtime.
 
 ```swift
 // iOS — clients/swift/Fylo.swift (Foundation + WebKit)
 let db = try await Fylo()
+try await db.createCollection("users")
 try await db.putData("users", ["name": "Ada", "role": "admin"])
 let admins = try await db.findDocs("users", ["$ops": [["role": ["$eq": "admin"]]]])
 ```
 
 ```kotlin
-// Android — clients/kotlin/Fylo.kt (android.webkit + org.json + coroutines)
+// Android — clients/kotlin/Fylo.kt (android.webkit + org.json + kotlinx-coroutines-android)
+// Inside a coroutine, e.g. lifecycleScope.launch { ... }
 val db = Fylo.open(context)
+db.createCollection("users")
 db.putData("users", mapOf("name" to "Ada", "role" to "admin"))
 val admins = db.findDocs("users", mapOf("\$ops" to listOf(mapOf("role" to mapOf("\$eq" to "admin")))))
 ```
 
 Same method names as the shims (`createCollection`, `putData`, `getLatest`,
-`patchDoc`, `delDoc`, `restoreDoc`, `findDocs`, `sql`).
+`patchDoc`, `delDoc`, `restoreDoc`, `findDocs`, `executeSQL`, `sql`).
 
 ## Flutter
 
@@ -497,8 +544,10 @@ Flutter apps are Dart, so where the app runs decides which client to use:
   model as the native mobile clients, hosting `fylo.mjs` in a headless
   [`flutter_inappwebview`](https://pub.dev/packages/flutter_inappwebview) (`^6.0.0`).
   It exposes the same async API + `collection()` facade. Add the three engine
-  assets under `assets/fylo/` (`fylo.mjs` from a release, plus `host.html` and
-  `bridge.js` from `mobile/`) and declare them in `pubspec.yaml`.
+  assets under `assets/fylo/` (the release asset `fylo-web.mjs` saved as
+  `fylo.mjs`, plus `host.html` and `bridge.js` from `mobile/`) and declare them
+  in `pubspec.yaml`. Raw-file buckets, schemas, and field encryption are not
+  available here in this release (see [Local-only limits](#local-only-limits)).
 - **Flutter web** → use `fylo-web.mjs` directly via `dart:js_interop`. It already
   runs in a browser with OPFS, so no WebView is needed.
 - **Flutter desktop, native binary** → the `dart/fylo.dart` shim also works, since
@@ -508,6 +557,7 @@ Flutter apps are Dart, so where the app runs decides which client to use:
 import 'fylo.dart';
 
 final db = await Fylo.open();
+await db.collection('users').create();
 await db.collection('users').put({'name': 'Ada', 'role': 'admin'});
 final admins = await db.collection('users').find({r'$ops': [{'role': {r'$eq': 'admin'}}]});
 ```
@@ -524,10 +574,12 @@ WebView can reach that localhost server — in `ios/Runner/Info.plist`:
 
 ## Concurrency
 
-The shims send one request at a time and read one response (guarded by a lock
-where the language needs it). The protocol carries a `requestId` echoed back in
-each response, so if you need pipelining you can send many requests and match
-replies by id — but start simple; one-in-flight is enough for most apps.
+The Node and Dart shims pipeline: each call writes its request to the child
+immediately, and a first-in, first-out queue pairs each response with its
+request, because the loop answers requests in the order it reads them. The
+other shims send one request at a time and wait for its response (guarded by a
+lock where the language needs it). Responses also echo an optional `requestId`
+from the request, so a custom driver can match replies by id.
 
 ## Example (Python)
 
@@ -535,11 +587,11 @@ replies by id — but start simple; one-in-flight is enough for most apps.
 from fylo import Fylo
 
 with Fylo("/path/to/db") as db:
-    db.createCollection("users")
-    doc_id = db.putData("users", {"name": "Ada", "score": 90})
-    doc = db.getLatest("users", doc_id)
+    db.create_collection("users")
+    doc_id = db.put_data("users", {"name": "Ada", "score": 90})
+    doc = db.get_latest("users", doc_id)
     print(doc)   # {"<id>": {"name": "Ada", "score": 90}}
-    winners = db.findDocs("users", {"$ops": [{"score": {"$gte": 50}}]})
+    winners = db.find_docs("users", {"$ops": [{"score": {"$gte": 50}}]})
 ```
 
 Construct with a db root, call the operation methods, close when done (or use a

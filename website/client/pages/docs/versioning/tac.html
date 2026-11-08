@@ -31,10 +31,10 @@
             <code>delete.many</code>, and <code>import</code> each record one commit covering every
             document they touched. Prefer them for ingests.
         </p>
-        <p>Turn it off for a manual, Git-style working tree:</p>
-        <pre class="code-block"><code>{offCode}</code></pre>
-        <p>Machine callers use the same option in JSON:</p>
-        <pre class="code-block"><code>{machineCode}</code></pre>
+        <p>
+            This release has no option to turn auto-commit off: neither the clients nor the machine
+            protocol accept one.
+        </p>
     </div>
 
     <div class="doc-section">
@@ -54,15 +54,10 @@
         <div class="doc-note doc-note--warn">
             <p>
                 Snapshots keep a full content-addressed copy of every raw file, which doubles disk
-                and write bandwidth for large media collections. Exclude a collection from history
-                at creation time when that trade is wrong:
+                and write bandwidth for large media collections. This release cannot exclude a
+                collection from history, so budget for that when you store large files in a bucket.
             </p>
         </div>
-        <pre class="code-block"><code>{unversionedCode}</code></pre>
-        <p>
-            Unversioned collections never appear in commits, diffs, or restores — their working
-            files are the only copy, and <code>restoreCommit</code> leaves them untouched.
-        </p>
     </div>
 
     <div class="doc-section">
