@@ -268,6 +268,16 @@ What a protected `.vdbx` file holds, in addition to ADR 0016:
   to 2,448 KiB (2,498,895 bytes at the change); the gzip budget (800 KiB)
   did not change, and the module is 804,949 bytes gzipped. The user had
   agreed to about 20 KB if the module was still over after one more cut.
+- **A temporary raise to 2,460 KiB (phases 7 and 8, the user's decision,
+  2026-11-08).** Phase 8's session certificates and the `tpm:` and enclave
+  paths, and then the directory journal (section 7), took the engine to
+  2,516,646 bytes (810,057 gzipped), over the 2,448 KiB raw budget. The
+  journal's write path and its read fallback both run in the browser, so it
+  adds 3,882 bytes that cannot be cut. The raw budget is 2,460 KiB
+  (2,519,040 bytes) for now; the gzip budget does not change. The raise is
+  temporary: phase 8 is removing code the browser never runs (settle and
+  admin paths, and the enclave, `tpm:` and session-certificate code) from
+  `fylo-browser.wasm`, and will lower the budget again when that lands.
 
 ### 5. Decisions for phase 5 (the user, 2026-11-07)
 
