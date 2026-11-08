@@ -198,6 +198,10 @@
             "retryable": false
         },
         {
+            "code": "ENATIVE_NOT_FOUND",
+            "retryable": false
+        },
+        {
             "code": "ENATIVE_WRONG_TYPE",
             "retryable": false
         },

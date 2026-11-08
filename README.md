@@ -1459,6 +1459,8 @@ text.
 | `EINDEX_FULL`                                                          | The write could grow the collection's index past its 240 MiB write limit   | Do not retry; delete documents or use another collection         |
 | `EDECRYPTFAILED`                                                       | An `$encrypted` field could not be decrypted with the configured key       | Do not retry; fix the key configuration                          |
 | `EINVALIDCURSOR`                                                       | The pagination cursor is invalid, expired, or from another process         | Restart the traversal from page one                              |
+| `ENATIVE_NOT_FOUND`                                                    | The named collection does not exist                                        | Do not retry; create the collection first                        |
+| `EBROWSER_UNSUPPORTED`                                                 | The browser or mobile engine does not implement the requested feature      | Do not retry; use the native engine                              |
 | `EROOTLOCKED` / `EROOTLEASELOST`                                       | Exclusive root ownership was unavailable or lost                           | Fail over per your supervisor policy                             |
 | `EFRAME_*`                                                             | Frame-contract violations, as documented above                             | Per the framing rules above                                      |
 | `EQUERYLOOPREQUIRED` / `EQUERYITEMTOOLARGE` / `EQUERYSNAPSHOTTOOLARGE` | Pagination contract violations, as documented above                        | Per the pagination rules above                                   |

@@ -274,9 +274,15 @@ versioned contract.
 | Java            | `Fylo.FyloException.getCode()` (extends `IOException`; the message is the raw response line) |
 | C#              | `FyloException.Code`                                                                         |
 | Dart            | `FyloException.code`                                                                         |
+| Browser (JS)    | `err.code`                                                                                   |
+| Swift (iOS)     | `FyloError.code`                                                                             |
+| Kotlin          | `FyloException.code`                                                                         |
+| Flutter         | `FyloException.code`                                                                         |
 
-The Swift, Kotlin, and Flutter clients also report the machine code on their
-error type; see the header comment of each client file for the accessor.
+Swift's `FyloError.failed` case now carries two values, the message and the
+code. Code that matched `case .failed(let message)` must change to
+`case .failed(let message, _)`, or catch `let error as FyloError` and read
+`error.description` and `error.code`.
 
 The raw `request` escape hatch takes one JSON object per line, so the Rust,
 Java, and C# shims reject a raw request string that contains a carriage return
@@ -512,7 +518,8 @@ clients that host it do not support these features in this release:
 - schemas (collection schema validation and schema administration)
 - field encryption (`$encrypted`)
 
-Such requests fail with an error instead of being ignored. Use the native
+Such requests fail with the error code `EBROWSER_UNSUPPORTED` instead of being
+ignored. Use the native
 `fylo` binary, through any binary-backed shim, when you need them. Create each
 collection before its first write; writing to a collection that does not exist
 fails with `Collection not found`.
@@ -533,6 +540,10 @@ request interception on Android — or the browser engine can't use OPFS.
 
 Raw-file buckets, schemas, and field encryption are not available on mobile in
 this release (see [Local-only limits](#local-only-limits)).
+
+The bridge runs the engine on the WebView's main thread. A native `config` may
+set `worker: true` to use a worker instead; the host must then also serve the
+engine's worker scripts.
 
 On iOS, add `Fylo.swift` to your app target; it is compiled with your app, so
 there is no module to import. On Android, add `Fylo.kt` to your app module

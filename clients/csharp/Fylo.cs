@@ -4,7 +4,7 @@
 // binary on PATH (brew/scoop) or an explicit path. One long-lived subprocess
 // keeps the engine warm across calls.
 //
-//   using var db = new Fylo("/path/to/db");
+//   using var db = new Fylo.Fylo("/path/to/db");
 //   var data = new Dictionary<string, object> { ["name"] = "Ada", ["role"] = "admin" };
 //   string id = db.PutData("users", data).GetString();
 //   JsonElement doc = db.GetLatest("users", id);
