@@ -235,7 +235,7 @@ jobs:
     native:
         name: Native Rust safety (${{ matrix.target }})
         runs-on: ${{ matrix.os }}
-        timeout-minutes: 50
+        timeout-minutes: ${{ startsWith(matrix.os, 'windows') && 90 || 50 }}
         strategy:
             fail-fast: false
             matrix:
