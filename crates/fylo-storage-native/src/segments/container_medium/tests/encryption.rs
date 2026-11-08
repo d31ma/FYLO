@@ -434,6 +434,25 @@ fn swappable(label: &str) -> Encrypted {
     database
 }
 
+/// A database whose collections `east` and `west` both hold documents 1 to
+/// 6, all with the same body, each document written to both collections one
+/// after the other so the two records mostly share their write time.
+fn paired(label: &str) -> Encrypted {
+    let database = Encrypted::create(label);
+    let writer = database.writer();
+    for name in ["east", "west"] {
+        writer
+            .create_collection(name, CollectionKind::Document, None)
+            .unwrap();
+    }
+    for number in 1..=6 {
+        for name in ["east", "west"] {
+            put(&writer, name, number, &fixed("first"));
+        }
+    }
+    database
+}
+
 fn read_error(database: &Encrypted, collection: &str, number: usize) -> crate::NativeStorageError {
     database.reopen();
     database
@@ -446,12 +465,22 @@ fn read_error(database: &Encrypted, collection: &str, number: usize) -> crate::N
 
 #[test]
 fn a_frame_moved_into_another_collection_is_refused() {
-    let database = swappable("vdbx-encrypted-swap");
-    let east = frame_at(&database, "east", lsn_of(&database, "east", 1));
-    let west = frame_at(&database, "west", lsn_of(&database, "west", 1));
-    // The same document, written the same way, in another collection.
+    let database = paired("vdbx-encrypted-swap");
+    // The same document, written the same way, in another collection. A
+    // record holds the time it was written, so a pair whose compressed
+    // records are as long as one another is picked.
+    let (number, east, west) = (1..=6)
+        .map(|number| {
+            (
+                number,
+                frame_at(&database, "east", lsn_of(&database, "east", number)),
+                frame_at(&database, "west", lsn_of(&database, "west", number)),
+            )
+        })
+        .find(|(_, east, west)| east.1 == west.1)
+        .expect("a document whose records are as long in both collections");
     copy_frame(&database, west, east);
-    let error = read_error(&database, "east", 1);
+    let error = read_error(&database, "east", number);
     assert_eq!(
         error.code(),
         NativeStorageErrorCode::CorruptDocument,
@@ -459,7 +488,7 @@ fn a_frame_moved_into_another_collection_is_refused() {
     );
     assert!(error.to_string().contains("EVDBX_CORRUPT"), "{error}");
     // The record it was copied from still reads where it belongs.
-    assert_eq!(read(&database.root(), "west", 1), fixed("first"));
+    assert_eq!(read(&database.root(), "west", number), fixed("first"));
     // `fylo verify` checks frames by their checksum without the key, so a
     // whole frame moved in place passes it: only the key finds it.
     let verified = ContainerFile::open_reader(&database.path())
