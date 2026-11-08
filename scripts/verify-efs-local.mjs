@@ -210,7 +210,6 @@ async function crossClientDrill() {
                 .filter(Boolean)
                 .map((line) => JSON.parse(line))
         )
-    const owner = { uid: 0, groups: [0] }
 
     const holder = docker(
         [
@@ -238,17 +237,14 @@ async function crossClientDrill() {
             op: 'putData',
             collection: 'records',
             id: '4VRNF52JPCO',
-            data: { name: 'Ada' },
-            access: { mode: 0o640 }
+            data: { name: 'Ada' }
         }
     ])
     assert(
         written.every((response) => response.ok),
         `the surviving client could not take over after SIGKILL: ${JSON.stringify(written)}`
     )
-    const [read] = await machine('a', [
-        { op: 'getDoc', collection: 'records', id: '4VRNF52JPCO', access: owner }
-    ])
+    const [read] = await machine('a', [{ op: 'getDoc', collection: 'records', id: '4VRNF52JPCO' }])
     assert(
         read.ok && read.result?.['4VRNF52JPCO']?.name === 'Ada',
         `a write was not visible to the other client after close: ${JSON.stringify(read)}`
@@ -261,8 +257,7 @@ async function crossClientDrill() {
                 op: 'putData',
                 collection: 'records',
                 id: `4VRNF52JT${index}0`,
-                data: { name: client },
-                access: { mode: 0o640 }
+                data: { name: client }
             }
         ])
         assert(put?.ok, `a write after the other client's write failed: ${JSON.stringify(put)}`)
