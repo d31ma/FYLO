@@ -70,6 +70,21 @@ public final class Fylo implements AutoCloseable {
         public int deadLettered;
     }
 
+    /** A failed FYLO operation; the message is the raw response line. */
+    public static final class FyloException extends IOException {
+        private final String code;
+
+        public FyloException(String message, String code) {
+            super(message);
+            this.code = code;
+        }
+
+        /** The machine-protocol error code, such as EINVALIDDOCID, or null when absent. */
+        public String getCode() {
+            return code;
+        }
+    }
+
     public static final class Options {
         public String binary = "fylo";
         /** Optional application.json path; null uses the CLI's default discovery. */
@@ -131,6 +146,9 @@ public final class Fylo implements AutoCloseable {
     public synchronized String request(String opJson) throws IOException {
         if (!proc.isAlive()) throw new IOException("fylo process has exited");
         String payload = opJson.stripTrailing();
+        if (payload.indexOf('\n') >= 0 || payload.indexOf('\r') >= 0) {
+            throw new IllegalArgumentException("FYLO request must be a single line without CR or LF characters");
+        }
         if (payload.getBytes(StandardCharsets.UTF_8).length > MAX_REQUEST_BYTES) {
             throw new IOException("FYLO request exceeds " + MAX_REQUEST_BYTES + " bytes");
         }
@@ -160,15 +178,22 @@ public final class Fylo implements AutoCloseable {
     }
 
     // Build an op from native fields, send it, and error on a failure response.
-    // ponytail: checks for the always-present "ok":true field by substring.
     private String op(String name, Object... kv) throws IOException {
         StringBuilder sb = new StringBuilder("{\"op\":").append(toJson(name));
         for (int i = 0; i + 1 < kv.length; i += 2) {
             sb.append(',').append(toJson(kv[i].toString())).append(':').append(toJson(kv[i + 1]));
         }
         String resp = request(sb.append('}').toString());
-        if (!resp.contains("\"ok\":true")) throw new IOException(resp.strip());
+        if (!jsonField(resp, "ok").equals("true")) throw new FyloException(resp.strip(), responseErrorCode(resp));
         return resp;
+    }
+
+    private static String responseErrorCode(String response) {
+        try {
+            return decodeJsonString(jsonField(jsonField(response, "error"), "code"));
+        } catch (IOException missingCode) {
+            return null;
+        }
     }
 
     // Quote a string as a JSON string literal, escaping control characters so an

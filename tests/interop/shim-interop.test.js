@@ -765,3 +765,605 @@ end
         expect(JSON.parse(result.stdout)).toEqual({ two: true, four: false })
     })
 })
+
+const INVALID_ID_MESSAGE = 'EENGINE_STORAGE: EINVALIDDOCID: invalid FYLO document identifier'
+const COMPILED_CLIENT_TIMEOUT = 180_000
+const FAKE_HANDSHAKE =
+    '{"protocolVersion":1,"ok":true,"op":"handshake","requestId":null,"durationMs":0,"result":{"machine":{"maxRequestBytes":1048576,"maxResponseBytes":8388608}}}'
+
+/**
+ * @param {string} directory
+ * @param {string} afterHandshake
+ */
+async function fakeBinary(directory, afterHandshake) {
+    const file = path.join(directory, 'fake-fylo.sh')
+    await writeFile(
+        file,
+        `#!/bin/sh\nread line\nprintf '%s\\n' '${FAKE_HANDSHAKE}'\n${afterHandshake}\n`,
+        { mode: 0o755 }
+    )
+    return file
+}
+
+/**
+ * @param {string} stdout
+ */
+function lastJsonLine(stdout) {
+    const lines = stdout.trim().split(/\r?\n/)
+    return JSON.parse(lines[lines.length - 1])
+}
+
+/**
+ * @param {string} runtime
+ * @param {string} binary
+ */
+function nodeFailureScript(runtime, binary) {
+    return `
+import { Fylo } from ${JSON.stringify(path.join(shimRoot, 'node', 'fylo.mjs'))}
+const settle = (promise) =>
+  Promise.race([
+    promise.then(() => 'resolved', (error) => error.message),
+    new Promise((resolve) => setTimeout(() => resolve('hung'), 5000)),
+  ])
+const db = new Fylo('/unused-root', { binary: ${JSON.stringify(binary)} })
+await db.handshake()
+const first = await settle(db.findDocs('users', {}))
+const second = await settle(db.findDocs('users', {}))
+const closed = await settle(db.close())
+console.log(JSON.stringify({ runtime: ${JSON.stringify(runtime)}, first, second, closed }))
+process.exit(0)
+`
+}
+
+describe('client shim failure contracts via fylo exec --loop', () => {
+    test.each(['node', 'bun'])(
+        'Node shim settles later calls and close after the child dies by a signal (%s)',
+        async (runtime) => {
+            await requireCommand(runtime)
+            const directory = await tempRoot('fylo-node-signal-')
+            const binary = await fakeBinary(directory, 'read line\nkill -9 $$')
+            const script = path.join(directory, 'signal.mjs')
+            await writeFile(script, nodeFailureScript(runtime, binary))
+            const result = await run([runtime, script], { timeout: 30_000 })
+            expectSuccess(`${runtime} signal death`, result)
+            expect(JSON.parse(result.stdout)).toEqual({
+                runtime,
+                first: 'fylo process exited',
+                second: 'fylo process exited',
+                closed: 'resolved'
+            })
+        }
+    )
+
+    test.each(['node', 'bun'])(
+        'Node shim settles later calls and close after a malformed response frame (%s)',
+        async (runtime) => {
+            await requireCommand(runtime)
+            const directory = await tempRoot('fylo-node-malformed-')
+            const binary = await fakeBinary(
+                directory,
+                "while read line; do printf '%s\\n' '{not json'; done"
+            )
+            const script = path.join(directory, 'malformed.mjs')
+            await writeFile(script, nodeFailureScript(runtime, binary))
+            const result = await run([runtime, script], { timeout: 30_000 })
+            expectSuccess(`${runtime} malformed frame`, result)
+            expect(JSON.parse(result.stdout)).toEqual({
+                runtime,
+                first: 'FYLO returned malformed UTF-8 or JSON',
+                second: 'fylo process exited',
+                closed: 'resolved'
+            })
+        }
+    )
+
+    test('Node shim exposes the machine error code', async () => {
+        await requireCommand('node')
+        const root = await tempRoot('fylo-node-code-')
+        const script = `
+import { Fylo } from ${JSON.stringify(path.join(shimRoot, 'node', 'fylo.mjs'))}
+const db = new Fylo(${JSON.stringify(root)}, { binary: ${JSON.stringify(binaryPath)} })
+try {
+  await db.createCollection('users')
+  const error = await db.getDoc('users', 'bad').then(() => null, (failure) => failure)
+  console.log(JSON.stringify({ code: error.code, message: error.message }))
+} finally {
+  await db.close()
+}
+`
+        const result = await run(['node', '--input-type=module', '-e', script])
+        expectSuccess('node error code', result)
+        expect(JSON.parse(result.stdout)).toEqual({
+            code: 'EINVALIDDOCID',
+            message: INVALID_ID_MESSAGE
+        })
+    })
+
+    test('Python shim runs async handlers in queue_process and exposes the error code', async () => {
+        await requireCommand('python3')
+        const root = await tempRoot('fylo-python-failures-')
+        const script = `
+import asyncio, json, sys
+sys.path.insert(0, ${JSON.stringify(path.join(shimRoot, 'python'))})
+from fylo import Fylo, FyloError
+
+handled = []
+
+async def handle(delivery):
+    await asyncio.sleep(0)
+    handled.append(delivery['payload']['job'])
+
+async def fail(delivery):
+    await asyncio.sleep(0)
+    raise RuntimeError('FYLO_SENTINEL_SECRET_MUST_NOT_PERSIST')
+
+with Fylo(${JSON.stringify(root)}, binary=${JSON.stringify(binaryPath)}) as db:
+    db.queue_publish('async.jobs', {'job': 1})
+    without_loop = db.queue_process('async.jobs', 'worker', handle)
+
+    async def inside_loop():
+        db.queue_publish('async.jobs', {'job': 2})
+        return db.queue_process('async.jobs', 'worker', handle)
+
+    with_loop = asyncio.run(inside_loop())
+    db.queue_publish('async.failures', {'job': 3})
+    failed = db.queue_process('async.failures', 'worker', fail, max_attempts=1)
+    letters = db.queue_dead_letters('async.failures', 'worker')
+    db.create_collection('users')
+    try:
+        db.get_doc('users', 'bad')
+        error = None
+    except FyloError as failure:
+        error = failure
+    print(json.dumps({
+        'handled': handled,
+        'withoutLoop': without_loop,
+        'withLoop': with_loop,
+        'failed': failed,
+        'reasons': [letter['reason'] for letter in letters],
+        'code': error.code,
+        'message': str(error),
+    }))
+`
+        const result = await run(['python3', '-c', script])
+        expectSuccess('python async queue_process and error code', result)
+        const parsed = JSON.parse(result.stdout)
+        expect(parsed.handled).toEqual([1, 2])
+        expect(parsed.withoutLoop.acknowledged).toBe(1)
+        expect(parsed.withLoop.acknowledged).toBe(1)
+        expect(parsed.failed.deadLettered).toBe(1)
+        expect(parsed.reasons).toEqual(['queue handler failed'])
+        expect(parsed.code).toBe('EINVALIDDOCID')
+        expect(parsed.message).toBe(INVALID_ID_MESSAGE)
+    })
+
+    test('Ruby shim exposes the machine error code', async () => {
+        await requireCommand('ruby')
+        const root = await tempRoot('fylo-ruby-code-')
+        const script = `
+$LOAD_PATH.unshift(${JSON.stringify(path.join(shimRoot, 'ruby'))})
+require 'fylo'
+require 'json'
+
+db = Fylo.new(${JSON.stringify(root)}, binary: ${JSON.stringify(binaryPath)})
+begin
+  db.create_collection('users')
+  begin
+    db.get_doc('users', 'bad')
+  rescue FyloError => error
+    puts JSON.generate({ code: error.code, message: error.message })
+  end
+ensure
+  db.close
+end
+`
+        const result = await run(['ruby', '-e', script])
+        expectSuccess('ruby error code', result)
+        expect(JSON.parse(result.stdout)).toEqual({
+            code: 'EINVALIDDOCID',
+            message: INVALID_ID_MESSAGE
+        })
+    })
+
+    test('PHP shim sends empty map arguments as objects and exposes the error code', async () => {
+        await requireCommand('php')
+        const root = await tempRoot('fylo-php-failures-')
+        const script = `<?php
+require ${JSON.stringify(path.join(shimRoot, 'php', 'fylo.php'))};
+
+function attempt(callable $call): string
+{
+    try {
+        $call();
+        return 'ok';
+    } catch (FyloError $error) {
+        return $error->getMessage();
+    }
+}
+
+$db = new Fylo(${JSON.stringify(root)}, ${JSON.stringify(binaryPath)});
+try {
+    $db->createCollection('users');
+    $id = $db->putData('users', []);
+    $results = [
+        'setMeta' => attempt(fn () => $db->setMeta('users', $id, [])),
+        'findDocs' => attempt(fn () => $db->findDocs('users', [])),
+        'findDeletedDocs' => attempt(fn () => $db->findDeletedDocs('users')),
+        'findDocsPage' => attempt(fn () => $db->findDocsPage('users', [])),
+        'findDeletedDocsPage' => attempt(fn () => $db->findDeletedDocsPage('users')),
+        'collectionFind' => attempt(fn () => $db->collection('users')->find([])),
+    ];
+    try {
+        $db->getDoc('users', 'bad');
+    } catch (FyloError $error) {
+        $failure = ['code' => $error->getFyloCode(), 'message' => $error->getMessage(), 'number' => $error->getCode()];
+    }
+    echo json_encode(['created' => is_string($id), 'results' => $results, 'failure' => $failure]);
+} finally {
+    $db->close();
+}
+`
+        const file = path.join(root, 'probe.php')
+        await writeFile(file, script)
+        const result = await run(['php', file])
+        expectSuccess('php empty maps and error code', result)
+        expect(JSON.parse(result.stdout)).toEqual({
+            created: true,
+            results: {
+                setMeta: 'ok',
+                findDocs: 'ok',
+                findDeletedDocs: 'ok',
+                findDocsPage: 'ok',
+                findDeletedDocsPage: 'ok',
+                collectionFind: 'ok'
+            },
+            failure: { code: 'EINVALIDDOCID', message: INVALID_ID_MESSAGE, number: 0 }
+        })
+    })
+
+    test(
+        'Go shim sends nil maps as objects and exposes the error code through errors.As',
+        async () => {
+            await requireCommand('go')
+            const directory = await tempRoot('fylo-go-failures-')
+            await mkdir(path.join(directory, 'fylo'))
+            await writeFile(
+                path.join(directory, 'fylo', 'fylo.go'),
+                await readFile(path.join(shimRoot, 'go', 'fylo.go'))
+            )
+            await writeFile(path.join(directory, 'go.mod'), 'module fylo-shim-test\n\ngo 1.22\n')
+            await writeFile(
+                path.join(directory, 'main.go'),
+                `package main
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+
+	fylo "fylo-shim-test/fylo"
+)
+
+func outcome(err error) string {
+	if err != nil {
+		return err.Error()
+	}
+	return "ok"
+}
+
+func main() {
+	db, err := fylo.OpenWithOptions(os.Args[2], fylo.Options{Binary: os.Args[1]})
+	if err != nil {
+		panic(err)
+	}
+	defer db.Close()
+	if _, err := db.CreateCollection("users", "document"); err != nil {
+		panic(err)
+	}
+	created, err := db.PutData("users", nil)
+	id, _ := created.(string)
+	results := map[string]string{"putData": outcome(err)}
+	_, err = db.SetMeta("users", id, nil)
+	results["setMeta"] = outcome(err)
+	_, err = db.FindDocs("users", nil)
+	results["findDocs"] = outcome(err)
+	_, err = db.FindDocsPage("users", nil, nil)
+	results["findDocsPage"] = outcome(err)
+	_, err = db.FindDeletedDocsPage("users", nil, nil)
+	results["findDeletedDocsPage"] = outcome(err)
+	_, err = db.GetDoc("users", "bad")
+	var failure *fylo.Error
+	matched := errors.As(err, &failure)
+	output, _ := json.Marshal(map[string]any{
+		"results": results,
+		"matched": matched,
+		"code":    failure.Code,
+		"message": err.Error(),
+	})
+	fmt.Print(string(output))
+}
+`
+            )
+            const result = await run(['go', 'run', '.', binaryPath, path.join(directory, 'root')], {
+                cwd: directory,
+                timeout: COMPILED_CLIENT_TIMEOUT
+            })
+            expectSuccess('go nil maps and error code', result)
+            expect(JSON.parse(result.stdout)).toEqual({
+                results: {
+                    putData: 'ok',
+                    setMeta: 'ok',
+                    findDocs: 'ok',
+                    findDocsPage: 'ok',
+                    findDeletedDocsPage: 'ok'
+                },
+                matched: true,
+                code: 'EINVALIDDOCID',
+                message: INVALID_ID_MESSAGE
+            })
+        },
+        COMPILED_CLIENT_TIMEOUT
+    )
+
+    test(
+        'Java shim rejects a multi-line raw request and exposes the error code',
+        async () => {
+            await requireCommand('javac')
+            const directory = await tempRoot('fylo-java-failures-')
+            await writeFile(
+                path.join(directory, 'Fylo.java'),
+                await readFile(path.join(shimRoot, 'java', 'Fylo.java'))
+            )
+            await writeFile(
+                path.join(directory, 'Probe.java'),
+                `import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+public final class Probe {
+    public static void main(String[] args) throws Exception {
+        Fylo.Options options = new Fylo.Options();
+        options.binary = args[0];
+        try (Fylo db = new Fylo(args[1], options)) {
+            db.createCollection("users");
+            Matcher created = Pattern.compile("\\"result\\":\\"([^\\"]+)\\"").matcher(db.putData("users", Map.of("name", "Ada")));
+            created.find();
+            String id = created.group(1);
+            String lineBreak = "accepted";
+            try {
+                db.request("{\\"op\\":\\"inspectCollection\\",\\"collection\\":\\"users\\"}\\n{\\"op\\":\\"handshake\\"}");
+            } catch (IllegalArgumentException error) {
+                lineBreak = error.getMessage();
+            }
+            String next = db.getLatest("users", id);
+            Fylo.FyloException failure = null;
+            try {
+                db.getDoc("users", "bad");
+            } catch (Fylo.FyloException error) {
+                failure = error;
+            }
+            System.out.print("{\\"lineBreak\\":" + Fylo.toJson(lineBreak)
+                + ",\\"nextIsOwnResponse\\":" + (next.contains("\\"op\\":\\"getLatest\\"") && next.contains(id))
+                + ",\\"code\\":" + Fylo.toJson(failure.getCode())
+                + ",\\"messageIsResponse\\":" + failure.getMessage().contains(${JSON.stringify(INVALID_ID_MESSAGE)}) + "}");
+        }
+    }
+}
+`
+            )
+            const compile = await run(['javac', 'Fylo.java', 'Probe.java'], {
+                cwd: directory,
+                timeout: COMPILED_CLIENT_TIMEOUT
+            })
+            expectSuccess('javac', compile)
+            const result = await run(
+                ['java', '-cp', directory, 'Probe', binaryPath, path.join(directory, 'root')],
+                { timeout: COMPILED_CLIENT_TIMEOUT }
+            )
+            expectSuccess('java line breaks and error code', result)
+            expect(JSON.parse(result.stdout)).toEqual({
+                lineBreak: 'FYLO request must be a single line without CR or LF characters',
+                nextIsOwnResponse: true,
+                code: 'EINVALIDDOCID',
+                messageIsResponse: true
+            })
+        },
+        COMPILED_CLIENT_TIMEOUT
+    )
+
+    test(
+        'C# shim rejects a multi-line raw request and exposes the error code',
+        async () => {
+            await requireCommand('dotnet')
+            const directory = await tempRoot('fylo-csharp-failures-')
+            await writeFile(
+                path.join(directory, 'Fylo.cs'),
+                await readFile(path.join(shimRoot, 'csharp', 'Fylo.cs'))
+            )
+            await writeFile(
+                path.join(directory, 'Probe.csproj'),
+                '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>disable</Nullable></PropertyGroup></Project>'
+            )
+            await writeFile(
+                path.join(directory, 'Program.cs'),
+                `using System.Text.Json;
+
+using var db = new Fylo.Fylo(args[1], new Fylo.Fylo.Options { Binary = args[0] });
+db.CreateCollection("users");
+string id = db.PutData("users", new Dictionary<string, object> { ["name"] = "Ada" }).GetString();
+string lineBreak = "accepted";
+try
+{
+    db.Request("{\\"op\\":\\"inspectCollection\\",\\"collection\\":\\"users\\"}\\n{\\"op\\":\\"handshake\\"}").Dispose();
+}
+catch (ArgumentException error)
+{
+    lineBreak = error.Message;
+}
+JsonElement next = db.GetLatest("users", id);
+Fylo.FyloException failure = null;
+try
+{
+    db.GetDoc("users", "bad");
+}
+catch (Fylo.FyloException error)
+{
+    failure = error;
+}
+Console.WriteLine(JsonSerializer.Serialize(new Dictionary<string, object>
+{
+    ["lineBreak"] = lineBreak,
+    ["nextIsOwnResponse"] = next.TryGetProperty(id, out _),
+    ["code"] = failure.Code,
+    ["message"] = failure.Message,
+}));
+`
+            )
+            const result = await run(
+                [
+                    'dotnet',
+                    'run',
+                    '--project',
+                    directory,
+                    '--',
+                    binaryPath,
+                    path.join(directory, 'root')
+                ],
+                {
+                    timeout: COMPILED_CLIENT_TIMEOUT,
+                    env: { DOTNET_CLI_TELEMETRY_OPTOUT: '1', DOTNET_NOLOGO: '1' }
+                }
+            )
+            expectSuccess('csharp line breaks and error code', result)
+            const parsed = lastJsonLine(result.stdout)
+            expect(parsed.lineBreak).toContain(
+                'FYLO request must be a single line without CR or LF characters'
+            )
+            expect(parsed.nextIsOwnResponse).toBe(true)
+            expect(parsed.code).toBe('EINVALIDDOCID')
+            expect(parsed.message).toBe(INVALID_ID_MESSAGE)
+        },
+        COMPILED_CLIENT_TIMEOUT
+    )
+
+    test(
+        'Rust shim rejects a multi-line raw request and exposes the error code',
+        async () => {
+            await requireCommand('rustc')
+            const directory = await tempRoot('fylo-rust-failures-')
+            await writeFile(
+                path.join(directory, 'fylo.rs'),
+                await readFile(path.join(shimRoot, 'rust', 'fylo.rs'))
+            )
+            await writeFile(
+                path.join(directory, 'probe.rs'),
+                `mod fylo;
+use fylo::{Fylo, FyloError, FyloOptions, Json};
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    let options = FyloOptions { binary: args[1].clone(), config: None };
+    let mut db = Fylo::open_with_options(&args[2], options).unwrap();
+    db.create_collection("users", "document").unwrap();
+    let created = db.put_data("users", Json::obj(vec![("name", "Ada".into())])).unwrap();
+    let id = created.split("\\"result\\":\\"").nth(1).unwrap().split('"').next().unwrap().to_string();
+    let line_break = db
+        .request("{\\"op\\":\\"inspectCollection\\",\\"collection\\":\\"users\\"}\\n{\\"op\\":\\"handshake\\"}")
+        .unwrap_err()
+        .to_string();
+    let next = db.get_latest("users", &id).unwrap();
+    let failure = db.get_doc("users", "bad").unwrap_err();
+    println!(
+        "{{\\"lineBreak\\":{:?},\\"nextIsOwnResponse\\":{},\\"code\\":{:?},\\"messageIsResponse\\":{}}}",
+        line_break,
+        next.contains("\\"op\\":\\"getLatest\\"") && next.contains(&id),
+        FyloError::code_of(&failure).unwrap_or_default(),
+        failure.to_string().contains(${JSON.stringify(INVALID_ID_MESSAGE)})
+    );
+}
+`
+            )
+            const executable = path.join(directory, 'probe')
+            const compile = await run(
+                ['rustc', '--edition', '2021', '-A', 'dead_code', 'probe.rs', '-o', executable],
+                { cwd: directory, timeout: COMPILED_CLIENT_TIMEOUT }
+            )
+            expectSuccess('rustc', compile)
+            const result = await run([executable, binaryPath, path.join(directory, 'root')])
+            expectSuccess('rust line breaks and error code', result)
+            expect(JSON.parse(result.stdout)).toEqual({
+                lineBreak: 'FYLO request must be a single line without CR or LF characters',
+                nextIsOwnResponse: true,
+                code: 'EINVALIDDOCID',
+                messageIsResponse: true
+            })
+        },
+        COMPILED_CLIENT_TIMEOUT
+    )
+
+    test(
+        'Dart shim fails requests fast after the child exits and exposes the error code',
+        async () => {
+            await requireCommand('dart')
+            const directory = await tempRoot('fylo-dart-failures-')
+            await writeFile(
+                path.join(directory, 'fylo.dart'),
+                await readFile(path.join(shimRoot, 'dart', 'fylo.dart'))
+            )
+            await writeFile(
+                path.join(directory, 'probe.dart'),
+                `import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
+import 'fylo.dart';
+
+Future<String> outcome(Future<Object?> request) => request
+    .then((_) => 'resolved', onError: (Object error) => '$error')
+    .timeout(const Duration(seconds: 5), onTimeout: () => 'hung');
+
+Future<void> main(List<String> args) async {
+  final binary = args[0];
+  final root = args[1];
+  final broken = await Fylo.open('$root/broken',
+      binary: binary, config: '$root/missing-application.json');
+  final first = await outcome(broken.request({'op': 'handshake'}));
+  final second = await outcome(broken.request({'op': 'handshake'}));
+  final closed = await outcome(broken.close());
+  final db = await Fylo.open('$root/db', binary: binary);
+  FyloException? failure;
+  try {
+    await db.createCollection('users');
+    await db.getDoc('users', 'bad');
+  } on FyloException catch (error) {
+    failure = error;
+  } finally {
+    await db.close();
+  }
+  stdout.write(jsonEncode({
+    'first': first.startsWith('FyloException: fylo process exited'),
+    'second': second.startsWith('FyloException: fylo process exited'),
+    'closed': closed,
+    'code': failure?.code,
+    'message': failure?.message,
+  }));
+}
+`
+            )
+            const result = await run(
+                ['dart', 'run', path.join(directory, 'probe.dart'), binaryPath, directory],
+                { timeout: COMPILED_CLIENT_TIMEOUT }
+            )
+            expectSuccess('dart after exit and error code', result)
+            expect(JSON.parse(result.stdout)).toEqual({
+                first: true,
+                second: true,
+                closed: 'resolved',
+                code: 'EINVALIDDOCID',
+                message: INVALID_ID_MESSAGE
+            })
+        },
+        COMPILED_CLIENT_TIMEOUT
+    )
+})

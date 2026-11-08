@@ -77,6 +77,40 @@ pub struct QueueProcessResult {
     pub dead_lettered: usize,
 }
 
+/// A failed FYLO operation, carried inside the returned `std::io::Error`.
+/// Its message is the raw response line; `code` is the machine-protocol error code.
+#[derive(Clone, Debug)]
+pub struct FyloError {
+    pub code: Option<String>,
+    message: String,
+}
+
+impl FyloError {
+    /// The machine-protocol error code of an operation error, such as EINVALIDDOCID.
+    pub fn code_of(error: &std::io::Error) -> Option<&str> {
+        let fylo_error = error.get_ref()?.downcast_ref::<FyloError>()?;
+        fylo_error.code.as_deref()
+    }
+
+    fn from_response(response: &str) -> FyloError {
+        let code = json_object_field(response, "error")
+            .and_then(|error| json_string_field(error, "code"))
+            .ok();
+        FyloError {
+            code,
+            message: response.trim().to_string(),
+        }
+    }
+}
+
+impl std::fmt::Display for FyloError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for FyloError {}
+
 impl Fylo {
     /// Start a warm fylo process rooted at `root`. `binary` is usually "fylo".
     pub fn open(root: &str, binary: &str) -> std::io::Result<Fylo> {
@@ -118,6 +152,12 @@ impl Fylo {
     /// response line (also JSON). ponytail: one call in flight; not thread-safe.
     pub fn request(&mut self, op_json: &str) -> std::io::Result<String> {
         let payload = op_json.trim_end();
+        if payload.contains(['\n', '\r']) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "FYLO request must be a single line without CR or LF characters",
+            ));
+        }
         if payload.as_bytes().len() > MAX_REQUEST_BYTES {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -159,13 +199,12 @@ impl Fylo {
     }
 
     // Send a fully-formed op JSON and error on a failure response.
-    // ponytail: checks for the always-present "ok":true field by substring.
     fn checked(&mut self, json: String) -> std::io::Result<String> {
         let resp = self.request(&json)?;
-        if !resp.contains("\"ok\":true") {
+        if json_object_field(&resp, "ok")? != "true" {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::Other,
-                resp.trim().to_string(),
+                FyloError::from_response(&resp),
             ));
         }
         Ok(resp)

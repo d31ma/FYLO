@@ -24,7 +24,14 @@ require "open3"
 MAX_REQUEST_BYTES = 1024 * 1024
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 
-class FyloError < StandardError; end
+class FyloError < StandardError
+  attr_reader :code
+
+  def initialize(message = nil, code = nil)
+    super(message)
+    @code = code
+  end
+end
 
 class Fylo
   def self.open(root, binary: "fylo", config: nil)
@@ -265,7 +272,7 @@ class Fylo
     payload = { "op" => name }
     fields.each { |k, v| payload[k] = v unless v.nil? }
     resp = request(payload)
-    raise FyloError, (resp.dig("error", "message") || "fylo error") unless resp["ok"]
+    raise FyloError.new(resp.dig("error", "message") || "fylo error", resp.dig("error", "code")) unless resp["ok"]
     resp["result"]
   end
 end

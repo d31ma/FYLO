@@ -54,7 +54,15 @@ namespace Fylo
 
     public sealed class FyloException : Exception
     {
+        /// <summary>The machine-protocol error code, such as EINVALIDDOCID, or null when absent.</summary>
+        public string Code { get; }
+
         public FyloException(string message) : base(message) { }
+
+        public FyloException(string message, string code) : base(message)
+        {
+            Code = code;
+        }
     }
 
     public sealed class Fylo : IDisposable
@@ -66,6 +74,7 @@ namespace Fylo
         private readonly Stream _stdout;
         private readonly byte[] _responseBuffer = new byte[MaxResponseBytes + 1];
         private readonly object _lock = new object();
+        private static readonly char[] LineBreaks = { '\n', '\r' };
 
         public sealed class Options
         {
@@ -114,6 +123,8 @@ namespace Fylo
             {
                 if (_proc.HasExited) throw new InvalidOperationException("fylo process has exited");
                 string payload = opJson.TrimEnd();
+                if (payload.IndexOfAny(LineBreaks) >= 0)
+                    throw new ArgumentException("FYLO request must be a single line without CR or LF characters", nameof(opJson));
                 if (Encoding.UTF8.GetByteCount(payload) > MaxRequestBytes)
                     throw new FyloException($"FYLO request exceeds {MaxRequestBytes} bytes");
                 _proc.StandardInput.Write(payload);
@@ -156,9 +167,16 @@ namespace Fylo
                              e.TryGetProperty("message", out var m)
                     ? m.GetString() ?? "fylo error"
                     : "fylo error";
-                throw new FyloException(msg);
+                throw new FyloException(msg, ErrorCode(root));
             }
             return root.TryGetProperty("result", out var r) ? r.Clone() : default;
+        }
+
+        private static string ErrorCode(JsonElement response)
+        {
+            if (response.TryGetProperty("error", out var error) && error.TryGetProperty("code", out var code))
+                return code.GetString();
+            return null;
         }
 
         // Serialize any native value to JSON (e.g. "users" -> "users", a

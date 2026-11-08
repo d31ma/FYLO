@@ -19,6 +19,7 @@ response dict — use it for ops without a dedicated method (branching, schema).
 
 import json
 import asyncio
+import concurrent.futures
 import functools
 import inspect
 import os
@@ -28,7 +29,9 @@ import threading
 MAX_REQUEST_BYTES = 1024 * 1024
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 class FyloError(RuntimeError):
-    pass
+    def __init__(self, message, code=None):
+        super().__init__(message)
+        self.code = code
 
 
 class Fylo:
@@ -83,7 +86,8 @@ class Fylo:
                 payload[key] = value
         response = self.request(payload)
         if not response.get("ok"):
-            raise FyloError((response.get("error") or {}).get("message", "fylo error"))
+            error = response.get("error") or {}
+            raise FyloError(error.get("message", "fylo error"), error.get("code"))
         return response.get("result")
 
     # --- Collections ---
@@ -182,9 +186,7 @@ class Fylo:
             try:
                 outcome = handler(delivery)
                 if inspect.isawaitable(outcome):
-                    if inspect.iscoroutine(outcome):
-                        outcome.close()
-                    raise TypeError("async queue handlers require queue_process_async")
+                    self._run_awaitable(outcome)
             except Exception:
                 failed = True
             if not failed:
@@ -202,6 +204,25 @@ class Fylo:
                 key = "deadLettered" if settled.get("deadLettered") else "retried"
                 result[key] += 1
         return result
+
+    @staticmethod
+    def _run_awaitable(awaitable):
+        if Fylo._event_loop_is_running():
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                return pool.submit(asyncio.run, Fylo._wait_for(awaitable)).result()
+        return asyncio.run(Fylo._wait_for(awaitable))
+
+    @staticmethod
+    def _event_loop_is_running():
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return False
+        return True
+
+    @staticmethod
+    async def _wait_for(awaitable):
+        return await awaitable
 
     def queue_consumer(
         self,

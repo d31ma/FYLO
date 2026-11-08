@@ -63,6 +63,17 @@ type QueueProcessResult struct {
 	DeadLettered int
 }
 
+// Error is a failed FYLO operation. Code is the machine-protocol error code;
+// use errors.As to read it.
+type Error struct {
+	Code    string
+	Message string
+}
+
+func (e *Error) Error() string {
+	return e.Message
+}
+
 // QueueHandler processes one native delivery object.
 type QueueHandler func(delivery map[string]any) error
 
@@ -107,8 +118,8 @@ func OpenWithOptions(root string, options Options) (*Fylo, error) {
 func (f *Fylo) op(name string, fields map[string]any) (any, error) {
 	payload := map[string]any{"op": name}
 	for k, v := range fields {
-		if v != nil {
-			payload[k] = v
+		if value, present := requestValue(v); present {
+			payload[k] = value
 		}
 	}
 	resp, err := f.Request(payload)
@@ -116,15 +127,27 @@ func (f *Fylo) op(name string, fields map[string]any) (any, error) {
 		return nil, err
 	}
 	if ok, _ := resp["ok"].(bool); !ok {
-		msg := "fylo error"
-		if e, ok := resp["error"].(map[string]any); ok {
-			if m, ok := e["message"].(string); ok {
-				msg = m
-			}
-		}
-		return nil, fmt.Errorf("%s", msg)
+		return nil, responseError(resp)
 	}
 	return resp["result"], nil
+}
+
+// requestValue sends a nil map as an empty JSON object and omits other nil values.
+func requestValue(value any) (any, bool) {
+	if object, isObject := value.(map[string]any); isObject && object == nil {
+		return map[string]any{}, true
+	}
+	return value, value != nil
+}
+
+func responseError(resp map[string]any) *Error {
+	details, _ := resp["error"].(map[string]any)
+	message, hasMessage := details["message"].(string)
+	if !hasMessage {
+		message = "fylo error"
+	}
+	code, _ := details["code"].(string)
+	return &Error{Code: code, Message: message}
 }
 
 // --- Collections ---

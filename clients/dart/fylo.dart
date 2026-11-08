@@ -24,7 +24,10 @@ import 'dart:typed_data';
 
 class FyloException implements Exception {
   final String message;
-  FyloException(this.message);
+
+  /// The machine-protocol error code, such as EINVALIDDOCID, when FYLO sent one.
+  final String? code;
+  FyloException(this.message, {this.code});
   @override
   String toString() => 'FyloException: $message';
 }
@@ -67,8 +70,11 @@ class Fylo {
   final Uint8List _responseBuffer = Uint8List(maxResponseBytes);
   int _responseLength = 0;
   bool _responseOversized = false;
+  FyloException? _exitError;
 
   Fylo._(this._proc, this._stdin, Stream<List<int>> bytes) {
+    _proc.exitCode.then(_markExited);
+    _stdin.done.then((_) {}, onError: _ignoreInputAfterExit);
     bytes.listen((chunk) {
       for (final byte in chunk) {
         if (byte != 0x0a) {
@@ -107,9 +113,16 @@ class Fylo {
         _responseOversized = false;
       }
     }, onDone: () {
-      _failAll(FyloException('fylo process exited'));
+      _exitError ??= FyloException('fylo process exited');
+      _failAll(_exitError!);
     });
   }
+
+  void _markExited(int exitCode) {
+    _exitError = FyloException('fylo process exited with code $exitCode');
+  }
+
+  void _ignoreInputAfterExit(Object error) {}
 
   void _failAll(FyloException error) {
     for (final completer in _queue) {
@@ -138,6 +151,7 @@ class Fylo {
 
   /// Send one raw machine-protocol op; resolves with the full response object.
   Future<Map<String, dynamic>> request(Map<String, dynamic> op) {
+    if (_exitError != null) return Future.error(_exitError!);
     final payload = utf8.encode(jsonEncode(op));
     if (payload.length > maxRequestBytes) {
       return Future.error(
@@ -158,7 +172,8 @@ class Fylo {
     if (response['ok'] != true) {
       final error = response['error'];
       throw FyloException(
-          (error is Map ? error['message'] : null) ?? 'fylo error');
+          (error is Map ? error['message'] : null) ?? 'fylo error',
+          code: error is Map ? error['code'] as String? : null);
     }
     return response['result'];
   }
@@ -333,7 +348,7 @@ class Fylo {
 
   /// Close stdin so the loop ends, and wait for the process to exit.
   Future<void> close() async {
-    await _stdin.close();
+    await _stdin.close().then((_) {}, onError: _ignoreInputAfterExit);
     await _proc.exitCode;
   }
 }

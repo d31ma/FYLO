@@ -19,7 +19,22 @@
 // convention; object arguments are native associative arrays. request($op) is
 // the raw escape hatch returning the full decoded response.
 
-class FyloError extends Exception {}
+class FyloError extends Exception
+{
+    private ?string $fyloCode = null;
+
+    public static function fromResponseError(array $error): self
+    {
+        $exception = new self($error['message'] ?? 'fylo error');
+        $exception->fyloCode = $error['code'] ?? null;
+        return $exception;
+    }
+
+    public function getFyloCode(): ?string
+    {
+        return $this->fyloCode;
+    }
+}
 
 #[Attribute(Attribute::TARGET_METHOD)]
 class FyloQueueConsumer
@@ -38,6 +53,7 @@ class Fylo
 {
     private const MAX_REQUEST_BYTES = 1048576;
     private const MAX_RESPONSE_BYTES = 8388608;
+    private const OBJECT_FIELDS = ['data', 'meta', 'newDoc', 'update', 'delete', 'query', 'page', 'join'];
     private $proc;
     private $stdin;
     private $stdout;
@@ -330,14 +346,23 @@ class Fylo
         $payload = ['op' => $name];
         foreach ($fields as $key => $value) {
             if ($value !== null) {
-                $payload[$key] = $value;
+                $payload[$key] = $this->fieldValue($key, $value);
             }
         }
         $resp = $this->request($payload);
         if (empty($resp['ok'])) {
-            throw new FyloError($resp['error']['message'] ?? 'fylo error');
+            throw FyloError::fromResponseError($resp['error'] ?? []);
         }
         return $resp['result'] ?? null;
+    }
+
+    /** Send an empty PHP array as a JSON object for fields the protocol defines as objects. */
+    private function fieldValue(string $key, mixed $value): mixed
+    {
+        if ($value === [] && in_array($key, self::OBJECT_FIELDS, true)) {
+            return new stdClass();
+        }
+        return $value;
     }
 
     /** Copy documented queue options only; unknown and protected fields are ignored. */

@@ -111,8 +111,13 @@ export class Fylo {
         this._responseBuffer = Buffer.allocUnsafe(this.maxResponseBytes)
         this._responseLength = 0
         this._responseOversized = false
+        this._exited = false
         this._proc.stdout.on('data', (chunk) => this._onData(chunk))
+        this._proc.on('exit', () => {
+            this._exited = true
+        })
         this._proc.on('close', () => {
+            this._exited = true
             const err = new Error('fylo process exited')
             for (const p of this._queue.splice(0)) p.reject(err)
         })
@@ -263,7 +268,7 @@ export class Fylo {
     /** Send one raw machine-protocol op; resolves with the full response object. */
     request(op) {
         return new Promise((resolve, reject) => {
-            if (this._proc.exitCode !== null) return reject(new Error('fylo process exited'))
+            if (this._exited) return reject(new Error('fylo process exited'))
             let payload
             try {
                 payload = Buffer.from(JSON.stringify(op), 'utf8')
@@ -532,8 +537,9 @@ export class Fylo {
     /** Close stdin so the loop ends, and wait for the process to exit. */
     close() {
         return new Promise((resolve) => {
-            if (this._proc.exitCode !== null) return resolve()
-            this._proc.on('exit', () => resolve())
+            if (this._exited) return resolve()
+            this._proc.once('exit', () => resolve())
+            this._proc.once('close', () => resolve())
             this._proc.stdin.end()
         })
     }
