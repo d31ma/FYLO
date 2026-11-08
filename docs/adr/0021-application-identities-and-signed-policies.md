@@ -278,6 +278,17 @@ What a protected `.vdbx` file holds, in addition to ADR 0016:
   then took out what the browser never needs, 13,917 bytes, and the budget
   is 2,448 KiB again (section 8, "The browser engine's size"); the gzip
   budget (800 KiB) never changed.
+- **A raise to 2,452 KiB for release 26.45.07 (the user's decision,
+  2026-11-08).** The release's engine fixes run in the browser too:
+  `EXPLAIN` returns a plan without running the statement, `CREATE TABLE`
+  and `DROP TABLE` create and drop collections, and a missing collection
+  is reported as not found. Together they add about 4.85 KB (2,502,736 to
+  2,507,586 bytes), and none of it can be cut without dropping a fix. The
+  bucket recovery fix had added 7,391 bytes more, which comparing the two
+  index paths as strings, instead of through a `BTreeSet`, took back out.
+  The engine was 834 bytes over 2,448 KiB, so the raw budget is 2,452 KiB
+  (2,510,848 bytes), 3,262 bytes above it. The module is 809,291 bytes
+  gzipped, so the gzip budget (800 KiB) does not change.
 
 ### 5. Decisions for phase 5 (the user, 2026-11-07)
 
