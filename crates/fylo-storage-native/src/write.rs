@@ -2693,12 +2693,11 @@ fn rebuild_restored_index(
 }
 
 fn captures_whole_index(captures: &[Capture]) -> bool {
-    let captured_paths: BTreeSet<&Path> = captures
-        .iter()
-        .map(|capture| Path::new(capture.path.as_str()))
-        .collect();
-    captured_paths.contains(Path::new("index/keys.snapshot"))
-        && captured_paths.contains(Path::new("index/keys.wal"))
+    captures_path(captures, "index/keys.snapshot") && captures_path(captures, "index/keys.wal")
+}
+
+fn captures_path(captures: &[Capture], path: &str) -> bool {
+    captures.iter().any(|capture| capture.path == path)
 }
 
 fn finish_transaction(

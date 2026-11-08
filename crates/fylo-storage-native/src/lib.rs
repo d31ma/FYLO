@@ -3499,10 +3499,8 @@ fn required_utf8_attribute(
         NativeStorageError::new(
             NativeStorageErrorCode::CorruptMetadata,
             format!(
-                "raw file system metadata is missing: {identifier} at {}; its key and \
-                 metadata were stored only in the file's extended attributes. Move the file \
-                 out of the store, run any write on the collection, then add it again with \
-                 putData and its key",
+                "raw file system metadata is missing: {identifier} at {}; move the file out, \
+                 run any write, then add it again with putData and its key",
                 location.display()
             ),
         )
