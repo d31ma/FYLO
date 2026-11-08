@@ -378,6 +378,16 @@
 
 ### Changed
 
+- **CI: release verification runs on pull requests into `main`; runners
+  pinned.** The Release workflow's verification jobs (native Windows x64,
+  macOS arm64 and x64, Linux x64 and arm64, tests, and compiled binary
+  interop) now also run on pull requests into `main`, so a release pull
+  request is tested on every release platform before it merges. Reading the
+  version, building and attesting assets, and publishing the GitHub release
+  still run only for a push to `main` or a manual dispatch, and Pages
+  publishes only after such a run. Every workflow job now names a fixed
+  runner image (`ubuntu-24.04`, `macos-15`) instead of `ubuntu-latest` or
+  `macos-latest`.
 - **The C# client is tested on .NET 10.** .NET 8 support ends on
   2026-11-10, so CI, the publish workflow and the C# interop and
   language-client tests now build `net10.0` with the .NET 10 SDK. The client

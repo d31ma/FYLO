@@ -14,13 +14,31 @@ on:
 permissions: {}
 
 concurrency:
-    group: pages
+    group: >-
+        ${{
+          github.event_name == 'workflow_run' &&
+          github.event.workflow_run.event == 'pull_request' &&
+          format('pages-ignored-{0}', github.run_id) ||
+          'pages'
+        }}
     cancel-in-progress: false
 
 jobs:
     build:
-        if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
-        runs-on: ubuntu-latest
+        if: >-
+            ${{
+              github.event_name == 'workflow_dispatch' ||
+              (
+                github.event.workflow_run.conclusion == 'success' &&
+                (
+                  github.event.workflow_run.event == 'push' ||
+                  github.event.workflow_run.event == 'workflow_dispatch'
+                ) &&
+                github.event.workflow_run.head_branch == github.event.repository.default_branch &&
+                github.event.workflow_run.head_repository.full_name == github.repository
+              )
+            }}
+        runs-on: ubuntu-24.04
         permissions:
             contents: write
         outputs:
@@ -221,7 +239,7 @@ jobs:
     deploy:
         needs: build
         if: needs.build.outputs.should_publish == 'true'
-        runs-on: ubuntu-latest
+        runs-on: ubuntu-24.04
         permissions:
             contents: read
             pages: write
@@ -236,7 +254,7 @@ jobs:
 
     verify:
         needs: [build, deploy]
-        runs-on: ubuntu-latest
+        runs-on: ubuntu-24.04
         permissions:
             contents: read
         steps:

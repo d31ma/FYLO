@@ -14,6 +14,16 @@ dispatch against a feature branch or tag cannot build or attest release assets;
 the later publication gate independently rechecks the default branch and exact
 source commit before creating a release.
 
+The Release workflow also runs on pull requests into `main`, so a release pull
+request exercises the native Windows x64, macOS arm64 and x64, and Linux x64
+and arm64 gates, the full test job, and the compiled binary interop job before
+it merges. On a pull request the version, asset, and publication jobs are
+skipped: the run has a read-only token and never receives OIDC, attestation,
+or release-write permissions. Pull-request runs use their own concurrency
+group, so they never cancel or wait behind a release from `main`. Every
+workflow runner is pinned to a fixed image (`ubuntu-24.04`, `macos-15`), never
+a `*-latest` label.
+
 The release is blocked by tests of the exact packaged Linux x64, macOS arm64,
 macOS x64, and Windows x64 executables. Each executable must report release
 build identity and pass the canonical-alias, simultaneous-owner, stale-metadata,

@@ -3,14 +3,22 @@ name: Release
 on:
     push:
         branches: [main]
+    pull_request:
+        branches: [main]
+        types: [opened, synchronize, reopened, ready_for_review]
     workflow_dispatch:
 
 permissions:
     contents: read
 
 concurrency:
-    group: release-${{ github.repository }}
-    cancel-in-progress: false
+    group: >-
+        ${{
+          github.event_name == 'pull_request' &&
+          format('release-pr-{0}', github.ref) ||
+          format('release-{0}', github.repository)
+        }}
+    cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
     windows-storage:
@@ -290,7 +298,7 @@ jobs:
 
     test:
         name: Test before release
-        runs-on: ubuntu-latest
+        runs-on: ubuntu-24.04
         timeout-minutes: 40
 
         steps:
@@ -338,7 +346,7 @@ jobs:
 
     binary-interop:
         name: Compiled binary interop
-        runs-on: macos-latest
+        runs-on: macos-15
         timeout-minutes: 30
 
         steps:
@@ -420,7 +428,8 @@ jobs:
 
     version:
         name: Read version
-        runs-on: ubuntu-latest
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        runs-on: ubuntu-24.04
         outputs:
             version: ${{ steps.read.outputs.version }}
             tag_exists: ${{ steps.check.outputs.exists }}
@@ -452,7 +461,7 @@ jobs:
 
     release-assets:
         name: Build release assets
-        runs-on: ubuntu-latest
+        runs-on: ubuntu-24.04
         permissions:
             contents: read
             id-token: write
@@ -461,6 +470,7 @@ jobs:
         needs: [test, binary-interop, windows-storage, macos-storage, linux-storage, version]
         if: >-
             ${{
+              (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
               github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
               needs.test.result == 'success' &&
               needs.binary-interop.result == 'success' &&
@@ -664,10 +674,11 @@ jobs:
 
     github-release:
         name: Publish GitHub release
-        runs-on: ubuntu-latest
+        runs-on: ubuntu-24.04
         needs: [release-assets, version]
         if: >-
             ${{
+              (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
               needs.release-assets.result == 'success' &&
               needs.version.result == 'success' &&
               needs.version.outputs.tag_exists == 'false'

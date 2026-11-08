@@ -249,8 +249,9 @@ release role does not need them.
 
 ## GitHub Pages verification
 
-The Pages workflow runs only after a successful Release workflow whose `v<version>` tag identifies
-the same commit. It publishes immutable paths such as `version/26.30.03/` and a mutable
+The Pages workflow runs only after a successful Release workflow run from a push to (or a manual
+dispatch on) the default branch, whose `v<version>` tag identifies the same commit. Release runs
+for pull requests never trigger a Pages build. It publishes immutable paths such as `version/26.30.03/` and a mutable
 `version/latest/`. Its post-deploy step downloads the loader, engine, shared and dedicated workers,
 Wasm module, and `SHA256SUMS`, then verifies every file by checksum and compares `latest`
 byte-for-byte with the immutable version:
