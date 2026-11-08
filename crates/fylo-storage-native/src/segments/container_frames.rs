@@ -261,11 +261,14 @@ impl ContainerFrames {
     }
 
     /// `stored` signed by the identity this protected file was opened with;
-    /// as it is in any other file.
-    fn signed(&self, lsn: u64, stored: Vec<u8>) -> Vec<u8> {
+    /// as it is in any other file. An identity whose hardware key refuses
+    /// to certify a session may not write, as without a grant.
+    fn signed(&self, lsn: u64, stored: Vec<u8>) -> Result<Vec<u8>, ContainerRecordError> {
         match self.cipher.as_ref().and_then(|cipher| cipher.access()) {
-            Some(access) => access.sign_frame(self.collection, lsn, stored),
-            None => stored,
+            Some(access) => access
+                .sign_frame(self.collection, lsn, stored)
+                .map_err(|_| ContainerRecordError::Cipher(crate::ContainerCipherError::NoGrant)),
+            None => Ok(stored),
         }
     }
 
@@ -329,7 +332,7 @@ impl LogBodyCodec for ContainerFrames {
             let lsn = u64::from_le_bytes(*lsn);
             let stored =
                 ContainerStoredBody::encode(codec, Some(cipher), self.context(lsn), rest, lz4)?;
-            Ok(self.signed(lsn, stored))
+            self.signed(lsn, stored)
         })
         .map_err(|error| Self::format_error(&error))
     }

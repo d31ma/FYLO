@@ -729,9 +729,13 @@ fn records_before_a_bad_signature_read_and_writes_past_it_are_refused() {
 }
 
 /// Per-commit and open costs of a protected database against a plain and a
-/// key-encrypted one (ADR 0021, phase 4). Run in release with
-/// `--run-ignored only --no-capture`; it prints, it asserts nothing about
-/// speed.
+/// key-encrypted one (ADR 0021, phase 4), and with session keys (phase 8):
+/// a software identity's, and a hardware identity's when
+/// `FYLO_MEASURE_IDENTITY` names a new one for it to create (for example an
+/// `enclave:` reference, with `FYLO_KEYCHAIN` naming a throwaway keychain:
+/// the keychain lets only the binary that made an item read it without
+/// asking). Run in release with `--run-ignored only --no-capture`; it
+/// prints, it asserts nothing about speed.
 #[test]
 #[ignore = "a measurement, run by hand in release"]
 fn measure_protected_costs() {
@@ -747,7 +751,17 @@ fn measure_protected_costs() {
     let verified = time_each(1000, || public.verify(&message, &signature).unwrap());
     println!("ecdsa p256 sign: {}", summary(&signed));
     println!("ecdsa p256 verify: {}", summary(&verified));
-    for mode in ["plain", "encrypted", "protected"] {
+    let hardware = std::env::var("FYLO_MEASURE_IDENTITY").ok();
+    let mut modes = vec!["plain", "encrypted", "protected", "protected-session"];
+    modes.extend(hardware.as_ref().map(|_| "protected-hardware"));
+    if let Some(reference) = &hardware {
+        let key = Identity::create(&KeyReference::parse(reference).unwrap()).unwrap();
+        let signed = time_each(50, || {
+            std::hint::black_box(key.try_sign(&message).unwrap());
+        });
+        println!("{reference} sign: {}", summary(&signed));
+    }
+    for mode in modes {
         let database = Protected::create(&format!("vdbx-cost-{mode}"));
         let options = cost_options(&database, mode);
         let writer = NativeWriteRoot::open_profiled(options.clone()).unwrap();
@@ -774,19 +788,30 @@ fn measure_protected_costs() {
 fn cost_options(database: &Protected, mode: &str) -> RootOpenOptions {
     let path = database.directory.join(format!("{mode}.vdbx"));
     let key = DatabaseKey::new(vec![b'k'; 32]);
+    let admin = cost_admin(database, mode);
     match mode {
         "plain" => NativeRoot::create_database(&path).unwrap(),
         "encrypted" => NativeRoot::create_encrypted_database(&path, &key).unwrap(),
-        _ => NativeRoot::create_protected_database(&path, &database.admin).unwrap(),
+        _ => NativeRoot::create_protected_database(&path, &admin).unwrap(),
     }
     let options = RootOpenOptions::new(&path);
+    let trust = AccessTrust::Pinned(admin.id().clone());
     match mode {
         "plain" => options,
         "encrypted" => options.with_database_key(key),
-        _ => options.with_identity(DatabaseIdentity::new(
-            Identity::open(database.admin.reference()).unwrap(),
-            AccessTrust::Pinned(database.admin.id().clone()),
-        )),
+        "protected-session" => {
+            options.with_identity(DatabaseIdentity::new(admin, trust).with_session_keys(true))
+        }
+        _ => options.with_identity(DatabaseIdentity::new(admin, trust)),
+    }
+}
+
+fn cost_admin(database: &Protected, mode: &str) -> Identity {
+    match mode {
+        "protected-hardware" => {
+            Identity::from_reference(&std::env::var("FYLO_MEASURE_IDENTITY").unwrap()).unwrap()
+        }
+        _ => Identity::open(database.admin.reference()).unwrap(),
     }
 }
 
@@ -1185,5 +1210,178 @@ fn the_access_report_names_a_pending_rotation_and_the_command() {
     assert_eq!(
         notice.command,
         format!("fylo access settle {}", database.path().display())
+    );
+}
+
+impl Protected {
+    /// As the admin, signing records with session keys (phase 8), as a
+    /// hardware identity always does.
+    fn as_admin_with_sessions(&self) -> RootOpenOptions {
+        let identity = Identity::open(self.admin.reference()).unwrap();
+        RootOpenOptions::new(self.path()).with_identity(
+            DatabaseIdentity::new(identity, AccessTrust::Pinned(self.admin.id().clone()))
+                .with_session_keys(true),
+        )
+    }
+
+    fn session_writer(&self) -> NativeWriteRoot {
+        NativeWriteRoot::open_profiled(self.as_admin_with_sessions()).unwrap()
+    }
+}
+
+/// Where each frame with a session trailer of the admin ends, and its
+/// certificate: the trailer's kind byte, the certificate (it opens with
+/// the admin's fingerprint) and the session key's signature.
+fn session_trailers(database: &Protected, bytes: &[u8]) -> Vec<(usize, Vec<u8>)> {
+    let fingerprint = database.admin.public().fingerprint();
+    let certificate = crate::session_certificate::SessionCertificate::BYTES;
+    bytes
+        .windows(fingerprint.len())
+        .enumerate()
+        .filter(|(at, window)| *window == fingerprint && *at > 0 && bytes[at - 1] == 2)
+        .map(|(at, _)| (at + certificate + 64, bytes[at..at + certificate].to_vec()))
+        .filter(|(end, _)| *end <= bytes.len())
+        .collect()
+}
+
+/// Rewrite every session-signed frame of the admin: `mutate` changes the
+/// stored bytes, then the frame's checksum is written again. Returns how
+/// many frames it rewrote.
+fn rewrite_session_frames(database: &Protected, mutate: impl Fn(&mut [u8])) -> usize {
+    database.reopen();
+    let mut bytes = std::fs::read(database.path()).unwrap();
+    let mut rewritten = 0;
+    for (end, _) in session_trailers(database, &bytes) {
+        let Some(start) = (end.saturating_sub(1 << 20)..end.saturating_sub(8))
+            .rev()
+            .find(|start| frame_ends_at(&bytes, *start, end))
+        else {
+            continue;
+        };
+        mutate(&mut bytes[start + 8..end]);
+        let checksum = fylo_format::Crc32c::checksum(&bytes[start + 8..end]);
+        bytes[start + 4..start + 8].copy_from_slice(&checksum.to_le_bytes());
+        rewritten += 1;
+    }
+    std::fs::write(database.path(), bytes).unwrap();
+    rewritten
+}
+
+fn write_ledger_with_sessions(database: &Protected) {
+    let writer = database.session_writer();
+    writer
+        .create_collection(LEDGER, CollectionKind::Document, None)
+        .unwrap();
+    put(&writer, LEDGER, DOCUMENT);
+    writer.rebuild_collection(LEDGER).unwrap();
+}
+
+fn certificates(database: &Protected) -> std::collections::BTreeSet<Vec<u8>> {
+    database.reopen();
+    let bytes = std::fs::read(database.path()).unwrap();
+    session_trailers(database, &bytes)
+        .into_iter()
+        .map(|(_, certificate)| certificate)
+        .collect()
+}
+
+#[test]
+fn records_signed_with_a_session_key_read_back() {
+    let database = Protected::create("vdbx-session-read");
+    write_ledger_with_sessions(&database);
+    assert!(rewrite_session_frames(&database, |_| ()) >= 2);
+    database.reopen();
+    assert_eq!(read(&database.root()), order());
+}
+
+#[test]
+fn a_writer_open_certifies_one_session_for_all_its_records() {
+    let database = Protected::create("vdbx-session-one");
+    write_ledger_with_sessions(&database);
+    let writer = database.session_writer();
+    put(&writer, LEDGER, SECOND);
+    put(&writer, LEDGER, "4VRNF560003");
+    drop(writer);
+    assert_eq!(certificates(&database).len(), 2);
+}
+
+#[test]
+fn identity_and_session_records_read_together() {
+    let database = Protected::create("vdbx-session-mixed");
+    write_ledger(&database);
+    database.reopen();
+    put(&database.session_writer(), LEDGER, SECOND);
+    assert_eq!(certificates(&database).len(), 1);
+    database.reopen();
+    let root = database.root();
+    assert_eq!(read(&root), order());
+    let ids = root.collection(LEDGER).unwrap().document_ids().unwrap();
+    assert_eq!(ids, vec![DOCUMENT.to_owned(), SECOND.to_owned()]);
+}
+
+#[test]
+fn a_session_record_whose_signature_was_changed_is_refused() {
+    let database = Protected::create("vdbx-session-forged");
+    write_ledger_with_sessions(&database);
+    let last = |stored: &mut [u8]| {
+        let at = stored.len() - 1;
+        stored[at] ^= 0x01;
+    };
+    assert!(rewrite_session_frames(&database, last) >= 2);
+    assert_eq!(read_code(&database), NativeStorageErrorCode::Signature);
+}
+
+#[test]
+fn a_session_record_whose_certificate_was_changed_is_refused() {
+    let database = Protected::create("vdbx-session-certificate");
+    write_ledger_with_sessions(&database);
+    let not_after = |stored: &mut [u8]| {
+        let certificate = crate::session_certificate::SessionCertificate::BYTES;
+        let at = stored.len() - 64 - certificate + 32 + 65;
+        stored[at] ^= 0x01;
+    };
+    assert!(rewrite_session_frames(&database, not_after) >= 2);
+    assert_eq!(read_code(&database), NativeStorageErrorCode::Signature);
+}
+
+#[test]
+fn a_session_record_stripped_of_its_session_flag_is_refused() {
+    let database = Protected::create("vdbx-session-flag");
+    write_ledger_with_sessions(&database);
+    let identity_flag = |stored: &mut [u8]| stored[0] &= !crate::container_record::SESSION_SIGNED;
+    assert!(rewrite_session_frames(&database, identity_flag) >= 2);
+    assert_eq!(read_code(&database), NativeStorageErrorCode::Signature);
+}
+
+#[test]
+fn compaction_and_verify_with_session_keys() {
+    let database = Protected::create("vdbx-session-compaction");
+    write_ledger_with_sessions(&database);
+    let writer = database.session_writer();
+    put(&writer, LEDGER, SECOND);
+    writer.delete_document(LEDGER, SECOND).unwrap();
+    writer.compact_collection(LEDGER).unwrap();
+    drop(writer);
+    database.reopen();
+    assert_eq!(read(&database.root()), order());
+    assert!(problem_codes(&unlocked_file(&database)).is_empty());
+}
+
+#[test]
+fn verify_reports_a_bad_session_signature() {
+    let database = Protected::create("vdbx-session-verify");
+    write_ledger_with_sessions(&database);
+    let last = |stored: &mut [u8]| {
+        let at = stored.len() - 1;
+        stored[at] ^= 0x01;
+    };
+    rewrite_session_frames(&database, last);
+    let report = unlocked_file(&database).verify().unwrap();
+    assert!(!report.ok);
+    assert!(
+        report
+            .problems
+            .iter()
+            .any(|problem| problem.code == "badSignature")
     );
 }

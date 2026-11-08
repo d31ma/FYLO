@@ -15,6 +15,7 @@ impl AccessBinding {
     const WRAP_LABEL: &'static [u8] = b"fylo.vdbx.key/1\0";
     const POLICY_LABEL: &'static [u8] = b"fylo.policy/1\0";
     const FRAME_LABEL: &'static [u8] = b"fylo.frame/1\0";
+    const SESSION_LABEL: &'static [u8] = b"fylo.session/1\0";
     const FIELD_LABEL: &'static [u8] = b"fylo.field/1\0";
     const CATALOG_SCOPE: u8 = 1;
     const COLLECTION_SCOPE: u8 = 2;
@@ -46,6 +47,26 @@ impl AccessBinding {
             &collection.to_le_bytes(),
             &lsn.to_le_bytes(),
             digest,
+        ]
+        .concat()
+    }
+
+    /// What an identity signs to certify a session key: this database, the
+    /// identity's fingerprint, the session's public key and the time, in
+    /// Unix milliseconds by the writer's clock, after which the writer signs
+    /// nothing more with it.
+    pub(crate) fn session_message(
+        self,
+        fingerprint: &[u8; 32],
+        session_key: &[u8; 65],
+        not_after: u64,
+    ) -> Vec<u8> {
+        [
+            Self::SESSION_LABEL,
+            &self.database,
+            fingerprint,
+            session_key,
+            &not_after.to_le_bytes(),
         ]
         .concat()
     }

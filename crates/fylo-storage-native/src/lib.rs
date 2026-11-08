@@ -70,10 +70,12 @@ mod queue;
 mod record_attributes;
 mod root_open_options;
 mod segments;
+mod session_certificate;
 mod sidecar_attributes;
 mod spelling_cache;
 mod validation_mode;
 mod write;
+mod writer_session;
 
 use beneath_open::BeneathOpen;
 use legacy_access_warning::LegacyAccessWarning;

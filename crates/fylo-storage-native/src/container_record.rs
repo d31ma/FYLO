@@ -29,7 +29,11 @@ const SEALED: u8 = 0x20;
 /// A protected file's frame: a signature trailer follows the stored bytes
 /// (ADR 0021). The frame's reader takes it off before it parses the rest.
 pub(crate) const SIGNED: u8 = 0x40;
-const KNOWN_FLAGS: u8 = CODEC_MASK | HAS_DICTIONARY | SEALED | SIGNED;
+/// With [`SIGNED`]: the trailer is a session certificate and a signature by
+/// the session key it certifies (ADR 0021, phase 8), rather than an identity
+/// key's signature. With it every bit of the header byte has a meaning; a
+/// later format change takes a new codec code, which an older build refuses.
+pub(crate) const SESSION_SIGNED: u8 = 0x80;
 const DICTIONARY_ID_BYTES: usize = 4;
 const LSN_BYTES: usize = 8;
 
@@ -166,7 +170,7 @@ impl<'a> ContainerStoredBody<'a> {
     ///
     /// # Errors
     ///
-    /// Returns `Unsupported` for unknown flag bits or an unknown codec, and
+    /// Returns `Unsupported` for an unknown codec, and
     /// `Malformed` for an empty body, a missing or zero dictionary id, a
     /// dictionary named without compression, or a sealed body too short for
     /// its LSN.
@@ -174,9 +178,6 @@ impl<'a> ContainerStoredBody<'a> {
         let (&header, rest) = stored
             .split_first()
             .ok_or(ContainerRecordError::Malformed)?;
-        if header & !KNOWN_FLAGS != 0 {
-            return Err(ContainerRecordError::Unsupported);
-        }
         let codec = ContainerCodec::from_code(header & CODEC_MASK)
             .map_err(|_| ContainerRecordError::Unsupported)?;
         let (dictionary_id, payload) = if header & HAS_DICTIONARY == 0 {

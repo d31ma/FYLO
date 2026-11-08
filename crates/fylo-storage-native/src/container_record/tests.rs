@@ -136,8 +136,8 @@ fn malformed_headers_are_refused() {
 }
 
 #[test]
-fn an_unknown_codec_or_flag_is_a_newer_format_not_damage() {
-    for stored in [&[0x03, 1][..], &[0x0F, 1], &[0x80, 1, 2], &[0x81, 1]] {
+fn an_unknown_codec_is_a_newer_format_not_damage() {
+    for stored in [&[0x03, 1][..], &[0x0F, 1], &[0x8F, 1, 2], &[0xC3, 1]] {
         let error = ContainerStoredBody::parse(stored).unwrap_err();
         assert!(
             matches!(error, ContainerRecordError::Unsupported),

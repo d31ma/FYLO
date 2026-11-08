@@ -72,6 +72,22 @@ impl Identity {
             .unwrap_or_default()
     }
 
+    /// Sign `message` through the host, reporting a host that cannot.
+    ///
+    /// # Errors
+    /// [`IdentityError::Store`] when the host refuses.
+    pub fn try_sign(&self, message: &[u8]) -> Result<Vec<u8>, IdentityError> {
+        fylo_vfs::host_identity_sign(message)
+            .map(|signature| signature.to_vec())
+            .map_err(|message| IdentityError::Store(format!("{}: {message}", self.reference)))
+    }
+
+    /// A `webcrypto:` key is a software key the browser holds.
+    #[must_use]
+    pub fn is_hardware(&self) -> bool {
+        false
+    }
+
     /// Open a key wrapped for this identity under `info`, through the host.
     ///
     /// # Errors

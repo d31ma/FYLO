@@ -31,6 +31,17 @@ impl PublicIdentity {
         PublicIdentity { public_key, id }
     }
 
+    /// The public identity of a SEC1 P-256 point.
+    ///
+    /// # Errors
+    /// [`IdentityError::InvalidIdentifier`] for bytes that are not a point
+    /// on the curve.
+    pub fn from_sec1(point: &[u8]) -> Result<PublicIdentity, IdentityError> {
+        PublicKey::from_sec1_bytes(point)
+            .map(Self::from_public_key)
+            .map_err(|_| IdentityError::InvalidIdentifier("not a SEC1 P-256 point".into()))
+    }
+
     /// Parse `fpk1:p256:<base64url SEC1 point>`.
     ///
     /// # Errors

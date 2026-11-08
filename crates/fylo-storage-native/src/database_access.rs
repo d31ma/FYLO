@@ -13,6 +13,8 @@ use crate::access_binding::AccessBinding;
 use crate::access_policy_chain::AccessPolicyChain;
 use crate::catalog_keys::CatalogKeys;
 use crate::collection_keys::CollectionKeys;
+use crate::session_certificate::SessionCertificate;
+use crate::writer_session::WriterSession;
 use crate::{
     AccessAction, AccessDocument, AccessGrantRequest, AccessGrants, AccessKeyWrap, AccessPolicy,
     AccessPolicyChange, AccessPolicyEnvelope, AccessTrust, ContainerCipher, ContainerCipherError,
@@ -31,6 +33,10 @@ pub struct DatabaseAccess {
     fingerprint: [u8; 32],
     state: RwLock<AccessState>,
     verified: Mutex<HashSet<[u8; 32]>>,
+    /// Whether this identity signs records with session keys (phase 8).
+    session_keys: bool,
+    /// The session this writer signs with, issued at its first record.
+    session: Mutex<Option<Arc<WriterSession>>>,
     /// The keys a rekey's new file gives its collections as it creates
     /// them, by name ([`Self::inherit`]); empty otherwise.
     inherited: Mutex<BTreeMap<String, CollectionKeys>>,
@@ -94,12 +100,14 @@ pub(crate) struct AccessChange {
 
 impl DatabaseAccess {
     const FIRST_EPOCH: u32 = 1;
-    /// The signer kind of a frame signed with an identity key. A later
-    /// kind (a session certificate for hardware keys, phase 8) is refused
-    /// by this build.
+    /// The signer kind of a frame signed with an identity key.
     const IDENTITY_SIGNER: u8 = 1;
+    /// The signer kind of a frame signed with a session key (phase 8).
+    const SESSION_SIGNER: u8 = 2;
     /// Kind, fingerprint and signature.
     pub(crate) const TRAILER_BYTES: usize = 1 + 32 + 64;
+    /// Kind, session certificate and the session key's signature.
+    const SESSION_TRAILER_BYTES: usize = 1 + SessionCertificate::BYTES + 64;
     /// Frames whose signature this process remembers having checked.
     const VERIFIED_CAPACITY: usize = 1 << 20;
 
@@ -156,6 +164,8 @@ impl DatabaseAccess {
             trusted_on_first_use,
             fingerprint: identity.identity().public().fingerprint(),
             verified: Mutex::new(HashSet::new()),
+            session_keys: identity.uses_session_keys(),
+            session: Mutex::new(None),
             inherited: Mutex::new(BTreeMap::new()),
             state: RwLock::new(AccessState {
                 generation: slot.generation,
@@ -193,6 +203,7 @@ impl DatabaseAccess {
         DatabaseIdentity::shared(
             Arc::clone(&self.identity),
             AccessTrust::Pinned(self.anchor.clone()),
+            self.session_keys,
         )
     }
 
@@ -283,20 +294,99 @@ impl DatabaseAccess {
 
     /// Sign a protected file's record frame, `stored` holding its stored
     /// bytes: set the signed flag in its header byte, and append the
-    /// trailer (signer kind, the signer's fingerprint, an ECDSA P-256
-    /// signature over the database, the collection, the LSN and the SHA-256
-    /// of the stored bytes).
-    pub(crate) fn sign_frame(&self, collection: u32, lsn: u64, mut stored: Vec<u8>) -> Vec<u8> {
-        if let Some(header) = stored.first_mut() {
-            *header |= crate::container_record::SIGNED;
-        }
+    /// trailer. With an identity key the trailer is the signer kind, the
+    /// signer's fingerprint and an ECDSA P-256 signature over the database,
+    /// the collection, the LSN and the SHA-256 of the stored bytes; with a
+    /// session key (phase 8) it is the signer kind, the session's
+    /// certificate and the session key's signature over the same.
+    ///
+    /// # Errors
+    /// [`LogFormatError::Denied`] when a session is due and the identity's
+    /// key (a Secure Enclave or TPM) refuses to certify one.
+    pub(crate) fn sign_frame(
+        &self,
+        collection: u32,
+        lsn: u64,
+        mut stored: Vec<u8>,
+    ) -> Result<Vec<u8>, LogFormatError> {
+        let session = self.current_session()?;
+        Self::mark_signed(&mut stored, session.is_some());
         let digest: [u8; 32] = Sha256::digest(&stored).into();
         let message = self.binding.frame_message(collection, lsn, &digest);
-        let signature = self.identity.sign(&message);
         self.remember_verified(Sha256::digest(&message).into());
+        Ok(self.with_trailer(stored, &message, session.as_deref()))
+    }
+
+    fn current_session(&self) -> Result<Option<Arc<WriterSession>>, LogFormatError> {
+        if !self.session_keys {
+            return Ok(None);
+        }
+        self.renewed_session().map(Some)
+    }
+
+    /// The session to sign with now: the current one, or a new one when
+    /// there is none or it is about to end.
+    #[cfg(not(target_family = "wasm"))]
+    fn renewed_session(&self) -> Result<Arc<WriterSession>, LogFormatError> {
+        let now = Self::now_ms();
+        let mut session = self.session.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(current) = session.as_ref().filter(|current| current.is_current(now)) {
+            return Ok(Arc::clone(current));
+        }
+        let issued = Arc::new(
+            WriterSession::issue(&self.identity, self.binding, now)
+                .map_err(|_| LogFormatError::Denied)?,
+        );
+        *session = Some(Arc::clone(&issued));
+        Ok(issued)
+    }
+
+    /// The browser issues no sessions: its `webcrypto:` identity signs each
+    /// record, and P-256 stays out of the module (decision P5-5).
+    #[cfg(target_family = "wasm")]
+    fn renewed_session(&self) -> Result<Arc<WriterSession>, LogFormatError> {
+        self.session
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+            .ok_or(LogFormatError::Denied)
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn now_ms() -> u64 {
+        crate::wall_clock()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| {
+                u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+            })
+    }
+
+    fn mark_signed(stored: &mut [u8], session: bool) {
+        let flags = if session {
+            crate::container_record::SIGNED | crate::container_record::SESSION_SIGNED
+        } else {
+            crate::container_record::SIGNED
+        };
+        if let Some(header) = stored.first_mut() {
+            *header |= flags;
+        }
+    }
+
+    fn with_trailer(
+        &self,
+        mut stored: Vec<u8>,
+        message: &[u8],
+        session: Option<&WriterSession>,
+    ) -> Vec<u8> {
+        if let Some(session) = session {
+            stored.push(Self::SESSION_SIGNER);
+            stored.extend_from_slice(session.certificate());
+            stored.extend_from_slice(&session.sign(message));
+            return stored;
+        }
         stored.push(Self::IDENTITY_SIGNER);
         stored.extend_from_slice(&self.fingerprint);
-        stored.extend_from_slice(&signature);
+        stored.extend_from_slice(&self.identity.sign(message));
         stored
     }
 
@@ -326,16 +416,27 @@ impl DatabaseAccess {
     }
 
     fn split_signed(stored: &[u8]) -> Result<(&[u8], &[u8]), LogFormatError> {
+        let header = stored
+            .first()
+            .copied()
+            .ok_or(LogFormatError::BadSignature)?;
+        let trailer = Self::trailer_bytes(header)?;
         stored
             .len()
-            .checked_sub(Self::TRAILER_BYTES)
+            .checked_sub(trailer)
             .map(|at| stored.split_at(at))
-            .filter(|(prefix, _)| {
-                prefix
-                    .first()
-                    .is_some_and(|header| header & crate::container_record::SIGNED != 0)
-            })
             .ok_or(LogFormatError::BadSignature)
+    }
+
+    /// How long the trailer of a frame with header byte `header` is.
+    fn trailer_bytes(header: u8) -> Result<usize, LogFormatError> {
+        let signed = header & crate::container_record::SIGNED != 0;
+        let session = header & crate::container_record::SESSION_SIGNED != 0;
+        match (signed, session) {
+            (true, false) => Ok(Self::TRAILER_BYTES),
+            (true, true) => Ok(Self::SESSION_TRAILER_BYTES),
+            _ => Err(LogFormatError::BadSignature),
+        }
     }
 
     fn check_trailer(
@@ -346,11 +447,28 @@ impl DatabaseAccess {
         trailer: &[u8],
     ) -> Result<(), LogFormatError> {
         let (kind, rest) = trailer.split_first().ok_or(LogFormatError::BadSignature)?;
+        let state = self.read();
+        let signer = match *kind {
+            Self::IDENTITY_SIGNER => Self::identity_signer(&state, message, rest),
+            Self::SESSION_SIGNER => self.session_signer(&state, message, rest),
+            _ => Err(LogFormatError::BadSignature),
+        }?;
+        Some(Self::could_write(&state, collection, lsn, &signer))
+            .filter(|allowed| *allowed)
+            .map(|_| ())
+            .ok_or(LogFormatError::BadSignature)
+    }
+
+    /// The identity whose own key signed `message`: the fingerprint and
+    /// signature of an identity trailer.
+    fn identity_signer(
+        state: &AccessState,
+        message: &[u8],
+        rest: &[u8],
+    ) -> Result<IdentityId, LogFormatError> {
         let (fingerprint, signature) = rest
             .split_first_chunk::<32>()
-            .filter(|_| *kind == Self::IDENTITY_SIGNER)
             .ok_or(LogFormatError::BadSignature)?;
-        let state = self.read();
         let signer = state
             .signers
             .get(fingerprint)
@@ -358,10 +476,54 @@ impl DatabaseAccess {
         signer
             .verify(message, signature)
             .map_err(|_| LogFormatError::BadSignature)?;
-        Some(Self::could_write(&state, collection, lsn, signer.id()))
-            .filter(|allowed| *allowed)
-            .map(|_| ())
-            .ok_or(LogFormatError::BadSignature)
+        Ok(signer.id().clone())
+    }
+
+    /// The identity whose session key signed `message`: the certificate,
+    /// signed by a key some policy version names, and the session key's
+    /// signature. The certificate's `not_after` is the writer's own limit;
+    /// a reader has no trusted clock and a record outlives its session, so
+    /// it is not checked here (ADR 0021 section 8).
+    fn session_signer(
+        &self,
+        state: &AccessState,
+        message: &[u8],
+        rest: &[u8],
+    ) -> Result<IdentityId, LogFormatError> {
+        let (certificate, signature) = rest
+            .split_at_checked(SessionCertificate::BYTES)
+            .ok_or(LogFormatError::BadSignature)?;
+        let parsed = SessionCertificate::parse(certificate).ok_or(LogFormatError::BadSignature)?;
+        let signer = state
+            .signers
+            .get(&parsed.fingerprint)
+            .ok_or(LogFormatError::BadSignature)?;
+        let session = self.certified_session(certificate, &parsed, signer)?;
+        session
+            .verify(message, signature)
+            .map_err(|_| LogFormatError::BadSignature)?;
+        Ok(signer.id().clone())
+    }
+
+    /// The session key `certificate` certifies. Its signature is checked
+    /// once per process, remembered by the certificate's SHA-256 among the
+    /// verified frames.
+    fn certified_session(
+        &self,
+        certificate: &[u8],
+        parsed: &SessionCertificate,
+        signer: &PublicIdentity,
+    ) -> Result<PublicIdentity, LogFormatError> {
+        let seen: [u8; 32] = Sha256::digest(certificate).into();
+        if self.was_verified(&seen) {
+            return PublicIdentity::from_sec1(&parsed.session_key)
+                .map_err(|_| LogFormatError::BadSignature);
+        }
+        let session = parsed
+            .verified_session(self.binding, signer)
+            .ok_or(LogFormatError::BadSignature)?;
+        self.remember_verified(seen);
+        Ok(session)
     }
 
     /// Whether the key `id` could write the collection at `lsn`: under the

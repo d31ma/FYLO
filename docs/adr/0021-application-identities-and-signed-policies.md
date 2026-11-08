@@ -188,11 +188,12 @@ What a protected `.vdbx` file holds, in addition to ADR 0016:
       encrypted with a shared key; an open and list of a 400-document
       collection 542 µs protected against 58 µs plain, the difference being
       the one-time key unwraps and policy-chain check.
-    - **Session certificates wait for hardware keys (phase 8).** With
-      software keys, which version 1 uses (Q8), a session key costs the same
-      per signature as the identity key, and a certificate needs storage the
-      access slots would fill. The signer-kind byte leaves room for them; a
-      build that predates a new kind refuses its frames.
+    - **Session certificates came with hardware keys (phase 8, section
+      8).** With software keys a session key costs the same per signature
+      as the identity key, so software identities keep signer kind 1 by
+      default; a hardware identity signs with session keys (kind 2), whose
+      certificate travels in each frame's trailer, so the access slots
+      hold none. A build that predates kind 2 refuses those frames.
     - **Not covered:** rollback (a whole older copy of the file), and a
       location or index snapshot rewritten by a process that holds the
       collection key while the checkpoint record names the old digests:
@@ -548,9 +549,94 @@ in phase 7.
   hardware's agreement, then the HKDF-SHA256 key schedule and
   AES-256-GCM). It opens exactly the wraps `hpke` seals; its tests open
   `hpke`'s wraps with a software stand-in that agrees as the hardware does.
-- **Writes.** A hardware identity signs every record as a software one
-  does until session certificates (below) take over; each signature then
-  costs milliseconds.
+- **Session certificates.** A hardware signature takes milliseconds, so a
+  hardware identity signs records with a **session key** instead: a fresh
+  in-memory P-256 software key it certifies once, at the first record a
+  writer open signs, with one hardware signature. Records are then signed
+  in software, as fast as with a `file:` key. A software identity may opt
+  in (`DatabaseIdentity::with_session_keys`); by default it signs each
+  record with its own key, as in phase 4.
+    - **Frame format.** A session-signed frame sets header flag `0x80`
+      with `0x40`, and its trailer is 234 bytes: signer kind 2, the 169-byte
+      **session certificate**, and the session key's ECDSA P-256 signature
+      over the same `fylo.frame/1` message as kind 1. The certificate is
+      the identity's fingerprint (32), the session's public key as a SEC1
+      uncompressed point (65), `notAfter` in Unix milliseconds by the
+      writer's clock (8, little-endian), and the identity's signature (64)
+      over `fylo.session/1\0`, the database id, the fingerprint, the session
+      key and `notAfter`. So a certificate cannot move to another database
+      or another identity, and frames carry their own chain: no extent and
+      no access-slot space hold certificates. A frame costs 137 bytes more
+      than with kind 1.
+    - **Readers** check the chain: the fingerprint names a key some policy
+      version lists, that key's signature over the certificate verifies,
+      and the session key's signature over the frame verifies. The
+      certificate's identity must then be able to write the collection at
+      the record's LSN, by exactly the rule of kind 1 (revocation
+      boundaries). A process checks each certificate once (cached by its
+      SHA-256) and each frame once, as before. Anything else is
+      `ESIGNATURE`, with the kind-1 fallback (read up to the last valid
+      record; a writer refuses to write past it).
+    - **Expiry.** A writer signs nothing with a session at or after its
+      `notAfter`: a session lasts 24 hours by the writer's clock, and a
+      writer replaces it 5 minutes before the end with a new certificate
+      (one more hardware signature). Readers do **not** check `notAfter`
+      against their own clock: a record outlives the session that wrote
+      it, and FYLO has no trusted clock (as for the audit's `at`).
+      `notAfter` bounds how long one in-memory key signs, not how long its
+      records count.
+    - **Revocation** is the identity's, never a session's: revoking the
+      identity's rule records the boundary LSNs as in phase 4, and every
+      record past a boundary is refused whichever session signed it.
+      Records the identity wrote before stay valid, sessions included. A
+      session key exists only in the writer's memory; whoever could read
+      it there could equally ask the hardware to sign through that
+      process, so a session adds no exposure beyond the open process, and
+      ends with it.
+    - **A hardware key that refuses** to certify a session (a removed TPM,
+      a locked Secure Enclave policy) denies the write (`EACCES`), as a
+      missing grant does; nothing unsigned is written.
+    - **Measured** (Apple M4 Mac mini, release, `measure_protected_costs`,
+      2026-11-07; phase 4's numbers in brackets): a Secure Enclave
+      signature 4.50 ms at p50; a durable put 200 µs protected with a
+      software key [202 µs], 201 µs with a software key on session keys,
+      and **201 µs with an `enclave:` identity on session keys** (it would
+      pay about 4.6 ms a record signing in the enclave), against 103 µs
+      plain; an open and list of 400 documents 553 µs with a software key
+      [542 µs] and **9.0 ms with an `enclave:` identity**, the two ECDH
+      agreements of unwrapping the catalog and the collection key in the
+      enclave (about 4.5 ms each). The session's one certificate signature
+      is paid at the first write, not at open.
+- **The rollback pin was not built (phase 8).** The study proposed letting
+  an application pin "the last LSN it saw" and refuse an older copy of the
+  file. It does not fit `.vdbx` cleanly yet:
+    - **No file-wide signed position.** LSNs are per collection. A pin is
+      then a map of collection to LSN, and needs rules for collections
+      created or dropped since it was taken: refusing a missing collection
+      would refuse a legitimate drop by another process, and ignoring one
+      would let a copy from before the collection existed through.
+    - **The newest LSN a reader knows is not always signed.** A reader
+      trusts the signed records it replays, but replay starts at the
+      collection's checkpoint and generation slots in its directory
+      block (next LSN, log length, snapshot positions). Those slots are
+      plain, checked only by a CRC: neither sealed nor signed (section 4,
+      "Not covered"). Whoever can write the file, with no key at all,
+      could raise a stale copy's next LSN past a pin. A sound pin needs
+      the position signed: a signature over the slot (the 256-byte
+      checkpoint slot has 24 spare bytes, not the 97 a signature trailer
+      needs), or a reader that finds and checks the signed `Checkpoint`
+      record the slot points at on every open, a read of the log the lazy
+      open avoids today.
+    - **What would fit cleanly** is a **policy-version pin**: the policy
+      chain is signed end to end and its length is known at open, so an
+      application could pin the newest version it saw (with
+      `AccessTrust::Pinned`) and refuse a copy from before a revocation,
+      the rollback that matters most for access (it would bring a revoked
+      writer back). It does not catch a rollback of documents alone. It is
+      left as a proposal for the user, not built.
+    - Until then the threat-model row stands: rollback to an older signed
+      copy is not detected inside the file; OS permissions, backups and
+      the [hardening samples](../hardening/README.md) remain the defence.
 
 ### 9. Phases
 

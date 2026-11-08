@@ -10,6 +10,7 @@ use crate::AccessTrust;
 pub struct DatabaseIdentity {
     identity: Arc<Identity>,
     trust: AccessTrust,
+    session_keys: bool,
 }
 
 impl DatabaseIdentity {
@@ -20,12 +21,37 @@ impl DatabaseIdentity {
         DatabaseIdentity {
             identity: Arc::new(identity),
             trust,
+            session_keys: false,
         }
     }
 
+    /// Sign records with a session key this identity certifies once per
+    /// session (ADR 0021, phase 8), even when its key is a software key.
+    /// A hardware identity (`enclave:`, `tpm:`) always does, since each of
+    /// its own signatures takes milliseconds.
+    #[must_use]
+    pub fn with_session_keys(mut self, session_keys: bool) -> DatabaseIdentity {
+        self.session_keys = session_keys;
+        self
+    }
+
     /// Open protected databases as an identity already held.
-    pub(crate) fn shared(identity: Arc<Identity>, trust: AccessTrust) -> DatabaseIdentity {
-        DatabaseIdentity { identity, trust }
+    pub(crate) fn shared(
+        identity: Arc<Identity>,
+        trust: AccessTrust,
+        session_keys: bool,
+    ) -> DatabaseIdentity {
+        DatabaseIdentity {
+            identity,
+            trust,
+            session_keys,
+        }
+    }
+
+    /// Whether records are signed with session keys.
+    #[must_use]
+    pub fn uses_session_keys(&self) -> bool {
+        self.session_keys || self.identity.is_hardware()
     }
 
     /// The identity.

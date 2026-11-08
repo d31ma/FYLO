@@ -4,6 +4,21 @@
 
 ### Added
 
+- **Session certificates for hardware identities (ADR 0021 section 8,
+  phase 8).** A writer whose identity is a hardware key (`enclave:`, and
+  `tpm:` where available) now signs records with a fresh in-memory session
+  key that the identity certifies once per writer open, so each record is
+  signed in software instead of in the Secure Enclave or TPM. Such a frame
+  sets header flag `0x80` and carries a 234-byte trailer: signer kind 2,
+  the 169-byte certificate (identity fingerprint, session public key,
+  `notAfter`, the identity's signature) and the session key's signature.
+  Readers check the chain and the identity's write grant at the record's
+  LSN, as for identity-signed records; revocation is the identity's. A
+  session lasts at most 24 hours by the writer's clock and is replaced
+  before it ends; readers do not judge `notAfter` by their own clock.
+  `DatabaseIdentity::with_session_keys(true)` opts a software identity in.
+  Builds before this refuse session-signed frames. The optional rollback
+  pin was not built; ADR 0021 section 8 says why.
 - **Sample OS hardening profiles (ADR 0021, phase 8).**
   [`docs/hardening/`](docs/hardening/README.md) has an AppArmor profile,
   an SELinux policy module and an AppContainer (MSIX) manifest with ACL

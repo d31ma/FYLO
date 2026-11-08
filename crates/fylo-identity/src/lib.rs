@@ -44,6 +44,8 @@ mod private_key_pem;
 #[cfg(not(target_family = "wasm"))]
 mod public_identity;
 #[cfg(not(target_family = "wasm"))]
+mod session_key;
+#[cfg(not(target_family = "wasm"))]
 mod software_key;
 #[cfg(not(target_family = "wasm"))]
 mod unsupported_key_store;
@@ -52,6 +54,8 @@ mod unsupported_key_store;
 mod identity_browser;
 #[cfg(target_family = "wasm")]
 mod public_identity_browser;
+#[cfg(target_family = "wasm")]
+mod session_key_browser;
 
 #[cfg(not(target_family = "wasm"))]
 pub use identity::Identity;
@@ -64,3 +68,7 @@ pub use key_reference::KeyReference;
 pub use public_identity::PublicIdentity;
 #[cfg(target_family = "wasm")]
 pub use public_identity_browser::PublicIdentity;
+#[cfg(not(target_family = "wasm"))]
+pub use session_key::SessionKey;
+#[cfg(target_family = "wasm")]
+pub use session_key_browser::SessionKey;
