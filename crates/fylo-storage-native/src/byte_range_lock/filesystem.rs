@@ -1,8 +1,9 @@
 //! Which filesystem holds a `.vdbx` file, so the lease can decide whether
 //! byte-range locks there are trusted (ADR 0016 section 7).
 
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io;
+use std::path::Path;
 
 /// The filesystem a `.vdbx` file is on.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -15,6 +16,8 @@ pub struct FilesystemInfo {
 }
 
 impl FilesystemInfo {
+    const PROBE_PREFIX: &'static str = ".fylo-filesystem-probe";
+
     /// Detect the filesystem of an open file.
     ///
     /// # Errors
@@ -22,6 +25,24 @@ impl FilesystemInfo {
     /// Returns the OS failure to describe the file's volume.
     pub fn of(file: &File) -> io::Result<Self> {
         detect(file)
+    }
+
+    /// Detect the filesystem of `directory`, through a probe file this
+    /// creates in it and removes again.
+    ///
+    /// # Errors
+    ///
+    /// Returns the OS failure to create, describe or remove the probe file.
+    pub fn of_directory(directory: &Path) -> io::Result<Self> {
+        Self::of_probe(&directory.join(crate::write::unique_name(Self::PROBE_PREFIX)))
+    }
+
+    fn of_probe(path: &Path) -> io::Result<Self> {
+        let file = OpenOptions::new().write(true).create_new(true).open(path)?;
+        let detected = detect(&file);
+        drop(file);
+        std::fs::remove_file(path)?;
+        detected
     }
 
     /// Whether byte-range locks on this filesystem have passed the

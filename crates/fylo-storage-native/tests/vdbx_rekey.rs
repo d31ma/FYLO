@@ -335,6 +335,7 @@ fn require_whole(path: &Path, key: Option<&DatabaseKey>) {
 
 #[test]
 fn a_rotation_keeps_every_collection_and_only_the_new_key_opens_it() {
+    require_byte_range_locks();
     let scratch = Scratch::new("rotate");
     let path = scratch.database();
     let (old, new) = (generated_key("old"), generated_key("new"));
@@ -409,6 +410,7 @@ fn a_rotation_keeps_every_collection_and_only_the_new_key_opens_it() {
 
 #[test]
 fn a_wrong_or_missing_old_key_changes_nothing() {
+    require_byte_range_locks();
     let scratch = Scratch::new("wrong-key");
     let path = scratch.database();
     let (old, new) = (generated_key("old"), generated_key("new"));
@@ -433,6 +435,7 @@ fn a_wrong_or_missing_old_key_changes_nothing() {
 
 #[test]
 fn a_plain_database_is_refused_a_rotation_and_encrypts_and_decrypts_on_request() {
+    require_byte_range_locks();
     let scratch = Scratch::new("plain");
     let path = scratch.database();
     let key = generated_key("encrypt");
@@ -523,6 +526,7 @@ fn a_handle_opened_before_a_rekey_reads_the_old_file_and_never_writes() {
 
 #[test]
 fn a_stopped_rekeys_staging_file_is_removed_by_the_next_rekey() {
+    require_byte_range_locks();
     let scratch = Scratch::new("staging");
     let path = scratch.database();
     let (old, new) = (generated_key("old"), generated_key("new"));
@@ -541,6 +545,7 @@ fn a_stopped_rekeys_staging_file_is_removed_by_the_next_rekey() {
 
 #[test]
 fn a_sealed_database_is_resealed_under_the_new_key() {
+    require_byte_range_locks();
     let scratch = Scratch::new("sealed");
     let live = scratch.0.join("live.vdbx");
     let (old, new) = (generated_key("old"), generated_key("new"));
@@ -579,4 +584,15 @@ fn a_sealed_database_is_resealed_under_the_new_key() {
         )
         .unwrap_err();
     assert_eq!(error.code(), NativeStorageErrorCode::Unsupported, "{error}");
+}
+
+fn require_byte_range_locks() {
+    let filesystem = fylo_storage_native::FilesystemInfo::of_directory(&std::env::temp_dir())
+        .expect("probe TMPDIR");
+    assert!(
+        filesystem.byte_range_locks_qualified(),
+        "this test needs byte-range locks, which FYLO does not trust on TMPDIR's {} filesystem; \
+         point TMPDIR at a directory on ext4, tmpfs, APFS or NTFS (CONTRIBUTING.md)",
+        filesystem.name
+    );
 }

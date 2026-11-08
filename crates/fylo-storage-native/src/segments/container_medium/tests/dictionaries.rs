@@ -558,6 +558,7 @@ fn stopped(role: &str, root: &Path, failpoint: &str) {
 
 #[test]
 fn a_crash_after_the_training_checkpoint_recovers_with_the_dictionary() {
+    super::require_byte_range_locks();
     let fixture = Fixture::create("vdbx-dictionary-crash-train");
     let writer = fixture.writer();
     let container = fixture.container();
@@ -637,6 +638,7 @@ fn a_dictionary_a_crash_left_unnamed_is_skipped_and_released_by_compaction() {
 
 #[test]
 fn a_crash_during_a_retraining_compaction_recovers_and_the_next_one_releases() {
+    super::require_byte_range_locks();
     for failpoint in ["after-compaction-copy", "after-compaction-record"] {
         let fixture = Fixture::create("vdbx-dictionary-crash-compact");
         let (writer, orders) = shifted(&fixture);

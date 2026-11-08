@@ -224,6 +224,7 @@ fn owner_of(database: &Path, generation: u64) -> String {
 
 #[test]
 fn a_held_lease_keeps_a_locked_marker_until_it_is_released() {
+    require_byte_range_locks();
     let (_guard, path) = database("vdbx-lease-marker");
     let first = ContainerLease::acquire(&path, FAST, Duration::ZERO).expect("acquire");
     let owner = owner_of(&path, 1);
@@ -242,6 +243,7 @@ fn a_held_lease_keeps_a_locked_marker_until_it_is_released() {
 
 #[test]
 fn a_killed_owner_on_this_host_is_taken_over_at_once_and_a_live_one_is_not() {
+    require_byte_range_locks();
     let (_guard, path) = database("vdbx-lease-killed");
     let child = holder(&path, None);
     let owner = owner_of(&path, 1);
@@ -271,6 +273,7 @@ fn a_killed_owner_on_this_host_is_taken_over_at_once_and_a_live_one_is_not() {
 
 #[test]
 fn a_killed_owner_whose_marker_this_host_cannot_see_is_waited_out() {
+    require_byte_range_locks();
     let (guard, path) = database("vdbx-lease-elsewhere");
     // Another temporary directory stands in for another host: the marker
     // is not where this process looks.
@@ -291,4 +294,15 @@ fn a_killed_owner_whose_marker_this_host_cannot_see_is_waited_out() {
     // The takeover time still applies.
     let lease = ContainerLease::acquire(&path, FAST, Duration::from_secs(5)).expect("take over");
     assert_eq!(lease.generation(), 2);
+}
+
+fn require_byte_range_locks() {
+    let filesystem =
+        crate::FilesystemInfo::of_directory(&std::env::temp_dir()).expect("probe TMPDIR");
+    assert!(
+        filesystem.byte_range_locks_qualified(),
+        "this test needs byte-range locks, which FYLO does not trust on TMPDIR's {} filesystem; \
+         point TMPDIR at a directory on ext4, tmpfs, APFS or NTFS (CONTRIBUTING.md)",
+        filesystem.name
+    );
 }

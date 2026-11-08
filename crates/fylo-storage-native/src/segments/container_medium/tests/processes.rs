@@ -188,6 +188,7 @@ fn a_second_writer_process_is_busy_under_the_lease_while_a_reader_reads() {
 
 #[test]
 fn a_writer_takes_over_at_once_from_a_killed_writer_process_on_this_host() {
+    super::require_byte_range_locks();
     let fixture = Fixture::create("vdbx-medium-killed");
     put_into(&fixture.writer(), "items", 0).unwrap();
     fixture.crash();

@@ -349,6 +349,7 @@ fn a_damaged_schemas_run_is_rebuilt_from_the_records() {
 
 #[test]
 fn recovery_finishes_a_schema_commit_a_crash_stopped_after_its_record() {
+    super::require_byte_range_locks();
     for failpoint in ["after-schema-record", "after-schemas-snapshot"] {
         let database = Database::create("vdbx-schemas-crash");
         database.commit(1).unwrap();

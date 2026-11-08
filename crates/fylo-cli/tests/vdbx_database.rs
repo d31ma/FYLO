@@ -122,6 +122,7 @@ fn verify_prints_the_report_and_fails_on_damage() {
 
 #[test]
 fn commands_and_sql_run_against_a_database_root() {
+    require_byte_range_locks();
     let fixture = Fixture::new("root");
     let created = fixture.run(&["create", "app.vdbx", "--unprotected"]);
     assert!(created.status.success(), "{created:?}");
@@ -292,11 +293,12 @@ fn a_pack_stopped_after_staging_leaves_no_database() {
 
     let pack = fixture.run(&["pack", "data", "--out", "app.vdbx"]);
     assert!(pack.status.success(), "{pack:?}");
-    // Beside the root's own owner lock files, only the database is left.
+    // Beside the root's own owner lock files and a core dump the aborted run
+    // may leave, only the database is left.
     let mut names: Vec<_> = fs::read_dir(&fixture.0)
         .unwrap()
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-        .filter(|name| !name.starts_with(".data.fylo-root-owner"))
+        .filter(|name| !name.starts_with(".data.fylo-root-owner") && !is_core_dump(name))
         .collect();
     names.sort();
     assert_eq!(names, ["app.vdbx", "data"]);
@@ -327,7 +329,7 @@ fn a_sealed_pack_stopped_after_staging_leaves_no_database() {
     let mut names: Vec<_> = fs::read_dir(&fixture.0)
         .unwrap()
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-        .filter(|name| !name.starts_with(".data.fylo-root-owner"))
+        .filter(|name| !name.starts_with(".data.fylo-root-owner") && !is_core_dump(name))
         .collect();
     names.sort();
     assert_eq!(names, ["app.vdbx", "data"]);
@@ -582,6 +584,7 @@ fn compact_shrinks_and_salvage_writes_out_a_database() {
 
 #[test]
 fn rekey_moves_an_encrypted_database_to_the_secret_new_key_names() {
+    require_byte_range_locks();
     let fixture = Fixture::new("rekey");
     let (old, new) = (generated_secret("old"), generated_secret("new"));
     let identifier = seeded_root(&fixture, "data");
@@ -664,4 +667,19 @@ fn rekey_moves_an_encrypted_database_to_the_secret_new_key_names() {
     let got = get(&old);
     assert!(got.status.success(), "{got:?}");
     assert_eq!(json(&got)[&identifier]["team"], "red");
+}
+
+fn require_byte_range_locks() {
+    let filesystem = fylo_storage_native::FilesystemInfo::of_directory(&std::env::temp_dir())
+        .expect("probe TMPDIR");
+    assert!(
+        filesystem.byte_range_locks_qualified(),
+        "this test needs byte-range locks, which FYLO does not trust on TMPDIR's {} filesystem; \
+         point TMPDIR at a directory on ext4, tmpfs, APFS or NTFS (CONTRIBUTING.md)",
+        filesystem.name
+    );
+}
+
+fn is_core_dump(name: &str) -> bool {
+    name == "core" || name.starts_with("core.")
 }

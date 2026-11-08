@@ -269,6 +269,7 @@ fn wait_until(path: &Path, children: &mut [&mut Child]) {
 
 #[test]
 fn a_rekey_stopped_part_way_leaves_the_old_database_whole() {
+    super::require_byte_range_locks();
     // After the staging file is built and flushed, just before the rename;
     // and in the middle of building it.
     for failpoint in ["after-pack-staging", "after-checkpoint-flush"] {
@@ -317,6 +318,7 @@ fn a_rekey_stopped_part_way_leaves_the_old_database_whole() {
 
 #[test]
 fn a_rekey_that_fails_part_way_removes_what_it_wrote() {
+    super::require_byte_range_locks();
     for action in ["enospc", "error"] {
         let database = Rekeyed::create("vdbx-rekey-fails");
         let output = spawn(

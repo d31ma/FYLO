@@ -523,6 +523,7 @@ fn a_revoked_reader_that_kept_its_old_keys_reads_nothing_after_a_collection_reke
 
 #[test]
 fn a_rekey_that_stops_before_the_rename_leaves_the_database_as_it_was() {
+    require_byte_range_locks();
     let fixture = Fixture::new("rekey-stopped");
     let admin = fixture.protected();
     let identifier = write_user(&fixture, &admin);
@@ -671,6 +672,7 @@ fn a_sealed_pack_of_a_protected_database_needs_an_admin() {
 
 #[test]
 fn a_sealed_pack_of_a_protected_database_that_stops_leaves_no_copy() {
+    require_byte_range_locks();
     let fixture = Fixture::new("sealed-protected-stopped");
     let admin = fixture.protected();
     let identifier = write_user(&fixture, &admin);
@@ -908,5 +910,16 @@ fn a_rotation_a_torn_slot_write_left_pending_reads_reports_and_settles() {
     assert_eq!(
         identity["database"]["catalogRotationPendingSince"],
         Value::Null
+    );
+}
+
+fn require_byte_range_locks() {
+    let filesystem = fylo_storage_native::FilesystemInfo::of_directory(&std::env::temp_dir())
+        .expect("probe TMPDIR");
+    assert!(
+        filesystem.byte_range_locks_qualified(),
+        "this test needs byte-range locks, which FYLO does not trust on TMPDIR's {} filesystem; \
+         point TMPDIR at a directory on ext4, tmpfs, APFS or NTFS (CONTRIBUTING.md)",
+        filesystem.name
     );
 }

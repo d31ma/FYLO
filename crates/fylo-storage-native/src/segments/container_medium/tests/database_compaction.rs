@@ -560,6 +560,7 @@ fn a_shrink_holds_the_file_and_another_writer_process_is_busy() {
 
 #[test]
 fn a_crash_at_each_compaction_and_shrink_failpoint_recovers() {
+    super::require_byte_range_locks();
     let prepared = Database::create("vdbx-compact-crash");
     // Compact once, so a shrink has free extents to move into and cut.
     prepared.compact_fully();

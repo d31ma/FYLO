@@ -685,6 +685,7 @@ fn recovered(database: &Encrypted, written: &[usize]) {
 
 #[test]
 fn an_encrypted_database_recovers_after_a_crash() {
+    super::require_byte_range_locks();
     for (role, failpoint) in [
         ("write", "after-log-append"),
         ("write", "after-log-sync"),
@@ -812,6 +813,7 @@ fn an_encrypted_database_compacts_shrinks_and_salvages_only_with_its_key() {
 
 #[test]
 fn an_encrypted_database_recovers_after_a_crash_in_compaction() {
+    super::require_byte_range_locks();
     for failpoint in ["after-compaction-record", "after-shrink-relocate"] {
         let database = churned("vdbx-encrypted-compact-crash");
         database.reopen();

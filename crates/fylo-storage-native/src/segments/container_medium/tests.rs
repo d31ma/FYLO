@@ -640,3 +640,14 @@ fn a_fresh_salvage_names_nothing_written_again_or_unreadable() {
     assert!(report.lost.is_empty(), "{report:?}");
     assert_eq!(report.damaged.len(), 1, "{report:?}");
 }
+
+fn require_byte_range_locks() {
+    let filesystem =
+        crate::FilesystemInfo::of_directory(&std::env::temp_dir()).expect("probe TMPDIR");
+    assert!(
+        filesystem.byte_range_locks_qualified(),
+        "this test needs byte-range locks, which FYLO does not trust on TMPDIR's {} filesystem; \
+         point TMPDIR at a directory on ext4, tmpfs, APFS or NTFS (CONTRIBUTING.md)",
+        filesystem.name
+    );
+}
