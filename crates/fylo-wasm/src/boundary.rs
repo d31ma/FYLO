@@ -132,7 +132,7 @@ pub extern "C" fn fylo_alloc(len: usize) -> *mut u8 {
     // Ownership passes to the host until it calls `fylo_free` with the same
     // length, which reconstructs the slice metadata without guessing a Vec
     // capacity.
-    Box::into_raw(buffer) as *mut u8
+    Box::into_raw(buffer).cast::<u8>()
 }
 
 /// Release a buffer obtained from [`fylo_alloc`] or returned by [`fylo_exec`].
@@ -155,8 +155,13 @@ pub extern "C" fn fylo_free(pointer: *mut u8, len: usize) {
 /// Returns `(pointer << 32) | length` addressing the NDJSON response, which
 /// the host must release with [`fylo_free`]. A zero return means the response
 /// was empty.
+///
+/// # Safety
+///
+/// `request` must be null or address `len` readable bytes, from
+/// [`fylo_alloc`], that the host does not change during the call.
 #[unsafe(no_mangle)]
-pub extern "C" fn fylo_exec(request: *const u8, len: usize) -> u64 {
+pub unsafe extern "C" fn fylo_exec(request: *const u8, len: usize) -> u64 {
     if install().is_err() {
         return pack(
             br#"{"protocolVersion":1,"ok":false,"op":null,"requestId":null,"durationMs":0,"error":{"name":"FyloMachineError","message":"host filesystem table was rejected","code":"ENATIVE_UNSUPPORTED"}}"#
@@ -198,8 +203,13 @@ pub extern "C" fn fylo_exec(request: *const u8, len: usize) -> u64 {
 /// Returns zero when the settings were accepted. Otherwise the settings stay
 /// as they were and the return addresses why, as UTF-8 text packed like
 /// [`fylo_exec`]'s response, which the host must release with [`fylo_free`].
+///
+/// # Safety
+///
+/// `request` must be null or address `len` readable bytes, from
+/// [`fylo_alloc`], that the host does not change during the call.
 #[unsafe(no_mangle)]
-pub extern "C" fn fylo_configure(request: *const u8, len: usize) -> u64 {
+pub unsafe extern "C" fn fylo_configure(request: *const u8, len: usize) -> u64 {
     if install().is_err() {
         return pack(b"host filesystem table was rejected".to_vec());
     }
@@ -242,7 +252,7 @@ fn pack(bytes: Vec<u8>) -> u64 {
         return 0;
     }
     let len = bytes.len();
-    let pointer = Box::into_raw(bytes.into_boxed_slice()) as *mut u8;
+    let pointer = Box::into_raw(bytes.into_boxed_slice()).cast::<u8>();
     // Released by `fylo_free`; see the SAFETY note there.
     ((pointer as u64) << 32) | len as u64
 }

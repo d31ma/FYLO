@@ -4973,9 +4973,9 @@ pub fn unix_millis() -> Result<u64, NativeStorageError> {
     // the host supplies one there. Every other target keeps `std`.
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
     {
-        return fylo_vfs::host_now_unix_ms().map_err(|message| {
+        fylo_vfs::host_now_unix_ms().map_err(|message| {
             NativeStorageError::new(NativeStorageErrorCode::Io, message.to_owned())
-        });
+        })
     }
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
     {

@@ -129,6 +129,13 @@ impl ContainerMedium {
 
     /// A dictionary trained on `samples`, or `None` when zstd cannot train
     /// one from them, which this process then stops asking for.
+    #[cfg_attr(
+        target_family = "wasm",
+        expect(
+            clippy::unused_self,
+            reason = "native builds record an untrainable collection"
+        )
+    )]
     fn trained(&self, samples: &[Vec<u8>]) -> Option<ContainerDictionary> {
         #[cfg(not(target_family = "wasm"))]
         {

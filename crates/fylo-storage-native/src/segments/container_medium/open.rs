@@ -370,6 +370,10 @@ impl ContainerOpen {
     /// Returns `EBUSY` when other writers keep the file, what `run`
     /// returns, or the failure to share the file again, after which this
     /// open reads on and its next write opens the file afresh.
+    #[cfg_attr(
+        target_family = "wasm",
+        expect(clippy::unused_self, reason = "native builds switch the lease byte")
+    )]
     pub(crate) fn exclusively<T>(
         &self,
         run: impl FnOnce() -> Result<T, NativeStorageError>,

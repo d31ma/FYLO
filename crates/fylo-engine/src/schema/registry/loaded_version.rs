@@ -120,6 +120,10 @@ impl LoadedVersion {
     }
 
     #[cfg(target_arch = "wasm32")]
+    #[expect(
+        clippy::unused_self,
+        reason = "the signature mirrors the native build, which reads the compiled schema"
+    )]
     pub(crate) fn non_portable_patterns(&self) -> Vec<String> {
         Vec::new()
     }

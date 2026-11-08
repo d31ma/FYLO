@@ -97,6 +97,10 @@ struct Claim {
 impl Claim {
     /// Whether the claim holds the collection's writer byte, which other
     /// processes wait for.
+    #[cfg_attr(
+        target_family = "wasm",
+        expect(clippy::unused_self, reason = "native builds read the writer byte")
+    )]
     fn holds_writer_byte(&self) -> bool {
         #[cfg(not(target_family = "wasm"))]
         {

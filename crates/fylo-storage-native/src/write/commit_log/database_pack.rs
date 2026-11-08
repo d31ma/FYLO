@@ -704,6 +704,13 @@ impl NativeWriteRoot {
             Err(error) => return Err(NativeStorageError::io(error)),
         };
         if !reserved {
+            #[cfg_attr(
+                target_family = "wasm",
+                expect(
+                    clippy::len_zero,
+                    reason = "the native std::fs::Metadata has no is_empty"
+                )
+            )]
             let debris = fylo_vfs::symlink_metadata(out)
                 .is_ok_and(|metadata| metadata.is_file() && metadata.len() == 0);
             if !debris {

@@ -228,6 +228,10 @@ pub(super) fn allocated_bytes(path: &std::path::Path) -> io::Result<u64> {
     target_vendor = "apple",
     windows
 )))]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "the signature mirrors the platforms that punch holes"
+)]
 pub(super) fn punch_hole(_file: &File, _offset: u64, _length: u64) -> io::Result<bool> {
     Ok(false)
 }

@@ -1379,6 +1379,10 @@ fn metadata_blob(path: &Path) -> Result<Option<Vec<u8>>, NativeStorageError> {
 }
 
 #[cfg(not(any(unix, windows)))]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "the signature mirrors the Unix and Windows implementations"
+)]
 fn metadata_blob(_path: &Path) -> Result<Option<Vec<u8>>, NativeStorageError> {
     Ok(None)
 }
@@ -2037,6 +2041,10 @@ fn copy_extended_metadata(source: &Path, target: &Path) -> Result<(), NativeStor
 }
 
 #[cfg(not(any(unix, windows)))]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "the signature mirrors the Unix and Windows implementations"
+)]
 fn copy_extended_metadata(_source: &Path, _target: &Path) -> Result<(), NativeStorageError> {
     Ok(())
 }
@@ -2215,6 +2223,10 @@ fn apply_metadata_blob(target: &Path, bytes: &[u8]) -> Result<(), NativeStorageE
 }
 
 #[cfg(not(any(unix, windows)))]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "the signature mirrors the Unix and Windows implementations"
+)]
 fn apply_metadata_blob(_target: &Path, _bytes: &[u8]) -> Result<(), NativeStorageError> {
     Ok(())
 }
