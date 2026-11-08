@@ -194,7 +194,9 @@ An AppArmor or SELinux profile, or an AppContainer ACL, can let only one
 executable open the database file, and the kernel enforces it. It is the
 right complement to C on a server, but each host's administrator must
 install it, and it differs on every OS. FYLO would document it and ship
-sample profiles; it is not part of the engine.
+sample profiles; it is not part of the engine. Phase 8 added them:
+[`docs/hardening/`](hardening/README.md) has an AppArmor profile, an
+SELinux module and an AppContainer manifest, as samples.
 
 ## 5. Recommended design
 

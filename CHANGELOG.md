@@ -4,6 +4,13 @@
 
 ### Added
 
+- **Sample OS hardening profiles (ADR 0021, phase 8).**
+  [`docs/hardening/`](docs/hardening/README.md) has an AppArmor profile,
+  an SELinux policy module and an AppContainer (MSIX) manifest with ACL
+  notes, for administrators who want the kernel to let only one
+  application read a protected database's key and file, and nobody trace
+  it. They are samples to adapt and test on the host, not shipped policy,
+  and FYLO's CI does not test them.
 - **`enclave:<label>` identities on macOS (ADR 0021 section 8, phase 8).**
   `fylo identity create --store enclave:<label>` makes a P-256 key inside
   the Secure Enclave, which never leaves it; `fylo identity show` opens it

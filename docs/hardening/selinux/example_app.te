@@ -1,0 +1,65 @@
+# Sample SELinux policy module for an application that uses a protected
+# FYLO database (ADR 0021, docs/hardening/README.md). Not tested by FYLO's
+# CI.
+#
+# It gives the application its own domain, example_app_t, entered from its
+# executable, and two file types only that domain is granted: the database
+# directory (example_app_db_t) and the identity's private key
+# (example_app_key_t). Confined domains get no access to them and may not
+# ptrace the application, since SELinux denies what no rule allows.
+# Unconfined domains (unconfined_t, an administrator's shell) keep their
+# broad access: confine the users and services that must not read the key.
+#
+# CHANGE: every name and the paths in example_app.fc. Build and load:
+#   checkmodule -M -m -o example_app.mod example_app.te
+#   semodule_package -o example_app.pp -m example_app.mod -f example_app.fc
+#   semodule -i example_app.pp
+#   restorecon -Rv /usr/local/bin/example-app /var/lib/example-app /etc/example-app
+# Try it permissive first: semanage permissive -a example_app_t
+
+module example_app 1.0;
+
+require {
+	role system_r;
+	attribute domain;
+	attribute file_type;
+	attribute exec_type;
+	type init_t;
+	type urandom_device_t;
+	class file { create getattr lock map open read rename setattr unlink write execute entrypoint };
+	class dir { add_name getattr open read remove_name search write };
+	class chr_file { getattr open read };
+	class process { transition sigchld };
+}
+
+# The application's domain and executable.
+type example_app_t, domain;
+type example_app_exec_t, file_type, exec_type;
+role system_r types example_app_t;
+# The database directory and its files.
+type example_app_db_t, file_type;
+# The identity's private key (a `file:` key; a `creds:` credential is
+# labelled by systemd instead).
+type example_app_key_t, file_type;
+
+# systemd (init_t) starts the application into its own domain.
+allow init_t example_app_exec_t:file { getattr open read execute };
+allow init_t example_app_t:process transition;
+type_transition init_t example_app_exec_t:process example_app_t;
+allow example_app_t example_app_exec_t:file { entrypoint map read execute };
+allow example_app_t init_t:process sigchld;
+
+# The database: open the .vdbx read-write with byte-range locks, create
+# and rename a staging file during rekey or pack, and sync the directory.
+allow example_app_t example_app_db_t:dir { add_name getattr open read remove_name search write };
+allow example_app_t example_app_db_t:file { create getattr lock map open read rename setattr unlink write };
+
+# The key: read only, by this domain only.
+allow example_app_t example_app_key_t:file { getattr open read };
+
+# Entropy for keys, nonces and session keys.
+allow example_app_t urandom_device_t:chr_file { getattr open read };
+
+# No rule lets any domain ptrace example_app_t (SELinux denies what it
+# does not allow). FYLO opens no network socket; grant none unless the
+# application itself needs one.

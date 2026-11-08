@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Sample package manifest for a packaged (MSIX) Windows application that
+  uses a protected FYLO database (ADR 0021, docs/hardening/README.md).
+  Not tested by FYLO's CI.
+
+  The application runs in an AppContainer: it declares no runFullTrust and
+  no broad file-system capability, so it reaches only its package's own
+  folders and what an ACL grants its package SID. Its identity is a `cng:`
+  or `tpm:` key; a key of the per-user Microsoft Software Key Storage
+  Provider is readable by the user's other processes, a TPM key is not
+  exportable at all. See README.md beside this file for the database
+  folder's ACL.
+
+  CHANGE: Identity, Publisher, the executable and every display name.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
+  IgnorableNamespaces="uap uap10">
+
+  <Identity
+    Name="Example.FyloApp"
+    Publisher="CN=Example Publisher"
+    Version="1.0.0.0"
+    ProcessorArchitecture="arm64" />
+
+  <Properties>
+    <DisplayName>Example FYLO application</DisplayName>
+    <PublisherDisplayName>Example Publisher</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Applications>
+    <!--
+      A Win32 executable (FYLO's Rust engine, a native application) in an
+      AppContainer: uap10:TrustLevel="appContainer" with
+      uap10:RuntimeBehavior="win32App" (Windows 10 version 2004 and
+      later). TrustLevel="mediumIL" or EntryPoint
+      "Windows.FullTrustApplication" would take it out of the container.
+    -->
+    <Application Id="App" Executable="example-app.exe"
+      uap10:RuntimeBehavior="win32App" uap10:TrustLevel="appContainer">
+      <uap:VisualElements
+        DisplayName="Example FYLO application"
+        Description="Uses a protected FYLO database"
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png" />
+    </Application>
+  </Applications>
+
+  <!--
+    No capabilities: FYLO opens no listener and no connection, and the
+    database lives in the package's LocalState folder or in a folder whose
+    ACL grants this package alone. Add only what the application itself
+    needs, never broadFileSystemAccess or runFullTrust.
+  -->
+  <Capabilities />
+</Package>
