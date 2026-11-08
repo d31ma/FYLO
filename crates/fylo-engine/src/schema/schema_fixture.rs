@@ -29,6 +29,16 @@ impl SchemaFixture {
             .fold(self.0.clone(), |path, component| path.join(component))
     }
 
+    pub(super) fn message_label(&self, relative: &str) -> String {
+        const MESSAGE_LABEL_LIMIT: usize = 100;
+        let label = self.path(relative).display().to_string();
+        if label.chars().count() <= MESSAGE_LABEL_LIMIT {
+            return label;
+        }
+        let head: String = label.chars().take(MESSAGE_LABEL_LIMIT).collect();
+        format!("{head}...")
+    }
+
     pub(super) fn tools(&self) -> SchemaTools {
         SchemaTools::new(&self.0)
     }

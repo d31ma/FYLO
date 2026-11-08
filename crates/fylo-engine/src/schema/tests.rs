@@ -255,7 +255,7 @@ fn head_validation_reports_the_chex_message_for_the_head_file() {
             .unwrap_err(),
         format!(
             "RegEx pattern fails for property 'name' in schema '{}'",
-            fixture.path("people/history/v2.schema.json").display()
+            fixture.message_label("people/history/v2.schema.json")
         )
     );
 }
