@@ -378,6 +378,9 @@
 
 ### Changed
 
+- **A `.vdbx` directory holds 509 collections per 2 MiB directory extent
+  (2,045 per 8 MiB), two fewer:** the directory journal below takes the
+  last two blocks.
 - **New `.vdbx` databases use 2 MiB extents instead of 8 MiB (ADR 0016
   section 3).** Every kind of data starts its own extent, so the extent size
   set the floor of a small database: an empty one took 24 MiB and the 5k
@@ -400,6 +403,21 @@
 
 ### Fixed
 
+- **A power cut that tears a directory block no longer makes a `.vdbx` file
+  unopenable (ADR 0021 section 7).** A catalog reseal (`fylo access revoke`,
+  `fylo access settle`), a drop, a descriptor change or a new collection
+  rewrites a 4 KiB directory block in place; a device write torn inside it
+  failed the block's checksum, and the whole file then refused to open with
+  `ENATIVE_METADATA`. Each such write now goes to a two-copy directory
+  journal first; an open finishes a torn block from it (a writable open
+  writes it back), and `fylo verify` warns `directoryBlockTorn`. The cost
+  is one more 3.5 KiB write and flush per block written: about 1 ms on a
+  3-collection `fylo access revoke` or `settle`, nothing measurable on an
+  add or drop.
+- **The Windows build of `fylo-engine`'s tests compiles again.** The
+  `read_only` tests imported `ReadOnlyEngine` and `EngineErrorCode` only on
+  Unix since phase 6, so `cargo clippy --all-targets` and the test build
+  failed on Windows.
 - **A collection's index can no longer grow past what readers accept.** A
   file-layout collection's prefix index (`keys.snapshot` merged with
   `keys.wal`) is read whole and capped at 256 MiB, about 150,000-200,000

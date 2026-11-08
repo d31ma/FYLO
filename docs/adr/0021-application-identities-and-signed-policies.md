@@ -479,6 +479,53 @@ in phase 7.
           sound), also without an identity since `previous` is visible in
           the access document, and the `exec --loop` handshake's
           `identity.database` carries `catalogRotationPendingSince`.
+    - **A torn directory block is finished from the directory journal
+      (gap closed, the user's decision, 2026-11-07).** A directory block's
+      static part has one copy, and the reseal rewrites every one in place.
+      A power cut that tears that write inside its 4 KiB (one 512-byte
+      sector new, the rest old) left a block that failed its checksum
+      under both keys, and the whole file then failed to open
+      (`ENATIVE_METADATA`); a process kill cannot do this, only a torn
+      device write. The same was true of a drop's dropped flag, a
+      descriptor change, and a new collection's first write, in every
+      `.vdbx` file, protected or not. Now:
+        - Two 4 KiB **directory journal** copies (`VDXDJRN\0`, generation,
+          block, the static part exactly as the block holds it, CRC-32C)
+          sit at the end of the directory extent's block area, before the
+          access slots, or at the end of the payload when the file is not
+          protected. They take the last two collection blocks, so a 2 MiB
+          directory holds 509 collections and an 8 MiB one 2,045.
+        - Every write of a static part writes the journal copy that does
+          not hold the newest generation, flushes, and only then writes the
+          block and flushes. A stop leaves the block whole, or torn with the
+          newest journal copy naming it; a torn journal copy leaves the
+          block untouched.
+        - An open that finds a block failing its checksum, its magic or its
+          seal reads the newest journal copy instead when that copy names
+          the block and decodes; a writable open writes it back, and a
+          reader keeps it in memory. A block the journal does not name is
+          still damage, and still refuses the open. A sealed copy is
+          authenticated with its block number, so a journal copy cannot
+          stand in for another block.
+        - `fylo verify` reports such a block as the warning
+          `directoryBlockTorn` (the file is sound), and `directoryBlockDamaged`
+          only when the journal cannot restore it.
+        - A sealed pack clears the journal: its blocks are renumbered and
+          never written again.
+        - The copies are ciphertext whenever the block is, so they reveal
+          nothing the directory does not.
+        - Cost: one more write of 3.5 KiB and one more flush per block
+          written. Measured on an Apple M4 Mac mini (APFS, internal SSD),
+          medians of 15 CLI runs: adding and dropping a collection
+          unchanged within noise (about 3.5 and 4.8 ms per command),
+          `fylo access revoke` on 3 collections 11.1–11.6 ms before and
+          12.1–13.3 ms after, `fylo access settle` of 3 collections
+          8.6–9.1 ms before and 9.6–10.3 ms after.
+        - The format change needs no version: no block was ever written in
+          the two places the journal takes unless the directory held more
+          than 509 collections, and a build without the journal reads a
+          file with one as before (its directory scan stops at the first
+          empty block).
     - A process that had the file open takes the new key in at its next
       refresh of the access slots, as it takes in new collection keys.
     - A grant does not rotate the key; a rekey of the whole database

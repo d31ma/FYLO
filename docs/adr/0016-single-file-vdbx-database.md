@@ -134,10 +134,11 @@ What a smaller extent costs, for the owner to weigh: a record must fit in one
 extent's payload, so the largest stored (compressed, possibly encrypted)
 document a new database accepts falls from about 8 MiB to about 2 MiB, and a
 larger one fails with `ENATIVE_FILE_SIZE` (the machine protocol's default
-request limit, 1 MiB, is lower still); a directory extent holds 511
-collection blocks instead of 2,047, and since chaining to a further directory
+request limit, 1 MiB, is lower still); a directory extent holds 509
+collection blocks instead of 2,045 (since ADR 0021 section 7 the directory
+journal takes the last two), and since chaining to a further directory
 extent is not built yet and a dropped collection keeps its block, a new
-database refuses its 512th collection ever created with `EVDBX_FULL`; and
+database refuses its 510th collection ever created with `EVDBX_FULL`; and
 each rotation rewrites the whole map, which is four times larger and comes
 four times as often per byte written, so the map bytes per rotated byte grow
 sixteenfold, to `file size / 128 GiB`: 0.8% at 1 GiB, 8% at 10 GiB, 78% at
@@ -174,9 +175,14 @@ schemas snapshots and dictionary) and two **generation slots** (ADR 0015 section
 moved in from `state.slots`, naming the active segment extent and its
 committed length). Each slot pair is written A/B with its own CRC, so an
 in-place slot write never touches the static part. One block per collection keeps two collections from
-ever writing the same sector. A 2 MiB directory holds 511 collections, and an
-8 MiB one 2,047 (its first 4 KiB is the extent header); past that it is to
-chain to a further directory extent.
+ever writing the same sector. A 2 MiB directory holds 509 collections, and an
+8 MiB one 2,045 (its first 4 KiB is the extent header, and the two blocks'
+worth before the access slots, or at the end, are the directory journal);
+past that it is to chain to a further directory extent. The static part is
+rewritten in place only by a drop, a descriptor change and a protected
+file's catalog reseal; each such write, and a new block's first write, goes
+to the directory journal first, so a write a power cut tears is finished
+from it (ADR 0021 section 7).
 
 **Extent map.** 32 bytes per extent: state (free, owned, sealed), kind, owner,
 sequence number and live bytes. A 1 TiB file at 8 MiB extents has a 4 MiB

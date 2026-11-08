@@ -1385,3 +1385,89 @@ fn verify_reports_a_bad_session_signature() {
             .any(|problem| problem.code == "badSignature")
     );
 }
+
+/// The problem codes verify finds without a key, sorted.
+fn sorted_codes(file: &crate::ContainerFile) -> Vec<&'static str> {
+    let mut codes = problem_codes(file);
+    codes.sort_unstable();
+    codes
+}
+
+/// After a write torn by a power cut during a catalog reseal: the rotation
+/// is pending, every block reads from the journal, verify warns, and a
+/// settle finishes it all.
+fn check_torn_reseal(database: &Protected) {
+    assert_eq!(
+        sorted_codes(&locked_file(database)),
+        vec!["catalogRotationPending", "directoryBlockTorn"]
+    );
+    assert_eq!(rotation_pending(database), Some(REVOCATION_VERSION));
+    database.reopen();
+    let root = database.root();
+    assert_eq!(root.database_collection_names().unwrap().len(), 3);
+    assert_eq!(read(&root), order());
+    drop(root);
+    database.reopen();
+    assert_eq!(
+        database.writer().settle_access().unwrap(),
+        Some(REVOCATION_VERSION)
+    );
+    assert_eq!(rotation_pending(database), None);
+    assert!(problem_codes(&unlocked_file(database)).is_empty());
+    assert_eq!(read(&database.root()), order());
+}
+
+/// Tear the settle's in-place write of a directory block once `passes` of
+/// them have passed, as a power cut leaves the first sector new and the
+/// rest old.
+fn settle_torn_at(passes: usize) {
+    let database = Protected::create("vdbx-protected-settle-torn");
+    write_three_collections(&database);
+    let reader = database.identity("reader");
+    revoke_reader_unsettled(&database, &reader);
+    let writer = database.writer();
+    crate::container_file::fault::arm_after(
+        crate::container_file::fault::ContainerFault::TornDirectoryBlock,
+        passes,
+    );
+    assert!(writer.settle_access().is_err());
+    assert!(!crate::container_file::fault::pending());
+    drop(writer);
+    check_torn_reseal(&database);
+}
+
+#[test]
+fn a_settle_torn_in_the_first_directory_block_reads_and_settles() {
+    settle_torn_at(0);
+}
+
+#[test]
+fn a_settle_torn_in_a_middle_directory_block_reads_and_settles() {
+    settle_torn_at(1);
+}
+
+#[test]
+fn a_settle_torn_in_the_last_directory_block_reads_and_settles() {
+    settle_torn_at(2);
+}
+
+#[test]
+fn a_revocation_torn_in_its_reseal_reads_and_settles() {
+    let database = Protected::create("vdbx-protected-revoke-torn");
+    write_three_collections(&database);
+    let reader = database.identity("reader");
+    database.grant("reader", &reader, &[AccessAction::Read], &["collection:*"]);
+    database.reopen();
+    let writer = database.writer();
+    crate::container_file::fault::arm(
+        crate::container_file::fault::ContainerFault::TornDirectoryBlock,
+    );
+    assert!(writer.revoke_access("reader-rule").is_err());
+    assert!(!crate::container_file::fault::pending());
+    drop(writer);
+    check_torn_reseal(&database);
+    assert_eq!(
+        database.open_code(database.as_identity(&reader)),
+        NativeStorageErrorCode::PermissionDenied
+    );
+}

@@ -177,6 +177,7 @@ impl ContainerFile {
                 }
                 plan.renumber_block(number, bytes)?;
             }
+            self.clear_journal(&mut extent[payload..])?;
         }
         Ok(())
     }

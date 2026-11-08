@@ -132,6 +132,10 @@ fn a_clean_encrypted_file_verifies_without_its_key() {
 #[test]
 fn a_damaged_sealed_directory_block_is_found_without_the_key() {
     let (_guard, path) = populated("vdbx-verify-sealed-block", Some(SECRET));
+    let mut container = ContainerFile::open_unchecked(&path).expect("open container");
+    container.unlock(SECRET).expect("unlock");
+    container.add_collection("orders", b"").expect("add");
+    drop(container);
     flip(&path, EXTENT_BYTES + PAYLOAD + 100);
     let report = verified(&path);
     assert!(!report.ok);
@@ -140,6 +144,18 @@ fn a_damaged_sealed_directory_block_is_found_without_the_key() {
         vec![(ContainerProblemSeverity::Error, "directoryBlockDamaged")]
     );
     assert_eq!(report.problems[0].extent, Some(1));
+}
+
+#[test]
+fn a_damaged_directory_block_the_journal_holds_is_only_a_warning() {
+    let (_guard, path) = populated("vdbx-verify-journaled-block", Some(SECRET));
+    flip(&path, EXTENT_BYTES + PAYLOAD + 100);
+    let report = verified(&path);
+    assert!(report.ok, "{report:?}");
+    assert_eq!(
+        codes(&report),
+        vec![(ContainerProblemSeverity::Warning, "directoryBlockTorn")]
+    );
 }
 
 #[test]

@@ -632,13 +632,14 @@ fn a_sealed_collection_block_moved_to_another_block_is_refused() {
         writer.add_collection("second", b"{}").unwrap();
         writer.superblock().directory_extent
     };
-    // Copy block 0 over block 1: its checksum still holds, but it was sealed
-    // for block 0.
+    // Copy block 1 over block 0: its checksum still holds, but it was sealed
+    // for block 1. The directory journal's newest copy names block 1, so it
+    // holds nothing for block 0.
     let block_at = |block: u64| directory * EXTENT_BYTES + 4096 + block * 4096;
     let mut bytes = std::fs::read(&path).unwrap();
     let first = usize::try_from(block_at(0)).unwrap();
     let second = usize::try_from(block_at(1)).unwrap();
-    bytes.copy_within(first..first + 4096, second);
+    bytes.copy_within(second..second + 4096, first);
     std::fs::write(&path, bytes).unwrap();
 
     let mut reader = ContainerFile::open_reader(&path).unwrap();

@@ -5,6 +5,7 @@ mod container_checkpoint_slot;
 mod container_codec;
 mod container_collection_header;
 mod container_dictionary;
+mod container_directory_journal;
 mod container_extent_header;
 mod container_extent_kind;
 mod container_extent_map;
@@ -34,6 +35,7 @@ pub use container_checkpoint_slot::{ContainerCheckpointSlot, ContainerSnapshotRe
 pub use container_codec::ContainerCodec;
 pub use container_collection_header::ContainerCollectionHeader;
 pub use container_dictionary::ContainerDictionaryHeader;
+pub use container_directory_journal::ContainerDirectoryJournal;
 pub use container_extent_header::ContainerExtentHeader;
 pub use container_extent_kind::ContainerExtentKind;
 pub use container_extent_map::{ContainerExtentMapPage, ContainerExtentState};

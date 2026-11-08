@@ -73,7 +73,8 @@ pub struct ContainerProblem {
     pub severity: ContainerProblemSeverity,
     /// A stable camelCase code: `superblockDamaged`,
     /// `superblockCopyDamaged`, `fileTooShort`, `extentHeaderMismatch`,
-    /// `unknownOwner`, `unexpectedOwner`, `directoryBlockDamaged`,
+    /// `unknownOwner`, `unexpectedOwner`, `directoryBlockDamaged`, the
+    /// warning `directoryBlockTorn` (a block the directory journal restores),
     /// `tornSlot`, `slotDamaged`, `snapshotOutOfRange`,
     /// `snapshotExtentMismatch`, `snapshotNotInMap`,
     /// `snapshotHashMismatch`, `dictionaryDamaged`, `dictionaryMismatch`,
@@ -348,6 +349,46 @@ impl ContainerFile {
         Ok(Some(ContainerExtentHeader::decode(&bytes)))
     }
 
+    /// A collection block whose static part fails: a warning when the
+    /// directory journal holds a copy that decodes, as a torn write leaves
+    /// it (the next writable open writes it back); damage otherwise.
+    fn report_damaged_block(
+        &self,
+        block: u32,
+        error: &str,
+        findings: &mut Findings,
+    ) -> Result<(), ContainerError> {
+        let directory = Some(self.superblock.directory_extent);
+        if self.journal_restores(block)? {
+            findings.warning(
+                "directoryBlockTorn",
+                directory,
+                format!(
+                    "collection block {block} is torn ({error}); the directory journal restores it at the next writable open"
+                ),
+            );
+            return Ok(());
+        }
+        findings.error(
+            "directoryBlockDamaged",
+            directory,
+            format!("collection block {block} is damaged: {error}"),
+        );
+        Ok(())
+    }
+
+    fn journal_restores(&self, block: u32) -> Result<bool, ContainerError> {
+        let journaled = self.journaled_static_part(block)?;
+        Ok(journaled.is_some_and(|part| self.static_part_decodes(&part)))
+    }
+
+    fn static_part_decodes(&self, static_part: &[u8]) -> bool {
+        if self.seals_units() {
+            return ContainerCollectionHeader::decode_sealed(static_part).is_ok();
+        }
+        ContainerCollectionHeader::decode(static_part).is_ok()
+    }
+
     fn verify_directory(
         &self,
         file_bytes: u64,
@@ -379,11 +420,7 @@ impl ContainerFile {
                         .map(|collection| collection.header.id)
                 }),
                 Err(error) => {
-                    findings.error(
-                        "directoryBlockDamaged",
-                        Some(directory),
-                        format!("collection block {block} is damaged: {error}"),
-                    );
+                    self.report_damaged_block(block, &error.to_string(), findings)?;
                     None
                 }
             };

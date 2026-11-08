@@ -26,6 +26,14 @@ pub(crate) enum ContainerFault {
     DirectoryBlock,
     /// Writing an access slot of a protected file.
     AccessSlot,
+    /// Writing a directory block's static part in place, after the journal:
+    /// only the first sector reaches the file, as a power cut tears it.
+    TornDirectoryBlock,
+}
+
+impl ContainerFault {
+    /// The sector a torn write leaves of a directory block.
+    pub(crate) const TORN_SECTOR_BYTES: usize = 512;
 }
 
 thread_local! {

@@ -23,6 +23,7 @@ use crate::container_allocator::{
 use crate::{ContainerCipher, ContainerCipherError, ContainerSealContext};
 
 mod dictionary;
+mod directory_journal;
 #[cfg(test)]
 pub(crate) mod fault;
 #[cfg(test)]
@@ -1077,12 +1078,7 @@ impl ContainerFile {
             None => header.encode()?,
         };
         bytes.resize(ContainerCollectionHeader::BLOCK_BYTES, 0);
-        self.write_payload(
-            self.superblock.directory_extent,
-            block as u64 * BLOCK_BYTES,
-            &bytes,
-        )?;
-        self.sync()?;
+        self.write_static_part(block_number, &bytes)?;
         self.collections.push(ContainerCollection {
             block: block_number,
             header,
@@ -1175,12 +1171,7 @@ impl ContainerFile {
         };
         #[cfg(test)]
         fault::check(ContainerFault::DirectoryBlock)?;
-        self.write_payload(
-            self.superblock.directory_extent,
-            u64::from(block) * BLOCK_BYTES,
-            &bytes,
-        )?;
-        self.sync()?;
+        self.write_static_part(block, &bytes)?;
         self.collection_mut(block)?.header = header;
         Ok(())
     }
@@ -1605,7 +1596,7 @@ impl ContainerFile {
     }
 
     fn directory_blocks(&self) -> u64 {
-        Self::access_slot_offset(self.extent_bytes(), self.is_protected()) / BLOCK_BYTES
+        self.journal_offset() / BLOCK_BYTES
     }
 
     fn slot_pair_offset(&self, block: u32, within: usize) -> Result<u64, ContainerError> {
@@ -1667,13 +1658,9 @@ impl ContainerFile {
                 break;
             }
             let block = u32::try_from(block).map_err(|_| ContainerFormatError::Oversized)?;
-            let header = match &self.cipher {
-                Some(cipher) => ContainerCollectionHeader::decode_body(&cipher.open(
-                    ContainerSealContext::Directory { block },
-                    ContainerCollectionHeader::decode_sealed(&block_bytes)?,
-                )?)?,
-                None => ContainerCollectionHeader::decode(&block_bytes)?,
-            };
+            let header = self
+                .decode_static_part(block, &block_bytes)
+                .or_else(|error| self.decode_journaled(block, error))?;
             let checkpoint_at = ContainerCollectionHeader::CHECKPOINT_SLOTS_OFFSET;
             let generation_at = ContainerCollectionHeader::GENERATION_SLOTS_OFFSET;
             collections.push(ContainerCollection {
@@ -1688,6 +1675,40 @@ impl ContainerFile {
             });
         }
         Ok(collections)
+    }
+
+    /// The header the static part at the start of `bytes` holds for
+    /// directory block `block`, opened with the file's key when it has one.
+    fn decode_static_part(
+        &self,
+        block: u32,
+        bytes: &[u8],
+    ) -> Result<ContainerCollectionHeader, ContainerError> {
+        match &self.cipher {
+            Some(cipher) => Ok(ContainerCollectionHeader::decode_body(&cipher.open(
+                ContainerSealContext::Directory { block },
+                ContainerCollectionHeader::decode_sealed(bytes)?,
+            )?)?),
+            None => Ok(ContainerCollectionHeader::decode(bytes)?),
+        }
+    }
+
+    /// The header of a block whose static part failed with `error`, from
+    /// the directory journal when its newest copy names the block: a write
+    /// a power cut tore. A writable open writes it back. Otherwise `error`.
+    fn decode_journaled(
+        &self,
+        block: u32,
+        error: ContainerError,
+    ) -> Result<ContainerCollectionHeader, ContainerError> {
+        let Some(static_part) = self.journaled_static_part(block)? else {
+            return Err(error);
+        };
+        let header = self
+            .decode_static_part(block, &static_part)
+            .map_err(|_| error)?;
+        self.restore_static_part(block, &static_part)?;
+        Ok(header)
     }
 }
 
