@@ -45,6 +45,7 @@ import {
     OPEN_EXCLUSIVE,
     OPEN_TRUNCATE,
     OPEN_WRITE,
+    configure,
     createHostImports,
     exec
 } from '../src/browser/host-vfs.mjs'
@@ -193,6 +194,7 @@ function verifySchemaValidation(instance, handshake) {
     author('legacy', { name: '^[a-z]+$' })
 
     const invalid = { name: 'ada', city: 'Zürich' }
+    endModuleSession(instance)
     const native = runNative([
         { op: 'createCollection', collection: 'people', root },
         { op: 'createCollection', collection: 'words', root },
@@ -314,6 +316,11 @@ function verifySchemaValidation(instance, handshake) {
     )
     rmSync(schemaDir, { recursive: true, force: true })
     return frames.length
+}
+
+/** @param {WebAssembly.Instance} instance */
+function endModuleSession(instance) {
+    configure(instance, {})
 }
 
 /** Run `requests` through the native binary, one process, one frame each. */
