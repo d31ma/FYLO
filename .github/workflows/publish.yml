@@ -205,11 +205,36 @@ jobs:
                     | shasum -a 256 --check
                   chmod +x target/release-oracle/fylo-macos-arm64
 
+            - name: Download the released oracle's TTID and CHEX helpers
+              if: matrix.target == 'macos-arm64'
+              env:
+                  GH_TOKEN: ${{ github.token }}
+              run: |
+                  set -euo pipefail
+                  helpers=target/release-oracle/helpers
+                  mkdir -p "$helpers"
+                  gh release download v26.28.02 \
+                    --repo d31ma/TTID \
+                    --pattern ttid-macos-arm64 \
+                    --dir "$helpers"
+                  gh release download v26.28.02 \
+                    --repo d31ma/CHEX \
+                    --pattern chex-macos-arm64 \
+                    --dir "$helpers"
+                  echo "a0c41c6a57a3ceefb30d99835afd677f1807917dcb73dd0abe1499e3802c8126  $helpers/ttid-macos-arm64" \
+                    | shasum -a 256 --check
+                  echo "bb14b34090306a221a360d976e4ed0218c10235cf2767433e136e7c2e5fc77ba  $helpers/chex-macos-arm64" \
+                    | shasum -a 256 --check
+                  mv "$helpers/ttid-macos-arm64" "$helpers/ttid"
+                  mv "$helpers/chex-macos-arm64" "$helpers/chex"
+                  chmod +x "$helpers/ttid" "$helpers/chex"
+
             - name: Verify release candidate matches all released machine semantics
               if: matrix.target == 'macos-arm64'
               run: >-
                   bun ./scripts/verify-rust-release-machine-parity.mjs
                   --released-binary target/release-oracle/fylo-macos-arm64
+                  --released-helpers target/release-oracle/helpers
                   --rust-binary dist-bin/${{ matrix.asset }}
 
             - name: Upload native-tested macOS executable
