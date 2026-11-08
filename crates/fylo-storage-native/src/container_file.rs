@@ -388,11 +388,22 @@ impl ContainerFile {
     ///
     /// Returns the open or read failure, or a decoding error.
     pub fn open_reader(path: &Path) -> Result<Self, ContainerError> {
-        #[cfg(not(target_family = "wasm"))]
-        let handle = crate::ByteRangeLockFile::open_read_only(path)?;
-        #[cfg(target_family = "wasm")]
-        let handle = OpenOptions::new().read(true).open(path)?;
+        let handle = Self::read_only_handle(path)?;
         Self::from_handle(handle, false)
+    }
+
+    /// Open the file at `path` to read. Natively this shares the handle the
+    /// process already has on the file, if any: on macOS, closing any other
+    /// descriptor for the file would drop every lock the process holds on it.
+    fn read_only_handle(path: &Path) -> io::Result<Handle> {
+        #[cfg(not(target_family = "wasm"))]
+        {
+            crate::ByteRangeLockFile::open_read_only(path)
+        }
+        #[cfg(target_family = "wasm")]
+        {
+            OpenOptions::new().read(true).open(path)
+        }
     }
 
     /// Refuse the file `file` with `Sealed` when its superblock says it is a
@@ -528,13 +539,17 @@ impl ContainerFile {
     }
 
     fn file(&self) -> &File {
+        Self::handle_file(&self.handle)
+    }
+
+    fn handle_file(handle: &Handle) -> &File {
         #[cfg(not(target_family = "wasm"))]
         {
-            self.handle.file()
+            handle.file()
         }
         #[cfg(target_family = "wasm")]
         {
-            &self.handle
+            handle
         }
     }
 
@@ -762,13 +777,13 @@ impl ContainerFile {
     ///
     /// Returns a read failure other than the file being absent or short.
     pub fn is_named_by(&self, path: &Path) -> Result<bool, ContainerError> {
-        let file = match OpenOptions::new().read(true).open(path) {
-            Ok(file) => file,
+        let handle = match Self::read_only_handle(path) {
+            Ok(handle) => handle,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
             Err(error) => return Err(error.into()),
         };
         let mut copies = vec![0_u8; 2 * ContainerSuperblock::ENCODED_BYTES];
-        match read_exact_at(&file, &mut copies, 0) {
+        match read_exact_at(Self::handle_file(&handle), &mut copies, 0) {
             Ok(()) => {}
             Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(false),
             Err(error) => return Err(error.into()),
