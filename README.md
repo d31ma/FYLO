@@ -670,7 +670,7 @@ metadata fails, with an `ENATIVE_IO` error that names the call, the attribute
 and the file, such as `setxattr user.fylo.meta.starred on <path>: filesystem
 does not support extended attributes`. To keep metadata and buckets, use a
 local filesystem with extended attributes, the `efs-sidecar-v1` filesystem
-profile, or a `.vdbx` database. Before creating a bucket, the native writer
+profile (Unix only), or a `.vdbx` database. Before creating a bucket, the native writer
 checks the filesystem by setting and removing `user.fylo.probe` on a
 short-lived `.fylo-xattr-probe-*.tmp` file at the top of the root.
 Metadata is per-version on filesystem-backed JSON documents. The machine ops
@@ -1572,6 +1572,11 @@ filesystems without native xattrs. Existing constructors, shims and CLI calls
 default to `native`. Selection does not promote EFS or change the local-filesystem
 support boundary described above. No native compiler/tests or actual EFS/Lambda
 qualification have completed for this candidate.
+
+The profile is Unix-only (macOS and Linux), because its sidecars need POSIX
+file identity. On Windows, opening a root with it fails at the handshake with
+`ENATIVE_UNSUPPORTED: EFS metadata profile requires supported POSIX file
+identity`.
 
 The profile uses a versioned root descriptor and mandatory private
 `<payload>.fylo-attrs` JSON/base64 files, including an empty `{}` manifest.
