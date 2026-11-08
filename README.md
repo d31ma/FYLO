@@ -519,86 +519,79 @@ directly; it must be restored.
 
 ### Raw Files (Buckets)
 
-A **bucket** stores raw files: create it with `kind: 'file'`, then pass a
-`Blob`, `File`, or `URL` to the normal `put()` method. The two collection kinds
-differ only by value type — a document collection takes a `Record`, a bucket
-takes a `Blob`/`File` — and the API is otherwise identical. Buckets are stored
-on disk under `.buckets/<name>/` (documents live under `.collections/<name>/`);
-the two share an identical internal layout. Databases written by older FYLO
-versions, where file collections lived under `.collections/`, are migrated to
-`.buckets/` automatically the first time the engine opens them.
+A **bucket** stores raw files: create a collection with kind `file`, then store
+a file by its local path or a URL. FYLO copies the bytes in; it keeps no link to
+the source. Buckets are stored on disk under `.buckets/<name>/` (documents live
+under `.collections/<name>/`); the two share an identical internal layout.
+Databases written by older FYLO versions, where file collections lived under
+`.collections/`, are migrated to `.buckets/` automatically the first time the
+engine opens them.
 
 Buckets need the native `fylo` binary. The browser loader and the iOS, Android,
 and Flutter clients do not support them in this release and reject
 `kind: 'file'` with an error.
 
+The examples use the Node shim. It has a dedicated `putFile`; every other shim
+stores a file by sending the same `putData` request, with a `file` field,
+through its raw `request` method (see the machine requests below), and reads
+it with `getFileData` the same way.
+
 ```js
+import { Fylo } from './fylo.mjs'
+
+const db = new Fylo('/mnt/fylo')
+
 await db.assets.create('file')
 
-const id = await db.assets.put(new File(['hello'], 'greeting.txt', { type: 'text/plain' }))
+const id = await db.assets.putFile(
+    { path: '/uploads/summary.pdf' },
+    { key: '/reports/2026/summary.pdf' },
+    { rating: 5, starred: true }
+)
 
-const metadata = await db.assets.get(id).once()
-const bytes = await db.assets.get(id).bytes()
-const blob = await db.assets.get(id).blob()
-const stream = await db.assets.get(id).stream()
+const manifest = await db.getDoc('assets', id) // { [id]: manifest }, no bytes
+const { result } = await db.request({ op: 'getFileData', collection: 'assets', id })
+const bytes = Buffer.from(result.data, 'base64')
 ```
 
-File collections also support slash-delimited logical object keys. `/` is the default;
-root and trailing-slash keys append the generated TTID filename, while an exact
-key is preserved as supplied:
+`putFile(collection, file, fileOptions, meta)` takes `{ path }` or `{ url }` as
+the file, and the collection facade drops the collection argument. Every file
+has a slash-delimited logical `key`. Without one, the key is `/` followed by the
+source file name; an exact key is preserved as supplied:
 
 ```js
-const id = await db.assets.put(file, { key: '/reports/2026/summary.pdf' })
+const exact = await db.assets.find({
+    $ops: [{ key: { $eq: '/reports/2026/summary.pdf' } }]
+})
 
-const exact = await db.assets
-    .find({
-        $ops: [{ key: { $eq: '/reports/2026/summary.pdf' } }]
-    })
-    .collect()
-
-const reports = await db.assets
-    .find({
-        $ops: [{ key: { $like: '/reports/%' } }]
-    })
-    .collect()
+const reports = await db.assets.find({
+    $ops: [{ key: { $like: '/reports/%' } }]
+})
 ```
 
-Keys are unique among active files in a collection. They always begin with `/`,
-may be at most 1024 UTF-8 bytes, and cannot contain backslashes, control
-characters, or `.` / `..` path segments. A key is logical metadata, not a local
-filesystem path; the raw bytes still use the TTID filename shown below.
+Keys always begin with `/`, may be at most 1024 UTF-8 bytes, and cannot contain
+backslashes, control characters, or `.` / `..` path segments. A key is logical
+metadata, not a local filesystem path; the raw bytes still use the TTID
+filename shown below. FYLO stores a key exactly as supplied and does not make
+keys unique, so two files can share one; pick unique keys in your application
+when you need them. To change a file's key, store the file again under the new
+key and delete the old record.
 
-Keys can be reassigned in place — no byte rewrite — and folder-style trees
-derived from them can be browsed one level at a time:
-
-```js
-await db.assets.rekey(id, '/reports/2027/summary.pdf') // move one file
-await db.assets.rekey.prefix('/reports/', '/archive/') // move a whole folder
-
-const { files, folders } = await db.assets.folder('/archive/')
-// files   → { [id]: manifest } for direct children
-// folders → ['2026', '2027'] — immediate subfolder names
-```
-
-`folder()` reads only key metadata for deeper descendants (one xattr each), so
-browsing stays cheap in large trees. Checksums are cached in a
-`user.fylo.checksum` xattr stamped with (size, mtime), so listings and reads
-do not re-hash file contents; the hash is recomputed automatically whenever
-the stamp no longer matches the file.
-
-The cache trusts its stamp, so silent corruption that preserves both size and
-mtime is invisible to the fast path. `verify()` is the stamp-ignoring audit
-that closes the gap — it re-hashes the full contents of every file (active
-and soft-deleted), freshens matching stamps, and reports mismatches without
-touching the corrupt file's original claim:
+Checksums are cached in a `user.fylo.checksum` xattr stamped with (size, mtime),
+so listings and reads do not re-hash file contents; the hash is recomputed
+automatically whenever the stamp no longer matches the file. The cache trusts
+its stamp, so silent corruption that preserves both size and mtime is invisible
+to the fast path. `verifyCollection` is the stamp-ignoring audit that closes the
+gap: it re-hashes the full contents of every file (active and soft-deleted),
+freshens matching stamps, and reports mismatches without touching the corrupt
+file's original claim:
 
 ```js
-const report = await db.assets.verify()
+const { result: report } = await db.request({ op: 'verifyCollection', collection: 'assets' })
 // { collection, filesScanned, verified, stamped, corrupt: [{ id, namespace, expected, actual }] }
 ```
 
-Each mismatch also emits a `file.checksum-mismatch` event through `onEvent`.
-The audit reads every byte, so it is slow by design — run it as a scheduled
+The audit reads every byte, so it is slow by design: run it as a scheduled
 background job, not per request. The CLI equivalent exits non-zero when
 corruption is found, so a cron line is all a weekly audit needs:
 
@@ -606,16 +599,6 @@ corruption is found, so a cron line is all a weekly audit needs:
 # Weekly integrity audit, Sunday 03:00 — mail/alert fires on non-zero exit
 0 3 * * 0  fylo verify assets --root /mnt/fylo --json || notify "fylo: corruption detected"
 ```
-
-Machine-protocol callers use `{"op": "verifyCollection", "collection": "assets"}`.
-Metadata has machine ops too: `putData` accepts a top-level `meta` record;
-`{"op":"getMeta","collection":"...","id":"..."}` reads it, and
-`{"op":"setMeta","collection":"...","id":"...","meta":{...}}` bulk-edits
-it. Browser document collections persist metadata in a
-durable internal OPFS sidecar and expose the same metadata API. Local-first
-clients read and write that sidecar entirely on-device. There is no background
-metadata transport or remote conflict clock; moving data between devices is an
-application-level export, filesystem mount, or backup concern.
 
 FYLO stores the bytes unchanged at:
 
@@ -626,79 +609,60 @@ FYLO stores the bytes unchanged at:
 **That path is internal and versioned, not an interface.** `<shard>` is derived
 from the identifier by a rule that has already changed once
 ([ADR 0006](docs/adr/0006-shard-records-by-the-trailing-creation-characters.md))
-and may change again. Read content through `getFileData` (below) or the client
-API; do not compute the path.
+and may change again. Read content through `getFileData` (below); do not
+compute the path.
 
-No source path or URL is retained. Metadata is derived from the stored file,
-with the logical `key` stored as a `user.fylo.key` extended attribute (xattr)
-on the file itself, so it travels with the bytes across moves:
-`name`, `key`, `extension`, `contentType`, `contentLength`, `etag`,
-`checksumSHA256`, `createdAt`, and `lastModified`. `key` is the record's
-logical name, not a location inside the bucket. These fields use the normal
-prefix index and can be queried with `find()`.
+Metadata is derived from the stored file, with the logical `key` stored as a
+`user.fylo.key` extended attribute (xattr) on the file itself, so it travels
+with the bytes across moves: `name`, `key`, `extension`, `contentType`,
+`contentLength`, `etag`, `checksumSHA256`, `createdAt`, and `lastModified`.
+These fields use the normal prefix index and can be queried with `findDocs`.
 
 Every timestamp FYLO returns is a **whole** number of epoch milliseconds.
 `createdAt` is decoded from the TTID; `lastModified` — like `updatedAt`,
 `mtime`, and `deletedAt` on documents — is the filesystem modification time,
-truncated to the millisecond. The JavaScript engine passed Node's fractional
-`fs.stat().mtimeMs` straight through, which meant one payload could mix
-`1785784975586` and `1785784975653.6606` and break a client that typed epoch
-milliseconds as an integer. Sub-millisecond filesystem precision is not
-something FYLO orders records by, so the type is now uniform instead.
+truncated to the millisecond.
 
 Developer-defined metadata rides along the same way, as `user.fylo.meta.*`
-xattrs on the document or raw file. `put` has two metadata-focused forms:
-`put(id, documentOrFile).metadata(record)` writes bytes and metadata together,
-and `put(id).metadata(record)` bulk-edits an existing record (`null` removes an
-entry). `get(id).metadata()` reads the complete canonical record plus custom
-metadata. Every record includes `id`, `mtime`, `updatedAt`, and `createdAt`;
-raw files also include their stored file descriptor:
+xattrs on the document or raw file. Pass it as the `meta` argument of `putFile`
+(the top-level `meta` field of `putData`), bulk-edit it with `setMeta` (`null`
+removes an entry), and read it with `getMeta`, which returns the complete
+canonical record plus custom metadata. Every record includes `id`, `mtime`,
+`updatedAt`, and `createdAt`; raw files also include their stored file
+descriptor:
 
 ```js
-const id = await Fylo.uniqueTTID()
-await db.assets
-    .put(id, file, { key: '/pics/beach.jpg' })
-    .metadata({ camera: 'A7 IV', rating: 5, starred: true })
-await db.assets.put(id).metadata({ rating: 4, starred: null }) // update + remove
-await db.assets.get(id).metadata()
+await db.setMeta('assets', id, { rating: 4, starred: null }) // update + remove
+await db.getMeta('assets', id)
 // { id, name, key, extension, contentType, contentLength, etag, checksumSHA256,
-//   lastModified, mtime, updatedAt, createdAt, camera: 'A7 IV', rating: 4 }
+//   lastModified, mtime, updatedAt, createdAt, rating: 4 }
 ```
 
 Canonical fields take precedence if a custom metadata key uses the same name.
+Every shim exposes `getMeta` and `setMeta`, with language-specific casing and
+collection-scoped forms documented in [`clients/README.md`](clients/README.md).
 
-Those fluent signatures belong to the browser collection facade. Native
-language shims expose the same behavior as `getMeta(collection, id)` and
-`setMeta(collection, id, record)`, with
-language-specific casing and collection-scoped forms documented in
-[`clients/README.md`](clients/README.md). All surfaces use the same `getMeta`,
-`setMeta`, and metadata-bearing `putData` machine operations; the shims do not
-invent a second metadata store or merge policy.
-
-The existing generated-ID form (`put(dataOrFile, options)`) remains available.
 The record must be a plain object. Names are 1-64 characters of letters, digits,
 `.`, `_`, or `-`, starting with a letter or digit. Each value must be
 JSON-serializable and at most 60 KiB after UTF-8 JSON encoding; strings, numbers,
 booleans, arrays, and objects round-trip with their types. A top-level `null`
 value is a deletion marker, not a storable metadata value. FYLO validates the
 whole mutation before writing it and rolls back a filesystem xattr batch if a
-later write fails. Browser sidecars enforce the same names, value types, and
-size ceiling. On file collections, metadata is returned inside each manifest
-(`manifest.meta`) and is indexed, so it can be queried — including numerically:
+later write fails. On file collections, metadata is indexed under `meta/`, so it
+can be queried, including numerically:
 
 ```js
 await db.assets.find({ $ops: [{ ['meta/starred']: { $eq: true } }] })
 await db.assets.find({ $ops: [{ ['meta/rating']: { $gte: 4 } }] })
 ```
 
-Metadata survives soft delete, restore, and version-control
-restores because it is snapshotted with each commit. If a store directory is ever copied by an xattr-dropping
-tool, `rebuild()` repairs each stripped file to its default `/<filename>` key
-(emitting a `file.key-repaired` event; custom keys are not recoverable from
-bytes alone — use a version-control restore for full fidelity). Filesystem-backed
-document and file collections use native xattrs on macOS/Linux and an NTFS
-Alternate Data Stream manifest on Windows. Browser document collections use the
-durable OPFS sidecar instead.
+Metadata survives soft delete, restore, and version-control restores because it
+is snapshotted with each commit. A file's key and metadata live only in its
+xattrs, so copy a store directory only with a tool that preserves extended
+attributes; a raw file whose xattrs were stripped cannot be indexed again from
+its bytes alone, so restore it from version control or a backup instead.
+Filesystem-backed document and file collections use native xattrs on
+macOS/Linux and an NTFS Alternate Data Stream manifest on Windows.
 A filesystem without extended attributes (a Docker Desktop VirtioFS bind mount
 on macOS, a FAT volume) can still hold documents, but not their metadata or a
 bucket's files. There, creating a bucket fails at once, and a write that stores
@@ -713,15 +677,11 @@ Metadata is per-version on filesystem-backed JSON documents. The machine ops
 `getMeta` and `setMeta` cover it from every client shim; native metadata remains
 an engine implementation detail rather than a package-level byte API.
 
-`URL` ingestion snapshots the content at write time. `file:` URLs work
-server-side; browser runtimes accept `Blob`, `File`, and network URLs. The
-default ingestion limit is 50 MiB and can be changed per write:
+A `url` source (`file:`, `http:`, or `https:`) is fetched once, at write time,
+with a 30-second timeout and a 512 MiB limit.
 
-```js
-await db.assets.put(file, { maxBytes: 250 * 1024 * 1024 })
-```
-
-Compiled executable callers use a tagged absolute path:
+The machine request behind `putFile` takes the file as a tagged absolute path
+(or `url`), with an optional `key`:
 
 ```json
 {

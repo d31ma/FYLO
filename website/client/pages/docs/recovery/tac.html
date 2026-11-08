@@ -17,8 +17,9 @@
         <docs-sample topic="rebuild" hydrate="load" />
         <pre class="code-block"><code>{rebuildCliCode}</code></pre>
         <p>
-            A rebuild also repairs bucket files whose key xattr was stripped by a copy tool,
-            restoring each to its default key and emitting <code>file.key-repaired</code>.
+            A rebuild does not repair bucket files whose xattrs were stripped by a copy tool: a
+            file's key and metadata live only in its xattrs, so restore such files from version
+            control or a backup.
         </p>
     </div>
 
