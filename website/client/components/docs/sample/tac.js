@@ -197,9 +197,27 @@ const SHORT = {
 // Languages whose clients expose `db.<collection>` dynamic sugar.
 const DYNAMIC = new Set(['node', 'web', 'python', 'ruby', 'php'])
 
+// Go and Rust take the collection kind as a required argument; every other
+// client defaults it to "document".
+function withRequiredKind(lang, op) {
+    const required = lang === 'go' || lang === 'rust'
+    if (op.op !== 'createCollection' || op.kind !== undefined || !required) return op
+    return { ...op, kind: 'document' }
+}
+
+// The browser client returns cursors for reads: `get(id)` resolves with
+// `.once()`, and `find(query)` streams through `.collect()`.
+function browserCursor(lang, op, invocation) {
+    if (lang !== 'web') return invocation
+    if (op === 'getDoc') return `${invocation}.once()`
+    if (op === 'findDocs') return `Array.fromAsync(${invocation}.collect())`
+    return invocation
+}
+
 // One collection-scoped facade call: `db.users.put(...)` in dynamic languages,
 // `db.collection("users").put(...)` in the rest.
-function call(lang, op) {
+function call(lang, requested) {
+    const op = withRequiredKind(lang, requested)
     let method = SHORT[op.op] || op.op
     if (lang === 'go' || lang === 'csharp')
         method = method.charAt(0).toUpperCase() + method.slice(1)
@@ -212,7 +230,7 @@ function call(lang, op) {
         ? `${lang === 'php' ? '$db->' : 'db.'}${op.collection}`
         : `db.${accessor}(${argLit(lang, op.collection)})`
     const sep = lang === 'php' ? '->' : '.' // PHP method access
-    const invocation = `${receiver}${sep}${method}(${rest})`
+    const invocation = browserCursor(lang, op.op, `${receiver}${sep}${method}(${rest})`)
     switch (lang) {
         case 'node':
         case 'web':
@@ -291,7 +309,11 @@ const SCAFFOLD = {
         close: ['}']
     },
     swift: {
-        open: ['import Fylo', '', 'let db = try await Fylo()'],
+        open: [
+            '// Fylo.swift is compiled into the app target, so there is no module to import.',
+            '',
+            'let db = try await Fylo()'
+        ],
         indent: '',
         close: []
     },
@@ -328,8 +350,7 @@ const SCAFFOLD = {
         open: [
             `<script src="${FYLO_BROWSER_LOADER}"></script>`,
             '<script type="module">',
-            '',
-            'const db = await Fylo.open()'
+            '  const db = await Fylo.open()'
         ],
         indent: '  ',
         close: ['</script>']
@@ -412,8 +433,7 @@ Future<void> main() async {
     config: './config/application.json',
   );
 }`,
-    swift: `import Fylo
-
+    swift: `// Fylo.swift is compiled into the app target, so there is no module to import.
 let db = try await Fylo()
 
 // iOS embeds FYLO in a WebView; configure its on-device
@@ -440,10 +460,13 @@ let db = try await Fylo()
 </script>`
 }
 
-function scaffold(lang, bodyLines) {
+// `imports` are extra lines a recipe needs ahead of the language's own
+// boilerplate, such as Go's "fmt" or the JSON decoder Rust and Java use to read
+// the raw response envelope.
+function scaffold(lang, bodyLines, imports = []) {
     const s = SCAFFOLD[lang]
     const body = bodyLines.map((l) => (l ? s.indent + l : l))
-    return [...s.open, '', ...body, ...s.close].join('\n')
+    return [...imports, ...s.open, '', ...body, ...s.close].join('\n')
 }
 
 // A recipe is an ordered list of steps. A step is either a comment line or one
@@ -546,6 +569,7 @@ const RECIPES = {
         { assign: 'info', op: 'inspectCollection', collection: 'posts' }
     ],
     bucket: [
+        { nativeOnly: true },
         { comment: 'A bucket is a collection whose values are bytes rather than records.' },
         { op: 'createCollection', collection: 'assets', kind: 'file' },
         { blank: true },
@@ -593,7 +617,9 @@ function bind(lang, name) {
 // `<id>` in a recipe means "the identifier the previous step produced", rendered
 // as that language's variable reference rather than a string literal.
 function idRef(lang) {
-    return lang === 'php' ? '$id' : 'id'
+    if (lang === 'php') return '$id'
+    if (lang === 'rust') return '&id'
+    return 'id'
 }
 
 // Statement terminator / await form, matching `call()`'s tail.
@@ -629,8 +655,11 @@ function sqlLit(lang, sql) {
     return `"${escaped}"`
 }
 
-// SQL is not collection-scoped — it is a top-level method on the client.
+// SQL is not collection-scoped — it is a top-level method on the client. The
+// browser client uses its `sql` tagged template, which escapes interpolated
+// values.
 function sqlCall(lang, sql) {
+    if (lang === 'web') return `await db.sql\`${sql}\``
     const receiver = lang === 'php' ? '$db->' : 'db.'
     return finish(lang, `${receiver}${methodName(lang, 'executeSQL')}(${sqlLit(lang, sql)})`)
 }
@@ -641,20 +670,92 @@ function applyBind(lang, name, line) {
     return bind(lang, name) + line
 }
 
+// `put` resolves with the new document id. Most clients return it as a string;
+// the statically typed ones need a cast, and Rust and Java return the raw
+// response envelope, so the id is read from its `result` field.
+function putIdLines(lang, line) {
+    const invocation = line.replace(/;$/, '')
+    switch (lang) {
+        case 'go':
+            return [`idValue, _ := ${line}`, 'id := idValue.(string)']
+        case 'rust':
+            return [
+                `let response = ${line}`,
+                'let reply: serde_json::Value = serde_json::from_str(&response)?;',
+                'let id = reply["result"].as_str().unwrap_or_default().to_owned();'
+            ]
+        case 'java':
+            return [
+                `String response = ${line}`,
+                'String id = new ObjectMapper().readTree(response).get("result").asText();'
+            ]
+        case 'csharp':
+            return [`string id = ${invocation}.GetString();`]
+        case 'swift':
+            return [`let id = ${line} as! String`]
+        case 'kotlin':
+            return [`val id = ${line} as String`]
+        default:
+            return [applyBind(lang, 'id', line)]
+    }
+}
+
+// Each step renders to one or more lines.
 function renderStep(lang, step) {
-    if (step.blank) return ''
+    if (step.blank) return ['']
     if (step.comment) {
         const cmt = LANGS.find((l) => l.key === lang)?.cmt || '//'
-        return `${cmt} ${step.comment}`
+        return [`${cmt} ${step.comment}`]
     }
     if (step.op === 'executeSQL') {
         const line = sqlCall(lang, step.sql)
-        return step.assign ? applyBind(lang, step.assign, line) : line
+        return [step.assign ? applyBind(lang, step.assign, line) : line]
     }
     const resolved = { ...step }
     if (resolved.id === '<id>') resolved.id = { __ref: idRef(lang) }
     const line = call(lang, resolved)
-    return step.assign ? applyBind(lang, step.assign, line) : line
+    if (step.assign === 'id') return putIdLines(lang, line)
+    return [step.assign ? applyBind(lang, step.assign, line) : line]
+}
+
+// Names a recipe binds to results it shows but never reads again. Go rejects
+// unused variables, so its samples print them.
+function shownResults(steps) {
+    return steps.filter((step) => step.assign && step.assign !== 'id').map((s) => s.assign)
+}
+
+function recipeBody(lang, steps) {
+    const lines = steps.filter((step) => !step.nativeOnly).flatMap((s) => renderStep(lang, s))
+    const results = shownResults(steps)
+    if (lang === 'go' && results.length > 0) lines.push('', `fmt.Println(${results.join(', ')})`)
+    return lines
+}
+
+function recipeImports(lang, steps) {
+    const readsId = steps.some((step) => step.assign === 'id')
+    if (lang === 'go' && shownResults(steps).length > 0) return ['import "fmt"']
+    if (lang === 'java' && readsId) {
+        return [
+            '// Reads the raw response envelope with Jackson (com.fasterxml.jackson).',
+            'import com.fasterxml.jackson.databind.ObjectMapper;'
+        ]
+    }
+    if (lang === 'rust' && readsId) {
+        return ['// Reads the raw response envelope with serde_json (add it to Cargo.toml).']
+    }
+    return []
+}
+
+// Raw-file buckets need the native engine: the browser loader and the mobile
+// WebView clients reject `kind: "file"` with an error.
+function nativeOnlyNote(lang) {
+    const cmt = LANGS.find((l) => l.key === lang)?.cmt || '//'
+    return [
+        `${cmt} Raw-file buckets (kind "file") need the native fylo binary.`,
+        `${cmt} The browser loader and the iOS, Android and Flutter clients reject`,
+        `${cmt} them with an error in this release. Use a binary-backed client`,
+        `${cmt} (Python, Ruby, Node.js, PHP, Go, Rust, C#, Java or Dart) instead.`
+    ].join('\n')
 }
 
 export default class {
@@ -697,9 +798,8 @@ export default class {
         const lang = LANGS.find((l) => l.key === this.$lang) ? this.$lang : 'python'
         if (this.topic === 'configuration') return CONFIGURATION_SAMPLES[lang]
         const steps = RECIPES[this.topic] || RECIPES.crud
-        return scaffold(
-            lang,
-            steps.map((step) => renderStep(lang, step))
-        )
+        const nativeOnly = steps.some((step) => step.nativeOnly)
+        if (nativeOnly && (lang === 'web' || isMobile(lang))) return nativeOnlyNote(lang)
+        return scaffold(lang, recipeBody(lang, steps), recipeImports(lang, steps))
     }
 }

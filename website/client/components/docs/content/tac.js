@@ -141,6 +141,10 @@ function methodName(lang, op) {
 // Render one argument in the target language. Rust scalars are &str; its object
 // args use the Json builder.
 function argLit(lang, v) {
+    // A `__ref` value is an existing variable in the snippet, not a literal.
+    if (v && typeof v === 'object' && !Array.isArray(v) && typeof v.__ref === 'string') {
+        return v.__ref
+    }
     switch (lang) {
         case 'python':
             return pyLit(v)
@@ -281,7 +285,11 @@ const SCAFFOLD = {
         close: ['}']
     },
     swift: {
-        open: ['import Fylo', '', 'let db = try await Fylo()'],
+        open: [
+            '// Fylo.swift is compiled into the app target, so there is no module to import.',
+            '',
+            'let db = try await Fylo()'
+        ],
         indent: '',
         close: []
     },
@@ -316,10 +324,72 @@ const SCAFFOLD = {
     }
 }
 
-function scaffold(lang, bodyLines) {
+// `imports` are extra lines a snippet needs ahead of the language's own
+// boilerplate, such as Go's "fmt".
+function scaffold(lang, bodyLines, imports = []) {
     const s = SCAFFOLD[lang]
     const body = bodyLines.map((l) => (l ? s.indent + l : l))
-    return [...s.open, '', ...body, ...s.close].join('\n')
+    return [...imports, ...s.open, '', ...body, ...s.close].join('\n')
+}
+
+// The variable that holds the id `put` produced, as each language passes it.
+function idRef(lang) {
+    if (lang === 'php') return '$id'
+    if (lang === 'rust') return '&id'
+    return 'id'
+}
+
+// `put` resolves with the new document id. Most clients return it as a string;
+// the statically typed ones need a cast, and Rust and Java return the raw
+// response envelope, so the id is read from its `result` field.
+function putIdLines(lang, line) {
+    switch (lang) {
+        case 'python':
+        case 'ruby':
+            return [`id = ${line}`]
+        case 'php':
+            return [`$id = ${line}`]
+        case 'node':
+            return [`const id = ${line}`]
+        case 'dart':
+        case 'flutter':
+            return [`final id = ${line}`]
+        case 'go':
+            return [`idValue, _ := ${line}`, 'id := idValue.(string)']
+        case 'rust':
+            return [
+                `let response = ${line}`,
+                'let reply: serde_json::Value = serde_json::from_str(&response)?;',
+                'let id = reply["result"].as_str().unwrap_or_default().to_owned();'
+            ]
+        case 'java':
+            return [
+                `String response = ${line}`,
+                'String id = new ObjectMapper().readTree(response).get("result").asText();'
+            ]
+        case 'csharp':
+            return [`string id = ${line.replace(/;$/, '')}.GetString();`]
+        case 'swift':
+            return [`let id = ${line} as! String`]
+        case 'kotlin':
+            return [`val id = ${line} as String`]
+        default:
+            return [line]
+    }
+}
+
+// Extra imports the id-reading lines above need.
+function putIdImports(lang) {
+    if (lang === 'java') {
+        return [
+            '// Reads the raw response envelope with Jackson (com.fasterxml.jackson).',
+            'import com.fasterxml.jackson.databind.ObjectMapper;'
+        ]
+    }
+    if (lang === 'rust') {
+        return ['// Reads the raw response envelope with serde_json (add it to Cargo.toml).']
+    }
+    return []
 }
 
 export default class {
@@ -404,37 +474,41 @@ export default class {
     mobileInstall(lang) {
         if (lang === 'swift') {
             return [
-                '// 1. Add clients/swift/Fylo.swift to your iOS app (or a Swift package).',
-                '// 2. Bundle the engine assets as app resources: fylo.mjs (from a FYLO',
-                '//    release) plus host.html and bridge.js from clients/mobile/.',
-                '',
-                'import Fylo',
+                '// 1. Add clients/swift/Fylo.swift to your iOS app target (no import needed).',
+                "// 2. Bundle the engine assets as app resources: the release's fylo-web.mjs",
+                '//    saved as fylo.mjs, plus host.html and bridge.js from clients/mobile/.',
                 '',
                 '// All reads and writes hit an on-device OPFS store — fully offline, no backend.',
                 'let db = try await Fylo()',
+                'try await db.collection("users").create()',
                 'try await db.collection("users").put(["name": "Ada", "role": "admin"])'
             ].join('\n')
         }
         if (lang === 'flutter') {
             return [
                 '// 1. Add flutter_inappwebview to pubspec.yaml + clients/flutter/fylo.dart',
-                '//    to your app; bundle fylo.mjs + host.html + bridge.js under assets/fylo/.',
+                "//    to your app; under assets/fylo/ bundle the release's fylo-web.mjs saved",
+                '//    as fylo.mjs, plus host.html and bridge.js from clients/mobile/.',
                 '// 2. iOS: add NSAllowsLocalNetworking to Info.plist (localhost asset server).',
                 '',
                 "import 'fylo.dart';",
                 '',
                 '// All reads and writes hit an on-device OPFS store — fully offline, no backend.',
                 'final db = await Fylo.open();',
+                "await db.collection('users').create();",
                 "await db.collection('users').put({'name': 'Ada', 'role': 'admin'});"
             ].join('\n')
         }
         return [
-            '// 1. Add clients/kotlin/Fylo.kt to your Android app.',
-            '// 2. Put the engine assets under app/src/main/assets/fylo/: fylo.mjs (from',
-            '//    a FYLO release) plus host.html and bridge.js from clients/mobile/.',
+            '// 1. Add clients/kotlin/Fylo.kt to your Android app, with the',
+            '//    kotlinx-coroutines-android dependency (it provides Dispatchers.Main).',
+            "// 2. Put the engine assets under app/src/main/assets/fylo/: the release's",
+            '//    fylo-web.mjs saved as fylo.mjs, plus host.html and bridge.js from',
+            '//    clients/mobile/.',
             '',
-            '// All reads and writes hit an on-device OPFS store — fully offline, no backend.',
+            '// Inside a coroutine. All reads and writes hit an on-device OPFS store.',
             'val db = Fylo.open(context)',
+            'db.collection("users").create()',
             'db.collection("users").put(mapOf("name" to "Ada", "role" to "admin"))'
         ].join('\n')
     }
@@ -443,28 +517,29 @@ export default class {
         const lang = this.$lang
         if (lang === 'web') return this.webCrud()
         const { cmt } = this.langMeta()
-        return scaffold(lang, [
-            call(lang, { op: 'createCollection', collection: 'users', kind: 'document' }),
-            '',
-            `${cmt} Create — the response's "result" field holds the new document id.`,
-            call(lang, {
-                op: 'putData',
-                collection: 'users',
-                data: { name: 'Ada', role: 'admin' }
-            }),
-            '',
-            `${cmt} Read the latest version, update in place (TTID preserved), then soft-delete.`,
-            call(lang, { op: 'getLatest', collection: 'users', id: '<id>' }),
-            call(lang, {
-                op: 'patchDoc',
-                collection: 'users',
-                id: '<id>',
-                newDoc: { role: 'owner' }
-            }),
-            call(lang, { op: 'delDoc', collection: 'users', id: '<id>' }),
-            `${cmt} ...and bring it back:`,
-            call(lang, { op: 'restoreDoc', collection: 'users', id: '<id>' })
-        ])
+        const id = { __ref: idRef(lang) }
+        const put = call(lang, {
+            op: 'putData',
+            collection: 'users',
+            data: { name: 'Ada', role: 'admin' }
+        })
+        return scaffold(
+            lang,
+            [
+                call(lang, { op: 'createCollection', collection: 'users', kind: 'document' }),
+                '',
+                `${cmt} Create — put returns the new document id.`,
+                ...putIdLines(lang, put),
+                '',
+                `${cmt} Read the latest version, update in place (TTID preserved), then soft-delete.`,
+                call(lang, { op: 'getLatest', collection: 'users', id }),
+                call(lang, { op: 'patchDoc', collection: 'users', id, newDoc: { role: 'owner' } }),
+                call(lang, { op: 'delDoc', collection: 'users', id }),
+                `${cmt} ...and bring it back:`,
+                call(lang, { op: 'restoreDoc', collection: 'users', id })
+            ],
+            putIdImports(lang)
+        )
     }
 
     queryCode() {
@@ -486,7 +561,8 @@ export default class {
         const lang = this.$lang
         const { cmt } = this.langMeta()
         const body = this.sqlBody(lang, cmt)
-        return lang === 'web' ? this.webScaffold(body) : scaffold(lang, body)
+        if (lang === 'web') return this.webScaffold(body)
+        return scaffold(lang, body, lang === 'go' ? ['import "fmt"'] : [])
     }
 
     // Each language's native `sql` interpolation. Node/JS-browser (tagged
@@ -588,6 +664,7 @@ export default class {
             '',
             this.webScaffold([
                 '// All reads and writes hit the browser-local OPFS store — fully offline.',
+                'await db.users.create()',
                 "const id = await db.users.put({ name: 'Ada', role: 'admin' })",
                 'const doc = await db.users.latest(id)',
                 '',
@@ -605,7 +682,8 @@ export default class {
 
     webCrud() {
         return this.webScaffold([
-            '// Create — put returns the new document id.',
+            '// Create the collection, then put — it returns the new document id.',
+            'await db.users.create()',
             "const id = await db.users.put({ name: 'Ada', role: 'admin' })",
             '',
             '// Read latest, update in place (id preserved), soft-delete, then restore.',

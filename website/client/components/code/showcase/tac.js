@@ -126,6 +126,10 @@ function methodName(lang, op) {
 }
 
 function argLit(lang, v) {
+    // A `__ref` value is an existing variable in the snippet, not a literal.
+    if (v && typeof v === 'object' && !Array.isArray(v) && typeof v.__ref === 'string') {
+        return v.__ref
+    }
     switch (lang) {
         case 'python':
             return pyLit(v)
@@ -264,7 +268,11 @@ const SCAFFOLD = {
         close: ['}']
     },
     swift: {
-        open: ['import Fylo', '', 'let db = try await Fylo()'],
+        open: [
+            '// Fylo.swift is compiled into the app target, so there is no module to import.',
+            '',
+            'let db = try await Fylo()'
+        ],
         indent: '',
         close: []
     },
@@ -299,10 +307,72 @@ const SCAFFOLD = {
     }
 }
 
-function scaffold(lang, bodyLines) {
+// `imports` are extra lines a snippet needs ahead of the language's own
+// boilerplate, such as Go's "fmt".
+function scaffold(lang, bodyLines, imports = []) {
     const s = SCAFFOLD[lang]
     const body = bodyLines.map((l) => (l ? s.indent + l : l))
-    return [...s.open, '', ...body, ...s.close].join('\n')
+    return [...imports, ...s.open, '', ...body, ...s.close].join('\n')
+}
+
+// The variable that holds the id `put` produced, as each language passes it.
+function idRef(lang) {
+    if (lang === 'php') return '$id'
+    if (lang === 'rust') return '&id'
+    return 'id'
+}
+
+// `put` resolves with the new document id. Most clients return it as a string;
+// the statically typed ones need a cast, and Rust and Java return the raw
+// response envelope, so the id is read from its `result` field.
+function putIdLines(lang, line) {
+    switch (lang) {
+        case 'python':
+        case 'ruby':
+            return [`id = ${line}`]
+        case 'php':
+            return [`$id = ${line}`]
+        case 'node':
+            return [`const id = ${line}`]
+        case 'dart':
+        case 'flutter':
+            return [`final id = ${line}`]
+        case 'go':
+            return [`idValue, _ := ${line}`, 'id := idValue.(string)']
+        case 'rust':
+            return [
+                `let response = ${line}`,
+                'let reply: serde_json::Value = serde_json::from_str(&response)?;',
+                'let id = reply["result"].as_str().unwrap_or_default().to_owned();'
+            ]
+        case 'java':
+            return [
+                `String response = ${line}`,
+                'String id = new ObjectMapper().readTree(response).get("result").asText();'
+            ]
+        case 'csharp':
+            return [`string id = ${line.replace(/;$/, '')}.GetString();`]
+        case 'swift':
+            return [`let id = ${line} as! String`]
+        case 'kotlin':
+            return [`val id = ${line} as String`]
+        default:
+            return [line]
+    }
+}
+
+// Extra imports the id-reading lines above need.
+function putIdImports(lang) {
+    if (lang === 'java') {
+        return [
+            '// Reads the raw response envelope with Jackson (com.fasterxml.jackson).',
+            'import com.fasterxml.jackson.databind.ObjectMapper;'
+        ]
+    }
+    if (lang === 'rust') {
+        return ['// Reads the raw response envelope with serde_json (add it to Cargo.toml).']
+    }
+    return []
 }
 
 export default class {
@@ -397,15 +467,25 @@ export default class {
         const lang = this.$lang
         if (lang === 'web') {
             return this.webScaffold([
-                `await db['${c}'].put({ name: 'Ada', role: 'admin' })`,
-                `await db['${c}'].latest('<id>')`
+                `await db['${c}'].create()`,
+                `const id = await db['${c}'].put({ name: 'Ada', role: 'admin' })`,
+                `await db['${c}'].latest(id)`
             ])
         }
-        return scaffold(lang, [
-            call(lang, { op: 'createCollection', collection: c, kind: 'document' }),
-            call(lang, { op: 'putData', collection: c, data: { name: 'Ada', role: 'admin' } }),
-            call(lang, { op: 'getLatest', collection: c, id: '<id>' })
-        ])
+        const put = call(lang, {
+            op: 'putData',
+            collection: c,
+            data: { name: 'Ada', role: 'admin' }
+        })
+        return scaffold(
+            lang,
+            [
+                call(lang, { op: 'createCollection', collection: c, kind: 'document' }),
+                ...putIdLines(lang, put),
+                call(lang, { op: 'getLatest', collection: c, id: { __ref: idRef(lang) } })
+            ],
+            putIdImports(lang)
+        )
     }
 
     queryCode() {
@@ -430,7 +510,8 @@ export default class {
         const lang = this.$lang
         const { cmt } = this.langs.find((l) => l.key === lang) ?? { cmt: '//' }
         const body = this.sqlBody(lang, cmt)
-        return lang === 'web' ? this.webScaffold(body) : scaffold(lang, body)
+        if (lang === 'web') return this.webScaffold(body)
+        return scaffold(lang, body, lang === 'go' ? ['import "fmt"'] : [])
     }
 
     // Each language's native `sql` interpolation. Node/JS-browser (tagged template)
