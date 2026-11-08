@@ -14,6 +14,58 @@ afterEach(async () => {
     )
 })
 
+async function loadRealBridge() {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), 'fylo-mobile-bridge-engine-'))
+    workspaces.push(workspace)
+    const clientUrl = pathToFileURL(path.resolve('src/browser/client.js')).href
+    await writeFile(
+        path.join(workspace, 'fylo.mjs'),
+        `import { createBrowserClient as createEngineClient } from ${JSON.stringify(clientUrl)}
+export const requestedOptions = []
+export const clients = []
+export function createBrowserClient(options) {
+    requestedOptions.push(options)
+    const client = createEngineClient({ ...options, storage: 'memory' })
+    clients.push(client)
+    return client
+}
+`
+    )
+    await Bun.write(path.join(workspace, 'bridge.js'), Bun.file('clients/mobile/bridge.js'))
+    const replies = new Map()
+    globalThis.__fyloNative = {
+        onMessage(text) {
+            const reply = JSON.parse(text)
+            replies.set(reply.id, reply)
+        }
+    }
+    const engine = await import(pathToFileURL(path.join(workspace, 'fylo.mjs')).href)
+    await import(pathToFileURL(path.join(workspace, 'bridge.js')).href)
+    let nextId = 1
+    const call = async (method, args = {}) => {
+        const id = nextId++
+        const encoded = Buffer.from(JSON.stringify({ id, method, args })).toString('base64')
+        await globalThis.__fyloDispatch(encoded)
+        return replies.get(id)
+    }
+    return { call, engine, replies }
+}
+
+async function openWithUsers() {
+    const bridge = await loadRealBridge()
+    await bridge.call('open', { config: {} })
+    await bridge.call('createCollection', { collection: 'users' })
+    const ada = await bridge.call('putData', {
+        collection: 'users',
+        data: { name: 'Ada', role: 'admin', age: 36, tags: ['engineering', 'math'] }
+    })
+    const bob = await bridge.call('putData', {
+        collection: 'users',
+        data: { name: 'Bob', role: 'user', age: 17, tags: ['sales'] }
+    })
+    return { ...bridge, ada: ada.result, bob: bob.result }
+}
+
 describe('mobile WebView bridge', () => {
     test('getDoc resolves the browser collection get facade to document data', async () => {
         const workspace = await mkdtemp(path.join(os.tmpdir(), 'fylo-mobile-bridge-'))
@@ -23,11 +75,13 @@ describe('mobile WebView bridge', () => {
             `export function createBrowserClient() {
     return {
         async ready() {},
-        users: {
-            get(id) {
-                return {
-                    async once() { return { [id]: { name: 'Ada', score: 51 } } },
-                    async metadata() { return {} }
+        collection(name) {
+            return {
+                get(id) {
+                    return {
+                        async once() { return { [id]: { name: 'Ada', score: 51, collection: name } } },
+                        async metadata() { return {} }
+                    }
                 }
             }
         }
@@ -57,7 +111,7 @@ describe('mobile WebView bridge', () => {
         expect(messages.find((message) => message.id === 1)).toEqual({
             id: 1,
             ok: true,
-            result: { 'doc-1': { name: 'Ada', score: 51 } }
+            result: { 'doc-1': { name: 'Ada', score: 51, collection: 'users' } }
         })
     })
 
@@ -80,12 +134,14 @@ describe('mobile WebView bridge', () => {
             await globalThis.__fyloDispatch(Buffer.from(JSON.stringify(payload)).toString('base64'))
         }
 
-        expect(messages.find((message) => message.id === 2)?.error.message).toContain(
-            'unknown method'
-        )
-        expect(messages.find((message) => message.id === 3)?.error.message).toContain(
-            'unsupported characters'
-        )
+        expect(messages.find((message) => message.id === 2)?.error).toEqual({
+            message: 'unknown method: fetch',
+            code: 'EUNSUPPORTEDOP'
+        })
+        expect(messages.find((message) => message.id === 3)?.error).toEqual({
+            message: 'collection contains unsupported characters',
+            code: 'EBADREQUEST'
+        })
     })
 
     test('returns correlated errors for oversized and malformed requests', async () => {
@@ -109,9 +165,13 @@ describe('mobile WebView bridge', () => {
         expect(messages.find((message) => message.id === 9)).toEqual({
             id: 9,
             ok: false,
-            error: { message: 'FYLO bridge request exceeds the 8 MiB limit' }
+            error: {
+                message: 'FYLO bridge request exceeds the 8 MiB limit',
+                code: 'EFRAME_REQUEST_TOO_LARGE'
+            }
         })
         expect(messages.find((message) => message.id === 10)?.ok).toBe(false)
+        expect(messages.find((message) => message.id === 10)?.error.code).toBe('EBADREQUEST')
         expect(messages.find((message) => message.id === 10)?.error.message.length).toBeGreaterThan(
             0
         )
@@ -125,9 +185,11 @@ describe('mobile WebView bridge', () => {
             `export function createBrowserClient() {
     return {
         async ready() {},
-        users: {
-            get(id) {
-                return { async once() { return { [id]: { value: '\u00e9'.repeat(3 * 1024 * 1024 + 1) } } } }
+        collection() {
+            return {
+                get(id) {
+                    return { async once() { return { [id]: { value: '\u00e9'.repeat(3 * 1024 * 1024 + 1) } } } }
+                }
             }
         }
     }
@@ -148,7 +210,10 @@ describe('mobile WebView bridge', () => {
         expect(JSON.parse(rawReply)).toEqual({
             id: 11,
             ok: false,
-            error: { message: 'FYLO bridge response exceeds the 6 MiB limit' }
+            error: {
+                message: 'FYLO bridge response exceeds the 6 MiB limit',
+                code: 'EFRAME_RESPONSE_TOO_LARGE'
+            }
         })
     })
 
@@ -403,5 +468,309 @@ struct Runtime {
         ])
         if (runtimeExit !== 0) throw new Error(runtimeError)
         expect(output).toContain('swift initialization cleanup ok')
+    })
+
+    test('native mobile clients dispatch without awaiting, expose executeSQL and error codes, and send kind', async () => {
+        const [kotlin, flutter, swift] = await Promise.all([
+            readFile('clients/kotlin/Fylo.kt', 'utf8'),
+            readFile('clients/flutter/fylo.dart', 'utf8'),
+            readFile('clients/swift/Fylo.swift', 'utf8')
+        ])
+
+        expect(swift).toContain('evaluateJavaScript("void window.__fyloDispatch(')
+        expect(kotlin).toContain('evaluateJavascript("void window.__fyloDispatch(')
+        expect(flutter).toContain("source: 'void window.__fyloDispatch(")
+        expect(swift).toContain('func executeSQL(_ statement: String)')
+        expect(kotlin).toContain('suspend fun executeSQL(statement: String)')
+        expect(flutter).toContain('Future<dynamic> executeSQL(String statement)')
+        expect(swift).toContain('var code: String?')
+        expect(swift).toContain('code: error?["code"] as? String')
+        expect(kotlin).toContain('class FyloException(message: String, val code: String? = null)')
+        expect(flutter).toContain('final String? code;')
+        expect(swift).toContain('["collection": collection, "kind": kind]')
+        expect(kotlin).toContain('mapOf("collection" to collection, "kind" to kind)')
+        expect(flutter).toContain("{'collection': collection, 'kind': kind}")
+    })
+})
+
+describe('mobile WebView bridge against the browser engine', () => {
+    test('signals ready and opens the engine on OPFS without a worker by default', async () => {
+        const { call, engine, replies } = await loadRealBridge()
+
+        const opened = await call('open', { config: {} })
+
+        expect(replies.get(0)).toEqual({ id: 0, ok: true, result: { bridge: 'ready' } })
+        expect(opened).toEqual({ id: 1, ok: true, result: { ready: true } })
+        expect(engine.requestedOptions).toEqual([{ worker: false, storage: 'opfs' }])
+    })
+
+    test('passes an explicit worker setting from the native config', async () => {
+        const { call, engine } = await loadRealBridge()
+
+        await call('open', { config: { worker: true, namespace: 'app' } })
+
+        expect(engine.requestedOptions).toEqual([
+            { namespace: 'app', worker: true, storage: 'opfs' }
+        ])
+    })
+
+    test('opens with defaults when the native side sends no config', async () => {
+        const { call, engine } = await loadRealBridge()
+
+        await call('open')
+
+        expect(engine.requestedOptions).toEqual([{ worker: false, storage: 'opfs' }])
+    })
+
+    test('creates, inspects, rebuilds, and drops a collection', async () => {
+        const { call } = await openWithUsers()
+
+        const inspected = await call('inspectCollection', { collection: 'users' })
+        const rebuilt = await call('rebuildCollection', { collection: 'users' })
+        const dropped = await call('dropCollection', { collection: 'users' })
+        const afterDrop = await call('inspectCollection', { collection: 'users' })
+
+        expect(inspected.result).toMatchObject({ collection: 'users', exists: true, docsStored: 2 })
+        expect(rebuilt.result).toMatchObject({
+            collection: 'users',
+            docsScanned: 2,
+            indexedDocs: 2
+        })
+        expect(dropped).toMatchObject({ ok: true, result: null })
+        expect(afterDrop.result).toMatchObject({ collection: 'users', exists: false })
+    })
+
+    test('accepts the document kind that the Flutter client sends', async () => {
+        const { call } = await loadRealBridge()
+
+        const created = await call('createCollection', { collection: 'notes', kind: 'document' })
+        const inspected = await call('inspectCollection', { collection: 'notes' })
+
+        expect(created).toMatchObject({ ok: true, result: null })
+        expect(inspected.result.exists).toBe(true)
+    })
+
+    test('reads, patches, deletes, and restores a document', async () => {
+        const { call, ada } = await openWithUsers()
+
+        const read = await call('getDoc', { collection: 'users', id: ada })
+        const patched = await call('patchDoc', {
+            collection: 'users',
+            id: ada,
+            newDoc: { role: 'owner' }
+        })
+        const latest = await call('getLatest', { collection: 'users', id: ada })
+        const deleted = await call('delDoc', { collection: 'users', id: ada })
+        const afterDelete = await call('getDoc', { collection: 'users', id: ada })
+        const restored = await call('restoreDoc', { collection: 'users', id: ada })
+        const afterRestore = await call('getLatest', { collection: 'users', id: ada })
+
+        expect(read.result[ada]).toMatchObject({ name: 'Ada', role: 'admin' })
+        expect(patched.result).toBe(ada)
+        expect(latest.result[ada]).toMatchObject({ name: 'Ada', role: 'owner' })
+        expect(deleted).toMatchObject({ ok: true, result: null })
+        expect(afterDelete.result ?? {}).toEqual({})
+        expect(restored.result).toBe(ada)
+        expect(afterRestore.result[ada]).toMatchObject({ name: 'Ada', role: 'owner' })
+    })
+
+    test('rejects a direct write onto a deleted id', async () => {
+        const { call, bob } = await openWithUsers()
+        await call('delDoc', { collection: 'users', id: bob })
+
+        const written = await call('putData', {
+            collection: 'users',
+            data: { [bob]: { name: 'x' } }
+        })
+
+        expect(written.ok).toBe(false)
+        expect(written.error.code).toBeString()
+    })
+
+    test('sets metadata and removes a key set to null', async () => {
+        const { call, ada } = await openWithUsers()
+
+        const fresh = await call('getMeta', { collection: 'users', id: ada })
+        const set = await call('setMeta', {
+            collection: 'users',
+            id: ada,
+            meta: { source: 'import', reviewed: false }
+        })
+        const removed = await call('setMeta', {
+            collection: 'users',
+            id: ada,
+            meta: { source: null }
+        })
+        const after = await call('getMeta', { collection: 'users', id: ada })
+
+        expect(fresh.result).toMatchObject({ id: ada })
+        expect(fresh.result.createdAt).toBeNumber()
+        expect(set.result).toMatchObject({ source: 'import', reviewed: false })
+        expect(Object.hasOwn(removed.result, 'source')).toBe(false)
+        expect(Object.hasOwn(after.result, 'source')).toBe(false)
+        expect(after.result.reviewed).toBe(false)
+    })
+
+    test('findDocs applies $eq, $gte, $contains, and OR operators', async () => {
+        const { call, ada, bob } = await openWithUsers()
+
+        const equal = await call('findDocs', {
+            collection: 'users',
+            query: { $ops: [{ role: { $eq: 'admin' } }] }
+        })
+        const adults = await call('findDocs', {
+            collection: 'users',
+            query: { $ops: [{ age: { $gte: 18 } }] }
+        })
+        const tagged = await call('findDocs', {
+            collection: 'users',
+            query: { $ops: [{ tags: { $contains: 'sales' } }] }
+        })
+        const either = await call('findDocs', {
+            collection: 'users',
+            query: { $ops: [{ role: { $eq: 'admin' } }, { role: { $eq: 'user' } }] }
+        })
+
+        expect(Object.keys(equal.result)).toEqual([ada])
+        expect(Object.keys(adults.result)).toEqual([ada])
+        expect(Object.keys(tagged.result)).toEqual([bob])
+        expect(Object.keys(either.result).sort()).toEqual([ada, bob].sort())
+    })
+
+    test('findDocs with $onlyIds returns the same id list as the browser engine', async () => {
+        const { call, engine, ada } = await openWithUsers()
+        const query = { $ops: [{ role: { $eq: 'admin' } }], $onlyIds: true }
+
+        const reply = await call('findDocs', { collection: 'users', query })
+        const direct = await engine.clients[0].request({
+            op: 'findDocs',
+            collection: 'users',
+            query
+        })
+
+        expect(reply.result).toEqual([ada])
+        expect(reply.result).toEqual(direct.result)
+    })
+
+    test('executeSQL creates, writes, reads, updates, and deletes rows', async () => {
+        const { call } = await loadRealBridge()
+
+        const created = await call('executeSQL', { sql: 'CREATE TABLE posts' })
+        const inserted = await call('executeSQL', {
+            sql: "INSERT INTO posts (title, published) VALUES ('Hello', true)"
+        })
+        const selected = await call('executeSQL', {
+            sql: 'SELECT title FROM posts WHERE published = true'
+        })
+        const updated = await call('executeSQL', {
+            sql: "UPDATE posts SET title = 'Bye' WHERE title = 'Hello'"
+        })
+        const deleted = await call('executeSQL', { sql: "DELETE FROM posts WHERE title = 'Bye'" })
+        const empty = await call('executeSQL', { sql: 'SELECT * FROM posts' })
+
+        expect(created.ok).toBe(true)
+        expect(inserted.ok).toBe(true)
+        expect(Object.values(selected.result)).toEqual([{ title: 'Hello' }])
+        expect(updated.result).toBe(1)
+        expect(deleted.result).toBe(1)
+        expect(Object.keys(empty.result)).toEqual([])
+    })
+
+    test('engine errors keep their stable code', async () => {
+        const { call } = await loadRealBridge()
+
+        const missing = await call('getDoc', { collection: 'ghosts', id: '4WNMX8R4TRG' })
+
+        expect(missing).toEqual({
+            id: 1,
+            ok: false,
+            error: { message: 'Collection not found: ghosts', code: 'FYLO_COLLECTION_NOT_FOUND' }
+        })
+    })
+
+    test.each(['options', 'collections', 'collection', 'browser', 'request', 'create', 'inspect'])(
+        'a collection named %s is a normal collection',
+        async (name) => {
+            const { call } = await loadRealBridge()
+
+            const created = await call('createCollection', { collection: name })
+            const id = await call('putData', { collection: name, data: { value: name } })
+            const read = await call('getDoc', { collection: name, id: id.result })
+
+            expect(created.ok).toBe(true)
+            expect(read.result[id.result]).toEqual({ value: name })
+        }
+    )
+
+    test.each(['then', 'close', 'ready', 'sql'])(
+        'a collection named %s gets the engine reserved-name error',
+        async (name) => {
+            const { call } = await loadRealBridge()
+
+            const created = await call('createCollection', { collection: name })
+
+            expect(created.ok).toBe(false)
+            expect(created.error.message).toBe(
+                `'${name}' is a reserved name and cannot be used as a collection name. Choose a different name.`
+            )
+            expect(created.error.code).toBe('EUNKNOWN')
+        }
+    )
+
+    test.each([
+        ['a file bucket', { kind: 'file' }],
+        ['a schema', { options: { schema: { name: '^.+$' } } }],
+        ['$encrypted fields', { options: { $encrypted: ['ssn'] } }],
+        ['an encryption key', { options: { encryption: { key: 'secret' } } }]
+    ])('createCollection with %s fails closed', async (_label, args) => {
+        const { call } = await loadRealBridge()
+
+        const created = await call('createCollection', { collection: 'vault', ...args })
+        const inspected = await call('inspectCollection', { collection: 'vault' })
+
+        expect(created.ok).toBe(false)
+        expect(created.error.code).toBe('EBROWSER_UNSUPPORTED')
+        expect(inspected.result.exists).toBe(false)
+    })
+
+    test('a failed open can be retried', async () => {
+        const workspace = await mkdtemp(path.join(os.tmpdir(), 'fylo-mobile-bridge-'))
+        workspaces.push(workspace)
+        await writeFile(
+            path.join(workspace, 'fylo.mjs'),
+            `let attempts = 0
+export function createBrowserClient() {
+    attempts += 1
+    const attempt = attempts
+    return {
+        async ready() {
+            if (attempt === 1) throw Object.assign(new Error('storage busy'), { code: 'EBUSY' })
+        }
+    }
+}
+`
+        )
+        await Bun.write(path.join(workspace, 'bridge.js'), Bun.file('clients/mobile/bridge.js'))
+        const messages = []
+        globalThis.__fyloNative = { onMessage: (text) => messages.push(JSON.parse(text)) }
+        await import(`${pathToFileURL(path.join(workspace, 'bridge.js')).href}?test=${Date.now()}`)
+        const open = (id) =>
+            globalThis.__fyloDispatch(
+                Buffer.from(JSON.stringify({ id, method: 'open', args: {} })).toString('base64')
+            )
+
+        await open(1)
+        await open(2)
+
+        expect(messages.find((message) => message.id === 1)).toEqual({
+            id: 1,
+            ok: false,
+            error: { message: 'storage busy', code: 'EBUSY' }
+        })
+        expect(messages.find((message) => message.id === 2)).toEqual({
+            id: 2,
+            ok: true,
+            result: { ready: true }
+        })
     })
 })

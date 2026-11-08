@@ -28,7 +28,8 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
 class FyloException implements Exception {
   final String message;
-  FyloException(this.message);
+  final String? code;
+  FyloException(this.message, [this.code]);
   @override
   String toString() => 'FyloException: $message';
 }
@@ -247,8 +248,12 @@ class Fylo {
       request.complete(reply['result']);
     } else {
       final error = reply['error'];
+      final code = error is Map ? error['code'] : null;
       request.fail(
-        FyloException((error is Map ? error['message'] : null) ?? 'fylo error'),
+        FyloException(
+          (error is Map ? error['message'] : null) ?? 'fylo error',
+          code is String ? code : null,
+        ),
       );
     }
   }
@@ -319,7 +324,7 @@ class Fylo {
     try {
       // base64 body is safe inside the JS string literal.
       await controller.evaluateJavascript(
-          source: 'window.__fyloDispatch("$encoded")');
+          source: 'void window.__fyloDispatch("$encoded")');
     } catch (error, stackTrace) {
       _pending.remove(id)?.fail(error, stackTrace);
     }
@@ -364,8 +369,10 @@ class Fylo {
 
   /// Run raw SQL against the local store. Native interpolation is verbatim —
   /// escape/validate untrusted input yourself.
-  Future<dynamic> sql(String statement) =>
+  Future<dynamic> executeSQL(String statement) =>
       request('executeSQL', {'sql': statement});
+
+  Future<dynamic> sql(String statement) => executeSQL(statement);
 
   /// Collection-scoped facade with short method names, so
   /// `db.collection('users').put(data)` reads like the browser client.

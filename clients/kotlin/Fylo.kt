@@ -86,7 +86,7 @@ class Fylo private constructor(
             val completed = withTimeoutOrNull(rpcTimeoutMillis) {
                 withContext(Dispatchers.Main) {
                     // base64 body is safe inside the JS string literal.
-                    webView.evaluateJavascript("window.__fyloDispatch(\"$base64\")", null)
+                    webView.evaluateJavascript("void window.__fyloDispatch(\"$base64\")", null)
                 }
                 listOf(deferred.await())
             }
@@ -137,8 +137,10 @@ class Fylo private constructor(
             if (reply.optBoolean("ok", false)) {
                 deferred.complete(if (reply.isNull("result")) null else reply.opt("result"))
             } else {
-                val message = reply.optJSONObject("error")?.optString("message") ?: "fylo error"
-                deferred.completeExceptionally(FyloException(message))
+                val error = reply.optJSONObject("error")
+                val message = error?.optString("message") ?: "fylo error"
+                val code = error?.optString("code")?.takeIf { it.isNotEmpty() }
+                deferred.completeExceptionally(FyloException(message, code))
             }
         }
 
@@ -153,9 +155,8 @@ class Fylo private constructor(
     }
 
     // --- Collections ---
-    // `kind` is accepted for cross-client parity; the on-device engine stores documents untyped.
     suspend fun createCollection(collection: String, kind: String = "document"): Any? =
-        request("createCollection", mapOf("collection" to collection))
+        request("createCollection", mapOf("collection" to collection, "kind" to kind))
     suspend fun dropCollection(collection: String): Any? =
         request("dropCollection", mapOf("collection" to collection))
     suspend fun inspectCollection(collection: String): Any? =
@@ -189,8 +190,10 @@ class Fylo private constructor(
      * Run raw SQL against the local store. Native interpolation is verbatim —
      * escape/validate untrusted input yourself.
      */
-    suspend fun sql(statement: String): Any? =
+    suspend fun executeSQL(statement: String): Any? =
         request("executeSQL", mapOf("sql" to statement))
+
+    suspend fun sql(statement: String): Any? = executeSQL(statement)
 
     /**
      * Collection-scoped facade with short method names, so
@@ -250,7 +253,7 @@ class Fylo private constructor(
         else Handler(Looper.getMainLooper()).post(dispose)
     }
 
-    class FyloException(message: String) : RuntimeException(message)
+    class FyloException(message: String, val code: String? = null) : RuntimeException(message)
 
     companion object {
         private const val HOST = "fylo.localhost"
