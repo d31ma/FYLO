@@ -646,7 +646,11 @@
   resumption PSKs (GHSA-c8m5-c952-6cm4), an unauthenticated ServerHello
   poisoning the per-name key-exchange record (GHSA-w44r-93j7-qv28), and Brotli
   certificate decompression allocating up to 1 GiB before authentication
-  (GHSA-h2v8-394m-p7vv). No other dependency changed.
+  (GHSA-h2v8-394m-p7vv).
+- **rustls-webpki 0.103.16 and webpki-root-certs 1.0.10.** Certificate
+  verification no longer accepts paths through the distrusted emSign
+  intermediates (RUSTSEC-2026-0382), and the bundled roots drop `emSign ECC
+  Root CA - G3` (RUSTSEC-2026-0383). No other dependency changed.
 
 ## 26.33.02 - 2026-08-11
 

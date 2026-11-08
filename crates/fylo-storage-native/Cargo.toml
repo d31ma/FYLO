@@ -70,7 +70,7 @@ test-support = []
 ruzstd.workspace = true
 fylo-test-support = { version = "0.1.0", path = "../fylo-test-support" }
 # The integration tests run the segment suite over both media.
-fylo-storage-native = { path = ".", features = ["test-support"] }
+fylo-storage-native = { version = "0.1.0", path = ".", features = ["test-support"] }
 
 # `.vdbx` byte-range locks call `fcntl` and `LockFileEx`, and hole punching
 # calls `fcntl(F_PUNCHHOLE)` and `DeviceIoControl`, which no safe signature in
