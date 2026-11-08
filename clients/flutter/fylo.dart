@@ -10,8 +10,9 @@
 //   await db.collection('users').put({'name': 'Ada', 'role': 'admin'});
 //   final admins = await db.collection('users').find({r'$ops': [{'role': {r'$eq': 'admin'}}]});
 //
-// Bundle the engine assets in your app's pubspec under assets/fylo/: fylo.mjs
-// (from a FYLO release) plus host.html and bridge.js from clients/mobile/. They
+// Bundle the engine assets in your app's pubspec under assets/fylo/: the
+// fylo-web.mjs asset from a FYLO release, saved as fylo.mjs (bridge.js imports
+// ./fylo.mjs), plus host.html and bridge.js from clients/mobile/. They
 // are served over http://localhost by an in-app server — a secure context, so
 // OPFS is available (a file:// origin would not get OPFS). On iOS, add an App
 // Transport Security exception so the WebView can reach the localhost server:
@@ -369,8 +370,8 @@ class Fylo {
 
   /// Run raw SQL against the local store. Native interpolation is verbatim —
   /// escape/validate untrusted input yourself.
-  Future<dynamic> executeSQL(String statement) =>
-      request('executeSQL', {'sql': statement});
+  Future<dynamic> executeSQL(String sql) =>
+      request('executeSQL', {'sql': sql});
 
   Future<dynamic> sql(String statement) => executeSQL(statement);
 

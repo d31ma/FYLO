@@ -11,8 +11,9 @@
 //   let doc = try await db.getLatest("users", id)
 //   let admins = try await db.findDocs("users", ["$ops": [["role": ["$eq": "admin"]]]])
 //
-// Bundle three files as app resources: this engine's `fylo.mjs` (from a FYLO
-// release), plus `host.html` and `bridge.js` from clients/mobile/. They are
+// Bundle three files as app resources: the `fylo-web.mjs` asset from a FYLO
+// release, saved as `fylo.mjs` (bridge.js imports ./fylo.mjs), plus
+// `host.html` and `bridge.js` from clients/mobile/. They are
 // served over a custom `fylo-app://` scheme — a secure origin, which OPFS
 // requires (a file:// origin does not get OPFS).
 //
