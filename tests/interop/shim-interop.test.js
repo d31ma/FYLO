@@ -581,7 +581,7 @@ console.log(JSON.stringify({ ok: true }))
         await mkdir(path.join(schema, 'users', 'history'), { recursive: true })
         await writeFile(
             path.join(schema, 'users', 'manifest.json'),
-            JSON.stringify({ current: 'v1' })
+            JSON.stringify({ current: 'v1', versions: [{ v: 'v1' }] })
         )
         await writeFile(
             path.join(schema, 'users', 'history', 'v1.schema.json'),
