@@ -2436,6 +2436,79 @@ class BrowserQueryEngine {
   }
 }
 
+// src/browser/core/browser-feature-guard.js
+class BrowserFeatureGuard {
+  static CODE = "EBROWSER_UNSUPPORTED";
+  static ENCRYPTION_OPTIONS = ["$encrypted", "encryption", "encrypted", "cipher"];
+  static DOCUMENT_KIND = "document";
+  static requireDocumentCollection(options) {
+    const record = BrowserFeatureGuard.#record(options);
+    BrowserFeatureGuard.#rejectOtherKind(record.kind);
+    BrowserFeatureGuard.#rejectSchema(record);
+    BrowserFeatureGuard.#rejectEncryption(record);
+  }
+  static requirePlainClientOptions(options) {
+    BrowserFeatureGuard.#rejectEncryption(BrowserFeatureGuard.#record(options));
+  }
+  static requireDocumentData(data) {
+    BrowserFeatureGuard.#rejectBinary(data);
+    BrowserFeatureGuard.#rejectBinaryValues(BrowserFeatureGuard.#record(data));
+  }
+  static requireDocumentBatch(batch) {
+    BrowserFeatureGuard.#rejectBinaryItems(BrowserFeatureGuard.#list(batch));
+  }
+  static #list(value) {
+    if (!Array.isArray(value))
+      return [];
+    return value;
+  }
+  static #record(value) {
+    if (value === null || typeof value !== "object")
+      return {};
+    return value;
+  }
+  static #rejectOtherKind(kind) {
+    if (kind === undefined || kind === BrowserFeatureGuard.DOCUMENT_KIND)
+      return;
+    throw BrowserFeatureGuard.#unsupported(`The FYLO browser engine stores document collections only; kind "${String(kind)}" (file buckets) needs the native engine`);
+  }
+  static #rejectSchema(record) {
+    if (!Object.hasOwn(record, "schema"))
+      return;
+    throw BrowserFeatureGuard.#unsupported("The FYLO browser engine does not support collection schemas; use the native engine for schema validation");
+  }
+  static #rejectEncryption(record) {
+    const requested = BrowserFeatureGuard.ENCRYPTION_OPTIONS.filter((name) => Object.hasOwn(record, name));
+    if (requested.length === 0)
+      return;
+    throw BrowserFeatureGuard.#unsupported(`The FYLO browser engine does not support encryption (${requested.join(", ")}); nothing was stored`);
+  }
+  static #rejectBinaryItems(items) {
+    for (const item of items)
+      BrowserFeatureGuard.requireDocumentData(item);
+  }
+  static #rejectBinaryValues(record) {
+    for (const value of Object.values(record))
+      BrowserFeatureGuard.#rejectBinary(value);
+  }
+  static #rejectBinary(value) {
+    if (!BrowserFeatureGuard.#isBinary(value))
+      return;
+    throw BrowserFeatureGuard.#unsupported("The FYLO browser engine does not store Blob, File, or URL values; document collections take plain objects");
+  }
+  static #isBinary(value) {
+    if (typeof Blob !== "undefined" && value instanceof Blob)
+      return true;
+    return typeof URL !== "undefined" && value instanceof URL;
+  }
+  static #unsupported(message) {
+    const error = new Error(message);
+    error.name = "BrowserUnsupportedError";
+    error.code = BrowserFeatureGuard.CODE;
+    return error;
+  }
+}
+
 // src/core/extensions.js
 function appendGroup(target, source) {
   const result = copySafeRecord(target);
@@ -2620,7 +2693,8 @@ class BrowserCore {
     });
     await this.index.ensureCollection(collection);
   }
-  async createCollection(collection) {
+  async createCollection(collection, options = {}) {
+    BrowserFeatureGuard.requireDocumentCollection(options);
     await this.ensureCollection(collection);
   }
   async requireCollection(collection) {
@@ -2690,6 +2764,7 @@ class BrowserCore {
     });
   }
   async putData(collection, data, meta) {
+    BrowserFeatureGuard.requireDocumentData(data);
     if (meta !== undefined)
       MetadataRecord.validate(meta);
     await this.requireCollection(collection);
@@ -2744,6 +2819,7 @@ class BrowserCore {
     });
   }
   async batchPutData(collection, batch) {
+    BrowserFeatureGuard.requireDocumentBatch(batch);
     const ids = [];
     for (const data of batch)
       ids.push(await this.putData(collection, data));
@@ -3159,8 +3235,8 @@ class BrowserCollectionFacade {
     this.core = core;
     this.collection = collection;
   }
-  async create() {
-    await this.core.createCollection(this.collection);
+  async create(options = {}) {
+    await this.core.createCollection(this.collection, options);
   }
   async drop() {
     await this.core.dropCollection(this.collection);
@@ -3267,7 +3343,7 @@ var BROWSER_OPERATIONS = {
   executeSQL: (fylo, request) => fylo.executeSQL(requireString(request, "sql")),
   createCollection: async (fylo, request) => {
     const collection = requireString(request, "collection");
-    await fylo.createCollection(collection);
+    await fylo.createCollection(collection, isRecord(request.options) ? request.options : {});
     return { collection };
   },
   dropCollection: async (fylo, request) => {
@@ -3665,12 +3741,19 @@ class OpfsFilesystem {
   }
   async rmdir(path, options = {}) {
     const parent = await this.directoryHandle(BrowserPath.dirname(path), false);
+    this.#forgetDirectory(path);
     try {
       await parent.removeEntry(this.basename(path), { recursive: options.recursive === true });
     } catch (err) {
       if (!isNotFound(err))
         throw err;
     }
+  }
+  #forgetDirectory(path) {
+    const key = this.key(path);
+    const stale = [...this.dirCache.keys()].filter((cacheKey) => cacheKey === key || cacheKey.startsWith(`${key}/`));
+    for (const cacheKey of stale)
+      this.dirCache.delete(cacheKey);
   }
   async readText(path) {
     return DECODER3.decode(await this.readBytes(path));

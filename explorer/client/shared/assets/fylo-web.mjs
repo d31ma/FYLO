@@ -2436,6 +2436,79 @@ class BrowserQueryEngine {
   }
 }
 
+// src/browser/core/browser-feature-guard.js
+class BrowserFeatureGuard {
+  static CODE = "EBROWSER_UNSUPPORTED";
+  static ENCRYPTION_OPTIONS = ["$encrypted", "encryption", "encrypted", "cipher"];
+  static DOCUMENT_KIND = "document";
+  static requireDocumentCollection(options) {
+    const record = BrowserFeatureGuard.#record(options);
+    BrowserFeatureGuard.#rejectOtherKind(record.kind);
+    BrowserFeatureGuard.#rejectSchema(record);
+    BrowserFeatureGuard.#rejectEncryption(record);
+  }
+  static requirePlainClientOptions(options) {
+    BrowserFeatureGuard.#rejectEncryption(BrowserFeatureGuard.#record(options));
+  }
+  static requireDocumentData(data) {
+    BrowserFeatureGuard.#rejectBinary(data);
+    BrowserFeatureGuard.#rejectBinaryValues(BrowserFeatureGuard.#record(data));
+  }
+  static requireDocumentBatch(batch) {
+    BrowserFeatureGuard.#rejectBinaryItems(BrowserFeatureGuard.#list(batch));
+  }
+  static #list(value) {
+    if (!Array.isArray(value))
+      return [];
+    return value;
+  }
+  static #record(value) {
+    if (value === null || typeof value !== "object")
+      return {};
+    return value;
+  }
+  static #rejectOtherKind(kind) {
+    if (kind === undefined || kind === BrowserFeatureGuard.DOCUMENT_KIND)
+      return;
+    throw BrowserFeatureGuard.#unsupported(`The FYLO browser engine stores document collections only; kind "${String(kind)}" (file buckets) needs the native engine`);
+  }
+  static #rejectSchema(record) {
+    if (!Object.hasOwn(record, "schema"))
+      return;
+    throw BrowserFeatureGuard.#unsupported("The FYLO browser engine does not support collection schemas; use the native engine for schema validation");
+  }
+  static #rejectEncryption(record) {
+    const requested = BrowserFeatureGuard.ENCRYPTION_OPTIONS.filter((name) => Object.hasOwn(record, name));
+    if (requested.length === 0)
+      return;
+    throw BrowserFeatureGuard.#unsupported(`The FYLO browser engine does not support encryption (${requested.join(", ")}); nothing was stored`);
+  }
+  static #rejectBinaryItems(items) {
+    for (const item of items)
+      BrowserFeatureGuard.requireDocumentData(item);
+  }
+  static #rejectBinaryValues(record) {
+    for (const value of Object.values(record))
+      BrowserFeatureGuard.#rejectBinary(value);
+  }
+  static #rejectBinary(value) {
+    if (!BrowserFeatureGuard.#isBinary(value))
+      return;
+    throw BrowserFeatureGuard.#unsupported("The FYLO browser engine does not store Blob, File, or URL values; document collections take plain objects");
+  }
+  static #isBinary(value) {
+    if (typeof Blob !== "undefined" && value instanceof Blob)
+      return true;
+    return typeof URL !== "undefined" && value instanceof URL;
+  }
+  static #unsupported(message) {
+    const error = new Error(message);
+    error.name = "BrowserUnsupportedError";
+    error.code = BrowserFeatureGuard.CODE;
+    return error;
+  }
+}
+
 // src/core/extensions.js
 function appendGroup(target, source) {
   const result = copySafeRecord(target);
@@ -2620,7 +2693,8 @@ class BrowserCore {
     });
     await this.index.ensureCollection(collection);
   }
-  async createCollection(collection) {
+  async createCollection(collection, options = {}) {
+    BrowserFeatureGuard.requireDocumentCollection(options);
     await this.ensureCollection(collection);
   }
   async requireCollection(collection) {
@@ -2690,6 +2764,7 @@ class BrowserCore {
     });
   }
   async putData(collection, data, meta) {
+    BrowserFeatureGuard.requireDocumentData(data);
     if (meta !== undefined)
       MetadataRecord.validate(meta);
     await this.requireCollection(collection);
@@ -2744,6 +2819,7 @@ class BrowserCore {
     });
   }
   async batchPutData(collection, batch) {
+    BrowserFeatureGuard.requireDocumentBatch(batch);
     const ids = [];
     for (const data of batch)
       ids.push(await this.putData(collection, data));
@@ -3159,8 +3235,8 @@ class BrowserCollectionFacade {
     this.core = core;
     this.collection = collection;
   }
-  async create() {
-    await this.core.createCollection(this.collection);
+  async create(options = {}) {
+    await this.core.createCollection(this.collection, options);
   }
   async drop() {
     await this.core.dropCollection(this.collection);
@@ -3267,7 +3343,7 @@ var BROWSER_OPERATIONS = {
   executeSQL: (fylo, request) => fylo.executeSQL(requireString(request, "sql")),
   createCollection: async (fylo, request) => {
     const collection = requireString(request, "collection");
-    await fylo.createCollection(collection);
+    await fylo.createCollection(collection, isRecord(request.options) ? request.options : {});
     return { collection };
   },
   dropCollection: async (fylo, request) => {
@@ -3665,12 +3741,19 @@ class OpfsFilesystem {
   }
   async rmdir(path, options = {}) {
     const parent = await this.directoryHandle(BrowserPath.dirname(path), false);
+    this.#forgetDirectory(path);
     try {
       await parent.removeEntry(this.basename(path), { recursive: options.recursive === true });
     } catch (err) {
       if (!isNotFound(err))
         throw err;
     }
+  }
+  #forgetDirectory(path) {
+    const key = this.key(path);
+    const stale = [...this.dirCache.keys()].filter((cacheKey) => cacheKey === key || cacheKey.startsWith(`${key}/`));
+    for (const cacheKey of stale)
+      this.dirCache.delete(cacheKey);
   }
   async readText(path) {
     return DECODER3.decode(await this.readBytes(path));
@@ -3920,6 +4003,31 @@ function createBrowserFilesystem(storage, namespace) {
   return storage.access === "readwrite" ? direct : createOverlayFilesystem(direct);
 }
 
+// src/browser/core/browser-protocol-error.js
+class BrowserProtocolError {
+  static from(error) {
+    if (!error || typeof error !== "object") {
+      return new Error("Unknown browser protocol error");
+    }
+    const record = error;
+    if (record.code === "FYLO_COLLECTION_NOT_FOUND") {
+      return BrowserProtocolError.collectionNotFound(record);
+    }
+    return BrowserProtocolError.failure(record);
+  }
+  static collectionNotFound(record) {
+    const message = typeof record.message === "string" ? record.message : "";
+    return new CollectionNotFoundError(message.replace(/^Collection not found: /, ""));
+  }
+  static failure(record) {
+    const failure = new Error(typeof record.message === "string" ? record.message : "Request failed");
+    failure.name = typeof record.name === "string" ? record.name : "Error";
+    if (typeof record.code === "string")
+      failure.code = record.code;
+    return failure;
+  }
+}
+
 // src/browser/worker/client.js
 class FyloWorkerClient {
   constructor(port, options) {
@@ -3947,7 +4055,7 @@ class FyloWorkerClient {
       return;
     this.pending.delete(id);
     if (envelope.ok === false) {
-      pending.reject(new Error(envelope.error?.message ?? "FYLO worker request failed"));
+      pending.reject(BrowserProtocolError.from(envelope.error ?? { message: "FYLO worker request failed" }));
       return;
     }
     pending.resolve(envelope);
@@ -3977,7 +4085,7 @@ class FyloWorkerClient {
   async request(request) {
     const response = await this.envelope(request);
     if (!response.ok)
-      throw new Error(response.error.message);
+      throw BrowserProtocolError.from(response.error);
     return response.result;
   }
   async envelope(request) {
@@ -4264,6 +4372,7 @@ class FyloBrowser {
   core;
   worker;
   constructor(options = {}) {
+    BrowserFeatureGuard.requirePlainClientOptions(options);
     this.namespace = options.namespace ?? "fylo";
     this.root = options.root ?? "/";
     const useWorker = shouldUseWorker(options.worker ?? true);
@@ -4367,6 +4476,9 @@ class FyloBrowser {
   async _sql(statement) {
     return await this.dispatch({ op: "executeSQL", sql: statement });
   }
+  async executeSQL(statement) {
+    return await this._sql(statement);
+  }
   async request(request) {
     if (this.worker)
       return await this.worker.envelope(request);
@@ -4379,11 +4491,11 @@ class FyloBrowser {
       throw new Error("FYLO browser runtime is not initialised");
     const response = await runBrowserRequest(this.core, request);
     if (!response.ok)
-      throw browserProtocolError(response.error);
+      throw BrowserProtocolError.from(response.error);
     return response.result;
   }
-  async createCollection(collection) {
-    await this.dispatch({ op: "createCollection", collection });
+  async createCollection(collection, options = {}) {
+    await this.dispatch({ op: "createCollection", collection, options });
   }
   async dropCollection(collection) {
     await this.dispatch({ op: "dropCollection", collection });
@@ -4575,8 +4687,8 @@ class BrowserCollectionFacade2 {
   async rebuild() {
     return await this.fylo.rebuildCollection(this.collection);
   }
-  async create() {
-    await this.fylo.createCollection(this.collection);
+  async create(options = {}) {
+    await this.fylo.createCollection(this.collection, options);
   }
   async drop() {
     await this.fylo.dropCollection(this.collection);
@@ -4587,18 +4699,6 @@ class BrowserCollectionFacade2 {
 }
 function createBrowserFylo(options) {
   return new FyloBrowser(options);
-}
-function browserProtocolError(error) {
-  if (!error || typeof error !== "object") {
-    return new Error("Unknown browser protocol error");
-  }
-  const err = error;
-  if (err.code === "FYLO_COLLECTION_NOT_FOUND") {
-    return new CollectionNotFoundError(typeof err.message === "string" ? err.message.replace(/^Collection not found: /, "") : "");
-  }
-  const failure = new Error(typeof err.message === "string" ? err.message : "Request failed");
-  failure.name = typeof err.name === "string" ? err.name : "Error";
-  return failure;
 }
 function shouldUseWorker(requested) {
   return requested && typeof window !== "undefined" && typeof URL !== "undefined" && (typeof SharedWorker !== "undefined" || typeof Worker !== "undefined");
@@ -4615,6 +4715,7 @@ var RESERVED = new Set([
   "request",
   "sql",
   "_sql",
+  "executeSQL",
   "inspect",
   "rebuild",
   "create",
@@ -4654,6 +4755,9 @@ class BrowserFyloClient {
     await this.ready();
     return await this.browser._sql(statement);
   }
+  async executeSQL(statement) {
+    return await this._sql(statement);
+  }
   async request(request) {
     await this.ready();
     return await this.browser.request(request);
@@ -4666,9 +4770,9 @@ class BrowserFyloClient {
     this.collections.set(collection, facade);
     return facade;
   }
-  async createCollection(collection) {
+  async createCollection(collection, options = {}) {
     await this.ready();
-    await this.browser.createCollection(collection);
+    await this.browser.createCollection(collection, options);
   }
   async dropCollection(collection) {
     await this.ready();
@@ -4714,8 +4818,8 @@ class BrowserDirectCollection {
     find.deleted = (query = {}) => self.findDeleted(query);
     this.find = find;
   }
-  async create() {
-    await this.host.createCollection(this.collection);
+  async create(options = {}) {
+    await this.host.createCollection(this.collection, options);
   }
   async drop() {
     await this.host.dropCollection(this.collection);
@@ -4730,7 +4834,7 @@ class BrowserDirectCollection {
     await this.host.ready();
     const res = await this.host.request({ op, collection: this.collection, ...fields });
     if (!res.ok)
-      throw new Error(res.error?.message ?? "browser request failed");
+      throw BrowserProtocolError.from(res.error);
     return res.result;
   }
   put(dataOrId, data) {
@@ -4780,7 +4884,7 @@ class BrowserDirectCollection {
       async once() {
         const res = await host.request({ op: "getDoc", collection, id, onlyId });
         if (!res.ok)
-          throw new Error(res.error?.message ?? "browser getDoc failed");
+          throw BrowserProtocolError.from(res.error);
         return res.result;
       },
       metadata: async () => await this.#req("getMeta", { id }),
@@ -4805,7 +4909,7 @@ class BrowserDirectCollection {
       async* collect() {
         const res = await host.request({ op: "findDocs", collection, query });
         if (!res.ok)
-          throw new Error(res.error?.message ?? "browser findDocs failed");
+          throw BrowserProtocolError.from(res.error);
         const docs = res.result;
         if (Array.isArray(docs)) {
           for (const id of docs)
@@ -4828,7 +4932,7 @@ class BrowserDirectCollection {
       async* collect() {
         const res = await host.request({ op: "findDeletedDocs", collection, query });
         if (!res.ok)
-          throw new Error(res.error?.message ?? "browser findDeletedDocs failed");
+          throw BrowserProtocolError.from(res.error);
         const docs = res.result;
         if (docs && typeof docs === "object") {
           for (const [id, doc] of Object.entries(docs)) {
