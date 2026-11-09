@@ -1360,7 +1360,7 @@ describe('web release operations', () => {
         expect(explorerPackage.scripts.bundle).toContain('@d31ma/tachyon/src/cli/index.js bundle')
         expect(websitePackage.devDependencies?.['@d31ma/tachyon']).toBeUndefined()
         expect(explorerPackage.devDependencies?.['@d31ma/tachyon']).toContain(
-            'github:d31ma/Tachyon#'
+            'github:d31ma/TACHYON#'
         )
         for (const packageJson of [rootPackage, websitePackage, explorerPackage]) {
             expect(packageJson.packageManager).toBe(`bun@${bunVersion}`)
