@@ -4,6 +4,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import { isDeepStrictEqual } from 'node:util'
 import { createWebArtifact } from './web-artifact.mjs'
 import { smokeSite } from './web-smoke.mjs'
 
@@ -518,8 +519,28 @@ async function releaseLease(bucket, key, lease, { run = command } = {}) {
     }
 }
 
-function withoutTrailingNewline(value) {
-    return value.endsWith('\n') ? value.slice(0, -1) : value
+function headerRules(text) {
+    const parsed = Bun.YAML.parse(text)
+    if (Array.isArray(parsed)) return parsed
+    return parsed?.customHeaders
+}
+
+function policyHeaderRules(site, text) {
+    const rules = headerRules(text)
+    if (!Array.isArray(rules)) {
+        throw new Error(`Amplify header policy ${site.headersPolicy} has no customHeaders list`)
+    }
+    return rules
+}
+
+function liveHeaderRules(site, value) {
+    try {
+        return headerRules(value)
+    } catch (error) {
+        throw new Error(
+            `Amplify returned invalid custom headers for ${site.appId}: ${error.message}`
+        )
+    }
 }
 
 async function verifyAmplifyHeaderPolicy(site, { run = command } = {}) {
@@ -528,7 +549,7 @@ async function verifyAmplifyHeaderPolicy(site, { run = command } = {}) {
     }
     let expected
     try {
-        expected = await readFile(site.headersPolicy, 'utf8')
+        expected = policyHeaderRules(site, await readFile(site.headersPolicy, 'utf8'))
     } catch (error) {
         throw new Error(`Cannot read Amplify header policy ${site.headersPolicy}: ${error.message}`)
     }
@@ -559,12 +580,9 @@ async function verifyAmplifyHeaderPolicy(site, { run = command } = {}) {
             `Amplify returned invalid custom headers for ${site.appId}: ${error.message}`
         )
     }
-    if (
-        typeof actual !== 'string' ||
-        withoutTrailingNewline(actual) !== withoutTrailingNewline(expected)
-    ) {
+    if (typeof actual !== 'string' || !isDeepStrictEqual(liveHeaderRules(site, actual), expected)) {
         throw new Error(
-            `Amplify custom headers drifted for ${site.appId}; apply ${site.headersPolicy} with aws amplify update-app before deploying`
+            `Amplify custom headers drifted for ${site.appId}; d31ma/PaaS infra/fylo/amplify must apply the same headers as ${site.headersPolicy} before deploying`
         )
     }
 }

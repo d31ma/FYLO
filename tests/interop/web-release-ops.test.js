@@ -782,12 +782,79 @@ describe('web release operations', () => {
             ).resolves.toBeUndefined()
             await expect(
                 verifyAmplifyHeaderPolicy(site, { run: response('customHeaders: []') })
-            ).rejects.toThrow('aws amplify update-app')
+            ).rejects.toThrow('d31ma/PaaS infra/fylo/amplify')
+            await expect(verifyAmplifyHeaderPolicy(site, { run: response('') })).rejects.toThrow(
+                'd31ma/PaaS infra/fylo/amplify'
+            )
+            await expect(
+                verifyAmplifyHeaderPolicy(site, { run: response('{not yaml') })
+            ).rejects.toThrow('invalid custom headers')
             await expect(
                 verifyAmplifyHeaderPolicy(site, {
                     run: async () => ({ status: 255, stdout: '', stderr: 'AccessDenied' })
                 })
             ).rejects.toThrow('AccessDenied')
+        } finally {
+            await rm(temporary, { recursive: true, force: true })
+        }
+    })
+
+    test('accepts the same headers stored by Amplify as compact JSON', async () => {
+        const temporary = await mkdtemp(path.join(os.tmpdir(), 'fylo-amplify-policy-test-'))
+        try {
+            const policy = path.join(temporary, 'headers.yml')
+            await writeFile(
+                policy,
+                [
+                    '# Comments and layout are not part of the policy.',
+                    'customHeaders:',
+                    "    - pattern: '**/*'",
+                    '      headers:',
+                    '          - key: Strict-Transport-Security',
+                    '            value: max-age=31536000',
+                    '          - key: Content-Security-Policy',
+                    '            value: >-',
+                    "                default-src 'self'; script-src 'self' 'sha256-abc='",
+                    ''
+                ].join('\n')
+            )
+            const site = { appId: 'app-123', headersPolicy: policy }
+            const stored = (rules) => async () => ({
+                status: 0,
+                stdout: JSON.stringify(JSON.stringify(rules)),
+                stderr: ''
+            })
+            const sameRules = [
+                {
+                    pattern: '**/*',
+                    headers: [
+                        { key: 'Strict-Transport-Security', value: 'max-age=31536000' },
+                        {
+                            key: 'Content-Security-Policy',
+                            value: "default-src 'self'; script-src 'self' 'sha256-abc='"
+                        }
+                    ]
+                }
+            ]
+            const changedRules = [
+                {
+                    pattern: '**/*',
+                    headers: [
+                        { key: 'Strict-Transport-Security', value: 'max-age=1' },
+                        {
+                            key: 'Content-Security-Policy',
+                            value: "default-src 'self'; script-src 'self' 'sha256-abc='"
+                        }
+                    ]
+                }
+            ]
+
+            await expect(
+                verifyAmplifyHeaderPolicy(site, { run: stored(sameRules) })
+            ).resolves.toBeUndefined()
+            await expect(
+                verifyAmplifyHeaderPolicy(site, { run: stored(changedRules) })
+            ).rejects.toThrow('drifted')
         } finally {
             await rm(temporary, { recursive: true, force: true })
         }
