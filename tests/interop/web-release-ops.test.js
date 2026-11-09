@@ -28,7 +28,7 @@ import {
     verifyAmplifyHeaderPolicy,
     writeState
 } from '../../scripts/amplify-release.mjs'
-import { resolveSite, withBranchAuthorization } from '../../scripts/web-release-config.mjs'
+import { resolveSite } from '../../scripts/web-release-config.mjs'
 import { smokeSite } from '../../scripts/web-smoke.mjs'
 import { createWebArtifact } from '../../scripts/web-artifact.mjs'
 import { verifyPagesRelease } from '../../scripts/pages-smoke.mjs'
@@ -1511,37 +1511,14 @@ describe('web release operations', () => {
 })
 
 describe('web release targets', () => {
-    test('the staging target deploys the production site to the staging branch and host', async () => {
+    test('production is the only Amplify target; staging is hosted on Floci', async () => {
         const config = await Bun.file('ops/web-release.json').json()
-        const staging = resolveSite(config, 'fylo-staging')
-        expect(staging.branch).toBe('staging')
-        expect(staging.origin).toBe('https://staging.dhq9jgfyq7uv2.amplifyapp.com')
-        expect(staging.basicAuthFromBranch).toBe(true)
-        expect(config.sites.fylo.basicAuthFromBranch).toBeUndefined()
-        expect(staging.extends).toBeUndefined()
-        expect(staging.appId).toBe(config.sites.fylo.appId)
-        expect(staging.probes).toEqual(config.sites.fylo.probes)
-        expect(staging.requiredHeaders).toEqual(config.sites.fylo.requiredHeaders)
-        expect(staging.headersPolicy).toBe(config.sites.fylo.headersPolicy)
-    })
-
-    test('a site without extends is used as written', () => {
-        const config = { sites: { fylo: { branch: 'production' } } }
+        expect(Object.keys(config.sites)).toEqual(['fylo'])
         expect(resolveSite(config, 'fylo')).toBe(config.sites.fylo)
     })
 
     test('an unknown site is refused', () => {
-        expect(() => resolveSite({ sites: {} }, 'fylo-preview')).toThrow('Unknown site')
-    })
-
-    test('a site may not extend a missing site', () => {
-        const config = { sites: { 'fylo-staging': { extends: 'fylo' } } }
-        expect(() => resolveSite(config, 'fylo-staging')).toThrow('must extend a defined site')
-    })
-
-    test('a site may not extend a site that extends another', () => {
-        const config = { sites: { a: { branch: 'x' }, b: { extends: 'a' }, c: { extends: 'b' } } }
-        expect(() => resolveSite(config, 'c')).toThrow('must extend a defined site')
+        expect(() => resolveSite({ sites: {} }, 'fylo-staging')).toThrow('Unknown site')
     })
 })
 
@@ -1600,92 +1577,5 @@ describe('prebuilt web artifacts', () => {
                 environment: { FYLO_WEB_RELEASE_ARTIFACT: file }
             })
         ).rejects.toThrow('FYLO_WEB_RELEASE_ARTIFACT_SHA256 must hold')
-    })
-})
-
-describe('staging basic auth from the Amplify branch', () => {
-    const credentials = 'dXNlcjpwYXNzd29yZA=='
-    const site = { appId: 'dhq9jgfyq7uv2', branch: 'staging', basicAuthFromBranch: true }
-
-    test('reads the branch, masks the credentials and returns an authorization', async () => {
-        const reads = []
-        const masked = []
-        const result = await withBranchAuthorization(site, {
-            readBranch: async (appId, branch) => {
-                reads.push([appId, branch])
-                return { enableBasicAuth: true, basicAuthCredentials: credentials }
-            },
-            mask: (secret) => masked.push(secret)
-        })
-        expect(reads).toEqual([['dhq9jgfyq7uv2', 'staging']])
-        expect(masked).toEqual([credentials])
-        expect(result.authorization).toBe(`Basic ${credentials}`)
-    })
-
-    test('adds no authorization when basic auth is off', async () => {
-        const result = await withBranchAuthorization(site, {
-            readBranch: async () => ({ enableBasicAuth: false }),
-            mask: () => {
-                throw new Error('must not mask')
-            }
-        })
-        expect(result.authorization).toBeUndefined()
-    })
-
-    test('fails when basic auth is on but GetBranch returns no credentials', async () => {
-        await expect(
-            withBranchAuthorization(site, {
-                readBranch: async () => ({ enableBasicAuth: true }),
-                mask: () => {}
-            })
-        ).rejects.toThrow('returned no basicAuthCredentials')
-    })
-
-    test('never reads AWS for a site without basicAuthFromBranch', async () => {
-        const production = { appId: 'dhq9jgfyq7uv2', branch: 'production' }
-        const result = await withBranchAuthorization(production, {
-            readBranch: async () => {
-                throw new Error('must not read the branch')
-            }
-        })
-        expect(result).toBe(production)
-    })
-
-    test('smoke sends the authorization with every probe request', async () => {
-        const sent = []
-        const fetcher = async (url, options) => {
-            sent.push(options.headers.authorization)
-            return new Response('FYLO', { status: 200, headers: { 'content-type': 'text/html' } })
-        }
-        await smokeSite(
-            {
-                origin: 'https://staging.dhq9jgfyq7uv2.amplifyapp.com',
-                authorization: `Basic ${credentials}`,
-                requiredHeaders: {},
-                probes: [
-                    { path: '/', contains: 'FYLO', contentTypes: ['text/html'] },
-                    { path: '/docs', contains: 'FYLO', contentTypes: ['text/html'] }
-                ]
-            },
-            fetcher
-        )
-        expect(sent).toEqual([`Basic ${credentials}`, `Basic ${credentials}`])
-    })
-
-    test('smoke sends no authorization for a public site', async () => {
-        const sent = []
-        const fetcher = async (url, options) => {
-            sent.push(Object.hasOwn(options.headers, 'authorization'))
-            return new Response('FYLO', { status: 200, headers: { 'content-type': 'text/html' } })
-        }
-        await smokeSite(
-            {
-                origin: 'https://fylo.del.ma',
-                requiredHeaders: {},
-                probes: [{ path: '/', contains: 'FYLO', contentTypes: ['text/html'] }]
-            },
-            fetcher
-        )
-        expect(sent).toEqual([false])
     })
 })

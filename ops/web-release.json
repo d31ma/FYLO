@@ -143,12 +143,6 @@
                     "contains": "FYLO"
                 }
             ]
-        },
-        "fylo-staging": {
-            "extends": "fylo",
-            "branch": "staging",
-            "origin": "https://staging.dhq9jgfyq7uv2.amplifyapp.com",
-            "basicAuthFromBranch": true
         }
     }
 }

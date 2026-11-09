@@ -230,40 +230,37 @@ bun scripts/web-smoke.mjs fylo
 
 ## Automatic deployment from a release
 
-A release deploys the website by itself. When `Release` runs on `main` for a new version, its
-`site-artifact` job builds the website once and keeps `fylo-site.zip` and its `.sha256` as a run
-artifact. That job may fail without blocking the binary release. When the `Release` run succeeds
-and its commit carries the release tag, `Site Deploy` (`.github/workflows/site-deploy.yml`):
+A release deploys the website by itself. Staging (`staging.fylo.del.ma`) is hosted on Floci on
+kestrel and is reachable only on the tailnet and the CITADEL LAN; production is the Amplify app.
 
-1. checks the zip's SHA-256;
-2. in GitHub environment `site-staging`, assumes `fylo-site-deploy-staging` and runs
-   `bun scripts/amplify-release.mjs deploy fylo-staging` with `FYLO_WEB_RELEASE_ARTIFACT` and
-   `FYLO_WEB_RELEASE_ARTIFACT_SHA256` set, so the prebuilt zip is archived, deployed to the
-   Amplify `staging` branch and probed at `https://staging.fylo.del.ma`;
-3. in environment `site-production`, assumes `fylo-site-deploy-production` and deploys **the same
-   zip** with `deploy fylo`, with the usual compensated rollback.
+1. `Release`'s `release-assets` job builds the website once and adds `fylo-site-<version>.zip`
+   (with `site-version.json` = `{"version", "commit"}` at its root) and its `.sha256` to the
+   release assets. Both are listed in `SHA256SUMS` and covered by the release attestation, like
+   every other asset.
+2. kestrel's pull deployer deploys that zip to staging, probes it, and sets the commit status
+   `site-staging/floci` on the release commit, with the description
+   `<version> <first 12 hex of the zip SHA-256>`.
+3. When the `Release` run succeeds and its commit carries the release tag, `Site Deploy`
+   (`.github/workflows/site-deploy.yml`) downloads the zip from the release and checks its
+   SHA-256. In GitHub environment `site-production` it runs `bun scripts/site-staging-gate.mjs`,
+   which waits up to 20 minutes for a `success` status with exactly that description, stops at
+   once on `failure` or `error`, and fails closed at the timeout. It then assumes
+   `fylo-site-deploy-production` and runs `bun scripts/amplify-release.mjs deploy fylo` with
+   `FYLO_WEB_RELEASE_ARTIFACT` and `FYLO_WEB_RELEASE_ARTIFACT_SHA256` set, so the same zip is
+   archived, deployed and probed, with the usual compensated rollback.
 
-A merge that is not a release deploys nothing. The `fylo-staging` target in
-`ops/web-release.json` extends `fylo` and changes only the branch, the origin and
-`basicAuthFromBranch`; it keeps its own
-lease and archive under `fylo/web-releases/fylo-staging/`. Both environments accept only `main`,
-and PaaS (`d31ma/PaaS`, `infra/fylo/amplify`) lets each one assume only its own role, which can
-deploy only its own branch, read the header policy, and use only its own archive prefix.
-
-`staging.fylo.del.ma` is reachable only on the tailnet, so `fylo-staging` probes the Amplify
-branch address `https://staging.dhq9jgfyq7uv2.amplifyapp.com`. With `basicAuthFromBranch`,
-`amplify-release.mjs` and `web-smoke.mjs` read the branch's basic-auth credentials at run time with
-`aws amplify get-branch`, mask them in the GitHub Actions log, and send them with every probe
-request; no password is stored in this repository. They stop before probing when basic auth is on
-but GetBranch returns no credentials. `bun scripts/web-smoke.mjs fylo-staging` therefore needs AWS
-credentials that may read the staging branch.
+A merge that is not a release deploys nothing. The environment accepts only `main`, and PaaS
+(`d31ma/PaaS`, `infra/fylo/amplify`) lets it assume only the production role, which can deploy
+only the `production` branch, read the header policy, and use only the
+`fylo/web-releases/fylo/` archive prefix. The status is read with the workflow's own token
+(`statuses: read`).
 
 Production deploys wait until `sites.fylo.branch` in `ops/web-release.json` is `production`.
-Until the domain moves from `master` to `production`, the workflow deploys staging only and says
-so in a notice.
+Until the domain moves from `master` to `production`, the workflow resolves the release and says
+in a notice that production waits.
 
-To roll back, run `Site Deploy` by hand with the target (`fylo-staging` or `fylo`); it runs
-`bun scripts/amplify-release.mjs rollback <target>` with that target's role. To retry a failed
+To roll back, run `Site Deploy` by hand (action `rollback`); it runs
+`bun scripts/amplify-release.mjs rollback fylo` with the production role. To retry a failed
 deployment, re-run the failed jobs of the `Site Deploy` run.
 
 ## Amplify rollback

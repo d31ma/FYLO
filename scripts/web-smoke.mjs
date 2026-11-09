@@ -1,13 +1,9 @@
 #!/usr/bin/env bun
 
 import { readFile } from 'node:fs/promises'
-import { resolveSite, withBranchAuthorization } from './web-release-config.mjs'
+import { resolveSite } from './web-release-config.mjs'
 
 const REQUEST_TIMEOUT_MS = 15_000
-
-function authorizationHeader(site) {
-    return site.authorization ? { authorization: site.authorization } : {}
-}
 
 export async function smokeSite(site, fetcher = fetch) {
     const results = []
@@ -16,11 +12,7 @@ export async function smokeSite(site, fetcher = fetch) {
         const response = await fetcher(url, {
             redirect: 'follow',
             signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-            headers: {
-                'cache-control': 'no-cache',
-                'user-agent': 'fylo-release-smoke/1',
-                ...authorizationHeader(site)
-            }
+            headers: { 'cache-control': 'no-cache', 'user-agent': 'fylo-release-smoke/1' }
         })
         if (!response.ok) throw new Error(`${url} returned HTTP ${response.status}`)
 
@@ -74,8 +66,7 @@ export async function smokeSite(site, fetcher = fetch) {
 async function main() {
     const [siteName, configPath = 'ops/web-release.json'] = process.argv.slice(2)
     const config = JSON.parse(await readFile(configPath, 'utf8'))
-    const site = await withBranchAuthorization(resolveSite(config, siteName))
-    console.log(JSON.stringify(await smokeSite(site)))
+    console.log(JSON.stringify(await smokeSite(resolveSite(config, siteName))))
 }
 
 if (import.meta.main)
