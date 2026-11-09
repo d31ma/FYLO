@@ -1436,11 +1436,15 @@ impl NativeWriteRoot {
     /// Missing stamps are refreshed best-effort; mismatched stamps are retained
     /// as evidence of the expected bytes.
     ///
+    /// The scan holds the collection lock and first recovers any transaction
+    /// a crashed writer left behind, so it counts only committed files and
+    /// never stamps beside a live writer.
+    ///
     /// # Errors
     ///
-    /// Returns an error for a non-file collection, unsafe paths, malformed
-    /// metadata, oversized files, or I/O failures other than a file that
-    /// vanished during the scan.
+    /// Returns an error for a non-file collection, a live writer, a failed
+    /// recovery, unsafe paths, malformed metadata, oversized files, or I/O
+    /// failures other than a file that vanished during the scan.
     pub fn verify_file_collection(
         &self,
         collection_name: &str,
@@ -1453,6 +1457,8 @@ impl NativeWriteRoot {
                 "verifyCollection requires a file collection",
             ));
         }
+        let _lock = self.lock_collection(&collection)?;
+        self.recover_locked(&collection)?;
         let namespaces = [
             (
                 "active",
