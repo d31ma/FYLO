@@ -502,6 +502,8 @@ struct CursorState {
 
 impl Session {
     const MAX_INVOCATION_COLLECTIONS: usize = 10_000;
+    const TOO_MANY_INVOCATION_COLLECTIONS: &'static str =
+        "invocation collection recovery exceeds its bounded collection count";
 
     fn execute_invocation(
         &self,
@@ -614,6 +616,38 @@ impl Session {
         root: &NativeRoot,
         budget: Option<(std::time::Instant, std::time::Duration)>,
     ) -> std::io::Result<std::collections::BTreeMap<String, bool>> {
+        match root.database_collection_names() {
+            Some(collections) => Self::database_invocation_names(collections),
+            None => Self::directory_invocation_names(root, budget),
+        }
+    }
+
+    fn database_invocation_names(
+        collections: Vec<String>,
+    ) -> std::io::Result<std::collections::BTreeMap<String, bool>> {
+        Self::require_invocation_bound(collections.len())?;
+        Ok(Self::live_invocation_names(collections))
+    }
+
+    fn live_invocation_names(collections: Vec<String>) -> std::collections::BTreeMap<String, bool> {
+        let mut names = std::collections::BTreeMap::new();
+        for name in collections {
+            names.entry(name).or_insert(true);
+        }
+        names
+    }
+
+    fn require_invocation_bound(count: usize) -> std::io::Result<()> {
+        if count > Self::MAX_INVOCATION_COLLECTIONS {
+            return Err(std::io::Error::other(Self::TOO_MANY_INVOCATION_COLLECTIONS));
+        }
+        Ok(())
+    }
+
+    fn directory_invocation_names(
+        root: &NativeRoot,
+        budget: Option<(std::time::Instant, std::time::Duration)>,
+    ) -> std::io::Result<std::collections::BTreeMap<String, bool>> {
         let mut names = std::collections::BTreeMap::new();
         for namespace in [".collections", ".buckets"] {
             Self::collect_invocation_names(
@@ -666,11 +700,7 @@ impl Session {
                 .entry(name.to_owned())
                 .and_modify(|live| *live |= !catalog)
                 .or_insert(!catalog);
-            if names.len() > Self::MAX_INVOCATION_COLLECTIONS {
-                return Err(std::io::Error::other(
-                    "invocation collection recovery exceeds its bounded collection count",
-                ));
-            }
+            Self::require_invocation_bound(names.len())?;
         }
         Ok(())
     }
@@ -4056,6 +4086,35 @@ mod tests {
         assert_eq!(
             capabilities["singleFileDatabase"]["operations"],
             json!(["inspectDatabase", "verifyDatabase"])
+        );
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn read_recovery_names_every_collection_of_a_vdbx_database() {
+        let dir = std::env::temp_dir().join(format!(
+            "fylo-machine-vdbx-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("app.vdbx");
+        fylo_storage_native::ContainerFile::create(&path, 20).unwrap();
+        {
+            let mut container = fylo_storage_native::ContainerFile::open_unchecked(&path).unwrap();
+            container.add_collection("users", b"").unwrap();
+            container.add_collection("orders", b"").unwrap();
+        }
+        let names = NativeRoot::open(&path)
+            .map_err(|error| std::io::Error::other(error.to_string()))
+            .and_then(|root| Session::invocation_collection_names(&root, None));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            names.unwrap(),
+            std::collections::BTreeMap::from([
+                ("orders".to_owned(), true),
+                ("users".to_owned(), true)
+            ])
         );
     }
 

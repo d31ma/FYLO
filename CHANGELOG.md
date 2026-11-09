@@ -432,6 +432,19 @@
 
 ### Fixed
 
+- **A browser `.vdbx` working copy is readable again after its Worker is
+  killed mid-write.** Reads of a collection whose last write was cut off
+  failed with `EENGINE_CONCURRENT_WRITE` on every retry, because the
+  read-side recovery looked for collection folders and a `.vdbx` database
+  keeps its collections inside the file. Recovery now takes the collection
+  names from the database, finishes the interrupted write, and the read
+  goes on. Native `.vdbx` readers were not affected, and no released
+  version had the browser `.vdbx` working copy. A build without this fix
+  recovers such a copy on its next write.
+- **`verifyCollection` no longer counts a file whose upload a crash cut
+  off.** It now recovers a file collection under its lock before scanning,
+  so after a crash mid-upload it no longer counts an uncommitted file that
+  `findDocs` then rolls back.
 - **A query no longer fails with `ENATIVE_NOT_FOUND` when a document it
   listed is deleted before it is read (#104).** `findDocs` (and `joinDocs`
   and SQL `SELECT`, which run through it) lists a collection's ids and then
