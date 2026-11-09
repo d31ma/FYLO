@@ -938,89 +938,172 @@ function runInLane(lanes, key, body) {
   return next;
 }
 
-// src/browser/core/path.js
-var SEPARATOR = "/";
-function isMeaningful(segment) {
-  return segment.length > 0 && segment !== ".";
-}
-function normalize(value) {
-  if (typeof value !== "string")
-    return "";
-  const isAbsolute = value.startsWith(SEPARATOR);
-  const out = [];
-  for (const segment of value.split(SEPARATOR)) {
-    if (!isMeaningful(segment))
-      continue;
-    if (segment === "..") {
-      if (out.length > 0 && out[out.length - 1] !== "..") {
-        out.pop();
-      } else if (!isAbsolute) {
-        out.push("..");
-      }
-      continue;
+// src/browser/core/browser-path.js
+class BrowserPath {
+  static #separator = "/";
+  static #currentDirectory = ".";
+  static #parentDirectory = "..";
+  static #emptyPath = "";
+  static #stringType = "string";
+  static #unsafePathMessage = "Unsafe document path: ";
+  static #emptyLength = 0;
+  static #firstIndex = 0;
+  static normalize(value) {
+    return this.#normalizeInput(value);
+  }
+  static join(...segments) {
+    const strings = this.#stringParts(segments);
+    const parts = this.#withoutEmpty(strings);
+    return this.normalize(parts.join(this.#separator));
+  }
+  static dirname(value) {
+    const normalized = this.normalize(value);
+    const index = normalized.lastIndexOf(this.#separator);
+    const parent = normalized.slice(0, this.#parentEnd(index));
+    return this.#parentOrDot(parent, index);
+  }
+  static basename(value) {
+    const normalized = this.normalize(value);
+    return normalized.slice(normalized.lastIndexOf(this.#separator) + 1);
+  }
+  static resolve(from, value) {
+    const target = this.#resolutionTarget(from, value);
+    return this.normalize(this.#resolutionInput(from, target));
+  }
+  static relative(from, to) {
+    const fromSegments = this.#pathSegments(from);
+    const toSegments = this.#pathSegments(to);
+    const common = this.#commonLength(fromSegments, toSegments);
+    const parents = Array(fromSegments.length - common).fill(this.#parentDirectory);
+    return [...parents, ...toSegments.slice(common)].join(this.#separator);
+  }
+  static assertPathInside(parent, target) {
+    const normalizedParent = this.normalize(parent);
+    const normalizedTarget = this.normalize(target);
+    this.#checkDifferentPaths(normalizedParent, normalizedTarget, target);
+  }
+  static #normalizeInput(value) {
+    if (typeof value !== this.#stringType)
+      return this.#emptyPath;
+    return this.#normalizeString(value);
+  }
+  static #normalizeString(value) {
+    const absolute = value.startsWith(this.#separator);
+    const parts = this.#resolveSegments(value, absolute);
+    const joined = parts.join(this.#separator);
+    const relative = this.#relativeOrDot(joined);
+    return this.#rootedPath(joined, relative, absolute);
+  }
+  static #resolveSegments(value, absolute) {
+    const parts = [];
+    for (const segment of value.split(this.#separator)) {
+      this.#appendSegment(parts, segment, absolute);
     }
-    out.push(segment);
+    return parts;
   }
-  const joined = out.join(SEPARATOR);
-  if (isAbsolute)
-    return SEPARATOR + joined;
-  return joined || ".";
-}
-function join(...segments) {
-  const parts = [];
-  for (const segment of segments) {
-    if (typeof segment !== "string")
-      continue;
-    if (segment.length === 0)
-      continue;
-    parts.push(segment);
+  static #appendSegment(parts, segment, absolute) {
+    switch (segment) {
+      case this.#emptyPath:
+      case this.#currentDirectory:
+        break;
+      case this.#parentDirectory:
+        this.#resolveParent(parts, absolute);
+        break;
+      default:
+        parts.push(segment);
+    }
   }
-  if (parts.length === 0)
-    return ".";
-  return normalize(parts.join(SEPARATOR));
-}
-function dirname(value) {
-  const normalised = normalize(value);
-  if (normalised === SEPARATOR)
-    return SEPARATOR;
-  const index = normalised.lastIndexOf(SEPARATOR);
-  if (index < 0)
-    return ".";
-  if (index === 0)
-    return SEPARATOR;
-  return normalised.slice(0, index);
-}
-function basename(value) {
-  const normalised = normalize(value);
-  if (normalised === SEPARATOR)
-    return "";
-  const index = normalised.lastIndexOf(SEPARATOR);
-  if (index < 0)
-    return normalised;
-  return normalised.slice(index + 1);
-}
-function relative(from, to) {
-  const fromSegments = normalize(from).split(SEPARATOR).filter((segment) => segment.length > 0);
-  const toSegments = normalize(to).split(SEPARATOR).filter((segment) => segment.length > 0);
-  let common = 0;
-  while (common < fromSegments.length && common < toSegments.length && fromSegments[common] === toSegments[common]) {
-    common++;
+  static #resolveParent(parts, absolute) {
+    const canRemove = this.#canRemoveParent(parts);
+    this.#removeParent(parts, canRemove);
+    this.#appendParent(parts, this.#needsParent(canRemove, absolute));
   }
-  const out = [];
-  for (let index = common;index < fromSegments.length; index++)
-    out.push("..");
-  for (let index = common;index < toSegments.length; index++)
-    out.push(toSegments[index]);
-  return out.join(SEPARATOR);
-}
-function assertPathInside(parent, target) {
-  const resolvedParent = normalize(parent);
-  const resolvedTarget = normalize(target);
-  if (resolvedTarget === resolvedParent)
-    return;
-  const offset = relative(resolvedParent, resolvedTarget);
-  if (offset.startsWith("..") || offset.startsWith(SEPARATOR)) {
-    throw new Error(`Unsafe document path: ${target}`);
+  static #canRemoveParent(parts) {
+    return parts.length > this.#emptyLength && parts[parts.length - 1] !== this.#parentDirectory;
+  }
+  static #needsParent(canRemove, absolute) {
+    return !canRemove && !absolute;
+  }
+  static #removeParent(parts, canRemove) {
+    if (canRemove)
+      parts.pop();
+  }
+  static #appendParent(parts, needed) {
+    if (needed)
+      parts.push(this.#parentDirectory);
+  }
+  static #stringParts(segments) {
+    return segments.filter(this.#isString);
+  }
+  static #isString(value) {
+    return typeof value === BrowserPath.#stringType;
+  }
+  static #withoutEmpty(segments) {
+    return segments.filter(this.#hasText);
+  }
+  static #hasText(segment) {
+    return segment.length > BrowserPath.#emptyLength;
+  }
+  static #relativeOrDot(joined) {
+    if (joined.length === this.#emptyLength)
+      return this.#currentDirectory;
+    return joined;
+  }
+  static #rootedPath(joined, relative, absolute) {
+    if (absolute)
+      return this.#separator + joined;
+    return relative;
+  }
+  static #parentEnd(index) {
+    if (index === this.#firstIndex)
+      return 1;
+    return index;
+  }
+  static #parentOrDot(parent, index) {
+    if (index < this.#firstIndex)
+      return this.#currentDirectory;
+    return parent;
+  }
+  static #resolutionTarget(from, value) {
+    if (typeof value !== this.#stringType)
+      return { value: from, standalone: true };
+    return { value, standalone: value.startsWith(this.#separator) };
+  }
+  static #resolutionInput(from, target) {
+    if (target.standalone)
+      return target.value;
+    return `${from}${this.#separator}${target.value}`;
+  }
+  static #pathSegments(path) {
+    return this.#withoutEmpty(this.normalize(path).split(this.#separator));
+  }
+  static #commonLength(from, to) {
+    let common = 0;
+    while (this.#sameSegment(from, to, common))
+      common++;
+    return common;
+  }
+  static #sameSegment(from, to, index) {
+    return index < Math.min(from.length, to.length) && from[index] === to[index];
+  }
+  static #checkDifferentPaths(parent, normalized, target) {
+    if (parent === normalized)
+      return;
+    this.#checkOffset(this.relative(parent, normalized), target);
+  }
+  static #checkOffset(offset, target) {
+    this.#rejectParentPath(offset, target);
+    this.#rejectAbsolutePath(offset, target);
+  }
+  static #rejectParentPath(offset, target) {
+    if (offset.startsWith(this.#parentDirectory)) {
+      throw new Error(`${this.#unsafePathMessage}${target}`);
+    }
+  }
+  static #rejectAbsolutePath(offset, target) {
+    if (offset.startsWith(this.#separator)) {
+      throw new Error(`${this.#unsafePathMessage}${target}`);
+    }
   }
 }
 
@@ -1042,7 +1125,7 @@ class BrowserDocuments {
     this.validateDocId(docId);
     const root = this.docsRoot(collection);
     const target = await this.existingPath(root, this.docPath(collection, docId), docId);
-    assertPathInside(root, target);
+    BrowserPath.assertPathInside(root, target);
     if (!await this.fs.exists(target))
       return null;
     const text = await this.fs.readText(target);
@@ -1059,7 +1142,7 @@ class BrowserDocuments {
     this.validateDocId(docId);
     const root = this.deletedRoot(collection);
     const target = await this.existingPath(root, this.deletedPath(collection, docId), docId);
-    assertPathInside(root, target);
+    BrowserPath.assertPathInside(root, target);
     if (!await this.fs.exists(target))
       return null;
     const text = await this.fs.readText(target);
@@ -1076,7 +1159,7 @@ class BrowserDocuments {
     this.validateDocId(docId);
     await this.ensureCollection(collection);
     const target = this.docPath(collection, docId);
-    assertPathInside(this.docsRoot(collection), target);
+    BrowserPath.assertPathInside(this.docsRoot(collection), target);
     const text = JSON.stringify(data);
     this.assertJsonDocumentText(text);
     await this.fs.writeText(target, text);
@@ -1090,7 +1173,7 @@ class BrowserDocuments {
     this.validateDocId(docId);
     const root = this.docsRoot(collection);
     const target = await this.existingPath(root, this.docPath(collection, docId), docId);
-    assertPathInside(root, target);
+    BrowserPath.assertPathInside(root, target);
     if (await this.fs.exists(target))
       await this.fs.remove(target);
   }
@@ -1098,8 +1181,8 @@ class BrowserDocuments {
     this.validateDocId(docId);
     const source = await this.existingPath(this.docsRoot(collection), this.docPath(collection, docId), docId);
     const target = this.deletedPath(collection, docId);
-    assertPathInside(this.docsRoot(collection), source);
-    assertPathInside(this.deletedRoot(collection), target);
+    BrowserPath.assertPathInside(this.docsRoot(collection), source);
+    BrowserPath.assertPathInside(this.deletedRoot(collection), target);
     if (!await this.fs.exists(source)) {
       throw new Error(`Document not found: ${docId}`);
     }
@@ -1116,8 +1199,8 @@ class BrowserDocuments {
     this.validateDocId(docId);
     const source = await this.existingPath(this.deletedRoot(collection), this.deletedPath(collection, docId), docId);
     const target = this.docPath(collection, docId);
-    assertPathInside(this.deletedRoot(collection), source);
-    assertPathInside(this.docsRoot(collection), target);
+    BrowserPath.assertPathInside(this.deletedRoot(collection), source);
+    BrowserPath.assertPathInside(this.docsRoot(collection), target);
     if (!await this.fs.exists(source)) {
       throw new Error(`No tombstone to restore: ${docId}`);
     }
@@ -1133,13 +1216,13 @@ class BrowserDocuments {
   async existingPath(root, canonical, docId) {
     if (await this.fs.exists(canonical))
       return canonical;
-    const legacy = join(root, legacyShardOf(docId), `${docId}.json`);
-    assertPathInside(root, legacy);
+    const legacy = BrowserPath.join(root, legacyShardOf(docId), `${docId}.json`);
+    BrowserPath.assertPathInside(root, legacy);
     return legacy !== canonical && await this.fs.exists(legacy) ? legacy : canonical;
   }
   async removeLegacyCopy(root, canonical, docId) {
-    const legacy = join(root, legacyShardOf(docId), `${docId}.json`);
-    assertPathInside(root, legacy);
+    const legacy = BrowserPath.join(root, legacyShardOf(docId), `${docId}.json`);
+    BrowserPath.assertPathInside(root, legacy);
     if (legacy !== canonical && await this.fs.exists(legacy))
       await this.fs.remove(legacy);
   }
@@ -1175,14 +1258,14 @@ async function listBucketedDocIds(fs, root) {
   const ids = [];
   const buckets = await fs.list(root);
   for (const bucket of buckets) {
-    const bucketPath = join(root, bucket);
+    const bucketPath = BrowserPath.join(root, bucket);
     if (!await fs.isDirectory(bucketPath))
       continue;
     const files = await fs.list(bucketPath);
     for (const file of files) {
       if (!file.endsWith(".json"))
         continue;
-      const id = basename(file).slice(0, -".json".length);
+      const id = BrowserPath.basename(file).slice(0, -".json".length);
       if (TTID.isTTID(id))
         ids.push(id);
     }
@@ -1190,99 +1273,227 @@ async function listBucketedDocIds(fs, root) {
   return ids;
 }
 
-// src/browser/core/metadata.js
-var META_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
-var MAX_META_VALUE_BYTES = 60 * 1024;
-function validateMetadataRecord(record) {
-  if (typeof record !== "object" || record === null || Array.isArray(record)) {
-    throw new Error("Metadata must be a plain object of name/value pairs");
+// src/browser/core/metadata-record.js
+class MetadataRecord {
+  static #name = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+  static #maximumValueBytes = 60 * 1024;
+  static validate(record) {
+    this.#checkRecord(record);
+    this.#checkEntries(record);
   }
-  for (const [name, value] of Object.entries(record)) {
-    if (!META_NAME.test(name)) {
+  static #checkRecord(record) {
+    this.#requireRecord(typeof record === "object");
+    this.#requireRecord(record !== null);
+    this.#requireRecord(!Array.isArray(record));
+  }
+  static #requireRecord(valid) {
+    if (!valid)
+      throw new Error("Metadata must be a plain object of name/value pairs");
+  }
+  static #checkEntries(record) {
+    for (const [name, value] of Object.entries(record)) {
+      this.#checkName(name);
+      this.#checkValue(value);
+    }
+  }
+  static #checkName(name) {
+    if (!this.#name.test(name)) {
       throw new Error('Metadata name must be 1-64 characters: letters, digits, ".", "_" or "-", starting with a letter or digit');
     }
-    if (value !== null) {
-      const encoded = JSON.stringify(value);
-      if (encoded === undefined)
-        throw new Error("Metadata values must be JSON-serializable");
-      if (new TextEncoder().encode(encoded).byteLength > MAX_META_VALUE_BYTES) {
-        throw new Error("Metadata values must be at most 60 KiB when JSON-encoded");
-      }
+  }
+  static #checkValue(value) {
+    if (value !== null)
+      this.#checkEncodedValue(value);
+  }
+  static #checkEncodedValue(value) {
+    const encoded = JSON.stringify(value);
+    this.#requireJson(encoded);
+    this.#checkSize(new TextEncoder().encode(encoded).byteLength);
+  }
+  static #requireJson(encoded) {
+    if (encoded === undefined)
+      throw new Error("Metadata values must be JSON-serializable");
+  }
+  static #checkSize(bytes) {
+    if (bytes > this.#maximumValueBytes) {
+      throw new Error("Metadata values must be at most 60 KiB when JSON-encoded");
     }
   }
 }
 
+// src/browser/core/browser-metadata-store.js
 class BrowserMetadataStore {
   constructor(fs, collectionRoot) {
     this.fs = fs;
     this.collectionRoot = collectionRoot;
   }
   root(collection) {
-    return join(this.collectionRoot(collection), ".metadata");
+    return BrowserPath.join(this.collectionRoot(collection), ".metadata");
   }
   path(collection, id) {
-    if (!TTID.isTTID(id))
-      throw new Error(`Invalid document ID: ${id}`);
-    const root = this.root(collection);
-    const target = join(root, shardOf(id), `${id}.json`);
-    assertPathInside(root, target);
-    return target;
+    this.#checkId(id);
+    return this.#shardPath(collection, id, shardOf(id));
   }
   async read(collection, id) {
     const target = await this.existingPath(collection, id);
-    if (!await this.fs.exists(target))
-      return { values: safeRecord(), updatedAt: 0 };
-    const parsed = JSON.parse(await this.fs.readText(target));
-    return {
-      values: parsed && typeof parsed.values === "object" && !Array.isArray(parsed.values) ? copySafeJson(parsed.values) : safeRecord(),
-      updatedAt: typeof parsed?.updatedAt === "number" ? parsed.updatedAt : 0
-    };
+    return await this.#readIfPresent(target, await this.fs.exists(target));
   }
   async mutate(collection, id, mutations) {
-    validateMetadataRecord(mutations);
+    MetadataRecord.validate(mutations);
     const current = await this.read(collection, id);
     const values = copySafeJson(current.values);
-    for (const [name, value] of Object.entries(mutations)) {
-      if (value === null)
-        delete values[name];
-      else
-        values[name] = copySafeJson(value);
-    }
+    this.#applyMutations(values, mutations);
     return await this.write(collection, id, values, Math.max(Date.now(), current.updatedAt + 1));
   }
   async write(collection, id, values, updatedAt) {
     const target = this.path(collection, id);
-    await this.fs.mkdir(join(this.root(collection), shardOf(id)), { recursive: true });
+    await this.fs.mkdir(BrowserPath.join(this.root(collection), shardOf(id)), {
+      recursive: true
+    });
     await this.fs.writeText(target, JSON.stringify({ values, updatedAt }));
     const legacy = this.legacyPath(collection, id);
-    if (legacy !== target && await this.fs.exists(legacy))
-      await this.fs.remove(legacy);
+    await this.#removeExistingFile(legacy, await this.#legacyExists(legacy, target));
     return { values, updatedAt };
   }
   legacyPath(collection, id) {
-    const root = this.root(collection);
-    const target = join(root, legacyShardOf(id), `${id}.json`);
-    assertPathInside(root, target);
-    return target;
+    return this.#shardPath(collection, id, legacyShardOf(id));
   }
   async existingPath(collection, id) {
     const canonical = this.path(collection, id);
-    if (await this.fs.exists(canonical))
+    return await this.#existingPath(collection, id, canonical, await this.fs.exists(canonical));
+  }
+  #checkId(id) {
+    if (!TTID.isTTID(id))
+      throw new Error(`Invalid document ID: ${id}`);
+  }
+  #shardPath(collection, id, shard) {
+    const root = this.root(collection);
+    const target = BrowserPath.join(root, shard, `${id}.json`);
+    BrowserPath.assertPathInside(root, target);
+    return target;
+  }
+  async#readIfPresent(target, exists) {
+    if (!exists)
+      return { values: safeRecord(), updatedAt: 0 };
+    return await this.#readSidecar(target);
+  }
+  async#readSidecar(target) {
+    const parsed = JSON.parse(await this.fs.readText(target));
+    return {
+      values: this.#values(parsed?.values),
+      updatedAt: this.#updatedAt(parsed?.updatedAt)
+    };
+  }
+  #values(value) {
+    const object = this.#objectValues(value);
+    return this.#copyRecord(object);
+  }
+  #objectValues(value) {
+    if (typeof value !== "object")
+      return safeRecord();
+    return value;
+  }
+  #copyRecord(value) {
+    if (Array.isArray(value))
+      return safeRecord();
+    return copySafeJson(value);
+  }
+  #updatedAt(value) {
+    if (typeof value === "number")
+      return value;
+    return 0;
+  }
+  #applyMutations(values, mutations) {
+    for (const [name, value] of Object.entries(mutations)) {
+      this.#applyMutation(values, name, value);
+    }
+  }
+  #applyMutation(values, name, value) {
+    if (value === null)
+      delete values[name];
+    else
+      values[name] = copySafeJson(value);
+  }
+  async#legacyExists(legacy, canonical) {
+    if (legacy === canonical)
+      return false;
+    return await this.fs.exists(legacy);
+  }
+  async#removeExistingFile(path, exists) {
+    if (exists)
+      await this.fs.remove(path);
+  }
+  async#existingPath(collection, id, canonical, exists) {
+    if (exists)
       return canonical;
+    return await this.#findLegacyPath(collection, id, canonical);
+  }
+  async#findLegacyPath(collection, id, canonical) {
     const legacy = this.legacyPath(collection, id);
-    return legacy !== canonical && await this.fs.exists(legacy) ? legacy : canonical;
+    return this.#selectPath(canonical, legacy, await this.#legacyExists(legacy, canonical));
+  }
+  #selectPath(canonical, legacy, exists) {
+    if (exists)
+      return legacy;
+    return canonical;
   }
 }
 
-// src/browser/core/event-bus.js
+// src/browser/core/browser-event-stream.js
+class BrowserEventStream {
+  static #emptyLength = 0;
+  #queue = [];
+  #wake = () => {};
+  constructor(subscribe) {
+    this.subscribe = subscribe;
+  }
+  iterate() {
+    return this.#withSubscription();
+  }
+  async* #withSubscription() {
+    const unsubscribe = this.subscribe(this.#receive.bind(this));
+    try {
+      yield* this.#readEvents();
+    } finally {
+      unsubscribe();
+    }
+  }
+  #receive(event) {
+    this.#queue.push(event);
+    this.#wake();
+  }
+  async* #readEvents() {
+    while (true) {
+      await this.#waitForEvent();
+      yield* this.#drainQueue();
+    }
+  }
+  async#waitForEvent() {
+    if (this.#queue.length === BrowserEventStream.#emptyLength) {
+      await this.#waitForPublication();
+    }
+  }
+  #waitForPublication() {
+    return new Promise((resolve) => {
+      this.#wake = () => resolve(undefined);
+    });
+  }
+  async* #drainQueue() {
+    while (this.#queue.length > BrowserEventStream.#emptyLength) {
+      yield this.#queue.shift();
+    }
+  }
+}
+
+// src/browser/core/browser-event-bus.js
 class BrowserEventBus {
-  constructor(fs, rootForCollection) {
-    this.fs = fs;
+  constructor(filesystem, rootForCollection) {
+    this.fs = filesystem;
     this.rootForCollection = rootForCollection;
     this.target = new EventTarget;
   }
   journalPath(collection) {
-    return join(this.rootForCollection(collection), "events", `${collection}.ndjson`);
+    return BrowserPath.join(this.rootForCollection(collection), "events", `${collection}.ndjson`);
   }
   async publish(collection, event) {
     await this.fs.appendText(this.journalPath(collection), `${JSON.stringify(event)}
@@ -1296,26 +1507,9 @@ class BrowserEventBus {
     this.target.addEventListener(collection, handler);
     return () => this.target.removeEventListener(collection, handler);
   }
-  async* listen(collection) {
-    const queue = [];
-    let wake = () => {};
-    const unsubscribe = this.subscribe(collection, (event) => {
-      queue.push(event);
-      wake();
-    });
-    try {
-      while (true) {
-        if (queue.length === 0) {
-          await new Promise((resolve) => {
-            wake = () => resolve(undefined);
-          });
-        }
-        while (queue.length > 0)
-          yield queue.shift();
-      }
-    } finally {
-      unsubscribe();
-    }
+  listen(collection) {
+    const stream = new BrowserEventStream(this.subscribe.bind(this, collection));
+    return stream.iterate();
   }
 }
 
@@ -1680,16 +1874,16 @@ class BrowserPrefixIndex {
     } catch {}
   }
   root(collection) {
-    return join(this.rootForCollection(collection), "index");
+    return BrowserPath.join(this.rootForCollection(collection), "index");
   }
   manifestPath(collection) {
-    return join(this.root(collection), LOCAL_FS_MANIFEST);
+    return BrowserPath.join(this.root(collection), LOCAL_FS_MANIFEST);
   }
   snapshotPath(collection) {
-    return join(this.root(collection), LOCAL_FS_SNAPSHOT);
+    return BrowserPath.join(this.root(collection), LOCAL_FS_SNAPSHOT);
   }
   walPath(collection) {
-    return join(this.root(collection), LOCAL_FS_WAL);
+    return BrowserPath.join(this.root(collection), LOCAL_FS_WAL);
   }
   async ensureCollection(collection) {
     await this.fs.mkdir(this.root(collection), { recursive: true });
@@ -1975,6 +2169,39 @@ function matchesLike(value, pattern, options = {}) {
 }
 
 // src/browser/core/query.js
+function documentNumber(text) {
+  const trimmed = text.trim();
+  if (/^[+-]0[xXbBoO]/.test(trimmed))
+    return null;
+  const numeric = Number(trimmed);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+function numericValue2(value) {
+  if (value === null)
+    return 0;
+  if (typeof value === "boolean")
+    return value ? 1 : 0;
+  if (typeof value === "number")
+    return value;
+  if (typeof value === "string")
+    return documentNumber(value);
+  if (Array.isArray(value) && value.length === 0)
+    return 0;
+  if (Array.isArray(value) && value.length === 1)
+    return numericValue2(value[0]);
+  return null;
+}
+function looseEqual(actual, expected) {
+  if (actual === undefined || actual === null)
+    return expected === null;
+  if (typeof actual === "object" || expected === null || typeof expected === "object")
+    return false;
+  if (typeof actual === typeof expected)
+    return actual === expected;
+  const left = numericValue2(actual);
+  return left !== null && left === numericValue2(expected);
+}
+
 class BrowserQueryEngine {
   constructor(context) {
     this.context = context;
@@ -1983,8 +2210,13 @@ class BrowserQueryEngine {
     return fieldPath.replaceAll("/", ".").split(".").reduce((acc, key) => {
       if (acc === undefined || acc === null || typeof acc !== "object")
         return;
+      if (Array.isArray(acc))
+        return;
       return Object.hasOwn(acc, key) ? acc[key] : undefined;
     }, target);
+  }
+  predicateValue(target, fieldPath) {
+    return this.getValueByPath(target, fieldPath.split(/[./]/).filter((segment) => segment !== "").join("."));
   }
   normalizeFieldPath(fieldPath) {
     return fieldPath.replaceAll(".", "/");
@@ -2030,14 +2262,14 @@ class BrowserQueryEngine {
   }
   matchesOperand(value, operand) {
     const predicates = {
-      $eq: (expected) => value == expected,
-      $ne: (expected) => value != expected,
+      $eq: (expected) => looseEqual(value, expected),
+      $ne: (expected) => !looseEqual(value, expected),
       $gt: (expected) => this.matchesNumber(value, "$gt", expected),
       $gte: (expected) => this.matchesNumber(value, "$gte", expected),
       $lt: (expected) => this.matchesNumber(value, "$lt", expected),
       $lte: (expected) => this.matchesNumber(value, "$lte", expected),
       $like: (expected) => typeof value === "string" && this.matchesLike(value, expected),
-      $contains: (expected) => Array.isArray(value) && value.some((item) => item == expected)
+      $contains: (expected) => Array.isArray(value) && value.some((item) => looseEqual(item, expected))
     };
     const supplied = operand;
     for (const [operator, predicate] of Object.entries(predicates)) {
@@ -2049,7 +2281,11 @@ class BrowserQueryEngine {
     return true;
   }
   matchesNumber(value, operator, expected) {
-    const numeric = Number(value);
+    const numeric = numericValue2(value);
+    const bound = numericValue2(expected);
+    if (numeric === null || bound === null)
+      return false;
+    expected = bound;
     if (operator === "$gt")
       return numeric > expected;
     if (operator === "$gte")
@@ -2073,12 +2309,11 @@ class BrowserQueryEngine {
     return intersection;
   }
   async candidateDocIdsForOperand(collection, fieldPath, operand) {
+    if (operand.$eq !== undefined || operand.$contains !== undefined)
+      return null;
+    if (this.matchedByEmptyArray(operand))
+      return null;
     let candidateIds = null;
-    if (operand.$eq !== undefined) {
-      candidateIds = this.intersectDocIds(candidateIds, await this.context.index.candidateDocIds(collection, fieldPath, {
-        $eq: operand.$eq
-      }) ?? new Set);
-    }
     if (operand.$gt !== undefined || operand.$gte !== undefined || operand.$lt !== undefined || operand.$lte !== undefined) {
       for (const key of ["$gt", "$gte", "$lt", "$lte"]) {
         if (operand[key] === undefined)
@@ -2097,11 +2332,10 @@ class BrowserQueryEngine {
         return null;
       candidateIds = this.intersectDocIds(candidateIds, likeCandidates);
     }
-    if (operand.$contains !== undefined) {
-      const containsCandidates = await this.context.index.candidateDocIds(collection, fieldPath, { $contains: operand.$contains });
-      candidateIds = this.intersectDocIds(candidateIds, containsCandidates ?? new Set);
-    }
     return candidateIds;
+  }
+  matchedByEmptyArray(operand) {
+    return this.matchesOperand([], operand);
   }
   async candidateDocIdsForOperation(collection, operation) {
     let candidateIds = null;
@@ -2138,7 +2372,7 @@ class BrowserQueryEngine {
       return true;
     return query.$ops.some((operation) => {
       for (const field of Object.keys(operation)) {
-        const value = this.getValueByPath(doc, field);
+        const value = this.predicateValue(doc, field);
         const operand = operation[field];
         if (!operand || !this.matchesOperand(value, operand))
           return false;
@@ -2202,6 +2436,79 @@ class BrowserQueryEngine {
   }
 }
 
+// src/browser/core/browser-feature-guard.js
+class BrowserFeatureGuard {
+  static CODE = "EBROWSER_UNSUPPORTED";
+  static ENCRYPTION_OPTIONS = ["$encrypted", "encryption", "encrypted", "cipher"];
+  static DOCUMENT_KIND = "document";
+  static requireDocumentCollection(options) {
+    const record = BrowserFeatureGuard.#record(options);
+    BrowserFeatureGuard.#rejectOtherKind(record.kind);
+    BrowserFeatureGuard.#rejectSchema(record);
+    BrowserFeatureGuard.#rejectEncryption(record);
+  }
+  static requirePlainClientOptions(options) {
+    BrowserFeatureGuard.#rejectEncryption(BrowserFeatureGuard.#record(options));
+  }
+  static requireDocumentData(data) {
+    BrowserFeatureGuard.#rejectBinary(data);
+    BrowserFeatureGuard.#rejectBinaryValues(BrowserFeatureGuard.#record(data));
+  }
+  static requireDocumentBatch(batch) {
+    BrowserFeatureGuard.#rejectBinaryItems(BrowserFeatureGuard.#list(batch));
+  }
+  static #list(value) {
+    if (!Array.isArray(value))
+      return [];
+    return value;
+  }
+  static #record(value) {
+    if (value === null || typeof value !== "object")
+      return {};
+    return value;
+  }
+  static #rejectOtherKind(kind) {
+    if (kind === undefined || kind === BrowserFeatureGuard.DOCUMENT_KIND)
+      return;
+    throw BrowserFeatureGuard.#unsupported(`The FYLO browser engine stores document collections only; kind "${String(kind)}" (file buckets) needs the native engine`);
+  }
+  static #rejectSchema(record) {
+    if (!Object.hasOwn(record, "schema"))
+      return;
+    throw BrowserFeatureGuard.#unsupported("The FYLO browser engine does not support collection schemas; use the native engine for schema validation");
+  }
+  static #rejectEncryption(record) {
+    const requested = BrowserFeatureGuard.ENCRYPTION_OPTIONS.filter((name) => Object.hasOwn(record, name));
+    if (requested.length === 0)
+      return;
+    throw BrowserFeatureGuard.#unsupported(`The FYLO browser engine does not support encryption (${requested.join(", ")}); nothing was stored`);
+  }
+  static #rejectBinaryItems(items) {
+    for (const item of items)
+      BrowserFeatureGuard.requireDocumentData(item);
+  }
+  static #rejectBinaryValues(record) {
+    for (const value of Object.values(record))
+      BrowserFeatureGuard.#rejectBinary(value);
+  }
+  static #rejectBinary(value) {
+    if (!BrowserFeatureGuard.#isBinary(value))
+      return;
+    throw BrowserFeatureGuard.#unsupported("The FYLO browser engine does not store Blob, File, or URL values; document collections take plain objects");
+  }
+  static #isBinary(value) {
+    if (typeof Blob !== "undefined" && value instanceof Blob)
+      return true;
+    return typeof URL !== "undefined" && value instanceof URL;
+  }
+  static #unsupported(message) {
+    const error = new Error(message);
+    error.name = "BrowserUnsupportedError";
+    error.code = BrowserFeatureGuard.CODE;
+    return error;
+  }
+}
+
 // src/core/extensions.js
 function appendGroup(target, source) {
   const result = copySafeRecord(target);
@@ -2221,29 +2528,54 @@ Object.assign(Object, { appendGroup });
 
 // src/browser/core/engine.js
 var JOIN_COMPARATORS = {
-  $eq: (leftValue, rightValue) => leftValue === rightValue,
-  $ne: (leftValue, rightValue) => leftValue !== rightValue,
-  $gt: (leftValue, rightValue) => Number(leftValue) > Number(rightValue),
-  $lt: (leftValue, rightValue) => Number(leftValue) < Number(rightValue),
-  $gte: (leftValue, rightValue) => Number(leftValue) >= Number(rightValue),
-  $lte: (leftValue, rightValue) => Number(leftValue) <= Number(rightValue)
+  $eq: (leftValue, rightValue) => joinEqual(leftValue, rightValue),
+  $ne: (leftValue, rightValue) => !joinEqual(leftValue, rightValue),
+  $gt: (leftValue, rightValue) => joinNumber(leftValue) > joinNumber(rightValue),
+  $lt: (leftValue, rightValue) => joinNumber(leftValue) < joinNumber(rightValue),
+  $gte: (leftValue, rightValue) => joinNumber(leftValue) >= joinNumber(rightValue),
+  $lte: (leftValue, rightValue) => joinNumber(leftValue) <= joinNumber(rightValue)
 };
+function joinEqual(left, right) {
+  if (left === undefined || right === undefined)
+    return false;
+  return structurallyEqual(left, right);
+}
+function structurallyEqual(left, right) {
+  if (left === null || right === null || typeof left !== "object" || typeof right !== "object")
+    return left === right;
+  if (Array.isArray(left) !== Array.isArray(right))
+    return false;
+  const leftKeys = Object.keys(left);
+  const rightRecord = right;
+  return leftKeys.length === Object.keys(right).length && leftKeys.every((key) => Object.hasOwn(right, key) && structurallyEqual(left[key], rightRecord[key]));
+}
+function joinNumber(value) {
+  if (value === null)
+    return 0;
+  if (typeof value === "boolean")
+    return value ? 1 : 0;
+  if (typeof value === "number")
+    return value;
+  if (typeof value === "string")
+    return documentNumber(value) ?? Number.NaN;
+  return Number.NaN;
+}
 var JOIN_MODES = {
   inner: (leftData, rightData) => Object.assign(safeRecord(), leftData, rightData),
   outer: (leftData, rightData) => Object.assign(safeRecord(), leftData, rightData),
   left: (leftData) => leftData,
   right: (leftData, rightData) => rightData
 };
-function groupJoinedDocs(join2, docs) {
+function groupJoinedDocs(join, docs) {
   const groupedDocs = safeRecord();
   for (const ids of Object.keys(docs)) {
     const data = docs[ids];
-    const key = String(data[join2.$groupby]);
+    const key = String(data[join.$groupby]);
     if (!Object.hasOwn(groupedDocs, key))
       groupedDocs[key] = safeRecord();
     groupedDocs[key][ids] = data;
   }
-  if (!join2.$onlyIds)
+  if (!join.$onlyIds)
     return groupedDocs;
   const groupedIds = safeRecord();
   for (const key of Object.keys(groupedDocs)) {
@@ -2322,13 +2654,13 @@ class BrowserCore {
   }
   collectionRoot(collection) {
     this.assertCollectionName(collection);
-    return join(this.root, ".collections", collection);
+    return BrowserPath.join(this.root, ".collections", collection);
   }
   docsRoot(collection) {
-    return join(this.collectionRoot(collection), "docs");
+    return BrowserPath.join(this.collectionRoot(collection), "docs");
   }
   deletedRoot(collection) {
-    return join(this.collectionRoot(collection), ".deleted");
+    return BrowserPath.join(this.collectionRoot(collection), ".deleted");
   }
   metaRoot(collection) {
     return this.collectionRoot(collection);
@@ -2336,15 +2668,15 @@ class BrowserCore {
   docPath(collection, docId) {
     validateDocId(docId);
     const root = this.docsRoot(collection);
-    const target = join(root, shardOf(docId), `${docId}.json`);
-    assertPathInside(root, target);
+    const target = BrowserPath.join(root, shardOf(docId), `${docId}.json`);
+    BrowserPath.assertPathInside(root, target);
     return target;
   }
   deletedPath(collection, docId) {
     validateDocId(docId);
     const root = this.deletedRoot(collection);
-    const target = join(root, shardOf(docId), `${docId}.json`);
-    assertPathInside(root, target);
+    const target = BrowserPath.join(root, shardOf(docId), `${docId}.json`);
+    BrowserPath.assertPathInside(root, target);
     return target;
   }
   async withCollectionWriteLane(collection, action) {
@@ -2356,10 +2688,13 @@ class BrowserCore {
     await this.fs.mkdir(this.docsRoot(collection), { recursive: true });
     await this.fs.mkdir(this.deletedRoot(collection), { recursive: true });
     await this.fs.mkdir(this.metadata.root(collection), { recursive: true });
-    await this.fs.mkdir(join(this.collectionRoot(collection), "events"), { recursive: true });
+    await this.fs.mkdir(BrowserPath.join(this.collectionRoot(collection), "events"), {
+      recursive: true
+    });
     await this.index.ensureCollection(collection);
   }
-  async createCollection(collection) {
+  async createCollection(collection, options = {}) {
+    BrowserFeatureGuard.requireDocumentCollection(options);
     await this.ensureCollection(collection);
   }
   async requireCollection(collection) {
@@ -2429,8 +2764,9 @@ class BrowserCore {
     });
   }
   async putData(collection, data, meta) {
+    BrowserFeatureGuard.requireDocumentData(data);
     if (meta !== undefined)
-      validateMetadataRecord(meta);
+      MetadataRecord.validate(meta);
     await this.requireCollection(collection);
     const explicit = explicitDocumentEntry(data);
     const id = explicit?.[0] ?? TTID.generate();
@@ -2483,6 +2819,7 @@ class BrowserCore {
     });
   }
   async batchPutData(collection, batch) {
+    BrowserFeatureGuard.requireDocumentBatch(batch);
     const ids = [];
     for (const data of batch)
       ids.push(await this.putData(collection, data));
@@ -2762,31 +3099,31 @@ class BrowserCore {
     this.assertCollectionName(collection);
     return this.events.subscribe(collection, listener);
   }
-  async join(join2) {
-    const leftDocs = await this.docResults(join2.$leftCollection);
-    const rightDocs = await this.docResults(join2.$rightCollection);
+  async join(join) {
+    const leftDocs = await this.docResults(join.$leftCollection);
+    const rightDocs = await this.docResults(join.$rightCollection);
     const docs = safeRecord();
     for (const leftEntry of leftDocs) {
       const [leftId, leftData] = Object.entries(leftEntry)[0];
       for (const rightEntry of rightDocs) {
         const [rightId, rightData] = Object.entries(rightEntry)[0];
-        if (!this.joinRowMatches(join2, leftData, rightData))
+        if (!this.joinRowMatches(join, leftData, rightData))
           continue;
-        docs[`${leftId}, ${rightId}`] = this.projectJoinRow(join2, leftData, rightData);
-        if (join2.$limit && Object.keys(docs).length >= join2.$limit)
+        docs[`${leftId}, ${rightId}`] = this.projectJoinRow(join, leftData, rightData);
+        if (join.$limit && Object.keys(docs).length >= join.$limit)
           break;
       }
-      if (join2.$limit && Object.keys(docs).length >= join2.$limit)
+      if (join.$limit && Object.keys(docs).length >= join.$limit)
         break;
     }
-    if (join2.$groupby)
-      return groupJoinedDocs(join2, docs);
-    if (join2.$onlyIds)
+    if (join.$groupby)
+      return groupJoinedDocs(join, docs);
+    if (join.$onlyIds)
       return Array.from(new Set(Object.keys(docs).flat()));
     return docs;
   }
-  joinRowMatches(join2, leftData, rightData) {
-    for (const [field, operand] of Object.entries(join2.$on)) {
+  joinRowMatches(join, leftData, rightData) {
+    for (const [field, operand] of Object.entries(join.$on)) {
       if (!operand)
         continue;
       for (const opKey of Object.keys(JOIN_COMPARATORS)) {
@@ -2801,13 +3138,13 @@ class BrowserCore {
     }
     return false;
   }
-  projectJoinRow(join2, leftData, rightData) {
-    const combine = JOIN_MODES[join2.$mode];
+  projectJoinRow(join, leftData, rightData) {
+    const combine = JOIN_MODES[join.$mode];
     let projected = combine ? combine(leftData, rightData) : undefined;
-    if (join2.$select?.length)
-      projected = this.queryEngine.selectValues(join2.$select, projected);
-    if (join2.$rename)
-      projected = this.queryEngine.renameFields(join2.$rename, projected);
+    if (join.$select?.length)
+      projected = this.queryEngine.selectValues(join.$select, projected);
+    if (join.$rename)
+      projected = this.queryEngine.renameFields(join.$rename, projected);
     return projected;
   }
   async executeSQL(SQL) {
@@ -2898,8 +3235,8 @@ class BrowserCollectionFacade {
     this.core = core;
     this.collection = collection;
   }
-  async create() {
-    await this.core.createCollection(this.collection);
+  async create(options = {}) {
+    await this.core.createCollection(this.collection, options);
   }
   async drop() {
     await this.core.dropCollection(this.collection);
@@ -3006,7 +3343,7 @@ var BROWSER_OPERATIONS = {
   executeSQL: (fylo, request) => fylo.executeSQL(requireString(request, "sql")),
   createCollection: async (fylo, request) => {
     const collection = requireString(request, "collection");
-    await fylo.createCollection(collection);
+    await fylo.createCollection(collection, isRecord(request.options) ? request.options : {});
     return { collection };
   },
   dropCollection: async (fylo, request) => {
@@ -3104,7 +3441,7 @@ class MemoryFilesystem {
     this.mtimes.set("/", Date.now());
   }
   key(path) {
-    const normalised = normalize(path);
+    const normalised = BrowserPath.normalize(path);
     if (!normalised.startsWith("/"))
       return `/${normalised === "." ? "" : normalised}`;
     return normalised;
@@ -3140,7 +3477,7 @@ class MemoryFilesystem {
       }
       return;
     }
-    const parent = dirname(key);
+    const parent = BrowserPath.dirname(key);
     if (!this.dirs.has(parent))
       throw notFound(parent);
     this.dirs.add(key);
@@ -3224,7 +3561,7 @@ class MemoryFilesystem {
     return bytes.byteLength;
   }
   ensureParents(key) {
-    const parent = dirname(key);
+    const parent = BrowserPath.dirname(key);
     if (this.files.has(parent))
       throw notDirectory(parent);
     if (this.dirs.has(parent))
@@ -3319,7 +3656,7 @@ class OpfsFilesystem {
     this.dirCache = new Map;
   }
   key(path) {
-    const normalised = normalize(path);
+    const normalised = BrowserPath.normalize(path);
     return normalised.startsWith("/") ? normalised.slice(1) : normalised;
   }
   async root() {
@@ -3347,7 +3684,7 @@ class OpfsFilesystem {
     return handle;
   }
   async fileHandle(path, create = false) {
-    const dir = await this.directoryHandle(dirname(path), create);
+    const dir = await this.directoryHandle(BrowserPath.dirname(path), create);
     return await dir.getFileHandle(this.basename(path), { create });
   }
   basename(path) {
@@ -3403,13 +3740,20 @@ class OpfsFilesystem {
     return names.sort();
   }
   async rmdir(path, options = {}) {
-    const parent = await this.directoryHandle(dirname(path), false);
+    const parent = await this.directoryHandle(BrowserPath.dirname(path), false);
+    this.#forgetDirectory(path);
     try {
       await parent.removeEntry(this.basename(path), { recursive: options.recursive === true });
     } catch (err) {
       if (!isNotFound(err))
         throw err;
     }
+  }
+  #forgetDirectory(path) {
+    const key = this.key(path);
+    const stale = [...this.dirCache.keys()].filter((cacheKey) => cacheKey === key || cacheKey.startsWith(`${key}/`));
+    for (const cacheKey of stale)
+      this.dirCache.delete(cacheKey);
   }
   async readText(path) {
     return DECODER3.decode(await this.readBytes(path));
@@ -3451,7 +3795,7 @@ class OpfsFilesystem {
     await this.writeBytes(path, merged);
   }
   async remove(path) {
-    const parent = await this.directoryHandle(dirname(path), false);
+    const parent = await this.directoryHandle(BrowserPath.dirname(path), false);
     try {
       await parent.removeEntry(this.basename(path));
     } catch (err) {
@@ -3485,7 +3829,7 @@ class FsaFilesystem extends OpfsFilesystem {
 function createOverlayFilesystem(base) {
   const layer = createMemoryFilesystem();
   const removed = new Set;
-  const key = (path) => normalize(path);
+  const key = (path) => BrowserPath.normalize(path);
   const inBase = async (path) => !removed.has(key(path)) && await base.exists(path);
   const copyUp = async (path) => {
     if (!await layer.exists(path) && await inBase(path)) {
@@ -3659,6 +4003,31 @@ function createBrowserFilesystem(storage, namespace) {
   return storage.access === "readwrite" ? direct : createOverlayFilesystem(direct);
 }
 
+// src/browser/core/browser-protocol-error.js
+class BrowserProtocolError {
+  static from(error) {
+    if (!error || typeof error !== "object") {
+      return new Error("Unknown browser protocol error");
+    }
+    const record = error;
+    if (record.code === "FYLO_COLLECTION_NOT_FOUND") {
+      return BrowserProtocolError.collectionNotFound(record);
+    }
+    return BrowserProtocolError.failure(record);
+  }
+  static collectionNotFound(record) {
+    const message = typeof record.message === "string" ? record.message : "";
+    return new CollectionNotFoundError(message.replace(/^Collection not found: /, ""));
+  }
+  static failure(record) {
+    const failure = new Error(typeof record.message === "string" ? record.message : "Request failed");
+    failure.name = typeof record.name === "string" ? record.name : "Error";
+    if (typeof record.code === "string")
+      failure.code = record.code;
+    return failure;
+  }
+}
+
 // src/browser/worker/client.js
 class FyloWorkerClient {
   constructor(port, options) {
@@ -3686,7 +4055,7 @@ class FyloWorkerClient {
       return;
     this.pending.delete(id);
     if (envelope.ok === false) {
-      pending.reject(new Error(envelope.error?.message ?? "FYLO worker request failed"));
+      pending.reject(BrowserProtocolError.from(envelope.error ?? { message: "FYLO worker request failed" }));
       return;
     }
     pending.resolve(envelope);
@@ -3716,7 +4085,7 @@ class FyloWorkerClient {
   async request(request) {
     const response = await this.envelope(request);
     if (!response.ok)
-      throw new Error(response.error.message);
+      throw BrowserProtocolError.from(response.error);
     return response.result;
   }
   async envelope(request) {
@@ -4003,6 +4372,7 @@ class FyloBrowser {
   core;
   worker;
   constructor(options = {}) {
+    BrowserFeatureGuard.requirePlainClientOptions(options);
     this.namespace = options.namespace ?? "fylo";
     this.root = options.root ?? "/";
     const useWorker = shouldUseWorker(options.worker ?? true);
@@ -4106,6 +4476,9 @@ class FyloBrowser {
   async _sql(statement) {
     return await this.dispatch({ op: "executeSQL", sql: statement });
   }
+  async executeSQL(statement) {
+    return await this._sql(statement);
+  }
   async request(request) {
     if (this.worker)
       return await this.worker.envelope(request);
@@ -4118,11 +4491,11 @@ class FyloBrowser {
       throw new Error("FYLO browser runtime is not initialised");
     const response = await runBrowserRequest(this.core, request);
     if (!response.ok)
-      throw browserProtocolError(response.error);
+      throw BrowserProtocolError.from(response.error);
     return response.result;
   }
-  async createCollection(collection) {
-    await this.dispatch({ op: "createCollection", collection });
+  async createCollection(collection, options = {}) {
+    await this.dispatch({ op: "createCollection", collection, options });
   }
   async dropCollection(collection) {
     await this.dispatch({ op: "dropCollection", collection });
@@ -4201,10 +4574,10 @@ class FyloBrowser {
       }
     };
   }
-  async join(join2) {
+  async join(join) {
     return await this.dispatch({
       op: "joinDocs",
-      join: join2
+      join
     });
   }
   async putData(collection, data, meta, metaPresent = arguments.length >= 3) {
@@ -4314,8 +4687,8 @@ class BrowserCollectionFacade2 {
   async rebuild() {
     return await this.fylo.rebuildCollection(this.collection);
   }
-  async create() {
-    await this.fylo.createCollection(this.collection);
+  async create(options = {}) {
+    await this.fylo.createCollection(this.collection, options);
   }
   async drop() {
     await this.fylo.dropCollection(this.collection);
@@ -4326,18 +4699,6 @@ class BrowserCollectionFacade2 {
 }
 function createBrowserFylo(options) {
   return new FyloBrowser(options);
-}
-function browserProtocolError(error) {
-  if (!error || typeof error !== "object") {
-    return new Error("Unknown browser protocol error");
-  }
-  const err = error;
-  if (err.code === "FYLO_COLLECTION_NOT_FOUND") {
-    return new CollectionNotFoundError(typeof err.message === "string" ? err.message.replace(/^Collection not found: /, "") : "");
-  }
-  const failure = new Error(typeof err.message === "string" ? err.message : "Request failed");
-  failure.name = typeof err.name === "string" ? err.name : "Error";
-  return failure;
 }
 function shouldUseWorker(requested) {
   return requested && typeof window !== "undefined" && typeof URL !== "undefined" && (typeof SharedWorker !== "undefined" || typeof Worker !== "undefined");
@@ -4354,6 +4715,7 @@ var RESERVED = new Set([
   "request",
   "sql",
   "_sql",
+  "executeSQL",
   "inspect",
   "rebuild",
   "create",
@@ -4393,6 +4755,9 @@ class BrowserFyloClient {
     await this.ready();
     return await this.browser._sql(statement);
   }
+  async executeSQL(statement) {
+    return await this._sql(statement);
+  }
   async request(request) {
     await this.ready();
     return await this.browser.request(request);
@@ -4405,9 +4770,9 @@ class BrowserFyloClient {
     this.collections.set(collection, facade);
     return facade;
   }
-  async createCollection(collection) {
+  async createCollection(collection, options = {}) {
     await this.ready();
-    await this.browser.createCollection(collection);
+    await this.browser.createCollection(collection, options);
   }
   async dropCollection(collection) {
     await this.ready();
@@ -4453,8 +4818,8 @@ class BrowserDirectCollection {
     find.deleted = (query = {}) => self.findDeleted(query);
     this.find = find;
   }
-  async create() {
-    await this.host.createCollection(this.collection);
+  async create(options = {}) {
+    await this.host.createCollection(this.collection, options);
   }
   async drop() {
     await this.host.dropCollection(this.collection);
@@ -4469,7 +4834,7 @@ class BrowserDirectCollection {
     await this.host.ready();
     const res = await this.host.request({ op, collection: this.collection, ...fields });
     if (!res.ok)
-      throw new Error(res.error?.message ?? "browser request failed");
+      throw BrowserProtocolError.from(res.error);
     return res.result;
   }
   put(dataOrId, data) {
@@ -4519,7 +4884,7 @@ class BrowserDirectCollection {
       async once() {
         const res = await host.request({ op: "getDoc", collection, id, onlyId });
         if (!res.ok)
-          throw new Error(res.error?.message ?? "browser getDoc failed");
+          throw BrowserProtocolError.from(res.error);
         return res.result;
       },
       metadata: async () => await this.#req("getMeta", { id }),
@@ -4544,7 +4909,7 @@ class BrowserDirectCollection {
       async* collect() {
         const res = await host.request({ op: "findDocs", collection, query });
         if (!res.ok)
-          throw new Error(res.error?.message ?? "browser findDocs failed");
+          throw BrowserProtocolError.from(res.error);
         const docs = res.result;
         if (Array.isArray(docs)) {
           for (const id of docs)
@@ -4567,7 +4932,7 @@ class BrowserDirectCollection {
       async* collect() {
         const res = await host.request({ op: "findDeletedDocs", collection, query });
         if (!res.ok)
-          throw new Error(res.error?.message ?? "browser findDeletedDocs failed");
+          throw BrowserProtocolError.from(res.error);
         const docs = res.result;
         if (docs && typeof docs === "object") {
           for (const [id, doc] of Object.entries(docs)) {
@@ -4598,6 +4963,284 @@ function createBrowserClient(options = {}) {
 }
 var fylo = createBrowserClient();
 var client_default = fylo;
+// src/browser/vdbx-names.mjs
+var WORKING_COPY_DIRECTORY = "fylo-vdbx";
+function isWorkingCopyName(name) {
+  return typeof name === "string" && name.length <= 200 && /^[A-Za-z0-9][A-Za-z0-9 ._()-]*\.vdbx$/.test(name) && !name.includes("..");
+}
+
+// src/browser/vdbx-client.mjs
+var VDBX_MAGIC = Object.freeze([137, 86, 68, 66, 88, 13, 10, 26]);
+var VDBX_MEDIA_TYPE = "application/vnd.d31ma.vdbx";
+var PICKER_TYPES = [{ description: "FYLO database", accept: { [VDBX_MEDIA_TYPE]: [".vdbx"] } }];
+
+class SingleFileDatabase {
+  constructor(worker, info, call) {
+    this.worker = worker;
+    this.info = info;
+    this.call = call;
+  }
+  static async open(source, { workerUrl, moduleUrl, path, identity, onProgress }) {
+    const worker = new Worker(workerUrl, { type: "module" });
+    const calls = createCalls(worker, onProgress);
+    try {
+      const info = await calls({ op: "open", source, path, moduleUrl, identity });
+      return new SingleFileDatabase(worker, info, calls);
+    } catch (error) {
+      worker.terminate();
+      throw error;
+    }
+  }
+  stat() {
+    return this.call({ op: "host", call: "stat" });
+  }
+  async read(offset, length) {
+    return (await this.call({ op: "host", call: "read", offset, length })).bytes;
+  }
+  write(offset, bytes) {
+    return this.call({ op: "host", call: "write", offset, bytes });
+  }
+  truncate(length) {
+    return this.call({ op: "host", call: "truncate", length });
+  }
+  flush() {
+    return this.call({ op: "host", call: "flush" });
+  }
+  async exec(ndjson) {
+    return (await this.call({ op: "exec", ndjson })).ndjson;
+  }
+  async snapshot() {
+    return (await this.call({ op: "snapshot" })).blob;
+  }
+  async close() {
+    try {
+      await this.call({ op: "close" });
+    } finally {
+      this.worker.terminate();
+    }
+  }
+}
+function createCalls(worker, onProgress) {
+  let next = 1;
+  const pending = new Map;
+  worker.onmessage = (event) => {
+    const { id, result, error, code, progress } = event.data ?? {};
+    const waiting = pending.get(id);
+    if (!waiting)
+      return;
+    if (progress) {
+      onProgress?.(progress);
+      return;
+    }
+    pending.delete(id);
+    if (error)
+      waiting.reject(Object.assign(new Error(error), { code }));
+    else
+      waiting.resolve(result);
+  };
+  worker.onerror = (event) => {
+    const failure = new Error(event.message || "the database Worker failed to start");
+    for (const waiting of pending.values())
+      waiting.reject(failure);
+    pending.clear();
+  };
+  return (message) => new Promise((resolve, reject) => {
+    const id = next++;
+    pending.set(id, { resolve, reject });
+    worker.postMessage({ ...message, id });
+  });
+}
+function hasVdbxMagic(bytes) {
+  return VDBX_MAGIC.every((value, index) => bytes[index] === value);
+}
+async function pickDatabaseFile() {
+  const { showOpenFilePicker } = globalThis;
+  if (typeof showOpenFilePicker !== "function")
+    return null;
+  const [handle] = await showOpenFilePicker({
+    types: PICKER_TYPES,
+    excludeAcceptAllOption: false,
+    multiple: false
+  });
+  return { file: await handle.getFile(), handle };
+}
+async function databaseFromDrop(transfer) {
+  const item = Array.from(transfer?.items ?? []).find((entry) => entry.kind === "file");
+  if (!item)
+    return null;
+  const withHandle = item;
+  const pendingHandle = typeof withHandle.getAsFileSystemHandle === "function" ? withHandle.getAsFileSystemHandle() : null;
+  const file = item.getAsFile();
+  if (!file)
+    return null;
+  const handle = await pendingHandle?.catch(() => null);
+  return handle?.kind === "file" ? { file, handle } : { file };
+}
+function workingCopyName(fileName, now = Date.now()) {
+  const base = String(fileName ?? "").replace(/\.vdbx$/i, "").replace(/[^A-Za-z0-9 ._()-]+/g, "-").replace(/\.{2,}/g, ".").replace(/^[^A-Za-z0-9]+/, "").slice(0, 120) || "database";
+  return `${base}-${now.toString(36)}.vdbx`;
+}
+async function listWorkingCopies() {
+  const directory = await workingCopyDirectory(false);
+  if (!directory)
+    return [];
+  const copies = [];
+  const listing = directory;
+  for await (const [name, handle] of listing.entries()) {
+    if (handle.kind !== "file" || !isWorkingCopyName(name))
+      continue;
+    try {
+      const file = await handle.getFile();
+      copies.push({ name, size: file.size, modifiedMs: file.lastModified });
+    } catch {
+      copies.push({ name, size: 0, modifiedMs: 0 });
+    }
+  }
+  return copies.sort((a, b) => b.modifiedMs - a.modifiedMs);
+}
+async function removeWorkingCopy(name) {
+  if (!isWorkingCopyName(name))
+    throw new Error(`invalid working copy name: ${name}`);
+  const directory = await workingCopyDirectory(false);
+  await directory?.removeEntry(name);
+}
+async function workingCopyDirectory(create) {
+  const root = await navigator.storage.getDirectory();
+  try {
+    return await root.getDirectoryHandle(WORKING_COPY_DIRECTORY, { create });
+  } catch (error) {
+    if (error?.name === "NotFoundError")
+      return null;
+    throw error;
+  }
+}
+async function saveDatabase(blob, { handle, suggestedName = "database.vdbx", ...options } = {}) {
+  if (handle && typeof handle.createWritable === "function" && await canWrite(handle)) {
+    await writeThrough(handle, blob);
+    return "written";
+  }
+  const { showSaveFilePicker } = globalThis;
+  if (typeof showSaveFilePicker === "function") {
+    const target = await showSaveFilePicker({ suggestedName, types: PICKER_TYPES });
+    await writeThrough(target, blob);
+    return "written";
+  }
+  downloadDatabase(blob, suggestedName, options.document);
+  return "downloaded";
+}
+async function canWrite(handle) {
+  if (typeof handle.queryPermission !== "function")
+    return true;
+  const mode = { mode: "readwrite" };
+  if (await handle.queryPermission(mode) === "granted")
+    return true;
+  return await handle.requestPermission?.(mode) === "granted";
+}
+async function writeThrough(handle, blob) {
+  if (typeof handle.createWritable !== "function") {
+    throw new Error("this browser cannot write the file in place");
+  }
+  const writable = await handle.createWritable();
+  try {
+    await writable.write(blob);
+    await writable.close();
+  } catch (error) {
+    await writable.abort?.().catch(() => {});
+    throw error;
+  }
+}
+function downloadDatabase(blob, name, document = globalThis.document) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = name;
+  link.rel = "noopener";
+  link.style.display = "none";
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+// src/browser/identity-bridge.mjs
+var BRIDGE_BYTES = 1024 * 1024;
+var DATABASE = "fylo-identities";
+var STORE = "keys";
+var ECDSA = { name: "ECDSA", namedCurve: "P-256" };
+var ECDH = { name: "ECDH", namedCurve: "P-256" };
+var encoder = new TextEncoder;
+var KEM_SUITE = concat(encoder.encode("KEM"), u16(16));
+var HPKE_SUITE = concat(encoder.encode("HPKE"), u16(16), u16(1), u16(2));
+var VERSION_LABEL = encoder.encode("HPKE-v1");
+function u16(value) {
+  return new Uint8Array([value >> 8 & 255, value & 255]);
+}
+function concat(...parts) {
+  const out = new Uint8Array(parts.reduce((total, part) => total + part.length, 0));
+  let at = 0;
+  for (const part of parts) {
+    out.set(part, at);
+    at += part.length;
+  }
+  return out;
+}
+function openStore(indexedDB2 = globalThis.indexedDB) {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB2.open(DATABASE, 1);
+    request.onupgradeneeded = () => request.result.createObjectStore(STORE);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+function storeRequest(database, mode, act) {
+  return new Promise((resolve, reject) => {
+    const request = act(database.transaction(STORE, mode).objectStore(STORE));
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+async function loadWebCryptoIdentity(name) {
+  const database = await openStore();
+  return storeRequest(database, "readonly", (store) => store.get(name));
+}
+async function createWebCryptoIdentity(name) {
+  const database = await openStore();
+  if (await storeRequest(database, "readonly", (store) => store.getKey(name))) {
+    throw Object.assign(new Error(`webcrypto:${name} already has a key`), {
+      code: "EIDENTITY_EXISTS"
+    });
+  }
+  const pair = await crypto.subtle.generateKey(ECDSA, true, ["sign", "verify"]);
+  const pkcs8 = await crypto.subtle.exportKey("pkcs8", pair.privateKey);
+  const publicKey = new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey));
+  const sign = await crypto.subtle.importKey("pkcs8", pkcs8, ECDSA, false, ["sign"]);
+  const derive = await crypto.subtle.importKey("pkcs8", pkcs8, ECDH, false, ["deriveBits"]);
+  await storeRequest(database, "readwrite", (store) => store.add({ sign, derive, publicKey }, name));
+  return publicKey;
+}
+var BASE32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+function base32(bytes) {
+  let text = "";
+  let buffer = 0;
+  let bits = 0;
+  for (const byte of bytes) {
+    buffer = (buffer << 8 | byte) & 65535;
+    bits += 8;
+    while (bits >= 5) {
+      bits -= 5;
+      text += BASE32[buffer >> bits & 31];
+    }
+  }
+  if (bits > 0)
+    text += BASE32[buffer << 5 - bits & 31];
+  return text;
+}
+function base64url(bytes) {
+  return btoa(String.fromCharCode(...bytes)).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+}
+async function describeIdentity(publicKey) {
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", publicKey));
+  return { publicKey: `fpk1:p256:${base64url(publicKey)}`, id: `fid1:p256:${base32(digest)}` };
+}
 // src/query/postgrest.js
 function queryFromSearch(search) {
   const query = {};
@@ -4666,13 +5309,23 @@ function coerceValue(value) {
   return value;
 }
 export {
+  workingCopyName,
+  saveDatabase,
+  removeWorkingCopy,
   queryFromSearch,
   pickFyloRoot,
+  pickDatabaseFile,
+  loadWebCryptoIdentity,
+  listWorkingCopies,
   listRecentRoots,
+  hasVdbxMagic,
   forgetRecentRoot,
   ensureRootPermission,
+  describeIdentity,
   client_default as default,
+  databaseFromDrop,
   createWorkerClient,
+  createWebCryptoIdentity,
   createWasmIndexScannerFactory,
   createOverlayFilesystem,
   createOpfsFilesystem,
@@ -4680,7 +5333,9 @@ export {
   createBrowserFylo,
   createBrowserClient,
   WasmIndexScannerFactory,
+  VDBX_MEDIA_TYPE,
   TTID,
+  SingleFileDatabase,
   OpfsFilesystem,
   MemoryFilesystem,
   FyloWorkerClient,
