@@ -527,6 +527,11 @@ jobs:
               run: |
                   bun install --frozen-lockfile
                   (cd explorer && bun install --frozen-lockfile)
+                  tachyon_cli=explorer/node_modules/@d31ma/tachyon/src/cli/index.js
+                  if [ ! -f "$tachyon_cli" ]; then
+                    echo "::error::The Explorer install did not install the Tachyon CLI at $tachyon_cli." >&2
+                    exit 1
+                  fi
                   sh ./scripts/install-vendor-bins.sh
                   echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
