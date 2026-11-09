@@ -4,7 +4,7 @@
     "sites": {
         "fylo": {
             "appId": "dhq9jgfyq7uv2",
-            "branch": "master",
+            "branch": "production",
             "sourceDir": "website/dist/web",
             "origin": "https://fylo.del.ma",
             "headersPolicy": "ops/fylo-amplify-custom-headers-transition-v1.yml",

@@ -2,10 +2,10 @@
 
 Fylo has two independently deployed web surfaces:
 
-| Surface                     | Build output                      | Production target                            |
-| --------------------------- | --------------------------------- | -------------------------------------------- |
-| Marketing and documentation | `website/dist/web`                | Amplify app `FYLO`, `https://fylo.del.ma`    |
-| Browser loader and engine   | `dist-web` plus `clients/browser` | GitHub Pages, `https://d31ma.github.io/FYLO` |
+| Surface                     | Build output                      | Production target                                              |
+| --------------------------- | --------------------------------- | -------------------------------------------------------------- |
+| Marketing and documentation | `website/dist/web`                | Amplify app `FYLO`, branch `production`, `https://fylo.del.ma` |
+| Browser loader and engine   | `dist-web` plus `clients/browser` | GitHub Pages, `https://d31ma.github.io/FYLO`                   |
 
 The GitHub release also publishes the Explorer build as
 `fylo-explorer-<CalVer>.zip`. The archive is created from the contents of
@@ -37,6 +37,11 @@ pub/sub are outside the 26.33.01 Rust compiler contract.
 
 ## One-time AWS setup
 
+For `fylo.del.ma`, d31ma/PaaS (`infra/fylo/amplify`) already provides all of this: the Amplify app
+`dhq9jgfyq7uv2` with its `production` branch, the response headers, the release bucket
+`fylo-web-releases-117469679339`, and the deploy roles. The steps below describe what that stack
+provides, for a review or a new host.
+
 Create a private, versioned S3 bucket for release artifacts. Block all public access and enable
 default encryption. Grant the release operator only these capabilities:
 
@@ -44,8 +49,9 @@ default encryption. Grant the release operator only these capabilities:
   `StringLike` `s3:prefix` condition limited to `fylo/web-releases/*`
 - Object-level `s3:GetObject`, `s3:PutObject`, and `s3:DeleteObject` on
   `arn:aws:s3:::your-private-release-bucket/fylo/web-releases/*`
-- `amplify:CreateDeployment`, `amplify:StartDeployment`, `amplify:GetJob`,
-  `amplify:GetApp`, and `amplify:UpdateApp` for the FYLO app
+- `amplify:CreateDeployment`, `amplify:StartDeployment`, and `amplify:GetJob` on the FYLO app's
+  branches, and `amplify:GetApp` to read the header policy. The operator never needs
+  `amplify:UpdateApp`: the headers are app configuration that PaaS owns.
 
 For example, substitute the exact release bucket name in this IAM policy:
 
@@ -136,29 +142,25 @@ Do not add a long-lived shared-cache directive to those stable URLs. Immutable, 
 assets may receive a narrower cache rule in a future policy version after their paths and smoke
 coverage are explicit.
 
-Apply the policy selected by `headersPolicy` to Amplify before deploying the site. `customHeaders`
-is app configuration, so it is not carried inside the deployment ZIP:
+`customHeaders` is app configuration, so it is not carried inside the deployment ZIP. d31ma/PaaS
+`infra/fylo/amplify` applies the policy selected by `headersPolicy`: it keeps a byte-for-byte copy
+of the file, sends it in the compact JSON form Amplify stores, and fails its plan if the two
+disagree. Change the policy in this repository first, then in that stack. To read the live value:
 
 ```sh
 FYLO_AMPLIFY_APP_ID=$(bun -e \
   'const c = await Bun.file("ops/web-release.json").json(); console.log(c.sites.fylo.appId)')
-FYLO_AMPLIFY_HEADERS_POLICY=$(bun -e \
-  'const c = await Bun.file("ops/web-release.json").json(); console.log(c.sites.fylo.headersPolicy)')
-aws amplify update-app \
-  --app-id "$FYLO_AMPLIFY_APP_ID" \
-  --custom-headers "$(cat "$FYLO_AMPLIFY_HEADERS_POLICY")"
 aws amplify get-app \
   --app-id "$FYLO_AMPLIFY_APP_ID" \
   --query 'app.customHeaders' \
   --output text
 ```
 
-Compare the returned value with the selected checked-in file before continuing. The post-deploy
-smoke test then requires every configured route and asset to return the exact security and cache
-headers. The release command also reads `app.customHeaders` and compares it byte-for-byte with the
-selected policy before it acquires the release lease, creates an artifact, or requests an Amplify
-upload. Missing policy, AWS errors, invalid responses, or drift all fail closed without changing
-release state.
+The post-deploy smoke test then requires every configured route and asset to return the exact
+security and cache headers. The release command also reads `app.customHeaders` and compares its
+parsed header list with the selected policy's `customHeaders` list before it acquires the release
+lease, creates an artifact, or requests an Amplify upload. Missing policy, AWS errors, invalid
+responses, or drift all fail closed without changing release state.
 
 The release state stores a checksum-bound probe and header contract for the current and previous
 artifacts. An automatic or manual rollback therefore validates the archived artifact's own routes
@@ -183,8 +185,8 @@ Promote to the final policy only after `state/current.json` records both `checks
 keeps a legacy artifact as `previousChecksum`, so a second distinct final-compatible artifact must
 be deployed successfully first. Then, in one reviewed change, point `headersPolicy` to
 `finalHeadersPolicy`, replace the configured `content-security-policy` required-header value with
-the final policy value, apply that final policy with `update-app`, verify `get-app`, and run the
-production smoke test. Do not promote solely because the current checksum is compatible; doing so
+the final policy value, apply that final policy through d31ma/PaaS `infra/fylo/amplify`, verify
+`get-app`, and run the production smoke test. Do not promote solely because the current checksum is compatible; doing so
 would break the recorded rollback target. Removing `unsafe-eval` at this promotion is mandatory;
 it must never be added to the final policy.
 
@@ -255,9 +257,14 @@ only the `production` branch, read the header policy, and use only the
 `fylo/web-releases/fylo/` archive prefix. The status is read with the workflow's own token
 (`statuses: read`).
 
-Production deploys wait until `sites.fylo.branch` in `ops/web-release.json` is `production`.
-Until the domain moves from `master` to `production`, the workflow resolves the release and says
-in a notice that production waits.
+Production deploys go to the Amplify branch named by `sites.fylo.branch` in `ops/web-release.json`,
+which is `production`. The workflow deploys only when that value is `production`; for any other
+value it resolves the release and says in a notice that production waits.
+
+`fylo.del.ma` moved from the legacy `master` branch to `production` on 2026-11-09. `master` still
+holds the last legacy artifact (Amplify job 19) as a temporary rollback. PaaS removes it after
+`production` has taken one release through `amplify-release.mjs`; until then, a hosting fault can
+be undone by pointing the PaaS domain association back to `master`.
 
 To roll back, run `Site Deploy` by hand (action `rollback`); it runs
 `bun scripts/amplify-release.mjs rollback fylo` with the production role. To retry a failed

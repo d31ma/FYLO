@@ -1491,7 +1491,9 @@ describe('web release operations', () => {
                 expect.objectContaining({ path: '/imports.js' })
             )
         }
-        expect(runbook).toContain('aws amplify update-app')
+        expect(runbook).not.toContain('aws amplify update-app')
+        expect(runbook).toContain('d31ma/PaaS `infra/fylo/amplify`')
+        expect(config.sites.fylo.branch).toBe('production')
         expect(runbook).toContain(config.sites.fylo.headersPolicy)
         expect(runbook).toContain(config.sites.fylo.finalHeadersPolicy)
         expect(runbook).toContain('previousChecksum')
