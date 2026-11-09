@@ -63,6 +63,7 @@ jobs:
             - name: Install verified Windows vendor binaries
               shell: pwsh
               env:
+                  GH_TOKEN: ${{ github.token }}
                   GITHUB_TOKEN: ${{ github.token }}
               run: ./scripts/install-vendor-bins.ps1
 
@@ -159,6 +160,8 @@ jobs:
                   go-version: '1.22'
 
             - name: Install dependencies and vendor binaries
+              env:
+                  GH_TOKEN: ${{ github.token }}
               run: |
                   bun install --frozen-lockfile
                   sh ./scripts/install-vendor-bins.sh
@@ -281,6 +284,8 @@ jobs:
                   bun-version-file: .bun-version
 
             - name: Install dependencies and vendor binaries
+              env:
+                  GH_TOKEN: ${{ github.token }}
               run: |
                   bun install --frozen-lockfile
                   sh ./scripts/install-vendor-bins.sh
@@ -352,6 +357,8 @@ jobs:
               run: bun install --frozen-lockfile
 
             - name: Install verified vendor binaries
+              env:
+                  GH_TOKEN: ${{ github.token }}
               run: |
                   sh ./scripts/install-vendor-bins.sh
                   echo "$HOME/.local/bin" >> "$GITHUB_PATH"
@@ -418,6 +425,8 @@ jobs:
                   go-version: '1.22'
 
             - name: Install Kotlin compiler
+              env:
+                  GH_TOKEN: ${{ github.token }}
               run: sh ./scripts/install-kotlin-compiler.sh
 
             - name: Install dependencies
@@ -427,6 +436,8 @@ jobs:
                   (cd explorer && bun install --frozen-lockfile)
 
             - name: Install verified vendor binaries
+              env:
+                  GH_TOKEN: ${{ github.token }}
               run: |
                   sh ./scripts/install-vendor-bins.sh
                   echo "$HOME/.local/bin" >> "$GITHUB_PATH"
@@ -524,6 +535,8 @@ jobs:
                   bun-version-file: .bun-version
 
             - name: Install release dependencies
+              env:
+                  GH_TOKEN: ${{ github.token }}
               run: |
                   bun install --frozen-lockfile
                   (cd explorer && bun install --frozen-lockfile)

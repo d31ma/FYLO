@@ -7,6 +7,7 @@ set -eu
 
 TACHYON_VERSION='v26.36.01'
 DESTINATION=${FYLO_VENDOR_BIN_DIR:-"$HOME/.local/bin"}
+SCRIPTS=$(dirname "$0")
 
 case "$(uname -s)-$(uname -m)" in
     Linux-x86_64)
@@ -62,9 +63,7 @@ install_binary() {
     executable=$5
     temporary=$(mktemp "${TMPDIR:-/tmp}/fylo-vendor.XXXXXX")
     trap 'rm -f "$temporary"' EXIT HUP INT TERM
-    curl --fail --silent --show-error --location --retry 3 \
-        "https://github.com/$repository/releases/download/$version/$asset" \
-        --output "$temporary"
+    sh "$SCRIPTS/download-release-asset.sh" "$repository" "$version" "$asset" "$temporary"
     verify_sha256 "$temporary" "$expected"
     install -m 0755 "$temporary" "$DESTINATION/$executable"
     rm -f "$temporary"
