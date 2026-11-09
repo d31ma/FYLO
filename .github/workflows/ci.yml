@@ -36,6 +36,8 @@ jobs:
                   bun-version-file: .bun-version
 
             - name: Install dependencies and verified vendor binaries
+              env:
+                  GH_TOKEN: ${{ github.token }}
               run: |
                   bun install --frozen-lockfile
                   sh ./scripts/install-vendor-bins.sh
@@ -267,6 +269,8 @@ jobs:
 
             - name: Install verified vendor binaries
               shell: bash
+              env:
+                  GH_TOKEN: ${{ github.token }}
               run: |
                   sh ./scripts/install-vendor-bins.sh
                   if command -v cygpath >/dev/null 2>&1; then
@@ -464,6 +468,8 @@ jobs:
                   go-version: '1.22'
 
             - name: Install Kotlin compiler and project dependencies
+              env:
+                  GH_TOKEN: ${{ github.token }}
               run: |
                   sh ./scripts/install-kotlin-compiler.sh
                   bun install --frozen-lockfile
