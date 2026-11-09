@@ -1,0 +1,218 @@
+name: Site Deploy
+
+on:
+    workflow_run:
+        workflows: [Release]
+        types: [completed]
+        branches: [main]
+    workflow_dispatch:
+        inputs:
+            site:
+                description: Release target to roll back to its previous artifact
+                required: true
+                type: choice
+                options: [fylo-staging, fylo]
+
+permissions: {}
+
+concurrency:
+    group: site-deploy-${{ github.repository }}
+    cancel-in-progress: false
+
+env:
+    FYLO_WEB_RELEASE_BUCKET: fylo-web-releases-117469679339
+    STAGING_ROLE: arn:aws:iam::117469679339:role/fylo-site-deploy-staging
+    PRODUCTION_ROLE: arn:aws:iam::117469679339:role/fylo-site-deploy-production
+
+jobs:
+    resolve:
+        name: Find the website zip of the release
+        if: >-
+            ${{
+              github.event_name == 'workflow_run' &&
+              github.event.workflow_run.conclusion == 'success' &&
+              github.event.workflow_run.event == 'push'
+            }}
+        runs-on: ubuntu-24.04
+        timeout-minutes: 10
+        permissions:
+            actions: read
+            contents: read
+        outputs:
+            deploy: ${{ steps.release.outputs.deploy }}
+            sha256: ${{ steps.zip.outputs.sha256 }}
+            production: ${{ steps.release.outputs.production }}
+        steps:
+            - name: Checkout
+              uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+              with:
+                  persist-credentials: false
+                  fetch-depth: 0
+
+            - name: Decide whether this run released a website
+              id: release
+              env:
+                  GH_TOKEN: ${{ github.token }}
+                  RUN_ID: ${{ github.event.workflow_run.id }}
+                  HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+              run: |
+                  set -euo pipefail
+                  git fetch --force --tags origin
+                  version=$(git show "$HEAD_SHA:package.json" | jq -r .version)
+                  tag_sha=$(git rev-parse --verify --quiet "refs/tags/v$version^{commit}" || true)
+                  artifacts=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/artifacts?per_page=100" --jq '.artifacts[].name')
+                  if [[ "$tag_sha" != "$HEAD_SHA" ]]; then
+                    echo "::notice::$HEAD_SHA is not the release v$version; nothing to deploy."
+                    echo "deploy=false" >> "$GITHUB_OUTPUT"
+                    exit 0
+                  fi
+                  if ! grep -qx fylo-site <<<"$artifacts"; then
+                    echo "::error::Release v$version has no fylo-site artifact; see the site-artifact job of run $RUN_ID."
+                    exit 1
+                  fi
+                  production_branch=$(jq -r .sites.fylo.branch ops/web-release.json)
+                  if [[ "$production_branch" != "production" ]]; then
+                    echo "::notice::ops/web-release.json deploys fylo to '$production_branch'; production deploys wait until it names the production branch."
+                  fi
+                  {
+                    echo "deploy=true"
+                    echo "production=$([[ "$production_branch" == "production" ]] && echo true || echo false)"
+                  } >> "$GITHUB_OUTPUT"
+
+            - name: Download the website zip
+              if: steps.release.outputs.deploy == 'true'
+              uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+              with:
+                  name: fylo-site
+                  path: site
+                  run-id: ${{ github.event.workflow_run.id }}
+                  github-token: ${{ github.token }}
+
+            - name: Check the website zip
+              id: zip
+              if: steps.release.outputs.deploy == 'true'
+              working-directory: site
+              run: |
+                  set -euo pipefail
+                  sha256sum --check --strict fylo-site.zip.sha256
+                  echo "sha256=$(cut -d' ' -f1 fylo-site.zip.sha256)" >> "$GITHUB_OUTPUT"
+
+    deploy-staging:
+        name: Deploy staging
+        needs: resolve
+        if: needs.resolve.outputs.deploy == 'true'
+        runs-on: ubuntu-24.04
+        timeout-minutes: 90
+        environment:
+            name: site-staging
+            url: https://staging.fylo.del.ma
+        permissions:
+            actions: read
+            contents: read
+            id-token: write
+        steps:
+            - name: Checkout
+              uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+              with:
+                  persist-credentials: false
+
+            - name: Setup Bun
+              uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+              with:
+                  bun-version-file: .bun-version
+
+            - name: Download the website zip
+              uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+              with:
+                  name: fylo-site
+                  path: site
+                  run-id: ${{ github.event.workflow_run.id }}
+                  github-token: ${{ github.token }}
+
+            - name: Assume the staging deploy role
+              uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+              with:
+                  role-to-assume: ${{ env.STAGING_ROLE }}
+                  aws-region: ca-central-1
+
+            - name: Deploy, probe and record staging
+              env:
+                  FYLO_WEB_RELEASE_ARTIFACT: site/fylo-site.zip
+                  FYLO_WEB_RELEASE_ARTIFACT_SHA256: ${{ needs.resolve.outputs.sha256 }}
+              run: bun scripts/amplify-release.mjs deploy fylo-staging
+
+    deploy-production:
+        name: Deploy production
+        needs: [resolve, deploy-staging]
+        if: needs.resolve.outputs.production == 'true'
+        runs-on: ubuntu-24.04
+        timeout-minutes: 90
+        environment:
+            name: site-production
+            url: https://fylo.del.ma
+        permissions:
+            actions: read
+            contents: read
+            id-token: write
+        steps:
+            - name: Checkout
+              uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+              with:
+                  persist-credentials: false
+
+            - name: Setup Bun
+              uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+              with:
+                  bun-version-file: .bun-version
+
+            - name: Download the website zip
+              uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+              with:
+                  name: fylo-site
+                  path: site
+                  run-id: ${{ github.event.workflow_run.id }}
+                  github-token: ${{ github.token }}
+
+            - name: Assume the production deploy role
+              uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+              with:
+                  role-to-assume: ${{ env.PRODUCTION_ROLE }}
+                  aws-region: ca-central-1
+
+            - name: Deploy, probe and record production (rolls back on failure)
+              env:
+                  FYLO_WEB_RELEASE_ARTIFACT: site/fylo-site.zip
+                  FYLO_WEB_RELEASE_ARTIFACT_SHA256: ${{ needs.resolve.outputs.sha256 }}
+              run: bun scripts/amplify-release.mjs deploy fylo
+
+    rollback:
+        name: Roll back ${{ inputs.site }}
+        if: github.event_name == 'workflow_dispatch'
+        runs-on: ubuntu-24.04
+        timeout-minutes: 90
+        environment:
+            name: ${{ inputs.site == 'fylo' && 'site-production' || 'site-staging' }}
+        permissions:
+            contents: read
+            id-token: write
+        steps:
+            - name: Checkout
+              uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+              with:
+                  persist-credentials: false
+
+            - name: Setup Bun
+              uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+              with:
+                  bun-version-file: .bun-version
+
+            - name: Assume the deploy role of the target
+              uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+              with:
+                  role-to-assume: ${{ inputs.site == 'fylo' && env.PRODUCTION_ROLE || env.STAGING_ROLE }}
+                  aws-region: ca-central-1
+
+            - name: Redeploy the previous artifact
+              env:
+                  SITE: ${{ inputs.site }}
+              run: bun scripts/amplify-release.mjs rollback "$SITE"

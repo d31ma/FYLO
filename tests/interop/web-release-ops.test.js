@@ -24,9 +24,11 @@ import {
     refreshLease,
     releaseLease,
     rollbackReleaseState,
+    siteArtifact,
     verifyAmplifyHeaderPolicy,
     writeState
 } from '../../scripts/amplify-release.mjs'
+import { resolveSite } from '../../scripts/web-release-config.mjs'
 import { createWebArtifact } from '../../scripts/web-artifact.mjs'
 import { verifyPagesRelease } from '../../scripts/pages-smoke.mjs'
 import { smokeSite } from '../../scripts/web-smoke.mjs'
@@ -1505,5 +1507,96 @@ describe('web release operations', () => {
         expect(release).toContain('no prior artifact exists for compensation')
         expect(release).toContain('previousChecksum')
         expect(release).toContain('verifiedProbeCount')
+    })
+})
+
+describe('web release targets', () => {
+    test('the staging target deploys the production site to the staging branch and host', async () => {
+        const config = await Bun.file('ops/web-release.json').json()
+        const staging = resolveSite(config, 'fylo-staging')
+        expect(staging.branch).toBe('staging')
+        expect(staging.origin).toBe('https://staging.fylo.del.ma')
+        expect(staging.extends).toBeUndefined()
+        expect(staging.appId).toBe(config.sites.fylo.appId)
+        expect(staging.probes).toEqual(config.sites.fylo.probes)
+        expect(staging.requiredHeaders).toEqual(config.sites.fylo.requiredHeaders)
+        expect(staging.headersPolicy).toBe(config.sites.fylo.headersPolicy)
+    })
+
+    test('a site without extends is used as written', () => {
+        const config = { sites: { fylo: { branch: 'production' } } }
+        expect(resolveSite(config, 'fylo')).toBe(config.sites.fylo)
+    })
+
+    test('an unknown site is refused', () => {
+        expect(() => resolveSite({ sites: {} }, 'fylo-preview')).toThrow('Unknown site')
+    })
+
+    test('a site may not extend a missing site', () => {
+        const config = { sites: { 'fylo-staging': { extends: 'fylo' } } }
+        expect(() => resolveSite(config, 'fylo-staging')).toThrow('must extend a defined site')
+    })
+
+    test('a site may not extend a site that extends another', () => {
+        const config = { sites: { a: { branch: 'x' }, b: { extends: 'a' }, c: { extends: 'b' } } }
+        expect(() => resolveSite(config, 'c')).toThrow('must extend a defined site')
+    })
+})
+
+describe('prebuilt web artifacts', () => {
+    async function prebuilt(content) {
+        const directory = await mkdtemp(path.join(os.tmpdir(), 'fylo-prebuilt-'))
+        const file = path.join(directory, 'fylo-site.zip')
+        await writeFile(file, content)
+        return { file, checksum: createHash('sha256').update(content).digest('hex') }
+    }
+
+    test('builds a new artifact from sourceDir when no prebuilt zip is given', async () => {
+        const calls = []
+        const create = async (source, temporary) => {
+            calls.push([source, temporary])
+            return { checksum: 'built', output: 'built.zip' }
+        }
+        const result = await siteArtifact({ sourceDir: 'website/dist/web' }, '/tmp/release', {
+            environment: {},
+            create
+        })
+        expect(result).toEqual({ checksum: 'built', output: 'built.zip' })
+        expect(calls).toEqual([[path.resolve('website/dist/web'), '/tmp/release']])
+    })
+
+    test('uses the prebuilt zip when its checksum matches', async () => {
+        const { file, checksum } = await prebuilt('site zip')
+        const result = await siteArtifact({ sourceDir: 'unused' }, '/tmp/release', {
+            environment: {
+                FYLO_WEB_RELEASE_ARTIFACT: file,
+                FYLO_WEB_RELEASE_ARTIFACT_SHA256: checksum
+            },
+            create: async () => {
+                throw new Error('must not build')
+            }
+        })
+        expect(result).toEqual({ checksum, output: file })
+    })
+
+    test('refuses a prebuilt zip whose checksum differs', async () => {
+        const { file } = await prebuilt('site zip')
+        await expect(
+            siteArtifact({ sourceDir: 'unused' }, '/tmp/release', {
+                environment: {
+                    FYLO_WEB_RELEASE_ARTIFACT: file,
+                    FYLO_WEB_RELEASE_ARTIFACT_SHA256: '0'.repeat(64)
+                }
+            })
+        ).rejects.toThrow('expected 0000')
+    })
+
+    test('refuses a prebuilt zip without a SHA-256', async () => {
+        const { file } = await prebuilt('site zip')
+        await expect(
+            siteArtifact({ sourceDir: 'unused' }, '/tmp/release', {
+                environment: { FYLO_WEB_RELEASE_ARTIFACT: file }
+            })
+        ).rejects.toThrow('FYLO_WEB_RELEASE_ARTIFACT_SHA256 must hold')
     })
 })

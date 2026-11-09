@@ -228,6 +228,35 @@ For an independent health check:
 bun scripts/web-smoke.mjs fylo
 ```
 
+## Automatic deployment from a release
+
+A release deploys the website by itself. When `Release` runs on `main` for a new version, its
+`site-artifact` job builds the website once and keeps `fylo-site.zip` and its `.sha256` as a run
+artifact. That job may fail without blocking the binary release. When the `Release` run succeeds
+and its commit carries the release tag, `Site Deploy` (`.github/workflows/site-deploy.yml`):
+
+1. checks the zip's SHA-256;
+2. in GitHub environment `site-staging`, assumes `fylo-site-deploy-staging` and runs
+   `bun scripts/amplify-release.mjs deploy fylo-staging` with `FYLO_WEB_RELEASE_ARTIFACT` and
+   `FYLO_WEB_RELEASE_ARTIFACT_SHA256` set, so the prebuilt zip is archived, deployed to the
+   Amplify `staging` branch and probed at `https://staging.fylo.del.ma`;
+3. in environment `site-production`, assumes `fylo-site-deploy-production` and deploys **the same
+   zip** with `deploy fylo`, with the usual compensated rollback.
+
+A merge that is not a release deploys nothing. The `fylo-staging` target in
+`ops/web-release.json` extends `fylo` and changes only the branch and origin; it keeps its own
+lease and archive under `fylo/web-releases/fylo-staging/`. Both environments accept only `main`,
+and PaaS (`d31ma/PaaS`, `infra/fylo/amplify`) lets each one assume only its own role, which can
+deploy only its own branch, read the header policy, and use only its own archive prefix.
+
+Production deploys wait until `sites.fylo.branch` in `ops/web-release.json` is `production`.
+Until the domain moves from `master` to `production`, the workflow deploys staging only and says
+so in a notice.
+
+To roll back, run `Site Deploy` by hand with the target (`fylo-staging` or `fylo`); it runs
+`bun scripts/amplify-release.mjs rollback <target>` with that target's role. To retry a failed
+deployment, re-run the failed jobs of the `Site Deploy` run.
+
 ## Amplify rollback
 
 Rollback never rebuilds source. It deploys the archived checksum recorded as

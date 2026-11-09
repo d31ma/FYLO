@@ -723,6 +723,51 @@ jobs:
                   compression-level: 0
                   retention-days: 1
 
+    site-artifact:
+        name: Build the website zip for Site Deploy
+        runs-on: ubuntu-24.04
+        needs: [release-assets, version]
+        if: needs.release-assets.result == 'success'
+        continue-on-error: true
+        permissions:
+            contents: read
+        timeout-minutes: 20
+        steps:
+            - name: Checkout
+              uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+            - name: Setup Bun
+              uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+              with:
+                  bun-version-file: .bun-version
+
+            - name: Build the website
+              env:
+                  GH_TOKEN: ${{ github.token }}
+              run: |
+                  set -euo pipefail
+                  sh ./scripts/install-vendor-bins.sh
+                  export PATH="$HOME/.local/bin:$PATH"
+                  bun install --frozen-lockfile
+                  (cd website && bun install --frozen-lockfile && bun run bundle)
+
+            - name: Package the website zip
+              run: |
+                  set -euo pipefail
+                  mkdir -p "$RUNNER_TEMP/site"
+                  checksum=$(bun scripts/web-artifact.mjs website/dist/web "$RUNNER_TEMP/site" | jq -r .checksum)
+                  mv "$RUNNER_TEMP/site/$checksum.zip" "$RUNNER_TEMP/site/fylo-site.zip"
+                  echo "$checksum  fylo-site.zip" > "$RUNNER_TEMP/site/fylo-site.zip.sha256"
+                  echo "fylo-site.zip $checksum"
+
+            - name: Keep the website zip for Site Deploy
+              uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+              with:
+                  name: fylo-site
+                  path: ${{ runner.temp }}/site/
+                  retention-days: 30
+                  if-no-files-found: error
+
     github-release:
         name: Publish GitHub release
         runs-on: ubuntu-24.04

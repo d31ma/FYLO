@@ -6,6 +6,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { createWebArtifact } from './web-artifact.mjs'
+import { resolveSite } from './web-release-config.mjs'
 import { smokeSite } from './web-smoke.mjs'
 
 const SHA256 = /^[a-f0-9]{64}$/
@@ -587,6 +588,33 @@ async function verifyAmplifyHeaderPolicy(site, { run = command } = {}) {
     }
 }
 
+async function siteArtifact(
+    site,
+    temporary,
+    { environment = process.env, create = createWebArtifact } = {}
+) {
+    const file = environment.FYLO_WEB_RELEASE_ARTIFACT
+    if (!file) return create(path.resolve(site.sourceDir), temporary)
+    return prebuiltArtifact(path.resolve(file), environment.FYLO_WEB_RELEASE_ARTIFACT_SHA256)
+}
+
+async function prebuiltArtifact(file, expected) {
+    if (!SHA256.test(expected ?? '')) {
+        throw new Error(
+            'FYLO_WEB_RELEASE_ARTIFACT_SHA256 must hold the SHA-256 of FYLO_WEB_RELEASE_ARTIFACT'
+        )
+    }
+    const checksum = createHash('sha256')
+        .update(await readFile(file))
+        .digest('hex')
+    if (checksum !== expected) {
+        throw new Error(
+            `Prebuilt web artifact ${file} has SHA-256 ${checksum}, expected ${expected}`
+        )
+    }
+    return { checksum, output: file }
+}
+
 async function archiveArtifact(bucket, key, artifact, checksum, { run = command } = {}) {
     const existing = await run(
         'aws',
@@ -833,8 +861,7 @@ async function main() {
     const bucket = process.env.FYLO_WEB_RELEASE_BUCKET
     if (!bucket) throw new Error('FYLO_WEB_RELEASE_BUCKET is required')
     const config = JSON.parse(await readFile(configPath, 'utf8'))
-    const site = config.sites?.[siteName]
-    if (!site) throw new Error(`Unknown site ${JSON.stringify(siteName)}`)
+    const site = resolveSite(config, siteName)
     const activeContract = activeArtifactContract(site)
     await assertConditionalS3Support()
     await verifyAmplifyHeaderPolicy(site)
@@ -934,7 +961,7 @@ async function main() {
             return
         }
 
-        const artifact = await createWebArtifact(path.resolve(site.sourceDir), temporary)
+        const artifact = await siteArtifact(site, temporary)
         const artifactKey = objectKey(config, siteName, `artifacts/${artifact.checksum}.zip`)
         await archiveArtifact(bucket, artifactKey, artifact.output, artifact.checksum)
         const rollbackContract = current
@@ -1065,6 +1092,7 @@ export {
     refreshLease,
     releaseLease,
     rollbackReleaseState,
+    siteArtifact,
     verifyAmplifyHeaderPolicy,
     writeState
 }

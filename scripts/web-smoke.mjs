@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 
 import { readFile } from 'node:fs/promises'
+import { resolveSite } from './web-release-config.mjs'
 
 const REQUEST_TIMEOUT_MS = 15_000
 
@@ -65,9 +66,7 @@ export async function smokeSite(site, fetcher = fetch) {
 async function main() {
     const [siteName, configPath = 'ops/web-release.json'] = process.argv.slice(2)
     const config = JSON.parse(await readFile(configPath, 'utf8'))
-    const site = config.sites?.[siteName]
-    if (!site) throw new Error(`Unknown site ${JSON.stringify(siteName)}`)
-    console.log(JSON.stringify(await smokeSite(site)))
+    console.log(JSON.stringify(await smokeSite(resolveSite(config, siteName))))
 }
 
 if (import.meta.main)
