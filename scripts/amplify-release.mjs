@@ -6,7 +6,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { createWebArtifact } from './web-artifact.mjs'
-import { resolveSite } from './web-release-config.mjs'
+import { resolveSite, withBranchAuthorization } from './web-release-config.mjs'
 import { smokeSite } from './web-smoke.mjs'
 
 const SHA256 = /^[a-f0-9]{64}$/
@@ -861,7 +861,7 @@ async function main() {
     const bucket = process.env.FYLO_WEB_RELEASE_BUCKET
     if (!bucket) throw new Error('FYLO_WEB_RELEASE_BUCKET is required')
     const config = JSON.parse(await readFile(configPath, 'utf8'))
-    const site = resolveSite(config, siteName)
+    const site = await withBranchAuthorization(resolveSite(config, siteName))
     const activeContract = activeArtifactContract(site)
     await assertConditionalS3Support()
     await verifyAmplifyHeaderPolicy(site)

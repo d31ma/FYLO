@@ -244,10 +244,19 @@ and its commit carries the release tag, `Site Deploy` (`.github/workflows/site-d
    zip** with `deploy fylo`, with the usual compensated rollback.
 
 A merge that is not a release deploys nothing. The `fylo-staging` target in
-`ops/web-release.json` extends `fylo` and changes only the branch and origin; it keeps its own
+`ops/web-release.json` extends `fylo` and changes only the branch, the origin and
+`basicAuthFromBranch`; it keeps its own
 lease and archive under `fylo/web-releases/fylo-staging/`. Both environments accept only `main`,
 and PaaS (`d31ma/PaaS`, `infra/fylo/amplify`) lets each one assume only its own role, which can
 deploy only its own branch, read the header policy, and use only its own archive prefix.
+
+`staging.fylo.del.ma` is reachable only on the tailnet, so `fylo-staging` probes the Amplify
+branch address `https://staging.dhq9jgfyq7uv2.amplifyapp.com`. With `basicAuthFromBranch`,
+`amplify-release.mjs` and `web-smoke.mjs` read the branch's basic-auth credentials at run time with
+`aws amplify get-branch`, mask them in the GitHub Actions log, and send them with every probe
+request; no password is stored in this repository. They stop before probing when basic auth is on
+but GetBranch returns no credentials. `bun scripts/web-smoke.mjs fylo-staging` therefore needs AWS
+credentials that may read the staging branch.
 
 Production deploys wait until `sites.fylo.branch` in `ops/web-release.json` is `production`.
 Until the domain moves from `master` to `production`, the workflow deploys staging only and says
