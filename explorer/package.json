@@ -13,6 +13,6 @@
         "seed": "(cd .. && bun ./scripts/run-rust.mjs cargo build --locked -p fylo-cli --bin fylo-rust) && bun seed.mjs"
     },
     "devDependencies": {
-        "@d31ma/tachyon": "github:d31ma/Tachyon#47775135e456cd8db3c80f4dfde0afaf1273296b"
+        "@d31ma/tachyon": "github:d31ma/TACHYON#47775135e456cd8db3c80f4dfde0afaf1273296b"
     }
 }
