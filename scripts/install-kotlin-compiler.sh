@@ -10,9 +10,8 @@ DESTINATION=${KOTLIN_DESTINATION:-"$TEMPORARY_ROOT/kotlin"}
 ARCHIVE=$(mktemp "$TEMPORARY_ROOT/kotlin-compiler.XXXXXX")
 trap 'rm -f "$ARCHIVE"' EXIT HUP INT TERM
 
-curl --fail --silent --show-error --location --retry 3 \
-    "https://github.com/JetBrains/kotlin/releases/download/v$KOTLIN_VERSION/kotlin-compiler-$KOTLIN_VERSION.zip" \
-    --output "$ARCHIVE"
+sh "$(dirname "$0")/download-release-asset.sh" 'JetBrains/kotlin' "v$KOTLIN_VERSION" \
+    "kotlin-compiler-$KOTLIN_VERSION.zip" "$ARCHIVE"
 
 if command -v sha256sum >/dev/null 2>&1; then
     ACTUAL=$(sha256sum "$ARCHIVE" | awk '{print $1}')
