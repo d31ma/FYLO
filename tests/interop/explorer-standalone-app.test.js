@@ -168,7 +168,7 @@ describe('standalone Explorer app', () => {
         ).text()
 
         const tachyonCommit = '47775135e456cd8db3c80f4dfde0afaf1273296b'
-        const pinnedTachyon = `github:d31ma/Tachyon#${tachyonCommit}`
+        const pinnedTachyon = `github:d31ma/TACHYON#${tachyonCommit}`
         expect(packageJson.devDependencies['@d31ma/tachyon']).toBe(pinnedTachyon)
         expect(lock).toContain(tachyonCommit.slice(0, 7))
         expect(websitePackage.scripts.bundle).toContain('run-site.mjs bundle')
