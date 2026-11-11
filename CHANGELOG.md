@@ -394,6 +394,15 @@
 
 ### Changed
 
+- **Build: `fylo-browser.wasm` is re-encoded with `wasm-opt`.** The browser
+  engine build runs binaryen's `wasm-opt -O0` (no optimization pass) over the
+  module, which writes the integers the Rust linker pads at their shortest
+  length: about 8% smaller raw and 2% smaller gzipped, with the same imports,
+  exports and code. binaryen is pinned in `.binaryen-version`; CI, Pages and the
+  Release workflow install it with `scripts/install-binaryen.sh`, which checks
+  a SHA-256 digest kept in the repository. A local build refuses another
+  `wasm-opt` version.
+
 - **CI: release verification runs on pull requests into `main`; runners
   pinned.** The Release workflow's verification jobs (native Windows x64,
   macOS arm64 and x64, Linux x64 and arm64, tests, and compiled binary

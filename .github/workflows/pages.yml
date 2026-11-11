@@ -82,6 +82,11 @@ jobs:
                       exit 1
                   fi
 
+            - name: Install pinned binaryen
+              if: steps.release.outputs.publish == 'true'
+              working-directory: source
+              run: sh ./scripts/install-binaryen.sh
+
             - name: Build browser client
               if: steps.release.outputs.publish == 'true'
               working-directory: source

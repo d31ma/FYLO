@@ -316,6 +316,11 @@ automatically if the module cannot load. Build all adjacent browser assets with:
 bun run build:web:wasm
 ```
 
+The build re-encodes `fylo-browser.wasm` with binaryen's `wasm-opt` (the
+version in `.binaryen-version`). It runs no optimization pass: it only writes
+the module's numbers in their shortest form, which the Rust linker pads. Install
+it with `brew install binaryen` or `sh scripts/install-binaryen.sh`.
+
 ```ts
 const db = createBrowserClient({ storage: 'opfs', worker: true, wasm: true })
 await db.ready()

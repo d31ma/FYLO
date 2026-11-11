@@ -7,6 +7,9 @@ recoverability, and bounded resource use take priority over feature volume.
 
 - Bun from `.bun-version`;
 - Rust from `rust-toolchain.toml`;
+- for browser engine builds, binaryen's `wasm-opt` from `.binaryen-version`
+  (`brew install binaryen`, or `sh scripts/install-binaryen.sh`, which checks
+  a pinned digest);
 - Git;
 - a local test root outside synchronized production data.
 

@@ -211,6 +211,9 @@ jobs:
                   toolchain=$(grep -oE 'channel *= *"[^"]+"' rust-toolchain.toml | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
                   rustup target add wasm32-wasip1 wasm32-unknown-unknown --toolchain "$toolchain"
 
+            - name: Install pinned binaryen
+              run: sh ./scripts/install-binaryen.sh
+
             - name: Build native, WASI, and browser engines
               run: |
                   bun ./scripts/run-rust.mjs cargo build --release --locked -p fylo-cli --bin fylo-rust
@@ -401,6 +404,9 @@ jobs:
 
             - name: Install pinned Rust toolchain
               run: rustup show active-toolchain
+
+            - name: Install pinned binaryen
+              run: sh ./scripts/install-binaryen.sh
 
             - name: Build browser host and Wasm kernel
               run: bun run build:web:wasm

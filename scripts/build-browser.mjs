@@ -75,21 +75,33 @@ const CUSTOM_ENTROPY = '--cfg getrandom_backend="custom"'
 const ENGINE_PROFILE = { CARGO_PROFILE_RELEASE_OPT_LEVEL: 'z' }
 
 const WASM_ARTIFACTS = [
-    ['fylo_browser_index.wasm', 'fylo-index.wasm', 'src/browser/wasm/Cargo.toml', '', {}],
+    ['fylo_browser_index.wasm', 'fylo-index.wasm', 'src/browser/wasm/Cargo.toml', '', {}, false],
     [
         'fylo_wasm.wasm',
         'fylo-browser.wasm',
         'crates/fylo-wasm/Cargo.toml',
         CUSTOM_ENTROPY,
-        ENGINE_PROFILE
+        ENGINE_PROFILE,
+        true
     ]
+]
+
+const ENGINE_FEATURES = [
+    '--enable-bulk-memory',
+    '--enable-multivalue',
+    '--enable-mutable-globals',
+    '--enable-nontrapping-float-to-int',
+    '--enable-reference-types',
+    '--enable-sign-ext'
 ]
 
 if (withWasm) {
     const artifacts = engineOnly ? WASM_ARTIFACTS.slice(1) : WASM_ARTIFACTS
-    for (const [built, published, manifest, rustflags, profile] of artifacts) {
+    if (artifacts.some(([, , , , , reencode]) => reencode)) await requireWasmOpt()
+    for (const [built, published, manifest, rustflags, profile, reencode] of artifacts) {
         await buildWasm(manifest, rustflags, profile)
-        await rm(new URL(`../dist-web/${published}`, import.meta.url), { force: true })
+        const output = fileURLToPath(new URL(`../dist-web/${published}`, import.meta.url))
+        await rm(output, { force: true })
         await cp(
             resolve(
                 root,
@@ -98,8 +110,9 @@ if (withWasm) {
                 'release',
                 built
             ),
-            new URL(`../dist-web/${published}`, import.meta.url)
+            output
         )
+        if (reencode) await reencodeWasm(output)
     }
 }
 
@@ -154,6 +167,26 @@ async function buildWasm(manifest, rustflags, profile) {
                 .join(' ')
         }
     )
+}
+
+async function requireWasmOpt() {
+    const version = (
+        process.env.FYLO_BINARYEN_VERSION ??
+        (await readFile(new URL('../.binaryen-version', import.meta.url), 'utf8'))
+    ).trim()
+    const installed = await capture('wasm-opt', ['--version']).catch(() => '')
+    if (!installed.includes(`version ${version}`)) {
+        throw new Error(
+            `Browser engine builds require wasm-opt from binaryen ${version}; found ${
+                installed.trim() || 'none'
+            }. Run scripts/install-binaryen.sh or install binaryen ${version}.`
+        )
+    }
+}
+
+/** @param {string} path */
+async function reencodeWasm(path) {
+    await run('wasm-opt', ['-O0', ...ENGINE_FEATURES, path, '-o', path])
 }
 
 async function dependencySourceRemaps() {

@@ -578,6 +578,9 @@ jobs:
                   name: linux-release-linux-arm64-${{ github.sha }}
                   path: release-assets
 
+            - name: Install pinned binaryen
+              run: sh ./scripts/install-binaryen.sh
+
             - name: Build local-first web bundle
               env:
                   FYLO_BUILD_COMMIT: ${{ github.sha }}
