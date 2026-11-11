@@ -91,7 +91,7 @@ impl SegmentInspection {
         let (mut report, images, versions) = Self::salvage_documents(collection)?;
         fylo_vfs::create_dir_all(out).map_err(NativeStorageError::io)?;
         let root = NativeRoot::open(out)?;
-        FileExport::build(&root, &root.canonical, &images, &collection)?;
+        FileExport::build(&root, &root.canonical, &images, collection)?;
         report.schema_versions = Self::write_schemas(out, &versions)?;
         Ok(report)
     }
