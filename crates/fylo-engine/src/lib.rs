@@ -1423,9 +1423,7 @@ impl ReadOnlyEngine {
         query: &StructuredQuery,
     ) -> Result<Option<Vec<String>>, EngineError> {
         let encrypted_fields = self.encrypted_fields(collection.name())?;
-        let word_fields = collection
-            .complete_word_fields()
-            .map_err(EngineError::storage)?;
+        let word_fields = Self::complete_word_fields(collection, query)?;
         let Some(plan) = index_plan::IndexPlan::new(query, &encrypted_fields, &word_fields) else {
             return Ok(None);
         };
@@ -1442,6 +1440,20 @@ impl ReadOnlyEngine {
             .index_snapshot_in_ranges(&plan.key_ranges())
             .map_err(EngineError::storage)?;
         plan.scan(&snapshot).map(Some)
+    }
+
+    /// The word fields a query's `$match` may plan from: none for a query
+    /// without `$match`, so other queries pay nothing for the check.
+    fn complete_word_fields(
+        collection: &NativeCollection,
+        query: &StructuredQuery,
+    ) -> Result<Vec<String>, EngineError> {
+        if query.match_fields().is_empty() {
+            return Ok(Vec::new());
+        }
+        collection
+            .complete_word_fields()
+            .map_err(EngineError::storage)
     }
 
     /// The fields the collection's head schema encrypts, or none without keys.
