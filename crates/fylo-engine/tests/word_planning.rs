@@ -137,6 +137,12 @@ impl Fixture {
                 )
             })
             .map(|row| row.metadata.id)
+            .take(
+                parsed
+                    .limit()
+                    .filter(|limit| *limit > 0)
+                    .unwrap_or(usize::MAX),
+            )
             .collect()
     }
 
@@ -397,7 +403,11 @@ fn an_older_write_to_another_field_keeps_the_word_keys_complete() {
     fixture.write_as_older_release(|fixture| {
         fixture
             .writer()
-            .patch_document("messages", &Fixture::id(0), br#"{"conversation":"c-7"}"#)
+            .patch_document(
+                "messages",
+                &Fixture::id(0),
+                br#"{"conversation":"c-7","body":"Meeting with Tom\u00e1s on Monday"}"#,
+            )
             .unwrap();
     });
     assert_eq!(fixture.complete_words(), ["body"]);
