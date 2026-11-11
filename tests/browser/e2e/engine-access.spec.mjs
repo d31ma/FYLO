@@ -10,7 +10,7 @@
 // signature made by WebCrypto checks in Rust.
 //
 // The bridge blocks in `Atomics.wait`, so the page is served cross-origin
-// isolated (port 4173), unlike the plain single-file specs.
+// isolated (`FYLO_E2E_PORT`, 4173 by default), unlike the plain single-file specs.
 
 import { expect, test } from './browser-test.mjs'
 import { expectOk, nativeBinary } from './engine-harness.mjs'
@@ -19,7 +19,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { gunzipSync } from 'node:zlib'
 
-const ISOLATED_ORIGIN = 'http://127.0.0.1:4173'
+const ISOLATED_ORIGIN = `http://127.0.0.1:${process.env.FYLO_E2E_PORT ?? 4173}`
 const FIXTURES = 'target/browser-fixtures/engine-access'
 const CANARY = 'WOMBAT-CANARY'
 

@@ -18,7 +18,7 @@ import { join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { gunzipSync } from 'node:zlib'
 
-const PLAIN_ORIGIN = 'http://127.0.0.1:4174'
+const PLAIN_ORIGIN = `http://127.0.0.1:${process.env.FYLO_E2E_PLAIN_PORT ?? 4174}`
 const FIXTURES = 'target/browser-fixtures/engine-vdbx'
 
 // A collection trains its zstd dictionary at its first checkpoint once its

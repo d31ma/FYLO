@@ -26,7 +26,7 @@ import { join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { gunzipSync, gzipSync } from 'node:zlib'
 
-const PLAIN_ORIGIN = 'http://127.0.0.1:4174'
+const PLAIN_ORIGIN = `http://127.0.0.1:${process.env.FYLO_E2E_PLAIN_PORT ?? 4174}`
 const FIXTURE_ROOT = 'target/browser-fixtures/engine-security'
 /** This worker's fixture directory, so parallel workers never share a file. */
 let FIXTURES = FIXTURE_ROOT

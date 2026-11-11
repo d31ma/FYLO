@@ -1,5 +1,8 @@
 import { defineConfig } from '@playwright/test'
 
+const ISOLATED_PORT = process.env.FYLO_E2E_PORT ?? '4173'
+const PLAIN_PORT = process.env.FYLO_E2E_PLAIN_PORT ?? '4174'
+
 export default defineConfig({
     testDir: './tests/browser/e2e',
     timeout: 120_000,
@@ -9,23 +12,23 @@ export default defineConfig({
     preserveOutput: 'always',
     reporter: [['line']],
     use: {
-        baseURL: 'http://127.0.0.1:4173',
+        baseURL: `http://127.0.0.1:${ISOLATED_PORT}`,
         trace: 'retain-on-failure'
     },
     webServer: [
         {
             // Cross-origin isolation, without which SharedArrayBuffer — and the
             // Atomics bridge OPFS needs — does not exist.
-            command: 'node scripts/serve-isolated.mjs 4173 .',
-            url: 'http://127.0.0.1:4173/tests/browser/fixtures/wasm-opfs.html',
+            command: `node scripts/serve-isolated.mjs ${ISOLATED_PORT} .`,
+            url: `http://127.0.0.1:${ISOLATED_PORT}/tests/browser/fixtures/wasm-opfs.html`,
             reuseExistingServer: true,
             timeout: 30_000
         },
         {
             // No isolation, as a static host serves a page: the single-file
             // hosts must work without SharedArrayBuffer.
-            command: 'node scripts/serve-isolated.mjs 4174 . --no-isolation',
-            url: 'http://127.0.0.1:4174/tests/browser/fixtures/vdbx-single-file.html',
+            command: `node scripts/serve-isolated.mjs ${PLAIN_PORT} . --no-isolation`,
+            url: `http://127.0.0.1:${PLAIN_PORT}/tests/browser/fixtures/vdbx-single-file.html`,
             reuseExistingServer: true,
             timeout: 30_000
         }

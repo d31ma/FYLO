@@ -8,7 +8,7 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { STUB_SIZE, stubBytes } from '../fixtures/vdbx-stub.mjs'
 
-const PLAIN_ORIGIN = 'http://127.0.0.1:4174'
+const PLAIN_ORIGIN = `http://127.0.0.1:${process.env.FYLO_E2E_PLAIN_PORT ?? 4174}`
 
 test.beforeAll(async () => {
     test.setTimeout(600_000)

@@ -22,9 +22,10 @@ import { join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { gunzipSync } from 'node:zlib'
 
-const PLAIN_ORIGIN = 'http://127.0.0.1:4174'
+const PLAIN_PORT = Number(process.env.FYLO_E2E_PLAIN_PORT ?? 4174)
+const PLAIN_ORIGIN = `http://127.0.0.1:${PLAIN_PORT}`
 const INSECURE_HOST = 'fylo-insecure.test'
-const INSECURE_ORIGIN = `http://${INSECURE_HOST}:4174`
+const INSECURE_ORIGIN = `http://${INSECURE_HOST}:${PLAIN_PORT}`
 const HARNESS = '/tests/browser/fixtures/vdbx-harness.html'
 const FIXTURES = 'target/browser-fixtures/vdbx-indexeddb'
 const STORAGES = ['opfs', 'indexeddb']
@@ -74,10 +75,10 @@ function startProxy() {
         const upstream = forward(
             {
                 host: '127.0.0.1',
-                port: 4174,
+                port: PLAIN_PORT,
                 method: incoming.method,
                 path: `${target.pathname}${target.search}`,
-                headers: { ...incoming.headers, host: '127.0.0.1:4174' }
+                headers: { ...incoming.headers, host: `127.0.0.1:${PLAIN_PORT}` }
             },
             (reply) => {
                 answer.writeHead(reply.statusCode ?? 502, reply.headers)
