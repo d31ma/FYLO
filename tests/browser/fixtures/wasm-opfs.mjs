@@ -82,6 +82,8 @@ if (typeof navigator.storage?.getDirectory !== 'function') {
             [ids[42]],
             'WAL addition'
         )
+        qualificationStep = 'word-index'
+        const words = await qualifyWordIndex(first)
         const acceleration = first.index.accelerationStatus()
         qualificationStep = 'close-first-core'
         await first.close()
@@ -94,6 +96,14 @@ if (typeof navigator.storage?.getDirectory !== 'function') {
         })
         await second.ready()
         const restartIds = await candidateIds(second, 'name', { $eq: 'record-moved' })
+        qualificationStep = 'word-index-after-restart'
+        words.restartMatch = await collectMessageIds(second, {
+            $ops: [{ body: { $match: 'meet tom' } }]
+        })
+        words.restartPlanned =
+            (await second.queryEngine.candidateDocIdsForQuery('messages', {
+                $ops: [{ body: { $match: 'meet' } }]
+            })) !== null
         const restartAcceleration = second.index.accelerationStatus()
         qualificationStep = 'benchmark'
         const benchmark = fallback ? null : await benchmarkEndToEnd(second, fs)
@@ -110,7 +120,8 @@ if (typeof navigator.storage?.getDirectory !== 'function') {
             restartAcceleration,
             benchmark,
             restartIds,
-            expectedRestartIds: [ids[42]]
+            expectedRestartIds: [ids[42]],
+            words
         })
     } catch (error) {
         const opfsUnavailable =
@@ -132,6 +143,57 @@ if (typeof navigator.storage?.getDirectory !== 'function') {
             }
         })
     }
+}
+
+// ADR 0023: word fields, $match and sorted pages over real OPFS.
+async function qualifyWordIndex(core) {
+    await core.messages.create()
+    const bodies = [
+        'Meeting with Tomás on Monday',
+        'Lunch menu: café crème',
+        'The quarterly MEETING notes',
+        'Re: meet-up at noon',
+        'Tom says hello'
+    ]
+    const ids = []
+    for (const [index, body] of bodies.entries()) {
+        ids.push(await core.messages.put({ body, sentAt: 100 - index }))
+    }
+    await core.setWordFields('messages', ['body'])
+    const planned =
+        (await core.queryEngine.candidateDocIdsForQuery('messages', {
+            $ops: [{ body: { $match: 'meet' } }]
+        })) !== null
+    const match = await collectMessageIds(core, { $ops: [{ body: { $match: 'meet tom' } }] })
+    const accents = await collectMessageIds(core, {
+        $ops: [{ body: { $match: 'cafe creme' } }]
+    })
+    const pages = []
+    let query = { $sort: { sentAt: 'asc' }, $limit: 2 }
+    for (;;) {
+        const page = await core.findPage('messages', query)
+        pages.push(page.items.map((item) => item.id))
+        if (!page.nextCursor) break
+        query = { ...query, $after: page.nextCursor }
+    }
+    return {
+        planned,
+        match,
+        expectedMatch: [ids[0]],
+        accents,
+        expectedAccents: [ids[1]],
+        pages,
+        expectedOrder: [...ids].reverse(),
+        expectedRestartMatch: [ids[0]]
+    }
+}
+
+async function collectMessageIds(core, query) {
+    const ids = []
+    for await (const row of core.messages.find(query).collect()) {
+        ids.push(typeof row === 'string' ? row : Object.keys(row)[0])
+    }
+    return ids
 }
 
 function traceStorageOperations(fs) {

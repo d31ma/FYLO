@@ -35,6 +35,13 @@ test('runs the Wasm kernel over a real OPFS index and survives restart', async (
         INITIALIZATION_BUDGET_MS[testInfo.project.name] ?? INITIALIZATION_BUDGET_MS.default
     )
     expect(evidence.restartIds).toEqual(evidence.expectedRestartIds)
+    expect(evidence.words.planned).toBe(true)
+    expect(evidence.words.match).toEqual(evidence.words.expectedMatch)
+    expect(evidence.words.accents).toEqual(evidence.words.expectedAccents)
+    expect(evidence.words.pages.flat()).toEqual(evidence.words.expectedOrder)
+    expect(evidence.words.pages.every((page) => page.length <= 2)).toBe(true)
+    expect(evidence.words.restartPlanned).toBe(true)
+    expect(evidence.words.restartMatch).toEqual(evidence.words.expectedRestartMatch)
     expect(evidence.benchmark.speedup).toBeGreaterThan(0)
     if (testInfo.project.name === 'chromium') {
         expect(evidence.benchmark.kernel.speedup).toBeGreaterThanOrEqual(1.2)

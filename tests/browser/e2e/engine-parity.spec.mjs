@@ -479,6 +479,89 @@ test('findDocs agrees on every operator and edge value', async ({ fylo }) => {
     }
 })
 
+// ADR 0023: word fields, $match and sorted, cursor-paged queries answer the
+// same in the browser engine as natively, and come from the index.
+test('word index and sorted pages agree with the native engine', async ({ fylo }) => {
+    test.setTimeout(600_000)
+    const bodies = [
+        'Meeting with Tomás on Monday',
+        'Lunch menu: café crème',
+        'The quarterly MEETING notes',
+        'Re: meet-up at noon',
+        'Straße closed today',
+        'Tom says hello'
+    ]
+    const id = mintIds(bodies.length + 1)
+    const pair = await Pair.open(fylo, 'parity-words')
+    try {
+        const loaded = await pair.step([
+            { op: 'createCollection', collection: 'messages' },
+            ...bodies.map((body, index) => ({
+                op: 'putData',
+                collection: 'messages',
+                id: id[index],
+                data: {
+                    conversation: index % 2 === 0 ? 'c-1' : 'c-2',
+                    body,
+                    sentAt: 1000 + ((index * 7) % 5)
+                }
+            }))
+        ])
+        expectOk(loaded.browser, 'browser load')
+        const words = await pair.step([
+            { op: 'setWordFields', collection: 'messages', fields: ['body'] },
+            { op: 'inspectCollection', collection: 'messages' }
+        ])
+        expectOk(words.browser, 'set word fields')
+        expect(words.native[1].result.wordFields).toEqual(['body'])
+        const matches = await pair.step(
+            [
+                { $ops: [{ body: { $match: 'meet' } }] },
+                { $ops: [{ body: { $match: 'meet tom' } }] },
+                { $ops: [{ body: { $match: 'cafe creme' } }] },
+                { $ops: [{ body: { $match: 'strasse' } }] },
+                { $ops: [{ body: { $match: 'meet' }, conversation: { $eq: 'c-1' } }] }
+            ].map((query) => ({ op: 'findDocs', collection: 'messages', query }))
+        )
+        expect(Object.keys(matches.native[0].result)).toEqual([id[0], id[2], id[3]])
+        expect(Object.keys(matches.native[1].result)).toEqual([id[0]])
+        const query = { $sort: { sentAt: 'desc' }, $limit: 2, $onlyIds: true }
+        const seen = []
+        let page = await pair.step([{ op: 'findDocs', collection: 'messages', query }])
+        for (;;) {
+            seen.push(...page.native[0].result.items)
+            const next = page.native[0].result.nextCursor
+            expect(page.browser[0].result.nextCursor).toBe(next)
+            if (!next) break
+            page = await pair.step([
+                { op: 'findDocs', collection: 'messages', query: { ...query, $after: next } }
+            ])
+        }
+        expect(seen).toHaveLength(bodies.length)
+        await pair.step([
+            {
+                op: 'putData',
+                collection: 'messages',
+                id: id[bodies.length],
+                data: { body: 'meeting again', sentAt: 9 }
+            },
+            {
+                op: 'findDocs',
+                collection: 'messages',
+                query: { $ops: [{ body: { $match: 'meeting' } }] }
+            },
+            {
+                op: 'findDocs',
+                collection: 'messages',
+                query: { $sort: { sentAt: 'asc' }, $limit: 3 }
+            }
+        ])
+        expectNoMismatch()
+    } finally {
+        await pair.close()
+    }
+})
+
 test('findDocs agrees over a few hundred documents', async ({ fylo }) => {
     test.setTimeout(900_000)
     const id = mintIds(320)
