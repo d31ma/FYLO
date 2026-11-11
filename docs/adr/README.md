@@ -44,6 +44,7 @@ ADR.
 | [0022](0022-indexeddb-host-backend-for-vdbx.md)            | Accepted | IndexedDB host backend for `.vdbx` working copies |
 | [0023](0023-word-index-and-sorted-queries.md)              | Accepted | Word indexes (`$match`) and sorted, cursor-paged queries |
 | [0024](0024-collection-change-feed.md)                       | Accepted | Collection change feed (`changes`, durable cursors)                      |
+| [0025](0025-browser-vdbx-encryption-with-a-host-key.md)      | Accepted | Browser `.vdbx` encryption with a host key, without isolation           |
 | [0026](0026-mobile-builds-and-a-c-abi.md)                  | Accepted | Mobile builds (iOS, Android) and a C ABI    |
 
 ## When another ADR is required

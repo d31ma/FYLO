@@ -15,6 +15,7 @@ use std::cell::RefCell;
 use fylo_machine::{ApplicationConfig, FrameLimits, FrameSession};
 use fylo_vfs::{HOST_ABI_VERSION, HostStat, HostVfs, install_host};
 
+use crate::browser_key::BrowserKey;
 use crate::browser_settings::BrowserSettings;
 
 /// ABI this module implements. A host that does not recognize it must refuse
@@ -223,6 +224,43 @@ pub unsafe extern "C" fn fylo_configure(request: *const u8, len: usize) -> u64 {
     match BrowserSettings::parse(&input) {
         Ok(config) => {
             CONFIG.with(|cell| *cell.borrow_mut() = config);
+            SESSION.with(|cell| *cell.borrow_mut() = None);
+            0
+        }
+        Err(message) => pack(message.into_bytes()),
+    }
+}
+
+/// Give the engine the key of an encrypted `.vdbx` file (see
+/// [`BrowserKey`]) for the batches after this one, and end the current
+/// session so the next batch opens its root with it (ADR 0025). The input
+/// buffer is overwritten with zeros before this returns, whether or not the
+/// key was accepted.
+///
+/// Returns zero when the key was accepted, or why not, packed like
+/// [`fylo_configure`]'s answer.
+///
+/// # Safety
+///
+/// `request` must be null or address `len` writable bytes, from
+/// [`fylo_alloc`], that the host does not use during the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn fylo_set_database_key(request: *mut u8, len: usize) -> u64 {
+    if request.is_null() || len == 0 {
+        return pack(b"the encryption key is empty".to_vec());
+    }
+    // SAFETY: the host wrote `len` bytes into a buffer from `fylo_alloc` and
+    // does not touch it during this call, so this is its only reference.
+    let input = unsafe { std::slice::from_raw_parts_mut(request, len) };
+    let parsed = BrowserKey::parse(input);
+    input.fill(0);
+    match parsed {
+        Ok((key, create)) => {
+            CONFIG.with(|cell| {
+                let mut config = cell.borrow_mut();
+                config.database_key = Some(key);
+                config.encrypt_databases = create;
+            });
             SESSION.with(|cell| *cell.borrow_mut() = None);
             0
         }

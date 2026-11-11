@@ -280,15 +280,46 @@ export function exec(instance, ndjson, trace = () => {}) {
  * @param {{ identity?: string, trustAnchor?: string, trustOnFirstUse?: boolean }} settings
  */
 export function configure(instance, settings) {
-    const { fylo_alloc, fylo_free, fylo_configure, fylo_abi_version, memory } = instance.exports
+    const { fylo_configure, fylo_abi_version } = instance.exports
     if (fylo_abi_version() !== MODULE_ABI_VERSION) {
         throw new Error(`unsupported FYLO module ABI: ${fylo_abi_version()}`)
     }
     const request = new TextEncoder().encode(JSON.stringify(settings))
-    const requestPointer = fylo_alloc(request.length)
-    new Uint8Array(memory.buffer).set(request, requestPointer)
-    const packed = fylo_configure(requestPointer, request.length)
-    fylo_free(requestPointer, request.length)
+    sendSetting(instance, fylo_configure, request, 'EIDENTITY')
+}
+
+/**
+ * Give the module the key of an encrypted `.vdbx` file
+ * (`fylo_set_database_key`, ADR 0025): the bytes `VdbxKey.material` made.
+ * They are wiped here and in module memory once the module has them. Throws
+ * `EKEY` with the engine's reason when it refuses them.
+ *
+ * @param {WebAssembly.Instance} instance
+ * @param {Uint8Array} material
+ */
+export function setDatabaseKey(instance, material) {
+    try {
+        sendSetting(instance, instance.exports.fylo_set_database_key, material, 'EKEY')
+    } finally {
+        material.fill(0)
+    }
+}
+
+/**
+ * Copy `bytes` into module memory, call `setting` with them, and throw the
+ * reason it answers with, under `code`.
+ *
+ * @param {WebAssembly.Instance} instance
+ * @param {(pointer: number, length: number) => bigint} setting
+ * @param {Uint8Array} bytes
+ * @param {string} code
+ */
+function sendSetting(instance, setting, bytes, code) {
+    const { fylo_alloc, fylo_free, memory } = instance.exports
+    const requestPointer = fylo_alloc(bytes.length)
+    new Uint8Array(memory.buffer).set(bytes, requestPointer)
+    const packed = setting(requestPointer, bytes.length)
+    fylo_free(requestPointer, bytes.length)
     if (packed === 0n) return
     const pointer = Number(packed >> 32n)
     const length = Number(packed & 0xffffffffn)
@@ -296,7 +327,7 @@ export function configure(instance, settings) {
         new Uint8Array(memory.buffer).slice(pointer, pointer + length)
     )
     fylo_free(pointer, length)
-    throw Object.assign(new Error(reason), { code: 'EIDENTITY' })
+    throw Object.assign(new Error(reason), { code })
 }
 
 /**

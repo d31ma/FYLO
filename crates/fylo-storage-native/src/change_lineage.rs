@@ -11,7 +11,9 @@ impl ChangeLineage {
     pub(crate) const DESCRIPTOR_KEY: &'static str = "changeLineage";
     const RANDOM_BYTES: usize = 16;
 
-    pub(crate) fn insert_fresh(descriptor: &mut Map<String, Value>) -> Result<(), NativeStorageError> {
+    pub(crate) fn insert_fresh(
+        descriptor: &mut Map<String, Value>,
+    ) -> Result<(), NativeStorageError> {
         descriptor.insert(Self::DESCRIPTOR_KEY.into(), Value::from(Self::fresh()?));
         Ok(())
     }

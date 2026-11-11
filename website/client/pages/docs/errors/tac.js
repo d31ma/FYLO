@@ -50,7 +50,8 @@ export default class {
         },
         {
             code: 'ECURSOR_EXPIRED',
-            meaning: "The change cursor is from before the collection's change history started again.",
+            meaning:
+                "The change cursor is from before the collection's change history started again.",
             retry: 'Read the collection again, then continue from after: null.'
         },
         {

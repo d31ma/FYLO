@@ -305,6 +305,13 @@ Each was decided as recommended. Phase 5 starts when the user says so.
 | P5-7 | Run `cng:` on Windows                                                            | **Yes**, on the `windows-vm` lane under the shared VM lock, then stop the VMs                                                                                                                                                                                   | It is the only way to run the one `unsafe` module                                                                        |
 | P5-8 | Phase 6: `fylo pack --protect` and per-record access descriptors                 | **Refuse** unless `--drop-record-access` or `--keep-record-access-as-metadata` is given                                                                                                                                                                         | A silent drop would lose access rules the old root enforced                                                              |
 
+**Exception to P5-1 and Q2 (the user, 2026-11-11; ADR 0025).** The browser
+engine may create a missing `.vdbx` that is **encrypted and unprotected**,
+only when the page asks for it (`create: true`) and gives a key. It has no
+identities and no access policy; the key is the only control. The browser
+never creates a plain database, and without a key it still creates nothing.
+Native creation is unchanged.
+
 Also settled: POSTIX (`.as()`, `--uid`, `--groups`, the per-request
 `access` field) goes in the same breaking release (Q1); `fylo rekey`,
 `fylo pack --sealed` and catalog-key rotation for protected databases stay

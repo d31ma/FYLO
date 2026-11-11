@@ -25,6 +25,9 @@
 #![cfg(target_arch = "wasm32")]
 
 mod boundary;
+mod browser_key;
 mod browser_settings;
 
-pub use boundary::{fylo_abi_version, fylo_alloc, fylo_configure, fylo_exec, fylo_free};
+pub use boundary::{
+    fylo_abi_version, fylo_alloc, fylo_configure, fylo_exec, fylo_free, fylo_set_database_key,
+};

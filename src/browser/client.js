@@ -328,7 +328,12 @@ export class BrowserDirectCollection {
 
     /** @param {string | null} [after] @param {number} [limit] */
     async changes(after = null, limit = undefined) {
-        const res = await this.host.request({ op: 'changes', collection: this.collection, after, limit })
+        const res = await this.host.request({
+            op: 'changes',
+            collection: this.collection,
+            after,
+            limit
+        })
         if (!res.ok) throw BrowserProtocolError.from(res.error)
         return res.result
     }

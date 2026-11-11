@@ -46,7 +46,7 @@ use fylo_storage_native::{
 use serde::Serialize;
 use serde_json::{Value, json};
 
-pub use fylo_storage_native::{RootConfig, parse_shard_width};
+pub use fylo_storage_native::{DatabaseKey, RootConfig, parse_shard_width};
 pub use strict::StrictValue;
 
 /// Protocol major version implemented by this crate.
@@ -1209,10 +1209,14 @@ impl Session {
     /// The browser makes a database with Explorer or natively, never through
     /// the machine protocol, which keeps the policy-writing code out of the
     /// browser engine's size budget.
+    ///
+    /// The one exception is a page that asked for it and gave a key: it gets
+    /// an encrypted, unprotected database (ADR 0025, an exception to ADR
+    /// 0021's decision P5-1 the user agreed on 2026-11-11). Never a plain one.
     #[cfg(target_family = "wasm")]
-    #[allow(clippy::unused_self)]
-    fn create_missing_database(&self, _root: &Path) -> Result<(), MachineError> {
-        Err(Self::no_identity())
+    fn create_missing_database(&self, root: &Path) -> Result<(), MachineError> {
+        let key = self.config.creation_key().ok_or_else(Self::no_identity)?;
+        NativeRoot::create_encrypted_database(root, key).map_err(|error| storage_error(&error))
     }
 
     fn no_identity() -> MachineError {

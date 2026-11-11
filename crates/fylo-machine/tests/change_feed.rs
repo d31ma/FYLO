@@ -73,31 +73,33 @@ impl Fixture {
             .collect()
     }
 
-    fn result(&self, request: Value) -> Value {
-        let reply = self.session(&[request.clone()]).remove(0);
+    fn result(&self, request: &Value) -> Value {
+        let reply = self.session(std::slice::from_ref(request)).remove(0);
         assert_eq!(reply["ok"], json!(true), "{request} failed: {reply}");
         reply["result"].clone()
     }
 
-    fn error(&self, request: Value) -> String {
-        let reply = self.session(&[request.clone()]).remove(0);
+    fn error(&self, request: &Value) -> String {
+        let reply = self.session(std::slice::from_ref(request)).remove(0);
         assert_eq!(reply["ok"], json!(false), "{request} succeeded: {reply}");
         reply["error"]["code"].as_str().unwrap().to_owned()
     }
 
     fn changes(&self, after: &Value, limit: u64) -> Value {
-        self.result(json!({ "op": "changes", "collection": "notes", "after": after, "limit": limit }))
+        self.result(
+            &json!({ "op": "changes", "collection": "notes", "after": after, "limit": limit }),
+        )
     }
 
     fn put(&self, number: usize) {
-        self.result(json!({
+        self.result(&json!({
             "op": "putData", "collection": "notes", "id": id(number),
             "data": { "text": format!("note {number}") }
         }));
     }
 
     fn patch(&self, number: usize) {
-        self.result(json!({
+        self.result(&json!({
             "op": "patchDoc", "collection": "notes", "id": id(number),
             "newDoc": { "text": format!("note {number} again") }
         }));
@@ -139,7 +141,7 @@ fn deleted(number: usize) -> (String, String) {
 
 fn database_with_notes() -> Fixture {
     let fixture = Fixture::database();
-    fixture.result(json!({ "op": "createCollection", "collection": "notes" }));
+    fixture.result(&json!({ "op": "createCollection", "collection": "notes" }));
     for number in 0..3 {
         fixture.put(number);
     }
@@ -165,7 +167,7 @@ fn a_later_change_moves_the_document_to_the_end() {
     let fixture = database_with_notes();
     let start = fixture.changes(&Value::Null, 10);
     fixture.patch(0);
-    fixture.result(json!({ "op": "delDoc", "collection": "notes", "id": id(1) }));
+    fixture.result(&json!({ "op": "delDoc", "collection": "notes", "id": id(1) }));
     let later = fixture.changes(&start["cursor"], 10);
     assert_eq!(listed(&later), [put(0), deleted(1)]);
     let everything = fixture.changes(&Value::Null, 10);
@@ -175,10 +177,10 @@ fn a_later_change_moves_the_document_to_the_end() {
 #[test]
 fn a_restored_document_is_a_put_again() {
     let fixture = database_with_notes();
-    fixture.result(json!({ "op": "delDoc", "collection": "notes", "id": id(2) }));
+    fixture.result(&json!({ "op": "delDoc", "collection": "notes", "id": id(2) }));
     let deletion = fixture.changes(&Value::Null, 10);
     assert_eq!(listed(&deletion).last(), Some(&deleted(2)));
-    fixture.result(json!({ "op": "restoreDoc", "collection": "notes", "id": id(2) }));
+    fixture.result(&json!({ "op": "restoreDoc", "collection": "notes", "id": id(2) }));
     let restored = fixture.changes(&deletion["cursor"], 10);
     assert_eq!(listed(&restored), [put(2)]);
 }
@@ -186,8 +188,8 @@ fn a_restored_document_is_a_put_again() {
 #[test]
 fn one_commit_of_many_documents_is_never_cut_by_a_page() {
     let fixture = Fixture::database();
-    fixture.result(json!({ "op": "createCollection", "collection": "notes" }));
-    fixture.result(json!({
+    fixture.result(&json!({ "op": "createCollection", "collection": "notes" }));
+    fixture.result(&json!({
         "op": "batchPutData", "collection": "notes",
         "batch": [{ "n": 1 }, { "n": 2 }, { "n": 3 }]
     }));
@@ -209,7 +211,7 @@ fn compaction_keeps_cursors_valid() {
     let start = fixture.changes(&Value::Null, 10);
     fixture.patch(1);
     fixture.patch(1);
-    fixture.result(json!({ "op": "compactCollection", "collection": "notes" }));
+    fixture.result(&json!({ "op": "compactCollection", "collection": "notes" }));
     let later = fixture.changes(&start["cursor"], 10);
     assert_eq!(listed(&later), [put(1)]);
     let everything = fixture.changes(&Value::Null, 10);
@@ -220,12 +222,12 @@ fn compaction_keeps_cursors_valid() {
 fn a_recreated_collection_expires_old_cursors() {
     let fixture = database_with_notes();
     let start = fixture.changes(&Value::Null, 1);
-    fixture.result(json!({ "op": "dropCollection", "collection": "notes" }));
-    fixture.result(json!({ "op": "createCollection", "collection": "notes" }));
+    fixture.result(&json!({ "op": "dropCollection", "collection": "notes" }));
+    fixture.result(&json!({ "op": "createCollection", "collection": "notes" }));
     for number in 0..5 {
         fixture.put(number);
     }
-    let code = fixture.error(json!({
+    let code = fixture.error(&json!({
         "op": "changes", "collection": "notes", "after": start["cursor"], "limit": 10
     }));
     assert_eq!(code, "ECURSOR_EXPIRED");
@@ -239,7 +241,7 @@ fn a_cursor_past_the_collections_end_is_expired() {
     let mut parts: Vec<&str> = cursor.splitn(4, '.').collect();
     parts[2] = "999999";
     let ahead = parts.join(".");
-    let code = fixture.error(json!({
+    let code = fixture.error(&json!({
         "op": "changes", "collection": "notes", "after": ahead, "limit": 10
     }));
     assert_eq!(code, "ECURSOR_EXPIRED");
@@ -248,32 +250,32 @@ fn a_cursor_past_the_collections_end_is_expired() {
 #[test]
 fn bad_cursors_and_limits_are_refused() {
     let fixture = database_with_notes();
-    let invalid = fixture.error(json!({
+    let invalid = fixture.error(&json!({
         "op": "changes", "collection": "notes", "after": "fqc1.7.3", "limit": 10
     }));
     assert_eq!(invalid, "EINVALIDCURSOR");
-    let zero = fixture.error(json!({ "op": "changes", "collection": "notes", "limit": 0 }));
+    let zero = fixture.error(&json!({ "op": "changes", "collection": "notes", "limit": 0 }));
     assert_eq!(zero, "EBADREQUEST");
-    let large = fixture.error(json!({ "op": "changes", "collection": "notes", "limit": 1001 }));
+    let large = fixture.error(&json!({ "op": "changes", "collection": "notes", "limit": 1001 }));
     assert_eq!(large, "EBADREQUEST");
-    let typed = fixture.error(json!({ "op": "changes", "collection": "notes", "after": 5 }));
+    let typed = fixture.error(&json!({ "op": "changes", "collection": "notes", "after": 5 }));
     assert_eq!(typed, "EBADREQUEST");
 }
 
 #[test]
 fn the_files_layout_is_refused_and_the_segments_layout_is_read() {
     let fixture = Fixture::folder();
-    fixture.result(json!({ "op": "createCollection", "collection": "notes" }));
+    fixture.result(&json!({ "op": "createCollection", "collection": "notes" }));
     fixture.put(0);
     fixture.put(5);
-    let code = fixture.error(json!({ "op": "changes", "collection": "notes" }));
+    let code = fixture.error(&json!({ "op": "changes", "collection": "notes" }));
     assert_eq!(code, "ELAYOUTUNSUPPORTED");
-    fixture.result(json!({ "op": "migrateLayout", "collection": "notes", "layout": "segments" }));
+    fixture.result(&json!({ "op": "migrateLayout", "collection": "notes", "layout": "segments" }));
     fixture.put(1);
     let page = fixture.changes(&Value::Null, 10);
     assert_eq!(listed(&page), [put(0), put(5), put(1)]);
-    fixture.result(json!({ "op": "migrateLayout", "collection": "notes", "layout": "files" }));
-    let code = fixture.error(json!({
+    fixture.result(&json!({ "op": "migrateLayout", "collection": "notes", "layout": "files" }));
+    let code = fixture.error(&json!({
         "op": "changes", "collection": "notes", "after": page["cursor"], "limit": 10
     }));
     assert_eq!(code, "ELAYOUTUNSUPPORTED");

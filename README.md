@@ -298,6 +298,44 @@ not exist fails with `Collection not found`.
 embed it fail such requests with an error instead of ignoring them. Use the
 native `fylo` binary, through any binary-backed client, for those features.
 
+### An encrypted `.vdbx` in the browser, with a key from the page
+
+The single-file engine (`fylo-browser.wasm` with `dist-web/vdbx-worker.js`)
+opens and writes an encrypted `.vdbx` database with a key the page supplies
+([ADR 0025](docs/adr/0025-browser-vdbx-encryption-with-a-host-key.md)). It
+needs no cross-origin isolation (no COOP or COEP headers).
+
+```js
+import { SingleFileDatabase } from './vdbx-client.mjs'
+
+// Either the secret itself, at least 32 bytes (the same secret native
+// `fylo.encryption.key` names, so files move between native and the browser)…
+const key = new TextEncoder().encode(secretFromYourServer)
+// …or a non-extractable HKDF CryptoKey, so the secret never sits in script.
+const hkdfKey = await crypto.subtle.importKey('raw', key, 'HKDF', false, ['deriveBits'])
+
+const db = await SingleFileDatabase.open(
+    { kind: 'opfs', name: 'device.vdbx' },
+    { workerUrl, moduleUrl, encryption: { key: hkdfKey }, create: true }
+)
+```
+
+- `create: true` creates a missing OPFS working copy, **always encrypted**
+  with that key. Without a key the browser creates nothing
+  (`EBROWSER_UNSUPPORTED`).
+- A database created this way is **unprotected**: it has no identities and no
+  access policy (ADR 0021). Anyone with the key reads and writes all of it.
+  This is a recorded exception to ADR 0021's "protected by default" rule,
+  agreed by the user on 2026-11-11.
+- A key shorter than 32 bytes, or a wrong key, fails with `EKEY`.
+- An AES-GCM `CryptoKey` is refused with `EBROWSER_UNSUPPORTED`: using it for
+  every record would need a cross-origin isolated page.
+- `encryption` together with `identity` is refused; a protected database uses
+  its identity's keys.
+- Keep the key away from the device's storage. A key kept in `localStorage`
+  or beside the file protects nothing. The folder engine (`fylo.js`) still
+  refuses encryption.
+
 Use `https://d31ma.github.io/FYLO/version/latest/fylo.js` to track the newest
 successful release. Direct ESM consumers can import
 `https://d31ma.github.io/FYLO/version/26.33.02/fylo-web.mjs` instead.

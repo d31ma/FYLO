@@ -302,14 +302,21 @@ fn require_kept(before: &[(String, Kept)], after: &[(String, Kept)]) {
         assert_eq!(after.shard_width, before.shard_width, "{name}: shard width");
         assert_eq!(after.index_keys, before.index_keys, "{name}: index keys");
         // The descriptor is kept but for the stamp of the collection's
-        // creation in its file, which names the new file's collection.
+        // creation in its file, which names the new file's collection, and
+        // the change lineage, which is new because the copy renumbers its
+        // changes (ADR 0024).
         let settings = |kept: &Kept| {
             let mut descriptor: Map<String, Value> =
                 serde_json::from_slice(&kept.descriptor).unwrap();
             assert!(descriptor.remove("created").is_some(), "{name}: stamp");
-            descriptor
+            let lineage = descriptor.remove("changeLineage");
+            (descriptor, lineage)
         };
-        assert_eq!(settings(after), settings(before), "{name}: descriptor");
+        let (after_settings, after_lineage) = settings(after);
+        let (before_settings, before_lineage) = settings(before);
+        assert_eq!(after_settings, before_settings, "{name}: descriptor");
+        assert!(after_lineage.is_some(), "{name}: change lineage");
+        assert_ne!(after_lineage, before_lineage, "{name}: new change lineage");
     }
 }
 

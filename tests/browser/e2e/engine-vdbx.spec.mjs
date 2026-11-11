@@ -11,7 +11,8 @@
 // engine runs through the single-file Worker (`dist-web/vdbx-worker.js`).
 
 import { expect, test } from './browser-test.mjs'
-import { comparable, expectOk, mintIds, nativeExec } from './engine-harness.mjs'
+import { comparable, expectOk, mintIds, nativeBinary, nativeExec } from './engine-harness.mjs'
+import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -768,7 +769,9 @@ test('the change feed reads a working copy as native does, and follows browser w
         expect(browser.result, 'the browser reads the feed native reads').toEqual(native.result)
         expect(browser.result.more).toBe(true)
         const [rest] = expectOk(
-            await harness.exec(opened.id, [{ ...firstPage, after: browser.result.cursor, limit: 100 }])
+            await harness.exec(opened.id, [
+                { ...firstPage, after: browser.result.cursor, limit: 100 }
+            ])
         )
         expect(rest.result.changes.length + browser.result.changes.length).toBe(smallIds.length)
         const writes = [
@@ -786,6 +789,183 @@ test('the change feed reads a working copy as native does, and follows browser w
         expect(later.result.more).toBe(false)
     } finally {
         await harness.close(opened.id)
+    }
+})
+
+const SECRET = 'f4-e2e-secret-for-an-encrypted-vdbx-0123456789'
+const SECRET_ENV = { FYLO_E2E_DATABASE_KEY: SECRET, FYLO_E2E_CIPHER_SALT: 'f4-e2e-cipher-salt' }
+
+/** A configuration naming the shared secret, as native `fylo.encryption.key`. */
+function keyConfig(paths) {
+    const config = paths.disk('encrypted.json')
+    writeFileSync(
+        config,
+        JSON.stringify({
+            fylo: {
+                encryption: { key: '${FYLO_E2E_DATABASE_KEY}' },
+                cipher: { salt: '${FYLO_E2E_CIPHER_SALT}' }
+            }
+        })
+    )
+    return config
+}
+
+/** Native reads of `database` with the shared secret. */
+function keyedExec(paths, database, requests) {
+    return nativeExec(database, requests, { env: SECRET_ENV, config: keyConfig(paths) })
+}
+
+/** An encrypted, unprotected database made natively, with three notes. */
+function nativeEncrypted(paths, ids) {
+    const database = paths.disk('encrypted.vdbx')
+    rmSync(database, { force: true })
+    execFileSync(
+        nativeBinary(),
+        ['create', database, '--unprotected', '--encrypt', '--config', keyConfig(paths)],
+        { env: { ...process.env, ...SECRET_ENV } }
+    )
+    expectOk(
+        keyedExec(paths, database, [
+            { op: 'createCollection', collection: 'notes' },
+            ...ids.map((id, index) => ({
+                op: 'putData',
+                collection: 'notes',
+                id,
+                data: note(index)
+            }))
+        ]),
+        'native encrypted fixture'
+    )
+    return database
+}
+
+test('opens a native encrypted database with a host key, without cross-origin isolation', async ({
+    page
+}) => {
+    test.setTimeout(300_000)
+    const harness = await VdbxPage.open(page)
+    await requireOpfs(harness)
+    const { paths } = fixture
+    const ids = mintIds(4)
+    nativeEncrypted(paths, ids.slice(0, 3))
+    const reads = [{ op: 'getDoc', collection: 'notes', id: ids[0] }]
+    const [expected] = expectOk(keyedExec(paths, paths.disk('encrypted.vdbx'), reads))
+    for (const form of ['bytes', 'string', 'hkdf']) {
+        const opened = await harness.open({
+            kind: 'copy',
+            label: `encrypted-${form}.vdbx`,
+            url: paths.url('encrypted.vdbx'),
+            encryption: { secret: SECRET, form }
+        })
+        try {
+            const [read] = expectOk(await harness.exec(opened.id, reads), `${form} read`)
+            expect(read.result, `${form}: the browser reads what native reads`).toEqual(
+                expected.result
+            )
+            expectOk(
+                await harness.exec(opened.id, [
+                    { op: 'putData', collection: 'notes', id: ids[3], data: note(3) }
+                ]),
+                `${form} write`
+            )
+            const copy = paths.disk(`encrypted-${form}.vdbx`)
+            writeFileSync(copy, await harness.snapshot(opened.id))
+            const [back] = expectOk(
+                keyedExec(paths, copy, [{ op: 'getDoc', collection: 'notes', id: ids[3] }]),
+                `${form}: native reads the browser's write`
+            )
+            expect(back.result[ids[3]]).toEqual(note(3))
+        } finally {
+            await harness.close(opened.id)
+        }
+    }
+})
+
+test('a wrong key, a short key and an AES CryptoKey are refused with stable codes', async ({
+    page
+}) => {
+    test.setTimeout(300_000)
+    const harness = await VdbxPage.open(page)
+    await requireOpfs(harness)
+    const { paths } = fixture
+    const ids = mintIds(1)
+    nativeEncrypted(paths, ids)
+    const source = (secret, form) => ({
+        kind: 'copy',
+        label: `refused-${form}.vdbx`,
+        url: paths.url('encrypted.vdbx'),
+        encryption: { secret, form }
+    })
+    for (const form of ['bytes', 'hkdf']) {
+        const opened = await harness.open(source(`${SECRET}-but-not-this-one`, form))
+        try {
+            const [frame] = await harness.exec(opened.id, [
+                { op: 'getDoc', collection: 'notes', id: ids[0] }
+            ])
+            expect(frame.ok, `${form}: a wrong key reads nothing`).toBe(false)
+            expect(frame.error.code).toBe('EKEY')
+        } finally {
+            await harness.close(opened.id)
+        }
+    }
+    const short = await harness.tryOpen(source('too-short', 'bytes'))
+    expect(short.code).toBe('EKEY')
+    const aes = await harness.tryOpen(source(SECRET, 'aes'))
+    expect(aes.code).toBe('EBROWSER_UNSUPPORTED')
+    const plainCreate = await harness.tryOpen({
+        kind: 'opfs',
+        name: 'plain-new.vdbx',
+        create: true
+    })
+    expect(plainCreate.code, 'the browser never creates a plain database').toBe(
+        'EBROWSER_UNSUPPORTED'
+    )
+})
+
+test('creates an encrypted database from a host key that native opens with the secret', async ({
+    page
+}) => {
+    test.setTimeout(300_000)
+    const harness = await VdbxPage.open(page)
+    await requireOpfs(harness)
+    const { paths } = fixture
+    for (const form of ['bytes', 'hkdf']) {
+        const [id] = mintIds(1)
+        const name = `created-${form}-${Date.now()}.vdbx`
+        const opened = await harness.open({
+            kind: 'opfs',
+            name,
+            create: true,
+            encryption: { secret: SECRET, form }
+        })
+        try {
+            expect(opened.info.writable).toBe(true)
+            expectOk(
+                await harness.exec(opened.id, [
+                    { op: 'createCollection', collection: 'notes' },
+                    { op: 'putData', collection: 'notes', id, data: note(7) }
+                ]),
+                `${form}: writes into the new database`
+            )
+            const bytes = await harness.snapshot(opened.id)
+            expect(
+                Buffer.from(bytes).includes(Buffer.from(note(7).body)),
+                `${form}: no document text in the file`
+            ).toBe(false)
+            const copy = paths.disk(`created-${form}.vdbx`)
+            writeFileSync(copy, bytes)
+            const [read, inspected] = expectOk(
+                keyedExec(paths, copy, [
+                    { op: 'getDoc', collection: 'notes', id },
+                    { op: 'inspectDatabase' }
+                ]),
+                `${form}: native opens it with the secret`
+            )
+            expect(read.result[id]).toEqual(note(7))
+            expect(inspected.result.encrypted).toBe(true)
+        } finally {
+            await harness.close(opened.id)
+        }
     }
 })
 

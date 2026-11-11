@@ -204,22 +204,173 @@ function exec(instance, ndjson, trace = () => {}) {
   return new TextDecoder().decode(response);
 }
 function configure(instance, settings) {
-  const { fylo_alloc, fylo_free, fylo_configure, fylo_abi_version, memory } = instance.exports;
+  const { fylo_configure, fylo_abi_version } = instance.exports;
   if (fylo_abi_version() !== MODULE_ABI_VERSION) {
     throw new Error(`unsupported FYLO module ABI: ${fylo_abi_version()}`);
   }
   const request = new TextEncoder().encode(JSON.stringify(settings));
-  const requestPointer = fylo_alloc(request.length);
-  new Uint8Array(memory.buffer).set(request, requestPointer);
-  const packed = fylo_configure(requestPointer, request.length);
-  fylo_free(requestPointer, request.length);
+  sendSetting(instance, fylo_configure, request, "EIDENTITY");
+}
+function setDatabaseKey(instance, material) {
+  try {
+    sendSetting(instance, instance.exports.fylo_set_database_key, material, "EKEY");
+  } finally {
+    material.fill(0);
+  }
+}
+function sendSetting(instance, setting, bytes, code) {
+  const { fylo_alloc, fylo_free, memory } = instance.exports;
+  const requestPointer = fylo_alloc(bytes.length);
+  new Uint8Array(memory.buffer).set(bytes, requestPointer);
+  const packed = setting(requestPointer, bytes.length);
+  fylo_free(requestPointer, bytes.length);
   if (packed === 0n)
     return;
   const pointer = Number(packed >> 32n);
   const length = Number(packed & 0xffffffffn);
   const reason = new TextDecoder().decode(new Uint8Array(memory.buffer).slice(pointer, pointer + length));
   fylo_free(pointer, length);
-  throw Object.assign(new Error(reason), { code: "EIDENTITY" });
+  throw Object.assign(new Error(reason), { code });
+}
+
+// src/browser/vdbx-key.mjs
+class VdbxKey {
+  static FLAG_DERIVED = 1;
+  static FLAG_CREATE = 2;
+  static MINIMUM_SECRET_BYTES = 32;
+  static SALT_BYTES = 32;
+  static FILE_KEY_BITS = 256;
+  static CHECK_BITS = 128;
+  static SUPERBLOCK_BYTES = 4096;
+  static SALT_OFFSET = 80;
+  static INCOMPAT_OFFSET = 20;
+  static INCOMPAT_ENCRYPTED = 1;
+  static MAGIC = [137, 86, 68, 66, 88, 13, 10, 26];
+  static FILE_KEY_INFO = "fylo.vdbx.file-key.v1";
+  static CHECK_INFO = "fylo.vdbx.key-check.v1";
+  static UNSUPPORTED = "EBROWSER_UNSUPPORTED";
+  static WRONG_KEY = "EKEY";
+  static async material(encryption, backend, create) {
+    const key = VdbxKey.#keyOf(encryption);
+    if (VdbxKey.#isCryptoKey(key))
+      return await VdbxKey.#derived(key, backend, create);
+    return VdbxKey.#secret(key, create);
+  }
+  static #keyOf(encryption) {
+    const record = encryption;
+    if (record?.key === undefined || record.key === null) {
+      throw VdbxKey.#error(VdbxKey.WRONG_KEY, "encryption.key is missing");
+    }
+    return record.key;
+  }
+  static #isCryptoKey(key) {
+    return typeof CryptoKey === "function" && key instanceof CryptoKey;
+  }
+  static #secret(key, create) {
+    const secret = VdbxKey.#bytesOf(key);
+    try {
+      if (secret.length < VdbxKey.MINIMUM_SECRET_BYTES) {
+        throw VdbxKey.#error(VdbxKey.WRONG_KEY, `the encryption key must be at least ${VdbxKey.MINIMUM_SECRET_BYTES} bytes`);
+      }
+      return VdbxKey.#packed(VdbxKey.#flags(false, create), [secret]);
+    } finally {
+      secret.fill(0);
+    }
+  }
+  static #bytesOf(key) {
+    if (typeof key === "string")
+      return new TextEncoder().encode(key);
+    if (key instanceof ArrayBuffer)
+      return new Uint8Array(key.slice(0));
+    if (ArrayBuffer.isView(key)) {
+      return new Uint8Array(key.buffer.slice(key.byteOffset, key.byteOffset + key.byteLength));
+    }
+    throw VdbxKey.#error(VdbxKey.WRONG_KEY, "encryption.key must be bytes, a string or an HKDF CryptoKey");
+  }
+  static async#derived(key, backend, create) {
+    VdbxKey.#requireHkdf(key);
+    const salt = VdbxKey.#salt(backend, create);
+    if (!salt)
+      return null;
+    const fileKey = await VdbxKey.#derive(key, salt, VdbxKey.FILE_KEY_INFO, VdbxKey.FILE_KEY_BITS);
+    const check = await VdbxKey.#derive(key, salt, VdbxKey.CHECK_INFO, VdbxKey.CHECK_BITS);
+    try {
+      return VdbxKey.#packed(VdbxKey.#flags(true, create), [salt, fileKey, check]);
+    } finally {
+      fileKey.fill(0);
+    }
+  }
+  static #requireHkdf(key) {
+    if (key.algorithm?.name === "HKDF" && key.usages.includes("deriveBits"))
+      return;
+    throw VdbxKey.#error(VdbxKey.UNSUPPORTED, `the browser engine takes an HKDF CryptoKey with the deriveBits usage, not ${key.algorithm?.name}: ` + "using an AES key for every record needs a cross-origin isolated page");
+  }
+  static #salt(backend, create) {
+    const size = backend.stat(backend.path).len ?? 0;
+    if (size === 0)
+      return VdbxKey.#newSalt(create);
+    const superblock = VdbxKey.#superblock(backend, size);
+    if (!VdbxKey.#encrypted(superblock))
+      return null;
+    return superblock.slice(VdbxKey.SALT_OFFSET, VdbxKey.SALT_OFFSET + VdbxKey.SALT_BYTES);
+  }
+  static #newSalt(create) {
+    if (!create)
+      throw VdbxKey.#error(VdbxKey.WRONG_KEY, "the database file is empty");
+    return crypto.getRandomValues(new Uint8Array(VdbxKey.SALT_BYTES));
+  }
+  static #superblock(backend, size) {
+    const first = VdbxKey.#read(backend, 0, size);
+    if (VdbxKey.#hasMagic(first))
+      return first;
+    return VdbxKey.#read(backend, VdbxKey.SUPERBLOCK_BYTES, size);
+  }
+  static #read(backend, offset, size) {
+    const bytes = new Uint8Array(Math.max(0, Math.min(VdbxKey.SUPERBLOCK_BYTES, size - offset)));
+    const handle = backend.open(backend.path, 0);
+    try {
+      backend.readAt(handle, offset, bytes);
+    } finally {
+      backend.close(handle);
+    }
+    return bytes;
+  }
+  static #hasMagic(bytes) {
+    return VdbxKey.MAGIC.every((value, index) => bytes[index] === value);
+  }
+  static #encrypted(superblock) {
+    if (superblock.length < VdbxKey.SALT_OFFSET + VdbxKey.SALT_BYTES)
+      return false;
+    const view = new DataView(superblock.buffer, superblock.byteOffset, superblock.byteLength);
+    return (view.getUint32(VdbxKey.INCOMPAT_OFFSET, true) & VdbxKey.INCOMPAT_ENCRYPTED) !== 0;
+  }
+  static async#derive(key, salt, info, bits) {
+    const algorithm = {
+      name: "HKDF",
+      hash: "SHA-256",
+      salt,
+      info: new TextEncoder().encode(info)
+    };
+    return new Uint8Array(await crypto.subtle.deriveBits(algorithm, key, bits));
+  }
+  static #flags(derived, create) {
+    const derivedFlag = derived ? VdbxKey.FLAG_DERIVED : 0;
+    return derivedFlag | (create ? VdbxKey.FLAG_CREATE : 0);
+  }
+  static #packed(flags, parts) {
+    const length = parts.reduce((total, part) => total + part.length, 1);
+    const packed = new Uint8Array(length);
+    packed[0] = flags;
+    let offset = 1;
+    for (const part of parts) {
+      packed.set(part, offset);
+      offset += part.length;
+    }
+    return packed;
+  }
+  static #error(code, message) {
+    return Object.assign(new Error(message), { code });
+  }
 }
 
 // src/browser/identity-bridge.mjs
@@ -832,11 +983,12 @@ function createFileBackend(file, { path = DEFAULT_DATABASE_PATH, reader } = {}) 
     }
   });
 }
-function createAccessHandleBackend(handle, { path = DEFAULT_DATABASE_PATH, writable = true } = {}) {
+function createAccessHandleBackend(handle, { path = DEFAULT_DATABASE_PATH, writable = true, absent = false } = {}) {
   let modifiedMs = Date.now();
   return createSingleFileBackend({
     path,
     writable,
+    absent,
     size: () => handle.getSize(),
     modifiedMs: () => modifiedMs,
     readAt: (offset, into) => handle.read(into, { at: offset }),
@@ -913,6 +1065,7 @@ function createSingleFileBackend(file) {
   const name = path.slice(path.lastIndexOf("/") + 1);
   const handles = new Map;
   let nextHandle = 1;
+  let absent = file.absent === true;
   const handleOf = (handle) => {
     const open = handles.get(handle);
     if (!open)
@@ -922,12 +1075,27 @@ function createSingleFileBackend(file) {
   const refuse = (what) => {
     throw withCode(new Error(`${what} is refused: this host holds the single file ${path}`), file.writable ? "EACCES" : "EROFS");
   };
+  const openHandle = (write) => {
+    const handle = nextHandle++;
+    handles.set(handle, { write });
+    return handle;
+  };
+  const createOnOpen = (flags) => {
+    if ((flags & OPEN_CREATE) === 0) {
+      throw withCode(new Error(`${path} does not exist`), "ENOENT");
+    }
+    absent = false;
+  };
   return {
     path,
     writable: file.writable,
     size: file.size,
     open(requested, flags) {
-      if (normalize(requested) !== path) {
+      const at = normalize(requested);
+      if (at === parent && (flags & (OPEN_WRITE | OPEN_CREATE)) === 0) {
+        return openHandle(false);
+      }
+      if (at !== path) {
         if (flags & OPEN_CREATE)
           refuse(`creating ${requested}`);
         throw withCode(new Error(`${requested} does not exist`), "ENOENT");
@@ -935,9 +1103,9 @@ function createSingleFileBackend(file) {
       const write = (flags & OPEN_WRITE) !== 0;
       if (write && !file.writable)
         refuse(`opening ${path} for writing`);
-      const handle = nextHandle++;
-      handles.set(handle, { write });
-      return handle;
+      if (absent)
+        createOnOpen(flags);
+      return openHandle(write);
     },
     close(handle) {
       handleOf(handle);
@@ -965,7 +1133,7 @@ function createSingleFileBackend(file) {
     },
     stat(requested) {
       const at = normalize(requested);
-      if (at === path) {
+      if (at === path && !absent) {
         return { kind: KIND_FILE, len: file.size(), modifiedMs: file.modifiedMs() };
       }
       if (at === parent)
@@ -974,7 +1142,7 @@ function createSingleFileBackend(file) {
     },
     readDir(requested) {
       if (normalize(requested) === parent)
-        return [name];
+        return absent ? [] : [name];
       throw withCode(new Error(`${requested} is not a directory`), "ENOENT");
     },
     mkdir: (requested) => refuse(`creating directory ${requested}`),
@@ -1031,6 +1199,7 @@ function withCode(error, code) {
 var COPY_CHUNK_BYTES = 4 * 1024 * 1024;
 var HANDLE_WAIT_MS = 5000;
 var HANDLE_RETRY_MS = 100;
+var CREATE_PROBE_COLLECTION = "fylo-create";
 var backend;
 var accessHandle;
 var indexedFile;
@@ -1083,32 +1252,44 @@ async function dispatch(message) {
       throw new Error(`unknown op: ${message.op}`);
   }
 }
-async function open({ id, source, path = DEFAULT_DATABASE_PATH, moduleUrl, identity }) {
+async function open({
+  id,
+  source,
+  path = DEFAULT_DATABASE_PATH,
+  moduleUrl,
+  identity,
+  encryption,
+  create = false
+}) {
   if (backend)
     throw new Error("this Worker already has a database open");
   lastHostError = undefined;
   try {
+    requireSupportedOpen(source, { moduleUrl, identity, encryption, create });
     if (source?.kind === "file") {
       backend = createFileBackend(source.file, { path });
     } else if (source?.kind === "url") {
       backend = createRangeBackend(new URL(source.url, self.location.href).href, { path });
     } else if (source?.kind === "opfs") {
-      await openWorkingCopy(source, path, (progress) => self.postMessage({ id, progress }));
+      await openWorkingCopy(source, path, (progress) => self.postMessage({ id, progress }), create);
     } else if (source?.kind === "indexeddb") {
       await openIndexedCopy(source, path, (progress) => self.postMessage({ id, progress }));
     } else if (source?.kind === "local") {
       const onProgress = (progress) => self.postMessage({ id, progress });
       if (await hasOpfs())
-        await openWorkingCopy(source, path, onProgress);
+        await openWorkingCopy(source, path, onProgress, false);
       else
         await openIndexedCopy(source, path, onProgress);
     } else {
       throw new Error(`unknown database source: ${source?.kind}`);
     }
+    const key = encryption ? await VdbxKey.material(encryption, backend, create) : null;
+    if (moduleUrl)
+      instance = await instantiate(moduleUrl, backend, identity, key);
+    if (create)
+      createIfMissing(path);
     probe = createProbe(backend);
     storage = storage ?? source.kind;
-    if (moduleUrl)
-      instance = await instantiate(moduleUrl, backend, identity);
     return describe();
   } catch (error) {
     await close();
@@ -1151,7 +1332,36 @@ async function openIndexedCopy({ name, copyFrom }, path, onProgress) {
     truncate: (length) => file.truncate(length)
   });
 }
-async function instantiate(moduleUrl, target, identity) {
+function requireSupportedOpen(source, { moduleUrl, identity, encryption, create }) {
+  if (encryption && identity) {
+    throw unsupported("a protected database opens with an identity, not with encryption.key");
+  }
+  if (!create)
+    return;
+  if (!encryption) {
+    throw unsupported("the browser creates only encrypted databases: pass encryption.key");
+  }
+  if (source?.kind !== "opfs" || source.copyFrom || !moduleUrl) {
+    throw unsupported("create needs an OPFS working copy by name, with no copyFrom, and moduleUrl");
+  }
+}
+function unsupported(message) {
+  return Object.assign(new Error(message), { code: "EBROWSER_UNSUPPORTED" });
+}
+function createIfMissing(path) {
+  if (backend.stat(path).kind === KIND_FILE)
+    return;
+  const request = { op: "findDocs", root: path, collection: CREATE_PROBE_COLLECTION, query: {} };
+  const [frame] = exec(instance, `${JSON.stringify(request)}
+`).split(`
+`).filter(Boolean).map((line) => JSON.parse(line));
+  if (backend.stat(path).kind === KIND_FILE)
+    return;
+  throw Object.assign(new Error(frame?.error?.message ?? "the database was not created"), {
+    code: frame?.error?.code ?? "EUNKNOWN"
+  });
+}
+async function instantiate(moduleUrl, target, identity, key) {
   let created;
   const imports = createHostImports({
     memory: () => created.exports.memory,
@@ -1169,6 +1379,8 @@ async function instantiate(moduleUrl, target, identity) {
       trustOnFirstUse: identity.trustOnFirstUse === true
     });
   }
+  if (key)
+    setDatabaseKey(created, key);
   return created;
 }
 async function startIdentityBridge({ name, workerUrl }) {
@@ -1188,18 +1400,19 @@ async function startIdentityBridge({ name, workerUrl }) {
   identityId = (await describeIdentity(ready.publicKey)).id;
   return createIdentityBridgeBackend(buffer);
 }
-async function openWorkingCopy({ name, copyFrom }, path, progress) {
+async function openWorkingCopy({ name, copyFrom }, path, progress, create) {
   if (!isWorkingCopyName(name))
     throw new Error(`invalid working copy name: ${name}`);
   storage = "opfs";
   await acquireLock(`fylo-vdbx:${name}`);
   const root = await navigator.storage.getDirectory();
   const directory = await root.getDirectoryHandle(WORKING_COPY_DIRECTORY, { create: true });
-  const file = await directory.getFileHandle(name, { create: Boolean(copyFrom) });
+  const file = await directory.getFileHandle(name, { create: Boolean(copyFrom) || create });
   accessHandle = await createAccessHandle(file);
   if (copyFrom)
     await streamInto(accessHandle, copyFrom, progress);
-  backend = createAccessHandleBackend(accessHandle, { path });
+  const absent = create && accessHandle.getSize() === 0;
+  backend = createAccessHandleBackend(accessHandle, { path, absent });
 }
 async function createAccessHandle(file) {
   for (let waited = 0;; waited += HANDLE_RETRY_MS) {

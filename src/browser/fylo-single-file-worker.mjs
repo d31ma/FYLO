@@ -37,7 +37,16 @@
 // - `snapshot` flushes and returns the whole file as a `Blob`, for Save;
 // - `close` closes the file and releases the lock.
 
-import { OPEN_READ, OPEN_WRITE, configure, createHostImports, exec } from './host-vfs.mjs'
+import {
+    KIND_FILE,
+    OPEN_READ,
+    OPEN_WRITE,
+    configure,
+    createHostImports,
+    exec,
+    setDatabaseKey
+} from './host-vfs.mjs'
+import { VdbxKey } from './vdbx-key.mjs'
 import {
     createIdentityBridgeBackend,
     createIdentityBridgeBuffer,
@@ -56,6 +65,7 @@ import {
 const COPY_CHUNK_BYTES = 4 * 1024 * 1024
 const HANDLE_WAIT_MS = 5000
 const HANDLE_RETRY_MS = 100
+const CREATE_PROBE_COLLECTION = 'fylo-create'
 
 /** @type {ReturnType<typeof createFileBackend> | undefined} */
 let backend
@@ -125,28 +135,44 @@ async function dispatch(message) {
     }
 }
 
-async function open({ id, source, path = DEFAULT_DATABASE_PATH, moduleUrl, identity }) {
+async function open({
+    id,
+    source,
+    path = DEFAULT_DATABASE_PATH,
+    moduleUrl,
+    identity,
+    encryption,
+    create = false
+}) {
     if (backend) throw new Error('this Worker already has a database open')
     lastHostError = undefined
     try {
+        requireSupportedOpen(source, { moduleUrl, identity, encryption, create })
         if (source?.kind === 'file') {
             backend = createFileBackend(source.file, { path })
         } else if (source?.kind === 'url') {
             backend = createRangeBackend(new URL(source.url, self.location.href).href, { path })
         } else if (source?.kind === 'opfs') {
-            await openWorkingCopy(source, path, (progress) => self.postMessage({ id, progress }))
+            await openWorkingCopy(
+                source,
+                path,
+                (progress) => self.postMessage({ id, progress }),
+                create
+            )
         } else if (source?.kind === 'indexeddb') {
             await openIndexedCopy(source, path, (progress) => self.postMessage({ id, progress }))
         } else if (source?.kind === 'local') {
             const onProgress = (progress) => self.postMessage({ id, progress })
-            if (await hasOpfs()) await openWorkingCopy(source, path, onProgress)
+            if (await hasOpfs()) await openWorkingCopy(source, path, onProgress, false)
             else await openIndexedCopy(source, path, onProgress)
         } else {
             throw new Error(`unknown database source: ${source?.kind}`)
         }
+        const key = encryption ? await VdbxKey.material(encryption, backend, create) : null
+        if (moduleUrl) instance = await instantiate(moduleUrl, backend, identity, key)
+        if (create) createIfMissing(path)
         probe = createProbe(backend)
         storage = storage ?? source.kind
-        if (moduleUrl) instance = await instantiate(moduleUrl, backend, identity)
         return describe()
     } catch (error) {
         await close()
@@ -200,7 +226,50 @@ async function openIndexedCopy({ name, copyFrom }, path, onProgress) {
     })
 }
 
-async function instantiate(moduleUrl, target, identity) {
+/**
+ * Refuse what the browser engine does not do before anything is opened: a
+ * key together with an identity, and creating a database that is not
+ * encrypted, not an OPFS working copy, or without an engine (ADR 0025).
+ */
+function requireSupportedOpen(source, { moduleUrl, identity, encryption, create }) {
+    if (encryption && identity) {
+        throw unsupported('a protected database opens with an identity, not with encryption.key')
+    }
+    if (!create) return
+    if (!encryption) {
+        throw unsupported('the browser creates only encrypted databases: pass encryption.key')
+    }
+    if (source?.kind !== 'opfs' || source.copyFrom || !moduleUrl) {
+        throw unsupported(
+            'create needs an OPFS working copy by name, with no copyFrom, and moduleUrl'
+        )
+    }
+}
+
+/** @param {string} message */
+function unsupported(message) {
+    return Object.assign(new Error(message), { code: 'EBROWSER_UNSUPPORTED' })
+}
+
+/**
+ * Let the engine create the database at `path` if the working copy is new:
+ * the first request that names a missing root creates it, encrypted with
+ * the key the page gave.
+ */
+function createIfMissing(path) {
+    if (backend.stat(path).kind === KIND_FILE) return
+    const request = { op: 'findDocs', root: path, collection: CREATE_PROBE_COLLECTION, query: {} }
+    const [frame] = exec(instance, `${JSON.stringify(request)}\n`)
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line))
+    if (backend.stat(path).kind === KIND_FILE) return
+    throw Object.assign(new Error(frame?.error?.message ?? 'the database was not created'), {
+        code: frame?.error?.code ?? 'EUNKNOWN'
+    })
+}
+
+async function instantiate(moduleUrl, target, identity, key) {
     let created
     const imports = createHostImports({
         memory: () => created.exports.memory,
@@ -218,6 +287,7 @@ async function instantiate(moduleUrl, target, identity) {
             trustOnFirstUse: identity.trustOnFirstUse === true
         })
     }
+    if (key) setDatabaseKey(created, key)
     return created
 }
 
@@ -250,16 +320,17 @@ async function startIdentityBridge({ name, workerUrl }) {
     return createIdentityBridgeBackend(buffer)
 }
 
-async function openWorkingCopy({ name, copyFrom }, path, progress) {
+async function openWorkingCopy({ name, copyFrom }, path, progress, create) {
     if (!isWorkingCopyName(name)) throw new Error(`invalid working copy name: ${name}`)
     storage = 'opfs'
     await acquireLock(`fylo-vdbx:${name}`)
     const root = await navigator.storage.getDirectory()
     const directory = await root.getDirectoryHandle(WORKING_COPY_DIRECTORY, { create: true })
-    const file = await directory.getFileHandle(name, { create: Boolean(copyFrom) })
+    const file = await directory.getFileHandle(name, { create: Boolean(copyFrom) || create })
     accessHandle = await createAccessHandle(file)
     if (copyFrom) await streamInto(accessHandle, copyFrom, progress)
-    backend = createAccessHandleBackend(accessHandle, { path })
+    const absent = create && accessHandle.getSize() === 0
+    backend = createAccessHandleBackend(accessHandle, { path, absent })
 }
 
 /**

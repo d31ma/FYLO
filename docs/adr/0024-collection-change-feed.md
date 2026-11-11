@@ -38,7 +38,7 @@ What FYLO had when this was written:
 client and in both browser engines:
 
 ```json
-{"op":"changes","collection":"notes","after":null,"limit":256}
+{ "op": "changes", "collection": "notes", "after": null, "limit": 256 }
 ```
 
 The result is `{ changes: [{ id, kind }], cursor, more }`:

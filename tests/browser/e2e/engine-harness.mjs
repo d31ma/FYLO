@@ -63,9 +63,10 @@ export function nativeRoot(label) {
  * unprotected first: the machine protocol creates only protected databases
  * (ADR 0021, decision P5-1), and these fixtures test storage, not access.
  */
-export function nativeExec(root, requests, { env } = {}) {
+export function nativeExec(root, requests, { env, config } = {}) {
     createMissingDatabase(root)
-    const outcome = spawnSync(nativeBinary(), ['exec', '--loop', '--root', root], {
+    const configured = config ? ['--config', config] : []
+    const outcome = spawnSync(nativeBinary(), [...configured, 'exec', '--loop', '--root', root], {
         input: `${requests.map((request) => JSON.stringify({ root, ...request })).join('\n')}\n`,
         encoding: 'utf8',
         maxBuffer: 512 * 1024 * 1024,

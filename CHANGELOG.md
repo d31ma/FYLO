@@ -52,6 +52,15 @@
   again. `listWorkingCopies` and `removeWorkingCopy` take `{ storage }`.
   The open copy is held in the Worker's memory (zero pages are not stored
   or held).
+- **Encrypted `.vdbx` in the browser with a key from the page (ADR 0025).**
+  `SingleFileDatabase.open(source, { encryption: { key } })` opens and writes
+  an encrypted database with the secret as bytes (the same secret as native
+  `fylo.encryption.key`) or a non-extractable HKDF `CryptoKey`, with no
+  cross-origin isolation. With `create: true` it creates a missing working
+  copy, always encrypted and unprotected (no identities or policy; an
+  exception to ADR 0021's protected-by-default rule, agreed on 2026-11-11).
+  An AES `CryptoKey`, a key with an identity, and a keyless create are
+  refused with `EBROWSER_UNSUPPORTED`; a short or wrong key with `EKEY`.
 - **A change feed (ADR 0024).** The new `changes` operation returns, for a
   collection in the segments layout or in a `.vdbx` database, every document
   whose newest change follows a cursor (`put` or `delete`), oldest first,

@@ -1495,6 +1495,12 @@ class BrowserEventBus {
   journalPath(collection) {
     return BrowserPath.join(this.rootForCollection(collection), "events", `${collection}.ndjson`);
   }
+  async journal(collection) {
+    const path = this.journalPath(collection);
+    if (!await this.fs.exists(path))
+      return "";
+    return await this.fs.readText(path);
+  }
   async publish(collection, event) {
     await this.fs.appendText(this.journalPath(collection), `${JSON.stringify(event)}
 `);
@@ -1510,6 +1516,111 @@ class BrowserEventBus {
   listen(collection) {
     const stream = new BrowserEventStream(this.subscribe.bind(this, collection));
     return stream.iterate();
+  }
+}
+
+// src/browser/core/browser-change-feed.js
+class BrowserChangeFeed {
+  static PREFIX = "fch1";
+  static NO_LINEAGE = "0";
+  static PARTS = 4;
+  static DEFAULT_LIMIT = 256;
+  static MAX_LIMIT = 1000;
+  static page(journal, after, limit) {
+    const size = BrowserChangeFeed.#limit(limit);
+    const events = BrowserChangeFeed.#events(journal);
+    const lineage = BrowserChangeFeed.#lineage(events);
+    const position = BrowserChangeFeed.#position(after, lineage);
+    BrowserChangeFeed.#requireCurrent(position, lineage, events.length);
+    const later = BrowserChangeFeed.#newest(events).filter((entry) => BrowserChangeFeed.#follows(entry, position));
+    const page = later.slice(0, size);
+    return {
+      changes: page.map((entry) => ({ id: entry.id, kind: entry.kind })),
+      cursor: BrowserChangeFeed.#cursor(lineage, page.at(-1), position),
+      more: later.length > size
+    };
+  }
+  static #limit(limit) {
+    const size = limit ?? BrowserChangeFeed.DEFAULT_LIMIT;
+    if (Number.isInteger(size) && size >= 1 && size <= BrowserChangeFeed.MAX_LIMIT)
+      return size;
+    throw BrowserChangeFeed.#error("EBADREQUEST", `limit must be an integer from 1 to ${BrowserChangeFeed.MAX_LIMIT}`);
+  }
+  static #events(journal) {
+    const events = [];
+    for (const line of journal.split(`
+`)) {
+      const event = BrowserChangeFeed.#parse(line);
+      if (event)
+        events.push(event);
+    }
+    return events;
+  }
+  static #parse(line) {
+    try {
+      return JSON.parse(line);
+    } catch {
+      return null;
+    }
+  }
+  static #lineage(events) {
+    const first = events[0];
+    if (!first)
+      return BrowserChangeFeed.NO_LINEAGE;
+    return `${first.ts}-${first.id}`;
+  }
+  static #position(after, lineage) {
+    if (after === null || after === undefined)
+      return { lineage, sequence: 0, id: "" };
+    if (typeof after !== "string") {
+      throw BrowserChangeFeed.#error("EBADREQUEST", "after must be a change cursor or null");
+    }
+    return BrowserChangeFeed.#decode(after);
+  }
+  static #decode(text) {
+    const parts = text.split(".");
+    const [prefix, lineage, sequence] = parts;
+    const id = parts.slice(3).join(".");
+    const valid = parts.length >= BrowserChangeFeed.PARTS && prefix === BrowserChangeFeed.PREFIX && lineage !== "" && /^\d+$/.test(sequence);
+    if (!valid) {
+      throw BrowserChangeFeed.#error("EINVALIDCURSOR", "after is not a change cursor");
+    }
+    return { lineage, sequence: Number(sequence), id };
+  }
+  static #requireCurrent(position, lineage, length) {
+    if (BrowserChangeFeed.#fromStart(position))
+      return;
+    if (position.lineage === lineage && position.sequence <= length)
+      return;
+    throw BrowserChangeFeed.#error("ECURSOR_EXPIRED", "the change cursor is from before the collection was created again; read the collection again and continue from after: null");
+  }
+  static #fromStart(position) {
+    return position.lineage === BrowserChangeFeed.NO_LINEAGE && position.sequence === 0;
+  }
+  static #newest(events) {
+    const newest = new Map;
+    events.forEach((event, index) => {
+      newest.delete(event.id);
+      newest.set(event.id, BrowserChangeFeed.#entry(event, index + 1));
+    });
+    return [...newest.values()];
+  }
+  static #entry(event, sequence) {
+    const kind = event.action === "delete" ? "delete" : "put";
+    return { sequence, id: event.id, kind };
+  }
+  static #follows(entry, position) {
+    return entry.sequence > position.sequence;
+  }
+  static #cursor(lineage, last, position) {
+    const sequence = last?.sequence ?? position.sequence;
+    const id = last?.id ?? position.id;
+    return `${BrowserChangeFeed.PREFIX}.${lineage}.${sequence}.${id}`;
+  }
+  static #error(code, message) {
+    const error = new Error(message);
+    error.code = code;
+    return error;
   }
 }
 
@@ -3517,6 +3628,11 @@ class BrowserCore {
       }
     };
   }
+  async changes(collection, after = null, limit = undefined) {
+    this.assertCollectionName(collection);
+    const journal = await this.events.journal(collection);
+    return BrowserChangeFeed.page(journal, after, limit);
+  }
   subscribe(collection, listener) {
     this.assertCollectionName(collection);
     return this.events.subscribe(collection, listener);
@@ -3782,6 +3898,7 @@ var BROWSER_OPERATIONS = {
   getMeta: (fylo, request) => fylo.getDocMeta(requireString(request, "collection"), requireString(request, "id")),
   setMeta: (fylo, request) => fylo.setDocMetaRecord(requireString(request, "collection"), requireString(request, "id"), requireObject(request, "meta")),
   findDocs: (fylo, request) => collectFindDocs(fylo, requireString(request, "collection"), isRecord(request.query) ? request.query : {}),
+  changes: (fylo, request) => fylo.changes(requireString(request, "collection"), request.after ?? null, request.limit ?? undefined),
   findDeletedDocs: (fylo, request) => collectDeletedDocs(fylo, requireString(request, "collection"), isRecord(request.query) ? request.query : {}),
   joinDocs: (fylo, request) => fylo.join(requireObject(request, "join")),
   putData: (fylo, request) => {

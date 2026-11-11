@@ -47,10 +47,10 @@ impl ChangeCursor {
     pub(crate) fn reply(&self, page: &ChangePage) -> Result<Value, MachineError> {
         self.require_current(page)?;
         let lineage = page.lineage.as_deref().unwrap_or(Self::NO_LINEAGE);
-        let next = page
-            .changes
-            .last()
-            .map_or_else(|| self.with_lineage(lineage), |last| Self::after_change(lineage, last));
+        let next = page.changes.last().map_or_else(
+            || self.with_lineage(lineage),
+            |last| Self::after_change(lineage, last),
+        );
         let changes: Vec<Value> = page.changes.iter().map(Self::change).collect();
         Ok(json!({
             "changes": changes,
@@ -68,18 +68,19 @@ impl ChangeCursor {
     }
 
     fn parse(text: &str) -> Result<Self, MachineError> {
-        let parts: Vec<&str> = text.splitn(Self::PARTS, '.').collect();
-        let [prefix, lineage, lsn, id] = parts.as_slice() else {
+        let mut parts = text.splitn(Self::PARTS, '.');
+        let fields = (parts.next(), parts.next(), parts.next(), parts.next());
+        let (Some(Self::PREFIX), Some(lineage), Some(lsn), Some(id)) = fields else {
             return Err(Self::invalid());
         };
-        if *prefix != Self::PREFIX || lineage.is_empty() {
+        if lineage.is_empty() {
             return Err(Self::invalid());
         }
         let lsn = lsn.parse::<u64>().map_err(|_| Self::invalid())?;
         Ok(Self {
-            lineage: (*lineage).to_owned(),
+            lineage: lineage.to_owned(),
             lsn,
-            id: (*id).to_owned(),
+            id: id.to_owned(),
         })
     }
 
@@ -135,7 +136,11 @@ impl ChangeCursor {
     }
 
     fn change(change: &DocumentChange) -> Value {
-        let kind = if change.deleted { Self::DELETE } else { Self::PUT };
+        let kind = if change.deleted {
+            Self::DELETE
+        } else {
+            Self::PUT
+        };
         json!({ "id": change.id, "kind": kind })
     }
 

@@ -1,5 +1,13 @@
 import { describe, expect, test } from 'bun:test'
-import { createHostImports } from '../../src/browser/host-vfs.mjs'
+import {
+    KIND_FILE,
+    KIND_MISSING,
+    OPEN_CREATE,
+    OPEN_EXCLUSIVE,
+    OPEN_READ,
+    OPEN_WRITE,
+    createHostImports
+} from '../../src/browser/host-vfs.mjs'
 import {
     createAccessHandleBackend,
     createFileBackend,
@@ -211,5 +219,21 @@ describe('working copy names', () => {
     test('the magic check reads the PNG-style header', () => {
         expect(hasVdbxMagic([0x89, 0x56, 0x44, 0x42, 0x58, 0x0d, 0x0a, 0x1a, 0])).toBe(true)
         expect(hasVdbxMagic([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])).toBe(false)
+    })
+})
+
+describe('an absent working copy', () => {
+    test('is missing until the engine creates it, and its folder opens for a sync', () => {
+        const backend = createAccessHandleBackend(accessHandle(new Uint8Array()), { absent: true })
+        expect(backend.stat(PATH).kind).toBe(KIND_MISSING)
+        expect(backend.readDir('/')).toEqual([])
+        expect(() => backend.open(PATH, OPEN_READ)).toThrow()
+        const folder = backend.open('/', OPEN_READ)
+        backend.close(folder)
+        expect(() => backend.open('/', OPEN_READ | OPEN_WRITE)).toThrow()
+        const created = backend.open(PATH, OPEN_READ | OPEN_WRITE | OPEN_CREATE | OPEN_EXCLUSIVE)
+        expect(backend.stat(PATH).kind).toBe(KIND_FILE)
+        expect(backend.readDir('/')).toEqual(['database.vdbx'])
+        backend.close(created)
     })
 })

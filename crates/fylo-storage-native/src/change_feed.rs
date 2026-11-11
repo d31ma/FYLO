@@ -1,4 +1,4 @@
-use crate::segments::{LocationState, SegmentLocation, SegmentStore};
+use crate::segments::{LocationState, LocationTable, SegmentLocation, SegmentStore};
 use crate::{
     ChangePage, CollectionKind, DocumentChange, NativeCollection, NativeStorageError,
     NativeStorageErrorCode,
@@ -7,9 +7,15 @@ use crate::{
 /// Reads a collection's change feed from its location table: every
 /// document whose newest change follows a position, once, in the order of
 /// those changes (ADR 0024).
+///
+/// Changes are ordered by a text key, the sequence number in
+/// [`Self::LSN_DIGITS`] digits then the identifier, so the browser engine
+/// reuses the text sort it already holds instead of carrying a new one.
 pub(crate) struct ChangeFeed;
 
 impl ChangeFeed {
+    const LSN_DIGITS: usize = 20;
+
     pub(crate) fn page(
         collection: &NativeCollection,
         after: (u64, &str),
@@ -19,12 +25,13 @@ impl ChangeFeed {
         let medium = collection.segment_medium()?;
         let next_lsn = medium.require_slot()?.next_lsn;
         let store = SegmentStore::open(medium)?;
-        let mut rows = Self::rows_after(store.table().rows(), after);
-        rows.sort_unstable_by(|left, right| (left.lsn, &left.id).cmp(&(right.lsn, &right.id)));
-        let more = rows.len() > limit;
-        rows.truncate(limit);
+        let table = store.table();
+        let mut keys = Self::keys_after(table.rows(), after);
+        keys.sort_unstable();
+        let more = keys.len() > limit;
+        keys.truncate(limit);
         Ok(ChangePage {
-            changes: rows.into_iter().map(Self::change).collect(),
+            changes: Self::changes(table, &keys),
             more,
             next_lsn,
             lineage: collection.change_lineage()?,
@@ -45,17 +52,29 @@ impl ChangeFeed {
         ))
     }
 
-    fn rows_after<'a>(
-        rows: Vec<&'a SegmentLocation>,
-        after: (u64, &str),
-    ) -> Vec<&'a SegmentLocation> {
-        let mut later = Vec::new();
+    fn keys_after(rows: Vec<&SegmentLocation>, after: (u64, &str)) -> Vec<String> {
+        let mut keys = Vec::new();
         for row in rows {
             if (row.lsn, row.id.as_str()) > after {
-                later.push(row);
+                keys.push(format!(
+                    "{:0width$}{}",
+                    row.lsn,
+                    row.id,
+                    width = Self::LSN_DIGITS
+                ));
             }
         }
-        later
+        keys
+    }
+
+    fn changes(table: &LocationTable, keys: &[String]) -> Vec<DocumentChange> {
+        let mut changes = Vec::with_capacity(keys.len());
+        for key in keys {
+            if let Some(row) = table.get(&key[Self::LSN_DIGITS..]) {
+                changes.push(Self::change(row));
+            }
+        }
+        changes
     }
 
     fn change(row: &SegmentLocation) -> DocumentChange {

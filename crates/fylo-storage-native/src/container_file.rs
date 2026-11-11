@@ -288,6 +288,23 @@ impl ContainerFile {
         Self::create_with(path, extent_shift, Some(secret))
     }
 
+    /// Create an empty encrypted file at `path` whose salt and key-check
+    /// value come from `key` (ADR 0025): a fresh salt for a secret, or the
+    /// salt a host derived its file key for.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`Self::create_encrypted`].
+    pub fn create_keyed(
+        path: &Path,
+        extent_shift: u8,
+        key: &crate::DatabaseKey,
+    ) -> Result<(), ContainerError> {
+        let (key_salt, key_check) = key.new_file_header()?;
+        let header = (ContainerSuperblock::INCOMPAT_ENCRYPTED, key_salt, key_check);
+        Self::create_raw(path, extent_shift, header, None)
+    }
+
     fn create_with(
         path: &Path,
         extent_shift: u8,
@@ -680,7 +697,10 @@ impl ContainerFile {
     ///
     /// The same as [`Self::unlock`].
     pub fn unlock_with_key(&mut self, key: &crate::DatabaseKey) -> Result<(), ContainerError> {
-        self.unlock(key.secret())
+        if !self.is_locked() {
+            return Ok(());
+        }
+        self.unlock_with(Arc::new(key.cipher(&self.superblock.key_salt)?))
     }
 
     /// Unlock an encrypted file with a key already derived for it, as

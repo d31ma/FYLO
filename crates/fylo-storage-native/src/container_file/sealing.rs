@@ -54,9 +54,9 @@ impl ContainerFile {
     pub fn write_sealed(
         &self,
         out: &Path,
-        secret: Option<&[u8]>,
+        key: Option<&crate::DatabaseKey>,
     ) -> Result<ContainerSealedReport, ContainerError> {
-        let sealable = !self.is_encrypted() || (self.is_protected() && secret.is_none());
+        let sealable = !self.is_encrypted() || (self.is_protected() && key.is_none());
         if !sealable
             || self.is_locked()
             || self.image.is_some()
@@ -70,11 +70,8 @@ impl ContainerFile {
             .into());
         }
         let plan = Renumbering::of(self, self.cipher.clone());
-        let cipher = match secret {
-            Some(secret) => {
-                let salt = ContainerCipher::new_salt()?;
-                Some((ContainerCipher::derive(secret, &salt), salt))
-            }
+        let cipher = match key {
+            Some(key) => Some(key.new_file_cipher()?),
             None => None,
         };
         let mut superblock = plan.superblock(&self.superblock)?;

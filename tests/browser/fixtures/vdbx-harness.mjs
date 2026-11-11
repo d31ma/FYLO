@@ -86,7 +86,9 @@ async function open(source) {
             moduleUrl: MODULE_URL,
             identity: source.identity
                 ? { ...source.identity, workerUrl: IDENTITY_WORKER_URL }
-                : undefined
+                : undefined,
+            encryption: source.encryption ? await encryptionOf(source.encryption) : undefined,
+            create: source.create === true
         })
         const id = nextSession++
         sessions.set(id, { database, name, kind: source.kind })
@@ -94,6 +96,28 @@ async function open(source) {
     } catch (error) {
         return { ...failure(error), name }
     }
+}
+
+/**
+ * The `encryption` option for a key described from Node, which cannot send
+ * a `CryptoKey`: the secret as bytes or as text, or imported as a
+ * non-extractable HKDF or AES-GCM key.
+ */
+async function encryptionOf({ secret, form }) {
+    const bytes = new TextEncoder().encode(secret)
+    if (form === 'string') return { key: secret }
+    if (form === 'bytes') return { key: bytes }
+    if (form === 'hkdf') {
+        return { key: await crypto.subtle.importKey('raw', bytes, 'HKDF', false, ['deriveBits']) }
+    }
+    if (form === 'aes') {
+        const aes = await crypto.subtle.importKey('raw', bytes.slice(0, 32), 'AES-GCM', false, [
+            'encrypt',
+            'decrypt'
+        ])
+        return { key: aes }
+    }
+    throw new Error(`unknown key form ${form}`)
 }
 
 /** A batch as NDJSON; each request gets the database's path as its root. */

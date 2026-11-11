@@ -38,10 +38,10 @@ mod beneath_open;
 #[cfg(not(target_family = "wasm"))]
 mod byte_range_lock;
 mod catalog_keys;
+mod catalog_rotation_notice;
 mod change_feed;
 mod change_lineage;
 mod change_page;
-mod catalog_rotation_notice;
 mod collection_keys;
 mod collection_layout;
 #[cfg(not(target_family = "wasm"))]
@@ -58,6 +58,7 @@ mod database_access;
 mod database_access_error;
 mod database_identity;
 mod database_key;
+mod database_key_material;
 mod document_change;
 mod document_rekey;
 mod durability;
@@ -113,7 +114,6 @@ pub use byte_range_lock::{
 pub use catalog_rotation_notice::CatalogRotationNotice;
 pub use change_page::ChangePage;
 pub use collection_layout::CollectionLayout;
-pub use document_change::DocumentChange;
 #[cfg(not(target_family = "wasm"))]
 pub use container_access::{ContainerWriteAccess, ContainerWriteOptions};
 pub use container_allocator::{
@@ -142,6 +142,7 @@ pub use database_access::DatabaseAccess;
 pub use database_access_error::DatabaseAccessError;
 pub use database_identity::DatabaseIdentity;
 pub use database_key::DatabaseKey;
+pub use document_change::DocumentChange;
 pub use document_rekey::DocumentRekey;
 pub use durability::Durability;
 pub use field_keys::{FieldKey, FieldKeys};

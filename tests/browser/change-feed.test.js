@@ -95,9 +95,9 @@ describe('browser change feed', () => {
     })
 
     test('bad cursors and limits are refused with stable codes', async () => {
-        expect(await ChangeFeedSamples.errorCode(() => BrowserChangeFeed.page('', 'fqc1.1', 1))).toBe(
-            'EINVALIDCURSOR'
-        )
+        expect(
+            await ChangeFeedSamples.errorCode(() => BrowserChangeFeed.page('', 'fqc1.1', 1))
+        ).toBe('EINVALIDCURSOR')
         expect(await ChangeFeedSamples.errorCode(() => BrowserChangeFeed.page('', 5, 1))).toBe(
             'EBADREQUEST'
         )

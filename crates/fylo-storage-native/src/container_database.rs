@@ -33,8 +33,8 @@ use fylo_format::ContainerSuperblock;
 use crate::container_allocator::ContainerTailExtent;
 use crate::segments::{ContainerMedium, ContainerOpen, ContainerOpenFile, SlotWriter, TableCache};
 use crate::{
-    ContainerCipher, ContainerCollection, ContainerError, ContainerFile, DatabaseIdentity,
-    DatabaseKey, GenerationState, GenerationStatus, NativeCollection, NativeStorageError,
+    ContainerCollection, ContainerError, ContainerFile, DatabaseIdentity, DatabaseKey,
+    GenerationState, GenerationStatus, NativeCollection, NativeStorageError,
     NativeStorageErrorCode,
 };
 
@@ -108,12 +108,9 @@ impl ContainerDatabase {
                 None => true,
                 Some(key) => {
                     let superblock = open.superblock();
-                    let cipher = ContainerCipher::open_file(
-                        key.secret(),
-                        &superblock.key_salt,
-                        &superblock.key_check,
-                    )
-                    .map_err(|_| Self::wrong_key())?;
+                    let cipher = key
+                        .open_cipher(&superblock.key_salt, &superblock.key_check)
+                        .map_err(|_| Self::wrong_key())?;
                     open.unlock(&Arc::new(cipher))
                         .map_err(ContainerMedium::error)?;
                     false
@@ -168,7 +165,7 @@ impl ContainerDatabase {
     /// since removed, is forgotten.
     pub(crate) fn create(path: &Path, key: Option<&DatabaseKey>) -> Result<(), NativeStorageError> {
         match key {
-            Some(key) => ContainerFile::create_encrypted(path, Self::EXTENT_SHIFT, key.secret()),
+            Some(key) => ContainerFile::create_keyed(path, Self::EXTENT_SHIFT, key),
             None => ContainerFile::create(path, Self::EXTENT_SHIFT),
         }
         .map_err(ContainerMedium::error)?;

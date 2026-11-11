@@ -237,7 +237,7 @@ impl NativeWriteRoot {
         key: Option<&DatabaseKey>,
     ) -> Result<crate::ContainerSealedReport, NativeStorageError> {
         crate::ContainerFile::open_reader(staging)
-            .and_then(|file| file.write_sealed(sealing, key.map(DatabaseKey::secret)))
+            .and_then(|file| file.write_sealed(sealing, key))
             .map_err(crate::segments::ContainerMedium::error)
     }
 

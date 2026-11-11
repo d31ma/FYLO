@@ -59,18 +59,22 @@ export function createFileBackend(file, { path = DEFAULT_DATABASE_PATH, reader }
  * The handle is exclusive by construction: a second `createSyncAccessHandle`
  * on the same file fails while this one is open, in this tab or another.
  *
+ * A new, empty working copy can be `absent`: the engine then sees no file
+ * until it creates one there (ADR 0025).
+ *
  * @param {FileSystemSyncAccessHandle} handle
- * @param {{ path?: string, writable?: boolean }} [options]
+ * @param {{ path?: string, writable?: boolean, absent?: boolean }} [options]
  */
 export function createAccessHandleBackend(
     handle,
-    { path = DEFAULT_DATABASE_PATH, writable = true } = {}
+    { path = DEFAULT_DATABASE_PATH, writable = true, absent = false } = {}
 ) {
     // A sync access handle has no modification time; the engine keeps its own.
     let modifiedMs = Date.now()
     return createSingleFileBackend({
         path,
         writable,
+        absent,
         size: () => handle.getSize(),
         modifiedMs: () => modifiedMs,
         readAt: (offset, into) => handle.read(into, { at: offset }),
@@ -190,6 +194,7 @@ export function createSingleFileBackend(file) {
     /** @type {Map<number, { write: boolean }>} */
     const handles = new Map()
     let nextHandle = 1
+    let absent = file.absent === true
 
     const handleOf = (handle) => {
         const open = handles.get(handle)
@@ -204,20 +209,37 @@ export function createSingleFileBackend(file) {
         )
     }
 
+    /** @param {boolean} write */
+    const openHandle = (write) => {
+        const handle = nextHandle++
+        handles.set(handle, { write })
+        return handle
+    }
+    /** @param {number} flags */
+    const createOnOpen = (flags) => {
+        if ((flags & OPEN_CREATE) === 0) {
+            throw withCode(new Error(`${path} does not exist`), 'ENOENT')
+        }
+        absent = false
+    }
+
     return {
         path,
         writable: file.writable,
         size: file.size,
         open(requested, flags) {
-            if (normalize(requested) !== path) {
+            const at = normalize(requested)
+            if (at === parent && (flags & (OPEN_WRITE | OPEN_CREATE)) === 0) {
+                return openHandle(false)
+            }
+            if (at !== path) {
                 if (flags & OPEN_CREATE) refuse(`creating ${requested}`)
                 throw withCode(new Error(`${requested} does not exist`), 'ENOENT')
             }
             const write = (flags & OPEN_WRITE) !== 0
             if (write && !file.writable) refuse(`opening ${path} for writing`)
-            const handle = nextHandle++
-            handles.set(handle, { write })
-            return handle
+            if (absent) createOnOpen(flags)
+            return openHandle(write)
         },
         close(handle) {
             handleOf(handle)
@@ -243,14 +265,14 @@ export function createSingleFileBackend(file) {
         },
         stat(requested) {
             const at = normalize(requested)
-            if (at === path) {
+            if (at === path && !absent) {
                 return { kind: KIND_FILE, len: file.size(), modifiedMs: file.modifiedMs() }
             }
             if (at === parent) return { kind: KIND_DIRECTORY, len: 0, modifiedMs: 0 }
             return { kind: KIND_MISSING }
         },
         readDir(requested) {
-            if (normalize(requested) === parent) return [name]
+            if (normalize(requested) === parent) return absent ? [] : [name]
             throw withCode(new Error(`${requested} is not a directory`), 'ENOENT')
         },
         mkdir: (requested) => refuse(`creating directory ${requested}`),

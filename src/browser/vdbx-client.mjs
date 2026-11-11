@@ -34,6 +34,7 @@ const PICKER_TYPES = [{ description: 'FYLO database', accept: { [VDBX_MEDIA_TYPE
  * @typedef {'opfs' | 'indexeddb'} WorkingCopyStorage
  * @typedef {{ copied: number, total: number }} CopyProgress
  * @typedef {{ name: string, workerUrl: string, trustAnchor?: string, trustOnFirstUse?: boolean }} DatabaseIdentity
+ * @typedef {{ key: CryptoKey | ArrayBuffer | ArrayBufferView | string }} DatabaseEncryption
  * @typedef {(message: Record<string, unknown>) => Promise<any>} WorkerCall
  */
 
@@ -52,13 +53,31 @@ export class SingleFileDatabase {
 
     /**
      * @param {DatabaseSource} source
-     * @param {{ workerUrl: string | URL, moduleUrl?: string, path?: string, identity?: DatabaseIdentity, onProgress?: (progress: CopyProgress) => void }} options
+     * `encryption.key` opens an encrypted file (ADR 0025): bytes or a string
+     * of at least 32 bytes, the same secret native `fylo.encryption.key`
+     * names, or a non-extractable HKDF `CryptoKey` with the `deriveBits`
+     * usage. With `create: true` a missing OPFS working copy is created,
+     * encrypted with that key; the browser never creates a plain database.
+     *
+     * @param {DatabaseSource} source
+     * @param {{ workerUrl: string | URL, moduleUrl?: string, path?: string, identity?: DatabaseIdentity, encryption?: DatabaseEncryption, create?: boolean, onProgress?: (progress: CopyProgress) => void }} options
      */
-    static async open(source, { workerUrl, moduleUrl, path, identity, onProgress }) {
+    static async open(
+        source,
+        { workerUrl, moduleUrl, path, identity, encryption, create, onProgress }
+    ) {
         const worker = new Worker(workerUrl, { type: 'module' })
         const calls = createCalls(worker, onProgress)
         try {
-            const info = await calls({ op: 'open', source, path, moduleUrl, identity })
+            const info = await calls({
+                op: 'open',
+                source,
+                path,
+                moduleUrl,
+                identity,
+                encryption,
+                create
+            })
             return new SingleFileDatabase(worker, info, calls)
         } catch (error) {
             worker.terminate()

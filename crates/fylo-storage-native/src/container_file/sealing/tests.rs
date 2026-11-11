@@ -150,7 +150,10 @@ fn an_encrypted_sealed_image_opens_only_with_its_key() {
     let out = scratch.0.join("sealed.vdbx");
     ContainerFile::open_reader(&path)
         .expect("open reader")
-        .write_sealed(&out, Some(b"the sealing secret"))
+        .write_sealed(
+            &out,
+            Some(&crate::DatabaseKey::new(b"the sealing secret".to_vec())),
+        )
         .expect("seal");
     let bytes = std::fs::read(&out).expect("read file");
     assert!(!bytes.windows(9).any(|window| window == b"segment 3"));

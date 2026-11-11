@@ -198,6 +198,17 @@ impl ContainerCipher {
         }
     }
 
+    /// A cipher for a file key the host derived for a file, with the
+    /// key-check value it derived beside it (ADR 0025).
+    #[must_use]
+    pub fn from_derived(key: &[u8; 32], key_check: [u8; KEY_CHECK_BYTES]) -> Self {
+        Self {
+            cipher: Arc::new(Aes256Gcm::new(key.into())),
+            key_check,
+            access: None,
+        }
+    }
+
     /// A protected file's cipher: `self` is its catalog key, and `access`
     /// holds the collection keys.
     #[must_use]
