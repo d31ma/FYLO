@@ -66,7 +66,7 @@ impl Fixture {
     }
 
     fn fields(number: usize, body: &str) -> Value {
-        let conversation = if number % 2 == 0 { "c-1" } else { "c-2" };
+        let conversation = if number.is_multiple_of(2) { "c-1" } else { "c-2" };
         json!({ "conversation": conversation, "body": body, "meta": { "subject": body } })
     }
 

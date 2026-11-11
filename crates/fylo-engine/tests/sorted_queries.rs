@@ -54,7 +54,7 @@ impl Fixture {
 
     fn put(&self, number: usize, conversation: &str, value: &Value) {
         let mut fields = json!({ "conversation": conversation, "body": format!("note {number}") });
-        if !value.is_null() || number % 2 == 0 {
+        if !value.is_null() || number.is_multiple_of(2) {
             fields["sentAt"] = value.clone();
         }
         WriteEngine::open(&self.0)

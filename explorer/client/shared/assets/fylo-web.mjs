@@ -1518,6 +1518,96 @@ function stringifyStoredValue(value) {
   return String(value).replaceAll("/", "%2F");
 }
 
+// src/browser/core/word-text.js
+class WordText {
+  static MAX_WORD_BYTES = 64;
+  static MAX_TERMS = 16;
+  static LATIN_FOLDS = "aaaaaa1ceeeeiiiidnooooo-ouuuuy23aaaaaa1ceeeeiiiidnooooo-ouuuuy2yaaaaaaccccccccddddeeeeeeeeeegggggggghhhhiiiiiiiiii44jjkkkllllllllllnnnnnnnnnoooooo55rrrrrrssssssssttttttuuuuuuuuuuuuwwyyyzzzzzzs";
+  static EXPANSIONS = { 1: "ae", 2: "th", 3: "ss", 4: "ij", 5: "oe" };
+  static FIRST_FOLDED = 192;
+  static FIRST_COMBINING_MARK = 768;
+  static LAST_COMBINING_MARK = 879;
+  static FINAL_SIGMA = "ς";
+  static SIGMA = "σ";
+  static WORD_CHARACTER = /^[\p{Alphabetic}\p{N}]$/u;
+  static words(text) {
+    const words = [];
+    const current = { text: "", bytes: 0 };
+    for (const character of text) {
+      WordText.readCharacter(character, current, words);
+    }
+    WordText.finishWord(current, words);
+    return words;
+  }
+  static matchesTerms(texts, terms) {
+    const words = texts.flatMap((text) => WordText.words(text));
+    return terms.every((term) => WordText.hasPrefix(words, term));
+  }
+  static hasPrefix(words, term) {
+    return words.some((word) => word.startsWith(term));
+  }
+  static readCharacter(character, current, words) {
+    if (WordText.isCombiningMark(character))
+      return;
+    if (!WordText.WORD_CHARACTER.test(character)) {
+      WordText.finishWord(current, words);
+      return;
+    }
+    for (const lower of character.toLowerCase()) {
+      WordText.pushFolded(lower, current);
+    }
+  }
+  static finishWord(current, words) {
+    const word = current.text;
+    current.text = "";
+    current.bytes = 0;
+    if (word === "" || words.includes(word))
+      return;
+    words.push(word);
+  }
+  static pushFolded(character, current) {
+    if (WordText.isCombiningMark(character))
+      return;
+    const folded = WordText.fold(character);
+    const bytes = WordText.utf8Length(folded);
+    if (current.bytes + bytes > WordText.MAX_WORD_BYTES)
+      return;
+    current.text += folded;
+    current.bytes += bytes;
+  }
+  static fold(character) {
+    if (character === WordText.FINAL_SIGMA)
+      return WordText.SIGMA;
+    const folded = WordText.LATIN_FOLDS[WordText.codePoint(character) - WordText.FIRST_FOLDED];
+    if (folded === undefined)
+      return character;
+    return WordText.EXPANSIONS[folded] ?? folded;
+  }
+  static isCombiningMark(character) {
+    const point = WordText.codePoint(character);
+    return point >= WordText.FIRST_COMBINING_MARK && point <= WordText.LAST_COMBINING_MARK;
+  }
+  static codePoint(character) {
+    return character.codePointAt(0) ?? 0;
+  }
+  static utf8Length(text) {
+    let bytes = 0;
+    for (const character of text) {
+      bytes += WordText.characterBytes(WordText.codePoint(character));
+    }
+    return bytes;
+  }
+  static characterBytes(point) {
+    if (point < 128)
+      return 1;
+    if (point < 2048)
+      return 2;
+    if (point < 65536)
+      return 3;
+    return 4;
+  }
+}
+
 // src/browser/core/prefix-index.js
 var LOCAL_FS_FORMAT = "fylo.local-fs.index.v1";
 var LOCAL_FS_MANIFEST = "manifest.json";
@@ -1660,13 +1750,17 @@ class BrowserPrefixIndexCodec {
   static prefix(fieldPath, kind, valuePrefix = "") {
     return [encodeFieldPath(fieldPath), kind, valuePrefix].join("/");
   }
-  static async entriesForDocument(collection, docId, data) {
+  static async entriesForDocument(collection, docId, data, wordFields = []) {
     const entries = [];
     const exactEntries = [];
     const addValue = async (fieldPath, raw) => {
       const value = stringifyStoredValue(raw);
       const planKey = (kind, plannedValue) => this.key(fieldPath, kind, plannedValue, docId);
-      exactEntries.push(this.key(fieldPath, "eq", await lookupToken(value), docId));
+      const token = await lookupToken(value);
+      exactEntries.push(this.key(fieldPath, "eq", token, docId));
+      if (wordFields.includes(fieldPath)) {
+        entries.push(...this.wordEntries(fieldPath, raw, token, docId));
+      }
       const numeric = numericValue(raw);
       const sortable = numeric === null ? "" : sortableFloat64(numeric);
       if (sortable) {
@@ -1708,7 +1802,38 @@ class BrowserPrefixIndexCodec {
     entries.push(...exactEntries);
     return [...new Set(entries)];
   }
+  static wordEntries(fieldPath, raw, token, docId) {
+    const entries = [this.key(fieldPath, "wv", token, docId)];
+    if (typeof raw !== "string")
+      return entries;
+    for (const word of WordText.words(raw)) {
+      entries.push(this.key(fieldPath, "w", encodeSegment(word), docId));
+    }
+    return entries;
+  }
+  static matchTerms(operand) {
+    if (typeof operand !== "string")
+      return null;
+    const terms = WordText.words(operand);
+    if (terms.length === 0 || terms.length > WordText.MAX_TERMS)
+      return null;
+    return terms;
+  }
+  static sortableValue(raw, descending) {
+    const numeric = numericValue(raw);
+    const sortable = numeric === null ? "" : sortableFloat64(numeric);
+    if (!sortable)
+      return null;
+    return descending ? reverseSortable(sortable) : sortable;
+  }
   static async queryPrefixes(collection, fieldPath, operand) {
+    const match = operand.$match;
+    if (match !== undefined) {
+      const terms = this.matchTerms(match);
+      if (!terms)
+        return null;
+      return terms.map((term) => ({ kind: "w", valuePrefix: encodeSegment(term) }));
+    }
     if (operand.$eq !== undefined) {
       return [
         {
@@ -1783,6 +1908,7 @@ class BrowserPrefixIndex {
     this.scanners = new Map;
     this.scannerSnapshots = new Map;
     this.walOverlayCache = new Map;
+    this.wordFieldsCache = new Map;
     this.accelerationState = "loading";
     this.accelerationError = null;
     this.accelerationReasonCode = null;
@@ -1861,6 +1987,7 @@ class BrowserPrefixIndex {
     }
   }
   async forgetCollection(collection) {
+    this.wordFieldsCache.delete(collection);
     this.snapshotCache.delete(collection);
     this.scannerSnapshots.delete(collection);
     this.walOverlayCache.delete(collection);
@@ -1892,10 +2019,67 @@ class BrowserPrefixIndex {
     await writeIfMissing(this.fs, this.snapshotPath(collection), "");
     await writeIfMissing(this.fs, this.walPath(collection), "");
   }
-  async resetCollection(collection) {
+  async resetCollection(collection, wordFields) {
+    const words = wordFields ?? await this.wordFields(collection);
     await this.forgetCollection(collection);
     await this.fs.rmdir(this.root(collection), { recursive: true });
     await this.ensureCollection(collection);
+    await this.writeWordFields(collection, words);
+  }
+  async wordFields(collection) {
+    const cached = this.wordFieldsCache.get(collection);
+    if (cached)
+      return cached;
+    const manifest = await this.readManifest(collection);
+    const words = Array.isArray(manifest.words) ? manifest.words.map(String) : [];
+    this.wordFieldsCache.set(collection, words);
+    return words;
+  }
+  async writeWordFields(collection, words) {
+    const manifest = await this.readManifest(collection);
+    manifest.format = LOCAL_FS_FORMAT;
+    manifest.words = words;
+    await this.fs.writeText(this.manifestPath(collection), `${JSON.stringify(manifest)}
+`);
+    this.wordFieldsCache.set(collection, words);
+  }
+  async readManifest(collection) {
+    const text = await readTextIfExists(this.fs, this.manifestPath(collection));
+    if (!text.trim())
+      return {};
+    try {
+      const parsed = JSON.parse(text);
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+  async keysWithPrefix(collection, prefix, after = "") {
+    await this.ensureCollection(collection);
+    const overlay = await this.loadWalOverlay(collection);
+    const bytes = await this.readSnapshotBytes(collection);
+    const start = after > prefix ? after : prefix;
+    const keys = [];
+    for (const key of streamKeysFrom(bytes, this.findFirstKeyAtOrAfter(bytes, start))) {
+      if (!key.startsWith(prefix))
+        break;
+      if (key > after && !overlay.removed.has(key))
+        keys.push(key);
+    }
+    for (const key of overlay.added) {
+      if (key.startsWith(prefix) && key > after)
+        keys.push(key);
+    }
+    return [...new Set(keys)].sort();
+  }
+  async completeWordField(collection, fieldPath) {
+    if (!(await this.wordFields(collection)).includes(fieldPath))
+      return false;
+    const equality = BrowserPrefixIndexCodec.prefix(fieldPath, "eq");
+    const witness = BrowserPrefixIndexCodec.prefix(fieldPath, "wv");
+    const values = (await this.keysWithPrefix(collection, equality)).map((key) => key.slice(equality.length));
+    const witnesses = (await this.keysWithPrefix(collection, witness)).map((key) => key.slice(witness.length));
+    return values.length === witnesses.length && values.every((value, at) => value === witnesses[at]);
   }
   async readSnapshotBytes(collection) {
     const cached = this.snapshotCache.get(collection);
@@ -1984,11 +2168,11 @@ class BrowserPrefixIndex {
     this.walOverlayCache.set(collection, { added: new Set, removed: new Set });
   }
   async putDocument(collection, docId, doc) {
-    const keys = await BrowserPrefixIndexCodec.entriesForDocument(collection, docId, doc);
+    const keys = await BrowserPrefixIndexCodec.entriesForDocument(collection, docId, doc, await this.wordFields(collection));
     await this.appendMutations(collection, keys.map((key) => ({ op: "+", key })));
   }
   async removeDocument(collection, docId, doc) {
-    const keys = await BrowserPrefixIndexCodec.entriesForDocument(collection, docId, doc);
+    const keys = await BrowserPrefixIndexCodec.entriesForDocument(collection, docId, doc, await this.wordFields(collection));
     await this.appendMutations(collection, keys.map((key) => ({ op: "-", key })));
   }
   async countDocuments(collection) {
@@ -2002,6 +2186,9 @@ class BrowserPrefixIndex {
     return docIds.size;
   }
   async candidateDocIds(collection, fieldPath, operand) {
+    const match = operand.$match !== undefined;
+    if (match && !await this.completeWordField(collection, fieldPath))
+      return null;
     const prefixes = await BrowserPrefixIndexCodec.queryPrefixes(collection, fieldPath, operand);
     if (!prefixes)
       return null;
@@ -2269,7 +2456,8 @@ class BrowserQueryEngine {
       $lt: (expected) => this.matchesNumber(value, "$lt", expected),
       $lte: (expected) => this.matchesNumber(value, "$lte", expected),
       $like: (expected) => typeof value === "string" && this.matchesLike(value, expected),
-      $contains: (expected) => Array.isArray(value) && value.some((item) => looseEqual(item, expected))
+      $contains: (expected) => Array.isArray(value) && value.some((item) => looseEqual(item, expected)),
+      $match: (expected) => this.matchesWords(value, expected)
     };
     const supplied = operand;
     for (const [operator, predicate] of Object.entries(predicates)) {
@@ -2279,6 +2467,26 @@ class BrowserQueryEngine {
         return false;
     }
     return true;
+  }
+  matchesWords(value, expected) {
+    const terms = BrowserPrefixIndexCodec.matchTerms(expected);
+    if (!terms)
+      return false;
+    const items = Array.isArray(value) ? value : [value];
+    const texts = items.filter((item) => typeof item === "string");
+    return WordText.matchesTerms(texts, terms);
+  }
+  validateWordOperands(query) {
+    for (const operation of query?.$ops ?? []) {
+      for (const operand of Object.values(operation ?? {})) {
+        const match = operand?.$match;
+        if (match === undefined)
+          continue;
+        if (BrowserPrefixIndexCodec.matchTerms(match))
+          continue;
+        throw Object.assign(new Error(`$match must hold from 1 to ${WordText.MAX_TERMS} words`), { code: "EQUERY_INVALID" });
+      }
+    }
   }
   matchesNumber(value, operator, expected) {
     const numeric = numericValue2(value);
@@ -2331,6 +2539,13 @@ class BrowserQueryEngine {
       if (likeCandidates === null)
         return null;
       candidateIds = this.intersectDocIds(candidateIds, likeCandidates);
+    }
+    const match = operand.$match;
+    if (match !== undefined) {
+      const wordCandidates = await this.context.index.candidateDocIds(collection, fieldPath, { $match: match });
+      if (wordCandidates === null)
+        return candidateIds;
+      candidateIds = this.intersectDocIds(candidateIds, wordCandidates);
     }
     return candidateIds;
   }
@@ -2433,6 +2648,104 @@ class BrowserQueryEngine {
     if (query?.$onlyIds)
       return Object.keys(next).shift();
     return next;
+  }
+}
+
+// src/browser/core/sort-order.js
+class BrowserSortOrder {
+  static CURSOR_FORMAT = "fys1";
+  static CURSOR_PARTS = 5;
+  static DIGEST_HEX_DIGITS = 16;
+  static SORTABLE_VALUE = /^[0-9a-f]{16}$/;
+  constructor(field, descending, digest) {
+    this.field = field;
+    this.descending = descending;
+    this.digest = digest;
+  }
+  static async parse(query, normalizeFieldPath) {
+    if (query.$sort === undefined)
+      return null;
+    const [field, direction] = BrowserSortOrder.singleEntry(query.$sort);
+    const descending = BrowserSortOrder.isDescending(direction);
+    const digest = await BrowserSortOrder.digestOf(query);
+    return new BrowserSortOrder(normalizeFieldPath(field), descending, digest);
+  }
+  static singleEntry(sort) {
+    const entries = sort && typeof sort === "object" ? Object.entries(sort) : [];
+    if (entries.length !== 1) {
+      throw BrowserSortOrder.error("EQUERY_INVALID", "$sort must be an object with exactly one field");
+    }
+    return entries[0];
+  }
+  static isDescending(direction) {
+    if (direction === "asc")
+      return false;
+    if (direction === "desc")
+      return true;
+    throw BrowserSortOrder.error("EQUERY_INVALID", '$sort direction must be "asc" or "desc"');
+  }
+  static async digestOf(query) {
+    const scope = {
+      $ops: query.$ops ?? null,
+      $created: query.$created ?? null,
+      $updated: query.$updated ?? null,
+      $sort: query.$sort ?? null
+    };
+    const digest = await sha256Hex(JSON.stringify(scope));
+    return digest.slice(0, BrowserSortOrder.DIGEST_HEX_DIGITS);
+  }
+  keyPrefix() {
+    return BrowserPrefixIndexCodec.prefix(this.field, this.descending ? "nr" : "n");
+  }
+  positionOfKey(key) {
+    const rest = key.slice(this.keyPrefix().length);
+    const slash = rest.indexOf("/");
+    if (slash < 0)
+      return null;
+    return { value: rest.slice(0, slash), id: decodeURIComponent(rest.slice(slash + 1)) };
+  }
+  keyOf(position) {
+    return `${this.keyPrefix()}${position.value}/${encodeURIComponent(position.id)}`;
+  }
+  placingValue(document) {
+    const value = BrowserSortOrder.valueAt(document, this.field);
+    const items = Array.isArray(value) ? value : [value];
+    const sortable = items.filter((item) => item !== undefined && (item === null || typeof item !== "object")).map((item) => BrowserPrefixIndexCodec.sortableValue(item, this.descending)).filter((item) => item !== null).sort();
+    return sortable[0] ?? null;
+  }
+  static valueAt(document, path) {
+    let current = document;
+    for (const segment of path.split("/")) {
+      if (!current || typeof current !== "object" || Array.isArray(current))
+        return;
+      current = current[segment];
+    }
+    return current;
+  }
+  cursor(position) {
+    return [
+      BrowserSortOrder.CURSOR_FORMAT,
+      this.descending ? "d" : "a",
+      position.value,
+      encodeURIComponent(position.id),
+      this.digest
+    ].join(".");
+  }
+  parseCursor(cursor) {
+    const parts = typeof cursor === "string" ? cursor.split(".") : [];
+    if (parts.length !== BrowserSortOrder.CURSOR_PARTS || parts[0] !== "fys1") {
+      throw BrowserSortOrder.error("EINVALIDCURSOR", "the cursor does not parse");
+    }
+    if (parts[1] !== (this.descending ? "d" : "a") || parts[4] !== this.digest) {
+      throw BrowserSortOrder.error("EINVALIDCURSOR", "the cursor belongs to a different query; restart from the first page");
+    }
+    if (!BrowserSortOrder.SORTABLE_VALUE.test(parts[2])) {
+      throw BrowserSortOrder.error("EINVALIDCURSOR", "the cursor's sort value does not parse");
+    }
+    return { value: parts[2], id: decodeURIComponent(parts[3]) };
+  }
+  static error(code, message) {
+    return Object.assign(new Error(message), { code });
   }
 }
 
@@ -2617,6 +2930,7 @@ function explicitDocumentEntry(value) {
 }
 
 class BrowserCore {
+  static MAX_WORD_FIELDS = 16;
   planner = new FyloQueryPlanner;
   constructor(options) {
     this.fs = options.fs;
@@ -2738,6 +3052,7 @@ class BrowserCore {
       docsStored: docIds.length,
       deletedDocs: deletedDocIds.length,
       indexedDocs,
+      wordFields: await this.index.wordFields(collection),
       indexAcceleration: this.index.accelerationStatus()
     };
   }
@@ -2963,6 +3278,11 @@ class BrowserCore {
   }
   async docResults(collection, query = {}) {
     await this.requireCollection(collection);
+    await this.prepareWordQuery(collection, query);
+    if (query.$sort !== undefined || query.$after !== undefined) {
+      const page = await this.sortedPage(collection, query);
+      return page.rows.map((row) => ({ [row.id]: clone(row.data) }));
+    }
     const candidateIds = await this.queryEngine.candidateDocIdsForQuery(collection, query);
     const ids = candidateIds ? Array.from(candidateIds) : await this.listQueryableDocIds(collection);
     const limit = query.$limit;
@@ -2978,6 +3298,108 @@ class BrowserCore {
         break;
     }
     return results;
+  }
+  async prepareWordQuery(collection, query) {
+    this.queryEngine.validateWordOperands(query);
+    for (const field of this.matchFields(query)) {
+      if (!(await this.index.wordFields(collection)).includes(field))
+        continue;
+      if (await this.index.completeWordField(collection, field))
+        continue;
+      await this.rebuildCollection(collection);
+      return;
+    }
+  }
+  matchFields(query) {
+    const fields = [];
+    for (const operation of query.$ops ?? []) {
+      for (const [field, operand] of Object.entries(operation ?? {})) {
+        if (operand?.$match === undefined)
+          continue;
+        fields.push(BrowserCore.normalizeWordField(field));
+      }
+    }
+    return fields;
+  }
+  async sortedPage(collection, query) {
+    const sort = await this.requireSort(query);
+    const after = query.$after === undefined ? null : sort.parseCursor(query.$after);
+    const candidates = await this.queryEngine.candidateDocIdsForQuery(collection, query);
+    const keys = await this.index.keysWithPrefix(collection, sort.keyPrefix(), after ? sort.keyOf(after) : "");
+    const limit = Number(query.$limit) > 0 ? Number(query.$limit) : Infinity;
+    const rows = [];
+    let last = null;
+    for (const key of keys) {
+      const row = await this.sortedRow(collection, query, sort, key, candidates);
+      if (!row)
+        continue;
+      if (rows.length >= limit)
+        return { rows, nextCursor: last && sort.cursor(last) };
+      rows.push({ id: row.position.id, data: row.data });
+      last = row.position;
+    }
+    return { rows, nextCursor: null };
+  }
+  async sortedRow(collection, query, sort, key, candidates) {
+    const position = sort.positionOfKey(key);
+    if (!position)
+      return null;
+    const id = position.id;
+    if (candidates && !candidates.has(id))
+      return null;
+    const stored = await this.documents.readStoredDoc(collection, id);
+    if (!stored || !this.queryEngine.matchesQuery(id, stored.data, query, stored))
+      return null;
+    if (sort.placingValue(stored.data) !== position.value)
+      return null;
+    return { position, data: stored.data };
+  }
+  async requireSort(query) {
+    const sort = await BrowserSortOrder.parse(query, BrowserCore.normalizeWordField);
+    if (sort)
+      return sort;
+    throw BrowserSortOrder.error("EINVALIDCURSOR", "$after must be a cursor string from a query with the same $sort");
+  }
+  async findPage(collection, query = {}) {
+    await this.requireCollection(collection);
+    await this.prepareWordQuery(collection, query);
+    const page = await this.sortedPage(collection, query);
+    const items = page.rows.map((row) => this.pageItem(row, query));
+    return { items, nextCursor: page.nextCursor };
+  }
+  pageItem(row, query) {
+    const processed = this.queryEngine.processDoc({ [row.id]: clone(row.data) }, query);
+    if (typeof processed === "string")
+      return processed;
+    return { id: row.id, doc: (processed ?? {})[row.id] };
+  }
+  async setWordFields(collection, fields) {
+    await this.requireCollection(collection);
+    const words = BrowserCore.validWordFields(fields);
+    await this.withCollectionWriteLane(collection, async () => {
+      await this.ensureCollection(collection);
+      await this.index.resetCollection(collection, words);
+      for (const docId of await this.documents.listDocIds(collection)) {
+        const stored = await this.documents.readStoredDoc(collection, docId);
+        if (stored)
+          await this.index.putDocument(collection, docId, stored.data);
+      }
+    });
+    return { collection, fields: words, rebuilt: true };
+  }
+  static validWordFields(fields) {
+    if (!Array.isArray(fields) || fields.length > BrowserCore.MAX_WORD_FIELDS) {
+      throw BrowserSortOrder.error("EQUERY_INVALID", `a collection may have at most ${BrowserCore.MAX_WORD_FIELDS} word fields`);
+    }
+    const words = fields.map((field) => BrowserCore.normalizeWordField(String(field)));
+    const valid = words.every((field) => field !== "" && new TextEncoder().encode(field).byteLength <= 256);
+    if (!valid || new Set(words).size !== words.length) {
+      throw BrowserSortOrder.error("EQUERY_INVALID", "word fields must be distinct paths of 1 to 256 bytes");
+    }
+    return words;
+  }
+  static normalizeWordField(field) {
+    return field.split(/[./]/).filter((segment) => segment !== "").join("/");
   }
   async deletedDocResults(collection, query = {}) {
     await this.requireCollection(collection);
@@ -3353,6 +3775,8 @@ var BROWSER_OPERATIONS = {
   },
   inspectCollection: (fylo, request) => fylo.inspectCollection(requireString(request, "collection")),
   rebuildCollection: (fylo, request) => fylo.rebuildCollection(requireString(request, "collection")),
+  setWordFields: (fylo, request) => fylo.setWordFields(requireString(request, "collection"), Array.isArray(request.fields) ? request.fields : []),
+  findPage: (fylo, request) => fylo.findPage(requireString(request, "collection"), isRecord(request.query) ? request.query : {}),
   getDoc: (fylo, request) => fylo.getDoc(requireString(request, "collection"), requireString(request, "id"), request.onlyId === true).once(),
   getLatest: (fylo, request) => fylo.getLatest(requireString(request, "collection"), requireString(request, "id"), request.onlyId === true),
   getMeta: (fylo, request) => fylo.getDocMeta(requireString(request, "collection"), requireString(request, "id")),
@@ -4506,6 +4930,12 @@ class FyloBrowser {
   async rebuildCollection(collection) {
     return await this.dispatch({ op: "rebuildCollection", collection });
   }
+  async setWordFields(collection, fields) {
+    return await this.dispatch({ op: "setWordFields", collection, fields });
+  }
+  async findPage(collection, query = {}) {
+    return await this.dispatch({ op: "findPage", collection, query });
+  }
   getDoc(collection, id, onlyId = false) {
     const fylo = this;
     if (!this.worker && this.core)
@@ -4687,6 +5117,12 @@ class BrowserCollectionFacade2 {
   async rebuild() {
     return await this.fylo.rebuildCollection(this.collection);
   }
+  async words(fields) {
+    return await this.fylo.setWordFields(this.collection, fields);
+  }
+  async page(query = {}) {
+    return await this.fylo.findPage(this.collection, query);
+  }
   async create(options = {}) {
     await this.fylo.createCollection(this.collection, options);
   }
@@ -4829,6 +5265,12 @@ class BrowserDirectCollection {
   }
   async rebuild() {
     return await this.host.rebuildCollection(this.collection);
+  }
+  async words(fields) {
+    return await this.#req("setWordFields", { fields });
+  }
+  async page(query = {}) {
+    return await this.#req("findPage", { query });
   }
   async#req(op, fields = {}) {
     await this.host.ready();
