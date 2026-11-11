@@ -344,8 +344,11 @@ class VdbxPage {
         return this.page.evaluate((id) => globalThis.vdbx.close(id), id)
     }
 
-    removeCopy(name) {
-        return this.page.evaluate((name) => globalThis.vdbx.removeCopy(name), name)
+    removeCopy(name, storage = 'opfs') {
+        return this.page.evaluate(
+            ([name, storage]) => globalThis.vdbx.removeCopy(name, storage),
+            [name, storage]
+        )
     }
 
     /** The whole file back in Node, checked against the digest the page took. */
@@ -365,10 +368,18 @@ async function attach(testInfo, name, evidence) {
     })
 }
 
+/** Where a working copy is kept: the OPFS file, or the IndexedDB pages of ADR 0022. */
+const STORAGES = ['opfs', 'indexeddb']
+
 /** Skip where working copies cannot exist (Playwright's Linux WebKit has no OPFS). */
 async function requireOpfs(harness) {
     const reason = await harness.opfs()
     test.skip(reason !== '', reason)
+}
+
+/** IndexedDB exists everywhere; OPFS does not. */
+async function requireStorage(harness, storage) {
+    if (storage === 'opfs') await requireOpfs(harness)
 }
 
 let fixture
@@ -480,251 +491,263 @@ test('reads a native database, dictionaries and all, exactly as native does', as
     await attach(testInfo, 'vdbx-native-reads', evidence)
 })
 
-test('edits a working copy in LZ4 that native reads, verifies and keeps writing, round after round', async ({
-    page
-}, testInfo) => {
-    test.setTimeout(900_000)
-    const harness = await VdbxPage.open(page)
-    await requireOpfs(harness)
-    const { paths } = fixture
-    const evidence = {}
-    const ids = structuredClone(fixture.ids)
-    const fresh = mintIds(1300)
-    const take = (count) => fresh.splice(0, count)
-    let copy
+for (const storage of STORAGES) {
+    test(`edits a working copy in LZ4 that native reads, verifies and keeps writing, round after round (${storage})`, async ({
+        page
+    }, testInfo) => {
+        test.setTimeout(900_000)
+        const harness = await VdbxPage.open(page)
+        await requireStorage(harness, storage)
+        const { paths } = fixture
+        const evidence = {}
+        const ids = structuredClone(fixture.ids)
+        const fresh = mintIds(1300)
+        const take = (count) => fresh.splice(0, count)
+        let copy
 
-    // Round 1, browser: writes, patches and deletes in collections with and
-    // without a dictionary, and in one it creates.
-    const browserUsers = take(500)
-    const browserNotes = take(150)
-    const browserEvents = take(250)
-    const patchedUsers = ids.users.filter((_, index) => index % 13 === 0)
-    const deletedUsers = ids.users.filter((_, index) => index % 17 === 1)
-    const patchedOrders = ids.orders.filter((_, index) => index % 29 === 0)
-    const deletedOrders = ids.orders.filter((_, index) => index % 31 === 2)
-    const round1 = [
-        { op: 'createCollection', collection: 'events' },
-        ...browserUsers.map((id, index) => ({
-            op: 'putData',
-            collection: 'users',
-            id,
-            data: { ...user(100_000 + index), writer: 'browser' }
-        })),
-        ...browserNotes.map((id, index) => ({
-            op: 'putData',
-            collection: 'notes',
-            id,
-            data: note(5000 + index)
-        })),
-        ...browserEvents.map((id, index) => ({
-            op: 'putData',
-            collection: 'events',
-            id,
-            data: {
-                kind: index % 2 ? 'click' : 'view',
-                at: index,
-                detail: `event ${index} `.repeat(12)
-            }
-        })),
-        ...patchedUsers.map((id) => ({
-            op: 'patchDoc',
-            collection: 'users',
-            id,
-            newDoc: { team: 'purple', patchedBy: 'browser' }
-        })),
-        ...deletedUsers.map((id) => ({ op: 'delDoc', collection: 'users', id })),
-        ...patchedOrders.map((id) => ({
-            op: 'patchDoc',
-            collection: 'orders',
-            id,
-            newDoc: { status: 'cancelled' }
-        })),
-        ...deletedOrders.map((id) => ({ op: 'delDoc', collection: 'orders', id })),
-        ...browserUsers.slice(0, 40).map((id) => ({
-            op: 'patchDoc',
-            collection: 'users',
-            id,
-            newDoc: { age: 99 }
-        })),
-        ...browserNotes.slice(0, 20).map((id) => ({ op: 'delDoc', collection: 'notes', id }))
-    ]
-    ids.users.push(...browserUsers)
-    ids.notes.push(...browserNotes)
-    ids.events = [...browserEvents]
-    try {
-        const opened = await harness.open({
-            kind: 'copy',
-            label: 'round-trip.vdbx',
-            url: paths.url('native.vdbx')
-        })
-        copy = opened.name
-        expect(opened.info.writable).toBe(true)
-        let started = Date.now()
-        expectOk(await harness.exec(opened.id, round1), 'browser round 1 writes')
-        evidence.round1 = { writes: round1.length, ms: Date.now() - started }
-        const [inspected] = expectOk(await harness.exec(opened.id, [{ op: 'inspectDatabase' }]))
-        expect(inspected.result.codecs.sort()).toEqual(['lz4', 'zstd'])
-        const reads = [...readsOf(ids), ...QUERIES]
-        started = Date.now()
-        const browserView = expectOk(await harness.exec(opened.id, reads), 'browser round 1 reads')
-        evidence.round1.readMs = Date.now() - started
-        const bytes = await harness.snapshot(opened.id)
-        await harness.close(opened.id)
-        writeFileSync(paths.disk('round1.vdbx'), bytes)
-
-        // The browser's frames are LZ4, with the collection's dictionary
-        // where it has one; what native wrote stays zstd.
-        const collections = inspected.result.collections
-        evidence.round1.census = census(bytes, collections)
-        expect(evidence.round1.census.users['lz4+dict']).toBeGreaterThan(0)
-        expect(evidence.round1.census.orders['lz4+dict']).toBeGreaterThan(0)
-        expect(evidence.round1.census.events.lz4).toBeGreaterThan(0)
-        expect(evidence.round1.census.events['lz4+dict']).toBeUndefined()
-        expect(evidence.round1.census.users['zstd+dict']).toBeGreaterThan(0)
-
-        // Round 2, native: the same answers, a clean verify, then more writes.
-        const native = expectOk(
-            nativeExec(paths.disk('round1.vdbx'), reads),
-            'native round 2 reads'
-        )
-        expectSameFrames(native, browserView, 'native reading the browser file')
-        const [verified, nativeInspect] = expectOk(
-            nativeExec(paths.disk('round1.vdbx'), [
-                { op: 'verifyDatabase' },
-                { op: 'inspectDatabase' }
-            ])
-        )
-        expect(verified.result).toMatchObject({ ok: true, problems: [] })
-        expect(nativeInspect.result.codecs.sort()).toEqual(['lz4', 'zstd'])
-
-        const nativeUsers = take(250)
-        const nativeEvents = take(100)
-        const round2 = [
-            ...nativeUsers.map((id, index) => ({
+        // Round 1, browser: writes, patches and deletes in collections with and
+        // without a dictionary, and in one it creates.
+        const browserUsers = take(500)
+        const browserNotes = take(150)
+        const browserEvents = take(250)
+        const patchedUsers = ids.users.filter((_, index) => index % 13 === 0)
+        const deletedUsers = ids.users.filter((_, index) => index % 17 === 1)
+        const patchedOrders = ids.orders.filter((_, index) => index % 29 === 0)
+        const deletedOrders = ids.orders.filter((_, index) => index % 31 === 2)
+        const round1 = [
+            { op: 'createCollection', collection: 'events' },
+            ...browserUsers.map((id, index) => ({
                 op: 'putData',
                 collection: 'users',
                 id,
-                data: { ...user(200_000 + index), writer: 'native' }
+                data: { ...user(100_000 + index), writer: 'browser' }
             })),
-            ...nativeEvents.map((id, index) => ({
+            ...browserNotes.map((id, index) => ({
+                op: 'putData',
+                collection: 'notes',
+                id,
+                data: note(5000 + index)
+            })),
+            ...browserEvents.map((id, index) => ({
                 op: 'putData',
                 collection: 'events',
                 id,
-                data: { kind: 'native', at: index, detail: `native event ${index} `.repeat(10) }
+                data: {
+                    kind: index % 2 ? 'click' : 'view',
+                    at: index,
+                    detail: `event ${index} `.repeat(12)
+                }
             })),
-            ...browserUsers.slice(40, 140).map((id) => ({
+            ...patchedUsers.map((id) => ({
                 op: 'patchDoc',
                 collection: 'users',
                 id,
-                newDoc: { patchedBy: 'native' }
+                newDoc: { team: 'purple', patchedBy: 'browser' }
             })),
-            ...browserUsers
-                .slice(140, 190)
-                .map((id) => ({ op: 'delDoc', collection: 'users', id })),
-            ...browserEvents.slice(0, 30).map((id) => ({ op: 'delDoc', collection: 'events', id }))
+            ...deletedUsers.map((id) => ({ op: 'delDoc', collection: 'users', id })),
+            ...patchedOrders.map((id) => ({
+                op: 'patchDoc',
+                collection: 'orders',
+                id,
+                newDoc: { status: 'cancelled' }
+            })),
+            ...deletedOrders.map((id) => ({ op: 'delDoc', collection: 'orders', id })),
+            ...browserUsers.slice(0, 40).map((id) => ({
+                op: 'patchDoc',
+                collection: 'users',
+                id,
+                newDoc: { age: 99 }
+            })),
+            ...browserNotes.slice(0, 20).map((id) => ({ op: 'delDoc', collection: 'notes', id }))
         ]
-        expectOk(nativeExec(paths.disk('round1.vdbx'), round2), 'native round 2 writes')
-        ids.users.push(...nativeUsers)
-        ids.events.push(...nativeEvents)
-        const reads3 = [...readsOf(ids), ...QUERIES]
-        const nativeView = expectOk(
-            nativeExec(paths.disk('round1.vdbx'), reads3),
-            'native round 2 view'
-        )
-        evidence.round2 = {
-            census: census(readFileSync(paths.disk('round1.vdbx')), collections)
-        }
-        // Native writes zstd again, with the collection's dictionary.
-        expect(evidence.round2.census.users['zstd+dict']).toBeGreaterThan(
-            evidence.round1.census.users['zstd+dict']
-        )
+        ids.users.push(...browserUsers)
+        ids.notes.push(...browserNotes)
+        ids.events = [...browserEvents]
+        try {
+            const opened = await harness.open({
+                kind: 'copy',
+                storage,
+                label: 'round-trip.vdbx',
+                url: paths.url('native.vdbx')
+            })
+            copy = opened.name
+            expect(opened.info.writable).toBe(true)
+            let started = Date.now()
+            expectOk(await harness.exec(opened.id, round1), 'browser round 1 writes')
+            evidence.round1 = { writes: round1.length, ms: Date.now() - started }
+            const [inspected] = expectOk(await harness.exec(opened.id, [{ op: 'inspectDatabase' }]))
+            expect(inspected.result.codecs.sort()).toEqual(['lz4', 'zstd'])
+            const reads = [...readsOf(ids), ...QUERIES]
+            started = Date.now()
+            const browserView = expectOk(
+                await harness.exec(opened.id, reads),
+                'browser round 1 reads'
+            )
+            evidence.round1.readMs = Date.now() - started
+            const bytes = await harness.snapshot(opened.id)
+            await harness.close(opened.id)
+            writeFileSync(paths.disk('round1.vdbx'), bytes)
 
-        // Round 3, browser: native's writes are there, and the browser writes on.
-        await harness.removeCopy(copy)
-        const again = await harness.open({
-            kind: 'copy',
-            label: 'round-trip.vdbx',
-            url: paths.url('round1.vdbx')
-        })
-        copy = again.name
-        expectSameFrames(
-            expectOk(await harness.exec(again.id, reads3), 'browser round 3 reads'),
-            nativeView,
-            'browser reading the file native wrote back'
-        )
-        const lastNotes = take(60)
-        expectOk(
-            await harness.exec(again.id, [
-                ...lastNotes.map((id, index) => ({
+            // The browser's frames are LZ4, with the collection's dictionary
+            // where it has one; what native wrote stays zstd.
+            const collections = inspected.result.collections
+            evidence.round1.census = census(bytes, collections)
+            expect(evidence.round1.census.users['lz4+dict']).toBeGreaterThan(0)
+            expect(evidence.round1.census.orders['lz4+dict']).toBeGreaterThan(0)
+            expect(evidence.round1.census.events.lz4).toBeGreaterThan(0)
+            expect(evidence.round1.census.events['lz4+dict']).toBeUndefined()
+            expect(evidence.round1.census.users['zstd+dict']).toBeGreaterThan(0)
+
+            // Round 2, native: the same answers, a clean verify, then more writes.
+            const native = expectOk(
+                nativeExec(paths.disk('round1.vdbx'), reads),
+                'native round 2 reads'
+            )
+            expectSameFrames(native, browserView, 'native reading the browser file')
+            const [verified, nativeInspect] = expectOk(
+                nativeExec(paths.disk('round1.vdbx'), [
+                    { op: 'verifyDatabase' },
+                    { op: 'inspectDatabase' }
+                ])
+            )
+            expect(verified.result).toMatchObject({ ok: true, problems: [] })
+            expect(nativeInspect.result.codecs.sort()).toEqual(['lz4', 'zstd'])
+
+            const nativeUsers = take(250)
+            const nativeEvents = take(100)
+            const round2 = [
+                ...nativeUsers.map((id, index) => ({
                     op: 'putData',
-                    collection: 'notes',
+                    collection: 'users',
                     id,
-                    data: note(9000 + index)
+                    data: { ...user(200_000 + index), writer: 'native' }
                 })),
-                ...nativeUsers.slice(0, 25).map((id) => ({
+                ...nativeEvents.map((id, index) => ({
+                    op: 'putData',
+                    collection: 'events',
+                    id,
+                    data: { kind: 'native', at: index, detail: `native event ${index} `.repeat(10) }
+                })),
+                ...browserUsers.slice(40, 140).map((id) => ({
                     op: 'patchDoc',
                     collection: 'users',
                     id,
-                    newDoc: { patchedBy: 'browser again' }
-                }))
-            ]),
-            'browser round 3 writes'
-        )
-        ids.notes.push(...lastNotes)
-        const reads4 = [...readsOf(ids), ...QUERIES]
-        const browserFinal = expectOk(await harness.exec(again.id, reads4), 'browser round 3 view')
-        const finalBytes = await harness.snapshot(again.id)
-        await harness.close(again.id)
-        writeFileSync(paths.disk('round3.vdbx'), finalBytes)
-        evidence.round3 = { census: census(finalBytes, collections) }
-        expect(evidence.round3.census.notes.lz4 ?? 0).toBeGreaterThan(
-            evidence.round1.census.notes.lz4 ?? 0
-        )
-        expectSameFrames(
-            expectOk(nativeExec(paths.disk('round3.vdbx'), reads4), 'native final reads'),
-            browserFinal,
-            'native reading the third round'
-        )
-        const [finalVerify] = expectOk(
-            nativeExec(paths.disk('round3.vdbx'), [{ op: 'verifyDatabase' }])
-        )
-        expect(finalVerify.result).toMatchObject({ ok: true, problems: [] })
+                    newDoc: { patchedBy: 'native' }
+                })),
+                ...browserUsers
+                    .slice(140, 190)
+                    .map((id) => ({ op: 'delDoc', collection: 'users', id })),
+                ...browserEvents
+                    .slice(0, 30)
+                    .map((id) => ({ op: 'delDoc', collection: 'events', id }))
+            ]
+            expectOk(nativeExec(paths.disk('round1.vdbx'), round2), 'native round 2 writes')
+            ids.users.push(...nativeUsers)
+            ids.events.push(...nativeEvents)
+            const reads3 = [...readsOf(ids), ...QUERIES]
+            const nativeView = expectOk(
+                nativeExec(paths.disk('round1.vdbx'), reads3),
+                'native round 2 view'
+            )
+            evidence.round2 = {
+                census: census(readFileSync(paths.disk('round1.vdbx')), collections)
+            }
+            // Native writes zstd again, with the collection's dictionary.
+            expect(evidence.round2.census.users['zstd+dict']).toBeGreaterThan(
+                evidence.round1.census.users['zstd+dict']
+            )
 
-        // An LZ4 body damaged behind a valid checksum: only the decoder can
-        // catch it, and both engines must catch it the same way.
-        const lz4 = recordFrames(bytes).filter(
-            (frame) => frame.codec === 'lz4' && frame.dictionary && frame.length > 64
-        )
-        expect(lz4.length).toBeGreaterThan(0)
-        const damaged = corruptPayload(bytes, lz4[Math.floor(lz4.length / 2)], 0.5)
-        writeFileSync(paths.disk('lz4-damaged.vdbx'), damaged)
-        copyFileSync(paths.disk('lz4-damaged.vdbx'), paths.disk('lz4-damaged.native.vdbx'))
-        const damageReads = [
-            { op: 'verifyDatabase' },
-            ...['users', 'orders', 'notes', 'events'].map((collection) => ({
-                op: 'findDocs',
-                collection,
-                query: {}
-            })),
-            ...browserUsers.map((id) => ({ op: 'getDoc', collection: 'users', id }))
-        ]
-        const reader = await harness.open({ kind: 'file', url: paths.url('lz4-damaged.vdbx') })
-        try {
-            const browserDamage = await harness.exec(reader.id, damageReads)
-            const nativeDamage = nativeExec(paths.disk('lz4-damaged.native.vdbx'), damageReads)
-            evidence.lz4Damage = browserDamage
-                .filter((frame) => !frame.ok)
-                .slice(0, 3)
-                .map((frame) => frame.error)
-            expectSameFrames(browserDamage, nativeDamage, 'damaged LZ4 frame', outcome)
+            // Round 3, browser: native's writes are there, and the browser writes on.
+            await harness.removeCopy(copy, storage)
+            const again = await harness.open({
+                kind: 'copy',
+                storage,
+                label: 'round-trip.vdbx',
+                url: paths.url('round1.vdbx')
+            })
+            copy = again.name
+            expectSameFrames(
+                expectOk(await harness.exec(again.id, reads3), 'browser round 3 reads'),
+                nativeView,
+                'browser reading the file native wrote back'
+            )
+            const lastNotes = take(60)
+            expectOk(
+                await harness.exec(again.id, [
+                    ...lastNotes.map((id, index) => ({
+                        op: 'putData',
+                        collection: 'notes',
+                        id,
+                        data: note(9000 + index)
+                    })),
+                    ...nativeUsers.slice(0, 25).map((id) => ({
+                        op: 'patchDoc',
+                        collection: 'users',
+                        id,
+                        newDoc: { patchedBy: 'browser again' }
+                    }))
+                ]),
+                'browser round 3 writes'
+            )
+            ids.notes.push(...lastNotes)
+            const reads4 = [...readsOf(ids), ...QUERIES]
+            const browserFinal = expectOk(
+                await harness.exec(again.id, reads4),
+                'browser round 3 view'
+            )
+            const finalBytes = await harness.snapshot(again.id)
+            await harness.close(again.id)
+            writeFileSync(paths.disk('round3.vdbx'), finalBytes)
+            evidence.round3 = { census: census(finalBytes, collections) }
+            expect(evidence.round3.census.notes.lz4 ?? 0).toBeGreaterThan(
+                evidence.round1.census.notes.lz4 ?? 0
+            )
+            expectSameFrames(
+                expectOk(nativeExec(paths.disk('round3.vdbx'), reads4), 'native final reads'),
+                browserFinal,
+                'native reading the third round'
+            )
+            const [finalVerify] = expectOk(
+                nativeExec(paths.disk('round3.vdbx'), [{ op: 'verifyDatabase' }])
+            )
+            expect(finalVerify.result).toMatchObject({ ok: true, problems: [] })
+
+            // An LZ4 body damaged behind a valid checksum: only the decoder can
+            // catch it, and both engines must catch it the same way.
+            const lz4 = recordFrames(bytes).filter(
+                (frame) => frame.codec === 'lz4' && frame.dictionary && frame.length > 64
+            )
+            expect(lz4.length).toBeGreaterThan(0)
+            const damaged = corruptPayload(bytes, lz4[Math.floor(lz4.length / 2)], 0.5)
+            writeFileSync(paths.disk('lz4-damaged.vdbx'), damaged)
+            copyFileSync(paths.disk('lz4-damaged.vdbx'), paths.disk('lz4-damaged.native.vdbx'))
+            const damageReads = [
+                { op: 'verifyDatabase' },
+                ...['users', 'orders', 'notes', 'events'].map((collection) => ({
+                    op: 'findDocs',
+                    collection,
+                    query: {}
+                })),
+                ...browserUsers.map((id) => ({ op: 'getDoc', collection: 'users', id }))
+            ]
+            const reader = await harness.open({ kind: 'file', url: paths.url('lz4-damaged.vdbx') })
+            try {
+                const browserDamage = await harness.exec(reader.id, damageReads)
+                const nativeDamage = nativeExec(paths.disk('lz4-damaged.native.vdbx'), damageReads)
+                evidence.lz4Damage = browserDamage
+                    .filter((frame) => !frame.ok)
+                    .slice(0, 3)
+                    .map((frame) => frame.error)
+                expectSameFrames(browserDamage, nativeDamage, 'damaged LZ4 frame', outcome)
+            } finally {
+                await harness.close(reader.id)
+            }
         } finally {
-            await harness.close(reader.id)
+            if (copy) await harness.removeCopy(copy, storage)
+            await attach(testInfo, 'vdbx-round-trips', evidence)
         }
-    } finally {
-        if (copy) await harness.removeCopy(copy)
-        await attach(testInfo, 'vdbx-round-trips', evidence)
-    }
-})
+    })
+}
 
 test('a picked file and a hosted file refuse writes and keep their bytes', async ({
     page
@@ -888,148 +911,155 @@ test('reports damaged and truncated files the way native does, without a trap or
     await attach(testInfo, 'vdbx-damage', evidence)
 })
 
-test('a Worker killed mid-batch leaves a working copy native verifies', async ({
-    page
-}, testInfo) => {
-    test.setTimeout(600_000)
-    const harness = await VdbxPage.open(page)
-    await requireOpfs(harness)
-    const { paths } = fixture
-    const evidence = {}
-    const warm = mintIds(40)
-    const batch = mintIds(CRASH_CHUNKS * CRASH_CHUNK)
-    const chunks = Array.from({ length: CRASH_CHUNKS }, (_, chunk) =>
-        batch.slice(chunk * CRASH_CHUNK, (chunk + 1) * CRASH_CHUNK).map((id, offset) => ({
-            op: 'putData',
-            collection: 'users',
-            id,
-            data: { ...user(300_000 + chunk * CRASH_CHUNK + offset), writer: 'crash' }
-        }))
-    )
-    const opened = await harness.open({
-        kind: 'copy',
-        label: 'crash.vdbx',
-        url: paths.url('native.vdbx')
-    })
-    const copy = opened.name
-    let reopened
-    try {
-        expectOk(
-            await harness.exec(
-                opened.id,
-                warm.map((id, index) => ({
-                    op: 'putData',
-                    collection: 'users',
-                    id,
-                    data: user(index)
-                }))
-            )
-        )
-        // The kill comes when the Worker answers chunk CRASH_KILL_AFTER, not
-        // after a guessed delay, so however fast the engine writes, the rest
-        // of the batch is still queued when the Worker goes.
-        const killed = await harness.killMidBatch(opened.id, chunks, CRASH_KILL_AFTER)
-        expect(killed.error, `the batch failed before the kill: ${killed.error}`).toBeUndefined()
-        expectOk(killed.frames, 'writes answered before the kill')
-        const acknowledged = killed.frames.length
-        expect(acknowledged).toBe(CRASH_KILL_AFTER * CRASH_CHUNK)
-        evidence.acknowledged = acknowledged
-        evidence.queuedChunks = killed.queued
-
-        // The Web Lock goes with the Worker; reopening may race its release.
-        for (let attempt = 0; attempt < 50; attempt++) {
-            reopened = await harness.tryOpen({ kind: 'opfs', name: copy })
-            if (reopened.code !== 'EBUSY') break
-            await page.waitForTimeout(100)
-        }
-        expect(reopened.error, `reopen: ${reopened.error}`).toBeUndefined()
-        // Firefox can let a terminated Worker's last write land after its
-        // Web Lock is released, and a read that sees the file change under
-        // it refuses with EENGINE_CONCURRENT_WRITE rather than answer from
-        // a torn view. That refusal is the engine working; read again.
-        let reread
-        evidence.concurrentRetries = 0
-        for (let attempt = 0; attempt < 10; attempt++) {
-            reread = await harness.exec(reopened.id, [
-                { op: 'verifyDatabase' },
-                { op: 'findDocs', collection: 'users', query: { $onlyIds: true } }
-            ])
-            if (!reread.some((frame) => frame.error?.code === 'EENGINE_CONCURRENT_WRITE')) break
-            evidence.concurrentRetries++
-            await page.waitForTimeout(200)
-        }
-        if (evidence.concurrentRetries > 0) {
-            testInfo.annotations.push({
-                type: 'concurrent-write-retry',
-                description: `read again ${evidence.concurrentRetries} time(s) after the kill`
-            })
-        }
-        const [verified, listed] = expectOk(reread, 'browser after the crash')
-        expect(verified.result.ok).toBe(true)
-        const present = new Set(listed.result)
-        const survived = batch.filter((id) => present.has(id)).length
-        evidence.survived = survived
-        // Each putData commits on its own, in order: what survived is exactly
-        // the first writes of the batch, every write answered before the kill
-        // among them, and the kill came before the end. Should the Worker
-        // ever outrun the kill and finish, the last check says so.
-        expect(batch.slice(0, survived).every((id) => present.has(id))).toBe(true)
-        expect(batch.slice(survived).some((id) => present.has(id))).toBe(false)
-        expect(survived, 'every write answered before the kill survived').toBeGreaterThanOrEqual(
-            acknowledged
-        )
-        expect(
-            survived,
-            `the Worker was killed mid-batch, with ${killed.queued} of ${CRASH_CHUNKS} chunks still queued`
-        ).toBeLessThan(batch.length)
-        expect(warm.every((id) => present.has(id))).toBe(true)
-
-        // The copy keeps working, and native agrees with what it holds.
-        const [after] = mintIds(1)
-        expectOk(
-            await harness.exec(reopened.id, [
-                { op: 'putData', collection: 'users', id: after, data: user(1) }
-            ])
-        )
-        const reads = [
-            { op: 'findDocs', collection: 'users', query: { $onlyIds: true } },
-            ...[...warm, ...batch.slice(0, survived), after].map((id) => ({
-                op: 'getDoc',
+for (const storage of STORAGES) {
+    test(`a Worker killed mid-batch leaves a working copy native verifies (${storage})`, async ({
+        page
+    }, testInfo) => {
+        test.setTimeout(600_000)
+        const harness = await VdbxPage.open(page)
+        await requireStorage(harness, storage)
+        const { paths } = fixture
+        const evidence = {}
+        const warm = mintIds(40)
+        const batch = mintIds(CRASH_CHUNKS * CRASH_CHUNK)
+        const chunks = Array.from({ length: CRASH_CHUNKS }, (_, chunk) =>
+            batch.slice(chunk * CRASH_CHUNK, (chunk + 1) * CRASH_CHUNK).map((id, offset) => ({
+                op: 'putData',
                 collection: 'users',
-                id
+                id,
+                data: { ...user(300_000 + chunk * CRASH_CHUNK + offset), writer: 'crash' }
             }))
-        ]
-        const browserView = expectOk(await harness.exec(reopened.id, reads))
-        const bytes = await harness.snapshot(reopened.id)
-        await harness.close(reopened.id)
-        writeFileSync(paths.disk('crashed.vdbx'), bytes)
-        const [nativeVerify] = expectOk(
-            nativeExec(paths.disk('crashed.vdbx'), [{ op: 'verifyDatabase' }])
         )
-        evidence.nativeVerify = nativeVerify.result
-        expect(nativeVerify.result.ok).toBe(true)
-        expect(
-            nativeVerify.result.problems.filter((problem) => problem.severity !== 'warning')
-        ).toEqual([])
-        expectSameFrames(
-            expectOk(nativeExec(paths.disk('crashed.vdbx'), reads)),
-            browserView,
-            'native reading the crashed copy'
-        )
-        const [more] = mintIds(1)
-        expectOk(
-            nativeExec(paths.disk('crashed.vdbx'), [
-                { op: 'putData', collection: 'users', id: more, data: user(2) }
-            ])
-        )
-    } finally {
-        // A failure above can leave the reopened session holding the copy;
-        // close it so the cleanup does not hide that failure behind its own.
-        if (reopened?.id !== undefined) await harness.close(reopened.id).catch(() => {})
-        await harness.removeCopy(copy)
-        await attach(testInfo, 'vdbx-crash', evidence)
-    }
-})
+        const opened = await harness.open({
+            kind: 'copy',
+            storage,
+            label: 'crash.vdbx',
+            url: paths.url('native.vdbx')
+        })
+        const copy = opened.name
+        let reopened
+        try {
+            expectOk(
+                await harness.exec(
+                    opened.id,
+                    warm.map((id, index) => ({
+                        op: 'putData',
+                        collection: 'users',
+                        id,
+                        data: user(index)
+                    }))
+                )
+            )
+            // The kill comes when the Worker answers chunk CRASH_KILL_AFTER, not
+            // after a guessed delay, so however fast the engine writes, the rest
+            // of the batch is still queued when the Worker goes.
+            const killed = await harness.killMidBatch(opened.id, chunks, CRASH_KILL_AFTER)
+            expect(
+                killed.error,
+                `the batch failed before the kill: ${killed.error}`
+            ).toBeUndefined()
+            expectOk(killed.frames, 'writes answered before the kill')
+            const acknowledged = killed.frames.length
+            expect(acknowledged).toBe(CRASH_KILL_AFTER * CRASH_CHUNK)
+            evidence.acknowledged = acknowledged
+            evidence.queuedChunks = killed.queued
+
+            // The Web Lock goes with the Worker; reopening may race its release.
+            for (let attempt = 0; attempt < 50; attempt++) {
+                reopened = await harness.tryOpen({ kind: 'opfs', storage, name: copy })
+                if (reopened.code !== 'EBUSY') break
+                await page.waitForTimeout(100)
+            }
+            expect(reopened.error, `reopen: ${reopened.error}`).toBeUndefined()
+            // Firefox can let a terminated Worker's last write land after its
+            // Web Lock is released, and a read that sees the file change under
+            // it refuses with EENGINE_CONCURRENT_WRITE rather than answer from
+            // a torn view. That refusal is the engine working; read again.
+            let reread
+            evidence.concurrentRetries = 0
+            for (let attempt = 0; attempt < 10; attempt++) {
+                reread = await harness.exec(reopened.id, [
+                    { op: 'verifyDatabase' },
+                    { op: 'findDocs', collection: 'users', query: { $onlyIds: true } }
+                ])
+                if (!reread.some((frame) => frame.error?.code === 'EENGINE_CONCURRENT_WRITE')) break
+                evidence.concurrentRetries++
+                await page.waitForTimeout(200)
+            }
+            if (evidence.concurrentRetries > 0) {
+                testInfo.annotations.push({
+                    type: 'concurrent-write-retry',
+                    description: `read again ${evidence.concurrentRetries} time(s) after the kill`
+                })
+            }
+            const [verified, listed] = expectOk(reread, 'browser after the crash')
+            expect(verified.result.ok).toBe(true)
+            const present = new Set(listed.result)
+            const survived = batch.filter((id) => present.has(id)).length
+            evidence.survived = survived
+            // Each putData commits on its own, in order: what survived is exactly
+            // the first writes of the batch, every write answered before the kill
+            // among them, and the kill came before the end. Should the Worker
+            // ever outrun the kill and finish, the last check says so.
+            expect(batch.slice(0, survived).every((id) => present.has(id))).toBe(true)
+            expect(batch.slice(survived).some((id) => present.has(id))).toBe(false)
+            expect(
+                survived,
+                'every write answered before the kill survived'
+            ).toBeGreaterThanOrEqual(acknowledged)
+            expect(
+                survived,
+                `the Worker was killed mid-batch, with ${killed.queued} of ${CRASH_CHUNKS} chunks still queued`
+            ).toBeLessThan(batch.length)
+            expect(warm.every((id) => present.has(id))).toBe(true)
+
+            // The copy keeps working, and native agrees with what it holds.
+            const [after] = mintIds(1)
+            expectOk(
+                await harness.exec(reopened.id, [
+                    { op: 'putData', collection: 'users', id: after, data: user(1) }
+                ])
+            )
+            const reads = [
+                { op: 'findDocs', collection: 'users', query: { $onlyIds: true } },
+                ...[...warm, ...batch.slice(0, survived), after].map((id) => ({
+                    op: 'getDoc',
+                    collection: 'users',
+                    id
+                }))
+            ]
+            const browserView = expectOk(await harness.exec(reopened.id, reads))
+            const bytes = await harness.snapshot(reopened.id)
+            await harness.close(reopened.id)
+            writeFileSync(paths.disk('crashed.vdbx'), bytes)
+            const [nativeVerify] = expectOk(
+                nativeExec(paths.disk('crashed.vdbx'), [{ op: 'verifyDatabase' }])
+            )
+            evidence.nativeVerify = nativeVerify.result
+            expect(nativeVerify.result.ok).toBe(true)
+            expect(
+                nativeVerify.result.problems.filter((problem) => problem.severity !== 'warning')
+            ).toEqual([])
+            expectSameFrames(
+                expectOk(nativeExec(paths.disk('crashed.vdbx'), reads)),
+                browserView,
+                'native reading the crashed copy'
+            )
+            const [more] = mintIds(1)
+            expectOk(
+                nativeExec(paths.disk('crashed.vdbx'), [
+                    { op: 'putData', collection: 'users', id: more, data: user(2) }
+                ])
+            )
+        } finally {
+            // A failure above can leave the reopened session holding the copy;
+            // close it so the cleanup does not hide that failure behind its own.
+            if (reopened?.id !== undefined) await harness.close(reopened.id).catch(() => {})
+            await harness.removeCopy(copy, storage)
+            await attach(testInfo, 'vdbx-crash', evidence)
+        }
+    })
+}
 
 function flip(bytes, at) {
     const out = Buffer.from(bytes)

@@ -13,6 +13,12 @@
 //   `copyFrom` streams a `Blob` into it first. The copy is held under a Web
 //   Lock for the life of the Worker, so a second tab is refused instead of
 //   corrupting it.
+// - `{ kind: 'indexeddb', name, copyFrom? }`: the same working copy kept in
+//   IndexedDB pages, for pages with no OPFS (ADR 0022). Every call that
+//   changes the file is stored in one IndexedDB transaction before it is
+//   answered.
+// - `{ kind: 'local', name, copyFrom? }`: OPFS where this Worker has it,
+//   IndexedDB otherwise. The open result names the one used in `storage`.
 // - `{ kind: 'url', url }`: a hosted file, read-only, by ranged requests.
 //
 // Protocol: post `{ id, op, ... }`, receive `{ id, result }` or `{ id, error }`,
@@ -37,20 +43,28 @@ import {
     createIdentityBridgeBuffer,
     describeIdentity
 } from './identity-bridge.mjs'
+import { IndexedDbFile } from './indexed-db-file.mjs'
 import { WORKING_COPY_DIRECTORY, isWorkingCopyName } from './vdbx-names.mjs'
 import {
     DEFAULT_DATABASE_PATH,
     createAccessHandleBackend,
     createFileBackend,
-    createRangeBackend
+    createRangeBackend,
+    createSingleFileBackend
 } from './single-file-vfs.mjs'
 
 const COPY_CHUNK_BYTES = 4 * 1024 * 1024
+const HANDLE_WAIT_MS = 5000
+const HANDLE_RETRY_MS = 100
 
 /** @type {ReturnType<typeof createFileBackend> | undefined} */
 let backend
 /** @type {FileSystemSyncAccessHandle | undefined} */
 let accessHandle
+/** @type {IndexedDbFile | undefined} */
+let indexedFile
+/** @type {'opfs' | 'indexeddb' | 'file' | 'url' | undefined} */
+let storage
 /** @type {(() => void) | undefined} */
 let releaseLock
 /** @type {WebAssembly.Instance | undefined} */
@@ -95,13 +109,16 @@ async function dispatch(message) {
             return await open(message)
         case 'exec':
             if (!instance) throw new Error('the engine was not loaded; pass moduleUrl to open')
-            return { ndjson: exec(instance, message.ndjson) }
+            return await stored(() => ({
+                ndjson: exec(/** @type {WebAssembly.Instance} */ (instance), message.ndjson)
+            }))
         case 'host':
-            return opened().call(message)
+            return await stored(() => opened().call(message))
         case 'snapshot':
+            indexedFile?.refuseWhenFailed()
             return snapshot()
         case 'close':
-            close()
+            await close()
             return { closed: true }
         default:
             throw new Error(`unknown op: ${message.op}`)
@@ -118,16 +135,69 @@ async function open({ id, source, path = DEFAULT_DATABASE_PATH, moduleUrl, ident
             backend = createRangeBackend(new URL(source.url, self.location.href).href, { path })
         } else if (source?.kind === 'opfs') {
             await openWorkingCopy(source, path, (progress) => self.postMessage({ id, progress }))
+        } else if (source?.kind === 'indexeddb') {
+            await openIndexedCopy(source, path, (progress) => self.postMessage({ id, progress }))
+        } else if (source?.kind === 'local') {
+            const onProgress = (progress) => self.postMessage({ id, progress })
+            if (await hasOpfs()) await openWorkingCopy(source, path, onProgress)
+            else await openIndexedCopy(source, path, onProgress)
         } else {
             throw new Error(`unknown database source: ${source?.kind}`)
         }
         probe = createProbe(backend)
+        storage = storage ?? source.kind
         if (moduleUrl) instance = await instantiate(moduleUrl, backend, identity)
         return describe()
     } catch (error) {
-        close()
+        await close()
         throw error
     }
+}
+
+/**
+ * Run one call, then store what it changed before it is answered. A failed
+ * store turns the answer into that failure: the change is not stored, so it
+ * must not be reported as done.
+ *
+ * @template T
+ * @param {() => T} action
+ * @returns {Promise<T>}
+ */
+async function stored(action) {
+    indexedFile?.refuseWhenFailed()
+    try {
+        return action()
+    } finally {
+        await indexedFile?.commit()
+    }
+}
+
+/** Whether this Worker can keep a working copy in OPFS. */
+async function hasOpfs() {
+    if (typeof navigator.storage?.getDirectory !== 'function') return false
+    if (typeof FileSystemFileHandle?.prototype?.createSyncAccessHandle !== 'function') return false
+    try {
+        await navigator.storage.getDirectory()
+        return true
+    } catch {
+        return false
+    }
+}
+
+async function openIndexedCopy({ name, copyFrom }, path, onProgress) {
+    if (!isWorkingCopyName(name)) throw new Error(`invalid working copy name: ${name}`)
+    indexedFile = await IndexedDbFile.open(name, { copyFrom, onProgress })
+    const file = indexedFile
+    storage = 'indexeddb'
+    backend = createSingleFileBackend({
+        path,
+        writable: true,
+        size: () => file.size(),
+        modifiedMs: () => file.modifiedMs(),
+        readAt: (offset, into) => file.readAt(offset, into),
+        writeAt: (offset, from) => file.writeAt(offset, from),
+        truncate: (length) => file.truncate(length)
+    })
 }
 
 async function instantiate(moduleUrl, target, identity) {
@@ -182,13 +252,42 @@ async function startIdentityBridge({ name, workerUrl }) {
 
 async function openWorkingCopy({ name, copyFrom }, path, progress) {
     if (!isWorkingCopyName(name)) throw new Error(`invalid working copy name: ${name}`)
+    storage = 'opfs'
     await acquireLock(`fylo-vdbx:${name}`)
     const root = await navigator.storage.getDirectory()
     const directory = await root.getDirectoryHandle(WORKING_COPY_DIRECTORY, { create: true })
     const file = await directory.getFileHandle(name, { create: Boolean(copyFrom) })
-    accessHandle = await file.createSyncAccessHandle()
+    accessHandle = await createAccessHandle(file)
     if (copyFrom) await streamInto(accessHandle, copyFrom, progress)
     backend = createAccessHandleBackend(accessHandle, { path })
+}
+
+/**
+ * Open the copy's sync access handle. Holding the Web Lock means no other
+ * Worker owns the copy, but Firefox can release a killed Worker's lock a
+ * moment before its handle, and refuses a new handle meanwhile; wait for it
+ * a short while, then report the copy as busy so the caller can try again.
+ *
+ * @param {FileSystemFileHandle} file
+ * @returns {Promise<FileSystemSyncAccessHandle>}
+ */
+async function createAccessHandle(file) {
+    for (let waited = 0; ; waited += HANDLE_RETRY_MS) {
+        try {
+            return await file.createSyncAccessHandle()
+        } catch (error) {
+            if (error?.name !== 'NoModificationAllowedError') throw error
+            if (waited >= HANDLE_WAIT_MS) {
+                throw Object.assign(
+                    new Error('this working copy is still held by a closing Worker'),
+                    {
+                        code: 'EBUSY'
+                    }
+                )
+            }
+        }
+        await new Promise((resolve) => setTimeout(resolve, HANDLE_RETRY_MS))
+    }
 }
 
 /** Copy a `Blob` into the handle a chunk at a time, so a large file never sits in memory. */
@@ -238,6 +337,7 @@ function describe() {
         size: len,
         modifiedMs,
         engine: Boolean(instance),
+        storage,
         identity: identityId,
         crossOriginIsolated: globalThis.crossOriginIsolated === true
     }
@@ -248,11 +348,14 @@ function opened() {
     return probe
 }
 
-function close() {
+async function close() {
     probe?.close()
     probe = undefined
     instance = undefined
     backend = undefined
+    storage = undefined
+    const closing = indexedFile
+    indexedFile = undefined
     identityWorker?.terminate()
     identityWorker = undefined
     identityId = null
@@ -262,6 +365,7 @@ function close() {
         accessHandle = undefined
         releaseLock?.()
         releaseLock = undefined
+        await closing?.close()
     }
 }
 

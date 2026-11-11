@@ -7,6 +7,7 @@
 // writes the copy back: over the original through File System Access where
 // the browser offers it, and as a download everywhere else.
 
+import { IndexedDbStore } from './indexed-db-store.mjs'
 import { WORKING_COPY_DIRECTORY, isWorkingCopyName } from './vdbx-names.mjs'
 
 export { WORKING_COPY_DIRECTORY, isWorkingCopyName }
@@ -29,7 +30,8 @@ const PICKER_TYPES = [{ description: 'FYLO database', accept: { [VDBX_MEDIA_TYPE
  *   queryPermission?: (descriptor: { mode: string }) => Promise<string>,
  *   requestPermission?: (descriptor: { mode: string }) => Promise<string>
  * }} WritableFileHandle
- * @typedef {{ kind: 'file', file: Blob } | { kind: 'opfs', name: string, copyFrom?: Blob } | { kind: 'url', url: string }} DatabaseSource
+ * @typedef {{ kind: 'file', file: Blob } | { kind: 'opfs' | 'indexeddb' | 'local', name: string, copyFrom?: Blob } | { kind: 'url', url: string }} DatabaseSource
+ * @typedef {'opfs' | 'indexeddb'} WorkingCopyStorage
  * @typedef {{ copied: number, total: number }} CopyProgress
  * @typedef {{ name: string, workerUrl: string, trustAnchor?: string, trustOnFirstUse?: boolean }} DatabaseIdentity
  * @typedef {(message: Record<string, unknown>) => Promise<any>} WorkerCall
@@ -212,11 +214,13 @@ export function workingCopyName(fileName, now = Date.now()) {
 }
 
 /**
- * The working copies this origin holds, newest first.
+ * The working copies this origin holds in one store, newest first.
  *
+ * @param {{ storage?: WorkingCopyStorage }} [options]
  * @returns {Promise<{ name: string, size: number, modifiedMs: number }[]>}
  */
-export async function listWorkingCopies() {
+export async function listWorkingCopies({ storage = 'opfs' } = {}) {
+    if (storage === 'indexeddb') return IndexedDbStore.list()
     const directory = await workingCopyDirectory(false)
     if (!directory) return []
     const copies = []
@@ -237,9 +241,15 @@ export async function listWorkingCopies() {
     return copies.sort((a, b) => b.modifiedMs - a.modifiedMs)
 }
 
-/** Delete one working copy. It must not be open. @param {string} name */
-export async function removeWorkingCopy(name) {
+/**
+ * Delete one working copy. It must not be open.
+ *
+ * @param {string} name
+ * @param {{ storage?: WorkingCopyStorage }} [options]
+ */
+export async function removeWorkingCopy(name, { storage = 'opfs' } = {}) {
     if (!isWorkingCopyName(name)) throw new Error(`invalid working copy name: ${name}`)
+    if (storage === 'indexeddb') return IndexedDbStore.remove(name)
     const directory = await workingCopyDirectory(false)
     await directory?.removeEntry(name)
 }

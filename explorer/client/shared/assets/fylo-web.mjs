@@ -4963,6 +4963,129 @@ function createBrowserClient(options = {}) {
 }
 var fylo = createBrowserClient();
 var client_default = fylo;
+// src/browser/indexed-db-store.mjs
+class IndexedDbStore {
+  static DATABASE_NAME = "fylo-vdbx";
+  static DATABASE_VERSION = 1;
+  static FILES = "files";
+  static PAGES = "pages";
+  static OWNERS = "owners";
+  static LOCK_PREFIX = "fylo-vdbx-idb:";
+  static READY = "ready";
+  static LAST_PAGE = Number.MAX_SAFE_INTEGER;
+  static async remove(name, options = {}) {
+    const database = await IndexedDbStore.openDatabase(options.indexedDB);
+    const lock = await IndexedDbStore.takeWebLock(name, options.locks);
+    try {
+      await IndexedDbStore.run(database, "readwrite", (stores, fail) => {
+        stores.owners.get(name).onsuccess = (event) => {
+          const holder = IndexedDbStore.resultOf(event);
+          if (IndexedDbStore.heldByOther(holder, "", lock.held)) {
+            return fail(IndexedDbStore.busy(name));
+          }
+          IndexedDbStore.deleteAll(stores, name);
+        };
+      });
+    } finally {
+      lock.release();
+      database.close();
+    }
+  }
+  static async list(options = {}) {
+    const database = await IndexedDbStore.openDatabase(options.indexedDB);
+    try {
+      let records = [];
+      await IndexedDbStore.run(database, "readonly", (stores) => {
+        stores.files.getAll().onsuccess = (event) => {
+          records = IndexedDbStore.resultOf(event);
+        };
+      });
+      return IndexedDbStore.readyCopies(records);
+    } finally {
+      database.close();
+    }
+  }
+  static openDatabase(given) {
+    const factory = given ?? globalThis.indexedDB;
+    if (!factory) {
+      return Promise.reject(IndexedDbStore.coded(new Error("IndexedDB is unavailable here"), "ENOSYS"));
+    }
+    return new Promise((resolve, reject) => {
+      const request = factory.open(IndexedDbStore.DATABASE_NAME, IndexedDbStore.DATABASE_VERSION);
+      request.onupgradeneeded = () => IndexedDbStore.createStores(request.result);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(IndexedDbStore.coded(new Error(`IndexedDB refused to open: ${request.error?.name}`), "EIO"));
+      request.onblocked = () => reject(IndexedDbStore.coded(new Error("IndexedDB is blocked by an older version"), "EBUSY"));
+    });
+  }
+  static createStores(database) {
+    database.createObjectStore(IndexedDbStore.FILES, { keyPath: "name" });
+    database.createObjectStore(IndexedDbStore.PAGES);
+    database.createObjectStore(IndexedDbStore.OWNERS, { keyPath: "name" });
+  }
+  static async takeWebLock(name, given) {
+    const locks = given === undefined ? globalThis.navigator?.locks : given;
+    if (!locks)
+      return { held: false, release: () => {} };
+    return new Promise((resolve, reject) => {
+      locks.request(IndexedDbStore.LOCK_PREFIX + name, { mode: "exclusive", ifAvailable: true }, (lock) => IndexedDbStore.holdLock(name, lock, resolve, reject)).catch(reject);
+    });
+  }
+  static holdLock(name, lock, resolve, reject) {
+    if (!lock) {
+      reject(IndexedDbStore.busy(name));
+      return;
+    }
+    return new Promise((release) => resolve({ held: true, release: () => release(undefined) }));
+  }
+  static heldByOther(holder, owner, lockHeld) {
+    if (!holder || holder.owner === owner || lockHeld)
+      return false;
+    return holder.expiresAt > Date.now();
+  }
+  static pagesOf(name) {
+    return IDBKeyRange.bound([name, 0], [name, IndexedDbStore.LAST_PAGE]);
+  }
+  static deleteAll(stores, name) {
+    stores.pages.delete(IndexedDbStore.pagesOf(name));
+    stores.files.delete(name);
+    stores.owners.delete(name);
+  }
+  static readyCopies(records) {
+    return records.filter((record) => record.state === IndexedDbStore.READY).map((record) => ({
+      name: record.name,
+      size: record.size,
+      modifiedMs: record.modifiedMs
+    })).sort((a, b) => b.modifiedMs - a.modifiedMs);
+  }
+  static run(database, mode, body) {
+    return new Promise((resolve, reject) => {
+      const names = [IndexedDbStore.FILES, IndexedDbStore.PAGES, IndexedDbStore.OWNERS];
+      const transaction = database.transaction(names, mode, { durability: "strict" });
+      let reason = null;
+      const fail = (error) => {
+        reason = error;
+        transaction.abort();
+      };
+      transaction.oncomplete = () => resolve();
+      transaction.onabort = () => reject(reason ?? transaction.error ?? new Error("IndexedDB aborted the transaction"));
+      body(IndexedDbStore.storesOf(transaction, names), fail);
+    });
+  }
+  static storesOf(transaction, names) {
+    return Object.fromEntries(names.map((name) => [name, transaction.objectStore(name)]));
+  }
+  static resultOf(event) {
+    return event.target.result;
+  }
+  static busy(name) {
+    return IndexedDbStore.coded(new Error(`${name} is open in another tab or window`), "EBUSY");
+  }
+  static coded(error, code) {
+    return Object.assign(error, { code });
+  }
+}
+
 // src/browser/vdbx-names.mjs
 var WORKING_COPY_DIRECTORY = "fylo-vdbx";
 function isWorkingCopyName(name) {
@@ -5080,7 +5203,9 @@ function workingCopyName(fileName, now = Date.now()) {
   const base = String(fileName ?? "").replace(/\.vdbx$/i, "").replace(/[^A-Za-z0-9 ._()-]+/g, "-").replace(/\.{2,}/g, ".").replace(/^[^A-Za-z0-9]+/, "").slice(0, 120) || "database";
   return `${base}-${now.toString(36)}.vdbx`;
 }
-async function listWorkingCopies() {
+async function listWorkingCopies({ storage = "opfs" } = {}) {
+  if (storage === "indexeddb")
+    return IndexedDbStore.list();
   const directory = await workingCopyDirectory(false);
   if (!directory)
     return [];
@@ -5098,9 +5223,11 @@ async function listWorkingCopies() {
   }
   return copies.sort((a, b) => b.modifiedMs - a.modifiedMs);
 }
-async function removeWorkingCopy(name) {
+async function removeWorkingCopy(name, { storage = "opfs" } = {}) {
   if (!isWorkingCopyName(name))
     throw new Error(`invalid working copy name: ${name}`);
+  if (storage === "indexeddb")
+    return IndexedDbStore.remove(name);
   const directory = await workingCopyDirectory(false);
   await directory?.removeEntry(name);
 }

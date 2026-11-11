@@ -137,8 +137,16 @@ backend.
   unsafe.
 - Complete: the real-OPFS corpus stores and queries through the Rust engine in
   Chromium and Firefox.
-- Pending before replacing the JavaScript engine: browser recovery and soak
-  pass the same failpoint matrix and duration gates as the native engine.
+- Complete for `.vdbx` working copies (2026-11-11, ADR 0022): a Worker
+  killed at twelve points (inside the engine, inside a store and between
+  batches) leaves a copy that opens, verifies natively and keeps every
+  answered write in order, and a timed soak with reopens and kills checks the
+  copy against a model, on both the OPFS and the IndexedDB backend, in
+  Chromium, Firefox and WebKit (`tests/browser/e2e/vdbx-indexeddb.spec.mjs`).
+  The soak runs 45 seconds by default (`FYLO_BROWSER_SOAK_SECONDS`), not the
+  native engine's duration gates.
+- Pending before replacing the JavaScript engine for folder roots: the same
+  failpoint matrix and duration gates as the native engine.
 - Complete: the support matrix names every accepted loss above.
 
 ## Related decisions

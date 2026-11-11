@@ -4,6 +4,22 @@
 
 ### Added
 
+- **IndexedDB working copies for `.vdbx` databases (ADR 0022).** The
+  single-file Worker takes two new sources: `{ kind: 'indexeddb', name,
+  copyFrom? }`, and `{ kind: 'local', name, copyFrom? }`, which uses OPFS
+  where the Worker has it and IndexedDB otherwise; the open result says which
+  in `storage`. So a working copy now opens where OPFS is missing: WKWebView
+  pages on `tachyon-app://`, Safari, and any page that is not a secure
+  context. The copy is kept as 16 KiB pages; every Worker call that changes
+  it is stored in one IndexedDB transaction (`durability: 'strict'`) before
+  it is answered, so a write is reported done only once it is stored, and a
+  killed tab leaves the copy as it was before or after that call. One Worker
+  owns a copy, through a fenced lease, plus a Web Lock where one exists. A
+  store that fails (quota, a lost lease) answers that call with `ENOSPC`,
+  `ELOCKLOST` or `EIO` and refuses later calls until the copy is opened
+  again. `listWorkingCopies` and `removeWorkingCopy` take `{ storage }`.
+  The open copy is held in the Worker's memory (zero pages are not stored
+  or held).
 - **`tpm:<name>` identities on Windows (ADR 0021 section 8, phase 8).**
   `fylo identity create --store tpm:<name>` makes a P-256 key inside the
   TPM 2.0 through the Microsoft Platform Crypto Provider; it is never

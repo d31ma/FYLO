@@ -312,6 +312,495 @@ function createIdentityBridgeBackend(buffer) {
   };
 }
 
+// src/browser/indexed-db-store.mjs
+class IndexedDbStore {
+  static DATABASE_NAME = "fylo-vdbx";
+  static DATABASE_VERSION = 1;
+  static FILES = "files";
+  static PAGES = "pages";
+  static OWNERS = "owners";
+  static LOCK_PREFIX = "fylo-vdbx-idb:";
+  static READY = "ready";
+  static LAST_PAGE = Number.MAX_SAFE_INTEGER;
+  static async remove(name, options = {}) {
+    const database = await IndexedDbStore.openDatabase(options.indexedDB);
+    const lock = await IndexedDbStore.takeWebLock(name, options.locks);
+    try {
+      await IndexedDbStore.run(database, "readwrite", (stores, fail) => {
+        stores.owners.get(name).onsuccess = (event) => {
+          const holder = IndexedDbStore.resultOf(event);
+          if (IndexedDbStore.heldByOther(holder, "", lock.held)) {
+            return fail(IndexedDbStore.busy(name));
+          }
+          IndexedDbStore.deleteAll(stores, name);
+        };
+      });
+    } finally {
+      lock.release();
+      database.close();
+    }
+  }
+  static async list(options = {}) {
+    const database = await IndexedDbStore.openDatabase(options.indexedDB);
+    try {
+      let records = [];
+      await IndexedDbStore.run(database, "readonly", (stores) => {
+        stores.files.getAll().onsuccess = (event) => {
+          records = IndexedDbStore.resultOf(event);
+        };
+      });
+      return IndexedDbStore.readyCopies(records);
+    } finally {
+      database.close();
+    }
+  }
+  static openDatabase(given) {
+    const factory = given ?? globalThis.indexedDB;
+    if (!factory) {
+      return Promise.reject(IndexedDbStore.coded(new Error("IndexedDB is unavailable here"), "ENOSYS"));
+    }
+    return new Promise((resolve, reject) => {
+      const request = factory.open(IndexedDbStore.DATABASE_NAME, IndexedDbStore.DATABASE_VERSION);
+      request.onupgradeneeded = () => IndexedDbStore.createStores(request.result);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(IndexedDbStore.coded(new Error(`IndexedDB refused to open: ${request.error?.name}`), "EIO"));
+      request.onblocked = () => reject(IndexedDbStore.coded(new Error("IndexedDB is blocked by an older version"), "EBUSY"));
+    });
+  }
+  static createStores(database) {
+    database.createObjectStore(IndexedDbStore.FILES, { keyPath: "name" });
+    database.createObjectStore(IndexedDbStore.PAGES);
+    database.createObjectStore(IndexedDbStore.OWNERS, { keyPath: "name" });
+  }
+  static async takeWebLock(name, given) {
+    const locks = given === undefined ? globalThis.navigator?.locks : given;
+    if (!locks)
+      return { held: false, release: () => {} };
+    return new Promise((resolve, reject) => {
+      locks.request(IndexedDbStore.LOCK_PREFIX + name, { mode: "exclusive", ifAvailable: true }, (lock) => IndexedDbStore.holdLock(name, lock, resolve, reject)).catch(reject);
+    });
+  }
+  static holdLock(name, lock, resolve, reject) {
+    if (!lock) {
+      reject(IndexedDbStore.busy(name));
+      return;
+    }
+    return new Promise((release) => resolve({ held: true, release: () => release(undefined) }));
+  }
+  static heldByOther(holder, owner, lockHeld) {
+    if (!holder || holder.owner === owner || lockHeld)
+      return false;
+    return holder.expiresAt > Date.now();
+  }
+  static pagesOf(name) {
+    return IDBKeyRange.bound([name, 0], [name, IndexedDbStore.LAST_PAGE]);
+  }
+  static deleteAll(stores, name) {
+    stores.pages.delete(IndexedDbStore.pagesOf(name));
+    stores.files.delete(name);
+    stores.owners.delete(name);
+  }
+  static readyCopies(records) {
+    return records.filter((record) => record.state === IndexedDbStore.READY).map((record) => ({
+      name: record.name,
+      size: record.size,
+      modifiedMs: record.modifiedMs
+    })).sort((a, b) => b.modifiedMs - a.modifiedMs);
+  }
+  static run(database, mode, body) {
+    return new Promise((resolve, reject) => {
+      const names = [IndexedDbStore.FILES, IndexedDbStore.PAGES, IndexedDbStore.OWNERS];
+      const transaction = database.transaction(names, mode, { durability: "strict" });
+      let reason = null;
+      const fail = (error) => {
+        reason = error;
+        transaction.abort();
+      };
+      transaction.oncomplete = () => resolve();
+      transaction.onabort = () => reject(reason ?? transaction.error ?? new Error("IndexedDB aborted the transaction"));
+      body(IndexedDbStore.storesOf(transaction, names), fail);
+    });
+  }
+  static storesOf(transaction, names) {
+    return Object.fromEntries(names.map((name) => [name, transaction.objectStore(name)]));
+  }
+  static resultOf(event) {
+    return event.target.result;
+  }
+  static busy(name) {
+    return IndexedDbStore.coded(new Error(`${name} is open in another tab or window`), "EBUSY");
+  }
+  static coded(error, code) {
+    return Object.assign(error, { code });
+  }
+}
+
+// src/browser/indexed-db-file.mjs
+class IndexedDbFile {
+  static PAGE_SIZE = 16 * 1024;
+  static LEASE_MS = 6000;
+  static RENEW_MS = 2000;
+  static COPY_COMMIT_BYTES = 4 * 1024 * 1024;
+  static COPYING = "copying";
+  constructor({ database, name, owner, record, pages, lease, releaseLock }) {
+    this.database = database;
+    this.name = name;
+    this.owner = owner;
+    this.pageSize = record.pageSize;
+    this.length = record.size;
+    this.shrunkTo = Infinity;
+    this.modified = record.modifiedMs;
+    this.state = record.state;
+    this.pages = pages;
+    this.dirtyPages = new Set;
+    this.recordDirty = false;
+    this.failure = null;
+    this.lease = lease;
+    this.releaseLock = releaseLock;
+    this.renewTimer = undefined;
+  }
+  static async open(name, options = {}) {
+    const lease = IndexedDbFile.leaseOf(options);
+    const database = await IndexedDbStore.openDatabase(options.indexedDB);
+    const lock = await IndexedDbStore.takeWebLock(name, options.locks);
+    const owner = IndexedDbFile.newOwnerId();
+    try {
+      const record = await IndexedDbFile.claim(database, name, owner, lock.held, options, lease);
+      const pages = await IndexedDbFile.loadPages(database, name, Boolean(options.copyFrom));
+      const file = new IndexedDbFile({
+        database,
+        name,
+        owner,
+        record,
+        pages,
+        lease,
+        releaseLock: lock.release
+      });
+      await file.copyIn(options);
+      file.startRenewing();
+      return file;
+    } catch (error) {
+      await IndexedDbFile.giveUp(database, name, owner, lock.release);
+      throw error;
+    }
+  }
+  size() {
+    return this.length;
+  }
+  modifiedMs() {
+    return this.modified;
+  }
+  readAt(offset, into) {
+    const end = Math.min(offset + into.length, this.length);
+    let position = offset;
+    while (position < end) {
+      position = this.readPagePart(position, end, into.subarray(position - offset));
+    }
+    return Math.max(0, end - offset);
+  }
+  writeAt(offset, from) {
+    this.refuseWhenFailed();
+    const end = offset + from.length;
+    let position = offset;
+    while (position < end) {
+      position = this.writePagePart(position, end, from.subarray(position - offset));
+    }
+    this.length = Math.max(this.length, end);
+    this.touch();
+    return from.length;
+  }
+  truncate(length) {
+    this.refuseWhenFailed();
+    if (length < this.length)
+      this.dropPagesFrom(length);
+    this.shrunkTo = Math.min(this.shrunkTo, length);
+    this.length = length;
+    this.touch();
+  }
+  hasChanges() {
+    return this.recordDirty;
+  }
+  async commit() {
+    this.refuseWhenFailed();
+    if (!this.recordDirty)
+      return;
+    try {
+      await this.writeChanges();
+    } catch (error) {
+      this.failure = IndexedDbFile.commitFailure(error);
+      throw this.failure;
+    }
+  }
+  async close() {
+    clearInterval(this.renewTimer);
+    try {
+      await this.releaseLease();
+    } finally {
+      this.releaseLock();
+      this.database.close();
+    }
+  }
+  refuseWhenFailed() {
+    if (this.failure)
+      throw this.failure;
+  }
+  touch() {
+    this.modified = Date.now();
+    this.recordDirty = true;
+  }
+  readPagePart(position, end, into) {
+    const index = Math.floor(position / this.pageSize);
+    const start = position - index * this.pageSize;
+    const count = Math.min(end - position, this.pageSize - start);
+    const page = this.pages.get(index);
+    if (page)
+      into.set(page.subarray(start, start + count));
+    else
+      into.fill(0, 0, count);
+    return position + count;
+  }
+  writePagePart(position, end, from) {
+    const index = Math.floor(position / this.pageSize);
+    const start = position - index * this.pageSize;
+    const count = Math.min(end - position, this.pageSize - start);
+    this.pageForWrite(index).set(from.subarray(0, count), start);
+    this.dirtyPages.add(index);
+    return position + count;
+  }
+  pageForWrite(index) {
+    const found = this.pages.get(index);
+    if (found)
+      return found;
+    const page = new Uint8Array(this.pageSize);
+    this.pages.set(index, page);
+    return page;
+  }
+  dropPagesFrom(length) {
+    const keep = Math.ceil(length / this.pageSize);
+    for (const index of [...this.pages.keys()]) {
+      if (index >= keep)
+        this.pages.delete(index);
+    }
+    this.zeroTailOf(length);
+  }
+  zeroTailOf(length) {
+    const index = Math.floor(length / this.pageSize);
+    const page = this.pages.get(index);
+    if (!page)
+      return;
+    page.fill(0, length - index * this.pageSize);
+    this.dirtyPages.add(index);
+  }
+  async writeChanges() {
+    const dirty = [...this.dirtyPages];
+    const record = this.fileRecord();
+    await IndexedDbStore.run(this.database, "readwrite", (stores, fail) => {
+      stores.owners.get(this.name).onsuccess = (event) => {
+        const holder = IndexedDbStore.resultOf(event);
+        if (holder?.owner !== this.owner)
+          return fail(IndexedDbFile.lockLost(this.name));
+        stores.owners.put(this.ownerRecord());
+        this.deleteDroppedPages(stores.pages);
+        this.putPages(stores.pages, dirty);
+        stores.files.put(record);
+      };
+    });
+    this.forgetCommitted(dirty);
+  }
+  putPages(pages, dirty) {
+    for (const index of dirty)
+      this.putPage(pages, index);
+  }
+  putPage(pages, index) {
+    const page = this.pages.get(index);
+    if (!page || IndexedDbFile.isZero(page)) {
+      pages.delete([this.name, index]);
+      return;
+    }
+    pages.put(page.buffer, [this.name, index]);
+  }
+  deleteDroppedPages(pages) {
+    if (this.shrunkTo === Infinity)
+      return;
+    const first = Math.ceil(this.shrunkTo / this.pageSize);
+    pages.delete(IDBKeyRange.bound([this.name, first], [this.name, IndexedDbStore.LAST_PAGE]));
+  }
+  forgetCommitted(committed) {
+    for (const index of committed)
+      this.dirtyPages.delete(index);
+    this.shrunkTo = Infinity;
+    this.recordDirty = this.dirtyPages.size > 0;
+  }
+  fileRecord() {
+    return {
+      name: this.name,
+      size: this.length,
+      pageSize: this.pageSize,
+      state: this.state,
+      modifiedMs: this.modified
+    };
+  }
+  ownerRecord() {
+    return { name: this.name, owner: this.owner, expiresAt: Date.now() + this.lease.leaseMs };
+  }
+  async copyIn(options) {
+    if (!options.copyFrom)
+      return;
+    const reader = options.copyFrom.stream().getReader();
+    let copied = 0;
+    let uncommitted = 0;
+    for (let chunk = await reader.read();!chunk.done; chunk = await reader.read()) {
+      this.writeAt(copied, chunk.value);
+      copied += chunk.value.length;
+      uncommitted = await this.commitCopyChunk(uncommitted + chunk.value.length);
+      options.onProgress?.({ copied, total: options.copyFrom.size });
+    }
+    await this.finishCopy(copied, options.copyFrom.size);
+  }
+  async commitCopyChunk(uncommitted) {
+    if (uncommitted < IndexedDbFile.COPY_COMMIT_BYTES)
+      return uncommitted;
+    await this.commit();
+    return 0;
+  }
+  async finishCopy(copied, total) {
+    if (copied !== total)
+      throw new Error(`copied ${copied} of ${total} bytes`);
+    this.state = IndexedDbStore.READY;
+    this.touch();
+    await this.commit();
+  }
+  startRenewing() {
+    this.renewTimer = setInterval(() => this.renew(), this.lease.renewMs);
+  }
+  async renew() {
+    try {
+      await this.writeLease();
+    } catch (error) {
+      clearInterval(this.renewTimer);
+      this.failure = this.failure ?? IndexedDbFile.commitFailure(error);
+    }
+  }
+  writeLease() {
+    return IndexedDbStore.run(this.database, "readwrite", (stores, fail) => {
+      stores.owners.get(this.name).onsuccess = (event) => {
+        const holder = IndexedDbStore.resultOf(event);
+        if (holder?.owner !== this.owner)
+          return fail(IndexedDbFile.lockLost(this.name));
+        stores.owners.put(this.ownerRecord());
+      };
+    });
+  }
+  releaseLease() {
+    return IndexedDbFile.dropLease(this.database, this.name, this.owner);
+  }
+  static leaseOf(options) {
+    return {
+      leaseMs: options.leaseMs ?? IndexedDbFile.LEASE_MS,
+      renewMs: options.renewMs ?? IndexedDbFile.RENEW_MS
+    };
+  }
+  static async claim(database, name, owner, lockHeld, options, lease) {
+    let record;
+    await IndexedDbStore.run(database, "readwrite", (stores, fail) => {
+      stores.owners.get(name).onsuccess = (event) => {
+        const holder = IndexedDbStore.resultOf(event);
+        if (IndexedDbStore.heldByOther(holder, owner, lockHeld))
+          return fail(IndexedDbStore.busy(name));
+        stores.owners.put({ name, owner, expiresAt: Date.now() + lease.leaseMs });
+        record = IndexedDbFile.startRecord(stores, name, options, fail);
+      };
+    });
+    return await IndexedDbFile.existingRecord(database, name, record);
+  }
+  static startRecord(stores, name, options, fail) {
+    if (!options.copyFrom)
+      return;
+    const record = {
+      name,
+      size: 0,
+      pageSize: IndexedDbFile.PAGE_SIZE,
+      state: IndexedDbFile.COPYING,
+      modifiedMs: Date.now()
+    };
+    stores.pages.delete(IndexedDbStore.pagesOf(name));
+    stores.files.put(record);
+    return record;
+  }
+  static async existingRecord(database, name, started) {
+    if (started)
+      return started;
+    let record;
+    await IndexedDbStore.run(database, "readonly", (stores) => {
+      stores.files.get(name).onsuccess = (event) => {
+        record = IndexedDbStore.resultOf(event);
+      };
+    });
+    return IndexedDbFile.openableRecord(name, record);
+  }
+  static openableRecord(name, record) {
+    if (!record)
+      throw IndexedDbStore.coded(new Error(`${name} does not exist`), "ENOENT");
+    if (record.state !== IndexedDbStore.READY) {
+      throw IndexedDbStore.coded(new Error(`${name} is an unfinished copy; copy it again`), "EIO");
+    }
+    return record;
+  }
+  static async loadPages(database, name, fresh) {
+    const pages = new Map;
+    if (fresh)
+      return pages;
+    const range = IndexedDbStore.pagesOf(name);
+    let keys = [];
+    let values = [];
+    await IndexedDbStore.run(database, "readonly", (stores) => {
+      stores.pages.getAllKeys(range).onsuccess = (event) => {
+        keys = IndexedDbStore.resultOf(event);
+      };
+      stores.pages.getAll(range).onsuccess = (event) => {
+        values = IndexedDbStore.resultOf(event);
+      };
+    });
+    keys.forEach((key, position) => pages.set(key[1], new Uint8Array(values[position])));
+    return pages;
+  }
+  static async giveUp(database, name, owner, releaseLock) {
+    try {
+      await IndexedDbFile.dropLease(database, name, owner);
+    } finally {
+      releaseLock();
+      database.close();
+    }
+  }
+  static dropLease(database, name, owner) {
+    return IndexedDbStore.run(database, "readwrite", (stores) => {
+      stores.owners.get(name).onsuccess = (event) => {
+        const holder = IndexedDbStore.resultOf(event);
+        if (holder?.owner === owner)
+          stores.owners.delete(name);
+      };
+    });
+  }
+  static isZero(page) {
+    const words = new Uint32Array(page.buffer, page.byteOffset, page.byteLength / 4);
+    return words.every((word) => word === 0);
+  }
+  static commitFailure(error) {
+    const failure = error instanceof Error ? error : new Error(String(error));
+    if (failure.code)
+      return failure;
+    const code = failure.name === "QuotaExceededError" ? "ENOSPC" : "EIO";
+    return IndexedDbStore.coded(new Error(`storing the working copy failed: ${failure.name}: ${failure.message}`), code);
+  }
+  static lockLost(name) {
+    return IndexedDbStore.coded(new Error(`another tab took over ${name}; open it again`), "ELOCKLOST");
+  }
+  static newOwnerId() {
+    const bytes = crypto.getRandomValues(new Uint8Array(16));
+    return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  }
+}
+
 // src/browser/vdbx-names.mjs
 var WORKING_COPY_DIRECTORY = "fylo-vdbx";
 function isWorkingCopyName(name) {
@@ -540,8 +1029,12 @@ function withCode(error, code) {
 
 // src/browser/fylo-single-file-worker.mjs
 var COPY_CHUNK_BYTES = 4 * 1024 * 1024;
+var HANDLE_WAIT_MS = 5000;
+var HANDLE_RETRY_MS = 100;
 var backend;
 var accessHandle;
+var indexedFile;
+var storage;
 var releaseLock;
 var instance;
 var probe;
@@ -575,13 +1068,16 @@ async function dispatch(message) {
     case "exec":
       if (!instance)
         throw new Error("the engine was not loaded; pass moduleUrl to open");
-      return { ndjson: exec(instance, message.ndjson) };
+      return await stored(() => ({
+        ndjson: exec(instance, message.ndjson)
+      }));
     case "host":
-      return opened().call(message);
+      return await stored(() => opened().call(message));
     case "snapshot":
+      indexedFile?.refuseWhenFailed();
       return snapshot();
     case "close":
-      close();
+      await close();
       return { closed: true };
     default:
       throw new Error(`unknown op: ${message.op}`);
@@ -598,17 +1094,62 @@ async function open({ id, source, path = DEFAULT_DATABASE_PATH, moduleUrl, ident
       backend = createRangeBackend(new URL(source.url, self.location.href).href, { path });
     } else if (source?.kind === "opfs") {
       await openWorkingCopy(source, path, (progress) => self.postMessage({ id, progress }));
+    } else if (source?.kind === "indexeddb") {
+      await openIndexedCopy(source, path, (progress) => self.postMessage({ id, progress }));
+    } else if (source?.kind === "local") {
+      const onProgress = (progress) => self.postMessage({ id, progress });
+      if (await hasOpfs())
+        await openWorkingCopy(source, path, onProgress);
+      else
+        await openIndexedCopy(source, path, onProgress);
     } else {
       throw new Error(`unknown database source: ${source?.kind}`);
     }
     probe = createProbe(backend);
+    storage = storage ?? source.kind;
     if (moduleUrl)
       instance = await instantiate(moduleUrl, backend, identity);
     return describe();
   } catch (error) {
-    close();
+    await close();
     throw error;
   }
+}
+async function stored(action) {
+  indexedFile?.refuseWhenFailed();
+  try {
+    return action();
+  } finally {
+    await indexedFile?.commit();
+  }
+}
+async function hasOpfs() {
+  if (typeof navigator.storage?.getDirectory !== "function")
+    return false;
+  if (typeof FileSystemFileHandle?.prototype?.createSyncAccessHandle !== "function")
+    return false;
+  try {
+    await navigator.storage.getDirectory();
+    return true;
+  } catch {
+    return false;
+  }
+}
+async function openIndexedCopy({ name, copyFrom }, path, onProgress) {
+  if (!isWorkingCopyName(name))
+    throw new Error(`invalid working copy name: ${name}`);
+  indexedFile = await IndexedDbFile.open(name, { copyFrom, onProgress });
+  const file = indexedFile;
+  storage = "indexeddb";
+  backend = createSingleFileBackend({
+    path,
+    writable: true,
+    size: () => file.size(),
+    modifiedMs: () => file.modifiedMs(),
+    readAt: (offset, into) => file.readAt(offset, into),
+    writeAt: (offset, from) => file.writeAt(offset, from),
+    truncate: (length) => file.truncate(length)
+  });
 }
 async function instantiate(moduleUrl, target, identity) {
   let created;
@@ -650,14 +1191,31 @@ async function startIdentityBridge({ name, workerUrl }) {
 async function openWorkingCopy({ name, copyFrom }, path, progress) {
   if (!isWorkingCopyName(name))
     throw new Error(`invalid working copy name: ${name}`);
+  storage = "opfs";
   await acquireLock(`fylo-vdbx:${name}`);
   const root = await navigator.storage.getDirectory();
   const directory = await root.getDirectoryHandle(WORKING_COPY_DIRECTORY, { create: true });
   const file = await directory.getFileHandle(name, { create: Boolean(copyFrom) });
-  accessHandle = await file.createSyncAccessHandle();
+  accessHandle = await createAccessHandle(file);
   if (copyFrom)
     await streamInto(accessHandle, copyFrom, progress);
   backend = createAccessHandleBackend(accessHandle, { path });
+}
+async function createAccessHandle(file) {
+  for (let waited = 0;; waited += HANDLE_RETRY_MS) {
+    try {
+      return await file.createSyncAccessHandle();
+    } catch (error) {
+      if (error?.name !== "NoModificationAllowedError")
+        throw error;
+      if (waited >= HANDLE_WAIT_MS) {
+        throw Object.assign(new Error("this working copy is still held by a closing Worker"), {
+          code: "EBUSY"
+        });
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, HANDLE_RETRY_MS));
+  }
 }
 async function streamInto(handle2, blob, progress) {
   handle2.truncate(0);
@@ -707,6 +1265,7 @@ function describe() {
     size: len,
     modifiedMs,
     engine: Boolean(instance),
+    storage,
     identity: identityId,
     crossOriginIsolated: globalThis.crossOriginIsolated === true
   };
@@ -716,11 +1275,14 @@ function opened() {
     throw new Error("no database is open");
   return probe;
 }
-function close() {
+async function close() {
   probe?.close();
   probe = undefined;
   instance = undefined;
   backend = undefined;
+  storage = undefined;
+  const closing = indexedFile;
+  indexedFile = undefined;
   identityWorker?.terminate();
   identityWorker = undefined;
   identityId = null;
@@ -730,6 +1292,7 @@ function close() {
     accessHandle = undefined;
     releaseLock?.();
     releaseLock = undefined;
+    await closing?.close();
   }
 }
 async function acquireLock(name) {

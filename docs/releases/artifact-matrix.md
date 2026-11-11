@@ -10,7 +10,7 @@ cannot supply something.
 | Storage | `std::fs` | `std::fs` over WASI preopens | host `HostVfs` table |
 | Driven by | a spawned process | any WASI runtime | an embedder that fills the table |
 | Release build (develop, 2026-10-10) | ~7.97 MiB (macOS arm64) | ~2.04 MiB | ~2.23 MiB, ~735 KiB gzip with the CHEX validator and `.vdbx` databases with their record codecs and dictionaries, built at `opt-level = "z"` (2026-10-29; 2.38 MiB / 800 KiB budget) |
-| Verified by | crash matrix, soak, interchange | native/WASI interchange | `browser:engine:e2e` (Chromium, Firefox), host-table corpus |
+| Verified by | crash matrix, soak, interchange | native/WASI interchange | `browser:wasm:e2e` (Chromium, Firefox, WebKit on macOS), `.vdbx` kill matrix and soak on OPFS and IndexedDB, host-table corpus |
 
 `fylo` and `fylo.wasm` are **interchangeable**. A shim spawns one or the other,
 writes NDJSON to stdin, reads NDJSON from stdout, and cannot tell which it got.
@@ -66,8 +66,12 @@ needs an export, not a copy.
 ## Browser: how the engine reaches OPFS
 
 `bun run browser:engine:e2e` stores and queries documents through the real
-engine in a real browser. Chromium and Firefox pass; WebKit cannot start a
-module Worker over OPFS in this harness and is skipped.
+engine in a real browser, and `bun run browser:wasm:e2e` runs every browser
+spec. Chromium, Firefox and WebKit pass. WebKit runs on macOS, in a persistent
+profile (`tests/browser/e2e/browser-test.mjs`); Linux WebKit builds have no
+`navigator.storage`, so CI runs the WebKit lane on `macos-15`. Real Safari is
+not automated: `safaridriver` needs "Allow Remote Automation", which is the
+machine owner's setting.
 
 **OPFS is only half synchronous.** Inside a Worker `createSyncAccessHandle`
 gives synchronous file read, write, truncate, and flush — but every directory
@@ -115,9 +119,35 @@ identically, because they are filesystem and CPU work and nothing else.
 The recovery implementation is shared by all three artifacts, but the release
 evidence is deliberately named rather than implied: the native artifact runs
 all 15 injected crash points, native and WASI run the interchange corpus, and
-the browser artifact runs the host-table and real-OPFS corpora. Browser/WASI
-failpoint and soak runs remain qualification work before the browser artifact
+the browser artifact runs the host-table and real-OPFS corpora. For `.vdbx`
+working copies the browser also runs a kill matrix (a Worker killed at twelve
+points, inside the engine, inside a store and between batches) and a timed
+soak with reopens and kills against a model, on OPFS and on IndexedDB
+(`tests/browser/e2e/vdbx-indexeddb.spec.mjs`). Folder-root failpoint and soak
+runs, and WASI ones, remain qualification work before the browser artifact
 can replace the JavaScript engine.
+
+## Browser: `.vdbx` working copies without OPFS
+
+OPFS needs a secure context. A WKWebView page on `tachyon-app://`, or any page
+on plain `http://` from a name other than `localhost`, has no
+`navigator.storage` and no Web Locks. There a working copy is kept in
+IndexedDB instead (ADR 0022): the `.vdbx` bytes as 16 KiB pages, with zero
+pages left out.
+
+| Source | Storage |
+| --- | --- |
+| `{ kind: 'opfs', name }` | always OPFS |
+| `{ kind: 'indexeddb', name }` | always IndexedDB |
+| `{ kind: 'local', name }` | OPFS where the Worker has it, IndexedDB otherwise; the open result says which in `storage` |
+
+The engine's host calls are synchronous and IndexedDB is not, so the Worker
+holds the open copy in memory and stores every call that changed it in one
+IndexedDB transaction (`durability: 'strict'`) before it answers. A killed
+tab therefore leaves the copy exactly as it was before or after that call.
+One Worker owns a copy through a lease that every store checks; where Web
+Locks exist a killed owner's copy opens again at once, and where they do not,
+once its lease runs out (6 seconds).
 
 ## What differs, and why
 

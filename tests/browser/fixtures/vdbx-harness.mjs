@@ -15,6 +15,7 @@
 
 import {
     SingleFileDatabase,
+    listWorkingCopies,
     removeWorkingCopy,
     workingCopyName
 } from '/src/browser/vdbx-client.mjs'
@@ -55,18 +56,23 @@ async function blobOf(source) {
     return new Blob([source.gzip ? await gunzip(bytes) : bytes])
 }
 
-/** Open a database. Refusals come back as `{ error, code }`, not as a throw. */
+/**
+ * Open a database. Refusals come back as `{ error, code }`, not as a throw.
+ * A working copy (`copy`, `opfs`) is kept in `source.storage`: `opfs` (the
+ * default), `indexeddb`, or `local` to let the Worker choose.
+ */
 async function open(source) {
     const started = performance.now()
     let name
     let opened
     try {
+        const storage = source.storage ?? 'opfs'
         if (source.kind === 'copy') {
             name = source.name ?? workingCopyName(source.label ?? 'harness.vdbx')
-            opened = { kind: 'opfs', name, copyFrom: await blobOf(source) }
+            opened = { kind: storage, name, copyFrom: await blobOf(source) }
         } else if (source.kind === 'opfs') {
             name = source.name
-            opened = { kind: 'opfs', name }
+            opened = { kind: storage, name }
         } else if (source.kind === 'file') {
             const blob = await blobOf(source)
             opened = { kind: 'file', file: new File([blob], source.label ?? 'picked.vdbx') }
@@ -134,6 +140,21 @@ globalThis.vdbx = {
     },
 
     /** Why this browser cannot keep an OPFS working copy, or '' when it can. */
+    /** Whether this page is a secure context, and the APIs that follow from it. */
+    context() {
+        return {
+            secure: globalThis.isSecureContext === true,
+            storageManager: typeof navigator.storage,
+            locks: typeof navigator.locks,
+            indexedDB: typeof indexedDB
+        }
+    },
+
+    /** The IndexedDB working copies this origin holds. */
+    listIndexed() {
+        return listWorkingCopies({ storage: 'indexeddb' })
+    },
+
     async opfs() {
         if (typeof navigator.storage?.getDirectory !== 'function') {
             return 'this browser build has no origin-private file system'
@@ -209,6 +230,61 @@ globalThis.vdbx = {
         })
     },
 
+    /**
+     * Run `batches` one after another, each waiting for the answer before the
+     * next is sent, and kill the Worker `killAfterMs` after the first one
+     * starts, wherever it is: inside the engine, inside a store, or between
+     * two batches. Comes back with how many batches were answered, and
+     * whether one was still running when the Worker went.
+     */
+    writeUntilKilled(id, batches, killAfterMs) {
+        const { database } = session(id)
+        let answered = 0
+        let running = false
+        let killed = false
+        return new Promise((resolve) => {
+            const kill = () => {
+                killed = true
+                database.worker.terminate()
+                sessions.delete(id)
+                resolve({ answered, inFlight: running, finished: answered === batches.length })
+            }
+            const timer = setTimeout(kill, killAfterMs)
+            ;(async () => {
+                for (const requests of batches) {
+                    running = true
+                    let frames
+                    try {
+                        frames = framesOf(await database.exec(ndjsonOf(database, requests)))
+                    } catch (error) {
+                        if (killed) return
+                        clearTimeout(timer)
+                        resolve({ ...failure(error), answered })
+                        return
+                    }
+                    if (killed) return
+                    running = false
+                    const failed = frames.find((frame) => !frame.ok)
+                    if (failed) {
+                        clearTimeout(timer)
+                        resolve({ error: JSON.stringify(failed.error), answered })
+                        return
+                    }
+                    answered++
+                }
+                clearTimeout(timer)
+                if (!killed) kill()
+            })()
+        })
+    },
+
+    /** Kill the Worker the way a crash does, with no close and no store. */
+    kill(id) {
+        const { database } = session(id)
+        database.worker.terminate()
+        sessions.delete(id)
+    },
+
     async close(id) {
         const found = sessions.get(id)
         if (!found) return
@@ -238,14 +314,15 @@ globalThis.vdbx = {
      * refuses the removal with NoModificationAllowedError meanwhile), so a
      * held copy is retried for up to ten seconds.
      */
-    async removeCopy(name) {
+    async removeCopy(name, storage = 'opfs') {
         for (let waited = 0; ; waited += 250) {
             try {
-                await removeWorkingCopy(name)
+                await removeWorkingCopy(name, { storage })
                 return
             } catch (error) {
                 if (error?.name === 'NotFoundError') return
-                if (error?.name !== 'NoModificationAllowedError' || waited >= 10_000) throw error
+                const held = error?.name === 'NoModificationAllowedError' || error?.code === 'EBUSY'
+                if (!held || waited >= 10_000) throw error
             }
             await new Promise((resolve) => setTimeout(resolve, 250))
         }

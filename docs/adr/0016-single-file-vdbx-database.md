@@ -493,6 +493,7 @@ already has all of them (`open`, `stat`, `read_at`, `write_at`, `truncate`,
 | --------------------------------- | ---------------------------------------------------------- | ------------------------ |
 | Browser, a picked or dropped file | a `File` read with `FileReaderSync` in the engine Worker   | none, read-only snapshot |
 | Browser, a working copy           | one OPFS `FileSystemSyncAccessHandle`, opened before start | in place                 |
+| Browser, a copy without OPFS      | IndexedDB pages held in Worker memory (ADR 0022)           | stored per Worker call   |
 | Browser, a hosted sealed file     | synchronous ranged `XMLHttpRequest` in the engine Worker   | none                     |
 | iOS and Android shells            | a native `HostVfs` over the app's file handle              | in place                 |
 | WASI runtime                      | a preopened file                                           | in place                 |
