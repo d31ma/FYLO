@@ -31,7 +31,7 @@ impl SegmentImport {
     pub(crate) fn build(
         root: &NativeRoot,
         directory: &Path,
-        (images, versions): (&[DocumentImage], &[Vec<u8>]),
+        (images, versions, word_fields): (&[DocumentImage], &[Vec<u8>], &[String]),
         generation: u64,
     ) -> Result<(), NativeStorageError> {
         SegmentLayout::create_empty(root, directory, generation)?;
@@ -57,9 +57,17 @@ impl SegmentImport {
         let mut ordered: Vec<&DocumentImage> = images.iter().collect();
         ordered.sort_by(|left, right| left.id.cmp(&right.id));
         for image in ordered {
-            rows.push(Self::append(&mut segment, image, generation)?);
+            rows.push(Self::append(
+                &mut segment,
+                (image, word_fields),
+                generation,
+            )?);
             if image.state == LocationState::Live {
-                keys.extend(NativeWriteRoot::document_keys(&image.id, &image.body)?);
+                keys.extend(NativeWriteRoot::document_keys(
+                    word_fields,
+                    &image.id,
+                    &image.body,
+                )?);
             }
         }
         medium.replace_location_snapshot(&LocationTable::from_rows(rows).encode_snapshot()?)?;
@@ -85,10 +93,10 @@ impl SegmentImport {
 
     fn append(
         segment: &mut LogSegment,
-        image: &DocumentImage,
+        (image, word_fields): (&DocumentImage, &[String]),
         generation: u64,
     ) -> Result<SegmentLocation, NativeStorageError> {
-        let record = Self::document_record(image, segment.next_lsn(), generation)?;
+        let record = Self::document_record(image, word_fields, segment.next_lsn(), generation)?;
         let encoded = segment.encode(&record)?;
         let location = SegmentLocation {
             id: image.id.clone(),
@@ -112,6 +120,7 @@ impl SegmentImport {
     /// `lsn`, with the index keys a live document adds.
     pub(crate) fn document_record(
         image: &DocumentImage,
+        word_fields: &[String],
         lsn: u64,
         generation: u64,
     ) -> Result<LogRecord, NativeStorageError> {
@@ -128,7 +137,7 @@ impl SegmentImport {
             mode: image.mode,
         };
         let added = if image.state == LocationState::Live {
-            NativeWriteRoot::document_keys(&image.id, &image.body)?
+            NativeWriteRoot::document_keys(word_fields, &image.id, &image.body)?
         } else {
             BTreeSet::new()
         };

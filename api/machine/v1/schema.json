@@ -16,6 +16,7 @@
                         "dropCollection",
                         "inspectCollection",
                         "rebuildCollection",
+                        "setWordFields",
                         "reshardCollection",
                         "migrateLayout",
                         "compactCollection",

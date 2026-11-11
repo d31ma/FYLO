@@ -91,6 +91,9 @@ impl<'a> HotReader<'a> {
         let collection = self.engine.open_collection(name)?;
         let state = ReadOnlyEngine::stable_generation(&collection)?;
         let encrypted = self.engine.encrypted_fields(name)?;
+        let words = collection
+            .complete_word_fields()
+            .map_err(EngineError::storage)?;
         let guard = match collection.kind() {
             CollectionKind::Document => self.engine.migration_guard(&collection)?,
             CollectionKind::File => None,
@@ -98,7 +101,7 @@ impl<'a> HotReader<'a> {
         let header = Arc::new(ResidentCollection::new(
             collection.kind(),
             state,
-            encrypted,
+            (encrypted, words),
             guard,
         ));
         self.hot_set
@@ -183,11 +186,12 @@ impl<'a> HotReader<'a> {
         header: &ResidentCollection,
         query: &StructuredQuery,
     ) -> Result<Arc<Vec<String>>, EngineError> {
-        let plan = IndexPlan::new(query, header.encrypted_fields()).filter(|plan| {
-            header
-                .migration_guard()
-                .is_none_or(|guard| guard.allows(plan))
-        });
+        let plan =
+            IndexPlan::new(query, header.encrypted_fields(), header.word_fields()).filter(|plan| {
+                header
+                    .migration_guard()
+                    .is_none_or(|guard| guard.allows(plan))
+            });
         match plan {
             Some(plan) => {
                 let snapshot = source.snapshot()?;

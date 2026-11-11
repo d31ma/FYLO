@@ -32,6 +32,11 @@
             "retry": "safe"
         },
         {
+            "name": "setWordFields",
+            "class": "derived-write",
+            "retry": "safe"
+        },
+        {
             "name": "reshardCollection",
             "class": "write",
             "retry": "safe"

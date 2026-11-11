@@ -121,10 +121,36 @@ impl<'root> Collection<'root> {
     ///
     /// Fails for a missing collection or a read failure.
     pub fn find(&self, query: &Query) -> Result<Vec<(String, Document)>, Error> {
+        self.repair_word_fields(query)?;
         let rows = self.root.reader()?.find(self.name, &query.0)?;
         Ok(rows
             .into_iter()
             .map(|record| (record.metadata.id, record.document.into_fields()))
             .collect())
+    }
+
+    /// Replace the collection's word fields, the paths whose words `$match`
+    /// finds from the index, and rebuild its index (ADR 0023). An empty list
+    /// clears them. Returns the stored, slash-separated paths.
+    ///
+    /// # Errors
+    ///
+    /// `EQUERY_INVALID` for more than 16 fields, an empty, repeated or
+    /// encrypted field, or a file collection; or the rebuild's failure.
+    pub fn set_word_fields(&self, fields: &[String]) -> Result<Vec<String>, Error> {
+        let encrypted = self.root.reader()?.encrypted_fields(self.name)?;
+        self.root
+            .writer()?
+            .set_word_fields(self.name, fields, &encrypted)
+            .map_err(Error::from)
+    }
+
+    fn repair_word_fields(&self, query: &Query) -> Result<(), Error> {
+        let fields = query.0.match_fields();
+        if fields.is_empty() {
+            return Ok(());
+        }
+        self.root.writer()?.repair_word_fields(self.name, &fields)?;
+        Ok(())
     }
 }

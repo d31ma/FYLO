@@ -80,6 +80,7 @@ mod session_certificate;
 mod sidecar_attributes;
 mod spelling_cache;
 mod validation_mode;
+mod word_witness;
 mod write;
 mod writer_session;
 
@@ -641,6 +642,7 @@ impl NativeRoot {
                 schemas: None,
                 schema_head: None,
                 encrypted: None,
+                words: None,
             });
         let namespace = match descriptor.kind {
             CollectionKind::Document => ".collections",
@@ -673,6 +675,7 @@ impl NativeRoot {
                 .collect::<Result<Vec<_>, _>>()?,
             validation: descriptor.validation,
             schema_head,
+            word_fields: descriptor.words.unwrap_or_default(),
             block: None,
         })
     }
@@ -722,6 +725,7 @@ impl NativeRoot {
             previous_shard_widths: Vec::new(),
             validation: descriptor.validation,
             schema_head: descriptor.schema_head()?,
+            word_fields: descriptor.words.unwrap_or_default(),
             block: Some(collection.block),
         })
     }
@@ -1669,6 +1673,9 @@ struct CollectionDescriptor {
     /// encrypts them, or is refused without the key.
     #[serde(default)]
     encrypted: Option<Vec<String>>,
+    /// Field paths whose string values get word keys (ADR 0023 section 1).
+    #[serde(default)]
+    words: Option<Vec<String>>,
 }
 
 impl CollectionDescriptor {
@@ -1860,11 +1867,43 @@ pub struct NativeCollection {
     previous_shard_widths: Vec<u32>,
     validation: Option<ValidationMode>,
     schema_head: Option<u32>,
+    /// Field paths with word keys, from the descriptor (ADR 0023).
+    word_fields: Vec<String>,
     /// The directory block of a collection in a `.vdbx` database.
     block: Option<u32>,
 }
 
 impl NativeCollection {
+    /// Field paths whose string values get word keys, slash-separated, as the
+    /// descriptor records them (ADR 0023 section 1).
+    #[must_use]
+    pub fn word_fields(&self) -> &[String] {
+        &self.word_fields
+    }
+
+    /// The word fields whose word keys are complete, so a `$match` on them
+    /// can be planned from the index. A field an older release wrote to
+    /// after its words were indexed is left out until the index is rebuilt
+    /// (ADR 0023 section 8).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for unreadable generation state or index keys.
+    pub fn complete_word_fields(&self) -> Result<Vec<String>, NativeStorageError> {
+        word_witness::WordWitness::complete_fields(self)
+    }
+
+    /// This collection as it would be with a different word-field list, for
+    /// a rebuild that must write the new list's keys before the descriptor
+    /// names it.
+    #[must_use]
+    pub(crate) fn with_word_fields(&self, word_fields: Vec<String>) -> Self {
+        Self {
+            word_fields,
+            ..self.clone()
+        }
+    }
+
     /// Validation mode this collection's descriptor records, if any.
     ///
     /// `None` means the host's `strict_schema` setting decides; see

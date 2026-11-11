@@ -11,7 +11,7 @@ use super::segment_import::SegmentImport;
 use super::step_applier::StepApplier;
 use super::update_step::UpdateStep;
 use crate::segments::LocationState;
-use crate::{NativeRoot, NativeStorageError};
+use crate::{NativeCollection, NativeRoot, NativeStorageError};
 
 /// Writes document images as the per-document file layout: one JSON file
 /// per document with its attributes, mode, owner and modification time, and
@@ -23,8 +23,9 @@ impl FileExport {
         root: &NativeRoot,
         directory: &Path,
         images: &[DocumentImage],
-        shard_width: u32,
+        source: &NativeCollection,
     ) -> Result<(), NativeStorageError> {
+        let shard_width = source.shard_width();
         ensure_directory(root, directory)?;
         for namespace in ["docs", ".deleted", "index"] {
             ensure_directory(root, &directory.join(namespace))?;
@@ -40,7 +41,11 @@ impl FileExport {
             )?;
             written.push(directory.join(&relative));
             if image.state == LocationState::Live {
-                keys.extend(NativeWriteRoot::document_keys(&image.id, &image.body)?);
+                keys.extend(NativeWriteRoot::document_keys(
+                    source.word_fields(),
+                    &image.id,
+                    &image.body,
+                )?);
             }
         }
         Self::write_index(directory, keys)?;

@@ -15,7 +15,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use fylo_format::{Document, DocumentLimits, TtidTimestamps};
 use fylo_query::{
     IndexLookupValue, QueryLimits, SqlOperation, StructuredQuery, index_entries_for_document,
-    prepare_sql,
+    index_entries_with_words, prepare_sql,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -41,6 +41,7 @@ mod document_codec;
 mod document_write;
 pub(crate) mod schema_counts;
 pub(crate) mod schema_registry;
+mod word_fields;
 pub(crate) use commit_log::SegmentSchemas;
 pub use commit_log::{
     CollectionAccessReport, CompactionReport, DatabaseCompactionReport, DatabasePackReport,
@@ -398,7 +399,19 @@ impl NativeWriteRoot {
         if unchanged(self.root.recorded_encrypted_fields(collection_name)?) {
             return Ok(false);
         }
-        let record = Value::from(fields.to_vec());
+        self.replace_descriptor_field(&collection, "encrypted", Value::from(fields.to_vec()))?;
+        Ok(true)
+    }
+
+    /// Set one field of `collection`'s descriptor to `record`, keeping every
+    /// other field. The caller holds the collection lock.
+    pub(crate) fn replace_descriptor_field(
+        &self,
+        collection: &super::NativeCollection,
+        field: &str,
+        record: Value,
+    ) -> Result<(), NativeStorageError> {
+        let collection_name = collection.name();
         if let Some(database) = self.root.database() {
             let current = database.collection(collection_name).ok_or_else(|| {
                 NativeStorageError::new(
@@ -409,10 +422,9 @@ impl NativeWriteRoot {
             let mut descriptor: Map<String, Value> =
                 serde_json::from_slice(&current.header.descriptor)
                     .map_err(|error| json_error(&error))?;
-            descriptor.insert("encrypted".into(), record);
+            descriptor.insert(field.into(), record);
             let encoded = Value::Object(descriptor).to_string().into_bytes();
-            database.replace_descriptor(collection_name, &encoded)?;
-            return Ok(true);
+            return database.replace_descriptor(collection_name, &encoded);
         }
         let catalog = self
             .root
@@ -435,11 +447,10 @@ impl NativeWriteRoot {
                 ),
             ])
         };
-        descriptor.insert("encrypted".into(), record);
+        descriptor.insert(field.into(), record);
         let mut encoded = serde_json::to_vec(&descriptor).map_err(|error| json_error(&error))?;
         encoded.push(b'\n');
-        durable_replace(&path, &encoded)?;
-        Ok(true)
+        durable_replace(&path, &encoded)
     }
 
     /// Open a materialized worktree whose catalog and repository metadata live
@@ -1421,11 +1432,20 @@ impl NativeWriteRoot {
             return self.rebuild_segment_collection(&collection);
         }
         let _lock = self.lock_collection(&collection)?;
-        self.recover_locked(&collection)?;
-        let mut transaction = Transaction::begin(self, &collection, "rebuild-index")?;
+        self.rebuild_file_collection_locked(&collection)
+    }
+
+    /// Rebuild a file-layout collection's index while the caller holds its
+    /// lock.
+    pub(crate) fn rebuild_file_collection_locked(
+        &self,
+        collection: &super::NativeCollection,
+    ) -> Result<(), NativeStorageError> {
+        self.recover_locked(collection)?;
+        let mut transaction = Transaction::begin(self, collection, "rebuild-index")?;
         let outcome = (|| {
-            capture_index_files(&mut transaction, &collection)?;
-            self.rebuild_index(&collection)?;
+            capture_index_files(&mut transaction, collection)?;
+            self.rebuild_index(collection)?;
             transaction.commit()
         })();
         finish_transaction(transaction, outcome, "index rebuild")
@@ -2278,9 +2298,10 @@ impl NativeWriteRoot {
                                 format!("document is invalid during index rebuild: {error}"),
                             )
                         })?;
-                    keys.extend(index_entries_for_document(
+                    keys.extend(index_entries_with_words(
                         identifier.as_str(),
                         document.fields(),
+                        collection.word_fields(),
                         |_, value| Ok::<_, NativeStorageError>(IndexLookupValue::plain(value)),
                     )?);
                 }
@@ -2618,7 +2639,12 @@ fn record_index_keys(
                             format!("document is invalid during index update: {error}"),
                         )
                     })?;
-                index_entries_for_document(identifier, document.fields(), plain)
+                index_entries_with_words(
+                    identifier,
+                    document.fields(),
+                    collection.word_fields(),
+                    plain,
+                )
             }
             Err(error) if error.code() == NativeStorageErrorCode::NotFound => Ok(BTreeSet::new()),
             Err(error) => Err(error),

@@ -250,12 +250,13 @@ impl NativeWriteRoot {
         staging: &Path,
     ) -> Result<(), NativeStorageError> {
         match layout {
-            CollectionLayout::Segments => {
-                SegmentImport::build(&self.root, staging, (images, versions), generation)
-            }
-            CollectionLayout::Files => {
-                FileExport::build(&self.root, staging, images, collection.shard_width())
-            }
+            CollectionLayout::Segments => SegmentImport::build(
+                &self.root,
+                staging,
+                (images, versions, collection.word_fields()),
+                generation,
+            ),
+            CollectionLayout::Files => FileExport::build(&self.root, staging, images, collection),
         }
     }
 

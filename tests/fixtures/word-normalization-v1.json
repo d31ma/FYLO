@@ -1,0 +1,150 @@
+{
+  "format": "fylo.word-normalization.v1",
+  "maxWordBytes": 64,
+  "cases": [
+    {
+      "text": "Meeting with Tomás, café-crème; STRAẞE 2026!",
+      "words": [
+        "meeting",
+        "with",
+        "tomas",
+        "cafe",
+        "creme",
+        "strasse",
+        "2026"
+      ]
+    },
+    {
+      "text": "café İstanbul",
+      "words": [
+        "cafe",
+        "istanbul"
+      ]
+    },
+    {
+      "text": "b a B A",
+      "words": [
+        "b",
+        "a"
+      ]
+    },
+    {
+      "text": "ΟΔΟΣ οδος ὈΔΌΣ",
+      "words": [
+        "οδοσ",
+        "ὀδόσ"
+      ]
+    },
+    {
+      "text": "éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé",
+      "words": [
+        "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      ]
+    },
+    {
+      "text": "日日日日日日日日日日日日日日日日日日日日日日日日日日日日日日",
+      "words": [
+        "日日日日日日日日日日日日日日日日日日日日日"
+      ]
+    },
+    {
+      "text": " -- !! ",
+      "words": []
+    },
+    {
+      "text": "",
+      "words": []
+    },
+    {
+      "text": "ÆSIR Œuvre Ø ł đ Þorn ß ĳssel ŉ ſ",
+      "words": [
+        "aesir",
+        "oeuvre",
+        "o",
+        "l",
+        "d",
+        "thorn",
+        "ss",
+        "ijssel",
+        "n",
+        "s"
+      ]
+    },
+    {
+      "text": "Ünïcödé ÀÉÎÕÜ àéîõü Çç Ññ Ÿÿ",
+      "words": [
+        "unicode",
+        "aeiou",
+        "cc",
+        "nn",
+        "yy"
+      ]
+    },
+    {
+      "text": "x×y÷z",
+      "words": [
+        "x",
+        "y",
+        "z"
+      ]
+    },
+    {
+      "text": "e-mail: ada@example.org, +44 20 7946 0958",
+      "words": [
+        "e",
+        "mail",
+        "ada",
+        "example",
+        "org",
+        "44",
+        "20",
+        "7946",
+        "0958"
+      ]
+    },
+    {
+      "text": "Привет, Мир! мир",
+      "words": [
+        "привет",
+        "мир"
+      ]
+    },
+    {
+      "text": "٣٤٥ ⅫⅣ ½",
+      "words": [
+        "٣٤٥",
+        "ⅻⅳ",
+        "½"
+      ]
+    },
+    {
+      "text": "東京タワー と 富士山",
+      "words": [
+        "東京タワー",
+        "と",
+        "富士山"
+      ]
+    },
+    {
+      "text": "tab\tnew\nline",
+      "words": [
+        "tab",
+        "new",
+        "line"
+      ]
+    },
+    {
+      "text": "Ǆemal Ǳ",
+      "words": [
+        "ǆemal",
+        "ǳ"
+      ]
+    },
+    {
+      "text": "ⓐⓑ",
+      "words": [
+        "ⓐⓑ"
+      ]
+    }
+  ]
+}

@@ -231,7 +231,7 @@ mod tests {
 
     fn plan(query: &Value) -> IndexPlan {
         let query = StructuredQuery::from_value(query, QueryLimits::default()).unwrap();
-        IndexPlan::new(&query, &[]).unwrap()
+        IndexPlan::new(&query, &[], &[]).unwrap()
     }
 
     fn counts(versions: &[(&str, u64)], unversioned: u64) -> SchemaVersionCounts {

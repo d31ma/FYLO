@@ -3,6 +3,7 @@ use std::string::FromUtf8Error;
 
 use fylo_query::{
     IndexKeyRange, IndexSnapshot, NumericRange, QueryLimits, equality_candidate_prefixes,
+    match_terms, normalize_field_path, word_prefix,
 };
 use serde_json::{Map, Value};
 
@@ -16,6 +17,13 @@ use crate::{EngineError, EngineErrorCode};
 /// coerces to. `$gt`, `$gte`, `$lt` and `$lte` read one run of the field's
 /// sortable numeric keys. Other operators, and fields the index cannot
 /// answer, are left to the predicate.
+/// What the planner knows about a collection's fields: which are encrypted,
+/// and which have complete word keys.
+pub(super) struct FieldRules<'a> {
+    pub(super) encrypted: &'a [String],
+    pub(super) words: &'a [String],
+}
+
 pub(super) struct IndexOperation {
     fields: Vec<Vec<IndexKeyRange>>,
     /// The top-level field of every path the index is asked about.
@@ -23,8 +31,8 @@ pub(super) struct IndexOperation {
 }
 
 impl IndexOperation {
-    pub(super) fn new(operation: &Map<String, Value>, encrypted: &[String]) -> Option<Self> {
-        let fields = Self::fields(operation, encrypted);
+    pub(super) fn new(operation: &Map<String, Value>, rules: &FieldRules<'_>) -> Option<Self> {
+        let fields = Self::fields(operation, rules);
         let names = operation
             .keys()
             .filter_map(|field| {
@@ -52,12 +60,34 @@ impl IndexOperation {
         Ok(candidates.unwrap_or_default())
     }
 
-    fn fields(operation: &Map<String, Value>, encrypted: &[String]) -> Vec<Vec<IndexKeyRange>> {
+    fn fields(operation: &Map<String, Value>, rules: &FieldRules<'_>) -> Vec<Vec<IndexKeyRange>> {
         let mut fields = Vec::new();
         for (field, operand) in operation {
-            fields.extend(Self::field_ranges(field, operand, encrypted));
+            fields.extend(Self::field_ranges(field, operand, rules.encrypted));
+            fields.extend(Self::word_ranges(field, operand, rules.words));
         }
         fields
+    }
+
+    /// One run of word keys per `$match` term, each intersected with the
+    /// others, for a field whose word keys are complete.
+    fn word_ranges(field: &str, operand: &Value, words: &[String]) -> Vec<Vec<IndexKeyRange>> {
+        let path = Self::normalize_path(field);
+        let Some(expected) = Self::word_operand(&path, operand, words) else {
+            return Vec::new();
+        };
+        let terms = match_terms(expected).unwrap_or_default();
+        terms
+            .iter()
+            .map(|term| vec![IndexKeyRange::prefix(&word_prefix(&path, term))])
+            .collect()
+    }
+
+    fn word_operand<'v>(path: &str, operand: &'v Value, words: &[String]) -> Option<&'v Value> {
+        if !words.iter().any(|word| word == path) {
+            return None;
+        }
+        operand.as_object()?.get("$match")
     }
 
     fn field_ranges(
@@ -88,11 +118,7 @@ impl IndexOperation {
     }
 
     fn normalize_path(field: &str) -> String {
-        field
-            .split(['.', '/'])
-            .filter(|segment| !segment.is_empty())
-            .collect::<Vec<_>>()
-            .join("/")
+        normalize_field_path(field)
     }
 
     fn require_plaintext(path: &str, encrypted: &[String]) -> Option<()> {

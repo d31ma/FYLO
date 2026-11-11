@@ -4,7 +4,7 @@ use std::path::Path;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use fylo_format::{Document, DocumentLimits, LogRecord};
-use fylo_query::{IndexLookupValue, StructuredQuery, index_entries_for_document};
+use fylo_query::{IndexLookupValue, StructuredQuery, index_entries_with_words};
 use serde_json::{Map, Value};
 
 use super::super::{
@@ -39,7 +39,7 @@ impl NativeWriteRoot {
         if collection.uses_segments() {
             return self.put_document_segmented(collection, identifier, canonical, metadata);
         }
-        let after = Self::document_keys(identifier, canonical)?;
+        let after = Self::document_keys(collection.word_fields(), identifier, canonical)?;
         self.commit_logged(collection, || {
             let target = collection
                 .path
@@ -114,15 +114,22 @@ impl NativeWriteRoot {
                         )?;
                         plan.index_delta(
                             &BTreeSet::new(),
-                            &Self::document_keys(identifier, canonical)?,
+                            &Self::document_keys(collection.word_fields(), identifier, canonical)?,
                         );
                     }
                     (DocumentWrite::Replace { .. }, Some(canonical)) => {
                         let stored = collection.read_document(identifier)?;
-                        let before = Self::document_keys(identifier, &stored.bytes)?;
+                        let before = Self::document_keys(
+                            collection.word_fields(),
+                            identifier,
+                            &stored.bytes,
+                        )?;
                         let image = RecordImage::contents(stored.bytes, stored.modified_millis);
                         plan.overwrite(collection, &stored.path, image, canonical)?;
-                        plan.index_delta(&before, &Self::document_keys(identifier, canonical)?);
+                        plan.index_delta(
+                            &before,
+                            &Self::document_keys(collection.word_fields(), identifier, canonical)?,
+                        );
                     }
                     (DocumentWrite::Delete { .. }, None) => {
                         let stored = collection.read_document(identifier)?;
@@ -130,7 +137,11 @@ impl NativeWriteRoot {
                         Self::require_no_tombstone(&target)?;
                         plan.rename(collection, &stored.path, &target)?;
                         plan.index_delta(
-                            &Self::document_keys(identifier, &stored.bytes)?,
+                            &Self::document_keys(
+                                collection.word_fields(),
+                                identifier,
+                                &stored.bytes,
+                            )?,
                             &BTreeSet::new(),
                         );
                     }
@@ -159,8 +170,8 @@ impl NativeWriteRoot {
         self.commit_logged(collection, || {
             let stored = collection.read_document(identifier)?;
             let canonical = patch(&stored.bytes)?;
-            let before = Self::document_keys(identifier, &stored.bytes)?;
-            let after = Self::document_keys(identifier, &canonical)?;
+            let before = Self::document_keys(collection.word_fields(), identifier, &stored.bytes)?;
+            let after = Self::document_keys(collection.word_fields(), identifier, &canonical)?;
             let image = RecordImage::contents(stored.bytes, stored.modified_millis);
             let mut plan = CommitPlan::new("patch-document");
             plan.overwrite(collection, &stored.path, image, &canonical)?;
@@ -184,7 +195,7 @@ impl NativeWriteRoot {
             let mut plan = CommitPlan::new("delete-document");
             plan.rename(collection, &stored.path, &target)?;
             plan.index_delta(
-                &Self::document_keys(identifier, &stored.bytes)?,
+                &Self::document_keys(collection.word_fields(), identifier, &stored.bytes)?,
                 &BTreeSet::new(),
             );
             Ok((Some(plan), ()))
@@ -211,7 +222,7 @@ impl NativeWriteRoot {
             plan.rename(collection, &deleted.path, &target)?;
             plan.index_delta(
                 &BTreeSet::new(),
-                &Self::document_keys(identifier, &deleted.bytes)?,
+                &Self::document_keys(collection.word_fields(), identifier, &deleted.bytes)?,
             );
             Ok((Some(plan), ()))
         })
@@ -274,8 +285,16 @@ impl NativeWriteRoot {
                 merge_top_level(&mut fields, changes);
                 let canonical = policy.encode(&collection.name, fields)?;
                 plan.index_delta(
-                    &Self::document_keys(&document.identifier, &stored.bytes)?,
-                    &Self::document_keys(&document.identifier, &canonical)?,
+                    &Self::document_keys(
+                        collection.word_fields(),
+                        &document.identifier,
+                        &stored.bytes,
+                    )?,
+                    &Self::document_keys(
+                        collection.word_fields(),
+                        &document.identifier,
+                        &canonical,
+                    )?,
                 );
                 let image = RecordImage::contents(stored.bytes, stored.modified_millis);
                 plan.overwrite(collection, &document.path, image, &canonical)?;
@@ -310,7 +329,11 @@ impl NativeWriteRoot {
                 let stored = collection.read_document(&document.identifier)?;
                 plan.rename(collection, &document.path, &target)?;
                 plan.index_delta(
-                    &Self::document_keys(&document.identifier, &stored.bytes)?,
+                    &Self::document_keys(
+                        collection.word_fields(),
+                        &document.identifier,
+                        &stored.bytes,
+                    )?,
                     &BTreeSet::new(),
                 );
                 identifiers.push(document.identifier);
@@ -424,6 +447,7 @@ impl NativeWriteRoot {
     }
 
     pub(crate) fn document_keys(
+        word_fields: &[String],
         identifier: &str,
         bytes: &[u8],
     ) -> Result<BTreeSet<String>, NativeStorageError> {
@@ -433,7 +457,7 @@ impl NativeWriteRoot {
                 format!("document is invalid during index update: {error}"),
             )
         })?;
-        index_entries_for_document(identifier, document.fields(), |_, value| {
+        index_entries_with_words(identifier, document.fields(), word_fields, |_, value| {
             Ok::<_, NativeStorageError>(IndexLookupValue::plain(value))
         })
     }

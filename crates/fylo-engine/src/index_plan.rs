@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use fylo_query::{IndexKeyRange, IndexSnapshot, StructuredQuery};
 
 use crate::EngineError;
-use crate::index_operation::IndexOperation;
+use crate::index_operation::{FieldRules, IndexOperation};
 
 /// The documents a query can match, found in the prefix index: the union of
 /// its operations' candidates.
@@ -16,8 +16,12 @@ pub(super) struct IndexPlan {
 }
 
 impl IndexPlan {
-    pub(super) fn new(query: &StructuredQuery, encrypted: &[String]) -> Option<Self> {
-        let operations = Self::operations(query, encrypted)?;
+    pub(super) fn new(
+        query: &StructuredQuery,
+        encrypted: &[String],
+        words: &[String],
+    ) -> Option<Self> {
+        let operations = Self::operations(query, &FieldRules { encrypted, words })?;
         Self::nonempty(operations)
     }
 
@@ -40,11 +44,11 @@ impl IndexPlan {
         self.operations.iter().flat_map(IndexOperation::names)
     }
 
-    fn operations(query: &StructuredQuery, encrypted: &[String]) -> Option<Vec<IndexOperation>> {
+    fn operations(query: &StructuredQuery, rules: &FieldRules<'_>) -> Option<Vec<IndexOperation>> {
         query
             .operations()
             .iter()
-            .map(|operation| IndexOperation::new(operation, encrypted))
+            .map(|operation| IndexOperation::new(operation, rules))
             .collect()
     }
 

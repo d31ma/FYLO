@@ -12,6 +12,7 @@ pub(crate) struct ResidentCollection {
     generation: u64,
     log: Option<LogPosition>,
     encrypted_fields: Vec<String>,
+    word_fields: Vec<String>,
     migration_guard: Option<MigrationGuard>,
 }
 
@@ -19,7 +20,7 @@ impl ResidentCollection {
     pub(crate) fn new(
         kind: CollectionKind,
         state: GenerationState,
-        encrypted_fields: Vec<String>,
+        (encrypted_fields, word_fields): (Vec<String>, Vec<String>),
         migration_guard: Option<MigrationGuard>,
     ) -> Self {
         Self {
@@ -27,6 +28,7 @@ impl ResidentCollection {
             generation: state.generation,
             log: state.log,
             encrypted_fields,
+            word_fields,
             migration_guard,
         }
     }
@@ -49,6 +51,11 @@ impl ResidentCollection {
 
     pub(crate) fn encrypted_fields(&self) -> &[String] {
         &self.encrypted_fields
+    }
+
+    /// The word fields whose word keys were complete when this was read.
+    pub(crate) fn word_fields(&self) -> &[String] {
+        &self.word_fields
     }
 
     pub(crate) const fn migration_guard(&self) -> Option<&MigrationGuard> {

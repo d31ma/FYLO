@@ -21,6 +21,14 @@ impl NativeWriteRoot {
         collection: &NativeCollection,
     ) -> Result<(), NativeStorageError> {
         let _lock = self.lock_collection(collection)?;
+        self.rebuild_segment_collection_locked(collection)
+    }
+
+    /// Rebuild a segment collection's index while the caller holds its lock.
+    pub(crate) fn rebuild_segment_collection_locked(
+        &self,
+        collection: &NativeCollection,
+    ) -> Result<(), NativeStorageError> {
         self.settle_log(collection)?;
         let stored = collection.stored_generation()?;
         if stored.state != GenerationStatus::Stable {
@@ -134,7 +142,7 @@ impl NativeWriteRoot {
             self.recover_locked(&collection)?;
             DocumentImage::read_collection(&collection)?
         };
-        FileExport::build(&root, &root.canonical, &images, collection.shard_width())?;
+        FileExport::build(&root, &root.canonical, &images, &collection)?;
         let deleted = images
             .iter()
             .filter(|image| image.state == crate::segments::LocationState::Deleted)

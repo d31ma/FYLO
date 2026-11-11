@@ -513,6 +513,9 @@ impl NativeWriteRoot {
         if let Some(fields) = source.root.recorded_encrypted_fields(source.name())? {
             descriptor.insert("encrypted".into(), Value::from(fields));
         }
+        if !source.word_fields().is_empty() {
+            descriptor.insert("words".into(), Value::from(source.word_fields().to_vec()));
+        }
         packed.add_database_collection(source.name(), descriptor)?;
         Ok(versions)
     }
@@ -562,7 +565,11 @@ impl NativeWriteRoot {
         if uncompressed {
             medium.write_uncompressed();
         } else {
-            medium.prime_dictionary(&Self::first_records(&ordered, generation)?)?;
+            medium.prime_dictionary(&Self::first_records(
+                &ordered,
+                collection.word_fields(),
+                generation,
+            )?)?;
         }
         for (index, version) in versions.iter().enumerate() {
             let ordinal = u32::try_from(index + 1).map_err(|_| {
@@ -579,7 +586,9 @@ impl NativeWriteRoot {
             )?;
         }
         for image in ordered {
-            let record = |lsn| SegmentImport::document_record(image, lsn, generation);
+            let record = |lsn| {
+                SegmentImport::document_record(image, collection.word_fields(), lsn, generation)
+            };
             Self::append_packed(
                 collection,
                 (&mut segment, &mut live, generation),
@@ -601,6 +610,7 @@ impl NativeWriteRoot {
     /// a pack writes every record after it.
     fn first_records(
         ordered: &[&DocumentImage],
+        word_fields: &[String],
         generation: u64,
     ) -> Result<Vec<LogRecord>, NativeStorageError> {
         let (mut records, mut total) = (Vec::new(), 0);
@@ -608,7 +618,7 @@ impl NativeWriteRoot {
             if total >= DICTIONARY_TRAINING_BYTES {
                 break;
             }
-            let record = SegmentImport::document_record(image, 0, generation)?;
+            let record = SegmentImport::document_record(image, word_fields, 0, generation)?;
             total += record.blobs.len();
             records.push(record);
         }
@@ -760,6 +770,9 @@ impl NativeWriteRoot {
         if let Some(fields) = source.root.recorded_encrypted_fields(name)? {
             descriptor.insert("encrypted".into(), Value::from(fields));
         }
+        if !source.word_fields().is_empty() {
+            descriptor.insert("words".into(), Value::from(source.word_fields().to_vec()));
+        }
         let mut encoded = serde_json::to_vec(&descriptor).map_err(|error| json_error(&error))?;
         encoded.push(b'\n');
         let descriptor_path = unpacked.descriptor_path(name);
@@ -768,7 +781,7 @@ impl NativeWriteRoot {
         }
         durable_replace(&descriptor_path, &encoded)?;
         let directory = unpacked.root.path().join(".collections").join(name);
-        FileExport::build(&unpacked.root, &directory, images, source.shard_width())?;
+        FileExport::build(&unpacked.root, &directory, images, source)?;
         let collection = unpacked.root.collection(name)?;
         if let Some(head) = Self::registry_head(versions)? {
             // A registry commit's order (ADR 0017 section 3): the version

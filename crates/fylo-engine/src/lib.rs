@@ -1417,7 +1417,10 @@ impl ReadOnlyEngine {
         query: &StructuredQuery,
     ) -> Result<Option<Vec<String>>, EngineError> {
         let encrypted_fields = self.encrypted_fields(collection.name())?;
-        let Some(plan) = index_plan::IndexPlan::new(query, &encrypted_fields) else {
+        let word_fields = collection
+            .complete_word_fields()
+            .map_err(EngineError::storage)?;
+        let Some(plan) = index_plan::IndexPlan::new(query, &encrypted_fields, &word_fields) else {
             return Ok(None);
         };
         // An index built from documents below the head can be wrong for the
@@ -1435,7 +1438,12 @@ impl ReadOnlyEngine {
         plan.scan(&snapshot).map(Some)
     }
 
-    fn encrypted_fields(&self, collection: &str) -> Result<Vec<String>, EngineError> {
+    /// The fields the collection's head schema encrypts, or none without keys.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unreadable schema.
+    pub fn encrypted_fields(&self, collection: &str) -> Result<Vec<String>, EngineError> {
         Ok(self
             .encryption
             .as_ref()
@@ -1862,6 +1870,7 @@ impl ReadOnlyEngine {
                 deleted_count,
                 index_bytes,
                 validation: collection.validation(),
+                word_fields: collection.word_fields().to_vec(),
                 schema_violations: fylo_storage_native::schema_violations(
                     self.root.path(),
                     collection.name(),
@@ -2221,6 +2230,8 @@ pub struct CollectionInspection {
     /// Validation mode the collection's descriptor records. `None` means the
     /// writing host's `strict_schema` setting decides (ADR 0017 section 2).
     pub validation: Option<ValidationMode>,
+    /// Field paths with word keys (ADR 0023).
+    pub word_fields: Vec<String>,
     /// Writes this process committed in `warn` mode although the schema
     /// rejected them.
     pub schema_violations: u64,

@@ -927,6 +927,7 @@ impl Session {
             "createCollection" => self.create_collection(request),
             "dropCollection" => self.drop_collection(request),
             "rebuildCollection" => self.rebuild_collection(request),
+            "setWordFields" => self.set_word_fields(request),
             "reshardCollection" => self.reshard_collection(request),
             "migrateLayout" => self.migrate_layout(request),
             "compactCollection" => self.compact_collection(request),
@@ -1418,9 +1419,10 @@ impl Session {
     }
 
     fn find_documents(&self, request: &Value) -> Result<Value, MachineError> {
-        let engine = self.engine(request)?;
         let collection = require_string(request, "collection")?;
         let query = structured_query(request)?;
+        self.repair_word_fields(request, collection, &query);
+        let engine = self.engine(request)?;
         if engine
             .collection_kind(collection)
             .map_err(|error| engine_error(&error))?
@@ -1497,6 +1499,7 @@ impl Session {
             "indexedDocs": indexed,
             "validation": validation.as_str(),
             "schemaViolations": inspection.schema_violations,
+            "wordFields": inspection.word_fields,
         }))
     }
 
@@ -1878,6 +1881,41 @@ impl Session {
             "bytesBefore": report.bytes_before,
             "bytesAfter": report.bytes_after,
         }))
+    }
+
+    /// Replace a collection's word fields and rebuild its index (ADR 0023).
+    fn set_word_fields(&self, request: &Value) -> Result<Value, MachineError> {
+        let collection = require_string(request, "collection")?;
+        let fields = string_array(request.get("fields").unwrap_or(&Value::Null), "fields")?;
+        let encrypted = self
+            .engine(request)?
+            .encrypted_fields(collection)
+            .map_err(|error| engine_error(&error))?;
+        let stored = self
+            .writer(request)?
+            .set_word_fields(collection, &fields, &encrypted)
+            .map_err(|error| storage_error(&error))?;
+        Ok(json!({ "collection": collection, "fields": stored, "rebuilt": true }))
+    }
+
+    /// Before a `$match` is planned, rebuild a word index an older release
+    /// left incomplete (ADR 0023 section 8). Without a writer, or when the
+    /// rebuild fails, the engine still answers completely by reading every
+    /// document, and reports any real damage itself.
+    fn repair_word_fields(&self, request: &Value, collection: &str, query: &StructuredQuery) {
+        let fields = query.match_fields();
+        if fields.is_empty() {
+            return;
+        }
+        let Ok(writer) = self.writer(request) else {
+            return;
+        };
+        if writer
+            .repair_word_fields(collection, &fields)
+            .unwrap_or(false)
+        {
+            self.clear_hot_set();
+        }
     }
 
     fn rebuild_collection(&self, request: &Value) -> Result<Value, MachineError> {

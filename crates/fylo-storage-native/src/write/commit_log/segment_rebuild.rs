@@ -46,6 +46,7 @@ impl SegmentRebuild {
         for batch in store.ids(LocationState::Live).chunks(Self::INDEX_BATCH) {
             for document in store.documents(batch, LocationState::Live)? {
                 keys.extend(NativeWriteRoot::document_keys(
+                    collection.word_fields(),
                     &document.entry.id,
                     &document.body,
                 )?);

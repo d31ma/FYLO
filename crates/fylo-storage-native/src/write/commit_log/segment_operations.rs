@@ -36,7 +36,7 @@ impl NativeWriteRoot {
         canonical: &[u8],
         metadata: &BTreeMap<String, Value>,
     ) -> Result<(), NativeStorageError> {
-        let after = Self::document_keys(identifier, canonical)?;
+        let after = Self::document_keys(collection.word_fields(), identifier, canonical)?;
         self.commit_logged(collection, || {
             let store = SegmentStore::open_for_writer(collection.segment_medium()?)?;
             let previous = store.table().get(identifier).cloned();
@@ -97,7 +97,7 @@ impl NativeWriteRoot {
             (DocumentWrite::Delete { .. }, None) => {
                 let stored = store.document(identifier, LocationState::Live)?;
                 plan.index_delta(
-                    &Self::document_keys(identifier, &stored.body)?,
+                    &Self::document_keys(collection.word_fields(), identifier, &stored.body)?,
                     &BTreeSet::new(),
                 );
                 Self::push_state_change(plan, collection, stored, LocationState::Deleted)
@@ -131,7 +131,7 @@ impl NativeWriteRoot {
         };
         plan.index_delta(
             &BTreeSet::new(),
-            &Self::document_keys(identifier, canonical)?,
+            &Self::document_keys(collection.word_fields(), identifier, canonical)?,
         );
         plan.push(&collection.path, (entry, Some(canonical)), None)
     }
@@ -144,8 +144,8 @@ impl NativeWriteRoot {
     ) -> Result<(), NativeStorageError> {
         let stored = store.document(identifier, LocationState::Live)?;
         plan.index_delta(
-            &Self::document_keys(identifier, &stored.body)?,
-            &Self::document_keys(identifier, canonical)?,
+            &Self::document_keys(collection.word_fields(), identifier, &stored.body)?,
+            &Self::document_keys(collection.word_fields(), identifier, canonical)?,
         );
         let mut entry = stored.entry.clone();
         entry.modified_ms = now_millis()?;
@@ -167,8 +167,8 @@ impl NativeWriteRoot {
             let canonical = patch(&stored.body)?;
             let mut plan = SegmentPlan::new("patch-document");
             plan.index_delta(
-                &Self::document_keys(identifier, &stored.body)?,
-                &Self::document_keys(identifier, &canonical)?,
+                &Self::document_keys(collection.word_fields(), identifier, &stored.body)?,
+                &Self::document_keys(collection.word_fields(), identifier, &canonical)?,
             );
             let mut entry = stored.entry.clone();
             entry.modified_ms = now_millis()?;
@@ -190,7 +190,7 @@ impl NativeWriteRoot {
             let stored = Self::live_document(collection, identifier)?;
             let mut plan = SegmentPlan::new("delete-document");
             plan.index_delta(
-                &Self::document_keys(identifier, &stored.body)?,
+                &Self::document_keys(collection.word_fields(), identifier, &stored.body)?,
                 &BTreeSet::new(),
             );
             Self::push_state_change(&mut plan, collection, stored, LocationState::Deleted)?;
@@ -215,7 +215,7 @@ impl NativeWriteRoot {
             let mut plan = SegmentPlan::new("restore-document");
             plan.index_delta(
                 &BTreeSet::new(),
-                &Self::document_keys(identifier, &deleted.body)?,
+                &Self::document_keys(collection.word_fields(), identifier, &deleted.body)?,
             );
             Self::push_state_change(&mut plan, collection, deleted, LocationState::Live)?;
             Ok((Some(plan), ()))
@@ -278,8 +278,8 @@ impl NativeWriteRoot {
                 merge_top_level(&mut fields, changes);
                 let canonical = policy.encode(&collection.name, fields)?;
                 plan.index_delta(
-                    &Self::document_keys(&stored.entry.id, &stored.body)?,
-                    &Self::document_keys(&stored.entry.id, &canonical)?,
+                    &Self::document_keys(collection.word_fields(), &stored.entry.id, &stored.body)?,
+                    &Self::document_keys(collection.word_fields(), &stored.entry.id, &canonical)?,
                 );
                 let mut entry = stored.entry.clone();
                 entry.modified_ms = now_millis()?;
@@ -309,7 +309,7 @@ impl NativeWriteRoot {
             let mut identifiers = Vec::new();
             for (stored, _, _) in Self::segment_matches(collection, query, codec)? {
                 plan.index_delta(
-                    &Self::document_keys(&stored.entry.id, &stored.body)?,
+                    &Self::document_keys(collection.word_fields(), &stored.entry.id, &stored.body)?,
                     &BTreeSet::new(),
                 );
                 identifiers.push(stored.entry.id.clone());

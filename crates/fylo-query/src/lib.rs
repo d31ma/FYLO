@@ -15,14 +15,17 @@ mod index_key_range;
 mod join;
 mod numeric_range;
 mod sql;
+mod word_text;
 
 pub use index::{
     IndexLookupValue, equality_candidate_prefixes, equality_prefix, index_entries_for_document,
+    index_entries_with_words, normalize_field_path, word_prefix, word_witness_prefixes,
 };
 pub use index_key_range::IndexKeyRange;
 pub use join::{JoinComparator, JoinMode, JoinSpec, value_by_path};
 pub use numeric_range::NumericRange;
 pub use sql::{AccessPath, SqlOperation, SqlPlan, prepare_sql};
+pub use word_text::WordText;
 
 /// Current portable query contract.
 pub const QUERY_FORMAT_V1: &str = "fylo.query.v1";
@@ -426,6 +429,9 @@ impl StructuredQuery {
                     ));
                 }
                 if let Value::Object(operators) = operand {
+                    if let Some(expected) = operators.get("$match") {
+                        match_terms(expected)?;
+                    }
                     for (operator, expected) in operators {
                         if operator.len() > limits.max_term_bytes
                             || serde_json::to_vec(expected)
@@ -530,6 +536,26 @@ impl StructuredQuery {
     #[must_use]
     pub const fn limit(&self) -> Option<usize> {
         self.limit
+    }
+
+    /// The slash-separated field paths a `$match` operator names.
+    #[must_use]
+    pub fn match_fields(&self) -> Vec<String> {
+        let mut fields: Vec<String> = Vec::new();
+        for (field, operand) in self.operations.iter().flatten() {
+            if Self::is_match_operand(operand) {
+                fields.push(normalize_field_path(field));
+            }
+        }
+        fields.sort();
+        fields.dedup();
+        fields
+    }
+
+    fn is_match_operand(operand: &Value) -> bool {
+        operand
+            .as_object()
+            .is_some_and(|operators| operators.contains_key("$match"))
     }
 
     /// The query's alternative operations.
@@ -654,6 +680,7 @@ fn matches_operand(value: FieldValue<'_>, operators: &Map<String, Value>) -> boo
                 }
                 _ => false,
             },
+            "$match" => match_operand(value, expected),
             "$contains" => match value {
                 FieldValue::Present(Value::Array(items)) => items
                     .iter()
@@ -667,6 +694,51 @@ fn matches_operand(value: FieldValue<'_>, operators: &Map<String, Value>) -> boo
         }
     }
     true
+}
+
+/// The normalized terms of a `$match` operand.
+///
+/// # Errors
+///
+/// Returns [`QueryErrorCode::InvalidQuery`] for an operand that is not a
+/// string, has no words, or has more than [`WordText::MAX_TERMS`].
+pub fn match_terms(expected: &Value) -> Result<Vec<String>, QueryError> {
+    let Value::String(text) = expected else {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidQuery,
+            "$match must be a string of words",
+        ));
+    };
+    let terms = WordText::words(text);
+    if terms.is_empty() || terms.len() > WordText::MAX_TERMS {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidQuery,
+            format!(
+                "$match must hold from 1 to {} words; it holds {}",
+                WordText::MAX_TERMS,
+                terms.len()
+            ),
+        ));
+    }
+    Ok(terms)
+}
+
+fn match_operand(value: FieldValue<'_>, expected: &Value) -> bool {
+    let Ok(terms) = match_terms(expected) else {
+        return false;
+    };
+    let FieldValue::Present(value) = value else {
+        return false;
+    };
+    WordText::matches_terms(field_texts(value), &terms)
+}
+
+fn field_texts(value: &Value) -> impl Iterator<Item = &str> {
+    let items = match value {
+        Value::Array(items) => items.as_slice(),
+        other => std::slice::from_ref(other),
+    };
+    items.iter().filter_map(Value::as_str)
 }
 
 fn loose_equal(actual: FieldValue<'_>, expected: &Value) -> bool {

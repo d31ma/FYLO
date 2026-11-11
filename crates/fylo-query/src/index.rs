@@ -3,6 +3,8 @@ use std::collections::BTreeSet;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
+use crate::word_text::WordText;
+
 const MAX_STRING_PREFIX_BYTES: usize = 180;
 const MAX_NGRAM_SOURCE_CHARS: usize = 512;
 const NGRAM_SIZE: usize = 3;
@@ -52,15 +54,69 @@ impl IndexLookupValue {
 pub fn index_entries_for_document<E>(
     document_id: &str,
     fields: &Map<String, Value>,
+    lookup: impl FnMut(&str, &str) -> Result<IndexLookupValue, E>,
+) -> Result<BTreeSet<String>, E> {
+    index_entries_with_words(document_id, fields, &[], lookup)
+}
+
+/// [`index_entries_for_document`] plus the word keys (`w`) and word witness
+/// keys (`wv`) of every field path in `word_fields` (ADR 0023 sections 3 and
+/// 8). Paths are slash-separated, as [`normalize_field_path`] writes them.
+///
+/// # Errors
+///
+/// Propagates the host's blind-index/key-availability failure.
+pub fn index_entries_with_words<E>(
+    document_id: &str,
+    fields: &Map<String, Value>,
+    word_fields: &[String],
     mut lookup: impl FnMut(&str, &str) -> Result<IndexLookupValue, E>,
 ) -> Result<BTreeSet<String>, E> {
     let mut entries = BTreeSet::new();
-    walk_fields(document_id, fields, None, &mut lookup, &mut entries)?;
+    let target = IndexTarget {
+        document_id,
+        word_fields,
+    };
+    walk_fields(&target, fields, None, &mut lookup, &mut entries)?;
     Ok(entries)
 }
 
+/// Slash-separated form of a field path written with `.` or `/`.
+#[must_use]
+pub fn normalize_field_path(field: &str) -> String {
+    field
+        .split(['.', '/'])
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Key prefix selecting every word of `field_path` that starts with `term`,
+/// an already normalized [`WordText`] word.
+#[must_use]
+pub fn word_prefix(field_path: &str, term: &str) -> String {
+    format!(
+        "{}/w/{}",
+        encode_field_path(field_path),
+        encode_uri_component(term)
+    )
+}
+
+/// Key prefixes of a word field's equality keys and its word witnesses. The
+/// field's word keys are complete when both hold the same values and ids.
+#[must_use]
+pub fn word_witness_prefixes(field_path: &str) -> (String, String) {
+    let field = encode_field_path(field_path);
+    (format!("{field}/eq/"), format!("{field}/wv/"))
+}
+
+struct IndexTarget<'a> {
+    document_id: &'a str,
+    word_fields: &'a [String],
+}
+
 fn walk_fields<E>(
-    document_id: &str,
+    target: &IndexTarget<'_>,
     fields: &Map<String, Value>,
     parent: Option<&str>,
     lookup: &mut impl FnMut(&str, &str) -> Result<IndexLookupValue, E>,
@@ -70,34 +126,34 @@ fn walk_fields<E>(
         let field_path = parent.map_or_else(|| field.clone(), |parent| format!("{parent}/{field}"));
         match value {
             Value::Object(children) => {
-                walk_fields(document_id, children, Some(&field_path), lookup, entries)?;
+                walk_fields(target, children, Some(&field_path), lookup, entries)?;
             }
             Value::Array(values) => {
                 for value in values {
-                    add_value(document_id, &field_path, value, lookup, entries)?;
+                    add_value(target, &field_path, value, lookup, entries)?;
                 }
             }
-            _ => add_value(document_id, &field_path, value, lookup, entries)?,
+            _ => add_value(target, &field_path, value, lookup, entries)?,
         }
     }
     Ok(())
 }
 
 fn add_value<E>(
-    document_id: &str,
+    target: &IndexTarget<'_>,
     field_path: &str,
     raw: &Value,
     lookup: &mut impl FnMut(&str, &str) -> Result<IndexLookupValue, E>,
     entries: &mut BTreeSet<String>,
 ) -> Result<(), E> {
+    let document_id = target.document_id;
     let stored = stringify_stored_value(raw);
     let lookup = lookup(field_path, &stored)?;
-    entries.insert(index_key(
-        field_path,
-        "eq",
-        &lookup_token(&lookup.value),
-        document_id,
-    ));
+    let token = lookup_token(&lookup.value);
+    entries.insert(index_key(field_path, "eq", &token, document_id));
+    if target.word_fields.iter().any(|field| field == field_path) {
+        add_words(document_id, field_path, raw, &token, entries);
+    }
 
     if let Some(numeric) = numeric_value(raw) {
         let sortable = sortable_float64(numeric);
@@ -136,6 +192,27 @@ fn add_value<E>(
         ));
     }
     Ok(())
+}
+
+fn add_words(
+    document_id: &str,
+    field_path: &str,
+    raw: &Value,
+    token: &str,
+    entries: &mut BTreeSet<String>,
+) {
+    entries.insert(index_key(field_path, "wv", token, document_id));
+    let Value::String(text) = raw else {
+        return;
+    };
+    for word in WordText::words(text) {
+        entries.insert(index_key(
+            field_path,
+            "w",
+            &encode_uri_component(&word),
+            document_id,
+        ));
+    }
 }
 
 /// Encoded key prefix selecting every document whose `field_path` equals

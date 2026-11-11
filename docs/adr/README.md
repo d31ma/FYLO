@@ -42,6 +42,7 @@ ADR.
 | [0020](0020-turso-engine-and-binding-builds.md)             | Proposed | Turso's engine and binding builds under the unsafe and dependency policy |
 | [0021](0021-application-identities-and-signed-policies.md)  | Proposed | Application identities and signed policies (deny by default) |
 | [0022](0022-indexeddb-host-backend-for-vdbx.md)            | Accepted | IndexedDB host backend for `.vdbx` working copies |
+| [0023](0023-word-index-and-sorted-queries.md)              | Accepted | Word indexes (`$match`) and sorted, cursor-paged queries |
 | [0026](0026-mobile-builds-and-a-c-abi.md)                  | Accepted | Mobile builds (iOS, Android) and a C ABI    |
 
 ## When another ADR is required
