@@ -1,6 +1,5 @@
-use std::collections::{BTreeSet, HashMap};
-use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use fylo_query::{IndexKeyRange, IndexSnapshot, word_witness_prefixes};
 
@@ -16,7 +15,8 @@ use crate::{NativeCollection, NativeStorageError};
 /// generation.
 pub(crate) struct WordWitness;
 
-type WitnessKey = (PathBuf, String);
+/// One cached answer: collection path, field, generation, complete.
+type WitnessEntry = (PathBuf, String, u64, bool);
 
 impl WordWitness {
     /// The word fields of `collection` whose word keys are complete.
@@ -41,12 +41,16 @@ impl WordWitness {
         field: &str,
         generation: u64,
     ) -> Result<bool, NativeStorageError> {
-        let key = (collection.path().to_path_buf(), field.to_owned());
-        if let Some(complete) = Self::cached(&key, generation) {
+        if let Some(complete) = Self::cached(collection.path(), field, generation) {
             return Ok(complete);
         }
         let complete = Self::compare(collection, field)?;
-        Self::remember(key, generation, complete);
+        Self::remember((
+            collection.path().to_path_buf(),
+            field.to_owned(),
+            generation,
+            complete,
+        ));
         Ok(complete)
     }
 
@@ -56,33 +60,40 @@ impl WordWitness {
             IndexKeyRange::prefix(&equality),
             IndexKeyRange::prefix(&witness),
         ])?;
+        // The snapshot is sorted, so each run is too, and equal runs mean
+        // equal sets.
         let values = Self::suffixes(&snapshot, &equality);
         let witnesses = Self::suffixes(&snapshot, &witness);
-        Ok(values == witnesses)
+        Ok(values.eq(witnesses))
     }
 
-    fn suffixes<'a>(snapshot: &'a IndexSnapshot, prefix: &str) -> BTreeSet<&'a [u8]> {
+    fn suffixes<'a>(
+        snapshot: &'a IndexSnapshot,
+        prefix: &'a str,
+    ) -> impl Iterator<Item = &'a [u8]> + 'a {
         snapshot
             .as_bytes()
             .split(|byte| *byte == b'\n')
-            .filter_map(|key| key.strip_prefix(prefix.as_bytes()))
-            .collect()
+            .filter_map(move |key| key.strip_prefix(prefix.as_bytes()))
     }
 
-    fn cached(key: &WitnessKey, generation: u64) -> Option<bool> {
+    fn cached(path: &Path, field: &str, generation: u64) -> Option<bool> {
         let cache = Self::cache().lock().ok()?;
-        let (cached_generation, complete) = cache.get(key)?;
-        (*cached_generation == generation).then_some(*complete)
+        cache
+            .iter()
+            .find(|entry| entry.0 == path && entry.1 == field && entry.2 == generation)
+            .map(|entry| entry.3)
     }
 
-    fn remember(key: WitnessKey, generation: u64, complete: bool) {
+    fn remember(entry: WitnessEntry) {
         if let Ok(mut cache) = Self::cache().lock() {
-            cache.insert(key, (generation, complete));
+            cache.retain(|kept| kept.0 != entry.0 || kept.1 != entry.1);
+            cache.push(entry);
         }
     }
 
-    fn cache() -> &'static Mutex<HashMap<WitnessKey, (u64, bool)>> {
-        static CACHE: OnceLock<Mutex<HashMap<WitnessKey, (u64, bool)>>> = OnceLock::new();
-        CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+    fn cache() -> &'static Mutex<Vec<WitnessEntry>> {
+        static CACHE: Mutex<Vec<WitnessEntry>> = Mutex::new(Vec::new());
+        &CACHE
     }
 }

@@ -1,5 +1,3 @@
-use std::collections::BTreeSet;
-
 use fylo_query::normalize_field_path;
 use serde_json::Value;
 
@@ -111,10 +109,9 @@ impl NativeWriteRoot {
     }
 
     fn require_valid_paths(fields: &[String]) -> Result<(), NativeStorageError> {
-        let mut seen = BTreeSet::new();
-        for field in fields {
+        for (index, field) in fields.iter().enumerate() {
             Self::require_valid_path(field)?;
-            if !seen.insert(field) {
+            if fields[..index].contains(field) {
                 return Err(Self::invalid_word_fields(format!(
                     "word field \"{field}\" is listed twice"
                 )));
@@ -134,11 +131,12 @@ impl NativeWriteRoot {
     }
 
     fn refuse_encrypted(fields: &[String], encrypted: &[String]) -> Result<(), NativeStorageError> {
-        let encrypted: BTreeSet<String> = encrypted
-            .iter()
-            .map(|field| normalize_field_path(field))
-            .collect();
-        let Some(field) = fields.iter().find(|field| encrypted.contains(*field)) else {
+        let is_encrypted = |field: &String| {
+            encrypted
+                .iter()
+                .any(|path| normalize_field_path(path) == *field)
+        };
+        let Some(field) = fields.iter().find(|field| is_encrypted(field)) else {
             return Ok(());
         };
         Err(Self::invalid_word_fields(format!(

@@ -541,12 +541,11 @@ impl StructuredQuery {
     pub fn match_fields(&self) -> Vec<String> {
         let mut fields: Vec<String> = Vec::new();
         for (field, operand) in self.operations.iter().flatten() {
-            if Self::is_match_operand(operand) {
-                fields.push(normalize_field_path(field));
+            let path = normalize_field_path(field);
+            if Self::is_match_operand(operand) && !fields.contains(&path) {
+                fields.push(path);
             }
         }
-        fields.sort();
-        fields.dedup();
         fields
     }
 

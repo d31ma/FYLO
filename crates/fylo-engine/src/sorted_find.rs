@@ -1,5 +1,3 @@
-use std::collections::BTreeSet;
-
 use fylo_query::{IndexSnapshot, SortOrder, SortPosition, StructuredQuery};
 use fylo_storage_native::{NativeCollection, StoredBytes};
 
@@ -57,25 +55,31 @@ impl ReadOnlyEngine {
         Ok(page)
     }
 
+    /// The filter's candidates, in identifier order as the plan returns
+    /// them, so membership is a binary search.
     fn sorted_candidates(
         &self,
         collection: &NativeCollection,
         query: &StructuredQuery,
-    ) -> Result<Option<BTreeSet<String>>, EngineError> {
-        let planned = self.plan_index_candidates(collection, query)?;
-        Ok(planned.map(|identifiers| identifiers.into_iter().collect()))
+    ) -> Result<Option<Vec<String>>, EngineError> {
+        self.plan_index_candidates(collection, query)
     }
 
     fn sorted_positions(
         snapshot: &IndexSnapshot,
         sort: &SortOrder,
-        candidates: Option<&BTreeSet<String>>,
+        candidates: Option<&Vec<String>>,
     ) -> Vec<SortPosition> {
         snapshot
             .as_bytes()
             .split(|byte| *byte == b'\n')
             .filter_map(|key| sort.position_of_key(key))
-            .filter(|position| candidates.is_none_or(|ids| ids.contains(position.id())))
+            .filter(|position| {
+                candidates.is_none_or(|ids| {
+                    ids.binary_search_by(|id| id.as_str().cmp(position.id()))
+                        .is_ok()
+                })
+            })
             .collect()
     }
 

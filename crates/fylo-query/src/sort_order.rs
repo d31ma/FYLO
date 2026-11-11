@@ -1,9 +1,8 @@
-use std::fmt::Write;
-
 use serde_json::{Map, Value};
-use sha2::{Digest, Sha256};
 
-use crate::index::{encode_field_path, encode_uri_component, numeric_value, sortable_float64};
+use crate::index::{
+    encode_field_path, encode_uri_component, numeric_value, sha256_hex, sortable_float64,
+};
 use crate::sort_position::SortPosition;
 use crate::{IndexKeyRange, QueryError, QueryErrorCode, normalize_field_path, value_by_path};
 
@@ -171,11 +170,8 @@ impl SortOrder {
             );
         }
         let encoded = serde_json::to_vec(&Value::Object(scope)).unwrap_or_default();
-        let digest = Sha256::digest(encoded);
-        let mut hex = String::with_capacity(Self::DIGEST_BYTES * 2);
-        for byte in &digest[..Self::DIGEST_BYTES] {
-            let _ = write!(hex, "{byte:02x}");
-        }
+        let mut hex = sha256_hex(&encoded);
+        hex.truncate(Self::DIGEST_BYTES * 2);
         hex
     }
 
