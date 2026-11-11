@@ -12,6 +12,8 @@ mod index_plan;
 mod lazy_migration;
 mod schema;
 mod schema_admin;
+mod sorted_find;
+mod sorted_page;
 #[cfg(any(test, target_arch = "wasm32"))]
 mod stored_validation;
 
@@ -42,6 +44,7 @@ use lazy_migration::{ChainCache, CountCache};
 use schema::{SchemaRegistry, SchemaTools, VersionChain};
 use serde::Serialize;
 use serde_json::{Map, Value, json};
+pub use sorted_page::SortedPage;
 
 const MAX_STABLE_READ_ATTEMPTS: usize = 3;
 /// Drifted index keys reported by one verification.
@@ -1405,6 +1408,9 @@ impl ReadOnlyEngine {
         collection: &str,
         query: &StructuredQuery,
     ) -> Result<Vec<ReadDocument>, EngineError> {
+        if query.sort().is_some() {
+            return self.find_sorted(collection, query).map(|page| page.rows);
+        }
         match &self.hot_set {
             Some(hot_set) => HotReader::new(self, hot_set, collection).find(query),
             None => self.find_from_storage(collection, query),

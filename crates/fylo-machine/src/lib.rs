@@ -31,9 +31,11 @@ use std::time::Duration;
 use std::time::Instant;
 
 use base64::Engine as _;
-use fylo_engine::{EngineError, HotSet, ReadOnlyEngine, WriteEngine};
+use fylo_engine::{EngineError, HotSet, ReadDocument, ReadOnlyEngine, WriteEngine};
 use fylo_format::Document;
-use fylo_query::{JoinSpec, QueryLimits, SqlOperation, SqlPlan, StructuredQuery, prepare_sql};
+use fylo_query::{
+    JoinSpec, QueryErrorCode, QueryLimits, SqlOperation, SqlPlan, StructuredQuery, prepare_sql,
+};
 use fylo_storage_native::{
     CollectionKind, CollectionLayout, FilesystemProfile, NativeQueue, NativeRoot,
     NativeStorageError, NativeStorageErrorCode, NativeWriteRoot, PutRawFileOptions,
@@ -1423,6 +1425,9 @@ impl Session {
         let query = structured_query(request)?;
         self.repair_word_fields(request, collection, &query);
         let engine = self.engine(request)?;
+        if query.sort().is_some() {
+            return Self::find_sorted_documents(&engine, request, collection, &query);
+        }
         if engine
             .collection_kind(collection)
             .map_err(|error| engine_error(&error))?
@@ -1896,6 +1901,41 @@ impl Session {
             .set_word_fields(collection, &fields, &encrypted)
             .map_err(|error| storage_error(&error))?;
         Ok(json!({ "collection": collection, "fields": stored, "rebuilt": true }))
+    }
+
+    /// A query with `$sort`: an ordered `items` array and the `nextCursor`
+    /// of the next page (ADR 0023 section 5). It is stateless, so it needs
+    /// no `exec --loop`, and refuses the loop's own `page` paging.
+    fn find_sorted_documents(
+        engine: &ReadOnlyEngine,
+        request: &Value,
+        collection: &str,
+        query: &StructuredQuery,
+    ) -> Result<Value, MachineError> {
+        if request.get("page").is_some() {
+            return Err(MachineError::new(
+                "EBADREQUEST",
+                "a query with $sort pages with $limit and $after, not \"page\"",
+            ));
+        }
+        let page = engine
+            .find_sorted(collection, query)
+            .map_err(|error| engine_error(&error))?;
+        let only_ids = request.get("query").and_then(|query| query.get("$onlyIds"))
+            == Some(&Value::Bool(true));
+        let items: Vec<Value> = page
+            .rows
+            .into_iter()
+            .map(|record| Self::sorted_item(record, only_ids))
+            .collect();
+        Ok(json!({ "items": items, "nextCursor": page.next_cursor }))
+    }
+
+    fn sorted_item(record: ReadDocument, only_ids: bool) -> Value {
+        if only_ids {
+            return Value::String(record.metadata.id);
+        }
+        json!({ "id": record.metadata.id, "doc": Value::Object(record.document.into_fields()) })
     }
 
     /// Before a `$match` is planned, rebuild a word index an older release
@@ -3898,8 +3938,13 @@ fn serverless_queue_capability() -> Value {
 
 fn structured_query(request: &Value) -> Result<StructuredQuery, MachineError> {
     let query = request.get("query").cloned().unwrap_or_else(|| json!({}));
-    StructuredQuery::from_value(&query, QueryLimits::default())
-        .map_err(|error| MachineError::new("EQUERY_INVALID", error.to_string()))
+    StructuredQuery::from_value(&query, QueryLimits::default()).map_err(|error| {
+        let code = match error.code() {
+            QueryErrorCode::InvalidCursor => "EINVALIDCURSOR",
+            _ => "EQUERY_INVALID",
+        };
+        MachineError::new(code, error.to_string())
+    })
 }
 
 /// The optional `layout` field of a request.

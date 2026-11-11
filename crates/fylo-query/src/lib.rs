@@ -14,6 +14,8 @@ mod index;
 mod index_key_range;
 mod join;
 mod numeric_range;
+mod sort_order;
+mod sort_position;
 mod sql;
 mod word_text;
 
@@ -24,6 +26,8 @@ pub use index::{
 pub use index_key_range::IndexKeyRange;
 pub use join::{JoinComparator, JoinMode, JoinSpec, value_by_path};
 pub use numeric_range::NumericRange;
+pub use sort_order::SortOrder;
+pub use sort_position::SortPosition;
 pub use sql::{AccessPath, SqlOperation, SqlPlan, prepare_sql};
 pub use word_text::WordText;
 
@@ -351,6 +355,8 @@ pub struct StructuredQuery {
     created: Option<TimestampRange>,
     updated: Option<TimestampRange>,
     limit: Option<usize>,
+    sort: Option<SortOrder>,
+    after: Option<SortPosition>,
 }
 
 impl StructuredQuery {
@@ -473,11 +479,15 @@ impl StructuredQuery {
                 "$limit must be a non-negative integer",
             ));
         }
+        let sort = SortOrder::parse(object)?;
+        let after = parse_after(object.get("$after"), sort.as_ref())?;
         Ok(Self {
             operations,
             created,
             updated,
             limit,
+            sort,
+            after,
         })
     }
 
@@ -536,6 +546,18 @@ impl StructuredQuery {
     #[must_use]
     pub const fn limit(&self) -> Option<usize> {
         self.limit
+    }
+
+    /// The query's `$sort`, if any (ADR 0023 section 5).
+    #[must_use]
+    pub const fn sort(&self) -> Option<&SortOrder> {
+        self.sort.as_ref()
+    }
+
+    /// Where a sorted query resumes: the position its `$after` cursor names.
+    #[must_use]
+    pub const fn after(&self) -> Option<&SortPosition> {
+        self.after.as_ref()
     }
 
     /// The slash-separated field paths a `$match` operator names.
@@ -694,6 +716,22 @@ fn matches_operand(value: FieldValue<'_>, operators: &Map<String, Value>) -> boo
         }
     }
     true
+}
+
+fn parse_after(
+    after: Option<&Value>,
+    sort: Option<&SortOrder>,
+) -> Result<Option<SortPosition>, QueryError> {
+    let Some(after) = after else {
+        return Ok(None);
+    };
+    let (Some(cursor), Some(sort)) = (after.as_str(), sort) else {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidCursor,
+            "$after must be a cursor string from a query with the same $sort",
+        ));
+    };
+    sort.parse_cursor(cursor).map(Some)
 }
 
 /// The normalized terms of a `$match` operand.
@@ -953,6 +991,9 @@ pub enum QueryErrorCode {
     /// Encoded result bytes exceeded their configured bound.
     #[serde(rename = "EQUERY_OUTPUT_SIZE")]
     OutputTooLarge,
+    /// A `$after` cursor did not parse or belongs to another query.
+    #[serde(rename = "EINVALIDCURSOR")]
+    InvalidCursor,
 }
 
 impl QueryErrorCode {
@@ -971,6 +1012,7 @@ impl QueryErrorCode {
             Self::UnsortedSnapshot => "EINDEX_SNAPSHOT_ORDER",
             Self::TooManyMatches => "EQUERY_MATCH_COUNT",
             Self::OutputTooLarge => "EQUERY_OUTPUT_SIZE",
+            Self::InvalidCursor => "EINVALIDCURSOR",
         }
     }
 }

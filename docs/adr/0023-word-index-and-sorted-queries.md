@@ -173,9 +173,9 @@ of the encoded word. A prefix search is therefore one key range.
   Terms of one field are intersected, and the field is intersected with the
   other fields of the same `$ops` entry, as `$eq` already is. Candidates are
   then read and verified against the whole query.
-- `$match` on a field in the encrypted-fields record is refused at parse time
-  with `EQUERY_INVALID` when the engine knows the field is encrypted; it can
-  never be planned.
+- `$match` on an encrypted field is never planned from the index (it has no
+  word keys); it is answered by reading every document, like an undeclared
+  field.
 - There is no ranking (BM25 or other). Results come in the query's order:
   TTID order, or the `$sort` order below.
 
@@ -201,7 +201,9 @@ of the encoded word. A prefix search is therefore one key range.
   documents runs without `$sort`.
 - An array field sorts by its smallest value (`asc`) or largest value
   (`desc`); the document appears once.
-- `$sort` on an encrypted field is refused with `EQUERY_INVALID`.
+- `$sort` on an encrypted field is refused with `EENGINE_QUERY`. A `$sort`
+  that is not an object with one field and `"asc"` or `"desc"` is refused
+  with `EQUERY_INVALID`.
 - **Execution** (no in-memory sort of the collection):
   1. Plan the `$ops` filter as today. When it is plannable, the candidates
      are a set of ids from the index; otherwise there is no candidate set.

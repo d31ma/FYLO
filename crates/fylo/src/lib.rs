@@ -35,6 +35,7 @@ mod collection;
 mod collection_recovery;
 mod error;
 mod link_identity;
+mod page;
 mod queue;
 #[cfg(feature = "sql")]
 mod sql;
@@ -55,6 +56,7 @@ pub use fylo_identity::{Identity, IdentityId, KeyReference};
 pub use fylo_storage_native::AccessTrust;
 pub use fylo_storage_native::{QueueAckResult, QueueDelivery, QueueNackResult, QueuePublishResult};
 pub use link_identity::LinkIdentity;
+pub use page::Page;
 pub use queue::{ClaimOptions, PublishOptions, Queue};
 #[cfg(feature = "sql")]
 pub use sql::{

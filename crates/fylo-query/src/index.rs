@@ -308,7 +308,7 @@ fn stringify_stored_value(value: &Value) -> String {
     value.replace('/', "%2F")
 }
 
-fn numeric_value(value: &Value) -> Option<f64> {
+pub(crate) fn numeric_value(value: &Value) -> Option<f64> {
     let numeric = match value {
         Value::Null => 0.0,
         Value::Bool(value) => u8::from(*value).into(),
@@ -382,7 +382,7 @@ fn trigrams(value: &str) -> Vec<String> {
     grams.into_iter().collect()
 }
 
-fn encode_uri_component(value: &str) -> String {
+pub(crate) fn encode_uri_component(value: &str) -> String {
     let mut encoded = String::with_capacity(value.len());
     for byte in value.bytes() {
         if byte.is_ascii_alphanumeric()

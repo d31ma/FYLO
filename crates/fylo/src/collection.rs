@@ -3,7 +3,7 @@ use fylo_query::{QueryLimits, StructuredQuery};
 use fylo_storage_native::NativeStorageErrorCode;
 use serde_json::{Map, Value};
 
-use crate::{Error, Root};
+use crate::{Error, Page, Root};
 
 /// A stored document: its JSON fields, in their stored order.
 pub type Document = Map<String, Value>;
@@ -115,7 +115,7 @@ impl<'root> Collection<'root> {
     }
 
     /// Every document matching `query`, as `(id, document)` pairs in TTID
-    /// order.
+    /// order, or in `$sort` order when it has one.
     ///
     /// # Errors
     ///
@@ -127,6 +127,25 @@ impl<'root> Collection<'root> {
             .into_iter()
             .map(|record| (record.metadata.id, record.document.into_fields()))
             .collect())
+    }
+
+    /// One page of a query with `$sort` (and usually `$limit`), in order,
+    /// with the cursor for `$after` on the next page (ADR 0023).
+    ///
+    /// # Errors
+    ///
+    /// `EENGINE_QUERY` for a query without `$sort`, or a read failure.
+    pub fn find_page(&self, query: &Query) -> Result<Page, Error> {
+        self.repair_word_fields(query)?;
+        let page = self.root.reader()?.find_sorted(self.name, &query.0)?;
+        Ok(Page {
+            items: page
+                .rows
+                .into_iter()
+                .map(|record| (record.metadata.id, record.document.into_fields()))
+                .collect(),
+            next_cursor: page.next_cursor,
+        })
     }
 
     /// Replace the collection's word fields, the paths whose words `$match`
