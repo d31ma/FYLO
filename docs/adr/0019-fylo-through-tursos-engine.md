@@ -1,6 +1,8 @@
 # ADR 0019: FYLO through Turso's engine
 
-- Status: **Proposed** (draft, 2026-11-01)
+- Status: **Proposed** (draft, 2026-11-01). Sections 1 and 5 were accepted
+  by [ADR 0026](0026-mobile-builds-and-a-c-abi.md) on 2026-11-11; the rest
+  stays Proposed.
 - Date: **2026-11-01**
 - Owners: **FYLO maintainers**
 - Amends: ADR 0004 (dependency policy: `turso_core`, and third-party binding
