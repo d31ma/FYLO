@@ -5,6 +5,7 @@
 //! permission, or transaction semantics.
 
 mod application;
+mod change_cursor;
 mod frame_access;
 mod frame_session;
 mod handshake_identity;
@@ -940,6 +941,7 @@ impl Session {
             "commit" => self.commit(request),
             "getLatest" => self.get_latest(request),
             "findDeletedDocs" => self.find_deleted_documents(request),
+            "changes" => self.changes(request),
             "restoreDoc" => self.restore_document(request),
             "batchPutData" => self.batch_put_data(request),
             "patchDocs" => self.patch_documents(request),
@@ -2180,6 +2182,17 @@ impl Session {
             }
             Err(error) => Err(error),
         }
+    }
+
+    fn changes(&self, request: &Value) -> Result<Value, MachineError> {
+        let engine = self.engine(request)?;
+        let collection = require_string(request, "collection")?;
+        let cursor = change_cursor::ChangeCursor::from_request(request)?;
+        let limit = change_cursor::ChangeCursor::limit(request)?;
+        let page = engine
+            .changes(collection, cursor.position(), limit)
+            .map_err(|error| engine_error(&error))?;
+        cursor.reply(&page)
     }
 
     fn find_deleted_documents(&self, request: &Value) -> Result<Value, MachineError> {

@@ -332,6 +332,10 @@ namespace Fylo
             Op($"{{\"op\":\"findDocs\",\"collection\":{J(collection)},\"query\":{J(query)}}}");
         public JsonElement FindDeletedDocsPage(string collection, object query, object page) =>
             Op($"{{\"op\":\"findDeletedDocs\",\"collection\":{J(collection)},\"query\":{J(query)},\"page\":{J(page)}}}");
+        public JsonElement Changes(string collection, string after = null) =>
+            Op($"{{\"op\":\"changes\",\"collection\":{J(collection)},\"after\":{J(after)}}}");
+        public JsonElement Changes(string collection, string after, int limit) =>
+            Op($"{{\"op\":\"changes\",\"collection\":{J(collection)},\"after\":{J(after)},\"limit\":{limit}}}");
         public JsonElement ExecuteSQL(string sql) =>
             Op($"{{\"op\":\"executeSQL\",\"sql\":{J(sql)}}}");
 
@@ -408,5 +412,7 @@ namespace Fylo
         public JsonElement Find(object query) => _db.FindDocs(_name, query);
         public JsonElement FindPage(object query, object page) => _db.FindDocsPage(_name, query, page);
         public JsonElement Page(object query) => _db.FindPage(_name, query);
+        public JsonElement Changes(string after = null) => _db.Changes(_name, after);
+        public JsonElement Changes(string after, int limit) => _db.Changes(_name, after, limit);
     }
 }

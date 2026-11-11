@@ -230,6 +230,10 @@ class Fylo
     op("findDeletedDocs", "collection" => collection, "query" => query, "page" => page)
   end
 
+  def changes(collection, after = nil, limit = nil)
+    op("changes", "collection" => collection, "after" => after, "limit" => limit)
+  end
+
   def join_docs(join)
     op("joinDocs", "join" => join)
   end
@@ -358,6 +362,10 @@ class Fylo
 
     def page(query)
       @db.find_page(@name, query)
+    end
+
+    def changes(after = nil, limit = nil)
+      @db.changes(@name, after, limit)
     end
   end
 end

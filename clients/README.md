@@ -85,6 +85,7 @@ exported/public methods must be capitalized):
 | findDocs      | `find_docs`          | `findDocs`               | `FindDocs`      |
 | findDocsPage  | `find_docs_page`     | `findDocsPage`           | `FindDocsPage`  |
 | findPage      | `find_page`          | `findPage`               | `FindPage`      |
+| changes       | `changes`            | `changes`                | `Changes`       |
 | executeSQL    | `execute_sql`        | `executeSQL`             | `ExecuteSQL`    |
 | queuePublish  | `queue_publish`      | `queuePublish`           | `QueuePublish`  |
 | queueClaim    | `queue_claim`        | `queueClaim`             | `QueueClaim`    |
@@ -455,6 +456,20 @@ null on the last page. `$match` queries need word fields first:
 them, and an empty list clears them. Unlike `findDocsPage`, this paging also
 works in the mobile and Flutter clients, which send the bridge ops
 `setWordFields` and `findPage`.
+
+**Change feed.** `changes(collection, after, limit)` reads one page of a
+collection's change feed. The collection facade exposes `changes(after, limit)`.
+Pass `after` as null (or leave it out) to start from the beginning. `limit` is
+1 to 1000; leave it out to use the default of 256. The result has `changes`,
+`cursor`, and `more`. Each change has the document `id` and a `kind` of `put`
+or `delete`. A document appears once, with its newest change only. Changes come
+oldest first. Pass `result.cursor` as `after` to read the next page, and keep
+reading while `more` is true. The cursor is durable: you can save it and use it
+again after a restart. If a call fails with `ECURSOR_EXPIRED`, the cursor is too
+old. Read the collection again (for example with `findDocs`), then continue
+from `after` null. A collection that uses the files layout has no change feed
+and fails with `ELAYOUTUNSUPPORTED`. Mobile and Flutter clients send the same
+call through the WebView bridge.
 
 ## Browser (`fylo-web.mjs`)
 

@@ -394,6 +394,9 @@ class Fylo:
             "findDeletedDocs", collection=collection, query=query or {}, page=page or {}
         )
 
+    def changes(self, collection, after=None, limit=None):
+        return self._op("changes", collection=collection, after=after, limit=limit)
+
     def join_docs(self, join):
         return self._op("joinDocs", join=join)
 
@@ -489,3 +492,5 @@ class _Collection:
 
     def page(self, query):
         return self._db.find_page(self._name, query)
+    def changes(self, after=None, limit=None):
+        return self._db.changes(self._name, after, limit)

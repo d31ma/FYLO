@@ -92,6 +92,11 @@
             "retry": "safe"
         },
         {
+            "name": "changes",
+            "class": "read",
+            "retry": "safe"
+        },
+        {
             "name": "restoreDoc",
             "class": "write",
             "retry": "conditional"

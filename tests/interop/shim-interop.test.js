@@ -75,15 +75,18 @@ afterAll(async () => {
 describe('client shim interop via fylo exec --loop', () => {
     test('every binary-backed language shim exposes bounded query continuation', async () => {
         const contracts = new Map([
-            ['node/fylo.mjs', ['findDocsPage', 'findDeletedDocsPage']],
-            ['python/fylo.py', ['find_docs_page', 'find_deleted_docs_page']],
-            ['ruby/fylo.rb', ['find_docs_page', 'find_deleted_docs_page']],
-            ['php/fylo.php', ['findDocsPage', 'findDeletedDocsPage']],
-            ['go/fylo.go', ['FindDocsPage', 'FindDeletedDocsPage']],
-            ['rust/fylo.rs', ['find_docs_page', 'find_deleted_docs_page']],
-            ['java/Fylo.java', ['findDocsPage', 'findDeletedDocsPage']],
-            ['csharp/Fylo.cs', ['FindDocsPage', 'FindDeletedDocsPage']],
-            ['dart/fylo.dart', ['findDocsPage', 'findDeletedDocsPage']]
+            ['node/fylo.mjs', ['findDocsPage', 'findDeletedDocsPage', 'changes(collection']],
+            ['python/fylo.py', ['find_docs_page', 'find_deleted_docs_page', 'def changes(']],
+            ['ruby/fylo.rb', ['find_docs_page', 'find_deleted_docs_page', 'def changes(']],
+            ['php/fylo.php', ['findDocsPage', 'findDeletedDocsPage', 'function changes(']],
+            ['go/fylo.go', ['FindDocsPage', 'FindDeletedDocsPage', 'func (f *Fylo) Changes(']],
+            ['rust/fylo.rs', ['find_docs_page', 'find_deleted_docs_page', 'fn changes(']],
+            ['java/Fylo.java', ['findDocsPage', 'findDeletedDocsPage', 'public String changes(']],
+            [
+                'csharp/Fylo.cs',
+                ['FindDocsPage', 'FindDeletedDocsPage', 'public JsonElement Changes(']
+            ],
+            ['dart/fylo.dart', ['findDocsPage', 'findDeletedDocsPage', 'Future<dynamic> changes(']]
         ])
         for (const [relative, methods] of contracts) {
             const source = await readFile(path.join(shimRoot, relative), 'utf8')

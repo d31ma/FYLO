@@ -310,6 +310,10 @@ class Fylo
     {
         return $this->op('findDeletedDocs', ['collection' => $collection, 'query' => $query, 'page' => $page]);
     }
+    public function changes(string $collection, ?string $after = null, ?int $limit = null)
+    {
+        return $this->op('changes', ['collection' => $collection, 'after' => $after, 'limit' => $limit]);
+    }
     public function joinDocs(array $join)
     {
         return $this->op('joinDocs', ['join' => $join]);
@@ -456,5 +460,10 @@ class FyloCollection
     public function page(array $query)
     {
         return $this->db->findPage($this->name, $query);
+    }
+
+    public function changes(?string $after = null, ?int $limit = null)
+    {
+        return $this->db->changes($this->name, $after, $limit);
     }
 }

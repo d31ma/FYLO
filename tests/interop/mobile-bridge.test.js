@@ -66,6 +66,42 @@ async function openWithUsers() {
     return { ...bridge, ada: ada.result, bob: bob.result }
 }
 
+async function loadChangeFeedBridge() {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), 'fylo-mobile-bridge-changes-'))
+    workspaces.push(workspace)
+    await writeFile(
+        path.join(workspace, 'fylo.mjs'),
+        `export const calls = []
+export function createBrowserClient() {
+    return {
+        async ready() {},
+        collection(name) {
+            return {
+                async changes(after, limit) {
+                    calls.push([name, after, limit])
+                    return { changes: [{ id: 'doc-1', kind: 'put' }], cursor: 'cursor-2', more: false }
+                }
+            }
+        }
+    }
+}
+`
+    )
+    await Bun.write(path.join(workspace, 'bridge.js'), Bun.file('clients/mobile/bridge.js'))
+    const messages = []
+    globalThis.__fyloNative = { onMessage: (text) => messages.push(JSON.parse(text)) }
+    const engine = await import(pathToFileURL(path.join(workspace, 'fylo.mjs')).href)
+    await import(`${pathToFileURL(path.join(workspace, 'bridge.js')).href}?test=${Date.now()}`)
+    const send = async (id, args) => {
+        const encoded = Buffer.from(JSON.stringify({ id, method: 'changes', args })).toString(
+            'base64'
+        )
+        await globalThis.__fyloDispatch(encoded)
+        return messages.find((message) => message.id === id)
+    }
+    return { calls: engine.calls, send }
+}
+
 describe('mobile WebView bridge', () => {
     test('getDoc resolves the browser collection get facade to document data', async () => {
         const workspace = await mkdtemp(path.join(os.tmpdir(), 'fylo-mobile-bridge-'))
@@ -142,6 +178,55 @@ describe('mobile WebView bridge', () => {
             message: 'collection contains unsupported characters',
             code: 'EBADREQUEST'
         })
+    })
+
+    test('changes routes one change feed page to the browser collection', async () => {
+        const { calls, send } = await loadChangeFeedBridge()
+
+        const first = await send(1, { collection: 'users' })
+        const next = await send(2, { collection: 'users', after: 'cursor-1', limit: 5 })
+
+        expect(first).toEqual({
+            id: 1,
+            ok: true,
+            result: { changes: [{ id: 'doc-1', kind: 'put' }], cursor: 'cursor-2', more: false }
+        })
+        expect(next.ok).toBe(true)
+        expect(calls).toEqual([
+            ['users', null, undefined],
+            ['users', 'cursor-1', 5]
+        ])
+    })
+
+    test('changes accepts null after and null limit from native clients', async () => {
+        const { calls, send } = await loadChangeFeedBridge()
+
+        const reply = await send(1, { collection: 'users', after: null, limit: null })
+
+        expect(reply.ok).toBe(true)
+        expect(calls).toEqual([['users', null, undefined]])
+    })
+
+    test('changes rejects a bad after type and an out-of-range limit', async () => {
+        const { calls, send } = await loadChangeFeedBridge()
+
+        const badAfter = await send(1, { collection: 'users', after: 42 })
+        const zeroLimit = await send(2, { collection: 'users', limit: 0 })
+        const largeLimit = await send(3, { collection: 'users', limit: 1001 })
+        const fractionLimit = await send(4, { collection: 'users', limit: 2.5 })
+
+        expect(badAfter.error).toEqual({
+            message: 'after must be a change cursor string or null',
+            code: 'EBADREQUEST'
+        })
+        const limitError = {
+            message: 'limit must be an integer from 1 to 1000',
+            code: 'EBADREQUEST'
+        }
+        expect(zeroLimit.error).toEqual(limitError)
+        expect(largeLimit.error).toEqual(limitError)
+        expect(fractionLimit.error).toEqual(limitError)
+        expect(calls).toEqual([])
     })
 
     test('returns correlated errors for oversized and malformed requests', async () => {

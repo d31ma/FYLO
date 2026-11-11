@@ -19,6 +19,7 @@ const MAX_RESPONSE_BYTES = 6 * 1024 * 1024
 const MAX_SQL_CHARS = 64 * 1024
 const MAX_COLLECTION_CHARS = 128
 const MAX_ID_CHARS = 128
+const MAX_CHANGES_LIMIT = 1000
 const OPERATIONS = new Set([
     'open',
     'createCollection',
@@ -36,6 +37,7 @@ const OPERATIONS = new Set([
     'restoreDoc',
     'findDocs',
     'findPage',
+    'changes',
     'executeSQL'
 ])
 
@@ -97,6 +99,19 @@ function mobileConfig(value) {
     return safe
 }
 
+function requireCursor(value) {
+    if (value !== undefined && value !== null && typeof value !== 'string') {
+        throw bridgeError('after must be a change cursor string or null', 'EBADREQUEST')
+    }
+}
+
+function requireChangesLimit(value) {
+    if (value === undefined || value === null) return
+    if (!Number.isInteger(value) || value < 1 || value > MAX_CHANGES_LIMIT) {
+        throw bridgeError(`limit must be an integer from 1 to ${MAX_CHANGES_LIMIT}`, 'EBADREQUEST')
+    }
+}
+
 function collectionOptions(args) {
     const supplied = own(args, 'options')
     const options = supplied === undefined ? {} : { ...requireObject(supplied, 'options') }
@@ -137,6 +152,10 @@ function validateArgs(method, args) {
     }
     if (['findDocs', 'findPage'].includes(method) && own(args, 'query') !== undefined) {
         requireObject(own(args, 'query'), 'query')
+    }
+    if (method === 'changes') {
+        requireCursor(own(args, 'after'))
+        requireChangesLimit(own(args, 'limit'))
     }
     return args
 }
@@ -252,6 +271,8 @@ async function route(method, a) {
             return col.restore(own(a, 'id'))
         case 'findDocs':
             return collect(col.find(own(a, 'query') ?? {}), own(a, 'query'))
+        case 'changes':
+            return col.changes(own(a, 'after') ?? null, own(a, 'limit') ?? undefined)
         case 'executeSQL':
             return database.executeSQL(own(a, 'sql'))
         default:

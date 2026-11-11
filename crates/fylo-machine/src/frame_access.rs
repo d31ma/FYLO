@@ -11,7 +11,7 @@ pub(crate) enum FrameAccess {
 }
 
 impl FrameAccess {
-    const READ_OPERATIONS: [&'static str; 12] = [
+    const READ_OPERATIONS: [&'static str; 13] = [
         "handshake",
         "getDoc",
         "getLatest",
@@ -19,6 +19,7 @@ impl FrameAccess {
         "getMeta",
         "findDocs",
         "findDeletedDocs",
+        "changes",
         "joinDocs",
         "inspectCollection",
         "inspectDatabase",

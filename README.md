@@ -1421,7 +1421,7 @@ including its operation names, delivery model, message/claim limits, consumer
 groups, visibility leases, delayed delivery, idempotent publication, and
 group-specific dead letters.
 
-Supported operations: `handshake`, `executeSQL`, `createCollection`, `dropCollection`, `inspectCollection`, `rebuildCollection`, `setWordFields`, `reshardCollection`, `migrateLayout`, `compactCollection`, `verifyCollection`, `getDoc`, `getFileData`, `getLatest`, `getMeta`, `setMeta`, `findDocs`, `findDeletedDocs`, `restoreDoc`, `joinDocs`, `putData`, `batchPutData`, `patchDoc`, `patchDocs`, `delDoc`, `delDocs`, `importBulkData`, `checkout`, `branch`, `commit`, `log`, `status`, `diff`, `restoreCommit`, `merge`, `schemaInspect`, `schemaCurrent`, `schemaHistory`, `schemaDoctor`, `schemaValidate`, `schemaMaterialize`, `schemaMode`, `schemaCheck`, `schemaMigrate`, `schemaPush`, `schemaPull`, `queuePublish`, `queueClaim`, `queueAck`, `queueNack`, `queueExtend`, `queueStats`, `queueDeadLetters`, `inspectDatabase`, `verifyDatabase`.
+Supported operations: `handshake`, `executeSQL`, `createCollection`, `dropCollection`, `inspectCollection`, `rebuildCollection`, `setWordFields`, `reshardCollection`, `migrateLayout`, `compactCollection`, `verifyCollection`, `getDoc`, `getFileData`, `getLatest`, `getMeta`, `setMeta`, `findDocs`, `findDeletedDocs`, `changes`, `restoreDoc`, `joinDocs`, `putData`, `batchPutData`, `patchDoc`, `patchDocs`, `delDoc`, `delDocs`, `importBulkData`, `checkout`, `branch`, `commit`, `log`, `status`, `diff`, `restoreCommit`, `merge`, `schemaInspect`, `schemaCurrent`, `schemaHistory`, `schemaDoctor`, `schemaValidate`, `schemaMaterialize`, `schemaMode`, `schemaCheck`, `schemaMigrate`, `schemaPush`, `schemaPull`, `queuePublish`, `queueClaim`, `queueAck`, `queueNack`, `queueExtend`, `queueStats`, `queueDeadLetters`, `inspectDatabase`, `verifyDatabase`.
 
 Requests name no caller: a request that carries the removed `access` object
 is refused with `EBADREQUEST`. Access comes from the session's identity.
@@ -1464,6 +1464,34 @@ restart, discard partial state and restart from page one. Snapshot state is
 private to the native process, cleaned on completion/expiry/shutdown, and capped
 at 1 GiB.
 
+#### Change feed
+
+`changes` returns one page of a collection's change feed: every document whose
+newest change comes after the cursor, once, oldest change first
+([ADR 0024](docs/adr/0024-collection-change-feed.md)).
+
+```json
+{"op":"changes","collection":"posts","after":null,"limit":256}
+{"op":"changes","collection":"posts","after":"<cursor>","limit":256}
+```
+
+The result is `{ changes: [{ id, kind }], cursor, more }`. `kind` is `put`
+(created, changed or restored) or `delete`. Read the document with `getDoc` to
+see its new content. A document changed twice since the cursor appears once,
+at its newest change. The cursor is durable: keep it, and continue from it
+after a restart or in another process. `limit` is 1 to 1000 (default 256).
+
+- The feed reads collections in the segments layout and in `.vdbx` databases.
+  A collection in the files layout is refused with `ELAYOUTUNSUPPORTED`; move
+  it with `fylo layout <collection> --to segments`.
+- Changes are kept as long as the collection's documents are: `fylo compact`
+  keeps every document's newest change, so a cursor never goes stale with
+  time or compaction.
+- A cursor expires only when the collection's change history starts again: a
+  drop and re-create, `fylo pack`, `fylo rekey`, a layout move, or an older copy
+  of the files put back. Then the answer is `ECURSOR_EXPIRED`: read the
+  collection again, and continue from `"after": null`.
+
 Unpaged operations that exceed the frame still return
 `EFRAME_RESPONSE_TOO_LARGE` while preserving stream synchronization. A single
 query item that cannot fit returns `EQUERYITEMTOOLARGE`; an oversized snapshot
@@ -1478,31 +1506,32 @@ is additive: new codes may appear in later releases, and an existing code
 keeps its meaning. Clients should branch on `error.code`, never on message
 text.
 
-| Code                                                                   | Meaning                                                                    | Retry guidance                                                   |
-| ---------------------------------------------------------------------- | -------------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| `EBADREQUEST`                                                          | The request shape, field types, access object, or page options are invalid | Do not retry; fix the request                                    |
-| `EUNSUPPORTEDOP`                                                       | The operation is unknown to this runtime                                   | Do not retry; check the handshake capabilities                   |
-| `EINVALIDDOCID`                                                        | The supplied document ID is not a valid TTID                               | Do not retry; fix the ID                                         |
-| `EARRAYOFOBJECTS`                                                      | The document contains an array of objects, which the data model rejects    | Do not retry; restructure per the document-model rule below      |
-| `EACCES`                                                               | The identity has no grant for the operation on a protected database        | Do not retry with the same identity                              |
-| `EQUEUE_INVALID`                                                       | A queue name, identity, option, or idempotency reuse is invalid            | Do not retry without correcting the request                      |
-| `EQUEUE_RECEIPT`                                                       | A queue receipt is incorrect, expired, or already superseded               | Do not acknowledge as that worker                                |
-| `EQUEUE_LIMIT`                                                         | A queue message, claim, delay, attempt, state, or read limit was exceeded  | Reduce the requested resource                                    |
-| `EINDEX_FULL`                                                          | The write could grow the collection's index past its 240 MiB write limit   | Do not retry; delete documents or use another collection         |
-| `EDECRYPTFAILED`                                                       | An `$encrypted` field could not be decrypted with the configured key       | Do not retry; fix the key configuration                          |
-| `EINVALIDCURSOR`                                                       | The pagination cursor is invalid, expired, or from another process         | Restart the traversal from page one                              |
-| `ENATIVE_NOT_FOUND`                                                    | The named collection does not exist                                        | Do not retry; create the collection first                        |
-| `EBROWSER_UNSUPPORTED`                                                 | The browser or mobile engine does not implement the requested feature      | Do not retry; use the native engine                              |
-| `EROOTLOCKED` / `EROOTLEASELOST`                                       | Exclusive root ownership was unavailable or lost                           | Fail over per your supervisor policy                             |
-| `EFRAME_*`                                                             | Frame-contract violations, as documented above                             | Per the framing rules above                                      |
-| `EQUERYLOOPREQUIRED` / `EQUERYITEMTOOLARGE` / `EQUERYSNAPSHOTTOOLARGE` | Pagination contract violations, as documented above                        | Per the pagination rules above                                   |
-| `ESCHEMA`                                                              | A document does not match the head schema, or a schema is invalid          | Do not retry; fix the document or schema                         |
-| `ESCHEMACONFLICT`                                                      | A pushed schema label is already committed with different content          | Do not retry; give the changed schema a new version label        |
-| `ESCHEMAUNAVAILABLE`                                                   | This build cannot validate the collection's head schema version            | Do not retry; push the schema natively, or write natively        |
-| `EVDBX_NOT_VDBX` / `EVDBX_VERSION`                                     | The file is not a `.vdbx` database, or needs a newer FYLO                  | Do not retry; open it with a build that supports it              |
-| `EVDBX_CORRUPT`                                                        | A `.vdbx` structure failed its checks                                      | Do not retry; run `fylo verify <db.vdbx>`                        |
-| `ENATIVE_IO`                                                           | Native filesystem I/O failed, including disk pressure or xattr operations  | Treat a mutation as ambiguous; inspect the cause before retrying |
-| `EUNKNOWN`                                                             | An engine failure without a more specific classification                   | Treat conservatively; inspect `error.message` diagnostically     |
+| Code                                                                   | Meaning                                                                        | Retry guidance                                                   |
+| ---------------------------------------------------------------------- | ------------------------------------------------------------------------------ | ---------------------------------------------------------------- |
+| `EBADREQUEST`                                                          | The request shape, field types, access object, or page options are invalid     | Do not retry; fix the request                                    |
+| `EUNSUPPORTEDOP`                                                       | The operation is unknown to this runtime                                       | Do not retry; check the handshake capabilities                   |
+| `EINVALIDDOCID`                                                        | The supplied document ID is not a valid TTID                                   | Do not retry; fix the ID                                         |
+| `EARRAYOFOBJECTS`                                                      | The document contains an array of objects, which the data model rejects        | Do not retry; restructure per the document-model rule below      |
+| `EACCES`                                                               | The identity has no grant for the operation on a protected database            | Do not retry with the same identity                              |
+| `EQUEUE_INVALID`                                                       | A queue name, identity, option, or idempotency reuse is invalid                | Do not retry without correcting the request                      |
+| `EQUEUE_RECEIPT`                                                       | A queue receipt is incorrect, expired, or already superseded                   | Do not acknowledge as that worker                                |
+| `EQUEUE_LIMIT`                                                         | A queue message, claim, delay, attempt, state, or read limit was exceeded      | Reduce the requested resource                                    |
+| `EINDEX_FULL`                                                          | The write could grow the collection's index past its 240 MiB write limit       | Do not retry; delete documents or use another collection         |
+| `EDECRYPTFAILED`                                                       | An `$encrypted` field could not be decrypted with the configured key           | Do not retry; fix the key configuration                          |
+| `ECURSOR_EXPIRED`                                                      | The change cursor is from before the collection's change history started again | Read the collection again; continue from `after: null`           |
+| `EINVALIDCURSOR`                                                       | The pagination cursor is invalid, expired, or from another process             | Restart the traversal from page one                              |
+| `ENATIVE_NOT_FOUND`                                                    | The named collection does not exist                                            | Do not retry; create the collection first                        |
+| `EBROWSER_UNSUPPORTED`                                                 | The browser or mobile engine does not implement the requested feature          | Do not retry; use the native engine                              |
+| `EROOTLOCKED` / `EROOTLEASELOST`                                       | Exclusive root ownership was unavailable or lost                               | Fail over per your supervisor policy                             |
+| `EFRAME_*`                                                             | Frame-contract violations, as documented above                                 | Per the framing rules above                                      |
+| `EQUERYLOOPREQUIRED` / `EQUERYITEMTOOLARGE` / `EQUERYSNAPSHOTTOOLARGE` | Pagination contract violations, as documented above                            | Per the pagination rules above                                   |
+| `ESCHEMA`                                                              | A document does not match the head schema, or a schema is invalid              | Do not retry; fix the document or schema                         |
+| `ESCHEMACONFLICT`                                                      | A pushed schema label is already committed with different content              | Do not retry; give the changed schema a new version label        |
+| `ESCHEMAUNAVAILABLE`                                                   | This build cannot validate the collection's head schema version                | Do not retry; push the schema natively, or write natively        |
+| `EVDBX_NOT_VDBX` / `EVDBX_VERSION`                                     | The file is not a `.vdbx` database, or needs a newer FYLO                      | Do not retry; open it with a build that supports it              |
+| `EVDBX_CORRUPT`                                                        | A `.vdbx` structure failed its checks                                          | Do not retry; run `fylo verify <db.vdbx>`                        |
+| `ENATIVE_IO`                                                           | Native filesystem I/O failed, including disk pressure or xattr operations      | Treat a mutation as ambiguous; inspect the cause before retrying |
+| `EUNKNOWN`                                                             | An engine failure without a more specific classification                       | Treat conservatively; inspect `error.message` diagnostically     |
 
 Storage-level failures may carry additional stable codes (for example
 `FYLO_COLLECTION_NOT_FOUND`); those retain their meaning across releases under

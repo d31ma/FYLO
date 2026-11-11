@@ -203,6 +203,12 @@ final class Fylo: NSObject {
     @discardableResult func findPage(_ collection: String, _ query: [String: Any]) async throws -> Any? {
         try await request("findPage", ["collection": collection, "query": query])
     }
+    @discardableResult func changes(_ collection: String, _ after: String? = nil, _ limit: Int? = nil) async throws -> Any? {
+        var args: [String: Any] = ["collection": collection]
+        args["after"] = after
+        args["limit"] = limit
+        return try await request("changes", args)
+    }
 
     /// Run raw SQL against the local store. Native interpolation is verbatim —
     /// escape/validate untrusted input yourself.
@@ -289,6 +295,9 @@ struct FyloCollection {
     }
     @discardableResult func page(_ query: [String: Any]) async throws -> Any? {
         try await db.findPage(name, query)
+    }
+    @discardableResult func changes(_ after: String? = nil, _ limit: Int? = nil) async throws -> Any? {
+        try await db.changes(name, after, limit)
     }
 }
 

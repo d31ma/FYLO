@@ -749,6 +749,46 @@ for (const storage of STORAGES) {
     })
 }
 
+test('the change feed reads a working copy as native does, and follows browser writes', async ({
+    page
+}) => {
+    test.setTimeout(300_000)
+    const harness = await VdbxPage.open(page)
+    await requireOpfs(harness)
+    const { paths, smallIds } = fixture
+    const firstPage = { op: 'changes', collection: 'notes', after: null, limit: 25 }
+    const [native] = expectOk(nativeExec(fixture.small, [firstPage]), 'native change feed')
+    const opened = await harness.open({
+        kind: 'copy',
+        label: 'changes.vdbx',
+        url: paths.url('small.vdbx')
+    })
+    try {
+        const [browser] = expectOk(await harness.exec(opened.id, [firstPage]), 'browser feed')
+        expect(browser.result, 'the browser reads the feed native reads').toEqual(native.result)
+        expect(browser.result.more).toBe(true)
+        const [rest] = expectOk(
+            await harness.exec(opened.id, [{ ...firstPage, after: browser.result.cursor, limit: 100 }])
+        )
+        expect(rest.result.changes.length + browser.result.changes.length).toBe(smallIds.length)
+        const writes = [
+            { op: 'patchDoc', collection: 'notes', id: smallIds[0], newDoc: { title: 'again' } },
+            { op: 'delDoc', collection: 'notes', id: smallIds[1] }
+        ]
+        expectOk(await harness.exec(opened.id, writes), 'browser writes')
+        const [later] = expectOk(
+            await harness.exec(opened.id, [{ ...firstPage, after: rest.result.cursor }])
+        )
+        expect(later.result.changes).toEqual([
+            { id: smallIds[0], kind: 'put' },
+            { id: smallIds[1], kind: 'delete' }
+        ])
+        expect(later.result.more).toBe(false)
+    } finally {
+        await harness.close(opened.id)
+    }
+})
+
 test('a picked file and a hosted file refuse writes and keep their bytes', async ({
     page
 }, testInfo) => {

@@ -335,6 +335,13 @@ func (f *Fylo) FindPage(collection string, query map[string]any) (any, error) {
 func (f *Fylo) FindDeletedDocsPage(collection string, query, page map[string]any) (any, error) {
 	return f.op("findDeletedDocs", map[string]any{"collection": collection, "query": query, "page": page})
 }
+func (f *Fylo) Changes(collection string, after *string, limit *int) (any, error) {
+	fields := map[string]any{"collection": collection, "after": after}
+	if limit != nil {
+		fields["limit"] = *limit
+	}
+	return f.op("changes", fields)
+}
 func (f *Fylo) JoinDocs(join map[string]any) (any, error) {
 	return f.op("joinDocs", map[string]any{"join": join})
 }
@@ -431,4 +438,8 @@ func (c *Collection) FindPage(query, page map[string]any) (any, error) {
 }
 func (c *Collection) Page(query map[string]any) (any, error) {
 	return c.fylo.FindPage(c.name, query)
+}
+
+func (c *Collection) Changes(after *string, limit *int) (any, error) {
+	return c.fylo.Changes(c.name, after, limit)
 }

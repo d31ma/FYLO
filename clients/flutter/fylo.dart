@@ -369,6 +369,9 @@ class Fylo {
   // --- Query ---
   Future<dynamic> findDocs(String collection, Map<String, dynamic> query) =>
       request('findDocs', {'collection': collection, 'query': query});
+  Future<dynamic> changes(String collection, [String? after, int? limit]) =>
+      request('changes',
+          {'collection': collection, 'after': after, 'limit': limit});
 
   /// One page of a query with $sort: {items, nextCursor}. Pass nextCursor as
   /// $after for the next page.
@@ -452,4 +455,6 @@ class FyloCollection {
       _db.findDocs(_name, query);
   Future<dynamic> page(Map<String, dynamic> query) =>
       _db.findPage(_name, query);
+  Future<dynamic> changes([String? after, int? limit]) =>
+      _db.changes(_name, after, limit);
 }

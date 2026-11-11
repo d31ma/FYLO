@@ -463,9 +463,11 @@ impl NativeWriteRoot {
         match layout {
             CollectionLayout::Segments => {
                 descriptor.insert("layout".into(), Value::from(layout.as_str()));
+                crate::change_lineage::ChangeLineage::insert_fresh(&mut descriptor)?;
             }
             CollectionLayout::Files => {
                 descriptor.remove("layout");
+                descriptor.remove(crate::change_lineage::ChangeLineage::DESCRIPTOR_KEY);
             }
         }
         let mut encoded = serde_json::to_vec(&descriptor).map_err(|error| json_error(&error))?;

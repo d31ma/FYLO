@@ -338,6 +338,9 @@ class Fylo {
           Map<String, dynamic> query, Map<String, dynamic> page) =>
       _op('findDeletedDocs',
           {'collection': collection, 'query': query, 'page': page});
+  Future<dynamic> changes(String collection, [String? after, int? limit]) =>
+      _op('changes',
+          {'collection': collection, 'after': after, 'limit': limit});
   Future<dynamic> joinDocs(Map<String, dynamic> join) =>
       _op('joinDocs', {'join': join});
   Future<dynamic> executeSQL(String sql) => _op('executeSQL', {'sql': sql});
@@ -391,4 +394,6 @@ class FyloCollection {
       _db.findDocsPage(_name, query, page);
   Future<dynamic> page(Map<String, dynamic> query) =>
       _db.findPage(_name, query);
+  Future<dynamic> changes([String? after, int? limit]) =>
+      _db.changes(_name, after, limit);
 }

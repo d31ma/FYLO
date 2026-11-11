@@ -38,6 +38,10 @@
             "retryable": false
         },
         {
+            "code": "ECURSOR_EXPIRED",
+            "retryable": false
+        },
+        {
             "code": "EINVALIDCURSOR",
             "retryable": false
         },

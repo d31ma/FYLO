@@ -13,6 +13,7 @@ for (const helper of ['ttid', 'chex']) {
 const registry = JSON.parse(await readFile('api/machine/v1/operations.json', 'utf8'))
 const canonicalOperations = registry.operations.map(({ name }) => name).sort()
 const candidateOnlyOperations = [
+    'changes',
     'compactCollection',
     'getFileData',
     'inspectDatabase',
@@ -313,6 +314,11 @@ async function runScenario(label, binary, root) {
             await request(
                 'compact-segmented',
                 { op: 'compactCollection', collection: 'segmented' },
+                { record: false }
+            )
+            await request(
+                'changes-segmented',
+                { op: 'changes', collection: 'segmented', after: null, limit: 10 },
                 { record: false }
             )
             await request(

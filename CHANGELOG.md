@@ -52,6 +52,15 @@
   again. `listWorkingCopies` and `removeWorkingCopy` take `{ storage }`.
   The open copy is held in the Worker's memory (zero pages are not stored
   or held).
+- **A change feed (ADR 0024).** The new `changes` operation returns, for a
+  collection in the segments layout or in a `.vdbx` database, every document
+  whose newest change follows a cursor (`put` or `delete`), oldest first,
+  with a durable cursor that survives restarts. It is in every language
+  client and in both browser engines. A cursor expires only when the
+  collection's change history starts again (a drop and re-create, a pack, a
+  rekey, a layout move, an older copy), with the new error
+  `ECURSOR_EXPIRED`. A collection in the files layout is refused with
+  `ELAYOUTUNSUPPORTED`.
 - **`tpm:<name>` identities on Windows (ADR 0021 section 8, phase 8).**
   `fylo identity create --store tpm:<name>` makes a P-256 key inside the
   TPM 2.0 through the Microsoft Platform Crypto Provider; it is never

@@ -188,6 +188,8 @@ class Fylo private constructor(
     // --- Query ---
     suspend fun findDocs(collection: String, query: Map<String, Any?>): Any? =
         request("findDocs", mapOf("collection" to collection, "query" to query))
+    suspend fun changes(collection: String, after: String? = null, limit: Int? = null): Any? =
+        request("changes", mapOf("collection" to collection, "after" to after, "limit" to limit))
 
     /** One page of a query with $sort: {items, nextCursor}. Pass nextCursor as $after for the next page. */
     suspend fun findPage(collection: String, query: Map<String, Any?>): Any? =
@@ -225,6 +227,7 @@ class Fylo private constructor(
         suspend fun restore(id: String) = restoreDoc(name, id)
         suspend fun find(query: Map<String, Any?>) = findDocs(name, query)
         suspend fun page(query: Map<String, Any?>) = findPage(name, query)
+        suspend fun changes(after: String? = null, limit: Int? = null) = changes(name, after, limit)
     }
 
     /** Release the WebView. Call from the main thread. */

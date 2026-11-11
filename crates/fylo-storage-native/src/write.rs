@@ -1686,6 +1686,7 @@ impl NativeWriteRoot {
                     "layout".into(),
                     Value::from(CollectionLayout::Segments.as_str()),
                 );
+                crate::change_lineage::ChangeLineage::insert_fresh(&mut descriptor)?;
             }
             if versioned == Some(false) {
                 descriptor.insert("versioned".into(), Value::from(false));
@@ -1764,12 +1765,15 @@ impl NativeWriteRoot {
             ));
         }
         let width = super::validated_shard_width(self.config.shard_width)?;
-        self.add_database_collection(collection_name, Self::database_descriptor(width))
+        self.add_database_collection(collection_name, Self::database_descriptor(width)?)
     }
 
     /// The catalog descriptor of a new collection of a `.vdbx` database: a
-    /// document collection in segments at shard width `width`.
-    pub(crate) fn database_descriptor(width: u32) -> Map<String, Value> {
+    /// document collection in segments at shard width `width`, with a fresh
+    /// change lineage.
+    pub(crate) fn database_descriptor(
+        width: u32,
+    ) -> Result<Map<String, Value>, NativeStorageError> {
         let mut descriptor = Map::new();
         descriptor.insert("version".into(), Value::from(1));
         descriptor.insert("kind".into(), Value::from("document"));
@@ -1778,7 +1782,8 @@ impl NativeWriteRoot {
             "layout".into(),
             Value::from(CollectionLayout::Segments.as_str()),
         );
-        descriptor
+        crate::change_lineage::ChangeLineage::insert_fresh(&mut descriptor)?;
+        Ok(descriptor)
     }
 
     /// Add the collection `collection_name` with catalog descriptor

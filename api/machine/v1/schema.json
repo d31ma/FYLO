@@ -30,6 +30,7 @@
                         "setMeta",
                         "findDocs",
                         "findDeletedDocs",
+                        "changes",
                         "restoreDoc",
                         "joinDocs",
                         "putData",
@@ -108,6 +109,7 @@
                     "maximum": 86400000
                 },
                 "limit": { "type": "integer", "minimum": 1, "maximum": 1000 },
+                "after": { "type": ["string", "null"] },
                 "source": { "type": "string" },
                 "from": { "type": "string" },
                 "to": { "type": "string" },

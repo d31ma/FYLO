@@ -38,6 +38,9 @@ mod beneath_open;
 #[cfg(not(target_family = "wasm"))]
 mod byte_range_lock;
 mod catalog_keys;
+mod change_feed;
+mod change_lineage;
+mod change_page;
 mod catalog_rotation_notice;
 mod collection_keys;
 mod collection_layout;
@@ -55,6 +58,7 @@ mod database_access;
 mod database_access_error;
 mod database_identity;
 mod database_key;
+mod document_change;
 mod document_rekey;
 mod durability;
 #[cfg(unix)]
@@ -107,7 +111,9 @@ pub use byte_range_lock::{
     FilesystemInfo, LOCK_RANGE_START, LockByte, LockMode, MAX_POLL_INTERVAL,
 };
 pub use catalog_rotation_notice::CatalogRotationNotice;
+pub use change_page::ChangePage;
 pub use collection_layout::CollectionLayout;
+pub use document_change::DocumentChange;
 #[cfg(not(target_family = "wasm"))]
 pub use container_access::{ContainerWriteAccess, ContainerWriteOptions};
 pub use container_allocator::{
@@ -643,6 +649,7 @@ impl NativeRoot {
                 schema_head: None,
                 encrypted: None,
                 words: None,
+                change_lineage: None,
             });
         let namespace = match descriptor.kind {
             CollectionKind::Document => ".collections",
@@ -1676,6 +1683,9 @@ struct CollectionDescriptor {
     /// Field paths whose string values get word keys (ADR 0023 section 1).
     #[serde(default)]
     words: Option<Vec<String>>,
+    /// The change-feed lineage (ADR 0024); absent before lineages existed.
+    #[serde(default)]
+    change_lineage: Option<String>,
 }
 
 impl CollectionDescriptor {
@@ -2181,6 +2191,30 @@ impl NativeCollection {
             return Ok(self.segment_store()?.ids(segments::LocationState::Live));
         }
         self.document_ids_at(&self.path.join("docs"))
+    }
+
+    /// One page of the collection's change feed: each document whose newest
+    /// change follows `after` (a sequence number and an identifier), at most
+    /// `limit` of them, oldest first (ADR 0024).
+    ///
+    /// # Errors
+    ///
+    /// Returns `LayoutUnsupported` for a collection outside the segments
+    /// layout, and an error for a collection whose log cannot be read.
+    pub fn changes_after(
+        &self,
+        after: (u64, &str),
+        limit: usize,
+    ) -> Result<ChangePage, NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        change_feed::ChangeFeed::page(self, after, limit)
+    }
+
+    pub(crate) fn change_lineage(&self) -> Result<Option<String>, NativeStorageError> {
+        Ok(self
+            .root
+            .collection_descriptor(&self.name)?
+            .and_then(|descriptor| descriptor.change_lineage))
     }
 
     /// List validated retained tombstone identifiers.

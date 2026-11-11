@@ -13,7 +13,7 @@ export default class {
             items: 'getDoc, getFileData, getLatest, putData, batchPutData, patchDoc, patchDocs, delDoc, delDocs, restoreDoc, importBulkData'
         },
         { group: 'Metadata', items: 'getMeta, setMeta' },
-        { group: 'Queries', items: 'findDocs, findDeletedDocs, joinDocs, executeSQL' },
+        { group: 'Queries', items: 'findDocs, findDeletedDocs, changes, joinDocs, executeSQL' },
         {
             group: 'Version control',
             items: 'checkout, branch, commit, log, status, diff, restoreCommit, merge'

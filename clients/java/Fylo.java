@@ -539,6 +539,12 @@ public final class Fylo implements AutoCloseable {
     public String findDeletedDocsPage(String collection, Map<String, Object> query, Map<String, Object> page) throws IOException {
         return op("findDeletedDocs", "collection", collection, "query", query, "page", page);
     }
+    public String changes(String collection, String after) throws IOException {
+        return op("changes", "collection", collection, "after", after);
+    }
+    public String changes(String collection, String after, int limit) throws IOException {
+        return op("changes", "collection", collection, "after", after, "limit", limit);
+    }
     public String executeSQL(String sql) throws IOException {
         return op("executeSQL", "sql", sql);
     }
@@ -610,6 +616,13 @@ public final class Fylo implements AutoCloseable {
         }
         public String page(Map<String, Object> query) throws IOException {
             return Fylo.this.findPage(name, query);
+        }
+
+        public String changes(String after) throws IOException {
+            return Fylo.this.changes(name, after);
+        }
+        public String changes(String after, int limit) throws IOException {
+            return Fylo.this.changes(name, after, limit);
         }
     }
 

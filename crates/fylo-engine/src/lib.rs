@@ -1720,6 +1720,31 @@ impl ReadOnlyEngine {
         Ok(Some(record))
     }
 
+    /// One page of `collection`'s change feed after `after` (a sequence
+    /// number and a document identifier), read at one stable generation
+    /// (ADR 0024).
+    ///
+    /// # Errors
+    ///
+    /// Returns a stable error for a collection outside the segments layout or
+    /// unreadable storage.
+    pub fn changes(
+        &self,
+        collection: &str,
+        after: (u64, &str),
+        limit: usize,
+    ) -> Result<fylo_storage_native::ChangePage, EngineError> {
+        let collection = self
+            .root
+            .collection(collection)
+            .map_err(EngineError::storage)?;
+        Self::read_stable(&collection, || {
+            collection
+                .changes_after(after, limit)
+                .map_err(EngineError::storage)
+        })
+    }
+
     /// Execute a structured query across retained tombstones.
     ///
     /// Ordering and predicate semantics match the live cursor; only the source

@@ -29,6 +29,16 @@ export class BrowserEventBus {
 
     /**
      * @param {string} collection
+     * @returns {Promise<string>}
+     */
+    async journal(collection) {
+        const path = this.journalPath(collection)
+        if (!(await this.fs.exists(path))) return ''
+        return await this.fs.readText(path)
+    }
+
+    /**
+     * @param {string} collection
      * @param {BrowserEvent} event
      * @returns {Promise<void>}
      */

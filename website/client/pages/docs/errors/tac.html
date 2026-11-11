@@ -72,6 +72,11 @@
                         <td>Do not retry; fix the key configuration.</td>
                     </tr>
                     <tr>
+                        <td><code>ECURSOR_EXPIRED</code></td>
+                        <td>The change cursor is from before the collection's change history started again.</td>
+                        <td>Read the collection again, then continue from after: null.</td>
+                    </tr>
+                    <tr>
                         <td><code>EINVALIDCURSOR</code></td>
                         <td>The pagination cursor is invalid, expired, or from another process.</td>
                         <td>Restart the traversal from page one.</td>

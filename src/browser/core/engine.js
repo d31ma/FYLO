@@ -8,6 +8,7 @@ import { BrowserDocuments } from './documents.js'
 import { MetadataRecord } from './metadata-record.js'
 import { BrowserMetadataStore } from './browser-metadata-store.js'
 import { BrowserEventBus } from './browser-event-bus.js'
+import { BrowserChangeFeed } from './browser-change-feed.js'
 import { BrowserPrefixIndex } from './prefix-index.js'
 import { BrowserQueryEngine, documentNumber } from './query.js'
 import { BrowserSortOrder } from './sort-order.js'
@@ -917,6 +918,18 @@ export class BrowserCore {
                 yield* collectDocs()
             }
         }
+    }
+
+    /**
+     * @param {string} collection
+     * @param {string | null} [after]
+     * @param {number} [limit]
+     * @returns {Promise<import('./browser-change-feed.js').BrowserChangePage>}
+     */
+    async changes(collection, after = null, limit = undefined) {
+        this.assertCollectionName(collection)
+        const journal = await this.events.journal(collection)
+        return BrowserChangeFeed.page(journal, after, limit)
     }
 
     /**

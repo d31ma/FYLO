@@ -206,7 +206,8 @@ export class Fylo {
             restore: (id) => this.restoreDoc(name, id),
             find: (query) => this.findDocs(name, query),
             findPage: (query, page) => this.findDocsPage(name, query, page),
-            page: (query) => this.findPage(name, query)
+            page: (query) => this.findPage(name, query),
+            changes: (after, limit) => this.changes(name, after, limit)
         }
     }
 
@@ -506,6 +507,15 @@ export class Fylo {
     }
     findDeletedDocsPage(collection, query = {}, page = {}) {
         return this._op('findDeletedDocs', { collection, query, page })
+    }
+    /**
+     * @param {string} collection
+     * @param {string | null} [after]
+     * @param {number} [limit]
+     * @returns {Promise<{ changes: { id: string, kind: 'put' | 'delete' }[], cursor: string, more: boolean }>}
+     */
+    changes(collection, after = null, limit) {
+        return this._op('changes', { collection, after, limit })
     }
     joinDocs(join) {
         return this._op('joinDocs', { join })

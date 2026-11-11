@@ -506,7 +506,7 @@ impl NativeWriteRoot {
         source: &NativeCollection,
     ) -> Result<Vec<Vec<u8>>, NativeStorageError> {
         let versions = self.registry_versions(source)?;
-        let mut descriptor = Self::database_descriptor(source.shard_width());
+        let mut descriptor = Self::database_descriptor(source.shard_width())?;
         if let Some(mode) = source.validation() {
             descriptor.insert("validation".into(), Value::from(mode.as_str()));
         }

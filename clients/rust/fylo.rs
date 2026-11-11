@@ -531,6 +531,21 @@ impl Fylo {
             page.encode()
         ))
     }
+    pub fn changes(
+        &mut self,
+        collection: &str,
+        after: Option<&str>,
+        limit: Option<usize>,
+    ) -> std::io::Result<String> {
+        let after = after.map_or(Json::Null, Json::from);
+        let limit = limit.map_or(String::new(), |count| format!(r#","limit":{}"#, count));
+        self.checked(format!(
+            r#"{{"op":"changes","collection":"{}","after":{}{}}}"#,
+            esc(collection),
+            after.encode(),
+            limit
+        ))
+    }
     pub fn execute_sql(&mut self, sql: &str) -> std::io::Result<String> {
         self.checked(format!(r#"{{"op":"executeSQL","sql":"{}"}}"#, esc(sql)))
     }
@@ -805,6 +820,14 @@ impl<'a> Collection<'a> {
     }
     pub fn page(&mut self, query: Json) -> std::io::Result<String> {
         self.db.find_page(&self.name, query)
+    }
+
+    pub fn changes(
+        &mut self,
+        after: Option<&str>,
+        limit: Option<usize>,
+    ) -> std::io::Result<String> {
+        self.db.changes(&self.name, after, limit)
     }
 }
 

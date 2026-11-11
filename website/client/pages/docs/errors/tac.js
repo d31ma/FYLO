@@ -49,6 +49,11 @@ export default class {
             retry: 'Do not retry; fix the key configuration.'
         },
         {
+            code: 'ECURSOR_EXPIRED',
+            meaning: "The change cursor is from before the collection's change history started again.",
+            retry: 'Read the collection again, then continue from after: null.'
+        },
+        {
             code: 'EINVALIDCURSOR',
             meaning: 'The pagination cursor is invalid, expired, or from another process.',
             retry: 'Restart the traversal from page one.'

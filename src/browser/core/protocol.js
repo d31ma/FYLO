@@ -169,6 +169,12 @@ const BROWSER_OPERATIONS = {
             requireString(request, 'collection'),
             isRecord(request.query) ? request.query : {}
         ),
+    changes: (fylo, request) =>
+        fylo.changes(
+            requireString(request, 'collection'),
+            request.after ?? null,
+            request.limit ?? undefined
+        ),
     findDeletedDocs: (fylo, request) =>
         collectDeletedDocs(
             fylo,

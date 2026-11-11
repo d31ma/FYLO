@@ -318,6 +318,17 @@ export class FyloBrowser {
         }
     }
 
+    /**
+     * @param {string} collection
+     * @param {string | null} [after]
+     * @param {number} [limit]
+     * @returns {Promise<import('./core/browser-change-feed.js').BrowserChangePage>}
+     */
+    async changes(collection, after = null, limit = undefined) {
+        if (!this.worker && this.core) return await this.core.changes(collection, after, limit)
+        return await this.dispatch({ op: 'changes', collection, after, limit })
+    }
+
     /** @param {string} collection @param {Record<string, any>} [query] */
     findDeletedDocs(collection, query = {}) {
         const fylo = this
@@ -514,6 +525,11 @@ export class BrowserCollectionFacade {
             return self.fylo.findDeletedDocs(self.collection, query)
         }
         this.find = find
+    }
+
+    /** @param {string | null} [after] @param {number} [limit] */
+    changes(after = null, limit = undefined) {
+        return this.fylo.changes(this.collection, after, limit)
     }
 
     /** @param {string} id @param {boolean} [onlyId] */
