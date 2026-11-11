@@ -454,31 +454,7 @@ impl StructuredQuery {
         }
         let created = parse_timestamp_range(object.get("$created"))?;
         let updated = parse_timestamp_range(object.get("$updated"))?;
-        let limit = match object.get("$limit") {
-            None => None,
-            Some(Value::Number(number)) => number
-                .as_u64()
-                .map(usize::try_from)
-                .transpose()
-                .map_err(|_| {
-                    QueryError::new(
-                        QueryErrorCode::InvalidQuery,
-                        "$limit exceeds this platform's address space",
-                    )
-                })?,
-            Some(_) => {
-                return Err(QueryError::new(
-                    QueryErrorCode::InvalidQuery,
-                    "$limit must be a non-negative integer",
-                ));
-            }
-        };
-        if object.contains_key("$limit") && limit.is_none() {
-            return Err(QueryError::new(
-                QueryErrorCode::InvalidQuery,
-                "$limit must be a non-negative integer",
-            ));
-        }
+        let limit = parse_limit(object)?;
         let sort = SortOrder::parse(object)?;
         let after = parse_after(object.get("$after"), sort.as_ref())?;
         Ok(Self {
@@ -716,6 +692,36 @@ fn matches_operand(value: FieldValue<'_>, operators: &Map<String, Value>) -> boo
         }
     }
     true
+}
+
+fn parse_limit(object: &Map<String, Value>) -> Result<Option<usize>, QueryError> {
+    let limit =
+        match object.get("$limit") {
+            None => None,
+            Some(Value::Number(number)) => number
+                .as_u64()
+                .map(usize::try_from)
+                .transpose()
+                .map_err(|_| {
+                    QueryError::new(
+                        QueryErrorCode::InvalidQuery,
+                        "$limit exceeds this platform's address space",
+                    )
+                })?,
+            Some(_) => {
+                return Err(QueryError::new(
+                    QueryErrorCode::InvalidQuery,
+                    "$limit must be a non-negative integer",
+                ));
+            }
+        };
+    if object.contains_key("$limit") && limit.is_none() {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidQuery,
+            "$limit must be a non-negative integer",
+        ));
+    }
+    Ok(limit)
 }
 
 fn parse_after(

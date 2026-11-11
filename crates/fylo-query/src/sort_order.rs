@@ -1,3 +1,5 @@
+use std::fmt::Write;
+
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
@@ -172,7 +174,7 @@ impl SortOrder {
         let digest = Sha256::digest(encoded);
         let mut hex = String::with_capacity(Self::DIGEST_BYTES * 2);
         for byte in &digest[..Self::DIGEST_BYTES] {
-            hex.push_str(&format!("{byte:02x}"));
+            let _ = write!(hex, "{byte:02x}");
         }
         hex
     }
