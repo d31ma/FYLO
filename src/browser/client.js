@@ -194,6 +194,22 @@ export class BrowserDirectCollection {
         return await this.host.rebuildCollection(this.collection)
     }
 
+    /**
+     * Replace the collection's word fields and rebuild its index (ADR 0023).
+     * @param {string[]} fields
+     */
+    async words(fields) {
+        return await this.#req('setWordFields', { fields })
+    }
+
+    /**
+     * One page of a query with `$sort`: `{ items, nextCursor }` (ADR 0023).
+     * @param {Record<string, any>} [query]
+     */
+    async page(query = {}) {
+        return await this.#req('findPage', { query })
+    }
+
     /** @param {import('./core/types.js').BrowserOperation} op @param {Record<string, any>} [fields] */
     async #req(op, fields = {}) {
         await this.host.ready()

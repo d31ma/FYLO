@@ -25,6 +25,7 @@ const OPERATIONS = new Set([
     'dropCollection',
     'inspectCollection',
     'rebuildCollection',
+    'setWordFields',
     'putData',
     'getDoc',
     'getMeta',
@@ -34,6 +35,7 @@ const OPERATIONS = new Set([
     'delDoc',
     'restoreDoc',
     'findDocs',
+    'findPage',
     'executeSQL'
 ])
 
@@ -130,7 +132,10 @@ function validateArgs(method, args) {
     if (method === 'putData') requireObject(own(args, 'data'), 'data')
     if (method === 'setMeta') requireObject(own(args, 'meta'), 'meta')
     if (method === 'patchDoc') requireObject(own(args, 'newDoc'), 'newDoc')
-    if (method === 'findDocs' && own(args, 'query') !== undefined) {
+    if (method === 'setWordFields' && !Array.isArray(own(args, 'fields'))) {
+        throw bridgeError('fields must be an array of field paths', 'EBADREQUEST')
+    }
+    if (['findDocs', 'findPage'].includes(method) && own(args, 'query') !== undefined) {
         requireObject(own(args, 'query'), 'query')
     }
     return args
@@ -225,6 +230,10 @@ async function route(method, a) {
             return col.inspect()
         case 'rebuildCollection':
             return col.rebuild()
+        case 'setWordFields':
+            return col.words(own(a, 'fields') ?? [])
+        case 'findPage':
+            return col.page(own(a, 'query') ?? {})
         case 'putData':
             return col.put(own(a, 'data'))
         case 'getDoc':

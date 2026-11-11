@@ -243,6 +243,28 @@ export class FyloBrowser {
         return await this.dispatch({ op: 'rebuildCollection', collection })
     }
 
+    /**
+     * Replace the collection's word fields, whose words `$match` finds from
+     * the index, and rebuild its index (ADR 0023).
+     * @param {string} collection
+     * @param {string[]} fields
+     * @returns {Promise<unknown>}
+     */
+    async setWordFields(collection, fields) {
+        return await this.dispatch({ op: 'setWordFields', collection, fields })
+    }
+
+    /**
+     * One page of a query with `$sort`: `{ items, nextCursor }`; pass
+     * `nextCursor` as `$after` for the next page (ADR 0023).
+     * @param {string} collection
+     * @param {Record<string, any>} [query]
+     * @returns {Promise<unknown>}
+     */
+    async findPage(collection, query = {}) {
+        return await this.dispatch({ op: 'findPage', collection, query })
+    }
+
     /** @param {string} collection @param {string} id @param {boolean} [onlyId] */
     getDoc(collection, id, onlyId = false) {
         const fylo = this
@@ -516,6 +538,16 @@ export class BrowserCollectionFacade {
 
     async rebuild() {
         return await this.fylo.rebuildCollection(this.collection)
+    }
+
+    /** @param {string[]} fields */
+    async words(fields) {
+        return await this.fylo.setWordFields(this.collection, fields)
+    }
+
+    /** @param {Record<string, any>} [query] */
+    async page(query = {}) {
+        return await this.fylo.findPage(this.collection, query)
     }
 
     /** @param {Record<string, any>} [options] */

@@ -59,7 +59,7 @@
  */
 
 /**
- * @typedef {'executeSQL' | 'createCollection' | 'dropCollection' | 'inspectCollection' | 'rebuildCollection' | 'getDoc' | 'getLatest' | 'getMeta' | 'setMeta' | 'findDocs' | 'findDeletedDocs' | 'restoreDoc' | 'joinDocs' | 'putData' | 'batchPutData' | 'patchDoc' | 'patchDocs' | 'delDoc' | 'delDocs'} BrowserOperation
+ * @typedef {'executeSQL' | 'createCollection' | 'dropCollection' | 'inspectCollection' | 'rebuildCollection' | 'setWordFields' | 'findPage' | 'getDoc' | 'getLatest' | 'getMeta' | 'setMeta' | 'findDocs' | 'findDeletedDocs' | 'restoreDoc' | 'joinDocs' | 'putData' | 'batchPutData' | 'patchDoc' | 'patchDocs' | 'delDoc' | 'delDocs'} BrowserOperation
  */
 
 /**
@@ -80,6 +80,7 @@
  * @property {StoreUpdate=} update
  * @property {StoreDelete=} delete
  * @property {Record<string, any>=} options
+ * @property {string[]=} fields word fields for setWordFields (ADR 0023)
  */
 
 /**

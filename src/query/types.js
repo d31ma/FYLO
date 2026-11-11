@@ -26,6 +26,7 @@
  * @property {number=} $lte
  * @property {string=} $like
  * @property {string | number | boolean=} $contains
+ * @property {string=} $match words that must each start a word of the field (ADR 0023)
  */
 
 /**
@@ -67,6 +68,8 @@
  * @property {TimestampQuery=} $updated
  * @property {TimestampQuery=} $created
  * @property {TimestampQuery=} $deleted
+ * @property {Record<string, 'asc' | 'desc'>=} $sort one numeric field to order by, from the index (ADR 0023)
+ * @property {string=} $after the `nextCursor` of the previous sorted page
  */
 
 /**

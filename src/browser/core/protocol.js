@@ -54,7 +54,7 @@ export function requireObjectArray(request, field) {
     if (!Array.isArray(value) || value.some((item) => !isRecord(item))) {
         throw new Error(`FYLO browser request field "${String(field)}" must be an array of objects`)
     }
-    return value
+    return /** @type {Record<string, any>[]} */ (value)
 }
 
 /**
@@ -131,6 +131,16 @@ const BROWSER_OPERATIONS = {
         fylo.inspectCollection(requireString(request, 'collection')),
     rebuildCollection: (fylo, request) =>
         fylo.rebuildCollection(requireString(request, 'collection')),
+    setWordFields: (fylo, request) =>
+        fylo.setWordFields(
+            requireString(request, 'collection'),
+            Array.isArray(request.fields) ? request.fields : []
+        ),
+    findPage: (fylo, request) =>
+        fylo.findPage(
+            requireString(request, 'collection'),
+            isRecord(request.query) ? request.query : {}
+        ),
     getDoc: (fylo, request) =>
         fylo
             .getDoc(

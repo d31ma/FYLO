@@ -1,5 +1,7 @@
 import { matchesLike } from '../../query/like.js'
 import { copySafeRecord, safeRecord } from '../../query/safe-record.js'
+import { BrowserPrefixIndexCodec } from './prefix-index.js'
+import { WordText } from './word-text.js'
 
 /**
  * JavaScript `Number` for a string, restricted the way the Rust index writer
@@ -183,7 +185,8 @@ export class BrowserQueryEngine {
             $lte: (expected) => this.matchesNumber(value, '$lte', expected),
             $like: (expected) => typeof value === 'string' && this.matchesLike(value, expected),
             $contains: (expected) =>
-                Array.isArray(value) && value.some((item) => looseEqual(item, expected))
+                Array.isArray(value) && value.some((item) => looseEqual(item, expected)),
+            $match: (expected) => this.matchesWords(value, expected)
         }
         const supplied = /** @type {Record<string, any>} */ (operand)
         for (const [operator, predicate] of Object.entries(predicates)) {
@@ -191,6 +194,40 @@ export class BrowserQueryEngine {
             if (!predicate(supplied[operator])) return false
         }
         return true
+    }
+
+    /**
+     * `$match`: every term of `expected` starts a word of the value's
+     * strings (ADR 0023 section 4).
+     * @param {unknown} value
+     * @param {unknown} expected
+     * @returns {boolean}
+     */
+    matchesWords(value, expected) {
+        const terms = BrowserPrefixIndexCodec.matchTerms(expected)
+        if (!terms) return false
+        const items = Array.isArray(value) ? value : [value]
+        const texts = items.filter((item) => typeof item === 'string')
+        return WordText.matchesTerms(texts, terms)
+    }
+
+    /**
+     * Refuse a `$match` operand without 1 to 16 words, before any read.
+     * @param {StoreQuery | undefined} query
+     * @returns {void}
+     */
+    validateWordOperands(query) {
+        for (const operation of query?.$ops ?? []) {
+            for (const operand of Object.values(operation ?? {})) {
+                const match = /** @type {Record<string, unknown> | null} */ (operand)?.$match
+                if (match === undefined) continue
+                if (BrowserPrefixIndexCodec.matchTerms(match)) continue
+                throw Object.assign(
+                    new Error(`$match must hold from 1 to ${WordText.MAX_TERMS} words`),
+                    { code: 'EQUERY_INVALID' }
+                )
+            }
+        }
     }
 
     /**
@@ -267,6 +304,16 @@ export class BrowserQueryEngine {
             })
             if (likeCandidates === null) return null
             candidateIds = this.intersectDocIds(candidateIds, likeCandidates)
+        }
+        const match = /** @type {Record<string, unknown>} */ (operand).$match
+        if (match !== undefined) {
+            const wordCandidates = await this.context.index.candidateDocIds(
+                collection,
+                fieldPath,
+                /** @type {Operand} */ ({ $match: match })
+            )
+            if (wordCandidates === null) return candidateIds
+            candidateIds = this.intersectDocIds(candidateIds, wordCandidates)
         }
         return candidateIds
     }

@@ -1,6 +1,7 @@
 import { stringifyStoredValue } from '../../storage/value-codec.js'
 import TTID from '../vendor/ttid.mjs'
 import { BrowserPath } from './browser-path.js'
+import { WordText } from './word-text.js'
 
 /**
  * Browser host for the canonical prefix-index format. Stores the same
@@ -273,9 +274,10 @@ export class BrowserPrefixIndexCodec {
      * @param {string} collection
      * @param {TTIDValue} docId
      * @param {Record<string, any>} data
+     * @param {string[]} [wordFields] field paths that also get word keys (ADR 0023)
      * @returns {Promise<string[]>}
      */
-    static async entriesForDocument(collection, docId, data) {
+    static async entriesForDocument(collection, docId, data, wordFields = []) {
         /** @type {string[]} */
         const entries = []
         /** @type {string[]} */
@@ -293,7 +295,11 @@ export class BrowserPrefixIndexCodec {
              */
             const planKey = (kind, plannedValue) => this.key(fieldPath, kind, plannedValue, docId)
 
-            exactEntries.push(this.key(fieldPath, 'eq', await lookupToken(value), docId))
+            const token = await lookupToken(value)
+            exactEntries.push(this.key(fieldPath, 'eq', token, docId))
+            if (wordFields.includes(fieldPath)) {
+                entries.push(...this.wordEntries(fieldPath, raw, token, docId))
+            }
 
             const numeric = numericValue(raw)
             const sortable = numeric === null ? '' : sortableFloat64(numeric)
@@ -343,12 +349,62 @@ export class BrowserPrefixIndexCodec {
     }
 
     /**
+     * The word witness key of one value of a word field, and its word keys
+     * when it is a string (ADR 0023 sections 3 and 8).
+     * @param {string} fieldPath
+     * @param {unknown} raw
+     * @param {string} token
+     * @param {TTIDValue} docId
+     * @returns {string[]}
+     */
+    static wordEntries(fieldPath, raw, token, docId) {
+        const entries = [this.key(fieldPath, 'wv', token, docId)]
+        if (typeof raw !== 'string') return entries
+        for (const word of WordText.words(raw)) {
+            entries.push(this.key(fieldPath, 'w', encodeSegment(word), docId))
+        }
+        return entries
+    }
+
+    /**
+     * The terms of a `$match` operand, or null when it holds no valid terms.
+     * @param {unknown} operand
+     * @returns {string[] | null}
+     */
+    static matchTerms(operand) {
+        if (typeof operand !== 'string') return null
+        const terms = WordText.words(operand)
+        if (terms.length === 0 || terms.length > WordText.MAX_TERMS) return null
+        return terms
+    }
+
+    /**
+     * The sortable key value of one stored value: its `n` value, or its `nr`
+     * value when descending; null when it has no number.
+     * @param {unknown} raw
+     * @param {boolean} descending
+     * @returns {string | null}
+     */
+    static sortableValue(raw, descending) {
+        const numeric = numericValue(raw)
+        const sortable = numeric === null ? '' : sortableFloat64(numeric)
+        if (!sortable) return null
+        return descending ? reverseSortable(sortable) : sortable
+    }
+
+    /**
      * @param {string} collection
      * @param {string} fieldPath
      * @param {Operand} operand
      * @returns {Promise<Array<{ kind: string, valuePrefix: string, range?: { op: '$gt' | '$gte' | '$lt' | '$lte', value: string } }> | null>}
      */
     static async queryPrefixes(collection, fieldPath, operand) {
+        const match = /** @type {Record<string, unknown>} */ (operand).$match
+        if (match !== undefined) {
+            const terms = this.matchTerms(match)
+            if (!terms) return null
+            return terms.map((term) => ({ kind: 'w', valuePrefix: encodeSegment(term) }))
+        }
         if (operand.$eq !== undefined) {
             return [
                 {
@@ -477,6 +533,8 @@ export class BrowserPrefixIndex {
         this.scannerSnapshots = new Map()
         /** @type {Map<string, { added: Set<string>, removed: Set<string> }>} */
         this.walOverlayCache = new Map()
+        /** @type {Map<string, string[]>} */
+        this.wordFieldsCache = new Map()
         /** @type {'loading' | 'active' | 'fallback'} */
         this.accelerationState = 'loading'
         /** @type {string | null} */
@@ -574,6 +632,7 @@ export class BrowserPrefixIndex {
 
     /** @param {string} collection @returns {Promise<void>} */
     async forgetCollection(collection) {
+        this.wordFieldsCache.delete(collection)
         this.snapshotCache.delete(collection)
         this.scannerSnapshots.delete(collection)
         this.walOverlayCache.delete(collection)
@@ -621,11 +680,111 @@ export class BrowserPrefixIndex {
         await writeIfMissing(this.fs, this.walPath(collection), '')
     }
 
-    /** @param {string} collection @returns {Promise<void>} */
-    async resetCollection(collection) {
+    /**
+     * Empty the collection's index, keeping its word fields, or replacing
+     * them with `wordFields` when given.
+     * @param {string} collection
+     * @param {string[]} [wordFields]
+     * @returns {Promise<void>}
+     */
+    async resetCollection(collection, wordFields) {
+        const words = wordFields ?? (await this.wordFields(collection))
         await this.forgetCollection(collection)
         await this.fs.rmdir(this.root(collection), { recursive: true })
         await this.ensureCollection(collection)
+        await this.writeWordFields(collection, words)
+    }
+
+    /**
+     * The collection's word fields, from its index manifest (ADR 0023).
+     * @param {string} collection
+     * @returns {Promise<string[]>}
+     */
+    async wordFields(collection) {
+        const cached = this.wordFieldsCache.get(collection)
+        if (cached) return cached
+        const manifest = await this.readManifest(collection)
+        const words = Array.isArray(manifest.words) ? manifest.words.map(String) : []
+        this.wordFieldsCache.set(collection, words)
+        return words
+    }
+
+    /**
+     * @param {string} collection
+     * @param {string[]} words
+     * @returns {Promise<void>}
+     */
+    async writeWordFields(collection, words) {
+        const manifest = await this.readManifest(collection)
+        manifest.format = LOCAL_FS_FORMAT
+        manifest.words = words
+        await this.fs.writeText(this.manifestPath(collection), `${JSON.stringify(manifest)}\n`)
+        this.wordFieldsCache.set(collection, words)
+    }
+
+    /**
+     * @param {string} collection
+     * @returns {Promise<Record<string, unknown>>}
+     */
+    async readManifest(collection) {
+        const text = await readTextIfExists(this.fs, this.manifestPath(collection))
+        if (!text.trim()) return {}
+        try {
+            const parsed = JSON.parse(text)
+            return parsed && typeof parsed === 'object' ? parsed : {}
+        } catch {
+            return {}
+        }
+    }
+
+    /**
+     * Every key that starts with `prefix` and sorts after `after`, from the
+     * snapshot and the write-ahead log, in order.
+     * @param {string} collection
+     * @param {string} prefix
+     * @param {string} [after]
+     * @returns {Promise<string[]>}
+     */
+    async keysWithPrefix(collection, prefix, after = '') {
+        await this.ensureCollection(collection)
+        const overlay = await this.loadWalOverlay(collection)
+        const bytes = await this.readSnapshotBytes(collection)
+        const start = after > prefix ? after : prefix
+        /** @type {string[]} */
+        const keys = []
+        for (const key of streamKeysFrom(bytes, this.findFirstKeyAtOrAfter(bytes, start))) {
+            if (!key.startsWith(prefix)) break
+            if (key > after && !overlay.removed.has(key)) keys.push(key)
+        }
+        for (const key of overlay.added) {
+            if (key.startsWith(prefix) && key > after) keys.push(key)
+        }
+        return [...new Set(keys)].sort()
+    }
+
+    /**
+     * Whether a word field's word keys are complete: its equality keys and
+     * its word witnesses name the same values and documents. A write by a
+     * release without word fields changes the first and not the second
+     * (ADR 0023 section 8).
+     * @param {string} collection
+     * @param {string} fieldPath
+     * @returns {Promise<boolean>}
+     */
+    async completeWordField(collection, fieldPath) {
+        if (!(await this.wordFields(collection)).includes(fieldPath)) return false
+        const equality = BrowserPrefixIndexCodec.prefix(fieldPath, 'eq')
+        const witness = BrowserPrefixIndexCodec.prefix(fieldPath, 'wv')
+        const values = (await this.keysWithPrefix(collection, equality)).map((key) =>
+            key.slice(equality.length)
+        )
+        const witnesses = (await this.keysWithPrefix(collection, witness)).map((key) =>
+            key.slice(witness.length)
+        )
+        return (
+            values.length === witnesses.length &&
+            values.every((value, at) => value === witnesses[at])
+        )
     }
 
     /**
@@ -755,7 +914,12 @@ export class BrowserPrefixIndex {
      * @returns {Promise<void>}
      */
     async putDocument(collection, docId, doc) {
-        const keys = await BrowserPrefixIndexCodec.entriesForDocument(collection, docId, doc)
+        const keys = await BrowserPrefixIndexCodec.entriesForDocument(
+            collection,
+            docId,
+            doc,
+            await this.wordFields(collection)
+        )
         await this.appendMutations(
             collection,
             keys.map((key) => ({ op: '+', key }))
@@ -769,7 +933,12 @@ export class BrowserPrefixIndex {
      * @returns {Promise<void>}
      */
     async removeDocument(collection, docId, doc) {
-        const keys = await BrowserPrefixIndexCodec.entriesForDocument(collection, docId, doc)
+        const keys = await BrowserPrefixIndexCodec.entriesForDocument(
+            collection,
+            docId,
+            doc,
+            await this.wordFields(collection)
+        )
         await this.appendMutations(
             collection,
             keys.map((key) => ({ op: '-', key }))
@@ -799,6 +968,8 @@ export class BrowserPrefixIndex {
      * @returns {Promise<Set<TTIDValue> | null>}
      */
     async candidateDocIds(collection, fieldPath, operand) {
+        const match = /** @type {Record<string, unknown>} */ (operand).$match !== undefined
+        if (match && !(await this.completeWordField(collection, fieldPath))) return null
         const prefixes = await BrowserPrefixIndexCodec.queryPrefixes(collection, fieldPath, operand)
         if (!prefixes) return null
         await this.ensureCollection(collection)

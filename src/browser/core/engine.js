@@ -10,6 +10,7 @@ import { BrowserMetadataStore } from './browser-metadata-store.js'
 import { BrowserEventBus } from './browser-event-bus.js'
 import { BrowserPrefixIndex } from './prefix-index.js'
 import { BrowserQueryEngine, documentNumber } from './query.js'
+import { BrowserSortOrder } from './sort-order.js'
 import { BrowserPath } from './browser-path.js'
 import { BrowserFeatureGuard } from './browser-feature-guard.js'
 import '../../core/extensions.js'
@@ -176,6 +177,7 @@ function explicitDocumentEntry(value) {
  * `.collections/<collection>/events/<collection>.ndjson`
  */
 export class BrowserCore {
+    static MAX_WORD_FIELDS = 16
     planner = new FyloQueryPlanner()
     /**
      * @param {BrowserCoreOptions} options
@@ -321,7 +323,7 @@ export class BrowserCore {
 
     /**
      * @param {string} collection
-     * @returns {Promise<{ collection: string, exists: boolean, worm: boolean, docsStored: number, deletedDocs: number, indexedDocs: number, indexAcceleration: ReturnType<BrowserPrefixIndex['accelerationStatus']> }>}
+     * @returns {Promise<{ collection: string, exists: boolean, worm: boolean, docsStored: number, deletedDocs: number, indexedDocs: number, wordFields?: string[], indexAcceleration: ReturnType<BrowserPrefixIndex['accelerationStatus']> }>}
      */
     async inspectCollection(collection) {
         const exists = await this.hasCollection(collection)
@@ -348,6 +350,7 @@ export class BrowserCore {
             docsStored: docIds.length,
             deletedDocs: deletedDocIds.length,
             indexedDocs,
+            wordFields: await this.index.wordFields(collection),
             indexAcceleration: this.index.accelerationStatus()
         }
     }
@@ -595,6 +598,11 @@ export class BrowserCore {
     /** @param {string} collection @param {StoreQuery | undefined} [query] @returns {Promise<Array<Record<string, Record<string, any>>>>} */
     async docResults(collection, query = {}) {
         await this.requireCollection(collection)
+        await this.prepareWordQuery(collection, query)
+        if (query.$sort !== undefined || query.$after !== undefined) {
+            const page = await this.sortedPage(collection, query)
+            return page.rows.map((row) => ({ [row.id]: clone(row.data) }))
+        }
         const candidateIds = await this.queryEngine.candidateDocIdsForQuery(collection, query)
         const ids = candidateIds
             ? Array.from(candidateIds)
@@ -610,6 +618,186 @@ export class BrowserCore {
             if (limit && results.length >= limit) break
         }
         return results
+    }
+
+    /**
+     * Refuse malformed `$match` operands, and rebuild a word index an older
+     * release left incomplete before the query is planned (ADR 0023).
+     * @param {string} collection
+     * @param {StoreQuery} query
+     * @returns {Promise<void>}
+     */
+    async prepareWordQuery(collection, query) {
+        this.queryEngine.validateWordOperands(query)
+        for (const field of this.matchFields(query)) {
+            if (!(await this.index.wordFields(collection)).includes(field)) continue
+            if (await this.index.completeWordField(collection, field)) continue
+            await this.rebuildCollection(collection)
+            return
+        }
+    }
+
+    /**
+     * @param {StoreQuery} query
+     * @returns {string[]}
+     */
+    matchFields(query) {
+        /** @type {string[]} */
+        const fields = []
+        for (const operation of query.$ops ?? []) {
+            for (const [field, operand] of Object.entries(operation ?? {})) {
+                if (/** @type {Record<string, unknown> | null} */ (operand)?.$match === undefined)
+                    continue
+                fields.push(BrowserCore.normalizeWordField(field))
+            }
+        }
+        return fields
+    }
+
+    /**
+     * One page of a sorted query from the sort field's numeric keys, in
+     * order, and the cursor of the next page (ADR 0023 sections 5 and 6).
+     * @param {string} collection
+     * @param {StoreQuery} query
+     * @returns {Promise<{ rows: Array<{ id: TTIDValue, data: Record<string, any> }>, nextCursor: string | null }>}
+     */
+    async sortedPage(collection, query) {
+        const sort = await this.requireSort(query)
+        const after = query.$after === undefined ? null : sort.parseCursor(query.$after)
+        const candidates = await this.queryEngine.candidateDocIdsForQuery(collection, query)
+        const keys = await this.index.keysWithPrefix(
+            collection,
+            sort.keyPrefix(),
+            after ? sort.keyOf(after) : ''
+        )
+        const limit = Number(query.$limit) > 0 ? Number(query.$limit) : Infinity
+        /** @type {Array<{ id: TTIDValue, data: Record<string, any> }>} */
+        const rows = []
+        /** @type {{ value: string, id: string } | null} */
+        let last = null
+        for (const key of keys) {
+            const row = await this.sortedRow(collection, query, sort, key, candidates)
+            if (!row) continue
+            if (rows.length >= limit) return { rows, nextCursor: last && sort.cursor(last) }
+            rows.push({ id: /** @type {TTIDValue} */ (row.position.id), data: row.data })
+            last = row.position
+        }
+        return { rows, nextCursor: null }
+    }
+
+    /**
+     * The document a sort key names, when it matches the query and the key
+     * is the one that places it.
+     * @param {string} collection
+     * @param {StoreQuery} query
+     * @param {BrowserSortOrder} sort
+     * @param {string} key
+     * @param {Set<TTIDValue> | null} candidates
+     * @returns {Promise<{ position: { value: string, id: string }, data: Record<string, any> } | null>}
+     */
+    async sortedRow(collection, query, sort, key, candidates) {
+        const position = sort.positionOfKey(key)
+        if (!position) return null
+        const id = /** @type {TTIDValue} */ (position.id)
+        if (candidates && !candidates.has(id)) return null
+        const stored = await this.documents.readStoredDoc(collection, id)
+        if (!stored || !this.queryEngine.matchesQuery(id, stored.data, query, stored)) return null
+        if (sort.placingValue(stored.data) !== position.value) return null
+        return { position, data: stored.data }
+    }
+
+    /**
+     * @param {StoreQuery} query
+     * @returns {Promise<BrowserSortOrder>}
+     */
+    async requireSort(query) {
+        const sort = await BrowserSortOrder.parse(query, BrowserCore.normalizeWordField)
+        if (sort) return sort
+        throw BrowserSortOrder.error(
+            'EINVALIDCURSOR',
+            '$after must be a cursor string from a query with the same $sort'
+        )
+    }
+
+    /**
+     * One page of a query with `$sort`: `{ items, nextCursor }`, where each
+     * item is `{ id, doc }`, or an id with `$onlyIds`.
+     * @param {string} collection
+     * @param {StoreQuery} [query]
+     * @returns {Promise<{ items: unknown[], nextCursor: string | null }>}
+     */
+    async findPage(collection, query = {}) {
+        await this.requireCollection(collection)
+        await this.prepareWordQuery(collection, query)
+        const page = await this.sortedPage(collection, query)
+        const items = page.rows.map((row) => this.pageItem(row, query))
+        return { items, nextCursor: page.nextCursor }
+    }
+
+    /**
+     * @param {{ id: TTIDValue, data: Record<string, any> }} row
+     * @param {StoreQuery} query
+     * @returns {unknown}
+     */
+    pageItem(row, query) {
+        const processed = this.queryEngine.processDoc({ [row.id]: clone(row.data) }, query)
+        if (typeof processed === 'string') return processed
+        return { id: row.id, doc: /** @type {Record<string, any>} */ (processed ?? {})[row.id] }
+    }
+
+    /**
+     * Replace the collection's word fields and rebuild its index (ADR 0023).
+     * @param {string} collection
+     * @param {string[]} fields
+     * @returns {Promise<{ collection: string, fields: string[], rebuilt: boolean }>}
+     */
+    async setWordFields(collection, fields) {
+        await this.requireCollection(collection)
+        const words = BrowserCore.validWordFields(fields)
+        await this.withCollectionWriteLane(collection, async () => {
+            await this.ensureCollection(collection)
+            await this.index.resetCollection(collection, words)
+            for (const docId of await this.documents.listDocIds(collection)) {
+                const stored = await this.documents.readStoredDoc(collection, docId)
+                if (stored) await this.index.putDocument(collection, docId, stored.data)
+            }
+        })
+        return { collection, fields: words, rebuilt: true }
+    }
+
+    /**
+     * @param {unknown} fields
+     * @returns {string[]}
+     */
+    static validWordFields(fields) {
+        if (!Array.isArray(fields) || fields.length > BrowserCore.MAX_WORD_FIELDS) {
+            throw BrowserSortOrder.error(
+                'EQUERY_INVALID',
+                `a collection may have at most ${BrowserCore.MAX_WORD_FIELDS} word fields`
+            )
+        }
+        const words = fields.map((field) => BrowserCore.normalizeWordField(String(field)))
+        const valid = words.every(
+            (field) => field !== '' && new TextEncoder().encode(field).byteLength <= 256
+        )
+        if (!valid || new Set(words).size !== words.length) {
+            throw BrowserSortOrder.error(
+                'EQUERY_INVALID',
+                'word fields must be distinct paths of 1 to 256 bytes'
+            )
+        }
+        return words
+    }
+
+    /**
+     * @param {string} field
+     * @returns {string}
+     */
+    static normalizeWordField(field) {
+        return field
+            .split(/[./]/)
+            .filter((segment) => segment !== '')
+            .join('/')
     }
 
     /** @param {string} collection @param {StoreQuery | undefined} [query] @returns {Promise<Array<Record<string, Record<string, any>>>>} */
