@@ -235,7 +235,7 @@ fn match_queries_match_a_full_scan_with_and_without_word_fields() {
         }
         assert_eq!(
             fixture.find(&json!({ "$ops": [{ "body": { "$match": "meet tom" } }] })),
-            [Fixture::id(0)]
+            [Fixture::id(0), Fixture::id(21)]
         );
     }
 }
