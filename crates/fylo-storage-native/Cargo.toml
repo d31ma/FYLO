@@ -50,8 +50,10 @@ ruzstd.workspace = true
 libc = { workspace = true }
 # The filesystem type (`fstatfs`) a `.vdbx` file is on, which decides whether
 # its byte-range locks are trusted, and `fallocate` hole punching of free
-# extents on Linux.
-rustix.workspace = true
+# extents on Linux. `std` gives its descriptors and errors the standard
+# library's traits; on macOS and Linux another crate turns it on, on iOS and
+# Android nothing does.
+rustix = { workspace = true, features = ["std"] }
 xattr.workspace = true
 
 # `LockFileEx` byte-range locks and file identity for `.vdbx` files (ADR 0016

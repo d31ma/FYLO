@@ -67,12 +67,13 @@ const QUALIFIED: &[(&str, &str, bool)] = &[
     ("windows", "NTFS", false),
 ];
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 fn detect(file: &File) -> io::Result<FilesystemInfo> {
     let stat = rustix::fs::fstatfs(file)?;
     let magic = magic(stat.f_type);
     let (name, remote) = match magic {
         0xEF53 => ("ext4", false),
+        0xF2F5_2010 => ("f2fs", false),
         0x5846_5342 => ("xfs", false),
         0x9123_683E => ("btrfs", false),
         0x2FC1_2FC1 => ("zfs", false),
@@ -103,7 +104,7 @@ fn detect(file: &File) -> io::Result<FilesystemInfo> {
 /// apart: `nfs4.1` for an NFS 4.1 mount, and `nfs-local-lock` for a mount
 /// whose locks stay on this client (`local_lock=posix` or `all`, or `nolock`),
 /// which is never qualified.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 fn nfs_name(file: &File) -> Option<String> {
     use std::os::unix::fs::MetadataExt;
     let dev = file.metadata().ok()?.dev();
@@ -113,7 +114,7 @@ fn nfs_name(file: &File) -> Option<String> {
 }
 
 /// The NFS name for `device` (`major:minor`) in a `/proc/self/mountinfo`.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 fn nfs_name_in(table: &str, device: &str) -> Option<String> {
     let line = table
         .lines()
@@ -140,7 +141,7 @@ fn nfs_name_in(table: &str, device: &str) -> Option<String> {
 
 /// `f_type` is signed on some targets and unsigned on others; the magic
 /// numbers are its low 32 bits.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 fn magic<T>(value: T) -> u64
 where
     i128: From<T>,
@@ -163,7 +164,11 @@ fn detect(file: &File) -> io::Result<FilesystemInfo> {
     })
 }
 
-#[cfg(all(unix, not(target_os = "linux"), not(target_vendor = "apple")))]
+#[cfg(all(
+    unix,
+    not(any(target_os = "linux", target_os = "android")),
+    not(target_vendor = "apple")
+))]
 fn detect(_file: &File) -> io::Result<FilesystemInfo> {
     Ok(FilesystemInfo {
         name: "unknown".to_owned(),
@@ -177,7 +182,7 @@ fn detect(file: &File) -> io::Result<FilesystemInfo> {
     Ok(FilesystemInfo { name, remote })
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(test, any(target_os = "linux", target_os = "android")))]
 mod tests {
     use super::nfs_name_in;
 

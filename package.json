@@ -18,6 +18,7 @@
         "rust:check": "bun ./scripts/run-rust.mjs cargo check --workspace --all-targets --all-features --locked",
         "rust:clippy": "bun ./scripts/run-rust.mjs cargo clippy --workspace --all-targets --all-features --locked -- -D warnings",
         "rust:clippy:cross": "bun ./scripts/clippy-cross-targets.mjs",
+        "rust:clippy:mobile": "bun ./scripts/clippy-mobile-targets.mjs",
         "rust:clippy:wasm": "bun ./scripts/clippy-wasm-target.mjs",
         "rust:deny": "bun ./scripts/run-rust.mjs cargo deny check",
         "rust:doc": "bun ./scripts/run-rust.mjs cargo doc --workspace --all-features --no-deps --locked",

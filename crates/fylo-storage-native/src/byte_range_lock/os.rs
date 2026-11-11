@@ -4,9 +4,10 @@
 //! the caller's loop, so a thread is never parked inside the kernel holding a
 //! lock request the in-process registry does not know about.
 //!
-//! - Linux: open-file-description locks (`F_OFD_SETLK`), owned by the open
-//!   file, so two opens of the file conflict even inside one process.
-//! - Other Unix, macOS included: classic `fcntl` locks (`F_SETLK`), owned by
+//! - Linux and Android: open-file-description locks (`F_OFD_SETLK`), owned by
+//!   the open file, so two opens of the file conflict even inside one
+//!   process. Android's kernels have them (Linux 3.15 and later).
+//! - Other Unix, macOS and iOS included: classic `fcntl` locks (`F_SETLK`), owned by
 //!   the process. Closing *any* descriptor for the file drops every lock the
 //!   process holds on it; the registry in the parent module keeps one
 //!   descriptor per file and defers other closes while a lock is held.
@@ -56,9 +57,9 @@ where
         .expect("fcntl lock constants fit a short")
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 const SET_LOCK: libc::c_int = libc::F_OFD_SETLK;
-#[cfg(all(unix, not(target_os = "linux")))]
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
 const SET_LOCK: libc::c_int = libc::F_SETLK;
 
 /// Apply one non-waiting `fcntl` lock request to one byte.

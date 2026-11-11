@@ -3665,7 +3665,7 @@ fn browser_session_identity() -> Option<String> {
     Some(format!("browser:{}", hex_lower(&bytes)))
 }
 
-#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[cfg(any(all(target_arch = "wasm32", target_os = "unknown"), target_os = "ios"))]
 fn hex_lower(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
     bytes.iter().fold(String::new(), |mut text, byte| {
@@ -3683,7 +3683,7 @@ fn lock_owner_alive(record: &LockRecord) -> bool {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 fn process_identity(pid: u32) -> Option<String> {
     let boot = fs::read_to_string("/proc/sys/kernel/random/boot_id").ok()?;
     let status_line = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
@@ -3718,8 +3718,34 @@ fn process_identity(_pid: u32) -> Option<String> {
     own_process_identity()
 }
 
+/// An iOS app may not start `ps`, and its sandbox hides every other
+/// process. So this process gets a random identity that lasts while it runs,
+/// and any other process's record reads as gone, as a crashed browser tab's
+/// does: on iOS a directory root has one process, and `.vdbx` files keep
+/// writers apart through the kernel's byte-range locks instead.
+#[cfg(target_os = "ios")]
+fn process_identity(pid: u32) -> Option<String> {
+    (pid == super::process_id())
+        .then(ios_session_identity)
+        .flatten()
+}
+
+#[cfg(target_os = "ios")]
+fn ios_session_identity() -> Option<String> {
+    static IDENTITY: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    IDENTITY
+        .get_or_init(|| {
+            let mut bytes = [0_u8; 16];
+            getrandom::fill(&mut bytes).ok()?;
+            Some(format!("ios:{}:{}", super::process_id(), hex_lower(&bytes)))
+        })
+        .clone()
+}
+
 #[cfg(not(any(
     target_os = "linux",
+    target_os = "android",
+    target_os = "ios",
     target_os = "windows",
     all(target_arch = "wasm32", target_os = "unknown")
 )))]
@@ -3734,9 +3760,11 @@ fn process_identity(pid: u32) -> Option<String> {
 }
 
 // Only the Windows and generic-Unix process-identity probes shell out; Linux
-// reads /proc directly.
+// and Android read /proc directly, and iOS may not start a process.
 #[cfg(not(any(
     target_os = "linux",
+    target_os = "android",
+    target_os = "ios",
     all(target_arch = "wasm32", target_os = "unknown")
 )))]
 fn command_output(program: &str, arguments: &[&str]) -> Option<String> {
