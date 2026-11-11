@@ -123,6 +123,10 @@ class Fylo
     {
         return $this->op('rebuildCollection', ['collection' => $collection]);
     }
+    public function setWordFields(string $collection, array $fields)
+    {
+        return $this->op('setWordFields', ['collection' => $collection, 'fields' => array_values($fields)]);
+    }
 
     // --- Durable serverless queue ---
     public function queuePublish(string $topic, mixed $payload, array $options = [])
@@ -297,6 +301,11 @@ class Fylo
     {
         return $this->op('findDocs', ['collection' => $collection, 'query' => $query, 'page' => $page]);
     }
+    /** One page of a query with $sort: {items, nextCursor}. Pass nextCursor as $after for the next page. */
+    public function findPage(string $collection, array $query)
+    {
+        return $this->op('findDocs', ['collection' => $collection, 'query' => $query]);
+    }
     public function findDeletedDocsPage(string $collection, array $query = [], array $page = [])
     {
         return $this->op('findDeletedDocs', ['collection' => $collection, 'query' => $query, 'page' => $page]);
@@ -400,6 +409,10 @@ class FyloCollection
     {
         return $this->db->rebuildCollection($this->name);
     }
+    public function words(array $fields)
+    {
+        return $this->db->setWordFields($this->name, $fields);
+    }
     public function put(array $data)
     {
         return $this->db->putData($this->name, $data);
@@ -439,5 +452,9 @@ class FyloCollection
     public function findPage(array $query, array $page = [])
     {
         return $this->db->findDocsPage($this->name, $query, $page);
+    }
+    public function page(array $query)
+    {
+        return $this->db->findPage($this->name, $query);
     }
 }

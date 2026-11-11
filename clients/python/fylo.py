@@ -103,6 +103,9 @@ class Fylo:
     def rebuild_collection(self, collection):
         return self._op("rebuildCollection", collection=collection)
 
+    def set_word_fields(self, collection, fields):
+        return self._op("setWordFields", collection=collection, fields=list(fields))
+
     # --- Durable serverless queue ---
     def queue_publish(self, topic, payload, delay_ms=None, idempotency_key=None):
         return self._op(
@@ -382,6 +385,10 @@ class Fylo:
     def find_docs_page(self, collection, query, page=None):
         return self._op("findDocs", collection=collection, query=query, page=page or {})
 
+    def find_page(self, collection, query):
+        """One page of a query with $sort: {items, nextCursor}. Pass nextCursor as $after for the next page."""
+        return self._op("findDocs", collection=collection, query=query)
+
     def find_deleted_docs_page(self, collection, query=None, page=None):
         return self._op(
             "findDeletedDocs", collection=collection, query=query or {}, page=page or {}
@@ -447,6 +454,9 @@ class _Collection:
     def rebuild(self):
         return self._db.rebuild_collection(self._name)
 
+    def words(self, fields):
+        return self._db.set_word_fields(self._name, fields)
+
     def put(self, data):
         return self._db.put_data(self._name, data)
 
@@ -476,3 +486,6 @@ class _Collection:
 
     def find_page(self, query, page=None):
         return self._db.find_docs_page(self._name, query, page)
+
+    def page(self, query):
+        return self._db.find_page(self._name, query)

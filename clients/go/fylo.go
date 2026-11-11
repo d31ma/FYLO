@@ -167,6 +167,12 @@ func (f *Fylo) InspectCollection(collection string) (any, error) {
 func (f *Fylo) RebuildCollection(collection string) (any, error) {
 	return f.op("rebuildCollection", map[string]any{"collection": collection})
 }
+func (f *Fylo) SetWordFields(collection string, fields []string) (any, error) {
+	if fields == nil {
+		fields = []string{}
+	}
+	return f.op("setWordFields", map[string]any{"collection": collection, "fields": fields})
+}
 
 // Durable serverless queue.
 func (f *Fylo) QueuePublish(topic string, payload any, options map[string]any) (any, error) {
@@ -321,6 +327,11 @@ func (f *Fylo) FindDeletedDocs(collection string, query map[string]any) (any, er
 func (f *Fylo) FindDocsPage(collection string, query, page map[string]any) (any, error) {
 	return f.op("findDocs", map[string]any{"collection": collection, "query": query, "page": page})
 }
+
+// FindPage returns one page of a query with $sort: {items, nextCursor}. Pass nextCursor as $after for the next page.
+func (f *Fylo) FindPage(collection string, query map[string]any) (any, error) {
+	return f.op("findDocs", map[string]any{"collection": collection, "query": query})
+}
 func (f *Fylo) FindDeletedDocsPage(collection string, query, page map[string]any) (any, error) {
 	return f.op("findDeletedDocs", map[string]any{"collection": collection, "query": query, "page": page})
 }
@@ -395,6 +406,9 @@ func (c *Collection) Create(kind string) (any, error) { return c.fylo.CreateColl
 func (c *Collection) Drop() (any, error)              { return c.fylo.DropCollection(c.name) }
 func (c *Collection) Inspect() (any, error)           { return c.fylo.InspectCollection(c.name) }
 func (c *Collection) Rebuild() (any, error)           { return c.fylo.RebuildCollection(c.name) }
+func (c *Collection) Words(fields []string) (any, error) {
+	return c.fylo.SetWordFields(c.name, fields)
+}
 func (c *Collection) Put(data map[string]any) (any, error) {
 	return c.fylo.PutData(c.name, data)
 }
@@ -414,4 +428,7 @@ func (c *Collection) Find(query map[string]any) (any, error) {
 }
 func (c *Collection) FindPage(query, page map[string]any) (any, error) {
 	return c.fylo.FindDocsPage(c.name, query, page)
+}
+func (c *Collection) Page(query map[string]any) (any, error) {
+	return c.fylo.FindPage(c.name, query)
 }

@@ -192,6 +192,8 @@ namespace Fylo
             Op($"{{\"op\":\"inspectCollection\",\"collection\":{J(collection)}}}");
         public JsonElement RebuildCollection(string collection) =>
             Op($"{{\"op\":\"rebuildCollection\",\"collection\":{J(collection)}}}");
+        public JsonElement SetWordFields(string collection, IEnumerable<string> fields) =>
+            Op($"{{\"op\":\"setWordFields\",\"collection\":{J(collection)},\"fields\":{J(fields ?? Array.Empty<string>())}}}");
 
         // --- Durable serverless queue ---
         public JsonElement QueuePublish(string topic, object payload, int delayMs = 0, string idempotencyKey = null) =>
@@ -325,6 +327,9 @@ namespace Fylo
             Op($"{{\"op\":\"findDocs\",\"collection\":{J(collection)},\"query\":{J(query)}}}");
         public JsonElement FindDocsPage(string collection, object query, object page) =>
             Op($"{{\"op\":\"findDocs\",\"collection\":{J(collection)},\"query\":{J(query)},\"page\":{J(page)}}}");
+        /// <summary>One page of a query with $sort: {items, nextCursor}. Pass nextCursor as $after for the next page.</summary>
+        public JsonElement FindPage(string collection, object query) =>
+            Op($"{{\"op\":\"findDocs\",\"collection\":{J(collection)},\"query\":{J(query)}}}");
         public JsonElement FindDeletedDocsPage(string collection, object query, object page) =>
             Op($"{{\"op\":\"findDeletedDocs\",\"collection\":{J(collection)},\"query\":{J(query)},\"page\":{J(page)}}}");
         public JsonElement ExecuteSQL(string sql) =>
@@ -391,6 +396,7 @@ namespace Fylo
         public JsonElement Drop() => _db.DropCollection(_name);
         public JsonElement Inspect() => _db.InspectCollection(_name);
         public JsonElement Rebuild() => _db.RebuildCollection(_name);
+        public JsonElement Words(IEnumerable<string> fields) => _db.SetWordFields(_name, fields);
         public JsonElement Put(object data) => _db.PutData(_name, data);
         public JsonElement Get(string id) => _db.GetDoc(_name, id);
         public JsonElement GetMeta(string id) => _db.GetMeta(_name, id);
@@ -401,5 +407,6 @@ namespace Fylo
         public JsonElement Restore(string id) => _db.RestoreDoc(_name, id);
         public JsonElement Find(object query) => _db.FindDocs(_name, query);
         public JsonElement FindPage(object query, object page) => _db.FindDocsPage(_name, query, page);
+        public JsonElement Page(object query) => _db.FindPage(_name, query);
     }
 }

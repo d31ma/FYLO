@@ -422,7 +422,17 @@ export default class {
         { op: '$contains', index: 'Exact match on array members', fallback: '—' },
         { op: "$like 'ali%'", index: 'Forward prefix (f)', fallback: 'Full scan' },
         { op: "$like '%ice'", index: 'Reversed prefix (r)', fallback: 'Full scan' },
-        { op: "$like '%lic%'", index: 'Trigram (g3) → hydrate → verify', fallback: 'Full scan' }
+        { op: "$like '%lic%'", index: 'Trigram (g3) → hydrate → verify', fallback: 'Full scan' },
+        {
+            op: "$match 'meet tom'",
+            index: 'Word keys (w) of a word field',
+            fallback: 'Full scan if the field has no word index'
+        },
+        {
+            op: "$sort { sentAt: 'desc' }",
+            index: 'Walks sortable numeric keys (n / nr) in order',
+            fallback: 'Documents without a number are left out'
+        }
     ]
 
     show(key) {

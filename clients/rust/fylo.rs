@@ -237,6 +237,23 @@ impl Fylo {
             esc(collection)
         ))
     }
+    pub fn set_word_fields(
+        &mut self,
+        collection: &str,
+        fields: &[&str],
+    ) -> std::io::Result<String> {
+        let fields = Json::arr(
+            fields
+                .iter()
+                .map(|field| Json::Str(field.to_string()))
+                .collect(),
+        );
+        self.checked(format!(
+            r#"{{"op":"setWordFields","collection":"{}","fields":{}}}"#,
+            esc(collection),
+            fields.encode()
+        ))
+    }
 
     // --- Durable serverless queue ---
     pub fn queue_publish(
@@ -493,6 +510,14 @@ impl Fylo {
             page.encode()
         ))
     }
+    /// One page of a query with $sort: {items, nextCursor}. Pass nextCursor as $after for the next page.
+    pub fn find_page(&mut self, collection: &str, query: Json) -> std::io::Result<String> {
+        self.checked(format!(
+            r#"{{"op":"findDocs","collection":"{}","query":{}}}"#,
+            esc(collection),
+            query.encode()
+        ))
+    }
     pub fn find_deleted_docs_page(
         &mut self,
         collection: &str,
@@ -745,6 +770,9 @@ impl<'a> Collection<'a> {
     pub fn rebuild(&mut self) -> std::io::Result<String> {
         self.db.rebuild_collection(&self.name)
     }
+    pub fn words(&mut self, fields: &[&str]) -> std::io::Result<String> {
+        self.db.set_word_fields(&self.name, fields)
+    }
     pub fn put(&mut self, data: Json) -> std::io::Result<String> {
         self.db.put_data(&self.name, data)
     }
@@ -774,6 +802,9 @@ impl<'a> Collection<'a> {
     }
     pub fn find_page(&mut self, query: Json, page: Json) -> std::io::Result<String> {
         self.db.find_docs_page(&self.name, query, page)
+    }
+    pub fn page(&mut self, query: Json) -> std::io::Result<String> {
+        self.db.find_page(&self.name, query)
     }
 }
 

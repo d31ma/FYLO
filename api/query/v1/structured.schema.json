@@ -19,7 +19,8 @@
                         "$lt": true,
                         "$lte": true,
                         "$like": { "type": "string" },
-                        "$contains": true
+                        "$contains": true,
+                        "$match": { "type": "string" }
                     },
                     "additionalProperties": true
                 }
@@ -27,7 +28,14 @@
         },
         "$created": { "$ref": "#/$defs/timestampRange" },
         "$updated": { "$ref": "#/$defs/timestampRange" },
-        "$limit": { "type": "integer", "minimum": 0 }
+        "$limit": { "type": "integer", "minimum": 0 },
+        "$sort": {
+            "type": "object",
+            "minProperties": 1,
+            "maxProperties": 1,
+            "additionalProperties": { "enum": ["asc", "desc"] }
+        },
+        "$after": { "type": "string", "pattern": "^fys1\\." }
     },
     "additionalProperties": true,
     "$defs": {

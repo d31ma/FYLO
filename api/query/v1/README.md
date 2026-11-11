@@ -32,3 +32,11 @@ Malformed snapshots, bounded-input failures, structured-query failures, and
 SQL parser failures are frozen in `tests/fixtures/rust-query-errors-v1.json`.
 Stable result ordering and `$limit` behavior are frozen in
 `tests/fixtures/rust-predicate-v1.json`.
+
+ADR 0023 adds `$match` (each normalized word of the operand must start a word
+of the field; normalization is frozen in
+`tests/fixtures/word-normalization-v1.json`), `$sort` (one field, `asc` or
+`desc`, by numeric value) and `$after` (the stateless `fys1.` cursor of the
+previous sorted page). A `$match` operand with no words or more than 16 is
+`EQUERY_INVALID`; a cursor that does not parse or belongs to another query is
+`EINVALIDCURSOR`.

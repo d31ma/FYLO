@@ -188,6 +188,8 @@ class Fylo {
       _op('inspectCollection', {'collection': collection});
   Future<dynamic> rebuildCollection(String collection) =>
       _op('rebuildCollection', {'collection': collection});
+  Future<dynamic> setWordFields(String collection, List<String> fields) =>
+      _op('setWordFields', {'collection': collection, 'fields': fields});
 
   // --- Durable serverless queue ---
   Future<dynamic> queuePublish(String topic, dynamic payload,
@@ -327,6 +329,11 @@ class Fylo {
   Future<dynamic> findDocsPage(String collection, Map<String, dynamic> query,
           Map<String, dynamic> page) =>
       _op('findDocs', {'collection': collection, 'query': query, 'page': page});
+
+  /// One page of a query with $sort: {items, nextCursor}. Pass nextCursor as
+  /// $after for the next page.
+  Future<dynamic> findPage(String collection, Map<String, dynamic> query) =>
+      _op('findDocs', {'collection': collection, 'query': query});
   Future<dynamic> findDeletedDocsPage(String collection,
           Map<String, dynamic> query, Map<String, dynamic> page) =>
       _op('findDeletedDocs',
@@ -365,6 +372,8 @@ class FyloCollection {
   Future<dynamic> drop() => _db.dropCollection(_name);
   Future<dynamic> inspect() => _db.inspectCollection(_name);
   Future<dynamic> rebuild() => _db.rebuildCollection(_name);
+  Future<dynamic> words(List<String> fields) =>
+      _db.setWordFields(_name, fields);
   Future<dynamic> put(Map<String, dynamic> data) => _db.putData(_name, data);
   Future<dynamic> get(String id) => _db.getDoc(_name, id);
   Future<dynamic> getMeta(String id) => _db.getMeta(_name, id);
@@ -380,4 +389,6 @@ class FyloCollection {
   Future<dynamic> findPage(
           Map<String, dynamic> query, Map<String, dynamic> page) =>
       _db.findDocsPage(_name, query, page);
+  Future<dynamic> page(Map<String, dynamic> query) =>
+      _db.findPage(_name, query);
 }

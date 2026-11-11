@@ -76,17 +76,19 @@ follow **each language's own paradigm** — `snake_case` in Python/Ruby/Rust,
 `camelCase` in Node/PHP/Java/Swift/Kotlin/Dart, `PascalCase` in Go/C# (their
 exported/public methods must be capitalized):
 
-| Op           | Python / Ruby / Rust | Node / PHP / Java / Dart | Go / C#        |
-| ------------ | -------------------- | ------------------------ | -------------- |
-| putData      | `put_data`           | `putData`                | `PutData`      |
-| getMeta      | `get_meta`           | `getMeta`                | `GetMeta`      |
-| setMeta      | `set_meta`           | `setMeta`                | `SetMeta`      |
-| findDocs     | `find_docs`          | `findDocs`               | `FindDocs`     |
-| findDocsPage | `find_docs_page`     | `findDocsPage`           | `FindDocsPage` |
-| executeSQL   | `execute_sql`        | `executeSQL`             | `ExecuteSQL`   |
-| queuePublish | `queue_publish`      | `queuePublish`           | `QueuePublish` |
-| queueClaim   | `queue_claim`        | `queueClaim`             | `QueueClaim`   |
-| queueAck     | `queue_ack`          | `queueAck`               | `QueueAck`     |
+| Op            | Python / Ruby / Rust | Node / PHP / Java / Dart | Go / C#         |
+| ------------- | -------------------- | ------------------------ | --------------- |
+| putData       | `put_data`           | `putData`                | `PutData`       |
+| getMeta       | `get_meta`           | `getMeta`                | `GetMeta`       |
+| setMeta       | `set_meta`           | `setMeta`                | `SetMeta`       |
+| setWordFields | `set_word_fields`    | `setWordFields`          | `SetWordFields` |
+| findDocs      | `find_docs`          | `findDocs`               | `FindDocs`      |
+| findDocsPage  | `find_docs_page`     | `findDocsPage`           | `FindDocsPage`  |
+| findPage      | `find_page`          | `findPage`               | `FindPage`      |
+| executeSQL    | `execute_sql`        | `executeSQL`             | `ExecuteSQL`    |
+| queuePublish  | `queue_publish`      | `queuePublish`           | `QueuePublish`  |
+| queueClaim    | `queue_claim`        | `queueClaim`             | `QueueClaim`    |
+| queueAck      | `queue_ack`          | `queueAck`               | `QueueAck`      |
 
 The larger dynamic shims cover the full common machine-operation set, including
 batch, bulk, deleted-document, and join helpers. Compact compiled-language
@@ -204,8 +206,10 @@ don't repeat the collection on each call — this reads like the browser client:
 
 ```
 db.collection("users").create()      // also drop/inspect/rebuild
+db.collection("users").words(fields) // setWordFields
 db.collection("users").put(data)     // also get/latest/patch/delete/restore
 db.collection("users").find(query)   // find
+db.collection("users").page(query)   // findPage (a query with $sort)
 ```
 
 Go and Rust take the kind explicitly: `Create("document")` / `create("document")`.
@@ -442,6 +446,16 @@ Pagination is a binary machine-protocol feature. Browser, mobile, and Flutter
 clients query their embedded local engine directly and do not accept these
 process-bound cursors.
 
+A query with `$sort` (ADR 0023) uses a different paging model. Call `findPage`
+(idiomatic casing per the table above; `page(query)` on the collection facade)
+with `$sort`, `$limit` and, after the first page, `$after`. It returns one page
+as `{items, nextCursor}`. Pass `nextCursor` as `$after` for the next page; it is
+null on the last page. `$match` queries need word fields first:
+`setWordFields(collection, fields)` (`words(fields)` on the facade) chooses
+them, and an empty list clears them. Unlike `findDocsPage`, this paging also
+works in the mobile and Flutter clients, which send the bridge ops
+`setWordFields` and `findPage`.
+
 ## Browser (`fylo-web.mjs`)
 
 Browsers can't spawn the binary, so the web client is different: it's a **bundled
@@ -568,7 +582,8 @@ val admins = db.findDocs("users", mapOf("\$ops" to listOf(mapOf("role" to mapOf(
 ```
 
 Same method names as the shims (`createCollection`, `putData`, `getLatest`,
-`patchDoc`, `delDoc`, `restoreDoc`, `findDocs`, `executeSQL`, `sql`).
+`patchDoc`, `delDoc`, `restoreDoc`, `findDocs`, `findPage`, `setWordFields`,
+`executeSQL`, `sql`).
 
 ## Flutter
 

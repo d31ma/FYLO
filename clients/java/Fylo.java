@@ -400,6 +400,9 @@ public final class Fylo implements AutoCloseable {
     public String rebuildCollection(String collection) throws IOException {
         return op("rebuildCollection", "collection", collection);
     }
+    public String setWordFields(String collection, List<String> fields) throws IOException {
+        return op("setWordFields", "collection", collection, "fields", fields);
+    }
 
     // --- Durable serverless queue ---
     public String queuePublish(String topic, Object payload) throws IOException {
@@ -529,6 +532,10 @@ public final class Fylo implements AutoCloseable {
     public String findDocsPage(String collection, Map<String, Object> query, Map<String, Object> page) throws IOException {
         return op("findDocs", "collection", collection, "query", query, "page", page);
     }
+    /** One page of a query with $sort: {items, nextCursor}. Pass nextCursor as $after for the next page. */
+    public String findPage(String collection, Map<String, Object> query) throws IOException {
+        return op("findDocs", "collection", collection, "query", query);
+    }
     public String findDeletedDocsPage(String collection, Map<String, Object> query, Map<String, Object> page) throws IOException {
         return op("findDeletedDocs", "collection", collection, "query", query, "page", page);
     }
@@ -570,6 +577,9 @@ public final class Fylo implements AutoCloseable {
         public String rebuild() throws IOException {
             return rebuildCollection(name);
         }
+        public String words(List<String> fields) throws IOException {
+            return setWordFields(name, fields);
+        }
         public String put(Map<String, Object> data) throws IOException {
             return putData(name, data);
         }
@@ -597,6 +607,9 @@ public final class Fylo implements AutoCloseable {
         }
         public String findPage(Map<String, Object> query, Map<String, Object> page) throws IOException {
             return findDocsPage(name, query, page);
+        }
+        public String page(Map<String, Object> query) throws IOException {
+            return Fylo.this.findPage(name, query);
         }
     }
 

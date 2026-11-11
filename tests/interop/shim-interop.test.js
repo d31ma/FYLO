@@ -91,6 +91,24 @@ describe('client shim interop via fylo exec --loop', () => {
         }
     })
 
+    test('every binary-backed language shim exposes word fields and sorted pages', async () => {
+        const contracts = new Map([
+            ['node/fylo.mjs', ["'setWordFields'", 'findPage(collection, query)']],
+            ['python/fylo.py', ['"setWordFields"', 'def find_page(self, collection, query)']],
+            ['ruby/fylo.rb', ['"setWordFields"', 'def find_page(collection, query)']],
+            ['php/fylo.php', ["'setWordFields'", 'function findPage(string $collection']],
+            ['go/fylo.go', ['"setWordFields"', 'func (f *Fylo) FindPage(']],
+            ['rust/fylo.rs', ['"op":"setWordFields"', 'pub fn find_page(&mut self, collection']],
+            ['java/Fylo.java', ['"setWordFields"', 'public String findPage(String collection']],
+            ['csharp/Fylo.cs', ['\\"op\\":\\"setWordFields\\"', 'FindPage(string collection']],
+            ['dart/fylo.dart', ["'setWordFields'", 'findPage(String collection']]
+        ])
+        for (const [relative, markers] of contracts) {
+            const source = await readFile(path.join(shimRoot, relative), 'utf8')
+            for (const marker of markers) expect(source, relative).toContain(marker)
+        }
+    })
+
     test('every binary-backed language shim exposes native application configuration', async () => {
         const contracts = new Map([
             ['node/fylo.mjs', ['config?: string']],

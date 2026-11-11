@@ -95,6 +95,10 @@ class Fylo
     op("rebuildCollection", "collection" => collection)
   end
 
+  def set_word_fields(collection, fields)
+    op("setWordFields", "collection" => collection, "fields" => Array(fields))
+  end
+
   # --- Durable serverless queue ---
   def queue_publish(topic, payload, delay_ms: nil, idempotency_key: nil)
     op("queuePublish", "topic" => topic, "payload" => payload, "delayMs" => delay_ms, "idempotencyKey" => idempotency_key)
@@ -217,6 +221,11 @@ class Fylo
     op("findDocs", "collection" => collection, "query" => query, "page" => page)
   end
 
+  # One page of a query with $sort: {items, nextCursor}. Pass nextCursor as $after for the next page.
+  def find_page(collection, query)
+    op("findDocs", "collection" => collection, "query" => query)
+  end
+
   def find_deleted_docs_page(collection, query = {}, page = {})
     op("findDeletedDocs", "collection" => collection, "query" => query, "page" => page)
   end
@@ -303,6 +312,10 @@ class Fylo
       @db.rebuild_collection(@name)
     end
 
+    def words(fields)
+      @db.set_word_fields(@name, fields)
+    end
+
     def put(data)
       @db.put_data(@name, data)
     end
@@ -341,6 +354,10 @@ class Fylo
 
     def find_page(query, page = {})
       @db.find_docs_page(@name, query, page)
+    end
+
+    def page(query)
+      @db.find_page(@name, query)
     end
   end
 end

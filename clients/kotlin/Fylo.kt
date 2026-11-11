@@ -164,6 +164,8 @@ class Fylo private constructor(
         request("inspectCollection", mapOf("collection" to collection))
     suspend fun rebuildCollection(collection: String): Any? =
         request("rebuildCollection", mapOf("collection" to collection))
+    suspend fun setWordFields(collection: String, fields: List<String>): Any? =
+        request("setWordFields", mapOf("collection" to collection, "fields" to fields))
 
     // --- Documents (object args are native Maps/Lists) ---
     suspend fun putData(collection: String, data: Map<String, Any?>): Any? =
@@ -187,6 +189,10 @@ class Fylo private constructor(
     suspend fun findDocs(collection: String, query: Map<String, Any?>): Any? =
         request("findDocs", mapOf("collection" to collection, "query" to query))
 
+    /** One page of a query with $sort: {items, nextCursor}. Pass nextCursor as $after for the next page. */
+    suspend fun findPage(collection: String, query: Map<String, Any?>): Any? =
+        request("findPage", mapOf("collection" to collection, "query" to query))
+
     /**
      * Run raw SQL against the local store. Native interpolation is verbatim —
      * escape/validate untrusted input yourself.
@@ -208,6 +214,7 @@ class Fylo private constructor(
         suspend fun drop() = dropCollection(name)
         suspend fun inspect() = inspectCollection(name)
         suspend fun rebuild() = rebuildCollection(name)
+        suspend fun words(fields: List<String>) = setWordFields(name, fields)
         suspend fun put(data: Map<String, Any?>) = putData(name, data)
         suspend fun get(id: String) = getDoc(name, id)
         suspend fun getMeta(id: String) = getMeta(name, id)
@@ -217,6 +224,7 @@ class Fylo private constructor(
         suspend fun delete(id: String) = delDoc(name, id)
         suspend fun restore(id: String) = restoreDoc(name, id)
         suspend fun find(query: Map<String, Any?>) = findDocs(name, query)
+        suspend fun page(query: Map<String, Any?>) = findPage(name, query)
     }
 
     /** Release the WebView. Call from the main thread. */

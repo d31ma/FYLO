@@ -252,6 +252,10 @@ age/nr/3fc1ffffffffffff/4UUB32VGUDW
 - `n` / `nr` = sortable numeric (range queries)
 - `eq` = exact match
 - `g3` = trigram (contains queries)
+- `w` = a normalized word of a word field (`$match`), only for fields named by
+  `setWordFields`
+- `wv` = a word witness: one per `eq` key of a word field, so FYLO can tell
+  when a release without word fields wrote to it
 
 ### Index
 
@@ -762,6 +766,63 @@ const privileged = await db.users.find({
 })
 ```
 
+### Word search and sorted pages
+
+Name the fields you search by word, once per collection. FYLO rebuilds the
+collection's index and keeps a key for every word of those fields from then on
+([ADR 0023](docs/adr/0023-word-index-and-sorted-queries.md)):
+
+```ts
+await db.messages.words(['body', 'subject']) // machine op: setWordFields
+```
+
+```bash
+fylo index words messages body subject
+```
+
+`$match` takes words. A document matches when each word you give is the start
+of a word in the field, so `meet tom` finds "Meeting with Tomás". Words are
+lower-cased, and accents on Latin letters are removed (`é` becomes `e`,
+`ß` becomes `ss`). There is no ranking, stemming or phrase search, and text
+written without spaces (Chinese, Japanese) is one word per run. `$match`
+combines with every other operator:
+
+```ts
+const found = await db.messages.find({
+    $ops: [{ conversation: { $eq: 'c-42' }, body: { $match: 'meet tom' } }]
+})
+```
+
+`$match` works on any field; on a field without word keys it reads every
+document. Word keys cost index space (a 2 KB message body adds roughly 6 to
+12 KB of keys), and they share the collection's 256 MiB index limit.
+
+`$sort` orders by one field's number, from the index, and `$after` takes the
+cursor of the previous page:
+
+```ts
+let page = await db.messages.page({
+    $ops: [{ conversation: { $eq: 'c-42' } }],
+    $sort: { sentAt: 'desc' },
+    $limit: 50
+}) // { items: [{ id, doc }], nextCursor }
+page = await db.messages.page({ ...query, $after: page.nextCursor })
+```
+
+- The sort value is the field's JavaScript `Number()` value: numbers, numeric
+  strings, booleans and `null`. **A document whose sort field has no number
+  (missing, a word, an ISO date string, an empty array) is left out of a
+  sorted query.** Store timestamps as epoch milliseconds to sort by them.
+- An array sorts by its smallest number (`asc`) or largest (`desc`). Ties go
+  by document id.
+- The cursor is stateless: it needs no `exec --loop` and never expires. A
+  cursor from a different filter or sort is refused with `EINVALIDCURSOR`.
+  Documents written between pages appear on a later page only when they sort
+  after the cursor.
+- A machine `findDocs` with `$sort` answers `{ "items": [{ "id", "doc" }],
+"nextCursor" }` (ids only with `$onlyIds`); it cannot be combined with the
+  loop's `page` option.
+
 ### SQL Support
 
 ```ts
@@ -870,14 +931,17 @@ then check every one against the whole query. A query whose every `$ops`
 entry has at least one field the index can answer reads only those
 documents; otherwise it reads every document.
 
-| Operator                     | Native engine (CLI, clients, Rust)               | Browser engine                    |
-| ---------------------------- | ------------------------------------------------ | --------------------------------- |
-| `$eq`                        | Exact match key (`eq`) and coerced numbers (`n`) | Exact match key (`eq`)            |
-| `$gt`, `$gte`, `$lt`, `$lte` | One run of sortable numeric keys (`n`)           | Sortable numeric keys (`n`/`nr`)  |
-| `$contains`                  | Reads every document                             | Exact match on array members      |
-| `$like "ali%"`               | Reads every document                             | Forward prefix (`f`)              |
-| `$like "%ice"`               | Reads every document                             | Reversed prefix (`r`)             |
-| `$like "%lic%"`              | Reads every document                             | Trigram (`g3`) → hydrate → verify |
+| Operator                     | Native engine (CLI, clients, Rust)               | Browser engine                               |
+| ---------------------------- | ------------------------------------------------ | -------------------------------------------- |
+| `$eq`                        | Exact match key (`eq`) and coerced numbers (`n`) | Exact match key (`eq`)                       |
+| `$gt`, `$gte`, `$lt`, `$lte` | One run of sortable numeric keys (`n`)           | Sortable numeric keys (`n`/`nr`)             |
+| `$contains`                  | Reads every document                             | Exact match on array members                 |
+| `$like "ali%"`               | Reads every document                             | Forward prefix (`f`)                         |
+| `$like "%ice"`               | Reads every document                             | Reversed prefix (`r`)                        |
+| `$like "%lic%"`              | Reads every document                             | Trigram (`g3`) → hydrate → verify            |
+| `$match` (word field)        | One run of word keys (`w`) per word              | One run of word keys (`w`) per word          |
+| `$match` (other field)       | Reads every document                             | Reads every document                         |
+| `$sort`                      | Walks `n` (asc) or `nr` (desc) keys in order     | Walks `n` (asc) or `nr` (desc) keys in order |
 
 Both engines read every document for comparisons an empty array satisfies
 (such as `$gte: 0`): an empty array compares as `0` but has no index key.
@@ -1607,19 +1671,21 @@ local fixture, mount or infrastructure plan is not a production support claim.
 
 ## Limitations
 
-| Limitation                           | Detail                                                                                                                                                                                               |
-| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Filesystem-only engine**           | One engine writes to one supported local path. Snapshot, replication, and remote-copy tooling remain deployment concerns outside FYLO.                                                               |
-| **Local-filesystem locking**         | PID-aware lock files plus kernel-owned takeover claims; live owners are never evicted by TTL. Use local POSIX filesystems or NTFS, not network/sync filesystems without equivalent atomic semantics. |
-| **Indexes are derived**              | External writes to data files won't update indexes. Use `db.<collection>.rebuild()`.                                                                                                                 |
-| **Frequency leaks on encryption**    | HMAC blind indexes for `$eq` reveal value repetition even without decryption.                                                                                                                        |
-| **Process-global cipher**            | One key per process for all `$encrypted` fields. No per-collection key rotation built in.                                                                                                            |
-| **No cross-collection transactions** | SQL mutations and ordinary writes are atomic within one collection; there is no atomic multi-collection commit.                                                                                      |
-| **Timestamp metadata**               | `createdAt` comes from TTID; `updatedAt` comes from file modification metadata. Every timestamp is whole epoch milliseconds.                                                                         |
-| **Canonical identifiers**            | TTID matches case-insensitively but FYLO names a file after the identifier, so a write with a non-canonical spelling is refused. Uppercasing the identifier repairs it.                              |
-| **Shard width is per collection**    | Recorded in the catalog descriptor and 1–4. A write configured for a different width fails with `ESHARDWIDTH`; `fylo reshard` moves the collection.                                                  |
-| **Bulk import for trusted sources**  | SSRF guard blocks private addresses and caps at 50 MiB. Not for user-provided URLs.                                                                                                                  |
-| **Index size per collection**        | A file-layout collection's index is read whole and capped at 256 MiB: roughly 150k-200k small or 35k-48k medium documents. Writes stop at 240 MiB with `EINDEX_FULL`; deletes still work.            |
+| Limitation                           | Detail                                                                                                                                                                                                                                                                             |
+| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Filesystem-only engine**           | One engine writes to one supported local path. Snapshot, replication, and remote-copy tooling remain deployment concerns outside FYLO.                                                                                                                                             |
+| **Local-filesystem locking**         | PID-aware lock files plus kernel-owned takeover claims; live owners are never evicted by TTL. Use local POSIX filesystems or NTFS, not network/sync filesystems without equivalent atomic semantics.                                                                               |
+| **Indexes are derived**              | External writes to data files won't update indexes. Use `db.<collection>.rebuild()`.                                                                                                                                                                                               |
+| **Frequency leaks on encryption**    | HMAC blind indexes for `$eq` reveal value repetition even without decryption.                                                                                                                                                                                                      |
+| **Process-global cipher**            | One key per process for all `$encrypted` fields. No per-collection key rotation built in.                                                                                                                                                                                          |
+| **No cross-collection transactions** | SQL mutations and ordinary writes are atomic within one collection; there is no atomic multi-collection commit.                                                                                                                                                                    |
+| **Timestamp metadata**               | `createdAt` comes from TTID; `updatedAt` comes from file modification metadata. Every timestamp is whole epoch milliseconds.                                                                                                                                                       |
+| **Canonical identifiers**            | TTID matches case-insensitively but FYLO names a file after the identifier, so a write with a non-canonical spelling is refused. Uppercasing the identifier repairs it.                                                                                                            |
+| **Shard width is per collection**    | Recorded in the catalog descriptor and 1–4. A write configured for a different width fails with `ESHARDWIDTH`; `fylo reshard` moves the collection.                                                                                                                                |
+| **Bulk import for trusted sources**  | SSRF guard blocks private addresses and caps at 50 MiB. Not for user-provided URLs.                                                                                                                                                                                                |
+| **Word search**                      | `$match` matches word prefixes after lower-casing and removing Latin accents. No ranking, stemming, phrases or segmentation of text written without spaces. A release before ADR 0023 that writes to a word field leaves its words out until the next `$match` rebuilds the index. |
+| **Sorted queries**                   | `$sort` orders by one field's number only; documents without a number in that field are not returned. Sorting by text is not supported yet.                                                                                                                                        |
+| **Index size per collection**        | A file-layout collection's index is read whole and capped at 256 MiB: roughly 150k-200k small or 35k-48k medium documents. Writes stop at 240 MiB with `EINDEX_FULL`; deletes still work.                                                                                          |
 
 ---
 

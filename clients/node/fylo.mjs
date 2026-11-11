@@ -192,6 +192,7 @@ export class Fylo {
             drop: () => this.dropCollection(name),
             inspect: () => this.inspectCollection(name),
             rebuild: () => this.rebuildCollection(name),
+            words: (fields) => this.setWordFields(name, fields),
             layout: (layout, options) => this.migrateLayout(name, layout, options),
             compact: () => this.compactCollection(name),
             put: (data, meta) => this.putData(name, data, meta),
@@ -204,7 +205,8 @@ export class Fylo {
             delete: (id) => this.delDoc(name, id),
             restore: (id) => this.restoreDoc(name, id),
             find: (query) => this.findDocs(name, query),
-            findPage: (query, page) => this.findDocsPage(name, query, page)
+            findPage: (query, page) => this.findDocsPage(name, query, page),
+            page: (query) => this.findPage(name, query)
         }
     }
 
@@ -327,6 +329,9 @@ export class Fylo {
     }
     rebuildCollection(collection) {
         return this._op('rebuildCollection', { collection })
+    }
+    setWordFields(collection, fields) {
+        return this._op('setWordFields', { collection, fields })
     }
     migrateLayout(collection, layout, options = {}) {
         return this._op('migrateLayout', {
@@ -494,6 +499,10 @@ export class Fylo {
     }
     findDocsPage(collection, query, page = {}) {
         return this._op('findDocs', { collection, query, page })
+    }
+    /** One page of a query with $sort: {items, nextCursor}. Pass nextCursor as $after for the next page. */
+    findPage(collection, query) {
+        return this._op('findDocs', { collection, query })
     }
     findDeletedDocsPage(collection, query = {}, page = {}) {
         return this._op('findDeletedDocs', { collection, query, page })

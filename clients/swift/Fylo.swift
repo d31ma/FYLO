@@ -165,6 +165,9 @@ final class Fylo: NSObject {
     @discardableResult func rebuildCollection(_ collection: String) async throws -> Any? {
         try await request("rebuildCollection", ["collection": collection])
     }
+    @discardableResult func setWordFields(_ collection: String, _ fields: [String]) async throws -> Any? {
+        try await request("setWordFields", ["collection": collection, "fields": fields])
+    }
 
     // MARK: Documents
     @discardableResult func putData(_ collection: String, _ data: [String: Any]) async throws -> Any? {
@@ -195,6 +198,10 @@ final class Fylo: NSObject {
     // MARK: Query
     @discardableResult func findDocs(_ collection: String, _ query: [String: Any]) async throws -> Any? {
         try await request("findDocs", ["collection": collection, "query": query])
+    }
+    /// One page of a query with $sort: {items, nextCursor}. Pass nextCursor as $after for the next page.
+    @discardableResult func findPage(_ collection: String, _ query: [String: Any]) async throws -> Any? {
+        try await request("findPage", ["collection": collection, "query": query])
     }
 
     /// Run raw SQL against the local store. Native interpolation is verbatim —
@@ -256,6 +263,9 @@ struct FyloCollection {
     @discardableResult func drop() async throws -> Any? { try await db.dropCollection(name) }
     @discardableResult func inspect() async throws -> Any? { try await db.inspectCollection(name) }
     @discardableResult func rebuild() async throws -> Any? { try await db.rebuildCollection(name) }
+    @discardableResult func words(_ fields: [String]) async throws -> Any? {
+        try await db.setWordFields(name, fields)
+    }
     @discardableResult func put(_ data: [String: Any]) async throws -> Any? {
         try await db.putData(name, data)
     }
@@ -276,6 +286,9 @@ struct FyloCollection {
     }
     @discardableResult func find(_ query: [String: Any]) async throws -> Any? {
         try await db.findDocs(name, query)
+    }
+    @discardableResult func page(_ query: [String: Any]) async throws -> Any? {
+        try await db.findPage(name, query)
     }
 }
 

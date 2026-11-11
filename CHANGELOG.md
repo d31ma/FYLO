@@ -4,6 +4,38 @@
 
 ### Added
 
+- **Word search with `$match` (ADR 0023).** `setWordFields` (CLI
+  `fylo index words <collection> [<field>...]`, `words()` in the clients)
+  names a collection's word fields and rebuilds its index; the list is kept in
+  the collection descriptor (a directory root's catalog file, or a `.vdbx`
+  database's directory block) and carried by `pack` and `unpack`. Every string
+  of a word field gets one `w` key per distinct normalized word: Unicode
+  letters and digits, lower-cased, Latin accents removed, cut at 64 bytes
+  (`tests/fixtures/word-normalization-v1.json`). `{ body: { $match: "meet
+  tom" } }` matches when each word starts a word of the field, combines with
+  `$eq` and the other operators, and is planned from the `w` keys; on a field
+  without word keys it reads every document. Each value of a word field also
+  gets a `wv` witness key, so a write by an older release, which keeps `eq`
+  keys but writes no words, is noticed: `findDocs` then rebuilds the index
+  before it answers, or reads every document when it cannot write.
+  `inspectCollection` reports `wordFields`. A `$match` with no words or more
+  than 16 is `EQUERY_INVALID`. No ranking, stemming or phrase search.
+- **Sorted, cursor-paged queries with `$sort` and `$after` (ADR 0023).**
+  `{ $sort: { sentAt: "desc" }, $limit: 50 }` walks the field's sortable
+  numeric index keys in order and reads only the documents it returns; there
+  is no in-memory sort. `findDocs` with `$sort` answers `{ items: [{ id, doc
+  }], nextCursor }`, and `$after: nextCursor` reads the next page. The cursor
+  is stateless (`fys1.…`), so it works in one-shot calls, `exec --loop`, the
+  `fylo` crate (`Collection::find_page`) and both browser engines; one from a
+  different query is `EINVALIDCURSOR`. **Documents whose sort field has no
+  numeric value are not returned by a sorted query**; store timestamps as
+  epoch milliseconds. `$sort` cannot be combined with the loop's `page`
+  option (`EBADREQUEST`).
+- Both features work in the native engine, `fylo-browser.wasm` and the
+  JavaScript browser engine (`BrowserCore`: `setWordFields`, `findPage`,
+  `collection.words()` and `collection.page()`, also through the mobile
+  bridge). The machine registry now has 55 operations.
+
 - **IndexedDB working copies for `.vdbx` databases (ADR 0022).** The
   single-file Worker takes two new sources: `{ kind: 'indexeddb', name,
   copyFrom? }`, and `{ kind: 'local', name, copyFrom? }`, which uses OPFS

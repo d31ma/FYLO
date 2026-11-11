@@ -342,6 +342,8 @@ class Fylo {
       request('inspectCollection', {'collection': collection});
   Future<dynamic> rebuildCollection(String collection) =>
       request('rebuildCollection', {'collection': collection});
+  Future<dynamic> setWordFields(String collection, List<String> fields) =>
+      request('setWordFields', {'collection': collection, 'fields': fields});
 
   // --- Documents ---
   Future<dynamic> putData(String collection, Map<String, dynamic> data) =>
@@ -367,6 +369,11 @@ class Fylo {
   // --- Query ---
   Future<dynamic> findDocs(String collection, Map<String, dynamic> query) =>
       request('findDocs', {'collection': collection, 'query': query});
+
+  /// One page of a query with $sort: {items, nextCursor}. Pass nextCursor as
+  /// $after for the next page.
+  Future<dynamic> findPage(String collection, Map<String, dynamic> query) =>
+      request('findPage', {'collection': collection, 'query': query});
 
   /// Run raw SQL against the local store. Native interpolation is verbatim —
   /// escape/validate untrusted input yourself.
@@ -429,6 +436,8 @@ class FyloCollection {
   Future<dynamic> drop() => _db.dropCollection(_name);
   Future<dynamic> inspect() => _db.inspectCollection(_name);
   Future<dynamic> rebuild() => _db.rebuildCollection(_name);
+  Future<dynamic> words(List<String> fields) =>
+      _db.setWordFields(_name, fields);
   Future<dynamic> put(Map<String, dynamic> data) => _db.putData(_name, data);
   Future<dynamic> get(String id) => _db.getDoc(_name, id);
   Future<dynamic> getMeta(String id) => _db.getMeta(_name, id);
@@ -441,4 +450,6 @@ class FyloCollection {
   Future<dynamic> restore(String id) => _db.restoreDoc(_name, id);
   Future<dynamic> find(Map<String, dynamic> query) =>
       _db.findDocs(_name, query);
+  Future<dynamic> page(Map<String, dynamic> query) =>
+      _db.findPage(_name, query);
 }
