@@ -261,10 +261,12 @@ Production deploys go to the Amplify branch named by `sites.fylo.branch` in `ops
 which is `production`. The workflow deploys only when that value is `production`; for any other
 value it resolves the release and says in a notice that production waits.
 
-`fylo.del.ma` moved from the legacy `master` branch to `production` on 2026-11-09. `master` still
-holds the last legacy artifact (Amplify job 19) as a temporary rollback. PaaS removes it after
-`production` has taken one release through `amplify-release.mjs`; until then, a hosting fault can
-be undone by pointing the PaaS domain association back to `master`.
+`fylo.del.ma` moved from the legacy `master` branch to `production` on 2026-11-09. PaaS deleted
+the `master` and `staging` branches on 2026-11-10 (`d31ma/PaaS` #255 and #256), so the Amplify
+app has only `production`, and there is no legacy branch to point the domain back to. Until
+`production` has taken one release through `amplify-release.mjs`, the release state may hold no
+prior artifact; if that first deployment fails, follow the no-prior-artifact steps in
+[Amplify rollback](#amplify-rollback).
 
 To roll back, run `Site Deploy` by hand (action `rollback`); it runs
 `bun scripts/amplify-release.mjs rollback fylo` with the production role. To retry a failed
