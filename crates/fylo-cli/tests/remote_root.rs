@@ -183,6 +183,7 @@ fn network_roots_are_refused_before_any_write() {
         refuses_the_first_request_of_a_plain_loop(&place, filesystem.name());
         refuses_an_existing_root(&place);
         refuses_a_vdbx_database(&place);
+        #[cfg(unix)]
         admits_the_efs_profile(&place);
     }
 }
@@ -260,6 +261,8 @@ fn refuses_a_vdbx_database(place: &Place) {
     fs::remove_file(&copied).unwrap();
 }
 
+/// The EFS profile exists on Unix only.
+#[cfg(unix)]
 fn admits_the_efs_profile(place: &Place) {
     let root = place.path("efs");
     fs::create_dir(&root).unwrap();
