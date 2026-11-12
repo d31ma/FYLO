@@ -1870,7 +1870,9 @@ impl NativeWriteRoot {
                 return database.drop_collection(collection_name);
             }
         }
+        let segments = Self::segment_medium_of(&collection)?;
         remove_dir_durable(&collection.path)?;
+        Self::forget_segment_table(segments.as_deref());
         if collection.uses_segments() {
             // The fixed segment marker would make a later file collection of the
             // same name unreadable.
@@ -1893,6 +1895,25 @@ impl NativeWriteRoot {
         }
         self.remove_schema_registry(collection_name)?;
         Ok(())
+    }
+
+    /// The segment medium of `collection`, or `None` for the file layout.
+    fn segment_medium_of(
+        collection: &super::NativeCollection,
+    ) -> Result<Option<std::sync::Arc<dyn crate::segments::SegmentMedium>>, NativeStorageError>
+    {
+        if !collection.uses_segments() {
+            return Ok(None);
+        }
+        collection.segment_medium().map(Some)
+    }
+
+    /// Forget the location table this process cached for a dropped segment
+    /// collection, so a collection created again at its path never reads it.
+    fn forget_segment_table(medium: Option<&dyn crate::segments::SegmentMedium>) {
+        if let Some(medium) = medium {
+            crate::segments::TableCache::shared().forget(medium);
+        }
     }
 
     /// Allocate one process-monotonic TTID for a caller that has none.

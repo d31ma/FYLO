@@ -241,17 +241,8 @@ impl SegmentImport {
             next_lsn: segment.next_lsn(),
             records: 0,
             locations_length: 0,
-            table_epoch: Self::table_epoch_of(generation),
+            table_epoch: SegmentLayout::fresh_table_epoch()?,
         })?;
         medium.sync_slots()
-    }
-
-    /// The table epoch of a layout imported at `generation`. Each move to
-    /// segments starts at a higher generation than any slot the collection
-    /// or a staging copy at the same path published before, so a location
-    /// table cached under an earlier layout at that path is never reused.
-    fn table_epoch_of(generation: u64) -> u32 {
-        let [first, second, third, fourth, ..] = generation.to_le_bytes();
-        u32::from_le_bytes([first, second, third, fourth])
     }
 }

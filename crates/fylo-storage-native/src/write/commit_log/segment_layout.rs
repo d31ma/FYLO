@@ -130,7 +130,24 @@ impl SegmentLayout {
             next_lsn: segment.next_lsn(),
             records: 0,
             locations_length: 0,
-            table_epoch: 0,
+            table_epoch: Self::fresh_table_epoch()?,
         })
+    }
+
+    /// The table epoch a new or imported layout starts at: a random draw.
+    /// A collection dropped and created again at the same path, or moved to
+    /// segments again, starts its generations over, so no count kept with
+    /// the collection is sure to differ from the epoch of a location table
+    /// another process cached for the layout before; a random epoch matches
+    /// it once in 2^32 layouts.
+    pub(crate) fn fresh_table_epoch() -> Result<u32, NativeStorageError> {
+        let mut bytes = [0_u8; 4];
+        getrandom::fill(&mut bytes).map_err(|error| {
+            NativeStorageError::new(
+                crate::NativeStorageErrorCode::Io,
+                format!("cannot draw a table epoch: {error}"),
+            )
+        })?;
+        Ok(u32::from_le_bytes(bytes))
     }
 }
