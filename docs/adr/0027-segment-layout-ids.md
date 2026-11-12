@@ -1,6 +1,6 @@
 # ADR 0027: Segment layout ids
 
-- Status: **Proposed**
+- Status: **Accepted** (accepted by the user, 2026-11-12)
 - Date: **2026-11-12**
 - Owners: **FYLO maintainers**
 - Amends: ADR 0015 section 2 (`state.slots` grows from 128 to 144 bytes) and

@@ -46,7 +46,7 @@ ADR.
 | [0024](0024-collection-change-feed.md)                       | Accepted | Collection change feed (`changes`, durable cursors)                      |
 | [0025](0025-browser-vdbx-encryption-with-a-host-key.md)      | Accepted | Browser `.vdbx` encryption with a host key, without isolation           |
 | [0026](0026-mobile-builds-and-a-c-abi.md)                  | Accepted | Mobile builds (iOS, Android) and a C ABI    |
-| [0027](0027-segment-layout-ids.md)                          | Proposed | Segment layout ids in `state.slots`, so a cached location table never outlives its layout |
+| [0027](0027-segment-layout-ids.md)                          | Accepted | Segment layout ids in `state.slots`, so a cached location table never outlives its layout |
 
 ## When another ADR is required
 
