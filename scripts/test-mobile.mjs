@@ -95,14 +95,14 @@ class MobileTestRun {
         if (this.options.includes('--build-only')) return this.build()
         if (this.options.includes('--remove-device')) return this.removeDevice()
         const device = new this.plan.device(process.env)
-        await device.start()
+        await device.prepare?.()
         const guard = new DeviceGuard({
-            udid: device.udid,
             loadLimit: this.loadLimit(),
             stop: () => this.stopAll(device)
         })
         guard.start()
         try {
+            await device.start()
             return await this.onDevice(device)
         } finally {
             guard.end()

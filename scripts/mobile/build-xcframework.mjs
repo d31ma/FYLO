@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { CargoArtifacts } from '../cargo-artifacts.mjs'
+import { DeviceGuard } from './device-guard.mjs'
 import { IosSimulator } from './ios-simulator.mjs'
 import { MobileTargets } from './mobile-targets.mjs'
 
@@ -105,15 +106,18 @@ class XcframeworkBuild {
     }
 
     /**
-     * XCTest on a new simulator. Xcode's derived data goes to a temporary
+     * XCTest on the kept simulator, guarded from before its boot. Xcode's derived data goes to a temporary
      * folder on a local disk, deleted afterwards: Xcode renames its files in
      * place, which an NFS build volume refuses, and tests need no index.
      */
     static async test(copy) {
         const derived = mkdtempSync(join(tmpdir(), 'fylo-xctest-'))
         const simulator = new IosSimulator()
-        await simulator.start()
+        await simulator.prepare()
+        const guard = new DeviceGuard({ stop: () => simulator.stop() })
+        guard.start()
         try {
+            await simulator.start()
             await XcframeworkBuild.step(
                 'xctest',
                 'xcodebuild',
@@ -131,6 +135,7 @@ class XcframeworkBuild {
                 copy
             )
         } finally {
+            guard.end()
             await simulator.stop()
             rmSync(derived, { recursive: true, force: true })
         }

@@ -15,10 +15,15 @@ export class IosSimulator {
         this.udid = ''
     }
 
-    /** Boot the kept device, making it first if it does not exist. */
-    async start() {
+    /** Find the kept device, making it first if it does not exist; no boot. */
+    async prepare() {
         this.udid = await IosSimulator.keptDevice()
         console.error(`=== simulator ${this.udid}`)
+    }
+
+    /** Boot the prepared device and wait until it is ready. */
+    async start() {
+        console.error(`=== simulator boot ${this.udid}`)
         await IosSimulator.simctl(['bootstatus', this.udid, '-b'])
     }
 
