@@ -37,6 +37,14 @@
                         <td>Do not retry; fix the ID.</td>
                     </tr>
                     <tr>
+                        <td><code>EDOCEXISTS</code></td>
+                        <td>
+                            A create named a document ID the collection already has; nothing
+                            changed.
+                        </td>
+                        <td>Do not retry; use a new ID, or patch the existing document.</td>
+                    </tr>
+                    <tr>
                         <td><code>EARRAYOFOBJECTS</code></td>
                         <td>
                             The document contains an array of objects, which the data model rejects.

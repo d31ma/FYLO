@@ -67,7 +67,13 @@ pub const QUERY_CURSOR_TTL_MS: u64 = 15 * 60 * 1000;
 pub const MAX_QUERY_SNAPSHOT_BYTES: usize = 1024 * 1024 * 1024;
 const MAX_MACHINE_FILE_BYTES: u64 = 512 * 1024 * 1024;
 
-const RUNTIME_VERSION: &str = include_str!("../../../VERSION");
+/// The FYLO version this build reports: `FYLO_BUILD_VERSION` when the
+/// build script set it (a development build is `<last release>-develop.<short
+/// commit>`), otherwise the `VERSION` file.
+pub const RUNTIME_VERSION: &str = match option_env!("FYLO_BUILD_VERSION") {
+    Some(version) => version,
+    None => include_str!("../../../VERSION").trim_ascii(),
+};
 const BUILD_COMMIT: &str = match option_env!("FYLO_BUILD_COMMIT") {
     Some(commit) => commit,
     None => "unknown",
@@ -1004,6 +1010,14 @@ impl Session {
                 }),
             ),
             (
+                "invocation".into(),
+                if cfg!(target_family = "wasm") {
+                    Value::Bool(false)
+                } else {
+                    InvocationRuntime::capability()
+                },
+            ),
+            (
                 "singleFileDatabase".into(),
                 json!({
                     "version": 1,
@@ -1079,7 +1093,7 @@ impl Session {
             lease.is_some_and(RootLease::kernel_enforced) && remote == Some(false);
         json!({
             "protocolVersion": PROTOCOL_VERSION,
-            "runtimeVersion": RUNTIME_VERSION.trim(),
+            "runtimeVersion": RUNTIME_VERSION,
             "commit": BUILD_COMMIT,
             "buildKind": BUILD_KIND,
             "buildTarget": runtime_target(),

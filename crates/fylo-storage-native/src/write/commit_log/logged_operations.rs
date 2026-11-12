@@ -48,7 +48,7 @@ impl NativeWriteRoot {
                 .join(format!("{identifier}.json"));
             if path_exists_no_follow(&target)? {
                 return Err(NativeStorageError::new(
-                    NativeStorageErrorCode::CorruptMetadata,
+                    NativeStorageErrorCode::DocumentExists,
                     "document identifier already exists",
                 ));
             }
@@ -100,7 +100,7 @@ impl NativeWriteRoot {
                             .join(format!("{identifier}.json"));
                         if path_exists_no_follow(&target)? {
                             return Err(NativeStorageError::new(
-                                NativeStorageErrorCode::CorruptMetadata,
+                                NativeStorageErrorCode::DocumentExists,
                                 "document identifier already exists",
                             ));
                         }

@@ -341,3 +341,22 @@ fn a_missing_database_is_created_protected_with_the_identity() {
         replies[1]
     );
 }
+
+#[test]
+fn a_repeated_id_in_a_database_is_refused_with_its_own_code() {
+    let fixture = Fixture::new();
+    NativeRoot::create_database(fixture.database()).unwrap();
+    let put = json!({ "op": "putData", "collection": "users", "id": id(0), "data": { "n": 1 } });
+    let replies = fixture.session(&[
+        json!({ "op": "createCollection", "collection": "users" }),
+        put.clone(),
+        put,
+    ]);
+    assert_eq!(replies[1]["ok"], json!(true), "{}", replies[1]);
+    assert_eq!(
+        replies[2]["error"]["code"],
+        json!("EDOCEXISTS"),
+        "{}",
+        replies[2]
+    );
+}

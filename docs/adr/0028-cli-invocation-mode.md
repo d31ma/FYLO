@@ -39,8 +39,9 @@ smaller than the deadline. The root is `--root`, else `fylo.root`, and must
 already exist. `--loop` and `--exclusive-root` are refused with it.
 
 Every ADR 0011 rule applies unchanged: the root lease is taken for this one
-request and waited for with backoff up to 200 ms until the budget reaches
-its reserve; `putData` needs a caller-chosen `id`; cursors are off; the
+request and waited for with backoff up to 50 ms until the budget reaches
+its reserve (200 ms until 2026-11-12); waiting invocations take turns (see
+"Waiting takes turns" below); `putData` needs a caller-chosen `id`; cursors are off; the
 repository operations are refused; the request frame limit is the same
 1 MiB default; a request may not override the root or schema directory.
 
@@ -91,6 +92,26 @@ uncertainty. The CLI mode does no further log close after the runtime.
   (EFS included), provider lifecycle, response loss and fencing keep ADR
   0011's open qualification gates. This mode is a local and test tool until
   they pass.
+
+## Waiting takes turns (2026-11-12)
+
+On Windows, two invocation processes that each put 15 documents on one
+root failed 2 runs of 3: one `putData` waited 9.8 s, its whole budget, and
+answered `EROOTLOCKED`. Each request held the root for about 0.8 s there.
+The waiting process tried the root every 200 ms, but the other worker's
+next process took the root a few milliseconds after the release, so the
+waiter almost never tried inside that gap. On macOS and Linux a request
+holds the root for about 10 ms, so the other worker finished all 15 long
+before the budget ran out, and the same unfairness never showed.
+
+A waiting process now first takes a turn lock (`.<root>.fylo-root-turn.lock`
+beside the owner lock, `RootLease::acquire_waiting`) and holds it until it
+owns the root. A process that starts later waits behind the turn, so the
+waiter takes the root on its next try after the release. The kernel drops
+the turn lock when its process ends. `exec --loop --exclusive-root` does
+not wait and does not take turns. Answering `EDOCEXISTS` for a repeated
+`id` and `capabilities.invocation` in the handshake came with the same
+change.
 
 ## Evidence
 

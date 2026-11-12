@@ -210,6 +210,10 @@
             "retryable": false
         },
         {
+            "code": "EDOCEXISTS",
+            "retryable": false
+        },
+        {
             "code": "ENATIVE_WRONG_TYPE",
             "retryable": false
         },

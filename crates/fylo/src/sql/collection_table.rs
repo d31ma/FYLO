@@ -298,7 +298,7 @@ impl TableState {
             (None | Some(Change::Replace(_)), change) => Some(change),
             (Some(Change::Put(_)), Change::Put(_)) => {
                 return Err(Error::new(
-                    "ENATIVE_CORRUPT_METADATA",
+                    NativeStorageErrorCode::DocumentExists.as_str(),
                     "document identifier already exists",
                 ));
             }

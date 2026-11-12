@@ -3244,6 +3244,8 @@ pub enum NativeStorageErrorCode {
     InvalidDocumentId,
     /// Requested record was not found.
     NotFound,
+    /// A create named a document or file identifier that already exists.
+    DocumentExists,
     /// Another writer owns the collection or recovery is required.
     ConcurrentWrite,
     /// The identity this root was opened with may not do the operation.
@@ -3305,6 +3307,7 @@ impl NativeStorageErrorCode {
             Self::InvalidCollection => "ENATIVE_COLLECTION",
             Self::InvalidDocumentId => "EINVALIDDOCID",
             Self::NotFound => "ENATIVE_NOT_FOUND",
+            Self::DocumentExists => "EDOCEXISTS",
             Self::ConcurrentWrite => "ENATIVE_CONCURRENT_WRITE",
             Self::PermissionDenied => "EACCES",
             Self::RootLocked => "EROOTLOCKED",

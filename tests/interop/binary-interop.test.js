@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs'
 import { cp, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import packageManifest from '../../package.json' with { type: 'json' }
+import { BuildVersion } from '../../scripts/build-version.mjs'
 
 const roots = []
 const workspaces = []
@@ -12,7 +12,6 @@ const binaryPath = path.resolve(
     process.env.FYLO_BINARY ??
         path.join(repoRoot, 'dist-bin', process.platform === 'win32' ? 'fylo.exe' : 'fylo')
 )
-const expectedVersion = process.env.FYLO_EXPECT_BINARY_VERSION ?? packageManifest.version
 
 /**
  * @param {string[]} args
@@ -119,10 +118,6 @@ describe('compiled binary language interop', () => {
     })
 
     test('compiled CLI and loop expose the same immutable runtime identity', async () => {
-        const version = await run([binaryPath, '--version'])
-        expectSuccess('compiled --version', version)
-        expect(version.stdout.trim()).toBe(expectedVersion)
-
         const cli = await run([binaryPath, 'version', '--output', 'json'])
         expectSuccess('compiled version JSON', cli)
         const cliIdentity = JSON.parse(cli.stdout)
@@ -142,6 +137,13 @@ describe('compiled binary language interop', () => {
         const expectedTarget =
             process.env.FYLO_EXPECT_TARGET ??
             `${process.platform === 'darwin' ? 'macos' : process.platform}-${process.arch}`
+
+        const expectedVersion =
+            process.env.FYLO_EXPECT_BINARY_VERSION ??
+            (await BuildVersion.resolve(expectedBuildKind, expectedCommit))
+        const version = await run([binaryPath, '--version'])
+        expectSuccess('compiled --version', version)
+        expect(version.stdout.trim()).toBe(expectedVersion)
 
         expect(handshake.protocolVersion).toBe(cliIdentity.protocolVersion)
         expect(handshake.result).toEqual(cliIdentity)

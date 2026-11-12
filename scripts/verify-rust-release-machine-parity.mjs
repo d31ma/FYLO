@@ -799,6 +799,8 @@ function normalizeHandshake(value) {
     // So is the single-file `.vdbx` database (ADR 0016).
     delete normalized.capabilities?.singleFileDatabase
     delete normalized.capabilities?.filesystemMetadata
+    // `exec --invocation` (ADR 0028) is newer than every released build.
+    delete normalized.capabilities?.invocation
     delete normalized.identity
     delete normalized.storage
     return normalized

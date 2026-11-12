@@ -295,7 +295,7 @@ fn warn_mode_stores_invalid_documents_and_counts_each_violation() {
     // A write that fails for another reason counts nothing.
     assert_eq!(
         refused(&runtime, &put(ID, &json!({"name":"lower","age":"1"}))),
-        "ENATIVE_METADATA"
+        "EDOCEXISTS"
     );
     assert_eq!(violations(&runtime), 6);
 }

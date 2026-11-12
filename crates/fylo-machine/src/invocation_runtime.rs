@@ -1,8 +1,8 @@
 use std::io;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use fylo_storage_native::{NativeStorageErrorCode, NativeWriteRoot, RootLease};
-use serde_json::Value;
+use fylo_storage_native::{NativeWriteRoot, RootLease};
+use serde_json::{Value, json};
 
 use crate::{InvocationOptions, StrictValue};
 
@@ -15,6 +15,34 @@ pub struct InvocationRuntime {
 }
 
 impl InvocationRuntime {
+    const CAPABILITY_VERSION: u32 = 1;
+    const COMMAND: &'static str = "exec --invocation";
+    const OPTIONS: [&'static str; 3] = ["--request", "--deadline-ms", "--cleanup-reserve-ms"];
+    const EXCLUDED_OPERATIONS: [&'static str; 8] = [
+        "log",
+        "commit",
+        "checkout",
+        "branch",
+        "status",
+        "diff",
+        "restoreCommit",
+        "merge",
+    ];
+
+    /// The handshake's `capabilities.invocation`: what a host needs to know
+    /// before it starts `fylo exec --invocation` (ADR 0028).
+    #[must_use]
+    pub fn capability() -> Value {
+        json!({
+            "version": Self::CAPABILITY_VERSION,
+            "command": Self::COMMAND,
+            "options": Self::OPTIONS,
+            "excludedOperations": Self::EXCLUDED_OPERATIONS,
+            "createRequiresId": true,
+            "waitsForRoot": true
+        })
+    }
+
     /// Prepare configuration without acquiring a root lease or recovering data.
     ///
     /// # Errors
@@ -56,28 +84,21 @@ impl InvocationRuntime {
     /// Wait for a root another invocation holds, within this budget.
     ///
     /// Concurrent provider invocations are normal, and refusing them at once
-    /// pushes every caller into its own retry loop. Waiting never extends past
-    /// the cleanup reserve; when the budget runs out the lock error is returned
-    /// and nothing was mutated.
+    /// pushes every caller into its own retry loop. Waiting invocations take
+    /// turns, so a stream of later invocations cannot keep one out. Waiting
+    /// never extends past the cleanup reserve; when the budget runs out the
+    /// lock error is returned and nothing was mutated.
     fn acquire_lease(&self) -> io::Result<RootLease> {
         let root = self.options.root();
+        RootLease::acquire_waiting(root.root(), root.filesystem_profile(), self.wait_until())
+            .map_err(|error| Self::storage_error(&error))
+    }
+
+    /// The moment the cleanup reserve starts. A budget already inside its
+    /// reserve still gets one try of the root.
+    fn wait_until(&self) -> Instant {
         let (deadline, reserve) = self.options.budget();
-        let mut pause = Duration::from_millis(10);
-        loop {
-            match RootLease::acquire_with_profile(root.root(), root.filesystem_profile()) {
-                Ok(lease) => return Ok(lease),
-                Err(error) if error.code() == NativeStorageErrorCode::RootLocked => {
-                    let usable = deadline
-                        .checked_duration_since(Instant::now())
-                        .and_then(|remaining| remaining.checked_sub(reserve))
-                        .filter(|usable| !usable.is_zero())
-                        .ok_or_else(|| Self::storage_error(&error))?;
-                    std::thread::sleep(pause.min(usable));
-                    pause = (pause * 2).min(Duration::from_millis(200));
-                }
-                Err(error) => return Err(Self::storage_error(&error)),
-            }
-        }
+        deadline.checked_sub(reserve).unwrap_or_else(Instant::now)
     }
 
     fn execute_owned(&self, lease: &RootLease, request: &Value) -> io::Result<Vec<u8>> {
@@ -166,19 +187,11 @@ impl InvocationRuntime {
     }
 
     fn require_supported_scope(request: &Value) -> io::Result<()> {
-        if matches!(
-            request.get("op").and_then(Value::as_str),
-            Some(
-                "log"
-                    | "commit"
-                    | "checkout"
-                    | "branch"
-                    | "status"
-                    | "diff"
-                    | "restoreCommit"
-                    | "merge"
-            )
-        ) {
+        let operation = request
+            .get("op")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if Self::EXCLUDED_OPERATIONS.contains(&operation) {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
                 "this invocation slice excludes version/repository operations whose additional read sets are not qualified",

@@ -1,3 +1,4 @@
+import { BuildVersion } from './build-version.mjs'
 import { CargoArtifacts } from './cargo-artifacts.mjs'
 import { chmod, copyFile, mkdir, rm } from 'node:fs/promises'
 import path from 'node:path'
@@ -83,6 +84,7 @@ if (!['development-compiled', 'native-rust-preview', 'release'].includes(buildKi
 if (buildKind === 'release' && commit === 'unknown') {
     throw new Error('A release build requires FYLO_BUILD_COMMIT or GITHUB_SHA')
 }
+const version = await BuildVersion.resolve(buildKind, commit)
 
 const cargo = [
     process.execPath,
@@ -102,7 +104,8 @@ const build = await run(cargo, {
         ...process.env,
         FYLO_BUILD_COMMIT: commit,
         FYLO_BUILD_KIND: buildKind,
-        FYLO_BUILD_TARGET: target.identity
+        FYLO_BUILD_TARGET: target.identity,
+        FYLO_BUILD_VERSION: version
     }
 })
 if (build.exitCode !== 0) process.exit(build.exitCode)
@@ -125,13 +128,14 @@ if (probe.exitCode !== 0) {
 }
 const identity = JSON.parse(probe.stdout)
 if (
+    identity.runtimeVersion !== version ||
     identity.commit !== commit ||
     identity.buildKind !== buildKind ||
     identity.buildTarget !== target.identity
 ) {
     throw new Error(
         `Built FYLO identity mismatch: ${JSON.stringify({
-            expected: { commit, buildKind, buildTarget: target.identity },
+            expected: { runtimeVersion: version, commit, buildKind, buildTarget: target.identity },
             actual: identity
         })}`
     )

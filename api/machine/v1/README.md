@@ -34,6 +34,14 @@ Error responses have a stable `error.code`. The human-readable
 when the operation registry says retry is safe and the concrete error is
 documented as transient.
 
+A `putData` that names an `id` the collection already has (a document, or a
+file in a document bucket) fails with `EDOCEXISTS` (not retryable) and
+changes nothing, in every layout: per-document files, segments and `.vdbx`
+databases. Releases
+up to 26.45.07 reported it as `ENATIVE_METADATA`. An `exec --invocation`
+retry of a create that had already committed answers `EDOCEXISTS`, which a
+host can treat as "already done".
+
 ## Compatibility
 
 Within protocol v1:
@@ -144,6 +152,35 @@ failure frame (`EROOTLOCKED`, `EREMOTEROOT`, `EDEADLINE`, `EBADREQUEST`,
 `EFRAME_REQUEST_TOO_LARGE`, `EUNSUPPORTEDOP`, `EINVOCATION`) where the library
 returns an I/O error. See
 [ADR 0028](../../../docs/adr/0028-cli-invocation-mode.md).
+
+Invocations that wait for the same root take turns. A waiting process first
+takes a second lock, kept in `.<root>.fylo-root-turn.lock` beside the root's
+owner lock, and keeps it until it owns the root. A process that starts later
+waits behind it, so a stream of new invocations cannot keep a waiting one out
+until its deadline. `exec --loop --exclusive-root` does not wait and does not
+take turns.
+
+Every handshake reports `capabilities.invocation`, so a host can check for
+the mode before it uses it. On a native build it is:
+
+```json
+{
+    "version": 1,
+    "command": "exec --invocation",
+    "options": ["--request", "--deadline-ms", "--cleanup-reserve-ms"],
+    "excludedOperations": ["log", "commit", "checkout", "branch", "status", "diff", "restoreCommit", "merge"],
+    "createRequiresId": true,
+    "waitsForRoot": true
+}
+```
+
+It is `false` in the browser (WebAssembly) engine. A binary without the key
+predates the mode.
+
+`fylo exec` refuses an option it does not read, and a value option with no
+value, as a configuration error: a message on stderr, exit code 1 and no
+frame. Releases up to 26.45.07 ignored such options, so an old binary given
+`--invocation` ran the request as a plain `exec --request`.
 
 ## In-memory hot set (`capabilities.hotSet`)
 

@@ -504,7 +504,15 @@ fn a_contending_owner_prevents_recovery_and_mutation_but_does_not_poison_the_run
             false
         );
     }
-    assert_eq!(snapshot(&fixture.parent), before);
+    // The waiter's turn lock file is coordination state, like the owner
+    // lock file; nothing under the root or in the owner record changed.
+    let mut after = snapshot(&fixture.parent);
+    assert!(
+        after
+            .remove(Path::new(".root.fylo-root-turn.lock"))
+            .is_some()
+    );
+    assert_eq!(after, before);
     lease.assert_owned().unwrap();
     lease.release_checked().unwrap();
     success(
@@ -776,6 +784,7 @@ fn an_uncertain_response_after_mutation_does_not_automatically_replay_the_operat
     fixture.assert_released(FilesystemProfile::Native);
     let retry = execute(&normal, &create);
     assert_eq!(retry["ok"], false);
+    assert_eq!(retry["error"]["code"], "EDOCEXISTS");
     assert!(
         retry["error"]["message"]
             .as_str()

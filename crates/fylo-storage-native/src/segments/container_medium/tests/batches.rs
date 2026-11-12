@@ -119,7 +119,7 @@ fn a_batch_with_one_refused_write_writes_nothing() {
         .unwrap_err();
     drop(writer);
 
-    assert_eq!(refused.code(), NativeStorageErrorCode::CorruptMetadata);
+    assert_eq!(refused.code(), NativeStorageErrorCode::DocumentExists);
     assert_eq!(database.name_of(1), Some(json!("one")));
     assert_eq!(database.name_of(2), None);
 }

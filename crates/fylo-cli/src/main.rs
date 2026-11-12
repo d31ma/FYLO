@@ -1,6 +1,7 @@
 //! FYLO Rust preview CLI.
 
 mod access_command;
+mod command_flags;
 mod grants_file;
 mod identity_command;
 mod invocation_command;
@@ -26,13 +27,12 @@ use fylo_storage_native::{
 use serde_json::{Map, Value, json};
 
 use access_command::AccessCommand;
+use command_flags::CommandFlags;
 use identity_command::IdentityCommand;
 use invocation_command::InvocationCommand;
 use link_command::LinkCommand;
 use pack_command::{PackCommand, PackOptions, RekeyTo};
 use segment_command::{SegmentCommand, SegmentOptions};
-
-const VERSION: &str = include_str!("../../../VERSION");
 
 fn main() -> ExitCode {
     let mut arguments: Vec<String> = env::args().skip(1).collect();
@@ -57,6 +57,9 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     if let Err(error) = refuse_removed_access_flags(&arguments) {
+        return print_outcome(Err(error));
+    }
+    if let Err(error) = CommandFlags::check(&arguments) {
         return print_outcome(Err(error));
     }
     if arguments.first().is_some_and(|command| command == "exec") {
@@ -347,7 +350,7 @@ fn version_output(arguments: &[String]) -> Result<String, String> {
             &application,
         )?);
     }
-    Ok(VERSION.trim().to_owned())
+    Ok(fylo_machine::RUNTIME_VERSION.to_owned())
 }
 
 fn run_machine(arguments: &[String]) -> ExitCode {
@@ -1956,10 +1959,13 @@ mod tests {
 
     #[test]
     fn version_reports_compatibility_identity() {
-        assert_eq!(run(&["version".into()]).unwrap(), VERSION.trim());
+        assert_eq!(
+            run(&["version".into()]).unwrap(),
+            fylo_machine::RUNTIME_VERSION
+        );
         let output = run(&["version".into(), "--output".into(), "json".into()]).unwrap();
         let identity: serde_json::Value = serde_json::from_str(&output).unwrap();
-        assert_eq!(identity["runtimeVersion"], VERSION.trim());
+        assert_eq!(identity["runtimeVersion"], fylo_machine::RUNTIME_VERSION);
         assert_eq!(
             identity["commit"],
             option_env!("FYLO_BUILD_COMMIT").unwrap_or("unknown")

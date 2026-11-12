@@ -4,6 +4,35 @@
 
 ### Changed
 
+- **An unknown `fylo` option is an error.** `fylo exec` and the other
+  subcommands refuse an option they do not read, and a value option with no
+  value after it, with a message on stderr and exit code 1 (no answer
+  frame). Before, such options were ignored, so `fylo exec --bogus-flag
+  --request -` answered `ok`, and a release without `--invocation` ran an
+  invocation as a plain `exec --request`. `fylo identity` already checked
+  its options. `--no-pager` stays accepted. Check scripts that pass extra
+  options.
+- **A repeated document id answers `EDOCEXISTS`.** `putData` with an `id`
+  the collection already has failed with the generic `ENATIVE_METADATA`; it
+  now fails with its own stable code `EDOCEXISTS` (not retryable), in every
+  layout and in `exec --invocation`. SQL `INSERT` through the `fylo` crate
+  reports it the same way. Code that matched `ENATIVE_METADATA` for this
+  case must match `EDOCEXISTS`.
+- **Waiting invocations take turns.** Two `exec --invocation` processes on
+  one root could keep a third waiting until its deadline, because a new
+  process took the root in the short gap before the waiter tried again
+  (seen on Windows, where it failed `EROOTLOCKED` after 9.8 s). A waiting
+  process now holds a turn lock (`.<root>.fylo-root-turn.lock`, beside the
+  owner lock) and takes the root before any later process. The library adds
+  `RootLease::acquire_waiting`.
+- **Development builds report a version after the last release.** A build
+  that is not a release build reports `<newest release tag>-develop.<short
+  commit>`, for example `26.45.07-develop.1a2b3c4`, instead of the older
+  `VERSION` file of `develop`. Release builds, and builds of a release
+  branch whose `VERSION` is newer than every tag, still report `VERSION`.
+  `scripts/build-executable.mjs` sets this as `FYLO_BUILD_VERSION`; a plain
+  `cargo build` reports `VERSION`.
+
 - **A root on a network filesystem is refused (ADR 0029).** A root that
   opened before on NFS, SMB, WebDAV, AFP, FUSE (sshfs, rclone, gcsfuse) or a
   virtual machine's host share (virtiofs, 9p) is now refused with the new
@@ -21,6 +50,11 @@
 
 ### Added
 
+- **`capabilities.invocation` in the handshake.** `fylo version --output
+  json` and every `handshake` report `{ "version": 1, "command": "exec
+  --invocation", "options": [...], "excludedOperations": [...],
+  "createRequiresId": true, "waitsForRoot": true }`, so a host can check for
+  invocation mode first. It is `false` in the WebAssembly engine.
 - **`fylo exec --invocation` (ADR 0028, ADR 0011).** One request per
   process on a shared root: `--request <json|@path|->`, `--deadline-ms` and
   `--cleanup-reserve-ms`. The process waits while another one holds the root,

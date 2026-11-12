@@ -42,7 +42,7 @@ impl NativeWriteRoot {
             let previous = store.table().get(identifier).cloned();
             if previous.is_some() {
                 return Err(NativeStorageError::new(
-                    NativeStorageErrorCode::CorruptMetadata,
+                    NativeStorageErrorCode::DocumentExists,
                     "document identifier already exists",
                 ));
             }
@@ -117,7 +117,7 @@ impl NativeWriteRoot {
     ) -> Result<(), NativeStorageError> {
         if store.table().get(identifier).is_some() {
             return Err(NativeStorageError::new(
-                NativeStorageErrorCode::CorruptMetadata,
+                NativeStorageErrorCode::DocumentExists,
                 "document identifier already exists",
             ));
         }

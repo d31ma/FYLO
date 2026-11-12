@@ -573,7 +573,7 @@ impl NativeWriteRoot {
             .join(format!("{identifier}.json"));
         if path_exists_no_follow(&target)? {
             return Err(NativeStorageError::new(
-                NativeStorageErrorCode::CorruptMetadata,
+                NativeStorageErrorCode::DocumentExists,
                 "document identifier already exists",
             ));
         }
@@ -750,7 +750,7 @@ impl NativeWriteRoot {
         self.recover_locked(&collection)?;
         if collection.raw_file_ids()?.iter().any(|id| id == identifier) {
             return Err(NativeStorageError::new(
-                NativeStorageErrorCode::CorruptMetadata,
+                NativeStorageErrorCode::DocumentExists,
                 "raw-file identifier already exists",
             ));
         }
@@ -2032,9 +2032,7 @@ impl NativeWriteRoot {
                         identifiers: vec![identifier],
                     });
                 }
-                Err(error)
-                    if error.code() == NativeStorageErrorCode::CorruptMetadata
-                        && error.to_string().contains("identifier already exists") => {}
+                Err(error) if error.code() == NativeStorageErrorCode::DocumentExists => {}
                 Err(error) => return Err(error),
             }
         }

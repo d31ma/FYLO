@@ -1,9 +1,11 @@
 use super::kernel_file_lock::KernelFileLock;
+use super::lease_backoff::LeaseBackoff;
 use super::lease_metadata::LeaseMetadata;
 use crate::{FilesystemProfile, NativeStorageError, NativeStorageErrorCode, RootFilesystem};
 use fylo_vfs::{File, OpenOptions};
 use std::fs::TryLockError;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 #[derive(Debug)]
 pub(super) struct RootLeaseInner {
@@ -16,8 +18,32 @@ pub(super) struct RootLeaseInner {
 }
 
 impl RootLeaseInner {
+    const LOCK_SUFFIX: &str = "fylo-root-owner.lock";
+    const METADATA_SUFFIX: &str = "fylo-root-owner.lock.json";
+
     pub(super) fn acquire(root: impl AsRef<Path>) -> Result<Self, NativeStorageError> {
         Self::acquire_with_profile(root, FilesystemProfile::Native)
+    }
+
+    /// Try the root again after growing pauses while another owner holds
+    /// it, until `wait_until`.
+    pub(super) fn acquire_waiting(
+        root: &Path,
+        profile: FilesystemProfile,
+        wait_until: Instant,
+    ) -> Result<Self, NativeStorageError> {
+        let mut backoff = LeaseBackoff::until(wait_until);
+        let mut attempt = Self::acquire_with_profile(root, profile);
+        while Self::held_by_another(&attempt) && backoff.wait() {
+            attempt = Self::acquire_with_profile(root, profile);
+        }
+        attempt
+    }
+
+    fn held_by_another(attempt: &Result<Self, NativeStorageError>) -> bool {
+        attempt
+            .as_ref()
+            .is_err_and(|error| error.code() == NativeStorageErrorCode::RootLocked)
     }
 
     pub(super) fn acquire_with_profile(
@@ -135,6 +161,17 @@ impl RootLeaseInner {
     }
 
     fn lease_paths(canonical: &Path) -> Result<(PathBuf, PathBuf), NativeStorageError> {
+        let lock_path = Self::sibling_path(canonical, Self::LOCK_SUFFIX)?;
+        let metadata_path = Self::sibling_path(canonical, Self::METADATA_SUFFIX)?;
+        Ok((lock_path, metadata_path))
+    }
+
+    /// The file `.<root name>.<suffix>` in the root's parent directory, where
+    /// the files that coordinate the root's owners live.
+    pub(super) fn sibling_path(
+        canonical: &Path,
+        suffix: &str,
+    ) -> Result<PathBuf, NativeStorageError> {
         let parent = canonical.parent().ok_or_else(|| {
             NativeStorageError::new(
                 NativeStorageErrorCode::UnsafePath,
@@ -145,9 +182,7 @@ impl RootLeaseInner {
             || "root".to_owned(),
             |name| name.to_string_lossy().into_owned(),
         );
-        let lock_path = parent.join(format!(".{root_name}.fylo-root-owner.lock"));
-        let metadata_path = parent.join(format!(".{root_name}.fylo-root-owner.lock.json"));
-        Ok((lock_path, metadata_path))
+        Ok(parent.join(format!(".{root_name}.{suffix}")))
     }
 
     fn open_lock_file(path: &Path) -> Result<File, NativeStorageError> {

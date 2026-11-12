@@ -19,6 +19,11 @@ export default class {
             retry: 'Do not retry; fix the ID.'
         },
         {
+            code: 'EDOCEXISTS',
+            meaning: 'A create named a document ID the collection already has; nothing changed.',
+            retry: 'Do not retry; use a new ID, or patch the existing document.'
+        },
+        {
             code: 'EARRAYOFOBJECTS',
             meaning: 'The document contains an array of objects, which the data model rejects.',
             retry: 'Do not retry; restructure the document.'
@@ -71,7 +76,8 @@ export default class {
         },
         {
             code: 'EREMOTEROOT',
-            meaning: 'The root is on a network filesystem (NFS, SMB, FUSE, a VM host share), where locks cannot keep a second machine out.',
+            meaning:
+                'The root is on a network filesystem (NFS, SMB, FUSE, a VM host share), where locks cannot keep a second machine out.',
             retry: 'Do not retry; move the root to a disk attached to this machine.'
         },
         {

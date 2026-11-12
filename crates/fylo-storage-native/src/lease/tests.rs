@@ -218,3 +218,63 @@ fn a_lock_refused_as_permission_denied_is_reported_as_root_locked() {
     .unwrap_err();
     assert_eq!(refused.code(), NativeStorageErrorCode::RootLocked);
 }
+
+#[test]
+fn a_waiter_takes_the_root_before_an_owner_that_takes_it_again_at_once() {
+    let mut fixture = LeaseFixture::new();
+    let root = fixture.lease().root().to_path_buf();
+    drop(fixture.take_lease());
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (owned_sender, owned) = std::sync::mpsc::channel();
+    let churner = {
+        let root = root.clone();
+        let stop = stop.clone();
+        std::thread::spawn(move || {
+            while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                let wait_until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+                let lease =
+                    RootLease::acquire_waiting(&root, crate::FilesystemProfile::Native, wait_until)
+                        .unwrap();
+                let _ = owned_sender.send(());
+                std::thread::sleep(std::time::Duration::from_millis(30));
+                drop(lease);
+            }
+        })
+    };
+    owned.recv().unwrap();
+    let wait_until = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let waited = RootLease::acquire_waiting(&root, crate::FilesystemProfile::Native, wait_until);
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    let lease = waited.unwrap();
+    lease.assert_owned().unwrap();
+    drop(lease);
+    churner.join().unwrap();
+}
+
+#[test]
+fn a_root_held_past_the_wait_is_reported_as_root_locked() {
+    let fixture = LeaseFixture::new();
+    let root = fixture.lease().root().to_path_buf();
+    let started = std::time::Instant::now();
+    let wait_until = started + std::time::Duration::from_millis(200);
+    let refused = RootLease::acquire_waiting(&root, crate::FilesystemProfile::Native, wait_until)
+        .unwrap_err();
+    assert_eq!(refused.code(), NativeStorageErrorCode::RootLocked);
+    assert!(started.elapsed() >= std::time::Duration::from_millis(200));
+    assert!(fixture.directory.join(".db.fylo-root-turn.lock").is_file());
+    fixture.lease().assert_owned().unwrap();
+}
+
+#[test]
+fn a_free_root_is_taken_at_once_when_the_wait_is_already_over() {
+    let mut fixture = LeaseFixture::new();
+    let root = fixture.lease().root().to_path_buf();
+    drop(fixture.take_lease());
+    let lease = RootLease::acquire_waiting(
+        &root,
+        crate::FilesystemProfile::Native,
+        std::time::Instant::now(),
+    )
+    .unwrap();
+    lease.assert_owned().unwrap();
+}

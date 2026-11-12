@@ -236,6 +236,7 @@ fn put_data_needs_a_caller_id_and_a_repeated_insert_is_stored_once() {
     let create = Fixture::put(Fixture::ID, "once");
     Fixture::frame(&fixture.invoke(&create), true);
     let repeated = Fixture::frame(&fixture.invoke(&create), false);
+    assert_eq!(repeated["error"]["code"], "EDOCEXISTS");
     assert!(
         repeated["error"]["message"]
             .as_str()
@@ -382,4 +383,105 @@ fn invocation_cost() {
         let at = |share: usize| times[times.len() * share / 100];
         println!("invocation {name}: p50 {:?} p95 {:?}", at(50), at(95));
     }
+}
+
+#[test]
+fn a_repeated_id_in_a_segment_collection_answers_document_exists() {
+    let fixture = Fixture::new();
+    let create =
+        json!({"op":"createCollection","collection":Fixture::COLLECTION,"layout":"segments"});
+    Fixture::frame(&fixture.invoke(&create), true);
+    let put = Fixture::put(Fixture::ID, "once");
+    Fixture::frame(&fixture.invoke(&put), true);
+    assert_eq!(Fixture::failure_code(&fixture.invoke(&put)), "EDOCEXISTS");
+}
+
+#[test]
+fn unknown_and_valueless_exec_options_are_configuration_errors() {
+    let fixture = Fixture::new();
+    let handshake = json!({"op":"handshake"}).to_string();
+    let cases: [(&[&str], &str); 4] = [
+        (
+            &["--bogus-flag", "--request", handshake.as_str()],
+            "unknown option --bogus-flag",
+        ),
+        (
+            &[
+                "--invocation",
+                "--deadline-ms",
+                "1000",
+                "--cleanup-reserve-ms",
+                "10",
+                "--request",
+            ],
+            "missing value for --request",
+        ),
+        (
+            &[
+                "--request",
+                handshake.as_str(),
+                "--max-request-bytes",
+                "--loop",
+            ],
+            "missing value for --max-request-bytes",
+        ),
+        (
+            &["--request", handshake.as_str(), "--json"],
+            "unknown option --json",
+        ),
+    ];
+    for (arguments, message) in cases {
+        let output = Command::new(Fixture::BINARY)
+            .args(["exec", "--root", &fixture.root()])
+            .args(arguments)
+            .env_remove("FYLO_ROOT")
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "{arguments:?}");
+        assert!(output.stdout.is_empty(), "{arguments:?}");
+        assert!(stderr.contains(message), "{arguments:?}: {stderr}");
+    }
+}
+
+#[test]
+fn other_subcommands_refuse_unknown_options_too() {
+    let fixture = Fixture::new();
+    for arguments in [
+        vec!["get", "records", Fixture::ID, "--bogus-flag"],
+        vec!["version", "--output"],
+        vec!["pack", "--out", "copy.vdbx", "--bogus-flag"],
+        vec!["SELECT * FROM records", "--bogus-flag"],
+    ] {
+        let output = Command::new(Fixture::BINARY)
+            .args(&arguments)
+            .args(["--root", &fixture.root()])
+            .env_remove("FYLO_ROOT")
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1), "{arguments:?}");
+        assert!(output.stdout.is_empty(), "{arguments:?}");
+        assert!(!output.stderr.is_empty(), "{arguments:?}");
+    }
+}
+
+#[test]
+fn the_handshake_reports_the_invocation_capability() {
+    let output = Command::new(Fixture::BINARY)
+        .args(["version", "--output", "json"])
+        .env_remove("FYLO_ROOT")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let identity: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let invocation = &identity["capabilities"]["invocation"];
+    assert_eq!(invocation["version"], 1);
+    assert_eq!(invocation["command"], "exec --invocation");
+    assert_eq!(invocation["createRequiresId"], true);
+    assert!(
+        invocation["excludedOperations"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("commit"))
+    );
 }
