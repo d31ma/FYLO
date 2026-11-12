@@ -9,6 +9,7 @@ import { MetadataRecord } from './metadata-record.js'
 import { BrowserMetadataStore } from './browser-metadata-store.js'
 import { BrowserEventBus } from './browser-event-bus.js'
 import { BrowserChangeFeed } from './browser-change-feed.js'
+import { BrowserNativeChangeSync } from './browser-native-change-sync.js'
 import { BrowserPrefixIndex } from './prefix-index.js'
 import { BrowserQueryEngine, documentNumber } from './query.js'
 import { BrowserSortOrder } from './sort-order.js'
@@ -176,6 +177,9 @@ function explicitDocumentEntry(value) {
  * `.collections/<collection>/.deleted/<bucket>/<id>.json`
  * `.collections/<collection>/index/{manifest.json,keys.snapshot,keys.wal}`
  * `.collections/<collection>/events/<collection>.ndjson`
+ *
+ * The event journal belongs to this engine only; the native engine never
+ * writes it, and its writes reach the journal through `BrowserNativeChangeSync`.
  */
 export class BrowserCore {
     static MAX_WORD_FIELDS = 16
@@ -202,6 +206,12 @@ export class BrowserCore {
             this.ensureCollection.bind(this)
         )
         this.metadata = new BrowserMetadataStore(this.fs, this.collectionRoot.bind(this))
+        this.nativeChanges = new BrowserNativeChangeSync(
+            this.fs,
+            this.root,
+            this.events,
+            this.documents
+        )
         this.queryEngine = new BrowserQueryEngine({ index: this.index })
         return new Proxy(this, {
             get(target, prop, receiver) {
@@ -928,8 +938,21 @@ export class BrowserCore {
      */
     async changes(collection, after = null, limit = undefined) {
         this.assertCollectionName(collection)
+        await this.withCollectionWriteLane(collection, () => this.syncNativeChanges(collection))
         const journal = await this.events.journal(collection)
         return BrowserChangeFeed.page(journal, after, limit)
+    }
+
+    /**
+     * Adds the native engine's writes to the collection's journal before the
+     * feed reads it (ADR 0024, section 4).
+     *
+     * @param {string} collection
+     * @returns {Promise<void>}
+     */
+    async syncNativeChanges(collection) {
+        if (!(await this.hasCollection(collection))) return
+        await this.nativeChanges.synchronize(collection)
     }
 
     /**

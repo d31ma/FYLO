@@ -1,6 +1,6 @@
 # ADR 0024: Collection change feed
 
-- Status: **Accepted** (built 2026-11-11; the subscription in section 6 is designed, not built)
+- Status: **Accepted** (built 2026-11-11; the subscription in section 6 is designed, not built; section 7 amended 2026-11-11)
 - Date: **2026-11-11**
 - Owners: **FYLO maintainers**
 - Request: Mesail's F4 (CADUCEUS), part 1
@@ -129,7 +129,8 @@ The cursor carries it, and a cursor whose lineage differs is expired.
   format and error codes. Its lineage is the journal's first event (time and
   id), so a dropped and re-created collection expires old cursors; its
   sequence numbers are the journal's line numbers. A cursor taken while the
-  journal was empty stays valid after the first write.
+  journal was empty stays valid after the first write. The journal is an
+  internal detail of this engine; section 7 says how native writes reach it.
 
 ### 5. Retention
 
@@ -164,6 +165,81 @@ application already runs:
 It is not built yet because the unsolicited frame changes the request and
 reply rule every client relies on, and each client needs a reader for it.
 
+### 7. Amendment (2026-11-11): the journal and native writes
+
+The native engine never writes `events/<collection>.ndjson`; it reads only
+the file's length into each transaction manifest (`event_offset`). Before
+this amendment the browser engine's feed therefore missed every change the
+native engine made to a root both engines open (the Explorer opens desktop
+roots through File System Access). The two engines share only the files
+layout: the browser engine cannot read the segments layout, and the native
+engine refuses `changes` on the files layout, which has no location table.
+
+Options considered:
+
+- (a) Every engine writes the journal. The native engine would append one
+  line per commit, and would need a flush or a replay of events after a
+  crash to stay correct, and the journal would grow forever. Rejected: it
+  breaks section 2 ("nothing new is written and no flush is added").
+- (b) The journal stays internal to the browser engine, which adds the
+  native writes to it. **Chosen.**
+- (c) No journal: build the browser feed from file times on every page.
+  Rejected: one file read per document per page, wall-clock order across
+  processes can skip changes, and a native soft-delete moves the file
+  without a new time.
+
+The decision:
+
+- The journal is written by the browser engine only. The native engine,
+  WASI and `fylo-browser.wasm` do not change.
+- Every native commit publishes a new generation in
+  `.fylo-transactions/.collections/<collection>/state.json`; the browser
+  engine never writes that file. Before it answers `changes`, inside the
+  collection's write lane, the browser engine reads that generation. When it
+  differs from the generation recorded in `events/<collection>.native.json`,
+  it lists `docs/` and `.deleted/` and compares them with the journal's
+  newest event for each document:
+    - a live document the journal does not name, names as deleted, or names
+      with another file time gets a `put`;
+    - a soft-deleted document the journal names as live, or does not name,
+      gets a `delete`;
+    - a document the journal names as live that is in neither folder gets a
+      `delete`.
+      The new events are appended oldest file first, then by id, and then the
+      generation is recorded. A root with no `state.json` (one only the browser
+      engine wrote) is never scanned.
+- **A native writer at the same time:** the generation is read before and
+  after the scan. The events are appended only when both reads show the same
+  stable generation, and the write-ahead log has the length the generation
+  records (otherwise a native writer stopped between its commit and its
+  publication). Otherwise the scan is thrown away and run again, up to 8
+  times with a short wait, and then the call fails with
+  `ENATIVE_CONCURRENT_WRITE` (retryable). A commit that lands after the
+  second read moves the generation, so the next call finds it. The
+  comparison is with the journal's current state, so running the scan again
+  (also after a crash between the append and the record) adds nothing twice.
+- The events carry `"source": "native"` and the file time as `ts`. They go to
+  the journal only; the engine's live listeners (`listen`, `subscribe`) are
+  not told.
+- With `access: 'overlay'` the added events live in the overlay (memory)
+  and are built again on each open. **A cursor from an earlier overlay
+  session can then miss native changes**: the rebuilt journal holds one
+  line per document, so the old cursor's line number can point past them.
+  Use a cursor only within the overlay session that returned it, or open the
+  root with `access: 'readwrite'`, where the journal is kept on disk.
+
+Limits, stated and not fixed:
+
+- **A native change to a document's metadata only (`setDocMeta`) is not
+  seen.** The native engine keeps that metadata in extended file attributes,
+  which the browser engine cannot read and which do not change the file
+  time. The next change to the document's content shows it.
+- Two writes to one document within the same file time (the file system's
+  time resolution, milliseconds under File System Access) look like one; the
+  second is not reported.
+- A scan reads the time of every document file: O(n) per collection, only on
+  the first `changes` call after a native commit.
+
 ## Consequences
 
 - One new operation (55 in the registry), one new error code
@@ -180,6 +256,15 @@ reply rule every client relies on, and each client needs a reader for it.
   re-create (`ECURSOR_EXPIRED`), a cursor past the end, bad cursors and
   limits, the files layout refused, and a move to segments and back to files.
 - `tests/browser/change-feed.test.js`: the JavaScript engine's feed.
+- `tests/browser/native-change-sync.test.js`: native puts, updates, deletes
+  and restores added once each; a native commit during the scan; a file a
+  native commit moves during the scan; a writer
+  stuck in `writing`; an unapplied write-ahead log record; a root no native
+  engine wrote; a collection the native engine dropped.
+- `tests/interop/native-change-feed.test.js`: the native binary writes a
+  root, the browser engine (File System Access) reads its feed, the native
+  binary changes and deletes documents, and the browser feed reports each
+  change once, then its own write after them.
 - `tests/browser/e2e/engine-vdbx.spec.mjs`: the feed in `fylo-browser.wasm`
   over a `.vdbx` working copy, in Chromium and Firefox.
 - `scripts/verify-rust-release-machine-parity.mjs` covers the operation.

@@ -40,6 +40,7 @@
  * @property {number=} createdAt
  * @property {number=} updatedAt
  * @property {Record<string, any>=} meta
+ * @property {'native'=} source
  */
 
 /**

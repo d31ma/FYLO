@@ -156,10 +156,16 @@ values:
     keys.snapshot          ← sorted index keys, mmap'd for O(log n) lookup
     keys.wal               ← append-only mutation log (compacted once it outgrows the snapshot, or 16 MiB)
                              (the two together hold at most 240 MiB of keys; see Limitations)
-  events/
-    <collection>.ndjson    ← append-only event journal
+  events/                  ← written only by the browser engine (fylo-web.mjs)
+    <collection>.ndjson    ← its change journal; the native engine never writes it
   locks/                   ← advisory file locks
 ```
+
+`events/` belongs to the JavaScript browser engine. The native engine and
+`fylo-browser.wasm` neither write nor read it: their change feed comes from
+the segments layout's location table (see [Change feed](#change-feed)). When
+the browser engine opens a root the native engine also writes, it adds the
+native writes to its journal before it answers `changes`.
 
 FYLO keeps the logical transaction journal outside collection trees so it is
 not mistaken for a document, indexed, versioned, or copied as record payload:
@@ -1529,6 +1535,15 @@ after a restart or in another process. `limit` is 1 to 1000 (default 256).
   drop and re-create, `fylo pack`, `fylo rekey`, a layout move, or an older copy
   of the files put back. Then the answer is `ECURSOR_EXPIRED`: read the
   collection again, and continue from `"after": null`.
+- The JavaScript browser engine (`fylo-web.mjs`) reads the files layout and
+  keeps its own feed in `events/<collection>.ndjson`. When the native engine
+  writes the same root, the browser engine sees the native commit in the
+  collection's generation (`.fylo-transactions/.collections/<collection>/state.json`)
+  and adds a `put` or `delete` for every document that changed before it
+  answers. One limit: a native change to a document's metadata only
+  (`setDocMeta`, kept in extended file attributes) does not show in the
+  browser engine's feed. A native writer in the middle of a commit makes the
+  call fail with `ENATIVE_CONCURRENT_WRITE`; call `changes` again.
 
 Unpaged operations that exceed the frame still return
 `EFRAME_RESPONSE_TOO_LARGE` while preserving stream synchronization. A single

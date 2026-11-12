@@ -1240,10 +1240,16 @@ class BrowserDocuments {
     return raw;
   }
   async listDocIds(collection) {
-    return await listBucketedDocIds(this.fs, this.docsRoot(collection));
+    return (await this.listDocFiles(collection)).map((file) => file.id);
   }
   async listDeletedDocIds(collection) {
-    return await listBucketedDocIds(this.fs, this.deletedRoot(collection));
+    return (await this.listDeletedDocFiles(collection)).map((file) => file.id);
+  }
+  async listDocFiles(collection) {
+    return await listBucketedFiles(this.fs, this.docsRoot(collection));
+  }
+  async listDeletedDocFiles(collection) {
+    return await listBucketedFiles(this.fs, this.deletedRoot(collection));
   }
 }
 function stripInternalFields(raw) {
@@ -1252,25 +1258,25 @@ function stripInternalFields(raw) {
   delete out._deletedAt;
   return out;
 }
-async function listBucketedDocIds(fs, root) {
+async function listBucketedFiles(fs, root) {
   if (!await fs.exists(root))
     return [];
-  const ids = [];
+  const files = [];
   const buckets = await fs.list(root);
   for (const bucket of buckets) {
     const bucketPath = BrowserPath.join(root, bucket);
     if (!await fs.isDirectory(bucketPath))
       continue;
-    const files = await fs.list(bucketPath);
-    for (const file of files) {
-      if (!file.endsWith(".json"))
+    const names = await fs.list(bucketPath);
+    for (const name of names) {
+      if (!name.endsWith(".json"))
         continue;
-      const id = BrowserPath.basename(file).slice(0, -".json".length);
+      const id = BrowserPath.basename(name).slice(0, -".json".length);
       if (TTID.isTTID(id))
-        ids.push(id);
+        files.push({ id, path: BrowserPath.join(bucketPath, name) });
     }
   }
-  return ids;
+  return files;
 }
 
 // src/browser/core/metadata-record.js
@@ -1506,6 +1512,17 @@ class BrowserEventBus {
 `);
     this.target.dispatchEvent(new CustomEvent(collection, { detail: event }));
   }
+  async append(collection, events) {
+    if (events.length === 0)
+      return;
+    const path = this.journalPath(collection);
+    await this.fs.mkdir(BrowserPath.dirname(path), { recursive: true });
+    await this.fs.appendText(path, events.map(BrowserEventBus.#line).join(""));
+  }
+  static #line(event) {
+    return `${JSON.stringify(event)}
+`;
+  }
   subscribe(collection, listener) {
     const handler = (event) => {
       listener(event.detail);
@@ -1620,6 +1637,194 @@ class BrowserChangeFeed {
   static #error(code, message) {
     const error = new Error(message);
     error.code = code;
+    return error;
+  }
+}
+
+// src/browser/core/browser-native-change-sync.js
+class BrowserNativeChangeSync {
+  static STABLE = "stable";
+  static ATTEMPTS = 8;
+  static RETRY_DELAY_MS = 25;
+  static NAMESPACE = ".collections";
+  static BUSY_CODE = "ENATIVE_CONCURRENT_WRITE";
+  constructor(filesystem, root, events, documents) {
+    this.fs = filesystem;
+    this.root = root;
+    this.events = events;
+    this.documents = documents;
+  }
+  async synchronize(collection) {
+    for (let attempt = 1;attempt < BrowserNativeChangeSync.ATTEMPTS; attempt += 1) {
+      if (await this.#trySynchronize(collection))
+        return;
+      await BrowserNativeChangeSync.#wait(attempt);
+    }
+    await this.#lastAttempt(collection);
+  }
+  async#lastAttempt(collection) {
+    if (await this.#trySynchronize(collection))
+      return;
+    throw BrowserNativeChangeSync.#busy(collection);
+  }
+  async#trySynchronize(collection) {
+    const before = await this.#generation(collection);
+    if (before === null)
+      return true;
+    return await this.#synchronizeStable(collection, before);
+  }
+  async#synchronizeStable(collection, before) {
+    if (!await this.#settled(collection, before))
+      return false;
+    return await this.#synchronizeUnseen(collection, before);
+  }
+  async#synchronizeUnseen(collection, before) {
+    if (await this.#recordedGeneration(collection) === before.generation)
+      return true;
+    return await this.#scan(collection, before);
+  }
+  async#scan(collection, before) {
+    const view = BrowserNativeChangeSync.#journalView(await this.events.journal(collection));
+    const live = await this.#withTimes(await this.documents.listDocFiles(collection));
+    const deleted = await this.#withTimes(await this.documents.listDeletedDocFiles(collection));
+    const found = BrowserNativeChangeSync.#differences(view, live, deleted);
+    const after = await this.#generation(collection);
+    return await this.#commitIfUnchanged(collection, before, after, found);
+  }
+  async#commitIfUnchanged(collection, before, after, found) {
+    if (!BrowserNativeChangeSync.#sameGeneration(before, after))
+      return false;
+    await this.events.append(collection, found);
+    await this.fs.mkdir(BrowserPath.dirname(this.#recordPath(collection)), { recursive: true });
+    await this.fs.writeText(this.#recordPath(collection), JSON.stringify({ generation: before.generation }));
+    return true;
+  }
+  static #sameGeneration(before, after) {
+    return after !== null && after.state === BrowserNativeChangeSync.STABLE && after.generation === before.generation && after.log?.length === before.log?.length;
+  }
+  async#settled(collection, generation) {
+    if (generation.state !== BrowserNativeChangeSync.STABLE)
+      return false;
+    return await this.#logMatches(collection, generation);
+  }
+  async#logMatches(collection, generation) {
+    if (!generation.log)
+      return true;
+    const log = BrowserPath.join(this.#nativeRoot(collection), "log", "segment.log");
+    return await this.#sizeOrNull(log) === generation.log.length;
+  }
+  async#sizeOrNull(path) {
+    if (!await this.fs.exists(path))
+      return null;
+    return await this.fs.size(path);
+  }
+  async#generation(collection) {
+    const path = BrowserPath.join(this.#nativeRoot(collection), "state.json");
+    if (!await this.fs.exists(path))
+      return null;
+    return BrowserNativeChangeSync.#parseGeneration(await this.#readOrEmpty(path));
+  }
+  async#readOrEmpty(path) {
+    try {
+      return await this.fs.readText(path);
+    } catch {
+      return "";
+    }
+  }
+  static #parseGeneration(text) {
+    try {
+      return JSON.parse(text);
+    } catch {
+      return { generation: -1, state: "writing" };
+    }
+  }
+  async#recordedGeneration(collection) {
+    const path = this.#recordPath(collection);
+    if (!await this.fs.exists(path))
+      return null;
+    return BrowserNativeChangeSync.#parseGeneration(await this.fs.readText(path)).generation;
+  }
+  #recordPath(collection) {
+    return BrowserPath.join(BrowserPath.dirname(this.events.journalPath(collection)), `${collection}.native.json`);
+  }
+  #nativeRoot(collection) {
+    return BrowserPath.join(this.root, ".fylo-transactions", BrowserNativeChangeSync.NAMESPACE, collection);
+  }
+  async#withTimes(files) {
+    const stored = [];
+    for (const file of files)
+      stored.push({ id: file.id, mtime: await this.#time(file.path) });
+    return stored.filter(BrowserNativeChangeSync.#hasTime);
+  }
+  static #hasTime(file) {
+    return file.mtime !== null;
+  }
+  async#time(path) {
+    try {
+      return await this.fs.mtimeMs(path);
+    } catch {
+      return null;
+    }
+  }
+  static #journalView(journal) {
+    const view = new Map;
+    for (const event of BrowserNativeChangeSync.#events(journal)) {
+      view.set(event.id, BrowserNativeChangeSync.#entry(event, view.get(event.id)));
+    }
+    return view;
+  }
+  static #events(journal) {
+    return journal.split(`
+`).map(BrowserNativeChangeSync.#parseEvent).filter((event) => event !== null);
+  }
+  static #parseEvent(line) {
+    try {
+      return JSON.parse(line);
+    } catch {
+      return null;
+    }
+  }
+  static #entry(event, previous) {
+    if (event.action === "meta")
+      return previous ?? { kind: "put", version: null };
+    if (event.action === "delete")
+      return { kind: "delete", version: null };
+    return { kind: "put", version: event.ts };
+  }
+  static #differences(view, live, deleted) {
+    const liveIds = new Set(live.map((file) => file.id));
+    const puts = live.filter((file) => BrowserNativeChangeSync.#changedLive(view.get(file.id), file));
+    const deletes = deleted.filter((file) => !liveIds.has(file.id) && view.get(file.id)?.kind !== "delete");
+    const vanished = BrowserNativeChangeSync.#vanished(view, liveIds, deleted);
+    return [
+      ...puts.map((file) => BrowserNativeChangeSync.#event("insert", file)),
+      ...[...deletes, ...vanished].map((file) => BrowserNativeChangeSync.#event("delete", file))
+    ].sort(BrowserNativeChangeSync.#byTimeThenId);
+  }
+  static #changedLive(entry, file) {
+    return entry?.kind !== "put" || entry.version !== file.mtime;
+  }
+  static #vanished(view, liveIds, deleted) {
+    const deletedIds = new Set(deleted.map((file) => file.id));
+    return [...view.entries()].filter(([id, entry]) => entry.kind === "put" && !liveIds.has(id) && !deletedIds.has(id)).map(([id]) => ({ id, mtime: 0 }));
+  }
+  static #event(action, file) {
+    return { ts: file.mtime, action, id: file.id, source: "native" };
+  }
+  static #byTimeThenId(left, right) {
+    return left.ts - right.ts || BrowserNativeChangeSync.#compareText(left.id, right.id);
+  }
+  static #compareText(left, right) {
+    if (left === right)
+      return 0;
+    return left < right ? -1 : 1;
+  }
+  static #wait(attempt) {
+    return new Promise((resolve) => setTimeout(resolve, BrowserNativeChangeSync.RETRY_DELAY_MS * attempt));
+  }
+  static #busy(collection) {
+    const error = new Error(`a native writer kept changing collection ${collection}; read the changes again`);
+    error.code = BrowserNativeChangeSync.BUSY_CODE;
     return error;
   }
 }
@@ -3054,6 +3259,7 @@ class BrowserCore {
     this.events = new BrowserEventBus(this.fs, this.collectionRoot.bind(this));
     this.documents = new BrowserDocuments(this.fs, this.docsRoot.bind(this), this.docPath.bind(this), this.deletedRoot.bind(this), this.deletedPath.bind(this), this.ensureCollection.bind(this));
     this.metadata = new BrowserMetadataStore(this.fs, this.collectionRoot.bind(this));
+    this.nativeChanges = new BrowserNativeChangeSync(this.fs, this.root, this.events, this.documents);
     this.queryEngine = new BrowserQueryEngine({ index: this.index });
     return new Proxy(this, {
       get(target, prop, receiver) {
@@ -3630,8 +3836,14 @@ class BrowserCore {
   }
   async changes(collection, after = null, limit = undefined) {
     this.assertCollectionName(collection);
+    await this.withCollectionWriteLane(collection, () => this.syncNativeChanges(collection));
     const journal = await this.events.journal(collection);
     return BrowserChangeFeed.page(journal, after, limit);
+  }
+  async syncNativeChanges(collection) {
+    if (!await this.hasCollection(collection))
+      return;
+    await this.nativeChanges.synchronize(collection);
   }
   subscribe(collection, listener) {
     this.assertCollectionName(collection);

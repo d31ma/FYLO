@@ -21,7 +21,7 @@ export default class {
             "    keys.snapshot        ← sorted keys, mmap'd O(log n)",
             '    keys.wal             ← append-only mutation log',
             '  events/',
-            '    users.ndjson         ← append-only event journal',
+            '    users.ndjson         ← browser engine only: its change journal',
             '  locks/                 ← advisory file locks'
         ].join('\n')
     }

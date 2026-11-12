@@ -15,7 +15,7 @@ fylo --version`
     docs/4U/4UUB32VGUDW.json
     .deleted/                  # soft-deleted payloads
     index/                     # derived: mmap'd sorted keys + WAL
-    events/users.ndjson        # append-only event journal
+    events/users.ndjson        # browser engine's change journal only
     locks/                     # advisory file locks
   .buckets/assets/             # raw files — identical layout
   .fylo-catalog/               # collection descriptors

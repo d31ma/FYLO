@@ -5,6 +5,7 @@ import { BrowserPath } from './browser-path.js'
 /**
  * @typedef {string} TTIDValue
  * @typedef {import('./filesystem.js').FyloFilesystem} FyloFilesystem
+ * @typedef {{ id: TTIDValue, path: string }} BucketedFile
  * @typedef {object} StoredDocRecord
  * @property {TTIDValue} id
  * @property {number} createdAt
@@ -258,7 +259,7 @@ export class BrowserDocuments {
      * @returns {Promise<TTIDValue[]>}
      */
     async listDocIds(collection) {
-        return await listBucketedDocIds(this.fs, this.docsRoot(collection))
+        return (await this.listDocFiles(collection)).map((file) => file.id)
     }
 
     /**
@@ -266,7 +267,23 @@ export class BrowserDocuments {
      * @returns {Promise<TTIDValue[]>}
      */
     async listDeletedDocIds(collection) {
-        return await listBucketedDocIds(this.fs, this.deletedRoot(collection))
+        return (await this.listDeletedDocFiles(collection)).map((file) => file.id)
+    }
+
+    /**
+     * @param {string} collection
+     * @returns {Promise<BucketedFile[]>}
+     */
+    async listDocFiles(collection) {
+        return await listBucketedFiles(this.fs, this.docsRoot(collection))
+    }
+
+    /**
+     * @param {string} collection
+     * @returns {Promise<BucketedFile[]>}
+     */
+    async listDeletedDocFiles(collection) {
+        return await listBucketedFiles(this.fs, this.deletedRoot(collection))
     }
 }
 
@@ -282,27 +299,28 @@ function stripInternalFields(raw) {
 }
 
 /**
- * Walks `<root>/<bucket>/<id>.json` and returns the TTIDs. Missing roots
- * yield an empty array (matches the server behaviour where `listDocIds` of an
- * unknown collection returns `[]`).
+ * Walks `<root>/<bucket>/<id>.json` and returns each TTID with its file path.
+ * Missing roots yield an empty array (matches the server behaviour where
+ * `listDocIds` of an unknown collection returns `[]`).
  *
  * @param {FyloFilesystem} fs
  * @param {string} root
- * @returns {Promise<string[]>}
+ * @returns {Promise<BucketedFile[]>}
  */
-async function listBucketedDocIds(fs, root) {
+async function listBucketedFiles(fs, root) {
     if (!(await fs.exists(root))) return []
-    const ids = []
+    /** @type {BucketedFile[]} */
+    const files = []
     const buckets = await fs.list(root)
     for (const bucket of buckets) {
         const bucketPath = BrowserPath.join(root, bucket)
         if (!(await fs.isDirectory(bucketPath))) continue
-        const files = await fs.list(bucketPath)
-        for (const file of files) {
-            if (!file.endsWith('.json')) continue
-            const id = BrowserPath.basename(file).slice(0, -'.json'.length)
-            if (TTID.isTTID(id)) ids.push(id)
+        const names = await fs.list(bucketPath)
+        for (const name of names) {
+            if (!name.endsWith('.json')) continue
+            const id = BrowserPath.basename(name).slice(0, -'.json'.length)
+            if (TTID.isTTID(id)) files.push({ id, path: BrowserPath.join(bucketPath, name) })
         }
     }
-    return ids
+    return files
 }

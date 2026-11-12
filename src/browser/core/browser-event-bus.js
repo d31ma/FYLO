@@ -48,6 +48,26 @@ export class BrowserEventBus {
     }
 
     /**
+     * Adds events to the journal without telling live listeners: the native
+     * change sync uses it for writes another engine already made.
+     *
+     * @param {string} collection
+     * @param {BrowserEvent[]} events
+     * @returns {Promise<void>}
+     */
+    async append(collection, events) {
+        if (events.length === 0) return
+        const path = this.journalPath(collection)
+        await this.fs.mkdir(BrowserPath.dirname(path), { recursive: true })
+        await this.fs.appendText(path, events.map(BrowserEventBus.#line).join(''))
+    }
+
+    /** @param {BrowserEvent} event @returns {string} */
+    static #line(event) {
+        return `${JSON.stringify(event)}\n`
+    }
+
+    /**
      * @param {string} collection
      * @param {(event: BrowserEvent) => void} listener
      * @returns {() => void}

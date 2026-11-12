@@ -536,6 +536,16 @@ await mounted.ready()
 Use `access: 'overlay'` for read-only inspection: document/index writes remain
 in memory while reads fall through to the selected directory.
 
+The browser engine's change feed (`changes`) works on the files layout. It is
+kept in `events/<collection>.ndjson`, a journal only the browser engine
+writes. On a root the native engine also writes, each `changes` call first adds
+the native writes to that journal, so native puts, updates and deletes appear
+too. A native change to a document's metadata only does not appear. If a
+native writer is in the middle of a commit, the call fails with
+`ENATIVE_CONCURRENT_WRITE`; call it again. With `access: 'overlay'` the added
+events stay in memory and are built again on each open, so use a cursor only
+in the session that returned it; with `access: 'readwrite'` cursors last.
+
 Every release remains available under `version/<version>/`; `version/latest/`
 is updated only after a successful Release workflow.
 
