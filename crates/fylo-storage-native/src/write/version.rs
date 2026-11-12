@@ -2013,9 +2013,11 @@ fn copy_directory(
 #[cfg(unix)]
 fn copy_extended_metadata(source: &Path, target: &Path) -> Result<(), NativeStorageError> {
     use crate::extended_attribute_error::ExtendedAttributeError;
+    use crate::extended_attribute_namespace::ExtendedAttributeNamespace;
 
     for name in xattr::list(source)
         .map_err(|error| ExtendedAttributeError::for_file(error, "listxattr", source))?
+        .filter(|name| !ExtendedAttributeNamespace::belongs_to_the_kernel(name))
     {
         let label = name.to_string_lossy();
         if let Some(value) = xattr::get(source, &name).map_err(|error| {

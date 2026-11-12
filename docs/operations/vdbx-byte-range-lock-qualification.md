@@ -182,6 +182,7 @@ flags without a `--`.
 | SMB 3.1.1 (`smbfs`, CITADEL ATLAS share), macOS | Mac Mini, two writer processes | 2026-10-29 | lease fallback | lease taken over 65 s after `kill -9` | the probe lock was refused, so the lock checks are skipped; writers 2 and 3 got `EBUSY` after 5.0 s while writer 1 held the lease; a reader ran 23,333 checked queries meanwhile with 0 failures | |
 | exFAT, macOS 27.2 (FSKit, 2 GiB image on HAVEN) | Mac Mini (M4, 10 cores) | 2026-10-29 | passed; not in `QUALIFIED`, so a writer uses the lease | 1.3 ms | 239,431 exclusive entries, 0 overlaps; control caught 357,022; longest wait 70 ms | **yes**, as expected |
 | NTFS, Windows 11 26H2 (ARM64), second drive (F:) | Surface (Snapdragon X, 10 cores) | 2026-10-29 | passed | 1.2 ms | 34,047 exclusive entries, 0 overlaps; control caught 82,499; longest wait 3.3 s | no |
+| ext4, Android 15 emulator (arm64, Linux 6.6), `/data/local/tmp` | Mac Mini (M4), Android emulator `tachyon-gate` | 2026-11-11 | passed | 3.4 ms | 76,261 exclusive entries, 0 overlaps; control caught 74,524; longest wait 249 ms | no |
 
 On the ATLAS share, writing a `.vdbx` first needed two fixes, both on
 develop: the lease file is flushed with `fsync`, because `smbfs` refuses
@@ -271,6 +272,13 @@ A filesystem joins `QUALIFIED` in
 those where `.vdbx` byte-range locks are enabled, only with a passed row here.
 A filesystem whose probe fails is recorded as "lease fallback": it is
 supported, through the lock-free lease.
+
+Phones (ADR 0026): Android's ext4 passed on the emulator, so `("android",
+"ext4")` is in `QUALIFIED`. Many phones keep `/data` on f2fs, which has no row
+yet, so a writer there uses the lease until a run on a device passes. The
+harness cannot run on iOS, because an iOS app cannot start another process,
+so iOS uses the lease; an iOS app is one process, which the lease already
+covers.
 
 On Linux every NFS version has one `fstatfs` magic number, so FYLO reads the
 mount table: an NFS 4.1 mount is named `nfs4.1`, and a mount whose locks stay

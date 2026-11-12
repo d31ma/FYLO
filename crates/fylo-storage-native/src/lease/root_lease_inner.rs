@@ -1,3 +1,4 @@
+use super::kernel_file_lock::KernelFileLock;
 use super::lease_metadata::LeaseMetadata;
 use crate::{FilesystemProfile, NativeStorageError, NativeStorageErrorCode};
 use fylo_vfs::{File, OpenOptions};
@@ -46,8 +47,12 @@ impl RootLeaseInner {
         crate::profile_manifest::ProfileManifest::admit_selection(&canonical, profile)?;
         let (lock_path, metadata_path) = Self::lease_paths(&canonical)?;
         let lock_file = Self::open_lock_file(&lock_path)?;
-        let kernel_enforced =
-            Self::lock_root(lock_file.try_lock(), &metadata_path, &canonical, profile)?;
+        let kernel_enforced = Self::lock_root(
+            KernelFileLock::try_lock(&lock_file),
+            &metadata_path,
+            &canonical,
+            profile,
+        )?;
         let owner = crate::write::unique_name("rust-root-owner");
         let metadata = LeaseMetadata::new(&canonical, &owner)?;
         metadata.write(&metadata_path)?;
@@ -111,7 +116,7 @@ impl RootLeaseInner {
     }
 
     fn unlock_checked(&self) -> Result<(), NativeStorageError> {
-        self.lock_file.unlock().map_err(NativeStorageError::io)
+        KernelFileLock::unlock(&self.lock_file).map_err(NativeStorageError::io)
     }
 
     fn ownership_lost() -> NativeStorageError {
@@ -188,6 +193,6 @@ impl RootLeaseInner {
 
 impl Drop for RootLeaseInner {
     fn drop(&mut self) {
-        let _ = self.lock_file.unlock();
+        let _ = KernelFileLock::unlock(&self.lock_file);
     }
 }

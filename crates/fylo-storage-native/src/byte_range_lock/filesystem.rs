@@ -61,6 +61,7 @@ impl FilesystemInfo {
 
 /// `(OS, filesystem name, remote)` for every filesystem that has passed.
 const QUALIFIED: &[(&str, &str, bool)] = &[
+    ("android", "ext4", false),
     ("linux", "ext4", false),
     ("linux", "tmpfs", false),
     ("macos", "apfs", false),

@@ -72,7 +72,10 @@ impl Bucket {
 
     fn strip_attributes(&self, identifier: &str) {
         let path = self.stored_file(identifier);
-        let names: Vec<_> = xattr::list(&path).unwrap().collect();
+        let names: Vec<_> = xattr::list(&path)
+            .unwrap()
+            .filter(|name| name.to_string_lossy().starts_with("user."))
+            .collect();
         for name in names {
             xattr::remove(&path, name).unwrap();
         }

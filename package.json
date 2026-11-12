@@ -45,6 +45,7 @@
         "rust:verify": "bun ./scripts/run-rust.mjs cargo run -p xtask -- verify-workspace",
         "test": "bun run rust:test && bun run rust:build && bun test tests/browser/*.test.js --timeout 120000 --parallel=1",
         "test:interop": "bun test tests/interop --timeout 120000 --parallel=1",
+        "test:mobile": "bun ./scripts/test-mobile.mjs",
         "typecheck": "tsc --noEmit",
         "lint": "prettier --check \"src/**/*.js\" \"clients/**/*.mjs\" \"scripts/**/*.mjs\" \"tests/**/*.js\" README.md",
         "format": "prettier --write src clients scripts tests"

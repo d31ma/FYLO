@@ -60,6 +60,8 @@ mod durability;
 #[cfg(unix)]
 mod extended_attribute_error;
 #[cfg(unix)]
+mod extended_attribute_namespace;
+#[cfg(unix)]
 mod extended_attribute_probe;
 mod field_keys;
 mod filesystem_profile;

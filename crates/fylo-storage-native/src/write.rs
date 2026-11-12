@@ -3538,24 +3538,39 @@ fn try_create_lock(
             true
         }
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
-        // A host filesystem has no links. Link-then-check exists because
-        // exclusive create is unreliable over NFS, and a filesystem with no
-        // links is not NFS — so the exclusive create the host does offer is
-        // the atomic primitive here.
-        Err(error) if error.kind() == std::io::ErrorKind::Unsupported => {
-            match write_new_synced(path, &encoded) {
-                Ok(()) => {
-                    sync_parent(path)?;
-                    true
-                }
-                Err(error) if error.code() == NativeStorageErrorCode::Io => false,
-                Err(error) => return Err(error),
+        // A host filesystem has no links, and Android refuses an app's
+        // links. Link-then-check exists because exclusive create is
+        // unreliable over NFS, and neither of these is NFS — so the exclusive
+        // create they do offer is the atomic primitive here.
+        Err(error) if links_unavailable(&error) => match write_new_synced(path, &encoded) {
+            Ok(()) => {
+                sync_parent(path)?;
+                true
             }
-        }
+            Err(error) if error.code() == NativeStorageErrorCode::Io => false,
+            Err(error) => return Err(error),
+        },
         Err(error) => return Err(NativeStorageError::io(error)),
     };
     fs::remove_file(scratch).map_err(NativeStorageError::io)?;
     Ok(result)
+}
+
+/// Whether `link(2)` failed because links are not available here, rather
+/// than because of the paths: a filesystem without hard links answers
+/// `Unsupported`, and Android's security policy answers `EACCES`.
+fn links_unavailable(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::Unsupported || refused_by_android_policy(error)
+}
+
+#[cfg(target_os = "android")]
+fn refused_by_android_policy(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::PermissionDenied
+}
+
+#[cfg(not(target_os = "android"))]
+fn refused_by_android_policy(_error: &std::io::Error) -> bool {
+    false
 }
 
 fn try_create_exclusive(path: &Path, encoded: &[u8]) -> Result<bool, NativeStorageError> {
@@ -5152,6 +5167,7 @@ fn native_mode(_metadata: &fs::Metadata) -> u32 {
 #[cfg(unix)]
 fn capture_attributes(path: &Path) -> Result<Vec<CapturedAttribute>, NativeStorageError> {
     use super::extended_attribute_error::ExtendedAttributeError;
+    use super::extended_attribute_namespace::ExtendedAttributeNamespace;
     use xattr::FileExt;
 
     let file = File::open(path).map_err(NativeStorageError::io)?;
@@ -5159,6 +5175,7 @@ fn capture_attributes(path: &Path) -> Result<Vec<CapturedAttribute>, NativeStora
     for name in file
         .list_xattr()
         .map_err(|error| ExtendedAttributeError::for_file(error, "listxattr", path))?
+        .filter(|name| !ExtendedAttributeNamespace::belongs_to_the_kernel(name))
     {
         let name = name.to_str().ok_or_else(|| {
             NativeStorageError::new(
@@ -5282,6 +5299,7 @@ fn restore_attributes(
     attributes: &[CapturedAttribute],
 ) -> Result<(), NativeStorageError> {
     use super::extended_attribute_error::ExtendedAttributeError;
+    use super::extended_attribute_namespace::ExtendedAttributeNamespace;
     use xattr::FileExt;
 
     let file = OpenOptions::new()
@@ -5292,6 +5310,7 @@ fn restore_attributes(
     for name in file
         .list_xattr()
         .map_err(|error| ExtendedAttributeError::for_file(error, "listxattr", path))?
+        .filter(|name| !ExtendedAttributeNamespace::belongs_to_the_kernel(name))
     {
         file.remove_xattr(&name).map_err(|error| {
             ExtendedAttributeError::for_attribute(
