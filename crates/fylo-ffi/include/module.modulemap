@@ -1,0 +1,7 @@
+module CFylo {
+    header "fylo.h"
+    link "iconv"
+    link framework "Security"
+    link framework "CoreFoundation"
+    export *
+}
