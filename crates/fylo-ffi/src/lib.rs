@@ -11,6 +11,7 @@ mod call_failure;
 mod call_outcome;
 mod create_mode;
 mod create_settings;
+mod database_key_argument;
 mod engine_settings;
 mod fylo_bytes;
 mod fylo_status;

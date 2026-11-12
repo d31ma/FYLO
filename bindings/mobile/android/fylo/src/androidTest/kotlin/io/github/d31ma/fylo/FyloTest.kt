@@ -112,4 +112,35 @@ class FyloTest {
             assertEquals("1234", db.get("secrets", id)!!.getJSONObject(id).getString("pin"))
         }
     }
+
+    @Test
+    fun anEncryptedDatabaseOpensOnlyWithItsKey() {
+        val key = Fylo.newKey()
+        val create = """{"create": {"mode": "encrypted"}}"""
+        val id = Fylo.open(database(), create, key).use { db ->
+            db.createCollection("notes")
+            db.put("notes", """{"secret": "lighthouse"}""")
+        }
+        Fylo.open(database(), key = key).use { db ->
+            assertEquals("lighthouse", db.get("notes", id)!!.getJSONObject(id).getString("secret"))
+        }
+        val wrong = Fylo.newKey()
+        try {
+            Fylo.open(database(), key = wrong)
+            fail("expected EKEY")
+        } catch (error: FyloException) {
+            assertEquals("EKEY", error.code)
+        }
+        assertTrue(!String(File(database()).readBytes(), Charsets.ISO_8859_1).contains("lighthouse"))
+    }
+
+    @Test
+    fun aShortKeyIsRefused() {
+        try {
+            Fylo.open(database(), """{"create": {"mode": "encrypted"}}""", ByteArray(31))
+            fail("expected EKEY")
+        } catch (error: FyloException) {
+            assertEquals("EKEY", error.code)
+        }
+    }
 }

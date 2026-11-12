@@ -8,4 +8,7 @@ pub(crate) enum CreateMode {
     Plain,
     /// Encrypted, with an admin identity and signed records (ADR 0021).
     Protected,
+    /// Encrypted with the key given to `fylo_open`, with no identities
+    /// (ADR 0026 section 9).
+    Encrypted,
 }

@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use fylo::{Document, Page, Query, Root};
+use fylo::{DatabaseKey, Document, Page, Query, Root};
 use serde_json::{Value, json};
 
 use crate::call_failure::CallFailure;
@@ -15,9 +15,13 @@ use crate::root_table::RootTable;
 pub(crate) struct RootCalls;
 
 impl RootCalls {
-    pub(crate) fn open(path: &str, options: &str) -> Result<u64, CallFailure> {
+    pub(crate) fn open(
+        path: &str,
+        options: &str,
+        key: Option<DatabaseKey>,
+    ) -> Result<u64, CallFailure> {
         let settings = OpenSettings::parse(options)?;
-        let options = settings.prepare(Path::new(path))?;
+        let options = settings.prepare(Path::new(path), key)?;
         let root = Root::open(path, options)?;
         Ok(RootTable::shared().insert(root))
     }

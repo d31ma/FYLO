@@ -27,10 +27,12 @@ use jni::objects::{JByteArray, JClass};
 use jni::sys::{jint, jlong};
 use jni::{Env, EnvUnowned};
 use serde_json::json;
+use zeroize::Zeroizing;
 
 use crate::c_abi::CAbi;
 use crate::call_failure::CallFailure;
 use crate::call_outcome::CallOutcome;
+use crate::database_key_argument::DatabaseKeyArgument;
 use crate::identity_calls::IdentityCalls;
 use crate::jni_keystore::JniKeystore;
 use crate::root_calls::RootCalls;
@@ -77,7 +79,7 @@ impl JniCalls {
         env.with_env(|env| -> Answer<'caller> {
             let path = env.convert_byte_array(&path)?;
             let options = env.convert_byte_array(&options)?;
-            let key = env.convert_byte_array(&key)?;
+            let key = Zeroizing::new(env.convert_byte_array(&key)?);
             let opened = CAbi::guarded(|| Self::open(&path, &options, &key));
             Self::answer(env, Self::opened(opened))
         })
@@ -206,8 +208,8 @@ impl JniCalls {
     }
 
     fn open(path: &[u8], options: &[u8], key: &[u8]) -> Result<u64, CallFailure> {
-        CAbi::refuse_key(key)?;
-        RootCalls::open(CAbi::utf8(path)?, CAbi::utf8(options)?)
+        let key = DatabaseKeyArgument::parse(key)?;
+        RootCalls::open(CAbi::utf8(path)?, CAbi::utf8(options)?, key)
     }
 
     fn opened(opened: Result<Result<u64, CallFailure>, ()>) -> CallOutcome {

@@ -11,6 +11,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use crate::call_failure::CallFailure;
 use crate::call_outcome::CallOutcome;
+use crate::database_key_argument::DatabaseKeyArgument;
 use crate::fylo_bytes::FyloBytes;
 use crate::fylo_status::FyloStatus;
 use crate::identity_calls::IdentityCalls;
@@ -30,7 +31,9 @@ impl CAbi {
         Self::ABI_VERSION
     }
 
-    /// Open the root or `.vdbx` database at `path`.
+    /// Open the root or `.vdbx` database at `path`. `key` is an encrypted
+    /// database's secret (at least 32 bytes) or empty; it never travels in
+    /// the JSON options (ADR 0026 section 9).
     ///
     /// # Safety
     ///
@@ -55,8 +58,7 @@ impl CAbi {
             let options = unsafe { Self::text(options, options_len) }?;
             // SAFETY: the caller's contract above.
             let key = unsafe { Self::bytes(key, key_len) }?;
-            Self::refuse_key(key)?;
-            RootCalls::open(path, options)
+            RootCalls::open(path, options, DatabaseKeyArgument::parse(key)?)
         });
         // SAFETY: the caller's contract above.
         unsafe { Self::deliver_root(opened, out_root, out_error) }
@@ -317,16 +319,6 @@ impl CAbi {
         // SAFETY: `ptr` is not null and addresses `len` readable bytes that
         // stay live and unchanged for the call (the contract above).
         Ok(unsafe { std::slice::from_raw_parts(ptr, len) })
-    }
-
-    /// Keys given as a value arrive in a later slice (ADR 0026 section 9).
-    pub(crate) fn refuse_key(key: &[u8]) -> Result<(), CallFailure> {
-        if key.is_empty() {
-            return Ok(());
-        }
-        Err(CallFailure::bad_request(
-            "this build of fylo_open takes no encryption key yet",
-        ))
     }
 
     /// Run a call on `root`; a panic kills that root's handle.

@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use fylo::{AccessTrust, Identity, OpenOptions};
+use fylo::{AccessTrust, DatabaseKey, Identity, OpenOptions};
 use serde::Deserialize;
 
 use crate::call_failure::CallFailure;
@@ -28,17 +28,53 @@ impl OpenSettings {
 
     /// Make the database when `create` asks for it, then build the options
     /// `Root::open` takes.
-    pub(crate) fn prepare(&self, path: &Path) -> Result<OpenOptions, CallFailure> {
-        let admin = self.create_missing(path)?;
+    pub(crate) fn prepare(
+        &self,
+        path: &Path,
+        key: Option<DatabaseKey>,
+    ) -> Result<OpenOptions, CallFailure> {
+        self.refuse_key_with_identity(key.as_ref())?;
+        let admin = self.create_missing(path, key.as_ref())?;
         let options = OpenOptions::default().with_config(self.config()?);
         let identity = self.identity(admin)?;
-        Ok(Self::with_identity(options, identity))
+        let options = Self::with_identity(options, identity);
+        Ok(Self::with_key(options, key))
     }
 
-    fn create_missing(&self, path: &Path) -> Result<Option<Identity>, CallFailure> {
+    /// A protected database has its own keys (ADR 0025): a key given beside
+    /// an identity is a mistake, not a second lock.
+    fn refuse_key_with_identity(&self, key: Option<&DatabaseKey>) -> Result<(), CallFailure> {
+        if key.is_some() && self.uses_identity() {
+            return Err(CallFailure::bad_request(
+                "an encryption key and an identity cannot be used together",
+            ));
+        }
+        Ok(())
+    }
+
+    fn uses_identity(&self) -> bool {
+        self.identity.is_some()
+            || self
+                .create
+                .as_ref()
+                .is_some_and(CreateSettings::is_protected)
+    }
+
+    fn create_missing(
+        &self,
+        path: &Path,
+        key: Option<&DatabaseKey>,
+    ) -> Result<Option<Identity>, CallFailure> {
         match &self.create {
-            Some(create) => create.create_missing(path),
+            Some(create) => create.create_missing(path, key),
             None => Ok(None),
+        }
+    }
+
+    fn with_key(options: OpenOptions, key: Option<DatabaseKey>) -> OpenOptions {
+        match key {
+            Some(key) => options.with_database_key(key),
+            None => options,
         }
     }
 

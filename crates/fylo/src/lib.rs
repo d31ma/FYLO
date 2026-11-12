@@ -57,7 +57,7 @@ pub use fylo_engine::{CollectionInspection, EngineConfig};
 pub use fylo_identity::{
     AndroidKeystore, AndroidKeystoreHost, Identity, IdentityError, IdentityId, KeyReference,
 };
-pub use fylo_storage_native::{AccessTrust, Durability};
+pub use fylo_storage_native::{AccessTrust, DatabaseKey, Durability};
 pub use fylo_storage_native::{QueueAckResult, QueueDelivery, QueueNackResult, QueuePublishResult};
 pub use link_identity::LinkIdentity;
 pub use page::Page;
@@ -73,6 +73,7 @@ pub use sql::{
 pub struct OpenOptions {
     config: EngineConfig,
     identity: Option<DatabaseIdentity>,
+    database_key: Option<DatabaseKey>,
 }
 
 impl OpenOptions {
@@ -93,6 +94,16 @@ impl OpenOptions {
         self.identity = Some(DatabaseIdentity::new(identity, trust));
         self
     }
+
+    /// Unlock an encrypted `.vdbx` database with `key`, the secret given as
+    /// bytes (ADR 0026 section 9). A directory root and a plain database
+    /// ignore it; an encrypted database opened without it, or with another
+    /// key, refuses reads and writes with `EKEY`.
+    #[must_use]
+    pub fn with_database_key(mut self, key: DatabaseKey) -> Self {
+        self.database_key = Some(key);
+        self
+    }
 }
 
 /// One open FYLO root, owned by this process until it is closed or dropped.
@@ -104,6 +115,7 @@ pub struct Root {
     lease: Option<RootLease>,
     config: EngineConfig,
     identity: Option<DatabaseIdentity>,
+    database_key: Option<DatabaseKey>,
 }
 
 impl Root {
@@ -125,6 +137,7 @@ impl Root {
             lease,
             config: options.config,
             identity: options.identity,
+            database_key: options.database_key,
         };
         root.check_lease()?;
         root.refuse_branch_worktree()?;
@@ -240,12 +253,28 @@ impl Root {
 
     fn options(&self) -> RootOpenOptions {
         let options = RootOpenOptions::new(&self.path).with_profile(FilesystemProfile::Native);
-        let options = match &self.lease {
+        let options = self.add_lease(options);
+        let options = self.add_identity(options);
+        self.add_database_key(options)
+    }
+
+    fn add_lease(&self, options: RootOpenOptions) -> RootOpenOptions {
+        match &self.lease {
             Some(lease) => options.with_lease(lease.clone()),
             None => options,
-        };
+        }
+    }
+
+    fn add_identity(&self, options: RootOpenOptions) -> RootOpenOptions {
         match &self.identity {
             Some(identity) => options.with_identity(identity.clone()),
+            None => options,
+        }
+    }
+
+    fn add_database_key(&self, options: RootOpenOptions) -> RootOpenOptions {
+        match &self.database_key {
+            Some(key) => options.with_database_key(key.clone()),
             None => options,
         }
     }

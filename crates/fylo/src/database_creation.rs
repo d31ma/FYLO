@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use fylo_identity::Identity;
-use fylo_storage_native::NativeRoot;
+use fylo_storage_native::{DatabaseKey, NativeRoot};
 
 use crate::Error;
 
@@ -15,6 +15,9 @@ pub enum DatabaseCreation {
     /// Encrypted, with `admin` as its admin and trust anchor, and every
     /// record signed (ADR 0021).
     Protected(Identity),
+    /// Encrypted with a key the application holds, and no identities: the
+    /// shared-key format of ADR 0016 section 9 (ADR 0026 section 9).
+    Encrypted(DatabaseKey),
 }
 
 impl DatabaseCreation {
@@ -30,6 +33,7 @@ impl DatabaseCreation {
             DatabaseCreation::Protected(admin) => {
                 NativeRoot::create_protected_database(path, admin)?;
             }
+            DatabaseCreation::Encrypted(key) => NativeRoot::create_encrypted_database(path, key)?,
         }
         Ok(())
     }

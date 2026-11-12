@@ -57,6 +57,10 @@ fn answer(status: FyloStatus, bytes: FyloBytes) -> Answer {
 }
 
 fn open(path: &str, options: &str) -> (Answer, u64) {
+    open_with_key(path, options, &[])
+}
+
+fn open_with_key(path: &str, options: &str, key: &[u8]) -> (Answer, u64) {
     let mut root = 0_u64;
     let mut error = FyloBytes::empty();
     let status = unsafe {
@@ -65,8 +69,8 @@ fn open(path: &str, options: &str) -> (Answer, u64) {
             path.len(),
             options.as_ptr(),
             options.len(),
-            std::ptr::null(),
-            0,
+            key.as_ptr(),
+            key.len(),
             &raw mut root,
             &raw mut error,
         )
@@ -320,29 +324,107 @@ fn an_engine_refusal_is_an_error_with_its_code() {
     assert!(stored.json["code"].as_str().unwrap().starts_with('E'));
 }
 
-#[test]
-fn an_encryption_key_is_refused_until_keys_are_supported() {
-    let fixture = Fixture::new();
-    let path = fixture.database();
-    let options = r#"{"create": {"mode": "plain"}}"#;
-    let key = [7_u8; 32];
-    let mut root = 0_u64;
-    let mut error = FyloBytes::empty();
-    let status = unsafe {
-        CAbi::fylo_open(
-            path.as_ptr(),
-            path.len(),
-            options.as_ptr(),
-            options.len(),
-            key.as_ptr(),
-            key.len(),
-            &raw mut root,
-            &raw mut error,
-        )
-    };
-    let answered = answer(status, error);
+const KEY: [u8; 32] = [7; 32];
+const OTHER_KEY: [u8; 32] = [9; 32];
+const CREATE_ENCRYPTED: &str = r#"{"create": {"mode": "encrypted"}}"#;
 
-    assert_eq!(answered.status, FyloStatus::InvalidArgument);
+#[test]
+fn a_plain_database_takes_no_key() {
+    let fixture = Fixture::new();
+    let (opened, _) = open_with_key(
+        &fixture.database(),
+        r#"{"create": {"mode": "plain"}}"#,
+        &KEY,
+    );
+
+    assert_eq!(opened.status, FyloStatus::InvalidArgument);
+    assert!(!PathBuf::from(fixture.database()).exists());
+}
+
+#[test]
+fn an_encrypted_database_is_created_and_reopened_with_its_key() {
+    let fixture = Fixture::new();
+    let (_, root) = open_with_key(&fixture.database(), CREATE_ENCRYPTED, &KEY);
+    create_collection(root, "notes");
+    let id = stored_id(&put(root, "notes", r#"{"secret": "lighthouse"}"#));
+    close(root);
+
+    let (reopened, root) = open_with_key(&fixture.database(), "", &KEY);
+    let read = get(root, "notes", &id);
+    close(root);
+
+    assert_eq!(reopened.status, FyloStatus::Ok);
+    assert_eq!(read.json, json!({ id.clone(): {"secret": "lighthouse"} }));
+    let bytes = fs::read(fixture.database()).unwrap();
+    assert!(!bytes.windows(10).any(|window| window == b"lighthouse"));
+}
+
+fn encrypted_with_one_note(fixture: &Fixture) -> String {
+    let (_, root) = open_with_key(&fixture.database(), CREATE_ENCRYPTED, &KEY);
+    create_collection(root, "notes");
+    let id = stored_id(&put(root, "notes", r#"{"secret": "lighthouse"}"#));
+    close(root);
+    id
+}
+
+#[test]
+fn a_wrong_key_is_refused_when_opening() {
+    let fixture = Fixture::new();
+    encrypted_with_one_note(&fixture);
+
+    let (opened, _) = open_with_key(&fixture.database(), "", &OTHER_KEY);
+
+    assert_eq!(opened.status, FyloStatus::Error);
+    assert_eq!(opened.json["code"], json!("EKEY"));
+}
+
+#[test]
+fn without_its_key_an_encrypted_database_opens_locked() {
+    let fixture = Fixture::new();
+    let id = encrypted_with_one_note(&fixture);
+
+    let (opened, root) = open(&fixture.database(), "");
+    let read = get(root, "notes", &id);
+    close(root);
+
+    assert_eq!(opened.status, FyloStatus::Ok);
+    assert_eq!(read.json["code"], json!("EKEY"));
+}
+
+#[test]
+fn a_short_key_is_refused_without_naming_it() {
+    let fixture = Fixture::new();
+    let (opened, _) = open_with_key(&fixture.database(), CREATE_ENCRYPTED, &[7; 31]);
+
+    assert_eq!(opened.status, FyloStatus::Error);
+    assert_eq!(opened.json["code"], json!("EKEY"));
+    assert_eq!(
+        opened.json["message"],
+        json!("the encryption key must be at least 32 bytes")
+    );
+    assert!(!PathBuf::from(fixture.database()).exists());
+}
+
+#[test]
+fn creating_an_encrypted_database_needs_a_key() {
+    let fixture = Fixture::new();
+    let (opened, _) = open(&fixture.database(), CREATE_ENCRYPTED);
+
+    assert_eq!(opened.json["code"], json!("EKEY"));
+    assert!(!PathBuf::from(fixture.database()).exists());
+}
+
+#[test]
+fn a_key_and_an_identity_are_refused_together() {
+    let fixture = Fixture::new();
+    let reference = fixture.key_file("device");
+    identity_create(&reference);
+    let options = json!({"create": {"mode": "protected", "admin": reference}}).to_string();
+
+    let (opened, _) = open_with_key(&fixture.database(), &options, &KEY);
+
+    assert_eq!(opened.status, FyloStatus::InvalidArgument);
+    assert!(!PathBuf::from(fixture.database()).exists());
 }
 
 #[test]

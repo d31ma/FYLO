@@ -46,8 +46,12 @@ uint32_t fylo_abi_version(void);
 
 /*
  * Open the root or .vdbx database at path. options is JSON:
- * {"config": {...}, "identity": {...}, "create": {"mode": ...}}, or empty.
- * key is reserved for an encryption key and must be empty for now.
+ * {"config": {...}, "identity": {...}, "create": {"mode": ...}}, or empty;
+ * create.mode is "plain", "protected" (with "admin") or "encrypted".
+ * key is an encrypted database's secret as bytes, at least 32 of them, or
+ * empty; it is never part of the JSON. A wrong or short key answers EKEY; a
+ * key beside an identity is refused. FYLO copies the key and wipes its copy;
+ * the caller wipes its own.
  */
 FyloStatus fylo_open(const uint8_t *path, size_t path_len,
                      const uint8_t *options, size_t options_len,

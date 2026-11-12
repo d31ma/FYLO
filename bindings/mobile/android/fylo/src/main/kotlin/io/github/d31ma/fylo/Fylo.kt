@@ -1,6 +1,7 @@
 package io.github.d31ma.fylo
 
 import java.io.Closeable
+import java.security.SecureRandom
 import org.json.JSONObject
 import org.json.JSONTokener
 
@@ -59,16 +60,31 @@ class Fylo private constructor(private val root: Long) : Closeable {
             get() = FyloNative.abiVersion()
 
         private const val ROOT = "root"
+        private const val KEY_BYTES = 32
         private val NO_KEY = ByteArray(0)
 
         /**
          * Open the root or `.vdbx` database at [path]. [optionsJson] is
          * `{"config": {...}, "identity": {...}, "create": {"mode": ...}}`,
-         * or empty; a missing database is made only when `create` says so.
+         * or empty; a missing database is made only when `create` says so
+         * (`"plain"`, `"protected"` with an `"admin"`, or `"encrypted"`).
+         *
+         * [key] is an encrypted database's secret, at least 32 bytes, as
+         * bytes: never a string, a preference or a log line. Keep it in
+         * Android Keystore-protected storage; [newKey] makes one. A wrong or
+         * short key throws [FyloException] with code `EKEY`. FYLO wipes its
+         * own copy; wipe yours (`key.fill(0)`) when you no longer need it.
          */
-        fun open(path: String, optionsJson: String = ""): Fylo {
-            val opened = FyloAnswer(FyloNative.open(path.bytes(), optionsJson.bytes(), NO_KEY))
+        fun open(path: String, optionsJson: String = "", key: ByteArray? = null): Fylo {
+            val opened = FyloAnswer(FyloNative.open(path.bytes(), optionsJson.bytes(), key ?: NO_KEY))
             return Fylo(opened.objectValue().getLong(ROOT))
+        }
+
+        /** A new encryption key: 32 random bytes from [SecureRandom]. */
+        fun newKey(): ByteArray {
+            val key = ByteArray(KEY_BYTES)
+            SecureRandom().nextBytes(key)
+            return key
         }
 
         private fun String.bytes(): ByteArray = toByteArray(Charsets.UTF_8)
