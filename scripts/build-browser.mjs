@@ -22,6 +22,7 @@ if (!engineOnly) {
         'build',
         './src/browser/index.js',
         '--target=browser',
+        '--minify-whitespace',
         '--outfile',
         './dist-web/fylo.mjs'
     ])

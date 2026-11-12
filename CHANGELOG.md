@@ -426,6 +426,12 @@
 
 ### Changed
 
+- **Build: the page bundle `fylo.mjs` is built without whitespace.** The
+  browser build passes Bun's `--minify-whitespace` for `dist-web/fylo.mjs`
+  (published as `fylo-web.mjs`): spaces, line breaks and comments go, names
+  and code stay. 196,329 bytes become 155,489 (gzip 41,711 to 37,312), under
+  the unchanged 192 KiB page budget. The Worker bundles are unchanged.
+
 - **Build: `fylo-browser.wasm` is re-encoded with `wasm-opt`.** The browser
   engine build runs binaryen's `wasm-opt -O0` (no optimization pass) over the
   module, which writes the integers the Rust linker pads at their shortest

@@ -325,6 +325,9 @@ version in `.binaryen-version`). It runs no optimization pass: it only writes
 the module's numbers in their shortest form, which the Rust linker pads. Install
 it with `brew install binaryen` or `sh scripts/install-binaryen.sh`.
 
+The page bundle `dist-web/fylo.mjs` is built with Bun's `--minify-whitespace`:
+spaces, line breaks and comments are removed, and names and code are kept.
+
 ```ts
 const db = createBrowserClient({ storage: 'opfs', worker: true, wasm: true })
 await db.ready()
