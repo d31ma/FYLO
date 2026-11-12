@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use fylo::{Document, Query, Root};
+use fylo::{Document, Page, Query, Root};
 use serde_json::{Value, json};
 
 use crate::call_failure::CallFailure;
@@ -61,6 +61,38 @@ impl RootCalls {
             let rows = root.collection(collection).find(&query)?;
             Ok(Value::Object(rows.into_iter().map(Self::row).collect()))
         })
+    }
+
+    /// One page of a query with `$sort`: `{"items": [{"id", "doc"}],
+    /// "nextCursor"}`, the cursor null on the last page (ADR 0023). With
+    /// `"$onlyIds": true` each item is just the id, as `findDocs` answers.
+    pub(crate) fn find_page(handle: u64, collection: &str, query: &str) -> CallOutcome {
+        Self::with_root(handle, |root| {
+            let query: Value = serde_json::from_str(query)?;
+            let page = root
+                .collection(collection)
+                .find_page(&Query::from_json(&query)?)?;
+            Ok(Self::page(
+                page,
+                query.get("$onlyIds") == Some(&Value::Bool(true)),
+            ))
+        })
+    }
+
+    fn page(page: Page, only_ids: bool) -> Value {
+        let items: Vec<Value> = page
+            .items
+            .into_iter()
+            .map(|item| Self::page_item(item, only_ids))
+            .collect();
+        json!({ "items": items, "nextCursor": page.next_cursor })
+    }
+
+    fn page_item((id, document): (String, Document), only_ids: bool) -> Value {
+        if only_ids {
+            return Value::String(id);
+        }
+        json!({ "id": id, "doc": Value::Object(document) })
     }
 
     fn with_root(

@@ -52,7 +52,7 @@ int main(int argc, char **argv) {
     expect(status == FYLO_OK && holds(out, "\"notes\""), "create collection");
     fylo_bytes_free(out);
 
-    const char *document = "{\"title\": \"from C\"}";
+    const char *document = "{\"title\": \"from C\", \"rank\": 1}";
     status = fylo_put(root, text("notes"), 5, text(document), strlen(document), &out);
     expect(status == FYLO_OK && out.len > 2, "put returns the id");
     char id[64] = {0};
@@ -68,6 +68,12 @@ int main(int argc, char **argv) {
     const char *query = "{\"$ops\": [{\"title\": {\"$eq\": \"from C\"}}]}";
     status = fylo_find(root, text("notes"), 5, text(query), strlen(query), &out);
     expect(status == FYLO_OK && holds(out, id), "find matches the document");
+    fylo_bytes_free(out);
+
+    const char *page = "{\"$sort\": {\"rank\": \"asc\"}, \"$limit\": 10}";
+    status = fylo_find_page(root, text("notes"), 5, text(page), strlen(page), &out);
+    expect(status == FYLO_OK && holds(out, "\"nextCursor\"") && holds(out, id),
+           "find_page returns a page");
     fylo_bytes_free(out);
 
     status = fylo_delete(root, text("notes"), 5, text(id), strlen(id), &out);

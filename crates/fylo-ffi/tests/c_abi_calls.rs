@@ -153,6 +153,21 @@ fn find(root: u64, collection: &str, query: &str) -> Answer {
     answer(status, out)
 }
 
+fn find_page(root: u64, collection: &str, query: &str) -> Answer {
+    let mut out = FyloBytes::empty();
+    let status = unsafe {
+        CAbi::fylo_find_page(
+            root,
+            collection.as_ptr(),
+            collection.len(),
+            query.as_ptr(),
+            query.len(),
+            &raw mut out,
+        )
+    };
+    answer(status, out)
+}
+
 fn identity_create(reference: &str) -> Answer {
     let mut out = FyloBytes::empty();
     let status =
@@ -414,4 +429,66 @@ fn calls_from_many_threads_share_one_handle() {
 
     assert!(statuses.iter().all(|status| *status == FyloStatus::Ok));
     assert_eq!(found.json.as_object().unwrap().len(), 20);
+}
+
+#[test]
+fn sorted_pages_follow_the_cursor_to_the_last_page() {
+    let fixture = Fixture::new();
+    let (_, root) = open(&fixture.database(), r#"{"create": {"mode": "plain"}}"#);
+    create_collection(root, "messages");
+    for (subject, sent) in [("first", 1), ("second", 2), ("third", 3)] {
+        put(
+            root,
+            "messages",
+            &json!({ "subject": subject, "sentAt": sent }).to_string(),
+        );
+    }
+
+    let first = find_page(
+        root,
+        "messages",
+        r#"{"$sort": {"sentAt": "desc"}, "$limit": 2}"#,
+    );
+    let cursor = first.json["nextCursor"].as_str().unwrap().to_owned();
+    let second = find_page(
+        root,
+        "messages",
+        &json!({ "$sort": { "sentAt": "desc" }, "$limit": 2, "$after": cursor }).to_string(),
+    );
+    let ids_only = find_page(
+        root,
+        "messages",
+        r#"{"$sort": {"sentAt": "asc"}, "$limit": 1, "$onlyIds": true}"#,
+    );
+
+    assert_eq!(first.status, FyloStatus::Ok);
+    let subjects: Vec<&str> = first.json["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["doc"]["subject"].as_str().unwrap())
+        .collect();
+    assert_eq!(subjects, ["third", "second"]);
+    assert_eq!(second.json["items"][0]["doc"]["subject"], json!("first"));
+    assert_eq!(second.json["items"].as_array().unwrap().len(), 1);
+    assert_eq!(second.json["nextCursor"], Value::Null);
+    assert!(ids_only.json["items"][0].is_string(), "{}", ids_only.json);
+    close(root);
+}
+
+#[test]
+fn a_page_without_sort_is_an_engine_error() {
+    let fixture = Fixture::new();
+    let (_, root) = open(&fixture.database(), r#"{"create": {"mode": "plain"}}"#);
+    create_collection(root, "messages");
+
+    let page = find_page(root, "messages", r#"{"$limit": 2}"#);
+
+    assert_eq!(page.status, FyloStatus::Error);
+    assert!(
+        page.json["code"].as_str().unwrap().starts_with('E'),
+        "{}",
+        page.json
+    );
+    close(root);
 }

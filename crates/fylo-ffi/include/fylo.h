@@ -86,6 +86,16 @@ FyloStatus fylo_find(uint64_t root,
                      const uint8_t *query, size_t query_len,
                      FyloBytes *out);
 
+/*
+ * One page of a query with $sort ($limit and $after optional):
+ * {"items": [{"id", "doc"}], "nextCursor"}; nextCursor is null on the last
+ * page and goes into $after for the next one.
+ */
+FyloStatus fylo_find_page(uint64_t root,
+                          const uint8_t *collection, size_t collection_len,
+                          const uint8_t *query, size_t query_len,
+                          FyloBytes *out);
+
 /* Make an identity's key where reference names: {"id", "publicKey"}. */
 FyloStatus fylo_identity_create(const uint8_t *reference, size_t reference_len,
                                 FyloBytes *out);

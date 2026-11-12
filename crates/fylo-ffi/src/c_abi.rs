@@ -196,6 +196,33 @@ impl CAbi {
         unsafe { Self::deliver(outcome, out) }
     }
 
+    /// One page of a query with `$sort` (and `$limit`, `$after`):
+    /// `{"items": [{"id": ..., "doc": {...}}], "nextCursor": ...}`, the
+    /// cursor null on the last page.
+    ///
+    /// # Safety
+    ///
+    /// As [`CAbi::fylo_open`] for the inputs; `out` is writable, or null.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn fylo_find_page(
+        root: u64,
+        collection: *const u8,
+        collection_len: usize,
+        query: *const u8,
+        query_len: usize,
+        out: *mut FyloBytes,
+    ) -> FyloStatus {
+        let outcome = Self::root_call(root, || {
+            // SAFETY: the caller's contract above.
+            let collection = unsafe { Self::text(collection, collection_len) }?;
+            // SAFETY: the caller's contract above.
+            let query = unsafe { Self::text(query, query_len) }?;
+            Ok(RootCalls::find_page(root, collection, query))
+        });
+        // SAFETY: the caller's contract above.
+        unsafe { Self::deliver(outcome, out) }
+    }
+
     /// Make an application identity's key where `reference` names, and
     /// describe it: `{"id": "fid1:...", "publicKey": "fpk1:..."}`.
     ///

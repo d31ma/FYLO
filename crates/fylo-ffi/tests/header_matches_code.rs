@@ -92,7 +92,7 @@ fn header_signatures(header: &str) -> Signatures {
 fn every_exported_function_has_the_same_c_signature_in_the_header() {
     let code = rust_signatures(&crate_file("src/c_abi.rs"));
     let header = header_signatures(&crate_file("include/fylo.h"));
-    assert_eq!(code.len(), 11, "{code:#?}");
+    assert_eq!(code.len(), 12, "{code:#?}");
     assert_eq!(header, code);
 }
 
