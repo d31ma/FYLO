@@ -783,6 +783,7 @@ name = "fylo-ffi"
 version = "0.1.0"
 dependencies = [
  "fylo",
+ "jni",
  "serde",
  "serde_json",
 ]

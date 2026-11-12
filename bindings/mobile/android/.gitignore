@@ -1,0 +1,4 @@
+.gradle/
+build/
+fylo/build/
+local.properties

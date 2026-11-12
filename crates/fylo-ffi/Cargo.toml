@@ -16,6 +16,11 @@ fylo = { version = "0.1.0", path = "../fylo" }
 serde.workspace = true
 serde_json.workspace = true
 
+# Android's Kotlin wrapper reaches the same calls through JNI (ADR 0026,
+# section 4). No default features: no JVM invocation, only native methods.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = { version = "0.22.4", default-features = false }
+
 # The C entry points read the caller's pointers and hand out buffers the
 # caller frees, which no safe signature expresses. ADR 0026 confines that to
 # `c_abi.rs`, one `SAFETY:` justification per block.

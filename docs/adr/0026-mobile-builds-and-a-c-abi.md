@@ -78,8 +78,9 @@ operating system protects.
   `unsafe`, each block with a `SAFETY:` comment. It is a new row of
   `docs/security/unsafe-inventory.md`.
 - On Android the JNI glue uses the `jni` crate. Its own `unsafe` is upstream,
-  reviewed like any dependency (ADR 0004's checklist); FYLO's calls into it
-  live in the same boundary module.
+  reviewed like any dependency (ADR 0004's checklist,
+  `docs/security/mobile-dependencies.md`). FYLO's glue, `jni_calls.rs`, calls
+  only its safe API; its exported names are its only `unsafe` items.
 
 ### 5. Panics (D6)
 

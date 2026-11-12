@@ -16,6 +16,8 @@ mod fylo_bytes;
 mod fylo_status;
 mod identity_calls;
 mod identity_settings;
+#[cfg(target_os = "android")]
+mod jni_calls;
 mod open_settings;
 mod root_calls;
 mod root_entry;
@@ -25,3 +27,5 @@ mod trust_settings;
 pub use c_abi::CAbi;
 pub use fylo_bytes::FyloBytes;
 pub use fylo_status::FyloStatus;
+#[cfg(target_os = "android")]
+pub use jni_calls::JniCalls;

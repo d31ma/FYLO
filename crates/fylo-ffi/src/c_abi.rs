@@ -292,6 +292,11 @@ impl CAbi {
     unsafe fn text<'call>(ptr: *const u8, len: usize) -> Result<&'call str, CallFailure> {
         // SAFETY: the contract of this function.
         let bytes = unsafe { Self::bytes(ptr, len) }?;
+        Self::utf8(bytes)
+    }
+
+    /// The caller's bytes as text, or `EBADREQUEST`.
+    pub(crate) fn utf8(bytes: &[u8]) -> Result<&str, CallFailure> {
         std::str::from_utf8(bytes).map_err(|_| CallFailure::bad_request("text must be UTF-8"))
     }
 
@@ -315,7 +320,7 @@ impl CAbi {
     }
 
     /// Keys given as a value arrive in a later slice (ADR 0026 section 9).
-    fn refuse_key(key: &[u8]) -> Result<(), CallFailure> {
+    pub(crate) fn refuse_key(key: &[u8]) -> Result<(), CallFailure> {
         if key.is_empty() {
             return Ok(());
         }
@@ -325,7 +330,7 @@ impl CAbi {
     }
 
     /// Run a call on `root`; a panic kills that root's handle.
-    fn root_call(
+    pub(crate) fn root_call(
         root: u64,
         call: impl FnOnce() -> Result<CallOutcome, CallFailure>,
     ) -> CallOutcome {
@@ -343,7 +348,9 @@ impl CAbi {
         }
     }
 
-    fn guarded_outcome(call: impl FnOnce() -> Result<CallOutcome, CallFailure>) -> CallOutcome {
+    pub(crate) fn guarded_outcome(
+        call: impl FnOnce() -> Result<CallOutcome, CallFailure>,
+    ) -> CallOutcome {
         match Self::guarded(call) {
             Ok(Ok(outcome)) => outcome,
             Ok(Err(failure)) => CallOutcome::failed(failure),
@@ -352,7 +359,7 @@ impl CAbi {
     }
 
     /// Catch a panic so it never unwinds into the caller's frames.
-    fn guarded<T>(call: impl FnOnce() -> T) -> Result<T, ()> {
+    pub(crate) fn guarded<T>(call: impl FnOnce() -> T) -> Result<T, ()> {
         catch_unwind(AssertUnwindSafe(call)).map_err(|_| ())
     }
 
