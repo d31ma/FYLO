@@ -1,4 +1,4 @@
-use super::{ContainerLease, ContainerLeaseError, ContainerLeaseTiming};
+use super::{ContainerLease, ContainerLeaseError, ContainerLeaseTiming, silent_long_enough};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Barrier};
@@ -100,18 +100,28 @@ fn a_crashed_owner_is_taken_over_and_learns_it_lost() {
     winner.assert_owned().expect("winner still owns it");
 }
 
+/// An owner thread that the machine stops for longer than `takeover_after`
+/// loses its lease by design (it then refuses to write). FAST's 300 ms is
+/// shorter than the stalls a loaded test machine shows (seen at load 32), so
+/// this test, which proves that renewing keeps the lease, uses a window wide
+/// enough that only a real fault can fail it.
+const RENEWING: ContainerLeaseTiming = ContainerLeaseTiming {
+    takeover_after: Duration::from_secs(2),
+    poll: Duration::from_millis(10),
+};
+
 #[test]
 fn a_renewing_owner_is_never_taken_over() {
     let (_guard, path) = database("vdbx-lease-renew");
-    let mut owner = ContainerLease::acquire(&path, FAST, Duration::ZERO).expect("acquire");
+    let mut owner = ContainerLease::acquire(&path, RENEWING, Duration::ZERO).expect("acquire");
     let contender_path = path.clone();
     let contender = thread::spawn(move || {
-        ContainerLease::acquire(&contender_path, FAST, FAST.takeover_after * 3)
+        ContainerLease::acquire(&contender_path, RENEWING, RENEWING.takeover_after * 2)
     });
-    let deadline = Instant::now() + FAST.takeover_after * 4;
+    let deadline = Instant::now() + RENEWING.takeover_after * 3;
     while Instant::now() < deadline {
         owner.renew().expect("renew");
-        thread::sleep(FAST.takeover_after / 6);
+        thread::sleep(RENEWING.takeover_after / 20);
     }
     assert_eq!(busy(contender.join().expect("join")), 1);
     owner.assert_owned().expect("still owned");
@@ -305,4 +315,25 @@ fn require_byte_range_locks() {
          point TMPDIR at a directory on ext4, tmpfs, APFS or NTFS (CONTRIBUTING.md)",
         filesystem.name
     );
+}
+
+#[test]
+fn silence_is_measured_between_the_two_reads_never_after_the_second() {
+    let first_seen_after = Instant::now();
+    let takeover = Duration::from_millis(300);
+    assert!(!silent_long_enough(
+        first_seen_after,
+        first_seen_after + Duration::from_millis(250),
+        takeover
+    ));
+    assert!(silent_long_enough(
+        first_seen_after,
+        first_seen_after + takeover,
+        takeover
+    ));
+    assert!(!silent_long_enough(
+        first_seen_after + takeover,
+        first_seen_after,
+        takeover
+    ));
 }

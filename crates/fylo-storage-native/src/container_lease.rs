@@ -152,6 +152,11 @@ impl ContainerLease {
             let next = match newest {
                 None => Some(1),
                 Some(generation) => {
+                    // Both clocks are read before the file, so time this
+                    // contender loses after the read never counts against
+                    // the owner.
+                    let read_started = Instant::now();
+                    let read_started_ms = now_ms();
                     match fs::read(directory.join(format!("{prefix}{generation}"))) {
                         Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
                         Err(error) => return Err(error.into()),
@@ -162,27 +167,24 @@ impl ContainerLease {
                         // watch it go unrenewed.
                         Ok(bytes)
                             if written_ms(&bytes).is_some_and(|written| {
-                                now_ms().saturating_sub(written)
+                                read_started_ms.saturating_sub(written)
                                     > 2 * timing.takeover_after.as_millis()
                             }) =>
                         {
                             Some(generation + 1)
                         }
-                        Ok(bytes) => {
-                            let now = Instant::now();
-                            match &observed {
-                                Some((seen, seen_bytes, since))
-                                    if *seen == generation && *seen_bytes == bytes =>
-                                {
-                                    (now.duration_since(*since) >= timing.takeover_after)
-                                        .then_some(generation + 1)
-                                }
-                                _ => {
-                                    observed = Some((generation, bytes, now));
-                                    None
-                                }
+                        Ok(bytes) => match &observed {
+                            Some((seen, seen_bytes, since))
+                                if *seen == generation && *seen_bytes == bytes =>
+                            {
+                                silent_long_enough(*since, read_started, timing.takeover_after)
+                                    .then_some(generation + 1)
                             }
-                        }
+                            _ => {
+                                observed = Some((generation, bytes, Instant::now()));
+                                None
+                            }
+                        },
                     }
                 }
             };
@@ -353,6 +355,19 @@ impl Drop for ContainerLease {
 /// Create and lock the marker for owner token `owner`, or `None` where the
 /// temporary directory cannot hold one whose lock is trusted. The lease
 /// works without it; only a takeover after a crash waits longer.
+/// Whether an owner stayed silent for `takeover_after`: from just after the
+/// read that first saw its lease bytes to just before the read that saw the
+/// same bytes again. Both instants lie inside the owner's silence, so a
+/// contender that is delayed around its own reads never counts that delay as
+/// the owner's.
+fn silent_long_enough(
+    first_seen_after: Instant,
+    seen_again_before: Instant,
+    takeover_after: Duration,
+) -> bool {
+    seen_again_before.saturating_duration_since(first_seen_after) >= takeover_after
+}
+
 fn hold_marker(owner: &str) -> Option<(PathBuf, ByteLockGuard)> {
     let path = std::env::temp_dir().join(format!("{MARKER_PREFIX}{owner}"));
     OpenOptions::new()
