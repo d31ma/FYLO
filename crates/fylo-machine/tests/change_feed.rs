@@ -280,3 +280,34 @@ fn the_files_layout_is_refused_and_the_segments_layout_is_read() {
     }));
     assert_eq!(code, "ELAYOUTUNSUPPORTED");
 }
+
+#[test]
+fn a_collection_of_one_document_moves_to_segments() {
+    let fixture = Fixture::folder();
+    fixture.result(&json!({ "op": "createCollection", "collection": "notes" }));
+    fixture.put(0);
+    let moved = fixture
+        .result(&json!({ "op": "migrateLayout", "collection": "notes", "layout": "segments" }));
+    assert_eq!(moved["documents"], json!(1));
+    let page = fixture.changes(&Value::Null, 10);
+    assert_eq!(listed(&page), [put(0)]);
+}
+
+#[test]
+fn a_layout_move_expires_old_cursors() {
+    let fixture = Fixture::folder();
+    fixture.result(&json!({ "op": "createCollection", "collection": "notes" }));
+    fixture.put(0);
+    fixture.put(5);
+    fixture.result(&json!({ "op": "migrateLayout", "collection": "notes", "layout": "segments" }));
+    fixture.put(1);
+    let page = fixture.changes(&Value::Null, 10);
+    fixture.result(&json!({ "op": "migrateLayout", "collection": "notes", "layout": "files" }));
+    fixture.result(&json!({ "op": "migrateLayout", "collection": "notes", "layout": "segments" }));
+    let code = fixture.error(&json!({
+        "op": "changes", "collection": "notes", "after": page["cursor"], "limit": 10
+    }));
+    assert_eq!(code, "ECURSOR_EXPIRED");
+    let fresh = fixture.changes(&Value::Null, 10);
+    assert_eq!(listed(&fresh).len(), 3);
+}

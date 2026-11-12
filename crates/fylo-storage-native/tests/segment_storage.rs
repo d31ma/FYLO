@@ -690,6 +690,96 @@ fn migration_round_trips_a_file_collection_exactly() {
     fixture.index_matches_rebuild();
 }
 
+fn file_layout_fixture(label: &str) -> (Fixture, NativeWriteRoot) {
+    let path = std::env::temp_dir().join(format!(
+        "fylo-seg-{label}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    fs::create_dir(&path).unwrap();
+    let fixture = Fixture {
+        root: fs::canonicalize(path).unwrap(),
+        medium: Medium::Directory,
+    };
+    let files = NativeWriteRoot::open(&fixture.root).unwrap();
+    files
+        .create_collection("items", CollectionKind::Document, None)
+        .unwrap();
+    (fixture, files)
+}
+
+#[test]
+fn migration_moves_a_collection_of_one_document() {
+    let (fixture, files) = file_layout_fixture("migrate-one");
+    put(&files, 0);
+    let bodies = fixture.bodies();
+
+    let report = files
+        .migrate_layout("items", CollectionLayout::Segments)
+        .unwrap();
+    assert_eq!((report.documents, report.deleted), (1, 0));
+    assert_eq!(fixture.collection().layout(), CollectionLayout::Segments);
+    assert_eq!(fixture.bodies(), bodies);
+
+    files
+        .migrate_layout("items", CollectionLayout::Files)
+        .unwrap();
+    assert_eq!(fixture.collection().layout(), CollectionLayout::Files);
+    assert_eq!(fixture.bodies(), bodies);
+}
+
+fn move_and_check(fixture: &Fixture, files: &NativeWriteRoot, layout: CollectionLayout) {
+    let bodies = fixture.bodies();
+    let deleted = fixture.collection().deleted_document_ids().unwrap();
+    files.migrate_layout("items", layout).unwrap();
+    assert_eq!(fixture.collection().layout(), layout);
+    assert_eq!(fixture.bodies(), bodies);
+    assert_eq!(
+        fixture.collection().deleted_document_ids().unwrap(),
+        deleted
+    );
+}
+
+#[test]
+fn migration_after_writes_in_segments_keeps_every_document() {
+    let (fixture, files) = file_layout_fixture("migrate-writes");
+    put(&files, 0);
+    move_and_check(&fixture, &files, CollectionLayout::Segments);
+    for number in 1..4 {
+        put(&files, number);
+    }
+    move_and_check(&fixture, &files, CollectionLayout::Files);
+    move_and_check(&fixture, &files, CollectionLayout::Segments);
+    files.delete_document("items", &identifier(1)).unwrap();
+    put(&files, 9);
+    move_and_check(&fixture, &files, CollectionLayout::Files);
+    files.delete_document("items", &identifier(0)).unwrap();
+    files.delete_document("items", &identifier(2)).unwrap();
+    move_and_check(&fixture, &files, CollectionLayout::Segments);
+    move_and_check(&fixture, &files, CollectionLayout::Files);
+    move_and_check(&fixture, &files, CollectionLayout::Segments);
+    fixture.index_matches_rebuild();
+}
+
+#[test]
+fn migration_of_one_document_after_a_write_in_segments() {
+    let (larger, larger_files) = file_layout_fixture("migrate-larger");
+    for number in 0..5 {
+        put(&larger_files, number);
+    }
+    let (fixture, files) = file_layout_fixture("migrate-single");
+    put(&files, 0);
+    move_and_check(&larger, &larger_files, CollectionLayout::Segments);
+    move_and_check(&fixture, &files, CollectionLayout::Segments);
+    put(&files, 1);
+    move_and_check(&fixture, &files, CollectionLayout::Files);
+    files.delete_document("items", &identifier(1)).unwrap();
+    move_and_check(&fixture, &files, CollectionLayout::Segments);
+}
+
 fn scratch(label: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
         "fylo-seg-out-{label}-{}-{}",
