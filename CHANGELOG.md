@@ -4,6 +4,14 @@
 
 ### Added
 
+- **`fylo exec --invocation` (ADR 0028, ADR 0011).** One request per
+  process on a shared root: `--request <json|@path|->`, `--deadline-ms` and
+  `--cleanup-reserve-ms`. The process waits while another one holds the root,
+  until only the reserve is left, then answers `EROOTLOCKED` without a change.
+  Output and exit codes match `exec --request`; new failure codes are
+  `EDEADLINE` and `EINVOCATION`. `InvocationRuntime` now checkpoints its
+  write-ahead logs before it releases the root lease. Local use only; not
+  qualified for deployment.
 - **FYLO's native engine on Android (ADR 0026).** A new crate, `fylo-ffi`,
   gives the `fylo` crate a small C ABI (`fylo.h`: open, close, collections,
   put, get, delete, find, `fylo_find_page`, identities), with handles that

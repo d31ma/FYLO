@@ -1,7 +1,7 @@
 use std::io;
 use std::time::{Duration, Instant};
 
-use fylo_storage_native::{NativeStorageErrorCode, RootLease};
+use fylo_storage_native::{NativeStorageErrorCode, NativeWriteRoot, RootLease};
 use serde_json::Value;
 
 use crate::{InvocationOptions, StrictValue};
@@ -37,11 +37,20 @@ impl InvocationRuntime {
         let lease = self.acquire_lease()?;
         // Retain every inner result until all private owning handles are gone.
         let result = self.execute_owned(&lease, &request);
+        let settled = self.settle_logs();
         lease
             .release_checked()
             .map_err(|error| Self::storage_error(&error))?;
         self.options.check_completion_deadline()?;
-        result
+        result.and_then(|response| settled.map(|()| response))
+    }
+
+    /// Checkpoint the write-ahead logs this process wrote under the root
+    /// while the lease still owns it. A checkpoint takes the collection lock,
+    /// so one taken after the release would meet the next owner's writes.
+    fn settle_logs(&self) -> io::Result<()> {
+        NativeWriteRoot::close_logs_under(self.options.root().root())
+            .map_err(|error| Self::storage_error(&error))
     }
 
     /// Wait for a root another invocation holds, within this budget.

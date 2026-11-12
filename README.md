@@ -1627,6 +1627,9 @@ error; its first request after the owner exits succeeds, without a restart.
 So run one `fylo exec --loop` per root and send every caller through it. Two
 containers or serverless instances that mount the same root are two processes:
 only one of them can use it at a time.
+Processes that each answer one request can share a root with
+`fylo exec --invocation` instead, which waits for the owner within a deadline
+(see [One request per process](#one-request-per-process-on-a-shared-root---invocation)).
 
 `--exclusive-root` takes the lock at startup instead, before the loop reads
 stdin:
@@ -1666,6 +1669,28 @@ fylo exec --request @request.json
 
 Callable from any language that can spawn a process and read JSON: write a
 machine request to stdin or `--request`, then read the JSON response from stdout.
+
+#### One request per process on a shared root (`--invocation`)
+
+Serverless hosts that start one `fylo` process per request can share one
+root with invocation mode:
+
+```bash
+echo '{"op":"putData","collection":"posts","id":"4VRNF52JPCO","data":{"title":"Hi"}}' |
+  fylo exec --invocation --root /mnt/fylo --request - \
+    --deadline-ms 3000 --cleanup-reserve-ms 500
+```
+
+The process takes the root lease for this one request. While another process
+holds the root it waits, with backoff up to 200 ms, until only the cleanup
+reserve is left, then answers `EROOTLOCKED` without changing anything. The
+deadline counts from process start. Output and exit codes are the same as
+`exec --request`. `putData` needs a caller-chosen `id`, so a retry is refused
+as existing instead of creating a duplicate; paged queries and repository
+operations are refused. Error codes and limits are in
+[ADR 0028](docs/adr/0028-cli-invocation-mode.md). The lease is local and
+cooperative: this mode is not qualified for deployment on network
+filesystems such as EFS (see [ADR 0011](docs/adr/0011-serverless-invocation-contract.md)).
 
 The compiled executable interop contract is tested in CI against Python, Ruby,
 PHP, Dart, Java, C#, C++, Swift, Kotlin, and Rust. Each language invokes the

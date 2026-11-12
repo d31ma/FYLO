@@ -3,6 +3,9 @@
 Status: accepted for isolated source implementation. Native behavior validation
 and runtime/backend qualification remain pending. No deployment is authorized.
 
+Extended by: [ADR 0028](0028-cli-invocation-mode.md) (the `fylo exec
+--invocation` CLI mode, and logs checkpointed before the lease is released).
+
 ## Context
 
 Serverless lifetime is separate from metadata representation. FYLO owns the
