@@ -80,7 +80,7 @@ reqwest = { version = "0.13.2", default-features = false, features = ["blocking"
 # `.vdbx` zstd frames in the browser (ADR 0016 section 8): pure Rust, decode
 # only.
 ruzstd = { version = "0.9.1", default-features = false, features = ["std"] }
-rustix = { version = "1.1.4", default-features = false, features = ["fs"] }
+rustix = { version = "1.1.6", default-features = false, features = ["fs"] }
 rustls = { version = "0.23.43", default-features = false, features = ["ring", "std", "tls12"] }
 ryu-js = "1.0.3"
 same-file = "1.0.6"
@@ -93,7 +93,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.151", features = ["preserve_order"] }
 sha2 = "0.11.0"
 windows-sys = { version = "0.61.2", default-features = false }
-xattr = "1.6.1"
+xattr = "1.7.0"
 zeroize = "1.8.2"
 # `.vdbx` zstd frames natively (ADR 0016 section 8): the C library, for its
 # ratio and its dictionary trainer. Never built for WebAssembly.

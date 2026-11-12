@@ -4692,6 +4692,31 @@ mod tests {
         assert_eq!(stored.checksum_sha256.len(), 64);
     }
 
+    /// An attribute larger than the first 4 KiB read takes the size-query
+    /// path of the `xattr` crate (RUSTSEC-2026-0486, rustix 1.1.6).
+    #[cfg(unix)]
+    #[test]
+    fn reads_a_metadata_value_larger_than_four_kibibytes() {
+        let fixture = TestRoot::create();
+        let path = fixture.create_raw_file();
+        let note = "x".repeat(8 * 1024);
+        xattr::set(
+            &path,
+            "user.fylo.meta.note",
+            format!("\"{note}\"").as_bytes(),
+        )
+        .unwrap();
+        let collection = NativeRoot::open(&fixture.0)
+            .unwrap()
+            .collection("assets")
+            .unwrap();
+        let stored = collection.read_raw_file("4VRNF52JPCO").unwrap();
+        assert_eq!(
+            stored.custom_metadata.get("note"),
+            Some(&Value::String(note))
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn rejects_duplicate_raw_file_identifiers() {
