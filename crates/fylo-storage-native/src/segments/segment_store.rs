@@ -29,9 +29,9 @@ impl SegmentStore {
     /// The view a reader gets: the location log as far as the published
     /// slot says it reaches, or the records up to the slot's end.
     pub(crate) fn open(medium: Arc<dyn SegmentMedium>) -> Result<Self, NativeStorageError> {
-        let slot = medium.require_slot()?;
+        let (slot, layout) = medium.require_slot_in_layout()?;
         let reach = TableReach::published(&*medium, &slot);
-        let table = TableCache::shared().table(&*medium, slot.table_epoch, reach)?;
+        let table = TableCache::shared().table(&*medium, (layout, slot.table_epoch), reach)?;
         Ok(Self::with(medium, table))
     }
 
@@ -42,15 +42,18 @@ impl SegmentStore {
     pub(crate) fn open_for_writer(
         medium: Arc<dyn SegmentMedium>,
     ) -> Result<Self, NativeStorageError> {
-        let slot = medium.require_slot()?;
+        let (slot, layout) = medium.require_slot_in_layout()?;
         let written = TableReach::written(&*medium)?;
         let cached = if medium.has_location_log() {
             written
         } else {
             TableReach::published(&*medium, &slot)
         };
-        let table =
-            TableCache::shared().table_beyond(&*medium, slot.table_epoch, (cached, written))?;
+        let table = TableCache::shared().table_beyond(
+            &*medium,
+            (layout, slot.table_epoch),
+            (cached, written),
+        )?;
         Self::require_signed(&table)?;
         Ok(Self::with(medium, table))
     }

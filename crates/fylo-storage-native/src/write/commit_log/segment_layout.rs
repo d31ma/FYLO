@@ -135,11 +135,10 @@ impl SegmentLayout {
     }
 
     /// The table epoch a new or imported layout starts at: a random draw.
-    /// A collection dropped and created again at the same path, or moved to
-    /// segments again, starts its generations over, so no count kept with
-    /// the collection is sure to differ from the epoch of a location table
-    /// another process cached for the layout before; a random epoch matches
-    /// it once in 2^32 layouts.
+    /// The layout id (ADR 0027) already tells a new layout from every older
+    /// one at the same path. The random start is a second guard for a
+    /// layout without one: a medium that names its layout in its identity,
+    /// or a collection an older release created.
     pub(crate) fn fresh_table_epoch() -> Result<u32, NativeStorageError> {
         let mut bytes = [0_u8; 4];
         getrandom::fill(&mut bytes).map_err(|error| {

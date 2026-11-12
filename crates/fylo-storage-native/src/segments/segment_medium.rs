@@ -5,7 +5,7 @@ use std::sync::{Arc, LazyLock};
 
 use fylo_format::{LogBodyCodec, LogRecord, PlainBody};
 
-use super::{RecordPosition, SlotRecord};
+use super::{LayoutId, RecordPosition, SlotRecord};
 use crate::{Durability, NativeRoot, NativeStorageError, NativeStorageErrorCode};
 
 /// Where one segment collection keeps its segments, generation slots and
@@ -117,6 +117,14 @@ pub(crate) trait SegmentMedium: Debug + Send + Sync {
     /// The newest valid generation slot, or `None` when neither slot is
     /// valid or the slots are missing.
     fn read_slot(&self) -> Result<Option<SlotRecord>, NativeStorageError>;
+
+    /// The newest valid generation slot with the id of the layout it
+    /// belongs to (ADR 0027), which process-wide caches add to
+    /// [`Self::identity`]. A medium whose identity already names the layout
+    /// has no layout id.
+    fn read_slot_in_layout(&self) -> Result<Option<(SlotRecord, LayoutId)>, NativeStorageError> {
+        Ok(self.read_slot()?.map(|slot| (slot, LayoutId::UNKNOWN)))
+    }
 
     /// Overwrite the older slot with `slot`, in place and without a flush.
     fn publish_slot(&self, slot: &SlotRecord) -> Result<(), NativeStorageError>;
@@ -266,13 +274,22 @@ pub(crate) trait SegmentMedium: Debug + Send + Sync {
 
     /// The newest valid slot, failing when neither is valid.
     fn require_slot(&self) -> Result<SlotRecord, NativeStorageError> {
-        self.read_slot()?.ok_or_else(|| {
-            NativeStorageError::new(
-                NativeStorageErrorCode::CorruptMetadata,
-                "segment collection has no valid generation slot",
-            )
-        })
+        self.read_slot()?.ok_or_else(no_valid_slot)
     }
+
+    /// The newest valid slot with its layout id, failing when neither slot
+    /// is valid.
+    fn require_slot_in_layout(&self) -> Result<(SlotRecord, LayoutId), NativeStorageError> {
+        self.read_slot_in_layout()?.ok_or_else(no_valid_slot)
+    }
+}
+
+/// What a reader reports on a collection with no valid generation slot.
+fn no_valid_slot() -> NativeStorageError {
+    NativeStorageError::new(
+        NativeStorageErrorCode::CorruptMetadata,
+        "segment collection has no valid generation slot",
+    )
 }
 
 /// What an index method reports on a medium that keeps no index.

@@ -9,6 +9,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use fylo_format::Crc32c;
 use fylo_storage_native::{
     CollectionKind, CollectionLayout, NativeRoot, NativeWriteRoot, PutDocumentOptions, RootConfig,
 };
@@ -21,6 +22,10 @@ const RESULT: &str = "RESULT ";
 const CACHED: &str = "CACHED";
 const OLD_ID: &str = "4VRNF540000";
 const NEW_ID: &str = "4VRNF540001";
+const SLOT_BYTES: usize = 64;
+const SLOT_MAGIC: &[u8] = b"FYSL";
+const SLOT_EPOCH_AT: usize = 56;
+const SLOT_CHECKSUM_AT: usize = 60;
 
 #[derive(Clone, Copy, Debug)]
 enum Medium {
@@ -186,6 +191,26 @@ fn recreated_in_the_same_process(medium: Medium) {
 }
 
 fn recreated_by_another_process(medium: Medium) {
+    reread_by_another_process(medium, |scratch| {
+        drop_and_recreate(&scratch.writer(), medium);
+    });
+}
+
+/// Re-create the collection, then give its slots the table epoch the old
+/// collection had when the reader cached its table: the case a random
+/// epoch only made unlikely. The layout id (ADR 0027) still tells the two
+/// collections apart.
+fn recreated_with_the_old_epoch_by_another_process(medium: Medium) {
+    reread_by_another_process(medium, |scratch| {
+        let epoch = newest_epoch(&slot_file(&scratch.root()));
+        drop_and_recreate(&scratch.writer(), medium);
+        force_epoch(&slot_file(&scratch.root()), epoch);
+    });
+}
+
+/// A second process reads the collection, `recreate` replaces it, and the
+/// second process reads again.
+fn reread_by_another_process(medium: Medium, recreate: impl Fn(&Scratch)) {
     let scratch = Scratch::new("other", medium);
     let writer = scratch.writer();
     create_with(&writer, medium, (OLD_ID, "old"));
@@ -209,7 +234,7 @@ fn recreated_by_another_process(medium: Medium) {
     assert!(next_result().contains(OLD_ID));
     assert_eq!(next_result(), CACHED);
 
-    drop_and_recreate(&scratch.writer(), medium);
+    recreate(&scratch);
     let mut stdin = child.stdin.take().unwrap();
     writeln!(stdin, "read").unwrap();
     drop(stdin);
@@ -270,4 +295,81 @@ fn moved_segments_recreated_in_the_same_process() {
 #[test]
 fn moved_segments_recreated_by_another_process() {
     recreated_by_another_process(Medium::Moved);
+}
+
+#[test]
+fn directory_segments_recreated_with_the_old_epoch_by_another_process() {
+    recreated_with_the_old_epoch_by_another_process(Medium::Directory);
+}
+
+#[test]
+fn moved_segments_recreated_with_the_old_epoch_by_another_process() {
+    recreated_with_the_old_epoch_by_another_process(Medium::Moved);
+}
+
+/// A collection written before layout ids has a slot file of only its two
+/// slots. It still reads and takes writes.
+#[test]
+fn directory_segments_without_a_layout_id_still_read_and_write() {
+    let scratch = Scratch::new("no-layout-id", Medium::Directory);
+    let writer = scratch.writer();
+    create_with(&writer, Medium::Directory, (OLD_ID, "old"));
+    let slots = slot_file(&scratch.root());
+    let bytes = fs::read(&slots).unwrap();
+    fs::write(&slots, &bytes[..2 * SLOT_BYTES]).unwrap();
+
+    put(&scratch.writer(), NEW_ID, "new");
+
+    let contents = contents(&scratch.root());
+    assert!(contents.contains(OLD_ID), "{contents}");
+    assert!(contents.contains(NEW_ID), "{contents}");
+}
+
+/// The generation slot file of the directory collection under `root`.
+fn slot_file(root: &Path) -> PathBuf {
+    root.join(".collections")
+        .join(ITEMS)
+        .join("segments")
+        .join("state.slots")
+}
+
+fn slot_is_valid(slot: &[u8]) -> bool {
+    let stored = u32::from_le_bytes(slot[SLOT_CHECKSUM_AT..].try_into().unwrap());
+    slot[..4] == *SLOT_MAGIC && Crc32c::checksum(&slot[..SLOT_CHECKSUM_AT]) == stored
+}
+
+fn slot_field(slot: &[u8], index: usize) -> u64 {
+    let start = 8 + index * 8;
+    u64::from_le_bytes(slot[start..start + 8].try_into().unwrap())
+}
+
+/// The table epoch of the newest valid slot: the highest generation, then
+/// the furthest end of the active segment, as readers order them.
+fn newest_epoch(slots: &Path) -> u32 {
+    let bytes = fs::read(slots).unwrap();
+    let newest = bytes[..2 * SLOT_BYTES]
+        .chunks(SLOT_BYTES)
+        .filter(|slot| slot_is_valid(slot))
+        .max_by_key(|slot| {
+            (
+                slot_field(slot, 0),
+                slot_field(slot, 1),
+                slot_field(slot, 2),
+            )
+        })
+        .expect("the collection has a valid slot");
+    u32::from_le_bytes(newest[SLOT_EPOCH_AT..SLOT_CHECKSUM_AT].try_into().unwrap())
+}
+
+/// Give every valid slot the table epoch `epoch`, with a new checksum.
+fn force_epoch(slots: &Path, epoch: u32) {
+    let mut bytes = fs::read(slots).unwrap();
+    for slot in bytes[..2 * SLOT_BYTES].chunks_mut(SLOT_BYTES) {
+        if slot_is_valid(slot) {
+            slot[SLOT_EPOCH_AT..SLOT_CHECKSUM_AT].copy_from_slice(&epoch.to_le_bytes());
+            let checksum = Crc32c::checksum(&slot[..SLOT_CHECKSUM_AT]);
+            slot[SLOT_CHECKSUM_AT..].copy_from_slice(&checksum.to_le_bytes());
+        }
+    }
+    fs::write(slots, bytes).unwrap();
 }

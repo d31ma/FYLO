@@ -15,6 +15,45 @@ impl PositionedRead {
         Self::read_exact_at(file, buffer, offset).map_err(NativeStorageError::io)
     }
 
+    /// Fill as much of `buffer` as the file holds from `offset`, and return
+    /// how many bytes that is: fewer than asked only at the end of the file.
+    pub(crate) fn up_to(
+        file: &File,
+        buffer: &mut [u8],
+        offset: u64,
+    ) -> Result<usize, NativeStorageError> {
+        let mut filled = 0;
+        while filled < buffer.len() {
+            let read = Self::read_some_at(file, &mut buffer[filled..], offset + filled as u64)
+                .map_err(NativeStorageError::io)?;
+            if read == 0 {
+                break;
+            }
+            filled += read;
+        }
+        Ok(filled)
+    }
+
+    #[cfg(unix)]
+    fn read_some_at(file: &File, buffer: &mut [u8], offset: u64) -> std::io::Result<usize> {
+        use std::os::unix::fs::FileExt;
+        file.read_at(buffer, offset)
+    }
+
+    #[cfg(windows)]
+    fn read_some_at(file: &File, buffer: &mut [u8], offset: u64) -> std::io::Result<usize> {
+        use std::os::windows::fs::FileExt;
+        file.seek_read(buffer, offset)
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    fn read_some_at(file: &File, buffer: &mut [u8], offset: u64) -> std::io::Result<usize> {
+        use std::io::{Read, Seek, SeekFrom};
+        let mut reader = file;
+        reader.seek(SeekFrom::Start(offset))?;
+        reader.read(buffer)
+    }
+
     #[cfg(unix)]
     fn read_exact_at(file: &File, buffer: &mut [u8], offset: u64) -> std::io::Result<()> {
         use std::os::unix::fs::FileExt;

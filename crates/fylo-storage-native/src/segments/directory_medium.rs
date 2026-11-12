@@ -5,8 +5,8 @@ use std::sync::Arc;
 use fylo_vfs::{self as fs, File, OpenOptions};
 
 use super::{
-    GenerationSlots, MediumIdentity, PositionedRead, RecordPosition, SegmentHandle, SegmentMedium,
-    SegmentPaths, SlotRecord, SnapshotStamp,
+    GenerationSlots, LayoutId, MediumIdentity, PositionedRead, RecordPosition, SegmentHandle,
+    SegmentMedium, SegmentPaths, SlotRecord, SnapshotStamp,
 };
 use crate::write::{
     durable_replace_owner_only, ensure_directory, sibling_scratch, sync_directory, sync_parent,
@@ -191,12 +191,18 @@ impl SegmentMedium for DirectoryMedium {
         self.slots().read()
     }
 
+    fn read_slot_in_layout(&self) -> Result<Option<(SlotRecord, LayoutId)>, NativeStorageError> {
+        self.slots().read_in_layout()
+    }
+
     fn publish_slot(&self, slot: &SlotRecord) -> Result<(), NativeStorageError> {
         self.slots().publish(slot)
     }
 
+    /// The slot file of a new layout, which also names the layout with a
+    /// new layout id (ADR 0027).
     fn create_slots(&self, slot: &SlotRecord) -> Result<(), NativeStorageError> {
-        self.slots().create(slot)
+        self.slots().create(slot, LayoutId::fresh()?)
     }
 
     fn sync_slots(&self) -> Result<(), NativeStorageError> {

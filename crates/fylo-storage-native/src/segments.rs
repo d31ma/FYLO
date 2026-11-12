@@ -6,6 +6,7 @@ mod container_medium;
 mod directory_medium;
 mod generation_slots;
 mod index_delta;
+mod layout_id;
 mod location_state;
 mod location_table;
 mod positioned_read;
@@ -29,6 +30,7 @@ pub(crate) use container_medium::{ContainerMedium, ContainerOpen, ContainerOpenF
 pub(crate) use directory_medium::{DirectoryMedium, FileSegment};
 use generation_slots::GenerationSlots;
 pub(crate) use index_delta::IndexDelta;
+pub(crate) use layout_id::LayoutId;
 pub(crate) use location_state::LocationState;
 pub(crate) use location_table::LocationTable;
 use positioned_read::PositionedRead;

@@ -7,6 +7,7 @@
   and `CLAUDE.md`, for document collections that opt in. Builds on ADR 0013
   (the record format and commit protocol) and keeps ADR 0014's hot-set check
   working.
+- Amended by: ADR 0027 (`state.slots` holds a layout id after its two slots).
 
 ## Context
 

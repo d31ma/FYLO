@@ -2797,6 +2797,15 @@ fn ensure_deleted_parent(
 }
 
 fn generate_ttid() -> Result<String, NativeStorageError> {
+    let identifier = encode_base36(next_ttid_tick()?);
+    validate_ttid_shape(&identifier)?;
+    Ok(identifier)
+}
+
+/// The next TTID clock tick of this process: 100-nanosecond units since the
+/// Unix epoch, always above every tick this process drew before, whether
+/// for a TTID or for a segment layout id (ADR 0027).
+pub(crate) fn next_ttid_tick() -> Result<u64, NativeStorageError> {
     let elapsed = super::wall_clock()
         .duration_since(UNIX_EPOCH)
         .map_err(|error| {
@@ -2818,9 +2827,7 @@ fn generate_ttid() -> Result<String, NativeStorageError> {
             Some(clock_ticks.max(previous.saturating_add(1)))
         })
         .unwrap_or_else(|previous| previous);
-    let identifier = encode_base36(clock_ticks.max(previous.saturating_add(1)));
-    validate_ttid_shape(&identifier)?;
-    Ok(identifier)
+    Ok(clock_ticks.max(previous.saturating_add(1)))
 }
 
 fn encode_base36(mut value: u64) -> String {
