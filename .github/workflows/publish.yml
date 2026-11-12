@@ -470,6 +470,88 @@ jobs:
                   FYLO_EXPECT_COMMIT: ${{ github.sha }}
               run: bun run test:interop
 
+    mobile-android:
+        name: Android library (AAR, size budget, x86_64 emulator tests)
+        # ADR 0026: the AAR for arm64-v8a and x86_64, the size gate, and the
+        # instrumented tests on an x86_64 emulator with KVM, which the arm64
+        # Mac cannot run. The iOS job (xcframework, Swift package, XCTest)
+        # is an open item: it comes with slices S5 and S7.
+        runs-on: ubuntu-24.04
+        timeout-minutes: 60
+        env:
+            ANDROID_NDK_VERSION: 30.0.16248370
+            ANDROID_PLATFORM: android-35
+            ANDROID_BUILD_TOOLS: 35.0.0
+            ANDROID_SYSTEM_IMAGE: system-images;android-35;google_apis;x86_64
+            FYLO_ANDROID_AVD: fylo-ci
+            FYLO_GRADLE: ${{ github.workspace }}/bindings/mobile/android/gradlew
+
+        steps:
+            - name: Checkout
+              uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+            - name: Setup Bun
+              uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+              with:
+                  bun-version-file: .bun-version
+
+            - name: Install pinned JDK 21
+              uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+              with:
+                  distribution: temurin
+                  java-version: 21.0.13+9
+
+            - name: Install dependencies
+              run: bun install --frozen-lockfile
+
+            - name: Install pinned Rust toolchain and Android targets
+              run: |
+                  set -euo pipefail
+                  rustup show active-toolchain
+                  toolchain=$(grep -oE 'channel *= *"[^"]+"' rust-toolchain.toml | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+                  rustup target add aarch64-linux-android x86_64-linux-android --toolchain "$toolchain"
+
+            - name: Install the pinned Android NDK, platform and emulator
+              run: |
+                  set -euo pipefail
+                  sdkmanager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+                  yes | "$sdkmanager" --licenses > /dev/null
+                  "$sdkmanager" --install "ndk;$ANDROID_NDK_VERSION" "platforms;$ANDROID_PLATFORM" \
+                    "build-tools;$ANDROID_BUILD_TOOLS" platform-tools emulator "$ANDROID_SYSTEM_IMAGE"
+                  # The runner's own ANDROID_NDK_HOME names its default NDK.
+                  echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION" >> "$GITHUB_ENV"
+
+            - name: Build the Android library
+              env:
+                  FYLO_BUILD_COMMIT: ${{ github.sha }}
+              run: bun run build:android
+
+            - name: Check the phone library size budget
+              run: bun run build:android:size
+
+            - name: Enable KVM for the emulator
+              run: |
+                  echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+                    | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+                  sudo udevadm control --reload-rules
+                  sudo udevadm trigger --name-match=kvm
+
+            - name: Create the x86_64 test emulator
+              run: >-
+                  echo no | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd
+                  --name "$FYLO_ANDROID_AVD" --package "$ANDROID_SYSTEM_IMAGE" --device pixel_6
+
+            - name: Instrumented tests on the x86_64 emulator
+              run: bun scripts/mobile/build-aar.mjs --test
+
+            - name: Upload the Android library
+              uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+              with:
+                  name: mobile-android-${{ github.sha }}
+                  path: target/fylo-android/fylo-android-*.aar
+                  if-no-files-found: error
+                  retention-days: 1
+
     version:
         name: Read version
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
@@ -511,7 +593,7 @@ jobs:
             id-token: write
             attestations: write
             artifact-metadata: write
-        needs: [test, binary-interop, windows-storage, macos-storage, linux-storage, version]
+        needs: [test, binary-interop, windows-storage, macos-storage, linux-storage, mobile-android, version]
         if: >-
             ${{
               (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
@@ -521,6 +603,7 @@ jobs:
               needs.windows-storage.result == 'success' &&
               needs.macos-storage.result == 'success' &&
               needs.linux-storage.result == 'success' &&
+              needs.mobile-android.result == 'success' &&
               needs.version.result == 'success' &&
               needs.version.outputs.tag_exists == 'false'
             }}
@@ -552,6 +635,12 @@ jobs:
               uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
               with:
                   name: windows-release-${{ github.sha }}
+                  path: release-assets
+
+            - name: Download the emulator-tested Android library
+              uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+              with:
+                  name: mobile-android-${{ github.sha }}
                   path: release-assets
 
             - name: Download native-tested macOS arm64 release executable
@@ -688,6 +777,7 @@ jobs:
                   expected=$(cat <<EOF
                   dedicated.js
                   fylo-${VERSION}.spdx.json
+                  fylo-android-${VERSION}.aar
                   fylo-browser.wasm
                   fylo-clients.tar.gz
                   fylo-explorer-${VERSION}.zip
@@ -918,3 +1008,63 @@ jobs:
                     echo "Tag $TAG resolves to $tag_sha, expected $GITHUB_SHA." >&2
                     exit 1
                   fi
+
+    android-package:
+        name: Publish the Android library to GitHub Packages
+        # FYLO's Maven registry of record (ADR 0026, D2):
+        # io.github.d31ma:fylo-android, the exact AAR release-assets checksummed
+        # and attested.
+        runs-on: ubuntu-24.04
+        needs: [release-assets, github-release, version]
+        if: >-
+            ${{
+              (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+              needs.release-assets.result == 'success' &&
+              needs.github-release.result == 'success' &&
+              needs.version.result == 'success'
+            }}
+        timeout-minutes: 20
+        permissions:
+            contents: read
+            packages: write
+        env:
+            ANDROID_PLATFORM: android-35
+            ANDROID_BUILD_TOOLS: 35.0.0
+
+        steps:
+            - name: Checkout release commit
+              uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+            - name: Install pinned JDK 21
+              uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+              with:
+                  distribution: temurin
+                  java-version: 21.0.13+9
+
+            - name: Install the pinned Android platform
+              run: |
+                  set -euo pipefail
+                  sdkmanager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+                  yes | "$sdkmanager" --licenses > /dev/null
+                  "$sdkmanager" --install "platforms;$ANDROID_PLATFORM" "build-tools;$ANDROID_BUILD_TOOLS"
+
+            - name: Download verified release assets
+              uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+              with:
+                  name: release-assets-${{ github.sha }}
+                  path: release-assets
+
+            - name: Verify the Android library checksum
+              working-directory: release-assets
+              run: grep -E ' fylo-android-.*\.aar$' SHA256SUMS | sha256sum --check
+
+            - name: Publish io.github.d31ma:fylo-android
+              working-directory: bindings/mobile/android
+              env:
+                  GITHUB_ACTOR: ${{ github.actor }}
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  VERSION: ${{ needs.version.outputs.version }}
+              run: >-
+                  ./gradlew --console=plain :fylo:publishReleasePublicationToGitHubPackagesRepository
+                  "-Pfylo.version=$VERSION"
+                  "-Pfylo.aar=$GITHUB_WORKSPACE/release-assets/fylo-android-$VERSION.aar"

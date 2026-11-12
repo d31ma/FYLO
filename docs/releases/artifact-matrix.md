@@ -18,6 +18,24 @@ writes NDJSON to stdin, reads NDJSON from stdout, and cannot tell which it got.
 buckets, version control, and five deliberate failures — and fails on any
 difference outside the declared list below.
 
+## The phone library (`fylo-ffi`)
+
+Phones cannot start a process, so ADR 0026 adds a fourth way to ship the
+native engine: `crates/fylo-ffi`, a C ABI over the `fylo` crate (`fylo.h`),
+built with the `mobile` profile (`panic = "unwind"`, so a C entry returns
+`FYLO_PANIC` instead of aborting the app).
+
+| | Android | iOS |
+| --- | --- | --- |
+| Targets | `aarch64-linux-android`, `x86_64-linux-android` | `aarch64-apple-ios`, `aarch64-apple-ios-sim` |
+| Package | `fylo-android-<version>.aar` (release asset and GitHub Packages `io.github.d31ma:fylo-android`) | `Fylo.xcframework` and the Swift package `FyloKit` (open: ADR 0026 slices S5 and S7) |
+| Size (stripped, 2026-11-11) | arm64 4.65 MB, x86_64 5.51 MB; budget +10% (`scripts/mobile/size-budget.json`) | measured with S5 |
+| Verified by | engine tests on the arm64 emulator (`bun run test:mobile android`), instrumented tests on the arm64 emulator here and the x86_64 emulator in the release job, `bun run test:ffi` | engine tests on the simulator (open) |
+
+The release job pins the NDK, platform, build tools, JDK and Gradle;
+`sdkmanager` installs the current `emulator` and `platform-tools`, which it
+cannot pin.
+
 ## The browser host table
 
 `fylo-browser.wasm` imports seventeen functions from one module, `fylo_host`,

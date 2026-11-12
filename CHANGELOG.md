@@ -4,6 +4,27 @@
 
 ### Added
 
+- **FYLO's native engine on Android (ADR 0026).** A new crate, `fylo-ffi`,
+  gives the `fylo` crate a small C ABI (`fylo.h`: open, close, collections,
+  put, get, delete, find, `fylo_find_page`, identities), with handles that
+  are numbers, buffers FYLO owns until `fylo_bytes_free`, and panics answered
+  as `FYLO_PANIC`. The Android library `io.github.d31ma:fylo-android`
+  (release asset `fylo-android-<version>.aar`, GitHub Packages) wraps it in
+  Kotlin through JNI (`Fylo`, `FyloIdentity`). The engine crates build and
+  pass their tests on the Android emulator (`bun run test:mobile android`);
+  Android's ext4 joins the qualified byte-range-lock filesystems. The iOS
+  package (`Fylo.xcframework`, `FyloKit`) and `ios-keychain:` come later.
+- **An encryption key given as a value (ADR 0026, the rules of ADR 0025).**
+  `fylo_open`'s key and `Fylo.open(path, options, key)` take an encrypted
+  `.vdbx` database's secret as bytes, at least 32; `create.mode:
+  "encrypted"` makes one. A short or wrong key is `EKEY`; a key beside an
+  identity is `EBADREQUEST`. `fylo::OpenOptions::with_database_key` and
+  `DatabaseCreation` give Rust apps the same.
+- **`android-keystore:<alias>` identities (ADR 0026, ADR 0021).** A P-256
+  key made inside the Android Keystore (StrongBox when present) that signs
+  and agrees and never leaves it, on Android 12 or newer, through the
+  Android library.
+
 - **Word search with `$match` (ADR 0023).** `setWordFields` (CLI
   `fylo index words <collection> [<field>...]`, `words()` in the clients)
   names a collection's word fields and rebuilds its index; the list is kept in
@@ -512,6 +533,18 @@
   `migrationExists` in place of `upgraderPath` and `upgraderExists`.
 
 ### Fixed
+
+- **`rustix` 1.1.6 and `xattr` 1.7.0 (RUSTSEC-2026-0486).** FYLO reached
+  rustix's unsound zero-length-buffer path through the `xattr` crate; both
+  are updated together, because rustix 1.1.6 with xattr 1.6.1 could read an
+  attribute over 4 KiB back as empty.
+- **A `.vdbx` lease contender no longer counts its own delay as the owner's
+  silence.** It read its clocks after reading the lease file, so a contender
+  stalled right after its read could take over from an owner that had just
+  renewed.
+- Extended-attribute before-images and version copies leave the kernel's own
+  attributes (`security.`, `system.`, `trusted.`) alone on Linux and Android,
+  where removing `security.selinux` failed.
 
 - **A browser `.vdbx` working copy is readable again after its Worker is
   killed mid-write.** Reads of a collection whose last write was cut off

@@ -25,12 +25,13 @@ addon. There are two kinds, sharing the same method names:
 
 ### Local-only clients (embed the engine on-device)
 
-| Platform         | File                     | How                                       |
-| ---------------- | ------------------------ | ----------------------------------------- |
-| Browser (JS)     | `browser/fylo.js` loader | OPFS store                                |
-| iOS (Swift)      | `swift/Fylo.swift`       | WKWebView hosting `fylo.mjs`              |
-| Android (Kotlin) | `kotlin/Fylo.kt`         | android.webkit.WebView hosting `fylo.mjs` |
-| Flutter (Dart)   | `flutter/fylo.dart`      | flutter_inappwebview hosting `fylo.mjs`   |
+| Platform         | File                           | How                                                                                                          |
+| ---------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------ |
+| Browser (JS)     | `browser/fylo.js` loader       | OPFS store                                                                                                   |
+| iOS (Swift)      | `swift/Fylo.swift`             | WKWebView hosting `fylo.mjs`                                                                                 |
+| Android (Kotlin) | `kotlin/Fylo.kt`               | android.webkit.WebView hosting `fylo.mjs`                                                                    |
+| Android (native) | `io.github.d31ma:fylo-android` | FYLO's native engine through JNI ([Android native engine](#android-native-engine-iogithubd31mafylo-android)) |
+| Flutter (Dart)   | `flutter/fylo.dart`            | flutter_inappwebview hosting `fylo.mjs`                                                                      |
 
 The mobile hosts load the engine as `fylo.mjs`: save the release asset
 `fylo-web.mjs` under that name (see [Mobile](#mobile-ios--android)). The local-only
@@ -554,6 +555,65 @@ collection before its first write; writing to a collection that does not exist
 fails with `Collection not found`.
 
 ## Mobile (iOS / Android)
+
+### Android native engine (`io.github.d31ma:fylo-android`)
+
+Since ADR 0026 an Android app can link FYLO's **native engine** instead of
+hosting the web engine in a WebView: the same Rust engine as the `fylo`
+binary, with real files, `.vdbx` databases, schemas, identities and field
+encryption. The app picks one of the two; they share the `.vdbx` format.
+(iOS gets the same engine as `Fylo.xcframework` and the Swift package
+`FyloKit` in a later release.)
+
+The AAR (`fylo-android-<version>.aar`, arm64-v8a and x86_64, minSdk 26) is a
+release asset and is published to GitHub Packages:
+
+```kotlin
+// settings.gradle.kts
+dependencyResolutionManagement {
+    repositories {
+        maven {
+            url = uri("https://maven.pkg.github.com/d31ma/FYLO")
+            credentials { username = "<github user>"; password = "<token with read:packages>" }
+        }
+    }
+}
+// app/build.gradle.kts
+dependencies { implementation("io.github.d31ma:fylo-android:<version>") }
+```
+
+```kotlin
+// Off the main thread: every call blocks and may flush to disk.
+val key: ByteArray = loadOrMakeKey()   // Fylo.newKey() makes 32 random bytes
+Fylo.open(File(filesDir, "app.vdbx").path, """{"create": {"mode": "encrypted"}}""", key).use { db ->
+    db.createCollection("notes")
+    val id = db.put("notes", """{"title": "Hello"}""")
+    val note = db.get("notes", id)              // {"<id>": {...}}, or null
+    val page = db.findPage("notes", """{"${'$'}sort": {"rank": "asc"}, "${'$'}limit": 20}""")
+}
+```
+
+- Results are `org.json` objects with the machine protocol's shapes;
+  failures throw `FyloException` with FYLO's error `code`.
+- `create.mode` is `"plain"`, `"encrypted"` (with a key) or `"protected"`
+  (with an `"admin"` identity). A missing database is created only when the
+  options say so.
+- **A key given as a value** is the secret's bytes, at least 32 of them, never
+  a string: keep it in Keystore-protected storage, never in preferences, logs
+  or backups, and wipe your copy (`key.fill(0)`). A short or wrong key throws
+  `EKEY`. Whoever holds the key and a copy of the file can read it.
+- **`android-keystore:<alias>` identities** (Android 12 or newer) keep a
+  P-256 key inside the Android Keystore (StrongBox when the device has one)
+  that never leaves it: `FyloIdentity.create("android-keystore:app.device")`,
+  then `{"create": {"mode": "protected", "admin": "android-keystore:app.device"}}`.
+  An emulator's Keystore is software; a real device's TEE or StrongBox holds
+  the key.
+- Leave the database out of Android's backups (`android:dataExtractionRules`),
+  so the file never leaves the device without its key.
+- `.vdbx` databases are the supported layout on phones. The C ABI under the
+  AAR (`fylo.h`, `crates/fylo-ffi`) is also usable from other native code.
+
+### WebView engine
 
 Phones can't spawn the binary either, so the mobile clients are **local-only**
 like the browser: they host the same web engine (`fylo.mjs`) in a headless

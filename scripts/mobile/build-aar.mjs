@@ -5,8 +5,9 @@
 //   bun scripts/mobile/build-aar.mjs --test    # and the instrumented tests on
 //                                              # the emulator (take the VM lock)
 //
-// Needs the pinned NDK, Gradle 8 on PATH and JAVA_HOME set to a JDK 17 to 21.
-// Output: <cargo target dir>/fylo-android/fylo-<version>.aar
+// Needs the pinned NDK, Gradle 8 on PATH (or FYLO_GRADLE naming the project's
+// pinned wrapper, as the release job does) and JAVA_HOME set to a JDK 17 to 21.
+// Output: <cargo target dir>/fylo-android/fylo-android-<version>.aar
 import { spawn } from 'node:child_process'
 import { copyFileSync, mkdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -65,7 +66,7 @@ class AarBuild {
     }
 
     static gradle(tasks, libraries) {
-        return AarBuild.step('gradle', 'gradle', [
+        return AarBuild.step('gradle', process.env.FYLO_GRADLE ?? 'gradle', [
             ...tasks,
             `-Pfylo.jniLibs=${libraries}`,
             `-Pfylo.version=${AarBuild.version()}`,
@@ -75,7 +76,7 @@ class AarBuild {
 
     static publish(output) {
         const built = join(AarBuild.PROJECT, 'fylo', 'build', 'outputs', 'aar', 'fylo-release.aar')
-        const named = join(output, `fylo-${AarBuild.version()}.aar`)
+        const named = join(output, `fylo-android-${AarBuild.version()}.aar`)
         copyFileSync(built, named)
         console.error(`=== aar ${named}`)
     }

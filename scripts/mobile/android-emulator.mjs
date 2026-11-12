@@ -32,7 +32,14 @@ export class AndroidEmulator {
     async start() {
         const emulator = join(this.sdk, 'emulator', 'emulator')
         const args = ['-avd', this.avd, '-port', String(AndroidEmulator.PORT), '-read-only']
-        const quiet = ['-no-window', '-no-audio', '-no-boot-anim', '-no-snapshot']
+        const quiet = [
+            '-no-window',
+            '-no-audio',
+            '-no-boot-anim',
+            '-no-snapshot',
+            '-gpu',
+            'swiftshader_indirect'
+        ]
         console.error(`=== emulator ${this.avd} as ${this.serial}`)
         this.process = spawn(emulator, [...args, ...quiet], {
             stdio: ['ignore', 'inherit', 'inherit']
