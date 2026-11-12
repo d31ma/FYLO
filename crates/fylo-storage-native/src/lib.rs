@@ -3370,7 +3370,7 @@ fn read_fylo_attributes(
     path: &Path,
 ) -> Result<BTreeMap<String, Vec<u8>>, NativeStorageError> {
     use extended_attribute_error::ExtendedAttributeError;
-    use xattr::FileExt;
+    use fylo_xattr::FileExt;
 
     let mut attributes = BTreeMap::new();
     let mut aggregate_bytes = 0_usize;
@@ -4444,10 +4444,15 @@ mod tests {
             fs::write(self.0.join(".buckets/assets/index/keys.snapshot"), b"").unwrap();
             let path = self.0.join(".buckets/assets/docs/4V/4VRNF52JPCO.bin");
             fs::write(&path, [0, 1, 2, 3, 255]).unwrap();
-            xattr::set(&path, KEY_XATTR, b"/fixtures/sample.bin").unwrap();
-            xattr::set(&path, "user.fylo.meta.source", br#""rust-native-test""#).unwrap();
-            xattr::set(&path, "user.fylo.meta.reviewed", b"true").unwrap();
-            xattr::set(
+            fylo_xattr::ExtendedAttributes::set(&path, KEY_XATTR, b"/fixtures/sample.bin").unwrap();
+            fylo_xattr::ExtendedAttributes::set(
+                &path,
+                "user.fylo.meta.source",
+                br#""rust-native-test""#,
+            )
+            .unwrap();
+            fylo_xattr::ExtendedAttributes::set(&path, "user.fylo.meta.reviewed", b"true").unwrap();
+            fylo_xattr::ExtendedAttributes::set(
                 &path,
                 ACCESS_XATTR,
                 br#"{"version":1,"uid":1000,"gid":100,"mode":416}"#,
@@ -4774,7 +4779,7 @@ mod tests {
         let fixture = TestRoot::create();
         let path = fixture.create_raw_file();
         let note = "x".repeat(8 * 1024);
-        xattr::set(
+        fylo_xattr::ExtendedAttributes::set(
             &path,
             "user.fylo.meta.note",
             format!("\"{note}\"").as_bytes(),
@@ -4798,7 +4803,7 @@ mod tests {
         fixture.create_raw_file();
         let duplicate = fixture.0.join(".buckets/assets/docs/4V/4VRNF52JPCO.txt");
         fs::write(&duplicate, b"duplicate").unwrap();
-        xattr::set(&duplicate, KEY_XATTR, b"/duplicate.txt").unwrap();
+        fylo_xattr::ExtendedAttributes::set(&duplicate, KEY_XATTR, b"/duplicate.txt").unwrap();
         let collection = NativeRoot::open(&fixture.0)
             .unwrap()
             .collection("assets")

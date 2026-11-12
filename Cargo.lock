@@ -753,9 +753,9 @@ dependencies = [
  "fylo-machine",
  "fylo-query",
  "fylo-storage-native",
+ "fylo-xattr",
  "serde_json",
  "sha2",
- "xattr",
 ]
 
 [[package]]
@@ -768,13 +768,13 @@ dependencies = [
  "fylo-query",
  "fylo-storage-native",
  "fylo-test-support",
+ "fylo-xattr",
  "getrandom 0.4.3",
  "hmac",
  "pbkdf2",
  "serde",
  "serde_json",
  "sha2",
- "xattr",
  "zeroize",
 ]
 
@@ -857,6 +857,7 @@ dependencies = [
  "fylo-storage-native",
  "fylo-test-support",
  "fylo-vfs",
+ "fylo-xattr",
  "getrandom 0.4.3",
  "hkdf",
  "hmac",
@@ -869,7 +870,6 @@ dependencies = [
  "serde_json",
  "sha2",
  "windows-sys 0.61.2",
- "xattr",
  "zeroize",
  "zstd",
 ]
@@ -893,6 +893,14 @@ dependencies = [
  "fylo-vfs",
  "getrandom 0.4.3",
  "serde_json",
+]
+
+[[package]]
+name = "fylo-xattr"
+version = "0.1.0"
+dependencies = [
+ "rustix",
+ "xattr",
 ]
 
 [[package]]

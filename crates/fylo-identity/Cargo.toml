@@ -57,3 +57,7 @@ all = { level = "deny", priority = -1 }
 pedantic = { level = "deny", priority = -1 }
 module_name_repetitions = "allow"
 must_use_candidate = "allow"
+
+# `ios-keychain:` (ADR 0026 section 8): the iOS Data Protection keychain.
+[target.'cfg(target_os = "ios")'.dependencies]
+security-framework.workspace = true

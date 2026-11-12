@@ -4465,7 +4465,7 @@ fn validate_custom_metadata(
 #[cfg(unix)]
 pub(crate) fn remove_fylo_attribute(path: &Path, name: &str) -> Result<(), NativeStorageError> {
     use super::extended_attribute_error::ExtendedAttributeError;
-    use xattr::FileExt;
+    use fylo_xattr::FileExt;
 
     let file = OpenOptions::new()
         .read(true)
@@ -4571,7 +4571,7 @@ pub(crate) fn write_fylo_attribute(
     value: &[u8],
 ) -> Result<(), NativeStorageError> {
     use super::extended_attribute_error::ExtendedAttributeError;
-    use xattr::FileExt;
+    use fylo_xattr::FileExt;
 
     let file = OpenOptions::new()
         .read(true)
@@ -5227,7 +5227,7 @@ fn native_mode(_metadata: &fs::Metadata) -> u32 {
 fn capture_attributes(path: &Path) -> Result<Vec<CapturedAttribute>, NativeStorageError> {
     use super::extended_attribute_error::ExtendedAttributeError;
     use super::extended_attribute_namespace::ExtendedAttributeNamespace;
-    use xattr::FileExt;
+    use fylo_xattr::FileExt;
 
     let file = File::open(path).map_err(NativeStorageError::io)?;
     let mut attributes = Vec::new();
@@ -5359,7 +5359,7 @@ fn restore_attributes(
 ) -> Result<(), NativeStorageError> {
     use super::extended_attribute_error::ExtendedAttributeError;
     use super::extended_attribute_namespace::ExtendedAttributeNamespace;
-    use xattr::FileExt;
+    use fylo_xattr::FileExt;
 
     let file = OpenOptions::new()
         .read(true)

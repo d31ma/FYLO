@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
+    "crates/fylo-xattr",
     "crates/fylo-chex",
     "crates/fylo-format",
     "crates/fylo-engine",
@@ -23,6 +24,7 @@ members = [
 # from the crates.io release and `vendor/turso_core-0.8.3-fylo.patch`.
 exclude = ["vendor/turso_core"]
 default-members = [
+    "crates/fylo-xattr",
     "crates/fylo-chex",
     "crates/fylo-format",
     "crates/fylo-engine",

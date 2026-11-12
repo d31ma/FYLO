@@ -123,7 +123,7 @@ fn reads_a_record_whose_access_descriptor_is_no_longer_enforced() {
     let path = fixture
         .0
         .join(".collections/users/docs/4V/4VRNF52JPCO.json");
-    xattr::set(
+    fylo_xattr::ExtendedAttributes::set(
         &path,
         "user.fylo.access",
         br#"{"version":1,"uid":1000,"gid":100,"mode":0}"#,

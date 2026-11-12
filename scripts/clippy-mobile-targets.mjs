@@ -7,6 +7,7 @@ const PACKAGES = [
     'fylo-format',
     'fylo-query',
     'fylo-vfs',
+    'fylo-xattr',
     'fylo-identity',
     'fylo-storage-native',
     'fylo-engine',

@@ -81,7 +81,7 @@ impl Fixture {
         let metadata = fs::metadata(&file).unwrap();
         let (uid, gid) = (metadata.uid(), metadata.gid());
         let descriptor = format!(r#"{{"version":1,"uid":{uid},"gid":{gid},"mode":{mode}}}"#);
-        xattr::set(&file, ACCESS_XATTR, descriptor.as_bytes()).unwrap();
+        fylo_xattr::ExtendedAttributes::set(&file, ACCESS_XATTR, descriptor.as_bytes()).unwrap();
         (uid, gid)
     }
 
@@ -393,7 +393,7 @@ impl Fixture {
 
 fn descriptor_of(fixture: &Fixture, identifier: &str) -> Option<Vec<u8>> {
     let file = record_file(&fixture.0.join("data/.collections/users"), identifier);
-    xattr::get(file, ACCESS_XATTR).unwrap()
+    fylo_xattr::ExtendedAttributes::get(file, ACCESS_XATTR).unwrap()
 }
 
 #[test]

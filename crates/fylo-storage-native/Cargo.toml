@@ -54,7 +54,7 @@ libc = { workspace = true }
 # library's traits; on macOS and Linux another crate turns it on, on iOS and
 # Android nothing does.
 rustix = { workspace = true, features = ["std"] }
-xattr.workspace = true
+fylo-xattr = { version = "0.1.0", path = "../fylo-xattr" }
 
 # `LockFileEx` byte-range locks and file identity for `.vdbx` files (ADR 0016
 # section 7). Already in the graph through `errno`, `rustix` and `tokio`.

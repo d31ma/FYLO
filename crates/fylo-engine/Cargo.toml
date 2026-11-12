@@ -20,7 +20,7 @@ sha2.workspace = true
 zeroize.workspace = true
 
 [target.'cfg(unix)'.dev-dependencies]
-xattr.workspace = true
+fylo-xattr = { version = "0.1.0", path = "../fylo-xattr" }
 
 [dev-dependencies]
 fylo-test-support = { version = "0.1.0", path = "../fylo-test-support" }

@@ -77,7 +77,7 @@ impl ExtendedAttributeProbe {
     }
 
     fn set_and_remove(&self) -> Result<(), NativeStorageError> {
-        use xattr::FileExt;
+        use fylo_xattr::FileExt;
 
         self.file
             .set_xattr(Self::ATTRIBUTE, Self::VALUE)

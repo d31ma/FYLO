@@ -155,12 +155,14 @@ fn collection_tree(directory: &Path) -> BTreeMap<String, FileImage> {
 
 #[cfg(unix)]
 fn attributes(path: &Path) -> Vec<(String, Vec<u8>)> {
-    let mut values: Vec<(String, Vec<u8>)> = xattr::list(path)
+    let mut values: Vec<(String, Vec<u8>)> = fylo_xattr::ExtendedAttributes::list(path)
         .unwrap()
         .filter_map(|name| {
             let name = name.to_string_lossy().into_owned();
             name.contains("fylo").then(|| {
-                let value = xattr::get(path, &name).unwrap().unwrap_or_default();
+                let value = fylo_xattr::ExtendedAttributes::get(path, &name)
+                    .unwrap()
+                    .unwrap_or_default();
                 (name, value)
             })
         })

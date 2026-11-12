@@ -1341,7 +1341,7 @@ fn decode_profiled_metadata_blob(
 fn metadata_blob(path: &Path) -> Result<Option<Vec<u8>>, NativeStorageError> {
     use base64::Engine as _;
     use base64::engine::general_purpose::STANDARD as BASE64;
-    use xattr::FileExt;
+    use fylo_xattr::FileExt;
 
     use crate::extended_attribute_error::ExtendedAttributeError;
 
@@ -2015,15 +2015,17 @@ fn copy_extended_metadata(source: &Path, target: &Path) -> Result<(), NativeStor
     use crate::extended_attribute_error::ExtendedAttributeError;
     use crate::extended_attribute_namespace::ExtendedAttributeNamespace;
 
-    for name in xattr::list(source)
+    for name in fylo_xattr::ExtendedAttributes::list(source)
         .map_err(|error| ExtendedAttributeError::for_file(error, "listxattr", source))?
         .filter(|name| !ExtendedAttributeNamespace::belongs_to_the_kernel(name))
     {
         let label = name.to_string_lossy();
-        if let Some(value) = xattr::get(source, &name).map_err(|error| {
-            ExtendedAttributeError::for_attribute(error, "getxattr", &label, source)
-        })? {
-            xattr::set(target, &name, &value).map_err(|error| {
+        if let Some(value) =
+            fylo_xattr::ExtendedAttributes::get(source, &name).map_err(|error| {
+                ExtendedAttributeError::for_attribute(error, "getxattr", &label, source)
+            })?
+        {
+            fylo_xattr::ExtendedAttributes::set(target, &name, &value).map_err(|error| {
                 ExtendedAttributeError::for_attribute(error, "setxattr", &label, target)
             })?;
         }
@@ -2189,7 +2191,7 @@ fn apply_metadata_blob(target: &Path, bytes: &[u8]) -> Result<(), NativeStorageE
                 "version metadata attribute has invalid base64",
             )
         })?;
-        xattr::set(target, name, &decoded).map_err(|error| {
+        fylo_xattr::ExtendedAttributes::set(target, name, &decoded).map_err(|error| {
             crate::extended_attribute_error::ExtendedAttributeError::for_attribute(
                 error, "setxattr", name, target,
             )
