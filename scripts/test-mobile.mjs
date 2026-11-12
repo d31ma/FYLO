@@ -29,6 +29,7 @@ const DEVICE_EXCLUDED = [
     'binary(header_matches_code)',
     'test(=stored_validation::tests::stored_validators_answer_exactly_as_native_compilation_does)'
 ].join(' | ')
+const DEVICE_TEST_THREADS = 2
 const scripts = fileURLToPath(new URL('./mobile/', import.meta.url))
 const [platform, ...options] = process.argv.slice(2)
 const buildOnly = options.includes('--build-only')
@@ -72,6 +73,11 @@ function nextestArguments(target, filterset) {
         target,
         ...packages,
         '--no-fail-fast',
+        // One test program at a time on a phone OS is cheap, many are not: an
+        // iOS simulator or Android emulator runs every test as its own
+        // process, and twelve at once overloaded the Mac (2026-11-11).
+        '--test-threads',
+        String(DEVICE_TEST_THREADS),
         ...selection
     ]
 }
