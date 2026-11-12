@@ -326,7 +326,9 @@ export class FyloBrowser {
      */
     async changes(collection, after = null, limit = undefined) {
         if (!this.worker && this.core) return await this.core.changes(collection, after, limit)
-        return await this.dispatch({ op: 'changes', collection, after, limit })
+        return /** @type {import('./core/browser-change-feed.js').BrowserChangePage} */ (
+            await this.dispatch({ op: 'changes', collection, after, limit })
+        )
     }
 
     /** @param {string} collection @param {Record<string, any>} [query] */

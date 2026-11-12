@@ -52,7 +52,6 @@ export class SingleFileDatabase {
     }
 
     /**
-     * @param {DatabaseSource} source
      * `encryption.key` opens an encrypted file (ADR 0025): bytes or a string
      * of at least 32 bytes, the same secret native `fylo.encryption.key`
      * names, or a non-extractable HKDF `CryptoKey` with the `deriveBits`
