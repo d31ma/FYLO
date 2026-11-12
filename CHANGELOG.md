@@ -20,8 +20,20 @@
   (release asset `fylo-android-<version>.aar`, GitHub Packages) wraps it in
   Kotlin through JNI (`Fylo`, `FyloIdentity`). The engine crates build and
   pass their tests on the Android emulator (`bun run test:mobile android`);
-  Android's ext4 joins the qualified byte-range-lock filesystems. The iOS
-  package (`Fylo.xcframework`, `FyloKit`) and `ios-keychain:` come later.
+  Android's ext4 joins the qualified byte-range-lock filesystems.
+- **FYLO's native engine on iOS (ADR 0026).** The release asset
+  `fylo-ios-<version>.xcframework.zip` holds `Fylo.xcframework` (device and
+  simulator, iOS 17 or newer) for the Swift package `FyloKit`
+  (`bindings/mobile/ios/FyloKit`: `Fylo`, `FyloIdentity`, `FyloError`).
+  File attributes on iOS go through the new crate `fylo-xattr` (rustix).
+  The iOS tests run only in the release job (`mobile-ios`): XCTest and the
+  engine crates' tests on a simulator, without the tests that start another
+  process, which an iOS app cannot do. A crashed owner's takeover by another
+  process, as with an app extension in a shared app-group container, is not
+  tested on iOS yet.
+- **`ios-keychain:<label>` identities (ADR 0026, ADR 0021).** A P-256 key in
+  the iOS Data Protection keychain, readable after the first unlock, on this
+  device only, never synchronized to iCloud.
 - **An encryption key given as a value (ADR 0026, the rules of ADR 0025).**
   `fylo_open`'s key and `Fylo.open(path, options, key)` take an encrypted
   `.vdbx` database's secret as bytes, at least 32; `create.mode:

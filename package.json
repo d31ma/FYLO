@@ -7,6 +7,7 @@
     "scripts": {
         "vendor:install": "sh ./scripts/install-vendor-bins.sh",
         "build:android": "bun ./scripts/mobile/build-aar.mjs",
+        "build:ios": "bun ./scripts/mobile/build-xcframework.mjs",
         "build:android:size": "bun ./scripts/mobile/check-size.mjs",
         "build:exe": "bun ./scripts/build-executable.mjs",
         "build:web": "bun ./scripts/build-browser.mjs",

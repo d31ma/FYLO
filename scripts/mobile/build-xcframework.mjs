@@ -4,8 +4,10 @@
 // checksum, inside a copy of the FyloKit Swift package (<target>/fylo-ios/FyloKit).
 //
 //   bun scripts/mobile/build-xcframework.mjs           # the xcframework and zip
-//   bun scripts/mobile/build-xcframework.mjs --test    # and XCTest on a new
-//                                                      # simulator (VM lock: ios)
+//   bun scripts/mobile/build-xcframework.mjs --build-tests  # and compile the
+//                                                           # tests, booting nothing
+//   bun scripts/mobile/build-xcframework.mjs --test    # and XCTest on the
+//                                                      # simulator (release job)
 //
 // Everything is written under <cargo target dir>/fylo-ios; a test run's
 // Xcode derived data lives in a temporary folder and is deleted after it.
@@ -34,7 +36,23 @@ class XcframeworkBuild {
         const framework = join(copy, XcframeworkBuild.FRAMEWORK)
         await XcframeworkBuild.createFramework(framework)
         await XcframeworkBuild.zip(output, framework)
+        if (options.includes('--build-tests')) await XcframeworkBuild.buildTests(copy)
         if (options.includes('--test')) await XcframeworkBuild.test(copy)
+    }
+
+    /** Compile FyloKit and its tests for any simulator; no device starts. */
+    static async buildTests(copy) {
+        const derived = mkdtempSync(join(tmpdir(), 'fylo-xcbuild-'))
+        try {
+            await XcframeworkBuild.xcodebuild(
+                copy,
+                derived,
+                'build-for-testing',
+                'generic/platform=iOS Simulator'
+            )
+        } finally {
+            rmSync(derived, { recursive: true, force: true })
+        }
     }
 
     static buildLibrary(target) {
@@ -72,7 +90,7 @@ class XcframeworkBuild {
     }
 
     static async zip(output, framework) {
-        const zip = join(output, `Fylo-${XcframeworkBuild.version()}.xcframework.zip`)
+        const zip = join(output, `fylo-ios-${XcframeworkBuild.version()}.xcframework.zip`)
         rmSync(zip, { force: true })
         await XcframeworkBuild.step('zip', 'ditto', [
             '-c',
@@ -82,11 +100,12 @@ class XcframeworkBuild {
             framework,
             zip
         ])
-        const checksum = await XcframeworkBuild.capture('swift', [
-            'package',
-            'compute-checksum',
-            zip
-        ])
+        // From the output folder: SwiftPM leaves a .build folder where it runs.
+        const checksum = await XcframeworkBuild.capture(
+            'swift',
+            ['package', 'compute-checksum', zip],
+            output
+        )
         writeFileSync(`${zip}.checksum`, `${checksum.trim()}\n`)
         console.error(`=== xcframework ${zip} checksum ${checksum.trim()}`)
     }
@@ -118,27 +137,38 @@ class XcframeworkBuild {
         guard.start()
         try {
             await simulator.start()
-            await XcframeworkBuild.step(
-                'xctest',
-                'xcodebuild',
-                [
-                    'test',
-                    '-scheme',
-                    'FyloKit',
-                    '-destination',
-                    `platform=iOS Simulator,id=${simulator.udid}`,
-                    '-derivedDataPath',
-                    derived,
-                    'COMPILER_INDEX_STORE_ENABLE=NO'
-                ],
-                process.env,
-                copy
+            await XcframeworkBuild.xcodebuild(
+                copy,
+                derived,
+                'test',
+                `platform=iOS Simulator,id=${simulator.udid}`
             )
         } finally {
             guard.end()
             await simulator.stop()
             rmSync(derived, { recursive: true, force: true })
         }
+    }
+
+    static xcodebuild(copy, derived, action, destination) {
+        return XcframeworkBuild.step(
+            `xcodebuild ${action}`,
+            'xcodebuild',
+            [
+                action,
+                '-scheme',
+                'FyloKit',
+                '-destination',
+                destination,
+                '-derivedDataPath',
+                derived,
+                // The xcframework has no x86_64 simulator slice (ADR 0026).
+                'ARCHS=arm64',
+                'COMPILER_INDEX_STORE_ENABLE=NO'
+            ],
+            process.env,
+            copy
+        )
     }
 
     static version() {
@@ -157,9 +187,9 @@ class XcframeworkBuild {
         })
     }
 
-    static capture(command, args) {
+    static capture(command, args, cwd) {
         return new Promise((resolve, reject) => {
-            const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'inherit'] })
+            const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'inherit'], cwd })
             let text = ''
             child.stdout.on('data', (chunk) => {
                 text += chunk

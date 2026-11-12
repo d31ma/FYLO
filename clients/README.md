@@ -572,8 +572,8 @@ Since ADR 0026 an Android app can link FYLO's **native engine** instead of
 hosting the web engine in a WebView: the same Rust engine as the `fylo`
 binary, with real files, `.vdbx` databases, schemas, identities and field
 encryption. The app picks one of the two; they share the `.vdbx` format.
-(iOS gets the same engine as `Fylo.xcframework` and the Swift package
-`FyloKit` in a later release.)
+(iOS gets the same engine through the Swift package `FyloKit`; see
+[iOS native engine](#ios-native-engine-fylokit).)
 
 The AAR (`fylo-android-<version>.aar`, arm64-v8a and x86_64, minSdk 26) is a
 release asset and is published to GitHub Packages:
@@ -622,6 +622,38 @@ Fylo.open(File(filesDir, "app.vdbx").path, """{"create": {"mode": "encrypted"}}"
   so the file never leaves the device without its key.
 - `.vdbx` databases are the supported layout on phones. The C ABI under the
   AAR (`fylo.h`, `crates/fylo-ffi`) is also usable from other native code.
+
+### iOS native engine (`FyloKit`)
+
+The release asset `fylo-ios-<version>.xcframework.zip` holds
+`Fylo.xcframework` (static, `aarch64-apple-ios` and `aarch64-apple-ios-sim`,
+iOS 17 or newer). Unzip it into a copy of `bindings/mobile/ios/FyloKit` taken
+at the same release tag, and add that folder to the app as a local Swift
+package.
+
+```swift
+// Off the main thread: every call blocks and may flush to disk.
+let key = Fylo.newKey()   // 32 random bytes; keep them in the keychain
+let db = try Fylo.open(
+    path: folder.appendingPathComponent("app.vdbx").path,
+    options: #"{"create": {"mode": "encrypted"}}"#,
+    key: key)
+_ = try db.createCollection("notes")
+let id = try db.put("notes", json: #"{"title": "Hello"}"#)
+let note = try db.get("notes", id: id)   // ["<id>": [...]], or nil
+try db.close()
+```
+
+- Results are dictionaries with the machine protocol's shapes; failures throw
+  `FyloError` with FYLO's error `code`. The key rules are Android's above.
+- **`ios-keychain:<label>` identities** keep a P-256 key in the Data
+  Protection keychain, readable after the first unlock, on this device only,
+  never synchronized to iCloud: `FyloIdentity.create("ios-keychain:app.device")`,
+  then `{"create": {"mode": "protected", "admin": "ios-keychain:app.device"}}`.
+- iOS has no qualified byte-range locks, so a `.vdbx` there uses the lock-free
+  lease. An app extension that opens the same database from a shared app-group
+  container is a second process; that case is not tested on iOS yet (see
+  `docs/operations/vdbx-byte-range-lock-qualification.md`).
 
 ### WebView engine
 

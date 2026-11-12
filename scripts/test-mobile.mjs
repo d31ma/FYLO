@@ -1,5 +1,7 @@
 // Run the engine crates' tests on the iOS simulator or the Android emulator
-// (ADR 0026). Run it under the machine's VM lock for that device.
+// (ADR 0026). Run it under the machine's VM lock for that device. iOS runs
+// only in the release job (mobile-ios): the Mac boots no iOS simulator since
+// 2026-11-12.
 //
 //   bun scripts/test-mobile.mjs <android|ios> ['<nextest filterset>']
 //   bun scripts/test-mobile.mjs <android|ios> --parts      # in slices of ~150 tests

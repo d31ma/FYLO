@@ -28,13 +28,20 @@ built with the `mobile` profile (`panic = "unwind"`, so a C entry returns
 | | Android | iOS |
 | --- | --- | --- |
 | Targets | `aarch64-linux-android`, `x86_64-linux-android` | `aarch64-apple-ios`, `aarch64-apple-ios-sim` |
-| Package | `fylo-android-<version>.aar` (release asset and GitHub Packages `io.github.d31ma:fylo-android`) | `Fylo.xcframework` and the Swift package `FyloKit` (open: ADR 0026 slices S5 and S7) |
-| Size (stripped, 2026-11-11) | arm64 4.65 MB, x86_64 5.51 MB; budget +10% (`scripts/mobile/size-budget.json`) | measured with S5 |
-| Verified by | engine tests on the arm64 emulator (`bun run test:mobile android`), instrumented tests on the arm64 emulator here and the x86_64 emulator in the release job, `bun run test:ffi` | engine tests on the simulator (open) |
+| Package | `fylo-android-<version>.aar` (release asset and GitHub Packages `io.github.d31ma:fylo-android`) | `fylo-ios-<version>.xcframework.zip` (release asset: `Fylo.xcframework`, static) for the Swift package `FyloKit` in `bindings/mobile/ios/FyloKit` |
+| Size (stripped, 2026-11-11) | arm64 4.65 MB, x86_64 5.51 MB; budget +10% (`scripts/mobile/size-budget.json`) | no budget yet (open) |
+| Verified by | engine tests on the arm64 emulator (`bun run test:mobile android`), instrumented tests on the arm64 emulator here and the x86_64 emulator in the release job, `bun run test:ffi` | only in the release job (`mobile-ios`, macOS 26, Xcode 26.6, iOS 26.5 simulator): XCTest for `FyloKit` and `ios-keychain:` (`bun run build:ios --test`), engine tests (`bun run test:mobile ios`); the Mac checks iOS by clippy and a test build that boots nothing (`bun run build:ios --build-tests`) |
 
 The release job pins the NDK, platform, build tools, JDK and Gradle;
 `sdkmanager` installs the current `emulator` and `platform-tools`, which it
 cannot pin.
+
+The iOS tests run only in the release job. The Mac that builds FYLO boots no
+iOS simulator (2026-11-12: a new device's first boot started about 270
+processes and overloaded it), so a failure that shows only on iOS appears
+first when a release pull request runs. The iOS run leaves out the tests that
+start another process, which an iOS app cannot do; the list is
+`IOS_EXCLUDED` in `scripts/test-mobile.mjs`.
 
 ## The browser host table
 

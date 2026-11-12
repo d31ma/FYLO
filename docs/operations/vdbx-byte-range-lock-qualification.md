@@ -277,8 +277,13 @@ Phones (ADR 0026): Android's ext4 passed on the emulator, so `("android",
 "ext4")` is in `QUALIFIED`. Many phones keep `/data` on f2fs, which has no row
 yet, so a writer there uses the lease until a run on a device passes. The
 harness cannot run on iOS, because an iOS app cannot start another process,
-so iOS uses the lease; an iOS app is one process, which the lease already
-covers.
+so iOS uses the lease. Open item: the lease's takeover of a crashed owner in
+another process is tested on macOS, Linux, Windows and Android, never on iOS,
+because those tests start a child process. An iOS app is not always one
+process: its app extensions (a widget, a share extension) are separate
+processes, and when they open a database in a shared app-group container,
+two processes use one `.vdbx`. That case relies on the lease behaving on iOS
+as it does on the other platforms, which no iOS test has shown yet.
 
 On Linux every NFS version has one `fstatfs` magic number, so FYLO reads the
 mount table: an NFS 4.1 mount is named `nfs4.1`, and a mount whose locks stay

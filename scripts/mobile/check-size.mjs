@@ -5,7 +5,7 @@
 //
 //   bun scripts/mobile/check-size.mjs
 //
-// iOS is an open item: its budget comes with the xcframework (slice S5).
+// iOS has no budget yet: an open item.
 import { readFileSync, statSync } from 'node:fs'
 import { CargoArtifacts } from '../cargo-artifacts.mjs'
 

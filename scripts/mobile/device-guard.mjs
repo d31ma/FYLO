@@ -8,7 +8,9 @@ import { loadavg } from 'node:os'
  * the last 10 s, how many more processes the Mac runs than just before the
  * boot, and macOS free memory. On a breach it calls `stop` once: the caller
  * stops the run's own process group by its saved id and shuts its own device
- * down by UDID.
+ * down by UDID. On a GitHub runner (GITHUB_ACTIONS=true) it only logs: a
+ * runner is a fresh machine of its own, every boot there is a first boot,
+ * and nothing else runs on it to protect.
  */
 export class DeviceGuard {
     static POLL_MS = 2_000
@@ -49,9 +51,22 @@ export class DeviceGuard {
         const reason = this.breach()
         if (reason === undefined || this.breached) return
         this.breached = true
+        this.act(reason)
+    }
+
+    act(reason) {
+        if (!DeviceGuard.enforced()) {
+            console.error(`=== guard: ${reason}; a GitHub runner, so the run goes on`)
+            return
+        }
         console.error(`=== guard: ${reason}; stopping the run`)
         this.end()
         this.stop(reason)
+    }
+
+    /** @returns {boolean} False on a GitHub runner, where the guard only logs. */
+    static enforced() {
+        return process.env.GITHUB_ACTIONS !== 'true'
     }
 
     /** Read one sample, log it, and name the limit it passes, if any. */

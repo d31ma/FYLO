@@ -474,8 +474,7 @@ jobs:
         name: Android library (AAR, size budget, x86_64 emulator tests)
         # ADR 0026: the AAR for arm64-v8a and x86_64, the size gate, and the
         # instrumented tests on an x86_64 emulator with KVM, which the arm64
-        # Mac cannot run. The iOS job (xcframework, Swift package, XCTest)
-        # is an open item: it comes with slices S5 and S7.
+        # Mac cannot run. The iOS package and its tests are the mobile-ios job.
         runs-on: ubuntu-24.04
         timeout-minutes: 60
         env:
@@ -552,6 +551,66 @@ jobs:
                   if-no-files-found: error
                   retention-days: 1
 
+    mobile-ios:
+        name: iOS package (xcframework, XCTest and engine tests on the simulator)
+        # ADR 0026: Fylo.xcframework and its release zip, then XCTest for the
+        # FyloKit wrapper and the ios-keychain: store, then the engine crates'
+        # Rust tests on an iOS simulator. These iOS runs happen only here: the
+        # Mac that builds FYLO boots no simulator (2026-11-12, a new device's
+        # first boot overloaded it), so an iOS-only failure shows first here.
+        runs-on: macos-26
+        timeout-minutes: 120
+        env:
+            XCODE_VERSION: '26.6'
+            IOS_SIMULATOR_RUNTIME: '26.5'
+            FYLO_IOS_DEVICE_TYPE: com.apple.CoreSimulator.SimDeviceType.iPhone-17
+            NEXTEST_VERSION: 0.9.146
+
+        steps:
+            - name: Checkout
+              uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+            - name: Select the pinned Xcode
+              run: |
+                  set -euo pipefail
+                  sudo xcode-select --switch "/Applications/Xcode_${XCODE_VERSION}.app"
+                  xcodebuild -version
+                  swift --version
+                  xcrun simctl list runtimes iOS available | grep -F "iOS ${IOS_SIMULATOR_RUNTIME} "
+
+            - name: Setup Bun
+              uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+              with:
+                  bun-version-file: .bun-version
+
+            - name: Install dependencies
+              run: bun install --frozen-lockfile
+
+            - name: Install pinned Rust toolchain, iOS targets and cargo-nextest
+              run: |
+                  set -euo pipefail
+                  rustup show active-toolchain
+                  toolchain=$(grep -oE 'channel *= *"[^"]+"' rust-toolchain.toml | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+                  rustup target add aarch64-apple-ios aarch64-apple-ios-sim --toolchain "$toolchain"
+                  cargo install --locked "cargo-nextest@${NEXTEST_VERSION}"
+                  cargo nextest --version
+
+            - name: Build the xcframework and run XCTest on the simulator
+              env:
+                  FYLO_BUILD_COMMIT: ${{ github.sha }}
+              run: bun run build:ios --test
+
+            - name: Engine tests on the simulator
+              run: bun run test:mobile ios
+
+            - name: Upload the iOS package
+              uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+              with:
+                  name: mobile-ios-${{ github.sha }}
+                  path: target/fylo-ios/fylo-ios-*.xcframework.zip
+                  if-no-files-found: error
+                  retention-days: 1
+
     version:
         name: Read version
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
@@ -593,7 +652,17 @@ jobs:
             id-token: write
             attestations: write
             artifact-metadata: write
-        needs: [test, binary-interop, windows-storage, macos-storage, linux-storage, mobile-android, version]
+        needs:
+            [
+                test,
+                binary-interop,
+                windows-storage,
+                macos-storage,
+                linux-storage,
+                mobile-android,
+                mobile-ios,
+                version
+            ]
         if: >-
             ${{
               (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
@@ -604,6 +673,7 @@ jobs:
               needs.macos-storage.result == 'success' &&
               needs.linux-storage.result == 'success' &&
               needs.mobile-android.result == 'success' &&
+              needs.mobile-ios.result == 'success' &&
               needs.version.result == 'success' &&
               needs.version.outputs.tag_exists == 'false'
             }}
@@ -641,6 +711,12 @@ jobs:
               uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
               with:
                   name: mobile-android-${{ github.sha }}
+                  path: release-assets
+
+            - name: Download the simulator-tested iOS package
+              uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+              with:
+                  name: mobile-ios-${{ github.sha }}
                   path: release-assets
 
             - name: Download native-tested macOS arm64 release executable
@@ -782,6 +858,7 @@ jobs:
                   fylo-clients.tar.gz
                   fylo-explorer-${VERSION}.zip
                   fylo-index.wasm
+                  fylo-ios-${VERSION}.xcframework.zip
                   fylo-linux-arm64
                   fylo-linux-x64
                   fylo-macos-arm64

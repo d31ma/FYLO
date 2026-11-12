@@ -1,18 +1,23 @@
-import { spawn } from 'node:child_process'
+import { SimctlCall } from './simctl-call.mjs'
 
 /**
  * The iOS simulator device FYLO's tests use (ADR 0026). It is made once and
  * kept: a new device's first boot starts about 240 iOS processes and pushed
  * the Mac's load past 400, while a later boot of the same device is light.
  * `bun scripts/test-mobile.mjs ios --warm-up` does that first boot alone;
- * `--remove-device` deletes it.
+ * `--remove-device` deletes it. FYLO_IOS_DEVICE_TYPE names another device
+ * type, for an Xcode whose runtimes do not run DEVICE_TYPE (the release job).
  */
 export class IosSimulator {
     static DEVICE_NAME = 'fylo-tests'
     static DEVICE_TYPE = 'com.apple.CoreSimulator.SimDeviceType.iPhone-16'
+    // A first boot on a GitHub runner can take minutes; never wait forever.
+    static BOOT_LIMIT_MS = 15 * 60_000
 
     constructor() {
         this.udid = ''
+        /** @type {SimctlCall | undefined} */
+        this.boot = undefined
     }
 
     /** Find the kept device, making it first if it does not exist; no boot. */
@@ -24,11 +29,13 @@ export class IosSimulator {
     /** Boot the prepared device and wait until it is ready. */
     async start() {
         console.error(`=== simulator boot ${this.udid}`)
-        await IosSimulator.simctl(['bootstatus', this.udid, '-b'])
+        this.boot = new SimctlCall(['bootstatus', this.udid, '-b'], IosSimulator.BOOT_LIMIT_MS)
+        await this.boot.run()
     }
 
-    /** Shut the device down and keep it. */
+    /** End a boot still waiting, shut the device down, and keep it. */
     async stop() {
+        this.boot?.cancel('was ended: the device is shutting down')
         console.error(`=== simulator shutdown ${this.udid}`)
         await IosSimulator.simctl(['shutdown', this.udid]).catch(() => undefined)
     }
@@ -51,7 +58,7 @@ export class IosSimulator {
         const created = await IosSimulator.simctl([
             'create',
             IosSimulator.DEVICE_NAME,
-            IosSimulator.DEVICE_TYPE,
+            IosSimulator.deviceType(),
             runtime
         ])
         return created.trim()
@@ -73,10 +80,10 @@ export class IosSimulator {
             await IosSimulator.simctl(['list', 'runtimes', 'iOS', 'available', '--json'])
         )
         // Device-specific runtimes (an identifier ending in -iPhone<model>)
-        // support only their own model, so pick one that runs DEVICE_TYPE.
+        // support only their own model, so pick one that runs the device type.
         const runtime = listing.runtimes.findLast((candidate) =>
             candidate.supportedDeviceTypes.some(
-                (type) => type.identifier === IosSimulator.DEVICE_TYPE
+                (type) => type.identifier === IosSimulator.deviceType()
             )
         )
         if (runtime === undefined) {
@@ -87,23 +94,16 @@ export class IosSimulator {
         return runtime.identifier
     }
 
+    /** @returns {string} */
+    static deviceType() {
+        return process.env.FYLO_IOS_DEVICE_TYPE ?? IosSimulator.DEVICE_TYPE
+    }
+
     /**
      * @param {string[]} args
      * @returns {Promise<string>}
      */
     static simctl(args) {
-        return new Promise((resolve, reject) => {
-            const child = spawn('xcrun', ['simctl', ...args], {
-                stdio: ['ignore', 'pipe', 'inherit']
-            })
-            let output = ''
-            child.stdout.on('data', (chunk) => (output += chunk))
-            child.once('error', reject)
-            child.once('close', (code) =>
-                code === 0
-                    ? resolve(output)
-                    : reject(new Error(`simctl ${args[0]} exited with ${code}`))
-            )
-        })
+        return new SimctlCall(args).run()
     }
 }
