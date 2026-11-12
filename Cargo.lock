@@ -779,6 +779,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fylo-ffi"
+version = "0.1.0"
+dependencies = [
+ "fylo",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "fylo-format"
 version = "0.1.0"
 dependencies = [

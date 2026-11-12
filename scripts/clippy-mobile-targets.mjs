@@ -10,7 +10,8 @@ const PACKAGES = [
     'fylo-identity',
     'fylo-storage-native',
     'fylo-engine',
-    'fylo'
+    'fylo',
+    'fylo-ffi'
 ]
 
 for (const target of MobileTargets.all()) {

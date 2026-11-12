@@ -41,10 +41,11 @@ operating system protects.
 
 ### 3. The C ABI (D3)
 
-- A new crate, `crates/fylo-ffi` (library name `fylo`), built as a
-  `staticlib` for iOS and a `cdylib` for Android. It depends on the `fylo`
-  crate, not on `fylo-machine`, so phones carry no machine protocol and no TLS
-  client.
+- A new crate, `crates/fylo-ffi`, built as a `staticlib` for iOS and a
+  `cdylib` for Android. Its Rust library name is `fylo_ffi`, because it
+  wraps the crate named `fylo`; the iOS and Android packages name the
+  binary they ship. It depends on the `fylo` crate, not on `fylo-machine`,
+  so phones carry no machine protocol and no TLS client.
 - Small typed functions only, no generic request function:
   `fylo_abi_version`, `fylo_open`, `fylo_close`, `fylo_create_collection`,
   `fylo_put`, `fylo_get`, `fylo_delete`, `fylo_find`, `fylo_find_page`,

@@ -33,6 +33,7 @@
 
 mod collection;
 mod collection_recovery;
+mod database_creation;
 mod error;
 mod link_identity;
 mod page;
@@ -50,10 +51,11 @@ use fylo_storage_native::{
 };
 
 pub use collection::{Collection, Document, Query};
+pub use database_creation::DatabaseCreation;
 pub use error::Error;
 pub use fylo_engine::{CollectionInspection, EngineConfig};
-pub use fylo_identity::{Identity, IdentityId, KeyReference};
-pub use fylo_storage_native::AccessTrust;
+pub use fylo_identity::{Identity, IdentityError, IdentityId, KeyReference};
+pub use fylo_storage_native::{AccessTrust, Durability};
 pub use fylo_storage_native::{QueueAckResult, QueueDelivery, QueueNackResult, QueuePublishResult};
 pub use link_identity::LinkIdentity;
 pub use page::Page;

@@ -19,12 +19,14 @@ const PACKAGES = [
     'fylo-identity',
     'fylo-storage-native',
     'fylo-engine',
-    'fylo'
+    'fylo',
+    'fylo-ffi'
 ]
 // Tests that cannot run on a phone: they start a program, or read the
 // repository's files, by its path on the Mac.
 const DEVICE_EXCLUDED = [
     'binary(byte_range_lock_harness)',
+    'binary(header_matches_code)',
     'test(=stored_validation::tests::stored_validators_answer_exactly_as_native_compilation_does)'
 ].join(' | ')
 const scripts = fileURLToPath(new URL('./mobile/', import.meta.url))

@@ -1,0 +1,30 @@
+[package]
+name = "fylo-ffi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "FYLO's C ABI for iOS and Android apps (ADR 0026)"
+publish = false
+
+[lib]
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[dependencies]
+fylo = { version = "0.1.0", path = "../fylo" }
+serde.workspace = true
+serde_json.workspace = true
+
+# The C entry points read the caller's pointers and hand out buffers the
+# caller frees, which no safe signature expresses. ADR 0026 confines that to
+# `c_abi.rs`, one `SAFETY:` justification per block.
+[lints.rust]
+unsafe_code = "deny"
+unused_must_use = "deny"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"

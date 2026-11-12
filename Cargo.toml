@@ -11,6 +11,7 @@ members = [
     "crates/fylo-wasm",
     "crates/fylo-cli",
     "crates/fylo",
+    "crates/fylo-ffi",
     "crates/fylo-identity",
     "crates/fylo-test-support",
     "src/browser/wasm",
@@ -32,6 +33,7 @@ default-members = [
     "crates/fylo-wasm",
     "crates/fylo-cli",
     "crates/fylo",
+    "crates/fylo-ffi",
     "crates/fylo-identity",
     "xtask",
 ]
@@ -115,3 +117,9 @@ codegen-units = 1
 opt-level = 3
 panic = "abort"
 strip = true
+
+# Phone builds of `fylo-ffi` (ADR 0026): a panic unwinds so the C entry can
+# catch it and return FYLO_PANIC instead of aborting the app.
+[profile.mobile]
+inherits = "release"
+panic = "unwind"

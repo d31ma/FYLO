@@ -44,6 +44,7 @@
         "rust:test": "bun ./scripts/run-rust.mjs cargo test --workspace --all-targets --all-features --locked",
         "rust:verify": "bun ./scripts/run-rust.mjs cargo run -p xtask -- verify-workspace",
         "test": "bun run rust:test && bun run rust:build && bun test tests/browser/*.test.js --timeout 120000 --parallel=1",
+        "test:ffi": "bun ./scripts/ffi-smoke.mjs",
         "test:interop": "bun test tests/interop --timeout 120000 --parallel=1",
         "test:mobile": "bun ./scripts/test-mobile.mjs",
         "typecheck": "tsc --noEmit",
