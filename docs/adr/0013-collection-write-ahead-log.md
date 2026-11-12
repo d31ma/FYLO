@@ -225,6 +225,13 @@ on the collection lock as they do today. A process that holds the root's
 exclusive lease (`exec --loop --exclusive-root`) is where concurrent writers
 meet one queue.
 
+Clarified 2026-11-12: two `fylo exec` processes never write one root at the
+same time. Every `fylo exec` session, with or without `--exclusive-root`,
+holds the root's kernel lease from its first request until it exits (ADR
+0003; "Root owner" in `README.md`). A second `fylo exec` on the same root gets
+`EROOTLOCKED` for every request until the first exits; it does not wait for
+the collection lock.
+
 ### 6. Failure in a live writer
 
 - **Validation fails** (step 2): nothing was written. The error is returned.

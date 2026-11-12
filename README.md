@@ -1559,32 +1559,32 @@ is additive: new codes may appear in later releases, and an existing code
 keeps its meaning. Clients should branch on `error.code`, never on message
 text.
 
-| Code                                                                   | Meaning                                                                        | Retry guidance                                                   |
-| ---------------------------------------------------------------------- | ------------------------------------------------------------------------------ | ---------------------------------------------------------------- |
-| `EBADREQUEST`                                                          | The request shape, field types, access object, or page options are invalid     | Do not retry; fix the request                                    |
-| `EUNSUPPORTEDOP`                                                       | The operation is unknown to this runtime                                       | Do not retry; check the handshake capabilities                   |
-| `EINVALIDDOCID`                                                        | The supplied document ID is not a valid TTID                                   | Do not retry; fix the ID                                         |
-| `EARRAYOFOBJECTS`                                                      | The document contains an array of objects, which the data model rejects        | Do not retry; restructure per the document-model rule below      |
-| `EACCES`                                                               | The identity has no grant for the operation on a protected database            | Do not retry with the same identity                              |
-| `EQUEUE_INVALID`                                                       | A queue name, identity, option, or idempotency reuse is invalid                | Do not retry without correcting the request                      |
-| `EQUEUE_RECEIPT`                                                       | A queue receipt is incorrect, expired, or already superseded                   | Do not acknowledge as that worker                                |
-| `EQUEUE_LIMIT`                                                         | A queue message, claim, delay, attempt, state, or read limit was exceeded      | Reduce the requested resource                                    |
-| `EINDEX_FULL`                                                          | The write could grow the collection's index past its 240 MiB write limit       | Do not retry; delete documents or use another collection         |
-| `EDECRYPTFAILED`                                                       | An `$encrypted` field could not be decrypted with the configured key           | Do not retry; fix the key configuration                          |
-| `ECURSOR_EXPIRED`                                                      | The change cursor is from before the collection's change history started again | Read the collection again; continue from `after: null`           |
-| `EINVALIDCURSOR`                                                       | The pagination cursor is invalid, expired, or from another process             | Restart the traversal from page one                              |
-| `ENATIVE_NOT_FOUND`                                                    | The named collection does not exist                                            | Do not retry; create the collection first                        |
-| `EBROWSER_UNSUPPORTED`                                                 | The browser or mobile engine does not implement the requested feature          | Do not retry; use the native engine                              |
-| `EROOTLOCKED` / `EROOTLEASELOST`                                       | Exclusive root ownership was unavailable or lost                               | Fail over per your supervisor policy                             |
-| `EFRAME_*`                                                             | Frame-contract violations, as documented above                                 | Per the framing rules above                                      |
-| `EQUERYLOOPREQUIRED` / `EQUERYITEMTOOLARGE` / `EQUERYSNAPSHOTTOOLARGE` | Pagination contract violations, as documented above                            | Per the pagination rules above                                   |
-| `ESCHEMA`                                                              | A document does not match the head schema, or a schema is invalid              | Do not retry; fix the document or schema                         |
-| `ESCHEMACONFLICT`                                                      | A pushed schema label is already committed with different content              | Do not retry; give the changed schema a new version label        |
-| `ESCHEMAUNAVAILABLE`                                                   | This build cannot validate the collection's head schema version                | Do not retry; push the schema natively, or write natively        |
-| `EVDBX_NOT_VDBX` / `EVDBX_VERSION`                                     | The file is not a `.vdbx` database, or needs a newer FYLO                      | Do not retry; open it with a build that supports it              |
-| `EVDBX_CORRUPT`                                                        | A `.vdbx` structure failed its checks                                          | Do not retry; run `fylo verify <db.vdbx>`                        |
-| `ENATIVE_IO`                                                           | Native filesystem I/O failed, including disk pressure or xattr operations      | Treat a mutation as ambiguous; inspect the cause before retrying |
-| `EUNKNOWN`                                                             | An engine failure without a more specific classification                       | Treat conservatively; inspect `error.message` diagnostically     |
+| Code                                                                   | Meaning                                                                             | Retry guidance                                                            |
+| ---------------------------------------------------------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| `EBADREQUEST`                                                          | The request shape, field types, access object, or page options are invalid          | Do not retry; fix the request                                             |
+| `EUNSUPPORTEDOP`                                                       | The operation is unknown to this runtime                                            | Do not retry; check the handshake capabilities                            |
+| `EINVALIDDOCID`                                                        | The supplied document ID is not a valid TTID                                        | Do not retry; fix the ID                                                  |
+| `EARRAYOFOBJECTS`                                                      | The document contains an array of objects, which the data model rejects             | Do not retry; restructure per the document-model rule below               |
+| `EACCES`                                                               | The identity has no grant for the operation on a protected database                 | Do not retry with the same identity                                       |
+| `EQUEUE_INVALID`                                                       | A queue name, identity, option, or idempotency reuse is invalid                     | Do not retry without correcting the request                               |
+| `EQUEUE_RECEIPT`                                                       | A queue receipt is incorrect, expired, or already superseded                        | Do not acknowledge as that worker                                         |
+| `EQUEUE_LIMIT`                                                         | A queue message, claim, delay, attempt, state, or read limit was exceeded           | Reduce the requested resource                                             |
+| `EINDEX_FULL`                                                          | The write could grow the collection's index past its 240 MiB write limit            | Do not retry; delete documents or use another collection                  |
+| `EDECRYPTFAILED`                                                       | An `$encrypted` field could not be decrypted with the configured key                | Do not retry; fix the key configuration                                   |
+| `ECURSOR_EXPIRED`                                                      | The change cursor is from before the collection's change history started again      | Read the collection again; continue from `after: null`                    |
+| `EINVALIDCURSOR`                                                       | The pagination cursor is invalid, expired, or from another process                  | Restart the traversal from page one                                       |
+| `ENATIVE_NOT_FOUND`                                                    | The named collection does not exist                                                 | Do not retry; create the collection first                                 |
+| `EBROWSER_UNSUPPORTED`                                                 | The browser or mobile engine does not implement the requested feature               | Do not retry; use the native engine                                       |
+| `EROOTLOCKED` / `EROOTLEASELOST`                                       | Another live process owns the root (see Root owner), or this session lost ownership | Retry after the owning process exits; run one `fylo exec --loop` per root |
+| `EFRAME_*`                                                             | Frame-contract violations, as documented above                                      | Per the framing rules above                                               |
+| `EQUERYLOOPREQUIRED` / `EQUERYITEMTOOLARGE` / `EQUERYSNAPSHOTTOOLARGE` | Pagination contract violations, as documented above                                 | Per the pagination rules above                                            |
+| `ESCHEMA`                                                              | A document does not match the head schema, or a schema is invalid                   | Do not retry; fix the document or schema                                  |
+| `ESCHEMACONFLICT`                                                      | A pushed schema label is already committed with different content                   | Do not retry; give the changed schema a new version label                 |
+| `ESCHEMAUNAVAILABLE`                                                   | This build cannot validate the collection's head schema version                     | Do not retry; push the schema natively, or write natively                 |
+| `EVDBX_NOT_VDBX` / `EVDBX_VERSION`                                     | The file is not a `.vdbx` database, or needs a newer FYLO                           | Do not retry; open it with a build that supports it                       |
+| `EVDBX_CORRUPT`                                                        | A `.vdbx` structure failed its checks                                               | Do not retry; run `fylo verify <db.vdbx>`                                 |
+| `ENATIVE_IO`                                                           | Native filesystem I/O failed, including disk pressure or xattr operations           | Treat a mutation as ambiguous; inspect the cause before retrying          |
+| `EUNKNOWN`                                                             | An engine failure without a more specific classification                            | Treat conservatively; inspect `error.message` diagnostically              |
 
 Storage-level failures may carry additional stable codes (for example
 `FYLO_COLLECTION_NOT_FOUND`); those retain their meaning across releases under
@@ -1611,22 +1611,35 @@ To model a collection of records, store them in their own collection and
 reference them by key or public ID. To keep an opaque payload that is never
 field-queried, serialize it to a single string field.
 
-#### Exclusive root owner
+#### Root owner
 
-Long-lived supervisors that require exactly one authoritative process can opt
-in to a root-wide lease:
+One process owns a root
+([ADR 0003](docs/adr/0003-native-and-browser-storage-boundaries.md)). Every
+`fylo exec` session, a single `--request` or a `--loop`, takes the root's
+non-blocking kernel file lock when its first request opens the root, and holds
+it until the process exits. It does not release the lock between requests,
+even while it is idle.
+
+A second `fylo exec` on the same root gets `EROOTLOCKED` for every request
+until the first process exits. It does not wait, and it executes no read or
+write. A second `--loop` keeps running and answers each request with that
+error; its first request after the owner exits succeeds, without a restart.
+So run one `fylo exec --loop` per root and send every caller through it. Two
+containers or serverless instances that mount the same root are two processes:
+only one of them can use it at a time.
+
+`--exclusive-root` takes the lock at startup instead, before the loop reads
+stdin:
 
 ```bash
 fylo exec --loop --root /mnt/fylo --exclusive-root
 ```
 
-FYLO canonicalizes the root, acquires a non-blocking kernel file lock before it
-reads stdin, and holds it for the complete loop lifetime. A competing process
-receives `EROOTLOCKED` and exits without executing a read or write. Normal
-shutdown releases the lock. After a crash or `SIGKILL`, the operating system
-releases it; persistent metadata is only diagnostic/fencing state and is not a
-PID-file claim, so PID reuse and stale metadata cannot retain ownership. Every
-request verifies the unique owner generation, and a replaced former owner
+If another process owns the root, the session answers its first request with
+`EROOTLOCKED` and ends. Normal shutdown releases the lock. After a crash or
+`SIGKILL`, the operating system releases it; persistent metadata is only
+diagnostic/fencing state and is not a PID-file claim, so PID reuse and stale
+metadata cannot retain ownership. Every request verifies the unique owner generation, and a replaced former owner
 fails closed with `EROOTLEASELOST`.
 
 Because nothing else can write the root, an exclusive session also keeps a
