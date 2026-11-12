@@ -73,7 +73,8 @@ machine, which is the failure above, so FYLO refuses all of FUSE.
 
 **virtiofs and 9p are remote.** They share a folder of another kernel (a
 virtual machine's host, or Windows from WSL 2). Processes on that other
-kernel do not see the locks taken here.
+kernel do not see the locks taken here. virtiofs is built on FUSE and
+reports FUSE's magic number, so FYLO names it `fuse`.
 
 ### 3. The EFS profile is the exception
 
@@ -119,4 +120,7 @@ filesystem the lease found. `kernelEnforced` is never `true` when `remote` is
   invocation, a one-shot request, an existing root, a new and a copied
   `.vdbx`, each with nothing written, and admits the EFS profile. On
   2026-11-12 it passed on an NFSv3 mount (unfsd, `locallocks`) and an NFSv4
-  mount (CITADEL) from macOS.
+  mount (CITADEL) from macOS, on an NFS 4.1 mount and a virtiofs share in a
+  Linux container (Colima), and on a UNC path (`\\localhost\C$\...`) in
+  Windows 11 on ARM64. The EFS profile has no Windows form, so that part runs
+  on Unix only.
