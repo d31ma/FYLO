@@ -34,6 +34,9 @@ pub enum KeyReference {
     /// `android-keystore:<alias>`: an Android Keystore key that never
     /// leaves the Keystore (ADR 0026, Android 12 or newer).
     AndroidKeystore(String),
+    /// `ios-keychain:<label>`: an iOS Data Protection keychain item, on
+    /// this device only (ADR 0026).
+    IosKeychain(String),
 }
 
 impl KeyReference {
@@ -45,6 +48,7 @@ impl KeyReference {
     const CREDS: &'static str = "creds";
     const WEB_CRYPTO: &'static str = "webcrypto";
     const ANDROID_KEYSTORE: &'static str = "android-keystore";
+    const IOS_KEYCHAIN: &'static str = "ios-keychain";
 
     /// Parse `<store>:<name>`.
     ///
@@ -71,6 +75,7 @@ impl KeyReference {
             Self::AndroidKeystore(alias) => {
                 Self::hardware_only(&format!("android-keystore:{alias}"))
             }
+            Self::IosKeychain(label) => Self::ios_keychain_store(label),
         }
     }
 
@@ -111,6 +116,7 @@ impl KeyReference {
             Self::CREDS => Self::checked_name(name).map(Self::Creds),
             Self::WEB_CRYPTO => Self::checked_name(name).map(Self::WebCrypto),
             Self::ANDROID_KEYSTORE => Self::checked_name(name).map(Self::AndroidKeystore),
+            Self::IOS_KEYCHAIN => Self::checked_name(name).map(Self::IosKeychain),
             _ => Err(Self::invalid(&format!("{store}:{name}"))),
         }
     }
@@ -135,8 +141,23 @@ impl KeyReference {
 
     fn invalid(text: &str) -> IdentityError {
         IdentityError::InvalidReference(format!(
-            "{text:?} is not a key reference: use file:<path>, keychain:<label>, enclave:<label>, cng:<name>, tpm:<name>, creds:<name>, android-keystore:<alias> or webcrypto:<name>"
+            "{text:?} is not a key reference: use file:<path>, keychain:<label>, enclave:<label>, cng:<name>, tpm:<name>, creds:<name>, android-keystore:<alias>, ios-keychain:<label> or webcrypto:<name>"
         ))
+    }
+
+    #[cfg(target_os = "ios")]
+    fn ios_keychain_store(label: &str) -> Box<dyn KeyStore> {
+        Box::new(crate::ios_keychain_key_store::IosKeychainKeyStore::new(
+            label.to_owned(),
+        ))
+    }
+
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    #[cfg(not(target_os = "ios"))]
+    fn ios_keychain_store(label: &str) -> Box<dyn KeyStore> {
+        Box::new(UnsupportedKeyStore::new(format!(
+            "ios-keychain:{label} needs iOS; use keychain:<label> on macOS or file:<path>"
+        )))
     }
 
     #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
@@ -227,6 +248,7 @@ impl fmt::Display for KeyReference {
             Self::Creds(name) => write!(formatter, "{}:{name}", Self::CREDS),
             Self::WebCrypto(name) => write!(formatter, "{}:{name}", Self::WEB_CRYPTO),
             Self::AndroidKeystore(alias) => write!(formatter, "{}:{alias}", Self::ANDROID_KEYSTORE),
+            Self::IosKeychain(label) => write!(formatter, "{}:{label}", Self::IOS_KEYCHAIN),
         }
     }
 }
@@ -274,6 +296,10 @@ mod tests {
         assert_eq!(
             KeyReference::AndroidKeystore("yon.device".into()).to_string(),
             "android-keystore:yon.device"
+        );
+        assert_eq!(
+            KeyReference::parse("ios-keychain:yon.device").unwrap(),
+            KeyReference::IosKeychain("yon.device".into())
         );
         assert_eq!(
             KeyReference::parse("creds:fylo-yon").unwrap(),

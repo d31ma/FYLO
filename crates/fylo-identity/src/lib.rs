@@ -3,7 +3,8 @@
 //! An identity is a P-256 key pair. Its static identifier is the fingerprint
 //! of its public key, `fid1:p256:<base32 of SHA-256>`. A process names its
 //! private key by a [`KeyReference`] (`file:`, `keychain:`, `enclave:`,
-//! `cng:`, `tpm:`, `creds:`, `android-keystore:` or `webcrypto:`) and never
+//! `cng:`, `tpm:`, `creds:`, `android-keystore:`, `ios-keychain:` or
+//! `webcrypto:`) and never
 //! by the key itself.
 
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
@@ -37,6 +38,10 @@ mod hardware_private_key;
 mod identity;
 mod identity_error;
 mod identity_id;
+#[cfg(target_os = "ios")]
+mod ios_keychain_item;
+#[cfg(target_os = "ios")]
+mod ios_keychain_key_store;
 mod key_reference;
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 mod key_store;
