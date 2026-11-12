@@ -20,6 +20,7 @@ serde_json.workspace = true
 # section 4). No default features: no JVM invocation, only native methods.
 [target.'cfg(target_os = "android")'.dependencies]
 jni = { version = "0.22.4", default-features = false }
+zeroize.workspace = true
 
 # The C entry points read the caller's pointers and hand out buffers the
 # caller frees, which no safe signature expresses. ADR 0026 confines that to

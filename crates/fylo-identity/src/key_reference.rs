@@ -31,6 +31,9 @@ pub enum KeyReference {
     Creds(String),
     /// `webcrypto:<name>`: a non-extractable `CryptoKey` in the browser.
     WebCrypto(String),
+    /// `android-keystore:<alias>`: an Android Keystore key that never
+    /// leaves the Keystore (ADR 0026, Android 12 or newer).
+    AndroidKeystore(String),
 }
 
 impl KeyReference {
@@ -41,6 +44,7 @@ impl KeyReference {
     const TPM: &'static str = "tpm";
     const CREDS: &'static str = "creds";
     const WEB_CRYPTO: &'static str = "webcrypto";
+    const ANDROID_KEYSTORE: &'static str = "android-keystore";
 
     /// Parse `<store>:<name>`.
     ///
@@ -64,6 +68,9 @@ impl KeyReference {
             Self::WebCrypto(name) => Box::new(UnsupportedKeyStore::new(format!(
                 "webcrypto:{name} keys live in a browser origin's IndexedDB; only FYLO's browser runtime opens them"
             ))),
+            Self::AndroidKeystore(alias) => {
+                Self::hardware_only(&format!("android-keystore:{alias}"))
+            }
         }
     }
 
@@ -74,6 +81,9 @@ impl KeyReference {
         match self {
             Self::Enclave(label) => Some(Self::enclave_store(label)),
             Self::Tpm(name) => Some(Self::platform_store(name)),
+            Self::AndroidKeystore(alias) => Some(Box::new(
+                crate::android_key_store::AndroidKeyStore::new(alias.clone()),
+            )),
             _ => None,
         }
     }
@@ -100,6 +110,7 @@ impl KeyReference {
             Self::TPM => Self::checked_name(name).map(Self::Tpm),
             Self::CREDS => Self::checked_name(name).map(Self::Creds),
             Self::WEB_CRYPTO => Self::checked_name(name).map(Self::WebCrypto),
+            Self::ANDROID_KEYSTORE => Self::checked_name(name).map(Self::AndroidKeystore),
             _ => Err(Self::invalid(&format!("{store}:{name}"))),
         }
     }
@@ -124,7 +135,7 @@ impl KeyReference {
 
     fn invalid(text: &str) -> IdentityError {
         IdentityError::InvalidReference(format!(
-            "{text:?} is not a key reference: use file:<path>, keychain:<label>, enclave:<label>, cng:<name>, tpm:<name>, creds:<name> or webcrypto:<name>"
+            "{text:?} is not a key reference: use file:<path>, keychain:<label>, enclave:<label>, cng:<name>, tpm:<name>, creds:<name>, android-keystore:<alias> or webcrypto:<name>"
         ))
     }
 
@@ -215,6 +226,7 @@ impl fmt::Display for KeyReference {
             Self::Tpm(name) => write!(formatter, "{}:{name}", Self::TPM),
             Self::Creds(name) => write!(formatter, "{}:{name}", Self::CREDS),
             Self::WebCrypto(name) => write!(formatter, "{}:{name}", Self::WEB_CRYPTO),
+            Self::AndroidKeystore(alias) => write!(formatter, "{}:{alias}", Self::ANDROID_KEYSTORE),
         }
     }
 }
@@ -254,6 +266,14 @@ mod tests {
         assert_eq!(
             KeyReference::parse("tpm:yon").unwrap(),
             KeyReference::Tpm("yon".into())
+        );
+        assert_eq!(
+            KeyReference::parse("android-keystore:yon.device").unwrap(),
+            KeyReference::AndroidKeystore("yon.device".into())
+        );
+        assert_eq!(
+            KeyReference::AndroidKeystore("yon.device".into()).to_string(),
+            "android-keystore:yon.device"
         );
         assert_eq!(
             KeyReference::parse("creds:fylo-yon").unwrap(),

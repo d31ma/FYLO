@@ -12,7 +12,11 @@ internal object FyloNative {
 
     init {
         System.loadLibrary(LIBRARY)
+        install()
     }
+
+    /** Hand FYLO the Java VM and [FyloKeystore], for `android-keystore:` keys. */
+    @JvmStatic external fun install()
 
     @JvmStatic external fun abiVersion(): Int
 

@@ -32,6 +32,7 @@ use crate::c_abi::CAbi;
 use crate::call_failure::CallFailure;
 use crate::call_outcome::CallOutcome;
 use crate::identity_calls::IdentityCalls;
+use crate::jni_keystore::JniKeystore;
 use crate::root_calls::RootCalls;
 
 type Answer<'local> = jni::errors::Result<JByteArray<'local>>;
@@ -51,6 +52,17 @@ impl JniCalls {
         _class: JClass<'caller>,
     ) -> jint {
         CAbi::ABI_VERSION.cast_signed()
+    }
+
+    /// `FyloNative.install()`: called once when the library loads, so
+    /// `android-keystore:` keys can reach `FyloKeystore`.
+    #[unsafe(no_mangle)]
+    pub extern "system" fn Java_io_github_d31ma_fylo_FyloNative_install<'caller>(
+        mut env: EnvUnowned<'caller>,
+        _class: JClass<'caller>,
+    ) {
+        env.with_env(|env| JniKeystore::install(env))
+            .resolve::<ThrowRuntimeExAndDefault>();
     }
 
     /// `FyloNative.open(path, options, key)`: `{"root": <handle>}`.

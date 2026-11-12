@@ -54,7 +54,9 @@ pub use collection::{Collection, Document, Query};
 pub use database_creation::DatabaseCreation;
 pub use error::Error;
 pub use fylo_engine::{CollectionInspection, EngineConfig};
-pub use fylo_identity::{Identity, IdentityError, IdentityId, KeyReference};
+pub use fylo_identity::{
+    AndroidKeystore, AndroidKeystoreHost, Identity, IdentityError, IdentityId, KeyReference,
+};
 pub use fylo_storage_native::{AccessTrust, Durability};
 pub use fylo_storage_native::{QueueAckResult, QueueDelivery, QueueNackResult, QueuePublishResult};
 pub use link_identity::LinkIdentity;

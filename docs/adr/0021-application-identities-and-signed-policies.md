@@ -39,15 +39,16 @@ caller cannot skip: the operating system's secret store and cryptography
 - The private key never enters a database. A process names it by a **key
   reference**:
 
-| Reference          | Private key                                                                                                               | Platforms                      |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------- | ------------------------------ |
-| `file:<path>`      | PKCS#8 PEM file, mode `0400` or `0600`, owned by the process's user. FYLO refuses a file any other user can read or write | Everywhere; development and CI |
-| `keychain:<label>` | A macOS keychain item; `FYLO_KEYCHAIN` names a keychain file to use instead of the default keychain                       | macOS                          |
-| `enclave:<label>`  | A Secure Enclave key that never leaves the enclave; its token blob is a keychain item (phase 8, section 8)                | macOS with a Secure Enclave    |
-| `cng:<name>`       | A Windows CNG key, DPAPI-protected                                                                                        | Windows                        |
-| `tpm:<name>`       | A TPM 2.0 key of the Microsoft Platform Crypto Provider that never leaves the TPM (phase 8, section 8)                    | Windows with a TPM 2.0         |
-| `creds:<name>`     | A `systemd-creds` credential handed to one unit                                                                           | Linux services                 |
-| `webcrypto:<name>` | A non-extractable `CryptoKey` in the origin's IndexedDB                                                                   | Browser                        |
+| Reference                  | Private key                                                                                                                                                                                 | Platforms                                       |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
+| `file:<path>`              | PKCS#8 PEM file, mode `0400` or `0600`, owned by the process's user. FYLO refuses a file any other user can read or write                                                                   | Everywhere; development and CI                  |
+| `keychain:<label>`         | A macOS keychain item; `FYLO_KEYCHAIN` names a keychain file to use instead of the default keychain                                                                                         | macOS                                           |
+| `enclave:<label>`          | A Secure Enclave key that never leaves the enclave; its token blob is a keychain item (phase 8, section 8)                                                                                  | macOS with a Secure Enclave                     |
+| `cng:<name>`               | A Windows CNG key, DPAPI-protected                                                                                                                                                          | Windows                                         |
+| `tpm:<name>`               | A TPM 2.0 key of the Microsoft Platform Crypto Provider that never leaves the TPM (phase 8, section 8)                                                                                      | Windows with a TPM 2.0                          |
+| `creds:<name>`             | A `systemd-creds` credential handed to one unit                                                                                                                                             | Linux services                                  |
+| `android-keystore:<alias>` | A P-256 key made in the Android Keystore (StrongBox when present, else the TEE) that signs and agrees and never leaves it; FYLO's Android library answers through JNI (ADR 0026, section 8) | Android 12+ with `io.github.d31ma:fylo-android` |
+| `webcrypto:<name>`         | A non-extractable `CryptoKey` in the origin's IndexedDB                                                                                                                                     | Browser                                         |
 
 A reference to a store the platform does not have fails with
 `EIDENTITY_UNSUPPORTED`. `fylo identity create --store <reference>` makes a
@@ -382,7 +383,7 @@ in phase 7.
 - **`fylo rekey` of a protected database.** Run by an admin (its
   identity, `--identity`), `fylo rekey <db.vdbx>` gives the catalog key
   and every collection key new values, and `fylo rekey <db.vdbx>
-  --collection <name>` only that collection's key, at the epoch after its
+--collection <name>` only that collection's key, at the epoch after its
   newest, so a revoked identity that kept an old key reads none of the
   old data either. `--new-key`, `--encrypt` and `--decrypt` stay for
   shared-key databases.
@@ -418,7 +419,7 @@ in phase 7.
       configured, `fylo.encryption.key`, written with the new one, and
       checked to read back the same. That is also the migration of values
       a protected database wrote under the shared key: `fylo rekey
-      --collection <name>` with `fylo.encryption.key` configured moves
+--collection <name>` with `fylo.encryption.key` configured moves
       them to the collection's key.
     - A sealed protected database is never rekeyed: rekey its source and
       pack it again.
@@ -505,7 +506,7 @@ in phase 7.
         - `fylo access report` names the pending rotation
           (`catalogRotation`: `pendingSince`, the newest revocation's
           version, a message and the `fylo access settle` command), `fylo
-          verify` warns `catalogRotationPending` (a warning: the file is
+verify` warns `catalogRotationPending` (a warning: the file is
           sound), also without an identity since `previous` is visible in
           the access document, and the `exec --loop` handshake's
           `identity.database` carries `catalogRotationPendingSince`.
@@ -571,7 +572,7 @@ in phase 7.
   `settle`;
   with the rule or collection, and `at`, milliseconds since the Unix epoch
   by the signer's clock), covered by the signature. `fylo access audit
-  <db.vdbx>`, run as any identity the policy names, lists every version
+<db.vdbx>`, run as any identity the policy names, lists every version
   oldest first with the admin whose signature it carries, its change, and
   the rules it added and removed against the version before; version 1 is
   `create`, and a version written before changes were recorded is
@@ -592,7 +593,7 @@ in phase 7.
 ### 8. Hardware keys (phase 8)
 
 - **`enclave:<label>`** (macOS). `fylo identity create --store
-  enclave:<label>` makes a P-256 key inside the Secure Enclave
+enclave:<label>` makes a P-256 key inside the Secure Enclave
   (`SecKeyCreateRandomKey` with the Secure Enclave token). The key never
   leaves the enclave: FYLO asks it to sign (ECDSA, SHA-256) and to agree
   (ECDH), and never sees the private scalar.
@@ -755,14 +756,14 @@ in phase 7.
       the file stays readable under both keys, `verifyDatabase` reports
       it, and a native admin's next write or `fylo access settle` finishes
       it. A browser admin's new collection still gets its keys.
-  The enclave and `tpm:` stores, session-certificate issuing, grant,
-  revoke, rekey and pack were already outside `fylo-browser.wasm`; what
-  stays of phase 8 is the session-certificate check a reader needs (about
-  1.7 KB) and the reference names. With the journal the engine is
-  2,502,729 bytes (810,324 gzipped), and the raw budget is back at
-  2,448 KiB, 4,023 bytes above it. `wasm-opt -Oz` (Binaryen) would take
-  about 430 KB more off the module; the build does not run it, and adding
-  it is a separate decision.
+      The enclave and `tpm:` stores, session-certificate issuing, grant,
+      revoke, rekey and pack were already outside `fylo-browser.wasm`; what
+      stays of phase 8 is the session-certificate check a reader needs (about
+      1.7 KB) and the reference names. With the journal the engine is
+      2,502,729 bytes (810,324 gzipped), and the raw budget is back at
+      2,448 KiB, 4,023 bytes above it. `wasm-opt -Oz` (Binaryen) would take
+      about 430 KB more off the module; the build does not run it, and adding
+      it is a separate decision.
 
 ### 9. Phases
 

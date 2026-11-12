@@ -3,8 +3,17 @@
 //! An identity is a P-256 key pair. Its static identifier is the fingerprint
 //! of its public key, `fid1:p256:<base32 of SHA-256>`. A process names its
 //! private key by a [`KeyReference`] (`file:`, `keychain:`, `enclave:`,
-//! `cng:`, `creds:` or `webcrypto:`) and never by the key itself.
+//! `cng:`, `tpm:`, `creds:`, `android-keystore:` or `webcrypto:`) and never
+//! by the key itself.
 
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+mod android_key;
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+mod android_key_store;
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+mod android_keystore;
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+mod android_keystore_host;
 mod base32;
 #[cfg(windows)]
 mod cng_key_store;
@@ -57,6 +66,10 @@ mod public_identity_browser;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 mod session_key_browser;
 
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+pub use android_keystore::AndroidKeystore;
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+pub use android_keystore_host::AndroidKeystoreHost;
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub use identity::Identity;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]

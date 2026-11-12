@@ -18,6 +18,8 @@ mod identity_calls;
 mod identity_settings;
 #[cfg(target_os = "android")]
 mod jni_calls;
+#[cfg(target_os = "android")]
+mod jni_keystore;
 mod open_settings;
 mod root_calls;
 mod root_entry;
