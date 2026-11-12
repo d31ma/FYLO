@@ -40,8 +40,8 @@ use fylo_query::{
 use fylo_storage_native::{
     CollectionKind, CollectionLayout, FilesystemProfile, NativeQueue, NativeRoot,
     NativeStorageError, NativeStorageErrorCode, NativeWriteRoot, PutRawFileOptions,
-    QueueClaimOptions, QueuePublishOptions, RootLease, RootOpenOptions, SqlMutationResultKind,
-    ValidationMode,
+    QueueClaimOptions, QueuePublishOptions, RootFilesystem, RootLease, RootOpenOptions,
+    SqlMutationResultKind, ValidationMode,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -1072,7 +1072,11 @@ impl Session {
             .as_ref()
             .zip(lease)
             .is_some_and(|(root, lease)| assert_repository_lease(root, lease).is_ok());
-        let kernel_enforced = lease.is_some_and(RootLease::kernel_enforced);
+        let filesystem = self.root_filesystem(lease);
+        let remote = filesystem.as_ref().map(RootFilesystem::remote);
+        // A lock on a remote filesystem binds only this machine's processes.
+        let kernel_enforced =
+            lease.is_some_and(RootLease::kernel_enforced) && remote == Some(false);
         json!({
             "protocolVersion": PROTOCOL_VERSION,
             "runtimeVersion": RUNTIME_VERSION.trim(),
@@ -1097,10 +1101,22 @@ impl Session {
                 "rootLock": {
                     "owned": owned,
                     "kernelEnforced": kernel_enforced,
-                    "remoteQualified": false
+                    "remoteQualified": false,
+                    "filesystem": filesystem.as_ref().map(RootFilesystem::name),
+                    "remote": remote
                 }
             }
         })
+    }
+
+    /// The filesystem of the session's default root: the one its lease found,
+    /// or, before a lease is taken, the one that holds the path. `None`
+    /// without a default root, or when its volume cannot be described.
+    fn root_filesystem(&self, lease: Option<&RootLease>) -> Option<RootFilesystem> {
+        if let Some(lease) = lease {
+            return Some(lease.filesystem().clone());
+        }
+        RootFilesystem::of(self.default_root.as_deref()?).ok()
     }
 
     /// Resolve the request's root, taking an exclusive kernel lease the first

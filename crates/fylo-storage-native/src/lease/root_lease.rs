@@ -1,5 +1,5 @@
 use super::root_lease_inner::RootLeaseInner;
-use crate::{FilesystemProfile, NativeStorageError, NativeStorageErrorCode};
+use crate::{FilesystemProfile, NativeStorageError, NativeStorageErrorCode, RootFilesystem};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -44,6 +44,13 @@ impl RootLease {
     #[must_use]
     pub fn kernel_enforced(&self) -> bool {
         self.inner.kernel_enforced()
+    }
+
+    /// The filesystem that holds the root, found before the lease was
+    /// taken (ADR 0029).
+    #[must_use]
+    pub fn filesystem(&self) -> &RootFilesystem {
+        self.inner.filesystem()
     }
 
     #[must_use]

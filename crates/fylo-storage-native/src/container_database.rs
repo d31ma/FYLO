@@ -164,6 +164,7 @@ impl ContainerDatabase {
     /// without, plain. What this process kept of a file of the same name,
     /// since removed, is forgotten.
     pub(crate) fn create(path: &Path, key: Option<&DatabaseKey>) -> Result<(), NativeStorageError> {
+        Self::admit_new(path)?;
         match key {
             Some(key) => ContainerFile::create_keyed(path, Self::EXTENT_SHIFT, key),
             None => ContainerFile::create(path, Self::EXTENT_SHIFT),
@@ -179,6 +180,7 @@ impl ContainerDatabase {
         path: &Path,
         admin: &fylo_identity::Identity,
     ) -> Result<(), NativeStorageError> {
+        Self::admit_new(path)?;
         ContainerFile::create_protected(path, Self::EXTENT_SHIFT, admin)
             .map_err(ContainerMedium::error)?;
         Self::settle_created(path)
@@ -191,9 +193,15 @@ impl ContainerDatabase {
         path: &Path,
         plan: &crate::database_access::RekeyPlan,
     ) -> Result<(), NativeStorageError> {
+        Self::admit_new(path)?;
         ContainerFile::create_rekeyed(path, Self::EXTENT_SHIFT, plan)
             .map_err(ContainerMedium::error)?;
         Self::settle_created(path)
+    }
+
+    /// Refuse to create a database on a network filesystem (ADR 0029).
+    fn admit_new(path: &Path) -> Result<(), NativeStorageError> {
+        crate::RootFilesystem::admit(path, crate::FilesystemProfile::Native).map(drop)
     }
 
     /// Forget what this process kept of a file of the same name, and make

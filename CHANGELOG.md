@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Changed
+
+- **A root on a network filesystem is refused (ADR 0029).** A root that
+  opened before on NFS, SMB, WebDAV, AFP, FUSE (sshfs, rclone, gcsfuse) or a
+  virtual machine's host share (virtiofs, 9p) is now refused with the new
+  code `EREMOTEROOT`, before anything is written. This covers folder roots
+  and `.vdbx` databases, reads and writes, `fylo exec` in every mode and the
+  library. The reason: a file lock there can bind only one machine, so two
+  machines could each own the root and write it at once (seen on an NFSv3
+  mount on 2026-11-12). Move the root to a disk attached to the machine that
+  runs FYLO. The explicit EFS profile (`--filesystem-profile
+  efs-sidecar-v1`, ADR 0010) still works on EFS and NFS as before.
+- **The handshake reports the root's filesystem.** `storage.rootLock` gains
+  `filesystem` (for example `apfs`, `ext4`, `nfs`) and `remote`.
+  `kernelEnforced` is never `true` for a remote root, the EFS profile
+  included.
+
 ### Added
 
 - **`fylo exec --invocation` (ADR 0028, ADR 0011).** One request per

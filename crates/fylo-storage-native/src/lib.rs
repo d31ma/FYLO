@@ -79,6 +79,7 @@ mod platform_companion;
 mod profile_manifest;
 mod queue;
 mod record_attributes;
+mod root_filesystem;
 mod root_open_options;
 mod segments;
 mod session_certificate;
@@ -156,6 +157,7 @@ pub use queue::{
     NativeQueue, QueueAckResult, QueueClaimOptions, QueueDeadLetter, QueueDelivery,
     QueueNackResult, QueuePublishOptions, QueuePublishResult, QueueStats,
 };
+pub use root_filesystem::RootFilesystem;
 pub use root_open_options::RootOpenOptions;
 pub use validation_mode::ValidationMode;
 pub use write::FAILPOINTS;
@@ -272,6 +274,7 @@ impl NativeRoot {
         let path = options.root.as_path();
         let repository_root = options.repository.as_deref().unwrap_or(path);
         let canonical = fs::canonicalize(path).map_err(NativeStorageError::io)?;
+        RootFilesystem::admit(&canonical, options.profile)?;
         let metadata = fs::metadata(&canonical).map_err(NativeStorageError::io)?;
         if metadata.is_file() {
             return Self::open_database(canonical, options);
@@ -283,6 +286,7 @@ impl NativeRoot {
             ));
         }
         let repository_root = fs::canonicalize(repository_root).map_err(NativeStorageError::io)?;
+        Self::admit_repository(&canonical, &repository_root, options.profile)?;
         if !fs::metadata(&repository_root)
             .map_err(NativeStorageError::io)?
             .is_dir()
@@ -336,6 +340,19 @@ impl NativeRoot {
             descriptor,
             database: None,
         })
+    }
+
+    /// A worktree's separate repository root may sit on another filesystem,
+    /// so it is admitted too.
+    fn admit_repository(
+        canonical: &Path,
+        repository_root: &Path,
+        profile: FilesystemProfile,
+    ) -> Result<(), NativeStorageError> {
+        if repository_root == canonical {
+            return Ok(());
+        }
+        RootFilesystem::admit(repository_root, profile).map(drop)
     }
 
     /// Open the `.vdbx` database at `canonical`. It is its own catalog and
@@ -3235,6 +3252,9 @@ pub enum NativeStorageErrorCode {
     RootLocked,
     /// This process's exclusive ownership of the root was lost.
     RootLeaseLost,
+    /// The root is on a network filesystem, where locks do not stop another
+    /// machine from writing it (ADR 0029).
+    RemoteRoot,
     /// A SQL mutation was malformed or used an unsupported execution shape.
     InvalidQuery,
     /// A record write targeted a collection whose recorded shard width differs
@@ -3289,6 +3309,7 @@ impl NativeStorageErrorCode {
             Self::PermissionDenied => "EACCES",
             Self::RootLocked => "EROOTLOCKED",
             Self::RootLeaseLost => "EROOTLEASELOST",
+            Self::RemoteRoot => "EREMOTEROOT",
             Self::InvalidQuery => "EQUERY_INVALID",
             Self::ShardWidth => "ESHARDWIDTH",
             Self::Unsupported => "ENATIVE_UNSUPPORTED",

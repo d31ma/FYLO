@@ -1,6 +1,6 @@
 use super::kernel_file_lock::KernelFileLock;
 use super::lease_metadata::LeaseMetadata;
-use crate::{FilesystemProfile, NativeStorageError, NativeStorageErrorCode};
+use crate::{FilesystemProfile, NativeStorageError, NativeStorageErrorCode, RootFilesystem};
 use fylo_vfs::{File, OpenOptions};
 use std::fs::TryLockError;
 use std::path::{Path, PathBuf};
@@ -12,6 +12,7 @@ pub(super) struct RootLeaseInner {
     lock_file: File,
     metadata_path: PathBuf,
     kernel_enforced: bool,
+    filesystem: RootFilesystem,
 }
 
 impl RootLeaseInner {
@@ -32,6 +33,8 @@ impl RootLeaseInner {
                 "a .vdbx database takes no root lease; queues and machine sessions need a directory root",
             ));
         }
+        // Refused before the root or its lock file is created (ADR 0029).
+        let filesystem = RootFilesystem::admit(root.as_ref(), profile)?;
         if profile == FilesystemProfile::Native {
             fylo_vfs::create_dir_all(root.as_ref()).map_err(NativeStorageError::io)?;
         } else if !fylo_vfs::metadata(root.as_ref())
@@ -62,6 +65,7 @@ impl RootLeaseInner {
             lock_file,
             metadata_path,
             kernel_enforced,
+            filesystem,
         })
     }
 
@@ -75,6 +79,10 @@ impl RootLeaseInner {
 
     pub(super) fn kernel_enforced(&self) -> bool {
         self.kernel_enforced
+    }
+
+    pub(super) fn filesystem(&self) -> &RootFilesystem {
+        &self.filesystem
     }
 
     pub(super) fn assert_owned(&self) -> Result<(), NativeStorageError> {

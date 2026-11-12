@@ -66,6 +66,10 @@
             "retryable": false
         },
         {
+            "code": "EREMOTEROOT",
+            "retryable": false
+        },
+        {
             "code": "EINVALIDDOCID",
             "retryable": false
         },

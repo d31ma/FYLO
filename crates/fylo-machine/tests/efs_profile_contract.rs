@@ -91,6 +91,8 @@ fn assert_storage_report(frame: &Value, profile: &str, owned: bool, kernel_enfor
             "efsQualified": false,
         })
     );
+    let filesystem = &frame["result"]["storage"]["rootLock"]["filesystem"];
+    assert!(filesystem.is_string(), "{frame}");
     assert_eq!(
         frame["result"]["storage"],
         json!({
@@ -99,6 +101,8 @@ fn assert_storage_report(frame: &Value, profile: &str, owned: bool, kernel_enfor
                 "owned": owned,
                 "kernelEnforced": kernel_enforced,
                 "remoteQualified": false,
+                "filesystem": filesystem,
+                "remote": false,
             },
         })
     );

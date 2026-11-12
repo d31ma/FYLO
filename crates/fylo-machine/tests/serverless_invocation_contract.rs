@@ -459,10 +459,13 @@ fn checked_invocation_completion_releases_the_root_before_success_or_domain_erro
     let fixture = Fixture::new();
     let runtime = fixture.runtime(FilesystemProfile::Native);
     let response = success(&runtime, &json!({"op":"handshake"}));
+    let filesystem = &response["result"]["storage"]["rootLock"]["filesystem"];
+    assert!(filesystem.is_string(), "{response}");
     assert_eq!(
         response["result"]["storage"]["rootLock"],
         json!({
             "owned":true, "kernelEnforced":true, "remoteQualified":false,
+            "filesystem": filesystem, "remote": false,
         })
     );
     fixture.assert_released(FilesystemProfile::Native);

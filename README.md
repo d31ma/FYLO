@@ -1576,6 +1576,7 @@ text.
 | `ENATIVE_NOT_FOUND`                                                    | The named collection does not exist                                                 | Do not retry; create the collection first                                 |
 | `EBROWSER_UNSUPPORTED`                                                 | The browser or mobile engine does not implement the requested feature               | Do not retry; use the native engine                                       |
 | `EROOTLOCKED` / `EROOTLEASELOST`                                       | Another live process owns the root (see Root owner), or this session lost ownership | Retry after the owning process exits; run one `fylo exec --loop` per root |
+| `EREMOTEROOT`                                                          | The root is on a network filesystem (see Where a root may live)                     | Do not retry; move the root to a disk attached to this machine            |
 | `EFRAME_*`                                                             | Frame-contract violations, as documented above                                      | Per the framing rules above                                               |
 | `EQUERYLOOPREQUIRED` / `EQUERYITEMTOOLARGE` / `EQUERYSNAPSHOTTOOLARGE` | Pagination contract violations, as documented above                                 | Per the pagination rules above                                            |
 | `ESCHEMA`                                                              | A document does not match the head schema, or a schema is invalid                   | Do not retry; fix the document or schema                                  |
@@ -1655,9 +1656,32 @@ The lease contract is supported on native local filesystems on macOS, Linux,
 and Windows. Containers on the same host can share it only when they share the
 same canonical bind-mounted root and host kernel lock domain. Network,
 clustered, object-backed, and independently synchronized filesystems are not a
-distributed lock service and are unsupported for `--exclusive-root`; use an
-external lease/consensus service there. Windows UNC/network shares have the
-same restriction.
+distributed lock service; FYLO refuses a root there (see below).
+
+#### Where a root may live
+
+A root, a folder or a `.vdbx` database, must be on a disk attached to the
+machine that runs FYLO: APFS, ext4, XFS, btrfs, NTFS and other local
+filesystems. FYLO refuses a root on a network filesystem with `EREMOTEROOT`,
+before it writes anything
+([ADR 0029](docs/adr/0029-no-root-on-a-network-filesystem.md)):
+
+- NFS, SMB/CIFS, WebDAV and AFP shares, and Windows network drives and UNC
+  paths (`\\server\share`);
+- AFS, Ceph, Lustre, GPFS and other network filesystems on Linux;
+- FUSE mounts (sshfs, rclone, s3fs, gcsfuse), because FUSE does not say
+  whether the files are on this machine;
+- a virtual machine's host share (virtiofs, 9p), such as a Docker Desktop or
+  Colima bind mount of a macOS folder. Use a Docker volume instead.
+
+A file lock on these filesystems can bind only the processes of one machine,
+so two machines could each own the root and write it at the same time. The
+handshake reports the filesystem in `storage.rootLock.filesystem` and
+`storage.rootLock.remote`.
+
+The one exception is the explicit EFS profile, `--filesystem-profile
+efs-sidecar-v1` ([ADR 0010](docs/adr/0010-explicit-efs-metadata-profile.md)),
+which runs on EFS and NFS 4.1 as before.
 
 ### Compiled Executable
 

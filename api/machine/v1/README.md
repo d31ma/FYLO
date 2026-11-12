@@ -87,6 +87,17 @@ succeeded. Neither proves mandatory fencing, current remote lock ownership or
 independent-client cache coherence. Native sessions without an owning lease
 report both local lock flags false.
 
+`rootLock` also reports `filesystem`, the name the OS gives the root's
+filesystem (`apfs`, `ext4`, `NTFS`, `nfs`, `nfs4.1`, `unknown`, ...), and
+`remote`, whether it is a network filesystem, FUSE or a virtual machine's
+host share ([ADR 0029](../../../docs/adr/0029-no-root-on-a-network-filesystem.md)).
+Before the lease is taken they describe the default root's path; both are
+`null` without a default root. `kernelEnforced` is never `true` when `remote`
+is `true`, the EFS profile included. A native session refuses a remote root
+with `EREMOTEROOT` (not retryable) before it writes anything: at startup with
+`--exclusive-root`, otherwise on the first request that opens the root. The
+EFS profile is admitted there as before.
+
 Frame limits, schema/encryption configuration, operation names and stable errors
 retain their existing contracts. EFS queue operations currently fail closed at
 the native queue-open seam; its `serverlessQueue` capability is false while the
@@ -129,7 +140,7 @@ qualification remain pending. See
 The `fylo` binary exposes this runtime as `fylo exec --invocation --request
 <json|@path|-> --deadline-ms <n> --cleanup-reserve-ms <n>`: one request per
 process, the same answer frame and exit codes as `exec --request`, and a
-failure frame (`EROOTLOCKED`, `EDEADLINE`, `EBADREQUEST`,
+failure frame (`EROOTLOCKED`, `EREMOTEROOT`, `EDEADLINE`, `EBADREQUEST`,
 `EFRAME_REQUEST_TOO_LARGE`, `EUNSUPPORTEDOP`, `EINVOCATION`) where the library
 returns an I/O error. See
 [ADR 0028](../../../docs/adr/0028-cli-invocation-mode.md).

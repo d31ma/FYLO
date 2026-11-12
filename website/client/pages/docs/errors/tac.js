@@ -70,6 +70,11 @@ export default class {
             retry: 'Fail over per your supervisor policy.'
         },
         {
+            code: 'EREMOTEROOT',
+            meaning: 'The root is on a network filesystem (NFS, SMB, FUSE, a VM host share), where locks cannot keep a second machine out.',
+            retry: 'Do not retry; move the root to a disk attached to this machine.'
+        },
+        {
             code: 'EFRAME_UTF8',
             meaning: 'The request frame was not valid UTF-8.',
             retry: 'Fix the encoder; the loop resumes at the next frame.'
