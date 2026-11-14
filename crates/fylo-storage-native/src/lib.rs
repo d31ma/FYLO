@@ -42,8 +42,10 @@ mod catalog_rotation_notice;
 mod change_feed;
 mod change_lineage;
 mod change_page;
+mod collection_incarnation;
 mod collection_keys;
 mod collection_layout;
+mod collection_stamp;
 #[cfg(not(target_family = "wasm"))]
 mod container_access;
 mod container_allocator;
@@ -69,6 +71,7 @@ mod extended_attribute_namespace;
 #[cfg(unix)]
 mod extended_attribute_probe;
 mod field_keys;
+mod file_stamp;
 mod filesystem_profile;
 mod index_cache;
 mod index_limit;
@@ -116,7 +119,9 @@ pub use byte_range_lock::{
 };
 pub use catalog_rotation_notice::CatalogRotationNotice;
 pub use change_page::ChangePage;
+pub use collection_incarnation::CollectionIncarnation;
 pub use collection_layout::CollectionLayout;
+pub use collection_stamp::CollectionStamp;
 #[cfg(not(target_family = "wasm"))]
 pub use container_access::{ContainerWriteAccess, ContainerWriteOptions};
 pub use container_allocator::{
@@ -149,6 +154,7 @@ pub use document_change::DocumentChange;
 pub use document_rekey::DocumentRekey;
 pub use durability::Durability;
 pub use field_keys::{FieldKey, FieldKeys};
+pub use file_stamp::FileStamp;
 pub use filesystem_profile::FilesystemProfile;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub use fylo_vfs::host_now_unix_ms;
@@ -1543,6 +1549,25 @@ impl NativeRoot {
         read_bounded(file.take(max_bytes.saturating_add(1)), max_bytes)
     }
 
+    /// `state.json`'s bytes with the identity of the handle they were read
+    /// from. The stamp is `None` where the target has no file identities.
+    fn read_stamped_generation_file(
+        &self,
+        path: &Path,
+    ) -> Result<(Vec<u8>, Option<FileStamp>), NativeStorageError> {
+        let mismatch = NativeStorageErrorCode::ConcurrentWrite;
+        let (mut file, _) =
+            self.open_file_with_identity_error(path, (MAX_GENERATION_BYTES, mismatch))?;
+        let bytes = read_bounded(
+            (&mut file).take(MAX_GENERATION_BYTES.saturating_add(1)),
+            MAX_GENERATION_BYTES,
+        )?;
+        let stamp = FileStamp::of_file(&file).ok();
+        self.verify_file_identity_with_error(path, (&file, mismatch))?;
+        self.assert_profile_owned()?;
+        Ok((bytes, stamp))
+    }
+
     fn read_generation_file(&self, path: &Path) -> Result<Vec<u8>, NativeStorageError> {
         if self.profile == FilesystemProfile::Native {
             return self.read_file(path, MAX_GENERATION_BYTES);
@@ -2142,27 +2167,93 @@ impl NativeCollection {
         if self.uses_segments() {
             return self.segment_generation();
         }
-        let path = self
-            .root
-            .canonical
-            .join(".fylo-transactions")
-            .join(&self.namespace)
-            .join(&self.name)
-            .join("state.json");
+        let path = self.generation_state_path();
         if !path_exists_no_follow(&path)? {
-            return Ok(GenerationState {
-                format: GenerationState::FORMAT_V1.into(),
-                generation: 0,
-                state: GenerationStatus::Stable,
-                transaction_id: None,
-                log: None,
-            });
+            return Ok(Self::missing_generation());
         }
         let bytes = self
             .root
             .read_generation_file(&path)
             .map_err(Self::replaced_while_read)?;
-        let state: GenerationState = serde_json::from_slice(&bytes).map_err(|error| {
+        Self::parse_generation(&bytes)
+    }
+
+    /// What this collection is right now, for a cache to check what it kept
+    /// against (ADR 0030 section 3.1). It reads `state.json` from an open
+    /// handle, with that handle's identity, and the incarnation file.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of reading the generation: a lost owner, an unsafe
+    /// path, or a corrupt or replaced `state.json`.
+    pub fn collection_stamp(&self) -> Result<CollectionStamp, NativeStorageError> {
+        self.root.assert_profile_owned()?;
+        let files_layout = self.has_stampable_layout();
+        let (state, state_file) = self.stamped_generation(files_layout)?;
+        let state = self.unapplied_log_check(state)?;
+        let incarnation = CollectionIncarnation::read(&self.incarnation_path());
+        Ok(CollectionStamp::new(
+            state,
+            state_file,
+            incarnation,
+            files_layout,
+        ))
+    }
+
+    pub(crate) fn incarnation_path(&self) -> PathBuf {
+        self.generation_state_path()
+            .with_file_name(CollectionIncarnation::FILE_NAME)
+    }
+
+    fn has_stampable_layout(&self) -> bool {
+        !self.uses_segments() && !self.root.is_database()
+    }
+
+    fn stamped_generation(
+        &self,
+        files_layout: bool,
+    ) -> Result<(GenerationState, Option<FileStamp>), NativeStorageError> {
+        if !files_layout {
+            return Ok((self.stored_generation()?, None));
+        }
+        self.stamped_generation_file()
+    }
+
+    fn stamped_generation_file(
+        &self,
+    ) -> Result<(GenerationState, Option<FileStamp>), NativeStorageError> {
+        let path = self.generation_state_path();
+        if !path_exists_no_follow(&path)? {
+            return Ok((Self::missing_generation(), None));
+        }
+        let (bytes, stamp) = self
+            .root
+            .read_stamped_generation_file(&path)
+            .map_err(Self::replaced_while_read)?;
+        Ok((Self::parse_generation(&bytes)?, stamp))
+    }
+
+    fn generation_state_path(&self) -> PathBuf {
+        self.root
+            .canonical
+            .join(".fylo-transactions")
+            .join(&self.namespace)
+            .join(&self.name)
+            .join("state.json")
+    }
+
+    fn missing_generation() -> GenerationState {
+        GenerationState {
+            format: GenerationState::FORMAT_V1.into(),
+            generation: 0,
+            state: GenerationStatus::Stable,
+            transaction_id: None,
+            log: None,
+        }
+    }
+
+    fn parse_generation(bytes: &[u8]) -> Result<GenerationState, NativeStorageError> {
+        let state: GenerationState = serde_json::from_slice(bytes).map_err(|error| {
             NativeStorageError::new(
                 NativeStorageErrorCode::CorruptMetadata,
                 format!("collection generation state is corrupt: {error}"),

@@ -484,6 +484,32 @@ decision. The rest of the calls are the EFS profile's own identity checks
 and each document's manifest binding is verified); they are a separate,
 safety-sensitive change.
 
+## Slice S0: collection stamp (built 2026-11-14)
+
+`NativeCollection::collection_stamp()` returns a `CollectionStamp`: the
+generation state (with the write-ahead log end), the `FileStamp` of the
+opened `state.json`, and the collection's `CollectionIncarnation`. A new
+files-layout collection gets a fresh incarnation, a TTID clock tick in the
+16-byte file `.fylo-transactions/<namespace>/<name>/incarnation` (magic
+`FYLN`, the tick, a CRC-32C); older releases ignore the file, and a missing
+or damaged one reads as unknown. `is_cacheable()` is true only for a
+files-layout collection of a folder root at a stable generation that has a
+`state.json` or a known incarnation. No reader uses the stamp yet, so no
+read path changed.
+
+On Windows the `FileStamp` has no change time (std offers none without
+unsafe code, which ADR 0004 confines to two modules); it uses a hash of
+the volume serial number and file index, the size, and the last-write and
+creation times. `auto` never turns the temp tier on there.
+
+Tests (`crates/fylo-storage-native/tests/collection_stamp.rs`): an
+inserted, a changed and a deleted document, a collection dropped and
+created again, the same `state.json` written again by rename and in place,
+a restored commit, a rebuild and a reshard each give another stamp; a
+collection without its incarnation is still cacheable by its `state.json`;
+one with neither file, and a segment collection, are not; the EFS profile
+behaves the same.
+
 ## Decisions (the user, 2026-11-14)
 
 - **D1. Default mode: `auto`.** The tier turns itself on only under the rules

@@ -1720,8 +1720,20 @@ impl NativeWriteRoot {
             commit_log::SegmentLayout::write_marker(&generation_path(self, &collection))?;
             return Ok(existing.is_none());
         }
+        self.create_files_layout(&collection_root, collection_name, existing.is_none())?;
+        Ok(existing.is_none())
+    }
+
+    /// The folders and empty index of a files-layout collection, and the
+    /// incarnation of a new one.
+    fn create_files_layout(
+        &self,
+        collection_root: &Path,
+        collection_name: &str,
+        created: bool,
+    ) -> Result<(), NativeStorageError> {
         for directory in [
-            collection_root.clone(),
+            collection_root.to_path_buf(),
             collection_root.join("docs"),
             collection_root.join(".deleted"),
             collection_root.join("index"),
@@ -1741,7 +1753,29 @@ impl NativeWriteRoot {
         )?;
         write_if_missing(&index.join("keys.snapshot"), b"")?;
         write_if_missing(&index.join("keys.wal"), b"")?;
-        Ok(existing.is_none())
+        self.record_new_incarnation(collection_name, created)
+    }
+
+    fn record_new_incarnation(
+        &self,
+        collection_name: &str,
+        created: bool,
+    ) -> Result<(), NativeStorageError> {
+        if !created {
+            return Ok(());
+        }
+        self.record_incarnation(collection_name)
+    }
+
+    /// Give a new files-layout collection a fresh incarnation (ADR 0030
+    /// section 3.3), so a cache never takes an entry of an earlier life of
+    /// the same name for this one.
+    fn record_incarnation(&self, collection_name: &str) -> Result<(), NativeStorageError> {
+        let collection = self.root.collection(collection_name)?;
+        let path = collection.incarnation_path();
+        ensure_directory(&self.root, path.parent().expect("incarnation has parent"))?;
+        let incarnation = super::CollectionIncarnation::fresh()?;
+        durable_replace(&path, &incarnation.encode())
     }
 
     /// Create a collection of a `.vdbx` database: a directory block whose
