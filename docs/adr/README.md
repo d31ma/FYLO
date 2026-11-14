@@ -49,6 +49,7 @@ ADR.
 | [0027](0027-segment-layout-ids.md)                          | Accepted | Segment layout ids in `state.slots`, so a cached location table never outlives its layout |
 | [0028](0028-cli-invocation-mode.md)                        | Accepted | CLI invocation mode `fylo exec --invocation` (local use; not qualified for deployment) |
 | [0029](0029-no-root-on-a-network-filesystem.md)            | Accepted | No root on a network filesystem (`EREMOTEROOT`) |
+| [0030](0030-tiered-read-cache.md)                          | Proposed | Tiered read cache (temp-disk documents, in-memory query results); slice R cuts file calls per read |
 
 ## When another ADR is required
 

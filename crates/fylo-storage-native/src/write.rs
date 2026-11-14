@@ -126,7 +126,7 @@ impl NativeWriteRoot {
     /// write on the first write, as every container does.
     fn writing(root: NativeRoot) -> Self {
         Self {
-            root,
+            root: root.without_check_reuse(),
             config: super::RootConfig::default(),
             segment_container: false,
         }
@@ -148,7 +148,7 @@ impl NativeWriteRoot {
                     "EFS writer requires its owning lease",
                 )
             })?;
-            lease.assert_owned()?;
+            lease.assert_owned_fresh()?;
             if !lease.kernel_enforced() || lease.root() != repository {
                 return Err(NativeStorageError::new(
                     NativeStorageErrorCode::RootLeaseLost,

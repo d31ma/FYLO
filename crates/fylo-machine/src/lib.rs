@@ -40,7 +40,7 @@ use fylo_query::{
 use fylo_storage_native::{
     CollectionKind, CollectionLayout, FilesystemProfile, NativeQueue, NativeRoot,
     NativeStorageError, NativeStorageErrorCode, NativeWriteRoot, PutRawFileOptions,
-    QueueClaimOptions, QueuePublishOptions, RootFilesystem, RootLease, RootOpenOptions,
+    QueueClaimOptions, QueuePublishOptions, ReadScope, RootFilesystem, RootLease, RootOpenOptions,
     SqlMutationResultKind, ValidationMode,
 };
 use serde::Serialize;
@@ -871,15 +871,26 @@ impl Session {
     }
 
     fn dispatch(&self, request: &Value) -> Result<Value, MachineError> {
-        match self.dispatch_once(request) {
+        match self.dispatch_scoped(request) {
             Err(error)
                 if error.code == "EENGINE_CONCURRENT_WRITE" && self.recover_stranded(request) =>
             {
                 self.clear_hot_set();
-                self.dispatch_once(request)
+                self.dispatch_scoped(request)
             }
             result => result,
         }
+    }
+
+    /// One attempt at a frame. A read-only frame runs inside a
+    /// [`ReadScope`], so it checks root ownership and resolves the root's
+    /// path once instead of before every file it reads. Recovery runs
+    /// between attempts, outside any scope.
+    fn dispatch_scoped(&self, request: &Value) -> Result<Value, MachineError> {
+        let operation = request.get("op").and_then(Value::as_str);
+        let reads = frame_access::FrameAccess::of(operation) == frame_access::FrameAccess::Read;
+        let _scope = ReadScope::enter(reads);
+        self.dispatch_once(request)
     }
 
     /// Roll back or forward a transaction nobody is finishing, so a read
@@ -1150,7 +1161,7 @@ impl Session {
                 MachineError::new("EBADREQUEST", "machine request requires a FYLO root")
             })?;
         let root = if self.filesystem_profile == FilesystemProfile::EfsSidecarV1 {
-            let canonical = fylo_vfs::canonicalize(&root).map_err(|_| {
+            let canonical = ReadScope::canonicalize(&root).map_err(|_| {
                 MachineError::new(
                     "EBADREQUEST",
                     "cannot resolve the EFS request repository root",

@@ -85,11 +85,35 @@ impl RootLease {
         Self::platform_lock_available()
     }
 
+    /// Inside a [`crate::ReadScope`], the owner record is read once per
+    /// scope; every later call in the same scope reuses that answer.
+    ///
     /// # Errors
     ///
     /// Returns an error if the recorded generation no longer belongs to this lease.
     pub fn assert_owned(&self) -> Result<(), NativeStorageError> {
+        let key = self.scope_key();
+        self.assert_owned_unless(crate::ReadScope::is_verified(key))?;
+        crate::ReadScope::remember_verified(key);
+        Ok(())
+    }
+
+    /// Read the owner record now, even inside a [`crate::ReadScope`].
+    pub(crate) fn assert_owned_fresh(&self) -> Result<(), NativeStorageError> {
         self.inner.assert_owned()
+    }
+
+    fn assert_owned_unless(&self, verified: bool) -> Result<(), NativeStorageError> {
+        if verified {
+            return Ok(());
+        }
+        self.inner.assert_owned()
+    }
+
+    fn scope_key(&self) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        std::hash::Hash::hash(&("root-lease", self.inner.owner_generation()), &mut hasher);
+        std::hash::Hasher::finish(&hasher)
     }
 
     /// Finish this unique root owner before exposing an invocation response.

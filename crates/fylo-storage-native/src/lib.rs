@@ -78,6 +78,8 @@ mod log_position;
 mod platform_companion;
 mod profile_manifest;
 mod queue;
+mod read_scope;
+mod read_scope_state;
 mod record_attributes;
 mod root_filesystem;
 mod root_open_options;
@@ -157,6 +159,7 @@ pub use queue::{
     NativeQueue, QueueAckResult, QueueClaimOptions, QueueDeadLetter, QueueDelivery,
     QueueNackResult, QueuePublishOptions, QueuePublishResult, QueueStats,
 };
+pub use read_scope::ReadScope;
 pub use root_filesystem::RootFilesystem;
 pub use root_open_options::RootOpenOptions;
 pub use validation_mode::ValidationMode;
@@ -233,6 +236,9 @@ pub struct NativeRoot {
     descriptor: Option<profile_manifest::ProfileManifest>,
     /// The `.vdbx` file this root is, when it is one.
     database: Option<std::sync::Arc<container_database::ContainerDatabase>>,
+    /// Whether an ownership check made earlier in the same [`ReadScope`]
+    /// stands for this one. A writer's root never reuses one.
+    reuses_checks: bool,
 }
 
 impl NativeRoot {
@@ -273,7 +279,7 @@ impl NativeRoot {
     pub fn open_profiled(options: RootOpenOptions) -> Result<Self, NativeStorageError> {
         let path = options.root.as_path();
         let repository_root = options.repository.as_deref().unwrap_or(path);
-        let canonical = fs::canonicalize(path).map_err(NativeStorageError::io)?;
+        let canonical = ReadScope::canonicalize(path).map_err(NativeStorageError::io)?;
         RootFilesystem::admit(&canonical, options.profile)?;
         let metadata = fs::metadata(&canonical).map_err(NativeStorageError::io)?;
         if metadata.is_file() {
@@ -285,7 +291,8 @@ impl NativeRoot {
                 "FYLO root is not a directory",
             ));
         }
-        let repository_root = fs::canonicalize(repository_root).map_err(NativeStorageError::io)?;
+        let repository_root =
+            ReadScope::canonicalize(repository_root).map_err(NativeStorageError::io)?;
         Self::admit_repository(&canonical, &repository_root, options.profile)?;
         if !fs::metadata(&repository_root)
             .map_err(NativeStorageError::io)?
@@ -339,6 +346,7 @@ impl NativeRoot {
             lease: options.lease,
             descriptor,
             database: None,
+            reuses_checks: true,
         })
     }
 
@@ -389,6 +397,7 @@ impl NativeRoot {
             lease: options.lease,
             descriptor: None,
             database: Some(database),
+            reuses_checks: true,
         })
     }
 
@@ -569,8 +578,48 @@ impl NativeRoot {
     }
 
     pub(crate) fn assert_profile_owned(&self) -> Result<(), NativeStorageError> {
+        let key = self.reusable_check_key();
+        let verified = key.is_some_and(ReadScope::is_verified);
+        self.check_profile_owned_unless(verified)?;
+        key.into_iter().for_each(ReadScope::remember_verified);
+        Ok(())
+    }
+
+    /// The same root under a writer: every check reads the owner again.
+    pub(crate) fn without_check_reuse(mut self) -> Self {
+        self.reuses_checks = false;
+        self
+    }
+
+    fn reusable_check_key(&self) -> Option<u64> {
+        self.reuses_checks
+            .then(|| self.lease.as_ref().map(|lease| self.check_key(lease)))
+            .flatten()
+    }
+
+    fn check_key(&self, lease: &RootLease) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        std::hash::Hash::hash(
+            &(
+                lease.owner_generation(),
+                &self.repository_root,
+                &self.canonical,
+            ),
+            &mut hasher,
+        );
+        std::hash::Hasher::finish(&hasher)
+    }
+
+    fn check_profile_owned_unless(&self, verified: bool) -> Result<(), NativeStorageError> {
+        if verified {
+            return Ok(());
+        }
+        self.check_profile_owned()
+    }
+
+    fn check_profile_owned(&self) -> Result<(), NativeStorageError> {
         if let Some(lease) = self.lease.as_ref() {
-            lease.assert_owned()?;
+            lease.assert_owned_fresh()?;
             if lease.root() != self.repository_root {
                 return Err(NativeStorageError::new(
                     NativeStorageErrorCode::RootLeaseLost,

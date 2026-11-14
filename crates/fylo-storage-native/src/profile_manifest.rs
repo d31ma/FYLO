@@ -159,7 +159,7 @@ impl ProfileManifest {
     }
 
     pub(crate) fn initialize(root: &Path, lease: &RootLease) -> Result<(), NativeStorageError> {
-        lease.assert_owned()?;
+        lease.assert_owned_fresh()?;
         if !lease.kernel_enforced() || lease.root() != root {
             return Err(NativeStorageError::new(
                 NativeStorageErrorCode::RootLeaseLost,
@@ -190,7 +190,7 @@ impl ProfileManifest {
         crate::write::sync_directory(root)?;
         let bytes = serde_json::to_vec(&descriptor).map_err(|_| corrupt_marker())?;
         crate::write::durable_replace_private(&Self::path(root), &bytes)?;
-        lease.assert_owned()
+        lease.assert_owned_fresh()
     }
 
     pub(crate) fn verify_identity(&self, root: &Path) -> Result<(), NativeStorageError> {
