@@ -209,7 +209,10 @@ writer that stopped left in the collection, with the map read afresh: an
 active segment extent its slot names but the map does not show is taken
 back, and `locations` and `index` runs no checkpoint slot names are
 released. Writers of different collections run side by side; those of one
-collection take turns, write by write.
+collection take turns, write by write: a process waiting for a byte first
+walks the byte's three turn bytes (`LockByte::turn`, ADR 0016 section 7),
+so a writer that lets the byte go and asks for it again waits behind a
+process already waiting: two writers of one collection alternate strictly.
 
 **Changing the map.** The allocation byte (`LockByte::ALLOCATION`) guards
 the extent map: taking, taking back and releasing extents, writing snapshot

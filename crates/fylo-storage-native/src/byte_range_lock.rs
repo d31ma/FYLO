@@ -24,6 +24,23 @@
 //! with a backoff of up to [`MAX_POLL_INTERVAL`], and is woken at once by a
 //! release inside the process. A blocking kernel wait (`F_OFD_SETLKW`) has no
 //! timeout and would hold a request the registry cannot see.
+//!
+//! Waiting takes turns (ADR 0016 section 7). Every byte has [`TURN_LEVELS`]
+//! turn bytes ([`LockByte::turn`]). A writable handle waits for the byte by
+//! taking its turn bytes exclusive from the last level to level 1, letting
+//! each go only once it holds the next, then taking the byte and letting
+//! level 1 go. A process that let the byte go and asks for it again starts
+//! at the last level like any other, so it waits behind every process
+//! already in the chain. Two processes therefore take the byte in turn,
+//! whatever the timing; with more, a process in the chain is passed only by
+//! those ahead of it, and those not yet in it race for the last level (ADR
+//! 0016 section 7 says when, and the bound the tests hold). Without turns, a
+//! writer that puts documents one after another took its collection's
+//! writer byte back a few microseconds after letting it go, and a waiting
+//! writer polling every millisecond met its busy timeout (`EBUSY`) on a
+//! loaded machine. A process that never takes turns, such as an older FYLO,
+//! can still pass a waiter but never breaks the locks, and a filesystem
+//! that refuses a turn byte leaves the wait as it was without turns.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -49,6 +66,12 @@ pub const COLLECTION_WRITER_START: u64 = 4096;
 /// Offset of collection compactor bytes from [`LOCK_RANGE_START`], past
 /// every writer byte a directory block number can name.
 pub const COLLECTION_COMPACTOR_START: u64 = COLLECTION_WRITER_START + (1 << 32);
+/// How many turn bytes each byte has ([`LockByte::turn`]).
+pub const TURN_LEVELS: u64 = 3;
+/// Offset from a byte to its turn byte of level 1, and from each level to
+/// the next: past every other reserved byte, with the last level still
+/// below 2⁶³.
+pub const TURN_STRIDE: u64 = 1 << 60;
 /// A reserved byte that [`ByteRangeLockFile::probe`] takes and releases.
 const PROBE: u64 = LOCK_RANGE_START + 2;
 /// The longest a waiting [`ByteRangeLockFile::lock`] sleeps between tries.
@@ -81,6 +104,14 @@ impl LockByte {
         Self(LOCK_RANGE_START + COLLECTION_COMPACTOR_START + u64::from(directory_block))
     }
 
+    /// The turn byte of this byte at `level`, from 1 to [`TURN_LEVELS`]: a
+    /// process waiting for this byte holds one of them exclusive, so the
+    /// next process to ask waits behind it.
+    #[must_use]
+    pub const fn turn(self, level: u64) -> Self {
+        Self(self.0 + level * TURN_STRIDE)
+    }
+
     /// The byte's file offset.
     #[must_use]
     pub const fn offset(self) -> u64 {
@@ -91,6 +122,12 @@ impl LockByte {
 impl fmt::Display for LockByte {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.0 - LOCK_RANGE_START {
+            n if n >= TURN_STRIDE => write!(
+                f,
+                "turn {} of {}",
+                n / TURN_STRIDE,
+                Self(LOCK_RANGE_START + n % TURN_STRIDE)
+            ),
             0 => f.write_str("lease"),
             1 => f.write_str("allocation"),
             n if n >= COLLECTION_COMPACTOR_START => {
@@ -332,12 +369,13 @@ impl ByteRangeLockFile {
         }))
     }
 
-    /// Take `byte`, waiting up to `timeout` for it.
+    /// Take `byte`, waiting up to `timeout` for it, in turn with the other
+    /// processes waiting for it.
     ///
     /// # Errors
     ///
-    /// Returns [`io::ErrorKind::TimedOut`] when the byte is still held at the
-    /// deadline, or a failure as [`Self::try_lock`] does.
+    /// Returns [`io::ErrorKind::TimedOut`] when the byte or a turn byte is
+    /// still held at the deadline, or a failure as [`Self::try_lock`] does.
     pub fn lock(
         &self,
         byte: LockByte,
@@ -345,8 +383,71 @@ impl ByteRangeLockFile {
         timeout: Duration,
     ) -> io::Result<ByteLockGuard> {
         self.check_access(byte, mode)?;
-        let deadline = Instant::now() + timeout;
-        let mut interval = FIRST_POLL_INTERVAL;
+        let deadline = Deadline::after(timeout);
+        let turn = self.queue_for(byte, deadline)?;
+        let guard = self.wait_for(byte, mode, deadline, FIRST_POLL_INTERVAL);
+        drop(turn);
+        guard
+    }
+
+    /// Walk the turn bytes of `byte` from the last level to level 1, by
+    /// `deadline`, holding each until the next is held, and return level 1:
+    /// the right to take `byte` next. `None` takes no turn: a read-only
+    /// handle can take no exclusive byte and only ever asks for the lease
+    /// shared, and a filesystem that refuses a turn byte waits without.
+    fn queue_for(&self, byte: LockByte, deadline: Deadline) -> io::Result<Option<ByteLockGuard>> {
+        if !self.writable {
+            return Ok(None);
+        }
+        let mut held = None;
+        for level in (1..=TURN_LEVELS).rev() {
+            let first = Self::first_interval(level);
+            let Some(next) = self.take_turn(byte.turn(level), deadline, first)? else {
+                return Ok(None);
+            };
+            held = Some(next);
+        }
+        Ok(held)
+    }
+
+    /// How long a wait at turn `level` sleeps after its first try. At the
+    /// last level, where a process that asks again meets those already
+    /// waiting, it starts at the longest sleep they have reached, so it has
+    /// no head start on them; below it, only one process asks at a time.
+    fn first_interval(level: u64) -> Duration {
+        if level == TURN_LEVELS {
+            MAX_POLL_INTERVAL
+        } else {
+            FIRST_POLL_INTERVAL
+        }
+    }
+
+    /// Take the turn byte `turn` by `deadline`, or `None` when the
+    /// filesystem refuses it.
+    fn take_turn(
+        &self,
+        turn: LockByte,
+        deadline: Deadline,
+        first_interval: Duration,
+    ) -> io::Result<Option<ByteLockGuard>> {
+        match self.wait_for(turn, LockMode::Exclusive, deadline, first_interval) {
+            Ok(guard) => Ok(Some(guard)),
+            Err(error) if error.kind() == io::ErrorKind::TimedOut => Err(error),
+            Err(_) => Ok(None),
+        }
+    }
+
+    /// Take `byte`, trying until `deadline`, sleeping `first_interval` after
+    /// the first try and twice as long after each, up to
+    /// [`MAX_POLL_INTERVAL`].
+    fn wait_for(
+        &self,
+        byte: LockByte,
+        mode: LockMode,
+        deadline: Deadline,
+        first_interval: Duration,
+    ) -> io::Result<ByteLockGuard> {
+        let mut interval = first_interval;
         let shared = self.shared();
         let descriptor = self.descriptor();
         let mut state = shared.state();
@@ -361,15 +462,18 @@ impl ByteRangeLockFile {
                 });
             }
             let now = Instant::now();
-            if now >= deadline {
+            if now >= deadline.at {
                 return Err(io::Error::new(
                     io::ErrorKind::TimedOut,
-                    format!("timed out after {timeout:?} waiting for the {byte} lock"),
+                    format!(
+                        "timed out after {:?} waiting for the {byte} lock",
+                        deadline.after
+                    ),
                 ));
             }
             state = shared
                 .released
-                .wait_timeout(state, interval.min(deadline - now))
+                .wait_timeout(state, interval.min(deadline.at - now))
                 .unwrap_or_else(PoisonError::into_inner)
                 .0;
             interval = (interval * 2).min(MAX_POLL_INTERVAL);
@@ -578,6 +682,23 @@ impl Drop for ByteLockGuard {
     fn drop(&mut self) {
         if self.held {
             let _ = self.file.release(self.byte, self.mode);
+        }
+    }
+}
+
+/// When a wait for a byte and its turn bytes runs out, and the timeout it
+/// was given, for the message.
+#[derive(Clone, Copy, Debug)]
+struct Deadline {
+    at: Instant,
+    after: Duration,
+}
+
+impl Deadline {
+    fn after(timeout: Duration) -> Self {
+        Self {
+            at: Instant::now() + timeout,
+            after: timeout,
         }
     }
 }

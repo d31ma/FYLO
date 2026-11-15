@@ -116,7 +116,8 @@ pub use access_trust::AccessTrust;
 #[cfg(not(target_family = "wasm"))]
 pub use byte_range_lock::{
     ByteLockGuard, ByteRangeLockFile, COLLECTION_COMPACTOR_START, COLLECTION_WRITER_START,
-    FilesystemInfo, LOCK_RANGE_START, LockByte, LockMode, MAX_POLL_INTERVAL,
+    FilesystemInfo, LOCK_RANGE_START, LockByte, LockMode, MAX_POLL_INTERVAL, TURN_LEVELS,
+    TURN_STRIDE,
 };
 pub use catalog_rotation_notice::CatalogRotationNotice;
 pub use change_page::ChangePage;

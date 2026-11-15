@@ -384,6 +384,136 @@ drifts toward the front of the file. Space is returned to the disk two ways:
   and a lock writer waits while any lease is held, taking over one a crash
   left. Unsupported: one host whose filesystem refuses every lock sharing a
   file with another host that writes through locks.
+- **Waiting takes turns (2026-11-14).** Under load 30 to 45 on macOS, the
+  test with two writer processes of one collection failed 3 runs of 3: one
+  writer's `put_document` waited its whole 5 s busy timeout and answered
+  `EBUSY`. A waiter tried the byte at most every millisecond. The other
+  writer let the collection's writer byte go after each put and took it
+  back a few microseconds later for the next one, so the waiter almost
+  never tried inside that gap. This is the starvation ADR 0028 fixed for a
+  root's owner lock.
+  - **Turn bytes.** Every reserved byte `b` has three turn bytes, `T1`,
+    `T2` and `T3`, at `b` plus 2⁶⁰, 2⁶¹ and 3·2⁶⁰ (`LockByte::turn`). The
+    largest, 2⁶² + 3·2⁶⁰ + 2³³ + 4096, is below 2⁶³, so it fits the signed
+    64-bit offset of `fcntl` and the 64-bit offset of `LockFileEx`.
+  - **Order.** A writable handle that waits for `b`, in either mode, takes
+    `T3`, then `T2`, then `T1`, then `b`, each exclusive. It lets `T3` go
+    once it holds `T2`, `T2` once it holds `T1`, and `T1` once it holds `b`
+    or its wait fails. Letting `b` go is a plain unlock. A process that
+    asks for `b` again, such as a writer starting its next put, starts at
+    `T3` like any other, so it queues behind every process already in the
+    chain. A read-only handle takes no turn: it can take no exclusive byte,
+    and it only ever asks for the lease shared.
+  - **Polling, not blocking.** Every level is taken with the non-waiting
+    request (`F_OFD_SETLK`, `F_SETLK`, `LockFileEx` with
+    `LOCKFILE_FAIL_IMMEDIATELY`), retried with a backoff of up to 1 ms.
+    FYLO relies on no OS queue. One deadline covers every level, so the
+    busy timeout still bounds the whole wait, and `EBUSY` answers a wait
+    that runs out at any level.
+  - **What the order guarantees** (corrected 2026-11-14 after the Windows
+    run). Only the holder of `T1` asks for `b`, only the holder of `T2`
+    asks for `T1`, and only the holder of `T3` asks for `T2`. A process
+    that waits always holds at least one level, so:
+    - **Two processes take `b` strictly in turn, on every platform and
+      whatever the timing.** The one that let `b` go must pass `T1`, which
+      the other holds until it has `b`. This is the reported bug: two
+      writers of one collection on its writer byte. The tests
+      `byte_range_lock::tests::turns::two_processes_taking_a_busy_byte_in_rounds_take_turns`
+      and `a_holder_that_lets_a_byte_go_and_asks_again_waits_behind_a_waiting_process`
+      check it on macOS, Linux and Windows.
+    - **Three or more processes: no starvation was seen within the measured
+      bound (`MOST_PASSES_OF_MANY`).** A race promises no upper limit, so the
+      test's bound is the evidence, not a guarantee. A process inside the
+      chain is passed only by the processes ahead of it in the chain. The
+      processes not yet in it race for `T3`. They race only when the chain
+      moves more slowly than one hold of `b`: each step of the chain waits for
+      a poll, and Windows rounds every sleep shorter than its timer tick
+      (15.6 ms) up to a whole tick. So on Windows a step can take about 15 ms
+      against holds of a few milliseconds, and two processes can wait at `T3`
+      at once. No strict order is promised for three or more processes. A
+      request that finds `T3` held starts its backoff at 1 ms, the interval
+      the processes already there have reached, so it has no head start on
+      them. The test
+      `more_processes_than_turn_levels_taking_a_busy_byte_all_finish_and_none_starves`
+      runs four processes and requires that each finishes and that no wait is
+      passed more than `MOST_PASSES_OF_MANY` (16) times. Measured on
+      2026-11-14: at most 3 passes on macOS and 8 on Windows, against 23 to
+      34 with turns switched off, where the test fails. The two-process test
+      allows `MOST_PASSES_OF_TWO` (6) passes, for a child paused between
+      noting its request and making it: at most 0 on macOS and 3 on a loaded
+      Windows VM, against 11 with turns switched off.
+    - **Mutual exclusion and mixed-version safety never depend on
+      timing.** Only `b` grants the right to write.
+  - **No new deadlock.** A process holds turn bytes of `b` only while it
+    waits for the next level of the same `b`. It holds no turn byte while
+    it waits for any other byte or its turns. The turn bytes sit just
+    before `b` in the lock order the engine already keeps, so no new wait
+    cycle can form, and every wait has a deadline.
+  - **A crashed waiter.** Turn bytes are ordinary byte-range locks, so the
+    OS drops them when their holder ends: `fcntl` locks on macOS when the
+    process exits, open-file-description locks on Linux when the last
+    descriptor closes, and `LockFileEx` locks on Windows when the handle
+    closes (Windows may take a moment). A killed waiter holding `T1` is
+    tested.
+  - **Older processes.** An older FYLO waits for `b` alone and never
+    touches a turn byte. The right to write still comes only from `b`
+    itself, unchanged, so old and new writers mixed on one database never
+    damage it or deadlock: an older process never waits on a turn byte,
+    and a newer one waits on a turn byte only behind newer processes. Mixed
+    writers are only as fair as before turns: an older writer can take `b`
+    in front of a newer one that waits, and the reverse. Fairness needs
+    every process writing the database to be a FYLO with turns. Nothing
+    detects an older writer, so the release notes tell users to upgrade
+    every process that writes a shared `.vdbx`. Tested with a child that
+    waits the old way beside two that take turns, and with the
+    multi-process test whose second `users` writer is the `vdbx_root` test
+    binary built from `develop` 979f8a1.
+  - **Filesystems.** Byte-range locks are qualified only on local APFS,
+    ext4, tmpfs and NTFS. On NFS, the EFS profile, SMB and the rest, a
+    writer holds the lease, and the bytes are decided inside its process,
+    except the lease byte, which it takes exclusive through the OS where
+    locks are granted, turns included. A filesystem that refuses a turn
+    byte with anything but a conflict makes that wait go on without
+    turns, as before, so turns add no new failure there.
+  - **Inside one process.** The OS cannot tell two threads of one process
+    apart (macOS `fcntl` locks belong to the process), so the process
+    decides between its own threads, as it already does for `b`: every
+    `ByteRangeLockFile` for one file in a process shares one handle, a
+    registry counts holders per byte and lets one exclusive holder in, and
+    a duplicate descriptor is closed only once the process holds no lock on
+    the file. Turn bytes go through that same registry, so two writers in
+    one process queue for a turn byte like any other byte, and no close
+    drops one. Every native open of a `.vdbx` file (`ContainerFile`'s
+    writer, reader and unchecked opens, `ContainerFile::open_writer`) goes
+    through `ByteRangeLockFile`; only `create` opens a new file by path,
+    before any lock exists on it.
+  - **Poll timing.** A wait at any level tries at once, then sleeps 20 µs,
+    doubling up to 1 ms between tries, and a release inside the process
+    wakes its waiting threads at once. So the holder of `T1` takes a free
+    `b` within about 1 ms, and a writer alone takes each level on its first
+    try (on Windows each sleep lasts at least one 15.6 ms timer tick). A
+    waiter sleeps between tries, so one try per millisecond costs a
+    few microseconds of CPU per millisecond; a longer interval, such as
+    20 to 50 ms, would add that much to every hand-over of `b`.
+  - **Cost.** A wait nobody competes with makes six more lock and unlock
+    calls than taking `b` alone: 12.6 µs against 2.6 µs on APFS
+    (Apple M-series, 2026-11-14, at load 31). A put that waits for its
+    writer byte and the allocation byte pays about 20 µs more, against
+    milliseconds for the put itself. Measured with one writer alone, 2,000
+    puts, the lock code of `develop` 979f8a1 and the new code run in turn
+    three times at load 15: p50 1.72, 1.46 and 1.08 ms before against
+    1.09, 1.30 and 0.93 ms after, and p99 8.57, 8.06 and 6.13 ms before
+    against 5.48, 9.05 and 6.71 ms after. The runs differ by far more than
+    the turns cost, and the new code is not slower
+    (`vdbx_root::measure_put_document_for_one_writer_alone`).
+
+  - **Open note.** With turns, one run in five of the two-writer test
+    (2026-11-14, macOS, load 40 to 55) had a writer's `put_document` fail.
+    Its error text was not kept, and it did not happen again in 32 later
+    runs on macOS and 15 on Linux and Windows. A writer child of
+    `vdbx_root` now prints the error, its code and OS error, how long the
+    put took and the lock bytes held at that moment, so a repeat, also in
+    the nightly run, explains itself.
 
 **Filesystem requirements.** A `.vdbx` database needs only positional reads
 and writes, resizing the file, flushing the file, and exclusive create for the

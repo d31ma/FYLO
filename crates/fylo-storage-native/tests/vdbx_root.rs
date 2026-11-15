@@ -11,8 +11,9 @@ use std::time::{Duration, Instant};
 
 use fylo_query::{IndexLookupValue, QueryLimits, ScanQuery, index_entries_for_document};
 use fylo_storage_native::{
-    CollectionKind, CollectionLayout, ContainerFile, FilesystemInfo, NativeQueue, NativeRoot,
-    NativeStorageErrorCode, NativeWriteRoot, PutDocumentOptions, RootLease,
+    ByteRangeLockFile, CollectionKind, CollectionLayout, ContainerFile, FilesystemInfo, LockByte,
+    LockMode, NativeQueue, NativeRoot, NativeStorageErrorCode, NativeWriteRoot, PutDocumentOptions,
+    RootLease, TURN_LEVELS,
 };
 use serde_json::{Map, Value, json};
 
@@ -75,6 +76,34 @@ impl Fixture {
             others.len() <= 1 && others.iter().all(|name| name.starts_with("db.vdbx.lease.")),
             "unexpected entries beside the database: {names:?}"
         );
+    }
+}
+
+/// The child processes of one test. A child still running when the test
+/// fails is stopped, so a failed test leaves no orphan behind (a reader
+/// waits for a `done` file that a failed test never writes).
+struct Children(Vec<(String, Option<Child>)>);
+
+impl Children {
+    fn named(&mut self) -> impl Iterator<Item = (&String, &mut Child)> {
+        self.0
+            .iter_mut()
+            .filter_map(|(name, child)| child.as_mut().map(|child| (&*name, child)))
+    }
+
+    /// Take the child at `index` out of the group to wait for it.
+    fn take(&mut self, index: usize) -> (String, Child) {
+        let (name, child) = &mut self.0[index];
+        (name.clone(), child.take().unwrap())
+    }
+}
+
+impl Drop for Children {
+    fn drop(&mut self) {
+        for child in self.0.iter_mut().filter_map(|(_, child)| child.as_mut()) {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 }
 
@@ -474,6 +503,7 @@ const CHILD_DATABASE: &str = "FYLO_VDBX_ROOT_CHILD_DATABASE";
 const CHILD_COLLECTION: &str = "FYLO_VDBX_ROOT_CHILD_COLLECTION";
 const CHILD_FIRST: &str = "FYLO_VDBX_ROOT_CHILD_FIRST";
 const CHILD_TEST: &str = "a_child_process";
+const OLDER_TEST_EXE: &str = "FYLO_VDBX_OLDER_TEST_EXE";
 /// Documents each writer process puts, of about 48 KiB each once
 /// compressed, so the extents of a database fill and every writer takes
 /// several.
@@ -481,6 +511,8 @@ const CHILD_DOCUMENTS: usize = 200;
 /// Characters of a child document's padding: 48 KiB once compressed.
 const PADDING_CHARS: usize = 64 * 1024;
 const WAIT: Duration = Duration::from_mins(2);
+/// The longest a reader child reads before it stops by itself.
+const READER_LIMIT: Duration = Duration::from_mins(10);
 
 fn padded(collection: &str, number: usize) -> Value {
     let mut value = body(collection, number);
@@ -512,39 +544,138 @@ fn a_child_process() {
             fs::write(directory.join(format!("{collection}{first}.ready")), b"").unwrap();
             wait_for(&directory.join("go"));
             for number in first..first + CHILD_DOCUMENTS {
-                writer
-                    .put_document(
-                        &collection,
-                        &identifier(number),
-                        padded(&collection, number).to_string().as_bytes(),
-                        PutDocumentOptions::default(),
-                    )
-                    .unwrap();
+                put_or_explain(&writer, &database, &collection, number);
             }
         }
-        "read" => {
-            let root = NativeRoot::open(&database).unwrap();
-            fs::write(directory.join("reader.ready"), b"").unwrap();
+        "fail" => {
+            let collection = std::env::var(CHILD_COLLECTION).unwrap();
+            let first = std::env::var(CHILD_FIRST).unwrap();
+            fs::write(directory.join(format!("{collection}{first}.ready")), b"").unwrap();
             wait_for(&directory.join("go"));
-            let mut rounds = 0;
-            while rounds < 3 || !directory.join("done").exists() {
-                for name in ["users", "orders"] {
-                    let collection = root.collection(name).unwrap();
-                    for id in collection.document_ids().unwrap() {
-                        let bytes = collection.read_document(&id).unwrap().bytes;
-                        let value: Value = serde_json::from_slice(&bytes).unwrap();
-                        assert_eq!(value["padding"].as_str().map(str::len), Some(PADDING_CHARS));
-                    }
-                }
-                rounds += 1;
-            }
+            panic!("this writer fails on purpose");
         }
+        "read" => read_until_done(&database, &directory),
         other => panic!("unknown child role {other}"),
     }
 }
 
-fn spawn(role: &str, database: &Path, environment: &[(&str, &str)]) -> Child {
-    Command::new(std::env::current_exe().unwrap())
+/// Put one padded document as a writer child. When the put fails, panic
+/// with what a later reader of the log needs: the error with its code, its
+/// OS error and message, how long the put took, and the lock bytes some
+/// holder had at that moment.
+fn put_or_explain(writer: &NativeWriteRoot, database: &Path, collection: &str, number: usize) {
+    let started = Instant::now();
+    let Err(error) = writer.put_document(
+        collection,
+        &identifier(number),
+        padded(collection, number).to_string().as_bytes(),
+        PutDocumentOptions::default(),
+    ) else {
+        return;
+    };
+    let elapsed = started.elapsed();
+    panic!(
+        "put_document of {collection} {number} failed after {elapsed:?}: {error} \
+         (code {}, {error:?}, source {:?}); lock bytes held then: {:?}",
+        error.code().as_str(),
+        std::error::Error::source(&error),
+        held_lock_bytes(database)
+    );
+}
+
+/// The allocation byte, the writer bytes of the first directory blocks and
+/// their turn bytes that a holder, this process or another, has now.
+fn held_lock_bytes(database: &Path) -> Vec<String> {
+    let file = ByteRangeLockFile::open(database).unwrap();
+    std::iter::once(LockByte::ALLOCATION)
+        .chain((0..8).map(LockByte::collection_writer))
+        .flat_map(|byte| {
+            std::iter::once(byte).chain((1..=TURN_LEVELS).map(move |level| byte.turn(level)))
+        })
+        .filter(|byte| file.try_lock(*byte, LockMode::Exclusive).unwrap().is_none())
+        .map(|byte| byte.to_string())
+        .collect()
+}
+
+/// The reader child: read every document again and again until the parent
+/// says `done`, for at least three rounds, counting each read in
+/// `reader.reads`. It stops by itself after [`READER_LIMIT`], so a reader
+/// whose parent was stopped without saying `done` does not run on.
+fn read_until_done(database: &Path, directory: &Path) {
+    let root = NativeRoot::open(database).unwrap();
+    fs::write(directory.join("reader.ready"), b"").unwrap();
+    wait_for(&directory.join("go"));
+    let deadline = Instant::now() + READER_LIMIT;
+    let mut reads = 0_u64;
+    let mut rounds = 0;
+    while rounds < 3 || !directory.join("done").exists() {
+        assert!(Instant::now() < deadline, "the parent never said done");
+        for name in ["users", "orders"] {
+            let collection = root.collection(name).unwrap();
+            for id in collection.document_ids().unwrap() {
+                let bytes = collection.read_document(&id).unwrap().bytes;
+                let value: Value = serde_json::from_slice(&bytes).unwrap();
+                assert_eq!(value["padding"].as_str().map(str::len), Some(PADDING_CHARS));
+                reads += 1;
+                fs::write(directory.join("reader.reads"), reads.to_string()).unwrap();
+            }
+        }
+        rounds += 1;
+    }
+}
+
+/// Who the second writer of `users` is.
+enum SecondUsersWriter<'a> {
+    /// This test binary, like the other writers.
+    Current,
+    /// A test binary built from an older FYLO.
+    Older(&'a Path),
+    /// This test binary, failing on purpose once the parent says `go`.
+    Failing,
+}
+
+impl SecondUsersWriter<'_> {
+    /// The program the writer runs, and its role.
+    fn program_and_role<'b>(&'b self, current: &'b Path) -> (&'b Path, &'static str) {
+        match self {
+            Self::Current => (current, "write"),
+            Self::Older(older) => (older, "write"),
+            Self::Failing => (current, "fail"),
+        }
+    }
+}
+
+/// Three writers, two of them on one collection, and a reader, all on
+/// `database`.
+fn spawn_writers_and_reader(database: &Path, second: &SecondUsersWriter) -> Children {
+    let current = std::env::current_exe().unwrap();
+    let (program, role) = second.program_and_role(&current);
+    let mut children = Children(
+        [
+            ("users", 0, current.as_path(), "write"),
+            ("orders", 0, current.as_path(), "write"),
+            ("users", 1_000, program, role),
+        ]
+        .into_iter()
+        .map(|(collection, first, program, role)| {
+            let first = first.to_string();
+            let child = spawn(
+                program,
+                role,
+                database,
+                &[(CHILD_COLLECTION, collection), (CHILD_FIRST, &first)],
+            );
+            (format!("{collection}{first}"), Some(child))
+        })
+        .collect(),
+    );
+    let reader = spawn(&current, "read", database, &[]);
+    children.0.push(("reader".to_owned(), Some(reader)));
+    children
+}
+
+fn spawn(program: &Path, role: &str, database: &Path, environment: &[(&str, &str)]) -> Child {
+    Command::new(program)
         .args(["--exact", CHILD_TEST, "--nocapture", "--test-threads=1"])
         .env(CHILD_ROLE, role)
         .env(CHILD_DATABASE, database)
@@ -579,19 +710,21 @@ fn wait_for(path: &Path) {
     }
 }
 
-/// Writer processes of two collections of one database, and two of one
-/// collection, write side by side under byte-range locks while a reader
-/// process reads: every process takes extents from the one map, under the
-/// allocation byte, and the writers of one collection take turns on its
-/// writer byte.
-#[test]
-fn writer_processes_share_a_database_under_byte_range_locks() {
-    let fixture = Fixture::create("processes");
+/// Whether `fixture`'s filesystem has qualified byte-range locks, saying
+/// why the test is skipped when it has not.
+fn locks_qualified(fixture: &Fixture) -> bool {
     let filesystem = FilesystemInfo::of(&fs::File::open(fixture.database()).unwrap()).unwrap();
-    if !filesystem.byte_range_locks_qualified() {
+    let qualified = filesystem.byte_range_locks_qualified();
+    if !qualified {
         eprintln!("skipped: byte-range locks are not qualified on {filesystem:?}");
-        return;
     }
+    qualified
+}
+
+/// Create `users` and `orders`, then run three writer processes and a
+/// reader on the database until every writer has passed. Nothing in this
+/// process holds the file while they run.
+fn write_from_processes(fixture: &Fixture, second: &SecondUsersWriter) {
     let writer = fixture.writer();
     for name in ["users", "orders"] {
         writer
@@ -599,24 +732,10 @@ fn writer_processes_share_a_database_under_byte_range_locks() {
             .unwrap();
     }
     drop(writer);
-    // Nothing in this process holds the file from here on.
     fixture.reopen();
 
-    let database = fixture.database();
-    let mut children: Vec<(String, Child)> = [("users", 0), ("orders", 0), ("users", 1_000)]
-        .into_iter()
-        .map(|(collection, first)| {
-            let first = first.to_string();
-            let child = spawn(
-                "write",
-                &database,
-                &[(CHILD_COLLECTION, collection), (CHILD_FIRST, &first)],
-            );
-            (format!("{collection}{first}"), child)
-        })
-        .collect();
-    children.push(("reader".to_owned(), spawn("read", &database, &[])));
-    for (name, child) in &mut children {
+    let mut children = spawn_writers_and_reader(&fixture.database(), second);
+    for (name, child) in children.named() {
         let ready = fixture.directory.join(format!("{name}.ready"));
         let deadline = Instant::now() + WAIT;
         while !ready.exists() {
@@ -626,16 +745,22 @@ fn writer_processes_share_a_database_under_byte_range_locks() {
         }
     }
     fs::write(fixture.directory.join("go"), b"").unwrap();
-    let reader = children.pop().unwrap();
-    for (name, child) in children {
+    let reader = children.0.len() - 1;
+    for index in 0..reader {
+        let (name, child) = children.take(index);
         passed(child, &name);
     }
     fs::write(fixture.directory.join("done"), b"").unwrap();
-    passed(reader.1, "reader");
+    let (_, child) = children.take(reader);
+    passed(child, "reader");
+}
 
+/// What the writers of [`write_from_processes`] left: every document and
+/// index entry, in extents of their own. Returns the ids of `users`.
+fn assert_the_writers_wrote(fixture: &Fixture) -> Vec<String> {
     // Each writer took extents of its own: users holds about 19 MiB and
     // orders about 10 MiB of 2 MiB extents, every finished one sealed.
-    let report = ContainerFile::open_reader(&database)
+    let report = ContainerFile::open_reader(&fixture.database())
         .unwrap()
         .report()
         .unwrap();
@@ -668,7 +793,35 @@ fn writer_processes_share_a_database_under_byte_range_locks() {
             "{name}"
         );
     }
-    drop(root);
+    users
+}
+
+/// Remove the files the parent and the children signalled with, and the
+/// reader's count of reads.
+fn remove_signals(directory: &Path) {
+    for name in [".ready", "go", "done", "reader.reads"] {
+        for entry in fs::read_dir(directory).unwrap() {
+            let path = entry.unwrap().path();
+            if path.to_string_lossy().ends_with(name) {
+                fs::remove_file(path).unwrap();
+            }
+        }
+    }
+}
+
+/// Writer processes of two collections of one database, and two of one
+/// collection, write side by side under byte-range locks while a reader
+/// process reads: every process takes extents from the one map, under the
+/// allocation byte, and the writers of one collection take turns on its
+/// writer byte.
+#[test]
+fn writer_processes_share_a_database_under_byte_range_locks() {
+    let fixture = Fixture::create("processes");
+    if !locks_qualified(&fixture) {
+        return;
+    }
+    write_from_processes(&fixture, &SecondUsersWriter::Current);
+    let users = assert_the_writers_wrote(&fixture);
     // A new process finds the same: the map the writers left is whole.
     fixture.reopen();
     let root = fixture.root();
@@ -679,13 +832,82 @@ fn writer_processes_share_a_database_under_byte_range_locks() {
     let writer = fixture.writer();
     put(&writer, "orders", 5_000);
     assert_eq!(read(&root, "orders", 5_000)["name"], "orders5000");
-    for name in [".ready", "go", "done"] {
-        for entry in fs::read_dir(&fixture.directory).unwrap() {
-            let path = entry.unwrap().path();
-            if path.to_string_lossy().ends_with(name) {
-                fs::remove_file(path).unwrap();
-            }
-        }
-    }
+    drop((writer, root));
+    remove_signals(&fixture.directory);
     fixture.assert_only_the_database();
+}
+
+/// A writer process of an older FYLO, which waits for lock bytes without
+/// taking turns (ADR 0016 section 7), shares the database with newer
+/// writers of the same collection and of another: every document arrives,
+/// and nothing is lost or damaged. `FYLO_VDBX_OLDER_TEST_EXE` names this
+/// test binary built from the older FYLO; without it the test is skipped.
+#[test]
+fn an_older_writer_process_shares_a_database_with_newer_ones() {
+    let Ok(older) = std::env::var(OLDER_TEST_EXE) else {
+        eprintln!("skipped: {OLDER_TEST_EXE} names no older test binary");
+        return;
+    };
+    let fixture = Fixture::create("older");
+    if !locks_qualified(&fixture) {
+        return;
+    }
+    write_from_processes(&fixture, &SecondUsersWriter::Older(Path::new(&older)));
+    assert_the_writers_wrote(&fixture);
+    fixture.reopen();
+    remove_signals(&fixture.directory);
+    fixture.assert_only_the_database();
+}
+
+/// A writer child that fails makes the test fail, and leaves no child
+/// process running: the reader, which reads until the parent says `done`,
+/// is stopped and reaped when the parent's assertion fails.
+#[test]
+fn a_failing_writer_child_leaves_no_child_process_running() {
+    let fixture = Fixture::create("failing");
+    if !locks_qualified(&fixture) {
+        return;
+    }
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        write_from_processes(&fixture, &SecondUsersWriter::Failing);
+    }));
+    assert!(outcome.is_err(), "the failing writer was not reported");
+    let reads = fixture.directory.join("reader.reads");
+    let before = fs::read_to_string(&reads).unwrap();
+    std::thread::sleep(Duration::from_secs(2));
+    assert_eq!(
+        fs::read_to_string(&reads).unwrap(),
+        before,
+        "the reader child still runs"
+    );
+}
+
+/// How long one writer alone takes per `put_document`, at the 50th and the
+/// 99th percentile, with nothing else using the database. A measurement,
+/// run on purpose; the test binary built from an older FYLO runs it too.
+#[test]
+#[ignore = "a measurement: run with --run-ignored"]
+fn measure_put_document_for_one_writer_alone() {
+    let fixture = Fixture::create("put-cost");
+    let writer = fixture.writer();
+    writer
+        .create_collection("items", CollectionKind::Document, None)
+        .unwrap();
+    let mut times: Vec<Duration> = (0..2_000)
+        .map(|number| timed_put(&writer, number))
+        .collect();
+    times.sort();
+    eprintln!(
+        "put_document, one writer alone: p50 {:?}, p99 {:?}, of {} puts",
+        times[times.len() / 2],
+        times[times.len() * 99 / 100],
+        times.len()
+    );
+    assert_eq!(times.len(), 2_000);
+}
+
+fn timed_put(writer: &NativeWriteRoot, number: usize) -> Duration {
+    let started = Instant::now();
+    put(writer, "items", number);
+    started.elapsed()
 }

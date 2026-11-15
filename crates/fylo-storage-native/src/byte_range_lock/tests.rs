@@ -1,9 +1,14 @@
-use super::{ByteRangeLockFile, FilesystemInfo, LOCK_RANGE_START, LockByte, LockMode};
+use super::{
+    ByteRangeLockFile, FilesystemInfo, LOCK_RANGE_START, LockByte, LockMode, TURN_LEVELS,
+    TURN_STRIDE,
+};
 use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
+
+mod turns;
 
 struct Database(PathBuf);
 
@@ -42,6 +47,22 @@ fn reserved_bytes_sit_at_and_above_two_to_the_sixty_two() {
         LockByte::collection_compactor(0).offset() > LockByte::collection_writer(u32::MAX).offset()
     );
     assert_eq!(LockByte::collection_compactor(7).to_string(), "compactor 7");
+    assert_eq!(
+        LockByte::LEASE.turn(1).offset(),
+        LOCK_RANGE_START + TURN_STRIDE
+    );
+    assert!(LockByte::LEASE.turn(1).offset() > LockByte::collection_compactor(u32::MAX).offset());
+    assert!(
+        LockByte::collection_compactor(u32::MAX)
+            .turn(TURN_LEVELS)
+            .offset()
+            < 1 << 63
+    );
+    assert_eq!(
+        LockByte::collection_writer(7).turn(2).to_string(),
+        "turn 2 of writer 7"
+    );
+    assert_eq!(LockByte::LEASE.turn(3).to_string(), "turn 3 of lease");
 }
 
 #[test]
