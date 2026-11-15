@@ -15,6 +15,9 @@ concurrency:
 env:
     CARGO_TERM_COLOR: always
     RUST_BACKTRACE: '1'
+    # Tests open roots in the runner's temp folder, on the system disk
+    # (ADR 0032).
+    FYLO_ALLOW_SYSTEM_DISK: '1'
 
 jobs:
     sanitizers:

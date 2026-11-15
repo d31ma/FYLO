@@ -1577,6 +1577,7 @@ text.
 | `EBROWSER_UNSUPPORTED`                                                 | The browser or mobile engine does not implement the requested feature               | Do not retry; use the native engine                                       |
 | `EROOTLOCKED` / `EROOTLEASELOST`                                       | Another live process owns the root (see Root owner), or this session lost ownership | Retry after the owning process exits; run one `fylo exec --loop` per root |
 | `EREMOTEROOT`                                                          | The root is on a network filesystem (see Where a root may live)                     | Do not retry; move the root to a disk attached to this machine            |
+| `ESYSTEMDISK`                                                          | The root is on the system disk (see Where a root may live)                          | Do not retry; move the root to another local disk, or use the opt-out     |
 | `EFRAME_*`                                                             | Frame-contract violations, as documented above                                      | Per the framing rules above                                               |
 | `EQUERYLOOPREQUIRED` / `EQUERYITEMTOOLARGE` / `EQUERYSNAPSHOTTOOLARGE` | Pagination contract violations, as documented above                                 | Per the pagination rules above                                            |
 | `ESCHEMA`                                                              | A document does not match the head schema, or a schema is invalid                   | Do not retry; fix the document or schema                                  |
@@ -1682,6 +1683,34 @@ handshake reports the filesystem in `storage.rootLock.filesystem` and
 The one exception is the explicit EFS profile, `--filesystem-profile
 efs-sidecar-v1` ([ADR 0010](docs/adr/0010-explicit-efs-metadata-profile.md)),
 which runs on EFS and NFS 4.1 as before.
+
+A local root must also be on a disk that is **not the system disk**
+([ADR 0032](docs/adr/0032-primary-root-on-a-data-disk.md)): a disk under
+`/Volumes` on macOS, a mounted disk such as `/mnt/<disk>` on Linux, or a
+drive other than the Windows drive on Windows. FYLO compares disks, not
+paths: on macOS the APFS container, on Linux the device and its whole disk
+(also through bind mounts, btrfs subvolumes, LVM and ZFS pools), on Windows
+the volume and its physical disk. A root on the system disk, in the OS temp
+folder, on a Linux memory filesystem (`tmpfs`, `ramfs`), or on a disk image
+whose file is on the system disk is refused with `ESYSTEMDISK` before
+anything is written. A disk image whose file is on another local disk or on
+a network share is allowed.
+
+Two settings allow more:
+
+| Setting                                    | Flag                  | Environment                | `application.json`        |
+| ------------------------------------------ | --------------------- | -------------------------- | ------------------------- |
+| Allow the system disk (tests, CI, laptops) | `--allow-system-disk` | `FYLO_ALLOW_SYSTEM_DISK=1` | `"allowSystemDisk": true` |
+| App mode: the app's own data folder        | `--app-id <id>`       | `FYLO_APP_ID=<id>`         | `"appId": "<id>"`         |
+
+With the opt-out on, `fylo` prints one warning line on stderr. App mode
+admits a root inside the app's own data folder, which FYLO computes from the
+OS: `~/Library/Application Support/<id>` (or the sandbox container) on macOS,
+`%LOCALAPPDATA%\<id>` and `%APPDATA%\<id>` on Windows, `$XDG_DATA_HOME/<id>`
+(default `~/.local/share/<id>`) on Linux. iOS and Android apps need nothing.
+Neither setting admits a network root. The handshake reports
+`storage.rootLock.systemDisk` and `storage.rootLock.placement` (`dataDisk`,
+`systemDiskAllowed` or `appOwned`).
 
 ### Compiled Executable
 

@@ -90,6 +90,7 @@ mod segments;
 mod session_certificate;
 mod sidecar_attributes;
 mod spelling_cache;
+mod system_disk;
 mod temp_tier;
 mod validation_mode;
 mod word_witness;
@@ -170,6 +171,9 @@ pub use queue::{
 pub use read_scope::ReadScope;
 pub use root_filesystem::RootFilesystem;
 pub use root_open_options::RootOpenOptions;
+pub use system_disk::{
+    AppId, OptOutSource, PlacementKind, PlacementReport, PlacementSettings, RootPlacement,
+};
 #[cfg(unix)]
 pub use temp_tier::FolderOwner;
 #[cfg(not(target_family = "wasm"))]
@@ -3407,6 +3411,9 @@ pub enum NativeStorageErrorCode {
     /// The root is on a network filesystem, where locks do not stop another
     /// machine from writing it (ADR 0029).
     RemoteRoot,
+    /// The root is on the system disk, or a disk FYLO cannot tell, and
+    /// neither the opt-out nor app mode admits it (ADR 0032).
+    SystemDisk,
     /// A SQL mutation was malformed or used an unsupported execution shape.
     InvalidQuery,
     /// A record write targeted a collection whose recorded shard width differs
@@ -3463,6 +3470,7 @@ impl NativeStorageErrorCode {
             Self::RootLocked => "EROOTLOCKED",
             Self::RootLeaseLost => "EROOTLEASELOST",
             Self::RemoteRoot => "EREMOTEROOT",
+            Self::SystemDisk => "ESYSTEMDISK",
             Self::InvalidQuery => "EQUERY_INVALID",
             Self::ShardWidth => "ESHARDWIDTH",
             Self::Unsupported => "ENATIVE_UNSUPPORTED",

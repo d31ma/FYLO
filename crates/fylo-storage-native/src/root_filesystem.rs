@@ -1,4 +1,8 @@
-use crate::{FilesystemProfile, NativeStorageError, NativeStorageErrorCode};
+#[cfg(not(target_family = "wasm"))]
+use crate::system_disk::SystemDiskRule;
+use crate::{FilesystemProfile, NativeStorageError, NativeStorageErrorCode, PlacementReport};
+#[cfg(not(target_family = "wasm"))]
+use crate::{PlacementKind, RootPlacement};
 use std::path::Path;
 
 /// The filesystem that holds a root, and the rule that a root never lives on
@@ -9,10 +13,14 @@ use std::path::Path;
 /// once. A native root there is refused before anything is written. The
 /// explicit EFS profile (ADR 0010) is the one exception: it is admitted as
 /// it always was, and only reported.
+///
+/// A local root must also be on a disk that is not the system disk, unless
+/// the opt-out or app mode admits it (ADR 0032).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RootFilesystem {
     name: String,
     remote: bool,
+    placement: PlacementReport,
 }
 
 impl RootFilesystem {
@@ -37,7 +45,34 @@ impl RootFilesystem {
     pub fn admit(path: &Path, profile: FilesystemProfile) -> Result<Self, NativeStorageError> {
         let filesystem = Self::detect(path)?;
         filesystem.refuse_remote(path, profile)?;
-        Ok(filesystem)
+        let placement = filesystem.admit_placement(path)?;
+        Ok(Self {
+            placement,
+            ..filesystem
+        })
+    }
+
+    /// Describe the filesystem that holds `path` and where it lies, as
+    /// [`Self::admit`] would judge it, without refusing (ADR 0032 section
+    /// 6, for the handshake).
+    ///
+    /// # Errors
+    ///
+    /// Returns `ENATIVE_IO` when the path's volume cannot be described.
+    pub fn describe(path: &Path) -> Result<Self, NativeStorageError> {
+        let filesystem = Self::detect(path)?;
+        let placement = filesystem.report_placement(path);
+        Ok(Self {
+            placement,
+            ..filesystem
+        })
+    }
+
+    /// Where the root lies, and why it is admitted (ADR 0032 section 6).
+    /// Empty for a filesystem described by [`Self::of`].
+    #[must_use]
+    pub const fn placement(&self) -> PlacementReport {
+        self.placement
     }
 
     /// The name the OS reports, such as `apfs`, `ext4`, `NTFS` or `nfs`.
@@ -73,12 +108,53 @@ impl RootFilesystem {
         ))
     }
 
+    /// The system-disk rule, for a local root. A remote root that got here
+    /// is admitted by the EFS profile and is never on the system disk.
+    #[cfg(not(target_family = "wasm"))]
+    fn admit_placement(&self, path: &Path) -> Result<PlacementReport, NativeStorageError> {
+        if self.remote {
+            return Ok(PlacementReport::admitted(None, PlacementKind::DataDisk));
+        }
+        let placement = RootPlacement::current()
+            .map_err(|reason| SystemDiskRule::setting_error(path, reason))?;
+        SystemDiskRule::admit(path, &placement)
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn report_placement(&self, path: &Path) -> PlacementReport {
+        if self.remote {
+            return PlacementReport::default();
+        }
+        RootPlacement::current().map_or_else(
+            |_| PlacementReport::default(),
+            |placement| SystemDiskRule::report(path, &placement),
+        )
+    }
+
+    /// The browser and WASI engines have no system disk to protect.
+    #[cfg(target_family = "wasm")]
+    #[expect(
+        clippy::unnecessary_wraps,
+        clippy::unused_self,
+        reason = "the native form can fail, and both forms share one signature"
+    )]
+    fn admit_placement(&self, _path: &Path) -> Result<PlacementReport, NativeStorageError> {
+        Ok(PlacementReport::default())
+    }
+
+    #[cfg(target_family = "wasm")]
+    #[expect(clippy::unused_self, reason = "both forms share one signature")]
+    fn report_placement(&self, _path: &Path) -> PlacementReport {
+        PlacementReport::default()
+    }
+
     #[cfg(not(target_family = "wasm"))]
     fn detect(path: &Path) -> Result<Self, NativeStorageError> {
         let info = crate::FilesystemInfo::of_path(path).map_err(NativeStorageError::io)?;
         Ok(Self {
             name: info.name,
             remote: info.remote,
+            placement: PlacementReport::default(),
         })
     }
 
@@ -91,6 +167,7 @@ impl RootFilesystem {
         Ok(Self {
             name: "unknown".to_owned(),
             remote: false,
+            placement: PlacementReport::default(),
         })
     }
 }
@@ -105,6 +182,7 @@ mod tests {
         RootFilesystem {
             name: "nfs".to_owned(),
             remote: true,
+            placement: crate::PlacementReport::default(),
         }
     }
 
@@ -132,9 +210,8 @@ mod tests {
     }
 
     #[test]
-    fn a_local_temporary_folder_is_admitted_and_named() {
-        let filesystem =
-            RootFilesystem::admit(&std::env::temp_dir(), FilesystemProfile::Native).unwrap();
+    fn a_local_temporary_folder_is_described_and_named() {
+        let filesystem = RootFilesystem::of(&std::env::temp_dir()).unwrap();
         assert!(!filesystem.remote());
         assert!(!filesystem.name().is_empty());
     }

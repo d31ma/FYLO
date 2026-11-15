@@ -1,5 +1,7 @@
 import { defineConfig } from '@playwright/test'
 
+process.env.FYLO_ALLOW_SYSTEM_DISK ??= '1'
+
 const ISOLATED_PORT = process.env.FYLO_E2E_PORT ?? '4173'
 const PLAIN_PORT = process.env.FYLO_E2E_PLAIN_PORT ?? '4174'
 

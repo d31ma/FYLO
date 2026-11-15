@@ -53,6 +53,7 @@ ADR.
 | [0029](0029-no-root-on-a-network-filesystem.md)            | Accepted | No root on a network filesystem (`EREMOTEROOT`) |
 | [0030](0030-tiered-read-cache.md)                          | Proposed | Tiered read cache (temp-disk documents, in-memory query results); slice R cuts file calls per read |
 | [0031](0031-windows-acl-for-the-temp-cache-folder.md)          | Accepted | Windows ACL for the temp cache folder (one Windows-only unsafe boundary) |
+| [0032](0032-primary-root-on-a-data-disk.md)                    | Accepted | A server root lives on a data disk, not the system disk (`ESYSTEMDISK`, opt-out, app mode) |
 
 ## When another ADR is required
 

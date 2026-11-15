@@ -466,6 +466,7 @@ fn checked_invocation_completion_releases_the_root_before_success_or_domain_erro
         json!({
             "owned":true, "kernelEnforced":true, "remoteQualified":false,
             "filesystem": filesystem, "remote": false,
+            "systemDisk": null, "placement": "systemDiskAllowed",
         })
     );
     fixture.assert_released(FilesystemProfile::Native);

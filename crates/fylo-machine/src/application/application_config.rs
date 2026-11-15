@@ -39,6 +39,12 @@ pub struct ApplicationConfig {
     pub trust_on_first_use: bool,
     /// The identity [`Self::open_identity`] opened from the settings above.
     pub identity: Option<DatabaseIdentity>,
+    /// `fylo.allowSystemDisk`: admit a root on the system disk (ADR 0032
+    /// section 3.1). Off by default.
+    pub allow_system_disk: bool,
+    /// `fylo.appId`: the app whose own data folder may hold the root
+    /// (ADR 0032 section 3.2).
+    pub app_id: Option<String>,
 }
 
 impl ApplicationConfig {

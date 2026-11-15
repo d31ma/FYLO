@@ -126,6 +126,8 @@ fn a_local_root_reports_its_filesystem_in_the_handshake() {
             "remoteQualified": false,
             "filesystem": expected.name(),
             "remote": false,
+            "systemDisk": null,
+            "placement": "systemDiskAllowed",
         })
     );
 }

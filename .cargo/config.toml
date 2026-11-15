@@ -1,0 +1,7 @@
+# FYLO's own tests and benchmarks open roots in the OS temp folder, which is
+# on the system disk. ADR 0032 refuses such a root unless the opt-out is on,
+# so every cargo command in a checkout turns it on. That includes `cargo run`
+# of the `fylo` server: `fylo` then prints "system-disk check disabled" on
+# stderr. Run a real server from a release binary, not from a checkout.
+[env]
+FYLO_ALLOW_SYSTEM_DISK = "1"

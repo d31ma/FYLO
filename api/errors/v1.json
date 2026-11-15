@@ -70,6 +70,10 @@
             "retryable": false
         },
         {
+            "code": "ESYSTEMDISK",
+            "retryable": false
+        },
+        {
             "code": "EINVALIDDOCID",
             "retryable": false
         },

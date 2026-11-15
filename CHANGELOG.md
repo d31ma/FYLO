@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+### Breaking Changes
+
+- **A root on the system disk is refused (ADR 0032).** FYLO keeps its data
+  on a local disk that is not the system disk: a disk under `/Volumes` on
+  macOS, a mounted disk on Linux, a drive other than the Windows drive on
+  Windows. A root on the system disk (also the OS temp folder, and on Linux
+  `tmpfs`) is refused with the new code `ESYSTEMDISK` before anything is
+  written, in every `fylo exec` mode, the other commands and the library.
+  FYLO compares disks, not paths: on macOS the APFS container, on Linux the
+  device and its whole disk, on Windows the volume and its physical disk.
+  A disk image counts as its disk, but an image whose file is on the system
+  disk is refused too (on macOS FYLO asks `/usr/bin/hdiutil`). To keep
+  using the system disk (tests, CI, a laptop), pass `--allow-system-disk`,
+  set `FYLO_ALLOW_SYSTEM_DISK=1` or set `fylo.allowSystemDisk` to `true`;
+  FYLO then prints one warning line on stderr saying the check is off. A
+  desktop app that keeps its data in its own data folder passes `--app-id
+  <id>` (`FYLO_APP_ID`, `fylo.appId`); iOS and Android apps need nothing.
+  Network roots stay refused (`EREMOTEROOT`, ADR 0029); the EFS profile
+  works as before. See the migration note in ADR 0032.
+- **The handshake reports where the root is.** `storage.rootLock` gains
+  `systemDisk` and `placement` (`dataDisk`, `systemDiskAllowed`,
+  `appOwned`).
+
 ### Changed
 
 - **An unknown `fylo` option is an error.** `fylo exec` and the other

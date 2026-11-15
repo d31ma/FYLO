@@ -81,6 +81,12 @@ export default class {
             retry: 'Do not retry; move the root to a disk attached to this machine.'
         },
         {
+            code: 'ESYSTEMDISK',
+            meaning:
+                'The root is on the system disk (or a memory filesystem, or a disk image whose file is on the system disk), and neither the opt-out nor app mode admits it.',
+            retry: 'Do not retry; move the root to another local disk, or set --allow-system-disk (FYLO_ALLOW_SYSTEM_DISK=1, fylo.allowSystemDisk) for tests, CI and laptops.'
+        },
+        {
             code: 'EFRAME_UTF8',
             meaning: 'The request frame was not valid UTF-8.',
             retry: 'Fix the encoder; the loop resumes at the next frame.'

@@ -15,8 +15,9 @@ pub struct CommandFlags {
 }
 
 impl CommandFlags {
-    const HOST_VALUES: [&'static str; 11] = [
+    const HOST_VALUES: [&'static str; 12] = [
         "--config",
+        "--app-id",
         "--filesystem-profile",
         "--root",
         "--schema-dir",
@@ -28,7 +29,8 @@ impl CommandFlags {
         "--identity",
         "--trust-anchor",
     ];
-    const HOST_SWITCHES: [&'static str; 5] = [
+    const HOST_SWITCHES: [&'static str; 6] = [
+        "--allow-system-disk",
         "--strict-schema",
         "--trust-on-first-use",
         "--worm",

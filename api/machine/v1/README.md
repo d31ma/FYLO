@@ -106,6 +106,21 @@ with `EREMOTEROOT` (not retryable) before it writes anything: at startup with
 `--exclusive-root`, otherwise on the first request that opens the root. The
 EFS profile is admitted there as before.
 
+A local root on the system disk is refused the same way, with `ESYSTEMDISK`
+(not retryable), unless the opt-out (`--allow-system-disk`,
+`FYLO_ALLOW_SYSTEM_DISK=1`, `fylo.allowSystemDisk`) or app mode (`--app-id`,
+`FYLO_APP_ID`, `fylo.appId`) admits it
+([ADR 0032](../../../docs/adr/0032-primary-root-on-a-data-disk.md)). The
+refusal is always an error frame on stdout: the first frame with
+`--exclusive-root`, otherwise the first request that opens the root; a
+handshake alone opens no root and answers `ok`. `rootLock` reports
+`systemDisk` (`true`, `false`, or `null` when it was not looked up: no
+default root, a remote root, the opt-out, app mode, or FYLO could not tell)
+and `placement`, why the root is admitted (`dataDisk`, `systemDiskAllowed`,
+`appOwned`), or `null` when it would be refused. An invalid
+`FYLO_ALLOW_SYSTEM_DISK` value or app id stops the CLI at start with a
+message on stderr and exit code 1.
+
 Frame limits, schema/encryption configuration, operation names and stable errors
 retain their existing contracts. EFS queue operations currently fail closed at
 the native queue-open seam; its `serverlessQueue` capability is false while the
@@ -149,8 +164,9 @@ The `fylo` binary exposes this runtime as `fylo exec --invocation --request
 <json|@path|-> --deadline-ms <n> --cleanup-reserve-ms <n>`, with optional
 `--max-request-bytes <n>` and `--max-response-bytes <n>` frame limits: one
 request per process, the same answer frame and exit codes as `exec --request`,
-and a failure frame (`EROOTLOCKED`, `EREMOTEROOT`, `EDEADLINE`, `EBADREQUEST`,
-`EFRAME_REQUEST_TOO_LARGE`, `EUNSUPPORTEDOP`, `EINVOCATION`) where the library
+and a failure frame (`EROOTLOCKED`, `EREMOTEROOT`, `ESYSTEMDISK`, `EDEADLINE`,
+`EBADREQUEST`, `EFRAME_REQUEST_TOO_LARGE`, `EUNSUPPORTEDOP`, `EINVOCATION`)
+where the library
 returns an I/O error. See
 [ADR 0028](../../../docs/adr/0028-cli-invocation-mode.md).
 

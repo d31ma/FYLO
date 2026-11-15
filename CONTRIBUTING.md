@@ -34,6 +34,21 @@ bun run test
 bun run test:interop
 ```
 
+### The system-disk opt-out in a checkout
+
+FYLO refuses a root on the system disk
+([ADR 0032](docs/adr/0032-primary-root-on-a-data-disk.md)), and the tests open
+their roots in the temp folder, on the system disk. So the repository turns
+the opt-out (`FYLO_ALLOW_SYSTEM_DISK=1`) on for its own commands:
+`.cargo/config.toml` for every cargo command, `bunfig.toml` (through
+`tests/setup/allow-system-disk.js`) for every bun command,
+`playwright.config.mjs` for the browser tests, and the GitHub workflows for
+CI. This includes `cargo run` of the `fylo` server in a checkout, which then
+prints `FYLO warning: system-disk check disabled by FYLO_ALLOW_SYSTEM_DISK=1`
+on stderr. Run a real server from a built release binary, not from
+`cargo run` in a checkout. Tests of the rule itself start `fylo` with the
+variable removed (`crates/fylo-cli/tests/system_disk.rs`).
+
 Browser/Wasm changes also run `bun run build:web:wasm` and the compiled-module
 browser corpus. Transaction, platform, backup, and release changes require
 their dedicated qualification profiles.

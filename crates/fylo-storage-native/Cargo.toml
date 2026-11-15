@@ -62,7 +62,11 @@ fylo-xattr = { version = "0.1.0", path = "../fylo-xattr" }
 # section 7). Already in the graph through `errno`, `rustix` and `tokio`.
 [target.'cfg(windows)'.dependencies]
 # `FSCTL_SET_SPARSE` and `FSCTL_SET_ZERO_DATA` hole punching of free extents.
-windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Ioctl", "Win32_System_Threading"] }
+# ADR 0032: the volume and physical disks of a root (`GetVolumePathNameW`,
+# `IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS`), the file behind a virtual disk
+# (`Win32_Storage_Vhd`), the Windows folder (`Win32_System_SystemInformation`)
+# and the app data folders (`Win32_UI_Shell`, freed with `Win32_System_Com`).
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_Storage_Vhd", "Win32_System_Com", "Win32_System_IO", "Win32_System_Ioctl", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_Shell"] }
 
 [features]
 # Hooks tests use, such as a writer that keeps segment collections in a
@@ -79,8 +83,10 @@ fylo-storage-native = { version = "0.1.0", path = ".", features = ["test-support
 # `.vdbx` byte-range locks call `fcntl` and `LockFileEx`, and hole punching
 # calls `fcntl(F_PUNCHHOLE)` and `DeviceIoControl`, which no safe signature in
 # the graph expresses. ADR 0004 confines that to `byte_range_lock/os.rs` and
-# `container_file/punch.rs`; `deny` rather than `forbid` is what lets those
-# modules opt in with a SAFETY comment per block.
+# `container_file/punch.rs`, and ADRs 0031 and 0032 add the Windows-only
+# `temp_tier/windows_folder.rs` and `system_disk/windows_disks.rs`; `deny`
+# rather than `forbid` is what lets those modules opt in with a SAFETY
+# comment per block.
 [lints.rust]
 unsafe_code = "deny"
 unused_must_use = "deny"

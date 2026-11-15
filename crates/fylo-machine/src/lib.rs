@@ -39,7 +39,7 @@ use fylo_query::{
 };
 use fylo_storage_native::{
     CollectionKind, CollectionLayout, FilesystemProfile, NativeQueue, NativeRoot,
-    NativeStorageError, NativeStorageErrorCode, NativeWriteRoot, PutRawFileOptions,
+    NativeStorageError, NativeStorageErrorCode, NativeWriteRoot, PlacementKind, PutRawFileOptions,
     QueueClaimOptions, QueuePublishOptions, ReadScope, RootFilesystem, RootLease, RootOpenOptions,
     SqlMutationResultKind, ValidationMode,
 };
@@ -1136,6 +1136,10 @@ impl Session {
             .is_some_and(|(root, lease)| assert_repository_lease(root, lease).is_ok());
         let filesystem = self.root_filesystem(lease);
         let remote = filesystem.as_ref().map(RootFilesystem::remote);
+        let placement = filesystem
+            .as_ref()
+            .map(RootFilesystem::placement)
+            .unwrap_or_default();
         // A lock on a remote filesystem binds only this machine's processes.
         let kernel_enforced =
             lease.is_some_and(RootLease::kernel_enforced) && remote == Some(false);
@@ -1165,7 +1169,9 @@ impl Session {
                     "kernelEnforced": kernel_enforced,
                     "remoteQualified": false,
                     "filesystem": filesystem.as_ref().map(RootFilesystem::name),
-                    "remote": remote
+                    "remote": remote,
+                    "systemDisk": placement.system_disk,
+                    "placement": placement.placement.map(PlacementKind::as_str)
                 }
             }
         })
@@ -1178,7 +1184,7 @@ impl Session {
         if let Some(lease) = lease {
             return Some(lease.filesystem().clone());
         }
-        RootFilesystem::of(self.default_root.as_deref()?).ok()
+        RootFilesystem::describe(self.default_root.as_deref()?).ok()
     }
 
     /// Resolve the request's root, taking an exclusive kernel lease the first

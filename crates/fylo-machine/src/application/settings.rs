@@ -29,11 +29,13 @@ impl Settings {
     const LAYOUT_KEY: &'static str = "layout";
     const IDENTITY_KEY: &'static str = "identity";
     const TRUST_ANCHOR_KEY: &'static str = "trustAnchor";
+    const ALLOW_SYSTEM_DISK_KEY: &'static str = "allowSystemDisk";
+    const APP_ID_KEY: &'static str = "appId";
     const MINIMUM_SHARD_WIDTH: u64 = 1;
     const MAXIMUM_SHARD_WIDTH: u64 = 4;
     const MINIMUM_KEY_BYTES: usize = 32;
     const PATH_ERROR: &'static str = "must be a nonempty path without NUL";
-    const KEYS: [&'static str; 12] = [
+    const KEYS: [&'static str; 14] = [
         Self::ROOT_KEY,
         Self::STRICT_KEY,
         Self::SCHEMA_KEY,
@@ -45,6 +47,8 @@ impl Settings {
         Self::LAYOUT_KEY,
         Self::IDENTITY_KEY,
         Self::TRUST_ANCHOR_KEY,
+        Self::ALLOW_SYSTEM_DISK_KEY,
+        Self::APP_ID_KEY,
         TempCacheSection::KEY,
     ];
     const CREDENTIAL_ERROR: &'static str = "fylo.encryption.key and fylo.cipher.salt require paired secret references; key must contain at least 32 UTF-8 bytes and salt must not be empty";
@@ -89,6 +93,11 @@ impl Settings {
         Self::reject_removed_chex(settings)?;
         let identity_reference = Self::text(settings.get(Self::IDENTITY_KEY), "fylo.identity")?;
         let trust_anchor = Self::text(settings.get(Self::TRUST_ANCHOR_KEY), "fylo.trustAnchor")?;
+        let allow_system_disk = Self::boolean(
+            settings.get(Self::ALLOW_SYSTEM_DISK_KEY),
+            "fylo.allowSystemDisk",
+        )?;
+        let app_id = Self::text(settings.get(Self::APP_ID_KEY), "fylo.appId")?;
         let temp_cache =
             TempCacheSection::load(settings.get(TempCacheSection::KEY), directory, &mut secrets)?;
         Ok(ApplicationConfig {
@@ -110,6 +119,8 @@ impl Settings {
             trust_anchor,
             trust_on_first_use: false,
             identity: None,
+            allow_system_disk,
+            app_id,
         })
     }
 
@@ -299,11 +310,16 @@ impl Settings {
     }
 
     fn strict(value: Option<&Value>) -> Result<bool, String> {
+        Self::boolean(value, "fylo.strict")
+    }
+
+    /// A boolean setting; off when absent.
+    fn boolean(value: Option<&Value>, name: &str) -> Result<bool, String> {
         match value {
             None => Ok(false),
             Some(value) => value
                 .as_bool()
-                .ok_or_else(|| "fylo.strict must be a boolean".into()),
+                .ok_or_else(|| format!("{name} must be a boolean")),
         }
     }
 

@@ -20,6 +20,11 @@ concurrency:
         }}
     cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+env:
+    # Tests open roots in the runner's temp folder, on the system disk
+    # (ADR 0032).
+    FYLO_ALLOW_SYSTEM_DISK: '1'
+
 jobs:
     windows-storage:
         name: Windows x64 Rust release safety (${{ matrix.os }})

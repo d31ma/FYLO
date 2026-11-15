@@ -103,6 +103,8 @@ fn assert_storage_report(frame: &Value, profile: &str, owned: bool, kernel_enfor
                 "remoteQualified": false,
                 "filesystem": filesystem,
                 "remote": false,
+                "systemDisk": null,
+                "placement": "systemDiskAllowed",
             },
         })
     );
