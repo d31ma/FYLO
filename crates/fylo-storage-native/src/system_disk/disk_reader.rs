@@ -126,6 +126,10 @@ impl DiskReader {
     }
 
     #[cfg(not(any(target_os = "macos", windows)))]
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "the macOS and Windows forms can fail, and all forms share one signature"
+    )]
     fn images_of(disk: &DiskDescription) -> Result<Vec<PathBuf>, String> {
         Ok(disk.images.clone())
     }

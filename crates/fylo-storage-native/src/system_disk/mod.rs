@@ -10,6 +10,8 @@ mod apple_disks;
 mod bsd_disk_name;
 #[cfg(not(target_family = "wasm"))]
 mod disk_description;
+#[cfg(any(test, windows))]
+mod disk_extents;
 #[cfg(any(test, target_os = "macos"))]
 mod disk_image_table;
 #[cfg(not(target_family = "wasm"))]

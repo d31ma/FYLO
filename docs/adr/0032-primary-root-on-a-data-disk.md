@@ -75,6 +75,9 @@ check (`RootFilesystem::admit`), right after the network check:
 `export --out` and `salvage --out` write plain document trees, not roots,
 and are not checked. The ADR 0030 temp cache (tier 2) is meant to live on
 the system disk and is never a root, so it is not checked either.
+Temp-tier code (ADR 0030 slices S2, S3 and later) opens its cache files
+through `RootFilesystem::of` or plain file opens, never through
+`RootFilesystem::admit` or a root open.
 
 The order of checks is: network (ADR 0029, `EREMOTEROOT`), then system disk
 (`ESYSTEMDISK`). A network root never reaches the second check, and the
@@ -154,8 +157,11 @@ physical disk numbers of the two volumes share a disk
 (`IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS`). So `D:` on a second disk is
 admitted; `D:` as a second partition of the system disk is refused; a
 `SUBST` drive or a folder junction that leads to the system volume is
-refused. When the disk extents cannot be read, the volume comparison alone
-decides.
+refused. A volume with no disk extents (the query fails) is judged by the
+volume comparison alone. A volume with more extents than FYLO reads (64; a
+spanned or striped dynamic volume answers `ERROR_MORE_DATA` with a partial
+list) is "could not tell": FYLO never compares a partial list (the hub's
+review of the SAFETY summary, 2026-11-15).
 
 **iOS and Android.** The rule does not apply: there is no other disk.
 These builds always run in app mode (section 3.2).

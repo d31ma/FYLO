@@ -28,6 +28,7 @@ use windows_sys::Win32::UI::Shell::{
 use windows_sys::core::{GUID, PWSTR};
 
 use super::disk_description::DiskDescription;
+use super::disk_extents::DiskExtents;
 
 /// The Windows calls behind the system-disk rule (ADR 0032 section 2): the
 /// volume of a path, the physical disks of a volume, the file behind a
@@ -56,13 +57,14 @@ impl WindowsDisks {
     const VOLUME_KEY: &'static str = "volume:";
     const DISK_KEY: &'static str = "disk:";
 
-    /// The volume of `path` and its physical disks. When the disks cannot
-    /// be read, the volume alone decides.
+    /// The volume of `path` and its physical disks. When the volume has
+    /// no disk extents, the volume alone decides; a partial list of extents
+    /// is "could not tell" (see [`DiskExtents`]).
     pub(crate) fn describe(path: &Path) -> Result<DiskDescription, String> {
         let volume = Self::volume(path).map_err(|error| {
             format!("the volume of {} cannot be read ({error})", path.display())
         })?;
-        let disks = Self::disk_numbers(&volume).unwrap_or_default();
+        let disks = Self::disk_numbers(&volume)?.unwrap_or_default();
         Ok(Self::description(&volume, &disks))
     }
 
@@ -141,13 +143,17 @@ impl WindowsDisks {
         Ok(Self::text(&volume))
     }
 
-    /// The physical disk numbers under `volume` (`\\?\Volume{GUID}\`).
+    /// The physical disk numbers under `volume` (`\\?\Volume{GUID}\`): a
+    /// complete list, `None` when the volume alone decides, or an error for
+    /// a partial list.
     #[allow(
         unsafe_code,
         reason = "ADR 0032: DeviceIoControl writes VOLUME_DISK_EXTENTS into a caller buffer"
     )]
-    fn disk_numbers(volume: &str) -> std::io::Result<Vec<u32>> {
-        let handle = Self::open_volume(volume)?;
+    fn disk_numbers(volume: &str) -> Result<Option<Vec<u32>>, String> {
+        let Ok(handle) = Self::open_volume(volume) else {
+            return Ok(None);
+        };
         let mut buffer = ExtentBuffer {
             count: 0,
             extents: [DISK_EXTENT::default(); Self::MAX_EXTENTS],
@@ -171,16 +177,17 @@ impl WindowsDisks {
                 null_mut(),
             )
         };
-        if done == 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        let count = usize::try_from(buffer.count)
-            .unwrap_or(usize::MAX)
-            .min(Self::MAX_EXTENTS);
-        Ok(buffer.extents[..count]
+        let error = std::io::Error::last_os_error()
+            .raw_os_error()
+            .and_then(|code| u32::try_from(code).ok())
+            .unwrap_or_default();
+        let disks: Vec<u32> = buffer
+            .extents
             .iter()
             .map(|extent| extent.DiskNumber)
-            .collect())
+            .collect();
+        DiskExtents::outcome(done != 0, error, buffer.count, &disks)
+            .map_err(|reason| format!("{volume}: {reason}"))
     }
 
     /// The files behind the virtual disk that holds `volume`: each host
