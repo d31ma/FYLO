@@ -31,6 +31,8 @@ ADR.
 | [0007](0007-filesystem-only-native-storage.md)              | Accepted | Filesystem-only native storage              |
 | [0008](0008-fylo-wasm-browser-and-mobile-engine.md)         | Accepted | Portable full-engine Wasm artifact          |
 | [0009](0009-embedded-serverless-queue.md)                   | Accepted | Embedded durable serverless queue           |
+| [0010](0010-explicit-efs-metadata-profile.md)               | Accepted (isolated candidate; qualification pending) | Explicit EFS metadata profile `efs-sidecar-v1` |
+| [0011](0011-serverless-invocation-contract.md)              | Accepted (isolated source; no deployment authorized) | Bounded serverless invocation (`InvocationRuntime`) |
 | [0012](0012-opt-in-network-server.md)                       | Withdrawn | Opt-in network server for one root (removed; FYLO is embedded) |
 | [0013](0013-collection-write-ahead-log.md)                  | Accepted | Collection write-ahead log with group commit |
 | [0014](0014-in-memory-hot-set.md)                           | Accepted | In-memory hot set for exclusive embedded sessions |
