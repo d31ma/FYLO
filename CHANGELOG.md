@@ -69,11 +69,15 @@
   json` and every `handshake` report `{ "version": 1, "command": "exec
   --invocation", "options": [...], "excludedOperations": [...],
   "createRequiresId": true, "waitsForRoot": true }`, so a host can check for
-  invocation mode first. It is `false` in the WebAssembly engine.
+  invocation mode first. `options` lists the mode's own options (the general
+  `--root`, `--config` and `--filesystem-profile` are left out): `--request`,
+  `--deadline-ms`, `--cleanup-reserve-ms`, `--max-request-bytes` and
+  `--max-response-bytes`. It is `false` in the WebAssembly engine.
 - **`fylo exec --invocation` (ADR 0028, ADR 0011).** One request per
   process on a shared root: `--request <json|@path|->`, `--deadline-ms` and
-  `--cleanup-reserve-ms`. The process waits while another one holds the root,
-  until only the reserve is left, then answers `EROOTLOCKED` without a change.
+  `--cleanup-reserve-ms`, with optional `--max-request-bytes` and
+  `--max-response-bytes` frame limits. The process waits while another one
+  holds the root, until only the reserve is left, then answers `EROOTLOCKED` without a change.
   Output and exit codes match `exec --request`; new failure codes are
   `EDEADLINE` and `EINVOCATION`. `InvocationRuntime` now checkpoints its
   write-ahead logs before it releases the root lease. Local use only; not

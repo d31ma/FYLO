@@ -1708,8 +1708,9 @@ echo '{"op":"putData","collection":"posts","id":"4VRNF52JPCO","data":{"title":"H
 The process takes the root lease for this one request. While another process
 holds the root it waits, with backoff up to 200 ms, until only the cleanup
 reserve is left, then answers `EROOTLOCKED` without changing anything. The
-deadline counts from process start. Output and exit codes are the same as
-`exec --request`. `putData` needs a caller-chosen `id`, so a retry is refused
+deadline counts from process start. `--max-request-bytes <n>` and
+`--max-response-bytes <n>` set the frame limits (1 MiB and 8 MiB by default).
+Output and exit codes are the same as `exec --request`. `putData` needs a caller-chosen `id`, so a retry is refused
 as existing instead of creating a duplicate; paged queries and repository
 operations are refused. Error codes and limits are in
 [ADR 0028](docs/adr/0028-cli-invocation-mode.md). The lease is local and

@@ -146,9 +146,10 @@ qualification remain pending. See
 [ADR 0011](../../../docs/adr/0011-serverless-invocation-contract.md).
 
 The `fylo` binary exposes this runtime as `fylo exec --invocation --request
-<json|@path|-> --deadline-ms <n> --cleanup-reserve-ms <n>`: one request per
-process, the same answer frame and exit codes as `exec --request`, and a
-failure frame (`EROOTLOCKED`, `EREMOTEROOT`, `EDEADLINE`, `EBADREQUEST`,
+<json|@path|-> --deadline-ms <n> --cleanup-reserve-ms <n>`, with optional
+`--max-request-bytes <n>` and `--max-response-bytes <n>` frame limits: one
+request per process, the same answer frame and exit codes as `exec --request`,
+and a failure frame (`EROOTLOCKED`, `EREMOTEROOT`, `EDEADLINE`, `EBADREQUEST`,
 `EFRAME_REQUEST_TOO_LARGE`, `EUNSUPPORTEDOP`, `EINVOCATION`) where the library
 returns an I/O error. See
 [ADR 0028](../../../docs/adr/0028-cli-invocation-mode.md).
@@ -167,7 +168,13 @@ the mode before it uses it. On a native build it is:
 {
     "version": 1,
     "command": "exec --invocation",
-    "options": ["--request", "--deadline-ms", "--cleanup-reserve-ms"],
+    "options": [
+        "--request",
+        "--deadline-ms",
+        "--cleanup-reserve-ms",
+        "--max-request-bytes",
+        "--max-response-bytes"
+    ],
     "excludedOperations": ["log", "commit", "checkout", "branch", "status", "diff", "restoreCommit", "merge"],
     "createRequiresId": true,
     "waitsForRoot": true

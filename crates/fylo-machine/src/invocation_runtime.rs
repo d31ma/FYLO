@@ -17,7 +17,13 @@ pub struct InvocationRuntime {
 impl InvocationRuntime {
     const CAPABILITY_VERSION: u32 = 1;
     const COMMAND: &'static str = "exec --invocation";
-    const OPTIONS: [&'static str; 3] = ["--request", "--deadline-ms", "--cleanup-reserve-ms"];
+    const OPTIONS: [&'static str; 5] = [
+        "--request",
+        "--deadline-ms",
+        "--cleanup-reserve-ms",
+        "--max-request-bytes",
+        "--max-response-bytes",
+    ];
     const EXCLUDED_OPERATIONS: [&'static str; 8] = [
         "log",
         "commit",

@@ -477,6 +477,16 @@ fn the_handshake_reports_the_invocation_capability() {
     let invocation = &identity["capabilities"]["invocation"];
     assert_eq!(invocation["version"], 1);
     assert_eq!(invocation["command"], "exec --invocation");
+    assert_eq!(
+        invocation["options"],
+        json!([
+            "--request",
+            "--deadline-ms",
+            "--cleanup-reserve-ms",
+            "--max-request-bytes",
+            "--max-response-bytes"
+        ])
+    );
     assert_eq!(invocation["createRequiresId"], true);
     assert!(
         invocation["excludedOperations"]
