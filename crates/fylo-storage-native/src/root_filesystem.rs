@@ -83,6 +83,10 @@ impl RootFilesystem {
     }
 
     #[cfg(target_family = "wasm")]
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "the native form can fail, and both forms share one signature"
+    )]
     fn detect(_path: &Path) -> Result<Self, NativeStorageError> {
         Ok(Self {
             name: "unknown".to_owned(),
