@@ -14,6 +14,7 @@ pub(crate) struct CollectionSlot {
     snapshot: Option<ResidentEntry<Arc<IndexSnapshot>>>,
     identifiers: Option<ResidentEntry<Arc<Vec<String>>>>,
     documents: HashMap<String, ResidentEntry<Arc<ResidentDocument>>>,
+    queries: HashMap<String, ResidentEntry<Arc<Vec<String>>>>,
 }
 
 impl CollectionSlot {
@@ -23,6 +24,7 @@ impl CollectionSlot {
             snapshot: None,
             identifiers: None,
             documents: HashMap::new(),
+            queries: HashMap::new(),
         }
     }
 
@@ -50,12 +52,21 @@ impl CollectionSlot {
         self.documents.len()
     }
 
+    pub(crate) fn query(&mut self, query: &str) -> Option<Arc<Vec<String>>> {
+        self.queries.get_mut(query).map(ResidentEntry::touch)
+    }
+
+    pub(crate) fn query_count(&self) -> usize {
+        self.queries.len()
+    }
+
     pub(crate) fn contains(&self, part: &ResidentPart) -> bool {
         match part {
             ResidentPart::Header => true,
             ResidentPart::Snapshot => self.snapshot.is_some(),
             ResidentPart::Identifiers => self.identifiers.is_some(),
             ResidentPart::Document(identifier) => self.documents.contains_key(identifier),
+            ResidentPart::Query(query) => self.queries.contains_key(query),
         }
     }
 
@@ -76,6 +87,10 @@ impl CollectionSlot {
     }
 
     /// Clear one part's reference bit; `None` when the part is gone.
+    pub(crate) fn insert_query(&mut self, query: String, entry: ResidentEntry<Arc<Vec<String>>>) {
+        self.queries.insert(query, entry);
+    }
+
     pub(crate) fn take_reference(&mut self, part: &ResidentPart) -> Option<bool> {
         match part {
             ResidentPart::Header => Some(self.header.take_reference()),
@@ -86,6 +101,10 @@ impl CollectionSlot {
             ResidentPart::Document(identifier) => self
                 .documents
                 .get_mut(identifier)
+                .map(ResidentEntry::take_reference),
+            ResidentPart::Query(query) => self
+                .queries
+                .get_mut(query)
                 .map(ResidentEntry::take_reference),
         }
     }
@@ -99,6 +118,7 @@ impl CollectionSlot {
             ResidentPart::Document(identifier) => {
                 Self::freed(self.documents.remove(identifier).as_ref())
             }
+            ResidentPart::Query(query) => Self::freed(self.queries.remove(query).as_ref()),
         }
     }
 
@@ -108,6 +128,9 @@ impl CollectionSlot {
         total += self.snapshot.as_ref().map_or(0, ResidentEntry::bytes);
         total += self.identifiers.as_ref().map_or(0, ResidentEntry::bytes);
         for entry in self.documents.values() {
+            total += entry.bytes();
+        }
+        for entry in self.queries.values() {
             total += entry.bytes();
         }
         total

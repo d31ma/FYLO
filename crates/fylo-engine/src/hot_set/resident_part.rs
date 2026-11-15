@@ -9,4 +9,5 @@ pub(crate) enum ResidentPart {
     Identifiers,
     /// One parsed document.
     Document(String),
+    Query(String),
 }

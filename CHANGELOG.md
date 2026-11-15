@@ -76,6 +76,16 @@
   (`root is local` for a local root in the default `auto` mode, or `read
   path not built`). `auto` creates nothing for a local root.
 
+- **Query results in the hot set (ADR 0030, slice S1).** An exclusive
+  session (`exec --loop --exclusive-root`, or a `FrameSession` with the
+  lease) now also keeps the complete match list of each `findDocs` query
+  without `$sort` that it evaluated to the end, under the same
+  `--hot-set-bytes` budget. A repeated query, with any `$limit`, reads its
+  first ids from that list instead of the index. A query cut short by its
+  `$limit` is not kept, every write frame clears the lists, and nothing
+  survives the session. `capabilities.hotSet` gains `queries`, `queryHits`
+  and `queryMisses`.
+
 - **`capabilities.invocation` in the handshake.** `fylo version --output
   json` and every `handshake` report `{ "version": 1, "command": "exec
   --invocation", "options": [...], "excludedOperations": [...],

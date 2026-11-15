@@ -91,6 +91,28 @@ impl HotSet {
         self.lock().document(key, generation, identifier)
     }
 
+    pub(crate) fn query(
+        &self,
+        key: &CollectionKey,
+        generation: u64,
+        query: &str,
+    ) -> Option<Arc<Vec<String>>> {
+        self.lock().query(key, generation, query)
+    }
+
+    pub(crate) fn admit_query(
+        &self,
+        epoch: u64,
+        key: &CollectionKey,
+        generation: u64,
+        (query, matches): (String, Arc<Vec<String>>),
+    ) {
+        let bytes = ResidentSize::query(key, &query, &matches);
+        if let Some(mut store) = self.lock_at(epoch) {
+            store.admit_query(key, generation, (query, matches), bytes);
+        }
+    }
+
     pub(crate) fn admit_header(
         &self,
         epoch: u64,

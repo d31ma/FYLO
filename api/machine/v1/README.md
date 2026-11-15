@@ -200,7 +200,15 @@ document id lists and collection headers in memory, 64 MiB by default
 `hotSet` is `false` when the session has no hot set: without the exclusive
 lease, or with `--hot-set-bytes 0`. Otherwise it is an object of counters:
 `budgetBytes`, `residentBytes`, `collections`, `documents`, `hits`, `misses`,
-`evictions`, `refusals` and `clears`. The counters are for operators; results
+`evictions`, `refusals`, `clears`, and for kept query results (ADR 0030)
+`queries`, `queryHits` and `queryMisses`.
+
+The hot set also keeps the complete match list of each `findDocs` query
+without `$sort` that it evaluated to the end: the ids of every matching
+document, in order, under the same budget and clear rules. A repeated query,
+with any `$limit`, reads its first ids from that list instead of the index,
+then reads each document as before. A query cut short by its `$limit` is not
+kept. Match lists live only in memory. The counters are for operators; results
 never depend on them. Frames in one session run one at a time, reads
 included; a frame that is not a read clears the hot set before and after it
 runs.

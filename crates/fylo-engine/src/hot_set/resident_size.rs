@@ -35,6 +35,10 @@ impl ResidentSize {
         Self::ENTRY_OVERHEAD + key.heap_bytes() + Self::strings(identifiers)
     }
 
+    pub(crate) fn query(key: &CollectionKey, query: &str, identifiers: &[String]) -> usize {
+        Self::ENTRY_OVERHEAD + key.heap_bytes() + 2 * query.len() + Self::strings(identifiers)
+    }
+
     pub(crate) fn document(key: &CollectionKey, identifier: &str, record: &ReadDocument) -> usize {
         Self::ENTRY_OVERHEAD
             + key.heap_bytes()

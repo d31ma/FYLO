@@ -145,13 +145,78 @@ impl<'a> HotReader<'a> {
         Self::settled(source.finish()?, rows)
     }
 
+    /// The rows of a query: from a resident match list of the same query at
+    /// this generation (ADR 0030 section 3.5), else evaluated, and their
+    /// match list kept when the evaluation saw every candidate.
     fn resident_rows(
         source: &mut DocumentSource<'_>,
         header: &ResidentCollection,
         query: &StructuredQuery,
     ) -> Result<Vec<ReadDocument>, EngineError> {
+        let key = Self::query_key(query);
+        match source.matches(&key) {
+            Some(matches) => Self::listed_rows(source, &matches, query),
+            None => Self::evaluated_rows(source, header, query, key),
+        }
+    }
+
+    /// One key for every limit of the same query: a match list answers any
+    /// limit by its first rows.
+    fn query_key(query: &StructuredQuery) -> String {
+        format!("{:?}", query.without_limit())
+    }
+
+    fn listed_rows(
+        source: &mut DocumentSource<'_>,
+        matches: &[String],
+        query: &StructuredQuery,
+    ) -> Result<Vec<ReadDocument>, EngineError> {
+        let count = Self::rows_to_answer(query, matches.len());
+        let mut rows = Vec::with_capacity(count);
+        for identifier in &matches[..count] {
+            rows.push(source.document(identifier)?.record().clone());
+        }
+        Ok(rows)
+    }
+
+    fn rows_to_answer(query: &StructuredQuery, available: usize) -> usize {
+        match query.limit() {
+            Some(limit) if limit > 0 => limit.min(available),
+            _ => available,
+        }
+    }
+
+    fn evaluated_rows(
+        source: &mut DocumentSource<'_>,
+        header: &ResidentCollection,
+        query: &StructuredQuery,
+        key: String,
+    ) -> Result<Vec<ReadDocument>, EngineError> {
         let candidates = Self::candidates(source, header, query)?;
-        Self::matching_rows(source, &candidates, query)
+        let rows = Self::matching_rows(source, &candidates, query)?;
+        Self::remember_complete(source, query, key, &rows);
+        Ok(rows)
+    }
+
+    /// A query cut short by its limit did not see every candidate, so its
+    /// rows are not the whole match list and are not kept.
+    fn remember_complete(
+        source: &mut DocumentSource<'_>,
+        query: &StructuredQuery,
+        key: String,
+        rows: &[ReadDocument],
+    ) {
+        if Self::stopped_at_limit(query, rows.len()) {
+            return;
+        }
+        let identifiers = rows.iter().map(|row| row.metadata.id.clone()).collect();
+        source.remember_matches(key, identifiers);
+    }
+
+    fn stopped_at_limit(query: &StructuredQuery, found: usize) -> bool {
+        query
+            .limit()
+            .is_some_and(|limit| limit > 0 && found >= limit)
     }
 
     /// The outcome of a read when storage held still while it ran, or `None`
@@ -220,10 +285,7 @@ impl<'a> HotReader<'a> {
         query: &StructuredQuery,
         found: usize,
     ) -> Option<&'c String> {
-        if query
-            .limit()
-            .is_some_and(|limit| limit > 0 && found >= limit)
-        {
+        if Self::stopped_at_limit(query, found) {
             return None;
         }
         remaining.next()

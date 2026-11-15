@@ -524,6 +524,16 @@ impl StructuredQuery {
         self.limit
     }
 
+    /// The same query with no `$limit`: it matches exactly the documents
+    /// this one matches, in the same order, without stopping early.
+    #[must_use]
+    pub fn without_limit(&self) -> Self {
+        Self {
+            limit: None,
+            ..self.clone()
+        }
+    }
+
     /// The query's `$sort`, if any (ADR 0023 section 5).
     #[must_use]
     pub const fn sort(&self) -> Option<&SortOrder> {

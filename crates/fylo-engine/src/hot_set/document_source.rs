@@ -24,6 +24,7 @@ pub(crate) struct DocumentSource<'a> {
     documents: Vec<Arc<ResidentDocument>>,
     snapshot: Option<Arc<IndexSnapshot>>,
     identifiers: Option<Arc<Vec<String>>>,
+    matches: Option<(String, Arc<Vec<String>>)>,
 }
 
 impl<'a> DocumentSource<'a> {
@@ -40,6 +41,7 @@ impl<'a> DocumentSource<'a> {
             documents: Vec::new(),
             snapshot: None,
             identifiers: None,
+            matches: None,
         }
     }
 
@@ -79,6 +81,20 @@ impl<'a> DocumentSource<'a> {
             Some(identifiers) => Ok(identifiers),
             None => self.stored_identifiers(),
         }
+    }
+
+    /// The ids every document matching `query` has, in order, when a
+    /// complete answer to that query is resident at this generation.
+    pub(crate) fn matches(&self, query: &str) -> Option<Arc<Vec<String>>> {
+        self.reader
+            .hot_set()
+            .query(self.reader.key(), self.generation(), query)
+    }
+
+    /// Keep the complete match list of `query`, admitted with the rest of
+    /// this read only if storage held still while it ran.
+    pub(crate) fn remember_matches(&mut self, query: String, identifiers: Vec<String>) {
+        self.matches = Some((query, Arc::new(identifiers)));
     }
 
     /// True when everything read is consistent with the resident generation;
@@ -173,6 +189,9 @@ impl<'a> DocumentSource<'a> {
         }
         if let Some(identifiers) = self.identifiers {
             hot_set.admit_identifiers(epoch, key, generation, identifiers);
+        }
+        if let Some(matches) = self.matches {
+            hot_set.admit_query(epoch, key, generation, matches);
         }
     }
 }

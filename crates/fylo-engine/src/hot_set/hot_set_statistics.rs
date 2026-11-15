@@ -22,4 +22,7 @@ pub struct HotSetStatistics {
     pub refusals: u64,
     /// Times every entry was dropped because the root may have changed.
     pub clears: u64,
+    pub queries: usize,
+    pub query_hits: u64,
+    pub query_misses: u64,
 }

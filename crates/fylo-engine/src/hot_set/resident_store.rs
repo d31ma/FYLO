@@ -75,6 +75,19 @@ impl ResidentStore {
     }
 
     /// Keep a collection header, replacing one read under another generation.
+    pub(crate) fn query(
+        &mut self,
+        key: &CollectionKey,
+        generation: u64,
+        query: &str,
+    ) -> Option<Arc<Vec<String>>> {
+        let matches = self
+            .slot_at(key, generation)
+            .and_then(|slot| slot.query(query));
+        self.count_query_lookup(matches.is_some());
+        matches
+    }
+
     pub(crate) fn admit_header(
         &mut self,
         key: &CollectionKey,
@@ -133,6 +146,20 @@ impl ResidentStore {
         }
     }
 
+    pub(crate) fn admit_query(
+        &mut self,
+        key: &CollectionKey,
+        generation: u64,
+        (query, matches): (String, Arc<Vec<String>>),
+        bytes: usize,
+    ) {
+        let part = ResidentPart::Query(query.clone());
+        let entry = ResidentEntry::new(matches, bytes);
+        if let Some(slot) = self.admit_part(key, generation, part, bytes) {
+            slot.insert_query(query, entry);
+        }
+    }
+
     pub(crate) fn clear(&mut self) {
         self.slots.clear();
         self.clock.clear();
@@ -149,6 +176,7 @@ impl ResidentStore {
                 .values()
                 .map(CollectionSlot::document_count)
                 .sum(),
+            queries: self.slots.values().map(CollectionSlot::query_count).sum(),
             ..self.statistics
         }
     }
@@ -214,6 +242,11 @@ impl ResidentStore {
     fn count_lookup(&mut self, found: bool) {
         self.statistics.hits += u64::from(found);
         self.statistics.misses += u64::from(!found);
+    }
+
+    fn count_query_lookup(&mut self, found: bool) {
+        self.statistics.query_hits += u64::from(found);
+        self.statistics.query_misses += u64::from(!found);
     }
 
     fn make_room(&mut self, bytes: usize) {

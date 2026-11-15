@@ -510,6 +510,45 @@ collection without its incarnation is still cacheable by its `state.json`;
 one with neither file, and a segment collection, are not; the EFS profile
 behaves the same.
 
+## Slice S1: query match lists in the hot set (built 2026-11-14)
+
+An exclusive session's hot set keeps, per collection and generation, the
+complete match list of each unsorted `findDocs` query it evaluated to the
+end: the ids of every matching document, in order. The key is the query
+without its `$limit`, so one list answers every limit by its first ids. A
+query cut short by its limit is not kept. A list is admitted only after the
+read's stable check, shares `--hot-set-bytes` (decision D4), its clock and
+epoch, and is cleared with the hot set before and after every write frame.
+A list larger than the whole budget is answered and not kept (counted as a
+refusal). Nothing survives the session: a later session, or one opened
+after another process wrote the root, starts empty. The handshake's
+`hotSet` gains `queries`, `queryHits` and `queryMisses`.
+
+Measured (2026-11-14, busy Mac; 500 documents of about 1 KB, ten queries
+of 50 matches each, warm = five repeats; p50 in ms, S0 build against S1):
+
+| Root | warm `findDocs` before | warm `findDocs` after | with `$limit` 5 |
+| --- | --- | --- | --- |
+| local APFS | 16.9 | 13.8 | 2.1 / 2.2 |
+| NFSv3, EFS profile | 15.8 | 9.7 | 2.1 / 2.2 |
+| NFSv4, EFS profile | 11.5 | 23.3 (noise) | 2.3 / 2.4 |
+
+Every repeat was a query hit (100 of 100). The gain is small because an
+exclusive session's warm query already reads nothing from the root: the
+hot set holds the index and the documents, and most of the time is spent
+building the 50-document answer. S1 removes only the planning and the
+predicate checks. It was merged because the user asked for this memory
+tier by name; the network cost is the temp tier's target (S2 to S5).
+
+Tests: `crates/fylo-engine/tests/hot_set_queries.rs` (every limit of a
+kept query equals storage, a cut query is not kept, changed, deleted and
+inserted documents and a re-created collection after a clear, the budget
+bounds the lists, an over-budget list is not kept, a zero budget keeps
+none) and `crates/fylo-machine/tests/hot_set_query_writes.rs` (insert,
+update and delete frames are seen by the next query in an exclusive
+session; a new session sees what another writer did after the last one
+ended; query hits are counted).
+
 ## Decisions (the user, 2026-11-14)
 
 - **D1. Default mode: `auto`.** The tier turns itself on only under the rules
