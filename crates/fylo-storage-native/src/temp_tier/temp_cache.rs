@@ -1,6 +1,7 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use super::cache_budget::CacheBudget;
@@ -13,7 +14,9 @@ use super::temp_cache_mode::TempCacheMode;
 use super::temp_cache_reason::TempCacheReason;
 use super::temp_cache_root::TempCacheRoot;
 use super::temp_cache_settings::TempCacheSettings;
+use super::temp_cache_state::TempCacheState;
 use super::temp_cache_status::TempCacheStatus;
+use super::temp_cache_tier::TempCacheTier;
 use super::volume_facts::VolumeFacts;
 use crate::RootFilesystem;
 
@@ -23,8 +26,9 @@ use crate::RootFilesystem;
 /// active. In `auto` mode it is only for a root opened with the EFS profile
 /// whose cache folder is private, on a local filesystem, on another device
 /// and with at least 64 MiB free; `on` drops the profile and device rules.
-/// This release has no read path, so the tier is never active: when every
-/// rule passes, the reason is `read path not built`.
+/// Only roots opened with the native profile have a read path yet: for an
+/// EFS-profile root that passes every rule, the reason is `read path not
+/// built`.
 pub struct TempCache;
 
 impl TempCache {
@@ -39,7 +43,22 @@ impl TempCache {
         root: &TempCacheRoot,
         now: SystemTime,
     ) -> Option<TempCacheStatus> {
-        (settings.mode != TempCacheMode::Off).then(|| Self::assess_on(settings, root, now))
+        Self::start(settings, root, now).status()
+    }
+
+    /// The temp tier of a session that opened `root`: off, inactive with a
+    /// reason, or active. When the rules pass, the cache folder is created
+    /// and, at most once per 30 seconds between processes, swept.
+    #[must_use]
+    pub fn start(
+        settings: &TempCacheSettings,
+        root: &TempCacheRoot,
+        now: SystemTime,
+    ) -> TempCacheState {
+        if settings.mode == TempCacheMode::Off {
+            return TempCacheState::Off;
+        }
+        Self::start_on(settings, root, now)
     }
 
     /// The current user's cache folder below `base`, or below the OS temp
@@ -82,19 +101,19 @@ impl TempCache {
         Ok(path)
     }
 
-    fn assess_on(
+    fn start_on(
         settings: &TempCacheSettings,
         root: &TempCacheRoot,
         now: SystemTime,
-    ) -> TempCacheStatus {
+    ) -> TempCacheState {
         let folder = CacheLocation::folder(settings.dir.as_deref());
         Self::evaluate(settings, root, &folder, now).unwrap_or_else(|reason| {
-            TempCacheStatus::inactive(
+            TempCacheState::Inactive(TempCacheStatus::inactive(
                 settings.mode,
                 folder.display().to_string(),
                 CacheBudget::wanted(settings.bytes),
                 reason,
-            )
+            ))
         })
     }
 
@@ -103,7 +122,7 @@ impl TempCache {
         root: &TempCacheRoot,
         folder: &Path,
         now: SystemTime,
-    ) -> Result<TempCacheStatus, TempCacheReason> {
+    ) -> Result<TempCacheState, TempCacheReason> {
         let root_path = Self::admit_root(settings.mode, root)?;
         let base = CacheLocation::base(settings.dir.as_deref());
         Self::require_local(&base)?;
@@ -112,13 +131,32 @@ impl TempCache {
         let private =
             PrivateFolder::open_or_create(folder).map_err(|_| TempCacheReason::UnsafeFolder)?;
         let budget = CacheBudget::cap(settings.bytes, free);
+        let sweep = Self::sweep(&private, budget, now);
+        let waiting = Self::waiting_profile(settings.mode, root, folder, (budget, sweep));
+        Ok(waiting.unwrap_or_else(|| {
+            let tier = TempCacheTier::new(private, settings.mode, budget, sweep);
+            TempCacheState::Active(Arc::new(tier))
+        }))
+    }
+
+    /// The EFS profile's read path (manifests and their record digests)
+    /// comes in a later slice; until then its roots read from the root.
+    fn waiting_profile(
+        mode: TempCacheMode,
+        root: &TempCacheRoot,
+        folder: &Path,
+        (budget, sweep): (u64, SweepReport),
+    ) -> Option<TempCacheState> {
+        if !root.is_remote_profile() {
+            return None;
+        }
         let status = TempCacheStatus::inactive(
-            settings.mode,
+            mode,
             folder.display().to_string(),
             budget,
             TempCacheReason::ReadPathNotBuilt,
         );
-        Ok(status.with_sweep(Self::sweep(&private, budget, now)))
+        Some(TempCacheState::Inactive(status.with_sweep(sweep)))
     }
 
     fn admit_root(mode: TempCacheMode, root: &TempCacheRoot) -> Result<&Path, TempCacheReason> {

@@ -92,6 +92,10 @@ mod sidecar_attributes;
 mod spelling_cache;
 mod system_disk;
 mod temp_tier;
+#[cfg(not(target_family = "wasm"))]
+mod tier_reads;
+#[cfg(target_family = "wasm")]
+mod tier_reads_wasm;
 mod validation_mode;
 mod word_witness;
 mod write;
@@ -179,7 +183,7 @@ pub use temp_tier::FolderOwner;
 #[cfg(not(target_family = "wasm"))]
 pub use temp_tier::{
     CacheBudget, CacheSweep, CacheUsage, PrivateFolder, SweepReport, TempCache, TempCacheReason,
-    TempCacheRoot, TempCacheStatus,
+    TempCacheRoot, TempCacheState, TempCacheStatus, TempCacheTier,
 };
 pub use temp_tier::{TempCacheMode, TempCacheSettings};
 pub use validation_mode::ValidationMode;
@@ -259,6 +263,8 @@ pub struct NativeRoot {
     /// Whether an ownership check made earlier in the same [`ReadScope`]
     /// stands for this one. A writer's root never reuses one.
     reuses_checks: bool,
+    /// The temp-disk read tier this root's document reads go through.
+    tier: temp_tier::TierLink,
 }
 
 impl NativeRoot {
@@ -358,6 +364,7 @@ impl NativeRoot {
                 "EFS profile descriptor is absent; read opens never initialize it",
             ));
         }
+        let tier = options.tier.bind(&canonical);
         Ok(Self {
             canonical,
             catalog_root: repository_root.clone(),
@@ -367,6 +374,7 @@ impl NativeRoot {
             descriptor,
             database: None,
             reuses_checks: true,
+            tier,
         })
     }
 
@@ -418,6 +426,7 @@ impl NativeRoot {
             descriptor: None,
             database: Some(database),
             reuses_checks: true,
+            tier: temp_tier::TierLink::default(),
         })
     }
 
@@ -605,9 +614,12 @@ impl NativeRoot {
         Ok(())
     }
 
-    /// The same root under a writer: every check reads the owner again.
+    /// The same root under a writer: every check reads the owner again, and
+    /// no read goes through the temp tier, whose entries a writer's own
+    /// changes would make stale before its next generation read.
     pub(crate) fn without_check_reuse(mut self) -> Self {
         self.reuses_checks = false;
+        self.tier = temp_tier::TierLink::default();
         self
     }
 
@@ -771,6 +783,7 @@ impl NativeRoot {
             schema_head,
             word_fields: descriptor.words.unwrap_or_default(),
             block: None,
+            window: temp_tier::ReadWindow::default(),
         })
     }
 
@@ -821,6 +834,7 @@ impl NativeRoot {
             schema_head: descriptor.schema_head()?,
             word_fields: descriptor.words.unwrap_or_default(),
             block: Some(collection.block),
+            window: temp_tier::ReadWindow::default(),
         })
     }
 
@@ -1987,6 +2001,12 @@ pub struct NativeCollection {
     word_fields: Vec<String>,
     /// The directory block of a collection in a `.vdbx` database.
     block: Option<u32>,
+    /// The collection's stamp as the temp tier last saw it.
+    #[cfg_attr(
+        target_family = "wasm",
+        expect(dead_code, reason = "the browser engine never has a temp tier")
+    )]
+    window: temp_tier::ReadWindow,
 }
 
 impl NativeCollection {
@@ -2162,6 +2182,14 @@ impl NativeCollection {
     ///
     /// Returns an error for corrupt, oversized, linked, or inaccessible state.
     pub fn generation(&self) -> Result<GenerationState, NativeStorageError> {
+        if self.reads_through_tier() {
+            return self.observed_generation();
+        }
+        self.plain_generation()
+    }
+
+    /// The generation as a handle without a temp tier reads it.
+    pub(crate) fn plain_generation(&self) -> Result<GenerationState, NativeStorageError> {
         let state = self.stored_generation()?;
         if state.state == GenerationStatus::Writing && self.block.is_some() {
             // A database collection's slot is published `writing` before
@@ -2581,7 +2609,7 @@ impl NativeCollection {
         if self.uses_segments() {
             return self.read_segment_document(identifier, segments::LocationState::Live);
         }
-        self.read_document_at(&self.path.join("docs"), identifier)
+        self.read_live_document(identifier)
     }
 
     /// Read many live documents, in the order given.
@@ -2690,17 +2718,32 @@ impl NativeCollection {
         namespace: &Path,
         identifier: &str,
     ) -> Result<StoredBytes, NativeStorageError> {
+        self.read_document_file(namespace, identifier, |_| ())
+            .map(|(stored, _, ())| stored)
+    }
+
+    /// Read one document as [`Self::read_document_at`] does, keep the file
+    /// it was read from, and what `before` saw of the file once it was open
+    /// and before anything was read from it.
+    fn read_document_file<T>(
+        &self,
+        namespace: &Path,
+        identifier: &str,
+        before: impl FnOnce(&File) -> T,
+    ) -> Result<(StoredBytes, File, T), NativeStorageError> {
         let (path, (mut file, metadata)) = self.open_document(namespace, identifier)?;
+        let seen = before(&file);
         let attributes = record_attributes::RecordAttributes::read(&self.root, &file, &path)?;
         let bytes = read_sized(&mut file, metadata.len(), MAX_DOCUMENT_BYTES)?;
         attributes.verify(&self.root, &file, &path)?;
         attributes.verify_contents(&self.root, &path, &bytes)?;
         LegacyAccessWarning::notice(&attributes);
-        Ok(StoredBytes {
+        let stored = StoredBytes {
             bytes,
             modified_millis: modified_millis(&metadata)?,
             path,
-        })
+        };
+        Ok((stored, file, seen))
     }
 
     /// Try each shard a document may live in with one open per candidate. A

@@ -108,15 +108,49 @@ fn auto_refuses_a_cache_folder_on_the_roots_device() {
 }
 
 #[test]
-fn on_creates_a_private_folder_and_waits_for_the_read_path() {
+fn on_creates_a_private_folder_and_activates_a_native_root() {
     let place = Place::new();
     let root = place.root(FilesystemProfile::Native);
     let status = place.assess(TempCacheMode::On, &root).unwrap();
-    assert_eq!(reason(&status), "read path not built");
+    assert!(status.active, "{status:?}");
+    assert_eq!(status.reason, None);
     assert_eq!(status.mode, "on");
     assert!(status.budget_bytes <= CacheBudget::DEFAULT_BYTES);
     assert!(status.budget_bytes > 0);
     assert!(place.cache().join("sweep.stamp").is_file());
+}
+
+#[test]
+fn on_keeps_an_efs_profile_root_on_the_root_until_its_read_path_exists() {
+    let place = Place::new();
+    let root = place.root(FilesystemProfile::EfsSidecarV1);
+    let status = place.assess(TempCacheMode::On, &root).unwrap();
+    assert_eq!(reason(&status), "read path not built");
+    assert!(place.cache().join("sweep.stamp").is_file());
+}
+
+#[test]
+fn start_hands_out_the_tier_only_when_it_is_active() {
+    let place = Place::new();
+    let native = place.root(FilesystemProfile::Native);
+    let settings = place.settings(TempCacheMode::On);
+    assert!(
+        TempCache::start(&settings, &native, SystemTime::now())
+            .tier()
+            .is_some()
+    );
+    let efs = place.root(FilesystemProfile::EfsSidecarV1);
+    assert!(
+        TempCache::start(&settings, &efs, SystemTime::now())
+            .tier()
+            .is_none()
+    );
+    let off = place.settings(TempCacheMode::Off);
+    assert!(
+        TempCache::start(&off, &native, SystemTime::now())
+            .tier()
+            .is_none()
+    );
 }
 
 #[test]
@@ -215,6 +249,7 @@ fn a_shared_temp_folder_passes_the_local_filesystem_rule() {
     };
     let root = place.root(FilesystemProfile::Native);
     let status = TempCache::assess(&settings, &root, SystemTime::now()).unwrap();
-    assert_ne!(reason(&status), "cache folder is remote");
+    assert!(status.active, "{status:?}");
+    assert_eq!(status.reason, None);
     assert_ne!(Path::new(&status.dir).parent(), None);
 }

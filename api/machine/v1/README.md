@@ -232,8 +232,15 @@ runs.
 ## Temp-disk read tier (`capabilities.tempCache`)
 
 ADR 0030 adds a read cache in the OS temp folder for roots on slow storage.
-This release has the folder manager only, with no read path: the tier is
-never active yet.
+It keeps the stored records of files-layout document collections exactly as
+the root holds them (encrypted fields stay encrypted) and checks every entry
+against the collection before it uses one: an entry read under the
+collection's current stamp (its `state.json`, that file's identity and the
+collection's incarnation) is used as it is; one read under an older stamp is
+used only when the document file on the root is still the same file. Any
+problem with an entry is counted and the read goes to the root. In this
+release the tier reads for roots opened with the native profile under
+`--temp-cache on`; the EFS profile, and so `auto`, follow in a later release.
 
 `--temp-cache <off|auto|on>` (default `auto`), `--temp-cache-bytes <n>`
 (default 256 MiB, never more than half the free space) and
@@ -252,8 +259,12 @@ the counters `hits`, `misses`, `revalidations`, `rejected`, `writes`,
 `evictions` and `errors`. `reason` says why the tier is not active:
 `no root`, `vdbx`, `root is local` (`auto` with a root not opened with the
 EFS profile), `unsafe folder`, `cache folder is remote`, `same device`,
-`low space`, or `read path not built`. `auto` creates nothing for a local
-root.
+`low space`, or `read path not built` (a root opened with the EFS profile,
+whose read path is not built yet). `auto` creates nothing for a local root.
+The counters count this process's reads: `hits` answered from the tier,
+`misses` it could not answer, `revalidations` of entries read under an older
+stamp, `rejected` entries refused and deleted, `writes` of new entries, and
+`errors` of failed cache reads and writes.
 
 `fylo cache status [--json]` prints the folder, its entries and bytes, its
 partial files and the last sweep; `fylo cache clear` deletes the folder.

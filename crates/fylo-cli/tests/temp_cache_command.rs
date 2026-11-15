@@ -120,12 +120,12 @@ fn auto_is_the_default_and_reports_a_local_root() {
 }
 
 #[test]
-fn on_creates_the_folder_but_the_tier_stays_inactive() {
+fn on_creates_the_folder_and_activates_the_tier_for_a_native_root() {
     let place = Place::new();
     let capability = place.temp_cache(&["--temp-cache", "on", "--temp-cache-bytes", "1048576"]);
     assert_eq!(capability["mode"], "on", "{capability}");
-    assert_eq!(capability["active"], false, "{capability}");
-    assert_eq!(capability["reason"], "read path not built", "{capability}");
+    assert_eq!(capability["active"], true, "{capability}");
+    assert_eq!(capability["reason"], Value::Null, "{capability}");
     assert_eq!(capability["budgetBytes"], 1_048_576, "{capability}");
     let folder = PathBuf::from(capability["dir"].as_str().unwrap());
     assert_eq!(folder.parent(), Some(place.base().as_path()));

@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use crate::temp_tier::TierLink;
 use crate::{DatabaseIdentity, DatabaseKey, FilesystemProfile, RootLease};
 
 /// Additive root admission options, separate from the existing `RootConfig`.
@@ -11,6 +12,7 @@ pub struct RootOpenOptions {
     pub(crate) lease: Option<RootLease>,
     pub(crate) database_key: Option<DatabaseKey>,
     pub(crate) identity: Option<DatabaseIdentity>,
+    pub(crate) tier: TierLink,
 }
 
 impl RootOpenOptions {
@@ -24,7 +26,17 @@ impl RootOpenOptions {
             lease: None,
             database_key: None,
             identity: None,
+            tier: TierLink::default(),
         }
+    }
+
+    /// Read the root's files-layout documents through `tier`, the temp-disk
+    /// read tier (ADR 0030 section 2). A `.vdbx` database never uses it.
+    #[cfg(not(target_family = "wasm"))]
+    #[must_use]
+    pub fn with_temp_tier(mut self, tier: std::sync::Arc<crate::TempCacheTier>) -> Self {
+        self.tier = TierLink::to(tier);
+        self
     }
 
     /// Select a metadata representation explicitly.

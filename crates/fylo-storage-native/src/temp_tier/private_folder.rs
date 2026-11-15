@@ -115,6 +115,28 @@ impl PrivateFolder {
         self.create_each(&names)
     }
 
+    /// Rename the file `from` to `to`, both in the folder `folder` names
+    /// below this one, replacing any file named `to`.
+    ///
+    /// # Errors
+    /// As [`Self::open_file`].
+    pub fn rename_file(&self, folder: &Path, from: &str, to: &str) -> io::Result<()> {
+        let parents = Self::names(folder)?;
+        let from = Self::single_name(from)?;
+        let to = Self::single_name(to)?;
+        self.rename_below(&parents, from, to)
+    }
+
+    /// Remove the file `relative` names below this folder.
+    ///
+    /// # Errors
+    /// As [`Self::open_file`].
+    pub fn remove_file(&self, relative: &Path) -> io::Result<()> {
+        let names = Self::names(relative)?;
+        let (name, parents) = names.split_last().ok_or_else(Self::outside)?;
+        self.remove_below(parents, name)
+    }
+
     fn create(path: &Path) -> io::Result<()> {
         Self::ignore_existing(Self::make_folder(path))
     }
@@ -139,6 +161,14 @@ impl PrivateFolder {
             .map(Self::plain_name)
             .collect::<io::Result<Vec<_>>>()?;
         Self::require_some(names)
+    }
+
+    fn single_name(name: &str) -> io::Result<&OsStr> {
+        let names = Self::names(Path::new(name))?;
+        match names.as_slice() {
+            [single] => Ok(single),
+            _ => Err(Self::outside()),
+        }
     }
 
     fn plain_name(component: Component<'_>) -> io::Result<&OsStr> {
@@ -293,6 +323,20 @@ impl PrivateFolder {
         Ok(rustix::fs::openat(folder, name, flags, Mode::empty())?)
     }
 
+    fn rename_below(&self, parents: &[&OsStr], from: &OsStr, to: &OsStr) -> io::Result<()> {
+        let parent = self.descend_all(parents)?;
+        Ok(rustix::fs::renameat(&parent, from, &parent, to)?)
+    }
+
+    fn remove_below(&self, parents: &[&OsStr], name: &OsStr) -> io::Result<()> {
+        let parent = self.descend_all(parents)?;
+        Ok(rustix::fs::unlinkat(
+            &parent,
+            name,
+            rustix::fs::AtFlags::empty(),
+        )?)
+    }
+
     fn create_each(&self, names: &[&OsStr]) -> io::Result<()> {
         use std::os::fd::AsFd;
 
@@ -374,6 +418,26 @@ impl PrivateFolder {
             FileOpening::Replace => options.write(true).create(true).truncate(true),
         };
         options
+    }
+
+    fn rename_below(&self, parents: &[&OsStr], from: &OsStr, to: &OsStr) -> io::Result<()> {
+        let folder = self.checked_folder(parents)?;
+        fs::rename(folder.join(from), folder.join(to))
+    }
+
+    fn remove_below(&self, parents: &[&OsStr], name: &OsStr) -> io::Result<()> {
+        let path = self.checked_folder(parents)?.join(name);
+        Self::require_not_reparse(&path, &fs::symlink_metadata(&path)?)?;
+        fs::remove_file(path)
+    }
+
+    fn checked_folder(&self, parents: &[&OsStr]) -> io::Result<PathBuf> {
+        let mut path = self.path.clone();
+        for parent in parents {
+            path.push(parent);
+            Self::require_plain_folder(&path)?;
+        }
+        Ok(path)
     }
 
     fn checked_path(&self, relative: &Path) -> io::Result<PathBuf> {

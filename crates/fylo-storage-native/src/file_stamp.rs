@@ -39,6 +39,29 @@ impl FileStamp {
         Self::read(file)
     }
 
+    #[cfg(not(target_family = "wasm"))]
+    /// Add every part of the stamp to `hasher`, in a fixed order, so equal
+    /// stamps give equal digests in every process.
+    pub(crate) fn feed(&self, hasher: &mut sha2::Sha256) {
+        use sha2::Digest;
+
+        hasher.update(self.device.to_le_bytes());
+        hasher.update(self.file.to_le_bytes());
+        hasher.update(self.size.to_le_bytes());
+        hasher.update(self.modified_nanoseconds.to_le_bytes());
+        hasher.update(self.changed_nanoseconds.to_le_bytes());
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    /// A SHA-256 digest of the stamp, the same in every process.
+    pub(crate) fn digest(&self) -> [u8; 32] {
+        use sha2::Digest;
+
+        let mut hasher = sha2::Sha256::new();
+        self.feed(&mut hasher);
+        hasher.finalize().into()
+    }
+
     #[cfg(unix)]
     fn read(file: &File) -> io::Result<Self> {
         use std::os::unix::fs::MetadataExt;

@@ -5,7 +5,7 @@ pub(crate) enum CacheFileKind {
     /// A finished entry, `<name>.fyc`.
     Entry,
     /// An entry still being written, or left by a crash:
-    /// `<name>.partial-<pid>-<random>`.
+    /// `<name>.partial-<pid>-<time>-<serial>`.
     Partial,
     /// Anything else, such as `sweep.stamp`. A sweep leaves it alone.
     Other,

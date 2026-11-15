@@ -99,6 +99,17 @@
   (`root is local` for a local root in the default `auto` mode, or `read
   path not built`). `auto` creates nothing for a local root.
 
+- **Temp tier reads (ADR 0030, slice S3).** With `--temp-cache on`, a root
+  opened with the native profile now reads files-layout documents through
+  the temp cache folder: a document read once is kept as its stored record
+  (never decrypted) and answered from the folder by later reads and later
+  processes while the collection is unchanged, or while the document file
+  on the root is still the same file. A damaged, foreign or stale entry is
+  refused, deleted and counted, and the read goes to the root. The default
+  `auto` still keeps local roots on the root, and EFS-profile roots report
+  `read path not built` until a later slice. The Rust API adds
+  `RootOpenOptions::with_temp_tier`, `TempCache::start`, `TempCacheState`
+  and `TempCacheTier`.
 - **Collection stamps (ADR 0030, slice S0).** A new files-layout
   collection gets a 16-byte `incarnation` file beside its `state.json` in
   `.fylo-transactions/<namespace>/<name>/`, written once when the

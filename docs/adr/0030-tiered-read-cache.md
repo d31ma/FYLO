@@ -606,3 +606,79 @@ a root that is not opened with the EFS profile.
 standard library does not offer, so `temp_tier/windows_folder.rs` is a new
 unsafe boundary under ADR 0004, decided in ADR 0031 and listed in
 `docs/security/unsafe-inventory.md`.
+
+## Slice S3: temp tier read path (built 2026-11-15)
+
+A session that starts the tier (`TempCache::start`) gets a
+`TempCacheTier` when every rule of 4.1 passes, and hands it to the roots it
+opens with `RootOpenOptions::with_temp_tier`. In this slice only roots
+opened with the **native** profile read through it, so it is active only
+under `--temp-cache on`; an EFS-profile root still reports `read path not
+built` (slice S4), and `auto` keeps every local root on the root.
+
+**Where the stamp comes from.** A collection handle that reads through the
+tier reads `state.json` from an open handle on every generation read (the
+reads `read_stable` and the hot set already make before and after each
+attempt) and records the digest of the collection stamp (3.1) in the
+handle's read window. The incarnation is read once per handle. No other
+file call is added. A clone of a handle starts with an empty window, and a
+handle whose last generation read failed, saw `writing`, or saw a stamp
+that is not cacheable has no stamp, so its reads go to the root.
+
+**Hit, revalidation, miss.** A document read looks up its entry (4.3): an
+entry read under the recorded stamp is used with no file call on the root;
+one read under another stamp is used only when the document file the shard
+lookup opens is the file the entry names, with the same file stamp (3.2),
+and is then kept again under the current stamp. Anything else (a missing
+entry, a damaged, foreign or stale one) is a miss: the entry is deleted and
+counted as `rejected`, and the read goes to the root. A hit is handed to
+the same decode path as a root read (`build_record`), so decryption,
+schema migration and every engine check still run.
+
+**Writers never read through it.** A writer's root (`NativeWriteRoot`)
+drops the tier: a writer changes documents after its last generation read,
+so its handle's recorded stamp would no longer describe the files it reads
+back (for example the "after" index keys of an SQL `UPDATE`).
+
+**What a same-stamp hit does not re-check.** A hit under the current stamp
+makes no file call on the root, so it does not repeat the per-file checks of
+a root read (the content checksum attribute, the no-follow open, the
+`legacyAccess` notice). It relies on the stamp: every FYLO change moves it.
+A file changed, swapped or deleted by another tool while `state.json` stays
+the same is not seen, the limit 3.4 accepts (decision D2). A stamped
+generation read that fails clears the window and answers as a handle
+without the tier does, so the tier adds no error of its own.
+
+**Admission.** A document read from the root waits in the handle's read
+window. The next generation read writes only the entries read under a stamp
+equal to the one it sees, and drops the rest, so an entry reaches the disk
+only after the read passed its closing check, under a stamp no commit came
+between. An entry is written as a partial file of the process and renamed
+over its name (4.4); the entry holds the stored payload, the document's
+path below `docs/`, its modification time, both stamp digests and two
+CRC-32C checksums. The document's file stamp is taken right after the file
+is opened and must be the same after it is read, so an entry never pairs
+bytes with a later file stamp. A failed write pauses this process's writes
+until the next sweep is due (at most 30 seconds); partial names carry the
+pid, the time and a serial, so a restarted process with the same pid never
+meets an old partial file. A payload over 1/64 of the budget is not kept, and a
+read attempt holds back at most a tenth of the budget.
+
+**Tests.** `fylo-machine/tests/temp_tier_reads.rs` (17): every read equals
+the read without the tier, cold and warm, on plain and encrypted
+collections; encrypted values never appear in any cache file; a write, a
+delete, a drop and re-create, a rebuild and a `state.json` put back to an
+older generation by another session are all seen; truncated, flipped,
+foreign-document, foreign-collection and older entries are refused;
+oversized documents are not kept; `auto` on a local root and `.vdbx` roots
+create nothing. `fylo-cli/tests/temp_tier_processes.rs` (3): separate
+`fylo` processes see each other's writes, and a process stopped in the
+middle of an entry, or before renaming it
+(`FYLO_RUST_TEMP_CACHE_FAILPOINT`), leaves only a partial file.
+
+**What it does not do yet.** No NFS gain can be measured in this slice: the
+native profile refuses a network root (ADR 0029), so the tier's real target,
+an EFS-profile root, comes with S4. **S4 owns the 30% go rule** (the
+coordinator's decision, 2026-11-15): it is the first slice that can read an
+EFS-profile root, so it measures the NFS gain and stops if it is under 30%.
+For S3 the check is that a local root in `auto` reads as fast as before.

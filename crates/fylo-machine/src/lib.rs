@@ -12,6 +12,7 @@ mod handshake_identity;
 mod invocation_options;
 mod invocation_runtime;
 mod request_frame;
+mod session_temp_cache;
 mod strict;
 
 pub use application::ApplicationConfig;
@@ -339,8 +340,11 @@ fn execute_invocation_frame(
         std::io::Error::other("invocation session requires its internal root owner")
     })?;
     let default_root = root.root().to_path_buf();
-    let temp_cache =
-        Session::temp_cache_for(&config, Some(&default_root), root.filesystem_profile());
+    let temp_cache = session_temp_cache::SessionTempCache::decide(
+        &config,
+        Some(&default_root),
+        root.filesystem_profile(),
+    );
     let session = Session {
         default_root: Some(default_root.clone()),
         filesystem_profile: root.filesystem_profile(),
@@ -461,7 +465,8 @@ impl Session {
             None
         };
         let hot_set = Self::hot_set_for(&config, persistent && owns_root && !leases.is_empty());
-        let temp_cache = Self::temp_cache_for(&config, default_root.as_deref(), profile);
+        let temp_cache =
+            session_temp_cache::SessionTempCache::decide(&config, default_root.as_deref(), profile);
         Self {
             default_root,
             filesystem_profile: profile,
@@ -486,35 +491,6 @@ impl Session {
         let budget = config.hot_set_bytes.unwrap_or(HotSet::DEFAULT_BUDGET_BYTES);
         (owns_root && budget > 0).then(|| Arc::new(HotSet::new(budget)))
     }
-
-    /// `capabilities.tempCache`: `false` under `--temp-cache off`, otherwise
-    /// the temp tier's status for this session's root (ADR 0030 section 7).
-    /// It is decided once, when the session opens.
-    #[cfg(not(target_family = "wasm"))]
-    fn temp_cache_for(
-        config: &ApplicationConfig,
-        root: Option<&Path>,
-        profile: FilesystemProfile,
-    ) -> Value {
-        let root = fylo_storage_native::TempCacheRoot::new(root, profile);
-        let status = fylo_storage_native::TempCache::assess(
-            &config.temp_cache,
-            &root,
-            std::time::SystemTime::now(),
-        );
-        status.map_or(Value::Bool(false), |status| json!(status))
-    }
-
-    /// The browser engine never uses the temp tier: OPFS is its derived
-    /// store (ADR 0003).
-    #[cfg(target_family = "wasm")]
-    fn temp_cache_for(
-        _config: &ApplicationConfig,
-        _root: Option<&Path>,
-        _profile: FilesystemProfile,
-    ) -> Value {
-        Value::Bool(false)
-    }
 }
 
 struct Session {
@@ -533,8 +509,8 @@ struct Session {
     /// The engine opened for the hot set, with the hot-set epoch it was
     /// opened in. A clear may follow a checkout, so it reopens after one.
     hot_engine: std::cell::RefCell<Option<(u64, ReadOnlyEngine)>>,
-    /// `capabilities.tempCache`, decided when the session opened.
-    temp_cache: Value,
+    /// The temp-disk read tier, decided when the session opened.
+    temp_cache: session_temp_cache::SessionTempCache,
 }
 
 /// One paginated query snapshot, held for the life of the session.
@@ -1112,7 +1088,7 @@ impl Session {
                 },
             ),
             ("hotSet".into(), self.hot_set_capability()),
-            ("tempCache".into(), self.temp_cache.clone()),
+            ("tempCache".into(), self.temp_cache.capability()),
         ])
     }
 
@@ -1334,7 +1310,10 @@ impl Session {
                 )
             })?;
         assert_repository_lease(&repository_root, &lease)?;
-        Ok(RootOpenOptions::new(root)
+        let options = self
+            .temp_cache
+            .attach(RootOpenOptions::new(root), &repository_root);
+        Ok(options
             .with_repository(repository_root)
             .with_profile(self.filesystem_profile)
             .with_lease(lease))
@@ -4923,7 +4902,7 @@ mod tests {
             persistent: false,
             hot_set: None,
             hot_engine: std::cell::RefCell::new(None),
-            temp_cache: Value::Bool(false),
+            temp_cache: session_temp_cache::SessionTempCache::off(),
         };
         let error = session
             .paginate(&json!({ "page": { "limit": 1 } }), Vec::new())

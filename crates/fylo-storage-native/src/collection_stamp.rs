@@ -58,6 +58,33 @@ impl CollectionStamp {
         self.incarnation
     }
 
+    #[cfg(not(target_family = "wasm"))]
+    /// A SHA-256 digest of every part of the stamp, the same in every
+    /// process: equal stamps give equal digests, so a temp entry keeps the
+    /// digest of the stamp it was read under (ADR 0030 section 4.4).
+    pub(crate) fn digest(&self) -> [u8; 32] {
+        use sha2::Digest;
+
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(serde_json::to_vec(&self.state).unwrap_or_default());
+        self.feed_state_file(&mut hasher);
+        hasher.update(self.incarnation.encode());
+        hasher.update([u8::from(self.files_layout)]);
+        hasher.finalize().into()
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn feed_state_file(&self, hasher: &mut sha2::Sha256) {
+        use sha2::Digest;
+
+        let Some(state_file) = &self.state_file else {
+            hasher.update([0_u8]);
+            return;
+        };
+        hasher.update([1_u8]);
+        state_file.feed(hasher);
+    }
+
     fn is_stable(&self) -> bool {
         self.state.state == GenerationStatus::Stable
     }
