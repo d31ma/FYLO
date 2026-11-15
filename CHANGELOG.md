@@ -76,6 +76,12 @@
   (`root is local` for a local root in the default `auto` mode, or `read
   path not built`). `auto` creates nothing for a local root.
 
+- **Collection stamps (ADR 0030, slice S0).** A new files-layout
+  collection gets a 16-byte `incarnation` file beside its `state.json` in
+  `.fylo-transactions/<namespace>/<name>/`, written once when the
+  collection is created. Older releases ignore it. The Rust API adds
+  `NativeCollection::collection_stamp()`, `CollectionStamp`, `FileStamp`
+  and `CollectionIncarnation`; no read path uses them yet.
 - **Query results in the hot set (ADR 0030, slice S1).** An exclusive
   session (`exec --loop --exclusive-root`, or a `FrameSession` with the
   lease) now also keeps the complete match list of each `findDocs` query
