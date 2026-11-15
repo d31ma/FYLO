@@ -18,7 +18,7 @@ mod disk_image_table;
 mod disk_reader;
 #[cfg(not(target_family = "wasm"))]
 mod disk_source;
-#[cfg(any(test, target_os = "linux", target_os = "android"))]
+#[cfg(any(all(test, unix), target_os = "linux", target_os = "android"))]
 mod linux_disks;
 #[cfg(any(test, target_os = "linux", target_os = "android"))]
 mod mount_table;
@@ -27,7 +27,7 @@ mod placement_kind;
 mod placement_report;
 mod placement_settings;
 mod root_placement;
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod scratch;
 #[cfg(not(target_family = "wasm"))]
 mod system_disk_refusal;
