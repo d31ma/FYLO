@@ -419,12 +419,16 @@ fn a_host_without_an_identity_refuses_every_crypto_call() {
 
 fn scratch(name: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!(
-        "fylo-vfs-host-{}-{}-{name}",
+        "fylo-vfs-host-{}-{}-{name}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock")
-            .as_nanos()
+            .as_nanos(),
+        {
+            static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        }
     ));
     std::fs::create_dir_all(&path).expect("scratch");
     path

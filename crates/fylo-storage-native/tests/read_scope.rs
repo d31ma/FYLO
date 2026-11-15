@@ -15,12 +15,16 @@ impl ScopeFixture {
 
     fn new(name: &str) -> Self {
         let directory = std::env::temp_dir().join(format!(
-            "fylo-read-scope-{name}-{}-{}",
+            "fylo-read-scope-{name}-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            {
+                static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            }
         ));
         let lease = RootLease::acquire(directory.join(Self::ROOT_NAME)).unwrap();
         let fixture = Self {

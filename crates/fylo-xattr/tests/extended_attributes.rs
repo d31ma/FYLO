@@ -12,12 +12,16 @@ struct Scratch(PathBuf);
 impl Scratch {
     fn new(name: &str) -> Scratch {
         let directory = std::env::temp_dir().join(format!(
-            "fylo-xattr-{name}-{}-{}",
+            "fylo-xattr-{name}-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            {
+                static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            }
         ));
         fs::create_dir_all(&directory).unwrap();
         Scratch(directory)

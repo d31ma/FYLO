@@ -64,13 +64,17 @@ struct Scratch {
 impl Scratch {
     fn new(label: &str, medium: Medium) -> Self {
         let path = std::env::temp_dir().join(format!(
-            "fylo-recreate-cache-{label}-{}-{}-{}",
+            "fylo-recreate-cache-{label}-{}-{}-{}-{}",
             medium.name(),
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            {
+                static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            }
         ));
         fs::create_dir(&path).unwrap();
         let scratch = Self {

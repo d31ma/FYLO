@@ -73,12 +73,16 @@ struct Fixture {
 impl Fixture {
     fn create(label: &str, medium: Medium) -> Self {
         let path = std::env::temp_dir().join(format!(
-            "fylo-seg-{label}-{}-{}",
+            "fylo-seg-{label}-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            {
+                static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            }
         ));
         fs::create_dir(&path).unwrap();
         let fixture = Self {
@@ -622,12 +626,16 @@ fn attributes(_path: &std::path::Path) -> Vec<(String, Vec<u8>)> {
 #[test]
 fn migration_round_trips_a_file_collection_exactly() {
     let path = std::env::temp_dir().join(format!(
-        "fylo-seg-migrate-{}-{}",
+        "fylo-seg-migrate-{}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
-            .as_nanos()
+            .as_nanos(),
+        {
+            static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        }
     ));
     fs::create_dir(&path).unwrap();
     let fixture = Fixture {
@@ -694,12 +702,16 @@ fn migration_round_trips_a_file_collection_exactly() {
 
 fn file_layout_fixture(label: &str) -> (Fixture, NativeWriteRoot) {
     let path = std::env::temp_dir().join(format!(
-        "fylo-seg-{label}-{}-{}",
+        "fylo-seg-{label}-{}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
-            .as_nanos()
+            .as_nanos(),
+        {
+            static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        }
     ));
     fs::create_dir(&path).unwrap();
     let fixture = Fixture {
@@ -784,12 +796,16 @@ fn migration_of_one_document_after_a_write_in_segments() {
 
 fn scratch(label: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
-        "fylo-seg-out-{label}-{}-{}",
+        "fylo-seg-out-{label}-{}-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
-            .as_nanos()
+            .as_nanos(),
+        {
+            static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        }
     ))
 }
 

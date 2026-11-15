@@ -28,8 +28,12 @@ impl Fixture {
             .unwrap()
             .as_nanos();
         let parent = std::env::temp_dir().join(format!(
-            "fylo-machine-companions-{}-{stamp}",
-            std::process::id()
+            "fylo-machine-companions-{}-{stamp}-{}",
+            std::process::id(),
+            {
+                static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            }
         ));
         let root = parent.join("root");
         fs::create_dir_all(&root).unwrap();

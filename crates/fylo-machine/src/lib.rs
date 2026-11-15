@@ -4404,12 +4404,16 @@ mod tests {
     #[test]
     fn serverless_queue_protocol_publishes_claims_retries_and_acknowledges() {
         let root = std::env::temp_dir().join(format!(
-            "fylo-machine-queue-{}-{}",
+            "fylo-machine-queue-{}-{}-{}",
             std::process::id(),
             fylo_storage_native::wall_clock()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            {
+                static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            }
         ));
         std::fs::create_dir_all(&root).unwrap();
         let script = [
@@ -4454,12 +4458,16 @@ mod tests {
     #[test]
     fn queue_claim_honors_a_small_response_frame_before_leasing() {
         let root = std::env::temp_dir().join(format!(
-            "fylo-machine-queue-budget-{}-{}",
+            "fylo-machine-queue-budget-{}-{}-{}",
             std::process::id(),
             fylo_storage_native::wall_clock()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            {
+                static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            }
         ));
         std::fs::create_dir_all(&root).unwrap();
         let input = format!(
@@ -4550,12 +4558,16 @@ mod tests {
     #[test]
     fn exclusive_startup_reports_a_contending_owner_in_the_handshake_frame() {
         let root = std::env::temp_dir().join(format!(
-            "fylo-machine-exclusive-{}-{}",
+            "fylo-machine-exclusive-{}-{}-{}",
             std::process::id(),
             fylo_storage_native::wall_clock()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            {
+                static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            }
         ));
         std::fs::create_dir_all(&root).unwrap();
         let held = RootLease::acquire(&root).unwrap();
@@ -4587,12 +4599,16 @@ mod tests {
     #[test]
     fn a_full_collection_refuses_puts_with_index_full() {
         let root = std::env::temp_dir().join(format!(
-            "fylo-machine-index-full-{}-{}",
+            "fylo-machine-index-full-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            {
+                static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            }
         ));
         std::fs::create_dir_all(&root).unwrap();
         let created = run(&format!(
@@ -4635,12 +4651,16 @@ mod tests {
     #[test]
     fn reshard_moves_records_and_keeps_them_readable() {
         let scratch = std::env::temp_dir().join(format!(
-            "fylo-machine-reshard-{}-{}",
+            "fylo-machine-reshard-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            {
+                static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            }
         ));
         let root = scratch.join("root");
         std::fs::create_dir_all(&root).unwrap();
@@ -4711,12 +4731,16 @@ mod tests {
     #[test]
     fn get_file_data_returns_bucket_content_inline_and_to_a_path() {
         let scratch = std::env::temp_dir().join(format!(
-            "fylo-machine-bucket-{}-{}",
+            "fylo-machine-bucket-{}-{}-{}",
             std::process::id(),
             fylo_storage_native::wall_clock()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            {
+                static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            }
         ));
         let root = scratch.join("root");
         let source = scratch.join("source.bin");
@@ -4763,12 +4787,16 @@ mod tests {
     #[test]
     fn every_timestamp_is_whole_milliseconds() {
         let scratch = std::env::temp_dir().join(format!(
-            "fylo-machine-timestamps-{}-{}",
+            "fylo-machine-timestamps-{}-{}-{}",
             std::process::id(),
             fylo_storage_native::wall_clock()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            {
+                static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            }
         ));
         let root = scratch.join("root");
         let source = scratch.join("source.bin");
@@ -4837,12 +4865,16 @@ mod tests {
     #[test]
     fn get_file_data_refuses_a_document_collection_and_an_occupied_path() {
         let scratch = std::env::temp_dir().join(format!(
-            "fylo-machine-bucket-refusal-{}-{}",
+            "fylo-machine-bucket-refusal-{}-{}-{}",
             std::process::id(),
             fylo_storage_native::wall_clock()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            {
+                static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            }
         ));
         let root = scratch.join("root");
         let occupied = scratch.join("occupied.bin");

@@ -849,12 +849,16 @@ mod tests {
 
     fn scratch(name: &str) -> PathBuf {
         let directory = std::env::temp_dir().join(format!(
-            "fylo-adopt-{name}-{}-{}",
+            "fylo-adopt-{name}-{}-{}-{}",
             std::process::id(),
             crate::wall_clock()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            {
+                static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            }
         ));
         fs::create_dir_all(&directory).unwrap();
         directory

@@ -15,12 +15,16 @@ struct Fixture(PathBuf);
 impl Fixture {
     fn create(label: &str) -> Self {
         let path = std::env::temp_dir().join(format!(
-            "fylo-schema-registry-{label}-{}-{}",
+            "fylo-schema-registry-{label}-{}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            {
+                static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            }
         ));
         fs::create_dir(&path).unwrap();
         NativeWriteRoot::open(&path)
