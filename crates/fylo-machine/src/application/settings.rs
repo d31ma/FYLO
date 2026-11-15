@@ -8,6 +8,7 @@ use fylo_storage_native::{CollectionLayout, DatabaseKey, Durability};
 use super::application_config::ApplicationConfig;
 use super::secret_reference::SecretReference;
 use super::secrets::Secrets;
+use super::temp_cache_section::TempCacheSection;
 
 pub(super) struct Settings;
 
@@ -32,7 +33,7 @@ impl Settings {
     const MAXIMUM_SHARD_WIDTH: u64 = 4;
     const MINIMUM_KEY_BYTES: usize = 32;
     const PATH_ERROR: &'static str = "must be a nonempty path without NUL";
-    const KEYS: [&'static str; 11] = [
+    const KEYS: [&'static str; 12] = [
         Self::ROOT_KEY,
         Self::STRICT_KEY,
         Self::SCHEMA_KEY,
@@ -44,6 +45,7 @@ impl Settings {
         Self::LAYOUT_KEY,
         Self::IDENTITY_KEY,
         Self::TRUST_ANCHOR_KEY,
+        TempCacheSection::KEY,
     ];
     const CREDENTIAL_ERROR: &'static str = "fylo.encryption.key and fylo.cipher.salt require paired secret references; key must contain at least 32 UTF-8 bytes and salt must not be empty";
 
@@ -87,6 +89,8 @@ impl Settings {
         Self::reject_removed_chex(settings)?;
         let identity_reference = Self::text(settings.get(Self::IDENTITY_KEY), "fylo.identity")?;
         let trust_anchor = Self::text(settings.get(Self::TRUST_ANCHOR_KEY), "fylo.trustAnchor")?;
+        let temp_cache =
+            TempCacheSection::load(settings.get(TempCacheSection::KEY), directory, &mut secrets)?;
         Ok(ApplicationConfig {
             root,
             storage: RootConfig {
@@ -101,6 +105,7 @@ impl Settings {
             database_key,
             encrypt_databases,
             hot_set_bytes: None,
+            temp_cache,
             identity_reference,
             trust_anchor,
             trust_on_first_use: false,
@@ -248,7 +253,7 @@ impl Settings {
             .ok_or_else(|| format!("{name} must be an object"))
     }
 
-    fn known_keys(
+    pub(super) fn known_keys(
         settings: &Map<String, Value>,
         allowed: &[&str],
         name: &str,
@@ -314,7 +319,7 @@ impl Settings {
         (Self::MINIMUM_SHARD_WIDTH..=Self::MAXIMUM_SHARD_WIDTH).contains(&width)
     }
 
-    fn path_setting(
+    pub(super) fn path_setting(
         value: Option<&Value>,
         name: &str,
         directory: &Path,

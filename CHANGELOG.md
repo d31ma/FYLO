@@ -65,6 +65,17 @@
 
 ### Added
 
+- **Temp cache folder (ADR 0030, slice S2).** A new `capabilities.tempCache`
+  in every handshake, the options `--temp-cache <off|auto|on>`,
+  `--temp-cache-bytes <n>` and `--temp-cache-dir <path>` (and
+  `fylo.tempCache` in `application.json`), and `fylo cache status|clear`.
+  The cache folder is private to the OS user (`0700`; on Windows a DACL for
+  the current user only), and a folder that is a link, belongs to another
+  user or is open to other users is refused and left alone. There is no
+  read path yet, so the tier is never active: the handshake reports why
+  (`root is local` for a local root in the default `auto` mode, or `read
+  path not built`). `auto` creates nothing for a local root.
+
 - **`capabilities.invocation` in the handshake.** `fylo version --output
   json` and every `handshake` report `{ "version": 1, "command": "exec
   --invocation", "options": [...], "excludedOperations": [...],

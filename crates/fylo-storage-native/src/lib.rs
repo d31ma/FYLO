@@ -90,6 +90,7 @@ mod segments;
 mod session_certificate;
 mod sidecar_attributes;
 mod spelling_cache;
+mod temp_tier;
 mod validation_mode;
 mod word_witness;
 mod write;
@@ -168,6 +169,14 @@ pub use queue::{
 pub use read_scope::ReadScope;
 pub use root_filesystem::RootFilesystem;
 pub use root_open_options::RootOpenOptions;
+#[cfg(unix)]
+pub use temp_tier::FolderOwner;
+#[cfg(not(target_family = "wasm"))]
+pub use temp_tier::{
+    CacheBudget, CacheSweep, CacheUsage, PrivateFolder, SweepReport, TempCache, TempCacheReason,
+    TempCacheRoot, TempCacheStatus,
+};
+pub use temp_tier::{TempCacheMode, TempCacheSettings};
 pub use validation_mode::ValidationMode;
 pub use write::FAILPOINTS;
 pub use write::schema_counts::SchemaVersionCounts;

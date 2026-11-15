@@ -53,14 +53,16 @@ libc = { workspace = true }
 # extents on Linux. `std` gives its descriptors and errors the standard
 # library's traits; on macOS and Linux another crate turns it on, on iOS and
 # Android nothing does.
-rustix = { workspace = true, features = ["std"] }
+# `geteuid`, the owner a private temp cache folder must have (ADR 0030
+# section 4.2).
+rustix = { workspace = true, features = ["std", "process"] }
 fylo-xattr = { version = "0.1.0", path = "../fylo-xattr" }
 
 # `LockFileEx` byte-range locks and file identity for `.vdbx` files (ADR 0016
 # section 7). Already in the graph through `errno`, `rustix` and `tokio`.
 [target.'cfg(windows)'.dependencies]
 # `FSCTL_SET_SPARSE` and `FSCTL_SET_ZERO_DATA` hole punching of free extents.
-windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Ioctl"] }
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Ioctl", "Win32_System_Threading"] }
 
 [features]
 # Hooks tests use, such as a writer that keeps segment collections in a

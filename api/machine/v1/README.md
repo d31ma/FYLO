@@ -205,6 +205,35 @@ never depend on them. Frames in one session run one at a time, reads
 included; a frame that is not a read clears the hot set before and after it
 runs.
 
+## Temp-disk read tier (`capabilities.tempCache`)
+
+ADR 0030 adds a read cache in the OS temp folder for roots on slow storage.
+This release has the folder manager only, with no read path: the tier is
+never active yet.
+
+`--temp-cache <off|auto|on>` (default `auto`), `--temp-cache-bytes <n>`
+(default 256 MiB, never more than half the free space) and
+`--temp-cache-dir <path>` set it for every `exec` mode, as do
+`fylo.tempCache.mode`, `.bytes` and `.dir` in `application.json`. A request
+never changes them. The cache folder is `fylo-cache-v1` in the base folder
+(`fylo-cache-v1-<uid>` on Linux and Android). It is private to the OS user:
+mode `0700` (Windows: a protected DACL for the current user only). A folder
+that is a link, belongs to another user or that other users may reach is
+refused and left unchanged.
+
+Every handshake reports top-level `capabilities.tempCache`: `false` under
+`--temp-cache off`, otherwise an object with `mode`, `active`, `reason`,
+`dir`, `budgetBytes`, `usedBytes` and `entries` (from the last sweep), and
+the counters `hits`, `misses`, `revalidations`, `rejected`, `writes`,
+`evictions` and `errors`. `reason` says why the tier is not active:
+`no root`, `vdbx`, `root is local` (`auto` with a root not opened with the
+EFS profile), `unsafe folder`, `cache folder is remote`, `same device`,
+`low space`, or `read path not built`. `auto` creates nothing for a local
+root.
+
+`fylo cache status [--json]` prints the folder, its entries and bytes, its
+partial files and the last sweep; `fylo cache clear` deletes the folder.
+
 ## Application identity (`identity`)
 
 Access control is per application identity on protected `.vdbx` databases

@@ -545,3 +545,25 @@ Per slice, in short:
   (`FYLO_TEST_NETWORK_ROOTS`, as ADR 0029);
 - a benchmark gate on NFS here, and a real Lambda + EFS gate in PaaS before
   `auto` becomes the default.
+
+## Slice S2: temp cache folder manager (built 2026-11-14)
+
+`fylo-storage-native` gains `TempCache` and its parts (`temp_tier/`): the
+per-OS location (4.2), `PrivateFolder` (creation with mode `0700`, the
+checks of an existing folder, and no-follow opens of files below it,
+relative to the open folder handle on Unix), `CacheSweep` (4.5: least
+recently used entries first down to 90% of the budget, partial files older
+than 10 minutes, `sweep.stamp` with the last totals), and `CacheBudget`
+(256 MiB, at most half the free space). The machine protocol reports
+`capabilities.tempCache` (section 7), and the CLI takes `--temp-cache`,
+`--temp-cache-bytes` and `--temp-cache-dir`, `fylo.tempCache` in
+`application.json`, and `fylo cache status|clear`.
+
+There is no read path yet, so the tier is never active: when every rule of
+4.1 passes, the reason is `read path not built`. `auto` creates nothing for
+a root that is not opened with the EFS profile.
+
+**Windows.** Setting and checking a protected DACL needs Win32 calls the
+standard library does not offer, so `temp_tier/windows_folder.rs` is a new
+unsafe boundary under ADR 0004, decided in ADR 0031 and listed in
+`docs/security/unsafe-inventory.md`.

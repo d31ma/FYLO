@@ -15,13 +15,16 @@ pub struct CommandFlags {
 }
 
 impl CommandFlags {
-    const HOST_VALUES: [&'static str; 8] = [
+    const HOST_VALUES: [&'static str; 11] = [
         "--config",
         "--filesystem-profile",
         "--root",
         "--schema-dir",
         "--shard-width",
         "--hot-set-bytes",
+        "--temp-cache",
+        "--temp-cache-bytes",
+        "--temp-cache-dir",
         "--identity",
         "--trust-anchor",
     ];
@@ -42,6 +45,8 @@ impl CommandFlags {
     ];
     const EXEC_SWITCHES: [&'static str; 3] = ["--invocation", "--loop", "--exclusive-root"];
     const VERSION_VALUES: [&'static str; 1] = ["--output"];
+    const CACHE_VALUES: [&'static str; 2] = ["--config", "--temp-cache-dir"];
+    const CACHE_SWITCHES: [&'static str; 3] = ["--json", "--help", "-h"];
     const ACCESS_VALUES: [&'static str; 6] = [
         "--grantee",
         "--key",
@@ -135,6 +140,7 @@ impl CommandFlags {
         match command {
             "exec" => Some(Self::host_options(&Self::EXEC_VALUES, &Self::EXEC_SWITCHES)),
             "version" => Some(Self::output_options(&Self::VERSION_VALUES, &[])),
+            "cache" => Some((Self::CACHE_VALUES.to_vec(), Self::CACHE_SWITCHES.to_vec())),
             "access" => Some(Self::output_options(
                 &Self::ACCESS_VALUES,
                 &Self::ACCESS_SWITCHES,

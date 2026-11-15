@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use fylo_identity::{Identity, IdentityId};
 use fylo_storage_native::AccessTrust;
-use fylo_storage_native::{DatabaseIdentity, DatabaseKey, RootOpenOptions};
+use fylo_storage_native::{DatabaseIdentity, DatabaseKey, RootOpenOptions, TempCacheSettings};
 
 use crate::{RootConfig, StrictValue};
 
@@ -24,6 +24,9 @@ pub struct ApplicationConfig {
     /// Memory a session holding the root's exclusive lease keeps for warm
     /// reads (ADR 0014). `None` is the default budget; zero turns it off.
     pub hot_set_bytes: Option<usize>,
+    /// `fylo.tempCache`, or `--temp-cache`, `--temp-cache-bytes` and
+    /// `--temp-cache-dir`: the temp-disk read tier (ADR 0030 section 7).
+    pub temp_cache: TempCacheSettings,
     /// `fylo.identity`, or `FYLO_IDENTITY`: the key reference of the
     /// application identity a protected `.vdbx` database opens with
     /// (ADR 0021).

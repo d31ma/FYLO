@@ -801,6 +801,8 @@ function normalizeHandshake(value) {
     delete normalized.capabilities?.filesystemMetadata
     // `exec --invocation` (ADR 0028) is newer than every released build.
     delete normalized.capabilities?.invocation
+    // So is the temp-disk read tier (ADR 0030), whose status names a folder.
+    delete normalized.capabilities?.tempCache
     delete normalized.identity
     delete normalized.storage
     return normalized

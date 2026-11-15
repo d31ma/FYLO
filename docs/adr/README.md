@@ -50,6 +50,7 @@ ADR.
 | [0028](0028-cli-invocation-mode.md)                        | Accepted | CLI invocation mode `fylo exec --invocation` (local use; not qualified for deployment) |
 | [0029](0029-no-root-on-a-network-filesystem.md)            | Accepted | No root on a network filesystem (`EREMOTEROOT`) |
 | [0030](0030-tiered-read-cache.md)                          | Proposed | Tiered read cache (temp-disk documents, in-memory query results); slice R cuts file calls per read |
+| [0031](0031-windows-acl-for-the-temp-cache-folder.md)          | Accepted | Windows ACL for the temp cache folder (one Windows-only unsafe boundary) |
 
 ## When another ADR is required
 

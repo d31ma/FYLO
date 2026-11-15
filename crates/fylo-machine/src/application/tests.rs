@@ -378,3 +378,61 @@ fn a_new_database_key_is_named_by_a_secret_reference_as_the_configured_one_is() 
     );
     assert!(resolve("prefix-${FYLO_UNIT_NEXT_KEY}").is_err());
 }
+
+#[test]
+fn temp_cache_settings_default_to_auto_with_no_budget_or_folder() {
+    let fixture = Fixture::new();
+    let config = fixture.load(Fixture::EMPTY_CONFIG).unwrap();
+    assert_eq!(
+        config.temp_cache,
+        fylo_storage_native::TempCacheSettings::default()
+    );
+    assert_eq!(
+        config.temp_cache.mode,
+        fylo_storage_native::TempCacheMode::Auto
+    );
+}
+
+#[test]
+fn temp_cache_settings_are_read_with_a_folder_relative_to_the_file() {
+    let fixture = Fixture::new();
+    let config = fixture
+        .load(r#"{"fylo":{"tempCache":{"mode":"on","bytes":4096,"dir":"cache-base"}}}"#)
+        .unwrap();
+    assert_eq!(
+        config.temp_cache.mode,
+        fylo_storage_native::TempCacheMode::On
+    );
+    assert_eq!(config.temp_cache.bytes, Some(4096));
+    assert_eq!(config.temp_cache.dir, Some(fixture.0.join("cache-base")));
+}
+
+#[test]
+fn temp_cache_setting_errors_are_stable() {
+    let fixture = Fixture::new();
+    for (source, expected) in [
+        (
+            r#"{"fylo":{"tempCache":"on"}}"#,
+            "fylo.tempCache must be an object",
+        ),
+        (
+            r#"{"fylo":{"tempCache":{"mode":"always"}}}"#,
+            "fylo.tempCache.mode must be",
+        ),
+        (
+            r#"{"fylo":{"tempCache":{"bytes":-1}}}"#,
+            "fylo.tempCache.bytes must be",
+        ),
+        (
+            r#"{"fylo":{"tempCache":{"dir":""}}}"#,
+            "fylo.tempCache.dir must be",
+        ),
+        (
+            r#"{"fylo":{"tempCache":{"size":1}}}"#,
+            "unknown key under fylo.tempCache",
+        ),
+    ] {
+        let error = fixture.error(source);
+        assert!(error.contains(expected), "{source}: {error}");
+    }
+}
