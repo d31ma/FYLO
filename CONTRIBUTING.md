@@ -47,7 +47,10 @@ CI. This includes `cargo run` of the `fylo` server in a checkout, which then
 prints `FYLO warning: system-disk check disabled by FYLO_ALLOW_SYSTEM_DISK=1`
 on stderr. Run a real server from a built release binary, not from
 `cargo run` in a checkout. Tests of the rule itself start `fylo` with the
-variable removed (`crates/fylo-cli/tests/system_disk.rs`).
+variable removed (`crates/fylo-cli/tests/system_disk.rs`). In Bun, a value the
+preload file sets does not reach `Bun.spawn` unless the call passes
+`env: { ...process.env }`, so a test that starts `fylo` (or a client that
+starts it) passes its environment that way.
 
 Browser/Wasm changes also run `bun run build:web:wasm` and the compiled-module
 browser corpus. Transaction, platform, backup, and release changes require

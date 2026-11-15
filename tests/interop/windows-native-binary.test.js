@@ -21,7 +21,8 @@ afterAll(async () => {
 async function invoke(request) {
     const child = Bun.spawn([binary, 'exec', '--request', JSON.stringify(request)], {
         stdout: 'pipe',
-        stderr: 'pipe'
+        stderr: 'pipe',
+        env: { ...process.env }
     })
     const [stdout, stderr, exitCode] = await Promise.all([
         new Response(child.stdout).text(),

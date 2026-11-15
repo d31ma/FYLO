@@ -46,7 +46,8 @@ async function fixture() {
 async function patch(root) {
     const child = Bun.spawn([process.execPath, '--no-env-file', script, root], {
         stdout: 'pipe',
-        stderr: 'pipe'
+        stderr: 'pipe',
+        env: { ...process.env }
     })
     const timeout = setTimeout(() => child.kill(), 10_000)
     try {

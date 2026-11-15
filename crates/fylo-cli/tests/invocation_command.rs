@@ -89,13 +89,18 @@ impl Fixture {
         format!("{}{high}{low}", Self::ID_PREFIX)
     }
 
-    /// One answer frame on stdout, nothing on stderr, and an exit code that
-    /// matches the frame's `ok`.
+    /// One answer frame on stdout, nothing on stderr but the system-disk
+    /// opt-out's warning (ADR 0032; the tests run with the opt-out on), and
+    /// an exit code that matches the frame's `ok`.
     fn frame(output: &Output, ok: bool) -> Value {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert_eq!(output.status.success(), ok, "{stdout}{stderr}");
-        assert!(stderr.is_empty(), "{stderr}");
+        let other: Vec<&str> = stderr
+            .lines()
+            .filter(|line| !line.starts_with("FYLO warning: system-disk check disabled by "))
+            .collect();
+        assert!(other.is_empty(), "{stderr}");
         assert_eq!(stdout.lines().count(), 1, "{stdout}");
         let frame: Value = serde_json::from_str(stdout.trim_end()).unwrap();
         assert_eq!(frame["ok"], json!(ok), "{frame}");

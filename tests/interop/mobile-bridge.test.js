@@ -545,7 +545,11 @@ struct Runtime {
         ])
         if (compileExit !== 0) throw new Error(compileError)
 
-        const runtime = Bun.spawn([executable], { stdout: 'pipe', stderr: 'pipe' })
+        const runtime = Bun.spawn([executable], {
+            stdout: 'pipe',
+            stderr: 'pipe',
+            env: { ...process.env }
+        })
         const [runtimeExit, output, runtimeError] = await Promise.all([
             runtime.exited,
             new Response(runtime.stdout).text(),

@@ -179,7 +179,11 @@ assert(meta.rating === 4 && !('starred' in meta), 'setMeta update and remove')
             script,
             `${program}\n${checks}\nawait db.close()\nconsole.log('bucket sample ok')\n`
         )
-        const child = Bun.spawn(['node', script], { stdout: 'pipe', stderr: 'pipe' })
+        const child = Bun.spawn(['node', script], {
+            stdout: 'pipe',
+            stderr: 'pipe',
+            env: { ...process.env }
+        })
         const [stdout, stderr, exitCode] = await Promise.all([
             new Response(child.stdout).text(),
             new Response(child.stderr).text(),
