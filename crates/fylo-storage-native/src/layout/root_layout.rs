@@ -154,8 +154,15 @@ impl RootLayout {
     /// claim of a lease generation.
     #[must_use]
     pub fn lease_claim_path(&self, namespace: &NamespaceName, generation: u64) -> PathBuf {
-        let suffix = format!("{}.{generation}", Self::LEASE_CLAIM_SUFFIX);
-        self.hidden_namespace_file(namespace, &suffix)
+        let name = format!("{}{generation}", Self::lease_claim_prefix(namespace));
+        self.app_folder.join(name)
+    }
+
+    /// `.<namespace>.fylo-root-owner.claim.`: the start of every claim file
+    /// name of a namespace; the generation follows it.
+    #[must_use]
+    pub fn lease_claim_prefix(namespace: &NamespaceName) -> String {
+        format!(".{namespace}.{}.", Self::LEASE_CLAIM_SUFFIX)
     }
 
     /// `<app>/.<namespace>.fylo-root-turn.lock`: the namespace's fair-wait
@@ -318,6 +325,10 @@ mod tests {
         assert_eq!(
             layout.lease_claim_path(&billing, 7),
             Path::new("/mnt/data/chat/.billing.fylo-root-owner.claim.7")
+        );
+        assert_eq!(
+            RootLayout::lease_claim_prefix(&billing),
+            ".billing.fylo-root-owner.claim."
         );
         assert_eq!(
             layout.turn_lock_path(&billing),
