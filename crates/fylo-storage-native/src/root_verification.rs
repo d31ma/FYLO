@@ -14,8 +14,8 @@ use std::path::Path;
 /// write is never reported as damage.
 ///
 /// A document that cannot be read or is not JSON, a file whose bytes do not
-/// match its checksum, and an index that no longer matches its documents
-/// are each listed with the file and its code. Nothing is repaired: an
+/// match its checksum, and an index that names a document that is gone are
+/// each listed with the file and its code. Nothing is repaired: an
 /// index is rebuilt with `rebuildCollection`, and a document is restored
 /// from a backup.
 pub struct RootVerification<'a> {
@@ -27,7 +27,6 @@ pub struct RootVerification<'a> {
 impl<'a> RootVerification<'a> {
     const COLLECTION_FOLDERS: [&'static str; 2] = [".collections", ".buckets"];
     const NOT_JSON: &'static str = "ENATIVE_DOCUMENT";
-    const INDEX_DIFFERS: &'static str = "ENATIVE_INDEX";
 
     #[must_use]
     pub fn run(writer: &'a NativeWriteRoot, root: &'a NativeRoot) -> RootVerificationReport {
@@ -125,29 +124,13 @@ impl<'a> RootVerification<'a> {
             .push(RootDamage::new(collection, path, Self::NOT_JSON, message));
     }
 
+    /// An index key that names a document that is gone (a rename that
+    /// never reached the disk) fails the reference check with
+    /// `ENATIVE_INDEX`.
     fn check_index(&mut self, collection: &NativeCollection) {
-        match collection.verify_index_references() {
-            Ok(verification) => {
-                self.check_index_matches(collection, verification.rebuild_equivalent);
-            }
-            Err(error) => self.damage(collection.name(), collection.path(), &error),
+        if let Err(error) = collection.verify_index_references() {
+            self.damage(collection.name(), collection.path(), &error);
         }
-    }
-
-    fn check_index_matches(&mut self, collection: &NativeCollection, matches: bool) {
-        if matches {
-            return;
-        }
-        let message = format!(
-            "the index of collection {} does not match its documents; run rebuildCollection",
-            collection.name()
-        );
-        self.report.damaged.push(RootDamage::new(
-            collection.name(),
-            collection.path(),
-            Self::INDEX_DIFFERS,
-            message,
-        ));
     }
 
     fn check_raw_files(&mut self, collection: &NativeCollection) {
