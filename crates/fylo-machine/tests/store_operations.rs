@@ -77,7 +77,9 @@ impl Fixture {
     }
 
     fn save(&self, entity: Value) -> Value {
-        self.result(json!({ "op": "storeSave", "collection": Self::COLLECTION, "entity": entity }))
+        let mut request = json!({ "op": "storeSave", "collection": Self::COLLECTION });
+        request["entity"] = entity;
+        self.result(request)
     }
 
     fn seed(&self) -> Vec<String> {
@@ -456,7 +458,7 @@ fn reads_inside_see_the_transaction_and_outside_only_after_commit() {
     assert_eq!(Fixture::titles(&outside), ["alpha"]);
     let committed = live.result(op("transactionCommit", json!({ "transaction": handle })));
     assert_eq!(committed, json!({ "committed": true, "writes": 2 }));
-    let after = fixture.result(in_tickets("storeFind", json!({})));
+    let after = live.result(in_tickets("storeFind", json!({})));
     assert_eq!(Fixture::titles(&after), ["alpha 2", "bravo"]);
 }
 
@@ -475,10 +477,7 @@ fn a_rollback_changes_nothing_and_ends_the_handle() {
         live.code(op("transactionCommit", json!({ "transaction": handle }))),
         json!("ETXNUNKNOWN")
     );
-    assert_eq!(
-        fixture.result(in_tickets("storeCount", json!({}))),
-        json!(0)
-    );
+    assert_eq!(live.result(in_tickets("storeCount", json!({}))), json!(0));
 }
 
 #[test]
@@ -503,10 +502,7 @@ fn another_collection_or_a_queue_operation_is_out_of_scope_and_rolls_back() {
         live.code(op("transactionRollback", json!({ "transaction": second }))),
         json!("ETXNUNKNOWN")
     );
-    assert_eq!(
-        fixture.result(in_tickets("storeCount", json!({}))),
-        json!(0)
-    );
+    assert_eq!(live.result(in_tickets("storeCount", json!({}))), json!(0));
 }
 
 #[test]
@@ -545,10 +541,7 @@ fn a_transaction_past_its_time_limit_is_expired() {
         json!({ "transaction": handle, "entity": { "title": "late" } }),
     );
     assert_eq!(live.code(request), json!("ETXNEXPIRED"));
-    assert_eq!(
-        fixture.result(in_tickets("storeCount", json!({}))),
-        json!(0)
-    );
+    assert_eq!(live.result(in_tickets("storeCount", json!({}))), json!(0));
 }
 
 #[test]
