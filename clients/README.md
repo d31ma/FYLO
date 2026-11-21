@@ -74,20 +74,20 @@ follow **each language's own paradigm** — `snake_case` in Python/Ruby,
 `camelCase` in Node/PHP/Java/Dart, `PascalCase` in Go/C# (their
 exported/public methods must be capitalized):
 
-| Op            | Python / Ruby        | Node / PHP / Java / Dart | Go / C#         |
-| ------------- | -------------------- | ------------------------ | --------------- |
-| putData       | `put_data`           | `putData`                | `PutData`       |
-| getMeta       | `get_meta`           | `getMeta`                | `GetMeta`       |
-| setMeta       | `set_meta`           | `setMeta`                | `SetMeta`       |
-| setWordFields | `set_word_fields`    | `setWordFields`          | `SetWordFields` |
-| findDocs      | `find_docs`          | `findDocs`               | `FindDocs`      |
-| findDocsPage  | `find_docs_page`     | `findDocsPage`           | `FindDocsPage`  |
-| findPage      | `find_page`          | `findPage`               | `FindPage`      |
-| changes       | `changes`            | `changes`                | `Changes`       |
-| executeSQL    | `execute_sql`        | `executeSQL`             | `ExecuteSQL`    |
-| queuePublish  | `queue_publish`      | `queuePublish`           | `QueuePublish`  |
-| queueClaim    | `queue_claim`        | `queueClaim`             | `QueueClaim`    |
-| queueAck      | `queue_ack`          | `queueAck`               | `QueueAck`      |
+| Op            | Python / Ruby     | Node / PHP / Java / Dart | Go / C#         |
+| ------------- | ----------------- | ------------------------ | --------------- |
+| putData       | `put_data`        | `putData`                | `PutData`       |
+| getMeta       | `get_meta`        | `getMeta`                | `GetMeta`       |
+| setMeta       | `set_meta`        | `setMeta`                | `SetMeta`       |
+| setWordFields | `set_word_fields` | `setWordFields`          | `SetWordFields` |
+| findDocs      | `find_docs`       | `findDocs`               | `FindDocs`      |
+| findDocsPage  | `find_docs_page`  | `findDocsPage`           | `FindDocsPage`  |
+| findPage      | `find_page`       | `findPage`               | `FindPage`      |
+| changes       | `changes`         | `changes`                | `Changes`       |
+| executeSQL    | `execute_sql`     | `executeSQL`             | `ExecuteSQL`    |
+| queuePublish  | `queue_publish`   | `queuePublish`           | `QueuePublish`  |
+| queueClaim    | `queue_claim`     | `queueClaim`             | `QueueClaim`    |
+| queueAck      | `queue_ack`       | `queueAck`               | `QueueAck`      |
 
 The larger dynamic shims cover the full common machine-operation set, including
 batch, bulk, deleted-document, and join helpers. Compact compiled-language
@@ -240,7 +240,6 @@ letters, digits, `.`, `_`, or `-`. Each value must be JSON-serializable and no
 larger than 60 KiB after UTF-8 JSON encoding. The local executable stores
 metadata as filesystem xattrs; the browser client uses an internal OPFS sidecar.
 
-
 ```js
 // Node shim; use the naming convention from the table in other languages.
 await db.users.setMeta(id, { source: 'import', reviewed: false })
@@ -281,17 +280,17 @@ Every client has `executeSQL(sql)` for a raw string (`execute_sql` in
 Python/Ruby, `ExecuteSQL` in Go/C#). Each also exposes a `sql` helper you
 interpolate with your language's **native** syntax:
 
-| Language         | Interpolation                            | Escapes values? |
-| ---------------- | ---------------------------------------- | --------------- |
-| Node/TS          | `` db.sql`… ${x}` `` (tagged template)   | ✅ safe         |
-| Browser (JS)     | `` db.sql`… ${x}` `` (tagged template)   | ✅ safe         |
-| C#               | `db.Sql($"… {x}")` (`FormattableString`) | ✅ safe         |
-| Python           | `db.sql(f"… {x}")`                       | ❌ verbatim     |
-| Ruby             | `db.sql("… #{x}")`                       | ❌ verbatim     |
-| PHP              | `$db->sql("… $x")`                       | ❌ verbatim     |
-| Go               | `db.Sql(fmt.Sprintf("… %v", x))`         | ❌ verbatim     |
-| Java             | `db.sql("… " + x)`                       | ❌ verbatim     |
-| Dart             | `db.sql("… $x")`                         | ❌ verbatim     |
+| Language     | Interpolation                            | Escapes values? |
+| ------------ | ---------------------------------------- | --------------- |
+| Node/TS      | `` db.sql`… ${x}` `` (tagged template)   | ✅ safe         |
+| Browser (JS) | `` db.sql`… ${x}` `` (tagged template)   | ✅ safe         |
+| C#           | `db.Sql($"… {x}")` (`FormattableString`) | ✅ safe         |
+| Python       | `db.sql(f"… {x}")`                       | ❌ verbatim     |
+| Ruby         | `db.sql("… #{x}")`                       | ❌ verbatim     |
+| PHP          | `$db->sql("… $x")`                       | ❌ verbatim     |
+| Go           | `db.Sql(fmt.Sprintf("… %v", x))`         | ❌ verbatim     |
+| Java         | `db.sql("… " + x)`                       | ❌ verbatim     |
+| Dart         | `db.sql("… $x")`                         | ❌ verbatim     |
 
 Node, the browser client, and C# hand the interpolated values to the client,
 which escapes them — those are injection-safe. The rest interpolate **before** the client sees the
@@ -342,16 +341,16 @@ Every binary-backed shim accepts an optional `application.json` configuration
 path. Settings live under `fylo`, with nested keys such as `fylo.shard.width`.
 The former `env` file/map option is replaced by `config`:
 
-| SDK             | Configuration                                                                                                    |
-| --------------- | ---------------------------------------------------------------------------------------------------------------- |
-| Node/TypeScript | `new Fylo(root, { config: './application.json' })`                                                               |
-| Python          | `Fylo(root, config='./application.json')`                                                                        |
-| Ruby            | `Fylo.open(root, config: './application.json')`                                                                  |
-| PHP             | `new Fylo($root, 'fylo', './application.json')`                                                                  |
-| Go              | `fylo.OpenWithOptions(root, fylo.Options{Config: "./application.json"})`                                         |
-| Java            | `new Fylo(root, options)` with `options.config = "./application.json"`                                           |
-| C#              | `new Fylo.Fylo(root, new Fylo.Fylo.Options { Config = "./application.json" })`                                   |
-| Dart            | `Fylo.open(root, config: './application.json')`                                                                  |
+| SDK             | Configuration                                                                  |
+| --------------- | ------------------------------------------------------------------------------ |
+| Node/TypeScript | `new Fylo(root, { config: './application.json' })`                             |
+| Python          | `Fylo(root, config='./application.json')`                                      |
+| Ruby            | `Fylo.open(root, config: './application.json')`                                |
+| PHP             | `new Fylo($root, 'fylo', './application.json')`                                |
+| Go              | `fylo.OpenWithOptions(root, fylo.Options{Config: "./application.json"})`       |
+| Java            | `new Fylo(root, options)` with `options.config = "./application.json"`         |
+| C#              | `new Fylo.Fylo(root, new Fylo.Fylo.Options { Config = "./application.json" })` |
+| Dart            | `Fylo.open(root, config: './application.json')`                                |
 
 Each component can choose its own configuration file:
 
