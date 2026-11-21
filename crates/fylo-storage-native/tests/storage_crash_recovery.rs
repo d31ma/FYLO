@@ -273,8 +273,10 @@ mod snapshots {
     }
 
     fn copy_tree(from: &Path, to: &Path) {
+        // `-a` keeps extended attributes on Linux too (a raw file's key is
+        // one), as a filesystem snapshot does; `-Rp` drops them there.
         let status = Command::new("cp")
-            .arg("-Rp")
+            .arg("-a")
             .arg(from)
             .arg(to)
             .status()
