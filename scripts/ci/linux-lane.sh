@@ -45,6 +45,10 @@ fylo_lane_stage_root() {
   echo "$HOME/Library/Caches/fylo-linux-lane"
 }
 
+fylo_lane_log_folder() {
+  echo "${LOG_ROOT:-$HOME/Library/Logs/local}/FYLO/linux-lane"
+}
+
 fylo_lane_say() {
   echo "=== linux lane $(date +%H:%M:%S): $*" >&2
 }
@@ -133,19 +137,20 @@ fylo_lane_run_in() {
 }
 
 fylo_lane_run() {
-  local owner="$1" image="$2" stage started status
+  local owner="$1" image="$2" stage log started status
   shift 2
   stage="$(fylo_lane_stage_root)/$$"
-  mkdir -p "$(fylo_lane_stage_root)" || return 1
+  log="$(fylo_lane_log_folder)/colima-$(date +%Y%m%d-%H%M%S)-$$.log"
+  mkdir -p "$(fylo_lane_stage_root)" "$(fylo_lane_log_folder)" || return 1
   DOCKER_HOST="$(fylo_lane_docker_host)" || return 1
   export DOCKER_HOST
-  fylo_lane_start_colima "$stage.colima.log"
+  fylo_lane_start_colima "$log"
   started=$?
   [ "$started" -ne 2 ] || return 1
   fylo_lane_run_in "$stage" "$owner" "$image" "$@"
   status=$?
   rm -rf "$stage"
-  [ "$started" -ne 0 ] || fylo_lane_stop_colima "$stage.colima.log"
+  [ "$started" -ne 0 ] || fylo_lane_stop_colima "$log"
   fylo_lane_say "done rc=$status"
   return "$status"
 }
