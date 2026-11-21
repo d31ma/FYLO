@@ -966,6 +966,33 @@ impl ContainerFile {
         Ok(allocation)
     }
 
+    /// Take `count` consecutive extents, the lowest free run that holds
+    /// them or new ones at the end, and write their headers, as
+    /// [`Self::allocate`] does for one: a large object's extents (ADR 0034
+    /// section 1).
+    ///
+    /// # Errors
+    ///
+    /// Returns the write or resize failure, after which nothing is taken.
+    pub fn allocate_run(
+        &mut self,
+        kind: ContainerExtentKind,
+        owner: u32,
+        count: usize,
+    ) -> Result<Vec<ContainerExtentAllocation>, ContainerError> {
+        self.require_writable()?;
+        let (saved, length) = (self.allocator.clone(), self.file().metadata()?.len());
+        let run = self.allocator.allocate_run(kind, owner, count);
+        let prepared = run
+            .iter()
+            .try_for_each(|allocation| self.prepare_extent(*allocation, kind, owner));
+        if let Err(error) = prepared {
+            self.roll_back(saved, length);
+            return Err(error.into());
+        }
+        Ok(run)
+    }
+
     /// Grow the file to hold a new extent, or clear a reused segment
     /// extent, and write the extent's header.
     fn prepare_extent(

@@ -89,7 +89,10 @@ impl<'a> ContainerObjectWriter<'a> {
     ) -> Result<ContainerObject, ContainerObjectError> {
         let left = self.object.length - self.written;
         let copied = io::copy(&mut source.take(left.saturating_add(1)), &mut self);
-        self.finish_after(copied.map_err(ContainerObjectError::from_read))
+        let result = copied
+            .map_err(ContainerObjectError::from_read)
+            .and_then(|_| self.complete());
+        self.settle(result)
     }
 
     /// Write the next bytes of the object.
@@ -114,10 +117,7 @@ impl<'a> ContainerObjectWriter<'a> {
     /// written, or the write or flush failure. The extents stay taken; call
     /// [`Self::abandon`] instead to release them.
     pub fn finish(mut self) -> Result<ContainerObject, ContainerObjectError> {
-        self.write_partial_chunk()?;
-        self.require_complete()?;
-        self.container.sync()?;
-        self.object.sha256 = ContainerObject::hex(&self.hasher.finalize());
+        self.complete()?;
         Ok(self.object)
     }
 
@@ -131,15 +131,24 @@ impl<'a> ContainerObjectWriter<'a> {
         Self::release_all(self.container, &self.object.extents())
     }
 
-    fn finish_after(
+    fn complete(&mut self) -> Result<(), ContainerObjectError> {
+        self.write_partial_chunk()?;
+        self.require_complete()?;
+        self.container.sync()?;
+        let digest = std::mem::take(&mut self.hasher).finalize();
+        self.object.sha256 = ContainerObject::hex(&digest);
+        Ok(())
+    }
+
+    fn settle(
         self,
-        copied: Result<u64, ContainerObjectError>,
+        result: Result<(), ContainerObjectError>,
     ) -> Result<ContainerObject, ContainerObjectError> {
-        if let Err(error) = copied {
+        if let Err(error) = result {
             self.abandon()?;
             return Err(error);
         }
-        self.finish()
+        Ok(self.object)
     }
 
     fn require_size(length: u64) -> Result<(), ContainerObjectError> {
@@ -159,24 +168,8 @@ impl<'a> ContainerObjectWriter<'a> {
         owner: u32,
         count: u64,
     ) -> Result<Vec<ContainerExtentAllocation>, ContainerObjectError> {
-        let mut taken = Vec::new();
-        for _ in 0..count {
-            match container.allocate(ContainerExtentKind::Object, owner) {
-                Ok(allocation) => taken.push(allocation),
-                Err(error) => return Self::undo_take(container, &taken, error.into()),
-            }
-        }
-        Ok(taken)
-    }
-
-    fn undo_take(
-        container: &mut ContainerFile,
-        taken: &[ContainerExtentAllocation],
-        error: ContainerObjectError,
-    ) -> Result<Vec<ContainerExtentAllocation>, ContainerObjectError> {
-        let extents: Vec<u64> = taken.iter().map(|allocation| allocation.index).collect();
-        Self::release_all(container, &extents)?;
-        Err(error)
+        let count = Self::to_usize(count)?;
+        Ok(container.allocate_run(ContainerExtentKind::Object, owner, count)?)
     }
 
     fn describe(

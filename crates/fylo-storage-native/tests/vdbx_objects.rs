@@ -141,6 +141,28 @@ impl Database {
         file.sync_all().unwrap();
     }
 
+    fn fill_until_reused(&mut self, id: &str, extent: u64) -> ContainerObject {
+        for _ in 0..64 {
+            let filler = self.put(id, b"x", None);
+            if filler.extents().contains(&extent) {
+                return filler;
+            }
+        }
+        panic!("extent {extent} was never reused");
+    }
+
+    fn fill_free_below(&mut self, extent: u64) {
+        while self
+            .container
+            .allocator()
+            .free_extents()
+            .first()
+            .is_some_and(|free| *free < extent)
+        {
+            self.put("filler", b"x", None);
+        }
+    }
+
     fn slot_bytes(&self, encrypted: bool) -> usize {
         usize::try_from(self.layout(encrypted).slot_bytes).unwrap()
     }
@@ -327,11 +349,9 @@ impl Write for HashSink {
     }
 }
 
-#[test]
-fn streams_an_object_of_the_full_limit() {
-    let mut db = database("full-limit", DEFAULT_SHIFT);
+fn stream_through(label: &str, length: u64) {
+    let mut db = database(label, DEFAULT_SHIFT);
     let target = db.target("video");
-    let length = ContainerObject::MAX_BYTES;
     let mut source = Pattern {
         left: length,
         state: 5,
@@ -351,6 +371,17 @@ fn streams_an_object_of_the_full_limit() {
     let mut read = HashSink(Sha256::new());
     assert_eq!(io::copy(&mut reader, &mut read).unwrap(), length);
     assert_eq!(object.sha256, ContainerObject::hex(&read.0.finalize()));
+}
+
+#[test]
+fn streams_a_large_encrypted_object() {
+    stream_through("stream", 64 * MIB + 5);
+}
+
+#[test]
+#[ignore = "writes and reads 512 MiB, about 5 minutes in a debug build: run with --run-ignored"]
+fn streams_an_object_of_the_full_limit() {
+    stream_through("full-limit", ContainerObject::MAX_BYTES);
 }
 
 #[test]
@@ -462,8 +493,7 @@ fn a_deleted_object_frees_its_extents_only_after_the_checkpoint() {
             .all(|extent| !old.extents().contains(extent))
     );
     db.container.checkpoint().unwrap();
-    let after = db.put("after", &pattern(8 * MIB, 16), None);
-    assert!(after.extents().contains(&old.extents()[0]));
+    db.fill_until_reused("filler", old.extents()[0]);
     let error = db.get(&old, None).unwrap_err();
     assert!(matches!(error, ContainerObjectError::NotFound), "{error}");
 }
@@ -476,8 +506,7 @@ fn a_reader_of_the_same_record_id_never_reads_a_later_write() {
         db.container.release(extent).unwrap();
     }
     db.container.checkpoint().unwrap();
-    let second = db.put("same", &pattern(8 * MIB, 18), None);
-    assert!(second.extents().contains(&first.extents()[0]));
+    let second = db.fill_until_reused("same", first.extents()[0]);
     assert_ne!(second.stamp, first.stamp);
     let error = db.get(&first, None).unwrap_err();
     assert!(matches!(error, ContainerObjectError::NotFound), "{error}");
@@ -513,8 +542,7 @@ fn compaction_moves_objects_down_with_their_frames_unchanged() {
     assert_eq!(db.get(&relocated, Some(&FILE_KEY)).unwrap(), bytes);
     assert_eq!(db.get(&moved, Some(&FILE_KEY)).unwrap(), bytes);
     db.container.checkpoint().unwrap();
-    let reuser = db.put("reuser", &pattern(12 * MIB, 21), None);
-    assert!(reuser.extents().contains(&moved.extents()[0]));
+    db.fill_until_reused("filler", moved.extents()[0]);
     let error = db.get(&moved, Some(&FILE_KEY)).unwrap_err();
     assert!(matches!(error, ContainerObjectError::NotFound), "{error}");
     assert_eq!(db.get(&relocated, Some(&FILE_KEY)).unwrap(), bytes);
@@ -524,6 +552,7 @@ fn compaction_moves_objects_down_with_their_frames_unchanged() {
 fn compaction_leaves_an_object_with_no_lower_free_extent() {
     let mut db = database("no-move", SMALL_SHIFT);
     let object = db.put("front", &pattern(MIB, 22), None);
+    db.fill_free_below(object.extents()[0]);
     assert!(
         ContainerObjectMover::relocate(&mut db.container, &object)
             .unwrap()
