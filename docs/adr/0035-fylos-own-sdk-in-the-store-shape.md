@@ -238,6 +238,21 @@ ship in the same release (DB-2 builds).
 `api/store/v1` (README and `schema.json`), `api/machine/v2` and
 `api/sql/v1` carry these changes.
 
+### Amendment 2 (2026-11-21): SQL that works today keeps working
+
+Mesail's devicebox app sends raw SQL to `fylo://` through TACHYON, and it
+works on FYLO today. What a user depends on today must keep working, so
+`api/sql/v1` gains three rules. Built in SDK-4, whose tests run Mesail's
+statements unchanged.
+
+1. **Dotted field paths.** `<f>` may be a dotted path into nested objects
+   (`waiting.<deviceKey> = true`), in `WHERE`, the select list and `ORDER
+   BY`, as FYLO's SQL accepts today. The draft allowed top-level names only.
+2. **Bound `LIMIT` and `OFFSET`.** Both accept a parameter (TACHYON sends
+   `LIMIT ?2`), checked against the same bounds.
+3. **Case.** Keywords and the literals `TRUE`, `FALSE` and `NULL` are
+   case-insensitive (Mesail writes `true`).
+
 ## Consequences
 
 - **Breaking Changes** (CHANGELOG of the next release): machine protocol v2;

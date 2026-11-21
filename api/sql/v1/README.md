@@ -22,6 +22,9 @@ in FYLO (Turso was removed by ADR 0035).
 - At most 64 parameters. A parameter is a scalar: string, finite number,
   boolean or `null`.
 - A parameter is always a value, never a name or SQL text.
+- Keywords, and the literals `TRUE`, `FALSE` and `NULL`, are
+  case-insensitive (`true`, `Select`, `null` are the same as `TRUE`,
+  `SELECT`, `NULL`). Collection and field names are case-sensitive.
 - The handshake answers `capabilities.sql: 1` when this contract is built.
 
 ## Statements
@@ -44,7 +47,12 @@ in FYLO 26.45.07; they are not part of the Store plan.
 
 - `<c>` is a collection, or `<namespace>.<collection>` (ADR 0033). Without a
   namespace, the request's `namespace`, else `public`.
-- `<f>` is a top-level field name. `id` is the document id.
+- `<f>` is a field name, or a dotted path into nested objects such as
+  `waiting.device42` (ADR 0035, Amendment 2; FYLO's SQL accepts this today).
+  A path walks objects only: a step that is missing, or that is not an
+  object, makes the value missing. A dotted path may appear in `WHERE`, in
+  the select list and in `ORDER BY`. `id` is the document id. (The Store's
+  queries name top-level fields only.)
 - `UPDATE` and `DELETE` with a `WHERE` change every matching row in one log
   record, all or none (as today). Without `WHERE` they change every row.
 
@@ -74,6 +82,9 @@ in FYLO 26.45.07; they are not part of the Store plan.
   added as the last tie-breaker.
 - `LIMIT n`: 1 to 1,000 (default: all matching rows, up to the response
   limit). `OFFSET k`: 0 or more.
+- `n` and `k` may be bound parameters (`LIMIT ?2 OFFSET ?3`, `LIMIT :size`;
+  Amendment 2). The value must be a non-negative integer within the same
+  bounds; any other value fails with `EUNSUPPORTEDSQL`.
 
 ## Types
 
