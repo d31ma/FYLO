@@ -8,7 +8,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use fylo_engine::{ReadOnlyEngine, WriteEngine};
 use fylo_query::{StorePage, StoreQuery, StoreScrollPage};
-use fylo_storage_native::{CollectionKind, CollectionLayout, DocumentWrite, NativeWriteRoot};
+use fylo_storage_native::{
+    CollectionKind, CollectionLayout, DocumentWrite, NativeStorageErrorCode, NativeWriteRoot,
+};
 use serde_json::{Map, Value, json};
 
 struct Fixture(PathBuf);
@@ -73,7 +75,7 @@ impl Fixture {
     }
 
     fn put_in_batches(&self, rows: &[Value]) {
-        let batch = 1000;
+        let batch = 50;
         for (number, chunk) in rows.chunks(batch).enumerate() {
             self.put_many(number * batch, chunk);
         }
@@ -398,12 +400,9 @@ fn exists_stops_early_and_answers_false_for_a_missing_collection() {
         &json!({ "where": [{ "field": "status", "operator": "eq", "value": "pending" }] }),
     );
     assert!(!reader.store_exists(Fixture::COLLECTION, &pending).unwrap());
-    assert!(!reader.store_exists("nothing_here", &closed).unwrap());
-    let error = reader.store_count("nothing_here", &closed).unwrap_err();
-    assert_eq!(
-        error.storage_code().map(|code| code.as_str()),
-        Some("ENATIVE_NOT_FOUND")
-    );
+    assert!(!reader.store_exists("absent", &closed).unwrap());
+    let error = reader.store_count("absent", &closed).unwrap_err();
+    assert_eq!(error.storage_code(), Some(NativeStorageErrorCode::NotFound));
 }
 
 fn check_delete(layout: CollectionLayout) {

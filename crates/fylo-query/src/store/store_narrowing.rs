@@ -22,7 +22,7 @@ impl StoreNarrowing {
     #[must_use]
     pub fn structured(query: &StoreQuery) -> Option<StructuredQuery> {
         let operations = Self::operations(query)?;
-        Self::bounded(operations)
+        Self::bounded(&operations)
     }
 
     fn operations(query: &StoreQuery) -> Option<Vec<Value>> {
@@ -114,7 +114,7 @@ impl StoreNarrowing {
         field != id_field && !structured
     }
 
-    fn bounded(operations: Vec<Value>) -> Option<StructuredQuery> {
+    fn bounded(operations: &[Value]) -> Option<StructuredQuery> {
         if operations.is_empty() || operations.len() > DEFAULT_MAX_QUERIES {
             return None;
         }

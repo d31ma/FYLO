@@ -104,7 +104,7 @@ impl StoreCursor {
 
     fn unhex(text: &str) -> Option<Vec<u8>> {
         let digits: Vec<char> = text.chars().collect();
-        if digits.len() % 2 != 0 {
+        if !digits.len().is_multiple_of(2) {
             return None;
         }
         digits.chunks(2).map(Self::hex_byte).collect()
