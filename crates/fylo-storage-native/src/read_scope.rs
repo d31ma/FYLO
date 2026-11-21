@@ -46,13 +46,12 @@ impl ReadScope {
         ReadScopeState::with(|state| state.remember_verified(key));
     }
 
-    /// The descriptor bytes this scope already read from `path`, or
-    /// `Some(None)` when it found none there.
-    pub(crate) fn known_descriptor(path: &Path) -> Option<Option<Vec<u8>>> {
+    /// The descriptor bytes this scope already read from `path`.
+    pub(crate) fn known_descriptor(path: &Path) -> Option<Vec<u8>> {
         ReadScopeState::with(|state| state.descriptor(path))
     }
 
-    pub(crate) fn remember_descriptor(path: &Path, bytes: Option<&[u8]>) {
+    pub(crate) fn remember_descriptor(path: &Path, bytes: &[u8]) {
         ReadScopeState::with(|state| state.remember_descriptor(path, bytes));
     }
 

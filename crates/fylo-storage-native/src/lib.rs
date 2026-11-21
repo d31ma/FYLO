@@ -953,7 +953,9 @@ impl NativeRoot {
         self.existing_names(candidates)
     }
 
-    fn found(collection: Result<NativeCollection, NativeStorageError>) -> Result<bool, NativeStorageError> {
+    fn found(
+        collection: Result<NativeCollection, NativeStorageError>,
+    ) -> Result<bool, NativeStorageError> {
         match collection {
             Ok(_) => Ok(true),
             Err(error) if error.code() == NativeStorageErrorCode::NotFound => Ok(false),
@@ -984,7 +986,10 @@ impl NativeRoot {
             .collect())
     }
 
-    fn existing_names(&self, candidates: BTreeSet<String>) -> Result<Vec<String>, NativeStorageError> {
+    fn existing_names(
+        &self,
+        candidates: BTreeSet<String>,
+    ) -> Result<Vec<String>, NativeStorageError> {
         let mut names = Vec::with_capacity(candidates.len());
         for name in candidates {
             if self.collection_exists(&name)? {
@@ -1018,10 +1023,12 @@ impl NativeRoot {
     /// handle and schema lookup of one read operation asks for them again.
     fn descriptor_bytes(path: &Path) -> Result<Option<Vec<u8>>, NativeStorageError> {
         if let Some(known) = ReadScope::known_descriptor(path) {
-            return Ok(known);
+            return Ok(Some(known));
         }
         let bytes = Self::read_descriptor_bytes(path)?;
-        ReadScope::remember_descriptor(path, bytes.as_deref());
+        if let Some(bytes) = &bytes {
+            ReadScope::remember_descriptor(path, bytes);
+        }
         Ok(bytes)
     }
 

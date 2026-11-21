@@ -8,8 +8,8 @@ mod encryption;
 mod field_rekey;
 mod hot_set;
 mod index_operation;
-mod indexed_inspection;
 mod index_plan;
+mod indexed_inspection;
 mod lazy_migration;
 mod schema;
 mod schema_admin;
@@ -25,7 +25,6 @@ use std::sync::Arc;
 
 use encryption::{EncryptionReader, is_encrypted_field, reject_undeclared_ciphertext};
 pub use field_rekey::FieldRekey;
-pub use indexed_inspection::IndexedInspection;
 use fylo_format::{
     CanonicalMetadata, Document, DocumentLimits, FormatError, FormatErrorCode, TtidTimestamps,
 };
@@ -42,6 +41,7 @@ use fylo_storage_native::{
 };
 use hot_set::HotReader;
 pub use hot_set::{HotSet, HotSetStatistics};
+pub use indexed_inspection::IndexedInspection;
 use lazy_migration::{ChainCache, CountCache};
 use schema::{SchemaRegistry, SchemaTools, VersionChain};
 use serde::Serialize;
@@ -1336,8 +1336,8 @@ impl ReadOnlyEngine {
         collection: &NativeCollection,
         (live, snapshot): &(Vec<String>, std::sync::Arc<fylo_query::IndexSnapshot>),
     ) -> Result<IndexVerification, EngineError> {
-        let mut verification = NativeCollection::index_references(live, snapshot)
-            .map_err(EngineError::storage)?;
+        let mut verification =
+            NativeCollection::index_references(live, snapshot).map_err(EngineError::storage)?;
         let encrypted_fields = self
             .encryption
             .as_ref()
@@ -1350,7 +1350,7 @@ impl ReadOnlyEngine {
             let fields = match collection.kind() {
                 CollectionKind::Document => {
                     let stored = collection
-                        .read_document(&identifier)
+                        .read_document(identifier)
                         .map_err(EngineError::storage)?;
                     // The index is built from documents as stored, so it
                     // is checked against them, not their head shape.
@@ -1364,13 +1364,13 @@ impl ReadOnlyEngine {
                 }
                 CollectionKind::File => {
                     let stored = collection
-                        .read_raw_file(&identifier)
+                        .read_raw_file(identifier)
                         .map_err(EngineError::storage)?;
-                    raw_file_index_fields(&identifier, stored)?
+                    raw_file_index_fields(identifier, stored)?
                 }
             };
             expected.extend(
-                index_entries_for_document(&identifier, &fields, |field, value| {
+                index_entries_for_document(identifier, &fields, |field, value| {
                     if is_encrypted_field(field, &encrypted_fields) {
                         let encryption = self.encryption.as_ref().ok_or_else(|| {
                             "encrypted index field has no schema/key context".to_owned()

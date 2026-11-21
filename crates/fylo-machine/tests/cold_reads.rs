@@ -45,7 +45,10 @@ impl Fixture {
         Self::add_collection(&mut requests, SMALL, PEOPLE_COUNT, SMALL_COUNT);
         Self::add_patches(&mut requests, PEOPLE, PEOPLE_COUNT);
         let frames = fixture.session(&requests);
-        let failed: Vec<&Value> = frames.iter().filter(|frame| frame["ok"] != json!(true)).collect();
+        let failed: Vec<&Value> = frames
+            .iter()
+            .filter(|frame| frame["ok"] != json!(true))
+            .collect();
         assert!(failed.is_empty(), "{failed:?}");
         fixture
     }
@@ -187,8 +190,16 @@ fn first_inspect_reads_no_document_and_the_index_once() {
     let fixture = Fixture::new();
     let (frame, log) = fixture.recorded(inspect(PEOPLE));
     assert_eq!(frame["ok"], json!(true), "{frame}");
-    assert_eq!(frame["result"]["docsStored"], json!(PEOPLE_COUNT), "{frame}");
-    assert_eq!(frame["result"]["indexedDocs"], json!(PEOPLE_COUNT), "{frame}");
+    assert_eq!(
+        frame["result"]["docsStored"],
+        json!(PEOPLE_COUNT),
+        "{frame}"
+    );
+    assert_eq!(
+        frame["result"]["indexedDocs"],
+        json!(PEOPLE_COUNT),
+        "{frame}"
+    );
     assert_eq!(log.opens_inside("docs"), 0, "{log:#?}");
     assert_eq!(log.opens_ending_with("keys.snapshot"), 1, "{log:#?}");
     assert_eq!(log.opens_ending_with("keys.wal"), 1, "{log:#?}");
@@ -202,7 +213,11 @@ fn first_inspect_opens_as_many_files_for_a_large_collection_as_for_a_small_one()
     let (small_frame, small) = fixture.recorded(inspect(SMALL));
     assert_eq!(large_frame["ok"], json!(true), "{large_frame}");
     assert_eq!(small_frame["ok"], json!(true), "{small_frame}");
-    assert_eq!(large.opened().len(), small.opened().len(), "{large:#?}\n{small:#?}");
+    assert_eq!(
+        large.opened().len(),
+        small.opened().len(),
+        "{large:#?}\n{small:#?}"
+    );
     assert!(large.listed().len() <= MOST_LISTINGS, "{large:#?}");
 }
 
@@ -228,9 +243,17 @@ fn inspect_of_a_missing_collection_reads_no_index() {
 #[test]
 fn both_inspects_agree_on_a_pending_index_log() {
     let fixture = Fixture::new();
-    assert!(fixture.collection_path(PEOPLE).join("index/keys.wal").exists());
+    assert!(
+        fixture
+            .collection_path(PEOPLE)
+            .join("index/keys.wal")
+            .exists()
+    );
     let cheap = fixture.answer(inspect(PEOPLE));
-    assert_eq!(outcome(&cheap), outcome(&fixture.answer(full_inspect(PEOPLE))));
+    assert_eq!(
+        outcome(&cheap),
+        outcome(&fixture.answer(full_inspect(PEOPLE)))
+    );
 }
 
 #[test]
@@ -238,7 +261,10 @@ fn both_inspects_agree_on_an_index_that_names_a_removed_document() {
     let fixture = Fixture::new();
     fs::remove_file(fixture.first_document_file(PEOPLE)).unwrap();
     let cheap = fixture.answer(inspect(PEOPLE));
-    assert_eq!(outcome(&cheap), outcome(&fixture.answer(full_inspect(PEOPLE))));
+    assert_eq!(
+        outcome(&cheap),
+        outcome(&fixture.answer(full_inspect(PEOPLE)))
+    );
 }
 
 #[test]
@@ -246,7 +272,10 @@ fn both_inspects_agree_without_an_index_snapshot() {
     let fixture = Fixture::new();
     fs::remove_file(fixture.collection_path(PEOPLE).join("index/keys.snapshot")).unwrap();
     let cheap = fixture.answer(inspect(PEOPLE));
-    assert_eq!(outcome(&cheap), outcome(&fixture.answer(full_inspect(PEOPLE))));
+    assert_eq!(
+        outcome(&cheap),
+        outcome(&fixture.answer(full_inspect(PEOPLE)))
+    );
 }
 
 #[test]
@@ -254,14 +283,21 @@ fn both_inspects_agree_on_a_collection_left_in_the_middle_of_a_write() {
     let fixture = Fixture::new();
     fixture.leave_mid_write(PEOPLE);
     let cheap = fixture.answer(inspect(PEOPLE));
-    assert_eq!(outcome(&cheap), outcome(&fixture.answer(full_inspect(PEOPLE))));
+    assert_eq!(
+        outcome(&cheap),
+        outcome(&fixture.answer(full_inspect(PEOPLE)))
+    );
 }
 
 #[test]
 fn collection_exists_reads_only_the_catalog() {
     let fixture = Fixture::new();
     let (frame, log) = fixture.recorded(json!({"op":"collectionExists","collection":PEOPLE}));
-    assert_eq!(frame["result"], json!({"collection":PEOPLE,"exists":true}), "{frame}");
+    assert_eq!(
+        frame["result"],
+        json!({"collection":PEOPLE,"exists":true}),
+        "{frame}"
+    );
     assert_eq!(log.opens_inside("docs"), 0, "{log:#?}");
     assert_eq!(log.opens_inside("index"), 0, "{log:#?}");
     assert_eq!(log.opens_ending_with("state.json"), 0, "{log:#?}");
@@ -272,7 +308,11 @@ fn collection_exists_reads_only_the_catalog() {
 fn collection_exists_answers_false_for_a_missing_collection() {
     let fixture = Fixture::new();
     let frame = fixture.answer(json!({"op":"collectionExists","collection":MISSING}));
-    assert_eq!(frame["result"], json!({"collection":MISSING,"exists":false}), "{frame}");
+    assert_eq!(
+        frame["result"],
+        json!({"collection":MISSING,"exists":false}),
+        "{frame}"
+    );
 }
 
 #[test]
@@ -286,7 +326,11 @@ fn collection_exists_refuses_an_invalid_name() {
 fn list_collections_reads_no_document_or_index() {
     let fixture = Fixture::new();
     let (frame, log) = fixture.recorded(json!({"op":"listCollections"}));
-    assert_eq!(frame["result"], json!({"collections":[PEOPLE, SMALL]}), "{frame}");
+    assert_eq!(
+        frame["result"],
+        json!({"collections":[PEOPLE, SMALL]}),
+        "{frame}"
+    );
     assert_eq!(log.opens_inside("docs"), 0, "{log:#?}");
     assert_eq!(log.opens_inside("index"), 0, "{log:#?}");
     assert_eq!(log.opens_ending_with("state.json"), 0, "{log:#?}");
