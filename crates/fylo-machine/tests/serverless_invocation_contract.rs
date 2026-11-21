@@ -486,6 +486,9 @@ fn checked_invocation_completion_releases_the_root_before_success_or_domain_erro
 #[test]
 fn a_contending_owner_prevents_recovery_and_mutation_but_does_not_poison_the_runtime() {
     let fixture = Fixture::new();
+    // The owner is taken first: its first lease in this process also reads
+    // the machine id and process start, which must not eat the short budget.
+    let lease = RootLease::acquire(&fixture.root).unwrap();
     // A contended invocation waits for the root until its budget runs out, so
     // this one gets a short budget; the next provider call gets a fresh one.
     let contended = InvocationRuntime::new(
@@ -501,7 +504,6 @@ fn a_contending_owner_prevents_recovery_and_mutation_but_does_not_poison_the_run
         .unwrap(),
     )
     .unwrap();
-    let lease = RootLease::acquire(&fixture.root).unwrap();
     let before = snapshot(&fixture.parent);
     let outcome = contended.execute(&frame(
         &json!({"op":"createCollection","collection":"records"}),
