@@ -21,11 +21,9 @@ fylo-storage-native = { version = "0.1.0", path = "../fylo-storage-native" }
 serde_json.workspace = true
 
 [dev-dependencies]
+fylo-test-support = { version = "0.1.0", path = "../fylo-test-support" }
 # The identity tests compute a key's identifier the way `fylo identity` does.
 sha2.workspace = true
-
-[dev-dependencies]
-fylo-test-support = { version = "0.1.0", path = "../fylo-test-support" }
 
 [lints]
 workspace = true
