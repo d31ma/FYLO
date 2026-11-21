@@ -214,8 +214,8 @@ ship in the same release (DB-2 builds).
    of `eq`; now `ne X` matches only a present, non-`null` value that is not
    equal to `X`. `isNull` and `isNotNull` stay the way to ask for `null`.
    `ne null` matches like `isNotNull`, as `eq null` matches like `isNull`.
-   FYLO's SQL follows the same rule for `<>` and `!=` (`<> NULL` behaves
-   like `IS NOT NULL`), so the Store and SQL answer the same. Built in SDK-2
+   FYLO's SQL also leaves out `NULL` and missing fields for `<> v` and
+   `!= v`; its comparisons with `NULL` itself follow part 3. Built in SDK-2
    (Store) and SDK-4 (SQL).
 2. **`storeSave` takes `requireExisting`** (default `false`). With `true`,
    the save only replaces: an `entity[idField]` that is missing, `null` or
@@ -224,8 +224,19 @@ ship in the same release (DB-2 builds).
    contract (TACHYON ADR 0032). The default stays create-or-replace. Built in
    SDK-3.
 
+3. **SQL is strict about `NULL`** (Amendment 1, part 2, the same day).
+   TACHYON passes users' raw SQL to `executeSQL`, and on PostgreSQL, MySQL,
+   SQLite and SQL Server a comparison with `NULL` matches no row. So in
+   `api/sql/v1`, `=`, `<>` and `!=` with `NULL`, written as a literal or
+   given as a bound parameter whose value is `null`, match nothing; `IS
+   NULL` and `IS NOT NULL` are the only tests for `NULL`. Today FYLO's SQL
+   treats `= NULL` like `IS NULL`, so this is a breaking change (CHANGELOG).
+   **The Store and SQL now differ on purpose:** the Store follows TACHYON's
+   query methods (`eq null` is `isNull`, `ne null` is `isNotNull`), and SQL
+   follows SQL. Built in SDK-4.
+
 `api/store/v1` (README and `schema.json`), `api/machine/v2` and
-`api/sql/v1` carry both changes.
+`api/sql/v1` carry these changes.
 
 ## Consequences
 

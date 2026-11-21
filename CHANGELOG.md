@@ -24,6 +24,13 @@
 - **The handshake reports where the root is.** `storage.rootLock` gains
   `systemDisk` and `placement` (`dataDisk`, `systemDiskAllowed`,
   `appOwned`).
+- **SQL comparisons with `NULL` match no row** (ADR 0035, Amendment 1).
+  In `fylo sql` and `executeSQL`, `=`, `<>` and `!=` with `NULL`, as a
+  literal or as a bound `null` parameter, match nothing, as in PostgreSQL,
+  MySQL, SQLite and SQL Server; `<> v` and `!= v` also leave out `NULL` and
+  missing fields. Until now `= NULL` matched like `IS NULL`. Use `IS NULL`
+  and `IS NOT NULL` to test for `NULL`. The Store keeps `eq null` as
+  `isNull` and `ne null` as `isNotNull`.
 
 ### Changed
 

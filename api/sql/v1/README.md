@@ -57,12 +57,16 @@ in FYLO 26.45.07; they are not part of the Store plan.
 - `AND`; `OR` and parentheses as today.
 - Values: string literals in single quotes (`''` for a quote), numbers,
   `TRUE`, `FALSE`, `NULL`, or a parameter.
-- The meaning of every comparison, of `NULL`, and of the sort order is the
-  Store's ("Equality" and "Sort order" in `api/store/v1`). `= NULL` behaves
-  like `IS NULL`.
-- `<f> <> v` and `<f> != v` leave out rows where `<f>` is `NULL` or missing,
-  as in standard SQL and as the Store's `ne` (ADR 0035, Amendment 1). Ask for
-  them with `IS NULL`. `<> NULL` and `!= NULL` behave like `IS NOT NULL`.
+- The meaning of every comparison and of the sort order is the Store's
+  ("Equality" and "Sort order" in `api/store/v1`), except for `NULL`, which
+  follows SQL (ADR 0035, Amendment 1):
+  - `=`, `<>` and `!=` with `NULL` match no row, whether `NULL` is written
+    as a literal or given as a bound parameter whose value is `null`.
+    `IS NULL` and `IS NOT NULL` are the only tests for `NULL`.
+  - `<f> <> v` and `<f> != v` leave out rows where `<f>` is `NULL` or
+    missing, as in standard SQL.
+  - This differs from the Store on purpose: there `eq null` is `isNull` and
+    `ne null` is `isNotNull`, as in TACHYON's query methods.
 
 ## `ORDER BY`, `LIMIT`, `OFFSET`
 
