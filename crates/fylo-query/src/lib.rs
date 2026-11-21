@@ -17,6 +17,7 @@ mod numeric_range;
 mod sort_order;
 mod sort_position;
 mod sql;
+mod store;
 mod word_text;
 
 pub use index::{
@@ -29,6 +30,10 @@ pub use numeric_range::NumericRange;
 pub use sort_order::SortOrder;
 pub use sort_position::SortPosition;
 pub use sql::{AccessPath, SqlOperation, SqlPlan, prepare_sql};
+pub use store::{
+    StoreNarrowing, StoreOperator, StorePage, StorePosition, StorePredicate, StoreQuery, StoreRow,
+    StoreScrollPage, StoreSortField, StoreSortKey, StoreSortValue,
+};
 pub use word_text::WordText;
 
 /// Current portable query contract.
@@ -1009,6 +1014,16 @@ pub enum QueryErrorCode {
     /// A `$after` cursor did not parse or belongs to another query.
     #[serde(rename = "EINVALIDCURSOR")]
     InvalidCursor,
+    /// A Store query has too many predicates, sort fields, `in` values or
+    /// `anyOf` lists.
+    #[serde(rename = "EQUERYLIMIT")]
+    QueryLimit,
+    /// A Store page size is below 1 or above its maximum.
+    #[serde(rename = "EPAGESIZE")]
+    PageSize,
+    /// A Store scroll cursor did not parse or belongs to another query.
+    #[serde(rename = "ECURSOR")]
+    Cursor,
 }
 
 impl QueryErrorCode {
@@ -1028,6 +1043,9 @@ impl QueryErrorCode {
             Self::TooManyMatches => "EQUERY_MATCH_COUNT",
             Self::OutputTooLarge => "EQUERY_OUTPUT_SIZE",
             Self::InvalidCursor => "EINVALIDCURSOR",
+            Self::QueryLimit => "EQUERYLIMIT",
+            Self::PageSize => "EPAGESIZE",
+            Self::Cursor => "ECURSOR",
         }
     }
 }
