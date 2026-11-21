@@ -70,11 +70,15 @@ impl ContainerSuperblock {
     /// image's units stay sealed under the catalog and collection keys and
     /// its blocks are not encrypted again.
     pub const INCOMPAT_PROTECTED: u32 = 1 << 4;
+    /// The file holds large objects in object extents (ADR 0034 section
+    /// 10). Set before the first object extent is taken.
+    pub const INCOMPAT_LARGE_OBJECTS: u32 = 1 << 5;
     const KNOWN_INCOMPAT: u32 = Self::INCOMPAT_ENCRYPTED
         | Self::INCOMPAT_SEALED
         | Self::INCOMPAT_CODEC_ZSTD
         | Self::INCOMPAT_CODEC_LZ4
-        | Self::INCOMPAT_PROTECTED;
+        | Self::INCOMPAT_PROTECTED
+        | Self::INCOMPAT_LARGE_OBJECTS;
     /// Collections carry schema-version records and a schemas snapshot
     /// (ADR 0017). Set before the first schema record is written, so a
     /// build that predates them opens the file read-only rather than write

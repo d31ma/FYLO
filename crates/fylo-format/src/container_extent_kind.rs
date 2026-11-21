@@ -18,6 +18,8 @@ pub enum ContainerExtentKind {
     /// Part of a collection's schemas snapshot (derived, ADR 0017
     /// section 3).
     Schemas,
+    /// Chunk frames of one large object (ADR 0034 section 1).
+    Object,
 }
 
 impl ContainerExtentKind {
@@ -32,6 +34,7 @@ impl ContainerExtentKind {
             Self::Index => 5,
             Self::Map => 6,
             Self::Schemas => 7,
+            Self::Object => 8,
         }
     }
 
@@ -46,6 +49,7 @@ impl ContainerExtentKind {
             Self::Index => "index",
             Self::Map => "map",
             Self::Schemas => "schemas",
+            Self::Object => "object",
         }
     }
 
@@ -63,6 +67,7 @@ impl ContainerExtentKind {
             5 => Ok(Self::Index),
             6 => Ok(Self::Map),
             7 => Ok(Self::Schemas),
+            8 => Ok(Self::Object),
             _ => Err(ContainerFormatError::InvalidField),
         }
     }
@@ -72,7 +77,10 @@ impl ContainerExtentKind {
     /// referenced.
     #[must_use]
     pub const fn is_source_of_truth(self) -> bool {
-        matches!(self, Self::Directory | Self::Segment | Self::Dictionary)
+        matches!(
+            self,
+            Self::Directory | Self::Segment | Self::Dictionary | Self::Object
+        )
     }
 }
 
@@ -90,10 +98,11 @@ mod tests {
             ContainerExtentKind::Index,
             ContainerExtentKind::Map,
             ContainerExtentKind::Schemas,
+            ContainerExtentKind::Object,
         ] {
             assert_eq!(ContainerExtentKind::from_code(kind.code()), Ok(kind));
         }
         assert!(ContainerExtentKind::from_code(0).is_err());
-        assert!(ContainerExtentKind::from_code(8).is_err());
+        assert!(ContainerExtentKind::from_code(9).is_err());
     }
 }

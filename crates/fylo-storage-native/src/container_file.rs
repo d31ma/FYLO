@@ -1223,6 +1223,7 @@ impl ContainerFile {
             ContainerExtentKind::Locations,
             ContainerExtentKind::Index,
             ContainerExtentKind::Schemas,
+            ContainerExtentKind::Object,
         ] {
             for (extent, _) in self.allocator.owned(kind, owner) {
                 self.allocator.release(extent)?;
@@ -1605,7 +1606,10 @@ impl ContainerFile {
     }
 
     /// Read and decode the header of `extent`.
-    fn read_extent_header_at(&self, extent: u64) -> Result<ContainerExtentHeader, ContainerError> {
+    pub(crate) fn read_extent_header_at(
+        &self,
+        extent: u64,
+    ) -> Result<ContainerExtentHeader, ContainerError> {
         let at = extent
             .checked_mul(self.extent_bytes())
             .filter(|_| extent >= 1)

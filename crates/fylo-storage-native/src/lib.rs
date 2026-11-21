@@ -55,6 +55,17 @@ mod container_database;
 mod container_file;
 #[cfg(not(target_family = "wasm"))]
 mod container_lease;
+mod container_object;
+mod container_object_chunk;
+mod container_object_error;
+mod container_object_move;
+mod container_object_mover;
+mod container_object_opener;
+mod container_object_orphans;
+mod container_object_reader;
+mod container_object_sealer;
+mod container_object_target;
+mod container_object_writer;
 mod container_record;
 mod database_access;
 mod database_access_error;
@@ -166,6 +177,17 @@ pub use container_file::{
 };
 #[cfg(not(target_family = "wasm"))]
 pub use container_lease::{ContainerLease, ContainerLeaseError, ContainerLeaseTiming};
+pub use container_object::ContainerObject;
+pub use container_object_chunk::ContainerObjectChunk;
+pub use container_object_error::ContainerObjectError;
+pub use container_object_move::ContainerObjectMove;
+pub use container_object_mover::ContainerObjectMover;
+pub use container_object_opener::ContainerObjectOpener;
+pub use container_object_orphans::ContainerObjectOrphans;
+pub use container_object_reader::ContainerObjectReader;
+pub use container_object_sealer::ContainerObjectSealer;
+pub use container_object_target::ContainerObjectTarget;
+pub use container_object_writer::ContainerObjectWriter;
 pub use container_record::{ContainerRecordError, ContainerStoredBody};
 pub use database_access::DatabaseAccess;
 pub use database_access_error::DatabaseAccessError;
