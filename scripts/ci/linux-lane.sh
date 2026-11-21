@@ -136,6 +136,7 @@ fylo_lane_run() {
   local owner="$1" image="$2" stage started status
   shift 2
   stage="$(fylo_lane_stage_root)/$$"
+  mkdir -p "$(fylo_lane_stage_root)" || return 1
   DOCKER_HOST="$(fylo_lane_docker_host)" || return 1
   export DOCKER_HOST
   fylo_lane_start_colima "$stage.colima.log"
