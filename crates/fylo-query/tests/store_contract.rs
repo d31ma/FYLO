@@ -59,11 +59,14 @@ fn strings_compare_by_exact_code_points() {
 }
 
 #[test]
-fn null_equality_and_not_equal_count_a_missing_field_as_null() {
+fn eq_null_is_is_null_and_ne_never_matches_null_or_missing() {
     assert!(predicate("eq", &Value::Null).matches(None));
     assert!(predicate("eq", &Value::Null).matches(Some(&Value::Null)));
     assert!(!predicate("ne", &Value::Null).matches(None));
-    assert!(predicate("ne", &json!("x")).matches(None));
+    assert!(predicate("ne", &Value::Null).matches(Some(&json!(0))));
+    assert!(!predicate("ne", &json!("x")).matches(None));
+    assert!(!predicate("ne", &json!("x")).matches(Some(&Value::Null)));
+    assert!(predicate("ne", &json!("x")).matches(Some(&json!("y"))));
     assert!(predicate("isNull", &Value::Null).matches(None));
     assert!(!predicate("isNotNull", &Value::Null).matches(Some(&Value::Null)));
 }
