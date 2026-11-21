@@ -347,10 +347,7 @@ fn a_taker_waits_the_longer_takeover_time_the_owner_recorded() {
     held["takeoverMillis"] = serde_json::json!(4000);
     fixture.write_record(&held);
     let (_lease, waited) = TakeoverFixture::timed(|| fixture.acquire().unwrap());
-    assert!(
-        waited >= Duration::from_secs(4),
-        "waited only {waited:?}"
-    );
+    assert!(waited >= Duration::from_secs(4), "waited only {waited:?}");
 }
 
 #[test]
