@@ -14,7 +14,6 @@ use fylo_storage_native::{
 };
 
 const NO_ATTRIBUTE_DIRECTORY: &str = "FYLO_TEST_NO_XATTR_DIR";
-const PROBE_PREFIX: &str = ".fylo-filesystem-probe-";
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 struct Directory(PathBuf);
