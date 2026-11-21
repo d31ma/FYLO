@@ -682,3 +682,21 @@ an EFS-profile root, comes with S4. **S4 owns the 30% go rule** (the
 coordinator's decision, 2026-11-15): it is the first slice that can read an
 EFS-profile root, so it measures the NFS gain and stops if it is under 30%.
 For S3 the check is that a local root in `auto` reads as fast as before.
+
+**Measured on a local root** (2026-11-21, APFS, release build, 1,000
+documents of about 1 KB, two shared `exec --loop` processes one after the
+other, each reading 200 random documents and 10 queries of 50 matches;
+p50 in ms, two rounds; Mac load 10 to 17):
+
+| Mode | `getDoc`, first process | `getDoc`, second process | `findDocs`, first | `findDocs`, second |
+| --- | --- | --- | --- | --- |
+| `off` | 0.84 / 0.89 | 0.71 / 0.78 | 18.5 / 21.2 | 17.7 / 18.8 |
+| `auto` (inactive: root is local) | 0.76 / 0.68 | 0.82 / 0.62 | 17.4 / 18.4 | 19.5 / 17.5 |
+| `on` | 1.28 / 1.42 | 0.94 / 1.05 | 35.8 / 39.4 | 21.8 / 19.3 |
+
+`auto` on a local root is the same as `off` within noise (AC17). With `on`
+a local root is slower: the first process writes every entry (596 writes),
+and the second answers all 700 reads from the tier but each hit still costs
+about 0.25 ms more than reading the local disk. This is why `auto` keeps
+local roots off; on NFS a hit saves about 18 ms (section "Slice R"), which
+S4 measures.
