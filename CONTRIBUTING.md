@@ -192,6 +192,33 @@ docker run --ulimit core=0 -v fylo-tmp:/fylo-tmp -e TMPDIR=/fylo-tmp ...
 In a shell already inside the container, `ulimit -c 0` and
 `export TMPDIR=<a directory on the volume>` do the same.
 
+### Test disks
+
+FYLO's tests open their roots under `FYLO_TEST_ROOT` when it is set
+([ADR 0033](docs/adr/0033-primary-layout-on-a-data-drive.md) section 12): a
+job folder on a test disk that is not the boot disk, so the drive rule is
+tested for real. Each system has its own disk, and a disk image is never
+attached to two systems at once. Every script below makes the job folder
+`<disk>/roots/<owner>-<host>-<pid>`, checks it with a write probe and 1 GiB of
+free space, removes job folders older than 24 hours whose process is gone,
+and removes its own job folder on every exit path. When the disk cannot be
+used it stops with `FYLO test disk not ready: <reason>` and never falls back
+to another folder.
+
+| Where | Test disk | Script |
+| ----- | --------- | ------ |
+| The build Mac, macOS lane | sparse APFS image on the HANGAR SSD | `scripts/ci/test-image.sh run -- <command>` |
+| The build Mac, Linux lane (Colima) | the Docker volume `fylo-test-volume` at `/data`, on Colima's data disk | `scripts/ci/linux-lane.sh -- <command>` inside `mac-heavy --vm=colima` |
+| The build Mac, windows-vm | the reusable raw image in `/Volumes/HANGAR/test-disks/windows-vm/`, attached only by `testvm` as the VM's second disk, NTFS, drive `T:` | `scripts/ci/windows-lane.sh -- <script.ps1>` inside `mac-heavy --vm=windows` |
+| Laptops and GitHub runners (Linux, macOS) | a sparse ext4 or APFS image the script makes on a disk that is not the boot disk (GitHub Linux: `/mnt`) | `scripts/ci/test-disk.sh make --folder <dir> --mount <dir>`, then `scripts/ci/test-disk.sh run --mount <dir> -- <command>` |
+| Laptops and GitHub runners (Windows) | a dynamically expanding VHDX on a disk other than the Windows disk (GitHub: `D:`) | `scripts/ci/test-disk.ps1 -Action Make -Folder D:\fylo-test -Letter T`, then `-Action Run -Letter T -Script <file.ps1>` |
+
+`make` refuses a folder on the boot disk, on HAVEN or ATLAS (production
+volumes), and the build Mac's lane folders (`/Volumes/HANGAR/fylo-test`,
+`/Volumes/HANGAR/test-disks`). On Linux it needs `sudo` for the loop mount.
+`detach --mount <dir> --folder <dir> --delete` (`-Action Detach -Folder
+<dir> -Delete` on Windows) removes the image when it is no longer needed.
+
 ## Change requirements
 
 - Start behavior changes with an observable failing test.

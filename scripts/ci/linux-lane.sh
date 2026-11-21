@@ -14,7 +14,9 @@
 #
 # The command runs in a copy of this worktree's files (tracked and untracked,
 # not ignored) at /build/src, with CARGO_TARGET_DIR=/build/target on the
-# volume fylo-linux-lane-build, which is kept between runs. It runs through
+# volume fylo-linux-lane-build, which is kept between runs (TMPDIR is
+# /build/tmp there too, an ext4 folder, never the container's overlay /tmp).
+# Core dumps are off, because the crash tests abort children on purpose. It runs through
 # scripts/ci/test-disk.sh run --mount /data, so FYLO_TEST_ROOT is a job folder
 # on the test disk that is removed afterwards.
 #
@@ -97,7 +99,7 @@ fylo_lane_pack() {
 fylo_lane_container() {
   local image="$1" stage="$2" owner="$3"
   shift 3
-  docker run --rm --init -u "$(fylo_lane_container_user)" \
+  docker run --rm --init --ulimit core=0 -u "$(fylo_lane_container_user)" \
     -e "FYLO_TEST_OWNER=$owner" -e "CARGO_BUILD_JOBS=${MAC_HEAVY_CORES:-4}" \
     -e "NEXTEST_TEST_THREADS=${MAC_HEAVY_CORES:-4}" \
     -v "$(fylo_lane_test_volume):/data" -v "$(fylo_lane_build_volume):/build" -v "$stage:/stage:ro" \
@@ -111,7 +113,8 @@ source /opt/tachyon/ci-env.sh 2> /dev/null
 ln -sfn /opt/tachyon/rustup "$HOME/.rustup" 2> /dev/null
 rm -rf /build/src && mkdir -p /build/src && tar -xf /stage/src.tar -C /build/src || exit 1
 cd /build/src || exit 1
-export CARGO_TARGET_DIR=/build/target
+export CARGO_TARGET_DIR=/build/target TMPDIR=/build/tmp
+mkdir -p "$TMPDIR"
 echo "=== linux lane: /data is $(findmnt -n -o SOURCE,FSTYPE --target /data)"
 exec bash scripts/ci/test-disk.sh run --mount /data -- "$@"
 INNER

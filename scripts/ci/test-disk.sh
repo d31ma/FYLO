@@ -117,10 +117,9 @@ fylo_disk_require_mount_point() {
 }
 
 fylo_disk_linux_whole_disk() {
-  local source
-  source="$(findmnt -n -o SOURCE --target "$1" 2> /dev/null)"
-  source="${source%%\[*}"
-  lsblk -n -d -o PKNAME "$source" 2> /dev/null | head -1
+  local numbers
+  numbers="$(findmnt -n -o MAJ:MIN --target "$1" 2> /dev/null | tr -d ' ')"
+  readlink -e "/sys/dev/block/$numbers" 2> /dev/null | sed -n 's#.*/block/\([^/]*\).*#\1#p'
 }
 
 fylo_disk_device() {

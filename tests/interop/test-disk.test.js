@@ -51,7 +51,13 @@ test.skipIf(onWindows)('test-disk.sh make refuses an image folder on ATLAS', () 
 })
 
 test.skipIf(onWindows)("test-disk.sh make refuses the build Mac's lane image folders", () => {
-    const result = testDisk(['make', '--folder', '/Volumes/HANGAR/test-disks/windows-vm', '--mount', '/tmp/m'])
+    const result = testDisk([
+        'make',
+        '--folder',
+        '/Volumes/HANGAR/test-disks/windows-vm',
+        '--mount',
+        '/tmp/m'
+    ])
     expect(result.status).toBe(1)
     expect(result.errors).toContain("holds the build Mac's lane images")
 })
