@@ -48,7 +48,6 @@ class MobileTestRun {
         '(test(/crash|killed|child|abort/) & not test(/^container_lease::tests::(a_crashed_owner_is_taken_over|an_empty_lease_left)/))',
         // Needs trusted byte-range locks, which iOS does not have yet.
         'test(=container_lease::tests::a_held_lease_keeps_a_locked_marker_until_it_is_released)',
-        'binary(sql_crash)',
         'binary(open_recovery)',
         'binary(layout_move_crash)',
         'binary(platform_companions)',
