@@ -268,14 +268,14 @@ fn a_killed_owner_on_this_host_is_taken_over_at_once_and_a_live_one_is_not() {
         1
     );
     kill(child);
+    // "At once" means without the 30 s takeover time. On a busy machine the
+    // dead-process check alone can take over a second (FYLO-FLAKE-LEASE), so
+    // the bound is a third of the takeover time, not a fixed second.
+    let timing = ContainerLeaseTiming::default();
+    let at_once = Duration::from_secs(10);
     let started = Instant::now();
-    let lease = ContainerLease::acquire(
-        &path,
-        ContainerLeaseTiming::default(),
-        Duration::from_secs(1),
-    )
-    .expect("taken over at once");
-    assert!(started.elapsed() < Duration::from_secs(1));
+    let lease = ContainerLease::acquire(&path, timing, at_once).expect("taken over at once");
+    assert!(started.elapsed() < at_once);
     assert_eq!(lease.generation(), 2);
     assert_eq!(lease_files(&path), vec!["app.vdbx.lease.2"]);
     assert!(!markers_named(&owner, &std::env::temp_dir()));

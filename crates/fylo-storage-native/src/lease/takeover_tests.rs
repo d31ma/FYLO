@@ -12,7 +12,7 @@ struct TakeoverFixture {
 
 impl TakeoverFixture {
     const HEARTBEAT: Duration = Duration::from_millis(20);
-    const TAKEOVER: Duration = Duration::from_millis(400);
+    const TAKEOVER: Duration = Duration::from_secs(2);
     const OTHER_MACHINE: &str = "ffffffffffffffffffffffffffffffff";
     const OTHER_OWNER: &str = "0123456789abcdef0123456789abcdef";
     const RECORD_NAME: &str = ".db.fylo-root-owner.lock.json";
@@ -65,7 +65,7 @@ impl TakeoverFixture {
             "heartbeat": 7,
             "state": "held",
             "heartbeatMillis": 20,
-            "takeoverMillis": 400,
+            "takeoverMillis": 2000,
             "processStart": start,
             "host": "elsewhere",
             "pid": pid,
@@ -344,11 +344,11 @@ fn the_default_timing_is_five_and_twenty_seconds() {
 fn a_taker_waits_the_longer_takeover_time_the_owner_recorded() {
     let fixture = TakeoverFixture::new();
     let mut held = TakeoverFixture::held_record(4, Some(TakeoverFixture::OTHER_MACHINE), 1, "x");
-    held["takeoverMillis"] = serde_json::json!(800);
+    held["takeoverMillis"] = serde_json::json!(4000);
     fixture.write_record(&held);
     let (_lease, waited) = TakeoverFixture::timed(|| fixture.acquire().unwrap());
     assert!(
-        waited >= Duration::from_millis(800),
+        waited >= Duration::from_secs(4),
         "waited only {waited:?}"
     );
 }

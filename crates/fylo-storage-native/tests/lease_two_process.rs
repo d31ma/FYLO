@@ -24,9 +24,9 @@ const TEST_PROFILE: &str = "FYLO_LEASE_TEST_PROFILE";
 const MACHINE: &str = "FYLO_TEST_LEASE_MACHINE";
 const ITEMS: &str = "items";
 const HEARTBEAT_SECONDS: &str = "0.05";
-const TAKEOVER_SECONDS: &str = "1";
+const TAKEOVER_SECONDS: &str = "3";
 const HEARTBEAT: Duration = Duration::from_millis(50);
-const TAKEOVER: Duration = Duration::from_secs(1);
+const TAKEOVER: Duration = Duration::from_secs(3);
 const READY_WAIT: Duration = Duration::from_mins(1);
 
 struct Scratch {
