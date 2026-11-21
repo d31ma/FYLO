@@ -4,6 +4,7 @@ import { cp, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { BuildVersion } from '../../scripts/build-version.mjs'
+import { testFolder } from '../helpers/root.js'
 
 const roots = []
 const workspaces = []
@@ -50,7 +51,7 @@ function expectSuccess(label, result) {
  * @param {string} prefix
  */
 async function tempRoot(prefix) {
-    const root = await mkdtemp(path.join(os.tmpdir(), prefix))
+    const root = await mkdtemp(path.join(testFolder(), prefix))
     roots.push(root)
     return root
 }
@@ -59,7 +60,7 @@ async function tempRoot(prefix) {
  * @param {string} prefix
  */
 async function tempWorkspace(prefix) {
-    const root = await mkdtemp(path.join(os.tmpdir(), prefix))
+    const root = await mkdtemp(path.join(testFolder(), prefix))
     workspaces.push(root)
     return root
 }

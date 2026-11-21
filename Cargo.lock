@@ -406,6 +406,7 @@ dependencies = [
  "fylo-identity",
  "fylo-query",
  "fylo-storage-native",
+ "fylo-test-support",
  "fylo-vfs",
  "serde_json",
 ]
@@ -421,6 +422,7 @@ dependencies = [
 name = "fylo-chex"
 version = "0.1.0"
 dependencies = [
+ "fylo-test-support",
  "regex",
  "regex-automata",
  "serde_json",
@@ -436,6 +438,7 @@ dependencies = [
  "fylo-machine",
  "fylo-query",
  "fylo-storage-native",
+ "fylo-test-support",
  "fylo-xattr",
  "serde_json",
  "sha2",
@@ -466,6 +469,7 @@ name = "fylo-ffi"
 version = "0.1.0"
 dependencies = [
  "fylo",
+ "fylo-test-support",
  "jni",
  "serde",
  "serde_json",
@@ -488,6 +492,7 @@ dependencies = [
  "base64",
  "core-foundation",
  "core-foundation-sys",
+ "fylo-test-support",
  "fylo-vfs",
  "hkdf",
  "hpke",
@@ -567,6 +572,9 @@ dependencies = [
 [[package]]
 name = "fylo-vfs"
 version = "0.1.0"
+dependencies = [
+ "fylo-test-support",
+]
 
 [[package]]
 name = "fylo-wasm"
@@ -582,6 +590,7 @@ dependencies = [
 name = "fylo-xattr"
 version = "0.1.0"
 dependencies = [
+ "fylo-test-support",
  "rustix",
  "xattr",
 ]

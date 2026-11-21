@@ -3,8 +3,8 @@ import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { createInterface } from 'node:readline'
 import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises'
-import os from 'node:os'
 import path from 'node:path'
+import { testFolder } from '../helpers/root.js'
 
 const required =
     process.env.FYLO_REQUIRE_NATIVE_BINARY === '1' ||
@@ -78,7 +78,7 @@ async function deadline(promise, timeout, message) {
 }
 
 async function expectDiskPressureRecovery(filesystemProfile, failpoint) {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'fylo-native-disk-pressure-'))
+    const root = await mkdtemp(path.join(testFolder(), 'fylo-native-disk-pressure-'))
     roots.push(root)
     const identifier = '4VRNF52JPCO'
 
@@ -171,7 +171,7 @@ afterAll(async () => {
 
 describe.skipIf(!required)('exact native release root lease', () => {
     test('binds identity, canonical aliases, stale metadata, and crash takeover', async () => {
-        const root = await mkdtemp(path.join(os.tmpdir(), 'fylo-native-release-lease-'))
+        const root = await mkdtemp(path.join(testFolder(), 'fylo-native-release-lease-'))
         roots.push(root)
         const alias = `${root}-alias`
         roots.push(alias)
@@ -224,7 +224,7 @@ describe.skipIf(!required)('exact native release root lease', () => {
     test.skipIf(process.platform === 'win32')(
         'validates schemas in-process and closes machine stdout on process exit (#89)',
         async () => {
-            const root = await mkdtemp(path.join(os.tmpdir(), 'fylo-native-pipe-owner-'))
+            const root = await mkdtemp(path.join(testFolder(), 'fylo-native-pipe-owner-'))
             roots.push(root)
             const schema = path.join(root, 'schema')
             await mkdir(schema)
@@ -276,7 +276,7 @@ describe.skipIf(!required || process.env.FYLO_REQUIRE_EFS_PROFILE !== '1')(
         test.skipIf(process.platform === 'win32')(
             'EFS owners contend through canonical aliases and preserve owner metadata',
             async () => {
-                const parent = await mkdtemp(path.join(os.tmpdir(), 'fylo-efs-shared-parent-'))
+                const parent = await mkdtemp(path.join(testFolder(), 'fylo-efs-shared-parent-'))
                 roots.push(parent)
                 const root = path.join(parent, 'root')
                 await mkdir(root)
@@ -318,7 +318,7 @@ describe.skipIf(!required || process.env.FYLO_REQUIRE_EFS_PROFILE !== '1')(
         test.skipIf(process.platform !== 'win32')(
             'Windows refuses the EFS profile because sidecars need POSIX identity',
             async () => {
-                const root = await mkdtemp(path.join(os.tmpdir(), 'fylo-efs-windows-'))
+                const root = await mkdtemp(path.join(testFolder(), 'fylo-efs-windows-'))
                 roots.push(root)
                 const refused = new ReleaseLoop(root, {}, undefined, 'efs-sidecar-v1')
                 try {
@@ -333,7 +333,7 @@ describe.skipIf(!required || process.env.FYLO_REQUIRE_EFS_PROFILE !== '1')(
         )
 
         test('bad profile fails before replacing the recorded owner', async () => {
-            const parent = await mkdtemp(path.join(os.tmpdir(), 'fylo-bad-profile-owner-'))
+            const parent = await mkdtemp(path.join(testFolder(), 'fylo-bad-profile-owner-'))
             roots.push(parent)
             const root = path.join(parent, 'root')
             await mkdir(root)
@@ -401,7 +401,7 @@ describe.skipIf(!required || process.env.FYLO_REQUIRE_EFS_PROFILE !== '1')(
         test.skipIf(process.platform === 'win32')(
             'losing the owner generation stops the EFS machine mutation',
             async () => {
-                const parent = await mkdtemp(path.join(os.tmpdir(), 'fylo-efs-lost-owner-'))
+                const parent = await mkdtemp(path.join(testFolder(), 'fylo-efs-lost-owner-'))
                 roots.push(parent)
                 const root = path.join(parent, 'root')
                 await mkdir(root)
