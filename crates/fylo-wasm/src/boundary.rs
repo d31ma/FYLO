@@ -165,7 +165,7 @@ pub extern "C" fn fylo_free(pointer: *mut u8, len: usize) {
 pub unsafe extern "C" fn fylo_exec(request: *const u8, len: usize) -> u64 {
     if install().is_err() {
         return pack(
-            br#"{"protocolVersion":1,"ok":false,"op":null,"requestId":null,"durationMs":0,"error":{"name":"FyloMachineError","message":"host filesystem table was rejected","code":"ENATIVE_UNSUPPORTED"}}"#
+            br#"{"protocolVersion":2,"ok":false,"op":null,"requestId":null,"durationMs":0,"error":{"name":"FyloMachineError","message":"host filesystem table was rejected","code":"ENATIVE_UNSUPPORTED"}}"#
                 .to_vec(),
         );
     }
@@ -190,7 +190,7 @@ pub unsafe extern "C" fn fylo_exec(request: *const u8, len: usize) -> u64 {
     });
     if served.is_err() {
         return pack(
-            br#"{"protocolVersion":1,"ok":false,"op":null,"requestId":null,"durationMs":0,"error":{"name":"FyloMachineError","message":"machine session failed","code":"EUNKNOWN"}}"#
+            br#"{"protocolVersion":2,"ok":false,"op":null,"requestId":null,"durationMs":0,"error":{"name":"FyloMachineError","message":"machine session failed","code":"EUNKNOWN"}}"#
                 .to_vec(),
         );
     }

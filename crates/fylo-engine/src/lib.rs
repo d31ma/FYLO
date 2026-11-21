@@ -46,7 +46,7 @@ use schema::{SchemaRegistry, SchemaTools, VersionChain};
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 pub use sorted_page::SortedPage;
-pub use store::StoreScroll;
+pub use store::{StoreOverlay, StoreScroll};
 
 const MAX_STABLE_READ_ATTEMPTS: usize = 3;
 /// Drifted index keys reported by one verification.

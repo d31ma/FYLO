@@ -382,7 +382,7 @@ const db = new Fylo(${JSON.stringify(root)}, {
 })
 try {
   const identity = await db.handshake()
-  if (identity.protocolVersion !== 1) throw new Error('bad handshake protocol')
+  if (identity.protocolVersion !== 2) throw new Error('bad handshake protocol')
   if (identity.machine.maxRequestBytes !== 1024) throw new Error('bad handshake request limit')
   let bounded = false
   try {
@@ -791,7 +791,7 @@ end
 const INVALID_ID_MESSAGE = 'EENGINE_STORAGE: EINVALIDDOCID: invalid FYLO document identifier'
 const COMPILED_CLIENT_TIMEOUT = 180_000
 const FAKE_HANDSHAKE =
-    '{"protocolVersion":1,"ok":true,"op":"handshake","requestId":null,"durationMs":0,"result":{"machine":{"maxRequestBytes":1048576,"maxResponseBytes":8388608}}}'
+    '{"protocolVersion":2,"ok":true,"op":"handshake","requestId":null,"durationMs":0,"result":{"machine":{"maxRequestBytes":1048576,"maxResponseBytes":8388608}}}'
 
 /**
  * @param {string} directory

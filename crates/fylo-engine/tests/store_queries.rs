@@ -6,7 +6,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use fylo_engine::{ReadOnlyEngine, WriteEngine};
+use fylo_engine::{ReadOnlyEngine, StoreOverlay, WriteEngine};
 use fylo_query::{StorePage, StoreQuery, StoreScrollPage};
 use fylo_storage_native::{
     CollectionKind, CollectionLayout, DocumentWrite, NativeStorageErrorCode, NativeWriteRoot,
@@ -14,6 +14,10 @@ use fylo_storage_native::{
 use serde_json::{Map, Value, json};
 
 struct Fixture(PathBuf);
+
+fn no_overlay() -> StoreOverlay {
+    StoreOverlay::default()
+}
 
 impl Fixture {
     const COLLECTION: &str = "tickets";
@@ -103,7 +107,7 @@ impl Fixture {
 
     fn titles(&self, query: &Value, page: StorePage) -> Vec<String> {
         self.reader()
-            .store_find(Self::COLLECTION, &Self::query(query), page)
+            .store_find(Self::COLLECTION, &Self::query(query), page, &no_overlay())
             .unwrap()
             .into_iter()
             .map(|row| row.document.fields()["title"].as_str().unwrap().to_owned())
@@ -112,7 +116,7 @@ impl Fixture {
 
     fn count(&self, query: &Value) -> u64 {
         self.reader()
-            .store_count(Self::COLLECTION, &Self::query(query))
+            .store_count(Self::COLLECTION, &Self::query(query), &no_overlay())
             .unwrap()
     }
 }
@@ -255,7 +259,7 @@ fn an_object_or_array_sort_key_is_refused() {
     let query = Fixture::query(&json!({ "orderBy": [{ "field": "tags" }] }));
     let error = fixture
         .reader()
-        .store_find(Fixture::COLLECTION, &query, first_page())
+        .store_find(Fixture::COLLECTION, &query, first_page(), &no_overlay())
         .unwrap_err();
     assert_eq!(error.query_code_str(), Some("EQUERY_INVALID"));
 }
@@ -316,7 +320,12 @@ fn scroll_page(
 ) -> (Vec<String>, Option<String>) {
     let page = fixture
         .reader()
-        .store_scroll(Fixture::COLLECTION, query, &StoreScrollPage::new(3, cursor))
+        .store_scroll(
+            Fixture::COLLECTION,
+            query,
+            &StoreScrollPage::new(3, cursor),
+            &no_overlay(),
+        )
         .unwrap();
     let ids = page
         .content
@@ -365,6 +374,7 @@ fn a_cursor_of_another_query_or_collection_is_refused() {
             Fixture::COLLECTION,
             &by_title,
             &StoreScrollPage::new(2, None),
+            &no_overlay(),
         )
         .unwrap();
     let cursor = first.next_cursor.unwrap();
@@ -374,6 +384,7 @@ fn a_cursor_of_another_query_or_collection_is_refused() {
             Fixture::COLLECTION,
             &by_priority,
             &StoreScrollPage::new(2, Some(cursor.clone())),
+            &no_overlay(),
         )
         .unwrap_err();
     assert_eq!(error.query_code_str(), Some("ECURSOR"));
@@ -382,6 +393,7 @@ fn a_cursor_of_another_query_or_collection_is_refused() {
             Fixture::COLLECTION,
             &by_title,
             &StoreScrollPage::new(2, Some("fyc1.x.y".into())),
+            &no_overlay(),
         )
         .unwrap_err();
     assert_eq!(error.query_code_str(), Some("ECURSOR"));
@@ -395,13 +407,27 @@ fn exists_stops_early_and_answers_false_for_a_missing_collection() {
     let closed = Fixture::query(
         &json!({ "where": [{ "field": "status", "operator": "eq", "value": "closed" }] }),
     );
-    assert!(reader.store_exists(Fixture::COLLECTION, &closed).unwrap());
+    assert!(
+        reader
+            .store_exists(Fixture::COLLECTION, &closed, &no_overlay())
+            .unwrap()
+    );
     let pending = Fixture::query(
         &json!({ "where": [{ "field": "status", "operator": "eq", "value": "pending" }] }),
     );
-    assert!(!reader.store_exists(Fixture::COLLECTION, &pending).unwrap());
-    assert!(!reader.store_exists("absent", &closed).unwrap());
-    let error = reader.store_count("absent", &closed).unwrap_err();
+    assert!(
+        !reader
+            .store_exists(Fixture::COLLECTION, &pending, &no_overlay())
+            .unwrap()
+    );
+    assert!(
+        !reader
+            .store_exists("absent", &closed, &no_overlay())
+            .unwrap()
+    );
+    let error = reader
+        .store_count("absent", &closed, &no_overlay())
+        .unwrap_err();
     assert_eq!(error.storage_code(), Some(NativeStorageErrorCode::NotFound));
 }
 
@@ -413,7 +439,7 @@ fn check_delete(layout: CollectionLayout) {
     );
     let matching = fixture
         .reader()
-        .store_matching_ids(Fixture::COLLECTION, &open)
+        .store_matching_ids(Fixture::COLLECTION, &open, &no_overlay())
         .unwrap();
     assert_eq!(matching, ids(&[0, 1, 3, 7]));
     let deleted = fixture
@@ -425,7 +451,7 @@ fn check_delete(layout: CollectionLayout) {
     assert!(
         !fixture
             .reader()
-            .store_exists(Fixture::COLLECTION, &open)
+            .store_exists(Fixture::COLLECTION, &open, &no_overlay())
             .unwrap()
     );
 }
@@ -477,7 +503,7 @@ fn documents_have_their_fields_and_id() {
     );
     let rows = fixture
         .reader()
-        .store_find(Fixture::COLLECTION, &query, first_page())
+        .store_find(Fixture::COLLECTION, &query, first_page(), &no_overlay())
         .unwrap();
     let expected: Map<String, Value> = json!({ "priority": 5, "title": "golf" })
         .as_object()
@@ -486,4 +512,72 @@ fn documents_have_their_fields_and_id() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].metadata.id, Fixture::id(6));
     assert_eq!(rows[0].document.fields(), &expected);
+}
+
+fn fields(value: &Value) -> Map<String, Value> {
+    value.as_object().unwrap().clone()
+}
+
+#[test]
+fn an_overlay_adds_replaces_and_hides_documents_for_every_read() {
+    let fixture = Fixture::new(CollectionLayout::Files);
+    fixture.seed_tickets();
+    let mut overlay = StoreOverlay::default();
+    overlay.put(
+        &Fixture::id(20),
+        fields(&json!({ "status": "open", "priority": 9, "title": "india" })),
+    );
+    overlay.put(
+        &Fixture::id(1),
+        fields(&json!({ "status": "closed", "priority": 1, "title": "bravo" })),
+    );
+    overlay.delete(&Fixture::id(0));
+    let reader = fixture.reader();
+    let open = Fixture::query(&json!({
+        "where": [{ "field": "status", "operator": "eq", "value": "open" }],
+        "orderBy": [{ "field": "priority", "direction": "desc" }]
+    }));
+    let found: Vec<String> = reader
+        .store_find(Fixture::COLLECTION, &open, first_page(), &overlay)
+        .unwrap()
+        .into_iter()
+        .map(|row| row.document.fields()["title"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(found, ["india", "delta", "hotel"]);
+    assert_eq!(
+        reader
+            .store_count(Fixture::COLLECTION, &open, &overlay)
+            .unwrap(),
+        3
+    );
+    let matching = reader
+        .store_matching_ids(Fixture::COLLECTION, &open, &overlay)
+        .unwrap();
+    assert_eq!(matching, ids(&[3, 7, 20]));
+    assert_eq!(fixture.count(&json!({})), 8);
+}
+
+#[test]
+fn an_overlay_document_pages_and_scrolls_with_stored_ones() {
+    let fixture = Fixture::new(CollectionLayout::Segments);
+    fixture.seed_tickets();
+    let mut overlay = StoreOverlay::default();
+    overlay.put(&Fixture::id(20), fields(&json!({ "title": "aaa" })));
+    let by_title = Fixture::query(&json!({ "orderBy": [{ "field": "title" }] }));
+    let page = fixture
+        .reader()
+        .store_scroll(
+            Fixture::COLLECTION,
+            &by_title,
+            &StoreScrollPage::new(2, None),
+            &overlay,
+        )
+        .unwrap();
+    let titles: Vec<&str> = page
+        .content
+        .iter()
+        .map(|row| row.document.fields()["title"].as_str().unwrap())
+        .collect();
+    assert_eq!(titles, ["aaa", "alpha"]);
+    assert!(page.next_cursor.is_some());
 }

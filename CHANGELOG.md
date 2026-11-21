@@ -4,6 +4,13 @@
 
 ### Breaking Changes
 
+- **The machine protocol reports version 2** (ADR 0035). The handshake
+  answers `protocolVersion: 2` and `capabilities.store: 1`, and every
+  response frame carries `protocolVersion: 2`. A client that checks for
+  `protocolVersion == 1` must accept 2. The v1 document operations
+  (`getDoc`, `getLatest`, `putData`, `batchPutData`, `patchDoc`,
+  `patchDocs`, `delDoc`, `delDocs`, `findDocs`) still work in this
+  development line and are removed before the release (slice SDK-10).
 - **A root on the system disk is refused (ADR 0032).** FYLO keeps its data
   on a local disk that is not the system disk: a disk under `/Volumes` on
   macOS, a mounted disk on Linux, a drive other than the Windows drive on
@@ -105,6 +112,19 @@
 
 ### Added
 
+- **The Store operations** (`api/machine/v2`, `api/store/v1`, ADR 0035):
+  `storeFindById`, `storeFindAll`, `storeSave` (with `requireExisting`),
+  `storePatch`, `storeDeleteById`, `storeFind`, `storeCount`, `storeExists`,
+  `storeDelete` and `storeScroll`. Entities carry the id under `idField`;
+  queries take AND-joined `where` predicates, `anyOf`, `orderBy` and pages
+  with no bound on the offset; the engine counts, sorts and pages itself.
+- **One-collection transactions:** `storeTransaction` (a batch of up to
+  1,000 writes) and `transactionBegin`, `transactionCommit`,
+  `transactionRollback`; Store operations take the `transaction` handle,
+  and reads inside it see its writes. A commit writes one log record, all
+  or nothing. New codes `ETXNSCOPE`, `ETXNEXPIRED`, `ETXNUNKNOWN`,
+  `ETXNBUSY`, `ETXNLIMIT`, `ETXNLAYOUT`, plus `EQUERYLIMIT`, `EPAGESIZE` and
+  `ECURSOR`.
 - **Temp cache folder (ADR 0030, slice S2).** A new `capabilities.tempCache`
   in every handshake, the options `--temp-cache <off|auto|on>`,
   `--temp-cache-bytes <n>` and `--temp-cache-dir <path>` (and

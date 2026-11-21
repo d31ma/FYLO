@@ -1,9 +1,12 @@
+use fylo_format::{CanonicalMetadata, Document, DocumentLimits, TtidTimestamps};
 use fylo_query::{StoreNarrowing, StorePage, StorePosition, StoreQuery, StoreRow, StoreScrollPage};
 use fylo_storage_native::{NativeCollection, NativeStorageErrorCode, StoredBytes};
+use serde_json::{Map, Value};
 
 use super::store_counter::StoreCounter;
 use super::store_existence::StoreExistence;
 use super::store_id_list::StoreIdList;
+use super::store_overlay::StoreOverlay;
 use super::store_ranking::StoreRanking;
 use super::store_scroll::StoreScroll;
 use super::store_sink::StoreSink;
@@ -27,13 +30,14 @@ impl ReadOnlyEngine {
         collection: &str,
         query: &StoreQuery,
         page: StorePage,
+        overlay: &StoreOverlay,
     ) -> Result<Vec<ReadDocument>, EngineError> {
         let handle = self.open_collection(collection)?;
         Self::read_stable(&handle, || {
-            let positions = self.store_ranked(&handle, query, page.end(), None)?;
+            let positions = self.store_ranked(&handle, (query, overlay), page.end(), None)?;
             let page_positions: Vec<StorePosition> =
                 positions.into_iter().skip(page.offset()).collect();
-            self.store_read_positions(&handle, &page_positions)
+            self.store_read_positions(&handle, &page_positions, overlay)
         })
     }
 
@@ -49,15 +53,20 @@ impl ReadOnlyEngine {
         collection: &str,
         query: &StoreQuery,
         page: &StoreScrollPage,
+        overlay: &StoreOverlay,
     ) -> Result<StoreScroll, EngineError> {
         let handle = self.open_collection(collection)?;
         let after = Self::store_cursor_position(&handle, query, page)?;
         Self::read_stable(&handle, || {
-            let positions =
-                self.store_ranked(&handle, query, page.size().saturating_add(1), after.clone())?;
+            let positions = self.store_ranked(
+                &handle,
+                (query, overlay),
+                page.size().saturating_add(1),
+                after.clone(),
+            )?;
             let next_cursor = Self::store_next_cursor(&handle, query, &positions, page.size());
             let shown: Vec<StorePosition> = positions.into_iter().take(page.size()).collect();
-            let content = self.store_read_positions(&handle, &shown)?;
+            let content = self.store_read_positions(&handle, &shown, overlay)?;
             Ok(StoreScroll {
                 content,
                 next_cursor,
@@ -71,11 +80,16 @@ impl ReadOnlyEngine {
     /// # Errors
     ///
     /// As [`Self::store_find`].
-    pub fn store_count(&self, collection: &str, query: &StoreQuery) -> Result<u64, EngineError> {
+    pub fn store_count(
+        &self,
+        collection: &str,
+        query: &StoreQuery,
+        overlay: &StoreOverlay,
+    ) -> Result<u64, EngineError> {
         let handle = self.open_collection(collection)?;
         Self::read_stable(&handle, || {
             let mut counter = StoreCounter::default();
-            self.store_scan(&handle, query, &mut counter)?;
+            self.store_scan(&handle, (query, overlay), &mut counter)?;
             Ok(counter.count())
         })
     }
@@ -86,9 +100,16 @@ impl ReadOnlyEngine {
     /// # Errors
     ///
     /// A stable error for unreadable storage or a concurrent write.
-    pub fn store_exists(&self, collection: &str, query: &StoreQuery) -> Result<bool, EngineError> {
+    pub fn store_exists(
+        &self,
+        collection: &str,
+        query: &StoreQuery,
+        overlay: &StoreOverlay,
+    ) -> Result<bool, EngineError> {
         let handle = self.open_collection_if_present(collection)?;
-        handle.map_or(Ok(false), |handle| self.store_exists_in(&handle, query))
+        handle.map_or(Ok(false), |handle| {
+            self.store_exists_in(&handle, (query, overlay))
+        })
     }
 
     /// The id of every document a Store query matches, in id order: the
@@ -101,11 +122,12 @@ impl ReadOnlyEngine {
         &self,
         collection: &str,
         query: &StoreQuery,
+        overlay: &StoreOverlay,
     ) -> Result<Vec<String>, EngineError> {
         let handle = self.open_collection(collection)?;
         Self::read_stable(&handle, || {
             let mut ids = StoreIdList::default();
-            self.store_scan(&handle, query, &mut ids)?;
+            self.store_scan(&handle, (query, overlay), &mut ids)?;
             let mut ids = ids.into_ids();
             ids.sort();
             Ok(ids)
@@ -115,11 +137,11 @@ impl ReadOnlyEngine {
     fn store_exists_in(
         &self,
         handle: &NativeCollection,
-        query: &StoreQuery,
+        view: (&StoreQuery, &StoreOverlay),
     ) -> Result<bool, EngineError> {
         Self::read_stable(handle, || {
             let mut existence = StoreExistence::default();
-            self.store_scan(handle, query, &mut existence)?;
+            self.store_scan(handle, view, &mut existence)?;
             Ok(existence.found())
         })
     }
@@ -165,12 +187,12 @@ impl ReadOnlyEngine {
     fn store_ranked(
         &self,
         handle: &NativeCollection,
-        query: &StoreQuery,
+        view: (&StoreQuery, &StoreOverlay),
         limit: usize,
         after: Option<StorePosition>,
     ) -> Result<Vec<StorePosition>, EngineError> {
         let mut ranking = StoreRanking::new(limit, after);
-        self.store_scan(handle, query, &mut ranking)?;
+        self.store_scan(handle, view, &mut ranking)?;
         Ok(ranking.into_sorted())
     }
 
@@ -178,28 +200,92 @@ impl ReadOnlyEngine {
         &self,
         handle: &NativeCollection,
         positions: &[StorePosition],
+        overlay: &StoreOverlay,
     ) -> Result<Vec<ReadDocument>, EngineError> {
-        let ids: Vec<String> = positions
+        let stored_ids: Vec<String> = positions
             .iter()
             .map(|position| position.id().to_owned())
+            .filter(|id| !overlay.touches(id))
             .collect();
-        let stored = handle.read_documents(&ids).map_err(EngineError::storage)?;
-        ids.iter()
-            .zip(stored)
-            .map(|(id, stored)| self.build_record(handle.name(), id, &stored))
+        let stored = handle
+            .read_documents(&stored_ids)
+            .map_err(EngineError::storage)?;
+        let mut from_storage = stored_ids.iter().zip(stored);
+        positions
+            .iter()
+            .map(|position| {
+                self.store_page_record(handle, (position.id(), overlay), &mut from_storage)
+            })
             .collect()
     }
 
+    fn store_page_record<'a>(
+        &self,
+        handle: &NativeCollection,
+        (id, overlay): (&str, &StoreOverlay),
+        from_storage: &mut impl Iterator<Item = (&'a String, StoredBytes)>,
+    ) -> Result<ReadDocument, EngineError> {
+        if let Some(Some(fields)) = overlay.state(id) {
+            return Self::store_overlay_record(id, fields);
+        }
+        let (stored_id, stored) = from_storage.next().ok_or_else(|| {
+            EngineError::new(
+                crate::EngineErrorCode::CorruptData,
+                "a Store page lost a document",
+            )
+        })?;
+        self.build_record(handle.name(), stored_id, &stored)
+    }
+
+    /// The record of a document an open transaction wrote: its fields and
+    /// the times its TTID holds.
+    fn store_overlay_record(
+        id: &str,
+        fields: &Map<String, Value>,
+    ) -> Result<ReadDocument, EngineError> {
+        let document =
+            Document::try_from_value(Value::Object(fields.clone()), DocumentLimits::default())
+                .map_err(EngineError::format)?;
+        let timestamps = TtidTimestamps::decode(id).map_err(EngineError::format)?;
+        Ok(ReadDocument {
+            metadata: CanonicalMetadata {
+                id: id.to_owned(),
+                created_at: timestamps.created_at,
+                updated_at: timestamps.created_at,
+                mtime: timestamps.created_at,
+            },
+            document,
+        })
+    }
+
+    /// Offer every document the query matches to `sink`: the stored
+    /// documents the transaction's overlay does not touch, then the
+    /// documents the overlay holds.
     fn store_scan(
         &self,
         handle: &NativeCollection,
-        query: &StoreQuery,
+        (query, overlay): (&StoreQuery, &StoreOverlay),
         sink: &mut dyn StoreSink,
     ) -> Result<(), EngineError> {
-        let ids = self.store_candidates(handle, query)?;
+        let mut ids = self.store_candidates(handle, query)?;
+        ids.retain(|id| !overlay.touches(id));
         for batch in ids.chunks(Self::read_batch(handle)) {
             let stored = handle.read_documents(batch).map_err(EngineError::storage)?;
             if self.store_offer_batch(handle, query, (batch, stored), sink)? {
+                return Ok(());
+            }
+        }
+        Self::store_offer_overlay(query, overlay, sink)
+    }
+
+    fn store_offer_overlay(
+        query: &StoreQuery,
+        overlay: &StoreOverlay,
+        sink: &mut dyn StoreSink,
+    ) -> Result<(), EngineError> {
+        for (id, fields) in overlay.present() {
+            let record = Self::store_overlay_record(id, fields)?;
+            if Self::store_offer(query, &record, sink)? {
                 return Ok(());
             }
         }
