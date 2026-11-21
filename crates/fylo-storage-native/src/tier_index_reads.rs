@@ -1,5 +1,3 @@
-use std::io::Read;
-
 use crate::index_cache::IndexInputs;
 use crate::index_limit::IndexLimit;
 use crate::temp_tier::{EntryKey, IndexEntry, PendingEntry, TempCacheTier};
@@ -52,12 +50,28 @@ impl NativeCollection {
         let (tier, stamp) = self.index_tier()?;
         let key = self.index_key()?;
         let entry = tier.read_index(&key, &self.cache_name());
-        let current = entry.filter(|entry| entry.collection_stamp == stamp);
+        let current = Self::current_index(tier, &key, entry, stamp);
         Self::count_index(tier, current.is_some());
         current.map(|entry| IndexInputs {
             snapshot: entry.snapshot,
             log: entry.log,
         })
+    }
+
+    /// `entry` when it was kept under `stamp`. An entry of an older stamp
+    /// can never be used again (a stamp never comes back), so it is removed.
+    fn current_index(
+        tier: &TempCacheTier,
+        key: &EntryKey,
+        entry: Option<IndexEntry>,
+        stamp: [u8; 32],
+    ) -> Option<IndexEntry> {
+        let entry = entry?;
+        if entry.collection_stamp != stamp {
+            tier.discard(key);
+            return None;
+        }
+        Some(entry)
     }
 
     fn count_index(tier: &TempCacheTier, hit: bool) {
@@ -68,12 +82,17 @@ impl NativeCollection {
         tier.count_miss();
     }
 
+    /// The log is read before the snapshot. A checkpoint replaces the
+    /// snapshot with one that holds the log, then empties the log; replaying
+    /// a log over a snapshot that already holds it gives the same keys, so
+    /// this order never misses a key, while the other order can.
     fn read_and_keep_index(&self, log_limit: u64) -> Result<IndexInputs, NativeStorageError> {
+        let log = self.index_log(log_limit)?;
         let inputs = IndexInputs {
             snapshot: self
                 .root
                 .read_file(&self.index_snapshot_path(), IndexLimit::INDEX_BYTES)?,
-            log: self.index_log(log_limit)?,
+            log,
         };
         self.keep_index(&inputs);
         Ok(inputs)
@@ -84,6 +103,7 @@ impl NativeCollection {
         tier: &TempCacheTier,
         stamp: [u8; 32],
     ) -> Result<Option<IndexInputs>, NativeStorageError> {
+        let log = self.index_log(crate::MAX_INDEX_WAL_BYTES)?;
         let (mut file, metadata) = self
             .root
             .open_file(&self.index_snapshot_path(), IndexLimit::INDEX_BYTES)?;
@@ -91,15 +111,8 @@ impl NativeCollection {
         if !small {
             return Ok(None);
         }
-        let mut snapshot = Vec::new();
-        (&mut file)
-            .take(IndexLimit::INDEX_BYTES.saturating_add(1))
-            .read_to_end(&mut snapshot)
-            .map_err(NativeStorageError::io)?;
-        let inputs = IndexInputs {
-            snapshot,
-            log: self.index_log(crate::MAX_INDEX_WAL_BYTES)?,
-        };
+        let snapshot = crate::read_sized(&mut file, metadata.len(), IndexLimit::INDEX_BYTES)?;
+        let inputs = IndexInputs { snapshot, log };
         self.keep_index_under(&inputs, tier, stamp);
         Ok(Some(inputs))
     }
@@ -111,6 +124,10 @@ impl NativeCollection {
     }
 
     fn keep_index_under(&self, inputs: &IndexInputs, tier: &TempCacheTier, stamp: [u8; 32]) {
+        let log = inputs.log.as_ref().map_or(0, Vec::len);
+        if !tier.admits(inputs.snapshot.len().saturating_add(log)) {
+            return;
+        }
         let entry = IndexEntry {
             collection: self.cache_name(),
             collection_stamp: stamp,

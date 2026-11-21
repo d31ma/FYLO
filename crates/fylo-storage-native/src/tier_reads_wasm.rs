@@ -24,11 +24,12 @@ impl NativeCollection {
     }
 
     pub(crate) fn index_inputs(&self, log_limit: u64) -> Result<IndexInputs, NativeStorageError> {
+        let log = self.index_log(log_limit)?;
         Ok(IndexInputs {
             snapshot: self
                 .root
                 .read_file(&self.index_snapshot_path(), IndexLimit::INDEX_BYTES)?,
-            log: self.index_log(log_limit)?,
+            log,
         })
     }
 

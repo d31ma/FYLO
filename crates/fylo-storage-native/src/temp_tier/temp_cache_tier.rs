@@ -138,6 +138,12 @@ impl TempCacheTier {
         let _ = self.folder.remove_file(&key.path());
     }
 
+    /// Delete the entry at `key` without counting it: it is sound but can
+    /// no longer be used, such as an index entry of an older stamp.
+    pub(crate) fn discard(&self, key: &EntryKey) {
+        let _ = self.folder.remove_file(&key.path());
+    }
+
     /// Count a read the tier answered.
     pub(crate) fn count_hit(&self) {
         TierCounters::count(&self.counters.hits);
@@ -166,11 +172,22 @@ impl TempCacheTier {
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
             other => other?,
         };
+        let limit = self.read_limit();
+        if file.metadata()?.len() > limit {
+            return Ok(None);
+        }
         Self::refresh_recency(&file);
-        let limit = crate::MAX_DOCUMENT_BYTES + Self::ENTRY_OVERHEAD;
         let mut bytes = Vec::new();
         file.take(limit).read_to_end(&mut bytes)?;
         Ok(Some(bytes))
+    }
+
+    /// The largest entry file this process reads: one entry of its own
+    /// budget, or one document, whichever is larger. A larger file, kept by
+    /// a process with a larger budget, is a miss and is left alone.
+    fn read_limit(&self) -> u64 {
+        let share = self.budget / Self::LARGEST_SHARE;
+        share.max(crate::MAX_DOCUMENT_BYTES) + Self::ENTRY_OVERHEAD
     }
 
     fn refresh_recency(file: &std::fs::File) {

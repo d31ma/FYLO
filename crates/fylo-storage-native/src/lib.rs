@@ -2975,7 +2975,9 @@ impl NativeCollection {
     ///
     /// The process retains at most one 64 MiB entry, including inputs and the
     /// merged view. Caller-held views and temporary read buffers are separate.
-    /// Every call checks paths and reads both inputs, including on a cache hit.
+    /// Every call checks paths and reads both inputs, including on a cache
+    /// hit, unless the temp tier holds them for the collection's current
+    /// stamp (ADR 0030 slice S5).
     ///
     /// # Errors
     ///
@@ -3044,11 +3046,11 @@ impl NativeCollection {
             let log = inputs.log.unwrap_or_default();
             return reader.read((std::io::Cursor::new(inputs.snapshot), length), &log);
         }
+        let log = self.index_log(MAX_INDEX_WAL_BYTES)?.unwrap_or_default();
         let (snapshot, metadata) = self.root.open_file(
             &self.index_snapshot_path(),
             index_limit::IndexLimit::INDEX_BYTES,
         )?;
-        let log = self.index_log(MAX_INDEX_WAL_BYTES)?.unwrap_or_default();
         reader.read((snapshot, metadata.len()), &log)
     }
 
