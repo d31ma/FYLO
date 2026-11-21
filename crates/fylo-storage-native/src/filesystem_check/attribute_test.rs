@@ -7,7 +7,7 @@ use super::probe_files::ProbeFiles;
 /// Sets an extended attribute on a new probe file and reads it back. It
 /// passes only when the file system keeps the attribute itself: macOS
 /// pretends to keep attributes on NFS and SMB shares by writing a `._<name>`
-/// AppleDouble file, which other machines do not read, so that counts as a
+/// `AppleDouble` file, which other machines do not read, so that counts as a
 /// failure.
 pub(crate) struct AttributeTest;
 

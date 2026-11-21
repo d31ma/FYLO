@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// The short-lived files of one probe run. Every name it hands out, and the
-/// AppleDouble file macOS may make beside it, is removed when it is dropped,
+/// `AppleDouble` file macOS may make beside it, is removed when it is dropped,
 /// so a probe leaves nothing behind whether it passed or failed.
 pub(crate) struct ProbeFiles {
     directory: PathBuf,
