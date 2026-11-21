@@ -18,7 +18,8 @@ impl TakeoverFixture {
     const RECORD_NAME: &str = ".db.fylo-root-owner.lock.json";
 
     fn new() -> Self {
-        let directory = std::env::temp_dir().join(crate::write::unique_name("fylo-lease-takeover"));
+        let directory = fylo_test_support::TestFolder::path()
+            .join(crate::write::unique_name("fylo-lease-takeover"));
         let root = directory.join("db");
         std::fs::create_dir_all(&root).unwrap();
         Self { directory, root }

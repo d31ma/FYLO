@@ -25,7 +25,7 @@ struct Scratch {
 
 impl Scratch {
     fn new(label: &str) -> Self {
-        let folder = std::env::temp_dir().join(format!(
+        let folder = fylo_test_support::TestFolder::path().join(format!(
             "fylo-crash-recovery-{label}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()

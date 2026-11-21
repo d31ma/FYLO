@@ -3,7 +3,7 @@
 //! paused owner, an owner on "another machine" (a test machine id), and an
 //! owner whose kernel lock was lost as a router reboot loses it.
 //!
-//! The roots live in TMPDIR. `FYLO_LEASE_TEST_DIR` puts them in another
+//! The roots live in the test folder (`FYLO_TEST_ROOT`, else TMPDIR). `FYLO_LEASE_TEST_DIR` puts them in another
 //! folder, and `FYLO_LEASE_TEST_PROFILE=efs` takes them with the EFS profile,
 //! which is how a root on an NFS mount is opened before the layout release.
 
@@ -36,7 +36,8 @@ struct Scratch {
 
 impl Scratch {
     fn new(label: &str) -> Self {
-        let base = std::env::var(TEST_DIR).map_or_else(|_| std::env::temp_dir(), PathBuf::from);
+        let base = std::env::var(TEST_DIR)
+            .map_or_else(|_| fylo_test_support::TestFolder::path(), PathBuf::from);
         let folder = base.join(format!(
             "fylo-lease-{label}-{}-{}",
             std::process::id(),
