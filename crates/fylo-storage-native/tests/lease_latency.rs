@@ -65,7 +65,9 @@ fn measure_open_read_commit_and_fencing_latency() {
     std::fs::create_dir_all(&root).unwrap();
     {
         let (_lease, writer) = open(&root);
-        writer.create_collection(ITEMS, CollectionKind::Document, None).unwrap();
+        writer
+            .create_collection(ITEMS, CollectionKind::Document, None)
+            .unwrap();
     }
     let mut opens = Vec::new();
     for _ in 0..ROUNDS {
@@ -77,12 +79,19 @@ fn measure_open_read_commit_and_fencing_latency() {
         let body = format!("{{\"n\":{number}}}");
         commits.push(timed(|| {
             writer
-                .put_document(ITEMS, &identifier(number), body.as_bytes(), PutDocumentOptions::default())
+                .put_document(
+                    ITEMS,
+                    &identifier(number),
+                    body.as_bytes(),
+                    PutDocumentOptions::default(),
+                )
                 .unwrap();
         }));
     }
     let collection = fylo_storage_native::NativeRoot::open_profiled(
-        RootOpenOptions::new(&root).with_profile(profile()).with_lease(lease.clone()),
+        RootOpenOptions::new(&root)
+            .with_profile(profile())
+            .with_lease(lease.clone()),
     )
     .unwrap()
     .collection(ITEMS)

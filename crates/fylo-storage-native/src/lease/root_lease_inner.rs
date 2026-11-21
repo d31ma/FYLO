@@ -1,6 +1,7 @@
 use super::kernel_file_lock::KernelFileLock;
 use super::lease_backoff::LeaseBackoff;
 use super::lease_claims::LeaseClaims;
+use super::lease_failpoint::LeaseFailpoint;
 use super::lease_heartbeat::LeaseHeartbeat;
 use super::lease_observation::LeaseObservation;
 use super::lease_takeover::LeaseTakeover;
@@ -230,7 +231,8 @@ impl RootLeaseInner {
         let mine = recorded.filter(|record| record.names(&self.owner, self.generation));
         let released = mine.map(|record| record.released());
         released.map_or(Ok(()), |record| record.persist(&self.record_path))?;
-        crate::write::failpoint("lease-after-release")
+        LeaseFailpoint::reach("lease-after-release");
+        Ok(())
     }
 
     fn unlock_checked(&self) -> Result<(), NativeStorageError> {

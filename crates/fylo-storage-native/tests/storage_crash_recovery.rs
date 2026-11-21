@@ -57,15 +57,24 @@ fn identifier(number: usize) -> String {
 fn put(writer: &NativeWriteRoot, number: usize) {
     let body = format!("{{\"name\":\"item{number}\",\"n\":{number}}}");
     writer
-        .put_document(ITEMS, &identifier(number), body.as_bytes(), PutDocumentOptions::default())
+        .put_document(
+            ITEMS,
+            &identifier(number),
+            body.as_bytes(),
+            PutDocumentOptions::default(),
+        )
         .unwrap();
 }
 
 fn seeded(root: &Path) -> NativeWriteRoot {
     fs::create_dir_all(root).unwrap();
     let writer = NativeWriteRoot::open(root).unwrap();
-    writer.create_collection(ITEMS, CollectionKind::Document, None).unwrap();
-    writer.create_collection(FILES, CollectionKind::File, None).unwrap();
+    writer
+        .create_collection(ITEMS, CollectionKind::Document, None)
+        .unwrap();
+    writer
+        .create_collection(FILES, CollectionKind::File, None)
+        .unwrap();
     for number in 0..5 {
         put(&writer, number);
     }
@@ -144,7 +153,11 @@ fn a_document_that_lost_its_tail_is_listed_with_its_path() {
     let report = verify(&scratch.root());
     assert!(!report.ok);
     assert_eq!(named(&report, &path), ["ENATIVE_DOCUMENT"], "{report:?}");
-    assert!(report.damaged[0].message.contains(&path.display().to_string()));
+    assert!(
+        report.damaged[0]
+            .message
+            .contains(&path.display().to_string())
+    );
 }
 
 #[test]
@@ -165,7 +178,10 @@ fn a_document_the_index_names_but_that_is_gone_is_reported_as_an_index_mismatch(
     let report = verify(&scratch.root());
     assert!(!report.ok);
     assert!(
-        report.damaged.iter().any(|damage| damage.collection == ITEMS && damage.code == "ENATIVE_INDEX"),
+        report
+            .damaged
+            .iter()
+            .any(|damage| damage.collection == ITEMS && damage.code == "ENATIVE_INDEX"),
         "{report:?}"
     );
 }
@@ -183,7 +199,10 @@ fn a_torn_file_that_kept_its_size_and_time_is_refused_on_read_with_its_path() {
         .read_raw_file(&identifier(0))
         .unwrap_err();
     assert_eq!(refused.code().as_str(), "ENATIVE_METADATA");
-    assert!(refused.to_string().contains(&path.display().to_string()), "{refused}");
+    assert!(
+        refused.to_string().contains(&path.display().to_string()),
+        "{refused}"
+    );
     let report = verify(&scratch.root());
     assert_eq!(report.damaged.len(), 1, "{report:?}");
     assert_eq!(report.damaged[0].collection, FILES);
@@ -232,10 +251,15 @@ mod snapshots {
         let root = PathBuf::from(root);
         let log = PathBuf::from(std::env::var(LOG).unwrap());
         let writer = NativeWriteRoot::open(&root).unwrap();
-        let mut file = fs::File::options().append(true).create(true).open(&log).unwrap();
+        let mut file = fs::File::options()
+            .append(true)
+            .create(true)
+            .open(&log)
+            .unwrap();
         for number in 100.. {
             put(&writer, number);
-            std::io::Write::write_all(&mut file, format!("{}\n", identifier(number)).as_bytes()).unwrap();
+            std::io::Write::write_all(&mut file, format!("{}\n", identifier(number)).as_bytes())
+                .unwrap();
             file.sync_all().unwrap();
         }
     }
@@ -249,14 +273,22 @@ mod snapshots {
     }
 
     fn copy_tree(from: &Path, to: &Path) {
-        let status = Command::new("cp").arg("-Rp").arg(from).arg(to).status().unwrap();
+        let status = Command::new("cp")
+            .arg("-Rp")
+            .arg(from)
+            .arg(to)
+            .status()
+            .unwrap();
         assert!(status.success());
     }
 
     fn wait_for_lines(log: &Path, count: usize) {
         let started = Instant::now();
         while fs::read_to_string(log).map_or(0, |text| text.lines().count()) < count {
-            assert!(started.elapsed() < LOAD_WAIT, "the writer never wrote {count} documents");
+            assert!(
+                started.elapsed() < LOAD_WAIT,
+                "the writer never wrote {count} documents"
+            );
             std::thread::sleep(Duration::from_millis(5));
         }
     }
@@ -270,7 +302,12 @@ mod snapshots {
         drop(seeded(&scratch.root()));
         let log = scratch.folder.join("committed.log");
         let mut child = Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "snapshots::crash_recovery_child", "--nocapture", "--test-threads=1"])
+            .args([
+                "--exact",
+                "snapshots::crash_recovery_child",
+                "--nocapture",
+                "--test-threads=1",
+            ])
             .env(CHILD, scratch.root())
             .env(LOG, &log)
             .stdout(std::process::Stdio::null())
@@ -279,7 +316,9 @@ mod snapshots {
         let mut copies = Vec::new();
         for snapshot in 0..SNAPSHOTS {
             wait_for_lines(&log, (snapshot + 1) * 3);
-            std::thread::sleep(Duration::from_millis(u64::try_from(snapshot * 7 % 11).unwrap()));
+            std::thread::sleep(Duration::from_millis(
+                u64::try_from(snapshot * 7 % 11).unwrap(),
+            ));
             signal(child.id(), "STOP");
             let copy = scratch.folder.join(format!("copy-{snapshot}"));
             fs::create_dir(&copy).unwrap();
@@ -292,12 +331,18 @@ mod snapshots {
         child.wait().unwrap();
         for (copy, committed) in copies {
             let report = verify(&copy);
-            assert!(report.ok, "copy {} did not verify: {report:?}", copy.display());
+            assert!(
+                report.ok,
+                "copy {} did not verify: {report:?}",
+                copy.display()
+            );
             let collection = NativeRoot::open(&copy).unwrap().collection(ITEMS).unwrap();
             for identifier in committed.lines() {
                 collection
                     .read_document(identifier)
-                    .unwrap_or_else(|error| panic!("{identifier} lost in {}: {error}", copy.display()));
+                    .unwrap_or_else(|error| {
+                        panic!("{identifier} lost in {}: {error}", copy.display())
+                    });
             }
         }
     }

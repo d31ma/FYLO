@@ -1,6 +1,6 @@
+use super::RootLease;
 use super::lease_timing::LeaseTiming;
 use super::machine_identity::MachineIdentity;
-use super::RootLease;
 use crate::{FilesystemProfile, NativeStorageErrorCode};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -50,7 +50,12 @@ impl TakeoverFixture {
 
     /// A held record of generation `generation`, as an owner on `machine`
     /// with process `pid` started at `start` would leave it.
-    fn held_record(generation: u64, machine: Option<&str>, pid: u32, start: &str) -> serde_json::Value {
+    fn held_record(
+        generation: u64,
+        machine: Option<&str>,
+        pid: u32,
+        start: &str,
+    ) -> serde_json::Value {
         let mut record = serde_json::json!({
             "format": "fylo.namespace-lease.v1",
             "namespace": "db",
@@ -126,7 +131,10 @@ fn a_record_of_an_owner_on_another_machine_is_taken_only_after_the_takeover_time
     let held = TakeoverFixture::held_record(4, Some(TakeoverFixture::OTHER_MACHINE), 1, "x");
     fixture.write_record(&held);
     let (lease, waited) = TakeoverFixture::timed(|| fixture.acquire().unwrap());
-    assert!(waited >= TakeoverFixture::TAKEOVER, "waited only {waited:?}");
+    assert!(
+        waited >= TakeoverFixture::TAKEOVER,
+        "waited only {waited:?}"
+    );
     assert_eq!(fixture.generation(), 5);
     lease.assert_owned().unwrap();
 }
@@ -139,7 +147,8 @@ fn a_record_whose_heartbeat_moves_is_never_taken() {
     let beating = {
         let stop = stop.clone();
         std::thread::spawn(move || {
-            let mut record = TakeoverFixture::held_record(4, Some(TakeoverFixture::OTHER_MACHINE), 1, "x");
+            let mut record =
+                TakeoverFixture::held_record(4, Some(TakeoverFixture::OTHER_MACHINE), 1, "x");
             while !stop.load(std::sync::atomic::Ordering::SeqCst) {
                 record["heartbeat"] = serde_json::json!(record["heartbeat"].as_u64().unwrap() + 1);
                 let scratch = path.with_extension("beat");
@@ -178,7 +187,10 @@ fn a_record_of_a_live_process_on_this_machine_waits_the_takeover_time() {
     let held = TakeoverFixture::held_record(2, Some(&machine), crate::process_id(), &start);
     fixture.write_record(&held);
     let (lease, waited) = TakeoverFixture::timed(|| fixture.acquire().unwrap());
-    assert!(waited >= TakeoverFixture::TAKEOVER, "waited only {waited:?}");
+    assert!(
+        waited >= TakeoverFixture::TAKEOVER,
+        "waited only {waited:?}"
+    );
     assert_eq!(fixture.generation(), 3);
     lease.assert_owned().unwrap();
 }
@@ -187,11 +199,15 @@ fn a_record_of_a_live_process_on_this_machine_waits_the_takeover_time() {
 fn a_record_without_a_process_start_waits_the_takeover_time() {
     let fixture = TakeoverFixture::new();
     let machine = MachineIdentity::current().expect("this platform has a machine id");
-    let mut held = TakeoverFixture::held_record(2, Some(&machine), TakeoverFixture::ended_pid(), "x");
+    let mut held =
+        TakeoverFixture::held_record(2, Some(&machine), TakeoverFixture::ended_pid(), "x");
     held.as_object_mut().unwrap().remove("processStart");
     fixture.write_record(&held);
     let (_lease, waited) = TakeoverFixture::timed(|| fixture.acquire().unwrap());
-    assert!(waited >= TakeoverFixture::TAKEOVER, "waited only {waited:?}");
+    assert!(
+        waited >= TakeoverFixture::TAKEOVER,
+        "waited only {waited:?}"
+    );
 }
 
 #[test]
@@ -250,7 +266,10 @@ fn an_unreadable_record_waits_and_continues_after_the_newest_claim() {
     std::fs::write(fixture.record_path(), b"{\"format\": torn").unwrap();
     std::fs::write(TakeoverFixture::claim_path(&fixture.directory, 9), b"").unwrap();
     let (_lease, waited) = TakeoverFixture::timed(|| fixture.acquire().unwrap());
-    assert!(waited >= TakeoverFixture::TAKEOVER, "waited only {waited:?}");
+    assert!(
+        waited >= TakeoverFixture::TAKEOVER,
+        "waited only {waited:?}"
+    );
     assert_eq!(fixture.generation(), 10);
     assert!(!TakeoverFixture::claim_path(&fixture.directory, 9).exists());
 }
@@ -261,7 +280,10 @@ fn a_claim_that_never_became_the_record_is_skipped_after_the_takeover_time() {
     drop(fixture.acquire().unwrap());
     std::fs::write(TakeoverFixture::claim_path(&fixture.directory, 2), b"").unwrap();
     let (_lease, waited) = TakeoverFixture::timed(|| fixture.acquire().unwrap());
-    assert!(waited >= TakeoverFixture::TAKEOVER, "waited only {waited:?}");
+    assert!(
+        waited >= TakeoverFixture::TAKEOVER,
+        "waited only {waited:?}"
+    );
     assert_eq!(fixture.generation(), 3);
 }
 
@@ -280,7 +302,11 @@ fn a_taken_over_owner_stops_with_lease_lost_even_if_the_record_comes_back() {
         lease.assert_owned().unwrap_err().code(),
         NativeStorageErrorCode::RootLeaseLost
     );
-    assert_eq!(fixture.record()["ownerId"], TakeoverFixture::OTHER_OWNER, "the lost owner wrote again");
+    assert_eq!(
+        fixture.record()["ownerId"],
+        TakeoverFixture::OTHER_OWNER,
+        "the lost owner wrote again"
+    );
 }
 
 #[test]
@@ -320,7 +346,10 @@ fn a_taker_waits_the_longer_takeover_time_the_owner_recorded() {
     held["takeoverMillis"] = serde_json::json!(800);
     fixture.write_record(&held);
     let (_lease, waited) = TakeoverFixture::timed(|| fixture.acquire().unwrap());
-    assert!(waited >= Duration::from_millis(800), "waited only {waited:?}");
+    assert!(
+        waited >= Duration::from_millis(800),
+        "waited only {waited:?}"
+    );
 }
 
 #[test]

@@ -105,9 +105,17 @@ fn writer(root: &Path, lease: RootLease) -> NativeWriteRoot {
     NativeWriteRoot::open_profiled(options).unwrap()
 }
 
-fn put(writer: &NativeWriteRoot, number: usize) -> Result<(), fylo_storage_native::NativeStorageError> {
+fn put(
+    writer: &NativeWriteRoot,
+    number: usize,
+) -> Result<(), fylo_storage_native::NativeStorageError> {
     let body = format!("{{\"n\":{number}}}");
-    writer.put_document(ITEMS, &identifier(number), body.as_bytes(), PutDocumentOptions::default())
+    writer.put_document(
+        ITEMS,
+        &identifier(number),
+        body.as_bytes(),
+        PutDocumentOptions::default(),
+    )
 }
 
 fn create_items(root: &Path) {
@@ -120,7 +128,12 @@ fn create_items(root: &Path) {
 
 /// Start a child that holds the root as `mode` says, with `machine` as its
 /// machine id when one is given, and `extra` environment variables.
-fn start_child(scratch: &Scratch, mode: &str, machine: Option<&str>, extra: &[(&str, &str)]) -> Child {
+fn start_child(
+    scratch: &Scratch,
+    mode: &str,
+    machine: Option<&str>,
+    extra: &[(&str, &str)],
+) -> Child {
     let mut command = Command::new(std::env::current_exe().unwrap());
     command
         .args(["--exact", "lease_child", "--nocapture", "--test-threads=1"])
@@ -141,7 +154,11 @@ fn start_child(scratch: &Scratch, mode: &str, machine: Option<&str>, extra: &[(&
 fn wait_for(path: &Path) {
     let started = Instant::now();
     while !path.exists() {
-        assert!(started.elapsed() < READY_WAIT, "{} never appeared", path.display());
+        assert!(
+            started.elapsed() < READY_WAIT,
+            "{} never appeared",
+            path.display()
+        );
         std::thread::sleep(Duration::from_millis(10));
     }
 }
@@ -185,7 +202,10 @@ fn lease_child() {
     let writer = writer(&root, lease);
     fs::write(folder.join("ready"), std::process::id().to_string()).unwrap();
     wait_for(&folder.join("go"));
-    let outcome = put(&writer, 1).map_or_else(|error| error.code().as_str().to_owned(), |()| "ok".to_owned());
+    let outcome = put(&writer, 1).map_or_else(
+        |error| error.code().as_str().to_owned(),
+        |()| "ok".to_owned(),
+    );
     fs::write(folder.join("result"), outcome).unwrap();
 }
 
@@ -251,7 +271,10 @@ fn a_paused_owner_is_taken_over_and_stops_with_lease_lost_before_it_writes() {
     signal(&child, "CONT");
     wait_for(&scratch.marker("result"));
     child.wait().unwrap();
-    assert_eq!(fs::read_to_string(scratch.marker("result")).unwrap(), "EROOTLEASELOST");
+    assert_eq!(
+        fs::read_to_string(scratch.marker("result")).unwrap(),
+        "EROOTLEASELOST"
+    );
     let successor_writer = writer(&scratch.root, successor);
     put(&successor_writer, 1).unwrap();
     assert_eq!(scratch.generation(), generation + 1);
@@ -267,9 +290,15 @@ fn crash_then_take(failpoint: &str, machine: Option<&str>) -> (Duration, Scratch
         &scratch,
         "crash",
         machine,
-        &[("FYLO_RUST_FAILPOINT", failpoint), ("FYLO_RUST_FAILPOINT_ACTION", "abort")],
+        &[
+            ("FYLO_RUST_FAILPOINT", failpoint),
+            ("FYLO_RUST_FAILPOINT_ACTION", "abort"),
+        ],
     );
-    assert!(!child.wait().unwrap().success(), "the child did not stop at {failpoint}");
+    assert!(
+        !child.wait().unwrap().success(),
+        "the child did not stop at {failpoint}"
+    );
     let (lease, waited) = timed(|| acquire(&scratch.root).unwrap());
     lease.assert_owned().unwrap();
     assert!(scratch.generation() > before);
@@ -356,7 +385,12 @@ impl RemoteMachine {
 
     fn signal(&self, pid: &str, name: &str) {
         let status = Command::new("ssh")
-            .args(["-o", "BatchMode=yes", &self.host, &format!("kill -{name} {pid}")])
+            .args([
+                "-o",
+                "BatchMode=yes",
+                &self.host,
+                &format!("kill -{name} {pid}"),
+            ])
             .status()
             .unwrap();
         assert!(status.success());
@@ -388,7 +422,10 @@ fn a_root_shared_with_another_machine_has_one_owner_at_a_time() {
     let generation = scratch.generation();
     let (refused, waited) = timed(|| RemoteMachine::acquire(&scratch.root));
     println!("live remote owner: refused after {waited:?}");
-    assert_eq!(refused.unwrap_err().code(), NativeStorageErrorCode::RootLocked);
+    assert_eq!(
+        refused.unwrap_err().code(),
+        NativeStorageErrorCode::RootLocked
+    );
     assert_eq!(scratch.generation(), generation);
     remote.signal(&pid, "STOP");
     let (successor, waited) = timed(|| RemoteMachine::acquire(&scratch.root).unwrap());
@@ -398,7 +435,10 @@ fn a_root_shared_with_another_machine_has_one_owner_at_a_time() {
     remote.signal(&pid, "CONT");
     wait_for(&scratch.marker("result"));
     child.wait().unwrap();
-    assert_eq!(fs::read_to_string(scratch.marker("result")).unwrap(), "EROOTLEASELOST");
+    assert_eq!(
+        fs::read_to_string(scratch.marker("result")).unwrap(),
+        "EROOTLEASELOST"
+    );
     drop(successor);
     RemoteMachine::clear_markers(&scratch);
     let _second = remote.start_child(&scratch);

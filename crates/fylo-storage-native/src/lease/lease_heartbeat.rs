@@ -65,13 +65,19 @@ impl LeaseHeartbeat {
         lost: &AtomicBool,
     ) {
         let mut current = Some(record);
-        while let Some(record) = current.take().filter(|_| Self::keep_beating(stopped, interval)) {
+        while let Some(record) = current
+            .take()
+            .filter(|_| Self::keep_beating(stopped, interval))
+        {
             current = Self::beat(path, record, lost);
         }
     }
 
     fn keep_beating(stopped: &mpsc::Receiver<()>, interval: Duration) -> bool {
-        matches!(stopped.recv_timeout(interval), Err(RecvTimeoutError::Timeout))
+        matches!(
+            stopped.recv_timeout(interval),
+            Err(RecvTimeoutError::Timeout)
+        )
     }
 
     /// One heartbeat. `None` when the lease was lost.

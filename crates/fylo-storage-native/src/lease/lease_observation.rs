@@ -33,8 +33,7 @@ impl LeaseObservation {
 
     /// The record names a process on this machine that has ended.
     pub(super) fn owner_died_here(&self) -> bool {
-        self.record()
-            .is_some_and(|record| record.owner_died_here())
+        self.record().is_some_and(|record| record.owner_died_here())
     }
 
     /// The generation the next claim follows. An unreadable record gives

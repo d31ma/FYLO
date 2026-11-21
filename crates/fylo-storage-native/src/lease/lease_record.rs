@@ -164,7 +164,8 @@ impl LeaseRecord {
         scratch: &Path,
         path: &Path,
     ) -> Result<(), NativeStorageError> {
-        let renamed = written.and_then(|()| fylo_vfs::rename(scratch, path).map_err(NativeStorageError::io));
+        let renamed =
+            written.and_then(|()| fylo_vfs::rename(scratch, path).map_err(NativeStorageError::io));
         if renamed.is_err() {
             let _ = fylo_vfs::remove_file(scratch);
         }

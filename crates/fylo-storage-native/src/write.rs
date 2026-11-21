@@ -5515,9 +5515,6 @@ pub const FAILPOINTS: [&str; 34] = [
     "after-pack-staging",
     "after-shrink-relocate",
     "after-shrink-truncate",
-    "lease-after-claim",
-    "lease-after-record",
-    "lease-after-release",
 ];
 
 pub(crate) fn failpoint(name: &str) -> Result<(), NativeStorageError> {

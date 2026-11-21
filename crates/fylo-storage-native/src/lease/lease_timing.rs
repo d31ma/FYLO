@@ -17,7 +17,7 @@ impl LeaseTiming {
     const DEFAULT_HEARTBEAT: Duration = Duration::from_secs(5);
     const DEFAULT_TAKEOVER: Duration = Duration::from_secs(20);
     const SHORTEST_HEARTBEAT: Duration = Duration::from_millis(10);
-    const LONGEST_TAKEOVER: Duration = Duration::from_secs(86_400);
+    const LONGEST_TAKEOVER: Duration = Duration::from_hours(24);
     const HEARTBEAT_VARIABLE: &str = "FYLO_LEASE_HEARTBEAT_SECONDS";
     const TAKEOVER_VARIABLE: &str = "FYLO_LEASE_TAKEOVER_SECONDS";
 
@@ -78,7 +78,11 @@ impl LeaseTiming {
         let seconds = text.trim().parse::<f64>().ok();
         let finite = seconds.filter(|value| value.is_finite() && *value > 0.0);
         let duration = finite.and_then(|value| Duration::try_from_secs_f64(value).ok());
-        duration.ok_or_else(|| Self::invalid(format!("{name} must be a positive number of seconds, not {text:?}")))
+        duration.ok_or_else(|| {
+            Self::invalid(format!(
+                "{name} must be a positive number of seconds, not {text:?}"
+            ))
+        })
     }
 
     fn require_heartbeat_floor(heartbeat: Duration) -> Result<(), NativeStorageError> {
@@ -90,7 +94,9 @@ impl LeaseTiming {
 
     fn require_takeover_ceiling(takeover: Duration) -> Result<(), NativeStorageError> {
         if takeover > Self::LONGEST_TAKEOVER {
-            return Err(Self::invalid("the lease takeover time must be at most one day"));
+            return Err(Self::invalid(
+                "the lease takeover time must be at most one day",
+            ));
         }
         Ok(())
     }

@@ -1,4 +1,5 @@
 use super::lease_claims::LeaseClaims;
+use super::lease_failpoint::LeaseFailpoint;
 use super::lease_observation::LeaseObservation;
 use super::lease_record::LeaseRecord;
 use super::lease_timing::LeaseTiming;
@@ -43,11 +44,11 @@ impl LeaseTakeover<'_> {
         self.wait_when(waits, &first)?;
         let generation = LeaseClaims::next_after(Self::base_generation(&first, &stale), &stale);
         self.claims.claim(generation)?;
-        crate::write::failpoint("lease-after-claim")?;
+        LeaseFailpoint::reach("lease-after-claim");
         self.require_unchanged(&first)?;
         let record = LeaseRecord::claim(self.owned_name, self.owner_id, generation, self.timing);
         record.persist(self.record_path)?;
-        crate::write::failpoint("lease-after-record")?;
+        LeaseFailpoint::reach("lease-after-record");
         self.claims.remove_before(generation);
         Ok(record)
     }
@@ -69,7 +70,9 @@ impl LeaseTakeover<'_> {
         if !waits {
             return Ok(());
         }
-        let takeover = self.timing.takeover_against(first.recorded_takeover_millis());
+        let takeover = self
+            .timing
+            .takeover_against(first.recorded_takeover_millis());
         let ends = Self::first_seen(self.record_path, first) + takeover;
         self.watch_until(ends, first, takeover)
     }
@@ -90,7 +93,9 @@ impl LeaseTakeover<'_> {
     }
 
     fn require_time_left(&self) -> Result<(), NativeStorageError> {
-        let passed = self.deadline.is_some_and(|deadline| Instant::now() >= deadline);
+        let passed = self
+            .deadline
+            .is_some_and(|deadline| Instant::now() >= deadline);
         if passed {
             return Err(self.locked(&LeaseObservation::read(self.record_path)));
         }
@@ -130,7 +135,10 @@ impl LeaseTakeover<'_> {
         entry.1
     }
 
-    fn restart_when_changed(entry: &mut (LeaseObservation, Instant), observation: &LeaseObservation) {
+    fn restart_when_changed(
+        entry: &mut (LeaseObservation, Instant),
+        observation: &LeaseObservation,
+    ) {
         if entry.0 != *observation {
             *entry = (observation.clone(), Instant::now());
         }

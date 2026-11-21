@@ -88,8 +88,11 @@ mod queue;
 mod read_scope;
 mod read_scope_state;
 mod record_attributes;
+mod root_damage;
 mod root_filesystem;
 mod root_open_options;
+mod root_verification;
+mod root_verification_report;
 mod segments;
 mod session_certificate;
 mod sidecar_attributes;
@@ -105,9 +108,6 @@ mod tier_reads_wasm;
 mod validation_mode;
 mod verified_manifest;
 mod word_witness;
-mod root_damage;
-mod root_verification;
-mod root_verification_report;
 mod write;
 mod writer_session;
 
@@ -178,9 +178,6 @@ pub use filesystem_profile::FilesystemProfile;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub use fylo_vfs::host_now_unix_ms;
 pub use lease::{LeaseTiming, RootLease};
-pub use root_damage::RootDamage;
-pub use root_verification::RootVerification;
-pub use root_verification_report::RootVerificationReport;
 pub use log_position::LogPosition;
 pub use platform_companion::is_platform_companion;
 pub use queue::{
@@ -188,8 +185,11 @@ pub use queue::{
     QueueNackResult, QueuePublishOptions, QueuePublishResult, QueueStats,
 };
 pub use read_scope::ReadScope;
+pub use root_damage::RootDamage;
 pub use root_filesystem::RootFilesystem;
 pub use root_open_options::RootOpenOptions;
+pub use root_verification::RootVerification;
+pub use root_verification_report::RootVerificationReport;
 pub use system_disk::{
     AppId, OptOutSource, PlacementKind, PlacementReport, PlacementSettings, RootPlacement,
 };

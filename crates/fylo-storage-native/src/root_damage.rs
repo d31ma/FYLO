@@ -26,7 +26,11 @@ impl RootDamage {
         }
     }
 
-    pub(crate) fn from_error(collection: &str, file: &Path, error: &crate::NativeStorageError) -> Self {
+    pub(crate) fn from_error(
+        collection: &str,
+        file: &Path,
+        error: &crate::NativeStorageError,
+    ) -> Self {
         Self::new(collection, file, error.code().as_str(), error.to_string())
     }
 }

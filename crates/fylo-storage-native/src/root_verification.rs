@@ -25,9 +25,9 @@ pub struct RootVerification<'a> {
 }
 
 impl<'a> RootVerification<'a> {
-    const COLLECTION_FOLDERS: [&str; 2] = [".collections", ".buckets"];
-    const NOT_JSON: &str = "ENATIVE_DOCUMENT";
-    const INDEX_DIFFERS: &str = "ENATIVE_INDEX";
+    const COLLECTION_FOLDERS: [&'static str; 2] = [".collections", ".buckets"];
+    const NOT_JSON: &'static str = "ENATIVE_DOCUMENT";
+    const INDEX_DIFFERS: &'static str = "ENATIVE_INDEX";
 
     #[must_use]
     pub fn run(writer: &'a NativeWriteRoot, root: &'a NativeRoot) -> RootVerificationReport {
@@ -107,7 +107,11 @@ impl<'a> RootVerification<'a> {
         self.report.files_checked += 1;
         match collection.read_document(identifier) {
             Ok(stored) => self.check_json(collection.name(), &stored.path, &stored.bytes),
-            Err(error) => self.damage(collection.name(), &collection.path().join(identifier), &error),
+            Err(error) => self.damage(
+                collection.name(),
+                &collection.path().join(identifier),
+                &error,
+            ),
         }
     }
 
@@ -123,7 +127,9 @@ impl<'a> RootVerification<'a> {
 
     fn check_index(&mut self, collection: &NativeCollection) {
         match collection.verify_index_references() {
-            Ok(verification) => self.check_index_matches(collection, verification.rebuild_equivalent),
+            Ok(verification) => {
+                self.check_index_matches(collection, verification.rebuild_equivalent);
+            }
             Err(error) => self.damage(collection.name(), collection.path(), &error),
         }
     }
@@ -156,7 +162,11 @@ impl<'a> RootVerification<'a> {
     fn check_raw_file(&mut self, collection: &NativeCollection, identifier: &str) {
         self.report.files_checked += 1;
         if let Err(error) = collection.read_raw_file(identifier) {
-            self.damage(collection.name(), &collection.path().join(identifier), &error);
+            self.damage(
+                collection.name(),
+                &collection.path().join(identifier),
+                &error,
+            );
         }
     }
 

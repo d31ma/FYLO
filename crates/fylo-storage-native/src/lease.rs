@@ -1,6 +1,7 @@
 mod kernel_file_lock;
 mod lease_backoff;
 mod lease_claims;
+mod lease_failpoint;
 mod lease_heartbeat;
 mod lease_observation;
 mod lease_record;

@@ -1328,7 +1328,9 @@ impl ReadOnlyEngine {
                         self.decrypt_fields(
                             collection.name(),
                             Document::parse(&stored.bytes, DocumentLimits::default())
-                                .map_err(|error| EngineError::damaged_document(error, &stored.path))?
+                                .map_err(|error| {
+                                    EngineError::damaged_document(error, &stored.path)
+                                })?
                                 .into_fields(),
                             None,
                         )?
