@@ -12,6 +12,7 @@ mod handshake_identity;
 mod invocation_options;
 mod invocation_runtime;
 mod request_frame;
+mod request_namespace;
 mod session_temp_cache;
 mod strict;
 
@@ -22,6 +23,7 @@ pub use invocation_runtime::InvocationRuntime;
 pub use request_frame::RequestFrame;
 
 use handshake_identity::HandshakeIdentity;
+use request_namespace::RequestNamespace;
 use std::io::{BufRead, Read, Write};
 #[cfg(not(target_arch = "wasm32"))]
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
@@ -47,6 +49,7 @@ use fylo_storage_native::{
 use serde::Serialize;
 use serde_json::{Value, json};
 
+pub use fylo_storage_native::layout::NamespaceName;
 pub use fylo_storage_native::{DatabaseKey, RootConfig, parse_shard_width};
 pub use strict::StrictValue;
 
@@ -943,6 +946,7 @@ impl Session {
                 "machine request field \"op\" must be a string",
             ));
         };
+        self.request_namespace(request)?;
         match operation {
             "handshake" => Ok(self.handshake()),
             "getDoc" => self.get_document(request),
@@ -1099,6 +1103,22 @@ impl Session {
             .map_or(Value::Bool(false), |hot_set| json!(hot_set.statistics()))
     }
 
+    /// The namespace a request names, or the session's default (ADR 0033
+    /// section 3). Every frame checks it before it runs, so a bad name is
+    /// refused with `ENAMESPACE`; the engine reads only `public` until slice
+    /// L1-5 moves it onto the new layout.
+    fn request_namespace(&self, request: &Value) -> Result<NamespaceName, MachineError> {
+        RequestNamespace::resolve(request, self.config.namespace.as_ref())
+    }
+
+    /// The namespace a request that names none uses.
+    fn default_namespace(&self) -> &str {
+        self.config
+            .namespace
+            .as_ref()
+            .map_or(NamespaceName::DEFAULT, NamespaceName::as_str)
+    }
+
     fn handshake(&self) -> Value {
         let capabilities = self.handshake_capabilities();
         let leases = self.leases.borrow();
@@ -1140,6 +1160,7 @@ impl Session {
             "identity": HandshakeIdentity::report(&self.config, self.default_root.as_deref()),
             "storage": {
                 "filesystemProfile": self.filesystem_profile.as_str(),
+                "namespace": self.default_namespace(),
                 "rootLock": {
                     "owned": owned,
                     "kernelEnforced": kernel_enforced,

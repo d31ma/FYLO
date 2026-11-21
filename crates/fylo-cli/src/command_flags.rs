@@ -38,7 +38,8 @@ impl CommandFlags {
         "-h",
     ];
     const OUTPUT_SWITCHES: [&'static str; 3] = ["--json", "--no-pager", "--version"];
-    const EXEC_VALUES: [&'static str; 5] = [
+    const EXEC_VALUES: [&'static str; 6] = [
+        "--namespace",
         "--request",
         "--deadline-ms",
         "--cleanup-reserve-ms",

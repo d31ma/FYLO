@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use fylo_identity::{Identity, IdentityId};
 use fylo_storage_native::AccessTrust;
+use fylo_storage_native::layout::NamespaceName;
 use fylo_storage_native::{DatabaseIdentity, DatabaseKey, RootOpenOptions, TempCacheSettings};
 
 use crate::{RootConfig, StrictValue};
@@ -45,6 +46,9 @@ pub struct ApplicationConfig {
     /// `fylo.appId`: the app whose own data folder may hold the root
     /// (ADR 0032 section 3.2).
     pub app_id: Option<String>,
+    /// `fylo exec --namespace`: the namespace of requests that name none
+    /// (ADR 0033 section 3). `None` means `public`.
+    pub namespace: Option<NamespaceName>,
 }
 
 impl ApplicationConfig {

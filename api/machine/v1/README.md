@@ -42,6 +42,20 @@ up to 26.45.07 reported it as `ENATIVE_METADATA`. An `exec --invocation`
 retry of a create that had already committed answers `EDOCEXISTS`, which a
 host can treat as "already done".
 
+## Namespace (`namespace`, ADR 0033)
+
+Every request may carry the optional string field `namespace`: the
+namespace (like a Postgres schema) the request works in. A request without it
+uses the session's default: `fylo exec --namespace <ns>`, else `public`. The
+handshake reports the default as `storage.namespace`.
+
+A name is 2-64 bytes of lowercase `a-z`, digits and `-`, starting and ending
+with a letter or digit; Windows device names and FYLO's reserved words are
+refused. A bad name fails the frame with `ENAMESPACE` (not retryable) before
+the operation runs; a value that is not a string fails with `EBADREQUEST`.
+Until the layout release the engine stores every collection in the root's
+existing layout, so the field is checked but does not yet select a folder.
+
 ## Compatibility
 
 Within protocol v1:

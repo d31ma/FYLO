@@ -121,6 +121,7 @@ impl Settings {
             identity: None,
             allow_system_disk,
             app_id,
+            namespace: None,
         })
     }
 
