@@ -27,42 +27,43 @@ a lost document cannot.
    owner.
 2. **Open the root once and verify it.**
 
-   ```bash
-   fylo verify --root /data/app
-   ```
+    ```bash
+    fylo verify --root /data/app
+    ```
 
-   The command first finishes any write the crash interrupted (an unfinished
-   transaction rolls back, a committed one rolls forward), then reads every
-   document and file. It prints a JSON report and exits with a non-zero code
-   when any file is damaged:
+    The command first finishes any write the crash interrupted (an unfinished
+    transaction rolls back, a committed one rolls forward), then reads every
+    document and file. It prints a JSON report and exits with a non-zero code
+    when any file is damaged:
 
-   ```json
-   {
-     "root": "/data/app",
-     "ok": false,
-     "collectionsChecked": 2,
-     "filesChecked": 5120,
-     "damaged": [
-       {
-         "collection": "items",
-         "file": "/data/app/.collections/items/docs/4V/4VRNF530001.json",
-         "code": "ENATIVE_DOCUMENT",
-         "message": "damaged FYLO document file ...: EOF while parsing ..."
-       }
-     ]
-   }
-   ```
+    ```json
+    {
+        "root": "/data/app",
+        "ok": false,
+        "collectionsChecked": 2,
+        "filesChecked": 5120,
+        "damaged": [
+            {
+                "collection": "items",
+                "file": "/data/app/.collections/items/docs/4V/4VRNF530001.json",
+                "code": "ENATIVE_DOCUMENT",
+                "message": "damaged FYLO document file ...: EOF while parsing ..."
+            }
+        ]
+    }
+    ```
 
-   A health check or a script can use the exit code alone.
+    A health check or a script can use the exit code alone.
+
 3. **Restore the named files** from a backup taken before the crash (for a
    btrfs pool: a snapshot; otherwise another copy). Restore only the files the
    report names, to the same paths.
 4. **Rebuild each collection the report named**, so its index matches its
    documents again:
 
-   ```bash
-   fylo rebuild <collection> --root /data/app
-   ```
+    ```bash
+    fylo rebuild <collection> --root /data/app
+    ```
 
 5. **Verify again** with `fylo verify --root /data/app`. Start the writers only
    when it exits with code 0.

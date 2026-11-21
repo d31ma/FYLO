@@ -248,6 +248,14 @@ same machine takes over at once when the owner's process has ended; a
 process on another machine waits the takeover time. Rust callers can pass a
 `LeaseTiming` to `RootLease::acquire_with_timing` instead.
 
+On a network share, keep the takeover time longer than the heartbeat plus the
+client's attribute cache time, with room to spare. A client may show a lease
+record that is up to that cache time old: on macOS NFS mounts `acregmin` and
+`acdirmin` default to 5 seconds, and a reader on such a mount saw each change
+up to 5.0 seconds late (measured on an NFSv3 mount, 2026-11-21). The defaults
+(5 and 20 seconds) leave 10 seconds of margin. Do not shorten the takeover
+time on a share without measuring that delay first.
+
 ### `cng:` keys and passwordless Windows logons
 
 A `cng:` key is protected by DPAPI with the owning user's credentials.

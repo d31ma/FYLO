@@ -348,8 +348,11 @@ struct RemoteMachine {
 
 impl RemoteMachine {
     const HEARTBEAT_SECONDS: &str = "0.5";
-    const TAKEOVER_SECONDS: &str = "5";
-    const TAKEOVER: Duration = Duration::from_secs(5);
+    // An NFS client may serve the record up to its attribute cache time
+    // late (5 s on this Mac's ANVIL mount, measured), so the takeover time
+    // must leave room for a heartbeat plus that delay.
+    const TAKEOVER_SECONDS: &str = "15";
+    const TAKEOVER: Duration = Duration::from_secs(15);
 
     fn from_environment() -> Self {
         Self {

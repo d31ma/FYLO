@@ -293,6 +293,13 @@ Two details of the build (slice L1-3):
   (ADR 0029), so the kernel lock this process holds already proves their
   owner gone. An unreadable record waits the takeover time; the claim files
   then give the last generation.
+- An NFS client can serve the record up to its attribute cache time late
+  (measured on this Mac's ANVIL NFSv3 mount: up to 5.0 s, both for a record
+  replaced by rename and for one rewritten in place). The takeover time must
+  exceed the heartbeat plus that delay; the defaults leave 10 s of margin.
+  Measured costs on that mount (EFS profile, 40 samples): open 5.6 ms p50,
+  read 5.4 ms, commit 52 ms, fencing check 0.2 ms; on the internal disk 0.7,
+  0.15, 1.6 and 0.02 ms.
 
 **One process, several namespaces.** An `exec --loop` takes a namespace's
 lease when its first request for that namespace arrives, as it takes the
