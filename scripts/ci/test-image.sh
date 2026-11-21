@@ -31,8 +31,8 @@ fylo_image_mount_point() {
   echo "${FYLO_TEST_IMAGE_MOUNT:-$HOME/Developer/FyloTestImage}"
 }
 
-fylo_image_size() {
-  echo "${FYLO_TEST_IMAGE_SIZE:-8g}"
+fylo_image_size_gib() {
+  echo "${FYLO_TEST_IMAGE_SIZE_GIB:-8}"
 }
 
 fylo_image_lock() {
@@ -137,10 +137,10 @@ fylo_image_require_volume() {
 fylo_image_create() {
   local image size
   image="$(fylo_image_file)"
-  size="$(fylo_image_size)"
-  fylo_image_say "creating $image (sparse APFS, $size maximum)"
+  size="$(fylo_image_size_gib)"
+  fylo_image_say "creating $image (sparse APFS, $size GiB maximum)"
   mkdir -p "$(dirname "$image")" || return 1
-  hdiutil create -size "$size" -type SPARSEBUNDLE -fs APFS -volname FYLOTEST "$image" >&2
+  diskutil image create blank --format UDSB --fs APFS --volumeName FYLOTEST --size "$((size * 1024 * 1024 * 1024))" "$image" >&2
 }
 
 fylo_image_require_file() {
@@ -167,7 +167,7 @@ fylo_image_require_single_attach() {
 }
 
 fylo_image_run_attach() {
-  hdiutil attach -nobrowse -mountpoint "$1" "$2" >&2
+  diskutil image attach --mountOptions nobrowse --mountPoint "$1" "$2" >&2
 }
 
 fylo_image_attach_now() {
@@ -225,7 +225,7 @@ fylo_image_show_users() {
 }
 
 fylo_image_run_detach() {
-  hdiutil detach "$1" >&2
+  diskutil eject "$1" >&2
 }
 
 fylo_image_detach_now() {
