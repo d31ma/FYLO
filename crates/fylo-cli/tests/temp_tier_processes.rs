@@ -23,6 +23,7 @@ impl Place {
     const BINARY: &'static str = env!("CARGO_BIN_EXE_fylo-rust");
     const FAILPOINT: &'static str = "FYLO_RUST_TEMP_CACHE_FAILPOINT";
 
+    #[cfg(unix)]
     const EFS: &'static [&'static str] = &["--filesystem-profile", "efs-sidecar-v1"];
 
     fn new() -> Self {
@@ -402,8 +403,10 @@ fn invocations_fill_and_answer_from_the_tier() {
 /// An EFS-profile root on a real network mount, with the default `auto`
 /// mode and the OS temp folder: the tier turns itself on, and a second
 /// process answers from it.
+#[cfg(unix)]
 struct NetworkRoot(PathBuf);
 
+#[cfg(unix)]
 impl NetworkRoot {
     const LIST: &'static str = "FYLO_TEST_NETWORK_ROOTS";
 
@@ -465,12 +468,14 @@ impl NetworkRoot {
     }
 }
 
+#[cfg(unix)]
 impl Drop for NetworkRoot {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
     }
 }
 
+#[cfg(unix)]
 fn assert_auto_reads_through_the_tier(parent: &Path) {
     let place = NetworkRoot::below(parent);
     place.succeed(&json!({"op":"createCollection","collection":NOTES}));
