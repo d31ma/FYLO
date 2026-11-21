@@ -76,7 +76,7 @@ class FyloTestDisk {
     $script = Join-Path $env:TEMP "fylo-test-disk-$PID.txt"
     Set-Content -LiteralPath $script -Encoding ASCII -Value "create vdisk file=`"$image`" maximum=$($sizeGiB * 1024) type=expandable"
     diskpart /s $script | Out-Host
-    $status = $LASTEXITCODE
+    $status = $global:LASTEXITCODE
     Remove-Item -LiteralPath $script -Force
     if ($status -ne 0) { [FyloTestDisk]::Fail("diskpart could not create $image") }
   }
@@ -274,6 +274,7 @@ try {
     'Detach' { [FyloTestDisk]::Detach($Folder, [bool]$Delete) }
     'Status' { [FyloTestDisk]::Status($Letter) }
   }
+  exit 0
 } catch {
   [Console]::Error.WriteLine($_.Exception.Message)
   exit 1

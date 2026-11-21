@@ -5,14 +5,14 @@
 # PowerShell script in windows-vm, with FYLO's NTFS test disk as drive T:.
 #
 #   MAC_HEAVY_COORDINATOR=fylo mac-heavy --owner <name> --vm=windows -- \
-#     scripts/ci/windows-lane.sh [--owner <name>] [--create] -- <script.ps1> [<argument>...]
+#     scripts/ci/windows-lane.sh [--owner <name>] -- <script.ps1> [<argument>...]
 #
 # The test disk is one reusable sparse raw image on the HANGAR SSD
-# (FYLO_WINDOWS_TEST_DISK, default below). Only testvm attaches it, as the
-# VM's second disk for this boot (TESTVM_TEST_DISK, Platform's change), so the
-# vm-windows lock makes it one boot at a time. The Mac never attaches it.
-# --create makes the image (sparse, 8 GiB) when it does not exist yet; Windows
-# formats it NTFS on first use (scripts/ci/test-disk.ps1 -Action Online).
+# (FYLO_WINDOWS_TEST_DISK, default below), made by Platform. Only testvm
+# attaches it, as the VM's second NVMe disk with serial TEST-DISK for this
+# boot (TESTVM_TEST_DISK), so the vm-windows lock makes it one boot at a time.
+# The Mac never attaches it. Windows formats it NTFS on first use only, when
+# the disk has no partitions (scripts/ci/test-disk.ps1 -Action Online).
 #
 # The script runs in a copy of this worktree's files (tracked and untracked,
 # not ignored) through scripts/ci/test-disk.ps1 -Action Run, so
@@ -23,11 +23,7 @@
 set -o pipefail
 
 fylo_win_test_disk() {
-  echo "${FYLO_WINDOWS_TEST_DISK:-/Volumes/HANGAR/test-disks/windows-vm/fylo-windows-test.raw}"
-}
-
-fylo_win_size() {
-  echo 8g
+  echo "${FYLO_WINDOWS_TEST_DISK:-/Volumes/HANGAR/fylo-test/windows-vm.raw}"
 }
 
 fylo_win_letter() {
@@ -54,19 +50,17 @@ fylo_win_fail() {
 fylo_win_place_problem() {
   case "$1" in
     /Volumes/HAVEN/* | /Volumes/ATLAS/*) echo "$1 is on a production volume (HAVEN or ATLAS)" ;;
-    /Volumes/HANGAR/test-disks/windows-vm/*.raw) echo none ;;
-    *) echo "$1 is not a .raw file in /Volumes/HANGAR/test-disks/windows-vm" ;;
+    /Volumes/HANGAR/fylo-test/*.raw) echo none ;;
+    *) echo "$1 is not a .raw file in /Volumes/HANGAR/fylo-test" ;;
   esac
 }
 
 fylo_win_require_disk() {
-  local disk="$1" create="$2" problem
+  local disk="$1" problem
   problem="$(fylo_win_place_problem "$disk")"
   [ "$problem" = none ] || { fylo_win_fail "$problem"; return 1; }
   [ -f "$disk" ] && return 0
-  [ "$create" = yes ] || { fylo_win_fail "$disk does not exist (pass --create to make it)"; return 1; }
-  fylo_win_say "creating $disk (sparse raw, $(fylo_win_size))"
-  mkdir -p "$(dirname "$disk")" && mkfile -n "$(fylo_win_size)" "$disk"
+  fylo_win_fail "$disk does not exist (Platform makes it)"
 }
 
 fylo_win_pack() {
@@ -156,11 +150,11 @@ fylo_win_run_booted() {
 }
 
 fylo_win_run() {
-  local owner="$1" create="$2" disk stage status
-  shift 2
+  local owner="$1" disk stage status
+  shift
   disk="$(fylo_win_test_disk)"
   stage="$(fylo_win_stage_root)/$$"
-  fylo_win_require_disk "$disk" "$create" || return 1
+  fylo_win_require_disk "$disk" || return 1
   fylo_win_pack "$stage" || { fylo_win_fail "could not pack the worktree"; return 1; }
   fylo_win_write_inner "$stage"
   fylo_win_write_run "$stage" "$owner" "$@"
@@ -183,17 +177,16 @@ fylo_win_usage() {
 }
 
 fylo_win_main() {
-  local owner="${FYLO_TEST_OWNER:-${MAC_HEAVY_OWNER:-windows-lane}}" create=no
+  local owner="${FYLO_TEST_OWNER:-${MAC_HEAVY_OWNER:-windows-lane}}"
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --owner) owner="$2"; shift 2 ;;
-      --create) create=yes; shift ;;
       --) shift; break ;;
       *) fylo_win_usage; return ;;
     esac
   done
   [ "$#" -gt 0 ] || { fylo_win_usage; return; }
-  fylo_win_run "$owner" "$create" "$@"
+  fylo_win_run "$owner" "$@"
 }
 
 fylo_win_main "$@"

@@ -562,7 +562,7 @@ all on HANGAR**:
 | System | The test image | Attached by | File system |
 | ------ | -------------- | ----------- | ----------- |
 | macOS lane (this Mac, jobq jobs, the nightly) | a sparsebundle on HANGAR, in a folder Platform confirms when slice L1-11 is near | the test helper, `hdiutil attach -nobrowse` at a fixed mount point, kept attached between jobs | APFS |
-| windows-vm | one reusable sparse raw image in `/Volumes/HANGAR/test-disks/windows-vm/`, the VM's second disk | **only `testvm`** (Platform's change), at boot, under the `vm-windows` lock | NTFS |
+| windows-vm | one reusable sparse raw image `/Volumes/HANGAR/fylo-test/windows-vm.raw` (made by Platform), the VM's second NVMe disk (serial `TEST-DISK`) | **only `testvm`** (Platform's change), at boot, under the `vm-windows` lock | NTFS |
 | Linux lane (Colima) | no image file: a named Docker volume (for example `fylo-test-volume`) mounted at `/data` in FYLO's test container. Colima's data disk is itself a file on HANGAR and is not the VM's boot disk, so it passes. No `--privileged` and no loop devices are needed. | Docker | ext4 |
 | Laptops away from home, GitHub Linux and Windows runners | a small image the test helper makes on a disk that is not the boot disk (GitHub: `/mnt`, `D:`) | the test helper, per run | native |
 | GitHub macOS runners | one disk only | - | **open**; to be asked again when the CI slice (L1-11) is near |
