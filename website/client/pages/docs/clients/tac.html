@@ -2,18 +2,15 @@
     <span class="eyebrow">SDK reference</span>
     <h1>Language clients</h1>
     <p class="doc-lede">
-        Every native shim owns the same versioned NDJSON conversation with the FYLO binary. Browser
-        and mobile clients embed the portable engine locally instead of spawning a process.
+        Every native shim owns the same versioned NDJSON conversation with the FYLO binary. The
+        browser client embeds the portable engine locally instead of spawning a process.
     </p>
 
     <div class="client-language-strip" aria-label="Supported language clients">
         <span class="w-chip w-chip-tonal">Python</span><span class="w-chip w-chip-tonal">Ruby</span
         ><span class="w-chip w-chip-tonal">Node.js</span><span class="w-chip w-chip-tonal">PHP</span
-        ><span class="w-chip w-chip-tonal">Go</span><span class="w-chip w-chip-tonal">Rust</span
-        ><span class="w-chip w-chip-tonal">C#</span><span class="w-chip w-chip-tonal">Java</span
-        ><span class="w-chip w-chip-tonal">Swift</span
-        ><span class="w-chip w-chip-tonal">Kotlin</span><span class="w-chip w-chip-tonal">Dart</span
-        ><span class="w-chip w-chip-tonal">Flutter</span
+        ><span class="w-chip w-chip-tonal">Go</span><span class="w-chip w-chip-tonal">C#</span
+        ><span class="w-chip w-chip-tonal">Java</span><span class="w-chip w-chip-tonal">Dart</span
         ><span class="w-chip w-chip-tonal">JS (Browser)</span>
     </div>
 
@@ -59,9 +56,9 @@
             Without a config path, the CLI discovers <code>application.json</code> in its working
             directory. An absent default file uses defaults; an explicitly selected missing file,
             invalid setting, or unresolved secret reference fails initialization. The same setting is available in the
-            Node/TypeScript, Python, Ruby, PHP, Go, Rust, Java, C#, and Dart shims. Browser and
-            mobile clients configure their storage adapters directly because they do not launch a
-            FYLO child process.
+            Node/TypeScript, Python, Ruby, PHP, Go, Java, C#, and Dart shims. The browser client
+            configures its storage adapters directly because it does not launch a FYLO child
+            process.
         </p>
         <div class="doc-note doc-note--warn">
             <p>
@@ -72,10 +69,10 @@
             </p>
             <p>
                 Treat configuration and binary paths as trusted bootstrap input, never request or
-                tenant data. Keep secret files private and out of source control. Browser and
-                mobile clients do not load these files implicitly; never publish native secrets in
-                website JSON. See <a href="/docs/operations">Native configuration</a> for migration
-                and resolution details.
+                tenant data. Keep secret files private and out of source control. The browser client
+                does not load these files implicitly; never publish native secrets in website JSON.
+                See <a href="/docs/operations">Native configuration</a> for migration and resolution
+                details.
             </p>
         </div>
     </div>

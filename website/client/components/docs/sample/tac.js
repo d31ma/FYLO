@@ -11,21 +11,13 @@ const LANGS = [
     { key: 'node', label: 'Node.js', dir: 'node', cmt: '//' },
     { key: 'php', label: 'PHP', dir: 'php', cmt: '//' },
     { key: 'go', label: 'Go', dir: 'go', cmt: '//' },
-    { key: 'rust', label: 'Rust', dir: 'rust', cmt: '//' },
     { key: 'csharp', label: 'C#', dir: 'csharp', cmt: '//' },
     { key: 'java', label: 'Java', dir: 'java', cmt: '//' },
-    { key: 'swift', label: 'Swift (iOS)', dir: 'swift', cmt: '//', mobile: true },
-    { key: 'kotlin', label: 'Kotlin (Android)', dir: 'kotlin', cmt: '//', mobile: true },
     { key: 'dart', label: 'Dart', dir: 'dart', cmt: '//' },
-    { key: 'flutter', label: 'Flutter', dir: 'flutter', cmt: '//', mobile: true },
     { key: 'web', label: 'JS (Browser)', dir: 'web', cmt: '//' }
 ]
 
 const FYLO_BROWSER_LOADER = 'https://d31ma.github.io/FYLO/version/26.45.07/fylo.js'
-
-// Swift (iOS), Kotlin (Android), and Flutter are local-first mobile clients — they
-// embed the engine in a WebView, on-device only, like the browser client.
-const isMobile = (lang) => lang === 'swift' || lang === 'kotlin' || lang === 'flutter'
 
 // Native object/array literal renderers, one per language. Object arguments are
 // built with each language's native container — no JSON strings.
@@ -85,32 +77,6 @@ function csharpLit(v) {
         .map(([k, val]) => `["${k}"] = ${csharpLit(val)}`)
         .join(', ')} }`
 }
-function rustJson(v) {
-    if (typeof v === 'number') return `${v}.into()`
-    if (typeof v === 'string') return `"${v}".into()`
-    if (Array.isArray(v)) return `Json::arr(vec![${v.map(rustJson).join(', ')}])`
-    return `Json::obj(vec![${Object.entries(v)
-        .map(([k, val]) => `("${k}", ${rustJson(val)})`)
-        .join(', ')}])`
-}
-function swiftLit(v) {
-    // Swift uses \(…) for interpolation, so a literal `$` in a string needs no escaping.
-    if (typeof v === 'number') return String(v)
-    if (typeof v === 'string') return `"${v}"`
-    if (Array.isArray(v)) return `[${v.map(swiftLit).join(', ')}]`
-    return `[${Object.entries(v)
-        .map(([k, val]) => `"${k}": ${swiftLit(val)}`)
-        .join(', ')}]`
-}
-function kotlinLit(v) {
-    const esc = (s) => s.replace(/\$/g, '\\$') // $ starts interpolation in Kotlin strings
-    if (typeof v === 'number') return String(v)
-    if (typeof v === 'string') return `"${esc(v)}"`
-    if (Array.isArray(v)) return `listOf(${v.map(kotlinLit).join(', ')})`
-    return `mapOf(${Object.entries(v)
-        .map(([k, val]) => `"${esc(k)}" to ${kotlinLit(val)}`)
-        .join(', ')})`
-}
 function dartLit(v) {
     const esc = (s) => s.replace(/\$/g, '\\$') // $ starts interpolation in Dart strings
     if (typeof v === 'number') return String(v)
@@ -137,14 +103,13 @@ const METHODS = {
 // The op name cased to each language's method convention.
 function methodName(lang, op) {
     if (lang === 'go' || lang === 'csharp') return op.charAt(0).toUpperCase() + op.slice(1)
-    if (lang === 'python' || lang === 'ruby' || lang === 'rust') {
+    if (lang === 'python' || lang === 'ruby') {
         return op.replace(/([a-z])([A-Z])/g, '$1_$2').toLowerCase()
     }
     return op // node / php / java keep the camelCase op name
 }
 
-// Render one argument in the target language. Rust scalars are &str; its object
-// args use the Json builder.
+// Render one argument in the target language.
 function argLit(lang, v) {
     // A `__ref` value is an existing variable in the snippet, not a literal.
     if (v && typeof v === 'object' && !Array.isArray(v) && typeof v.__ref === 'string') {
@@ -166,15 +131,8 @@ function argLit(lang, v) {
             return javaLit(v)
         case 'csharp':
             return csharpLit(v)
-        case 'swift':
-            return swiftLit(v)
-        case 'kotlin':
-            return kotlinLit(v)
         case 'dart':
-        case 'flutter':
             return dartLit(v)
-        case 'rust':
-            return typeof v === 'string' ? `"${v}"` : rustJson(v)
         default:
             return pyLit(v)
     }
@@ -197,10 +155,10 @@ const SHORT = {
 // Languages whose clients expose `db.<collection>` dynamic sugar.
 const DYNAMIC = new Set(['node', 'web', 'python', 'ruby', 'php'])
 
-// Go and Rust take the collection kind as a required argument; every other
+// Go takes the collection kind as a required argument; every other
 // client defaults it to "document".
 function withRequiredKind(lang, op) {
-    const required = lang === 'go' || lang === 'rust'
+    const required = lang === 'go'
     if (op.op !== 'createCollection' || op.kind !== undefined || !required) return op
     return { ...op, kind: 'document' }
 }
@@ -236,18 +194,13 @@ function call(lang, requested) {
         case 'web':
             return `await ${invocation}`
         case 'dart':
-        case 'flutter':
             return `await ${invocation};`
-        case 'swift':
-            return `try await ${invocation}` // async local-first mobile client
-        case 'rust':
-            return `${invocation}?;`
         case 'csharp':
         case 'java':
         case 'php':
             return `${invocation};`
         default:
-            return invocation // python / ruby / go / kotlin
+            return invocation // python / ruby / go
     }
 }
 
@@ -284,11 +237,6 @@ const SCAFFOLD = {
         indent: '',
         close: []
     },
-    rust: {
-        open: ['use fylo::{Fylo, Json};', '', 'let mut db = Fylo::open("/mnt/fylo", "fylo")?;'],
-        indent: '',
-        close: []
-    },
     csharp: {
         open: [
             'using System.Collections.Generic;',
@@ -308,24 +256,6 @@ const SCAFFOLD = {
         indent: '    ',
         close: ['}']
     },
-    swift: {
-        open: [
-            '// Fylo.swift is compiled into the app target, so there is no module to import.',
-            '',
-            'let db = try await Fylo()'
-        ],
-        indent: '',
-        close: []
-    },
-    kotlin: {
-        open: [
-            '// inside a coroutine (e.g. lifecycleScope.launch { … })',
-            '',
-            'val db = Fylo.open(context)'
-        ],
-        indent: '',
-        close: []
-    },
     dart: {
         open: [
             "import 'fylo.dart';",
@@ -335,16 +265,6 @@ const SCAFFOLD = {
         ],
         indent: '  ',
         close: ['}']
-    },
-    flutter: {
-        open: [
-            "import 'fylo.dart';",
-            '',
-            '// in an async context (e.g. initState / an async method)',
-            'final db = await Fylo.open();'
-        ],
-        indent: '',
-        close: []
     },
     web: {
         open: [
@@ -358,8 +278,8 @@ const SCAFFOLD = {
 }
 
 // Child-process configuration is intentionally rendered separately from CRUD
-// recipes: each native shim exposes an idiomatic options shape, while browser
-// and mobile clients embed the portable engine and therefore have no child
+// recipes: each native shim exposes an idiomatic options shape, while the
+// browser client embeds the portable engine and therefore has no child
 // process configuration file to select.
 const CONFIGURATION_SAMPLES = {
     python: `from fylo import Fylo
@@ -400,16 +320,6 @@ db, err := fylo.OpenWithOptions("/mnt/fylo", fylo.Options{
 })
 if err != nil { return err }
 defer db.Close()`,
-    rust: `use fylo::{Fylo, FyloOptions};
-
-let mut db = Fylo::open_with_options(
-    "/mnt/fylo",
-    FyloOptions {
-        binary: "/opt/fylo/bin/fylo".into(),
-        config: Some("./config/application.json".into()),
-        ..Default::default()
-    },
-)?;`,
     csharp: `using var db = new Fylo.Fylo(
     "/mnt/fylo",
     new Fylo.Fylo.Options {
@@ -433,21 +343,6 @@ Future<void> main() async {
     config: './config/application.json',
   );
 }`,
-    swift: `// Fylo.swift is compiled into the app target, so there is no module to import.
-let db = try await Fylo()
-
-// iOS embeds FYLO in a WebView; configure its on-device
-// storage host directly. No native child process is spawned.`,
-    kotlin: `val db = Fylo.open(context)
-
-// Android embeds FYLO in a WebView; configure its on-device
-// storage host directly. No native child process is spawned.`,
-    flutter: `Future<void> configureFylo() async {
-  final db = await Fylo.open();
-
-  // Flutter embeds FYLO in a WebView; configure its on-device
-  // storage host directly. No native child process is spawned.
-}`,
     web: `<script src="${FYLO_BROWSER_LOADER}"></script>
 <script type="module">
   const db = await Fylo.open({
@@ -461,7 +356,7 @@ let db = try await Fylo()
 }
 
 // `imports` are extra lines a recipe needs ahead of the language's own
-// boilerplate, such as Go's "fmt" or the JSON decoder Rust and Java use to read
+// boilerplate, such as Go's "fmt" or the JSON decoder Java uses to read
 // the raw response envelope.
 function scaffold(lang, bodyLines, imports = []) {
     const s = SCAFFOLD[lang]
@@ -596,18 +491,11 @@ function bind(lang, name) {
             return `$${name} = `
         case 'go':
             return `${name}, _ := `
-        case 'rust':
-            return `let ${name} = `
         case 'csharp':
             return `var ${name} = `
         case 'java':
             return `var ${name} = `
-        case 'swift':
-            return `let ${name} = `
-        case 'kotlin':
-            return `val ${name} = `
         case 'dart':
-        case 'flutter':
             return `final ${name} = `
         default:
             return `${name} = `
@@ -618,7 +506,6 @@ function bind(lang, name) {
 // as that language's variable reference rather than a string literal.
 function idRef(lang) {
     if (lang === 'php') return '$id'
-    if (lang === 'rust') return '&id'
     return 'id'
 }
 
@@ -629,12 +516,7 @@ function finish(lang, invocation) {
         case 'web':
             return `await ${invocation}`
         case 'dart':
-        case 'flutter':
             return `await ${invocation};`
-        case 'swift':
-            return `try await ${invocation}`
-        case 'rust':
-            return `${invocation}?;`
         case 'csharp':
         case 'java':
         case 'php':
@@ -648,8 +530,7 @@ function finish(lang, invocation) {
 // double-quoted literal — the single-quote languages would otherwise terminate
 // the string early. `$` is escaped where the language interpolates it.
 function sqlLit(lang, sql) {
-    const interpolatesDollar =
-        lang === 'php' || lang === 'kotlin' || lang === 'dart' || lang === 'flutter'
+    const interpolatesDollar = lang === 'php' || lang === 'dart'
     let escaped = sql.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
     if (interpolatesDollar) escaped = escaped.replace(/\$/g, '\\$')
     return `"${escaped}"`
@@ -671,19 +552,13 @@ function applyBind(lang, name, line) {
 }
 
 // `put` resolves with the new document id. Most clients return it as a string;
-// the statically typed ones need a cast, and Rust and Java return the raw
+// the statically typed ones need a cast, and Java returns the raw
 // response envelope, so the id is read from its `result` field.
 function putIdLines(lang, line) {
     const invocation = line.replace(/;$/, '')
     switch (lang) {
         case 'go':
             return [`idValue, _ := ${line}`, 'id := idValue.(string)']
-        case 'rust':
-            return [
-                `let response = ${line}`,
-                'let reply: serde_json::Value = serde_json::from_str(&response)?;',
-                'let id = reply["result"].as_str().unwrap_or_default().to_owned();'
-            ]
         case 'java':
             return [
                 `String response = ${line}`,
@@ -691,10 +566,6 @@ function putIdLines(lang, line) {
             ]
         case 'csharp':
             return [`string id = ${invocation}.GetString();`]
-        case 'swift':
-            return [`let id = ${line} as! String`]
-        case 'kotlin':
-            return [`val id = ${line} as String`]
         default:
             return [applyBind(lang, 'id', line)]
     }
@@ -740,21 +611,18 @@ function recipeImports(lang, steps) {
             'import com.fasterxml.jackson.databind.ObjectMapper;'
         ]
     }
-    if (lang === 'rust' && readsId) {
-        return ['// Reads the raw response envelope with serde_json (add it to Cargo.toml).']
-    }
     return []
 }
 
-// Raw-file buckets need the native engine: the browser loader and the mobile
-// WebView clients reject `kind: "file"` with an error.
+// Raw-file buckets need the native engine: the browser loader rejects
+// `kind: "file"` with an error.
 function nativeOnlyNote(lang) {
     const cmt = LANGS.find((l) => l.key === lang)?.cmt || '//'
     return [
         `${cmt} Raw-file buckets (kind "file") need the native fylo binary.`,
-        `${cmt} The browser loader and the iOS, Android and Flutter clients reject`,
-        `${cmt} them with an error in this release. Use a binary-backed client`,
-        `${cmt} (Python, Ruby, Node.js, PHP, Go, Rust, C#, Java or Dart) instead.`
+        `${cmt} The browser loader rejects them with an error in this release.`,
+        `${cmt} Use a binary-backed client (Python, Ruby, Node.js, PHP, Go, C#,`,
+        `${cmt} Java or Dart) instead.`
     ].join('\n')
 }
 
@@ -799,7 +667,7 @@ export default class {
         if (this.topic === 'configuration') return CONFIGURATION_SAMPLES[lang]
         const steps = RECIPES[this.topic] || RECIPES.crud
         const nativeOnly = steps.some((step) => step.nativeOnly)
-        if (nativeOnly && (lang === 'web' || isMobile(lang))) return nativeOnlyNote(lang)
+        if (nativeOnly && lang === 'web') return nativeOnlyNote(lang)
         return scaffold(lang, recipeBody(lang, steps), recipeImports(lang, steps))
     }
 }

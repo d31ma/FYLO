@@ -28,18 +28,13 @@ function contentCode(section, lang) {
 }
 
 describe('website language samples match the shipped clients', () => {
-    test('Go and Rust pass the collection kind their create methods require', () => {
+    test('Go passes the collection kind its create method requires', () => {
         expect(sampleCode('crud', 'go')).toContain('db.Collection("users").Create("document")')
-        expect(sampleCode('crud', 'rust')).toContain('db.collection("users").create("document")?;')
     })
 
     test('typed clients read the put id as a string', () => {
         expect(sampleCode('crud', 'go')).toContain('id := idValue.(string)')
         expect(sampleCode('crud', 'csharp')).toContain('.GetString();')
-        expect(sampleCode('crud', 'swift')).toContain('as! String')
-        expect(sampleCode('crud', 'kotlin')).toContain('as String')
-        expect(sampleCode('crud', 'rust')).toContain('reply["result"].as_str()')
-        expect(sampleCode('crud', 'rust')).toContain('.get(&id)?;')
         expect(sampleCode('crud', 'java')).toContain('.readTree(response).get("result")')
     })
 
@@ -64,35 +59,15 @@ describe('website language samples match the shipped clients', () => {
         expect(query).not.toContain('executeSQL')
     })
 
-    test('Swift samples add Fylo.swift to the app target instead of importing a module', () => {
-        for (const code of [
-            sampleCode('crud', 'swift'),
-            sampleCode('configuration', 'swift'),
-            showcaseCode('start', 'swift'),
-            contentCode('install', 'swift'),
-            contentCode('crud', 'swift')
-        ]) {
-            expect(code).not.toContain('import Fylo')
-        }
-    })
-
     test('raw-file bucket samples are shown only for binary-backed clients', () => {
-        for (const lang of ['web', 'swift', 'kotlin', 'flutter']) {
-            const code = sampleCode('bucket', lang)
-            expect(code).toContain('need the native fylo binary')
-            expect(code).not.toContain('create(')
-        }
+        const code = sampleCode('bucket', 'web')
+        expect(code).toContain('need the native fylo binary')
+        expect(code).not.toContain('create(')
         expect(sampleCode('bucket', 'node')).toContain("await db.assets.create('file')")
     })
 
     test('local-only samples create the collection before the first put', () => {
-        for (const code of [
-            showcaseCode('start', 'web'),
-            contentCode('install', 'web'),
-            contentCode('install', 'swift'),
-            contentCode('install', 'kotlin'),
-            contentCode('install', 'flutter')
-        ]) {
+        for (const code of [showcaseCode('start', 'web'), contentCode('install', 'web')]) {
             expect(code.indexOf('create()')).toBeGreaterThan(-1)
             expect(code.indexOf('create()')).toBeLessThan(code.indexOf('put('))
         }

@@ -209,7 +209,7 @@ if (typeof document !== 'undefined') {
         {
             name: 'description',
             content:
-                'FYLO is a document store that ships as a single self-contained binary with language shims for Python, Ruby, Node, Go, Rust, C#, Java, PHP, and Dart, plus local-only browser, mobile, and Flutter clients. One canonical JSON file per document, zero-payload prefix indexes, git-like version control, and SQL — no server, no network protocol.'
+                'FYLO is a document store that ships as a single self-contained binary with language shims for Python, Ruby, Node, Go, C#, Java, PHP, and Dart, plus a local-only browser client. One canonical JSON file per document, zero-payload prefix indexes, git-like version control, and SQL — no server, no network protocol.'
         },
         {
             name: 'keywords',

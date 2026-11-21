@@ -38,7 +38,7 @@ describe('website language selector', () => {
         expect(css).toContain('.showcase-langs::-webkit-scrollbar')
         expect(css).toContain('-webkit-overflow-scrolling: touch')
         expect(markup.match(/role="group"/g)).toHaveLength(2)
-        expect(markup.match(/aria-pressed=/g)).toHaveLength(16)
+        expect(markup.match(/aria-pressed=/g)).toHaveLength(12)
         expect(markup).not.toContain('role="tab"')
         expect(markup).not.toContain('role="tablist"')
         expect(markup).toContain('aria-live="polite"')
@@ -114,7 +114,6 @@ describe('website child-scoped FYLO configuration', () => {
             'Fylo.open(',
             'new Fylo(',
             'OpenWithOptions',
-            'open_with_options',
             'new Fylo.Fylo(',
             'Fylo.Options options',
             'final db = await Fylo.open('
@@ -128,7 +127,6 @@ describe('website child-scoped FYLO configuration', () => {
             'Ruby',
             'PHP',
             'Go',
-            'Rust',
             'Java',
             'C#',
             'Dart'
@@ -150,7 +148,7 @@ describe('website child-scoped FYLO configuration', () => {
         expect(sampleMarkup).toContain('role="group" aria-label="Language"')
         expect(sampleMarkup).not.toContain('role="tab"')
         expect(sampleMarkup).not.toContain('role="tablist"')
-        expect(sampleMarkup.match(/aria-pressed=/g)).toHaveLength(13)
+        expect(sampleMarkup.match(/aria-pressed=/g)).toHaveLength(9)
         expect(browserEntry).toContain('requestAnimationFrame(revealLanguageSelections)')
         expect(browserEntry).toContain('strip.querySelector(\'[aria-pressed="true"]\')')
         expect(faq.match(/aria-controls="faq-[^"]+-answer"/g)).toHaveLength(9)
@@ -162,7 +160,6 @@ describe('website child-scoped FYLO configuration', () => {
         expect(operations).toContain('administrator-controlled bootstrap input')
         expect(operations).toMatch(/Never\s+derive them from a request/)
         expect(sample).not.toContain('./config/fylo.env')
-        expect(sample).toContain('config: Some("./config/application.json".into())')
         expect(operations).toContain('"key": "$&#123;FYLO_ENCRYPTION_KEY&#125;"')
         expect(operations).toContain('Unreferenced variables are ignored')
         expect(clients).toContain('former <code>env</code> file/map option is replaced')
@@ -200,10 +197,6 @@ describe('website child-scoped FYLO configuration', () => {
         const dartEnvironment = new DocsSample({ topic: 'configuration' })
         dartEnvironment.$lang = 'dart'
         expect(dartEnvironment.code()).toContain('Future<void> main() async {')
-
-        const flutterEnvironment = new DocsSample({ topic: 'configuration' })
-        flutterEnvironment.$lang = 'flutter'
-        expect(flutterEnvironment.code()).toContain('Future<void> configureFylo() async {')
     })
 })
 
@@ -244,8 +237,8 @@ describe('website serverless queue guidance', () => {
         expect(queueHtml).toContain('Serverless does not mean distributed multi-writer storage')
         expect(queueHtml).toContain('Seven machine operations')
         expect(queueHtml).toContain('One-batch consumer decorators')
-        expect(queueHtml).toContain('Browser and')
-        expect(queueHtml).toContain('do not advertise the')
+        expect(queueHtml).toContain('The browser client keeps')
+        expect(queueHtml).toContain('does not advertise the native queue capability')
         expect(queueHtml).toMatch(/1,000 most recently acknowledged\s+ID\/receipt\s+pairs/)
         expect(queueHtml).toMatch(/64 MiB of aggregate\s+message-file scan\s+work/)
         expect(queueJs).toContain('@db.queue_consumer(')

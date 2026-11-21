@@ -5,13 +5,9 @@ const LANGS = [
     { key: 'node', label: 'Node.js', cmt: '//' },
     { key: 'php', label: 'PHP', cmt: '//' },
     { key: 'go', label: 'Go', cmt: '//' },
-    { key: 'rust', label: 'Rust', cmt: '//' },
     { key: 'csharp', label: 'C#', cmt: '//' },
     { key: 'java', label: 'Java', cmt: '//' },
-    { key: 'swift', label: 'Swift (iOS)', cmt: '//' },
-    { key: 'kotlin', label: 'Kotlin (Android)', cmt: '//' },
     { key: 'dart', label: 'Dart', cmt: '//' },
-    { key: 'flutter', label: 'Flutter', cmt: '//' },
     { key: 'web', label: 'JS (Browser)', cmt: '//' }
 ]
 
@@ -74,31 +70,6 @@ function csharpLit(v) {
         .map(([k, val]) => `["${k}"] = ${csharpLit(val)}`)
         .join(', ')} }`
 }
-function rustJson(v) {
-    if (typeof v === 'number') return `${v}.into()`
-    if (typeof v === 'string') return `"${v}".into()`
-    if (Array.isArray(v)) return `Json::arr(vec![${v.map(rustJson).join(', ')}])`
-    return `Json::obj(vec![${Object.entries(v)
-        .map(([k, val]) => `("${k}", ${rustJson(val)})`)
-        .join(', ')}])`
-}
-function swiftLit(v) {
-    if (typeof v === 'number') return String(v)
-    if (typeof v === 'string') return `"${v}"`
-    if (Array.isArray(v)) return `[${v.map(swiftLit).join(', ')}]`
-    return `[${Object.entries(v)
-        .map(([k, val]) => `"${k}": ${swiftLit(val)}`)
-        .join(', ')}]`
-}
-function kotlinLit(v) {
-    const esc = (s) => s.replace(/\$/g, '\\$') // $ starts interpolation in Kotlin strings
-    if (typeof v === 'number') return String(v)
-    if (typeof v === 'string') return `"${esc(v)}"`
-    if (Array.isArray(v)) return `listOf(${v.map(kotlinLit).join(', ')})`
-    return `mapOf(${Object.entries(v)
-        .map(([k, val]) => `"${esc(k)}" to ${kotlinLit(val)}`)
-        .join(', ')})`
-}
 function dartLit(v) {
     const esc = (s) => s.replace(/\$/g, '\\$') // $ starts interpolation in Dart strings
     if (typeof v === 'number') return String(v)
@@ -119,7 +90,7 @@ const METHODS = {
 
 function methodName(lang, op) {
     if (lang === 'go' || lang === 'csharp') return op.charAt(0).toUpperCase() + op.slice(1)
-    if (lang === 'python' || lang === 'ruby' || lang === 'rust') {
+    if (lang === 'python' || lang === 'ruby') {
         return op.replace(/([a-z])([A-Z])/g, '$1_$2').toLowerCase()
     }
     return op
@@ -146,15 +117,8 @@ function argLit(lang, v) {
             return javaLit(v)
         case 'csharp':
             return csharpLit(v)
-        case 'swift':
-            return swiftLit(v)
-        case 'kotlin':
-            return kotlinLit(v)
         case 'dart':
-        case 'flutter':
             return dartLit(v)
-        case 'rust':
-            return typeof v === 'string' ? `"${v}"` : rustJson(v)
         default:
             return pyLit(v)
     }
@@ -197,12 +161,7 @@ function call(lang, op) {
         case 'node':
             return `await ${invocation}`
         case 'dart':
-        case 'flutter':
             return `await ${invocation};`
-        case 'swift':
-            return `try await ${invocation}` // async local-first mobile client
-        case 'rust':
-            return `${invocation}?;`
         case 'csharp':
         case 'java':
         case 'php':
@@ -243,11 +202,6 @@ const SCAFFOLD = {
         indent: '',
         close: []
     },
-    rust: {
-        open: ['use fylo::{Fylo, Json};', '', 'let mut db = Fylo::open("/mnt/fylo", "fylo")?;'],
-        indent: '',
-        close: []
-    },
     csharp: {
         open: [
             'using System.Collections.Generic;',
@@ -267,24 +221,6 @@ const SCAFFOLD = {
         indent: '    ',
         close: ['}']
     },
-    swift: {
-        open: [
-            '// Fylo.swift is compiled into the app target, so there is no module to import.',
-            '',
-            'let db = try await Fylo()'
-        ],
-        indent: '',
-        close: []
-    },
-    kotlin: {
-        open: [
-            '// inside a coroutine (e.g. lifecycleScope.launch { … })',
-            '',
-            'val db = Fylo.open(context)'
-        ],
-        indent: '',
-        close: []
-    },
     dart: {
         open: [
             "import 'fylo.dart';",
@@ -294,16 +230,6 @@ const SCAFFOLD = {
         ],
         indent: '  ',
         close: ['}']
-    },
-    flutter: {
-        open: [
-            "import 'fylo.dart';",
-            '',
-            '// in an async context (e.g. initState / an async method)',
-            'final db = await Fylo.open();'
-        ],
-        indent: '',
-        close: []
     }
 }
 
@@ -318,12 +244,11 @@ function scaffold(lang, bodyLines, imports = []) {
 // The variable that holds the id `put` produced, as each language passes it.
 function idRef(lang) {
     if (lang === 'php') return '$id'
-    if (lang === 'rust') return '&id'
     return 'id'
 }
 
 // `put` resolves with the new document id. Most clients return it as a string;
-// the statically typed ones need a cast, and Rust and Java return the raw
+// the statically typed ones need a cast, and Java returns the raw
 // response envelope, so the id is read from its `result` field.
 function putIdLines(lang, line) {
     switch (lang) {
@@ -335,16 +260,9 @@ function putIdLines(lang, line) {
         case 'node':
             return [`const id = ${line}`]
         case 'dart':
-        case 'flutter':
             return [`final id = ${line}`]
         case 'go':
             return [`idValue, _ := ${line}`, 'id := idValue.(string)']
-        case 'rust':
-            return [
-                `let response = ${line}`,
-                'let reply: serde_json::Value = serde_json::from_str(&response)?;',
-                'let id = reply["result"].as_str().unwrap_or_default().to_owned();'
-            ]
         case 'java':
             return [
                 `String response = ${line}`,
@@ -352,10 +270,6 @@ function putIdLines(lang, line) {
             ]
         case 'csharp':
             return [`string id = ${line.replace(/;$/, '')}.GetString();`]
-        case 'swift':
-            return [`let id = ${line} as! String`]
-        case 'kotlin':
-            return [`val id = ${line} as String`]
         default:
             return [line]
     }
@@ -368,9 +282,6 @@ function putIdImports(lang) {
             '// Reads the raw response envelope with Jackson (com.fasterxml.jackson).',
             'import com.fasterxml.jackson.databind.ObjectMapper;'
         ]
-    }
-    if (lang === 'rust') {
-        return ['// Reads the raw response envelope with serde_json (add it to Cargo.toml).']
     }
     return []
 }
@@ -562,26 +473,7 @@ export default class {
                     'String role = "admin";',
                     `db.sql("SELECT * FROM ${c} WHERE role = '" + role + "'");`
                 ]
-            case 'rust':
-                return [
-                    `${cmt} format! — quote and escape untrusted values yourself.`,
-                    'let role = "admin";',
-                    `db.sql(&format!("SELECT * FROM ${c} WHERE role = '{role}'"))?;`
-                ]
-            case 'swift':
-                return [
-                    `${cmt} Native interpolation (\\()) — quote and escape untrusted values yourself.`,
-                    'let role = "admin"',
-                    `try await db.sql("SELECT * FROM ${c} WHERE role = '\\(role)'")`
-                ]
-            case 'kotlin':
-                return [
-                    `${cmt} Native interpolation ($) — quote and escape untrusted values yourself.`,
-                    'val role = "admin"',
-                    `db.sql("SELECT * FROM ${c} WHERE role = '\${role}'")`
-                ]
             case 'dart':
-            case 'flutter':
                 return [
                     `${cmt} Native interpolation ($) — quote and escape untrusted values yourself.`,
                     "final role = 'admin';",
