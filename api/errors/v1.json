@@ -86,6 +86,10 @@
             "retryable": false
         },
         {
+            "code": "EFSPROBE",
+            "retryable": false
+        },
+        {
             "code": "EINVALIDDOCID",
             "retryable": false
         },

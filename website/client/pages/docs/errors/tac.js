@@ -87,6 +87,12 @@ export default class {
             retry: 'Do not retry; move the root to another local disk, or set --allow-system-disk (FYLO_ALLOW_SYSTEM_DISK=1, fylo.allowSystemDisk) for tests, CI and laptops.'
         },
         {
+            code: 'EFSPROBE',
+            meaning:
+                'The file system failed the probe when the app folder was created (exclusive create or rename over a file), or no longer does what the app folder recorded in format.json (extended attributes or hard links).',
+            retry: 'Do not retry; move the app folder to a file system that passes the probe, or recreate it there.'
+        },
+        {
             code: 'EFRAME_UTF8',
             meaning: 'The request frame was not valid UTF-8.',
             retry: 'Fix the encoder; the loop resumes at the next frame.'

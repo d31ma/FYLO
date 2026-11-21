@@ -72,6 +72,7 @@ mod extended_attribute_namespace;
 mod extended_attribute_probe;
 mod field_keys;
 mod file_stamp;
+mod filesystem_check;
 mod filesystem_profile;
 mod index_cache;
 mod index_limit;
@@ -166,6 +167,9 @@ pub use document_rekey::DocumentRekey;
 pub use durability::Durability;
 pub use field_keys::{FieldKey, FieldKeys};
 pub use file_stamp::FileStamp;
+#[cfg(not(target_family = "wasm"))]
+pub use filesystem_check::FilesystemProbe;
+pub use filesystem_check::{FilesystemProbeRecord, MetadataStorage};
 pub use filesystem_profile::FilesystemProfile;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub use fylo_vfs::host_now_unix_ms;
@@ -3475,6 +3479,10 @@ pub enum NativeStorageErrorCode {
     /// The root is on the system disk, or a disk FYLO cannot tell, and
     /// neither the opt-out nor app mode admits it (ADR 0032).
     SystemDisk,
+    /// The file system failed the probe when the app folder was created, or
+    /// no longer does what the app folder recorded in `format.json` (ADR
+    /// 0033 section 6).
+    FilesystemProbe,
     /// A SQL mutation was malformed or used an unsupported execution shape.
     InvalidQuery,
     /// A record write targeted a collection whose recorded shard width differs
@@ -3540,6 +3548,7 @@ impl NativeStorageErrorCode {
             Self::RootLeaseLost => "EROOTLEASELOST",
             Self::RemoteRoot => "EREMOTEROOT",
             Self::SystemDisk => "ESYSTEMDISK",
+            Self::FilesystemProbe => "EFSPROBE",
             Self::InvalidQuery => "EQUERY_INVALID",
             Self::ShardWidth => "ESHARDWIDTH",
             Self::Unsupported => "ENATIVE_UNSUPPORTED",
