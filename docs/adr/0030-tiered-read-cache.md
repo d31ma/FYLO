@@ -776,7 +776,7 @@ before.
 same.** Writers never read through the tier. Transaction writes change the
 index while `state.json` says `writing`, which is not cacheable; logged
 writes publish their log position before they append to the index log;
-`rebuildCollection`, `reshard`, `setWordFields` and `repairWordFields` run
+`rebuildCollection`, `reshardCollection`, and the word-field changes (`set_word_fields`, `repair_word_fields`) run
 a rebuild, which moves the generation; compaction exists only for the
 segment layout, which never uses the tier. A log checkpoint keeps the index
 logically the same but replaces the snapshot and then empties the log, so a
