@@ -2,6 +2,7 @@
 
 - Status: **Accepted** (approved by Samuel, 2026-10-28)
 - Date: **2026-10-28**
+- To be amended by [ADR 0035](0035-fylos-own-sdk-in-the-store-shape.md) (accepted, not yet built): a client's one-collection transaction (`storeTransaction`, `transactionBegin`/`Commit`) commits as one log record.
 - Owners: **FYLO maintainers**
 - Amends: the collection transaction journal described in `README.md`
   ("`.fylo-transactions`") for ordinary record mutations. The journal stays for

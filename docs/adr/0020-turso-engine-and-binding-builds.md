@@ -1,6 +1,6 @@
 # ADR 0020: Turso's engine and binding builds under the dependency and unsafe policy
 
-- Status: **Proposed** (draft for the user, 2026-11-01)
+- Status: **Superseded** by [ADR 0035](0035-fylos-own-sdk-in-the-store-shape.md) (2026-11-21): Turso's engine and the binding builds are removed. (Was: Proposed, draft for the user, 2026-11-01.)
 - Date: **2026-11-01**
 - Owners: **FYLO maintainers**
 - Amends: ADR 0004 (unsafe code and dependencies). Follows ADR 0019

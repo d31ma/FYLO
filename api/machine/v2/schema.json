@@ -1,0 +1,415 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "https://fylo.del.ma/api/machine/v2/schema.json",
+    "title": "FYLO machine protocol v2 (frozen, ADR 0035)",
+    "$defs": {
+        "request": {
+            "type": "object",
+            "required": [
+                "op"
+            ],
+            "properties": {
+                "op": {
+                    "type": "string",
+                    "enum": [
+                        "handshake",
+                        "executeSQL",
+                        "createCollection",
+                        "dropCollection",
+                        "inspectCollection",
+                        "storeFindById",
+                        "storeFindAll",
+                        "storeSave",
+                        "storePatch",
+                        "storeDeleteById",
+                        "storeFind",
+                        "storeCount",
+                        "storeExists",
+                        "storeDelete",
+                        "storeScroll",
+                        "storeTransaction",
+                        "transactionBegin",
+                        "transactionCommit",
+                        "transactionRollback",
+                        "collectionExists",
+                        "listCollections",
+                        "rebuildCollection",
+                        "setWordFields",
+                        "reshardCollection",
+                        "migrateLayout",
+                        "compactCollection",
+                        "verifyCollection",
+                        "getFileData",
+                        "getMeta",
+                        "setMeta",
+                        "findDeletedDocs",
+                        "changes",
+                        "restoreDoc",
+                        "joinDocs",
+                        "importBulkData",
+                        "checkout",
+                        "branch",
+                        "commit",
+                        "log",
+                        "status",
+                        "diff",
+                        "restoreCommit",
+                        "merge",
+                        "schemaInspect",
+                        "schemaCurrent",
+                        "schemaHistory",
+                        "schemaDoctor",
+                        "schemaValidate",
+                        "schemaMaterialize",
+                        "schemaMode",
+                        "schemaCheck",
+                        "schemaMigrate",
+                        "schemaPush",
+                        "schemaPull",
+                        "queuePublish",
+                        "queueClaim",
+                        "queueAck",
+                        "queueNack",
+                        "queueExtend",
+                        "queueStats",
+                        "queueDeadLetters",
+                        "inspectDatabase",
+                        "verifyDatabase"
+                    ]
+                },
+                "requestId": {
+                    "type": "string",
+                    "maxLength": 1024
+                },
+                "root": {
+                    "type": "string"
+                },
+                "schemaDir": {
+                    "type": "string"
+                },
+                "worm": {
+                    "type": [
+                        "boolean",
+                        "object"
+                    ]
+                },
+                "versioning": {
+                    "type": "object"
+                },
+                "collection": {
+                    "type": "string",
+                    "minLength": 1
+                },
+                "kind": {
+                    "enum": [
+                        "document",
+                        "file"
+                    ]
+                },
+                "mode": {
+                    "enum": [
+                        "off",
+                        "warn",
+                        "strict"
+                    ]
+                },
+                "layout": {
+                    "enum": [
+                        "files",
+                        "segments"
+                    ]
+                },
+                "allowEngineOnlyAccess": {
+                    "type": "boolean"
+                },
+                "branch": {
+                    "type": "string"
+                },
+                "create": {
+                    "type": "boolean"
+                },
+                "force": {
+                    "type": "boolean"
+                },
+                "message": {
+                    "type": "string"
+                },
+                "topic": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 127,
+                    "pattern": "^[^/\\\\\\u0000-\\u001F\\u007F-\\u009F]+$",
+                    "x-maxBytes": 127
+                },
+                "group": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 127,
+                    "pattern": "^[^/\\\\\\u0000-\\u001F\\u007F-\\u009F]+$",
+                    "x-maxBytes": 127
+                },
+                "payload": true,
+                "receipt": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                },
+                "reason": {
+                    "type": "string",
+                    "maxLength": 4096
+                },
+                "idempotencyKey": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 1024
+                },
+                "delayMs": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 2592000000
+                },
+                "maxMessages": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1000
+                },
+                "maxAttempts": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 100
+                },
+                "visibilityTimeoutMs": {
+                    "type": "integer",
+                    "minimum": 100,
+                    "maximum": 86400000
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1000
+                },
+                "after": {
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "source": {
+                    "type": "string"
+                },
+                "from": {
+                    "type": "string"
+                },
+                "to": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "onlyId": {
+                    "type": "boolean"
+                },
+                "sql": {
+                    "type": "string"
+                },
+                "query": {
+                    "$ref": "../../store/v1/schema.json#/$defs/query"
+                },
+                "page": {
+                    "type": "object"
+                },
+                "join": {
+                    "type": "object"
+                },
+                "document": {
+                    "type": "object"
+                },
+                "data": {
+                    "type": "object"
+                },
+                "file": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string"
+                        },
+                        "url": {
+                            "type": "string"
+                        },
+                        "key": {
+                            "type": "string"
+                        }
+                    },
+                    "additionalProperties": false
+                },
+                "fileOptions": {
+                    "type": "object"
+                },
+                "meta": {
+                    "type": "object"
+                },
+                "options": {
+                    "type": "object"
+                },
+                "url": {
+                    "type": "string"
+                },
+                "limitOrOptions": {
+                    "type": [
+                        "integer",
+                        "object"
+                    ]
+                },
+                "includeUnversioned": {
+                    "type": "boolean"
+                },
+                "out": {
+                    "type": "string",
+                    "minLength": 1
+                },
+                "namespace": {
+                    "type": "string"
+                },
+                "idField": {
+                    "type": "string",
+                    "minLength": 1
+                },
+                "transaction": {
+                    "type": "string",
+                    "minLength": 1
+                },
+                "entity": {
+                    "type": "object"
+                },
+                "fields": {
+                    "type": "object"
+                },
+                "writes": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 1000,
+                    "items": {
+                        "$ref": "../../store/v1/schema.json#/$defs/write"
+                    }
+                },
+                "timeoutMs": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 300000
+                },
+                "parameters": {
+                    "type": [
+                        "array",
+                        "object"
+                    ]
+                }
+            },
+            "additionalProperties": false
+        },
+        "success": {
+            "type": "object",
+            "required": [
+                "protocolVersion",
+                "ok",
+                "op",
+                "requestId",
+                "durationMs",
+                "result"
+            ],
+            "properties": {
+                "protocolVersion": {
+                    "const": 2
+                },
+                "ok": {
+                    "const": true
+                },
+                "op": {
+                    "type": "string"
+                },
+                "requestId": {
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "durationMs": {
+                    "type": "integer",
+                    "minimum": 0
+                },
+                "result": true
+            },
+            "additionalProperties": false
+        },
+        "error": {
+            "type": "object",
+            "required": [
+                "name",
+                "message",
+                "code"
+            ],
+            "properties": {
+                "name": {
+                    "type": "string"
+                },
+                "message": {
+                    "type": "string"
+                },
+                "code": {
+                    "type": "string",
+                    "pattern": "^E[A-Z0-9_]+$"
+                }
+            },
+            "additionalProperties": false
+        },
+        "failure": {
+            "type": "object",
+            "required": [
+                "protocolVersion",
+                "ok",
+                "op",
+                "requestId",
+                "durationMs",
+                "error"
+            ],
+            "properties": {
+                "protocolVersion": {
+                    "const": 2
+                },
+                "ok": {
+                    "const": false
+                },
+                "op": {
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "requestId": {
+                    "type": [
+                        "string",
+                        "null"
+                    ]
+                },
+                "durationMs": {
+                    "type": "integer",
+                    "minimum": 0
+                },
+                "error": {
+                    "$ref": "#/$defs/error"
+                }
+            },
+            "additionalProperties": false
+        }
+    },
+    "oneOf": [
+        {
+            "$ref": "#/$defs/request"
+        },
+        {
+            "$ref": "#/$defs/success"
+        },
+        {
+            "$ref": "#/$defs/failure"
+        }
+    ]
+}

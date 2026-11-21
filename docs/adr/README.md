@@ -40,8 +40,8 @@ ADR.
 | [0016](0016-single-file-vdbx-database.md)                   | Accepted | Single-file `.vdbx` databases               |
 | [0017](0017-schemas-in-the-database.md)                     | Accepted | Schemas in the database, validated at the commit |
 | [0018](0018-json-only-schema-migrations.md)                 | Accepted | JSON-only schema migrations                 |
-| [0019](0019-fylo-through-tursos-engine.md)                  | Proposed | FYLO through Turso's engine: the `fylo` crate and `fylo link` |
-| [0020](0020-turso-engine-and-binding-builds.md)             | Proposed | Turso's engine and binding builds under the unsafe and dependency policy |
+| [0019](0019-fylo-through-tursos-engine.md)                  | Sections 1, 5 accepted (ADR 0026); 2-4, 6 superseded by 0035 | FYLO through Turso's engine: the `fylo` crate and `fylo link` |
+| [0020](0020-turso-engine-and-binding-builds.md)             | Superseded by 0035 | Turso's engine and binding builds under the unsafe and dependency policy |
 | [0021](0021-application-identities-and-signed-policies.md)  | Proposed | Application identities and signed policies (deny by default) |
 | [0022](0022-indexeddb-host-backend-for-vdbx.md)            | Accepted | IndexedDB host backend for `.vdbx` working copies |
 | [0023](0023-word-index-and-sorted-queries.md)              | Accepted | Word indexes (`$match`) and sorted, cursor-paged queries |
@@ -54,8 +54,9 @@ ADR.
 | [0030](0030-tiered-read-cache.md)                          | Proposed | Tiered read cache (temp-disk documents, in-memory query results); slice R cuts file calls per read |
 | [0031](0031-windows-acl-for-the-temp-cache-folder.md)          | Accepted | Windows ACL for the temp cache folder (one Windows-only unsafe boundary) |
 | [0032](0032-primary-root-on-a-data-disk.md)                    | Accepted | A server root lives on a data disk, not the system disk (`ESYSTEMDISK`, opt-out, app mode) |
-| [0033](0033-primary-layout-on-a-data-drive.md)                 | Accepted (not yet built; ships after the next release) | Primary layout `<drive>/<app>/<namespace>/<collection>/<TTID>.json`: namespaces, one lease per namespace, any file system |
+| [0033](0033-primary-layout-on-a-data-drive.md)                 | Accepted (not yet built; ships in the next release) | Primary layout `<drive>/<app>/<namespace>/<collection>/<TTID>.json`: namespaces, one lease per namespace, any file system |
 | [0034](0034-large-objects-in-vdbx.md)                          | Accepted (not yet built; ships with ADR 0033) | Large objects (images, videos, files) in `.vdbx`: extent runs, ~1 MiB chunks, range reads |
+| [0035](0035-fylos-own-sdk-in-the-store-shape.md)              | Accepted (not yet built; ships in the next release) | FYLO's own SDK in TACHYON's `Store` shape: machine protocol v2, `api/store/v1`, `api/sql/v1`, one-collection transactions, no Turso |
 
 ## When another ADR is required
 

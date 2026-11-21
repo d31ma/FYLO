@@ -5,6 +5,7 @@
   (quoted in "Context"). Slices L1-1 to L1-13 build it. It ships in **its own
   release, after the next FYLO release** (the S5 release of ADR 0030). Until
   that release, ADRs 0010, 0029 and 0032 stay in force as written.
+- Release changed (2026-11-21): the user decided "there should be no later FYLO release"; this ADR now ships in **the next FYLO release**, together with ADR 0034 and [ADR 0035](0035-fylos-own-sdk-in-the-store-shape.md). Where this ADR says "its own release, after the next FYLO release", read "the next FYLO release".
 - Date: **2026-11-21**
 - Owners: **FYLO maintainers**
 - Replaces: **ADR 0029** (no root on a network filesystem), when this ADR
