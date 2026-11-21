@@ -1,3 +1,5 @@
+use std::cmp::Ordering;
+
 use serde_json::{Map, Value};
 
 use super::store_comparison::StoreComparison;
@@ -65,16 +67,16 @@ impl StorePredicate {
             StoreOperator::Equal => StoreComparison::equal(actual, expected),
             StoreOperator::NotEqual => StoreComparison::not_equal(actual, expected),
             StoreOperator::LessThan => {
-                StoreComparison::order(actual, expected).is_some_and(|order| order.is_lt())
+                StoreComparison::order(actual, expected).is_some_and(Ordering::is_lt)
             }
             StoreOperator::LessThanOrEqual => {
-                StoreComparison::order(actual, expected).is_some_and(|order| order.is_le())
+                StoreComparison::order(actual, expected).is_some_and(Ordering::is_le)
             }
             StoreOperator::GreaterThan => {
-                StoreComparison::order(actual, expected).is_some_and(|order| order.is_gt())
+                StoreComparison::order(actual, expected).is_some_and(Ordering::is_gt)
             }
             StoreOperator::GreaterThanOrEqual => {
-                StoreComparison::order(actual, expected).is_some_and(|order| order.is_ge())
+                StoreComparison::order(actual, expected).is_some_and(Ordering::is_ge)
             }
             StoreOperator::In => StoreComparison::any_equal(actual, expected),
             StoreOperator::IsNull => StoreComparison::is_null(actual),
