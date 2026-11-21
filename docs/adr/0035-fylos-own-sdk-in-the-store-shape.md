@@ -45,6 +45,8 @@ The user's answers to the spec's questions, quoted exactly:
 | Q2 SQL | "Own thin SQL, v1 (Rec.)" |
 | Q2b joins, `GROUP BY`, `OR` | "Keep them (Rec.)" |
 | Q3 language clients | "lets have the same languages that TACHYON project support" |
+| Q3 client table | "Approve the list (Rec.)" |
+| Q3-T2 native mobile packages | "Keep both (Rec.)" |
 | Q4 when | "Layout release (Rec.)" |
 | Q5 old machine operations | "Remove with the SDK" |
 | Q6 transactions | "One-collection only" |
@@ -180,11 +182,14 @@ segments, identities, verify and rebuild.
   JVM (Java, Kotlin, Groovy), .NET (C#, F#), Go, Rust (the `fylo` crate), Dart,
   Lua and C++. Tac (browser) languages need no client; the browser engine
   keeps its `Store` class.
-- The Rust shim and the Swift, Kotlin and Flutter WebView hosts go.
-- The native mobile packages (FyloKit, the Android AAR; ADR 0026) depend on
-  the user's answer to Q3-T2 (recommendation: keep them, with `Store`).
-- No client is added or removed before the user approves the table (SDK1
-  spec section 9.3).
+- **Keep:** JavaScript and TypeScript (the Node client and the browser
+  engine), Python, Ruby, PHP, the JVM client, the .NET client, Go, the Rust
+  crate and Dart. **Add:** Lua and C++. **Drop:** the Rust shim (the crate
+  replaces it) and the Swift, Kotlin and Flutter WebView hosts. The user
+  approved this table on 2026-11-21: "Approve the list (Rec.)".
+- **The native mobile packages stay** (FyloKit for Swift and the Android
+  AAR; ADR 0026), each with a `Store` class. The user, on 2026-11-21: "Keep
+  both (Rec.)".
 
 ### 7. One release, and how users move
 
