@@ -93,6 +93,8 @@ mod spelling_cache;
 mod system_disk;
 mod temp_tier;
 #[cfg(not(target_family = "wasm"))]
+mod tier_index_reads;
+#[cfg(not(target_family = "wasm"))]
 mod tier_reads;
 #[cfg(target_family = "wasm")]
 mod tier_reads_wasm;
@@ -3009,14 +3011,7 @@ impl NativeCollection {
                 log: Some(log),
             });
         }
-        let snapshot_bytes = self.root.read_file(
-            &self.index_snapshot_path(),
-            index_limit::IndexLimit::INDEX_BYTES,
-        )?;
-        cache.load(index_cache::IndexInputs {
-            snapshot: snapshot_bytes,
-            log: self.index_log(log_limit)?,
-        })
+        cache.load(self.index_inputs(log_limit)?)
     }
 
     /// Read only the prefix-index keys in `ranges`, with the complete WAL
@@ -3043,6 +3038,11 @@ impl NativeCollection {
             let (snapshot, log) = self.medium_index()?;
             let length = snapshot.len() as u64;
             return reader.read((std::io::Cursor::new(snapshot), length), &log);
+        }
+        if let Some(inputs) = self.index_inputs_for_ranges()? {
+            let length = inputs.snapshot.len() as u64;
+            let log = inputs.log.unwrap_or_default();
+            return reader.read((std::io::Cursor::new(inputs.snapshot), length), &log);
         }
         let (snapshot, metadata) = self.root.open_file(
             &self.index_snapshot_path(),

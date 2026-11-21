@@ -721,3 +721,142 @@ fn writes_never_read_through_the_tier() {
 fn writes_never_read_through_the_tier_on_efs() {
     check_writes_never_read_through_the_tier(&Fixture::efs());
 }
+
+const FOURTH: &str = "4VRNF52JPCR";
+const INDEX_ENTRY: &str = "index.fyc";
+
+fn index_entry(fixture: &Fixture) -> PathBuf {
+    let entries: Vec<_> = fixture
+        .entries()
+        .into_iter()
+        .filter(|path| path.file_name().is_some_and(|name| name == INDEX_ENTRY))
+        .collect();
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    entries[0].clone()
+}
+
+fn queries() -> Vec<Value> {
+    vec![
+        find(NOTES, &json!({})),
+        find(NOTES, &json!({"$ops":[{"n":{"$gte":2}}]})),
+        find(NOTES, &json!({"$ops":[{"title":{"$eq":"two"}}]})),
+    ]
+}
+
+fn check_a_query_reads_the_index_from_the_tier(fixture: &Fixture) {
+    seed(fixture);
+    fixture.succeed(&queries());
+    index_entry(fixture);
+    let expected = fixture.answers(TempCacheMode::Off, &queries());
+    assert_eq!(fixture.answers(TempCacheMode::On, &queries()), expected);
+    let counters = fixture.counters_after(&queries());
+    assert!(counter(&counters, "hits") >= 3, "{counters}");
+    assert_eq!(counter(&counters, "rejected"), 0, "{counters}");
+}
+
+#[test]
+fn a_query_reads_the_index_from_the_tier() {
+    check_a_query_reads_the_index_from_the_tier(&Fixture::new());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_query_reads_the_index_from_the_tier_on_efs() {
+    check_a_query_reads_the_index_from_the_tier(&Fixture::efs());
+}
+
+fn check_a_document_written_after_the_index_was_kept_is_found(fixture: &Fixture) {
+    seed(fixture);
+    fixture.succeed(&queries());
+    fixture.succeed(&[put(NOTES, FOURTH, &json!({"title":"two","n":4}))]);
+    let expected = fixture.answers(TempCacheMode::Off, &queries());
+    assert_eq!(fixture.answers(TempCacheMode::On, &queries()), expected);
+    assert_eq!(
+        expected[1]["result"].as_object().map(serde_json::Map::len),
+        Some(3),
+        "{expected:?}"
+    );
+}
+
+#[test]
+fn a_document_written_after_the_index_was_kept_is_found() {
+    check_a_document_written_after_the_index_was_kept_is_found(&Fixture::new());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_document_written_after_the_index_was_kept_is_found_on_efs() {
+    check_a_document_written_after_the_index_was_kept_is_found(&Fixture::efs());
+}
+
+fn check_a_damaged_index_entry_is_refused(fixture: &Fixture) {
+    seed(fixture);
+    fixture.succeed(&queries());
+    let entry = index_entry(fixture);
+    let mut bytes = fs::read(&entry).unwrap();
+    let middle = bytes.len() / 2;
+    bytes[middle] ^= 0x01;
+    fs::write(&entry, bytes).unwrap();
+    let expected = fixture.answers(TempCacheMode::Off, &queries());
+    let counters = fixture.counters_after(&queries()[1..2]);
+    assert_eq!(counter(&counters, "rejected"), 1, "{counters}");
+    assert_eq!(fixture.answers(TempCacheMode::On, &queries()), expected);
+}
+
+#[test]
+fn a_damaged_index_entry_is_refused() {
+    check_a_damaged_index_entry_is_refused(&Fixture::new());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_damaged_index_entry_is_refused_on_efs() {
+    check_a_damaged_index_entry_is_refused(&Fixture::efs());
+}
+
+#[test]
+fn word_keys_added_after_the_index_was_kept_answer_match_the_same() {
+    let fixture = Fixture::new();
+    fixture.succeed(&[
+        create(NOTES),
+        put(NOTES, FIRST, &json!({"body":"meet tom at noon"})),
+        put(NOTES, SECOND, &json!({"body":"lunch room agenda"})),
+        put(NOTES, THIRD, &json!({"body":"meeting notes"})),
+    ]);
+    let matches = [
+        find(NOTES, &json!({"$ops":[{"body":{"$match":"meet"}}]})),
+        find(NOTES, &json!({"$ops":[{"body":{"$match":"agenda room"}}]})),
+    ];
+    fixture.succeed(&matches);
+    NativeWriteRoot::open(fixture.root())
+        .unwrap()
+        .set_word_fields(NOTES, &["body".to_owned()], &[])
+        .unwrap();
+    let expected = fixture.answers(TempCacheMode::Off, &matches);
+    assert_eq!(fixture.answers(TempCacheMode::On, &matches), expected);
+    assert_eq!(fixture.answers(TempCacheMode::On, &matches), expected);
+    assert_ne!(expected[0]["result"], json!({}), "{expected:?}");
+}
+
+#[test]
+fn an_index_over_its_share_of_the_budget_is_not_kept() {
+    let fixture = Fixture::new();
+    let application = fixture.application(TempCacheMode::On, Some(65_536));
+    let mut requests = vec![create(NOTES)];
+    for number in 0..40 {
+        let id = format!("4VRNF52J{number:03}");
+        requests.push(put(
+            NOTES,
+            &id,
+            &json!({"title":format!("title {number} {}", "x".repeat(40)), "n":number}),
+        ));
+    }
+    requests.push(find(NOTES, &json!({"$ops":[{"n":{"$gte":2}}]})));
+    let replies = Fixture::session_at((&fixture.root(), fixture.profile), application, &requests);
+    assert_eq!(replies.last().unwrap()["ok"], true, "{replies:?}");
+    let kept_index = fixture
+        .entries()
+        .iter()
+        .any(|path| path.file_name().is_some_and(|name| name == INDEX_ENTRY));
+    assert!(!kept_index);
+}

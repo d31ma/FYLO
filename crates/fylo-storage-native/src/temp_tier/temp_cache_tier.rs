@@ -6,6 +6,7 @@ use std::time::{Duration, SystemTime};
 use super::cache_sweep::CacheSweep;
 use super::document_entry::DocumentEntry;
 use super::entry_key::EntryKey;
+use super::index_entry::IndexEntry;
 use super::private_folder::PrivateFolder;
 use super::sweep_report::SweepReport;
 use super::temp_cache_mode::TempCacheMode;
@@ -94,6 +95,15 @@ impl TempCacheTier {
         self.reject_unless_found(key, entry)
     }
 
+    /// The index entry at `key`, if one is there and it is a sound entry of
+    /// `collection`. A damaged or foreign entry is deleted and counted as
+    /// rejected.
+    pub(crate) fn read_index(&self, key: &EntryKey, collection: &str) -> Option<IndexEntry> {
+        let bytes = self.read_bytes(key)?;
+        let entry = IndexEntry::decode(&bytes).filter(|entry| entry.collection == collection);
+        self.reject_unless_found(key, entry)
+    }
+
     /// Whether a stored payload of `bytes` may be written: one entry never
     /// takes more than 1/64 of the budget.
     pub(crate) fn admits(&self, bytes: usize) -> bool {
@@ -106,16 +116,16 @@ impl TempCacheTier {
         usize::try_from(self.budget / Self::SWEEP_SHARE).unwrap_or(usize::MAX)
     }
 
-    /// Write `entry` at `key`: a partial file of this process first, then a
-    /// rename over the final name, so a reader never sees half an entry. A
-    /// failed write is counted and pauses writing until the next sweep.
-    pub(crate) fn write(&self, key: &EntryKey, entry: &DocumentEntry) {
+    /// Write the encoded entry `bytes` at `key`: a partial file of this
+    /// process first, then a rename over the final name, so a reader never
+    /// sees half an entry. A failed write is counted and pauses writing
+    /// until the next sweep.
+    pub(crate) fn write(&self, key: &EntryKey, bytes: &[u8]) {
         if self.writes_paused.load(Ordering::Relaxed) {
             self.sweep(SystemTime::now());
             return;
         }
-        let bytes = entry.encode();
-        match self.write_bytes(key, &bytes) {
+        match self.write_bytes(key, bytes) {
             Ok(()) => self.written(bytes.len()),
             Err(_) => self.write_failed(),
         }
@@ -175,11 +185,7 @@ impl TempCacheTier {
         }
     }
 
-    fn reject_unless_found(
-        &self,
-        key: &EntryKey,
-        entry: Option<DocumentEntry>,
-    ) -> Option<DocumentEntry> {
+    fn reject_unless_found<T>(&self, key: &EntryKey, entry: Option<T>) -> Option<T> {
         if entry.is_none() {
             self.reject(key);
         }

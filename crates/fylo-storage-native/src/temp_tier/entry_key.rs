@@ -22,6 +22,7 @@ impl EntryKey {
     const NAME_BYTES: usize = 16;
     const SPREAD_HEX: usize = 2;
     const SUFFIX: &'static str = ".fyc";
+    const INDEX_NAME: &'static str = "index";
 
     /// The 32 hex characters that name the root at `canonical` on `device`.
     pub(crate) fn root_key(canonical: &Path, device: u64) -> String {
@@ -41,6 +42,16 @@ impl EntryKey {
         Self {
             folder: [root_key, &collection_key, &spread].iter().collect(),
             name: format!("{name}{}", Self::SUFFIX),
+        }
+    }
+
+    /// The one index entry of collection `collection` of the root
+    /// `root_key` names; a newer stamp replaces it in place.
+    pub(crate) fn index(root_key: &str, collection: &str) -> Self {
+        let collection_key = Self::hash_hex(collection, Self::COLLECTION_KEY_BYTES);
+        Self {
+            folder: [root_key, collection_key.as_str()].iter().collect(),
+            name: format!("{}{}", Self::INDEX_NAME, Self::SUFFIX),
         }
     }
 

@@ -1,3 +1,5 @@
+use crate::index_cache::IndexInputs;
+use crate::index_limit::IndexLimit;
 use crate::{GenerationState, NativeCollection, NativeStorageError, StoredBytes};
 
 /// The browser engine never reads through a temp tier (ADR 0030 section 2).
@@ -19,5 +21,25 @@ impl NativeCollection {
         identifier: &str,
     ) -> Result<StoredBytes, NativeStorageError> {
         self.read_document_at(&self.path.join("docs"), identifier)
+    }
+
+    pub(crate) fn index_inputs(&self, log_limit: u64) -> Result<IndexInputs, NativeStorageError> {
+        Ok(IndexInputs {
+            snapshot: self
+                .root
+                .read_file(&self.index_snapshot_path(), IndexLimit::INDEX_BYTES)?,
+            log: self.index_log(log_limit)?,
+        })
+    }
+
+    #[expect(
+        clippy::unused_self,
+        clippy::unnecessary_wraps,
+        reason = "the browser engine never has a temp tier; the signature matches the native one"
+    )]
+    pub(crate) const fn index_inputs_for_ranges(
+        &self,
+    ) -> Result<Option<IndexInputs>, NativeStorageError> {
+        Ok(None)
     }
 }

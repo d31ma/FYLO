@@ -57,7 +57,7 @@ impl NativeCollection {
         cached.map_or_else(|| self.read_and_keep(&reading, identifier), Ok)
     }
 
-    fn tier(&self) -> Option<(&TempCacheTier, &str)> {
+    pub(crate) fn tier(&self) -> Option<(&TempCacheTier, &str)> {
         let usable = [
             self.kind == CollectionKind::Document,
             !self.uses_segments(),
@@ -88,7 +88,7 @@ impl NativeCollection {
             return;
         };
         for pending in ready {
-            tier.write(&pending.key, &pending.entry);
+            tier.write(&pending.key, &pending.bytes);
         }
     }
 
@@ -96,7 +96,7 @@ impl NativeCollection {
     /// entry key and every entry's collection field come from here, so a
     /// later change to what names a collection (ADR 0030, layout work)
     /// touches only this helper.
-    fn cache_name(&self) -> String {
+    pub(crate) fn cache_name(&self) -> String {
         format!("{}/{}", self.namespace, self.name)
     }
 
@@ -189,7 +189,7 @@ impl NativeCollection {
             collection_stamp: reading.stamp,
             ..entry
         };
-        self.keep(reading, refreshed);
+        self.keep(reading, &refreshed);
         Some(stored)
     }
 
@@ -234,7 +234,7 @@ impl NativeCollection {
             self.read_document_file(&namespace, identifier, opened, RecordCheck::of)?;
         let entry = self.entry_for(reading, &stored, (opened, check), identifier);
         if let Some(entry) = entry {
-            self.keep(reading, entry);
+            self.keep(reading, &entry);
         }
         Ok(stored)
     }
@@ -265,10 +265,11 @@ impl NativeCollection {
         admitted.then_some(entry)
     }
 
-    fn keep(&self, reading: &TierReading<'_>, entry: DocumentEntry) {
+    fn keep(&self, reading: &TierReading<'_>, entry: &DocumentEntry) {
         let pending = PendingEntry {
             key: reading.key.clone(),
-            entry,
+            stamp: entry.collection_stamp,
+            bytes: entry.encode(),
         };
         self.window.defer(pending, reading.tier.pending_limit());
     }

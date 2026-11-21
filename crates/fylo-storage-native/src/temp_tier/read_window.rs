@@ -65,10 +65,10 @@ impl ReadWindow {
     }
 
     /// Keep `pending` until the next generation read, unless the waiting
-    /// entries would then hold more than `limit` payload bytes.
+    /// entries would then hold more than `limit` bytes.
     pub(crate) fn defer(&self, pending: PendingEntry, limit: usize) {
         let mut state = self.lock();
-        let bytes = state.pending_bytes + pending.entry.stored_bytes();
+        let bytes = state.pending_bytes.saturating_add(pending.bytes.len());
         if bytes > limit {
             return;
         }
@@ -82,7 +82,7 @@ impl ReadWindow {
         };
         pending
             .into_iter()
-            .filter(|pending| pending.entry.collection_stamp == digest)
+            .filter(|pending| pending.stamp == digest)
             .collect()
     }
 
