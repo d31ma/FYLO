@@ -73,7 +73,7 @@ class FyloTestDisk {
 
   static [void] CreateImage([string]$image, [int]$sizeGiB) {
     [FyloTestDisk]::Say("creating $image (dynamically expanding VHDX, $sizeGiB GiB maximum)")
-    $script = Join-Path $env:TEMP "fylo-test-disk-$PID.txt"
+    $script = Join-Path $env:TEMP "fylo-test-disk-$([FyloTestDisk]::ProcessId()).txt"
     Set-Content -LiteralPath $script -Encoding ASCII -Value "create vdisk file=`"$image`" maximum=$($sizeGiB * 1024) type=expandable"
     diskpart /s $script | Out-Host
     $status = $global:LASTEXITCODE
@@ -167,7 +167,7 @@ class FyloTestDisk {
   }
 
   static [void] RequireWritable([string]$letter) {
-    $probe = Join-Path ([FyloTestDisk]::Drive($letter)) ".fylo-write-probe-$PID"
+    $probe = Join-Path ([FyloTestDisk]::Drive($letter)) ".fylo-write-probe-$([FyloTestDisk]::ProcessId())"
     try {
       Set-Content -LiteralPath $probe -Value 'probe'
       Remove-Item -LiteralPath $probe -Force
@@ -187,6 +187,10 @@ class FyloTestDisk {
     $volume = Get-Volume -DriveLetter $letter.TrimEnd(':') -ErrorAction SilentlyContinue
     if (-not $volume) { [FyloTestDisk]::Fail("no volume has drive letter $letter") }
     if ($letter.TrimEnd(':') -eq $env:SystemDrive.TrimEnd(':')) { [FyloTestDisk]::Fail("$letter is the Windows drive") }
+  }
+
+  static [int] ProcessId() {
+    return [System.Diagnostics.Process]::GetCurrentProcess().Id
   }
 
   static [string] HostName() {
@@ -225,7 +229,7 @@ class FyloTestDisk {
     [FyloTestDisk]::RequireSpace($letter)
     $roots = Join-Path ([FyloTestDisk]::Drive($letter)) 'roots'
     [FyloTestDisk]::Sweep($roots)
-    $job = Join-Path $roots "$([FyloTestDisk]::CleanOwner($owner))-$([FyloTestDisk]::HostName())-$PID"
+    $job = Join-Path $roots "$([FyloTestDisk]::CleanOwner($owner))-$([FyloTestDisk]::HostName())-$([FyloTestDisk]::ProcessId())"
     New-Item -ItemType Directory -Force -Path $job | Out-Null
     [FyloTestDisk]::Say("FYLO_TEST_ROOT=$job")
     $env:FYLO_TEST_ROOT = $job
