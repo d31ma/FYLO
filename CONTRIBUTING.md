@@ -34,6 +34,44 @@ bun run test
 bun run test:interop
 ```
 
+### Targeted merges: only the affected crates
+
+A merge into `develop` gates only the crates the change touches, plus every
+workspace crate that depends on them. The full workspace runs in the nightly
+run on `develop` and in the release gates. To get the crate list:
+
+```bash
+bun scripts/ci/affected-crates.mjs --check
+```
+
+It compares the branch, including uncommitted and untracked files, with its
+merge base on `origin/develop` (`--base <ref>` picks another base) and prints
+one of:
+
+- the crate names, one per line;
+- `none`: no Rust crate changed, so skip the cargo gates;
+- `full`: run the full workspace. This happens when a `Cargo.toml`,
+  `Cargo.lock`, `build.rs`, `rust-toolchain.toml`, `.cargo/`, `.config/`
+  (nextest), `deny.toml`, `rustfmt.toml` or the shared test harness
+  `crates/fylo-test-support/` changed, or when a changed file outside every
+  crate affects Rust (a `.rs` file, `VERSION`, `tests/fixtures/`, `vendor/`,
+  `fuzz/`). Stderr names each file that caused it.
+
+`--check` also runs `cargo tree --invert` for each changed crate and fails when
+its list differs from the script's. `--args` prints the same choice as cargo
+flags (`-p a -p b`, or `--workspace` for `full`), for example:
+
+```bash
+bun ./scripts/run-rust.mjs cargo clippy $(bun scripts/ci/affected-crates.mjs --args) --all-targets --all-features --locked -- -D warnings
+bun ./scripts/run-rust.mjs cargo nextest run $(bun scripts/ci/affected-crates.mjs --args) --all-targets --all-features --locked
+bun ./scripts/run-rust.mjs cargo doc $(bun scripts/ci/affected-crates.mjs --args) --all-features --no-deps --locked
+```
+
+Leave the command output unquoted, so the shell passes each flag on its own.
+Run `cargo fmt --all --check` as before. Name the crate list in the merge
+report so anyone can rerun the same gates. The script's tests are
+`bun test tests/interop/affected-crates.test.js`.
+
 ### The system-disk opt-out in a checkout
 
 FYLO refuses a root on the system disk
