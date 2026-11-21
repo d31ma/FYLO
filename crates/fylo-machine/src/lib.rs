@@ -15,6 +15,7 @@ mod namespace_separation;
 mod request_frame;
 mod request_namespace;
 mod session_temp_cache;
+mod store;
 mod strict;
 
 pub use application::ApplicationConfig;
@@ -59,7 +60,7 @@ pub use namespace_separation::NamespaceSeparation;
 pub use strict::StrictValue;
 
 /// Protocol major version implemented by this crate.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 /// Default maximum request frame, excluding the LF delimiter.
 pub const DEFAULT_MAX_REQUEST_BYTES: usize = 1024 * 1024;
 /// Default maximum response frame, excluding the LF delimiter.
@@ -168,6 +169,8 @@ struct MachineError {
     name: &'static str,
     message: String,
     code: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    details: Option<Box<Value>>,
 }
 
 impl MachineError {
@@ -176,7 +179,15 @@ impl MachineError {
             name: "FyloMachineError",
             message: message.into(),
             code: code.to_owned(),
+            details: None,
         }
+    }
+
+    /// The same error, naming the position of the failing write in a
+    /// `storeTransaction` batch.
+    fn at_index(mut self, index: usize) -> Self {
+        self.details = Some(Box::new(json!({ "index": index })));
+        self
     }
 }
 
@@ -366,6 +377,7 @@ fn execute_invocation_frame(
         hot_set: None,
         hot_engine: std::cell::RefCell::new(None),
         temp_cache,
+        store_transactions: std::cell::RefCell::default(),
     };
     drop(root);
     // Returning data drops this private session and every transient engine.
@@ -488,6 +500,7 @@ impl Session {
             hot_set,
             hot_engine: std::cell::RefCell::new(None),
             temp_cache,
+            store_transactions: std::cell::RefCell::default(),
         }
     }
 }
@@ -519,6 +532,8 @@ struct Session {
     hot_engine: std::cell::RefCell<Option<(u64, ReadOnlyEngine)>>,
     /// The temp-disk read tier, decided when the session opened.
     temp_cache: session_temp_cache::SessionTempCache,
+    /// The Store transactions open in this session (ADR 0035 section 5).
+    store_transactions: std::cell::RefCell<store::StoreTransactions>,
 }
 
 /// One paginated query snapshot, held for the life of the session.
@@ -952,6 +967,7 @@ impl Session {
             ));
         };
         self.request_namespace(request)?;
+        self.store_scope_refusal(operation, request)?;
         match operation {
             "handshake" => Ok(self.handshake()),
             "getDoc" => self.get_document(request),
@@ -1015,6 +1031,12 @@ impl Session {
             "queueExtend" => self.queue_extend(request),
             "queueStats" => self.queue_stats(request),
             "queueDeadLetters" => self.queue_dead_letters(request),
+            _ if store::StoreOperations::NAMES.contains(&operation) => {
+                self.store_operation(operation, request)
+            }
+            _ if store::StoreOperations::TRANSACTION_NAMES.contains(&operation) => {
+                self.store_transaction_operation(operation, request)
+            }
             _ if RETIRED_OPERATIONS.contains(&operation) => Err(MachineError::new(
                 "EUNSUPPORTEDOP",
                 format!(
@@ -1101,6 +1123,10 @@ impl Session {
                 } else {
                     Value::Bool(false)
                 },
+            ),
+            (
+                "store".into(),
+                Value::from(store::StoreOperations::CAPABILITY_VERSION),
             ),
             ("hotSet".into(), self.hot_set_capability()),
             ("tempCache".into(), self.temp_cache.capability()),
@@ -4520,7 +4546,7 @@ mod tests {
         let frames = run("{\"op\":\"handshake\",\"requestId\":\"one\"}\n");
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0]["ok"], json!(true));
-        assert_eq!(frames[0]["protocolVersion"], json!(1));
+        assert_eq!(frames[0]["protocolVersion"], json!(2));
         assert_eq!(frames[0]["requestId"], json!("one"));
         assert_eq!(frames[0]["result"]["machine"]["delimiter"], json!("LF"));
         assert_eq!(
@@ -5098,6 +5124,7 @@ mod tests {
             hot_set: None,
             hot_engine: std::cell::RefCell::new(None),
             temp_cache: session_temp_cache::SessionTempCache::off(),
+            store_transactions: std::cell::RefCell::default(),
         };
         let error = session
             .paginate(&json!({ "page": { "limit": 1 } }), Vec::new())

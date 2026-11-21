@@ -58,6 +58,30 @@
             "retryable": false
         },
         {
+            "code": "ETXNSCOPE",
+            "retryable": false
+        },
+        {
+            "code": "ETXNEXPIRED",
+            "retryable": false
+        },
+        {
+            "code": "ETXNUNKNOWN",
+            "retryable": false
+        },
+        {
+            "code": "ETXNBUSY",
+            "retryable": true
+        },
+        {
+            "code": "ETXNLIMIT",
+            "retryable": false
+        },
+        {
+            "code": "ETXNLAYOUT",
+            "retryable": false
+        },
+        {
             "code": "EQUERYITEMTOOLARGE",
             "retryable": false
         },

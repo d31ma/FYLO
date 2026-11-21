@@ -29,7 +29,7 @@ if (identity.commit !== commit) {
 }
 if (
     identity.buildKind !== 'native-rust-preview' ||
-    identity.protocolVersion !== 1 ||
+    identity.protocolVersion !== 2 ||
     identity.capabilities?.handshake !== true ||
     identity.capabilities?.wholeRootBackup !== undefined
 ) {

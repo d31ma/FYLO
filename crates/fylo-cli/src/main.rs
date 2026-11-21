@@ -2086,7 +2086,7 @@ mod tests {
             identity["buildKind"],
             option_env!("FYLO_BUILD_KIND").unwrap_or("development-compiled")
         );
-        assert_eq!(identity["protocolVersion"], 1);
+        assert_eq!(identity["protocolVersion"], 2);
         assert_eq!(identity["capabilities"]["handshake"], true);
         assert!(identity["capabilities"].get("wholeRootBackup").is_none());
     }

@@ -361,7 +361,7 @@ fn a_successful_invocation_exits_zero_with_one_frame() {
         true,
     );
     assert_eq!(frame["requestId"], "r1");
-    assert_eq!(frame["protocolVersion"], 1);
+    assert_eq!(frame["protocolVersion"], 2);
 }
 
 /// `cargo nextest run -p fylo-cli --run-ignored only -E 'test(invocation_cost)' --no-capture`
