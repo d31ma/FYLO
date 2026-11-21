@@ -8,10 +8,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use fylo_storage_native::{
-    FilesystemProbe, FilesystemProbeRecord, FilesystemProfile, MetadataStorage,
-    NativeStorageErrorCode,
+use fylo_storage_native::layout::{
+    AppFolder, FormatMarker, MetadataStore, ProbeRecord, RootLayout,
 };
+use fylo_storage_native::{FilesystemProbe, FilesystemProfile, NativeStorageErrorCode};
 
 const NO_ATTRIBUTE_DIRECTORY: &str = "FYLO_TEST_NO_XATTR_DIR";
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -44,12 +44,7 @@ impl Directory {
     }
 
     fn names(&self) -> Vec<String> {
-        let mut names: Vec<String> = fs::read_dir(&self.0)
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-            .collect();
-        names.sort();
-        names
+        names_in(&self.0)
     }
 }
 
@@ -59,8 +54,17 @@ impl Drop for Directory {
     }
 }
 
-fn record(metadata: MetadataStorage, hard_links: bool) -> FilesystemProbeRecord {
-    FilesystemProbeRecord::new(metadata, hard_links)
+fn names_in(folder: &Path) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(folder)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+fn record(metadata: MetadataStore, hard_links: bool) -> ProbeRecord {
+    ProbeRecord::new(metadata, hard_links)
 }
 
 #[test]
@@ -69,7 +73,7 @@ fn a_local_disk_keeps_extended_attributes_and_hard_links() {
 
     let probed = FilesystemProbe::run(&directory.0, None).unwrap();
 
-    assert_eq!(probed, record(MetadataStorage::ExtendedAttributes, true));
+    assert_eq!(probed, record(MetadataStore::ExtendedAttributes, true));
 }
 
 #[test]
@@ -79,7 +83,7 @@ fn the_probe_leaves_no_file_behind() {
     FilesystemProbe::run(&directory.0, None).unwrap();
     FilesystemProbe::verify(
         &directory.0,
-        record(MetadataStorage::ExtendedAttributes, true),
+        record(MetadataStore::ExtendedAttributes, true),
     )
     .unwrap();
 
@@ -92,8 +96,11 @@ fn the_sidecar_override_chooses_sidecar_files_on_a_local_disk() {
 
     let probed = FilesystemProbe::run(&directory.0, Some(FilesystemProfile::EfsSidecarV1)).unwrap();
 
-    assert_eq!(probed.metadata(), MetadataStorage::SidecarFiles);
-    assert_eq!(probed.profile(), FilesystemProfile::EfsSidecarV1);
+    assert_eq!(probed.metadata(), MetadataStore::SidecarFiles);
+    assert_eq!(
+        FilesystemProbe::profile_of(probed.metadata()),
+        FilesystemProfile::EfsSidecarV1
+    );
 }
 
 #[test]
@@ -102,8 +109,11 @@ fn the_native_override_keeps_extended_attributes_on_a_local_disk() {
 
     let probed = FilesystemProbe::run(&directory.0, Some(FilesystemProfile::Native)).unwrap();
 
-    assert_eq!(probed.metadata(), MetadataStorage::ExtendedAttributes);
-    assert_eq!(probed.profile(), FilesystemProfile::Native);
+    assert_eq!(probed.metadata(), MetadataStore::ExtendedAttributes);
+    assert_eq!(
+        FilesystemProbe::profile_of(probed.metadata()),
+        FilesystemProfile::Native
+    );
 }
 
 #[test]
@@ -148,7 +158,7 @@ fn the_recorded_way_passes_its_open_check() {
 fn a_sidecar_record_without_hard_links_passes_its_open_check() {
     let directory = Directory::temporary();
 
-    FilesystemProbe::verify(&directory.0, record(MetadataStorage::SidecarFiles, false)).unwrap();
+    FilesystemProbe::verify(&directory.0, record(MetadataStore::SidecarFiles, false)).unwrap();
 }
 
 #[test]
@@ -156,9 +166,8 @@ fn the_open_check_fails_with_efsprobe_when_the_folder_is_gone() {
     let directory = Directory::temporary();
     let missing = directory.0.join("missing");
 
-    let error =
-        FilesystemProbe::verify(&missing, record(MetadataStorage::ExtendedAttributes, true))
-            .unwrap_err();
+    let error = FilesystemProbe::verify(&missing, record(MetadataStore::ExtendedAttributes, true))
+        .unwrap_err();
 
     assert_eq!(error.code(), NativeStorageErrorCode::FilesystemProbe);
     assert!(
@@ -169,21 +178,21 @@ fn the_open_check_fails_with_efsprobe_when_the_folder_is_gone() {
 
 #[test]
 fn no_override_always_matches_the_record() {
-    let recorded = record(MetadataStorage::SidecarFiles, false);
+    let recorded = record(MetadataStore::SidecarFiles, false);
 
     FilesystemProbe::check_override(recorded, None).unwrap();
 }
 
 #[test]
 fn the_same_override_matches_the_record() {
-    let recorded = record(MetadataStorage::SidecarFiles, false);
+    let recorded = record(MetadataStore::SidecarFiles, false);
 
     FilesystemProbe::check_override(recorded, Some(FilesystemProfile::EfsSidecarV1)).unwrap();
 }
 
 #[test]
 fn another_override_is_refused_on_an_existing_app_folder() {
-    let recorded = record(MetadataStorage::ExtendedAttributes, true);
+    let recorded = record(MetadataStore::ExtendedAttributes, true);
 
     let error = FilesystemProbe::check_override(recorded, Some(FilesystemProfile::EfsSidecarV1))
         .unwrap_err();
@@ -194,42 +203,52 @@ fn another_override_is_refused_on_an_existing_app_folder() {
 }
 
 #[test]
-fn the_record_is_the_probe_object_of_format_json() {
-    let recorded = record(MetadataStorage::SidecarFiles, false);
+fn a_new_app_folder_records_the_probe_in_format_json() {
+    let drive = Directory::temporary();
+    let layout = RootLayout::waived(drive.0.join("app"));
 
-    let json = serde_json::to_value(recorded).unwrap();
+    let prepared = AppFolder::prepare(&layout, "26.50.02", |folder| {
+        FilesystemProbe::run(folder, None)
+    })
+    .unwrap();
+    let recorded = FormatMarker::read(&layout.format_marker_path())
+        .unwrap()
+        .unwrap();
 
     assert_eq!(
-        json,
-        serde_json::json!({"metadata": "sidecar", "hardLinks": false})
+        prepared.probe(),
+        record(MetadataStore::ExtendedAttributes, true)
     );
+    assert_eq!(recorded.probe(), prepared.probe());
 }
 
 #[test]
-fn the_record_reads_back_from_format_json() {
-    let json = serde_json::json!({"metadata": "xattr", "hardLinks": true});
+fn a_new_app_folder_passes_its_open_check() {
+    let drive = Directory::temporary();
+    let layout = RootLayout::waived(drive.0.join("app"));
+    let prepared = AppFolder::prepare(&layout, "26.50.02", |folder| {
+        FilesystemProbe::run(folder, None)
+    })
+    .unwrap();
 
-    let recorded: FilesystemProbeRecord = serde_json::from_value(json).unwrap();
-
-    assert_eq!(recorded, record(MetadataStorage::ExtendedAttributes, true));
+    FilesystemProbe::verify(&layout.app_state_folder(), prepared.probe()).unwrap();
 }
 
 #[test]
-fn a_record_with_an_unknown_field_is_refused() {
-    let json = serde_json::json!({"metadata": "xattr", "hardLinks": true, "extra": 1});
+fn the_probe_of_a_new_app_folder_leaves_only_fylo_files() {
+    let drive = Directory::temporary();
+    let layout = RootLayout::waived(drive.0.join("app"));
 
-    let result = serde_json::from_value::<FilesystemProbeRecord>(json);
+    AppFolder::prepare(&layout, "26.50.02", |folder| {
+        FilesystemProbe::run(folder, None)
+    })
+    .unwrap();
+    let names = names_in(&layout.app_state_folder());
 
-    assert!(result.is_err());
-}
-
-#[test]
-fn a_record_with_an_unknown_metadata_storage_is_refused() {
-    let json = serde_json::json!({"metadata": "ads", "hardLinks": true});
-
-    let result = serde_json::from_value::<FilesystemProbeRecord>(json);
-
-    assert!(result.is_err());
+    assert!(
+        names.iter().all(|name| !name.contains("probe")),
+        "{names:?}"
+    );
 }
 
 #[test]
@@ -239,8 +258,22 @@ fn a_file_system_without_attributes_gets_sidecar_files() {
 
     let probed = FilesystemProbe::run(&directory.0, None).unwrap();
 
-    assert_eq!(probed.metadata(), MetadataStorage::SidecarFiles);
+    assert_eq!(probed.metadata(), MetadataStore::SidecarFiles);
     assert_eq!(directory.names(), Vec::<String>::new());
+}
+
+#[test]
+#[ignore = "needs FYLO_TEST_NO_XATTR_DIR on a file system without extended attributes"]
+fn a_new_app_folder_on_a_share_without_attributes_records_sidecar_files() {
+    let drive = Directory::without_attributes();
+    let layout = RootLayout::waived(drive.0.join("app"));
+
+    let prepared = AppFolder::prepare(&layout, "26.50.02", |folder| {
+        FilesystemProbe::run(folder, None)
+    })
+    .unwrap();
+
+    assert_eq!(prepared.probe().metadata(), MetadataStore::SidecarFiles);
 }
 
 #[test]
@@ -261,7 +294,7 @@ fn an_app_folder_copied_to_a_share_without_attributes_fails_its_open_check() {
 
     let error = FilesystemProbe::verify(
         &directory.0,
-        record(MetadataStorage::ExtendedAttributes, true),
+        record(MetadataStore::ExtendedAttributes, true),
     )
     .unwrap_err();
 

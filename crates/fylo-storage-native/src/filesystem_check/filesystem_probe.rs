@@ -5,10 +5,8 @@ use std::path::{Path, PathBuf};
 use super::attribute_test::AttributeTest;
 use super::probe_failure::ProbeFailure;
 use super::probe_files::ProbeFiles;
-use crate::{
-    FilesystemProbeRecord, FilesystemProfile, MetadataStorage, NativeStorageError,
-    NativeStorageErrorCode,
-};
+use crate::layout::{MetadataStore, ProbeRecord};
+use crate::{FilesystemProfile, NativeStorageError, NativeStorageErrorCode};
 
 /// Tests what FYLO needs from the file system of an app folder (ADR 0033
 /// section 6): exclusive create, rename over a file, extended attributes and
@@ -39,14 +37,14 @@ impl FilesystemProbe {
     pub fn run(
         directory: &Path,
         forced: Option<FilesystemProfile>,
-    ) -> Result<FilesystemProbeRecord, NativeStorageError> {
+    ) -> Result<ProbeRecord, NativeStorageError> {
         let mut files = ProbeFiles::new(directory);
         Self::check_exclusive_create(directory, &mut files)?;
         Self::check_rename_over(directory, &mut files)?;
         let attributes = AttributeTest::run(&mut files);
         let metadata = Self::choose_metadata(directory, forced, attributes)?;
         let hard_links = Self::hard_links_work(directory, &mut files)?;
-        Ok(FilesystemProbeRecord::new(metadata, hard_links))
+        Ok(ProbeRecord::new(metadata, hard_links))
     }
 
     /// Check, when an app folder is opened for writing, that the way
@@ -58,10 +56,7 @@ impl FilesystemProbe {
     /// # Errors
     ///
     /// Returns `EFSPROBE` naming what no longer works.
-    pub fn verify(
-        directory: &Path,
-        record: FilesystemProbeRecord,
-    ) -> Result<(), NativeStorageError> {
+    pub fn verify(directory: &Path, record: ProbeRecord) -> Result<(), NativeStorageError> {
         let mut files = ProbeFiles::new(directory);
         Self::verify_metadata(directory, &mut files, record.metadata())?;
         let hard_links = Self::hard_links_still_work(directory, &mut files, record.hard_links())?;
@@ -75,19 +70,42 @@ impl FilesystemProbe {
     ///
     /// Returns `EUNSUPPORTED` when `forced` names another profile.
     pub fn check_override(
-        record: FilesystemProbeRecord,
+        record: ProbeRecord,
         forced: Option<FilesystemProfile>,
     ) -> Result<(), NativeStorageError> {
         match forced {
-            Some(profile) if profile != record.profile() => Err(NativeStorageError::new(
-                NativeStorageErrorCode::Unsupported,
-                format!(
-                    "--filesystem-profile {} differs from the metadata storage {} recorded in format.json",
-                    profile.as_str(),
-                    record.metadata().as_str()
-                ),
-            )),
+            Some(profile) if profile != Self::profile_of(record.metadata()) => {
+                Err(NativeStorageError::new(
+                    NativeStorageErrorCode::Unsupported,
+                    format!(
+                        "--filesystem-profile {} differs from the metadata storage {} recorded in format.json",
+                        profile.as_str(),
+                        Self::name_of(record.metadata())
+                    ),
+                ))
+            }
             _ => Ok(()),
+        }
+    }
+
+    /// The engine profile that reads and writes metadata the way `store`
+    /// names.
+    #[must_use]
+    pub const fn profile_of(store: MetadataStore) -> FilesystemProfile {
+        Self::profile_for(store)
+    }
+
+    const fn profile_for(store: MetadataStore) -> FilesystemProfile {
+        match store {
+            MetadataStore::ExtendedAttributes => FilesystemProfile::Native,
+            MetadataStore::SidecarFiles => FilesystemProfile::EfsSidecarV1,
+        }
+    }
+
+    const fn name_of(store: MetadataStore) -> &'static str {
+        match store {
+            MetadataStore::ExtendedAttributes => "xattr",
+            MetadataStore::SidecarFiles => "sidecar",
         }
     }
 
@@ -162,12 +180,12 @@ impl FilesystemProbe {
         directory: &Path,
         forced: Option<FilesystemProfile>,
         attributes: std::io::Result<()>,
-    ) -> Result<MetadataStorage, NativeStorageError> {
+    ) -> Result<MetadataStore, NativeStorageError> {
         match (forced, attributes) {
             (Some(FilesystemProfile::EfsSidecarV1), _) | (None, Err(_)) => {
-                Ok(MetadataStorage::SidecarFiles)
+                Ok(MetadataStore::SidecarFiles)
             }
-            (_, Ok(())) => Ok(MetadataStorage::ExtendedAttributes),
+            (_, Ok(())) => Ok(MetadataStore::ExtendedAttributes),
             (Some(FilesystemProfile::Native), Err(error)) => Err(ProbeFailure::from_io(
                 "extended attributes (required by --filesystem-profile native)",
                 directory,
@@ -190,11 +208,11 @@ impl FilesystemProbe {
     fn verify_metadata(
         directory: &Path,
         files: &mut ProbeFiles,
-        metadata: MetadataStorage,
+        metadata: MetadataStore,
     ) -> Result<(), NativeStorageError> {
         match metadata {
-            MetadataStorage::SidecarFiles => Ok(()),
-            MetadataStorage::ExtendedAttributes => AttributeTest::run(files).map_err(|error| {
+            MetadataStore::SidecarFiles => Ok(()),
+            MetadataStore::ExtendedAttributes => AttributeTest::run(files).map_err(|error| {
                 ProbeFailure::from_io(
                     "extended attributes, recorded in format.json, no longer work",
                     directory,

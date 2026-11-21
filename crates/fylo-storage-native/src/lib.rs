@@ -72,6 +72,7 @@ mod extended_attribute_namespace;
 mod extended_attribute_probe;
 mod field_keys;
 mod file_stamp;
+#[cfg(not(target_family = "wasm"))]
 mod filesystem_check;
 mod filesystem_profile;
 mod index_cache;
@@ -169,7 +170,6 @@ pub use field_keys::{FieldKey, FieldKeys};
 pub use file_stamp::FileStamp;
 #[cfg(not(target_family = "wasm"))]
 pub use filesystem_check::FilesystemProbe;
-pub use filesystem_check::{FilesystemProbeRecord, MetadataStorage};
 pub use filesystem_profile::FilesystemProfile;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub use fylo_vfs::host_now_unix_ms;
