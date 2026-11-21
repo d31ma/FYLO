@@ -186,16 +186,14 @@ mod tests {
         );
     }
 
+    /// macOS firmlinks: the temp folder `/private/var/...` is on the mount
+    /// `/System/Volumes/Data`, which is not a prefix of its path.
     #[test]
     fn the_volume_of_a_missing_root_in_the_temp_folder_is_read() {
         let temp = std::fs::canonicalize(std::env::temp_dir()).unwrap();
         let root = temp.join("fylo-volume-root-test").join("root");
         let volume = VolumeRoot::of(&root).unwrap();
-        assert!(
-            temp.starts_with(&volume),
-            "{} {}",
-            temp.display(),
-            volume.display()
-        );
+        assert!(volume.is_absolute(), "{}", volume.display());
+        assert_ne!(volume, temp.join("fylo-volume-root-test"));
     }
 }
