@@ -956,6 +956,7 @@ impl Session {
             "inspectDatabase" => self.inspect_database(&self.database_path(request, operation)?),
             "verifyDatabase" => self.verify_database(&self.database_path(request, operation)?),
             "verifyCollection" => self.verify_collection(request),
+            "verifyRoot" => self.verify_root(request),
             "log" => self.history(request),
             "getMeta" => self.get_metadata(request),
             "executeSQL" => self.execute_sql(request),
@@ -1678,6 +1679,24 @@ impl Session {
         self.writer(request)?
             .verify_file_collection(collection)
             .map_err(|error| storage_error(&error))
+    }
+
+    /// Read every document and file of a folder root and list the damaged
+    /// ones (L1 spec 20.2). Opening the root first finishes any write a
+    /// crash interrupted, as every request does.
+    fn verify_root(&self, request: &Value) -> Result<Value, MachineError> {
+        let repository_root = self.root(request)?;
+        if NativeRoot::names_database(&repository_root) {
+            return Err(MachineError::new(
+                "EBADREQUEST",
+                "verifyRoot checks a folder root; check a .vdbx database with verifyDatabase",
+            ));
+        }
+        let active_root = active_worktree(&repository_root)?;
+        let root = NativeRoot::open_profiled(self.root_options(active_root, repository_root)?)
+            .map_err(|error| storage_error(&error))?;
+        let report = fylo_storage_native::RootVerification::run(&root);
+        serde_json::to_value(report).map_err(|error| serialization_error(&error))
     }
 
     fn history(&self, request: &Value) -> Result<Value, MachineError> {

@@ -84,6 +84,9 @@ fn main() -> ExitCode {
     if let Some((operation, path)) = database_command(&arguments) {
         return run_database(&arguments, operation, &path);
     }
+    if let Some(path) = root_verify_command(&arguments) {
+        return run_database(&arguments, "verifyRoot", &path);
+    }
     print_outcome(run(&arguments))
 }
 
@@ -468,6 +471,16 @@ fn database_command(arguments: &[String]) -> Option<(&'static str, PathBuf)> {
         .map(|path| (operation, PathBuf::from(path)))
 }
 
+/// The folder root `fylo verify --root <root>` names when no collection
+/// follows `verify`: every collection is checked (L1 spec 20.2). A `.vdbx`
+/// file goes to [`database_command`] instead.
+fn root_verify_command(arguments: &[String]) -> Option<PathBuf> {
+    let verify = arguments.first().is_some_and(|command| command == "verify");
+    let alone = positionals(arguments).len() == 1;
+    let root = option(arguments, "--root").map(PathBuf::from);
+    root.filter(|_| verify && alone)
+}
+
 /// Print a `.vdbx` file's inspect or verify report as JSON. A verify report
 /// with errors is printed and fails the command.
 fn run_database(arguments: &[String], operation: &str, path: &Path) -> ExitCode {
@@ -482,7 +495,8 @@ fn run_database(arguments: &[String], operation: &str, path: &Path) -> ExitCode 
     match result.and_then(|report| pretty(&report).map(|output| (report, output))) {
         Ok((report, output)) => {
             println!("{output}");
-            if operation == "verifyDatabase" && report.get("ok") != Some(&Value::Bool(true)) {
+            let verifies = matches!(operation, "verifyDatabase" | "verifyRoot");
+            if verifies && report.get("ok") != Some(&Value::Bool(true)) {
                 ExitCode::FAILURE
             } else {
                 ExitCode::SUCCESS
@@ -2048,6 +2062,26 @@ mod tests {
         assert!(output.starts_with("Usage:\n  fylo checkout"));
         assert!(output.contains("fylo exec --loop"));
         assert!(!output.contains("fylo-rust"));
+    }
+
+    #[test]
+    fn verify_with_only_a_folder_root_checks_the_whole_root() {
+        let arguments = |values: &[&str]| -> Vec<String> {
+            values.iter().map(|value| (*value).to_owned()).collect()
+        };
+        assert_eq!(
+            root_verify_command(&arguments(&["verify", "--root", "/data/app"])),
+            Some(PathBuf::from("/data/app"))
+        );
+        assert_eq!(
+            root_verify_command(&arguments(&["verify", "users", "--root", "/data/app"])),
+            None
+        );
+        assert_eq!(root_verify_command(&arguments(&["verify"])), None);
+        assert_eq!(
+            root_verify_command(&arguments(&["inspect", "--root", "/data/app"])),
+            None
+        );
     }
 
     #[test]

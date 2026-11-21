@@ -21,6 +21,7 @@
                         "migrateLayout",
                         "compactCollection",
                         "verifyCollection",
+                        "verifyRoot",
                         "inspectDatabase",
                         "verifyDatabase",
                         "getDoc",

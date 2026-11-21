@@ -268,8 +268,31 @@ check ownership once per read frame, as today.
 
 **Stopping.** A clean stop marks the record **released** (it does not delete
 it, so the generation keeps growing and fencing stays sound) and releases the
-kernel lock. The next owner starts at once. Only after a crash does the next
-owner wait, up to the takeover time.
+kernel lock. The next owner starts at once.
+
+After a crash the next owner also starts at once when the record names
+**this machine** and its process has ended (amended in slice L1-3, hub
+decision of 2026-11-21). The record carries a stable machine id (a hash of
+the platform's machine id: the IOPlatformUUID on macOS; `/etc/machine-id`,
+the pid namespace and the host name on Linux, the boot id on Android; the
+MachineGuid and the computer name on Windows) and the owner's pid with that
+pid's start time. "Ended" means the pid names no process, or a process that
+started at another time. The check does not depend on the file system type.
+A machine with no stable id (iOS, the browser) never takes this path. Every
+other crash waits the takeover time. So local disks keep taking over at
+once after a crash, as before this ADR.
+
+Two details of the build (slice L1-3):
+
+- A process keeps, per record, when it first saw the exact record bytes.
+  A process that tries again and again with short deadlines (`exec --loop`
+  serving one request at a time) takes over once the record stood still for
+  the takeover time across its tries.
+- A record written by a binary from before the layout release (format
+  `version: 1`) counts as released: those binaries refused network roots
+  (ADR 0029), so the kernel lock this process holds already proves their
+  owner gone. An unreadable record waits the takeover time; the claim files
+  then give the last generation.
 
 **One process, several namespaces.** An `exec --loop` takes a namespace's
 lease when its first request for that namespace arrives, as it takes the

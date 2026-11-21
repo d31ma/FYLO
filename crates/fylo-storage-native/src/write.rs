@@ -3738,7 +3738,7 @@ fn unreadable_lock_record(path: &Path) -> Result<LockRecord, NativeStorageError>
 
 /// This process's identity never changes while it runs, and finding it
 /// spawns a process on macOS and Windows, so it is found once.
-fn own_process_identity() -> Option<String> {
+pub(crate) fn own_process_identity() -> Option<String> {
     static IDENTITY: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     IDENTITY
         .get_or_init(|| {
@@ -3787,7 +3787,7 @@ fn lock_owner_alive(record: &LockRecord) -> bool {
 }
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
-fn process_identity(pid: u32) -> Option<String> {
+pub(crate) fn process_identity(pid: u32) -> Option<String> {
     let boot = fs::read_to_string("/proc/sys/kernel/random/boot_id").ok()?;
     let status_line = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     // Field 22 of /proc/<pid>/stat is the process start time in clock ticks.
@@ -3801,7 +3801,7 @@ fn process_identity(pid: u32) -> Option<String> {
 }
 
 #[cfg(target_os = "windows")]
-fn process_identity(pid: u32) -> Option<String> {
+pub(crate) fn process_identity(pid: u32) -> Option<String> {
     let command = format!(
         "(Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}').CreationDate.ToUniversalTime().Ticks"
     );
@@ -3817,7 +3817,7 @@ fn process_identity(pid: u32) -> Option<String> {
 /// session's record is a crashed tab's, since the root's Web Lock keeps a
 /// second live session out.
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-fn process_identity(_pid: u32) -> Option<String> {
+pub(crate) fn process_identity(_pid: u32) -> Option<String> {
     own_process_identity()
 }
 
@@ -3827,7 +3827,7 @@ fn process_identity(_pid: u32) -> Option<String> {
 /// does: on iOS a directory root has one process, and `.vdbx` files keep
 /// writers apart through the kernel's byte-range locks instead.
 #[cfg(target_os = "ios")]
-fn process_identity(pid: u32) -> Option<String> {
+pub(crate) fn process_identity(pid: u32) -> Option<String> {
     (pid == super::process_id())
         .then(ios_session_identity)
         .flatten()
@@ -3852,7 +3852,7 @@ fn ios_session_identity() -> Option<String> {
     target_os = "windows",
     all(target_arch = "wasm32", target_os = "unknown")
 )))]
-fn process_identity(pid: u32) -> Option<String> {
+pub(crate) fn process_identity(pid: u32) -> Option<String> {
     let platform = if cfg!(target_os = "macos") {
         "darwin"
     } else {
@@ -5515,6 +5515,9 @@ pub const FAILPOINTS: [&str; 34] = [
     "after-pack-staging",
     "after-shrink-relocate",
     "after-shrink-truncate",
+    "lease-after-claim",
+    "lease-after-record",
+    "lease-after-release",
 ];
 
 pub(crate) fn failpoint(name: &str) -> Result<(), NativeStorageError> {

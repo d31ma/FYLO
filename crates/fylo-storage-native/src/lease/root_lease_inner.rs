@@ -1,28 +1,51 @@
 use super::kernel_file_lock::KernelFileLock;
 use super::lease_backoff::LeaseBackoff;
-use super::lease_metadata::LeaseMetadata;
+use super::lease_claims::LeaseClaims;
+use super::lease_heartbeat::LeaseHeartbeat;
+use super::lease_observation::LeaseObservation;
+use super::lease_takeover::LeaseTakeover;
+use super::lease_timing::LeaseTiming;
 use crate::{FilesystemProfile, NativeStorageError, NativeStorageErrorCode, RootFilesystem};
 use fylo_vfs::{File, OpenOptions};
 use std::fs::TryLockError;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+/// One owner of a folder: the kernel lock on its lock file plus the current
+/// generation of its lease record, kept alive by a heartbeat
+/// (ADR 0033 section 4).
+///
+/// The owned folder is a root today. The files that coordinate its owners
+/// live beside it, named after it, so the same lease serves one namespace of
+/// an app folder once namespaces exist: only the owned path changes.
 #[derive(Debug)]
 pub(super) struct RootLeaseInner {
     root: PathBuf,
     owner: String,
+    generation: u64,
+    scope_name: String,
     lock_file: File,
-    metadata_path: PathBuf,
+    record_path: PathBuf,
     kernel_enforced: bool,
     filesystem: RootFilesystem,
+    heartbeat: LeaseHeartbeat,
 }
 
 impl RootLeaseInner {
     const LOCK_SUFFIX: &str = "fylo-root-owner.lock";
-    const METADATA_SUFFIX: &str = "fylo-root-owner.lock.json";
+    const RECORD_SUFFIX: &str = "fylo-root-owner.lock.json";
+    const OWNER_ID_BYTES: usize = 16;
 
     pub(super) fn acquire(root: impl AsRef<Path>) -> Result<Self, NativeStorageError> {
         Self::acquire_with_profile(root, FilesystemProfile::Native)
+    }
+
+    pub(super) fn acquire_with_profile(
+        root: impl AsRef<Path>,
+        profile: FilesystemProfile,
+    ) -> Result<Self, NativeStorageError> {
+        let timing = LeaseTiming::from_environment()?;
+        Self::acquire_timed(root.as_ref(), profile, timing, None)
     }
 
     /// Try the root again after growing pauses while another owner holds
@@ -32,10 +55,20 @@ impl RootLeaseInner {
         profile: FilesystemProfile,
         wait_until: Instant,
     ) -> Result<Self, NativeStorageError> {
+        let timing = LeaseTiming::from_environment()?;
+        Self::acquire_waiting_timed(root, profile, timing, wait_until)
+    }
+
+    pub(super) fn acquire_waiting_timed(
+        root: &Path,
+        profile: FilesystemProfile,
+        timing: LeaseTiming,
+        wait_until: Instant,
+    ) -> Result<Self, NativeStorageError> {
         let mut backoff = LeaseBackoff::until(wait_until);
-        let mut attempt = Self::acquire_with_profile(root, profile);
+        let mut attempt = Self::acquire_timed(root, profile, timing, Some(wait_until));
         while Self::held_by_another(&attempt) && backoff.wait() {
-            attempt = Self::acquire_with_profile(root, profile);
+            attempt = Self::acquire_timed(root, profile, timing, Some(wait_until));
         }
         attempt
     }
@@ -46,57 +79,102 @@ impl RootLeaseInner {
             .is_err_and(|error| error.code() == NativeStorageErrorCode::RootLocked)
     }
 
-    pub(super) fn acquire_with_profile(
-        root: impl AsRef<Path>,
+    /// Take the root: the kernel lock first, then the next generation of
+    /// the lease record. Without a deadline, a takeover from an owner that
+    /// may live on another machine waits the whole takeover time.
+    pub(super) fn acquire_timed(
+        root: &Path,
         profile: FilesystemProfile,
+        timing: LeaseTiming,
+        deadline: Option<Instant>,
     ) -> Result<Self, NativeStorageError> {
-        // A `.vdbx` database is owned through the lease of its own file
-        // (ADR 0016 section 7); a root lease, and the queues and machine
-        // sessions held under one, need a directory root. A missing root
-        // named `*.vdbx` names a database, never a directory to create.
-        if crate::NativeRoot::names_database(root.as_ref()) {
+        Self::refuse_database(root)?;
+        // Refused before the root or its lock file is created (ADR 0029).
+        let filesystem = RootFilesystem::admit(root, profile)?;
+        Self::prepare_root(root, profile)?;
+        let canonical = fylo_vfs::canonicalize(root).map_err(NativeStorageError::io)?;
+        crate::profile_manifest::ProfileManifest::admit_selection(&canonical, profile)?;
+        let lock_path = Self::sibling_path(&canonical, Self::LOCK_SUFFIX)?;
+        let record_path = Self::sibling_path(&canonical, Self::RECORD_SUFFIX)?;
+        let lock_file = Self::open_lock_file(&lock_path)?;
+        let kernel_enforced = Self::lock_root(
+            KernelFileLock::try_lock(&lock_file),
+            &record_path,
+            &canonical,
+            profile,
+        )?;
+        let owner = Self::new_owner_id()?;
+        let owned_name = Self::owned_name(&canonical);
+        let claims = LeaseClaims::beside(Self::parent(&canonical)?, &owned_name);
+        let record = LeaseTakeover {
+            record_path: &record_path,
+            claims: &claims,
+            canonical: &canonical,
+            owned_name: &owned_name,
+            owner_id: &owner,
+            timing,
+            deadline,
+        }
+        .claim()?;
+        let generation = record.generation();
+        let heartbeat = LeaseHeartbeat::start(record_path.clone(), record, timing.heartbeat());
+        Ok(Self {
+            root: canonical,
+            scope_name: format!("{owner}:{generation}"),
+            owner,
+            generation,
+            lock_file,
+            record_path,
+            kernel_enforced,
+            filesystem,
+            heartbeat,
+        })
+    }
+
+    /// A `.vdbx` database is owned through the lease of its own file
+    /// (ADR 0016 section 7); a root lease, and the queues and machine
+    /// sessions held under one, need a directory root. A missing root named
+    /// `*.vdbx` names a database, never a directory to create.
+    fn refuse_database(root: &Path) -> Result<(), NativeStorageError> {
+        if crate::NativeRoot::names_database(root) {
             return Err(crate::NativeRoot::database_unsupported(
                 "a .vdbx database takes no root lease; queues and machine sessions need a directory root",
             ));
         }
-        // Refused before the root or its lock file is created (ADR 0029).
-        let filesystem = RootFilesystem::admit(root.as_ref(), profile)?;
+        Ok(())
+    }
+
+    fn prepare_root(root: &Path, profile: FilesystemProfile) -> Result<(), NativeStorageError> {
         if profile == FilesystemProfile::Native {
-            fylo_vfs::create_dir_all(root.as_ref()).map_err(NativeStorageError::io)?;
-        } else if !fylo_vfs::metadata(root.as_ref())
-            .map_err(NativeStorageError::io)?
-            .is_dir()
-        {
-            return Err(NativeStorageError::new(
-                NativeStorageErrorCode::WrongType,
-                "EFS profile requires an existing directory",
-            ));
+            return fylo_vfs::create_dir_all(root).map_err(NativeStorageError::io);
         }
-        let canonical = fylo_vfs::canonicalize(root.as_ref()).map_err(NativeStorageError::io)?;
-        crate::profile_manifest::ProfileManifest::admit_selection(&canonical, profile)?;
-        let (lock_path, metadata_path) = Self::lease_paths(&canonical)?;
-        let lock_file = Self::open_lock_file(&lock_path)?;
-        let kernel_enforced = Self::lock_root(
-            KernelFileLock::try_lock(&lock_file),
-            &metadata_path,
-            &canonical,
-            profile,
-        )?;
-        let owner = crate::write::unique_name("rust-root-owner");
-        let metadata = LeaseMetadata::new(&canonical, &owner)?;
-        metadata.write(&metadata_path)?;
-        Ok(Self {
-            root: canonical,
-            owner,
-            lock_file,
-            metadata_path,
-            kernel_enforced,
-            filesystem,
-        })
+        Self::require_existing_directory(root)
+    }
+
+    fn require_existing_directory(root: &Path) -> Result<(), NativeStorageError> {
+        let metadata = fylo_vfs::metadata(root).map_err(NativeStorageError::io)?;
+        if metadata.is_dir() {
+            return Ok(());
+        }
+        Err(NativeStorageError::new(
+            NativeStorageErrorCode::WrongType,
+            "EFS profile requires an existing directory",
+        ))
+    }
+
+    fn new_owner_id() -> Result<String, NativeStorageError> {
+        let mut bytes = [0_u8; Self::OWNER_ID_BYTES];
+        getrandom::fill(&mut bytes).map_err(|error| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::Io,
+                format!("no random owner id for the root lease: {error}"),
+            )
+        })?;
+        Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
     }
 
     pub(super) fn owner_generation(&self) -> &str {
-        &self.owner
+        &self.scope_name
     }
 
     pub(super) fn root(&self) -> &Path {
@@ -111,16 +189,28 @@ impl RootLeaseInner {
         &self.filesystem
     }
 
+    /// The fencing check (ADR 0033 section 4): the heartbeat has not seen
+    /// a takeover, and the record still names this owner and generation.
     pub(super) fn assert_owned(&self) -> Result<(), NativeStorageError> {
-        let recorded = LeaseMetadata::read(&self.metadata_path);
-        let verified = recorded.and_then(|metadata| metadata.verify_owner(&self.owner));
-        verified.ok_or_else(Self::ownership_lost)
+        let recorded = LeaseObservation::read(&self.record_path).record();
+        let named = recorded.is_some_and(|record| record.names(&self.owner, self.generation));
+        let owned = named && !self.heartbeat.lost();
+        owned.then_some(()).ok_or_else(Self::ownership_lost)
     }
 
-    pub(super) fn release_checked(self) -> Result<(), NativeStorageError> {
+    pub(super) fn release_checked(mut self) -> Result<(), NativeStorageError> {
         self.require_kernel_lock()?;
-        self.remove_owner_metadata()?;
+        self.heartbeat.stop();
+        self.assert_owned()?;
+        self.mark_released()?;
         self.unlock_checked()
+    }
+
+    /// Give up the kernel lock but keep the lease, as a router reboot does
+    /// to an NFS client's locks.
+    #[cfg(feature = "test-support")]
+    pub(super) fn drop_kernel_lock_for_test(&self) {
+        let _ = KernelFileLock::unlock(&self.lock_file);
     }
 
     fn require_kernel_lock(&self) -> Result<(), NativeStorageError> {
@@ -133,20 +223,14 @@ impl RootLeaseInner {
         ))
     }
 
-    fn remove_owner_metadata(&self) -> Result<(), NativeStorageError> {
-        self.assert_owned()?;
-        fylo_vfs::remove_file(&self.metadata_path).map_err(NativeStorageError::io)?;
-        self.sync_metadata_parent()
-    }
-
-    fn sync_metadata_parent(&self) -> Result<(), NativeStorageError> {
-        let parent = self.metadata_path.parent().ok_or_else(|| {
-            NativeStorageError::new(
-                NativeStorageErrorCode::UnsafePath,
-                "root owner metadata has no parent directory",
-            )
-        })?;
-        crate::write::sync_directory(parent)
+    /// A clean stop marks the record released instead of removing it, so
+    /// the generation keeps growing and the next owner claims at once.
+    fn mark_released(&self) -> Result<(), NativeStorageError> {
+        let recorded = LeaseObservation::read(&self.record_path).record();
+        let mine = recorded.filter(|record| record.names(&self.owner, self.generation));
+        let released = mine.map(|record| record.released());
+        released.map_or(Ok(()), |record| record.persist(&self.record_path))?;
+        crate::write::failpoint("lease-after-release")
     }
 
     fn unlock_checked(&self) -> Result<(), NativeStorageError> {
@@ -160,10 +244,20 @@ impl RootLeaseInner {
         )
     }
 
-    fn lease_paths(canonical: &Path) -> Result<(PathBuf, PathBuf), NativeStorageError> {
-        let lock_path = Self::sibling_path(canonical, Self::LOCK_SUFFIX)?;
-        let metadata_path = Self::sibling_path(canonical, Self::METADATA_SUFFIX)?;
-        Ok((lock_path, metadata_path))
+    fn owned_name(canonical: &Path) -> String {
+        canonical.file_name().map_or_else(
+            || "root".to_owned(),
+            |name| name.to_string_lossy().into_owned(),
+        )
+    }
+
+    fn parent(canonical: &Path) -> Result<&Path, NativeStorageError> {
+        canonical.parent().ok_or_else(|| {
+            NativeStorageError::new(
+                NativeStorageErrorCode::UnsafePath,
+                "FYLO root has no parent directory",
+            )
+        })
     }
 
     /// The file `.<root name>.<suffix>` in the root's parent directory, where
@@ -172,17 +266,8 @@ impl RootLeaseInner {
         canonical: &Path,
         suffix: &str,
     ) -> Result<PathBuf, NativeStorageError> {
-        let parent = canonical.parent().ok_or_else(|| {
-            NativeStorageError::new(
-                NativeStorageErrorCode::UnsafePath,
-                "FYLO root has no parent directory",
-            )
-        })?;
-        let root_name = canonical.file_name().map_or_else(
-            || "root".to_owned(),
-            |name| name.to_string_lossy().into_owned(),
-        );
-        Ok(parent.join(format!(".{root_name}.{suffix}")))
+        let parent = Self::parent(canonical)?;
+        Ok(parent.join(format!(".{}.{suffix}", Self::owned_name(canonical))))
     }
 
     fn open_lock_file(path: &Path) -> Result<File, NativeStorageError> {
@@ -197,7 +282,7 @@ impl RootLeaseInner {
 
     pub(super) fn lock_root(
         attempt: Result<(), TryLockError>,
-        metadata_path: &Path,
+        record_path: &Path,
         canonical: &Path,
         profile: FilesystemProfile,
     ) -> Result<bool, NativeStorageError> {
@@ -206,11 +291,11 @@ impl RootLeaseInner {
             // The lock file is already open read-write, so a refusal here is
             // another holder: SMB (cifs) reports a held byte-range lock as
             // EACCES rather than EWOULDBLOCK.
-            Err(TryLockError::WouldBlock) => Err(Self::root_locked(metadata_path, canonical)),
+            Err(TryLockError::WouldBlock) => Err(Self::root_locked(record_path, canonical)),
             Err(TryLockError::Error(error))
                 if error.kind() == std::io::ErrorKind::PermissionDenied =>
             {
-                Err(Self::root_locked(metadata_path, canonical))
+                Err(Self::root_locked(record_path, canonical))
             }
             Err(TryLockError::Error(error)) if error.kind() == std::io::ErrorKind::Unsupported => {
                 if profile == FilesystemProfile::EfsSidecarV1 {
@@ -226,16 +311,18 @@ impl RootLeaseInner {
         }
     }
 
-    fn root_locked(metadata_path: &Path, canonical: &Path) -> NativeStorageError {
+    fn root_locked(record_path: &Path, canonical: &Path) -> NativeStorageError {
         NativeStorageError::new(
             NativeStorageErrorCode::RootLocked,
-            LeaseMetadata::describe_owner(metadata_path, canonical),
+            LeaseObservation::read(record_path).owner_message(canonical),
         )
     }
 }
 
 impl Drop for RootLeaseInner {
     fn drop(&mut self) {
+        self.heartbeat.stop();
+        let _ = self.mark_released();
         let _ = KernelFileLock::unlock(&self.lock_file);
     }
 }

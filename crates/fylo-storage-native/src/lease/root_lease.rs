@@ -1,4 +1,5 @@
 use super::root_lease_inner::RootLeaseInner;
+use super::lease_timing::LeaseTiming;
 use super::root_turn::RootTurn;
 use crate::{FilesystemProfile, NativeStorageError, NativeStorageErrorCode, RootFilesystem};
 use std::path::Path;
@@ -57,6 +58,51 @@ impl RootLease {
         Ok(Self {
             inner: Arc::new(inner?),
         })
+    }
+
+    /// Acquire a root owner with an explicit heartbeat and takeover time
+    /// instead of `FYLO_LEASE_HEARTBEAT_SECONDS` and
+    /// `FYLO_LEASE_TAKEOVER_SECONDS` (ADR 0033 section 4).
+    ///
+    /// # Errors
+    /// As [`RootLease::acquire_with_profile`]; a takeover from an owner that
+    /// may live on another machine first waits the takeover time.
+    pub fn acquire_with_timing(
+        root: impl AsRef<Path>,
+        profile: FilesystemProfile,
+        timing: LeaseTiming,
+    ) -> Result<Self, NativeStorageError> {
+        let inner = RootLeaseInner::acquire_timed(root.as_ref(), profile, timing, None)?;
+        Ok(Self {
+            inner: Arc::new(inner),
+        })
+    }
+
+    /// [`RootLease::acquire_waiting`] with an explicit heartbeat and
+    /// takeover time.
+    ///
+    /// # Errors
+    /// As [`RootLease::acquire_waiting`].
+    pub fn acquire_waiting_with_timing(
+        root: impl AsRef<Path>,
+        profile: FilesystemProfile,
+        timing: LeaseTiming,
+        wait_until: Instant,
+    ) -> Result<Self, NativeStorageError> {
+        let turn = RootTurn::wait(root.as_ref(), profile, wait_until)?;
+        let inner =
+            RootLeaseInner::acquire_waiting_timed(root.as_ref(), profile, timing, wait_until);
+        drop(turn);
+        Ok(Self {
+            inner: Arc::new(inner?),
+        })
+    }
+
+    /// Give up the kernel lock but keep the lease record and heartbeat, as
+    /// a router reboot does to the locks of an NFS client.
+    #[cfg(feature = "test-support")]
+    pub fn drop_kernel_lock_for_test(&self) {
+        self.inner.drop_kernel_lock_for_test();
     }
 
     pub(crate) fn owner_generation(&self) -> &str {

@@ -10,7 +10,7 @@ struct LeaseFixture {
 
 impl LeaseFixture {
     const ROOT_NAME: &str = "db";
-    const INVALID_VERSION: u32 = 2;
+    const OTHER_FORMAT: &str = "fylo.namespace-lease.v2";
     const OVERSIZED_RECORD_BYTES: usize = 4097;
 
     fn new() -> Self {
@@ -97,7 +97,7 @@ fn cloned_lease_holds_the_kernel_lock_until_the_last_clone_is_dropped() {
 fn rejects_a_changed_owner_record() {
     let fixture = LeaseFixture::new();
     let mut record = fixture.record();
-    record["owner"] = serde_json::json!("replacement-owner");
+    record["ownerId"] = serde_json::json!("0123456789abcdef0123456789abcdef");
     fixture.write_record(&record);
     assert_eq!(
         fixture.ownership_error(),
@@ -106,10 +106,10 @@ fn rejects_a_changed_owner_record() {
 }
 
 #[test]
-fn rejects_an_unknown_owner_record_version() {
+fn rejects_an_unknown_owner_record_format() {
     let fixture = LeaseFixture::new();
     let mut record = fixture.record();
-    record["version"] = serde_json::json!(LeaseFixture::INVALID_VERSION);
+    record["format"] = serde_json::json!(LeaseFixture::OTHER_FORMAT);
     fixture.write_record(&record);
     assert_eq!(
         fixture.ownership_error(),

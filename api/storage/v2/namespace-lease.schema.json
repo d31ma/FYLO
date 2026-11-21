@@ -1,7 +1,7 @@
 {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "$id": "https://fylo.del.ma/api/storage/v2/namespace-lease.schema.json",
-    "title": "FYLO namespace lease record (DRAFT, ADR 0033 section 4, not yet built)",
+    "title": "FYLO namespace lease record (DRAFT, ADR 0033 section 4; written by the root lease since L1-3)",
     "description": "Describes <drive>/<app>/.<namespace>.fylo-root-owner.lock.json. Written by temporary file and rename. The owner owns the namespace while it holds the kernel lock on .<namespace>.fylo-root-owner.lock AND this record names its ownerId and generation.",
     "type": "object",
     "additionalProperties": false,
@@ -11,7 +11,11 @@
         "ownerId",
         "generation",
         "heartbeat",
-        "state"
+        "state",
+        "heartbeatMillis",
+        "takeoverMillis",
+        "host",
+        "pid"
     ],
     "properties": {
         "format": {
@@ -19,7 +23,8 @@
         },
         "namespace": {
             "type": "string",
-            "pattern": "^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$"
+            "pattern": "^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$",
+            "description": "The owned folder's name. Until the layout release this is the root folder's name and may not match the pattern."
         },
         "ownerId": {
             "description": "128 random bits, new for every process start, as 32 lowercase hex characters.",
@@ -45,27 +50,37 @@
                 "released"
             ]
         },
-        "heartbeatSeconds": {
-            "description": "The owner's heartbeat interval. Default 5.",
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 3600
-        },
-        "takeoverSeconds": {
-            "description": "How long a taker waits for the heartbeat to move before it claims. Default 20. Must be greater than heartbeatSeconds.",
-            "type": "integer",
-            "minimum": 2,
-            "maximum": 86400
-        },
         "host": {
             "description": "Diagnostic only. Never used to decide ownership.",
             "type": "string",
             "maxLength": 255
         },
         "pid": {
-            "description": "Diagnostic only. Never used to decide ownership.",
+            "description": "The owner's process id. Used with machine and processStart only on the same machine; diagnostic everywhere else.",
             "type": "integer",
             "minimum": 0
+        },
+        "heartbeatMillis": {
+            "description": "The owner's heartbeat interval in milliseconds. Default 5000 (FYLO_LEASE_HEARTBEAT_SECONDS).",
+            "type": "integer",
+            "minimum": 10,
+            "maximum": 86400000
+        },
+        "takeoverMillis": {
+            "description": "The owner's takeover time in milliseconds. Default 20000 (FYLO_LEASE_TAKEOVER_SECONDS). Greater than heartbeatMillis. A taker waits the longer of its own takeover time and this one.",
+            "type": "integer",
+            "minimum": 11,
+            "maximum": 86400000
+        },
+        "machine": {
+            "description": "A stable id of the owner's machine: 32 lowercase hex characters of a SHA-256 over the platform's machine id (ADR 0033 section 4, Stopping). Absent where the platform has none. Only used to decide whether the owner's pid may be checked here.",
+            "type": "string",
+            "pattern": "^[0-9a-f]{32}$"
+        },
+        "processStart": {
+            "description": "The owner process's start time as the platform reports it. A taker on the same machine takes over at once when pid now names no process or one with another start time.",
+            "type": "string",
+            "maxLength": 255
         }
     }
 }

@@ -105,6 +105,9 @@ mod tier_reads_wasm;
 mod validation_mode;
 mod verified_manifest;
 mod word_witness;
+mod root_damage;
+mod root_verification;
+mod root_verification_report;
 mod write;
 mod writer_session;
 
@@ -174,7 +177,10 @@ pub use filesystem_check::FilesystemProbe;
 pub use filesystem_profile::FilesystemProfile;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 pub use fylo_vfs::host_now_unix_ms;
-pub use lease::RootLease;
+pub use lease::{LeaseTiming, RootLease};
+pub use root_damage::RootDamage;
+pub use root_verification::RootVerification;
+pub use root_verification_report::RootVerificationReport;
 pub use log_position::LogPosition;
 pub use platform_companion::is_platform_companion;
 pub use queue::{
@@ -2914,12 +2920,15 @@ impl NativeCollection {
             if cached.as_deref() != Some(computed_checksum.as_str()) {
                 return Err(NativeStorageError::new(
                     NativeStorageErrorCode::CorruptMetadata,
-                    "EFS raw payload checksum, size or mtime does not match its manifest",
+                    format!(
+                        "EFS raw payload checksum, size or mtime does not match its manifest: {}",
+                        path.display()
+                    ),
                 ));
             }
             computed_checksum
         } else {
-            cached.unwrap_or(computed_checksum)
+            matching_checksum(cached, computed_checksum, &path)?
         };
         Ok(StoredRawFile {
             bytes,
@@ -3942,6 +3951,28 @@ fn cached_checksum(value: Option<&Vec<u8>>, size: u64, modified_millis: u64) -> 
     } else {
         None
     }
+}
+
+/// The checksum of a raw file's bytes, refusing a file whose cached checksum
+/// still matches its size and modification time but not its bytes. That is
+/// what a lost or torn write after a storage crash leaves (L1 spec 20.2):
+/// the file is refused, named, and never returned.
+fn matching_checksum(
+    cached: Option<String>,
+    computed: String,
+    path: &Path,
+) -> Result<String, NativeStorageError> {
+    let damaged = cached.is_some_and(|cached| cached != computed);
+    if damaged {
+        return Err(NativeStorageError::new(
+            NativeStorageErrorCode::CorruptMetadata,
+            format!(
+                "damaged FYLO file {}: its bytes do not match its recorded checksum",
+                path.display()
+            ),
+        ));
+    }
+    Ok(computed)
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {

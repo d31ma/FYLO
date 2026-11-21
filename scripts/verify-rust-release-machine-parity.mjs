@@ -31,7 +31,8 @@ const candidateOnlyOperations = [
     'schemaMode',
     'schemaPull',
     'schemaPush',
-    'verifyDatabase'
+    'verifyDatabase',
+    'verifyRoot'
 ]
 const releasedOperations = canonicalOperations.filter(
     (operation) => !candidateOnlyOperations.includes(operation)

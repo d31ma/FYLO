@@ -57,6 +57,11 @@
             "retry": "safe"
         },
         {
+            "name": "verifyRoot",
+            "class": "read",
+            "retry": "safe"
+        },
+        {
             "name": "getDoc",
             "class": "read",
             "retry": "safe"

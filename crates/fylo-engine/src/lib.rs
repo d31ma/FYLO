@@ -1108,7 +1108,7 @@ impl ReadOnlyEngine {
         let document = self.decode_document(
             collection,
             Document::parse(&stored.bytes, DocumentLimits::default())
-                .map_err(EngineError::format)?,
+                .map_err(|error| EngineError::damaged_document(error, &stored.path))?,
         )?;
         let timestamps = TtidTimestamps::decode(identifier).map_err(EngineError::format)?;
         Ok(ReadDocument {
@@ -1215,7 +1215,7 @@ impl ReadOnlyEngine {
             let document = self.decode_document(
                 collection.name(),
                 Document::parse(&stored.bytes, DocumentLimits::default())
-                    .map_err(EngineError::format)?,
+                    .map_err(|error| EngineError::damaged_document(error, &stored.path))?,
             )?;
             let timestamps = TtidTimestamps::decode(identifier).map_err(EngineError::format)?;
             Ok(ReadDeletedDocument {
@@ -1328,7 +1328,7 @@ impl ReadOnlyEngine {
                         self.decrypt_fields(
                             collection.name(),
                             Document::parse(&stored.bytes, DocumentLimits::default())
-                                .map_err(EngineError::format)?
+                                .map_err(|error| EngineError::damaged_document(error, &stored.path))?
                                 .into_fields(),
                             None,
                         )?
@@ -1774,7 +1774,7 @@ impl ReadOnlyEngine {
                 let document = self.decode_document(
                     collection.name(),
                     Document::parse(&stored.bytes, DocumentLimits::default())
-                        .map_err(EngineError::format)?,
+                        .map_err(|error| EngineError::damaged_document(error, &stored.path))?,
                 )?;
                 let timestamps =
                     TtidTimestamps::decode(&identifier).map_err(EngineError::format)?;
@@ -2413,6 +2413,17 @@ impl EngineError {
     #[must_use]
     pub fn query_code_str(&self) -> Option<&'static str> {
         self.query_code().map(QueryErrorCode::as_str)
+    }
+
+    /// A stored document that no longer parses: the file is named, so an
+    /// operator can restore it from a backup (L1 spec 20.2). The code stays
+    /// the format code a damaged document always had.
+    fn damaged_document(error: FormatError, path: &std::path::Path) -> Self {
+        Self {
+            code: EngineErrorCode::Format,
+            message: format!("damaged FYLO document file {}: {error}", path.display()),
+            source: Some(Box::new(error)),
+        }
     }
 
     fn format(error: FormatError) -> Self {
