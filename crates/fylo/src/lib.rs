@@ -1,9 +1,8 @@
 //! FYLO in-process: open a root in the host's own process and use its
 //! documents, collections and queues through typed, synchronous calls.
 //!
-//! This is layer 1 of the Turso SDK design (ADR 0019, proposed). It wraps the
-//! same engine the CLI and the machine protocol use, with no child process
-//! and no listener:
+//! It wraps the same engine the CLI and the machine protocol use, with no
+//! child process and no listener:
 //!
 //! ```no_run
 //! use serde_json::json;
@@ -27,19 +26,14 @@
 //! Scope: directory roots on their main worktree, and `.vdbx` databases,
 //! document collections and, in a directory root, the queue. A protected
 //! `.vdbx` database (ADR 0021) opens with an application identity and a
-//! trusted anchor ([`OpenOptions::with_identity`]). The `sql` feature adds
-//! [`Root::sql`]: Turso SQL over the same root or database, with
-//! collections as tables.
+//! trusted anchor ([`OpenOptions::with_identity`]).
 
 mod collection;
 mod collection_recovery;
 mod database_creation;
 mod error;
-mod link_identity;
 mod page;
 mod queue;
-#[cfg(feature = "sql")]
-mod sql;
 
 use std::path::{Path, PathBuf};
 
@@ -59,13 +53,8 @@ pub use fylo_identity::{
 };
 pub use fylo_storage_native::{AccessTrust, DatabaseKey, Durability};
 pub use fylo_storage_native::{QueueAckResult, QueueDelivery, QueueNackResult, QueuePublishResult};
-pub use link_identity::LinkIdentity;
 pub use page::Page;
 pub use queue::{ClaimOptions, PublishOptions, Queue};
-#[cfg(feature = "sql")]
-pub use sql::{
-    Sql, SqlOptions, SqlRows, SqlValue, TURSO_PIN, install_turso_open_hook, is_fylo_root,
-};
 
 /// How [`Root::open`] opens a root.
 #[derive(Clone, Debug, Default)]

@@ -956,8 +956,7 @@ fylo access settle app.vdbx --identity file:admin.pem --trust-anchor fid1:...
   lists every signed policy change, settles included.
 - **Every entry point** takes the identity: the CLI, `fylo exec --loop`
   (its handshake reports the identity and its grants), the `fylo` crate
-  (`OpenOptions::with_identity`), `fylo link` for Turso SDKs, SQL over
-  `.vdbx`, and the browser (`identity: { name, workerUrl, trustAnchor }`
+  (`OpenOptions::with_identity`), SQL over `.vdbx`, and the browser (`identity: { name, workerUrl, trustAnchor }`
   with a `webcrypto:` key).
 - **Directory roots** stay an unprotected layout for development and
   tooling: anyone who can read the folder reads every record and every

@@ -167,8 +167,7 @@ admin's `fid1:` identifier:
 or `FYLO_IDENTITY` and `FYLO_TRUST_ANCHOR` in the environment. The same
 settings serve the CLI (`--identity`, `--trust-anchor`), the machine
 protocol (`fylo exec --loop`, whose handshake reports the identity and its
-grants), the `fylo` crate (`OpenOptions::with_identity`) and `fylo link`
-(the `application.json` beside the database). In the browser, open the
+grants), and the `fylo` crate (`OpenOptions::with_identity`). In the browser, open the
 database with `identity: { name, workerUrl, trustAnchor }`.
 
 Remove `.as(...)` calls, `--uid` and `--groups`, and the machine

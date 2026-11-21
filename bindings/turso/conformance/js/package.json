@@ -1,8 +1,0 @@
-{
-  "name": "fylo-link-js-conformance",
-  "private": true,
-  "type": "module",
-  "dependencies": {
-    "@tursodatabase/database": "0.8.3"
-  }
-}
