@@ -1,16 +1,20 @@
-//! The temp-disk read tier (ADR 0030 slice S3): with `--temp-cache on`, a
-//! native-profile folder root answers document reads from stored records
-//! kept in a private temp folder, and every answer equals the one the root
-//! gives. Each session here is a new tier on the same cache folder, as a new
-//! process would be.
+//! The temp-disk read tier (ADR 0030 slices S3 and S4): with `--temp-cache
+//! on`, a folder root answers document reads from stored records kept in a
+//! private temp folder, and every answer equals the one the root gives. Each
+//! test runs on a native-profile root and, on Unix, on an EFS-profile root,
+//! whose entries also keep the record's manifest. Each session here is a new
+//! tier on the same cache folder, as a new process would be.
 
 use std::fs;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use fylo_machine::{ApplicationConfig, FrameLimits, serve_application};
-use fylo_storage_native::{NativeRoot, NativeWriteRoot, TempCacheMode, TempCacheSettings};
+use fylo_machine::{ApplicationConfig, FrameLimits, serve_profiled};
+use fylo_storage_native::{
+    FilesystemProfile, NativeRoot, NativeWriteRoot, RootOpenOptions, TempCacheMode,
+    TempCacheSettings,
+};
 use serde_json::{Value, json};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -28,10 +32,20 @@ const SECRET: &str = "123-45-6789";
 /// the temp cache, removed when the test ends.
 struct Fixture {
     parent: PathBuf,
+    profile: FilesystemProfile,
 }
 
 impl Fixture {
     fn new() -> Self {
+        Self::with_profile(FilesystemProfile::Native)
+    }
+
+    #[cfg(unix)]
+    fn efs() -> Self {
+        Self::with_profile(FilesystemProfile::EfsSidecarV1)
+    }
+
+    fn with_profile(profile: FilesystemProfile) -> Self {
         let parent = std::env::temp_dir().join(format!(
             "fylo-temp-tier-reads-{}-{}",
             std::process::id(),
@@ -53,6 +67,7 @@ impl Fixture {
         .unwrap();
         Self {
             parent: fs::canonicalize(parent).unwrap(),
+            profile,
         }
     }
 
@@ -77,22 +92,24 @@ impl Fixture {
         }
     }
 
-    /// Answer `requests` in one new session against `root`.
-    fn session_at(root: &Path, application: ApplicationConfig, requests: &[Value]) -> Vec<Value> {
+    /// Answer `requests` in one new session against `root`, opened with
+    /// `profile`.
+    fn session_at(
+        (root, profile): (&Path, FilesystemProfile),
+        application: ApplicationConfig,
+        requests: &[Value],
+    ) -> Vec<Value> {
         let mut input = String::new();
         for request in requests {
             input.push_str(&request.to_string());
             input.push('\n');
         }
         let mut output = Vec::new();
-        serve_application(
-            &mut Cursor::new(input.into_bytes()),
-            &mut output,
-            Some(root.to_path_buf()),
-            FrameLimits::default(),
+        serve_profiled(
+            (&mut Cursor::new(input.into_bytes()), &mut output),
+            RootOpenOptions::new(root).with_profile(profile),
             application,
-            false,
-            true,
+            (FrameLimits::default(), false, true),
         )
         .unwrap();
         String::from_utf8(output)
@@ -103,7 +120,11 @@ impl Fixture {
     }
 
     fn session(&self, mode: TempCacheMode, requests: &[Value]) -> Vec<Value> {
-        Self::session_at(&self.root(), self.application(mode, None), requests)
+        Self::session_at(
+            (&self.root(), self.profile),
+            self.application(mode, None),
+            requests,
+        )
     }
 
     /// Run `requests` with the tier on and expect each to succeed.
@@ -215,10 +236,8 @@ fn counter(counters: &Value, name: &str) -> u64 {
         .unwrap_or_else(|| panic!("{name}: {counters}"))
 }
 
-#[test]
-fn a_document_read_once_is_answered_from_the_tier_by_the_next_session() {
-    let fixture = Fixture::new();
-    seed(&fixture);
+fn check_a_document_read_once_is_answered_from_the_tier_by_the_next_session(fixture: &Fixture) {
+    seed(fixture);
     fixture.succeed(&[get(NOTES, FIRST)]);
     let counters = fixture.counters_after(&[get(NOTES, FIRST)]);
     assert_eq!(counters["active"], true, "{counters}");
@@ -229,9 +248,18 @@ fn a_document_read_once_is_answered_from_the_tier_by_the_next_session() {
 }
 
 #[test]
-fn every_read_with_the_tier_equals_the_read_without_it_cold_and_warm() {
-    let fixture = Fixture::new();
-    seed(&fixture);
+fn a_document_read_once_is_answered_from_the_tier_by_the_next_session() {
+    check_a_document_read_once_is_answered_from_the_tier_by_the_next_session(&Fixture::new());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_document_read_once_is_answered_from_the_tier_by_the_next_session_on_efs() {
+    check_a_document_read_once_is_answered_from_the_tier_by_the_next_session(&Fixture::efs());
+}
+
+fn check_every_read_with_the_tier_equals_the_read_without_it_cold_and_warm(fixture: &Fixture) {
+    seed(fixture);
     let expected = fixture.answers(TempCacheMode::Off, &reads());
     let cold = fixture.answers(TempCacheMode::On, &reads());
     let warm = fixture.answers(TempCacheMode::On, &reads());
@@ -242,8 +270,19 @@ fn every_read_with_the_tier_equals_the_read_without_it_cold_and_warm() {
 }
 
 #[test]
-fn encrypted_documents_read_the_same_and_reach_the_disk_only_as_ciphertext() {
-    let fixture = Fixture::new();
+fn every_read_with_the_tier_equals_the_read_without_it_cold_and_warm() {
+    check_every_read_with_the_tier_equals_the_read_without_it_cold_and_warm(&Fixture::new());
+}
+
+#[cfg(unix)]
+#[test]
+fn every_read_with_the_tier_equals_the_read_without_it_cold_and_warm_on_efs() {
+    check_every_read_with_the_tier_equals_the_read_without_it_cold_and_warm(&Fixture::efs());
+}
+
+fn check_encrypted_documents_read_the_same_and_reach_the_disk_only_as_ciphertext(
+    fixture: &Fixture,
+) {
     fixture.succeed(&[
         create(PII),
         put(PII, FIRST, &json!({"name":"Ada","ssn":SECRET})),
@@ -265,9 +304,20 @@ fn encrypted_documents_read_the_same_and_reach_the_disk_only_as_ciphertext() {
 }
 
 #[test]
-fn a_write_by_another_session_is_seen_and_unchanged_documents_are_revalidated() {
-    let fixture = Fixture::new();
-    seed(&fixture);
+fn encrypted_documents_read_the_same_and_reach_the_disk_only_as_ciphertext() {
+    check_encrypted_documents_read_the_same_and_reach_the_disk_only_as_ciphertext(&Fixture::new());
+}
+
+#[cfg(unix)]
+#[test]
+fn encrypted_documents_read_the_same_and_reach_the_disk_only_as_ciphertext_on_efs() {
+    check_encrypted_documents_read_the_same_and_reach_the_disk_only_as_ciphertext(&Fixture::efs());
+}
+
+fn check_a_write_by_another_session_is_seen_and_unchanged_documents_are_revalidated(
+    fixture: &Fixture,
+) {
+    seed(fixture);
     fixture.succeed(&[get(NOTES, FIRST), get(NOTES, SECOND)]);
     fixture.succeed(&[patch(NOTES, FIRST, &json!({"title":"changed"}))]);
     let replies = fixture.succeed(&[get(NOTES, FIRST), get(NOTES, SECOND)]);
@@ -282,9 +332,22 @@ fn a_write_by_another_session_is_seen_and_unchanged_documents_are_revalidated() 
 }
 
 #[test]
-fn a_changed_document_is_refused_on_revalidation() {
-    let fixture = Fixture::new();
-    seed(&fixture);
+fn a_write_by_another_session_is_seen_and_unchanged_documents_are_revalidated() {
+    check_a_write_by_another_session_is_seen_and_unchanged_documents_are_revalidated(
+        &Fixture::new(),
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_write_by_another_session_is_seen_and_unchanged_documents_are_revalidated_on_efs() {
+    check_a_write_by_another_session_is_seen_and_unchanged_documents_are_revalidated(
+        &Fixture::efs(),
+    );
+}
+
+fn check_a_changed_document_is_refused_on_revalidation(fixture: &Fixture) {
+    seed(fixture);
     fixture.succeed(&[get(NOTES, FIRST), get(NOTES, SECOND)]);
     fixture.succeed(&[patch(NOTES, FIRST, &json!({"title":"changed"}))]);
     let counters = fixture.counters_after(&[get(NOTES, FIRST), get(NOTES, SECOND)]);
@@ -294,9 +357,18 @@ fn a_changed_document_is_refused_on_revalidation() {
 }
 
 #[test]
-fn a_deleted_document_is_not_found_with_the_tier() {
-    let fixture = Fixture::new();
-    seed(&fixture);
+fn a_changed_document_is_refused_on_revalidation() {
+    check_a_changed_document_is_refused_on_revalidation(&Fixture::new());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_changed_document_is_refused_on_revalidation_on_efs() {
+    check_a_changed_document_is_refused_on_revalidation(&Fixture::efs());
+}
+
+fn check_a_deleted_document_is_not_found_with_the_tier(fixture: &Fixture) {
+    seed(fixture);
     fixture.succeed(&[get(NOTES, FIRST)]);
     fixture.succeed(&[json!({"op":"delDoc","collection":NOTES,"id":FIRST})]);
     let expected = fixture.answers(TempCacheMode::Off, &[get(NOTES, FIRST)]);
@@ -308,9 +380,20 @@ fn a_deleted_document_is_not_found_with_the_tier() {
 }
 
 #[test]
-fn a_collection_dropped_and_created_again_does_not_answer_from_its_old_life() {
-    let fixture = Fixture::new();
-    seed(&fixture);
+fn a_deleted_document_is_not_found_with_the_tier() {
+    check_a_deleted_document_is_not_found_with_the_tier(&Fixture::new());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_deleted_document_is_not_found_with_the_tier_on_efs() {
+    check_a_deleted_document_is_not_found_with_the_tier(&Fixture::efs());
+}
+
+fn check_a_collection_dropped_and_created_again_does_not_answer_from_its_old_life(
+    fixture: &Fixture,
+) {
+    seed(fixture);
     fixture.succeed(&[get(NOTES, FIRST), find(NOTES, &json!({}))]);
     fixture.succeed(&[
         json!({"op":"dropCollection","collection":NOTES}),
@@ -323,9 +406,18 @@ fn a_collection_dropped_and_created_again_does_not_answer_from_its_old_life() {
 }
 
 #[test]
-fn a_rebuilt_collection_reads_the_same() {
-    let fixture = Fixture::new();
-    seed(&fixture);
+fn a_collection_dropped_and_created_again_does_not_answer_from_its_old_life() {
+    check_a_collection_dropped_and_created_again_does_not_answer_from_its_old_life(&Fixture::new());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_collection_dropped_and_created_again_does_not_answer_from_its_old_life_on_efs() {
+    check_a_collection_dropped_and_created_again_does_not_answer_from_its_old_life(&Fixture::efs());
+}
+
+fn check_a_rebuilt_collection_reads_the_same(fixture: &Fixture) {
+    seed(fixture);
     fixture.succeed(&reads());
     fixture.succeed(&[json!({"op":"rebuildCollection","collection":NOTES})]);
     let expected = fixture.answers(TempCacheMode::Off, &reads());
@@ -333,9 +425,18 @@ fn a_rebuilt_collection_reads_the_same() {
 }
 
 #[test]
-fn a_generation_that_comes_back_does_not_bring_back_an_old_document() {
-    let fixture = Fixture::new();
-    seed(&fixture);
+fn a_rebuilt_collection_reads_the_same() {
+    check_a_rebuilt_collection_reads_the_same(&Fixture::new());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_rebuilt_collection_reads_the_same_on_efs() {
+    check_a_rebuilt_collection_reads_the_same(&Fixture::efs());
+}
+
+fn check_a_generation_that_comes_back_does_not_bring_back_an_old_document(fixture: &Fixture) {
+    seed(fixture);
     let state = find_file(&fixture.root().join(".fylo-transactions"), "state.json");
     fixture.succeed(&[get(NOTES, FIRST)]);
     let old_state = fs::read(&state).unwrap();
@@ -384,20 +485,38 @@ fn seed_one(fixture: &Fixture) {
 }
 
 #[test]
-fn a_truncated_entry_is_refused() {
-    let fixture = Fixture::new();
-    seed_one(&fixture);
-    refused_after(&fixture, |entry| {
+fn a_generation_that_comes_back_does_not_bring_back_an_old_document() {
+    check_a_generation_that_comes_back_does_not_bring_back_an_old_document(&Fixture::new());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_generation_that_comes_back_does_not_bring_back_an_old_document_on_efs() {
+    check_a_generation_that_comes_back_does_not_bring_back_an_old_document(&Fixture::efs());
+}
+
+fn check_a_truncated_entry_is_refused(fixture: &Fixture) {
+    seed_one(fixture);
+    refused_after(fixture, |entry| {
         let bytes = fs::read(entry).unwrap();
         fs::write(entry, &bytes[..bytes.len() - 3]).unwrap();
     });
 }
 
 #[test]
-fn an_entry_with_a_flipped_byte_is_refused() {
-    let fixture = Fixture::new();
-    seed_one(&fixture);
-    refused_after(&fixture, |entry| {
+fn a_truncated_entry_is_refused() {
+    check_a_truncated_entry_is_refused(&Fixture::new());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_truncated_entry_is_refused_on_efs() {
+    check_a_truncated_entry_is_refused(&Fixture::efs());
+}
+
+fn check_an_entry_with_a_flipped_byte_is_refused(fixture: &Fixture) {
+    seed_one(fixture);
+    refused_after(fixture, |entry| {
         let mut bytes = fs::read(entry).unwrap();
         let last = bytes.len() - 6;
         bytes[last] ^= 0x01;
@@ -406,9 +525,18 @@ fn an_entry_with_a_flipped_byte_is_refused() {
 }
 
 #[test]
-fn an_entry_of_another_document_is_refused() {
-    let fixture = Fixture::new();
-    seed_one(&fixture);
+fn an_entry_with_a_flipped_byte_is_refused() {
+    check_an_entry_with_a_flipped_byte_is_refused(&Fixture::new());
+}
+
+#[cfg(unix)]
+#[test]
+fn an_entry_with_a_flipped_byte_is_refused_on_efs() {
+    check_an_entry_with_a_flipped_byte_is_refused(&Fixture::efs());
+}
+
+fn check_an_entry_of_another_document_is_refused(fixture: &Fixture) {
+    seed_one(fixture);
     let first = fixture.only_entry();
     fixture.succeed(&[put(NOTES, SECOND, &json!({"title":"two"}))]);
     fs::remove_file(&first).unwrap();
@@ -425,8 +553,17 @@ fn an_entry_of_another_document_is_refused() {
 }
 
 #[test]
-fn an_entry_of_another_collection_is_refused() {
-    let fixture = Fixture::new();
+fn an_entry_of_another_document_is_refused() {
+    check_an_entry_of_another_document_is_refused(&Fixture::new());
+}
+
+#[cfg(unix)]
+#[test]
+fn an_entry_of_another_document_is_refused_on_efs() {
+    check_an_entry_of_another_document_is_refused(&Fixture::efs());
+}
+
+fn check_an_entry_of_another_collection_is_refused(fixture: &Fixture) {
     fixture.succeed(&[
         create(NOTES),
         create(OTHER),
@@ -447,9 +584,18 @@ fn an_entry_of_another_collection_is_refused() {
 }
 
 #[test]
-fn an_entry_from_before_a_change_is_refused() {
-    let fixture = Fixture::new();
-    seed_one(&fixture);
+fn an_entry_of_another_collection_is_refused() {
+    check_an_entry_of_another_collection_is_refused(&Fixture::new());
+}
+
+#[cfg(unix)]
+#[test]
+fn an_entry_of_another_collection_is_refused_on_efs() {
+    check_an_entry_of_another_collection_is_refused(&Fixture::efs());
+}
+
+fn check_an_entry_from_before_a_change_is_refused(fixture: &Fixture) {
+    seed_one(fixture);
     let entry = fixture.only_entry();
     let old = fs::read(&entry).unwrap();
     fixture.succeed(&[patch(NOTES, FIRST, &json!({"title":"changed"}))]);
@@ -465,8 +611,17 @@ fn an_entry_from_before_a_change_is_refused() {
 }
 
 #[test]
-fn a_document_over_its_share_of_the_budget_is_not_kept() {
-    let fixture = Fixture::new();
+fn an_entry_from_before_a_change_is_refused() {
+    check_an_entry_from_before_a_change_is_refused(&Fixture::new());
+}
+
+#[cfg(unix)]
+#[test]
+fn an_entry_from_before_a_change_is_refused_on_efs() {
+    check_an_entry_from_before_a_change_is_refused(&Fixture::efs());
+}
+
+fn check_a_document_over_its_share_of_the_budget_is_not_kept(fixture: &Fixture) {
     let large = "x".repeat(4096);
     let application = fixture.application(TempCacheMode::On, Some(65_536));
     let requests = [
@@ -476,10 +631,21 @@ fn a_document_over_its_share_of_the_budget_is_not_kept() {
         get(NOTES, FIRST),
         json!({"op":"handshake"}),
     ];
-    let replies = Fixture::session_at(&fixture.root(), application, &requests);
+    let replies = Fixture::session_at((&fixture.root(), fixture.profile), application, &requests);
     let counters = &replies[4]["result"]["capabilities"]["tempCache"];
     assert_eq!(counter(counters, "writes"), 0, "{counters}");
     assert!(fixture.entries().is_empty());
+}
+
+#[test]
+fn a_document_over_its_share_of_the_budget_is_not_kept() {
+    check_a_document_over_its_share_of_the_budget_is_not_kept(&Fixture::new());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_document_over_its_share_of_the_budget_is_not_kept_on_efs() {
+    check_a_document_over_its_share_of_the_budget_is_not_kept(&Fixture::efs());
 }
 
 #[test]
@@ -515,17 +681,19 @@ fn a_vdbx_database_never_uses_the_tier() {
         get(NOTES, FIRST),
         json!({"op":"handshake"}),
     ];
-    let replies = Fixture::session_at(&database, application, &requests);
+    let replies = Fixture::session_at(
+        (&database, FilesystemProfile::Native),
+        application,
+        &requests,
+    );
     assert_eq!(replies[0]["ok"], true, "{replies:?}");
     let capability = &replies[2]["result"]["capabilities"]["tempCache"];
     assert_eq!(capability["reason"], "vdbx", "{capability}");
     assert!(fixture.cache_files().is_empty());
 }
 
-#[test]
-fn writes_never_read_through_the_tier() {
-    let fixture = Fixture::new();
-    seed(&fixture);
+fn check_writes_never_read_through_the_tier(fixture: &Fixture) {
+    seed(fixture);
     fixture.succeed(&[
         get(NOTES, FIRST),
         get(NOTES, SECOND),
@@ -541,4 +709,15 @@ fn writes_never_read_through_the_tier() {
     }
     let expected = fixture.answers(TempCacheMode::Off, &reads());
     assert_eq!(fixture.answers(TempCacheMode::On, &reads()), expected);
+}
+
+#[test]
+fn writes_never_read_through_the_tier() {
+    check_writes_never_read_through_the_tier(&Fixture::new());
+}
+
+#[cfg(unix)]
+#[test]
+fn writes_never_read_through_the_tier_on_efs() {
+    check_writes_never_read_through_the_tier(&Fixture::efs());
 }

@@ -26,9 +26,6 @@ use crate::RootFilesystem;
 /// active. In `auto` mode it is only for a root opened with the EFS profile
 /// whose cache folder is private, on a local filesystem, on another device
 /// and with at least 64 MiB free; `on` drops the profile and device rules.
-/// Only roots opened with the native profile have a read path yet: for an
-/// EFS-profile root that passes every rule, the reason is `read path not
-/// built`.
 pub struct TempCache;
 
 impl TempCache {
@@ -132,31 +129,8 @@ impl TempCache {
             PrivateFolder::open_or_create(folder).map_err(|_| TempCacheReason::UnsafeFolder)?;
         let budget = CacheBudget::cap(settings.bytes, free);
         let sweep = Self::sweep(&private, budget, now);
-        let waiting = Self::waiting_profile(settings.mode, root, folder, (budget, sweep));
-        Ok(waiting.unwrap_or_else(|| {
-            let tier = TempCacheTier::new(private, settings.mode, budget, sweep);
-            TempCacheState::Active(Arc::new(tier))
-        }))
-    }
-
-    /// The EFS profile's read path (manifests and their record digests)
-    /// comes in a later slice; until then its roots read from the root.
-    fn waiting_profile(
-        mode: TempCacheMode,
-        root: &TempCacheRoot,
-        folder: &Path,
-        (budget, sweep): (u64, SweepReport),
-    ) -> Option<TempCacheState> {
-        if !root.is_remote_profile() {
-            return None;
-        }
-        let status = TempCacheStatus::inactive(
-            mode,
-            folder.display().to_string(),
-            budget,
-            TempCacheReason::ReadPathNotBuilt,
-        );
-        Some(TempCacheState::Inactive(status.with_sweep(sweep)))
+        let tier = TempCacheTier::new(private, settings.mode, budget, sweep);
+        Ok(TempCacheState::Active(Arc::new(tier)))
     }
 
     fn admit_root(mode: TempCacheMode, root: &TempCacheRoot) -> Result<&Path, TempCacheReason> {

@@ -5,11 +5,12 @@ use std::path::{Path, PathBuf};
 use fylo_vfs::File;
 
 use crate::sidecar_attributes::SidecarAttributes;
-use crate::{FilesystemProfile, NativeRoot, NativeStorageError};
+use crate::{FileStamp, FilesystemProfile, NativeRoot, NativeStorageError};
 
 pub(crate) struct RecordAttributes {
     values: BTreeMap<String, Vec<u8>>,
     sidecar: Option<File>,
+    sidecar_opened: Option<FileStamp>,
     sidecar_path: PathBuf,
 }
 
@@ -20,18 +21,30 @@ impl RecordAttributes {
         path: &Path,
     ) -> Result<Self, NativeStorageError> {
         root.assert_profile_owned()?;
-        let (values, sidecar) = match root.filesystem_profile() {
-            FilesystemProfile::Native => (crate::read_fylo_attributes(file, path)?, None),
+        let (values, sidecar, sidecar_opened) = match root.filesystem_profile() {
+            FilesystemProfile::Native => (crate::read_fylo_attributes(file, path)?, None, None),
             FilesystemProfile::EfsSidecarV1 => {
-                let (values, sidecar) = SidecarAttributes::read_verified(root, file, path)?;
-                (values, Some(sidecar))
+                let manifest = SidecarAttributes::read_verified(root, file, path)?;
+                (manifest.values, Some(manifest.file), manifest.opened)
             }
         };
         Ok(Self {
             values,
             sidecar,
+            sidecar_opened,
             sidecar_path: crate::sidecar_path(path),
         })
+    }
+
+    /// The EFS profile's open manifest file, if the record has one.
+    pub(crate) const fn sidecar(&self) -> Option<&File> {
+        self.sidecar.as_ref()
+    }
+
+    /// The manifest's stamp, taken when it was opened and before it was
+    /// read (ADR 0030 section 3.2).
+    pub(crate) const fn sidecar_opened(&self) -> Option<FileStamp> {
+        self.sidecar_opened
     }
 
     pub(crate) fn verify(

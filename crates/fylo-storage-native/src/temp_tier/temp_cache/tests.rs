@@ -121,11 +121,12 @@ fn on_creates_a_private_folder_and_activates_a_native_root() {
 }
 
 #[test]
-fn on_keeps_an_efs_profile_root_on_the_root_until_its_read_path_exists() {
+fn on_activates_an_efs_profile_root() {
     let place = Place::new();
     let root = place.root(FilesystemProfile::EfsSidecarV1);
     let status = place.assess(TempCacheMode::On, &root).unwrap();
-    assert_eq!(reason(&status), "read path not built");
+    assert!(status.active, "{status:?}");
+    assert_eq!(status.reason, None);
     assert!(place.cache().join("sweep.stamp").is_file());
 }
 
@@ -142,6 +143,12 @@ fn start_hands_out_the_tier_only_when_it_is_active() {
     let efs = place.root(FilesystemProfile::EfsSidecarV1);
     assert!(
         TempCache::start(&settings, &efs, SystemTime::now())
+            .tier()
+            .is_some()
+    );
+    let auto = place.settings(TempCacheMode::Auto);
+    assert!(
+        TempCache::start(&auto, &native, SystemTime::now())
             .tier()
             .is_none()
     );

@@ -9,6 +9,7 @@ fn entry() -> DocumentEntry {
         modified_millis: 1_700_000_000_123,
         relative_path: "Z0/01JABCDEFGHJKMNPQRSTVWXYZ0.json".to_owned(),
         payload: br#"{"name":"Ada"}"#.to_vec(),
+        manifest: br#"{"user.fylo.record-identity":"WyJmeWxvIl0="}"#.to_vec(),
     }
 }
 
@@ -25,6 +26,22 @@ fn an_empty_payload_reads_back() {
         ..entry()
     };
     assert_eq!(DocumentEntry::decode(&entry.encode()), Some(entry));
+}
+
+#[test]
+fn an_entry_without_a_manifest_reads_back() {
+    let entry = DocumentEntry {
+        manifest: Vec::new(),
+        ..entry()
+    };
+    assert_eq!(DocumentEntry::decode(&entry.encode()), Some(entry));
+}
+
+#[test]
+fn an_entry_of_the_first_format_is_refused() {
+    let mut bytes = entry().encode();
+    bytes[4] = 1;
+    assert_eq!(DocumentEntry::decode(&bytes), None);
 }
 
 #[test]
@@ -56,7 +73,8 @@ fn trailing_bytes_are_refused() {
 fn the_header_has_a_fixed_size() {
     let entry = entry();
     let strings = entry.collection.len() + entry.identifier.len() + entry.relative_path.len();
-    let expected = DocumentEntry::header_bytes() + strings + entry.payload.len() + 4;
+    let body = entry.payload.len() + entry.manifest.len();
+    let expected = DocumentEntry::header_bytes() + strings + body + 4;
     assert_eq!(entry.encode().len(), expected);
 }
 

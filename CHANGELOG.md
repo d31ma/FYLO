@@ -99,6 +99,15 @@
   (`root is local` for a local root in the default `auto` mode, or `read
   path not built`). `auto` creates nothing for a local root.
 
+- **Temp tier for EFS-profile roots, and `auto` (ADR 0030, slice S4).** A
+  root opened with `--filesystem-profile efs-sidecar-v1` now reads through
+  the temp tier, and in the default `auto` mode the tier turns itself on for
+  such a root when its cache folder is private, local, on another device and
+  has 64 MiB free. An EFS entry also keeps the record's verified
+  `.fylo-attrs` manifest; a hit checks that the manifest binds the payload
+  to the record, and revalidation compares both files' stamps. The reason
+  `read path not built` is gone. Entries of the S3 format (version 1) are
+  refused and replaced.
 - **Temp tier reads (ADR 0030, slice S3).** With `--temp-cache on`, a root
   opened with the native profile now reads files-layout documents through
   the temp cache folder: a document read once is kept as its stored record
@@ -106,8 +115,7 @@
   processes while the collection is unchanged, or while the document file
   on the root is still the same file. A damaged, foreign or stale entry is
   refused, deleted and counted, and the read goes to the root. The default
-  `auto` still keeps local roots on the root, and EFS-profile roots report
-  `read path not built` until a later slice. The Rust API adds
+  `auto` keeps local roots on the root. The Rust API adds
   `RootOpenOptions::with_temp_tier`, `TempCache::start`, `TempCacheState`
   and `TempCacheTier`.
 - **Collection stamps (ADR 0030, slice S0).** A new files-layout

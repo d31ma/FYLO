@@ -53,13 +53,24 @@ impl FileStamp {
     }
 
     #[cfg(not(target_family = "wasm"))]
-    /// A SHA-256 digest of the stamp, the same in every process.
-    pub(crate) fn digest(&self) -> [u8; 32] {
+    /// A SHA-256 digest of this stamp followed by `manifest`'s, the same in
+    /// every process: a record's payload and, in the EFS profile, its
+    /// manifest file (ADR 0030 section 3.2).
+    pub(crate) fn digest_with(&self, manifest: Option<&Self>) -> [u8; 32] {
         use sha2::Digest;
 
         let mut hasher = sha2::Sha256::new();
         self.feed(&mut hasher);
+        Self::feed_manifest(manifest, &mut hasher);
         hasher.finalize().into()
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn feed_manifest(manifest: Option<&Self>, hasher: &mut sha2::Sha256) {
+        let Some(manifest) = manifest else {
+            return;
+        };
+        manifest.feed(hasher);
     }
 
     #[cfg(unix)]

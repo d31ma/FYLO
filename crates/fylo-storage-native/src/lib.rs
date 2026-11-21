@@ -97,6 +97,7 @@ mod tier_reads;
 #[cfg(target_family = "wasm")]
 mod tier_reads_wasm;
 mod validation_mode;
+mod verified_manifest;
 mod word_witness;
 mod write;
 mod writer_session;
@@ -2718,19 +2719,21 @@ impl NativeCollection {
         namespace: &Path,
         identifier: &str,
     ) -> Result<StoredBytes, NativeStorageError> {
-        self.read_document_file(namespace, identifier, |_| ())
-            .map(|(stored, _, ())| stored)
+        self.read_document_file(namespace, identifier, |_| (), |_, _| ())
+            .map(|(stored, (), ())| stored)
     }
 
-    /// Read one document as [`Self::read_document_at`] does, keep the file
-    /// it was read from, and what `before` saw of the file once it was open
-    /// and before anything was read from it.
-    fn read_document_file<T>(
+    /// Read one document as [`Self::read_document_at`] does, with what
+    /// `before` saw of the file once it was open and before anything was
+    /// read from it, and what `after` saw of the file and its verified
+    /// attributes once the read passed every check.
+    fn read_document_file<T, U>(
         &self,
         namespace: &Path,
         identifier: &str,
         before: impl FnOnce(&File) -> T,
-    ) -> Result<(StoredBytes, File, T), NativeStorageError> {
+        after: impl FnOnce(&File, &record_attributes::RecordAttributes) -> U,
+    ) -> Result<(StoredBytes, T, U), NativeStorageError> {
         let (path, (mut file, metadata)) = self.open_document(namespace, identifier)?;
         let seen = before(&file);
         let attributes = record_attributes::RecordAttributes::read(&self.root, &file, &path)?;
@@ -2738,12 +2741,13 @@ impl NativeCollection {
         attributes.verify(&self.root, &file, &path)?;
         attributes.verify_contents(&self.root, &path, &bytes)?;
         LegacyAccessWarning::notice(&attributes);
+        let checked = after(&file, &attributes);
         let stored = StoredBytes {
             bytes,
             modified_millis: modified_millis(&metadata)?,
             path,
         };
-        Ok((stored, file, seen))
+        Ok((stored, seen, checked))
     }
 
     /// Try each shard a document may live in with one open per candidate. A

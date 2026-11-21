@@ -1,6 +1,9 @@
 use std::path::{Component, Path};
 
-use crate::temp_tier::{DocumentEntry, EntryKey, PendingEntry, TempCacheTier, TierReading};
+use crate::sidecar_attributes::SidecarAttributes;
+use crate::temp_tier::{
+    DocumentEntry, EntryKey, PendingEntry, RecordCheck, TempCacheTier, TierReading,
+};
 use crate::{
     CollectionIncarnation, CollectionKind, CollectionStamp, FileStamp, FilesystemProfile,
     GenerationState, NativeCollection, NativeStorageError, SpellingCache, StoredBytes,
@@ -59,7 +62,6 @@ impl NativeCollection {
             self.kind == CollectionKind::Document,
             !self.uses_segments(),
             !self.root.is_database(),
-            self.root.profile == FilesystemProfile::Native,
         ];
         self.root.tier.tier().filter(|_| !usable.contains(&false))
     }
@@ -90,10 +92,18 @@ impl NativeCollection {
         }
     }
 
+    /// The name the temp tier keys this collection's entries by. Every
+    /// entry key and every entry's collection field come from here, so a
+    /// later change to what names a collection (ADR 0030, layout work)
+    /// touches only this helper.
+    fn cache_name(&self) -> String {
+        format!("{}/{}", self.namespace, self.name)
+    }
+
     fn tier_reading(&self, identifier: &str) -> Option<TierReading<'_>> {
         let (tier, root_key) = self.tier()?;
         let stamp = self.window.stamp()?;
-        let collection = format!("{}/{}", self.namespace, self.name);
+        let collection = self.cache_name();
         let key = EntryKey::document(root_key, &collection, identifier);
         Some(TierReading {
             tier,
@@ -111,7 +121,7 @@ impl NativeCollection {
             reading.tier.count_miss();
             return None;
         };
-        let Some(stored) = self.stored_from(&entry, identifier) else {
+        let Some(stored) = self.sound_entry(&entry, identifier) else {
             Self::refuse(reading);
             return None;
         };
@@ -120,6 +130,25 @@ impl NativeCollection {
             return Some(stored);
         }
         self.revalidated(reading, entry, stored, identifier)
+    }
+
+    /// The stored bytes of `entry`, when it names this document's path and,
+    /// as a root read checks, its manifest binds its payload to this record.
+    fn sound_entry(&self, entry: &DocumentEntry, identifier: &str) -> Option<StoredBytes> {
+        let stored = self.stored_from(entry, identifier)?;
+        self.manifest_binds(entry, identifier).then_some(stored)
+    }
+
+    /// The EFS profile's record-identity check, from the entry alone: its
+    /// manifest must bind its payload as this collection's `identifier`. A
+    /// native-profile entry has no manifest.
+    fn manifest_binds(&self, entry: &DocumentEntry, identifier: &str) -> bool {
+        if self.root.profile == FilesystemProfile::Native {
+            return entry.manifest.is_empty();
+        }
+        let record = [self.namespace.as_str(), self.name.as_str(), identifier];
+        SidecarAttributes::decode(&entry.manifest)
+            .is_ok_and(|values| SidecarAttributes::binds(&values, record, &entry.payload))
     }
 
     fn stored_from(&self, entry: &DocumentEntry, identifier: &str) -> Option<StoredBytes> {
@@ -164,11 +193,29 @@ impl NativeCollection {
         Some(stored)
     }
 
+    /// The digest of the document's file stamps on the root now: its
+    /// payload and, in the EFS profile, its manifest.
     fn document_stamp(&self, identifier: &str, path: &Path) -> Option<[u8; 32]> {
         let namespace = self.path.join(Self::LIVE_FOLDER);
         let (opened, (file, _)) = self.open_document(&namespace, identifier).ok()?;
-        let stamp = FileStamp::of_file(&file).ok()?;
-        (opened == path).then(|| stamp.digest())
+        let payload = FileStamp::of_file(&file).ok()?;
+        (opened == path).then_some(())?;
+        self.record_digest(payload, &opened)
+    }
+
+    /// `payload`'s stamp digested with the stamp of its manifest file in
+    /// the EFS profile; `None` when the manifest cannot be opened.
+    fn record_digest(&self, payload: FileStamp, path: &Path) -> Option<[u8; 32]> {
+        if self.root.profile == FilesystemProfile::Native {
+            return Some(payload.digest_with(None));
+        }
+        let manifest = crate::sidecar_path(path);
+        let (file, _) = self
+            .root
+            .open_file(&manifest, crate::MAX_DOCUMENT_BYTES)
+            .ok()?;
+        let manifest = FileStamp::of_file(&file).ok()?;
+        Some(payload.digest_with(Some(&manifest)))
     }
 
     fn refuse(reading: &TierReading<'_>) {
@@ -182,10 +229,10 @@ impl NativeCollection {
         identifier: &str,
     ) -> Result<StoredBytes, NativeStorageError> {
         let namespace = self.path.join(Self::LIVE_FOLDER);
-        let stamp = |file: &fylo_vfs::File| FileStamp::of_file(file).ok();
-        let (stored, file, before) = self.read_document_file(&namespace, identifier, stamp)?;
-        let unchanged = before.filter(|before| FileStamp::of_file(&file).ok() == Some(*before));
-        let entry = unchanged.and_then(|stamp| self.entry_for(reading, &stored, stamp, identifier));
+        let opened = |file: &fylo_vfs::File| FileStamp::of_file(file).ok();
+        let (stored, opened, check) =
+            self.read_document_file(&namespace, identifier, opened, RecordCheck::of)?;
+        let entry = self.entry_for(reading, &stored, (opened, check), identifier);
         if let Some(entry) = entry {
             self.keep(reading, entry);
         }
@@ -196,21 +243,23 @@ impl NativeCollection {
         &self,
         reading: &TierReading<'_>,
         stored: &StoredBytes,
-        document_stamp: FileStamp,
+        (opened, check): (Option<FileStamp>, RecordCheck),
         identifier: &str,
     ) -> Option<DocumentEntry> {
         let relative = stored
             .path
             .strip_prefix(self.path.join(Self::LIVE_FOLDER))
             .ok()?;
+        let document_stamp = check.unchanged_digest(opened)?;
         let entry = DocumentEntry {
             collection: reading.collection.clone(),
             identifier: identifier.to_owned(),
             collection_stamp: reading.stamp,
-            document_stamp: document_stamp.digest(),
+            document_stamp,
             modified_millis: stored.modified_millis,
             relative_path: relative.to_str()?.to_owned(),
             payload: stored.bytes.clone(),
+            manifest: check.manifest_bytes()?,
         };
         let admitted = entry.fits() && reading.tier.admits(entry.payload.len());
         admitted.then_some(entry)

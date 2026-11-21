@@ -237,10 +237,15 @@ the root holds them (encrypted fields stay encrypted) and checks every entry
 against the collection before it uses one: an entry read under the
 collection's current stamp (its `state.json`, that file's identity and the
 collection's incarnation) is used as it is; one read under an older stamp is
-used only when the document file on the root is still the same file. Any
-problem with an entry is counted and the read goes to the root. In this
-release the tier reads for roots opened with the native profile under
-`--temp-cache on`; the EFS profile, and so `auto`, follow in a later release.
+used only when the document file on the root (and, in the EFS profile, its
+`.fylo-attrs` manifest) is still the same file. An EFS-profile entry also
+keeps the record's verified manifest, and a hit checks that the manifest
+binds the payload to the record, as a root read does. Any problem with an
+entry is counted and the read goes to the root. In the default `auto` mode
+the tier is active only for a root opened with the EFS profile (the only
+way a root may sit on a network filesystem) whose cache folder is private,
+local, on another device and has 64 MiB free; `on` turns it on for any
+folder root.
 
 `--temp-cache <off|auto|on>` (default `auto`), `--temp-cache-bytes <n>`
 (default 256 MiB, never more than half the free space) and
@@ -259,8 +264,7 @@ the counters `hits`, `misses`, `revalidations`, `rejected`, `writes`,
 `evictions` and `errors`. `reason` says why the tier is not active:
 `no root`, `vdbx`, `root is local` (`auto` with a root not opened with the
 EFS profile), `unsafe folder`, `cache folder is remote`, `same device`,
-`low space`, or `read path not built` (a root opened with the EFS profile,
-whose read path is not built yet). `auto` creates nothing for a local root.
+or `low space`. `auto` creates nothing for a local root.
 The counters count this process's reads: `hits` answered from the tier,
 `misses` it could not answer, `revalidations` of entries read under an older
 stamp, `rejected` entries refused and deleted, `writes` of new entries, and

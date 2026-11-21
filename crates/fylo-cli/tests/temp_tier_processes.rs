@@ -15,14 +15,26 @@ const NOTES: &str = "notes";
 const FIRST: &str = "4VRNF52JPCO";
 const SECOND: &str = "4VRNF52JPCP";
 
-/// A root and a temp cache base folder for one test, removed when it ends.
-struct Place(PathBuf);
+/// A root and a temp cache base folder for one test, removed when it ends,
+/// with the options that pick the root's filesystem profile.
+struct Place(PathBuf, &'static [&'static str]);
 
 impl Place {
     const BINARY: &'static str = env!("CARGO_BIN_EXE_fylo-rust");
     const FAILPOINT: &'static str = "FYLO_RUST_TEMP_CACHE_FAILPOINT";
 
+    const EFS: &'static [&'static str] = &["--filesystem-profile", "efs-sidecar-v1"];
+
     fn new() -> Self {
+        Self::with_profile(&[])
+    }
+
+    #[cfg(unix)]
+    fn efs() -> Self {
+        Self::with_profile(Self::EFS)
+    }
+
+    fn with_profile(profile: &'static [&'static str]) -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let path = std::env::temp_dir().join(format!(
             "fylo-temp-tier-processes-{}-{}",
@@ -31,7 +43,7 @@ impl Place {
         ));
         fs::create_dir_all(path.join("root")).unwrap();
         fs::create_dir_all(path.join("base")).unwrap();
-        Self(path)
+        Self(path, profile)
     }
 
     fn root(&self) -> PathBuf {
@@ -49,6 +61,7 @@ impl Place {
             .args(mode)
             .arg("--root")
             .arg(self.root())
+            .args(self.1)
             .args(["--temp-cache", "on", "--temp-cache-dir"])
             .arg(self.base())
             .current_dir(&self.0)
@@ -165,8 +178,17 @@ fn seed(place: &Place) {
 
 #[test]
 fn each_process_answers_what_the_processes_before_it_wrote() {
-    let place = Place::new();
-    seed(&place);
+    check_each_process_answers_what_the_processes_before_it_wrote(&Place::new());
+}
+
+#[cfg(unix)]
+#[test]
+fn each_process_answers_what_the_processes_before_it_wrote_on_efs() {
+    check_each_process_answers_what_the_processes_before_it_wrote(&Place::efs());
+}
+
+fn check_each_process_answers_what_the_processes_before_it_wrote(place: &Place) {
+    seed(place);
     let mut first = place.session();
     assert_eq!(first.ask(&get(FIRST))[FIRST]["title"], "one");
     assert_eq!(first.ask(&get(FIRST))[FIRST]["title"], "one");
@@ -347,5 +369,132 @@ fn the_tier_works_in_the_os_temp_folder_for_a_data_disk_root() {
     let roots = std::env::var_os(DataDiskRoot::LIST).unwrap_or_default();
     for parent in std::env::split_paths(&roots).filter(|path| !path.as_os_str().is_empty()) {
         assert_tier_reads_for_a_data_disk_root(&parent);
+    }
+}
+
+#[test]
+fn invocations_fill_and_answer_from_the_tier() {
+    let place = Place::new();
+    seed(&place);
+    let invocation = [
+        "--invocation",
+        "--deadline-ms",
+        "30000",
+        "--cleanup-reserve-ms",
+        "2000",
+    ];
+    let invoke = |frame: &Value| {
+        let mut arguments = invocation.to_vec();
+        let frame = frame.to_string();
+        arguments.extend(["--request", frame.as_str()]);
+        let output = place.command(&arguments).output().unwrap();
+        assert!(output.status.success(), "{output:?}");
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+    assert_eq!(invoke(&get(FIRST))["result"][FIRST]["title"], "one");
+    assert_eq!(place.files_named(".fyc").len(), 1);
+    assert_eq!(invoke(&get(FIRST))["result"][FIRST]["title"], "one");
+    let handshake = invoke(&json!({"op":"handshake"}));
+    let temp_cache = &handshake["result"]["capabilities"]["tempCache"];
+    assert_eq!(temp_cache["active"], true, "{temp_cache}");
+}
+
+/// An EFS-profile root on a real network mount, with the default `auto`
+/// mode and the OS temp folder: the tier turns itself on, and a second
+/// process answers from it.
+struct NetworkRoot(PathBuf);
+
+impl NetworkRoot {
+    const LIST: &'static str = "FYLO_TEST_NETWORK_ROOTS";
+
+    fn below(parent: &Path) -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let folder = parent.join(format!(
+            "fylo-temp-tier-network-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(folder.join("root")).unwrap();
+        Self(folder)
+    }
+
+    fn command(&self, mode: &[&str]) -> Command {
+        let mut command = Command::new(Place::BINARY);
+        command
+            .arg("exec")
+            .args(mode)
+            .arg("--root")
+            .arg(self.0.join("root"))
+            .args(Place::EFS)
+            .current_dir(&self.0)
+            .env_remove("FYLO_ROOT")
+            .env_remove(Place::FAILPOINT);
+        command
+    }
+
+    fn succeed(&self, frame: &Value) {
+        let output = self
+            .command(&["--request", &frame.to_string()])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let reply: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(reply["ok"], true, "{frame} failed: {reply}");
+    }
+
+    fn get_and_handshake(&self) -> Vec<Value> {
+        let input = format!("{}\n{}\n", get(FIRST), json!({"op":"handshake"}));
+        let mut child = self
+            .command(&["--loop"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.as_bytes())
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+}
+
+impl Drop for NetworkRoot {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+fn assert_auto_reads_through_the_tier(parent: &Path) {
+    let place = NetworkRoot::below(parent);
+    place.succeed(&json!({"op":"createCollection","collection":NOTES}));
+    place.succeed(&json!({"op":"putData","collection":NOTES,"id":FIRST,"data":{"title":"one"}}));
+    let first = place.get_and_handshake();
+    assert_eq!(first[0]["result"][FIRST]["title"], "one", "{first:?}");
+    let second = place.get_and_handshake();
+    assert_eq!(second[0]["result"][FIRST]["title"], "one", "{second:?}");
+    let temp_cache = &second[1]["result"]["capabilities"]["tempCache"];
+    assert_eq!(temp_cache["mode"], "auto", "{temp_cache}");
+    assert_eq!(temp_cache["active"], true, "{temp_cache}");
+    assert_eq!(temp_cache["hits"], 1, "{temp_cache}");
+}
+
+/// Run against real network mounts:
+/// `FYLO_TEST_NETWORK_ROOTS=/mnt/nfs cargo nextest run -p fylo-cli --test
+/// temp_tier_processes --run-ignored only`. Each folder gets a throwaway
+/// subfolder, removed afterwards.
+#[cfg(unix)]
+#[test]
+#[ignore = "needs FYLO_TEST_NETWORK_ROOTS naming folders on network mounts"]
+fn auto_reads_an_efs_root_on_a_network_mount_through_the_tier() {
+    let roots = std::env::var_os(NetworkRoot::LIST).unwrap_or_default();
+    for parent in std::env::split_paths(&roots).filter(|path| !path.as_os_str().is_empty()) {
+        assert_auto_reads_through_the_tier(&parent);
     }
 }

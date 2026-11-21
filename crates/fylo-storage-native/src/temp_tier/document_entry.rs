@@ -9,8 +9,10 @@ use super::entry_reader::EntryReader;
 /// digests of the collection stamp and of the document file's stamp, the
 /// file's modification time, and the lengths), the collection, the id and
 /// the document's path below the collection's `docs` folder, a CRC-32C of
-/// all of that, then the stored payload exactly as read from the root and a
-/// CRC-32C of the payload. Nothing in it is decoded or decrypted.
+/// all of that, then the stored payload exactly as read from the root, the
+/// record's verified manifest (the EFS profile's `.fylo-attrs` file, empty
+/// in the native profile) and a CRC-32C of both. Nothing in it is decoded
+/// or decrypted.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct DocumentEntry {
     pub(crate) collection: String,
@@ -20,13 +22,14 @@ pub(crate) struct DocumentEntry {
     pub(crate) modified_millis: u64,
     pub(crate) relative_path: String,
     pub(crate) payload: Vec<u8>,
+    pub(crate) manifest: Vec<u8>,
 }
 
 impl DocumentEntry {
     const MAGIC: [u8; 4] = *b"FYLC";
-    const VERSION: u16 = 1;
+    const VERSION: u16 = 2;
     const DOCUMENT_KIND: u8 = 1;
-    const FIXED_BYTES: usize = 90;
+    const FIXED_BYTES: usize = 94;
     pub(crate) const CHECKSUM_BYTES: usize = 4;
     const DIGEST_BYTES: usize = 32;
 
@@ -35,8 +38,11 @@ impl DocumentEntry {
         let mut bytes = self.header();
         let header_checksum = Crc32c::checksum(&bytes);
         bytes.extend_from_slice(&header_checksum.to_le_bytes());
+        let body_start = bytes.len();
         bytes.extend_from_slice(&self.payload);
-        bytes.extend_from_slice(&Crc32c::checksum(&self.payload).to_le_bytes());
+        bytes.extend_from_slice(&self.manifest);
+        let body_checksum = Crc32c::checksum(&bytes[body_start..]);
+        bytes.extend_from_slice(&body_checksum.to_le_bytes());
         bytes
     }
 
@@ -44,8 +50,8 @@ impl DocumentEntry {
     pub(crate) fn fits(&self) -> bool {
         let texts = [&self.collection, &self.identifier, &self.relative_path];
         let lengths = texts.map(|text| u16::try_from(text.len()).is_ok());
-        let payload = u32::try_from(self.payload.len()).is_ok();
-        !lengths.contains(&false) && payload
+        let bodies = [&self.payload, &self.manifest].map(|body| u32::try_from(body.len()).is_ok());
+        !lengths.contains(&false) && !bodies.contains(&false)
     }
 
     /// The entry `bytes` hold, or `None` when they are torn, damaged, of
@@ -58,11 +64,11 @@ impl DocumentEntry {
         let header_checksum = reader.take_u32()?;
         let header = &bytes[..Self::FIXED_BYTES + lengths.strings()];
         Self::require(Crc32c::checksum(header) == header_checksum)?;
-        let payload = reader.take(lengths.payload)?;
-        let payload_checksum = reader.take_u32()?;
-        Self::require(Crc32c::checksum(payload) == payload_checksum)?;
+        let body = reader.take(lengths.body()?)?;
+        let body_checksum = reader.take_u32()?;
+        Self::require(Crc32c::checksum(body) == body_checksum)?;
         Self::require(reader.is_empty())?;
-        Self::assemble(fixed, strings, &lengths, payload)
+        Self::assemble(fixed, strings, &lengths, body)
     }
 
     fn header(&self) -> Vec<u8> {
@@ -78,6 +84,7 @@ impl DocumentEntry {
         bytes.extend_from_slice(&Self::short_length(&self.identifier).to_le_bytes());
         bytes.extend_from_slice(&Self::short_length(&self.relative_path).to_le_bytes());
         bytes.extend_from_slice(&Self::long_length(&self.payload).to_le_bytes());
+        bytes.extend_from_slice(&Self::long_length(&self.manifest).to_le_bytes());
         bytes.extend_from_slice(self.collection.as_bytes());
         bytes.extend_from_slice(self.identifier.as_bytes());
         bytes.extend_from_slice(self.relative_path.as_bytes());
@@ -100,19 +107,23 @@ impl DocumentEntry {
             collection: usize::from(u16::from_le_bytes([fixed[80], fixed[81]])),
             identifier: usize::from(u16::from_le_bytes([fixed[82], fixed[83]])),
             path: usize::from(u16::from_le_bytes([fixed[84], fixed[85]])),
-            payload: usize::try_from(u32::from_le_bytes([
-                fixed[86], fixed[87], fixed[88], fixed[89],
-            ]))
-            .ok()?,
+            payload: Self::long_at(fixed, 86)?,
+            manifest: Self::long_at(fixed, 90)?,
         })
     }
 
-    fn assemble(
-        fixed: &[u8],
-        strings: &[u8],
-        lengths: &EntryLengths,
-        payload: &[u8],
-    ) -> Option<Self> {
+    fn long_at(fixed: &[u8], start: usize) -> Option<usize> {
+        let bytes = [
+            fixed[start],
+            fixed[start + 1],
+            fixed[start + 2],
+            fixed[start + 3],
+        ];
+        usize::try_from(u32::from_le_bytes(bytes)).ok()
+    }
+
+    fn assemble(fixed: &[u8], strings: &[u8], lengths: &EntryLengths, body: &[u8]) -> Option<Self> {
+        let (payload, manifest) = body.split_at(lengths.payload);
         let (collection, rest) = strings.split_at(lengths.collection);
         let (identifier, path) = rest.split_at(lengths.identifier);
         Some(Self {
@@ -123,6 +134,7 @@ impl DocumentEntry {
             modified_millis: u64::from_le_bytes(Self::eight_at(fixed, 72)),
             relative_path: String::from_utf8(path.to_vec()).ok()?,
             payload: payload.to_vec(),
+            manifest: manifest.to_vec(),
         })
     }
 

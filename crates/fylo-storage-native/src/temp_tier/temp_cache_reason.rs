@@ -17,8 +17,6 @@ pub enum TempCacheReason {
     SameDevice,
     /// The cache folder's filesystem has less than 64 MiB free.
     LowSpace,
-    /// Every rule passed, but this release has no temp-tier read path yet.
-    ReadPathNotBuilt,
 }
 
 impl TempCacheReason {
@@ -33,7 +31,6 @@ impl TempCacheReason {
             Self::CacheFolderRemote => "cache folder is remote",
             Self::SameDevice => "same device",
             Self::LowSpace => "low space",
-            Self::ReadPathNotBuilt => "read path not built",
         }
     }
 }

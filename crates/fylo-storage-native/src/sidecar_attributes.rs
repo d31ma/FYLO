@@ -10,7 +10,8 @@ use serde::de::{MapAccess, Visitor};
 #[cfg(unix)]
 use sha2::{Digest, Sha256};
 
-use crate::{ExpectedType, NativeRoot, NativeStorageError, NativeStorageErrorCode};
+use crate::verified_manifest::VerifiedManifest;
+use crate::{ExpectedType, FileStamp, NativeRoot, NativeStorageError, NativeStorageErrorCode};
 
 const MAX_BYTES: u64 = 16 * 1024 * 1024;
 pub(crate) const IDENTITY_ATTRIBUTE: &str = "user.fylo.record-identity";
@@ -24,20 +25,23 @@ impl SidecarAttributes {
         payload: &File,
         path: &Path,
     ) -> Result<BTreeMap<String, Vec<u8>>, NativeStorageError> {
-        Ok(Self::read_verified(root, payload, path)?.0)
+        Ok(Self::read_verified(root, payload, path)?.values)
     }
 
+    /// The record's verified manifest, with its open file and the file's
+    /// stamp from before it was read.
     pub(crate) fn read_verified(
         root: &NativeRoot,
         payload: &File,
         path: &Path,
-    ) -> Result<(BTreeMap<String, Vec<u8>>, File), NativeStorageError> {
+    ) -> Result<VerifiedManifest, NativeStorageError> {
         root.assert_profile_owned()?;
         let sidecar = crate::sidecar_path(path);
         if !crate::path_exists_no_follow(&sidecar)? {
             return Err(corrupt());
         }
         let (mut file, metadata) = root.open_file(&sidecar, MAX_BYTES)?;
+        let opened = FileStamp::of_file(&file).ok();
         Self::verify_owner(
             root,
             &payload.metadata().map_err(NativeStorageError::io)?,
@@ -53,7 +57,11 @@ impl SidecarAttributes {
         root.verify_open_file_identity(&sidecar, &file)?;
         root.verify_open_file_identity(path, payload)?;
         root.assert_profile_owned()?;
-        Ok((attributes, file))
+        Ok(VerifiedManifest {
+            values: attributes,
+            file,
+            opened,
+        })
     }
 
     pub(crate) fn read_path(
@@ -92,16 +100,45 @@ impl SidecarAttributes {
             NativeStorageError::new(NativeStorageErrorCode::UnsafePath, "manifest has no parent")
         })?;
         root.verify_path(parent, ExpectedType::Directory)?;
-        let encoded: BTreeMap<String, String> = attributes
-            .iter()
-            .map(|(name, value)| (name.clone(), BASE64.encode(value)))
-            .collect();
-        let bytes = serde_json::to_vec(&encoded).map_err(|_| corrupt())?;
+        let bytes = Self::encode(attributes)?;
         // Validate the same names, canonical encodings and limits on writes.
         Self::decode(&bytes)?;
         crate::write::durable_replace_private(&sidecar, &bytes)?;
         root.verify_open_file_identity(path, &payload)?;
         root.assert_profile_owned()
+    }
+
+    /// The manifest file's bytes for `attributes`: each value in base64, as
+    /// [`Self::decode`] reads them.
+    pub(crate) fn encode(
+        attributes: &BTreeMap<String, Vec<u8>>,
+    ) -> Result<Vec<u8>, NativeStorageError> {
+        let encoded: BTreeMap<String, String> = attributes
+            .iter()
+            .map(|(name, value)| (name.clone(), BASE64.encode(value)))
+            .collect();
+        serde_json::to_vec(&encoded).map_err(|_| corrupt())
+    }
+
+    /// Whether `attributes` bind `bytes` as the document `record` names
+    /// (namespace, collection, id), with no file call: the check a temp
+    /// tier hit repeats from what its entry holds (ADR 0030 section 4.4).
+    pub(crate) fn binds(
+        attributes: &BTreeMap<String, Vec<u8>>,
+        record: [&str; 3],
+        bytes: &[u8],
+    ) -> bool {
+        let [namespace, collection, identifier] = record;
+        let checksum = crate::sha256_hex(bytes);
+        let expected = [
+            IDENTITY_FORMAT,
+            namespace,
+            collection,
+            identifier,
+            checksum.as_str(),
+        ];
+        let value = serde_json::to_vec(&expected).unwrap_or_default();
+        attributes.get(IDENTITY_ATTRIBUTE).map(Vec::as_slice) == Some(value.as_slice())
     }
 
     pub(crate) fn refresh_binding(
@@ -411,4 +448,61 @@ fn corrupt() -> NativeStorageError {
         NativeStorageErrorCode::CorruptMetadata,
         "EFS attribute manifest is corrupt",
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::{IDENTITY_ATTRIBUTE, IDENTITY_FORMAT, SidecarAttributes};
+
+    const RECORD: [&str; 3] = [".collections", "notes", "4VRNF52JPCO"];
+
+    fn bound(payload: &[u8]) -> BTreeMap<String, Vec<u8>> {
+        let checksum = crate::sha256_hex(payload);
+        let [namespace, collection, identifier] = RECORD;
+        let value = [
+            IDENTITY_FORMAT,
+            namespace,
+            collection,
+            identifier,
+            checksum.as_str(),
+        ];
+        BTreeMap::from([(
+            IDENTITY_ATTRIBUTE.to_owned(),
+            serde_json::to_vec(&value).unwrap(),
+        )])
+    }
+
+    #[test]
+    fn a_manifest_binds_the_payload_it_was_written_for() {
+        assert!(SidecarAttributes::binds(&bound(b"{}"), RECORD, b"{}"));
+    }
+
+    #[test]
+    fn a_manifest_does_not_bind_other_bytes() {
+        assert!(!SidecarAttributes::binds(
+            &bound(b"{}"),
+            RECORD,
+            b"{\"a\":1}"
+        ));
+    }
+
+    #[test]
+    fn a_manifest_does_not_bind_another_record() {
+        let other = [".collections", "notes", "4VRNF52JPCP"];
+        assert!(!SidecarAttributes::binds(&bound(b"{}"), other, b"{}"));
+    }
+
+    #[test]
+    fn a_manifest_without_a_binding_binds_nothing() {
+        assert!(!SidecarAttributes::binds(&BTreeMap::new(), RECORD, b"{}"));
+    }
+
+    #[test]
+    fn an_encoded_manifest_reads_back() {
+        let attributes = bound(b"{}");
+        let bytes = SidecarAttributes::encode(&attributes).unwrap();
+        assert_eq!(SidecarAttributes::decode(&bytes).unwrap(), attributes);
+    }
 }

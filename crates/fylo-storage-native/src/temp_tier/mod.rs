@@ -12,7 +12,11 @@ mod entry_lengths;
 #[cfg(not(target_family = "wasm"))]
 mod entry_reader;
 #[cfg(not(target_family = "wasm"))]
+mod manifest_seen;
+#[cfg(not(target_family = "wasm"))]
 mod pending_entry;
+#[cfg(not(target_family = "wasm"))]
+mod record_check;
 #[cfg(not(target_family = "wasm"))]
 mod temp_cache_tier;
 #[cfg(not(target_family = "wasm"))]
@@ -91,5 +95,5 @@ pub use temp_cache_tier::TempCacheTier;
 #[cfg(not(target_family = "wasm"))]
 pub(crate) use {
     document_entry::DocumentEntry, entry_key::EntryKey, pending_entry::PendingEntry,
-    tier_reading::TierReading,
+    record_check::RecordCheck, tier_reading::TierReading,
 };
