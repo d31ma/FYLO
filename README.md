@@ -74,6 +74,8 @@ requires an authenticated GitHub CLI and fails closed before installation; see
 the [release provenance runbook](docs/operations/release-provenance.md).
 Maintainers can reproduce the pull-request gates from the
 [CI qualification runbook](docs/operations/ci-qualification.md).
+After a crash of the storage under a root, follow the
+[after a storage crash runbook](docs/operations/after-a-storage-crash.md).
 
 Then drive it from your language through a thin, dependency-free
 [client shim](clients/). Node example:

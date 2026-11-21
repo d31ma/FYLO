@@ -117,8 +117,8 @@ impl LeaseTakeover<'_> {
     /// request at a time) still takes over once the record has stood still
     /// for the takeover time across all its tries.
     fn first_seen(path: &Path, observation: &LeaseObservation) -> Instant {
-        static SEEN: OnceLock<Mutex<HashMap<PathBuf, (LeaseObservation, Instant)>>> =
-            OnceLock::new();
+        type SeenRecords = HashMap<PathBuf, (LeaseObservation, Instant)>;
+        static SEEN: OnceLock<Mutex<SeenRecords>> = OnceLock::new();
         let mut seen = SEEN
             .get_or_init(Mutex::default)
             .lock()

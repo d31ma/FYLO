@@ -146,6 +146,7 @@ fn wait_for(path: &Path) {
     }
 }
 
+#[cfg(unix)]
 fn signal(child: &Child, name: &str) {
     let status = Command::new("kill")
         .args([&format!("-{name}"), &child.id().to_string()])
@@ -182,7 +183,7 @@ fn lease_child() {
         lease.drop_kernel_lock_for_test();
     }
     let writer = writer(&root, lease);
-    fs::write(folder.join("ready"), b"").unwrap();
+    fs::write(folder.join("ready"), std::process::id().to_string()).unwrap();
     wait_for(&folder.join("go"));
     let outcome = put(&writer, 1).map_or_else(|error| error.code().as_str().to_owned(), |()| "ok".to_owned());
     fs::write(folder.join("result"), outcome).unwrap();
@@ -303,4 +304,109 @@ fn a_crash_after_a_clean_stop_record_is_taken_at_once_from_any_machine() {
     let (waited, scratch, before) = crash_then_take("lease-after-release", Some("machine-b"));
     assert!(waited < TAKEOVER, "waited {waited:?}");
     assert_eq!(scratch.generation(), before + 2);
+}
+
+/// A second machine that sees the same folder under another path: kestrel
+/// mounts ANVIL locally, this Mac reaches it over NFS with local-only kernel
+/// locks, so the kernel lock binds one machine only.
+struct RemoteMachine {
+    host: String,
+    local_prefix: PathBuf,
+    remote_prefix: PathBuf,
+}
+
+impl RemoteMachine {
+    const HEARTBEAT_SECONDS: &str = "0.5";
+    const TAKEOVER_SECONDS: &str = "5";
+    const TAKEOVER: Duration = Duration::from_secs(5);
+
+    fn from_environment() -> Self {
+        Self {
+            host: std::env::var("FYLO_LEASE_REMOTE_HOST").expect("set FYLO_LEASE_REMOTE_HOST"),
+            local_prefix: PathBuf::from(std::env::var("FYLO_LEASE_LOCAL_PREFIX").unwrap()),
+            remote_prefix: PathBuf::from(std::env::var("FYLO_LEASE_REMOTE_PREFIX").unwrap()),
+        }
+    }
+
+    fn timing() -> LeaseTiming {
+        LeaseTiming::new(Duration::from_millis(500), Self::TAKEOVER).unwrap()
+    }
+
+    fn remote(&self, local: &Path) -> PathBuf {
+        self.remote_prefix
+            .join(local.strip_prefix(&self.local_prefix).unwrap())
+    }
+
+    fn start_child(&self, scratch: &Scratch) -> Child {
+        let binary = self.remote(&fs::canonicalize(std::env::current_exe().unwrap()).unwrap());
+        let command = format!(
+            "cd /tmp && env {CHILD}=hold {ROOT}={} {TEST_PROFILE}={} FYLO_LEASE_HEARTBEAT_SECONDS={} FYLO_LEASE_TAKEOVER_SECONDS={} {} --exact lease_child --nocapture --test-threads=1",
+            self.remote(&scratch.root).display(),
+            std::env::var(TEST_PROFILE).unwrap_or_default(),
+            Self::HEARTBEAT_SECONDS,
+            Self::TAKEOVER_SECONDS,
+            binary.display()
+        );
+        Command::new("ssh")
+            .args(["-o", "BatchMode=yes", &self.host, &command])
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap()
+    }
+
+    fn signal(&self, pid: &str, name: &str) {
+        let status = Command::new("ssh")
+            .args(["-o", "BatchMode=yes", &self.host, &format!("kill -{name} {pid}")])
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+
+    fn acquire(root: &Path) -> Result<RootLease, fylo_storage_native::NativeStorageError> {
+        RootLease::acquire_with_timing(root, profile(), Self::timing())
+    }
+
+    fn clear_markers(scratch: &Scratch) {
+        for name in ["ready", "go", "result"] {
+            let _ = fs::remove_file(scratch.marker(name));
+        }
+    }
+}
+
+/// Run with `FYLO_LEASE_REMOTE_HOST`, `FYLO_LEASE_LOCAL_PREFIX`,
+/// `FYLO_LEASE_REMOTE_PREFIX`, `FYLO_LEASE_TEST_DIR` (under the local
+/// prefix) and `FYLO_LEASE_TEST_PROFILE=efs`, `--ignored --nocapture`.
+#[test]
+#[ignore = "needs a second machine that shares a folder; see the doc comment"]
+fn a_root_shared_with_another_machine_has_one_owner_at_a_time() {
+    let remote = RemoteMachine::from_environment();
+    let scratch = Scratch::new("cross-machine");
+    create_items(&scratch.root);
+    let mut child = remote.start_child(&scratch);
+    wait_for(&scratch.marker("ready"));
+    let pid = fs::read_to_string(scratch.marker("ready")).unwrap();
+    let generation = scratch.generation();
+    let (refused, waited) = timed(|| RemoteMachine::acquire(&scratch.root));
+    println!("live remote owner: refused after {waited:?}");
+    assert_eq!(refused.unwrap_err().code(), NativeStorageErrorCode::RootLocked);
+    assert_eq!(scratch.generation(), generation);
+    remote.signal(&pid, "STOP");
+    let (successor, waited) = timed(|| RemoteMachine::acquire(&scratch.root).unwrap());
+    println!("paused remote owner: taken over after {waited:?}");
+    assert!(waited >= RemoteMachine::TAKEOVER, "waited only {waited:?}");
+    fs::write(scratch.marker("go"), b"").unwrap();
+    remote.signal(&pid, "CONT");
+    wait_for(&scratch.marker("result"));
+    child.wait().unwrap();
+    assert_eq!(fs::read_to_string(scratch.marker("result")).unwrap(), "EROOTLEASELOST");
+    drop(successor);
+    RemoteMachine::clear_markers(&scratch);
+    let _second = remote.start_child(&scratch);
+    wait_for(&scratch.marker("ready"));
+    let pid = fs::read_to_string(scratch.marker("ready")).unwrap();
+    remote.signal(&pid, "KILL");
+    let (taken, waited) = timed(|| RemoteMachine::acquire(&scratch.root).unwrap());
+    println!("killed remote owner: taken over after {waited:?}");
+    assert!(waited >= RemoteMachine::TAKEOVER, "waited only {waited:?}");
+    taken.assert_owned().unwrap();
 }

@@ -17,7 +17,7 @@ pub(super) struct MachineIdentity;
 
 impl MachineIdentity {
     const HASH_PREFIX: &str = "fylo-machine-v1\n";
-    const NAME_LENGTH: usize = 32;
+    const NAME_BYTES: usize = 16;
     #[cfg(feature = "test-support")]
     const TEST_VARIABLE: &str = "FYLO_TEST_LEASE_MACHINE";
 
@@ -45,11 +45,7 @@ impl MachineIdentity {
 
     fn hash(parts: &str) -> String {
         let digest = Sha256::digest(format!("{}{parts}", Self::HASH_PREFIX).as_bytes());
-        let text = digest
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
-        text[..Self::NAME_LENGTH].to_owned()
+        crate::hex_bytes(&digest[..Self::NAME_BYTES])
     }
 
     #[cfg(target_os = "macos")]

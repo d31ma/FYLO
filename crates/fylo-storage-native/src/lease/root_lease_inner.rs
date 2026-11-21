@@ -170,7 +170,7 @@ impl RootLeaseInner {
                 format!("no random owner id for the root lease: {error}"),
             )
         })?;
-        Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+        Ok(crate::hex_bytes(&bytes))
     }
 
     pub(super) fn owner_generation(&self) -> &str {

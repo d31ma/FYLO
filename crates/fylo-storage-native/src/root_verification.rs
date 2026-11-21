@@ -1,6 +1,6 @@
 use crate::root_damage::RootDamage;
 use crate::root_verification_report::RootVerificationReport;
-use crate::{CollectionKind, NativeCollection, NativeRoot, NativeStorageError};
+use crate::{CollectionKind, NativeCollection, NativeRoot, NativeStorageError, NativeWriteRoot};
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -8,12 +8,18 @@ use std::path::Path;
 /// file, so that every file a storage crash damaged is found at once
 /// (L1 spec 20.2, `fylo verify --root <root>`).
 ///
+/// Each collection first finishes a transaction a crash interrupted, as the
+/// next writer would: an unfinished one rolls back, a committed one rolls
+/// forward. Only then are its files read, so a crash in the middle of a
+/// write is never reported as damage.
+///
 /// A document that cannot be read or is not JSON, a file whose bytes do not
 /// match its checksum, and an index that no longer matches its documents
 /// are each listed with the file and its code. Nothing is repaired: an
 /// index is rebuilt with `rebuildCollection`, and a document is restored
 /// from a backup.
 pub struct RootVerification<'a> {
+    writer: &'a NativeWriteRoot,
     root: &'a NativeRoot,
     report: RootVerificationReport,
 }
@@ -24,8 +30,9 @@ impl<'a> RootVerification<'a> {
     const INDEX_DIFFERS: &str = "ENATIVE_INDEX";
 
     #[must_use]
-    pub fn run(root: &'a NativeRoot) -> RootVerificationReport {
+    pub fn run(writer: &'a NativeWriteRoot, root: &'a NativeRoot) -> RootVerificationReport {
         let mut verification = Self {
+            writer,
             root,
             report: RootVerificationReport {
                 root: root.path().display().to_string(),
@@ -60,6 +67,9 @@ impl<'a> RootVerification<'a> {
 
     fn check_collection(&mut self, name: &str) {
         self.report.collections_checked += 1;
+        if let Err(error) = self.writer.recover_collection(name) {
+            self.damage(name, &self.root.path().join(name), &error);
+        }
         match self.root.collection(name) {
             Ok(collection) => self.check_kind(&collection),
             Err(error) => self.damage(name, &self.root.path().join(name), &error),

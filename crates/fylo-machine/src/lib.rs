@@ -1693,9 +1693,11 @@ impl Session {
             ));
         }
         let active_root = active_worktree(&repository_root)?;
-        let root = NativeRoot::open_profiled(self.root_options(active_root, repository_root)?)
+        let options = self.root_options(active_root, repository_root)?;
+        let writer = NativeWriteRoot::open_profiled(options.clone())
             .map_err(|error| storage_error(&error))?;
-        let report = fylo_storage_native::RootVerification::run(&root);
+        let root = NativeRoot::open_profiled(options).map_err(|error| storage_error(&error))?;
+        let report = fylo_storage_native::RootVerification::run(&writer, &root);
         serde_json::to_value(report).map_err(|error| serialization_error(&error))
     }
 

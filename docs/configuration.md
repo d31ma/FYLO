@@ -229,6 +229,25 @@ fylo identity show keychain:com.example.app
 `FYLO_KEYCHAIN` is read by the keychain store itself, like the installer
 variables above, and is not engine configuration.
 
+### Root lease timing
+
+A process that owns a root proves it is alive by writing its lease record
+every heartbeat. A process that finds another owner's record waits for the
+takeover time, on its own clock, and takes the root only if the record did
+not change (ADR 0033 section 4). The lease reads two process variables, like
+`FYLO_KEYCHAIN` above; they are not engine configuration:
+
+| Variable | Default | Meaning |
+| -------- | ------- | ------- |
+| `FYLO_LEASE_HEARTBEAT_SECONDS` | `5` | Seconds between heartbeats; decimals allowed, at least 0.01 |
+| `FYLO_LEASE_TAKEOVER_SECONDS` | `20` | Seconds a taker waits for a heartbeat; must be longer than the heartbeat |
+
+A taker always waits the longer of its own takeover time and the one the
+owner recorded. A clean stop needs no wait. After a crash, a process on the
+same machine takes over at once when the owner's process has ended; a
+process on another machine waits the takeover time. Rust callers can pass a
+`LeaseTiming` to `RootLease::acquire_with_timing` instead.
+
 ### `cng:` keys and passwordless Windows logons
 
 A `cng:` key is protected by DPAPI with the owning user's credentials.
