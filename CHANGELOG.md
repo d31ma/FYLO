@@ -56,9 +56,8 @@
 - **A repeated document id answers `EDOCEXISTS`.** `putData` with an `id`
   the collection already has failed with the generic `ENATIVE_METADATA`; it
   now fails with its own stable code `EDOCEXISTS` (not retryable), in every
-  layout and in `exec --invocation`. SQL `INSERT` through the `fylo` crate
-  reports it the same way. Code that matched `ENATIVE_METADATA` for this
-  case must match `EDOCEXISTS`.
+  layout and in `exec --invocation`. Code that matched `ENATIVE_METADATA`
+  for this case must match `EDOCEXISTS`.
 - **Waiting invocations take turns.** Two `exec --invocation` processes on
   one root could keep a third waiting until its deadline, because a new
   process took the root in the short gap before the waiter tried again
